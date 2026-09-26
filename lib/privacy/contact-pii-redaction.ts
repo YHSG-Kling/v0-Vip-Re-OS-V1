@@ -24,6 +24,10 @@ export const CONTACT_PII_NULL_COLUMNS = [
   // credit_score_range (PeopleData estimate, m640, written by lib/lead-pipeline/enrichment-orchestrator.ts)
   // are TWO DIFFERENT columns (CLAUDE.md §6) — both are a person's credit posture and both null on erasure.
   "household_income", "age_range", "credit_score_band", "credit_score_range", "credit_status",
+  // net_worth_range (m640) — WRITTEN since lane 85C (BatchData demographic dataset / Versium financial
+  // append, through enrichment-column-map.ts::householdFinancialContactColumns); a person's modeled
+  // wealth band is erased with the rest of their financial posture.
+  "net_worth_range",
   // records / enrichment (free-form PII)
   "court_records", "public_records", "enrichment_profile", "property_records", "social_handles", "metadata",
   "qualification_summary", "isa_handoff_brief", "referral_approach",

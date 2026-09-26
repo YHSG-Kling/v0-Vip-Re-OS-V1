@@ -10,6 +10,7 @@ import { scrubPhonesForPatch } from '@/lib/compliance/phone-scrub-runner'
 import {
   peopleDataProfileToContactColumns, peopleDataProfileToLeadColumns, buildPeopleDataProfile,
   batchDataPropertyEnrichmentToLeadColumns, batchDataPropertyEnrichmentToContactColumns,
+  carryForwardHouseholdFinancials,
 } from '@/lib/lead-pipeline/enrichment-column-map'
 import { trackVendorUsageService } from '@/lib/vendor-governance'
 import { meterVendorSpend } from '@/lib/vendor-governance/meter-vendor'
@@ -722,6 +723,36 @@ export async function processEnrichmentQueue(
         // partition from planEnrichmentLane), so the lineage view shows what the spend answered.
         profile.paid_answers = plan.paid.answers
 
+        // Lane 85C — HOUSEHOLD FINANCIALS (marital status / household income / net worth / modeled
+        // credit band). The write below REPLACES enrichment_profile wholesale, so the values an
+        // earlier BatchData read put there (seller-signal probe, acquisition pull, Step 6f) are
+        // carried forward first — PeopleData sells none of the four, and a refresh must not erase
+        // them. Then the PAID rung (Versium financial append) is asked ONLY for a gap it can fill,
+        // vendor-budget pre-flighted and booked on the platform ledger inside appendModeledCredit.
+        // Both through the ONE mapper (enrichment-column-map.ts HOUSEHOLD FINANCIALS).
+        Object.assign(profile, carryForwardHouseholdFinancials(profile, entity.enrichment_profile as Record<string, any> | null))
+        {
+          const { appendModeledCredit } = await import('@/lib/enrichment/household-financials')
+          const credit = await appendModeledCredit({
+            profile,
+            identity: {
+              firstName: (entity.first_name as string | null) ?? enriched.firstName ?? null,
+              lastName: (entity.last_name as string | null) ?? enriched.lastName ?? null,
+              email: primaryEmail,
+              phone: primaryPhone,
+              address: (entity.address as string | null) ?? null,
+              city: (entity.city as string | null) ?? enriched.city ?? null,
+              state: (entity.state as string | null) ?? enriched.state ?? null,
+              zip: (entity.zip_code as string | null) ?? enriched.zipCode ?? null,
+            },
+            brokerageId,
+            lane: 'enrichment_drain',
+          })
+          Object.assign(profile, credit.profile)
+          result.totalCost += credit.cost
+          if (credit.error) console.warn('[enrichment-orchestrator] household-financial rung (non-blocking):', credit.error)
+        }
+
         // Step 6a: Update entity table
         if (entityType === 'lead') {
           await supabase
@@ -965,16 +996,18 @@ export async function processEnrichmentQueue(
                 agentId: (contact as any).agent_id ?? null, // contacts.agent_id is agents-class
                 facts: {
                   ageRange: enriched.ageRange ?? (enriched.age ? String(enriched.age) : null),
-                  maritalStatus: enriched.maritalStatus ?? null,
+                  // Lane 85C — the four household financials read from the PROFILE (carried forward +
+                  // the paid rung), not the PDL object, which never carries them.
+                  maritalStatus: profile.marital_status ?? enriched.maritalStatus ?? null,
                   childrenCount: enriched.childrenCount ?? null,
                   householdSize: enriched.householdSize ?? null,
                   // PDL carries a PERSON salary band (inferred_salary), not household income — used
                   // only when no household figure exists, and labelled so the persona never mistakes it.
-                  householdIncome: enriched.householdIncome ?? (enriched.inferredSalary ? `${enriched.inferredSalary} (individual salary, inferred)` : null),
+                  householdIncome: profile.household_income ?? enriched.householdIncome ?? (enriched.inferredSalary ? `${enriched.inferredSalary} (individual salary, inferred)` : null),
                   // m640: promoted from the jsonb blob alongside household_income —
                   // see lib/lead-pipeline/enrichment-column-map.ts and the migration header.
-                  netWorth: enriched.netWorth ?? null,
-                  creditScoreRange: enriched.creditScoreRange ?? null,
+                  netWorth: profile.net_worth ?? enriched.netWorth ?? null,
+                  creditScoreRange: profile.credit_score_range ?? enriched.creditScoreRange ?? null,
                   homeOwnerStatus: enriched.homeOwnerStatus ?? null,
                   homeValue: enriched.homeValue ?? null,
                   occupation: enriched.currentTitle ?? null,

@@ -48,6 +48,11 @@ import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { createServiceClient } from "@/lib/supabase/service"
 import { PeopleDataClient } from "@/lib/external"
+import {
+  buildPeopleDataProfile,
+  carryForwardHouseholdFinancials,
+  peopleDataProfileToContactColumns,
+} from "@/lib/lead-pipeline/enrichment-column-map"
 import { OSINTClient } from "@/lib/osint-client"
 import { validateEmail, validatePhone } from "@/lib/contact-validation"
 import { trackVendorUsageService } from "@/lib/vendor-governance"
@@ -487,7 +492,7 @@ export async function enrichContactRecord(params: {
   try {
     const { data: contact, error: readError } = await supabase
       .from("contacts")
-      .select("id, brokerage_id, first_name, last_name, email, phone, city, state, enriched_at")
+      .select("id, brokerage_id, first_name, last_name, email, phone, address, city, state, zip_code, enriched_at, enrichment_profile")
       .eq("id", contactId)
       .eq("brokerage_id", brokerageId)
       .maybeSingle()
@@ -564,12 +569,17 @@ export async function enrichContactRecord(params: {
       }
     }
 
-    // 3. PeopleData — paid, one record.
+    // 3. PeopleData — paid, one record. Lane 85C (owner verbatim: "add location for contact
+    // enrichment"): the contact's own city / state / ZIP ride beside the name — PDL admits a name
+    // only with a location qualifier, so a name-only contact could never match before this.
     const personData = await peopleData.enrich({
       firstName: contact.first_name as string,
       lastName: contact.last_name as string,
       email: (contact.email as string) ?? undefined,
       phone: (contact.phone as string) ?? undefined,
+      city: (contact.city as string | null) ?? null,
+      state: (contact.state as string | null) ?? null,
+      postalCode: (contact.zip_code as string | null) ?? null,
     })
 
     // PLATFORM LEDGER (vendor_usage_tracking) at the outcome's real price: PDL bills per
@@ -589,22 +599,51 @@ export async function enrichContactRecord(params: {
       })
     }
 
+    // TOMBSTONE (CLAUDE.md §1.1, lane 85C): the inline PeopleData → contacts column literal that
+    // stood here (age_range / gender / marital_status / household_income / home_owner_status /
+    // home_value_estimate / occupation / social URLs, picked straight off the PDL object) is DELETED —
+    // a SECOND mapping of one provider onto one table (lane 84C open item #4). Survivor:
+    // lib/lead-pipeline/enrichment-column-map.ts::buildPeopleDataProfile (:187) →
+    // peopleDataProfileToContactColumns (:73), the builder + column mapper the drain
+    // (enrichment-orchestrator.ts) already uses. What the survivor was missing, merged onto it first:
+    // nothing — it already mapped every column the literal did, plus education_level, peopledata_id,
+    // social_handles, net_worth_range and credit_score_range the literal dropped.
+    // `data_source` / `confidence_score` stay here: they are this lane's own columns, not the mapper's.
+    let profile: Record<string, any> | null = null
     if (personData) {
+      profile = carryForwardHouseholdFinancials(
+        buildPeopleDataProfile(personData),
+        (contact.enrichment_profile as Record<string, any> | null) ?? null,
+      )
       enrichmentData = {
         ...enrichmentData,
-        age_range: personData.ageRange,
-        gender: personData.gender,
-        marital_status: personData.maritalStatus,
-        household_income: personData.householdIncome,
-        home_owner_status: personData.homeOwnerStatus,
-        home_value_estimate: personData.homeValue,
-        occupation: personData.currentTitle,
-        linkedin_url: personData.linkedinUrl,
-        facebook_url: personData.facebookUrl,
-        twitter_url: personData.twitterUrl,
         data_source: "peopledata",
         confidence_score: personData.enrichmentConfidence || 70,
       }
+    }
+
+    // 3b. HOUSEHOLD FINANCIALS paid rung (lane 85C) — marital status / household income / net worth /
+    // modeled credit band still missing after PDL (which sells none of them) and whatever BatchData's
+    // already-bought demographic dataset put on this contact. Asked only for a gap it can fill, under
+    // the same vendor budget gate, booked on the platform ledger inside appendModeledCredit.
+    {
+      const { appendModeledCredit } = await import("@/lib/enrichment/household-financials")
+      const credit = await appendModeledCredit({
+        profile: profile ?? { ...((contact.enrichment_profile as Record<string, any> | null) ?? {}) },
+        identity: {
+          firstName: (contact.first_name as string | null) ?? null,
+          lastName: (contact.last_name as string | null) ?? null,
+          email: (contact.email as string | null) ?? null,
+          phone: (contact.phone as string | null) ?? null,
+          address: (contact.address as string | null) ?? null,
+          city: (contact.city as string | null) ?? null,
+          state: (contact.state as string | null) ?? null,
+          zip: (contact.zip_code as string | null) ?? null,
+        },
+        brokerageId,
+        lane: "contact_enrichment",
+      })
+      if (credit.filled.length > 0 || profile) profile = credit.profile
     }
 
     // 4. OSINT — paid, several scrape requests.
@@ -639,11 +678,18 @@ export async function enrichContactRecord(params: {
       if (osintData.social_profiles?.length) {
         const findProfile = (platform: string) =>
           osintData.social_profiles.find((p) => p.platform === platform)?.url
-        enrichmentData.linkedin_url = enrichmentData.linkedin_url || findProfile("linkedin")
-        enrichmentData.facebook_url = enrichmentData.facebook_url || findProfile("facebook")
-        enrichmentData.twitter_url = enrichmentData.twitter_url || findProfile("twitter")
+        // OSINT fills a social URL only where the PDL profile (mapped below) has none.
+        enrichmentData.linkedin_url = profile?.linkedin_url || findProfile("linkedin")
+        enrichmentData.facebook_url = profile?.facebook_url || findProfile("facebook")
+        enrichmentData.twitter_url = profile?.twitter_url || findProfile("twitter")
       }
     }
+
+    // The ONE mapper's contact columns (lane 85C). Its `enrichment_source` is the PROVIDER, while
+    // this lane's `enrichment_source` has always recorded the TRIGGER (auto / manual / …) — the
+    // trigger value below keeps winning, unchanged; the provider stays readable on data_source and
+    // enrichment_profile.provider (the two-meanings column is an open item in the lane-85C notes).
+    const { enrichment_source: _providerName, ...mappedColumns } = profile ? peopleDataProfileToContactColumns(profile) : {} as Record<string, unknown>
 
     // 5. Persist. Tenant-anchored on both the PK and the brokerage.
     //
@@ -653,18 +699,13 @@ export async function enrichContactRecord(params: {
     // (app/actions/home-value.ts carries the same note for the same reason).
     // Keeping the chain short keeps the scope auditable at a glance.
     const enrichmentUpdate = {
-      age_range: enrichmentData.age_range,
-      gender: enrichmentData.gender,
-      marital_status: enrichmentData.marital_status,
-      household_income: enrichmentData.household_income,
-      home_owner_status: enrichmentData.home_owner_status,
-      home_value_estimate: enrichmentData.home_value_estimate,
-      length_of_residence: enrichmentData.length_of_residence,
-      occupation: enrichmentData.occupation,
-      education_level: enrichmentData.education_level,
-      linkedin_url: enrichmentData.linkedin_url,
-      facebook_url: enrichmentData.facebook_url,
-      twitter_url: enrichmentData.twitter_url,
+      // PDL demographics + the four household financials, through the ONE mapper (only present
+      // values — a miss never nulls a column an earlier enrichment filled).
+      ...mappedColumns,
+      ...(profile && { enrichment_profile: { ...((contact.enrichment_profile as Record<string, any> | null) ?? {}), ...profile } }),
+      linkedin_url: enrichmentData.linkedin_url ?? mappedColumns.linkedin_url,
+      facebook_url: enrichmentData.facebook_url ?? mappedColumns.facebook_url,
+      twitter_url: enrichmentData.twitter_url ?? mappedColumns.twitter_url,
       instagram_url: enrichmentData.instagram_url,
       life_events: enrichmentData.life_events || [],
       last_life_event_detected: enrichmentData.last_life_event_detected,

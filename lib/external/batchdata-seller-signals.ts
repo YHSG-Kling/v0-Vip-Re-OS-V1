@@ -135,6 +135,8 @@
 
 import { normalizeStreetAddress } from "./permit-signals"
 import { excludeConvertedLeads } from "@/lib/contact-promotion/conversion-finality"
+import { householdFinancialsFromBatchData } from "@/lib/lead-pipeline/enrichment-column-map"
+import type { HouseholdFinancialCapture } from "@/lib/enrichment/household-financials"
 import type { SellerSignalStrength } from "@/lib/lead-governance/seller-signal-strength"
 import {
   defineSellerSignalSources, screenProtectedClassCriteria, labelProtectedClassFields,
@@ -1664,6 +1666,15 @@ export interface BatchDataSignalIngestResult {
    * counter derived from intent proves only what the loop believed.
    */
   protectedClassDerivedByType: Record<string, number>
+  /**
+   * Lane 85C — address-matched probes whose `demographic` dataset carried at least one household
+   * financial (marital status / household income / net worth). The dataset was requested for the
+   * signals since #297 and its values were DISCARDED unless a signal fired; they are now handed to
+   * the caller's persist hook (lib/enrichment/household-financials.ts::persistHouseholdFinancialCaptures).
+   */
+  householdFinancialsCaptured: number
+  /** How many of those the persist hook actually wrote (its refusals land on `errors`). */
+  householdFinancialsWritten: number
   /** Every refusal, verbatim. A run with errors NEVER reports a clean success. */
   errors: string[]
 }
@@ -1695,6 +1706,10 @@ export async function ingestBatchDataSellerSignals(params: {
   /** `YYYY-MM-DD`. Drives the rotation and the "is this auction still ahead" read. */
   dayIso: string
   lookupsPerRun?: number
+  /** Lane 85C — where the probe's already-bought household financials go. Injectable (the proof's
+   *  double has no `.update`); production passes persistHouseholdFinancialCaptures. Absent → the
+   *  captures are only counted, never silently claimed as written. */
+  persistHouseholdFinancials?: (captures: HouseholdFinancialCapture[]) => Promise<{ written: number; errors: string[] }>
 }): Promise<BatchDataSignalIngestResult> {
   const { supabase, brokerageId, lookup, dayIso } = params
   const perRun = params.lookupsPerRun ?? DEFAULT_LOOKUPS_PER_RUN
@@ -1716,8 +1731,11 @@ export async function ingestBatchDataSellerSignals(params: {
     writtenByEntity: { lead: 0, contact: 0 },
     protectedClassFields: [],
     protectedClassDerivedByType: {},
+    householdFinancialsCaptured: 0,
+    householdFinancialsWritten: 0,
     errors: [],
   }
+  const householdCaptures: HouseholdFinancialCapture[] = []
 
   // ── 1a. The tenant's own UNCONVERTED leads ────────────────────────────────
   //
@@ -1851,6 +1869,15 @@ export async function ingestBatchDataSellerSignals(params: {
       continue
     }
 
+    // Lane 85C — the SAME row's `demographic` dataset, captured AFTER the exact-address refusal
+    // above (a neighbour's household never lands on this person) and BEFORE the no-signal
+    // `continue` (a home with no seller signal still has a household).
+    const household = householdFinancialsFromBatchData(res.data)
+    if (Object.keys(household).length > 0) {
+      householdCaptures.push({ entity: lead.entity, id: lead.id, financials: household })
+      result.householdFinancialsCaptured++
+    }
+
     const derived = deriveSellerSignals(res.data, { todayIso: dayIso })
     if (derived.length === 0) { result.probesNoSignal++; continue }
     result.signalsDerived += derived.length
@@ -1869,6 +1896,18 @@ export async function ingestBatchDataSellerSignals(params: {
       if (toWrite.length >= MAX_SIGNALS_PER_RUN) break
     }
     if (toWrite.length >= MAX_SIGNALS_PER_RUN) break
+  }
+
+  // Lane 85C — hand the captured household financials to the caller's writer BEFORE the signal
+  // write (whose early returns would otherwise skip it). Refusals are reported, never swallowed.
+  if (householdCaptures.length > 0 && params.persistHouseholdFinancials) {
+    try {
+      const persisted = await params.persistHouseholdFinancials(householdCaptures)
+      result.householdFinancialsWritten = persisted.written
+      result.errors.push(...persisted.errors)
+    } catch (e) {
+      result.errors.push(`household financials persist failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
   if (toWrite.length === 0) return result

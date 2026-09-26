@@ -6,6 +6,7 @@ import {
 } from "@/app/actions/cron-kernel"
 import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-territories"
 import { ingestPermitSignals, type PermitScanTerritory } from "@/lib/external/permit-signals"
+import { persistHouseholdFinancialCaptures } from "@/lib/enrichment/household-financials"
 import {
   listSupportedMarkets, listQueryablePermitDatasets, listQueryableDatasets,
 } from "@/lib/external/socrata-market-registry"
@@ -265,6 +266,9 @@ export async function GET(request: Request) {
             lookup: realBatchDataPropertyLookup,
             dayIso,
             lookupsPerRun: DEFAULT_LOOKUPS_PER_RUN,
+            // Lane 85C — the demographic dataset this probe already buys lands on the lead/contact
+            // (marital status / household income / net worth) through the ONE mapper.
+            persistHouseholdFinancials: (captures) => persistHouseholdFinancialCaptures({ supabase, brokerageId, captures }),
           })
           batchdata.leads_available += r.leadsAvailable
           batchdata.contacts_available += r.contactsAvailable

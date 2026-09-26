@@ -56,6 +56,8 @@ const MUST_CLEAR = [
   "mailing_address", "household_income", "credit_score_band", "credit_score_range", "court_records",
   "public_records", "social_handles", "ghl_contact_id", "peopledata_id",
   "birthday", "occupation", "enrichment_profile",
+  // Lane 85C — the household financials now WRITTEN by enrichment (marital status, modeled net worth).
+  "marital_status", "net_worth_range",
 ]
 
 async function main() {

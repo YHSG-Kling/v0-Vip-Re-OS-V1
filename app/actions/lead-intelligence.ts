@@ -3087,6 +3087,10 @@ export async function runBatchDataSellerSignalProbe() {
     lookup: realBatchDataPropertyLookup,
     dayIso: new Date().toISOString().slice(0, 10),
     lookupsPerRun: 25,
+    // Lane 85C — the probe's already-bought demographic dataset lands on the lead/contact (SESSION
+    // tenant, auth.brokerageId) through the ONE household mapper.
+    persistHouseholdFinancials: async (captures) =>
+      (await import("@/lib/enrichment/household-financials")).persistHouseholdFinancialCaptures({ supabase, brokerageId: auth.brokerageId, captures }),
   })
 
   // A run with any refusal NEVER reports a clean success — supabase-js and the

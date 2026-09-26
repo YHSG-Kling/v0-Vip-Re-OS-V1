@@ -1,5 +1,6 @@
 import type { NormalizedScrapedRecord } from "@/lib/lead-pipeline/raw-record-types"
 import { resolveBatchDataToken } from "@/lib/external/batchdata-tokens"
+import { householdFinancialsFromBatchData, type HouseholdFinancials } from "@/lib/lead-pipeline/enrichment-column-map"
 
 // ─── CLASS ALIAS (backward compat for callers using `new BatchDataClient()`) ──
 export class BatchDataClient {
@@ -116,6 +117,11 @@ export interface BatchDataRecord {
     // quickLists BatchData publishes that no trigger reached before (see QUICKLIST_SLUG below).
     | 'fsbo' | 'senior_owner' | 'canceled_listing' | 'lis_pendens' | 'notice_of_default' | 'involuntary_lien'
   motivationConfidence: number
+  /** Lane 85C — the property row's `demographic` dataset (marital status / household income / net
+   *  worth) that a Property Search returns with every permitted dataset and this normalizer used to
+   *  DROP. Carried onto raw_scraped_leads.raw_data, read by pipeline-processor.ts through the ONE
+   *  mapper (enrichment-column-map.ts::householdFinancialsFromBatchData). */
+  householdFinancials?: HouseholdFinancials
 }
 
 /** Full motivated-seller trigger set requested by default. Only types that map to a REAL BatchData
@@ -314,6 +320,7 @@ export function normalizeBatchDataProperty(p: Record<string, any>, requestedType
     }),
     motivationType: (requestedType as BatchDataRecord['motivationType']) ?? 'distressed',
     motivationConfidence: 0.7,
+    householdFinancials: compact(householdFinancialsFromBatchData(p)),
   }
 }
 
@@ -1280,6 +1287,8 @@ export interface BatchDataPropertyEnrichment {
   foreclosureStatus: string | null
   lastDeedType: string | null
   ownerOccupied: boolean | null
+  /** Lane 85C — the `demographic` dataset, requested in the SAME lookup (no extra billed record). */
+  householdFinancials?: HouseholdFinancials | null
   cost: number
   error?: string
 }
@@ -1297,7 +1306,10 @@ export async function enrichPropertyDatasetsBatchData(address: string): Promise<
       {
         searchCriteria: { query: address },
         options: { take: 1, skip: 0 },
-        dataset: ["core", "valuation", "mortgage-liens", "foreclosure", "deed", "owner"],
+        // Lane 85C — "demographic" rides the SAME lookup: BatchData bills the returned record, not the
+        // dataset list, so marital status / household income / net worth arrive at no extra record
+        // cost (the seller-signal probe has asked for it since #297). Mapped by the ONE mapper.
+        dataset: ["core", "valuation", "mortgage-liens", "foreclosure", "deed", "owner", "demographic"],
       },
       "BatchData property enrichment error",
     )
@@ -1317,6 +1329,7 @@ export async function enrichPropertyDatasetsBatchData(address: string): Promise<
       foreclosureStatus: typeof foreclosure.status === "string" ? foreclosure.status : null,
       lastDeedType: typeof deed.documentType === "string" ? deed.documentType : null,
       ownerOccupied: typeof owner.ownerOccupied === "boolean" ? owner.ownerOccupied : null,
+      householdFinancials: (() => { const hf = householdFinancialsFromBatchData(prop); return Object.keys(hf).length > 0 ? hf : null })(),
       cost: 0.05,
     }
   } catch (e) {

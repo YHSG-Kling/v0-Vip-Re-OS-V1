@@ -85,16 +85,16 @@ export function peopleDataProfileToContactColumns(
 
   set('age_range', profile.age_range)
   set('gender', profile.gender)
-  set('marital_status', profile.marital_status)
-  set('household_income', profile.household_income)
   set('occupation', profile.job_title ?? profile.employer)
   set('education_level', deriveEducationLevel(profile.education))
   set('home_owner_status', profile.home_owner_status)
   set('home_value_estimate', typeof profile.home_value === 'number' ? profile.home_value : undefined)
-  // m640: PeopleData's own market-intelligence estimates — distinct from the
-  // agent-tracked contacts.credit_score_band (see the migration header).
-  set('net_worth_range', profile.net_worth)
-  set('credit_score_range', profile.credit_score_range)
+  // Lane 85C — the four HOUSEHOLD FINANCIAL attributes (marital status, household income, net worth,
+  // modeled credit band) map through ONE function, householdFinancialContactColumns below, whichever
+  // provider supplied them (BatchData demographic dataset / Versium financial append / a payload that
+  // carries them). m640's net_worth_range + credit_score_range columns are the landing spots; the
+  // agent-tracked credit-repair band is a different column this mapper never writes.
+  Object.assign(out, householdFinancialContactColumns(profile))
   set('linkedin_url', profile.linkedin_url)
   set('facebook_url', profile.facebook_url)
   set('twitter_url', profile.twitter_url)
@@ -291,6 +291,8 @@ export interface BatchDataPropertyEnrichmentLike {
   foreclosureStatus: string | null
   lastDeedType: string | null
   ownerOccupied: boolean | null
+  /** Lane 85C — the `demographic` dataset's household financials (householdFinancialsFromBatchData). */
+  householdFinancials?: HouseholdFinancials | null
 }
 
 /** Pure: BatchData property-enrichment → the first-class columns BOTH leads and
@@ -304,7 +306,9 @@ function sharedBatchDataPropertyColumns(e: BatchDataPropertyEnrichmentLike): Rec
 }
 
 /** Pure: BatchData property-enrichment → leads columns + the enrichment_profile.batchdata_property
- *  nested block (leads has no dedicated property jsonb column). */
+ *  nested block (leads has no dedicated property jsonb column). Lane 85C: the `demographic` dataset's
+ *  household financials (the same lookup, no extra record) merge into the profile through the ONE
+ *  household merge — leads carry them in enrichment_profile only (no first-class lead column). */
 export function batchDataPropertyEnrichmentToLeadColumns(
   e: BatchDataPropertyEnrichmentLike | null | undefined,
   priorProfile: Record<string, unknown> | null | undefined,
@@ -312,8 +316,11 @@ export function batchDataPropertyEnrichmentToLeadColumns(
   if (!e || !e.ok) return {}
   const out = sharedBatchDataPropertyColumns(e)
   if (typeof e.estimatedValue === 'number') out.estimated_value = e.estimatedValue
+  const withHousehold = e.householdFinancials
+    ? mergeHouseholdFinancials(priorProfile ?? {}, e.householdFinancials, 'batchdata', { prefer: 'incoming' })
+    : (priorProfile ?? {})
   out.enrichment_profile = {
-    ...(priorProfile ?? {}),
+    ...withHousehold,
     batchdata_property: {
       captured_at: new Date().toISOString(),
       equity_percent: e.equityPercent,
@@ -336,6 +343,9 @@ export function batchDataPropertyEnrichmentToContactColumns(
   if (!e || !e.ok) return {}
   const out = sharedBatchDataPropertyColumns(e)
   if (typeof e.estimatedValue === 'number') out.home_value_estimate = e.estimatedValue
+  // Lane 85C — the demographic dataset's household financials land on the contact's first-class
+  // columns through the ONE column mapper (same function peopleDataProfileToContactColumns uses).
+  if (e.householdFinancials) Object.assign(out, householdFinancialContactColumns(e.householdFinancials))
   out.property_records = {
     ...(priorPropertyRecords ?? {}),
     batchdata: {
@@ -347,6 +357,243 @@ export function batchDataPropertyEnrichmentToContactColumns(
       last_deed_type: e.lastDeedType,
       owner_occupied: e.ownerOccupied,
     },
+  }
+  return out
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HOUSEHOLD FINANCIALS — marital status, household income, net worth, modeled credit band
+// (lane 85C, wave 85; owner verbatim: "add marital status,household income, net worth or credit on
+// enrichment and add location for contact enrichment.")
+//
+// ONE VOCABULARY (CLAUDE.md §6). The profile keys are the ones buildPeopleDataProfile already
+// declared and every reader already reads — marital_status / household_income / net_worth /
+// credit_score_range — so nothing downstream learns a second spelling. PeopleData's person schema
+// does NOT carry any of the four (lane 84C finding), so until this lane the keys were declared,
+// mapped and read, and never written by anything. The WRITERS are:
+//   · BatchData's `demographic` property dataset (maritalStatus / income / netWorth) — ALREADY
+//     BOUGHT: the seller-signal probe requests it for every lead/contact it rotates through
+//     (batchdata-seller-signals.ts BATCHDATA_SIGNAL_DATASETS) and the drain's Step 6f property
+//     lookup now names it in the SAME request (no extra billed record). Acquisition pulls return
+//     every permitted dataset by default, so a BatchData-sourced RAW row carries it from ingest.
+//   · Versium's financial append (Household Income / Estimated Net Worth / Credit Rating) — the only
+//     rung that sells a CREDIT band; asked only for what is still missing (household-financials.ts).
+//
+// CREDIT IS A MODELED MARKETING ESTIMATE, NEVER A CONSUMER REPORT. Versium / BatchData are not
+// consumer reporting agencies and their ranges are modeled from marketing data (both vendors state
+// the data may not be used for FCRA-regulated eligibility decisions). normalizeModeledCreditBand
+// therefore stores a BAND only (an exact score is bucketed to a 50-point band, never stored), the
+// profile carries household_financials.credit_basis = MODELED_CREDIT_BASIS, and the band feeds
+// persona / intelligence reads only — never an eligibility, pricing or steering decision, never an
+// outbound message, never an agent-facing card (lane-85C notes).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const HOUSEHOLD_FINANCIAL_FIELDS = ['marital_status', 'household_income', 'net_worth', 'credit_score_range'] as const
+export type HouseholdFinancialField = typeof HOUSEHOLD_FINANCIAL_FIELDS[number]
+export type HouseholdFinancials = Partial<Record<HouseholdFinancialField, string>>
+/** The providers that may supply a household financial — one name per provider, the ledger's vendor key. */
+export type HouseholdFinancialProvider = 'batchdata' | 'versium' | 'peopledata'
+
+/** The provenance stamp for a credit band: a modeled range from marketing data, not a credit report. */
+export const MODELED_CREDIT_BASIS = 'modeled_marketing_estimate'
+
+/** profile key → contacts column (m640 named the two financial columns *_range). */
+const HOUSEHOLD_FINANCIAL_CONTACT_COLUMN: Readonly<Record<HouseholdFinancialField, string>> = {
+  marital_status: 'marital_status',
+  household_income: 'household_income',
+  net_worth: 'net_worth_range',
+  credit_score_range: 'credit_score_range',
+}
+
+const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
+
+/** PURE — any provider's marital status (word or single-letter list code) → married | single |
+ *  divorced | widowed | separated. Unknown / blank → null (never guessed). "Inferred" spellings and
+ *  the list-industry A (inferred married) / B (inferred single) codes map to the same word. */
+export function normalizeMaritalStatus(raw: unknown): string | null {
+  if (typeof raw === 'boolean' || raw == null) return null
+  const s = String(raw).trim().toLowerCase()
+  if (!s) return null
+  if (s.length === 1) return ({ m: 'married', a: 'married', s: 'single', b: 'single', d: 'divorced', w: 'widowed' } as Record<string, string>)[s] ?? null
+  if (/never\s*married|un-?married|\bsingle\b/.test(s)) return 'single'
+  if (/divorc/.test(s)) return 'divorced'
+  if (/widow/.test(s)) return 'widowed'
+  if (/separat/.test(s)) return 'separated'
+  if (/married/.test(s)) return 'married'
+  return null
+}
+
+/** PURE — a household income / net worth figure → the range string readers parse. A provider range
+ *  string passes through trimmed; a bare number (a modeled point estimate) is formatted as dollars. */
+export function normalizeMoneyRange(raw: unknown): string | null {
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return `$${Math.round(raw).toLocaleString('en-US')}`
+  if (nonEmpty(raw)) return raw.trim()
+  return null
+}
+
+/** PURE — a modeled credit figure → a BAND. "700-749" / "700 to 749" → "700-749"; "800+" → "800+";
+ *  "> 799" → "800+"; "< 550" / "under 550" → "<550"; an exact score (300–850) → its 50-point band (an
+ *  exact score is never stored); a descriptor (excellent / very good / good / fair / poor) → the
+ *  lower-case word. Anything else (out of range, garbage) → null. */
+export function normalizeModeledCreditBand(raw: unknown): string | null {
+  if (raw == null || typeof raw === 'boolean') return null
+  const s = String(raw).trim().toLowerCase()
+  if (!s) return null
+  const inRange = (n: number) => n >= 300 && n <= 850
+  const range = s.match(/(\d{3})\s*(?:-|–|to)\s*(\d{3})/)
+  if (range) {
+    const lo = Number(range[1]), hi = Number(range[2])
+    return inRange(lo) && inRange(hi) && lo <= hi ? `${lo}-${hi}` : null
+  }
+  const plus = s.match(/^(\d{3})\s*(?:\+|and\s+(?:above|up)|or\s+(?:more|higher))$/)
+  if (plus) return inRange(Number(plus[1])) ? `${Number(plus[1])}+` : null
+  const over = s.match(/^(>=|>|over|above)\s*(\d{3})$/)
+  if (over) {
+    const n = Number(over[2])
+    if (!inRange(n)) return null
+    return over[1] === '>=' ? `${n}+` : `${n + 1}+`
+  }
+  const under = s.match(/^(?:<=?|under|below|less\s+than)\s*(\d{3})$/)
+  if (under) return inRange(Number(under[1])) ? `<${Number(under[1])}` : null
+  if (/^\d{3}$/.test(s)) {
+    const n = Number(s)
+    if (!inRange(n)) return null
+    if (n >= 800) return '800+'
+    if (n < 550) return '<550'
+    const lo = Math.floor(n / 50) * 50
+    return `${lo}-${lo + 49}`
+  }
+  const word = s.replace(/_/g, ' ')
+  return ['excellent', 'very good', 'good', 'fair', 'poor'].includes(word) ? word : null
+}
+
+function normalizeHouseholdField(field: HouseholdFinancialField, raw: unknown): string | null {
+  if (field === 'marital_status') return normalizeMaritalStatus(raw)
+  if (field === 'credit_score_range') return normalizeModeledCreditBand(raw)
+  return normalizeMoneyRange(raw)
+}
+
+/** PURE — keep only normalizable values of the four fields. */
+export function normalizeHouseholdFinancials(input: Partial<Record<HouseholdFinancialField, unknown>> | null | undefined): HouseholdFinancials {
+  const out: HouseholdFinancials = {}
+  if (!input) return out
+  for (const f of HOUSEHOLD_FINANCIAL_FIELDS) {
+    const v = normalizeHouseholdField(f, input[f])
+    if (v) out[f] = v
+  }
+  return out
+}
+
+/** PURE — BatchData's `demographic` dataset on a property row (`demographics.maritalStatus` /
+ *  `maritalStatusCode` / `income` / `netWorth`, field names read live from
+ *  list_property_dataset_fields 2026-09-26) → household financials. Also accepts a row that ALREADY
+ *  carries the mapped block (a BatchDataRecord persisted as raw_scraped_leads.raw_data has
+ *  `householdFinancials`). BatchData sells no credit band; that key is never produced here. */
+export function householdFinancialsFromBatchData(row: unknown): HouseholdFinancials {
+  if (!row || typeof row !== 'object') return {}
+  const r = row as Record<string, any>
+  if (r.householdFinancials && typeof r.householdFinancials === 'object') {
+    const { credit_score_range: _never, ...rest } = r.householdFinancials as Record<string, unknown>
+    return normalizeHouseholdFinancials(rest)
+  }
+  const d = r.demographics
+  if (!d || typeof d !== 'object') return {}
+  return normalizeHouseholdFinancials({
+    marital_status: d.maritalStatus ?? d.maritalStatusCode,
+    household_income: d.income,
+    net_worth: d.netWorth,
+  })
+}
+
+/** PURE — one Versium Demographic Append result (`financial` output type; field names from
+ *  api-documentation.versium.com "Demographic Output Sample") → household financials. */
+export function householdFinancialsFromVersium(result: unknown): HouseholdFinancials {
+  if (!result || typeof result !== 'object') return {}
+  const r = result as Record<string, unknown>
+  return normalizeHouseholdFinancials({
+    marital_status: r['Marital Status'],
+    household_income: r['Household Income'],
+    net_worth: r['Estimated Net Worth'],
+    credit_score_range: r['Credit Rating'],
+  })
+}
+
+/** PURE — the household financial values a profile already carries (top-level keys). */
+export function householdFinancialsFromProfile(profile: Record<string, unknown> | null | undefined): HouseholdFinancials {
+  if (!profile) return {}
+  const out: HouseholdFinancials = {}
+  for (const f of HOUSEHOLD_FINANCIAL_FIELDS) if (nonEmpty(profile[f])) out[f] = (profile[f] as string).trim()
+  return out
+}
+
+/** PURE — which of the four a profile still lacks (drives the paid credit rung: ask only for gaps). */
+export function missingHouseholdFinancials(profile: Record<string, unknown> | null | undefined): HouseholdFinancialField[] {
+  const have = householdFinancialsFromProfile(profile)
+  return HOUSEHOLD_FINANCIAL_FIELDS.filter((f) => !have[f])
+}
+
+/**
+ * PURE — THE ONE household merge. Writes each present value at the profile's top-level key (what
+ * every reader reads) and records its provider under `household_financials.sources`, plus the
+ * credit basis when a band lands. `prefer: 'incoming'` (a fresh provider read) replaces a value;
+ * `prefer: 'existing'` (carrying an older read forward) only fills gaps. Never mutates its input.
+ */
+export function mergeHouseholdFinancials(
+  profile: Record<string, any> | null | undefined,
+  incoming: HouseholdFinancials | null | undefined,
+  provider: HouseholdFinancialProvider,
+  opts: { prefer?: 'incoming' | 'existing'; capturedAt?: string } = {},
+): Record<string, any> {
+  const base: Record<string, any> = { ...(profile ?? {}) }
+  const clean = normalizeHouseholdFinancials(incoming ?? {})
+  const prior = (base.household_financials && typeof base.household_financials === 'object') ? base.household_financials as Record<string, any> : {}
+  const sources: Record<string, string> = { ...(prior.sources ?? {}) }
+  let wrote = false
+  for (const f of HOUSEHOLD_FINANCIAL_FIELDS) {
+    const v = clean[f]
+    if (!v) continue
+    if (opts.prefer === 'existing' && nonEmpty(base[f])) continue
+    base[f] = v
+    sources[f] = provider
+    wrote = true
+  }
+  if (!wrote) return base
+  base.household_financials = {
+    ...prior,
+    sources,
+    captured_at: opts.capturedAt ?? new Date().toISOString(),
+    ...(nonEmpty(base.credit_score_range) ? { credit_basis: MODELED_CREDIT_BASIS } : {}),
+  }
+  return base
+}
+
+/** PURE — a profile that REPLACES an older one (the drain writes enrichment_profile wholesale) keeps
+ *  the older household financials it does not itself carry, with their provenance. */
+export function carryForwardHouseholdFinancials(
+  next: Record<string, any>,
+  prior: Record<string, any> | null | undefined,
+): Record<string, any> {
+  const priorValues = householdFinancialsFromProfile(prior)
+  if (Object.keys(priorValues).length === 0) return next
+  const priorBlock = (prior?.household_financials ?? {}) as Record<string, any>
+  const priorSources = (priorBlock.sources ?? {}) as Record<string, string>
+  let out = next
+  for (const f of HOUSEHOLD_FINANCIAL_FIELDS) {
+    if (!priorValues[f]) continue
+    const provider = (priorSources[f] ?? 'peopledata') as HouseholdFinancialProvider
+    out = mergeHouseholdFinancials(out, { [f]: priorValues[f] }, provider, { prefer: 'existing', capturedAt: priorBlock.captured_at })
+  }
+  return out
+}
+
+/** PURE — THE ONE household → contacts column mapping (marital_status, household_income,
+ *  net_worth_range, credit_score_range). Only present values are emitted, so it spreads safely. */
+export function householdFinancialContactColumns(source: Record<string, unknown> | HouseholdFinancials | null | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  const values = normalizeHouseholdFinancials((source ?? {}) as Partial<Record<HouseholdFinancialField, unknown>>)
+  for (const f of HOUSEHOLD_FINANCIAL_FIELDS) {
+    const v = values[f]
+    if (v) out[HOUSEHOLD_FINANCIAL_CONTACT_COLUMN[f]] = v
   }
   return out
 }

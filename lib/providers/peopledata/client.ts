@@ -63,6 +63,10 @@ export interface PersonEnrichParams {
   email?: string
   /** PDL's `location` free-text param. */
   location?: string
+  /** PDL's `postal_code` param (lane 85C) — on the installed SDK's PersonEnrichmentParams
+   *  (`node_modules/peopledatalabs/dist/types/enrichment-types.d.ts`: `postal_code?: string`). A
+   *  location qualifier beside a name, like `location`, and the most precise one a contact carries. */
+  postalCode?: string
   /** PDL's `profile` param (lane 72B) — a social profile URL (LinkedIn/Facebook/
    *  Instagram/Twitter/…). Confirmed on the installed SDK's own type surface
    *  (`node_modules/peopledatalabs/dist/types/enrichment-types.d.ts`:
@@ -92,6 +96,7 @@ export async function enrichPerson(apiKey: string, params: PersonEnrichParams): 
       phone: params.phone,
       email: params.email,
       location: params.location,
+      ...(params.postalCode ? { postal_code: params.postalCode } : {}),
       profile: params.profile,
       min_likelihood: params.minLikelihood,
       required: params.required,

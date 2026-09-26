@@ -147,7 +147,7 @@ check("guard runs it AFTER test:scrapers (ordering only)", guard.indexOf("npm ru
 check("MAINTENANCE_DOMAINS owns it with coOwners", /lead_demographics:\s*\{\s*manager:\s*"data_steward",\s*proof:\s*"test:lead-demographics",\s*coOwners:/.test(read("lib/kernel/manager-registry.ts")))
 
 console.log(`\n  denominators: ${DEMOGRAPHIC_PROFILE_FIELDS.length} demographic profile fields · 2 enrichment paths (drain + raw) · 6 lead-intelligence acquisition bookings · 1 Perplexity grounding booking`)
-console.log("  blind spots: the live PDL payload is not exercised (fixture follows docs.peopledatalabs.com field bundles); fields such as marital_status / household_income / home_value are NOT in PDL's person schema and stay empty unless a payload carries them; the merge path of a post-enrichment duplicate still fills email/phone only")
+console.log("  blind spots: the live PDL payload is not exercised (fixture follows docs.peopledatalabs.com field bundles); fields such as marital_status / household_income / home_value are NOT in PDL's person schema — since lane 85C the four household financials come from BatchData's demographic dataset + the Versium credit rung (proved in test:enrichment-one-rail Layer 8), home_value stays empty from PDL; the merge path of a post-enrichment duplicate still fills email/phone only")
 console.log(`\n${"─".repeat(50)}\n RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ❌ LEAD_DEMOGRAPHICS_FAIL"); process.exit(1) }
 console.log(" ✅ LEAD_DEMOGRAPHICS_PASS")

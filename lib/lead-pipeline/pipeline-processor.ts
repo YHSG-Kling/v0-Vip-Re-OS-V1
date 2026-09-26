@@ -10,7 +10,7 @@ import { deriveSocialProfileUrl } from './social-identity-resolve'
 import { meterVendorSpend } from '@/lib/vendor-governance/meter-vendor'
 // Lane 83A — THE ONE PeopleData profile builder (also used by the enrichment drain), so a lead born
 // from a scrape carries the same demographics blob as a drained one.
-import { buildPeopleDataProfile, demographicsFromProfile, peopleDataProfileToLeadColumns } from './enrichment-column-map'
+import { buildPeopleDataProfile, demographicsFromProfile, peopleDataProfileToLeadColumns, householdFinancialsFromBatchData, mergeHouseholdFinancials } from './enrichment-column-map'
 import { mergeEnrichment, shouldGapFill, enrichViaPerplexity, type BaseEnrichment } from './perplexity-enrichment'
 import { KernelEvent } from '@/lib/kernel/events'
 import { emitKernelEvent } from '@/lib/kernel/emit'
@@ -326,6 +326,19 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     // anything else.
     username, source: rec.source,
   })
+
+  // ── Raw-lead HOUSEHOLD FINANCIALS (lane 85C) — a BatchData-sourced raw row arrives carrying the
+  // property row's `demographic` dataset (marital status / household income / net worth), mapped at
+  // ingest by normalizeBatchDataProperty and kept on raw_data. PeopleData sells none of the four, so
+  // they merge onto the same demographic profile through the ONE mapper (a PDL value, were one ever
+  // returned, wins: prefer 'existing'). $0 — bought with the acquisition pull. The raw row's
+  // normalized_preview.demographics and the lead's enrichment_profile below both carry the result.
+  const rawHousehold = householdFinancialsFromBatchData(rec.raw_data)
+  if (Object.keys(rawHousehold).length > 0) {
+    enriched.peopleDataProfile = mergeHouseholdFinancials(
+      enriched.peopleDataProfile ?? { provider: 'batchdata' }, rawHousehold, 'batchdata', { prefer: 'existing' },
+    )
+  }
 
   // ── Raw-lead demographics (lane 83A) — the PDL match lands on the RAW row too, so a record that
   // stops at a gate (duplicate / identity) still carries who the person is for the next sweep and

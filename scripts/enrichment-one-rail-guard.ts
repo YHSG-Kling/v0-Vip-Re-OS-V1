@@ -51,6 +51,22 @@
  *   Layer 7 — registration: package.json script, guard ordering after
  *             test:scrapers (ordering only), MAINTENANCE_DOMAINS entry with
  *             coOwners (the prose names co-owners).
+ *   Layer 8 — lane 85C, HOUSEHOLD FINANCIALS (marital status, household income,
+ *             net worth, MODELED credit band) + contact-enrichment location:
+ *             8a the ONE mapper, pure (BatchData / Versium readers, band-only
+ *                credit with an exact-score positive control, one marital
+ *                vocabulary, merge / carry-forward, live contacts columns);
+ *             8b the writers (acquisition normalizer keeps the dataset, Step 6f
+ *                names it, raw path merges it, the seller-signal probe captures
+ *                it after the address refusal — run against a resolving double
+ *                with a neighbour as positive control — the tenant-anchored
+ *                persist, the paid rung asked only for a gap under the budget
+ *                gate and booked as 'versium');
+ *             8c contact enrichment sends city/state/ZIP (positive control: the
+ *                pre-85C call is flagged) and maps through the survivor — no
+ *                second PeopleData → column mapper anywhere (positive control);
+ *             8d FCRA / display: net worth + credit band off the agent card and
+ *                off outbound copy, erased on DSR, and every write has a reader.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
@@ -352,6 +368,234 @@ const { MAINTENANCE_DOMAINS } = await import("../lib/kernel/manager-registry")
 const dom = MAINTENANCE_DOMAINS.enrichment_one_rail
 check("MAINTENANCE_DOMAINS.enrichment_one_rail names this proof under ai_isa with coOwners listing_concierge / data_steward / shopping_agent / compliance_officer (the prose names each)",
   dom?.proof === "test:enrichment-one-rail" && dom?.manager === "ai_isa" && [...(dom?.coOwners ?? [])].sort().join(",") === "compliance_officer,data_steward,listing_concierge,shopping_agent" && /AssessorSearch/i.test(dom?.what ?? ""))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Layer 8 — lane 85C (owner verbatim: "add marital status,household income, net worth or credit on
+// enrichment and add location for contact enrichment."): the four HOUSEHOLD FINANCIALS ride the one
+// rail through ONE mapper; contact enrichment merges onto that mapper and sends a location.
+console.log("\n[Layer 8a · household financials — the ONE mapper, pure]")
+const cmap = await import("../lib/lead-pipeline/enrichment-column-map")
+const {
+  HOUSEHOLD_FINANCIAL_FIELDS, DEMOGRAPHIC_PROFILE_FIELDS, MODELED_CREDIT_BASIS,
+  householdFinancialsFromBatchData, householdFinancialsFromVersium, normalizeModeledCreditBand, normalizeMaritalStatus,
+  mergeHouseholdFinancials, carryForwardHouseholdFinancials, householdFinancialContactColumns, missingHouseholdFinancials,
+  peopleDataProfileToContactColumns, batchDataPropertyEnrichmentToLeadColumns, batchDataPropertyEnrichmentToContactColumns,
+  buildPeopleDataProfile, demographicsFromProfile,
+} = cmap
+const { SCHEMA_SNAPSHOT } = await import("./schema-snapshot")
+const BD_ROW = {
+  address: { street: "1234 N Lamar Blvd", city: "Austin", state: "TX", zip: "78756" },
+  owner: { firstName: "Ana", lastName: "Reyes" },
+  demographics: { maritalStatus: "Inferred Married", income: "$100,000 - $149,999", netWorth: "$250,000 - $499,999", creditRating: "700-749" },
+}
+const VERSIUM_ROW = { "Marital Status": "Married", "Household Income": "$150,000-199,999", "Estimated Net Worth": "> $499,999", "Credit Rating": "700-749" }
+const bdHf = householdFinancialsFromBatchData(BD_ROW)
+check("BatchData demographic dataset → marital_status / household_income / net_worth (field names from list_property_dataset_fields)",
+  bdHf.marital_status === "married" && bdHf.household_income === "$100,000 - $149,999" && bdHf.net_worth === "$250,000 - $499,999", JSON.stringify(bdHf))
+check("BatchData NEVER produces a credit band (it sells none) — even a stray credit-looking field on the row is ignored", !("credit_score_range" in bdHf))
+check("a row carrying the ALREADY-MAPPED block (raw_data from normalizeBatchDataProperty) reads the same, credit still refused",
+  JSON.stringify(householdFinancialsFromBatchData({ householdFinancials: { ...bdHf, credit_score_range: "700-749" } })) === JSON.stringify(bdHf))
+const vHf = householdFinancialsFromVersium(VERSIUM_ROW)
+check("Versium financial append → all four, the credit band as a band", vHf.credit_score_range === "700-749" && vHf.net_worth === "> $499,999" && vHf.marital_status === "married" && vHf.household_income === "$150,000-199,999", JSON.stringify(vHf))
+check("credit is a BAND: an exact score is bucketed, never stored (712 → 700-749; 805 → 800+; 520 → <550)",
+  normalizeModeledCreditBand(712) === "700-749" && normalizeModeledCreditBand("805") === "800+" && normalizeModeledCreditBand("520") === "<550")
+check("POSITIVE CONTROL: the bucketer changes an exact score (a no-op normalizer would store 712)", normalizeModeledCreditBand("712") !== "712")
+check("band spellings normalize to one vocabulary; garbage / out-of-range → null",
+  normalizeModeledCreditBand("700 to 749") === "700-749" && normalizeModeledCreditBand("> 799") === "800+" && normalizeModeledCreditBand("under 550") === "<550"
+  && normalizeModeledCreditBand("EXCELLENT") === "excellent" && normalizeModeledCreditBand("999") === null && normalizeModeledCreditBand("abc") === null && normalizeModeledCreditBand(true) === null)
+check("marital status: one vocabulary across word and list codes (M/A → married, S/B → single); unknown → null",
+  normalizeMaritalStatus("M") === "married" && normalizeMaritalStatus("A") === "married" && normalizeMaritalStatus("B") === "single"
+  && normalizeMaritalStatus("Never Married") === "single" && normalizeMaritalStatus("Divorced") === "divorced" && normalizeMaritalStatus("Unknown") === null)
+const merged = mergeHouseholdFinancials({ provider: "peopledata", age: 41 }, vHf, "versium", { capturedAt: "2026-09-26T00:00:00Z" })
+check("the ONE merge writes the reader keys at top level + provenance per field + the MODELED credit basis",
+  HOUSEHOLD_FINANCIAL_FIELDS.every((f) => typeof merged[f] === "string") && merged.household_financials?.sources?.credit_score_range === "versium"
+  && merged.household_financials?.credit_basis === MODELED_CREDIT_BASIS && merged.age === 41)
+const kept = mergeHouseholdFinancials({ household_income: "$100,000 - $149,999" }, vHf, "versium", { prefer: "existing" })
+check("prefer 'existing': the paid rung never overwrites a value the free rung already supplied", kept.household_income === "$100,000 - $149,999" && kept.credit_score_range === "700-749")
+const carried = carryForwardHouseholdFinancials(buildPeopleDataProfile({ fullName: "Ana Reyes", age: 41 } as any), merged)
+check("a wholesale profile REPLACEMENT (the drain) carries the older household financials + provenance forward",
+  HOUSEHOLD_FINANCIAL_FIELDS.every((f) => carried[f] === merged[f]) && carried.household_financials?.sources?.credit_score_range === "versium")
+check("POSITIVE CONTROL: without the carry, the rebuilt PDL profile has none of the four (PDL sells none)",
+  HOUSEHOLD_FINANCIAL_FIELDS.every((f) => !(f in buildPeopleDataProfile({ fullName: "Ana Reyes", age: 41 } as any))))
+const cols = householdFinancialContactColumns(merged)
+check("contacts columns: marital_status / household_income / net_worth_range / credit_score_range — every one a LIVE contacts column (schema-snapshot)",
+  JSON.stringify(Object.keys(cols).sort()) === JSON.stringify(["credit_score_range", "household_income", "marital_status", "net_worth_range"])
+  && Object.keys(cols).every((c) => (SCHEMA_SNAPSHOT.contacts ?? []).includes(c)), JSON.stringify(cols))
+{
+  const viaContactMapper = peopleDataProfileToContactColumns(merged) as Record<string, unknown>
+  check("the contact mapper (peopleDataProfileToContactColumns) emits the SAME four columns through the same function",
+    Object.keys(cols).every((c) => viaContactMapper[c] === (cols as Record<string, string>)[c]))
+}
+check("the mapper never writes the agent-tracked credit_score_band (a different column, credit-copilot.ts)", !("credit_score_band" in peopleDataProfileToContactColumns(merged)))
+check("RAW LEADS carry them: all four are DEMOGRAPHIC_PROFILE_FIELDS, so normalized_preview.demographics keeps them",
+  HOUSEHOLD_FINANCIAL_FIELDS.every((f) => (DEMOGRAPHIC_PROFILE_FIELDS as readonly string[]).includes(f)) && demographicsFromProfile(merged).credit_score_range === "700-749")
+const propE = { ok: true, equityPercent: 40, estimatedValue: 500000, mortgageBalance: 1, foreclosureStatus: null, lastDeedType: null, ownerOccupied: true, householdFinancials: bdHf }
+const leadPatch = batchDataPropertyEnrichmentToLeadColumns(propE, { provider: "peopledata" }) as any
+const contactPatch = batchDataPropertyEnrichmentToContactColumns(propE, null) as any
+check("Step 6f property lookup: LEADS get them in enrichment_profile (no lead column); CONTACTS get the first-class columns",
+  leadPatch.enrichment_profile?.marital_status === "married" && !("marital_status" in leadPatch) && contactPatch.net_worth_range === "$250,000 - $499,999" && contactPatch.marital_status === "married")
+check("missingHouseholdFinancials names the gaps (drives the paid rung)", JSON.stringify(missingHouseholdFinancials({ ...bdHf })) === JSON.stringify(["credit_score_range"]))
+
+console.log("\n[Layer 8b · writers — already-bought data first, the paid rung only for a gap]")
+const bdc = await import("../lib/external/batchdata-client")
+const normalized = bdc.normalizeBatchDataProperty(BD_ROW, "distressed")
+check("acquisition pull: normalizeBatchDataProperty KEEPS the demographic dataset on the record (it used to drop it) → raw_data",
+  normalized.householdFinancials?.marital_status === "married" && normalized.householdFinancials?.net_worth === "$250,000 - $499,999")
+const bdcSrc = stripped("lib/external/batchdata-client.ts")
+const enrichFn = bdcSrc.slice(bdcSrc.indexOf("export async function enrichPropertyDatasetsBatchData"), bdcSrc.indexOf("export interface BatchDataLookupResult"))
+check("the drain's Step 6f lookup names \"demographic\" in the SAME request and maps it through the ONE mapper",
+  /dataset: \[[^\]]*"demographic"[^\]]*\]/.test(enrichFn) && /householdFinancialsFromBatchData\(prop\)/.test(enrichFn))
+const ppSrc = stripped("lib/lead-pipeline/pipeline-processor.ts")
+check("raw path: pipeline-processor merges raw_data's household financials onto the demographic profile BEFORE the raw-row write and the lead insert",
+  /householdFinancialsFromBatchData\(rec\.raw_data\)/.test(ppSrc) && ppSrc.indexOf("householdFinancialsFromBatchData(rec.raw_data)") < ppSrc.indexOf("demographics: demographicsFromProfile(enriched.peopleDataProfile)")
+  && ppSrc.indexOf("householdFinancialsFromBatchData(rec.raw_data)") > ppSrc.indexOf("await enrichWithPeopleData({"))
+const sigSrc = stripped("lib/external/batchdata-seller-signals.ts")
+const probe = sigSrc.slice(sigSrc.indexOf("export async function ingestBatchDataSellerSignals"))
+check("seller-signal probe: captures AFTER the exact-address refusal and BEFORE the no-signal continue",
+  probe.indexOf("probesAddressMismatch++") < probe.indexOf("householdFinancialsFromBatchData(res.data)")
+  && probe.indexOf("householdFinancialsFromBatchData(res.data)") < probe.indexOf("if (derived.length === 0)"))
+check("both probe callers hand it the one writer (cron + lead-desk action)",
+  /persistHouseholdFinancials: \(captures\) => persistHouseholdFinancialCaptures\(\{ supabase, brokerageId, captures \}\)/.test(stripped("app/api/cron/permit-signal-scan/route.ts"))
+  && /persistHouseholdFinancials:[\s\S]{0,160}persistHouseholdFinancialCaptures\(\{ supabase, brokerageId: auth\.brokerageId, captures \}\)/.test(stripped("app/actions/lead-intelligence.ts")))
+{
+  // Run the probe against a double that RESOLVES (supabase-js shape) — one lead at the matching
+  // address, one contact whose provider row is a NEIGHBOUR (positive control for the address refusal).
+  const sig = await import("../lib/external/batchdata-seller-signals")
+  const fake = (rows: Record<string, any[]>) => ({
+    from(table: string) {
+      const q: any = {
+        select: () => q, eq: () => q, in: () => q, is: () => q, not: () => q, limit: () => q,
+        insert: (r: any) => ({ select: () => Promise.resolve({ data: (Array.isArray(r) ? r : [r]).map((_: unknown, i: number) => ({ id: `s${i}` })), error: null }) }),
+        then: (res: any) => Promise.resolve({ data: rows[table] ?? [], count: 0, error: null }).then(res),
+      }
+      return q
+    },
+  })
+  const got: any[] = []
+  const r = await sig.ingestBatchDataSellerSignals({
+    supabase: fake({ leads: [{ id: "lead-1", address: "1234 N Lamar Blvd", city: "Austin", state: "TX", zip_code: "78756" }], contacts: [{ id: "contact-1", address: "99 Other St", city: "Austin", state: "TX", zip_code: "78756" }] }),
+    brokerageId: "b-1", dayIso: "2026-09-26",
+    lookup: async () => ({ ok: true, status: 200, data: BD_ROW as any, error: null }),
+    persistHouseholdFinancials: async (caps) => { got.push(...caps); return { written: caps.length, errors: [] } },
+  })
+  check("probe run: the matching lead's household is captured and handed to the writer; the NEIGHBOUR's is refused (positive control)",
+    r.householdFinancialsCaptured === 1 && r.householdFinancialsWritten === 1 && got.length === 1 && got[0].entity === "lead" && got[0].id === "lead-1"
+    && got[0].financials.marital_status === "married" && r.probesAddressMismatch === 1, JSON.stringify({ c: r.householdFinancialsCaptured, w: r.householdFinancialsWritten, m: r.probesAddressMismatch, e: r.errors }))
+}
+{
+  const hfm = await import("../lib/enrichment/household-financials")
+  // persist: tenant-anchored read + write, errors READ, zero-row update reported (CLAUDE.md §3).
+  const calls: Array<{ table: string; op: string; filters: Record<string, unknown>; patch?: any }> = []
+  const store: Record<string, any> = { "leads:lead-1": { id: "lead-1", enrichment_profile: { provider: "peopledata", age: 41 } }, "contacts:c-1": { id: "c-1", enrichment_profile: null } }
+  const db = {
+    from(table: string) {
+      const filters: Record<string, unknown> = {}
+      let op = "select", patch: any
+      const q: any = {
+        select: () => q,
+        update: (p: any) => { op = "update"; patch = p; return q },
+        eq: (c: string, v: unknown) => { filters[c] = v; return q },
+        maybeSingle: () => { calls.push({ table, op, filters: { ...filters } }); return Promise.resolve({ data: store[`${table}:${filters.id}`] ?? null, error: null }) },
+        then: (res: any) => { calls.push({ table, op, filters: { ...filters }, patch }); const hit = store[`${table}:${filters.id}`]; return Promise.resolve({ data: hit ? [{ id: hit.id }] : [], error: null }).then(res) },
+      }
+      return q
+    },
+  }
+  const out = await hfm.persistHouseholdFinancialCaptures({ supabase: db, brokerageId: "b-1", captures: [
+    { entity: "lead", id: "lead-1", financials: bdHf }, { entity: "contact", id: "c-1", financials: bdHf }, { entity: "contact", id: "gone", financials: bdHf },
+  ] })
+  const leadW = calls.find((c) => c.table === "leads" && c.op === "update"), conW = calls.find((c) => c.table === "contacts" && c.op === "update" && c.filters.id === "c-1")
+  check("persist: lead → enrichment_profile only (prior keys kept); contact → the four-column mapper + enrichment_profile",
+    leadW?.patch?.enrichment_profile?.marital_status === "married" && leadW?.patch?.enrichment_profile?.age === 41 && !("marital_status" in (leadW?.patch ?? {}))
+    && conW?.patch?.net_worth_range === "$250,000 - $499,999" && conW?.patch?.enrichment_profile?.household_financials?.sources?.marital_status === "batchdata")
+  check("persist: every read AND write is anchored on the caller's brokerage (§4)", calls.every((c) => c.filters.brokerage_id === "b-1"))
+  check("persist: a record not found in this brokerage is REPORTED, never counted as written", out.written === 2 && out.errors.length === 1 && /not found in this brokerage/.test(out.errors[0]), JSON.stringify(out))
+
+  // The paid rung, injected (zero network).
+  const meters: any[] = []
+  const deps = (over: Partial<import("../lib/enrichment/household-financials").AppendModeledCreditDeps> = {}) => ({
+    append: async () => ({ data: vHf, cost: 0.05 }),
+    checkBudget: async () => ({ allowed: true }),
+    meter: async (p: any) => { meters.push(p) },
+    ...over,
+  })
+  const complete = await hfm.appendModeledCredit({ profile: merged, identity: {}, brokerageId: "b-1", lane: "t", deps: deps() })
+  check("paid rung: a profile with all four is NEVER asked (no spend)", !complete.asked && complete.skipped === "complete" && meters.length === 0)
+  const maritalOnly = await hfm.appendModeledCredit({ profile: { household_income: "x", net_worth: "y", credit_score_range: "700-749" }, identity: {}, brokerageId: "b-1", lane: "t", deps: deps() })
+  check("paid rung: a MARITAL-only gap is not asked (Versium's financial output does not return it)", !maritalOnly.asked && meters.length === 0)
+  const refused = await hfm.appendModeledCredit({ profile: { ...bdHf }, identity: {}, brokerageId: "b-1", lane: "t", deps: deps({ checkBudget: async () => ({ allowed: false }) }) })
+  check("paid rung: the vendor budget gate refuses BEFORE the call (no ask, no booking)", !refused.asked && refused.skipped === "budget" && meters.length === 0)
+  const noTenant = await hfm.appendModeledCredit({ profile: { ...bdHf }, identity: {}, brokerageId: null, lane: "t", deps: deps() })
+  check("paid rung: no tenant → no spend (never charged to nobody)", !noTenant.asked && noTenant.skipped === "no_brokerage")
+  const filled = await hfm.appendModeledCredit({ profile: { ...bdHf }, identity: {}, brokerageId: "b-1", lane: "t", deps: deps() })
+  check("paid rung: fills ONLY the gap (credit), keeps BatchData's income, books vendor 'versium' at the client's cost on the platform ledger",
+    filled.asked && JSON.stringify(filled.filled) === JSON.stringify(["credit_score_range"]) && filled.profile.household_income === bdHf.household_income
+    && meters.length === 1 && meters[0].vendorName === "versium" && meters[0].cost === 0.05 && filled.profile.household_financials?.credit_basis === MODELED_CREDIT_BASIS)
+  const vc = await import("../lib/external/versium-client")
+  const { VENDOR_PRICING: VP } = await import("../lib/vendor-governance/cost-normalizer")
+  check("one price: VENDOR_PRICING.versium equals the client's per-match constant; a no-match is $0",
+    VP.versium?.costPerUnit === vc.VERSIUM_FINANCIAL_MATCH_COST_USD && vc.VERSIUM_NO_MATCH_COST_USD === 0)
+  check("Versium is asked only with an input shape it accepts (name+city/state, email, phone, postal); nothing else → no call",
+    vc.versiumQueryFor({ firstName: "Ana", lastName: "Reyes", city: "Austin", state: "TX" })?.first === "Ana" && vc.versiumQueryFor({ firstName: "Ana", lastName: "Reyes" }) === null
+    && vc.versiumQueryFor({ phone: "+1 (512) 555-0100" })?.phone === "5125550100")
+  const noKey = await vc.appendVersiumFinancial({ email: "a@b.co" })
+  check("fail closed: no VERSIUM_API_KEY → no network, $0, skipped 'unconfigured'", process.env.VERSIUM_API_KEY ? true : (noKey.skipped === "unconfigured" && noKey.cost === 0))
+  const order = Object.values(hfm.HOUSEHOLD_FINANCIAL_SOURCES)
+  check("provider order is data, CHEAPEST FIRST per field; the credit band has exactly one (modeled) source",
+    order.every((list) => list.every((e, i) => i === 0 || list[i - 1].unitCostUsd <= e.unitCostUsd))
+    && hfm.HOUSEHOLD_FINANCIAL_SOURCES.credit_score_range.length === 1 && hfm.HOUSEHOLD_FINANCIAL_SOURCES.credit_score_range[0].provider === "versium"
+    && hfm.HOUSEHOLD_FINANCIAL_SOURCES.marital_status.every((e) => e.unitCostUsd === 0))
+}
+const orch = stripped("lib/lead-pipeline/enrichment-orchestrator.ts")
+check("the drain carries prior household financials forward, then asks the paid rung, BEFORE the entity write",
+  orch.indexOf("carryForwardHouseholdFinancials(profile,") > 0 && orch.indexOf("carryForwardHouseholdFinancials(profile,") < orch.indexOf("appendModeledCredit({")
+  && orch.indexOf("appendModeledCredit({") < orch.indexOf("...peopleDataProfileToLeadColumns(profile),"))
+check("the persona builder reads the four from the PROFILE (the PDL object never carries them)",
+  /maritalStatus: profile\.marital_status/.test(orch) && /netWorth: profile\.net_worth/.test(orch) && /creditScoreRange: profile\.credit_score_range/.test(orch) && /householdIncome: profile\.household_income/.test(orch))
+
+console.log("\n[Layer 8c · contact enrichment — ONE mapper, and it sends a location]")
+const cec = stripped("lib/enrichment/contact-enrichment-core.ts")
+const cecEnrich = cec.slice(cec.indexOf("export async function enrichContactRecord"), cec.indexOf("export async function runLifeChangeCheck"))
+check("the contact read selects the location it sends (city, state, zip_code) + the prior profile",
+  /\.select\("[^"]*\bcity\b[^"]*\bstate\b[^"]*\bzip_code\b[^"]*enrichment_profile[^"]*"\)/.test(cecEnrich))
+const SENDS_LOCATION = /peopleData\.enrich\(\{[\s\S]{0,400}city: \(contact\.city[\s\S]{0,120}state: \(contact\.state[\s\S]{0,120}postalCode: \(contact\.zip_code/
+check("contact enrichment SENDS city / state / ZIP to PeopleData", SENDS_LOCATION.test(cecEnrich))
+check("POSITIVE CONTROL: the pre-85C call (name/email/phone only) is flagged by the same predicate",
+  !SENDS_LOCATION.test(`const personData = await peopleData.enrich({\n firstName: contact.first_name as string,\n lastName: contact.last_name as string,\n email: x, phone: y,\n })`))
+const pdlc = stripped("lib/external/peopledata-client.ts")
+const { pdlLocationFrom } = await import("../lib/external/peopledata-client")
+check("the client turns them into PDL's qualifiers: location 'City, ST' + postal_code (SDK param) — and nothing when absent",
+  pdlLocationFrom({ city: "Austin", state: "TX" }) === "Austin, TX" && pdlLocationFrom({ city: " ", state: null }) === undefined
+  && /address: pdlLocationFrom\(data\)/.test(pdlc) && /postalCode: data\.postalCode/.test(pdlc) && /postalCode: params\.postalCode/.test(pdlc)
+  && /postal_code: params\.postalCode/.test(stripped("lib/providers/peopledata/client.ts")))
+check("contact enrichment maps through the survivor: buildPeopleDataProfile → peopleDataProfileToContactColumns (+ the carry and the paid rung)",
+  /buildPeopleDataProfile\(personData\)/.test(cecEnrich) && /peopleDataProfileToContactColumns\(profile\)/.test(cecEnrich) && /appendModeledCredit\(\{/.test(cecEnrich) && /carryForwardHouseholdFinancials\(/.test(cecEnrich))
+// NO SECOND MAPPER: a PDL person object's camelCase field written to a snake_case column outside the
+// mapper. The receivers are the names a PDL result travels under in this repo. `occupation` is left
+// out ON PURPOSE: it is also a PersonaFacts key (the orchestrator's persona facts read
+// `occupation: enriched.currentTitle` — a reader's input, not a column write; the first run flagged it).
+const SECOND_MAPPER = /\b(?:age_range|gender|marital_status|household_income|net_worth(?:_range)?|credit_score_range|home_owner_status|home_value_estimate|linkedin_url|facebook_url|twitter_url)\s*:\s*(?:personData|enriched|pdl\w*|person|peopleData\w*)\.(?:ageRange|gender|maritalStatus|householdIncome|netWorth|creditScoreRange|homeOwnerStatus|homeValue|linkedinUrl|facebookUrl|twitterUrl)\b/
+const MAPPER_FILE = "lib/lead-pipeline/enrichment-column-map.ts"
+const secondMappers = CORPUS.filter((p) => p !== MAPPER_FILE && SECOND_MAPPER.test(blankStrings(stripped(p))))
+check(`NO second PeopleData → column mapper anywhere under app/ lib/ (denominator ${CORPUS.length} files; the one mapper excluded)`, secondMappers.length === 0, secondMappers.join(", "))
+check("POSITIVE CONTROL: the deleted contact-enrichment literal IS flagged", SECOND_MAPPER.test(`enrichmentData = { marital_status: personData.maritalStatus, household_income: personData.householdIncome }`))
+check("the only PDL field contact enrichment still reads directly is its own confidence column", !/personData\.(?!enrichmentConfidence\b)\w+/.test(blankStrings(cecEnrich)))
+
+console.log("\n[Layer 8d · FCRA / display — modeled credit + net worth stay intelligence-only]")
+const panel = stripped("app/crm/contacts/[contactId]/components/enrichment-panel.tsx")
+const insights = stripped("app/actions/contact-enrichment.ts")
+const FIN_ON_CARD = /net_worth_range|credit_score_range/
+check("the agent-facing enrichment card neither lists nor selects net worth / the credit band", !FIN_ON_CARD.test(panel) && !FIN_ON_CARD.test(insights.slice(insights.indexOf("export async function getContactInsights"))))
+check("POSITIVE CONTROL: a card that labels the credit band IS flagged", FIN_ON_CARD.test(`["credit_score_range", "Credit band"]`))
+const outreach = stripped("lib/ai-isa/personalize-outreach.ts")
+check("outbound copy (personalize-outreach) never reads net worth or the credit band", !/net_worth|credit_score/.test(outreach))
+const { CONTACT_PII_NULL_COLUMNS } = await import("../lib/privacy/contact-pii-redaction")
+check("right-to-be-forgotten erases all four household columns", ["marital_status", "household_income", "net_worth_range", "credit_score_range"].every((c) => (CONTACT_PII_NULL_COLUMNS as readonly string[]).includes(c)))
+check("READERS exist for every write: persona-builder reads netWorth + creditScoreRange; contact-creator maps a lead's profile onto the contact",
+  /isHighNetWorthRange\(f\.netWorth\)/.test(stripped("lib/contacts/persona-builder.ts")) && /isSubprimeCreditRange\(f\.creditScoreRange\)/.test(stripped("lib/contacts/persona-builder.ts"))
+  && /peopleDataProfileToContactColumns\(data\.lead\.enrichment_profile/.test(stripped("lib/contact-promotion/contact-creator.ts")))
+console.log(`  denominators: ${HOUSEHOLD_FINANCIAL_FIELDS.length} household fields · 3 writers (seller-signal probe, drain Step 6f + paid rung, raw acquisition path) + contact enrichment · 1 mapper`)
+console.log("  blind spots: live BatchData demographic VALUE formats and Versium's live payload are not exercised (fixtures follow the providers' published samples); no VERSIUM_API_KEY exists yet, so the credit band stays empty until the owner buys credits")
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n" + "─".repeat(60))

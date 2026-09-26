@@ -91,6 +91,16 @@ export const VENDOR_PRICING: Record<string, VendorPricing> = {
     costPerUnit: 0.25,
     notes: 'Per SUCCESSFUL match (PDL bills nothing on a 404 no-match) — lib/external/peopledata-client.ts',
   },
+  // Lane 85C — the ONLY rung that sells a (modeled) credit band. MUST EQUAL
+  // lib/external/versium-client.ts::VERSIUM_FINANCIAL_MATCH_COST_USD (one match credit, credit-package
+  // ceiling; versium.com/pricing, Exa 2026-09-26). Asked only for a lead/contact still missing a
+  // household financial after BatchData's already-bought demographic dataset.
+  'versium': {
+    vendorName: 'Versium REACH',
+    unitType: 'records',
+    costPerUnit: 0.05,
+    notes: 'Financial append (Household Income / Estimated Net Worth / Credit Rating) — per MATCH, no-match free — lib/external/versium-client.ts',
+  },
 
   // KEYLESS / FREE LANES — rated at exactly $0 ON PURPOSE.
   //

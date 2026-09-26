@@ -45,6 +45,7 @@ import { CONNECTED_CAPABILITY_REGISTRY, type ConnectedCapability } from "@/lib/a
 import { canonicalProvider } from "@/lib/integrations/connection-manager"
 import { composeSentinelLossReport } from "@/lib/kernel/write-sentinel"
 import { geoapifyConfigured } from "@/lib/external/geoapify-client"
+import { VERSIUM_FINANCIAL_MATCH_COST_USD } from "@/lib/external/versium-client"
 import { OSINTClient } from "@/lib/osint-client"
 import { fetchOSINTNeighborhoodData } from "@/lib/external/osint-neighborhood"
 import { runFreeOsintLane } from "@/lib/external/osint-free"
@@ -612,6 +613,7 @@ const CATEGORY_OVERRIDES: Record<string, ProviderCategory> = {
   batchdata: "enrichment",    // owner vocabulary: enrichment, not scraper
   rentcast: "enrichment",
   geoapify: "enrichment",
+  versium: "enrichment",
   cma_aggregate: "enrichment",
   openai: "ai_llm", ai_gateway: "ai_llm", perplexity: "ai_llm",
   heygen: "ai_media", remotion: "ai_media", pexels: "ai_media", browser_tts: "ai_media",
@@ -779,6 +781,10 @@ function getPlatformProviderRegistry(): PlatformProviderEntry[] {
   // one of its own exports so the module can't silently drift away from its row.
   void geoapifyConfigured // binding: lib/external/geoapify-client
   { const a = get("geoapify", "geoapify-client (env-gated module)"); a.envVars.add("GEOAPIFY_API_KEY"); a.platformHint = true }
+  // Lane 85C — Versium financial append (modeled credit band / income / net worth), env-gated,
+  // platform-paid. Bound through its own exported price so the row cannot drift from the module.
+  void VERSIUM_FINANCIAL_MATCH_COST_USD // binding: lib/external/versium-client
+  { const a = get("versium", "versium-client (env-gated module)"); a.envVars.add("VERSIUM_API_KEY"); a.platformHint = true }
 
   // OSINT records lane — lib/osint-client scrapes court/public records by
   // territory (divorce/probate/foreclosure… → motivated-seller signals). It

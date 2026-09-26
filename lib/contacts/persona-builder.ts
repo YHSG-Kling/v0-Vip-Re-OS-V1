@@ -81,6 +81,9 @@ function isHighNetWorthRange(range: string | null | undefined): boolean {
 
 /** True when the range's low end reads under 650 (subprime/near-prime — financing risk). */
 function isSubprimeCreditRange(range: string | null | undefined): boolean {
+  // Lane 85C — a modeled band may arrive as a descriptor (normalizeModeledCreditBand keeps
+  // excellent / very good / good / fair / poor); "fair" and "poor" are the sub-650 tiers.
+  if (range && /^(fair|poor)$/i.test(range.trim())) return true
   const n = firstNumber(range)
   return n !== null && n > 0 && n < 650
 }

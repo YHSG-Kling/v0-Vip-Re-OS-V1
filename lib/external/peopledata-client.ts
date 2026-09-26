@@ -27,11 +27,22 @@ export const PEOPLEDATA_NO_MATCH_COST_USD = 0
 export const PEOPLEDATA_EMAIL_VALIDATE_COST_USD = 0.01
 
 export class PeopleDataClient {
-  async enrich(data: { email?: string; phone?: string; firstName?: string; lastName?: string }) {
+  /**
+   * Lane 85C — LOCATION RIDES WITH THE NAME (owner verbatim: "add location for contact enrichment").
+   * PDL admits a name only beside a location qualifier (docs.peopledatalabs.com "Input Parameters";
+   * lane 84C fixed the two lead legs, this is the contact leg): city/state go out as `location`
+   * ("Austin, TX") and the ZIP as PDL's own `postal_code`. Same per-match price — a miss is $0.
+   */
+  async enrich(data: {
+    email?: string; phone?: string; firstName?: string; lastName?: string
+    city?: string | null; state?: string | null; postalCode?: string | null
+  }) {
     return skipTraceWithPeopleData({
       name: data.firstName && data.lastName ? `${data.firstName} ${data.lastName}` : undefined,
       phone: data.phone,
       email: data.email,
+      address: pdlLocationFrom(data),
+      postalCode: data.postalCode ?? undefined,
     }).then(r => r.data)
   }
   async bulkEnrich(contacts: Array<{ email?: string; phone?: string }>) {
@@ -137,6 +148,8 @@ export async function skipTraceWithPeopleData(params: {
    *  outright. Same endpoint, same per-match price — PDL bills the match
    *  regardless of which identifying param resolved it. */
   profileUrl?: string
+  /** Lane 85C — PDL `postal_code` (a location qualifier beside a name; see PeopleDataClient.enrich). */
+  postalCode?: string
 }): Promise<{
   data: PeopleDataEnrichment | null
   cost: number
@@ -153,6 +166,7 @@ export async function skipTraceWithPeopleData(params: {
     phone: params.phone,
     email: params.email,
     location: params.address,
+    postalCode: params.postalCode,
     profile: params.profileUrl,
     minLikelihood: 6,
     required: 'emails OR phones',
@@ -176,6 +190,14 @@ export async function skipTraceWithPeopleData(params: {
     data: mapPeopleDataPerson(data.data, { name: params.name, likelihood: (data as any).likelihood }),
     cost: PEOPLEDATA_MATCH_COST_USD,
   }
+}
+
+/** PURE — the `location` qualifier PDL pairs with a name: "City, ST" from whatever parts exist
+ *  (undefined when neither does — PDL then matches on email/phone alone). The ZIP travels separately
+ *  as `postal_code`. Lane 85C: the contact leg's one spelling of what 84C wrote inline for leads. */
+export function pdlLocationFrom(parts: { city?: string | null; state?: string | null }): string | undefined {
+  const s = [parts.city, parts.state].map((p) => (typeof p === 'string' ? p.trim() : '')).filter(Boolean).join(', ')
+  return s || undefined
 }
 
 /** PURE — PDL birth_year / birth_date → whole years at `now` (null when PDL returned neither). */
