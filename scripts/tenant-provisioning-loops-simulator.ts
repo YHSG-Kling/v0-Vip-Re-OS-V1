@@ -165,14 +165,19 @@ async function main() {
   check("readiness: both kinds present → BOTH lanes must be registered", (() => { const r = assessPhoneTestReadiness({ ...approved, tollfree_status: "IN_REVIEW", tollfree_verification_sid: "HH1" }, [{ phone_number: "+15125551212" }, { phone_number: "+18005551212" }]); return !r.ready && r.lanes.length === 2 && r.lanes[0].registered && !r.lanes[1].registered })())
   check("describeTollfreeState is honest about not-submitted / under review / approved / rejected", /not yet submitted/.test(describeTollfreeState({})) && /under carrier review/.test(describeTollfreeState({ tollfree_verification_sid: "HH1", tollfree_status: "IN_REVIEW" })) && /verified/.test(describeTollfreeState({ tollfree_verification_sid: "HH1", tollfree_status: "TWILIO_APPROVED" })) && /REJECTED/.test(describeTollfreeState({ tollfree_verification_sid: "HH1", tollfree_status: "TWILIO_REJECTED" })))
   {
-    const svc = fakeSvc({ brokerage_settings: [{ brokerage_id: "b1", settings: { a2p_business_profile: { legalName: "Acme" } } }] })
+    // Wave 84D re-anchor: the legal name lives on the brokerages row; the
+    // registration branding setting (settings.business_registration) holds only
+    // what no other record does — here, nothing yet.
+    const svc = fakeSvc({ brokerages: [{ id: "b1", name: "Acme" }], brokerage_settings: [{ brokerage_id: "b1", settings: { business_registration: {} } }] })
     const r = await kickCarrierRegistration(svc, { brokerageId: "b1", phoneNumber: "+15125551212", trigger: "purchased" })
     const audit = svc.inserts.find((i: any) => i.table === "phone_number_events")
     check("kickoff with an INCOMPLETE profile: not kicked, names the missing fields, audited on phone_number_events with a CHECK'd event_type", !r.kicked && r.lane === "10dlc" && r.reason === "profile_incomplete" && /missing: EIN/.test(r.statusLine) && !!audit && audit.row.source === "a2p_auto_kickoff" && CHECK_VOCABULARIES.phone_number_events.event_type.includes(audit.row.event_type) && /after purchased/.test(audit.row.notes))
   }
   {
-    const profile = { legalName: "Acme Realty LLC", ein: "123456789", website: "https://acme.example", street: "1 Main", city: "Austin", region: "TX", postalCode: "78701", contactFirstName: "A", contactLastName: "B", contactEmail: "a@acme.example", contactPhone: "+15125550100", privacyPolicyUrl: "https://acme.example/privacy", termsUrl: "https://acme.example/terms" }
-    const svc = fakeSvc({ brokerage_settings: [{ brokerage_id: "b1", settings: { a2p_business_profile: profile } }], platform_credentials: [], brokerages: [{ id: "b1" }] })
+    // Wave 84D re-anchor: identity from the brokerages row, registration-only
+    // facts from the branding setting — the same split the filing reads.
+    const registration = { ein: "123456789", businessType: "Limited Liability Corporation", repFirstName: "A", repLastName: "B", repTitle: "Broker / Owner", repEmail: "a@acme.example", repPhone: "+15125550100", privacyPolicyUrl: "https://acme.example/privacy", termsUrl: "https://acme.example/terms" }
+    const svc = fakeSvc({ brokerage_settings: [{ brokerage_id: "b1", settings: { business_registration: registration } }], platform_credentials: [], brokerages: [{ id: "b1", name: "Acme Realty LLC", website: "https://acme.example", address: "1 Main", city: "Austin", state: "TX", zip: "78701" }] })
     const r = await kickCarrierRegistration(svc, { brokerageId: "b1", phoneNumber: "+15125551212", trigger: "ported_in" })
     check("kickoff with a complete profile runs the 10DLC machine and is HONEST when the carrier is not configured (nothing marked registered)", !r.kicked && r.lane === "10dlc" && /Twilio master account not configured/.test(r.reason ?? "") && svc.inserts.some((i: any) => i.table === "platform_credentials") && /In progress|not configured/.test(r.statusLine))
     const tf = await kickCarrierRegistration(svc, { brokerageId: "b1", phoneNumber: "+18885551212", trigger: "purchased" })

@@ -25,6 +25,7 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { PhoneIncoming, MapPin, Loader2, AlertTriangle, CheckCircle2 } from "lucide-react"
 import { getPortInStatusAction, submitPortInAction, checkPortabilityAction, type PortInStatusView } from "@/app/actions/phone-port-in"
+import type { PortInRegistrationPrefill } from "@/lib/voice/number-port-in"
 
 export interface PickOrPortAgentOption { agentId: string; name: string }
 
@@ -44,11 +45,15 @@ export function PickOrPortCard({ agents }: { agents: PickOrPortAgentOption[] }) 
   const [missing, setMissing] = useState<string[]>([])
   const [ok, setOk] = useState<string | null>(null)
   const [pinNumbers, setPinNumbers] = useState<string[]>([])
+  // Wave 84D: LOA details pulled from Settings → Branding → Business
+  // registration; the form shows them as defaults and the server fills any
+  // left blank from the same record — the person types only what differs.
+  const [prefill, setPrefill] = useState<Partial<PortInRegistrationPrefill>>({})
   const [isPending, startTransition] = useTransition()
 
   useEffect(() => {
     getPortInStatusAction().then((r) => {
-      if (r.ok) { setPorts(r.ports); setDefaultDate(r.defaultTargetDate); if (r.ports.length) setMode("port") }
+      if (r.ok) { setPorts(r.ports); setDefaultDate(r.defaultTargetDate); setPrefill(r.prefill ?? {}); if (r.ports.length) setMode("port") }
     }).catch(() => {})
   }, [])
 
@@ -109,14 +114,14 @@ export function PickOrPortCard({ agents }: { agents: PickOrPortAgentOption[] }) 
         )}
 
         {mode === "port" && (
-          <form className="grid gap-3 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); submit(e.currentTarget) }}>
+          <form key={JSON.stringify(prefill)} className="grid gap-3 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); submit(e.currentTarget) }}>
             <div className="space-y-1 sm:col-span-2">
               <Label htmlFor="port-numbers" className="text-xs">Number(s) to port — local or mobile (toll-free ports go through Twilio support)</Label>
               <Input id="port-numbers" name="phoneNumbers" placeholder="+15125551234, +15125559876" onBlur={(e) => checkPortable(e.target.value)} autoComplete="off" />
             </div>
             <div className="space-y-1">
               <Label htmlFor="port-customer" className="text-xs">Account holder (exactly as your carrier has it)</Label>
-              <Input id="port-customer" name="customerName" autoComplete="organization" />
+              <Input id="port-customer" name="customerName" autoComplete="organization" defaultValue={prefill.customerName ?? ""} />
             </div>
             <div className="space-y-1">
               <Label htmlFor="port-type" className="text-xs">Account type</Label>
@@ -141,20 +146,23 @@ export function PickOrPortCard({ agents }: { agents: PickOrPortAgentOption[] }) 
             ))}
             <div className="space-y-1">
               <Label htmlFor="port-rep" className="text-xs">Who signs the authorization</Label>
-              <Input id="port-rep" name="authorizedRepresentative" autoComplete="name" />
+              <Input id="port-rep" name="authorizedRepresentative" autoComplete="name" defaultValue={prefill.authorizedRepresentative ?? ""} />
             </div>
             <div className="space-y-1">
               <Label htmlFor="port-rep-email" className="text-xs">Their e-mail (the LOA is sent here)</Label>
-              <Input id="port-rep-email" name="authorizedRepresentativeEmail" type="email" autoComplete="email" />
+              <Input id="port-rep-email" name="authorizedRepresentativeEmail" type="email" autoComplete="email" defaultValue={prefill.authorizedRepresentativeEmail ?? ""} />
             </div>
             <div className="space-y-1 sm:col-span-2">
               <Label htmlFor="port-street" className="text-xs">Service address (as on the carrier bill)</Label>
-              <Input id="port-street" name="street" autoComplete="address-line1" />
+              <Input id="port-street" name="street" autoComplete="address-line1" defaultValue={prefill.street ?? ""} />
             </div>
-            <Input name="street2" placeholder="Suite / floor (optional)" autoComplete="address-line2" />
-            <Input name="city" placeholder="City" autoComplete="address-level2" />
-            <Input name="state" placeholder="State" autoComplete="address-level1" />
-            <Input name="zip" placeholder="ZIP" autoComplete="postal-code" />
+            <Input name="street2" placeholder="Suite / floor (optional)" autoComplete="address-line2" defaultValue={prefill.street2 ?? ""} />
+            <Input name="city" placeholder="City" autoComplete="address-level2" defaultValue={prefill.city ?? ""} />
+            <Input name="state" placeholder="State" autoComplete="address-level1" defaultValue={prefill.state ?? ""} />
+            <Input name="zip" placeholder="ZIP" autoComplete="postal-code" defaultValue={prefill.zip ?? ""} />
+            {Object.keys(prefill).length > 0 && (
+              <p className="sm:col-span-2 text-[11px] text-muted-foreground">Pre-filled from Settings → Branding → Business registration — change anything your carrier bill shows differently.</p>
+            )}
             <div className="space-y-1">
               <Label htmlFor="port-date" className="text-xs">Target port date (at least 7 days out)</Label>
               <Input id="port-date" name="targetPortInDate" type="date" defaultValue={defaultDate} />

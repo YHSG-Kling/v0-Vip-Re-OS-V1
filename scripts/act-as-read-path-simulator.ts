@@ -134,7 +134,10 @@ const DB_HARNESS = `
         limit: () => thenable, range: () => thenable,
         single: async () => ({ data: null, error: null }),
         maybeSingle: async () => ({ data: null, error: null }),
-        then: (res) => res({ data: [], error: null }),
+        // Wave 84D: a real PromiseLike — supabase-js builders accept
+        // .then(undefined, onRejected), which runA2pRegistrationAction uses
+        // on its audit insert (now this subject's writer).
+        then: (res, rej) => Promise.resolve({ data: [], error: null }).then(res, rej),
       }
       return {
         select: () => thenable,
@@ -442,9 +445,17 @@ async function main() {
     { file: "app/actions/tenant-connections.ts", reader: "getTenantConnectionsAction", writer: "saveTenantConnectionAction",
       writerArgs: [{ platform: "listhub", apiKey: "abcdefgh" }],
       extraStubs: { "@/lib/settings/tenant-connection-slots": `exports.TENANT_CONNECTION_SLOTS = [{ key: "listhub", label: "ListHub", note: "", fields: ["apiKey"] }]` } },
-    { file: "app/actions/a2p-registration.ts", reader: "getA2pStatusAction", writer: "saveA2pBusinessProfileAction",
-      writerArgs: [{}],
-      extraStubs: { "@/lib/voice/a2p-registration": `
+    // Wave 84D re-anchor: saveA2pBusinessProfileAction moved to the Branding
+    // page's door (app/actions/settings/business-registration.ts); the WRITE on
+    // THIS gate is now the carrier filing, runA2pRegistrationAction.
+    { file: "app/actions/a2p-registration.ts", reader: "getA2pStatusAction", writer: "runA2pRegistrationAction",
+      writerArgs: [],
+      extraStubs: {
+        "@/lib/branding/business-registration": `
+        exports.redactDraftForClient = (d) => ({ ...(d || {}) })
+        exports.BUSINESS_REGISTRATION_SETTINGS_PATH = "/settings/branding#business-registration"
+      `,
+        "@/lib/voice/a2p-registration": `
         exports.validateA2pProfile = () => ({ ok: true, value: {} })
         exports.loadA2pState = async () => ({ state: {} })
         exports.runA2pRegistration = async () => ({ ok: true })

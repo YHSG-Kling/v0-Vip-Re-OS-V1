@@ -157,7 +157,7 @@ async function main() {
 
   console.log("\n[3 · submit: gate order, fail closed, the record persisted]")
   {
-    const db = fakeDb({ brokerage_settings: [{ id: "bs1", brokerage_id: "b1", settings: { a2p_business_profile: { legalName: "Kling" } } }] })
+    const db = fakeDb({ brokerage_settings: [{ id: "bs1", brokerage_id: "b1", settings: { business_registration: { repFirstName: "Kling" } } }] })
     const denied = adapterStub()
     const capped = await submitPortIn(db, "b1", GOOD, BILL, { deps: { creds: { accountSid: "AC_sub", authToken: "t" }, adapter: denied.adapter, allowance: async () => ({ allowed: false, reason: "Your plan's hard cap of 3 numbers is reached" }), now: TODAY } })
     check("the plan allowance gates a port like a purchase — refused BEFORE any carrier call", !capped.ok && /hard cap/.test(capped.error) && denied.calls.length === 0)
@@ -176,7 +176,7 @@ async function main() {
     const r4 = await submitPortIn(db, "b1", GOOD, BILL, { agentUserId: "u-agent", agentId: "a-1", deps: { creds: { accountSid: "AC_sub", authToken: "t" }, adapter: good.adapter, allowance: async () => ({ allowed: true }), now: TODAY } })
     check("happy path: portability → bill upload → create (into the tenant's OWN account, with the bill's document SID)", r4.ok && good.calls.join("|") === "portability:+15125551212|upload|create:RD_bill:AC_sub")
     const stored = db.tables.brokerage_settings[0].settings
-    check("the record lands in brokerage_settings.settings.phone_port_ins WITHOUT clobbering the business profile", Array.isArray(stored.phone_port_ins) && stored.phone_port_ins[0].sid === "KW_1" && stored.phone_port_ins[0].agentUserId === "u-agent" && stored.a2p_business_profile?.legalName === "Kling")
+    check("the record lands in brokerage_settings.settings.phone_port_ins WITHOUT clobbering the business registration setting", Array.isArray(stored.phone_port_ins) && stored.phone_port_ins[0].sid === "KW_1" && stored.phone_port_ins[0].agentUserId === "u-agent" && stored.business_registration?.repFirstName === "Kling")
     check("the tenant is told the status + the one next step", r4.ok && r4.status.phase === "in_review" && /Nothing to do/.test(r4.status.nextStep))
   }
 
@@ -186,7 +186,8 @@ async function main() {
       brokerages: [{ id: "b1", name: "Kling Realty Group LLC", address: "100 Congress Ave", city: "Austin", state: "TX", zip: "78701", phone: "+15125550100", email: "o@k.example", website: "https://kling.example", slug: "kling" }],
       users: [{ id: "u-owner", brokerage_id: "b1", user_type: "broker_owner", first_name: "Dana", last_name: "Kling", email: "dana@kling.example", phone: "+15125550111", deleted_at: null }],
       brokerage_settings: [{ id: "bs1", brokerage_id: "b1", settings: {
-        a2p_business_profile: { ein: "123456789", privacyPolicyUrl: "https://kling.example/privacy", termsUrl: "https://kling.example/terms" },
+        // Wave 84D: the registration branding setting (was a2p_business_profile).
+        business_registration: { ein: "123456789", businessType: "Limited Liability Corporation", privacyPolicyUrl: "https://kling.example/privacy", termsUrl: "https://kling.example/terms" },
         phone_port_ins: [{ sid: "KW_1", status: "In Review", numbers: [{ phone: "+15125551212", status: "In Review", rejection: null, portDate: null, landed: false }, { phone: "+15125559999", status: "In Review", rejection: null, portDate: null, landed: false }], signatureUrl: null, targetDate: "2026-10-07", repEmail: "dana@kling.example", submittedAt: "2026-09-26", lastPolledAt: null, agentUserId: null, agentId: null }],
       } }],
       tenant_phone_numbers: [], platform_credentials: [], phone_number_events: [], notifications: [],

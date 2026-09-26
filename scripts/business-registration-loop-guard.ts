@@ -41,6 +41,7 @@ import { CRON_REGISTRY } from "../lib/kernel/cron-dispatch"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 import { deriveA2pProfile, assessPhoneTestReadiness, loadA2pState, type TwilioTransport, type A2pState } from "../lib/voice/a2p-registration"
 import { advanceTenantCarrier, carrierRegistrationPhase, carrierTickPlan, runCarrierRegistrationTick } from "../lib/voice/carrier-registration-loop"
+import { BUSINESS_REGISTRATION_SETTINGS_KEY } from "../lib/branding/business-registration"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const src = (p: string) => readFileSync(join(root, p), "utf8")
@@ -134,13 +135,19 @@ const deps = (tw: ReturnType<typeof fakeTwilio>) => ({
 
 const BROKERAGE = { id: "b1", name: "Kling Realty Group LLC", address: "100 Congress Ave", city: "Austin", state: "TX", zip: "78701", phone: "+15125550100", email: "office@kling.example", website: "https://kling.example", slug: "kling-realty-ab12" }
 const OWNER = { id: "u-owner", brokerage_id: "b1", user_type: "broker_owner", first_name: "Dana", last_name: "Kling", email: "dana@kling.example", phone: "+15125550111", deleted_at: null }
-const TYPED = { ein: "12-3456789", privacyPolicyUrl: "https://kling.example/privacy", termsUrl: "https://kling.example/terms" }
+// Wave 84D: what the tenant supplies is the Business registration BRANDING
+// SETTING (brokerage_settings.settings.business_registration — lib/branding/
+// business-registration.ts); entity type joined the EIN and the URLs there
+// (the runner used to hard-code "Limited Liability Corporation").
+const TYPED = { ein: "123456789", businessType: "Limited Liability Corporation", privacyPolicyUrl: "https://kling.example/privacy", termsUrl: "https://kling.example/terms" }
+/** The registration-only facts no other record holds — the missing list for a bare tenant is exactly these. */
+const REGISTRATION_ONLY = /EIN|Business type|Privacy|Terms/
 
 function tenantDb(extra: { typed?: Record<string, string> | null; numbers?: Row[] } = {}) {
   return fakeDb({
     brokerages: [{ ...BROKERAGE }],
     users: [{ ...OWNER }],
-    brokerage_settings: extra.typed === null ? [] : [{ id: "bs1", brokerage_id: "b1", settings: { a2p_business_profile: extra.typed ?? TYPED } }],
+    brokerage_settings: extra.typed === null ? [] : [{ id: "bs1", brokerage_id: "b1", settings: { [BUSINESS_REGISTRATION_SETTINGS_KEY]: extra.typed ?? TYPED } }],
     tenant_phone_numbers: extra.numbers ?? [{ id: "n1", brokerage_id: "b1", phone_number: "+15125551212", twilio_number_sid: "PN_1", is_active: true }],
     platform_credentials: [],
     phone_number_events: [],
@@ -155,15 +162,22 @@ async function main() {
 
   console.log("\n[1 · the profile is derived from the brokerage's own record]")
   {
-    const d = deriveA2pProfile({ saved: TYPED, brokerage: BROKERAGE, owner: OWNER, appUrl: "https://app.example" })
-    check("typed EIN + URLs + the brokerage row + the owner seat = a COMPLETE profile (nothing retyped)", d.validation.ok && d.derivedKeys.includes("legalName") && d.derivedKeys.includes("contactEmail") && !d.derivedKeys.includes("ein"))
-    const bare = deriveA2pProfile({ saved: null, brokerage: BROKERAGE, owner: OWNER, appUrl: "https://app.example" })
-    check("with nothing typed, ONLY what no record holds is asked: EIN + privacy + terms (never name/address/contact)", !bare.validation.ok && bare.validation.missing.length === 3 && bare.validation.missing.every((m) => /EIN|Privacy|Terms/.test(m)))
-    const typedWins = deriveA2pProfile({ saved: { ...TYPED, legalName: "Kling Realty Group, L.L.C." }, brokerage: BROKERAGE, owner: OWNER })
-    check("a field the tenant TYPED wins over the derived one", typedWins.validation.ok && typedWins.validation.value.legalName === "Kling Realty Group, L.L.C." && !typedWins.derivedKeys.includes("legalName"))
-    const storefront = deriveA2pProfile({ saved: TYPED, brokerage: { ...BROKERAGE, website: null }, owner: OWNER, appUrl: "https://app.example/" })
-    check("no website on file → the tenant's live storefront (/site/<slug>) — never an invented domain; no appUrl → asked", storefront.validation.ok && storefront.validation.value.website === "https://app.example/site/kling-realty-ab12" && !deriveA2pProfile({ saved: TYPED, brokerage: { ...BROKERAGE, website: null }, owner: OWNER }).validation.ok)
-    check("the EIN is never derived or guessed (no source for it exists in the derivation)", !/ein:/.test(stripped("lib/voice/a2p-registration.ts").slice(stripped("lib/voice/a2p-registration.ts").indexOf("export function deriveA2pProfile"), stripped("lib/voice/a2p-registration.ts").indexOf("export async function resolveA2pProfile"))))
+    const d = deriveA2pProfile({ registration: TYPED, brokerage: BROKERAGE, owner: OWNER, appUrl: "https://app.example" })
+    check("registration setting (EIN + entity type + URLs) + the brokerage row + the owner seat = a COMPLETE profile (nothing retyped)", d.validation.ok && d.derivedKeys.includes("legalName") && d.derivedKeys.includes("contactEmail") && !d.derivedKeys.includes("ein"))
+    const bare = deriveA2pProfile({ registration: null, brokerage: BROKERAGE, owner: OWNER, appUrl: "https://app.example" })
+    check("with nothing typed, ONLY what no record holds is asked: EIN + entity type + privacy + terms (never name/address/contact)", !bare.validation.ok && bare.validation.missing.length === 4 && bare.validation.missing.every((m) => REGISTRATION_ONLY.test(m)))
+    // Wave 84D re-anchor: the legal name now has ONE home (brokerages.name, edited
+    // through updateBrokerageIdentity) — the registration record never carries a
+    // second copy. What the record DOES carry and must win is the representative.
+    const typedWins = deriveA2pProfile({ registration: { ...TYPED, repFirstName: "Pat", repLastName: "Lee" }, brokerage: BROKERAGE, owner: OWNER })
+    check("a field the tenant set on the registration record wins over the derived one (representative over the owner seat)", typedWins.validation.ok && typedWins.validation.value.contactFirstName === "Pat" && !typedWins.derivedKeys.includes("contactFirstName"))
+    const storefront = deriveA2pProfile({ registration: TYPED, brokerage: { ...BROKERAGE, website: null }, owner: OWNER, appUrl: "https://app.example/" })
+    check("no website on file → the tenant's live storefront (/site/<slug>) — never an invented domain; no appUrl → asked", storefront.validation.ok && storefront.validation.value.website === "https://app.example/site/kling-realty-ab12" && !deriveA2pProfile({ registration: TYPED, brokerage: { ...BROKERAGE, website: null }, owner: OWNER }).validation.ok)
+    // Wave 84D re-anchor (the rule, not the spelling): the derivation now has an
+    // explicit registration layer that names `ein:`, so the source-slice regex
+    // would accuse it. Asserted behaviourally instead — with every OTHER source
+    // present, the EIN has no source and is asked for.
+    check("the EIN is never derived or guessed (with no registration record it has no source and is asked for)", bare.sources.ein === undefined && !bare.validation.ok && bare.validation.missing.some((m) => /EIN/.test(m)))
   }
 
   console.log("\n[2 · every step progresses on the cron — the real machine, tick by tick]")
@@ -180,7 +194,9 @@ async function main() {
     }
     const s1 = stateAt[0]
     check("tick 1 files profile → trust product → brand → messaging service → number attach in ONE pass, then honestly pauses in carrier_review while TCR reviews the brand", !!s1.customer_profile_sid && !!s1.trust_product_sid && s1.brand_sid === "BN_1" && s1.messaging_service_sid === "MG_1" && s1.number_attached === true && !s1.campaign_sid && phases[0] === "carrier_review")
-    check("the derived profile was persisted so every reader sees what was filed", db.tables.brokerage_settings[0].settings.a2p_business_profile.legalName === BROKERAGE.name && Array.isArray(db.tables.brokerage_settings[0].settings.a2p_profile_derived_keys))
+    // Wave 84D: the 83D persist-a-derived-copy write is retired (a second store);
+    // every reader derives from the same sources through the one reader.
+    check("NO derived copy is persisted — the settings row still holds only the registration setting (one store)", Object.keys(db.tables.brokerage_settings[0].settings).join() === BUSINESS_REGISTRATION_SETTINGS_KEY)
     const campaignTick = stateAt.findIndex((s) => !!s.campaign_sid)
     check("the brand is RE-POLLED on later ticks (PENDING → IN_REVIEW → APPROVED) and the campaign files the tick the brand clears — no button", campaignTick > 0 && stateAt[campaignTick - 1].brand_status !== "APPROVED" && stateAt[campaignTick].brand_status === "APPROVED")
     const approvedTick = phases.indexOf("approved")
@@ -206,11 +222,11 @@ async function main() {
     const db = tenantDb({ typed: null })
     const tw = fakeTwilio({ brand: ["PENDING", "APPROVED"], campaign: ["IN_PROGRESS", "VERIFIED"] })
     const r = await advanceTenantCarrier(db, "b1", deps(tw))
-    check("no EIN / URLs typed → phase needs_input naming ONLY those, and ZERO Twilio calls", r.after === "needs_input" && r.needs.length === 3 && r.needs.every((n) => /EIN|Privacy|Terms/.test(n)) && tw.calls.length === 0)
+    check("no EIN / entity type / URLs on the registration setting → phase needs_input naming ONLY those, and ZERO Twilio calls", r.after === "needs_input" && r.needs.length === 4 && r.needs.every((n) => REGISTRATION_ONLY.test(n)) && tw.calls.length === 0)
     check("the tenant is rung with the exact fields", db.tables.notifications.some((n: Row) => /needs your input/.test(n.title) && /EIN/.test(n.body)))
     await advanceTenantCarrier(db, "b1", deps(tw))
     check("the same phase next tick does NOT ring again", db.tables.notifications.filter((n: Row) => n.type === "carrier_registration").length === 1)
-    db.tables.brokerage_settings.push({ id: "bs1", brokerage_id: "b1", settings: { a2p_business_profile: TYPED } })
+    db.tables.brokerage_settings.push({ id: "bs1", brokerage_id: "b1", settings: { [BUSINESS_REGISTRATION_SETTINGS_KEY]: TYPED } })
     const r2 = await advanceTenantCarrier(db, "b1", deps(tw))
     check("once the tenant saves them, the very next tick files — no button", r2.ran.includes("10dlc") && tw.calls.some((c) => c.path === "/v1/CustomerProfiles"))
   }

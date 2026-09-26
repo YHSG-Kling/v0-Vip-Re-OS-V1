@@ -12,6 +12,7 @@ import { resolveBrokerageFinanceAdmin } from '@/lib/auth/resolve-user-role'
 // re-validated against the live session row on the very call.
 import { resolveActingContext, resolveWriteContext } from '@/lib/platform/acting-context'
 import { STATE_CODES } from '@/lib/constants/us-states'
+import { isHttpUrl, isEmail, normalizeUsPhone } from '@/lib/branding/business-registration'
 import {
   CAP_ANNIVERSARY_BASES,
   DEFAULT_CAP_ANNIVERSARY_BASIS,
@@ -39,7 +40,7 @@ import {
 // plan_tier, status, trial_ends_at, billing_metadata, is_demo,
 // brokerage_on_platform, twilio_subaccount_sid. A settings action that spread a
 // client payload into an update would be a privilege-escalation bug — a broker
-// could promote their own tenant's plan_tier from a form post. Only the eleven
+// could promote their own tenant's plan_tier from a form post. Only the fourteen
 // fields below are ever written, and the payload is re-sanitized through
 // pickWritableFields() on the way in, the same defence-in-depth
 // lib/platform/config-snapshots.ts applies to SNAPSHOT_SITE_FIELDS on apply.
@@ -64,6 +65,15 @@ const BROKERAGE_IDENTITY_FIELDS = [
   'city',
   'state',
   'zip',
+  // Wave 84D — the brokerage's public contact line and website. These columns
+  // had NO settings writer at all (only tenant creation set email / phone, and
+  // nothing ever set website), yet carrier registration files from them
+  // (lib/voice/a2p-registration.ts deriveA2pProfile). The Branding page's
+  // Business registration card (app/actions/settings/business-registration.ts)
+  // writes them HERE — this allow-list extended, not a second writer.
+  'website',
+  'phone',
+  'email',
 ] as const
 
 /**
@@ -303,7 +313,7 @@ export async function getBrokerageIdentity(): Promise<ActionResult<BrokerageIden
   // of the guard that exists to catch exactly the "column isn't there" failure.
   const { data, error } = await supabase
     .from('brokerages')
-    .select('name, dba, license_number, license_state, address, address_line2, city, state, zip, default_cap_amount, default_cap_anniversary_basis')
+    .select('name, dba, license_number, license_state, address, address_line2, city, state, zip, website, phone, email, default_cap_amount, default_cap_anniversary_basis')
     .eq('id', brokerageId)
     .maybeSingle()
 
@@ -432,6 +442,23 @@ export async function updateBrokerageIdentity(
     return { data: null, error: 'ZIP must be 5 digits, or 5+4 (12345-6789).' }
   }
 
+  // Wave 84D — contact line + website, validated by the SAME helpers the
+  // carrier-registration derivation validates with, so a value saved here can
+  // never be refused at filing time.
+  const website = trimOrNull(picked.website)
+  if (website && !isHttpUrl(website)) {
+    return { data: null, error: 'Website must be a full web address starting with https://' }
+  }
+  const email = trimOrNull(picked.email)
+  if (email && !isEmail(email)) {
+    return { data: null, error: 'Business e-mail must be a valid address.' }
+  }
+  const rawPhone = trimOrNull(picked.phone)
+  const phone = rawPhone ? normalizeUsPhone(rawPhone) : null
+  if (rawPhone && !phone) {
+    return { data: null, error: 'Business phone must be a 10-digit US number.' }
+  }
+
   // ── THE BROKERAGE'S DEFAULT COMMISSION CAP ────────────────────────────────
   // Money is `numeric(12,2)`. parseCapAmountInput REFUSES more precision rather
   // than rounding it away — the same rule `saveTeamSplits` applies to a team
@@ -482,6 +509,9 @@ export async function updateBrokerageIdentity(
   if ('city' in picked) updates.city = trimOrNull(picked.city)
   if ('state' in picked) updates.state = brokerageState.value
   if ('zip' in picked) updates.zip = zip
+  if ('website' in picked) updates.website = website
+  if ('phone' in picked) updates.phone = phone
+  if ('email' in picked) updates.email = email ? email.toLowerCase() : null
   if ('default_cap_amount' in picked) updates.default_cap_amount = capAmount.value
   if (basisValue !== null) updates.default_cap_anniversary_basis = basisValue
 

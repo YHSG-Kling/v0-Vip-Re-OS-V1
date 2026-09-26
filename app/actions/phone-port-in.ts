@@ -13,7 +13,10 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
-import { checkNumbersPortable, submitPortIn, loadPortIns, describePortIn, defaultPortDate, type PortabilityVerdict, type PortInInput, type PortPhase } from "@/lib/voice/number-port-in"
+import { checkNumbersPortable, submitPortIn, loadPortIns, describePortIn, defaultPortDate, portInPrefillFromRegistration, fillPortInFromRegistration, type PortabilityVerdict, type PortInInput, type PortPhase, type PortInRegistrationPrefill } from "@/lib/voice/number-port-in"
+// Wave 84D: the LOA details are PULLED from the Business registration branding
+// setting through the same derivation carrier registration files from.
+import { resolveA2pProfile } from "@/lib/voice/a2p-registration"
 
 async function requirePortCtx(mode: "read" | "write"): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
   const ctx = mode === "write" ? await resolveWriteContextForTenant() : await resolveActingContext()
@@ -34,16 +37,18 @@ export interface PortInStatusView {
   lastPolledAt: string | null
 }
 
-/** READ — the tenant's port requests with the one next step each. */
-export async function getPortInStatusAction(): Promise<{ ok: true; ports: PortInStatusView[]; defaultTargetDate: string } | { ok: false; error: string }> {
+/** READ — the tenant's port requests with the one next step each, plus the
+ *  LOA details already on file (Business registration — never the EIN). */
+export async function getPortInStatusAction(): Promise<{ ok: true; ports: PortInStatusView[]; defaultTargetDate: string; prefill: Partial<PortInRegistrationPrefill> } | { ok: false; error: string }> {
   const auth = await requirePortCtx("read")
   if (!auth.ok) return auth
   const svc = createServiceClient()
-  const cur = await loadPortIns(svc, auth.brokerageId)
+  const [cur, reg] = await Promise.all([loadPortIns(svc, auth.brokerageId), resolveA2pProfile(svc, auth.brokerageId)])
   if (!cur.ok) return { ok: false, error: cur.error }
   return {
     ok: true,
     defaultTargetDate: defaultPortDate(new Date()),
+    prefill: portInPrefillFromRegistration(reg.draft),
     ports: cur.records.map((r) => {
       const d = describePortIn(r)
       return { sid: r.sid, numbers: r.numbers.map((n) => ({ phone: n.phone, status: n.status, landed: n.landed })), phase: d.phase, headline: d.headline, nextStep: d.nextStep, signatureUrl: r.signatureUrl, targetDate: r.targetDate, submittedAt: r.submittedAt, lastPolledAt: r.lastPolledAt }
@@ -75,7 +80,7 @@ export async function submitPortInAction(form: FormData): Promise<{ ok: true; po
       pins[d.length === 10 ? `+1${d}` : `+${d}`] = v.trim()
     }
   }
-  const input: Partial<PortInInput> = {
+  const typed: Partial<PortInInput> = {
     phoneNumbers, pins,
     customerName: str("customerName"), customerType: str("customerType") === "Individual" ? "Individual" : "Business",
     accountNumber: str("accountNumber"), accountTelephoneNumber: str("accountTelephoneNumber"),
@@ -83,6 +88,9 @@ export async function submitPortInAction(form: FormData): Promise<{ ok: true; po
     street: str("street"), street2: str("street2"), city: str("city"), state: str("state"), zip: str("zip"),
     targetPortInDate: str("targetPortInDate"),
   }
+  // Wave 84D: typed wins (the LOA must match the losing carrier's record);
+  // every blank is pulled from the Business registration branding setting.
+  const input = fillPortInFromRegistration(typed, portInPrefillFromRegistration((await resolveA2pProfile(svc, auth.brokerageId)).draft))
 
   // Optional: the agent the number lands on — tenant-checked here, never trusted.
   let agentUserId: string | null = null

@@ -78,6 +78,45 @@ export interface PortInInput {
   targetPortInDate?: string
 }
 
+/** The LOA fields the Business registration branding setting can pre-fill. */
+export type PortInRegistrationPrefill = Pick<PortInInput, "customerName" | "authorizedRepresentative" | "authorizedRepresentativeEmail" | "street" | "street2" | "city" | "state" | "zip">
+
+/**
+ * PURE (wave 84D — owner: "add the registration info needed for registration
+ * in as a branding setting so that info is pulled for registration."): the LOA
+ * details the port form can take from the brokerage's Business registration
+ * (the derived profile draft — lib/voice/a2p-registration.ts deriveA2pProfile,
+ * read through lib/branding/business-registration.ts, the ONE reader). The EIN
+ * is never part of it.
+ */
+export function portInPrefillFromRegistration(draft: Record<string, string> | null | undefined): Partial<PortInRegistrationPrefill> {
+  const d = draft ?? {}
+  const t = (k: string) => (typeof d[k] === "string" ? d[k].trim() : "")
+  const rep = [t("contactFirstName"), t("contactLastName")].filter(Boolean).join(" ")
+  const out: Partial<PortInRegistrationPrefill> = {}
+  if (t("legalName")) out.customerName = t("legalName")
+  if (rep) out.authorizedRepresentative = rep
+  if (t("contactEmail")) out.authorizedRepresentativeEmail = t("contactEmail")
+  if (t("street")) out.street = t("street")
+  if (t("street2")) out.street2 = t("street2")
+  if (t("city")) out.city = t("city")
+  if (t("region")) out.state = t("region")
+  if (t("postalCode")) out.zip = t("postalCode")
+  return out
+}
+
+/** PURE: what the person TYPED wins field by field (the LOA must match the
+ *  LOSING carrier's record, which can differ from the IRS one); every blank is
+ *  pulled from the registration prefill. Only what neither holds stays missing. */
+export function fillPortInFromRegistration(typed: Partial<PortInInput>, prefill: Partial<PortInRegistrationPrefill>): Partial<PortInInput> {
+  const out: Partial<PortInInput> = { ...typed }
+  for (const [k, v] of Object.entries(prefill) as Array<[keyof PortInRegistrationPrefill, string]>) {
+    const cur = out[k]
+    if ((typeof cur !== "string" || !cur.trim()) && v) (out as Record<string, unknown>)[k] = v
+  }
+  return out
+}
+
 export interface PortabilityVerdict {
   phoneNumber: string
   portable: boolean

@@ -22,6 +22,9 @@
 //      — landing kicks registration through the same core;
 //   2. resolves the business profile from the brokerage's own record
 //      (resolveA2pProfile) — the tenant is asked ONLY for what no record holds;
+//      since wave 84D that is PULLED from the Branding page's Business
+//      registration setting (lib/branding/business-registration.ts, the one
+//      reader) — the ring names the missing fields and links there;
 //   3. runs the 10DLC machine for local numbers and toll-free verification for
 //      8xx, each resumable and idempotent (a pass is one poll when idle);
 //   4. derives ONE phase (carrierRegistrationPhase) and, when it CHANGES,
@@ -38,6 +41,7 @@ import {
   type A2pState, type CarrierRunDeps,
 } from "@/lib/voice/a2p-registration"
 import { pollPortIns, portInNeedsPolling, type PortInDeps, type PortInRecord } from "@/lib/voice/number-port-in"
+import { BUSINESS_REGISTRATION_SETTINGS_LABEL, BUSINESS_REGISTRATION_SETTINGS_PATH } from "@/lib/branding/business-registration"
 
 // ── The phase (PURE) ─────────────────────────────────────────────────────────
 
@@ -177,7 +181,7 @@ export async function advanceTenantCarrier(svc: any, brokerageId: string, deps: 
       notes: `carrier registration ${prev ?? "new"} → ${view.phase}${view.needs.length ? ` · needs: ${view.needs.join("; ")}` : ""}`.slice(0, 500),
     })
     if (view.phase === "approved") await ringAdmins(svc, brokerageId, "Business texting approved — phone test unlocked", `Carriers approved your business registration. ${view.statusLines.join(" ")} You can now run the phone test from Phone settings.`)
-    else if (view.phase === "needs_input" || view.phase === "rejected") await ringAdmins(svc, brokerageId, "Business registration needs your input", `${view.needs.join(" · ")} — add it in Phone settings → Carrier registration; filing resumes on its own within the hour.`)
+    else if (view.phase === "needs_input" || view.phase === "rejected") await ringAdmins(svc, brokerageId, "Business registration needs your input", `${view.needs.join(" · ")} — add it in ${BUSINESS_REGISTRATION_SETTINGS_LABEL} (${BUSINESS_REGISTRATION_SETTINGS_PATH}); filing resumes on its own within the hour.`)
   }
   return { brokerageId, before: prev, after: view.phase, ported: port.landed, ran, needs: view.needs, testUnlocked: view.testUnlocked }
 }

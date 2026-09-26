@@ -204,6 +204,11 @@ console.log("\n── PURE: A2P 10DLC step machine ──")
     street: "1 Main St", city: "Austin", region: "TX", postalCode: "78701",
     contactFirstName: "D", contactLastName: "K", contactEmail: "d@kling.example", contactPhone: "+15125550100",
     privacyPolicyUrl: "https://kling.example/privacy", termsUrl: "https://kling.example/terms",
+    // Wave 84D: the merged profile now carries the entity facts the runner used
+    // to hard-code (business type, industry, regions, company type, rep title /
+    // job position) — pulled from the Business registration branding setting.
+    businessType: "Limited Liability Corporation", industry: "REAL_ESTATE", regionsOfOperation: "USA_AND_CANADA",
+    companyType: "private", contactTitle: "Broker / Owner", contactJobPosition: "Director",
   })
   check("complete profile normalizes (EIN digits-only, default use-case supplied)", good.ok && (good as any).value.ein === "123456789" && (good as any).value.useCaseDescription.length > 10)
   check("step machine resumes in order and finishes",

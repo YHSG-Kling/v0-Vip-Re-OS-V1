@@ -14,20 +14,49 @@
 // (legal name, EIN, address, contact) — validated pure, honest missing-field
 // list, nothing submitted until complete.
 
+import {
+  normalizeEin, isEmail, isHttpUrl, repTitleForUserType, loadBusinessRegistrationSources, BUSINESS_REGISTRATION_SETTINGS_LABEL,
+  REGISTRATION_BUSINESS_TYPES, REGISTRATION_COMPANY_TYPES, REGISTRATION_JOB_POSITIONS, REGISTRATION_DEFAULTS,
+  type BusinessRegistration, type BrokerageIdentityRow, type RepresentativeSeat,
+} from "@/lib/branding/business-registration"
+
 // ── The business profile (what carriers require) ─────────────────────────────
 
 export interface A2pBusinessProfile {
   legalName: string
+  /** The trade name the brokerage advertises under (brokerages.dba) — falls
+   *  back to the legal name; the name printed in message samples. */
+  brandName: string
   ein: string
+  /** TrustHub business_type (lib/branding/business-registration.ts
+   *  REGISTRATION_BUSINESS_TYPES). Wave 84D: was HARD-CODED to "Limited
+   *  Liability Corporation" for every tenant — an invented fact that TCR vets
+   *  against the IRS record; it is now the tenant's own answer. */
+  businessType: string
+  industry: string
+  regionsOfOperation: string
+  /** us_a2p_messaging_profile_information.company_type (was hard-coded "private"). */
+  companyType: string
+  stockExchange: string
+  stockTicker: string
+  socialMediaUrl: string
   website: string
   street: string
+  street2: string
   city: string
   region: string
   postalCode: string
+  /** The AUTHORIZED REPRESENTATIVE (TrustHub authorized_representative_1). */
   contactFirstName: string
   contactLastName: string
+  contactTitle: string
+  contactJobPosition: string
   contactEmail: string
   contactPhone: string
+  /** The brokerage's public support line (brokerages.email / phone) — named in
+   *  the HELP reply carriers require. Optional. */
+  supportEmail: string
+  supportPhone: string
   /** REQUIRED on every campaign since June 30, 2026 — submissions without
    *  them hard-400 (contract-verified against Twilio's current docs). */
   privacyPolicyUrl: string
@@ -41,21 +70,35 @@ export type A2pProfileValidation = { ok: true; value: A2pBusinessProfile } | { o
 const REQUIRED: Array<[keyof A2pBusinessProfile, string]> = [
   ["legalName", "Legal business name"],
   ["ein", "EIN (federal tax ID)"],
+  ["businessType", "Business type (LLC, corporation, …)"],
+  ["industry", "Industry"],
+  ["regionsOfOperation", "Regions of operation"],
+  ["companyType", "Company type (private / public)"],
   ["website", "Business website"],
   ["street", "Street address"],
   ["city", "City"],
   ["region", "State"],
   ["postalCode", "ZIP code"],
-  ["contactFirstName", "Contact first name"],
-  ["contactLastName", "Contact last name"],
-  ["contactEmail", "Contact email"],
-  ["contactPhone", "Contact phone"],
+  ["contactFirstName", "Authorized representative first name"],
+  ["contactLastName", "Authorized representative last name"],
+  ["contactTitle", "Authorized representative title"],
+  ["contactJobPosition", "Authorized representative job position"],
+  ["contactEmail", "Authorized representative email"],
+  ["contactPhone", "Authorized representative phone"],
   ["privacyPolicyUrl", "Privacy policy URL"],
   ["termsUrl", "Terms & conditions URL"],
 ]
 
-/** PURE: validate the tenant's business profile — an honest missing list, and
- *  nothing is submitted to carriers until every required field is present. */
+/** Every profile key the derivation fills (REQUIRED + the optional ones). */
+const PROFILE_KEYS: ReadonlyArray<keyof A2pBusinessProfile> = [
+  ...REQUIRED.map(([k]) => k), "brandName", "stockExchange", "stockTicker", "socialMediaUrl", "street2", "supportEmail", "supportPhone", "useCaseDescription",
+]
+
+/** PURE: validate the merged business profile — an honest missing-field list,
+ *  and nothing is submitted to carriers until every required field is present.
+ *  Formats go through the ONE set of validators the Branding card saves with
+ *  (lib/branding/business-registration.ts), so a value the card accepted can
+ *  never be refused here, nor the reverse. */
 export function validateA2pProfile(raw: any): A2pProfileValidation {
   const r = raw ?? {}
   const missing: string[] = []
@@ -63,28 +106,47 @@ export function validateA2pProfile(raw: any): A2pProfileValidation {
   for (const [key, label] of REQUIRED) {
     if (!get(key)) missing.push(label)
   }
-  const ein = get("ein").replace(/\D/g, "")
-  if (get("ein") && ein.length !== 9) missing.push("EIN must be 9 digits")
-  if (get("contactEmail") && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(get("contactEmail"))) missing.push("Contact email must be valid")
-  if (get("website") && !/^https?:\/\//.test(get("website"))) missing.push("Website must start with http(s)://")
+  const ein = get("ein") ? normalizeEin(get("ein")) : null
+  if (ein && !ein.ok) missing.push(ein.error)
+  if (get("contactEmail") && !isEmail(get("contactEmail"))) missing.push("Authorized representative email must be valid")
+  if (get("website") && !isHttpUrl(get("website"))) missing.push("Website must be a full web address starting with http(s)://")
   for (const k of ["privacyPolicyUrl", "termsUrl"] as const) {
-    if (get(k) && !/^https?:\/\//.test(get(k))) missing.push(`${k === "privacyPolicyUrl" ? "Privacy policy" : "Terms"} URL must start with http(s)://`)
+    if (get(k) && !isHttpUrl(get(k))) missing.push(`${k === "privacyPolicyUrl" ? "Privacy policy" : "Terms"} URL must start with http(s)://`)
   }
-  if (missing.length > 0) return { ok: false, missing }
+  if (get("businessType") && !(REGISTRATION_BUSINESS_TYPES as readonly string[]).includes(get("businessType"))) missing.push(`Business type must be one of: ${REGISTRATION_BUSINESS_TYPES.join(", ")}`)
+  if (get("companyType") && !(REGISTRATION_COMPANY_TYPES as readonly string[]).includes(get("companyType"))) missing.push(`Company type must be one of: ${REGISTRATION_COMPANY_TYPES.join(", ")}`)
+  if (get("contactJobPosition") && !(REGISTRATION_JOB_POSITIONS as readonly string[]).includes(get("contactJobPosition"))) missing.push(`Representative job position must be one of: ${REGISTRATION_JOB_POSITIONS.join(", ")}`)
+  if (get("companyType") === "public" && (!get("stockExchange") || !get("stockTicker"))) missing.push("Stock exchange and ticker (public company)")
+  if (missing.length > 0 || !ein || !ein.ok) return { ok: false, missing }
+  const isPublic = get("companyType") === "public"
   return {
     ok: true,
     value: {
       legalName: get("legalName").slice(0, 100),
-      ein,
+      brandName: (get("brandName") || get("legalName")).slice(0, 100),
+      ein: ein.value,
+      businessType: get("businessType"),
+      industry: get("industry"),
+      regionsOfOperation: get("regionsOfOperation"),
+      companyType: get("companyType"),
+      // Twilio: stock_* must be OMITTED unless company_type is public (30796).
+      stockExchange: isPublic ? get("stockExchange").slice(0, 10) : "",
+      stockTicker: isPublic ? get("stockTicker").slice(0, 10) : "",
+      socialMediaUrl: isHttpUrl(get("socialMediaUrl")) ? get("socialMediaUrl").slice(0, 300) : "",
       website: get("website").slice(0, 200),
       street: get("street").slice(0, 100),
+      street2: get("street2").slice(0, 100),
       city: get("city").slice(0, 60),
       region: get("region").slice(0, 30),
       postalCode: get("postalCode").slice(0, 12),
       contactFirstName: get("contactFirstName").slice(0, 60),
       contactLastName: get("contactLastName").slice(0, 60),
+      contactTitle: get("contactTitle").slice(0, 80),
+      contactJobPosition: get("contactJobPosition"),
       contactEmail: get("contactEmail").slice(0, 120),
       contactPhone: get("contactPhone").slice(0, 24),
+      supportEmail: isEmail(get("supportEmail")) ? get("supportEmail").slice(0, 120) : "",
+      supportPhone: get("supportPhone").slice(0, 24),
       privacyPolicyUrl: get("privacyPolicyUrl").slice(0, 300),
       termsUrl: get("termsUrl").slice(0, 300),
       useCaseDescription: (get("useCaseDescription") || "Real estate brokerage: appointment confirmations, showing reminders, and replies to client-initiated conversations.").slice(0, 400),
@@ -92,95 +154,110 @@ export function validateA2pProfile(raw: any): A2pProfileValidation {
   }
 }
 
-// ── The profile, DERIVED from what the tenant already told us (wave 83D) ──────
-// Owner: "the person picks a number or ports and auto business listing
-// approval." Every tenant already has a brokerages row (name, address, phone,
-// e-mail, website, storefront slug) and an owner seat (users: name, e-mail,
-// phone). Asking the tenant to retype those into a registration form was the
-// "chore" the header above promised to remove. So: what the tenant TYPED wins
-// field by field; every blank is filled from the brokerage's own record; only
-// what no record holds is asked for — in practice the EIN, and the privacy /
-// terms URLs when the website has none on file. Nothing is invented: the EIN is
-// never guessed, a URL is never fabricated (the platform-hosted storefront is
-// used as the website only because it IS the tenant's live site —
-// tenantWebsitePath, wave 81D).
+// ── The profile, PULLED from the brokerage's branding settings (84D) ─────────
+// Wave 83D derived blanks from the brokerages row + the owner seat and asked
+// the tenant (on the phone-settings card) only for the EIN and the privacy /
+// terms URLs, storing what was typed PLUS a derived copy of every other field
+// in brokerage_settings.settings.a2p_business_profile.
+// Wave 84D (owner: "add the registration info needed for registration in as a
+// branding setting so that info is pulled for registration."): the facts only
+// registration needs are a BRANDING SETTING —
+// brokerage_settings.settings.business_registration, edited on the Branding
+// page's "Business registration" card (app/components/settings/
+// BusinessRegistrationCard.tsx) — and everything is pulled through its ONE
+// reader (lib/branding/business-registration.ts loadBusinessRegistrationSources):
+//   registration record → EIN, entity type, industry, regions, company type
+//                         (+ stock listing), privacy / terms / social URLs, the
+//                         authorized representative
+//   brokerages row      → legal name, DBA, address, website, support e-mail/phone
+//   owner seat          → the representative when none is on the record
+//   defaults            → industry REAL_ESTATE, regions USA_AND_CANADA, company
+//                         type private, job position Director (REGISTRATION_DEFAULTS)
+//   storefront          → /site/<slug> when no website is on file (wave 81D)
+// Nothing is invented: the EIN and the entity type are never guessed, and no
+// derived copy is persisted any more — every reader derives from the same
+// sources, so there is no second store to drift.
+
+export type A2pFieldSource = "registration" | "brokerage" | "owner_seat" | "default" | "storefront"
 
 export interface A2pProfileSources {
-  saved?: Record<string, unknown> | null
-  brokerage?: { name?: string | null; address?: string | null; city?: string | null; state?: string | null; zip?: string | null; phone?: string | null; email?: string | null; website?: string | null; slug?: string | null } | null
-  owner?: { first_name?: string | null; last_name?: string | null; email?: string | null; phone?: string | null } | null
+  /** brokerage_settings.settings.business_registration (the branding setting). */
+  registration?: Partial<BusinessRegistration> | null
+  brokerage?: BrokerageIdentityRow | null
+  owner?: RepresentativeSeat | null
   /** NEXT_PUBLIC_APP_URL — the storefront's origin (no trailing slash). */
   appUrl?: string | null
 }
 
-/** Owner-seat preference for the authorized representative — the finance-admin
- *  roster, most senior first (the person who can sign for the brokerage). */
-const REPRESENTATIVE_ORDER = ["broker_owner", "broker", "broker_admin", "admin"] as const
+export interface A2pDerivation {
+  validation: A2pProfileValidation
+  draft: Record<string, string>
+  /** Profile keys NOT supplied by the registration record (compat with 83D). */
+  derivedKeys: string[]
+  /** Where each filled key came from — the cards label pulled fields with it. */
+  sources: Record<string, A2pFieldSource>
+}
 
-/** PURE: merge typed-over-derived, then validate. Returns the merged draft too
- *  so the settings card can pre-fill every field it already knows. */
-export function deriveA2pProfile(src: A2pProfileSources): { validation: A2pProfileValidation; draft: Record<string, string>; derivedKeys: string[] } {
-  const saved = (src.saved ?? {}) as Record<string, unknown>
+/** PURE: pull every field from its one home, then validate. */
+export function deriveA2pProfile(src: A2pProfileSources): A2pDerivation {
+  const reg = (src.registration ?? {}) as Partial<BusinessRegistration>
   const b = src.brokerage ?? {}
   const o = src.owner ?? {}
   const t = (v: unknown) => (typeof v === "string" ? v.trim() : "")
-  const site = t(b.website) ? (/^https?:\/\//.test(t(b.website)) ? t(b.website) : `https://${t(b.website)}`) : (t(src.appUrl) && t(b.slug) ? `${t(src.appUrl).replace(/\/$/, "")}/site/${t(b.slug)}` : "")
-  const derived: Record<string, string> = {
-    legalName: t(b.name),
-    website: site,
-    street: t(b.address),
-    city: t(b.city),
-    region: t(b.state),
-    postalCode: t(b.zip),
-    contactFirstName: t(o.first_name),
-    contactLastName: t(o.last_name),
-    contactEmail: t(o.email) || t(b.email),
-    contactPhone: t(o.phone) || t(b.phone),
-  }
+  const layers: Array<[A2pFieldSource, Partial<Record<keyof A2pBusinessProfile, string>>]> = [
+    ["registration", {
+      ein: t(reg.ein), businessType: t(reg.businessType), industry: t(reg.industry), regionsOfOperation: t(reg.regionsOfOperation),
+      companyType: t(reg.companyType), stockExchange: t(reg.stockExchange), stockTicker: t(reg.stockTicker),
+      socialMediaUrl: t(reg.socialMediaUrl), privacyPolicyUrl: t(reg.privacyPolicyUrl), termsUrl: t(reg.termsUrl),
+      contactFirstName: t(reg.repFirstName), contactLastName: t(reg.repLastName), contactTitle: t(reg.repTitle),
+      contactJobPosition: t(reg.repJobPosition), contactEmail: t(reg.repEmail), contactPhone: t(reg.repPhone),
+      useCaseDescription: t(reg.useCaseDescription),
+    }],
+    ["brokerage", {
+      legalName: t(b.name), brandName: t(b.dba) || t(b.name),
+      website: t(b.website) ? (/^https?:\/\//i.test(t(b.website)) ? t(b.website) : `https://${t(b.website)}`) : "",
+      street: t(b.address), street2: t(b.address_line2), city: t(b.city), region: t(b.state), postalCode: t(b.zip),
+      supportEmail: t(b.email), supportPhone: t(b.phone),
+    }],
+    ["owner_seat", {
+      contactFirstName: t(o.first_name), contactLastName: t(o.last_name), contactTitle: repTitleForUserType(o.user_type),
+      contactEmail: t(o.email) || t(b.email), contactPhone: t(o.phone) || t(b.phone),
+    }],
+    ["default", {
+      industry: REGISTRATION_DEFAULTS.industry, regionsOfOperation: REGISTRATION_DEFAULTS.regionsOfOperation,
+      companyType: REGISTRATION_DEFAULTS.companyType, contactJobPosition: REGISTRATION_DEFAULTS.repJobPosition,
+    }],
+    ["storefront", { website: t(src.appUrl) && t(b.slug) ? `${t(src.appUrl).replace(/\/$/, "")}/site/${t(b.slug)}` : "" }],
+  ]
   const draft: Record<string, string> = {}
-  const derivedKeys: string[] = []
-  for (const [key] of REQUIRED) {
-    const typed = t(saved[key])
-    if (typed) draft[key] = typed
-    else if (derived[key]) { draft[key] = derived[key]; derivedKeys.push(key) }
+  const sources: Record<string, A2pFieldSource> = {}
+  for (const key of PROFILE_KEYS) {
+    for (const [source, layer] of layers) {
+      const v = t(layer[key])
+      if (v) { draft[key] = v; sources[key] = source; break }
+    }
   }
-  if (t(saved.useCaseDescription)) draft.useCaseDescription = t(saved.useCaseDescription)
-  return { validation: validateA2pProfile(draft), draft, derivedKeys }
+  const derivedKeys = Object.keys(sources).filter((k) => sources[k] !== "registration")
+  return { validation: validateA2pProfile(draft), draft, derivedKeys, sources }
 }
 
 /**
- * IMPURE: read the saved profile + the brokerage row + the owner seat,
- * derive, and — when the merged profile is COMPLETE and differs from what is
- * saved — persist it, so every later reader (the step machine, the superadmin
- * A2P board) sees the same profile the filing used. Refused reads are
- * refusals (an unreadable profile is never "incomplete, please type it").
+ * IMPURE: read the registration branding setting + the brokerage row + the
+ * representative seat through the ONE reader and derive. READ-ONLY since
+ * wave 84D (the 83D persist-a-derived-copy write is retired — every reader
+ * derives from the same sources). A refused settings read is a refusal (an
+ * unreadable profile is never "incomplete, please type it").
  */
-export async function resolveA2pProfile(svc: any, brokerageId: string, opts: { persist?: boolean } = {}): Promise<A2pProfileValidation & { draft?: Record<string, string>; derivedKeys?: string[] }> {
-  const [bsRes, bRes, oRes] = await Promise.all([
-    svc.from("brokerage_settings").select("id, settings").eq("brokerage_id", brokerageId).maybeSingle(),
-    svc.from("brokerages").select("name, address, city, state, zip, phone, email, website, slug").eq("id", brokerageId).maybeSingle(),
-    svc.from("users").select("first_name, last_name, email, phone, user_type").eq("brokerage_id", brokerageId).in("user_type", [...REPRESENTATIVE_ORDER]).is("deleted_at", null).limit(20),
-  ])
-  if (bsRes?.error) return { ok: false, missing: [`business profile could not be read (${bsRes.error.message})`] }
-  const settings = ((bsRes?.data as any)?.settings ?? {}) as Record<string, any>
-  const owners = (Array.isArray(oRes?.data) ? oRes.data : []) as Array<{ user_type?: string; first_name?: string | null; last_name?: string | null; email?: string | null; phone?: string | null }>
-  const owner = [...owners].sort((a, z) => REPRESENTATIVE_ORDER.indexOf(a.user_type as any) - REPRESENTATIVE_ORDER.indexOf(z.user_type as any))[0] ?? null
-  const { validation, draft, derivedKeys } = deriveA2pProfile({
-    saved: settings.a2p_business_profile ?? null,
-    brokerage: bRes?.error ? null : (bRes?.data as any) ?? null,
-    owner: oRes?.error ? null : owner,
+export async function resolveA2pProfile(svc: any, brokerageId: string): Promise<A2pProfileValidation & { draft?: Record<string, string>; derivedKeys?: string[]; sources?: Record<string, A2pFieldSource> }> {
+  const src = await loadBusinessRegistrationSources(svc, brokerageId)
+  if (!src.ok) return { ok: false, missing: [src.error] }
+  const { validation, draft, derivedKeys, sources } = deriveA2pProfile({
+    registration: src.registration,
+    brokerage: src.brokerage,
+    owner: src.owner,
     appUrl: process.env.NEXT_PUBLIC_APP_URL ?? null,
   })
-  // A READ caller (the status card, a read_only act-as grant) passes persist: false.
-  if (validation.ok && derivedKeys.length > 0 && opts.persist !== false) {
-    const next = { ...settings, a2p_business_profile: validation.value, a2p_profile_derived_keys: derivedKeys }
-    const rowId = (bsRes?.data as any)?.id
-    const write = rowId
-      ? await svc.from("brokerage_settings").update({ settings: next, updated_at: new Date().toISOString() }).eq("id", rowId).eq("brokerage_id", brokerageId)
-      : await svc.from("brokerage_settings").insert({ brokerage_id: brokerageId, settings: next })
-    if (write?.error) console.warn(`[a2p] derived profile NOT persisted for ${brokerageId} (filing continues on the derived copy):`, write.error.message)
-  }
-  return { ...validation, draft, derivedKeys }
+  return { ...validation, draft, derivedKeys, sources }
 }
 
 // ── The step machine ──────────────────────────────────────────────────────────
@@ -441,11 +518,16 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
       const biz = await twilio<{ sid?: string }>(master, TRUSTHUB, "/v1/EndUsers", "POST", {
         FriendlyName: `${profile.legalName} business info`,
         Type: "customer_profile_business_information",
+        // Wave 84D: business_type / industry / regions are the tenant's own
+        // answers from the Branding page's Business registration card (they
+        // were hard-coded "Limited Liability Corporation" / REAL_ESTATE /
+        // USA_AND_CANADA for every tenant — a corporation was filed as an LLC).
         Attributes: JSON.stringify({
           business_name: profile.legalName, business_identity: "direct_customer",
-          business_type: "Limited Liability Corporation", business_industry: "REAL_ESTATE",
+          business_type: profile.businessType, business_industry: profile.industry,
           business_registration_identifier: "EIN", business_registration_number: profile.ein,
-          business_regions_of_operation: "USA_AND_CANADA", website_url: profile.website,
+          business_regions_of_operation: profile.regionsOfOperation, website_url: profile.website,
+          ...(profile.socialMediaUrl ? { social_media_profile_urls: profile.socialMediaUrl } : {}),
         }),
       })
       if (!biz.ok || !biz.data?.sid) return fail(`Business info failed: ${biz.error ?? biz.status}`)
@@ -456,13 +538,13 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
         Attributes: JSON.stringify({
           first_name: profile.contactFirstName, last_name: profile.contactLastName,
           email: profile.contactEmail, phone_number: profile.contactPhone,
-          business_title: "Broker", job_position: "Director",
+          business_title: profile.contactTitle, job_position: profile.contactJobPosition,
         }),
       })
       if (!rep.ok || !rep.data?.sid) return fail(`Authorized rep failed: ${rep.error ?? rep.status}`)
 
       const addr = await twilio<{ sid?: string }>(master, "https://api.twilio.com", `/2010-04-01/Accounts/${master.accountSid}/Addresses.json`, "POST", {
-        CustomerName: profile.legalName, Street: profile.street, City: profile.city,
+        CustomerName: profile.legalName, Street: profile.street, ...(profile.street2 ? { StreetSecondary: profile.street2 } : {}), City: profile.city,
         Region: profile.region, PostalCode: profile.postalCode, IsoCountry: "US",
       })
       if (!addr.ok || !addr.data?.sid) return fail(`Address failed: ${addr.error ?? addr.status}`)
@@ -495,7 +577,13 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
       const msgProfile = await twilio<{ sid?: string }>(master, TRUSTHUB, "/v1/EndUsers", "POST", {
         FriendlyName: `${profile.legalName} messaging profile`,
         Type: "us_a2p_messaging_profile_information",
-        Attributes: JSON.stringify({ company_type: "private" }),
+        // Wave 84D: company_type from the registration record (was hard-coded
+        // "private"); a PUBLIC brand carries its listing and a brand contact
+        // e-mail for TCR's 2FA attestation — and ONLY a public one (30796).
+        Attributes: JSON.stringify({
+          company_type: profile.companyType,
+          ...(profile.companyType === "public" ? { stock_exchange: profile.stockExchange, stock_ticker: profile.stockTicker, brand_contact_email: profile.contactEmail } : {}),
+        }),
       })
       if (!msgProfile.ok || !msgProfile.data?.sid) return fail(`Messaging profile failed: ${msgProfile.error ?? msgProfile.status}`)
       for (const objectSid of [state.customer_profile_sid!, msgProfile.data.sid]) {
@@ -597,7 +685,7 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
           MessageFlow: "Contacts opt in by texting or calling the office first, submitting a web form with consent language, or signing in at an open house with express written consent. Consent language and records are retained. Every message honors opt-out; STOP is processed immediately.",
           MessageSamples: [
             "Hi {first name}, confirming your showing at {address} tomorrow at {time}. Reply C to confirm or R to reschedule. Reply STOP to opt out.",
-            `Hi {first name}, this is ${profile.legalName}. The open house at {address} starts at {time} — see you there! Reply STOP to opt out.`,
+            `Hi {first name}, this is ${profile.brandName}. The open house at {address} starts at {time} — see you there! Reply STOP to opt out.`,
           ],
           UsAppToPersonUsecase: "LOW_VOLUME",
           HasEmbeddedLinks: true,
@@ -605,7 +693,7 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
           SubscriberOptIn: true,
           AgeGated: false,
           DirectLending: false,
-          OptInMessage: `${profile.legalName}: You're opted in to appointment and listing updates (up to 4 msgs/mo). Msg&data rates may apply. Reply HELP for help, STOP to opt out.`,
+          OptInMessage: `${profile.brandName}: You're opted in to appointment and listing updates (up to 4 msgs/mo). Msg&data rates may apply. Reply HELP for help, STOP to opt out.`,
           OptInKeywords: ["START", "YES", "UNSTOP"],
           PrivacyPolicyUrl: profile.privacyPolicyUrl,
           TermsAndConditionsUrl: profile.termsUrl,
@@ -793,7 +881,7 @@ export async function runVoiceIntegrityRegistration(svc: any, brokerageId: strin
     const endUser = await twilio<{ sid?: string }>(master, TRUSTHUB, "/v1/EndUsers", "POST", {
       FriendlyName: `${profile.legalName} caller ID`,
       Type: "cnam_information",
-      Attributes: JSON.stringify({ cnam_display_name: profile.legalName.slice(0, CNAM_DISPLAY_NAME_MAX).trim() }),
+      Attributes: JSON.stringify({ cnam_display_name: profile.brandName.slice(0, CNAM_DISPLAY_NAME_MAX).trim() }),
     })
     if (!endUser.ok || !endUser.data?.sid) return fail(`CNAM display-name end user failed: ${endUser.error ?? endUser.status}`)
     const r = await registerBundle("cnam", CNAM_TRUST_POLICY, [endUser.data.sid])
@@ -868,6 +956,22 @@ export function describeTollfreeState(s: A2pState): string {
   return `Toll-free verification under carrier review (${st}). Sending is restricted until approved.`
 }
 
+/** PURE (wave 84D): Twilio Tollfree Verifications BusinessType from the
+ *  registration record (was hard-coded PRIVATE_PROFIT for every tenant). */
+export function tollfreeBusinessType(p: Pick<A2pBusinessProfile, "businessType" | "companyType">): "PRIVATE_PROFIT" | "PUBLIC_PROFIT" | "NON_PROFIT" | "SOLE_PROPRIETOR" | "GOVERNMENT" {
+  if (p.companyType === "government") return "GOVERNMENT"
+  if (p.companyType === "non-profit" || p.businessType === "Non-profit Corporation") return "NON_PROFIT"
+  if (p.businessType === "Sole Proprietorship") return "SOLE_PROPRIETOR"
+  return p.companyType === "public" ? "PUBLIC_PROFIT" : "PRIVATE_PROFIT"
+}
+
+/** PURE (wave 84D): the HELP reply names the brokerage's support line when the
+ *  brokerage record has one (brokerages.phone / email via the branding card). */
+function helpContact(p: Pick<A2pBusinessProfile, "supportPhone" | "supportEmail">): string {
+  const via = p.supportPhone || p.supportEmail
+  return via ? `for help contact ${via}; ` : "reply HELP for help or "
+}
+
 export interface TollfreeRunResult { ok: boolean; state: A2pState; status: string | null; error?: string }
 
 /**
@@ -938,7 +1042,7 @@ export async function runTollfreeVerification(svc: any, brokerageId: string, opt
     NotificationEmail: profile.contactEmail,
     UseCaseCategories: ["CUSTOMER_CARE", "ACCOUNT_NOTIFICATIONS"],
     UseCaseSummary: profile.useCaseDescription,
-    ProductionMessageSample: `Hi {first name}, this is ${profile.legalName}. Confirming your showing at {address} tomorrow at {time}. Reply C to confirm or R to reschedule. Reply STOP to opt out.`,
+    ProductionMessageSample: `Hi {first name}, this is ${profile.brandName}. Confirming your showing at {address} tomorrow at {time}. Reply C to confirm or R to reschedule. Reply STOP to opt out.`,
     OptInImageUrls: [profile.website],
     OptInType: "WEB_FORM",
     MessageVolume: "1,000",
@@ -948,10 +1052,10 @@ export async function runTollfreeVerification(svc: any, brokerageId: string, opt
     BusinessRegistrationNumber: profile.ein,
     BusinessRegistrationAuthority: "EIN",
     BusinessRegistrationCountry: "US",
-    BusinessType: "PRIVATE_PROFIT",
+    BusinessType: tollfreeBusinessType(profile),
     OptInKeywords: ["START", "YES"],
-    HelpMessageSample: `${profile.legalName}: reply HELP for help or STOP to opt out. Msg&data rates may apply.`,
-    OptInConfirmationMessage: `${profile.legalName}: You're opted in to appointment and listing updates. Msg&data rates may apply. Reply HELP for help, STOP to opt out.`,
+    HelpMessageSample: `${profile.brandName}: ${helpContact(profile)}reply STOP to opt out. Msg&data rates may apply.`,
+    OptInConfirmationMessage: `${profile.brandName}: You're opted in to appointment and listing updates. Msg&data rates may apply. Reply HELP for help, STOP to opt out.`,
   })
   if (!created.ok || !created.data?.sid) return fail(`Toll-free verification submit failed: ${created.error ?? created.status}`)
   state.tollfree_verification_sid = created.data.sid
@@ -987,7 +1091,7 @@ export async function kickCarrierRegistration(svc: any, args: { brokerageId: str
     // (resolveA2pProfile); only what no record holds is asked of the tenant.
     const profileV = await resolveA2pProfile(svc, args.brokerageId)
     if (!profileV.ok) {
-      result = { kicked: false, lane, statusLine: `Business registration waiting on the business profile — missing: ${profileV.missing.join(", ")} (Phone settings → Carrier registration). It resumes on its own once these are saved.`, reason: "profile_incomplete" }
+      result = { kicked: false, lane, statusLine: `Business registration waiting on the business profile — missing: ${profileV.missing.join(", ")} (${BUSINESS_REGISTRATION_SETTINGS_LABEL}). It resumes on its own once these are saved.`, reason: "profile_incomplete" }
     } else if (lane === "tollfree") {
       const r = await runTollfreeVerification(svc, args.brokerageId, { deps: args.deps })
       result = { kicked: r.ok, lane, statusLine: describeTollfreeState(r.state), reason: r.error }
