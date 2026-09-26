@@ -249,6 +249,18 @@ export function edgeFadeFrames(spec: CinemaFinishSpec, fps: number, durationInFr
 // sharp and true) never does, and a still never does. The static card/text
 // layers inside a moving composition are unaffected in practice: identical
 // samples average to themselves.
+// MEASURED (wave 84A — owner: "chack on motion blur"; a real @remotion/renderer
+// render of CinemaFinish, 1280×720, 300 frames, Chromium 1194 new-headless,
+// swangle): the blurred reel smears the moving edge (10 partial pixels on the
+// block's row vs 0 unblurred), a STATIC patch renders identical (197,41,41 in
+// both — "destructive to colors" does not show at 5 samples on opaque content;
+// max 4/255 anywhere the block never crosses), no black frames, the audio is
+// identical (same RMS, same 10.048 s — the renderer dedupes the N sample copies'
+// <Audio> by id), and the render cost 5.2× the unblurred one (444.6 s vs 85.1 s).
+// DEFECT FIXED: the grade filter sat INSIDE CameraMotionBlur, so each of the 5
+// samples was graded before averaging; it now wraps the blur (once, after the
+// shutter — the film order). Controlled A/B, 90 frames × 2 rounds: 112.4 / 94.1 s
+// inside → 71.2 / 67.1 s outside (≈ -33 %), unblurred 25.7 / 19.5 s; colours equal.
 
 /** Treatments whose picture moves like a camera (Ken Burns push, footage). */
 const CAMERA_MOVE_TREATMENTS: ReadonlySet<BodyTreatment> = new Set<BodyTreatment>(["property_photos", "broll"])

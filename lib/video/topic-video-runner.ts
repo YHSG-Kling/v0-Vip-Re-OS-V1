@@ -57,6 +57,11 @@ export interface TopicVideoRunResult {
   byHost: Record<string, number>
   skipped: Record<string, number>
   errors: number
+  /** Wave 84A — what the plan-driven readiness pass did across the run
+   *  (lib/video/plan-asset-readiness.ts): assets reused from the buckets,
+   *  created (booked), missing, segments that fell to another treatment, and
+   *  the creation spend in cents. Never silent. */
+  assets: { reused: number; created: number; missing: number; degradedSegments: number; costCents: number }
 }
 
 const TopicScriptSchema = z.object({
@@ -75,7 +80,7 @@ function bump(r: TopicVideoRunResult, why: string) { r.skipped[why] = (r.skipped
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Promise<TopicVideoRunResult> {
-  const out: TopicVideoRunResult = { tenantsConsidered: 0, tenantsDue: 0, topicVideos: 0, byHost: {}, skipped: {}, errors: 0 }
+  const out: TopicVideoRunResult = { tenantsConsidered: 0, tenantsDue: 0, topicVideos: 0, byHost: {}, skipped: {}, errors: 0, assets: { reused: 0, created: 0, missing: 0, degradedSegments: 0, costCents: 0 } }
   const { data: tenants, error: tenantErr } = await svc.from("brokerages")
     .select("id, city, state, zip, is_demo")
     .eq("is_active", true).is("deleted_at", null).limit(2000)
@@ -114,8 +119,11 @@ export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Prom
       if (agentErr) { bump(out, "agents_read_refused"); continue }
       const roster = (agents ?? []) as Array<{ id: string; user_id: string }>
       if (roster.length === 0) { bump(out, "no_active_agent"); continue }
-      // THE HOST IS DERIVED, NOT ASSUMED: a topic video carries no photos, screens,
-      // stat cards or client clips. The fronting agent is the next one in the
+      // THE HOST IS DERIVED, NOT ASSUMED. The brief is CLASSIFIED on the facts this
+      // runner holds (a topic carries no listing photos, client clips or stat
+      // facts); the visuals the chosen plan then WANTS are sourced by the Director's
+      // readiness pass (wave 84A, lib/video/plan-asset-readiness.ts — buckets
+      // first, create only what is honest, degradations recorded). The fronting agent is the next one in the
       // rotation whose D-ID twin can render (at most MAX_TWIN_PROBES probed —
       // cost-down) → the AVATAR host (education_explainer). No ready twin → the
       // rotation's own agent on the VOICEOVER host (voiceover_explainer: kinetic
@@ -212,6 +220,15 @@ export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Prom
         content: topicVideoContent(planned.plan.compositionId, object),
       })
       const r = await commissionCustomVideo(brief, { brokerageId: t.id, agentUserId: agent.user_id, targetChannel: "instagram" }, svc)
+      // Wave 84A — the Director read the plan and checked the buckets before it
+      // staged (readyVisualPlanForDispatch); its ledger is counted here, blocked or not.
+      if (r.assetReadiness) {
+        out.assets.reused += r.assetReadiness.reused
+        out.assets.created += r.assetReadiness.created
+        out.assets.missing += r.assetReadiness.missing
+        out.assets.degradedSegments += r.assetReadiness.degradations.length
+        out.assets.costCents += r.assetReadiness.cost_cents
+      }
       if (!r.ok || !r.videoProjectId || r.status !== "staged") { bump(out, `director_${r.status}`); continue }
       // THE PERSONA STAMP (wave 83, lane 83F) — per-persona learning attributes this
       // video's outcomes to the persona it spoke to, so the persona rides the staged

@@ -31,8 +31,11 @@
  *
  * BLIND SPOTS (published): the grade/dip are proven as numbers and source shape,
  * not as rendered pixels (no Chromium here); loudness is proven as the ffmpeg
- * graph string, not a measured LUFS of a real file; motion blur is NOT applied
- * (@remotion/motion-blur is not installed — recorded in the lane notes).
+ * graph string, not a measured LUFS of a real file. Motion blur IS applied
+ * (@remotion/motion-blur, wave 83B); this guard proves it by rule and source
+ * shape — the rendered-pixel check (a real @remotion/renderer render: blurred
+ * edges, static colour identical, audio identical, 5.2× render time at 5
+ * samples) is the lane-84A notes' harness, not re-run here (no Chromium in CI).
  */
 import { readFileSync, readdirSync } from "node:fs"
 import { dirname, join } from "node:path"
@@ -220,6 +223,18 @@ console.log("\n── §motion-blur · film-camera blur where the camera moves, 
   check("the finish layer mounts CameraMotionBlur from @remotion/motion-blur, gated on the rule, around an AbsoluteFill (docs: children absolutely positioned)",
     /import\s*\{\s*CameraMotionBlur\s*\}\s*from\s*"@remotion\/motion-blur"/.test(layer) && /blur\.enabled\s*\?/.test(layer)
     && /<CameraMotionBlur shutterAngle=\{blur\.shutterAngle\} samples=\{blur\.samples\}>\s*<AbsoluteFill/.test(layer) && /cinemaMotionBlurFor\(compositionId\)/.test(layer))
+  // WAVE 84A (owner: "chack on motion blur" — a real render, notes lane84A):
+  // the grade is applied ONCE to the integrated exposure (film order: shutter,
+  // then grade), so the filter wraps CameraMotionBlur and nothing inside the
+  // blur carries a filter — not `samples` graded copies averaged.
+  const gradeOutsideBlur = (src: string): boolean => {
+    const open = src.indexOf("<CameraMotionBlur"), close = src.indexOf("</CameraMotionBlur>")
+    const gradeAt = src.search(/<AbsoluteFill style=\{\{ filter \}\}>/)
+    return open > 0 && close > open && gradeAt >= 0 && gradeAt < open && !/filter/.test(src.slice(open, close))
+  }
+  check("the grade WRAPS the blur (applied once, after the shutter) — no filter inside CameraMotionBlur", gradeOutsideBlur(layer))
+  check("POSITIVE CONTROL: the pre-84A shape (the graded AbsoluteFill inside the blur) fails the same rule",
+    !gradeOutsideBlur(`<AbsoluteFill><CameraMotionBlur shutterAngle={blur.shutterAngle} samples={blur.samples}>\n<AbsoluteFill style={{ filter }}>{children}</AbsoluteFill>\n</CameraMotionBlur></AbsoluteFill>`))
   const pkg = JSON.parse(read("package.json")) as { dependencies: Record<string, string> }
   check(`@remotion/motion-blur is a dependency pinned to the fleet's remotion version (${pkg.dependencies["@remotion/motion-blur"]} = remotion ${pkg.dependencies.remotion})`,
     pkg.dependencies["@remotion/motion-blur"] === pkg.dependencies.remotion && !!pkg.dependencies.remotion)

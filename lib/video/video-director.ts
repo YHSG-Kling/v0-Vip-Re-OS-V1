@@ -938,6 +938,10 @@ interface CommissionResult {
   compositionId?: string
   reason?: string
   violations?: string[]
+  /** Wave 84A — what the plan wanted, what the buckets had, what was created,
+   *  what degraded and why (lib/video/plan-asset-readiness.ts). Also stamped on
+   *  the row at video_metadata.asset_readiness. */
+  assetReadiness?: import("@/lib/video/plan-asset-readiness").AssetReadinessStamp
 }
 
 /**
@@ -1223,8 +1227,13 @@ export async function commissionVideo(
           brokerageId: opts.brokerageId,
           // The Director renders for the agent's personal brand — agent scope
           // inherits team + brokerage b_roll via the cascade.
+          // Wave 84A — agents.id, NOT users.id: video_assets scopes an agent
+          // row by agents.id (lib/identity/policy-scope.ts agentScopeId) and
+          // the picker resolves the team via agents.id, so the users.id this
+          // passed before matched neither tier (CLAUDE.md §3: agents.id and
+          // users.id are disjoint) — only brokerage-scoped b-roll was ever found.
           scopeType:   "agent",
-          scopeId:     opts.agentUserId,
+          scopeId:     directorAgentId,
         },
         svc,
       )
@@ -1398,7 +1407,9 @@ export async function commissionVideo(
   //     runs BEFORE the row that the render cron and the D-ID poller act on
   //     is written: a segment with no asset behind it, b-roll on a no-b-roll
   //     format, or a treatment the purpose disallows BLOCKS the commission.
-  const { stageBodyVisualPlan, gateVisualPlanForDispatch, assetsFromProps, bodyVisualStamp } = await import("@/lib/video/body-visual-model")
+  // The plan is staged and gated INSIDE readyVisualPlanForDispatch (6e′ below)
+  // through the same stageBodyVisualPlan / gateVisualPlanForDispatch survivors.
+  const { bodyVisualStamp } = await import("@/lib/video/body-visual-model")
   const { loadBodyVisualRuleOverrides } = await import("@/lib/video/body-visual-rule-ledger")
   const visualOverrides = await loadBodyVisualRuleOverrides(opts.brokerageId, svc)
   const stagedPurpose = videoPurposeForSituation(situation.kind, format.compositionId, customPlanOf(situation)?.purpose ?? null)
@@ -1429,30 +1440,51 @@ export async function commissionVideo(
     ...(stagedPurpose ? { videoPurpose: stagedPurpose } : {}),
     ...(format.needsBroll ? { brollClips, brollSource: "stock" } : {}),
   }
-  const visual = stageBodyVisualPlan({
+  // 6e′. WAVE 84A — READ THE PLAN, CHECK THE BUCKETS, CREATE WHAT IS MISSING
+  //      (owner verbatim: "autonomous videos need to read the plan and create
+  //      whatever assets that are needed, first check the buckets to see if
+  //      assets are there."). lib/video/plan-asset-readiness.ts cuts the plan
+  //      the PURPOSE wants, reads each segment's asset need, reuses what the
+  //      tenant's buckets already hold (listing_media, the marketing_assets
+  //      library, video_assets stock/b-roll/music, the OS stills — and, for a
+  //      CAMPAIGN video only, the tenant's approved Zestimate still admitted by
+  //      the ONE screenshot use rule — lane 84B, screenshotUseAllowed(
+  //      "zillow_zestimate", "campaign_video")), creates only what is honest to
+  //      create (booked on ai_tool_usage, captured into the library), re-stages
+  //      from the real props, records every segment that had to fall to
+  //      another treatment and WHY, and runs the SAME dispatch gate. This is
+  //      also the restored 80D still staging, narrowed to campaign videos
+  //      (83C's tombstone above stands for every other video).
+  const { readyVisualPlanForDispatch } = await import("@/lib/video/plan-asset-readiness")
+  const readiness = await readyVisualPlanForDispatch({
+    svc,
     compositionId: format.compositionId,
     props: visualProps,
     avatarClip: requiresAvatar,
     script: narrationForVisual,
     overrides: visualOverrides,
+    ctx: {
+      brokerageId: opts.brokerageId, agentId: directorAgentId, agentUserId: opts.agentUserId,
+      listingId: opts.listingId ?? null, campaignId: opts.campaignId ?? null, cut,
+      address: stillAddressOf(contentProps),
+      subject: (typeof situation.facts?.goal === "string" ? situation.facts.goal : null) ?? hookLine,
+      musicMood: finish.music ? effectiveMood : null,
+    },
   })
-  if (!visual.ok) {
+  if (!readiness.ok) {
     return {
       ok: false, status: "blocked",
       compositionId: format.compositionId,
-      reason: `body visual could not be planned for ${format.compositionId}: ${visual.reason}`,
-      violations: ["body_visual_unplanned"],
+      reason: readiness.reason,
+      violations: readiness.violations,
+      assetReadiness: readiness.stamp,
     }
   }
-  const visualGate = gateVisualPlanForDispatch(visual.plan, assetsFromProps(visualProps, { avatarClip: requiresAvatar, compositionId: format.compositionId }), { overrides: visualOverrides })
-  if (!visualGate.ok) {
-    return {
-      ok: false, status: "blocked",
-      compositionId: format.compositionId,
-      reason: visualGate.reason,
-      violations: ["body_visual_unplanned", ...visualGate.missing],
-    }
-  }
+  const visual = { ok: true as const, plan: readiness.plan }
+  // Everything the readiness pass reused or created rides the staged props
+  // under the key the composition reads (imageUrls / screenshotUrls / brollClips).
+  const readyPatch = readiness.propsPatch
+  const stagedBroll = Array.isArray(readyPatch.brollClips) ? (readyPatch.brollClips as typeof brollClips) : brollClips
 
   // The ads cut's props — the ONE plan. The MLS cut is DERIVED from these
   // below (mlsCutProps), never staged from a second resolver.
@@ -1463,6 +1495,8 @@ export async function commissionVideo(
     // render path feeds the composition's brollClips prop the real clips.
     input_props: {
       ...contentProps,
+      // Wave 84A — the assets the readiness pass reused / created (6e′).
+      ...readyPatch,
       // The per-segment screen plan (6e) — segments, treatments, b-roll /
       // photo / screenshot windows, caption window, music duck, avatar share.
       bodyVisualPlan: visual.plan,
@@ -1484,7 +1518,7 @@ export async function commissionVideo(
       mlsClean,
       renderCut: cut,
       music_mood: finish.music ? effectiveMood : null,
-      ...(format.needsBroll ? { brollClips, brollSource: "stock" } : {}),
+      ...(format.needsBroll || stagedBroll.length > 0 ? { brollClips: stagedBroll, brollSource: readyPatch.brollSource ?? "stock" } : {}),
     },
   }
   // Wave 81C — THE MLS CUT: the same props with every branded element
@@ -1537,9 +1571,11 @@ export async function commissionVideo(
       brand_voice_context: brandVoiceContext,
       intro_video_url: null,             // assembled by the render coordinator's bookend pass
       outro_video_url: null,
-      b_roll_urls: format.needsBroll ? brollClips.map((c) => c.url) : null,
+      b_roll_urls: format.needsBroll || stagedBroll.length > 0 ? stagedBroll.map((c) => c.url) : null,
       // Wave 80C — the audit stamp the learning loop reads back (format-learning.ts).
-      video_metadata: { ...videoMetadata, supports_bookends: finish.bookends && supportsBookends, body_visual: bodyVisualStamp(visual.plan) },
+      // Wave 84A — asset_readiness: wanted vs final treatments, the provenance
+      // of every asset (reused | created | missing, source, cost), degradations.
+      video_metadata: { ...videoMetadata, supports_bookends: finish.bookends && supportsBookends, body_visual: bodyVisualStamp(visual.plan), asset_readiness: readiness.stamp },
       provider_metadata: providerMetadata,
       created_at: now,
       updated_at: now,
@@ -1555,7 +1591,18 @@ export async function commissionVideo(
     ok: true, status: "staged",
     videoProjectId: (inserted as { id: string }).id,
     compositionId: format.compositionId,
+    assetReadiness: readiness.stamp,
   }
+}
+
+/** Wave 84A — the property a campaign video's Zestimate still must show, spelled
+ *  the way the still door records it ("street, City, ST" — the playbook install's
+ *  resolvePlayAddress join); null when the reel is not about a property. */
+function stillAddressOf(props: Record<string, unknown>): string | null {
+  const street = typeof props.address === "string" ? props.address.trim() : ""
+  if (!street) return null
+  const cityState = typeof props.cityState === "string" ? props.cityState.trim() : ""
+  return cityState ? `${street}, ${cityState}` : street
 }
 
 /** The ONLY facts the hook copy may use — drawn from the situation, no fabrication. */
@@ -1923,7 +1970,11 @@ export async function commissionVideoExperiment(
     // content prop, with the already-staged variants rolled back.
     // Wave 80C — same plan-before-send as the main path: live overrides, the
     // situation's purpose, the ONE dispatch gate before any variant row.
-    const { stageBodyVisualPlan, gateVisualPlanForDispatch, assetsFromProps, bodyVisualStamp } = await import("@/lib/video/body-visual-model")
+    // Wave 84A — the SAME read-the-plan / check-the-buckets / create-what-is-
+    // missing pass as the main path (6e′), which stages and gates the plan
+    // through stageBodyVisualPlan / gateVisualPlanForDispatch itself.
+    const { bodyVisualStamp } = await import("@/lib/video/body-visual-model")
+    const { readyVisualPlanForDispatch } = await import("@/lib/video/plan-asset-readiness")
     const { loadBodyVisualRuleOverrides } = await import("@/lib/video/body-visual-rule-ledger")
     const visualOverrides = await loadBodyVisualRuleOverrides(opts.brokerageId, svc)
     const stagedPurpose = videoPurposeForSituation(situation.kind, format.compositionId)
@@ -1931,31 +1982,31 @@ export async function commissionVideoExperiment(
       .map((k) => (contentProps as Record<string, unknown>)[k])
       .find((x): x is string => typeof x === "string" && x.trim().length > 0) ?? hookLine
     const visualProps: Record<string, unknown> = { ...contentProps, ...(stagedPurpose ? { videoPurpose: stagedPurpose } : {}) }
-    const visual = stageBodyVisualPlan({ compositionId: format.compositionId, props: visualProps, avatarClip: requiresAvatar, script: narrationForVisual, overrides: visualOverrides })
-    if (!visual.ok) {
+    const readiness = await readyVisualPlanForDispatch({
+      svc, compositionId: format.compositionId, props: visualProps, avatarClip: requiresAvatar, script: narrationForVisual, overrides: visualOverrides,
+      ctx: {
+        brokerageId: opts.brokerageId, agentId: directorAgentId, agentUserId: opts.agentUserId,
+        listingId: opts.listingId ?? null, campaignId: opts.campaignId ?? null, cut: "ads",
+        address: stillAddressOf(contentProps),
+        subject: hookLine, musicMood: finish.music ? spec.music.mood : null,
+      },
+    })
+    if (!readiness.ok) {
       for (const id of insertedIds) { try { await svc.from("ai_video_projects").delete().eq("id", id) } catch { /* noop */ } }
       return {
         ok: false, status: "blocked",
         experimentId, compositionId: format.compositionId,
-        reason: `body visual could not be planned for ${format.compositionId}: ${visual.reason}`,
-        violations: ["body_visual_unplanned"],
+        reason: readiness.reason,
+        violations: readiness.violations,
       }
     }
-    const visualGate = gateVisualPlanForDispatch(visual.plan, assetsFromProps(visualProps, { avatarClip: requiresAvatar, compositionId: format.compositionId }), { overrides: visualOverrides })
-    if (!visualGate.ok) {
-      for (const id of insertedIds) { try { await svc.from("ai_video_projects").delete().eq("id", id) } catch { /* noop */ } }
-      return {
-        ok: false, status: "blocked",
-        experimentId, compositionId: format.compositionId,
-        reason: visualGate.reason,
-        violations: ["body_visual_unplanned", ...visualGate.missing],
-      }
-    }
+    const visual = { ok: true as const, plan: readiness.plan }
 
     const providerMetadata = {
       composition_id: format.compositionId,
       input_props: {
         ...contentProps,
+        ...readiness.propsPatch,
         bodyVisualPlan: visual.plan,
         ...(stagedPurpose ? { videoPurpose: stagedPurpose } : {}),
         intro: introProps, outro: outroProps,
@@ -1991,7 +2042,7 @@ export async function commissionVideoExperiment(
         intro_video_url: null,
         outro_video_url: null,
         b_roll_urls: null,
-        video_metadata: { ...videoMetadata, body_visual: bodyVisualStamp(visual.plan) },
+        video_metadata: { ...videoMetadata, body_visual: bodyVisualStamp(visual.plan), asset_readiness: readiness.stamp },
         provider_metadata: providerMetadata,
         created_at: now,
         updated_at: now,

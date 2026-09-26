@@ -107,8 +107,16 @@ console.log("\n── §doors · the gate runs before every provider spend, by s
     check(`${label}: gateVisualPlanForDispatch (${gates.length}×) precedes the spend (${spends.length}×) in source order`, ok, `gates at ${gates.join(",")}, spends at ${spends.join(",")}`)
   }
   const director = readStripped("lib/video/video-director.ts")
-  order(director, /gateVisualPlanForDispatch\(visual\.plan/, /\.from\("ai_video_projects"\)\s*\.insert\(/, "video-director.ts (commissionVideo + commissionVideoExperiment)", 2)
-  check("video-director.ts refuses on !visualGate.ok with the gate's findings as violations, on both paths", (director.match(/if \(!visualGate\.ok\)/g) ?? []).length === 2 && (director.match(/violations: \["body_visual_unplanned", \.\.\.visualGate\.missing\]/g) ?? []).length === 2)
+  // Wave 84A re-anchor: the director's door is either the inline gate or
+  // readyVisualPlanForDispatch (lib/video/plan-asset-readiness.ts), whose OWN
+  // source runs the gate on the final plan before it returns ok and hands the
+  // gate's findings back as violations — both proven below.
+  order(director, /(?:gateVisualPlanForDispatch\(visual\.plan|readyVisualPlanForDispatch\(\{)/, /\.from\("ai_video_projects"\)\s*\.insert\(/, "video-director.ts (commissionVideo + commissionVideoExperiment)", 2)
+  const readiness = readStripped("lib/video/plan-asset-readiness.ts")
+  order(readiness, /gateVisualPlanForDispatch\(final\.plan/, /return \{ ok: true, plan: final\.plan/, "plan-asset-readiness.ts (the readiness door: gate before the ok that lets the director spend)")
+  check("video-director.ts refuses on the gate's findings as violations, on both paths (inline !visualGate.ok, or !readiness.ok carrying the readiness door's gate.missing)",
+    (director.match(/if \(!visualGate\.ok\)/g) ?? []).length + (director.match(/if \(!readiness\.ok\)[\s\S]{0,400}?violations: readiness\.violations/g) ?? []).length === 2
+    && ((director.match(/readyVisualPlanForDispatch\(\{/g) ?? []).length === 0 || /violations: \["body_visual_unplanned", \.\.\.gate\.missing\]/.test(readiness)))
   const submit = readStripped("lib/video/avatar-track-submit.ts")
   order(submit, /gateVisualPlanForDispatch\(planned\.plan/, /await generateVideo\(\{/, "avatar-track-submit.ts (the D-ID avatar track)")
   check("avatar-track-submit.ts plans when the request carries no plan, refuses when it cannot, writes the plan back onto the request and asks for a keyed presenter when the plan puts the presenter in a corner",

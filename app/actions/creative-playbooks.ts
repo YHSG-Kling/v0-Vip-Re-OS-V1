@@ -136,6 +136,9 @@ export async function installCreativePlaybook(
   // figure once a human confirmed it off the approved still.
   let campaignVideoStillUrl: string | null = null
   let zestimateFigureLine: string | null = null
+  // Wave 84A — the campaign video's asset provenance (the still reused from the
+  // tenant's bucket, or why none rides it), stamped on the video row below.
+  const stillLedger: import("@/lib/video/plan-asset-readiness").ProvenanceEntry[] = []
   // Address: the named listing, else the tenant's most recent listing (own
   // DB — the cheapest rail; no provider is asked for an address). Shared by
   // the Zestimate Challenge and the Estimate Comparison (wave 82D).
@@ -166,6 +169,7 @@ export async function installCreativePlaybook(
       // The approved comparison COMPOSITE is this campaign's own creative
       // (Zillow still + text figures) — its campaign video shows it.
       campaignVideoStillUrl = approvedStillUrl
+      if (campaignVideoStillUrl) stillLedger.push({ kind: "screenshots", status: "reused", source: "estimate_comparison_creative", count: 1, urls: [campaignVideoStillUrl], assetIds: approvedStillId ? [approvedStillId] : [] })
       if (!postcard && !square) {
         const have = await listComparisonEvidence(svc, ctx.brokerageId, address)
         if (have.length === 0) {
@@ -180,6 +184,9 @@ export async function installCreativePlaybook(
     const { ensureZestimateChallengeStill } = await import("@/lib/marketing/tenant-screenshot-door")
     const address = await resolvePlayAddress()
     const still = await ensureZestimateChallengeStill({ svc, brokerageId: ctx.brokerageId, userId: ctx.userId, address, listingId: opts.listingId ?? null, source: opts.estimateSource ?? null })
+    // Wave 84A — the campaign video's still, as provenance: reused when the
+    // ONE use rule and the row admit campaign_video, else why it rides nothing.
+    const { campaignStillProvenance } = await import("@/lib/video/plan-asset-readiness")
     if (still.state === "approved") {
       approvedStillUrl = still.url; approvedStillId = still.assetId
       const { screenshotUseAllowed } = await import("@/lib/assets/screenshot-capture")
@@ -204,6 +211,7 @@ export async function installCreativePlaybook(
     else if (still.state === "pending") notes.push(`Still: a ${still.source.replace(/_/g, " ")} still for ${address} is awaiting your approval under Zestimate & co. stills.`)
     else if (still.state === "refused") notes.push(`Still: not captured — ${still.reason}`)
     else notes.push("Still: no listing address on file to capture an estimate still for — add one under Zestimate & co. stills.")
+    stillLedger.push(campaignStillProvenance(still, { forCampaignVideo: !!campaignVideoStillUrl }))
   }
 
   // Brand voice grounding — THE single brand source of truth (tier cascade).
@@ -271,6 +279,7 @@ export async function installCreativePlaybook(
         svc, brokerageId: ctx.brokerageId, agentUserId: ctx.userId, agentRecordId: ctx.agentId,
         playbook, videoStep, brandLine, magnetId, notes, author,
         screenshotUrls: campaignVideoStillUrl ? [campaignVideoStillUrl] : [],
+        stillLedger,
       })
     }
   }
@@ -477,6 +486,9 @@ async function createPlaybookVideo(args: {
    *  lib/video/body-visual-model.ts assetsFromProps reads for the `screenshot`
    *  treatment. Empty when none is approved — never a pending still. */
   screenshotUrls?: string[]
+  /** Wave 84A — provenance of the still (lib/video/plan-asset-readiness.ts
+   *  campaignStillProvenance), stamped at video_metadata.asset_readiness. */
+  stillLedger?: import("@/lib/video/plan-asset-readiness").ProvenanceEntry[]
 }): Promise<string | null> {
   const { svc, notes } = args
 
@@ -545,7 +557,12 @@ async function createPlaybookVideo(args: {
       compliance_status: "passed",
       compliance_evaluated_at: new Date().toISOString(),
       is_ai_generated: true,
-      video_metadata: { playbook_key: args.playbook.key, lead_magnet_id: args.magnetId },
+      video_metadata: {
+        playbook_key: args.playbook.key, lead_magnet_id: args.magnetId,
+        ...(args.stillLedger && args.stillLedger.length > 0
+          ? { asset_readiness: (await import("@/lib/video/plan-asset-readiness")).readinessStamp(null, null, args.stillLedger, []) }
+          : {}),
+      },
     })
     .select("id")
     .single()

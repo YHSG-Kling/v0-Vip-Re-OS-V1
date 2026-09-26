@@ -228,11 +228,24 @@ export type BrollVerdictKind = (typeof BROLL_VERDICTS)[number]
 /** Fewer listing photos than this → a listing promo may fall back to stock cutaways (peachgum.ai 2026-04-22: vacant / exterior-only). */
 export const BROLL_PHOTO_SCARCITY = 3
 
+/** The asset class a treatment cannot be chosen without (null = drawn from copy / brand alone). */
+export type TreatmentAssetNeed = "avatar" | "broll" | "photos" | "screenshots" | "chart" | "stats" | "footage"
+
 /** Treatments that need an ASSET before they can be chosen. */
-const ASSET_BOUND: Record<BodyTreatment, "avatar" | "broll" | "photos" | "screenshots" | "chart" | "stats" | "footage" | null> = {
+const ASSET_BOUND: Record<BodyTreatment, TreatmentAssetNeed | null> = {
   full_avatar: "avatar", avatar_pip: "avatar", broll: "broll", property_photos: "photos",
   screenshot: "screenshots", chart: "chart", stat_card: "stats", client_footage: "footage",
   kinetic_text: null, lower_third: null, brand_card: null, background: null,
+}
+
+/**
+ * WAVE 84A — the ONE table above, readable. lib/video/plan-asset-readiness.ts
+ * reads the PLAN and asks, per segment, which asset class the treatment needs
+ * before it checks the buckets / creates what is missing. Exposed rather than
+ * restated there (§6: one spelling of "what does a treatment need"). PURE.
+ */
+export function treatmentAssetNeed(treatment: BodyTreatment): TreatmentAssetNeed | null {
+  return ASSET_BOUND[treatment] ?? null
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1255,6 +1268,11 @@ export interface StageBodyVisualArgs {
   script?: string | null
   segments?: ScriptSegment[] | null
   overrides?: readonly BodyVisualRuleOverride[] | null
+  /** WAVE 84A — an explicit asset inventory instead of the one read off the
+   *  props. lib/video/plan-asset-readiness.ts cuts the WANTED plan (what the
+   *  purpose would show if every reusable-or-creatable asset existed) with it,
+   *  reads what that plan needs, and then re-stages from the real props. */
+  assets?: BodyVisualAssets | null
 }
 
 export type StageBodyVisualResult = { ok: true; plan: BodyVisualPlan } | { ok: false; reason: string }
@@ -1270,7 +1288,7 @@ export function stageBodyVisualPlan(args: StageBodyVisualArgs): StageBodyVisualR
     const plan = planBodyVisual({
       compositionId: args.compositionId, duration, purpose,
       segments: args.segments ?? null, script,
-      assets: assetsFromProps(props, { avatarClip: args.avatarClip, compositionId: args.compositionId }),
+      assets: args.assets ?? assetsFromProps(props, { avatarClip: args.avatarClip, compositionId: args.compositionId }),
       overrides: args.overrides ?? null,
     })
     return { ok: true, plan }

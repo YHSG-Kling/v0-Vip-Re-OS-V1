@@ -73,15 +73,27 @@ export const CinemaFinish: React.FC<CinemaFinishProps> = ({ compositionId, input
 
   return (
     <AbsoluteFill>
-      {blur.enabled ? (
-        // Camera moves only (cinema-finish.ts cinemaMotionBlurFor — never a talking head or a
-        // screen). The docs require absolutely positioned children: AbsoluteFill is.
-        <CameraMotionBlur shutterAngle={blur.shutterAngle} samples={blur.samples}>
-          <AbsoluteFill style={{ filter }}>{children}</AbsoluteFill>
-        </CameraMotionBlur>
-      ) : (
-        <AbsoluteFill style={{ filter }}>{children}</AbsoluteFill>
-      )}
+      {/* THE GRADE WRAPS THE BLUR (wave 84A, measured): a film camera integrates
+          light over the shutter FIRST and the grade is applied to that exposure,
+          so the CSS filter sits OUTSIDE CameraMotionBlur and runs ONCE on the
+          averaged image — not once per time-offset sample on each copy (it was
+          inside: `samples` graded copies, then averaged). Measured (lane-84A
+          harness, 90 frames 1280×720, two rounds): grade inside the blur 112.4 /
+          94.1 s, grade outside 71.2 / 67.1 s, no blur 25.7 / 19.5 s — a third
+          of the blur's cost was the per-sample grade; colours identical
+          (static patch 215,45,45 in all three). */}
+      <AbsoluteFill style={{ filter }}>
+        {blur.enabled ? (
+          // Camera moves only (cinema-finish.ts cinemaMotionBlurFor — never a talking head or a
+          // screen). The docs require absolutely positioned children: AbsoluteFill is
+          // (remotion.dev/docs/motion-blur/camera-motion-blur).
+          <CameraMotionBlur shutterAngle={blur.shutterAngle} samples={blur.samples}>
+            <AbsoluteFill>{children}</AbsoluteFill>
+          </CameraMotionBlur>
+        ) : (
+          children
+        )}
+      </AbsoluteFill>
       {spec.look.vignette > 0 ? (
         <AbsoluteFill
           style={{

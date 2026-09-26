@@ -298,8 +298,19 @@ console.log("\n── §wiring · the director, the product spec, the consumer c
 {
   const director = readStripped("lib/video/video-director.ts")
   check("video-director.ts stages input_props.bodyVisualPlan on BOTH commission paths", (director.match(/bodyVisualPlan:\s*visual\.plan/g) ?? []).length === 2)
-  check("video-director.ts BLOCKS a commission whose body visual cannot be planned (body_visual_unplanned), on both paths — and runs the ONE dispatch gate on both (wave 80C)",
-    (director.match(/body_visual_unplanned/g) ?? []).length === 4 && (director.match(/if \(!visual\.ok\)/g) ?? []).length === 2 && (director.match(/gateVisualPlanForDispatch\(visual\.plan/g) ?? []).length === 2)
+  // Wave 84A re-anchor (the RULE, not the spelling): each commission path either
+  // stages + gates inline, or goes through readyVisualPlanForDispatch — which is
+  // itself proven here to stage with stageBodyVisualPlan, block with
+  // body_visual_unplanned and run gateVisualPlanForDispatch before it returns ok.
+  const readinessSrc = readStripped("lib/video/plan-asset-readiness.ts")
+  const inlinePaths = (director.match(/gateVisualPlanForDispatch\(visual\.plan/g) ?? []).length
+  const readyPaths = (director.match(/readyVisualPlanForDispatch\(\{/g) ?? []).length
+  const readinessGates = /stageBodyVisualPlan\(/.test(readinessSrc) && /violations: \["body_visual_unplanned"\]/.test(readinessSrc)
+    && /gateVisualPlanForDispatch\(final\.plan/.test(readinessSrc)
+    && readinessSrc.indexOf("gateVisualPlanForDispatch(final.plan") < readinessSrc.lastIndexOf("return { ok: true, plan: final.plan")
+  check("video-director.ts BLOCKS a commission whose body visual cannot be planned (body_visual_unplanned), on both paths — and runs the ONE dispatch gate on both (wave 80C; 84A: through readyVisualPlanForDispatch)",
+    inlinePaths + readyPaths === 2 && (director.match(/if \(!(visual|readiness)\.ok\)/g) ?? []).length === 2 && (readyPaths === 0 || readinessGates),
+    `inline ${inlinePaths}, readiness ${readyPaths}, readiness module gates: ${readinessGates}`)
   check("video-director.ts cuts the plan under the tenant's LIVE learned overrides and stamps body_visual on the row, on both paths",
     (director.match(/loadBodyVisualRuleOverrides\(opts\.brokerageId, svc\)/g) ?? []).length === 2 && (director.match(/body_visual: bodyVisualStamp\(visual\.plan\)/g) ?? []).length === 2)
   const product = readStripped("lib/platform/product-content.ts")
