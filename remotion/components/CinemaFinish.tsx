@@ -18,7 +18,12 @@
  *      so the registered timeline is untouched (see SceneFade.tsx for why not
  *      TransitionSeries); lighter where the voice bridges the cut (J/L cut);
  *   3. a head fade IN from and a tail fade OUT to the BRAND colour — never a
- *      hard cut on black.
+ *      hard cut on black;
+ *   4. (wave 83B) film-camera MOTION BLUR (@remotion/motion-blur CameraMotionBlur,
+ *      180° shutter, 5 samples) on compositions whose picture moves as a camera
+ *      (Ken Burns photos, b-roll) — never a talking head, a screen or a still.
+ *      (A true two-picture crossfade is documented, not built — cinema-finish.ts
+ *      § CROSSFADE says why the cut stays a dip.)
  *
  * Stills (finish-spec STILL) pass through untouched. Remotion best practices
  * honoured (remotion-markup/REFERENCE.md + timing.md): everything is driven by
@@ -27,8 +32,9 @@
  */
 import React from "react"
 import { AbsoluteFill, Easing, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { CameraMotionBlur } from "@remotion/motion-blur"
 import {
-  CINEMA_EASING, cinemaCutPoints, cinemaFinishFor, dipOpacityAt, edgeFadeFrames, gradeFilter,
+  CINEMA_EASING, cinemaCutPoints, cinemaFinishFor, cinemaMotionBlurFor, dipOpacityAt, edgeFadeFrames, gradeFilter,
 } from "../../lib/video/cinema-finish"
 import { fitBodyVisualPlan, type BodyVisualPlan } from "../../lib/video/body-visual-model"
 
@@ -55,6 +61,7 @@ export const CinemaFinish: React.FC<CinemaFinishProps> = ({ compositionId, input
   const cuts = cinemaCutPoints(compositionId, durationInFrames, plan)
   const edges = edgeFadeFrames(spec, fps, durationInFrames)
   const dip = dipOpacityAt(frame, cuts, spec, fps)
+  const blur = cinemaMotionBlurFor(compositionId)
   const head = interpolate(frame, [0, edges.head], [1, 0], {
     extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: Easing.bezier(...CINEMA_EASING.enter),
   })
@@ -66,7 +73,15 @@ export const CinemaFinish: React.FC<CinemaFinishProps> = ({ compositionId, input
 
   return (
     <AbsoluteFill>
-      <AbsoluteFill style={{ filter }}>{children}</AbsoluteFill>
+      {blur.enabled ? (
+        // Camera moves only (cinema-finish.ts cinemaMotionBlurFor — never a talking head or a
+        // screen). The docs require absolutely positioned children: AbsoluteFill is.
+        <CameraMotionBlur shutterAngle={blur.shutterAngle} samples={blur.samples}>
+          <AbsoluteFill style={{ filter }}>{children}</AbsoluteFill>
+        </CameraMotionBlur>
+      ) : (
+        <AbsoluteFill style={{ filter }}>{children}</AbsoluteFill>
+      )}
       {spec.look.vignette > 0 ? (
         <AbsoluteFill
           style={{

@@ -31,7 +31,8 @@ import {
   type GuideField, type NeedsChecklist,
 } from "@/lib/video/video-guide"
 import {
-  PERSONA_AUDIENCE, TOPIC_VIDEO_PERSONAS, personaForWeek, seasonalCategories, topicArchetypeFor, topicGoal,
+  PERSONA_AUDIENCE, personaForSlot, personaForTopicCategories, seasonalCategories, topicArchetypeFor, topicGoal,
+  type TopicVideoPersona,
 } from "@/lib/video/topic-video"
 
 interface Caller { userId: string; brokerageId: string }
@@ -244,12 +245,11 @@ export interface VideoTopicOption {
 
 export interface VideoTopicPoolResult { success: boolean; error?: string; season?: string; topics?: VideoTopicOption[] }
 
-function personaForTopic(categories: string[], now: Date, brokerageId: string): (typeof TOPIC_VIDEO_PERSONAS)[number] {
-  if (categories.includes("seller_advice")) return "seller"
-  if (categories.includes("buyer_advice") || categories.includes("neighborhood") || categories.includes("finance")) return "buyer"
-  if (categories.includes("home_improvement")) return "lifetime"
-  if (categories.includes("market_education")) return "both"
-  return personaForWeek(now, brokerageId)
+// Wave 83: the suggested audience is keyed by CONTACT PERSONA (contacts.contact_persona),
+// never contact_type — topic-video.ts personaForTopicCategories is the one rule; a topic
+// with no persona overlap falls back to this week's first slot's persona.
+function personaForTopic(categories: string[], now: Date, brokerageId: string): TopicVideoPersona {
+  return personaForTopicCategories(categories, personaForSlot(now, brokerageId, 0, 1))
 }
 
 /** THE TOPIC POOL ON THE CARD — the tenant's freshest, in-season, territory-boosted topics. Read only (nothing is claimed until a video is staged). */

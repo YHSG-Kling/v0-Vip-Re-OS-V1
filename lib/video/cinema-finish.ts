@@ -55,7 +55,7 @@
 
 import { finishForVideo, type VideoFinish } from "./finish-spec"
 import { compositionBookends, compositionPurposes, type VideoPurpose } from "./duration-model"
-import { safeInsets, type BodyVisualPlan, type SafeInsets } from "./body-visual-model"
+import { COMPOSITION_TREATMENTS, safeInsets, type BodyTreatment, type BodyVisualPlan, type SafeInsets } from "./body-visual-model"
 import { DEFAULT_MUSIC_FADE_IN_SECONDS, DEFAULT_MUSIC_FADE_OUT_SECONDS } from "../remotion/music-filter-graph"
 
 // ── § EASING — one set of curves ────────────────────────────────────────────
@@ -228,6 +228,73 @@ export function edgeFadeFrames(spec: CinemaFinishSpec, fps: number, durationInFr
     tail: Math.min(cap, Math.max(1, Math.round(spec.tailFadeSeconds * fps))),
   }
 }
+
+// ── § MOTION BLUR — where the camera moves, never on a talking head ─────────
+//
+// WAVE 83 (owner: motion blur — https://www.remotion.dev/docs/motion-blur/).
+// @remotion/motion-blur's <CameraMotionBlur> "produces natural looking motion
+// blur similar to what would be produced by a film camera": it renders `samples`
+// time-offset copies and averages them. The docs' own cautions set the rule:
+//   · "shutterAngle … common values … 30 fps / 180° or 90°" → 180° (the film
+//     standard) for a camera move;
+//   · "samples … Recommended values: 5-10" and "the technique is destructive to
+//     colors … keep the samples property as low as possible" → 5, the floor;
+//   · it re-renders the subtree `samples` times → render cost ×samples, so it is
+//     spent only where motion warrants it.
+// WHERE, DERIVED from the body-visual registry (COMPOSITION_TREATMENTS), never a
+// hand list: a composition whose picture MOVES AS A CAMERA — Ken Burns over
+// property_photos (KenBurnsPhoto) or moving b-roll — gets it; a composition that
+// can put a PERSON on screen (full_avatar / avatar_pip — a talking head, whose
+// lips and eyes must stay crisp) or a SCREEN (true-colour look: UI must stay
+// sharp and true) never does, and a still never does. The static card/text
+// layers inside a moving composition are unaffected in practice: identical
+// samples average to themselves.
+
+/** Treatments whose picture moves like a camera (Ken Burns push, footage). */
+const CAMERA_MOVE_TREATMENTS: ReadonlySet<BodyTreatment> = new Set<BodyTreatment>(["property_photos", "broll"])
+/** Treatments that put a person on screen — kept crisp. */
+const PERSON_TREATMENTS: ReadonlySet<BodyTreatment> = new Set<BodyTreatment>(["full_avatar", "avatar_pip"])
+
+export interface CinemaMotionBlur {
+  enabled: boolean
+  /** Degrees; 180 = the film standard at 24-60 fps (remotion docs). */
+  shutterAngle: number
+  /** Time-offset copies averaged per frame (docs: 5-10; lowest kept — colour-destructive). */
+  samples: number
+  reason: string
+}
+
+export const CINEMA_MOTION_BLUR = { shutterAngle: 180, samples: 5 } as const
+
+export function cinemaMotionBlurFor(compositionId: string, entityType?: string | null): CinemaMotionBlur {
+  const off = (reason: string): CinemaMotionBlur => ({ enabled: false, shutterAngle: 0, samples: 0, reason })
+  const spec = cinemaFinishFor(compositionId, entityType)
+  if (!spec.enabled) return off("a still — nothing moves")
+  if (spec.look.id === "true_color") return off("a screen — UI stays sharp and true")
+  const treatments = COMPOSITION_TREATMENTS[compositionId] ?? []
+  const person = treatments.filter((t) => PERSON_TREATMENTS.has(t))
+  if (person.length > 0) return off(`a person on screen (${person.join(", ")}) — a talking head stays crisp`)
+  const moves = treatments.filter((t) => CAMERA_MOVE_TREATMENTS.has(t))
+  if (moves.length === 0) return off("no camera move — cards and kinetic text only")
+  return { enabled: true, ...CINEMA_MOTION_BLUR, reason: `camera moves (${moves.join(", ")}) — film-camera blur, 180° shutter, 5 samples` }
+}
+
+// ── § CROSSFADE — why the cut is still a dip (wave 83B, documented) ─────────
+//
+// A TRUE two-picture crossfade needs both scenes mounted across the cut.
+// `@remotion/transitions` is NOT installed (package.json; checked 2026-09-26) and
+// its TransitionSeries.Transition SHORTENS the timeline by the transition length
+// (remotion-markup/transitions.md "Duration calculation") — which the registered
+// geometry, the render cache and the narration pad all key on. The
+// timeline-keeping shape (widen each scene's Sequence by half the fade on each
+// inner side; raise the incoming scene's opacity over the still-playing outgoing
+// one, painted on an opaque backdrop — the fade() presentation "works only if the
+// incoming slide is fully opaque") is per-COMPOSITION work: every composition's
+// scenes are hand-mounted `<Sequence from={…} durationInFrames={…}>` tags that
+// scripts/composition-segments.ts (the ONE timeline extractor) tiles against the
+// registered geometry, so a list-driven series would blind that proof. Until a
+// composition is migrated with its proof re-anchored, the cut stays the eased DIP.
+
 
 // ── § TYPOGRAPHY + SAFE AREAS ────────────────────────────────────────────────
 

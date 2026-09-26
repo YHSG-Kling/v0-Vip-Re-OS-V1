@@ -440,7 +440,6 @@
     "lib/transactions/offer-bridge.ts": 1,
     "lib/usage.ts": 1,
     "lib/vendor/assignment-access.ts": 1,
-    "lib/vendor-governance/meter-vendor.ts": 1,
     "lib/vendors/rank.ts": 1,
     "lib/vendors/vendor-money-directions.ts": 1,
     "lib/vendors/vendor-platform-identity.ts": 2,
@@ -488,7 +487,7 @@
     "remotion/components/QrOutroBadge.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10067,
+  "census": 10069,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2957,6 +2956,7 @@
     "lib/campaign-sequences/compliance-gate.ts": 1,
     "lib/campaign-sequences/copy-learning-conductor.ts": 1,
     "lib/campaign-sequences/deferral-policy.ts": 2,
+    "lib/campaign-sequences/enrollment-attribution.ts": 2,
     "lib/campaign-sequences/enrollment-engine.ts": 5,
     "lib/campaign-sequences/first-touch-coordination.ts": 1,
     "lib/campaign-sequences/persona-render-runner.ts": 1,
@@ -3430,7 +3430,7 @@
     "lib/kernel/ads.ts": 7,
     "lib/kernel/agent-coaching.ts": 5,
     "lib/kernel/agent-identity-resolver.ts": 3,
-    "lib/kernel/agent-identity.ts": 4,
+    "lib/kernel/agent-identity.ts": 5,
     "lib/kernel/agent-onboarding.ts": 8,
     "lib/kernel/ai-copy.ts": 3,
     "lib/kernel/ai-isa.ts": 10,
@@ -4256,7 +4256,7 @@
     "lib/vendor-governance/budget-gate.ts": 4,
     "lib/vendor-governance/budget-visibility.ts": 2,
     "lib/vendor-governance/cost-normalizer.ts": 3,
-    "lib/vendor-governance/meter-vendor.ts": 3,
+    "lib/vendor-governance/meter-vendor.ts": 2,
     "lib/vendor-governance/track-vendor-usage.ts": 1,
     "lib/vendor-governance/usage-logger.ts": 1,
     "lib/vendor-governance/vendor-policy.ts": 2,
@@ -14907,6 +14907,10 @@
       "isDeconflictDeferral",
       "decideDeferral"
     ],
+    "lib/campaign-sequences/enrollment-attribution.ts": [
+      "creditEnrollment",
+      "loadContactHolders"
+    ],
     "lib/campaign-sequences/enrollment-engine.ts": [
       "enrollContact",
       "pauseEnrollment",
@@ -17109,6 +17113,7 @@
       "resolveAgentId",
       "resolveAgentIdInBrokerage",
       "resolveUserIdForAgentRecord",
+      "resolveUserIdsForAgentRecords",
       "requireAgentId"
     ],
     "lib/kernel/agent-onboarding.ts": [
@@ -21434,7 +21439,6 @@
     ],
     "lib/vendor-governance/meter-vendor.ts": [
       "meterVendorSpend",
-      "scraperTypeToVendor",
       "estimatePlatformVendorCost"
     ],
     "lib/vendor-governance/track-vendor-usage.ts": [

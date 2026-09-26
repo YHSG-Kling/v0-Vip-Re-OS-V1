@@ -58,11 +58,20 @@ const brief = (goal: string, host: HostKind, assets: Partial<BodyVisualAssets> =
   ({ audience: "people in Naples", goal, host, assets: { ...NONE, ...assets }, ...extra })
 
 // ─────────────────────────────────────────────────────────────────────────────
-console.log("\n── §registry · seven archetypes, every one inherits a real purpose ──")
+console.log("\n── §registry · eight archetypes, every one inherits a real purpose ──")
 {
   const vocab = read("scripts/check-vocabularies.ts")
   const videoTypes = (vocab.match(/video_type: \[([^\]]+)\]/)?.[1] ?? "").split(",").map((s) => s.trim().replace(/"/g, ""))
-  check("CUSTOM_VIDEO_ARCHETYPES is the closed set of seven", CUSTOM_VIDEO_ARCHETYPES.length === 7 && CUSTOM_VIDEO_ARCHETYPES.join() === "talking_head_message,photo_story,screen_demo,data_update,testimonial_story,event_promo,education_explainer")
+  // Wave 83B: + voiceover_explainer (the needs-free shape for an agent with no ready twin).
+  check("CUSTOM_VIDEO_ARCHETYPES is the closed set of eight", CUSTOM_VIDEO_ARCHETYPES.length === 8 && CUSTOM_VIDEO_ARCHETYPES.join() === "talking_head_message,photo_story,screen_demo,data_update,testimonial_story,event_promo,education_explainer,voiceover_explainer")
+  // RULE (not a count): every host that carries narration has at least one NEEDS-FREE archetype,
+  // so a brief with nothing but a voice (or a twin) can always plan — the 82C gap, closed.
+  const needsFree = CUSTOM_VIDEO_ARCHETYPES.filter((a) => Object.keys(CUSTOM_ARCHETYPE_REGISTRY[a].needs).length === 0)
+  for (const h of ["voiceover", "avatar"] as HostKind[]) {
+    check(`host ${h}: a needs-free archetype is carried (${needsFree.filter((a) => archetypeHosts(a).includes(h)).join(", ") || "none"})`, needsFree.some((a) => archetypeHosts(a).includes(h)))
+  }
+  check("the explainer twins never compete: education_explainer is avatar-only, voiceover_explainer voiceover-only (derived)",
+    archetypeHosts("education_explainer").join() === "avatar" && archetypeHosts("voiceover_explainer").join() === "voiceover")
   for (const id of CUSTOM_VIDEO_ARCHETYPES) {
     const s = CUSTOM_ARCHETYPE_REGISTRY[id]
     const hosts = archetypeHosts(id)
@@ -87,6 +96,7 @@ console.log("\n── §classify · one fixture per archetype; refusals name the
     ["closing-day story", brief("A client story from closing day in their own words", "voiceover", { clientFootage: 1 }), "testimonial_story"],
     ["seminar invite", brief("Invite past clients to our Saturday first-time buyer workshop, RSVP by Friday", "voiceover", { propertyPhotos: 1 }), "event_promo"],
     ["closing costs", brief("Explain closing costs in three steps for first-time buyers", "avatar", { avatarClip: true }), "education_explainer"],
+    ["closing costs, no twin", brief("Explain closing costs in three steps for first-time buyers", "voiceover"), "voiceover_explainer"],
   ]
   for (const [label, b, want] of cases) {
     const r = classifyCustomVideoBrief(b)

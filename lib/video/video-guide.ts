@@ -77,6 +77,7 @@ export const ARCHETYPE_HEADLINES: Record<CustomVideoArchetype, string> = {
   testimonial_story: "A client's own words, shown with their clip.",
   event_promo: "An invitation — what, when, where — with a photo of the place.",
   education_explainer: "One idea explained in three simple steps.",
+  voiceover_explainer: "One idea in three steps as words on screen, in your voice — no camera needed.",
 }
 
 const NEXT_STEPS: Record<CustomVideoArchetype, string> = {
@@ -87,6 +88,7 @@ const NEXT_STEPS: Record<CustomVideoArchetype, string> = {
   testimonial_story: "Invite others with a similar situation to reach out.",
   event_promo: "Ask them to save the date or reply to hold a spot.",
   education_explainer: "Invite a question: \"Ask me how this works for your situation.\"",
+  voiceover_explainer: "Invite a question: \"Ask me how this works for your situation.\"",
 }
 
 const FOCUS: Record<CustomVideoArchetype, GuideField[]> = {
@@ -97,6 +99,7 @@ const FOCUS: Record<CustomVideoArchetype, GuideField[]> = {
   testimonial_story: ["audience", "script"],
   event_promo: ["title", "goal", "script"],
   education_explainer: ["goal", "bullets", "script"],
+  voiceover_explainer: ["title", "bullets", "script"],
 }
 
 /** DERIVED: what a kind of video needs, said plainly. */

@@ -62,6 +62,14 @@ export interface NewsletterDigestVideoProps {
   /** SOUND-OFF CAPTIONS fallback — the raw VO script text; CaptionLayer estimates
    *  timing in-composition when no cues are supplied. Absent → no captions. */
   captionScript?: string | null
+  /** WAVE 83 (lane 83B) — the voiceover explainer (lib/video/custom-video-archetypes.ts
+   *  voiceover_explainer) rides this composition for agents with no ready twin: a topic
+   *  is not "this week's digest", so the four chrome labels are props. Absent → the
+   *  newsletter wording below, unchanged. */
+  beatLabel?:     string | null
+  sectionsLabel?: string | null
+  endHeadline?:   string | null
+  endSubline?:    string | null
 }
 
 // THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts). A
@@ -91,7 +99,7 @@ export const NewsletterDigestVideo: React.FC<NewsletterDigestVideoProps> = (prop
       </Sequence>
 
       <Sequence from={INTRO + MARKET} durationInFrames={SECTIONS}>
-        <SectionHighlights titles={props.sectionTitles.slice(0, 3)} brand={props.brand} windowFrames={SECTIONS} />
+        <SectionHighlights titles={props.sectionTitles.slice(0, 3)} brand={props.brand} windowFrames={SECTIONS} label={props.sectionsLabel} />
       </Sequence>
 
       <Sequence from={INTRO + BODY} durationInFrames={OUTRO}>
@@ -128,7 +136,7 @@ const IntroFrame: React.FC<NewsletterDigestVideoProps> = ({ subject, brand }) =>
   )
 }
 
-const MarketBeat: React.FC<NewsletterDigestVideoProps> = ({ marketBeat, brand }) => {
+const MarketBeat: React.FC<NewsletterDigestVideoProps> = ({ marketBeat, brand, beatLabel }) => {
   const frame = useCurrentFrame()
   const enter = interpolate(frame, [0, 20], [60, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   const opacity = interpolate(frame, [0, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
@@ -142,7 +150,7 @@ const MarketBeat: React.FC<NewsletterDigestVideoProps> = ({ marketBeat, brand })
         opacity,
       }}>
         <p style={{ color: brand.accentColor, fontSize: 32, fontWeight: 700, marginBottom: 24, textTransform: "uppercase", letterSpacing: 2 }}>
-          This week in your market
+          {beatLabel || "This week in your market"}
         </p>
         <h2 style={{ color: "white", fontSize: 72, margin: 0, fontWeight: 800, lineHeight: 1.15 }}>
           {marketBeat}
@@ -152,7 +160,7 @@ const MarketBeat: React.FC<NewsletterDigestVideoProps> = ({ marketBeat, brand })
   )
 }
 
-const SectionHighlights: React.FC<{ titles: string[]; brand: NewsletterDigestVideoProps["brand"]; windowFrames: number }> = ({ titles, brand, windowFrames }) => {
+const SectionHighlights: React.FC<{ titles: string[]; brand: NewsletterDigestVideoProps["brand"]; windowFrames: number; label?: string | null }> = ({ titles, brand, windowFrames, label }) => {
   const frame = useCurrentFrame()
   // The SECTIONS window is divided across however many titles actually
   // arrived — the same idiom remotion/JustListedReel.tsx's PropertyImages
@@ -178,7 +186,7 @@ const SectionHighlights: React.FC<{ titles: string[]; brand: NewsletterDigestVid
   return (
     <AbsoluteFill style={{ padding: 80, justifyContent: "center" }}>
       <p style={{ color: brand.accentColor, fontSize: 36, fontWeight: 600, marginBottom: 16, opacity: 0.9 }}>
-        Inside this week's digest
+        {label || "Inside this week's digest"}
       </p>
       <h1 style={{ color: "white", fontSize: 104, fontWeight: 800, lineHeight: 1.05, margin: 0, opacity }}>
         {t}
@@ -191,11 +199,11 @@ const SectionHighlights: React.FC<{ titles: string[]; brand: NewsletterDigestVid
 // "for this week's full digest" + brokerage/EHO footer + QrOutroBadge) was
 // MERGED onto remotion/components/EndCard.tsx — the ONE end card the four
 // outros in this fleet now share. FRAMES.OUTRO_START..OUTRO_END is unchanged.
-const OutroCta: React.FC<NewsletterDigestVideoProps> = ({ brand, qrCodeDataUrl, qrCaption }) => (
+const OutroCta: React.FC<NewsletterDigestVideoProps> = ({ brand, qrCodeDataUrl, qrCaption, endHeadline, endSubline }) => (
   <EndCard
     brand={brand}
-    headline="Open the email"
-    subline="for this week's full digest"
+    headline={endHeadline || "Open the email"}
+    subline={endSubline || "for this week's full digest"}
     align="start"
     logoHeight={64}
     qrCodeDataUrl={qrCodeDataUrl}

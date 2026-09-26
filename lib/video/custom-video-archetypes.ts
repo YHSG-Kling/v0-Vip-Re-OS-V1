@@ -72,6 +72,7 @@ export const CUSTOM_VIDEO_ARCHETYPES = [
   "testimonial_story",
   "event_promo",
   "education_explainer",
+  "voiceover_explainer",
 ] as const
 export type CustomVideoArchetype = (typeof CUSTOM_VIDEO_ARCHETYPES)[number]
 
@@ -150,6 +151,23 @@ export const CUSTOM_ARCHETYPE_REGISTRY: Record<CustomVideoArchetype, CustomVideo
     videoType: "education",
     why: "Teach one concept in three beats: the explainer band (30-90 s) and rule (the bullet is the content, the presenter in the corner) fit a buyer guide, an FAQ answer, a myth-vs-fact, a relocation guide.",
     sources: ["sendspark.com 2026-04: explainers 60-90 s", "whatastory.agency 2026-07: 74 % retention through 60 s when under 90 s", "luxurypresence.com 2026-03: FAQ videos — one question per video"],
+  },
+  // WAVE 83 (lane 83B) — the 82C gap: the explainer purpose is avatar-hosted by owner rule
+  // ("explainers and market updates present with the CIRCLE avatar", body-visual-model), so an
+  // agent with no ready twin had NO needs-free shape and got no topic video. This shape needs
+  // nothing but the agent's voice: kinetic text (the hook, then three beats) under the
+  // narration. It INHERITS the newsletter purpose — the one voiceover-native, no-avatar,
+  // kinetic-text purpose already registered (NewsletterDigestVideo: 20-60 s band, cap 1950
+  // frames = 60 s + bookends, so no geometry change and no migration). It SHARES the
+  // explainer's cues (+ voice cues): the HOST separates the two — education_explainer is
+  // avatar-only and this is voiceover-only (both derived), so they are never eligible
+  // together, and a described "explain …" on the voiceover host now plans.
+  voiceover_explainer: {
+    id: "voiceover_explainer", basePurpose: "newsletter", needs: {},
+    cues: ["explain", "explainer", "guide", "how does", "what is", "what are", "faq", "question", "questions", "myth", "mistake", "mistakes", "checklist", "steps", "process", "closing cost", "inspection", "pre-approval", "preapproval", "escrow", "relocat", "moving to", "first-time", "first time", "buyer", "seller", "investor", "downsiz", "hoa", "insurance", "tax", "voiceover", "voice-over", "voice over", "no camera", "off camera", "just my voice", "text on screen"],
+    videoType: "education",
+    why: "One idea taught as kinetic text under the agent's own voice — the hook on screen, then three beats — for when no one is on camera: the newsletter purpose's band (20-60 s) and rule (kinetic text, no avatar) carry it.",
+    sources: ["listingclip.com 2026-05: short-form 30-60 s with burned-in captions", "ads-video skill: first frame text + movement; captions for sound-off viewing", "reel-e.ai 2026-02: consistency over polish — 3 a week minimum"],
   },
 }
 

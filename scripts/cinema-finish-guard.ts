@@ -39,12 +39,12 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { stripComments, blankStrings } from "./strip-comments"
 import {
-  CINEMA_EASING, CINEMA_LOOKS, MAX_GRADE_DEPARTURE, cinemaCutPoints, cinemaFinishFor, cinemaFrame, cinemaMusicFades,
-  cinemaTypeScale, dipOpacityAt, easeInOut, edgeFadeFrames, gradeFilter, isStillFinish,
+  CINEMA_EASING, CINEMA_LOOKS, CINEMA_MOTION_BLUR, MAX_GRADE_DEPARTURE, cinemaCutPoints, cinemaFinishFor, cinemaFrame, cinemaMotionBlurFor,
+  cinemaMusicFades, cinemaTypeScale, dipOpacityAt, easeInOut, edgeFadeFrames, gradeFilter, isStillFinish,
 } from "../lib/video/cinema-finish"
 import { finishForVideo } from "../lib/video/finish-spec"
 import { compositionBookends, compositionPurposes } from "../lib/video/duration-model"
-import { safeInsets, type BodyVisualPlan } from "../lib/video/body-visual-model"
+import { COMPOSITION_TREATMENTS, safeInsets, type BodyVisualPlan } from "../lib/video/body-visual-model"
 import {
   MASTER_LOUDNESS, buildMasterLoudnessStage, buildMusicDuckFilterGraph, buildMusicMixFilterGraph, withMasterLoudness,
 } from "../lib/remotion/music-filter-graph"
@@ -198,6 +198,42 @@ console.log("\n── §audio · master, fades derived, both paths ──")
     return !(inOk && outOk && f.fadeInSeconds >= 0.8 && f.fadeOutSeconds >= 1.5)
   })
   check(`music fades DERIVE from each composition's own intro/outro (${moving.length} moving compositions)`, wrong.length === 0, wrong.join(", "))
+}
+
+console.log("\n── §motion-blur · film-camera blur where the camera moves, never on a face or a screen (wave 83B) ──")
+{
+  const moving = ids.filter((id) => !isStillFinish(finishForVideo(id)))
+  const blurred = moving.filter((id) => cinemaMotionBlurFor(id).enabled)
+  console.log(`    denominator: ${moving.length} moving compositions → ${blurred.length} blurred (${blurred.join(", ")})`)
+  for (const id of moving) console.log(`      ${id}: ${cinemaMotionBlurFor(id).reason}`)
+  const person = (id: string) => (COMPOSITION_TREATMENTS[id] ?? []).some((t) => t === "full_avatar" || t === "avatar_pip")
+  const moves = (id: string) => (COMPOSITION_TREATMENTS[id] ?? []).some((t) => t === "property_photos" || t === "broll")
+  check("RULE: blurred ⇔ a moving composition whose picture moves as a camera (Ken Burns photos / b-roll), with no person on screen and a graded (not true-colour) look",
+    moving.every((id) => cinemaMotionBlurFor(id).enabled === (moves(id) && !person(id) && cinemaFinishFor(id).look.id !== "true_color")))
+  check("at least one camera-move composition is blurred (the finder still finds; PhotoWalkthroughReel is the Ken Burns reel)", blurred.length > 0 && blurred.includes("PhotoWalkthroughReel"))
+  check("NO talking head is blurred (every avatar/PiP composition stays crisp)", moving.filter(person).every((id) => !cinemaMotionBlurFor(id).enabled), moving.filter((id) => person(id) && cinemaMotionBlurFor(id).enabled).join(", "))
+  check("POSITIVE CONTROL: the talking-head reel is recognised as a person on screen", person("AgentTalkingHeadReel") && !cinemaMotionBlurFor("AgentTalkingHeadReel").enabled)
+  check("no still and no screen is blurred (PostcardFront4x6, ProductPromoReel)", !cinemaMotionBlurFor("PostcardFront4x6").enabled && !cinemaMotionBlurFor("ProductPromoReel").enabled)
+  check(`the docs' values: shutterAngle ${CINEMA_MOTION_BLUR.shutterAngle}° (film standard at 24-60 fps), samples ${CINEMA_MOTION_BLUR.samples} (docs 5-10; lowest kept — colour-destructive)`,
+    CINEMA_MOTION_BLUR.shutterAngle === 180 && CINEMA_MOTION_BLUR.samples >= 5 && CINEMA_MOTION_BLUR.samples <= 10 && blurred.every((id) => cinemaMotionBlurFor(id).samples === CINEMA_MOTION_BLUR.samples))
+  const layer = readStripped("remotion/components/CinemaFinish.tsx")
+  check("the finish layer mounts CameraMotionBlur from @remotion/motion-blur, gated on the rule, around an AbsoluteFill (docs: children absolutely positioned)",
+    /import\s*\{\s*CameraMotionBlur\s*\}\s*from\s*"@remotion\/motion-blur"/.test(layer) && /blur\.enabled\s*\?/.test(layer)
+    && /<CameraMotionBlur shutterAngle=\{blur\.shutterAngle\} samples=\{blur\.samples\}>\s*<AbsoluteFill/.test(layer) && /cinemaMotionBlurFor\(compositionId\)/.test(layer))
+  const pkg = JSON.parse(read("package.json")) as { dependencies: Record<string, string> }
+  check(`@remotion/motion-blur is a dependency pinned to the fleet's remotion version (${pkg.dependencies["@remotion/motion-blur"]} = remotion ${pkg.dependencies.remotion})`,
+    pkg.dependencies["@remotion/motion-blur"] === pkg.dependencies.remotion && !!pkg.dependencies.remotion)
+}
+
+console.log("\n── §crossfade · documented, not faked (wave 83B) ──")
+{
+  const pkg = JSON.parse(read("package.json")) as { dependencies: Record<string, string>; devDependencies?: Record<string, string> }
+  const installed = !!(pkg.dependencies["@remotion/transitions"] ?? pkg.devDependencies?.["@remotion/transitions"])
+  const doc = read("lib/video/cinema-finish.ts")
+  check(`@remotion/transitions is ${installed ? "INSTALLED — the § CROSSFADE note must be revisited" : "not installed"}, and cinema-finish.ts § CROSSFADE says why the cut is still a dip`,
+    !installed && /§ CROSSFADE — why the cut is still a dip/.test(doc) && /SHORTENS the timeline/.test(doc))
+  const src = Array.from(readdirSync(join(root, "remotion"))).filter((f) => f.endsWith(".tsx")).map((f) => readStripped(`remotion/${f}`)).join("\n")
+  check("no composition imports @remotion/transitions (it would shorten the registered timeline)", !/from\s*"@remotion\/transitions/.test(src))
 }
 
 console.log("\n── §broadcast · the duplicate is merged onto the survivor ──")

@@ -1,23 +1,32 @@
 // lib/video/topic-video-runner.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// THE AUTONOMOUS TOPIC-POOL VIDEO RUNNER (wave 82, lane 82C).
+// THE AUTONOMOUS TOPIC-POOL VIDEO RUNNER (wave 82, lane 82C; wave 83, lane 83B).
 //
 // Called from the EXISTING daily video-plays cron (app/api/cron/video-plays —
-// CRON_REGISTRY "30 15 * * *"); no new cron. Per tenant, on the tenant's own
-// weekday(s) (topic-video.ts isTopicVideoDay):
+// CRON_REGISTRY "30 15 * * *") as ITS OWN named step (wave 83: it was wrongly
+// destructured into the listing-plays const beside runListingBrochures, which
+// is a new-listing brochure capability — owner: "does not fit in for the
+// capability"); no new cron. Per tenant, on the tenant's own slot days
+// (topic-video.ts topicVideoSlotToday, from the tenant's CADENCE —
+// brokerage_settings.settings.topic_video_cadence, default 3/week +1 in peak):
 //
-//   1. PERSONA of the week + in-season categories (topic-video.ts),
+//   1. the slot's CONTACT PERSONA (contacts.contact_persona vocabulary — wave 83:
+//      never contact_type), ASSIGNED from the rotation of the personas the
+//      tenant's own book carries, + in-season categories (topic-video.ts),
 //   2. ONE topic from the ONE pool — pickTopics (freshness, the tenant's own
-//      city/state/zip as the territory boost, per-persona performance learning,
-//      the 30-day office claim) — never a second pool,
-//   3. the fronting agent (rotated through the tenant's active agents) and the
-//      host their twin supports (avatar when the D-ID twin can render, else the
-//      cloned-voice voiceover),
+//      city/state/zip as the territory boost, per-persona performance learning
+//      keyed by that SAME persona, the 30-day office claim — which is what keeps
+//      a topic from repeating across the week's slots) — never a second pool,
+//   3. the fronting agent (rotated through the tenant's active agents): AVATAR
+//      when one of the next MAX_TWIN_PROBES has a D-ID twin that can render,
+//      else the rotation's agent on the VOICEOVER host (wave 83 closes 82C's
+//      gap: voiceover_explainer, kinetic text under the agent's voice),
 //   4. the archetype by rule, the script written COMPLIANCE-FIRST through the
 //      routed, booked model lane (generateObjectRouted, feature
 //      video_script_generation, brokerageId from the tenant row the cron read —
 //      a system job has no session; the tenant is the row being processed),
 //      scanned for hard fair-housing flags (a flag skips the topic, never ships),
+//      and POST-CHECKED (postcheckScript — warnings pass through, recorded),
 //   5. commissioned through the ONE Director rail (commissionCustomVideo →
 //      compliance gate, plan-before-send gate, status pending_review — every
 //      customer-facing video waits for a human approval), and
@@ -30,8 +39,9 @@
 import "server-only"
 import { z } from "zod"
 import {
-  isTopicVideoDay, personaForWeek, seasonalCategories, topicCategoriesForPersona,
-  topicVideoBrief, topicScriptPrompt, topicScriptWords, isoWeek,
+  TOPIC_VIDEO_CADENCE_KEY, personaForSlot, personaRotation, resolveTopicVideoCadence, seasonalCategories,
+  topicCategoriesForPersona, topicPersonaSide, topicScriptPrompt, topicScriptWords, topicVideoBrief,
+  topicVideoContent, topicVideoSlotToday, topicVideosPerWeek, isoWeek,
 } from "./topic-video"
 import { planCustomVideo } from "./custom-video-archetypes"
 import type { HostKind } from "./duration-model"
@@ -41,6 +51,8 @@ export interface TopicVideoRunResult {
   tenantsConsidered: number
   tenantsDue: number
   topicVideos: number
+  /** How many staged on each host — the voiceover path is visible, never folded in. */
+  byHost: Record<string, number>
   skipped: Record<string, number>
   errors: number
 }
@@ -48,17 +60,20 @@ export interface TopicVideoRunResult {
 const TopicScriptSchema = z.object({
   script: z.string().min(20).max(2400),
   title: z.string().min(2).max(80),
+  hook: z.string().min(3).max(120),
   bullets: z.array(z.string().min(1).max(60)).min(1).max(4),
 })
 
 /** Agents probed for a ready twin per tenant per run (each probe is a presenter lookup). */
 const MAX_TWIN_PROBES = 5
+/** Rows of the tenant's book read to learn which contact personas it carries. */
+const PERSONA_SAMPLE_ROWS = 2000
 
 function bump(r: TopicVideoRunResult, why: string) { r.skipped[why] = (r.skipped[why] ?? 0) + 1 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Promise<TopicVideoRunResult> {
-  const out: TopicVideoRunResult = { tenantsConsidered: 0, tenantsDue: 0, topicVideos: 0, skipped: {}, errors: 0 }
+  const out: TopicVideoRunResult = { tenantsConsidered: 0, tenantsDue: 0, topicVideos: 0, byHost: {}, skipped: {}, errors: 0 }
   const { data: tenants, error: tenantErr } = await svc.from("brokerages")
     .select("id, city, state, zip, is_demo")
     .eq("is_active", true).is("deleted_at", null).limit(2000)
@@ -67,6 +82,15 @@ export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Prom
     out.errors += 1
     return out
   }
+  // THE CADENCE — one read of every tenant's setting (a system job reading every
+  // tenant, like the brokerages read above). A refused read FAILS CLOSED to the
+  // default cadence and is counted — never "every tenant switched off".
+  const cadenceByTenant = new Map<string, unknown>()
+  const { data: cadenceRows, error: cadenceErr } = await svc.from("brokerage_settings")
+    .select(`brokerage_id, cadence:settings->${TOPIC_VIDEO_CADENCE_KEY}`).limit(5000)
+  if (cadenceErr) { bump(out, "cadence_read_refused_default_used"); console.warn("[topic-video-runner] cadence read refused:", cadenceErr.message) }
+  for (const row of (cadenceRows ?? []) as Array<{ brokerage_id: string; cadence: unknown }>) cadenceByTenant.set(row.brokerage_id, row.cadence)
+
   const season = seasonalCategories(now.getUTCMonth())
   const { pickTopics } = await import("@/lib/content-intel/topic-bank")
   const { logTopicUses } = await import("@/lib/content-intel/performance-aggregator")
@@ -75,7 +99,10 @@ export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Prom
   for (const t of (tenants ?? []) as Array<{ id: string; city: string | null; state: string | null; zip: string | null; is_demo: boolean | null }>) {
     out.tenantsConsidered += 1
     if (t.is_demo) { bump(out, "demo_tenant"); continue }
-    if (!isTopicVideoDay(t.id, now)) { bump(out, "not_this_tenants_day"); continue }
+    const cadence = resolveTopicVideoCadence(cadenceByTenant.get(t.id))
+    if (!cadence.enabled) { bump(out, "cadence_off"); continue }
+    const slot = topicVideoSlotToday(t.id, now, cadence)
+    if (slot < 0) { bump(out, "not_this_tenants_day"); continue }
     out.tenantsDue += 1
     try {
       // ── the fronting agent (rotated) ──
@@ -86,12 +113,11 @@ export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Prom
       const roster = (agents ?? []) as Array<{ id: string; user_id: string }>
       if (roster.length === 0) { bump(out, "no_active_agent"); continue }
       // THE HOST IS DERIVED, NOT ASSUMED: a topic video carries no photos, screens,
-      // stat cards or client clips, and the only needs-free archetypes
-      // (education_explainer, talking_head_message) are registered on the AVATAR
-      // host alone (custom-video-archetypes.ts archetypeHosts — the composition
-      // registry has no voiceover explainer). So the fronting agent is the next one
-      // in the rotation whose D-ID twin can render; at most MAX_TWIN_PROBES are
-      // probed (cost-down), and a tenant with no ready twin is skipped BY NAME.
+      // stat cards or client clips. The fronting agent is the next one in the
+      // rotation whose D-ID twin can render (at most MAX_TWIN_PROBES probed —
+      // cost-down) → the AVATAR host (education_explainer). No ready twin → the
+      // rotation's own agent on the VOICEOVER host (voiceover_explainer: kinetic
+      // text under their voice) — counted by host, never skipped for want of a twin.
       const start = (isoWeek(now) * 7 + now.getUTCDay()) % roster.length
       let agent: { id: string; user_id: string } | null = null
       const { resolveAgentPresenterMedia } = await import("./presenter-media")
@@ -102,10 +128,17 @@ export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Prom
           if (p.canRender) { agent = candidate; break }
         } catch { /* probe the next agent */ }
       }
-      if (!agent) { bump(out, "no_twin_ready"); continue }
+      const host: HostKind = agent ? "avatar" : "voiceover"
+      if (!agent) { agent = roster[start]; bump(out, "no_twin_ready_voiceover_used") }
+
+      // ── the slot's CONTACT PERSONA — from the tenant's own book (contacts.contact_persona) ──
+      const { data: book, error: bookErr } = await svc.from("contacts")
+        .select("contact_persona").eq("brokerage_id", t.id).not("contact_persona", "is", null).limit(PERSONA_SAMPLE_ROWS)
+      if (bookErr) bump(out, "persona_read_refused_full_roster_used")
+      const rotation = personaRotation(((book ?? []) as Array<{ contact_persona: string | null }>).map((r) => r.contact_persona))
+      const persona = personaForSlot(now, t.id, slot, topicVideosPerWeek(cadence, now.getUTCMonth()), rotation)
 
       // ── ONE topic from the ONE pool ──
-      const persona = personaForWeek(now, t.id)
       const topics = await pickTopics({
         brokerageId: t.id,
         categoriesAny: topicCategoriesForPersona(persona),
@@ -120,10 +153,8 @@ export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Prom
       const topic = topics[0]
       if (!topic) { bump(out, "pool_empty_for_persona"); continue }
 
-      // ── host: the fronting agent's twin (chosen above because it can render) ──
-      const host: HostKind = "avatar"
       const assets: BodyVisualAssets = {
-        avatarClip: true, brollClips: 0, propertyPhotos: 0, screenshots: 0,
+        avatarClip: host === "avatar", brollClips: 0, propertyPhotos: 0, screenshots: 0,
         statCards: 0, clientFootage: 0, chartData: false,
       }
 
@@ -132,6 +163,7 @@ export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Prom
       const planned = planCustomVideo(first.brief)
       if (!planned.ok) { bump(out, "unplanned"); console.warn("[topic-video-runner] unplanned:", planned.reason); continue }
       const words = topicScriptWords(planned.plan.band.targetSeconds, host)
+      const side = topicPersonaSide(persona)
 
       const { generateObjectRouted } = await import("@/lib/ai/models")
       const { buildComplianceSystemBlocks, detectFairHousingRedFlags } = await import("./script-compliance")
@@ -156,7 +188,7 @@ export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Prom
         object = await draft(`${basePrompt}\n\nRewrite to remove these tells: ${tells.join("; ")}`)
         if (scanForAiTells(object.script).length > 0) bump(out, "ai_tells_after_redraft_advisory")
       }
-      const flags = detectFairHousingRedFlags(`${object.title}\n${object.bullets.join("\n")}\n${object.script}`, persona === "seller" ? "seller" : "buyer")
+      const flags = detectFairHousingRedFlags(`${object.title}\n${object.hook}\n${object.bullets.join("\n")}\n${object.script}`, side)
       if (flags.length > 0) { bump(out, "fair_housing_red_flag"); console.warn("[topic-video-runner] script refused:", flags.join("; ")); continue }
       // COMPLIANCE-FIRST IS BOTH HALVES (CLAUDE.md §5; test:video-script-compliance
       // GATE-ROSTER-EVERY-CALLER-POSTCHECKS): the compliance blocks rode the writing prompt
@@ -169,13 +201,13 @@ export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Prom
       const complianceWarnings = await postcheckScript(
         { userId: agent.user_id, brokerageId: t.id },
         object.script,
-        persona === "seller" ? "seller" : "buyer",
+        side,
         { client: svc },
       )
 
       const { brief } = topicVideoBrief({
         topic, persona, host, assets,
-        content: { captionScript: object.script, caption: object.script, title: object.title, bullets: object.bullets },
+        content: topicVideoContent(planned.plan.compositionId, object),
       })
       const r = await commissionCustomVideo(brief, { brokerageId: t.id, agentUserId: agent.user_id, targetChannel: "instagram" }, svc)
       if (!r.ok || !r.videoProjectId || r.status !== "staged") { bump(out, `director_${r.status}`); continue }
@@ -191,6 +223,7 @@ export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Prom
 
       await logTopicUses({ topicIds: [topic.id], brokerageId: t.id, assetType: "situational_reel", assetId: r.videoProjectId, agentId: agent.id })
       out.topicVideos += 1
+      out.byHost[host] = (out.byHost[host] ?? 0) + 1
     } catch (e) {
       out.errors += 1
       console.error("[topic-video-runner] tenant failed:", t.id, (e as Error).message)
