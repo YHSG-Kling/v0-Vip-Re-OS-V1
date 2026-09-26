@@ -292,6 +292,33 @@ console.log("\n[6 · the approval rail is the EXISTING one]")
   const studio = strippedKeepStrings("app/actions/marketing-studio.ts")
   const approveChunk = studio.slice(studio.indexOf("export async function approveAsset"), studio.indexOf("export async function rejectAsset"))
   check("marketing-studio approveAsset flips marketing_assets to approved WITH the tenant predicate (.eq brokerage_id)", /approval_status: "approved"/.test(approveChunk) && /\.eq\("brokerage_id", brokerageId\)/.test(approveChunk))
+  // REJECTION KEEPS PROVENANCE. marketing_assets.metadata carries the row's provenance (asset_kind,
+  // estimate_source, address, source_url, captured_at, customer_facing_value:false); a rejection
+  // that REPLACES the jsonb with { rejection_reason } erases it and hides the row from
+  // asset_kind-scoped reads. The rule: rejectAsset reads the current metadata under the tenant
+  // predicate and SPREADS it into what it writes, and both decisions COUNT their update (§3).
+  const rejectChunk = studio.slice(studio.indexOf("export async function rejectAsset"))
+  const rejectEnd = rejectChunk.indexOf("\nexport ", 1)
+  const reject = rejectEnd > 0 ? rejectChunk.slice(0, rejectEnd) : rejectChunk
+  const replacesMetadata = (fn: string) => /metadata:\s*\{\s*rejection_reason/.test(fn)
+  const mergesMetadata = (fn: string) =>
+    /\.select\("metadata"\)[\s\S]*?\.eq\("id", assetId\)\s*\.eq\("brokerage_id", brokerageId\)/.test(fn)
+    && /\.\.\.existing/.test(fn) && /metadata:\s*merged/.test(fn)
+  check("rejectAsset MERGES rejection_reason into the row's existing metadata (read under the tenant predicate, spread, then written) — provenance keys survive a rejection",
+    mergesMetadata(reject) && !replacesMetadata(reject))
+  check("POSITIVE CONTROL: the pre-fix shape (metadata: { rejection_reason … }) IS caught as a replace",
+    replacesMetadata(`.update({ approval_status: "rejected", metadata: { rejection_reason: reason ?? "Not specified" }, updated_at: x })`))
+  check("POSITIVE CONTROL: a merge that never reads the current row is NOT accepted as a merge",
+    !mergesMetadata(`const merged = { ...existing, rejection_reason: r }; await supabase.from("marketing_assets").update({ metadata: merged })`))
+  const counted = (fn: string, status: string) =>
+    new RegExp(`approval_status: "${status}"[\\s\\S]*?\\.eq\\("brokerage_id", brokerageId\\)\\s*\\.select\\("id"\\)`).test(fn)
+    && /length === 0\)/.test(fn)
+  check("approveAsset and rejectAsset COUNT their update (.select(\"id\") + zero rows is a refusal, CLAUDE.md §3)",
+    counted(approveChunk, "approved") && counted(reject, "rejected"))
+  check("POSITIVE CONTROL: an uncounted update is flagged",
+    !counted(`.update({ approval_status: "approved" }).eq("id", assetId).eq("brokerage_id", brokerageId)`, "approved"))
+  check("approveAsset reads the asset under the tenant predicate before its compliance gate",
+    /\.select\("asset_type, preview_text"\)\s*\.eq\("id", assetId\)\s*\.eq\("brokerage_id", brokerageId\)/.test(approveChunk))
   check("no writer in the door/action/card flips approval_status itself", !/approval_status: "approved"/.test(strippedKeepStrings(DOOR)) && !/approval_status/.test(strippedKeepStrings(ACTION)) && !/approval_status: "approved"/.test(card))
   check("an APPROVED brokerage image row already joins the tenant's image-library picker (approved + brokerage_id.eq) — no second picker", /\.eq\("approval_status", "approved"\)/.test(strippedKeepStrings("app/actions/marketing/image-library.ts")) && /brokerage_id\.eq\.\$\{brokerageId\}/.test(strippedKeepStrings("app/actions/marketing/image-library.ts")))
   const regen = strippedKeepStrings("app/api/cron/marketing-image-regen/route.ts")

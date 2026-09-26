@@ -657,6 +657,7 @@ export async function approveAsset(assetId: string) {
     .from("marketing_assets")
     .select("asset_type, preview_text")
     .eq("id", assetId)
+    .eq("brokerage_id", brokerageId)
     .maybeSingle()
 
   if (asset?.preview_text) {
@@ -680,7 +681,10 @@ export async function approveAsset(assetId: string) {
     }
   }
 
-  const { error } = await supabase
+  // COUNTED (CLAUDE.md §3): an update that matches nothing resolves exactly like one that
+  // worked, so a wrong-tenant or already-gone asset would report "approved". .select() the
+  // update and treat zero rows as the refusal it is.
+  const { data: approved, error } = await supabase
     .from("marketing_assets")
     .update({
       approval_status: "approved",
@@ -688,10 +692,14 @@ export async function approveAsset(assetId: string) {
     })
     .eq("id", assetId)
     .eq("brokerage_id", brokerageId)
+    .select("id")
 
   if (error) {
     console.error("[v0] Error approving asset:", error)
     return { success: false, error: error.message }
+  }
+  if (!approved || approved.length === 0) {
+    return { success: false, error: "That asset is not in your brokerage (or no longer exists); nothing was approved." }
   }
 
   return { success: true }
@@ -704,21 +712,63 @@ export async function rejectAsset(assetId: string, reason?: string) {
     return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
   }
 
+  if (!brokerageId) {
+    return { success: false, error: "No brokerage on your session; nothing was rejected." }
+  }
+
   const supabase = await createClient()
 
-  const { error } = await supabase
+  // MERGE, NEVER REPLACE. marketing_assets.metadata carries the row's provenance — asset_kind,
+  // estimate_source, address, source_url, captured_at, customer_facing_value:false — written by
+  // lib/assets/screenshot-capture.ts, the estimate-comparison composer and the web-searched
+  // estimate stager. Replacing the jsonb with { rejection_reason } erased the audit trail of every
+  // rejected third-party capture and hid the row from asset_kind-scoped reads (including the
+  // URL+day screenshot cache). Read it under the SAME tenant predicate, then merge.
+  const { data: current, error: readErr } = await supabase
+    .from("marketing_assets")
+    .select("metadata")
+    .eq("id", assetId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+
+  if (readErr) {
+    console.error("[v0] Error reading asset before rejection:", readErr)
+    return { success: false, error: readErr.message }
+  }
+  if (!current) {
+    return { success: false, error: "That asset is not in your brokerage (or no longer exists); nothing was rejected." }
+  }
+
+  const existing =
+    current.metadata && typeof current.metadata === "object" && !Array.isArray(current.metadata)
+      ? (current.metadata as Record<string, unknown>)
+      : {}
+  const nowIso = new Date().toISOString()
+  const merged = {
+    ...existing,
+    rejection_reason: reason ?? "Not specified",
+    rejected_by: userId ?? null,
+    rejected_at: nowIso,
+  }
+
+  // COUNTED (CLAUDE.md §3): zero rows back is a refusal, not a success.
+  const { data: rejected, error } = await supabase
     .from("marketing_assets")
     .update({
       approval_status: "rejected",
-      metadata: { rejection_reason: reason ?? "Not specified" },
-      updated_at: new Date().toISOString(),
+      metadata: merged,
+      updated_at: nowIso,
     })
     .eq("id", assetId)
     .eq("brokerage_id", brokerageId)
+    .select("id")
 
   if (error) {
     console.error("[v0] Error rejecting asset:", error)
     return { success: false, error: error.message }
+  }
+  if (!rejected || rejected.length === 0) {
+    return { success: false, error: "That asset is not in your brokerage (or no longer exists); nothing was rejected." }
   }
 
   return { success: true }
