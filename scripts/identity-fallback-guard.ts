@@ -281,7 +281,11 @@ console.log("\n═══ 4. The sites fixed in this pass stay fixed ═══")
   // agent_id, and created_by (FK users) gets the session user, never the agents id.
   ok("...while direct_mail_campaigns.agent_id keeps the agents id, which is the\n    class that column's foreign key actually points at (via the one creator, createMailCampaign)",
     /createMailCampaign\(\{[\s\S]{0,300}agentId: params\.agentId,[\s\S]{0,300}createdBy: auth\.userId/.test(mail)
-    && /\.from\("direct_mail_campaigns"\)\s*\.insert\(\{[\s\S]{0,120}agent_id: params\.agentId \?\? null/.test(code(read("app/actions/direct-mail.ts"))))
+    // RE-ANCHORED (lane 84E): the creator no longer writes the body's agentId raw — it
+    // writes the agents row it VERIFIED in the session tenant (or crossed from the
+    // session user via resolveAgentIdInBrokerage). test:direct-mail-identity-class owns
+    // the full rule; this keeps the insert pinned to the verified agents-class local.
+    && /\.from\("direct_mail_campaigns"\)\s*\.insert\(\{[\s\S]{0,120}agent_id: agentRecordId,/.test(code(read("app/actions/direct-mail.ts"))))
 
   const cr = code(read("app/dashboard/documents/contract-review/page.tsx"))
   ok("the contract-review page hands down an agents id or nothing, never the\n    auth user id wearing an agents id's name",
@@ -485,8 +489,15 @@ console.log("\n═══ 10. The INVERTED resolve — where the fallback was the
   //     all, so that insert was simply rejected every time.
   // The resolve is deleted in both, not reordered — nothing there needed it.
   const cs = code(read("lib/wizard-staging/content-staging.ts"))
+  // RE-ANCHORED (lane 84E). This matched `agentId: ctx.userId,` ANYWHERE in the file —
+  // and since createVideoProject's field became `agentUserId`, the only line still
+  // satisfying it was stageDirectMailCampaign's `agentId: ctx.userId` — the very
+  // users-id-into-agents-FK defect 84E fixed. The assertion was green on the wrong call
+  // site. It is now scoped to stageVideoProject's own createVideoProject call.
+  const svpAt = cs.indexOf("export async function stageVideoProject")
+  const svp = svpAt >= 0 ? cs.slice(svpAt, cs.indexOf("\nexport ", svpAt + 10)) : ""
   ok("stageVideoProject passes ctx.userId to createVideoProject, whose column and\n    actor context are both users-class",
-    /agentId: ctx\.userId,/.test(cs) && !/agentId: agentId \?\? ctx\.userId/.test(cs))
+    /createVideoProject\(\{[\s\S]{0,300}agentUserId: ctx\.userId,/.test(svp) && !/agentId: agentId \?\? ctx\.userId/.test(cs))
   // INVERTED BY m366. podcast_episodes.agent_id used to FK users(id), so
   // ctx.userId was the value that fit. It FKs agents(id) now, so the staging
   // path RESOLVES users->agents first — the resolve this guard once said was

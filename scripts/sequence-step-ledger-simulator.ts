@@ -140,6 +140,37 @@ console.log("\n── the report reads the ledger it can actually count ──")
     check(`…and the step tallies no longer test for '${dead}'`,
       !new RegExp(`status === "${dead}"`).test(stepTallies))
   }
+  // WAVE 84E — THE SLICE ABOVE WAS THE BLIND SPOT. It ended at `const totalConversions`,
+  // so the per-channel split BELOW it (byChannel successes/failures) kept testing
+  // 'completed' and 'error' — words the column cannot hold — and the channel tiles
+  // disagreed with the totals. The rule now covers EVERY status literal the file tests
+  // against a step row: from the ledger read to the first enrollment-keyed block.
+  const stepStatusWords = (code: string): string[] => {
+    const a = code.indexOf('from("sequence_step_executions")')
+    const b = code.indexOf("enrollmentsBySequence", a)
+    const region = a >= 0 ? code.slice(a, b > a ? b : undefined) : ""
+    const words = new Set<string>()
+    for (const m of region.matchAll(/\.status\s*===\s*"([a-z_]+)"/g)) words.add(m[1])
+    for (const m of region.matchAll(/new Set\(\[([^\]]*)\]\)/g)) for (const w of m[1].matchAll(/"([a-z_]+)"/g)) words.add(w[1])
+    return [...words]
+  }
+  const tested = stepStatusWords(r)
+  const inadmissible = tested.filter((w) => !live.includes(w))
+  check(`every step-status word the report tests is admitted (${tested.length} words: ${tested.join(", ")})`,
+    tested.length > 0 && inadmissible.length === 0)
+  check("POSITIVE CONTROL: the pre-84E byChannel split ('completed' / 'error') is flagged",
+    stepStatusWords(`from("sequence_step_executions")
+      if (r.status === "sent" || r.status === "completed") x++
+      if (r.status === "failed" || r.status === "error") y++
+      enrollmentsBySequence`).filter((w) => !live.includes(w)).sort().join(",") === "completed,error")
+  check("the channel split counts successes with the SAME set as the totals (DELIVERED)",
+    /byChannel\[ch\]\.successes/.test(r) && /if \(DELIVERED\.has\(r\.status as string\)\) byChannel\[ch\]\.successes/.test(r))
+  check("a refused step read is a refused report, never a zero (§3: supabase-js resolves refusals)",
+    /const \{ data: stepRuns, error: stepRunsError \} = await stepQuery/.test(r) && /if \(stepRunsError\) return \{ success: false/.test(r))
+  check("average completion days counts COMPLETED enrollments only (unenrollContact also stamps completed_at)",
+    /completedDurations = \(enrollments \?\? \[\]\)\s*\.filter\(e => e\.status === "completed"/.test(r)
+    && /status:\s*"unenrolled",\s*completed_at:/.test(src("lib/campaign-sequences/enrollment-engine.ts")))
+
   check("authority_blocked IS admitted — the compliance gate's own word",
     live.includes("authority_blocked"))
   check("…and the report finally counts it as blocked", /"authority_blocked"/.test(r))

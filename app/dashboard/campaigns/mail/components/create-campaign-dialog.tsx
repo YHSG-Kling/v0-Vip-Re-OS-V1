@@ -312,9 +312,11 @@ export function CreateCampaignDialog({
     }
     setCreating(true)
     try {
+      // Identity is the SESSION's inside the action (users.id for the gate/created_by,
+      // agents.id crossed via agents.user_id for agent_id). `agentId` here is user.id,
+      // which is why it is no longer handed over — it 23503'd the agents FK.
       const result = await createDirectMailCampaign({
         brokerageId,
-        agentId,
         campaignName: formData.campaignName.trim(),
         targetAudience: formData.targetAudience.trim(),
         mailingType: "postcard",

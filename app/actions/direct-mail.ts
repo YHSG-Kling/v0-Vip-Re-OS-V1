@@ -27,6 +27,8 @@ import {
   KernelEvent,
 } from "@/lib/kernel"
 import { dispatchDirectMail } from "@/lib/providers/dispatch"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -114,19 +116,58 @@ export async function createMailCampaign(params: CreateMailCampaignParams) {
       return { success: false, error: "Invalid brokerage ID" }
     }
 
-    // ── Kernel Gate: canAccessFeature ──
-    const access = await canAccessFeature(params.createdBy, "direct_mail")
-    if (!access.allowed) {
-      return { success: false, error: access.reason ?? "Direct mail feature not available" }
+    // ── IDENTITY FROM THE SESSION (wave 84E — §3 disjoint classes, §4 tenant) ──
+    // This is a "use server" export, so every field below arrives from a request body.
+    // Three ids of two classes: `createdBy` feeds the gate, the usage counter and
+    // created_by (FK users); `agentId` feeds agent_id (FK agents). Callers had mixed
+    // them — content-studio-client passed `agentId: userId`, ai-direct-mail passed one
+    // id to both — and the FK refused every such insert (live direct_mail_campaigns: 0
+    // rows, 2026-09-26). So: the tenant and the users id must BE the session's, and an
+    // agents id must name an agents row in that tenant. When no agentId is given, the
+    // session user's own agents row is crossed through the ONE survivor
+    // lib/kernel/agent-identity.ts resolveAgentIdInBrokerage (NULL when they have none
+    // — never the users id).
+    const actor = await getAgentContext()
+    if (!actor.isAuthenticated || !actor.userId || !actor.brokerageId) {
+      return { success: false, error: "Not signed in to a brokerage — a direct mail campaign is filed by a signed-in brokerage user" }
+    }
+    if (params.brokerageId !== actor.brokerageId) {
+      return { success: false, error: "That brokerage is not yours — a direct mail campaign is filed in your own brokerage" }
+    }
+    if (params.createdBy !== actor.userId) {
+      return { success: false, error: "createdBy must be your own users id — a direct mail campaign's created_by is the signed-in user" }
     }
 
     const supabase = await createClient()
 
+    let agentRecordId: string | null = null
+    if (params.agentId) {
+      const { data: agentRow, error: agentError } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("id", params.agentId)
+        .eq("brokerage_id", actor.brokerageId)
+        .maybeSingle()
+      if (agentError) return { success: false, error: `Could not verify the campaign's agent: ${agentError.message}` }
+      if (!agentRow) {
+        return { success: false, error: "That agent is not an agents row in your brokerage — agent_id takes an agents id, not a users id" }
+      }
+      agentRecordId = agentRow.id as string
+    } else {
+      agentRecordId = await resolveAgentIdInBrokerage(supabase, actor.userId, actor.brokerageId)
+    }
+
+    // ── Kernel Gate: canAccessFeature ──
+    const access = await canAccessFeature(actor.userId, "direct_mail")
+    if (!access.allowed) {
+      return { success: false, error: access.reason ?? "Direct mail feature not available" }
+    }
+
     const { data: campaign, error } = await supabase
       .from("direct_mail_campaigns")
       .insert({
-        brokerage_id: params.brokerageId,
-        agent_id: params.agentId ?? null,
+        brokerage_id: actor.brokerageId,
+        agent_id: agentRecordId,
         campaign_name: params.campaignName,
         target_audience: params.targetAudience,
         design_url: params.designUrl ?? null,
@@ -135,7 +176,7 @@ export async function createMailCampaign(params: CreateMailCampaignParams) {
         mailing_date: params.mailingDate ?? null,
         per_piece_cost: params.perPieceCost ?? null,
         status: "planning",
-        created_by: params.createdBy,
+        created_by: actor.userId,
       })
       .select()
       .maybeSingle()
@@ -143,12 +184,12 @@ export async function createMailCampaign(params: CreateMailCampaignParams) {
     if (error || !campaign) throw error ?? new Error("Failed to create campaign")
 
     // ── Increment usage counter ──
-    await incrementFeatureUsage(params.createdBy, "direct_mail")
+    await incrementFeatureUsage(actor.userId, "direct_mail")
 
     // ── Fire kernel event ──
     await processKernelEvent({
       event: KernelEvent.DIRECT_MAIL_CAMPAIGN_CREATED,
-      brokerageId: params.brokerageId,
+      brokerageId: actor.brokerageId,
       entityType: "direct_mail_campaign",
       entityId: campaign.id,
     }).catch((err) => {

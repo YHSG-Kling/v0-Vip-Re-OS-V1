@@ -178,9 +178,13 @@ export async function getWorkflowReport(filters: WorkflowReportFilters): Promise
     const completedEnrollments = enrollments?.filter(e => e.status === "completed").length ?? 0
     const enrollmentIds        = (enrollments ?? []).map(e => e.id)
 
-    // Average completion duration (enrolled_at → completed_at) in days
+    // Average completion duration (enrolled_at → completed_at) in days — COMPLETED
+    // enrollments only. completed_at is also stamped by lib/campaign-sequences/
+    // enrollment-engine.ts unenrollContact (status 'unenrolled'), so filtering on the
+    // timestamp alone averaged "how long until someone pulled them out" into "how long a
+    // sequence takes to finish" (wave 84E).
     const completedDurations = (enrollments ?? [])
-      .filter(e => e.completed_at && e.enrolled_at)
+      .filter(e => e.status === "completed" && e.completed_at && e.enrolled_at)
       .map(e => (new Date(e.completed_at!).getTime() - new Date(e.enrolled_at!).getTime()) / 86_400_000)
     const averageCompletionDays = completedDurations.length > 0
       ? completedDurations.reduce((a, b) => a + b, 0) / completedDurations.length
@@ -212,7 +216,10 @@ export async function getWorkflowReport(filters: WorkflowReportFilters): Promise
       stepQuery = stepQuery.eq("channel", filters.channel)
     }
 
-    const { data: stepRuns } = await stepQuery
+    // supabase-js RESOLVES a refusal (§3): an unread error rendered every step tile as a
+    // confident zero. Refuse the report instead of reporting "nothing ran".
+    const { data: stepRuns, error: stepRunsError } = await stepQuery
+    if (stepRunsError) return { success: false, error: `Workflow report refused: step executions could not be read (${stepRunsError.message}).` }
 
     // Status sets are the ones sequence_step_executions actually admits
     // (authority_blocked | clicked | delivered | failed | opened | pending |
@@ -246,8 +253,13 @@ export async function getWorkflowReport(filters: WorkflowReportFilters): Promise
       const ch = r.channel ?? "unknown"
       if (!byChannel[ch]) byChannel[ch] = { runs: 0, successes: 0, failures: 0 }
       byChannel[ch].runs += 1
-      if (r.status === "sent" || r.status === "completed") byChannel[ch].successes += 1
-      if (r.status === "failed" || r.status === "error")    byChannel[ch].failures  += 1
+      // ONE VOCABULARY (§6, wave 84E): the per-channel split counts with the SAME sets as
+      // the totals above. It tested 'completed' and 'error' — words the
+      // sequence_step_executions status CHECK cannot hold (scripts/check-vocabularies.ts),
+      // so opened/clicked/replied/delivered sends were never a channel "success" and the
+      // channel tiles disagreed with successfulSteps.
+      if (DELIVERED.has(r.status as string)) byChannel[ch].successes += 1
+      if (r.status === "failed")             byChannel[ch].failures  += 1
     }
 
     // ── 5. Top sequences by enrollment count ────────────────────────────────

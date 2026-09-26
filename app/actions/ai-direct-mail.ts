@@ -21,6 +21,7 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { z } from "zod"
 import {
   canAccessFeature,
@@ -517,10 +518,25 @@ export async function getDirectMailCampaigns(_agentId?: string /* ignored — de
  *
  * Use `createMailCampaign` directly for manual / non-AI flows. Do NOT
  * introduce a third creator that bypasses both.
+ *
+ * IDENTITY CLASS (wave 84E — CLAUDE.md §3 "agents.id and users.id are DISJOINT").
+ * This took ONE `agentId` and handed it to three columns of two classes:
+ * `canAccessFeature` / `created_by` / `incrementFeatureUsage` want a USERS id,
+ * while `direct_mail_campaigns.agent_id` and `qr_codes.agent_id` FK AGENTS.
+ * Every caller (create-campaign-dialog `setAgentId(user.id)`, price-reduction-sheet
+ * `agentId={user.id}`, content-staging `agentId: ctx.userId`) passed the USERS id,
+ * so the insert named a users id in an agents FK and 23503'd — live
+ * `direct_mail_campaigns` held 0 rows on 2026-09-26. Both ids now come from the
+ * SESSION (§4, this is a "use server" export): users.id = the session user, and
+ * agents.id is crossed through the ONE survivor
+ * lib/kernel/agent-identity.ts `resolveAgentIdInBrokerage` (agents.user_id,
+ * pinned to the session tenant). A seat with no agents row files the campaign
+ * with agent_id NULL (the column is nullable) — never the users id.
+ * `brokerageId` stays accepted only as a cross-check: a foreign tenant is refused.
  */
 export async function createDirectMailCampaign(params: {
-  agentId: string
-  brokerageId: string
+  /** Cross-check only — the tenant is the SESSION's (§4). A foreign id is refused. */
+  brokerageId?: string
   campaignName: string
   targetAudience: string
   mailingType: "postcard" | "letter" | "brochure"
@@ -539,11 +555,24 @@ export async function createDirectMailCampaign(params: {
   appOrigin?: string
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    const actor = await getAgentContext()
+    if (!actor.isAuthenticated || !actor.userId) {
+      return { success: false, error: "Not signed in — a direct mail campaign is filed by a signed-in user" }
     }
+    if (!actor.brokerageId) {
+      return { success: false, error: "No brokerage on your account — a direct mail campaign belongs to a brokerage" }
+    }
+    if (params.brokerageId && params.brokerageId !== actor.brokerageId) {
+      return { success: false, error: "That brokerage is not yours — a direct mail campaign is filed in your own brokerage" }
+    }
+    const brokerageId = actor.brokerageId
+    // users.id — the gate, the usage counter and created_by (FK users).
+    const actorUserId = actor.userId
+    // agents.id — direct_mail_campaigns.agent_id and qr_codes.agent_id (FK agents),
+    // crossed via agents.user_id and pinned to the session tenant.
+    const agentRecordId = await resolveAgentIdInBrokerage(await createClient(), actorUserId, brokerageId)
 
-    const access = await canAccessFeature(params.agentId, "direct_mail")
+    const access = await canAccessFeature(actorUserId, "direct_mail")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Direct mail feature not available" }
     }
@@ -562,8 +591,8 @@ export async function createDirectMailCampaign(params: {
       : null
 
     const campaignResult = await createMailCampaign({
-      brokerageId: params.brokerageId,
-      agentId: params.agentId,
+      brokerageId,
+      agentId: agentRecordId ?? undefined,
       campaignName: params.campaignName,
       targetAudience: params.targetAudience,
       designUrl: params.designTemplate ?? undefined,
@@ -571,7 +600,7 @@ export async function createDirectMailCampaign(params: {
       quantity,
       mailingDate: params.sendDate ?? undefined,
       perPieceCost,
-      createdBy: params.agentId,
+      createdBy: actorUserId,
     })
 
     if (!campaignResult.success) {
@@ -586,11 +615,21 @@ export async function createDirectMailCampaign(params: {
     const pieceType: DirectMailPieceType = params.pieceType ?? "postcard"
 
     // Persist piece type + tracking id on the campaign row regardless of QR.
+    // supabase-js RESOLVES a refusal and an update matching nothing (§3), so read the
+    // error AND count the row: an unstamped tracking_id is what /api/qr/scan would miss.
     if (campaign?.id) {
-      await supabase
+      const { data: stamped, error: stampError } = await supabase
         .from("direct_mail_campaigns")
         .update({ piece_type: pieceType, tracking_id: trackingId })
         .eq("id", campaign.id)
+        .eq("brokerage_id", brokerageId)
+        .select("id")
+      if (stampError || (stamped ?? []).length === 0) {
+        console.error(
+          "[AI Direct Mail] piece_type/tracking_id NOT stamped on the campaign:",
+          stampError?.message ?? "update matched 0 rows",
+        )
+      }
     }
 
     // Generate the QR code + image URL when tracking is enabled.
@@ -610,8 +649,9 @@ export async function createDirectMailCampaign(params: {
       // link that already worked and is what /api/qr/scan reads for direct-mail attribution.
       // Collapsing either into the other would break one of the two lanes.
       const qrResult = await createQrCodeAction({
-        brokerageId: params.brokerageId,
-        agentId: params.agentId,
+        brokerageId,
+        // qr_codes.agent_id FKs agents — the crossed agents row, never the users id.
+        agentId: agentRecordId ?? undefined,
         label: `${params.campaignName} (${trackingId})`,
         purpose: "campaign",
         destinationType: "landing_page",

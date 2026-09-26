@@ -256,11 +256,14 @@ console.log("\n── content_topic_uses: the two blind channels can log a use �
      "podcast_episode", "social_post"].every((t) => live.includes(t)))
 
   let scanned = 0
-  for (const f of [
+  let expected = 0
+  const LEDGER_WRITERS = [
     "lib/agents/marketing-agent-actions.ts",
     "lib/farm-mail/dispatch-farm-mail.ts",
     "lib/kernel/manager-signals.ts",
-  ]) {
+  ]
+  for (const f of LEDGER_WRITERS) {
+    expected += (src(f).match(/\.from\("content_topic_uses"\)\s*\.insert\(\s*\{/g) ?? []).length
     for (const p of insertPayloads(src(f), "content_topic_uses")) {
       scanned++
       const a = p.asset_type ? unquote(p.asset_type) : null
@@ -269,7 +272,12 @@ console.log("\n── content_topic_uses: the two blind channels can log a use �
       check(`${f}: the ledger row names its topic`, "topic_id" in p)
     }
   }
-  check("all four ledger writers were found", scanned === 4)
+  // RULE, NOT A WAYPOINT (lane 84E). This pinned `scanned === 4`, and went red the day
+  // manager-signals' two identical situational_reel inserts merged into ONE helper
+  // (claimSituationalReelTopic) — a count moved by a dedupe, not by a lost writer. The
+  // rule: every insert call site in the writer files is parsed, and every file has one.
+  check(`every ledger insert in the writer files was parsed (${scanned} of ${expected} call sites, derived)`,
+    scanned === expected && scanned >= LEDGER_WRITERS.length)
 
   const agg = src("lib/content-intel/performance-aggregator.ts")
   check("asset_type has a real reader — which is why widening beats flattening",

@@ -245,8 +245,11 @@ interface TopicVideoPersonaPassResult {
  * THE PERSONA is the one the runner spoke to (lib/video/topic-video-runner.ts stamps
  * it on the staged row: ai_video_projects.video_metadata[TOPIC_VIDEO_PERSONA_KEY]);
  * a topic video's viewers have no recipient lifecycle, so attribution is per VIDEO.
- * A row without the stamp (e.g. manager-signals' contact reels, which also log
- * situational_reel) is SKIPPED BY NAME — never guessed into a persona.
+ * A row without the stamp is SKIPPED BY NAME — never guessed into a persona.
+ * manager-signals' contact reels also claim situational_reel; since wave 84E they
+ * stamp the SAME key in the SAME contact-persona vocabulary (lib/kernel/manager-signals.ts
+ * claimSituationalReelTopic, normalised by topicPersonaOf), and are skipped only when
+ * the contact has no persona. custom-video's office claims carry no stamp (no audience).
  *
  * THE OUTCOME is only what is really written for the project (see
  * lib/video/topic-video.ts TopicVideoOutcome): video_performance_tracking

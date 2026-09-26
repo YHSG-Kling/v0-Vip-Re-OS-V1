@@ -158,6 +158,49 @@ async function proposeLeadIntroPostcard(
 /** A signal handler: acts on one signal, returns the action taken (or null to leave open). */
 export type SignalHandler = (signal: ManagerSignal, ctx: { brokerageId: string; supabase: Svc }) => Promise<string | null>
 
+/**
+ * THE CONTACT REELS' HALF OF THE situational_reel LEARNING LOOP (wave 84E, CLAUDE.md §6).
+ *
+ * Both contact reels (asset_manager:contact_reel_handoff, the seller-conversion reel) claim
+ * their topic under asset_type 'situational_reel' — the same key the autonomous topic videos
+ * use (lib/video/topic-video-runner.ts). The ONE writer of the per-persona rows
+ * (lib/content-intel/performance-aggregator.ts aggregateTopicVideoPersonaPerformance) joins
+ * each claim to the project's persona stamp (video_metadata[TOPIC_VIDEO_PERSONA_KEY]) and
+ * skipped every contact reel by name because none carried one. This writes the claim and the
+ * stamp in the ONE vocabulary (contact_persona, normalised by lib/video/topic-video.ts
+ * topicPersonaOf — the runner's own normaliser) — merged into
+ * the existing metadata, tenant-scoped, .select()-ed and COUNTED (§3: a refused or unmatched
+ * write resolves). No learning persona → the claim only (the aggregator skips it, honestly).
+ * Returns what it did, for the handler's log line.
+ */
+async function claimSituationalReelTopic(
+  ctx: { brokerageId: string; supabase: Svc },
+  topicId: string,
+  videoProjectId: string,
+  learningPersona: string | null,
+): Promise<string> {
+  const done: string[] = []
+  const { error: claimErr } = await ctx.supabase.from("content_topic_uses").insert({
+    topic_id: topicId, brokerage_id: ctx.brokerageId,
+    asset_type: "situational_reel", asset_id: videoProjectId, used_at: new Date().toISOString(),
+  })
+  done.push(claimErr ? `topic claim REFUSED (${claimErr.message})` : "topic claimed")
+  if (!learningPersona) return [...done, "no contact persona — no learning stamp"].join("; ")
+
+  const { TOPIC_VIDEO_PERSONA_KEY } = await import("@/lib/video/topic-video")
+  const { data: proj, error: readErr } = await ctx.supabase.from("ai_video_projects")
+    .select("video_metadata").eq("id", videoProjectId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+  if (readErr || !proj) return [...done, `persona stamp skipped (project unreadable: ${readErr?.message ?? "no row in this tenant"})`].join("; ")
+  const meta = ((proj as { video_metadata?: Record<string, unknown> | null }).video_metadata ?? {}) as Record<string, unknown>
+  const { data: stamped, error: stampErr } = await ctx.supabase.from("ai_video_projects")
+    .update({ video_metadata: { ...meta, [TOPIC_VIDEO_PERSONA_KEY]: learningPersona } })
+    .eq("id", videoProjectId).eq("brokerage_id", ctx.brokerageId)
+    .select("id")
+  if (stampErr) return [...done, `persona stamp REFUSED (${stampErr.message})`].join("; ")
+  if (!stamped || stamped.length === 0) return [...done, "persona stamp matched 0 rows"].join("; ")
+  return [...done, `learning persona '${learningPersona}' stamped`].join("; ")
+}
+
 /** Resolve a users.id to notify for a contact — the contact's assigned agent. Best-effort. */
 async function resolveLoanAgentUser(supabase: Svc, contactId: string): Promise<string | null> {
   const { data: c } = await supabase.from("contacts").select("agent_id").eq("id", contactId).maybeSingle()
@@ -1013,16 +1056,23 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const contactId = signal.entityId ?? signal.contactId
     if (!contactId) return null
     const { data: contact } = await ctx.supabase.from("contacts")
-      .select("id, contact_type, city, state, zip_code").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      .select("id, contact_type, contact_persona, city, state, zip_code").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
     if (!contact) return null
     const { resolveContactPresenterUserId } = await import("@/lib/ai-isa/outreach-identity")
     const agentUserId = await resolveContactPresenterUserId(ctx.supabase, contactId, ctx.brokerageId)
     if (!agentUserId) return "no assigned agent to front the reel — contact situational reel deferred"
     const { contactReelPersona, buildContactReelSituation, buildInformationalReelSituation, personaTopicCategories } = await import("@/lib/ai-isa/contact-reel-situation")
+    // The ONE contact-persona normaliser (legacy spellings folded, 'other' excluded) — the same
+    // one the topic-video runner's rotation uses, so both situational_reel writers share it.
+    const { topicPersonaOf } = await import("@/lib/video/topic-video")
     const { commissionVideo } = await import("@/lib/video/video-director")
     const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
-    const cr = contact as { contact_type: string | null; city?: string | null; state?: string | null; zip_code?: string | null }
+    const cr = contact as { contact_type: string | null; contact_persona?: string | null; city?: string | null; state?: string | null; zip_code?: string | null }
+    // TWO KEYS, TWO JOBS (§6, wave 84E): the contact TYPE picks the reel kind + topic
+    // categories; the contact PERSONA is the learning key (the vocabulary the aggregator
+    // writes situational_reel rows in). They never cross.
     const persona = contactReelPersona(cr.contact_type)
+    const learningPersona = topicPersonaOf(cr.contact_persona)
 
     // FOLLOW-UP REELS FOLLOW POPULAR KEYWORDS — pull a fresh topic from content_topic_bank that
     // pertains to this persona's situation (rotating via markUsed, ranked by per-persona
@@ -1035,7 +1085,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       const { pickTopics } = await import("@/lib/content-intel/topic-bank")
       const topics = await pickTopics({
         brokerageId: ctx.brokerageId, categoriesAny: personaTopicCategories(persona),
-        recipientPersona: persona, assetType: "situational_reel", limit: 1, markUsed: true,
+        recipientPersona: learningPersona, assetType: "situational_reel", limit: 1, markUsed: true,
         recipientLocation: { city: cr.city ?? null, state: cr.state ?? null, zip_code: cr.zip_code ?? null },
       })
       const topic = topics[0]
@@ -1051,14 +1101,13 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       { brokerageId: ctx.brokerageId, agentUserId, contactId, idempotencyDiscriminator: discriminator, persona: { audience: persona }, copyGenerator: realCopyGenerator },
       ctx.supabase,
     )
-    // CLOSE THE LEARNING LOOP — log the topic use so the per-persona performance aggregator
-    // joins it to engagement (qr scans / reply) and pickTopics compounds the winners.
-    if (discriminator && r.ok && r.videoProjectId) {
-      await ctx.supabase.from("content_topic_uses").insert({
-        topic_id: discriminator, brokerage_id: ctx.brokerageId,
-        asset_type: "situational_reel", asset_id: r.videoProjectId, used_at: new Date().toISOString(),
-      }).then(() => {}, () => {})
-    }
+    // CLOSE THE LEARNING LOOP — claim the topic AND stamp the learning persona on the project,
+    // so the aggregator's situational_reel pass joins it to the reel's real outcomes and
+    // pickTopics compounds the winners (wave 84E: it used to skip every contact reel by name).
+    const loop = discriminator && r.ok && r.videoProjectId
+      ? await claimSituationalReelTopic(ctx, discriminator, r.videoProjectId, learningPersona)
+      : null
+    if (loop) console.log(`[manager-signals] contact reel learning loop: ${loop}`)
     // MULTILINGUAL VARIANT — the contact has no `preferred_language` column (checked
     // scripts/schema-snapshot.ts; none exists — a product-data gap, not a code gap), so
     // the closest LIVE signal is the language ElevenLabs/the transcriber actually detected
@@ -1159,15 +1208,19 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const contactId = signal.entityId ?? signal.contactId
     if (!contactId) return null
     const { data: contact } = await ctx.supabase.from("contacts")
-      .select("id, city, state, zip_code").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      .select("id, contact_persona, city, state, zip_code").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
     if (!contact) return null
     const { resolveContactPresenterUserId } = await import("@/lib/ai-isa/outreach-identity")
     const agentUserId = await resolveContactPresenterUserId(ctx.supabase, contactId, ctx.brokerageId)
     if (!agentUserId) return "no assigned agent to front the seller-conversion reel — deferred"
     const { buildSellerConversionSituation, personaTopicCategories } = await import("@/lib/ai-isa/contact-reel-situation")
+    const { topicPersonaOf } = await import("@/lib/video/topic-video")
     const { commissionVideo } = await import("@/lib/video/video-director")
     const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
-    const cr = contact as { city?: string | null; state?: string | null; zip_code?: string | null }
+    const cr = contact as { contact_persona?: string | null; city?: string | null; state?: string | null; zip_code?: string | null }
+    // "seller" stays the CATEGORY key (the reel's kind); the learning key is the contact
+    // PERSONA — the one vocabulary situational_reel rows are written in (§6, wave 84E).
+    const learningPersona = topicPersonaOf(cr.contact_persona)
 
     // Pull a FRESH seller-value topic (rotating via markUsed, ranked per persona + geo). No fresh topic
     // → the value-forward first touch ("what your home could sell for"). Each topic is its OWN reel.
@@ -1179,7 +1232,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       const { pickTopics } = await import("@/lib/content-intel/topic-bank")
       const topics = await pickTopics({
         brokerageId: ctx.brokerageId, categoriesAny: personaTopicCategories("seller"),
-        recipientPersona: "seller", assetType: "situational_reel", limit: 1, markUsed: true,
+        recipientPersona: learningPersona, assetType: "situational_reel", limit: 1, markUsed: true,
         recipientLocation: { city: cr.city ?? null, state: cr.state ?? null, zip_code: cr.zip_code ?? null },
       })
       const topic = topics[0]
@@ -1192,13 +1245,11 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       { brokerageId: ctx.brokerageId, agentUserId, contactId, idempotencyDiscriminator: discriminator, persona: { audience: "seller" }, copyGenerator: realCopyGenerator },
       ctx.supabase,
     )
-    // Close the learning loop — log the topic use so per-persona performance compounds the winners.
-    if (discriminator && r.ok && r.videoProjectId) {
-      await ctx.supabase.from("content_topic_uses").insert({
-        topic_id: discriminator, brokerage_id: ctx.brokerageId,
-        asset_type: "situational_reel", asset_id: r.videoProjectId, used_at: new Date().toISOString(),
-      }).then(() => {}, () => {})
-    }
+    // Close the learning loop — claim the topic + stamp the learning persona (one helper, both reels).
+    const loop = discriminator && r.ok && r.videoProjectId
+      ? await claimSituationalReelTopic(ctx, discriminator, r.videoProjectId, learningPersona)
+      : null
+    if (loop) console.log(`[manager-signals] seller-conversion reel learning loop: ${loop}`)
     if (r.status === "already_staged") return `seller-conversion reel on ${label} already commissioned (${r.compositionId}, deduped)`
     if (r.ok) return `commissioned the SELLER-CONVERSION reel on ${label} (${r.compositionId}, gated) fronted by the assigned agent — invite + reel will reach the un-converted seller`
     return r.status === "blocked" ? `seller-conversion reel blocked at the compliance gate (${(r.violations ?? []).join("; ").slice(0, 120)})` : null

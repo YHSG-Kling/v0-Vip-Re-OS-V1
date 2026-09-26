@@ -450,8 +450,14 @@ export async function stageDirectMailCampaign(
       intake.pieceType === "letter" || intake.pieceType === "handwritten" || intake.pieceType === "thank_you_note"
         ? "letter"
         : "postcard"
+    // IDENTITY CLASS (wave 84E). This passed `agentId: ctx.userId` — a USERS id — and the
+    // action wrote it into direct_mail_campaigns.agent_id, which FKs AGENTS (23503). The
+    // action now derives both classes from the SESSION (users.id for the gate/created_by,
+    // agents.id via lib/kernel/agent-identity.ts resolveAgentIdInBrokerage), and the
+    // brokerage here is a cross-check it refuses on mismatch. The ElevenLabs webhook
+    // caller has no cookie session, so it is REFUSED ("Not signed in") rather than
+    // filed under an id of the wrong class — see lane84E notes (unresolved door).
     const result = await createDirectMailCampaign({
-      agentId: ctx.userId,
       brokerageId: ctx.brokerageId,
       campaignName: intake.campaignName,
       targetAudience: intake.targetAudience,
@@ -462,7 +468,9 @@ export async function stageDirectMailCampaign(
       trackingEnabled: true,
     })
     if (!result.success) return { success: false, error: result.error ?? "Direct mail creation failed" }
-    const campaignId = (result as { campaignId?: string; campaign?: { id?: string } }).campaignId
+    // The action returns `campaign.id`; it has never returned a `campaignId`, so this
+    // read was writerless and every staged mailer lost its draftId / deep link.
+    const campaignId = (result as { campaign?: { id?: string } | null }).campaign?.id
     return {
       success: true,
       draftId: campaignId,

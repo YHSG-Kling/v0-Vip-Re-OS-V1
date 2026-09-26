@@ -37,9 +37,11 @@
  * not per viewer — a topic video's viewers have no recipient lifecycle. Live data is
  * zero today (read 2026-09-26: 0 situational_reel claims, 0 project-keyed tracking
  * rows, 0 synced social posts), so this proves the wiring, not a learned ranking.
- * manager-signals' contact reels also claim `situational_reel` but key their pick on
- * a contact_type-derived persona and carry no stamp — the pass skips them BY NAME
- * (no_persona_stamp) rather than guess. The SQL is proven by text, not by applying it.
+ * manager-signals' contact reels also claim `situational_reel`; since wave 84E they key
+ * their pick on the contact PERSONA (topicPersonaOf) and stamp it, so the pass learns from
+ * them — a contact without a persona is still skipped BY NAME (no_persona_stamp). The one
+ * vocabulary is held by test:situational-reel-vocabulary. The SQL is proven by text, not
+ * by applying it.
  */
 import { readFileSync, existsSync } from "node:fs"
 import { dirname, join } from "node:path"

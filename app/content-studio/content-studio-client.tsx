@@ -511,7 +511,8 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
     try {
       const result = await createMailCampaign({
         brokerageId: brokerageId,
-        agentId: userId,
+        // No agentId: `userId` is a USERS id and agent_id FKs AGENTS (23503). The
+        // creator crosses the session user to their agents row itself (wave 84E).
         campaignName: newMail.title || "Direct Mail Campaign",
         targetAudience: "farm_area",
         quantity: 100,

@@ -130,8 +130,9 @@ export function PriceReductionSheet({
 
       if (launchMailCampaign) {
         try {
-          await createDirectMailCampaign({
-            agentId,
+          // No agentId: this sheet holds user.id, and the action derives BOTH id
+          // classes from the session (agents.id via agents.user_id) — wave 84E.
+          const mail = await createDirectMailCampaign({
             brokerageId,
             campaignName: `${priceImprovementLabel("noun")} — ${listingAddress}`,
             targetAudience: "local_buyers_investors",
@@ -140,7 +141,10 @@ export function PriceReductionSheet({
             trackingEnabled: true,
             appOrigin: typeof window !== "undefined" ? window.location.origin : "",
           })
-          toast.success("Price reduction direct mail campaign launched")
+          // The action RESOLVES a refusal ({ success: false }) rather than throwing, so
+          // the old unconditional success toast announced campaigns that never existed.
+          if (mail.success) toast.success("Price reduction direct mail campaign launched")
+          else toast.error(`Mail campaign not created — price still reduced: ${mail.error ?? "unknown error"}`)
         } catch {
           toast.error("Mail campaign failed — price still reduced")
         }
