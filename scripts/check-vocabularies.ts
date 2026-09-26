@@ -18,9 +18,9 @@
  * MEASURED AT GENERATION: 440 tables, 778 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-24
+ * generated: 2026-09-26
  * source: public.live_check_constraints_json()
- * body-sha256: c41942acf8ece40ea71f8927dc1e0c3857a269cf952fcf2aebbbfd9c77923c6d
+ * body-sha256: 0edebb7f1267cea3af5abd5f64e3a44f0e38b6ed398a3759732d857debe82d00
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -802,7 +802,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["cancelled", "completed", "failed", "pending", "running"],
   },
   lead_scraping_keywords: {
-    keyword_type: ["buyer", "expired", "fsbo", "investor", "motivated_seller"],
+    keyword_type: ["buyer", "expired", "fsbo", "investor", "motivated_seller", "realtor_seeking", "relocation"],
   },
   lead_scraping_markets: {
     territory_scope: ["agent", "brokerage", "team"],

@@ -1,4 +1,4 @@
--- ── WRITTEN, NOT APPLIED — the integrator applies it (CLAUDE.md §3: files are not the database) ──
+-- ── APPLIED LIVE 2026-09-26 via Supabase MCP apply_migration (project hrvaqgvukzxfskkcrwbt) ──
 -- m662 — Marketplace + cash buyers ON by default; scrape keyword types for relocation and
 --        realtor-seeking (wave 83, lane 83A)
 --
