@@ -81,7 +81,7 @@
     "lib/analytics/territory-coverage.ts": 2,
     "lib/analytics/territory-roi.ts": 2,
     "lib/application/listing-lifecycle.ts": 1,
-    "lib/assets/screenshot-capture.ts": 17,
+    "lib/assets/screenshot-capture.ts": 19,
     "lib/auth/role-grants.ts": 1,
     "lib/billing/ai-overage.ts": 1,
     "lib/billing/billing-access.ts": 1,
@@ -140,22 +140,23 @@
     "lib/education/skill-freshness-radar.ts": 1,
     "lib/education/skill-freshness.ts": 1,
     "lib/embed/widget-modes.ts": 1,
+    "lib/enrichment/household-financials.ts": 1,
     "lib/enrichment/reverse-skip-trace.ts": 1,
     "lib/enrichment/web-mention-search.ts": 2,
     "lib/external/apify-actors.ts": 1,
     "lib/external/arcgis-permits.ts": 8,
     "lib/external/batchdata-client.ts": 4,
     "lib/external/batchdata-seller-signals.ts": 16,
-    "lib/external/email-verifier.ts": 1,
     "lib/external/exa-client.ts": 1,
     "lib/external/nextdoor-extract.ts": 1,
     "lib/external/nominatim-geocode.ts": 2,
-    "lib/external/peopledata-client.ts": 3,
+    "lib/external/peopledata-client.ts": 4,
     "lib/external/permit-signals.ts": 11,
     "lib/external/review-extract.ts": 1,
     "lib/external/socrata-client.ts": 2,
     "lib/external/socrata-market-registry.ts": 2,
     "lib/external/tavily-client.ts": 1,
+    "lib/external/versium-client.ts": 1,
     "lib/external/zenrows-client.ts": 1,
     "lib/external/zyte-client.ts": 2,
     "lib/finance/auto-dispute.ts": 1,
@@ -298,11 +299,13 @@
     "lib/lead-assignment/rule-matcher.ts": 2,
     "lib/lead-governance/protected-class-signals.ts": 4,
     "lib/lead-governance/seller-signal-strength.ts": 4,
+    "lib/lead-magnets/embed-snippet.ts": 1,
     "lib/lead-pipeline/acquisition-coverage.ts": 1,
     "lib/lead-pipeline/ai-intent-classifier.ts": 3,
     "lib/lead-pipeline/canonical-lead-eligibility.ts": 2,
     "lib/lead-pipeline/email-engagement-sourcer.ts": 1,
-    "lib/lead-pipeline/enrichment-column-map.ts": 1,
+    "lib/lead-pipeline/email-seek.ts": 1,
+    "lib/lead-pipeline/enrichment-column-map.ts": 5,
     "lib/lead-pipeline/exa-sourcer.ts": 1,
     "lib/lead-pipeline/osint-sourcer.ts": 1,
     "lib/lead-pipeline/parked-retention.ts": 4,
@@ -318,7 +321,7 @@
     "lib/lead-pipeline/source-cost-ledger.ts": 1,
     "lib/lead-pipeline/subscription-gate.ts": 1,
     "lib/lead-pipeline/tavily-sourcer.ts": 1,
-    "lib/lead-pipeline/unknown-sender-identification.ts": 3,
+    "lib/lead-pipeline/unknown-sender-identification.ts": 5,
     "lib/lead-scoring/behavioral-events.ts": 1,
     "lib/lead-scoring/record-behavioral-event.ts": 1,
     "lib/learning-router/composer.ts": 1,
@@ -352,7 +355,7 @@
     "lib/marketing/social-cadence.ts": 1,
     "lib/marketing/social-carousel.ts": 2,
     "lib/marketing/social-media-pairing.ts": 2,
-    "lib/marketing/tenant-screenshot-door.ts": 2,
+    "lib/marketing/tenant-screenshot-door.ts": 3,
     "lib/marketing/trigger-match.ts": 2,
     "lib/marketing/video-content-kit.ts": 2,
     "lib/net-sheet/net-sheet-reconciler.ts": 1,
@@ -425,7 +428,7 @@
     "lib/remotion/chromium-executable.ts": 2,
     "lib/remotion/code-revision.ts": 3,
     "lib/remotion/composition-cache.ts": 1,
-    "lib/remotion/voiceover-mixer.ts": 1,
+    "lib/remotion/voiceover-mixer.ts": 2,
     "lib/security/oauth-refresh.ts": 2,
     "lib/security/secret-crypto.ts": 1,
     "lib/showings/showingtime-ingest.ts": 1,
@@ -458,7 +461,7 @@
     "lib/video/custom-video-archetypes.ts": 4,
     "lib/video/director-content.ts": 10,
     "lib/video/director-eval-harness.ts": 2,
-    "lib/video/duration-model.ts": 9,
+    "lib/video/duration-model.ts": 7,
     "lib/video/format-learning.ts": 6,
     "lib/video/listing-pitch-reel.ts": 1,
     "lib/video/multilingual-reel.ts": 1,
@@ -466,11 +469,10 @@
     "lib/video/plan-asset-readiness.ts": 7,
     "lib/video/promo-composition.ts": 1,
     "lib/video/realism-profile.ts": 5,
-    "lib/video/render-cut.ts": 2,
+    "lib/video/render-cut.ts": 1,
     "lib/video/script-compliance.ts": 1,
-    "lib/video/topic-video.ts": 3,
+    "lib/video/topic-video.ts": 2,
     "lib/video/video-director.ts": 7,
-    "lib/video/video-guide.ts": 1,
     "lib/video/video-plays.ts": 2,
     "lib/video/video-qr.ts": 1,
     "lib/voice/a2p-registration.ts": 2,
@@ -494,7 +496,7 @@
     "remotion/components/QrOutroBadge.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10171,
+  "census": 10214,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -817,7 +819,7 @@
     "app/actions/marketing/image-library.ts": 6,
     "app/actions/marketing/lead-magnet-copy.ts": 1,
     "app/actions/marketing/publish-guide-to-gbp.ts": 1,
-    "app/actions/marketing/tenant-screenshots.ts": 9,
+    "app/actions/marketing/tenant-screenshots.ts": 11,
     "app/actions/marketing-agent-resolutions.ts": 2,
     "app/actions/marketing-ai-approvals.ts": 3,
     "app/actions/marketing-cadence-policy.ts": 2,
@@ -1398,7 +1400,7 @@
     "app/api/internal/voice-command/route.ts": 1,
     "app/api/internal/voice-tts/route.ts": 1,
     "app/api/lead-magnets/qr/[magnetId]/route.ts": 1,
-    "app/api/lead-magnets/submissions/route.ts": 1,
+    "app/api/lead-magnets/submissions/route.ts": 2,
     "app/api/leads/deduplication-log/route.ts": 1,
     "app/api/leads/process-pipeline/route.ts": 1,
     "app/api/leads/raw/route.ts": 1,
@@ -2342,6 +2344,7 @@
     "app/dashboard/showings/prep/actions.ts": 3,
     "app/dashboard/showings/prep/prep-list-client.tsx": 1,
     "app/dashboard/social/components/post-composer-dialog.tsx": 1,
+    "app/dashboard/social/components/social-compliance-log.tsx": 1,
     "app/dashboard/social/social-dashboard-client.tsx": 1,
     "app/dashboard/sphere/actions.ts": 4,
     "app/dashboard/sphere/sphere-client.tsx": 1,
@@ -2608,6 +2611,7 @@
     "app/settings/campaign-bundles/estimate-comparison-card.tsx": 1,
     "app/settings/campaign-bundles/estimate-stills-card.tsx": 1,
     "app/settings/campaign-bundles/learned-visual-rules-card.tsx": 1,
+    "app/settings/campaign-bundles/public-page-stills-card.tsx": 1,
     "app/settings/campaign-bundles/topic-video-cadence-card.tsx": 1,
     "app/settings/channel-presets/client.tsx": 1,
     "app/settings/connections/connection-center-client.tsx": 1,
@@ -2863,7 +2867,7 @@
     "lib/application/transactions.ts": 55,
     "lib/approval-workflow/approval-engine.ts": 6,
     "lib/approval-workflow/approval-logger.ts": 5,
-    "lib/assets/screenshot-capture.ts": 30,
+    "lib/assets/screenshot-capture.ts": 32,
     "lib/assets/screenshot-uses.ts": 9,
     "lib/audiences/audience-sync.ts": 3,
     "lib/auth/authorize-for-user.ts": 1,
@@ -3156,6 +3160,7 @@
     "lib/direct-mail/orchestrate-bundle-send.ts": 1,
     "lib/direct-mail/orchestrate-preset-send.ts": 1,
     "lib/direct-mail/orchestrate-send.ts": 1,
+    "lib/direct-mail/piece-type.ts": 1,
     "lib/direct-mail/render-letter-audio.ts": 1,
     "lib/direct-mail/render-letter.ts": 1,
     "lib/direct-mail/render-postcard.ts": 2,
@@ -3206,6 +3211,7 @@
     "lib/enrichment/contact-enrichment-core.ts": 6,
     "lib/enrichment/deal-suppression.ts": 3,
     "lib/enrichment/deal-vocabulary.ts": 3,
+    "lib/enrichment/household-financials.ts": 3,
     "lib/enrichment/identifier-guard.ts": 1,
     "lib/enrichment/lead-enrichment-core.ts": 3,
     "lib/enrichment/lead-freshness.ts": 2,
@@ -3242,7 +3248,7 @@
     "lib/external/nominatim-geocode.ts": 5,
     "lib/external/osint-free.ts": 3,
     "lib/external/osint-neighborhood.ts": 3,
-    "lib/external/peopledata-client.ts": 5,
+    "lib/external/peopledata-client.ts": 6,
     "lib/external/permit-signals.ts": 15,
     "lib/external/rentcast-ai-tools.ts": 1,
     "lib/external/rentcast-mcp.ts": 2,
@@ -3251,6 +3257,7 @@
     "lib/external/socrata-client.ts": 4,
     "lib/external/socrata-market-registry.ts": 7,
     "lib/external/tavily-client.ts": 2,
+    "lib/external/versium-client.ts": 2,
     "lib/external/vision-property.ts": 1,
     "lib/external/zenrows-client.ts": 5,
     "lib/external/zenrows-normalizer.ts": 1,
@@ -3505,6 +3512,7 @@
     "lib/kernel/consent-recovery.ts": 3,
     "lib/kernel/consistency-guardian.ts": 4,
     "lib/kernel/consult-outcome-resolver.ts": 1,
+    "lib/kernel/content-creators.ts": 7,
     "lib/kernel/content-studio.ts": 7,
     "lib/kernel/continuity-receipt.ts": 3,
     "lib/kernel/contracts.ts": 2,
@@ -3573,7 +3581,7 @@
     "lib/kernel/managing-broker.ts": 3,
     "lib/kernel/marketing/real-estate-compliance-gate.ts": 2,
     "lib/kernel/marketing-bench.ts": 1,
-    "lib/kernel/marketing.ts": 20,
+    "lib/kernel/marketing.ts": 17,
     "lib/kernel/milestone-calendar-bridge.ts": 1,
     "lib/kernel/morning-standup.ts": 3,
     "lib/kernel/neighbor-farm.ts": 3,
@@ -3711,12 +3719,14 @@
     "lib/lead-intelligence/signal-extensions.ts": 4,
     "lib/lead-intent/inbound-lead-intent.ts": 1,
     "lib/lead-intent/lead-opt-out.ts": 2,
+    "lib/lead-magnets/embed-snippet.ts": 2,
     "lib/lead-pipeline/acquisition-coverage.ts": 2,
     "lib/lead-pipeline/ai-intent-classifier.ts": 7,
-    "lib/lead-pipeline/canonical-lead-eligibility.ts": 3,
+    "lib/lead-pipeline/canonical-lead-eligibility.ts": 4,
     "lib/lead-pipeline/contact-signal-rescrape.ts": 1,
     "lib/lead-pipeline/email-engagement-sourcer.ts": 2,
-    "lib/lead-pipeline/enrichment-column-map.ts": 7,
+    "lib/lead-pipeline/email-seek.ts": 2,
+    "lib/lead-pipeline/enrichment-column-map.ts": 18,
     "lib/lead-pipeline/enrichment-merge.ts": 2,
     "lib/lead-pipeline/enrichment-orchestrator.ts": 1,
     "lib/lead-pipeline/enrichment-retry.ts": 3,
@@ -3763,7 +3773,7 @@
     "lib/lead-pipeline/stale-preapproval-reengage.ts": 1,
     "lib/lead-pipeline/subscription-gate.ts": 2,
     "lib/lead-pipeline/tavily-sourcer.ts": 2,
-    "lib/lead-pipeline/unknown-sender-identification.ts": 5,
+    "lib/lead-pipeline/unknown-sender-identification.ts": 7,
     "lib/lead-pipeline/variant-winner.ts": 1,
     "lib/lead-promotion/eligibility-core.ts": 1,
     "lib/lead-promotion/eligibility-evaluator.ts": 1,
@@ -3856,7 +3866,7 @@
     "lib/marketing/email-campaign-sender.ts": 2,
     "lib/marketing/engagement-rollup.ts": 2,
     "lib/marketing/estimate-comparison.ts": 12,
-    "lib/marketing/estimate-sources.ts": 3,
+    "lib/marketing/estimate-sources.ts": 4,
     "lib/marketing/estimate-web-search.ts": 13,
     "lib/marketing/geo-faq.ts": 3,
     "lib/marketing/guide-booklet-content.ts": 2,
@@ -3882,7 +3892,7 @@
     "lib/marketing/stuck-campaign-reaper.ts": 1,
     "lib/marketing/stuck-social-post-policy.ts": 1,
     "lib/marketing/stuck-social-post-reaper.ts": 1,
-    "lib/marketing/tenant-screenshot-door.ts": 6,
+    "lib/marketing/tenant-screenshot-door.ts": 8,
     "lib/marketing/touchpoint-recorder.ts": 2,
     "lib/marketing/tracked-qr.ts": 8,
     "lib/marketing/trigger-match.ts": 2,
@@ -4123,7 +4133,7 @@
     "lib/remotion/code-revision.ts": 4,
     "lib/remotion/composition-cache.ts": 9,
     "lib/remotion/composition-geometry.ts": 2,
-    "lib/remotion/content-contract.ts": 6,
+    "lib/remotion/content-contract.ts": 7,
     "lib/remotion/media-host.ts": 1,
     "lib/remotion/music-filter-graph.ts": 6,
     "lib/remotion/music-mixer.ts": 2,
@@ -4133,7 +4143,7 @@
     "lib/remotion/render-decision.ts": 10,
     "lib/remotion/stock-pick.ts": 1,
     "lib/remotion/stock-scope.ts": 1,
-    "lib/remotion/voiceover-mixer.ts": 2,
+    "lib/remotion/voiceover-mixer.ts": 3,
     "lib/repurpose/actions.ts": 10,
     "lib/repurpose/distribute.ts": 1,
     "lib/repurpose/shared.ts": 1,
@@ -4294,13 +4304,13 @@
     "lib/vendors/w9-vocab.ts": 3,
     "lib/vendors/w9.ts": 3,
     "lib/video/anniversary-script.ts": 5,
-    "lib/video/assembly-timeline.ts": 3,
+    "lib/video/assembly-timeline.ts": 4,
     "lib/video/assistant-faces.ts": 1,
     "lib/video/assistant-options.ts": 1,
     "lib/video/avatar-explainer.ts": 4,
     "lib/video/avatar-render-orchestrator.ts": 8,
     "lib/video/avatar-track-submit.ts": 1,
-    "lib/video/body-visual-model.ts": 21,
+    "lib/video/body-visual-model.ts": 22,
     "lib/video/body-visual-rule-ledger.ts": 5,
     "lib/video/broll-picker.ts": 1,
     "lib/video/broll-plan.ts": 1,
@@ -4315,7 +4325,7 @@
     "lib/video/custom-video-archetypes.ts": 7,
     "lib/video/director-content.ts": 16,
     "lib/video/director-eval-harness.ts": 5,
-    "lib/video/duration-model.ts": 20,
+    "lib/video/duration-model.ts": 21,
     "lib/video/finish-spec.ts": 1,
     "lib/video/format-learning.ts": 13,
     "lib/video/intro-video-reactor.ts": 2,
@@ -4339,7 +4349,7 @@
     "lib/video/playable-video.ts": 1,
     "lib/video/presenter-media.ts": 1,
     "lib/video/promo-composition.ts": 6,
-    "lib/video/realism-profile.ts": 21,
+    "lib/video/realism-profile.ts": 22,
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 1,
     "lib/video/render-cut.ts": 9,
@@ -4347,10 +4357,10 @@
     "lib/video/script-compliance.ts": 9,
     "lib/video/script-structure.ts": 13,
     "lib/video/topic-video-runner.ts": 1,
-    "lib/video/topic-video.ts": 21,
+    "lib/video/topic-video.ts": 20,
     "lib/video/verbal-disclosure.ts": 1,
     "lib/video/video-director.ts": 13,
-    "lib/video/video-guide.ts": 7,
+    "lib/video/video-guide.ts": 6,
     "lib/video/video-identity.ts": 1,
     "lib/video/video-pipeline-reaper-policy.ts": 1,
     "lib/video/video-pipeline-reaper.ts": 1,
@@ -6597,6 +6607,8 @@
       "listEstimateSourcesAction",
       "captureEstimateStillAction",
       "listTenantScreenshotStillsAction",
+      "captureTenantPublicPageStillAction",
+      "listTenantPublicPageStillsAction",
       "captureEstimateComparisonAction",
       "typeComparisonFigureAction",
       "listEstimateComparisonAction",
@@ -9355,6 +9367,7 @@
       "GET"
     ],
     "app/api/lead-magnets/submissions/route.ts": [
+      "OPTIONS",
       "POST"
     ],
     "app/api/leads/deduplication-log/route.ts": [
@@ -12250,6 +12263,9 @@
     "app/dashboard/social/components/post-composer-dialog.tsx": [
       "PostComposerDialog"
     ],
+    "app/dashboard/social/components/social-compliance-log.tsx": [
+      "SocialComplianceLog"
+    ],
     "app/dashboard/social/social-dashboard-client.tsx": [
       "SocialDashboardClient"
     ],
@@ -13074,6 +13090,9 @@
     ],
     "app/settings/campaign-bundles/learned-visual-rules-card.tsx": [
       "LearnedVisualRulesCard"
+    ],
+    "app/settings/campaign-bundles/public-page-stills-card.tsx": [
+      "PublicPageStillsCard"
     ],
     "app/settings/campaign-bundles/topic-video-cadence-card.tsx": [
       "TopicVideoCadenceCard"
@@ -14317,6 +14336,8 @@
       "unsatisfiedReadyLabels",
       "screenshotCacheKey",
       "isPublicPageHost",
+      "isPublicIpAddress",
+      "requestHostRefusal",
       "planScreenshotCapture",
       "assertDemoTenantOnly",
       "isRobotsAllowed",
@@ -15814,6 +15835,9 @@
     "lib/direct-mail/orchestrate-send.ts": [
       "orchestrateRenderAndSend"
     ],
+    "lib/direct-mail/piece-type.ts": [
+      "canonicalCampaignPieceType"
+    ],
     "lib/direct-mail/render-letter-audio.ts": [
       "renderLetterAudio"
     ],
@@ -16057,6 +16081,11 @@
       "isTransactionLive",
       "leadDealLinkage"
     ],
+    "lib/enrichment/household-financials.ts": [
+      "needsPaidHouseholdRung",
+      "appendModeledCredit",
+      "persistHouseholdFinancialCaptures"
+    ],
     "lib/enrichment/identifier-guard.ts": [
       "hasUsableIdentifier"
     ],
@@ -16280,6 +16309,7 @@
     ],
     "lib/external/peopledata-client.ts": [
       "skipTraceWithPeopleData",
+      "pdlLocationFrom",
       "pdlAgeFromBirth",
       "ageRangeForAge",
       "mapPeopleDataPerson",
@@ -16336,6 +16366,10 @@
     "lib/external/tavily-client.ts": [
       "tavilySearch",
       "normalizeTavilyRow"
+    ],
+    "lib/external/versium-client.ts": [
+      "versiumQueryFor",
+      "appendVersiumFinancial"
     ],
     "lib/external/vision-property.ts": [
       "scorePropertyImage"
@@ -17506,6 +17540,15 @@
     "lib/kernel/consult-outcome-resolver.ts": [
       "resolveConsultOutcomes"
     ],
+    "lib/kernel/content-creators.ts": [
+      "authorNewsletterContent",
+      "createNewsletterCampaign",
+      "createEmailCampaign",
+      "createBlogPostDraft",
+      "writePodcastScript",
+      "createPodcastEpisode",
+      "createVideoProject"
+    ],
     "lib/kernel/content-studio.ts": [
       "captionStateOf",
       "hasQrOf",
@@ -17944,7 +17987,6 @@
     ],
     "lib/kernel/marketing.ts": [
       "loadMarketingWorkspace",
-      "createNewsletterCampaign",
       "saveNewsletterDraft",
       "scheduleNewsletterSend",
       "sendNewsletterNow",
@@ -17954,10 +17996,8 @@
       "createBlogPost",
       "previewBlogPost",
       "publishBlogPost",
-      "createVideoProject",
       "previewVideoProject",
       "distributeVideoAsset",
-      "createPodcastEpisodeKernel",
       "previewPodcastEpisode",
       "publishPodcastEpisode",
       "createMarketingCampaign",
@@ -18755,6 +18795,10 @@
       "applyLeadOptOut",
       "reopenLeadOnInboundConsent"
     ],
+    "lib/lead-magnets/embed-snippet.ts": [
+      "leadMagnetEmbedEndpoint",
+      "buildLeadMagnetEmbedSnippet"
+    ],
     "lib/lead-pipeline/acquisition-coverage.ts": [
       "recordAcquisitionIntents",
       "acquisitionIntentLabel"
@@ -18769,6 +18813,7 @@
       "assembleRecordContent"
     ],
     "lib/lead-pipeline/canonical-lead-eligibility.ts": [
+      "leadEmailProblem",
       "personNameProblem",
       "evaluateCanonicalLeadEligibility",
       "isLeadEligibleIdentity"
@@ -18780,6 +18825,10 @@
       "normalizeEmailEngagementSignal",
       "sourceEmailEngagementIntent"
     ],
+    "lib/lead-pipeline/email-seek.ts": [
+      "emailSeekDecision",
+      "seekEmailForRawRecord"
+    ],
     "lib/lead-pipeline/enrichment-column-map.ts": [
       "deriveEducationLevel",
       "peopleDataProfileToContactColumns",
@@ -18787,7 +18836,18 @@
       "demographicsFromProfile",
       "peopleDataProfileToLeadColumns",
       "batchDataPropertyEnrichmentToLeadColumns",
-      "batchDataPropertyEnrichmentToContactColumns"
+      "batchDataPropertyEnrichmentToContactColumns",
+      "normalizeMaritalStatus",
+      "normalizeMoneyRange",
+      "normalizeModeledCreditBand",
+      "normalizeHouseholdFinancials",
+      "householdFinancialsFromBatchData",
+      "householdFinancialsFromVersium",
+      "householdFinancialsFromProfile",
+      "missingHouseholdFinancials",
+      "mergeHouseholdFinancials",
+      "carryForwardHouseholdFinancials",
+      "householdFinancialContactColumns"
     ],
     "lib/lead-pipeline/enrichment-merge.ts": [
       "mergeEnrichment",
@@ -19020,9 +19080,11 @@
     ],
     "lib/lead-pipeline/unknown-sender-identification.ts": [
       "resolveInboundMailboxOwner",
+      "parseFromHeader",
       "extractInboundHeaderText",
       "preFilterAutomatedSender",
       "classifyUnknownSenderIntent",
+      "deriveSenderName",
       "identifyAndRouteUnknownSender"
     ],
     "lib/lead-pipeline/variant-winner.ts": [
@@ -19477,7 +19539,8 @@
     "lib/marketing/estimate-sources.ts": [
       "estimateSource",
       "estimateStillUseVerdict",
-      "comparisonEstimateSource"
+      "comparisonEstimateSource",
+      "classifyPublicPage"
     ],
     "lib/marketing/estimate-web-search.ts": [
       "parseAddressGeo",
@@ -19603,6 +19666,8 @@
       "planTenantStill",
       "captureTenantEstimateStill",
       "listTenantScreenshotStills",
+      "planTenantPublicPageStill",
+      "captureTenantPublicPageStill",
       "pickApprovedStill",
       "approvedTenantStill",
       "ensureZestimateChallengeStill"
@@ -20865,7 +20930,8 @@
       "describeMissingContent",
       "contentContractError",
       "consumesVoiceover",
-      "stagesVoiceover"
+      "stagesVoiceover",
+      "stagesSpeech"
     ],
     "lib/remotion/media-host.ts": [
       "hostRenderedMedia"
@@ -20921,6 +20987,7 @@
       "resolveStockScopeOrder"
     ],
     "lib/remotion/voiceover-mixer.ts": [
+      "narrationDelayStage",
       "paddingSecondsFor",
       "mixNarrationVoiceover"
     ],
@@ -21633,7 +21700,8 @@
     "lib/video/assembly-timeline.ts": [
       "computeAssemblyTimeline",
       "evenShotSlots",
-      "weightedShotSlots"
+      "weightedShotSlots",
+      "slideFadeRange"
     ],
     "lib/video/assistant-faces.ts": [
       "generateAssistantFaceOptions"
@@ -21680,6 +21748,7 @@
       "safeInsets",
       "pipCornerStyle",
       "insideSafeArea",
+      "fullPresenterBox",
       "planWantsKeyedPresenter",
       "bodyVisualStamp"
     ],
@@ -21782,6 +21851,7 @@
       "providerMaxSpokenSeconds",
       "compositionDurationSpec",
       "compositionBookends",
+      "narrationStartFrame",
       "compositionPurposes",
       "requiredCapFrames",
       "movingCompositionIds",
@@ -21928,6 +21998,7 @@
       "budgetForWordCount",
       "stripExpressiveAudioTags",
       "enforceExpressiveAudioTagBudget",
+      "appliedBookendSeconds",
       "withSpokenScriptStandards",
       "sentenceLengthCoefficientOfVariation",
       "describeAiTellCoverage",
@@ -22006,7 +22077,6 @@
       "topicVideosPerWeek",
       "topicVideoWeekdays",
       "topicVideoSlotToday",
-      "isTopicVideoDay",
       "terminalArchetypeFor",
       "topicArchetypeFor",
       "topicGoal",
@@ -22038,7 +22108,6 @@
     ],
     "lib/video/video-guide.ts": [
       "needsChecklist",
-      "allChecklists",
       "needsPrompt",
       "suggestPrompt",
       "cleanSuggestion",
