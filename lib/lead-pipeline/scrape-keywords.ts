@@ -91,7 +91,8 @@ export const SCRAPE_KEYWORD_POLICY: Record<SourceKey, KeywordPolicy> = {
   reddit_intent:        { reads: true, shape: "terms", perIntent: 3 },
   craigslist_fsbo:      { reads: true, shape: "or_query", perIntent: 3 },
   craigslist_wanted:    { reads: true, shape: "or_query", perIntent: 3 },
-  tiktok_intent:        { reads: true, shape: "terms", perIntent: 2 },
+  // tiktok_intent's keyword policy retired with the SourceKey (lane 84C; owner 2026-09-26
+  // "don't need tiktok." — lib/lead-pipeline/source-intent-map.ts carries the tombstone).
   batchdata_motivated:         { reads: false, why: "BatchData quickLists (motivation triggers from lead_scraping_motivated_params), not text search" },
   expired_listing:             { reads: false, why: "BatchData 'expired-listing' quickList — structured, no text" },
   batchdata_smart_search:      { reads: false, why: "BatchData subscription push (webhook) — criteria, no text" },
@@ -127,8 +128,8 @@ export const KEYWORD_SOURCE_KEYS: SourceKey[] = (Object.keys(SCRAPE_KEYWORD_POLI
 // ─── Defaults (territory tokens {city} / {state}) ────────────────────────────
 // Sources: platform listening vocabulary used by seller-intent monitors (SellerRadar: relocation,
 // inheritance, downsizing on Reddit/Facebook groups/Nextdoor/Craigslist), motivated-seller PPC lists
-// (reimarketingpro.com 2026: urgency/condition/situation words), Nextdoor/TikTok agent playbooks
-// (realestateagentleads.com 2026-05; NAR 2026-07: "moving to <city>" is how movers search TikTok).
+// (reimarketingpro.com 2026: urgency/condition/situation words), Nextdoor agent playbooks
+// (realestateagentleads.com 2026-05).
 
 export const DEFAULT_SCRAPE_KEYWORDS: Record<string, Partial<Record<AcquisitionIntent, readonly string[]>>> = {
   nextdoor_intent: {
@@ -169,12 +170,8 @@ export const DEFAULT_SCRAPE_KEYWORDS: Record<string, Partial<Record<AcquisitionI
     relocate: ["relocating to {city}", "moving to {city}"],
     investor: ["cash buyer", "investor looking to buy"],
   },
-  tiktok_intent: {
-    buy: ["{city} homes for sale", "first time home buyer {city}"],
-    relocate: ["moving to {city}", "relocating to {city}"],
-    sell: ["selling my house in {city}", "what is my home worth {city}"],
-    realtor_seeking: ["best realtor in {city}", "looking for a realtor in {city}"],
-  },
+  // tiktok_intent's default terms retired with the SourceKey (lane 84C; owner 2026-09-26
+  // "don't need tiktok.").
 }
 
 // ─── Brokerage keyword rows (lead_scraping_keywords) ─────────────────────────

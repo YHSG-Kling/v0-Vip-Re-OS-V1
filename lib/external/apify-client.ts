@@ -167,45 +167,9 @@ export async function scrapeFacebookMarketplaceListings(params: {
   return { listings: result.data, cost: result.cost }
 }
 
-/**
- * Lane 83A — TikTok hop 1: territory keyword search → videos. Both candidates' input names are
- * sent (`keywords` + `maxResultsPerKeyword` for memo23, `searchQueries` + `maxVideosPerQuery` for
- * devcake/xmolodtsov). Comments are NOT scraped here (the dearer hop runs only on the top videos).
- */
-export async function scrapeTikTokSearch(params: {
-  queries: readonly string[]
-  perQuery?: number
-}): Promise<{ videos: any[]; cost: number }> {
-  const queries = params.queries.map((q) => q.trim()).filter(Boolean)
-  if (queries.length === 0) return { videos: [], cost: 0 }
-  const per = params.perQuery || 10
-  const result = await runApifyTask('tiktok_search', {
-    keywords: queries,
-    maxResultsPerKeyword: per,
-    searchQueries: queries,
-    maxVideosPerQuery: per,
-    scrapeComments: false,
-  })
-  return { videos: result.data, cost: result.cost }
-}
-
-/** Lane 83A — TikTok hop 2: comments on the territory's top videos (`videoUrls` / `postUrls`). */
-export async function scrapeTikTokComments(params: {
-  videoUrls: readonly string[]
-  perVideo?: number
-}): Promise<{ comments: any[]; cost: number }> {
-  const urls = params.videoUrls.filter(Boolean)
-  if (urls.length === 0) return { comments: [], cost: 0 }
-  const per = params.perVideo || 100
-  const result = await runApifyTask('tiktok_comments', {
-    videoUrls: urls,
-    maxCommentsPerVideo: per,
-    postUrls: urls,
-    maxCommentsPerPost: per,
-    includeReplies: false,
-  })
-  return { comments: result.data, cost: result.cost }
-}
+// TOMBSTONE — scrapeTikTokSearch / scrapeTikTokComments (lane 83A's two Apify hops) retired by
+// lane 84C. Owner, 2026-09-26: "don't need tiktok." Their only caller was
+// lib/lead-pipeline/social-sourcer.ts::sourceTikTokIntent, retired in the same edit.
 
 export async function scrapeGoogleSearchResults(params: {
   queries: string[]

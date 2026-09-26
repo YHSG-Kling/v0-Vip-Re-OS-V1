@@ -16,6 +16,15 @@
  *     gate. Which makes `mailing_address_verified` a gate input, and a gate is
  *     only as honest as the writer behind its inputs.
  *
+ *     SUPERSEDED IN PART — owner, wave 84 (2026-09-26), verbatim: "if the
+ *     record/row from scrapping comes in and doesnt have phone and/or email with
+ *     first and last name, it can't come in as a lead - it goes in as a raw lead
+ *     to dedup/enrich/dedup, etc." The mailing-address arm is RETIRED: first +
+ *     last name AND phone and/or email is the whole rule (lane 84C;
+ *     scripts/lead-identity-gate-guard.ts is its dedicated proof). This file keeps
+ *     the refusals, now including "a VERIFIED address alone refuses", and asserts
+ *     the gate-side Lob writer is GONE rather than wired.
+ *
  *  2. AUTOMATIC ENRICHMENT
  *     "when a list or any time there is a new contact, there is an automatic
  *      enrichment run."
@@ -42,19 +51,10 @@
  *            doors; the bulk path is bounded; the lead→contact conversion still
  *            carries notes, lineage and dnc_status.
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import {
-  evaluateCanonicalLeadEligibility,
-  hasVerifiedMailingAddress,
-  hasUnverifiedMailingAddress,
-} from "../lib/lead-pipeline/canonical-lead-eligibility"
-import {
-  needsPromotionAddressVerification,
-  interpretLobForPromotion,
-} from "../lib/lead-pipeline/promotion-address-verification"
-import { CASS_SOURCE } from "../lib/providers/mailing-cass-gate"
+import { evaluateCanonicalLeadEligibility } from "../lib/lead-pipeline/canonical-lead-eligibility"
 import { stripComments } from "./strip-comments"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
@@ -87,7 +87,7 @@ const check = (name: string, ok: boolean, detail?: string) => {
 // RULING 1 · THE CONVERSION GATE
 // ═════════════════════════════════════════════════════════════════════════════
 function gatePure() {
-  console.log("\n[PURE · ruling 1 — the gate approves]")
+  console.log("\n[PURE · ruling 1 (wave 84 form) — the gate approves]")
   const email = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "m@x.com" })
   check("first + last + EMAIL → approved via email",
     email.eligible === true && (email as any).via.join(",") === "email")
@@ -96,19 +96,11 @@ function gatePure() {
   check("first + last + PHONE → approved via phone (the owner named phone; round 38 had excluded it)",
     phone.eligible === true && (phone as any).via.join(",") === "phone")
 
-  const addr = evaluateCanonicalLeadEligibility({
-    first_name: "Walter", last_name: "Sobchak",
-    mailing_address: "742 Evergreen Ter, Miami FL 33101", mailing_address_verified: true,
-  })
-  check("first + last + VERIFIED mailing address → approved via the address arm",
-    addr.eligible === true && (addr as any).via.join(",") === "verified_mailing_address")
-
-  const all = evaluateCanonicalLeadEligibility({
+  const both = evaluateCanonicalLeadEligibility({
     first_name: "Maria", last_name: "Gonzalez", email: "m@x.com", phone: "3055550142",
-    mailing_address: "PO Box 9", mailing_address_verified: true,
   })
-  check("all three channels → every one is named in `via` (attribution, not just a boolean)",
-    all.eligible === true && (all as any).via.length === 3)
+  check("both channels → each is named in `via` (attribution, not just a boolean)",
+    both.eligible === true && (both as any).via.length === 2)
 
   console.log("\n[PURE · ruling 1 — THE REFUSALS (the assertions that can actually fail)]")
   const firstOnly = evaluateCanonicalLeadEligibility({ first_name: "Maria", email: "m@x.com", phone: "3055550142" })
@@ -124,102 +116,37 @@ function gatePure() {
     lastOnly.eligible === false && (lastOnly as any).failing === "name")
 
   const noChannel = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez" })
-  check("REFUSAL · ALL THREE CHANNELS ABSENT → refused, failing 'contact_anchor'",
+  check("REFUSAL · NO PHONE AND NO EMAIL → refused, failing 'contact_anchor'",
     noChannel.eligible === false && (noChannel as any).failing === "contact_anchor")
-  check("REFUSAL · the refusal reason states the owner's rule, all three arms",
-    /email address and\/or a phone number and\/or a VERIFIED mailing address/.test((noChannel as any).reason))
+  check("REFUSAL · the refusal reason states the owner's wave-84 rule",
+    /phone number and\/or an email address/.test((noChannel as any).reason))
 
-  const unverified = evaluateCanonicalLeadEligibility({
+  const verified = evaluateCanonicalLeadEligibility({
     first_name: "Walter", last_name: "Sobchak",
-    mailing_address: "742 Evergreen Ter, Miami FL 33101", mailing_address_verified: false,
-  })
-  check("REFUSAL · ADDRESS PRESENT BUT NOT VERIFIED → refused (the word the owner used is VERIFIED)",
-    unverified.eligible === false && (unverified as any).failing === "contact_anchor")
-
-  const unverifiedNull = evaluateCanonicalLeadEligibility({
-    first_name: "Walter", last_name: "Sobchak", mailing_address: "742 Evergreen Ter",
-  })
-  check("REFUSAL · an address with NO verdict at all is not verified either (null !== true)",
-    unverifiedNull.eligible === false && (unverifiedNull as any).failing === "contact_anchor")
-
-  const flagNoAddress = evaluateCanonicalLeadEligibility({
-    first_name: "Walter", last_name: "Sobchak", mailing_address_verified: true,
-  })
-  check("REFUSAL · a verified FLAG with no address string is not a mailing address",
-    flagNoAddress.eligible === false && (flagNoAddress as any).failing === "contact_anchor")
+    mailing_address: "742 Evergreen Ter, Miami FL 33101", mailing_address_verified: true,
+  } as any)
+  check("REFUSAL · a VERIFIED mailing address alone → refused (wave 84 retired the address arm)",
+    verified.eligible === false && (verified as any).failing === "contact_anchor")
 
   const whitespace = evaluateCanonicalLeadEligibility({
-    first_name: "Maria", last_name: "Gonzalez", email: "  ", phone: "\t", mailing_address: " ", mailing_address_verified: true,
+    first_name: "Maria", last_name: "Gonzalez", email: "  ", phone: "\t",
   })
   check("REFUSAL · whitespace in every channel fabricates nothing", whitespace.eligible === false)
-
-  console.log("\n[PURE · ruling 1 — the address predicates]")
-  check("hasVerifiedMailingAddress demands BOTH the string and the flag",
-    hasVerifiedMailingAddress({ mailing_address: "x", mailing_address_verified: true }) === true &&
-    hasVerifiedMailingAddress({ mailing_address: "x" }) === false &&
-    hasVerifiedMailingAddress({ mailing_address_verified: true }) === false)
-  check("hasUnverifiedMailingAddress finds exactly the records a verification could rescue",
-    hasUnverifiedMailingAddress({ mailing_address: "x" }) === true &&
-    hasUnverifiedMailingAddress({ mailing_address: "x", mailing_address_verified: true }) === false &&
-    hasUnverifiedMailingAddress({}) === false)
 }
 
-function gateWriterPure() {
-  console.log("\n[PURE · ruling 1 — the verified-address WRITER: when it spends, and what it concludes]")
-  check("spends ONLY when the address is the record's only possible anchor",
-    needsPromotionAddressVerification({ mailing_address: "742 Evergreen Ter" }) === true)
-  check("does NOT spend when an email already opens the gate",
-    needsPromotionAddressVerification({ email: "m@x.com", mailing_address: "742 Evergreen Ter" }) === false)
-  check("does NOT spend when a phone already opens the gate",
-    needsPromotionAddressVerification({ phone: "3055550142", mailing_address: "742 Evergreen Ter" }) === false)
-  check("does NOT spend when there is nothing to verify",
-    needsPromotionAddressVerification({}) === false)
-  check("does NOT re-buy a verdict already recorded as verified",
-    needsPromotionAddressVerification({ mailing_address: "x", mailing_address_verified: true }) === false)
-  check("does NOT re-buy an address Lob already ruled UNDELIVERABLE (the CASS marker is the receipt)",
-    needsPromotionAddressVerification({ mailing_address: "x", mailing_address_source: CASS_SOURCE }) === false)
-
-  // FAIL CLOSED — the whole point. A gate that cannot run must refuse.
-  const unavailable = interpretLobForPromotion(null)
-  check("FAIL CLOSED · no LOB_API_KEY / transient failure → NOT verified",
-    unavailable.verified === false)
-  check("FAIL CLOSED · and writes NOTHING (a synthetic false would look like Lob's own verdict next pass)",
-    Object.keys(unavailable.patch).length === 0)
-
-  const deliverable = interpretLobForPromotion({
-    verified: true, deliverability: "deliverable",
-    standardized: { primary_line: "742 EVERGREEN TER", city: "MIAMI", state: "FL", zip_code: "33101" },
-    raw: {}, error: null,
-  })
-  check("deliverable → verified, and Lob's STANDARDIZED parts are what gets persisted",
-    deliverable.verified === true &&
-    deliverable.patch.mailing_address === "742 EVERGREEN TER" &&
-    deliverable.patch.mailing_address_verified === true &&
-    deliverable.patch.mailing_address_source === CASS_SOURCE)
-
-  const undeliverable = interpretLobForPromotion({
-    verified: false, deliverability: "undeliverable", standardized: {}, raw: {}, error: null,
-  })
-  check("undeliverable (authoritative) → NOT verified, and the false verdict is RECORDED so it is not re-bought",
-    undeliverable.verified === false &&
-    undeliverable.patch.mailing_address_verified === false &&
-    undeliverable.patch.mailing_address_source === CASS_SOURCE)
-
-  // The verdict feeds the gate, and the gate refuses on it. End to end, pure.
-  const afterUndeliverable = evaluateCanonicalLeadEligibility({
-    first_name: "Walter", last_name: "Sobchak",
-    mailing_address: "742 Evergreen Ter",
-    mailing_address_verified: undeliverable.patch.mailing_address_verified as boolean,
-  })
-  check("END TO END · an undeliverable address still refuses the conversion",
-    afterUndeliverable.eligible === false && (afterUndeliverable as any).failing === "contact_anchor")
-  const afterDeliverable = evaluateCanonicalLeadEligibility({
-    first_name: "Walter", last_name: "Sobchak",
-    mailing_address: deliverable.patch.mailing_address as string,
-    mailing_address_verified: deliverable.patch.mailing_address_verified as boolean,
-  })
-  check("END TO END · a deliverable address opens the gate on the address arm alone",
-    afterDeliverable.eligible === true && (afterDeliverable as any).via.join(",") === "verified_mailing_address")
+function gateWriterRetired() {
+  console.log("\n[SOURCE · ruling 1 — the gate-side verified-address WRITER is retired, not left orphaned]")
+  check("promotion-address-verification.ts is deleted (its only purpose was the retired address arm)",
+    !existsSync(join(root, "lib/lead-pipeline/promotion-address-verification.ts")))
+  const finder = /verifyMailingAddressForPromotion\(|verifyAddressBatchData\(/
+  check("positive control · the finder recognises a live call to the retired writer",
+    finder.test("const v = await verifyMailingAddressForPromotion({ candidate })"))
+  check("processRawRecord makes no gate-side Lob / BatchData address call",
+    !finder.test(src("lib/lead-pipeline/pipeline-processor.ts")) && !/verifyAddressViaLob/.test(src("lib/lead-pipeline/pipeline-processor.ts")))
+  check("verifyAddressBatchData (the writer's Lob-less fallback, its only caller) is gone from the BatchData client",
+    !/export async function verifyAddressBatchData\(/.test(src("lib/external/batchdata-client.ts")))
+  check("direct-mail verification survives at the SEND (needsCassCheck → Lob)",
+    /needsCassCheck\(/.test(src("lib/providers/dispatch.ts")) && /verifyAddressViaLob\(/.test(src("lib/providers/dispatch.ts")))
 }
 
 function gateSource() {
@@ -227,17 +154,13 @@ function gateSource() {
   const pipeline = src("lib/lead-pipeline/pipeline-processor.ts")
   check("the promotion path delegates to THE canonical gate (one gate, no local copy)",
     /evaluateCanonicalLeadEligibility\(/.test(pipeline))
-  check("the gate is fed the PHONE (the arm the owner added)",
+  check("the gate is fed the PHONE (an arm the owner named)",
     /phone:\s+enriched\.phone \?\? phone,/.test(pipeline))
-  check("the gate is fed the verified FLAG, not merely the address string",
-    /mailing_address_verified:\s+resolvedMailingVerified/.test(pipeline))
   check("a refused record is NOT promoted — it stays raw under insufficient_identity_for_promotion",
     /insufficient_identity_for_promotion/.test(pipeline) && /promotion_identity_gate/.test(pipeline))
-  check("the writer runs ONLY on a contact_anchor refusal (never on a name refusal, never on a pass)",
-    /failing === "contact_anchor"/.test(pipeline) && /verifyMailingAddressForPromotion\(/.test(pipeline))
-  check("the gate is RE-EVALUATED after the verification, by the same canonical function",
-    pipeline.split("evaluateCanonicalLeadEligibility(").length - 1 >= 2)
-  check("the promoted lead carries the verdict AND the CASS marker (so nothing re-buys it)",
+  check("the gate is evaluated ONCE (no second, address-driven re-evaluation)",
+    pipeline.split("evaluateCanonicalLeadEligibility(").length - 1 === 1)
+  check("the promoted lead still CARRIES the honest verified flag and its source (data, not an anchor)",
     /mailing_address_verified:\s*resolvedMailingVerified/.test(pipeline) &&
     /mailing_address_source:\s*resolvedMailingSource/.test(pipeline))
 
@@ -399,18 +322,17 @@ async function main() {
   console.log(" CONVERSION GATE + AUTOMATIC ENRICHMENT — two owner rulings, wave 14")
   console.log("══════════════════════════════════════════════════════════════════════")
   gatePure()
-  gateWriterPure()
+  gateWriterRetired()
   gateSource()
   enrichmentSource()
   bulkBound()
   conversionInvariants()
   console.log(`\n${"═".repeat(70)}`)
   console.log(`CONVERSION GATE + AUTO ENRICHMENT — ${pass} passed, ${fail} failed`)
-  console.log("Blind spots: no DB and no network layer here. The gate, the Lob")
-  console.log("interpretation and the bulk bound are proved as pure functions; the")
-  console.log("wiring is proved by comment-stripped source. Whether Lob itself")
-  console.log("answers, and whether the queue drains, are live questions this")
-  console.log("simulator deliberately does not claim to have checked.")
+  console.log("Blind spots: no DB and no network layer here. The gate and the bulk")
+  console.log("bound are proved as pure functions; the wiring is proved by")
+  console.log("comment-stripped source. Whether the queue drains is a live question")
+  console.log("this simulator deliberately does not claim to have checked.")
   if (fail > 0) {
     console.log("\nFailures:")
     for (const f of fails) console.log(`  · ${f}`)

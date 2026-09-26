@@ -17,8 +17,6 @@ import {
   scrapeGoogleSearchResults,
   scrapeLinkedInPosts,
   scrapeFacebookMarketplaceListings,
-  scrapeTikTokSearch,
-  scrapeTikTokComments,
 } from "@/lib/external/apify-client"
 import { isViableRecord, type NormalizedScrapedRecord } from "./raw-record-types"
 import { parseCraigslistHtml, buildRealtySiteChatterUrl, parseContactAgentChatter, parseSellerChatter } from "./scraper-parsers"
@@ -577,7 +575,7 @@ export async function sourceRealtySiteChatter(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// LANE 83A — Nextdoor keyword match (moved out of the cron) + TikTok comment intent
+// LANE 83A — Nextdoor keyword match (moved out of the cron)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -611,59 +609,8 @@ export function normalizeNextdoorPost(post: Record<string, any>, market: SocialM
   }
 }
 
-/**
- * PURE — one TikTok comment (under a territory video) → a raw record, or null when the comment
- * evidences no population (most comments are "love this!"). The commenter's handle is the identity
- * anchor; social-identity-resolve.ts turns it into https://www.tiktok.com/@handle for PeopleData.
- */
-export function normalizeTikTokComment(comment: Record<string, any>, market: SocialMarket, video?: Record<string, any> | null): NormalizedScrapedRecord | null {
-  const text = `${comment.text ?? comment.comment ?? comment.content ?? ""}`
-  const signals = intentSignalsFromText(text)
-  if (signals.length === 0) return null
-  const author = comment.author ?? comment.user ?? {}
-  const handle = author.uniqueId ?? author.unique_id ?? comment.uniqueId ?? comment.username ?? comment.authorUsername ?? null
-  const { firstName, lastName } = nameFromHandle(author.nickname ?? comment.nickname ?? null)
-  return {
-    sourceRecordId: `tiktok-${comment.cid ?? comment.id ?? comment.commentId ?? `${Date.now()}-${Math.random()}`}`,
-    source: "tiktok_intent",
-    behaviorType: "social_comment_intent",
-    intentType: intentTypeFromText(text),
-    intentSignals: signals,
-    firstName,
-    lastName,
-    username: handle ?? undefined,
-    city: market.city,
-    state: market.state,
-    sourceUrl: comment.commentUrl ?? video?.webVideoUrl ?? video?.url ?? null,
-    motivationScore: 40,
-    rawPayload: { comment, video_url: video?.webVideoUrl ?? video?.url ?? null, video_desc: video?.text ?? video?.desc ?? null },
-  }
-}
-
-/** Videos per run whose comments are read (the dearer hop) — bounds spend per territory. */
-export const TIKTOK_VIDEOS_PER_RUN = 10
-export const TIKTOK_COMMENTS_PER_VIDEO = 100
-
-/**
- * TikTok intent lane (lane 83A) — territory-scoped, two hops on Apify:
- *   1. search the territory's resolved tiktok_intent keywords ("moving to <city>", "<city> homes for
- *      sale", …) → the most-commented territory videos;
- *   2. read those videos' comments → classify each (normalizeTikTokComment) → raw records.
- * The commenter-profile hop is the pipeline's own: processRawRecord → PeopleData by profile URL.
- * No city ⇒ no call and $0 (never a national sweep).
- */
-export async function sourceTikTokIntent(market: SocialMarket, queries: readonly string[]): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
-  if (!market.city || queries.length === 0) return { records: [], cost: 0 }
-  const search = await scrapeTikTokSearch({ queries, perQuery: 10 }).catch(() => ({ videos: [], cost: 0 }))
-  const videos = [...(search.videos ?? [])]
-    .filter((v) => (v.webVideoUrl ?? v.url))
-    .sort((a, b) => Number(b.commentCount ?? b.stats?.commentCount ?? 0) - Number(a.commentCount ?? a.stats?.commentCount ?? 0))
-    .slice(0, TIKTOK_VIDEOS_PER_RUN)
-  if (videos.length === 0) return { records: [], cost: search.cost ?? 0 }
-  const byUrl = new Map(videos.map((v) => [String(v.webVideoUrl ?? v.url), v]))
-  const comments = await scrapeTikTokComments({ videoUrls: [...byUrl.keys()], perVideo: TIKTOK_COMMENTS_PER_VIDEO }).catch(() => ({ comments: [], cost: 0 }))
-  const records = (comments.comments ?? [])
-    .map((c) => normalizeTikTokComment(c, market, byUrl.get(String(c.videoWebUrl ?? c.videoUrl ?? c.postUrl ?? "")) ?? null))
-    .filter((r): r is NormalizedScrapedRecord => !!r && isViableRecord(r))
-  return { records, cost: (search.cost ?? 0) + (comments.cost ?? 0) }
-}
+// TOMBSTONE — normalizeTikTokComment, TIKTOK_VIDEOS_PER_RUN, TIKTOK_COMMENTS_PER_VIDEO and
+// sourceTikTokIntent (lane 83A's two-hop Apify TikTok comment lane) RETIRED by lane 84C.
+// Owner, 2026-09-26, verbatim: "don't need tiktok." No survivor to merge onto — no other lane
+// reads TikTok comments; the capability was ruled away, not moved. The SourceKey tombstone is in
+// lib/lead-pipeline/source-intent-map.ts (SourceKey union).

@@ -231,7 +231,9 @@ const TRANSPORT = new Set([
 const SCRAPER_LANE = new Set([
   "app/api/cron/lead-scraping/route.ts", "app/api/webhooks/batchdata-smart-search/route.ts",
   "lib/kernel/listings-batchdata-feed.ts", "lib/kernel/intent-campaign.ts", "lib/kernel/neighbor-farm.ts",
-  "lib/lead-pipeline/pipeline-processor.ts", "lib/lead-pipeline/promotion-address-verification.ts",
+  "lib/lead-pipeline/pipeline-processor.ts",
+  // (lane 84C: lib/lead-pipeline/promotion-address-verification.ts left this list — the file is
+  // deleted with the wave-14 address anchor; its verifyAddressBatchData reach went with it.)
   "app/api/cron/permit-signal-scan/route.ts", // cron: permit → seller-signal scan
   "app/actions/admin/run-scrape-test.ts", "app/api/admin/scrape-test/route.ts", // admin dry-run of a scrape source
 ])

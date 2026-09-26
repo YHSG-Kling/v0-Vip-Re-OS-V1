@@ -474,7 +474,35 @@ export async function createLeadOnlyRecordForAcquisitionSource(params: {
   agent_id?: string | null
   brokerage_id: string
   raw_record_id?: string
+  /**
+   * Lane 84C — who started the contact. DEFAULT "scraped": the owner's wave-84 rule applies in
+   * full ("if the record/row from scrapping comes in and doesnt have phone and/or email with first
+   * and last name, it can't come in as a lead") through THE predicate,
+   * lib/lead-pipeline/canonical-lead-eligibility.ts — a refused record belongs in raw_scraped_leads
+   * (ingestRawSourceBatch → processRawRecord), never here.
+   * "person_initiated_inbound": the PERSON wrote to the brokerage (the unknown-sender door,
+   * lib/lead-pipeline/unknown-sender-identification.ts — owner wave 74A: a brokerage mailbox's
+   * qualifying sender "comes in as a lead not a raw lead"). Not a scraped row, so the name half is
+   * not required; the reachability half (phone and/or email) still is.
+   */
+  origin?: "scraped" | "person_initiated_inbound"
 }): Promise<CRMResult> {
+  const { evaluateCanonicalLeadEligibility } = await import("@/lib/lead-pipeline/canonical-lead-eligibility")
+  const gate = evaluateCanonicalLeadEligibility({
+    first_name: params.first_name, last_name: params.last_name, email: params.email, phone: params.phone,
+  })
+  const reachable = !!(params.email ?? "").trim() || !!(params.phone ?? "").trim()
+  const scraped = (params.origin ?? "scraped") === "scraped"
+  if (scraped ? !gate.eligible : !reachable) {
+    // FAIL CLOSED — no row. A scraped record that fails belongs in the raw pipeline.
+    return {
+      success: false,
+      error: scraped && !gate.eligible
+        ? `${gate.reason} — not a lead; route it through the raw pipeline`
+        : "Needs a phone number and/or an email address",
+    }
+  }
+
   const supabase = createServiceClient()
   const now = new Date().toISOString()
 

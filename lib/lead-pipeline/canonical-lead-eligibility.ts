@@ -1,133 +1,183 @@
 /**
  * SINGLE source of truth for the "raw record → lead" CONVERSION GATE.
  *
- * CANONICAL BUSINESS RULE (owner, wave 14), verbatim: "when a raw lead gets
- * converted to a lead, the gate approves only if there is a first name and last
- * name and email and/or phone number and/or a mailing address verified."
+ * ── THE RULE IN FORCE (owner, wave 84, 2026-09-26), verbatim ──────────────────
+ *   "if the record/row from scrapping comes in and doesnt have phone and/or email
+ *    with first and last name, it can't come in as a lead - it goes in as a raw
+ *    lead to dedup/enrich/dedup, etc."
  *
  * Read precisely, that is TWO tests, both of which must pass:
  *
- *   1. IDENTITY — a FIRST NAME **and** a LAST NAME. Both. Neither is optional.
- *   2. REACHABILITY — at least ONE of three channels:
- *        • an EMAIL ADDRESS, and/or
- *        • a PHONE NUMBER, and/or
- *        • a VERIFIED MAILING ADDRESS.
+ *   1. IDENTITY — a real FIRST NAME **and** a real LAST NAME. Both.
+ *   2. REACHABILITY — a PHONE NUMBER and/or an EMAIL ADDRESS.
  *
- * ── WHAT CHANGED, AND WHY EACH HALF MOVED ────────────────────────────────────
- * The round-38/39 gate this replaces read:
- *
- *     const hasMailing = !!(c.mailing_address ?? "").trim() || c.mailing_address_verified === true
- *     if (!hasFirst || !hasLast) …refuse…
- *     if (hasEmail || hasMailing) …promote…
- *
- * Two defects against the ruling now in force:
- *
- *   · PHONE WAS NOT AN ANCHOR. Round 38 explicitly excluded it ("Phone still
- *     does NOT count as a contact anchor"). The owner's wave-14 wording names it
- *     — "email and/or phone number and/or …" — so a named, callable person was
- *     being refused promotion for want of an email. Phone now counts.
- *   · A BARE ADDRESS STRING COUNTED AS "VERIFIED". `hasMailing` was satisfied by
- *     any non-empty scrap of an address. The ruling says VERIFIED. An
- *     unstandardized string scraped off a listing page is not a verified mailing
- *     address, and the repo already paid for that confusion once: see
- *     lib/providers/mailing-cass-gate.ts, which exists precisely because
- *     `mailing_address_verified` was being set true at promotion "merely because
- *     an address STRING exists", and direct mail then trusted it.
- *
- * ── WHAT "VERIFIED" MEANS HERE ───────────────────────────────────────────────
- * Both halves, together: an actual address STRING **and** the
- * `mailing_address_verified` flag true. A flag with no address is not something
- * you can mail to (the AI-ISA direct-mail resolver already requires
- * `lead.mailing_address && verified`), and an address with no verification is
- * exactly the scrap the ruling excludes.
- *
- * The flag's honest writer is Lob US-verification — lib/external/lob-address-verify.ts,
- * `deliverability === 'deliverable'`. At the gate the writer is
- * lib/lead-pipeline/promotion-address-verification.ts, which spends the ~$0.0025
- * ONCE, only for a record that has no email and no phone and would otherwise be
- * refused, and persists the verdict (plus Lob's standardized parts) back onto the
- * raw row. FAIL CLOSED: no LOB_API_KEY, or a transient Lob failure, verifies
- * NOTHING and the record stays raw and retryable — "nobody checked" never renders
- * as "checked and fine".
+ * Anything short of that stays a RAW lead (raw_scraped_leads,
+ * processing_status 'insufficient_identity_for_promotion') and keeps cycling
+ * dedup → enrich → dedup → this gate: the daily re-enrich sweep in
+ * app/api/cron/lead-scraping/route.ts resets stranded rows to 'pending' (capped by
+ * promotion-gate-health.ts::MAX_PROMOTION_ATTEMPTS) and processRawRecord re-runs the
+ * whole flow, so a record that gains a name or a phone from PeopleData later is
+ * promoted then.
  *
  * ── FAILURE IS REPORTED PER DIMENSION ────────────────────────────────────────
- *   `failing: 'name'`            — first and/or last missing. RETRYABLE:
- *                                  enrichWithPeopleData backfills first_name /
- *                                  last_name before the post-enrich pass.
- *   `failing: 'contact_anchor'`  — no email, no phone, no verified address.
- *                                  Also retryable: enrichment can append an
- *                                  email or a phone, and the gate-side Lob check
- *                                  can verify an address on a later sweep.
+ *   `failing: 'name'`            — first and/or last missing, a placeholder, an
+ *                                  initial or an entity. RETRYABLE: PeopleData
+ *                                  backfills first_name / last_name before the
+ *                                  post-enrich pass.
+ *   `failing: 'contact_anchor'`  — a person's name but no phone and no email.
+ *                                  Also retryable: enrichment can append either.
  *
- * Both historical promotion paths (lib/lead-pipeline/pipeline-processor.ts and
- * lib/lead-promotion/eligibility-evaluator.ts) delegate here so they can never
- * drift apart. This module is PURE — no imports, no I/O — so the plain-`tsx`
- * simulators can call it directly.
+ * `isLeadEligibleIdentity` is THE predicate. Every raw→lead promotion door calls it
+ * (directly, or through `evaluateCanonicalLeadEligibility`, which is the same rule
+ * with a per-dimension reason):
+ *   · lib/lead-pipeline/pipeline-processor.ts  (processRawRecord — every scraper,
+ *     cron, inventory radar, social scrape and the deal-room demo promote through it)
+ *   · lib/lead-promotion/eligibility-core.ts    (the gated evaluator door)
+ *   · lib/lead-promotion/lead-promoter.ts       (promoteRawRecordToLead — the insert
+ *     refuses on its own, so a caller that skipped the evaluator still cannot mint)
+ *   · lib/kernel/crm.ts                         (createLeadOnlyRecordForAcquisitionSource —
+ *     gated unless the caller declares a PERSON-INITIATED inbound, see there)
+ * scripts/lead-identity-gate-guard.ts proves the doors call it, with positive controls.
+ *
+ * ── WHAT CHANGED FROM WAVE 14, AND WHY ───────────────────────────────────────
+ * The wave-14 ruling read "first name and last name and email and/or phone number
+ * and/or a mailing address verified", so a VERIFIED MAILING ADDRESS was a third
+ * anchor, and a Lob call at the gate (promotion-address-verification.ts) existed
+ * only to turn an address into that anchor. The wave-84 ruling names phone and/or
+ * email and nothing else, so:
+ *   · the verified-mailing-address arm is REMOVED — a name + a verified address and
+ *     no phone/email now stays raw;
+ *   · TOMBSTONE — lib/lead-pipeline/promotion-address-verification.ts
+ *     (verifyMailingAddressForPromotion / needsPromotionAddressVerification /
+ *     interpretLobForPromotion) is DELETED. It could only ever rescue a record whose
+ *     sole anchor was the address, which the ruling no longer promotes. Mailing-address
+ *     verification for the direct-mail channel is untouched and lives where it always
+ *     did — at the send: lib/providers/dispatch.ts (needsCassCheck → verifyAddressViaLob
+ *     → interpretLobForGate from lib/providers/mailing-cass-gate.ts).
+ *   · hasVerifiedMailingAddress / hasUnverifiedMailingAddress (this file) are DELETED
+ *     with it — their only readers were that module and the proofs.
+ *   A promoted lead still CARRIES its mailing address and the honest verified flag
+ *   (pipeline-processor.ts writes both); the address is data, not an anchor.
+ *
+ * ── WHAT COUNTS AS A NAME (decided by lane 84C, documented, test-pinned) ─────
+ * Each of first and last must be a PERSON's name part:
+ *   · non-empty after trimming, with at least TWO letters — a bare initial ("J.")
+ *     is not a first name; enrichment can supply the full one;
+ *   · no digit, no "@", no URL — a handle or an email in a name column is not a name;
+ *   · not a PLACEHOLDER — "Unknown", "Owner", "Current", "Resident", "Occupant",
+ *     "Homeowner", "N/A", "None", "Null", "Test", "Anonymous", … (PLACEHOLDER_NAME_TOKENS),
+ *     nor a whole placeholder phrase across both parts ("Current Resident",
+ *     "Current Owner", "The Occupant");
+ *   · the combined name carries no ENTITY marker — LLC, Inc, Corp, Ltd, LP/LLP, Trust,
+ *     Trustee, "Estate of", Holdings, Properties, Investments, Realty, Bank,
+ *     Association, Partners, Group, Capital, Ventures, Fund, "et al", "City of",
+ *     "County of", HOA… (ENTITY_NAME_TOKENS). An LLC split across the two columns by
+ *     a scraper ("ABC Holdings" / "LLC") is an entity, not a person; the person behind
+ *     it has to be found (enrichment) before it can be a lead.
+ *   · a SINGLE-TOKEN name is refused by construction: both columns are required, and a
+ *     full name crammed into first_name with an empty last_name fails the last-name test.
+ * Deliberately NOT treated as entity markers, because they are real surnames: "Church",
+ * "Estate" alone without "of", "Co". A false refusal leaves a record raw (retryable); a
+ * false admission mints a lead the ISA cannot address — the list errs toward refusal
+ * only where the token is not a plausible surname.
+ *
+ * This module is PURE — no imports, no I/O — so the plain-`tsx` proofs call it directly.
  */
 export interface LeadCandidate {
-  first_name?:                string | null
-  last_name?:                 string | null
-  email?:                     string | null
-  phone?:                     string | null
-  /** The mailing address value, when the scrape/enrichment produced one. */
-  mailing_address?:           string | null
-  /** True ONLY when address verification (Lob) confirmed deliverability. */
-  mailing_address_verified?:  boolean | null
+  first_name?: string | null
+  last_name?:  string | null
+  email?:      string | null
+  phone?:      string | null
 }
 
-/** The three channels the owner's ruling admits as "reachable". */
-export type ReachableChannel = "email" | "phone" | "verified_mailing_address"
+/** The two channels the owner's ruling admits as "reachable". */
+export type ReachableChannel = "email" | "phone"
 
 export type EligibilityResult =
   | { eligible: true; via: ReachableChannel[] }
   | { eligible: false; reason: string; failing: "name" | "contact_anchor" }
 
-/**
- * PURE — does this candidate carry a mailing address the ruling would accept?
- * An address STRING and the verified flag. Either alone is not a verified
- * mailing address.
- *
- * Exported because the promotion paths need to answer "is it worth spending a
- * Lob verification on this record?" without re-deriving the rule.
- */
-export function hasVerifiedMailingAddress(c: LeadCandidate): boolean {
-  return !!(c.mailing_address ?? "").trim() && c.mailing_address_verified === true
+/** Name parts that are placeholders, never a person (compared lowercased, punctuation stripped). */
+export const PLACEHOLDER_NAME_TOKENS: readonly string[] = [
+  "unknown", "unk", "owner", "owners", "current", "resident", "residents", "occupant", "occupants",
+  // "n a" is N/A after normalisation; bare "na" is deliberately absent — Na is a real surname.
+  "homeowner", "homeowners", "tenant", "tenants", "n a", "none", "null", "undefined", "nil",
+  "test", "testing", "anonymous", "anon", "noname", "no name", "not available", "notavailable",
+  "withheld", "redacted", "fsbo", "for sale by owner", "mr", "mrs", "ms", "dr",
+  // Deliberately absent: role words that are also surnames (Lead, Seller, Buyer, Client, Private).
+]
+
+/** Whole-name placeholder phrases (first + last joined). */
+const PLACEHOLDER_FULL_NAMES: readonly string[] = [
+  "current resident", "current owner", "current occupant", "the occupant", "the owner",
+  "the resident", "property owner", "home owner", "record owner", "unknown owner",
+  "unknown unknown", "first last", "firstname lastname", "john doe", "jane doe",
+]
+
+/** Tokens that mark an ENTITY rather than a person, matched as whole words in the combined name. */
+export const ENTITY_NAME_TOKENS: readonly string[] = [
+  "llc", "l l c", "inc", "incorporated", "corp", "corporation", "company", "ltd", "limited",
+  "lp", "llp", "pllc", "plc", "trust", "trustee", "trustees", "tr", "revocable", "irrevocable",
+  "estate of", "et al", "etal", "holdings", "holding", "properties", "property", "investments",
+  "investment", "investors", "realty", "realtors", "bank", "mortgage", "association", "assn",
+  "partners", "partnership", "group", "capital", "ventures", "fund", "reit", "hoa",
+  "city of", "county of", "state of", "housing authority", "authority", "ministries",
+  "foundation", "enterprises", "management", "mgmt", "development", "developers", "homes",
+]
+
+/** Lowercased, every non-letter (Unicode — "José", "O'Neil", "李") → space, spaces collapsed. */
+function normToken(s: string): string {
+  return s.toLowerCase().replace(/[^\p{L}\s]/gu, " ").replace(/\s+/g, " ").trim()
 }
 
-/**
- * PURE — does this candidate carry an UNVERIFIED address that a verification
- * call could still turn into an anchor? Used by the gate-side writer to decide
- * whether to spend on Lob, so the spend is bounded to records that would
- * otherwise be refused.
- */
-export function hasUnverifiedMailingAddress(c: LeadCandidate): boolean {
-  return !!(c.mailing_address ?? "").trim() && c.mailing_address_verified !== true
+/** PURE — why a (first, last) pair is not a person's name, or null when it is. */
+export function personNameProblem(first: string | null | undefined, last: string | null | undefined): string | null {
+  const f = (first ?? "").trim()
+  const l = (last ?? "").trim()
+  if (!f || !l) return "missing first and/or last name"
+  for (const [label, part] of [["first", f], ["last", l]] as const) {
+    if (/[0-9@]|https?:|www\./i.test(part)) return `${label} name looks like a handle, number or address, not a name`
+    // Letters in ANY script. A single CJK character is a complete name part (王, 李), so the
+    // two-letter floor applies to alphabetic scripts only.
+    const letters = part.match(/\p{L}/gu) ?? []
+    const cjkOnly = letters.length > 0 && letters.every((ch) => /\p{Script=Han}|\p{Script=Hangul}|\p{Script=Hiragana}|\p{Script=Katakana}/u.test(ch))
+    if (!cjkOnly && letters.length < 2) return `${label} name is an initial or too short`
+    if (PLACEHOLDER_NAME_TOKENS.includes(normToken(part))) return `${label} name "${part}" is a placeholder`
+  }
+  const full = normToken(`${f} ${l}`)
+  if (PLACEHOLDER_FULL_NAMES.includes(full)) return `"${f} ${l}" is a placeholder name`
+  const padded = ` ${full} `
+  const entity = ENTITY_NAME_TOKENS.find((t) => padded.includes(` ${t} `))
+  if (entity) return `"${f} ${l}" is an entity name (${entity}), not a person`
+  return null
 }
 
 export function evaluateCanonicalLeadEligibility(c: LeadCandidate): EligibilityResult {
-  const hasFirst   = !!(c.first_name ?? "").trim()
-  const hasLast    = !!(c.last_name ?? "").trim()
-  const hasEmail   = !!(c.email ?? "").trim()
-  const hasPhone   = !!(c.phone ?? "").trim()
-  const hasMailing = hasVerifiedMailingAddress(c)
-
-  if (!hasFirst || !hasLast) {
+  const nameProblem = personNameProblem(c.first_name, c.last_name)
+  if (nameProblem) {
     return {
       eligible: false,
       failing:  "name",
-      reason:   "Needs a first name and a last name (enrichment can supply them before the post-enrich pass)",
+      reason:   `Needs a real first name and last name — ${nameProblem} (enrichment can supply them before the post-enrich pass)`,
     }
   }
 
   const via: ReachableChannel[] = []
-  if (hasEmail)   via.push("email")
-  if (hasPhone)   via.push("phone")
-  if (hasMailing) via.push("verified_mailing_address")
+  if ((c.email ?? "").trim()) via.push("email")
+  if ((c.phone ?? "").trim()) via.push("phone")
   if (via.length > 0) return { eligible: true, via }
 
   return {
     eligible: false,
     failing:  "contact_anchor",
-    reason:   "Needs at least an email address and/or a phone number and/or a VERIFIED mailing address",
+    reason:   "Needs a phone number and/or an email address (a mailing address alone does not make a lead — owner 2026-09-26)",
   }
+}
+
+/**
+ * THE predicate (owner wave 84): first name AND last name AND (phone OR email).
+ * A record that fails it stays a raw lead and keeps cycling dedup → enrich → dedup.
+ */
+export function isLeadEligibleIdentity(c: LeadCandidate): boolean {
+  return evaluateCanonicalLeadEligibility(c).eligible
 }

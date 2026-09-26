@@ -474,91 +474,48 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     }
   }
 
-  // ── STEP 4B: Promotion eligibility gate (CANONICAL — shared with lead-promoter) ─
-  // Owner's canonical rule (wave 14): after enrichment + second dedup, promote when the
-  // record carries a FIRST NAME and a LAST NAME plus at least ONE reachable channel —
-  // an EMAIL and/or a PHONE and/or a VERIFIED MAILING ADDRESS. Names are fed
-  // post-enrichment (enriched.first_name ?? firstName) so enrichWithPeopleData can SUPPLY
-  // a missing name before this pass. Single source of truth in canonical-lead-eligibility
-  // so the two historical paths can never drift apart.
+  // ── STEP 4B: Promotion eligibility gate (CANONICAL — shared with every promotion door) ─
+  // Owner (wave 84, 2026-09-26): "if the record/row from scrapping comes in and doesnt have phone
+  // and/or email with first and last name, it can't come in as a lead - it goes in as a raw lead to
+  // dedup/enrich/dedup, etc." → first + last NAME (a person's, not a placeholder or an entity) AND a
+  // PHONE and/or an EMAIL. Names are fed post-enrichment (enriched.first_name ?? firstName) so
+  // enrichWithPeopleData can SUPPLY a missing name or contact point before this pass. THE predicate
+  // lives in canonical-lead-eligibility.ts (isLeadEligibleIdentity / evaluateCanonicalLeadEligibility).
+  //
+  // TOMBSTONE — the wave-14 VERIFIED-MAILING-ADDRESS arm and its gate-side Lob call
+  // (promotion-address-verification.ts::verifyMailingAddressForPromotion) are removed: the wave-84
+  // ruling names phone and/or email only, so an address can no longer make a lead and spending on it
+  // here rescued nothing. Direct-mail address verification stays at the send
+  // (lib/providers/dispatch.ts needsCassCheck → lib/providers/mailing-cass-gate.ts).
   const { evaluateCanonicalLeadEligibility } =
     await import("@/lib/lead-pipeline/canonical-lead-eligibility")
   const rawAddrVerified = (rawRecord as any)?.mailing_address_verified
                         ?? (rawRecord.raw_data as any)?.mailing_address_verified
                         ?? false
-  // Resolution order for the mailing address (same chain the lead insert uses):
-  // enrichment result → raw first-class column → preview/raw_data jsonb.
-  let resolvedMailingAddress =
+  // The mailing address is still CARRIED onto the lead (direct mail reads it) — it is data, not an
+  // anchor. Resolution order: enrichment result → raw first-class column → preview/raw_data jsonb.
+  const resolvedMailingAddress =
     (enriched as any).mailing_address
     ?? rec.mailing_address
     ?? rec.normalized_preview?.mailingAddress
     ?? (rec.raw_data as any)?.mailing_address
     ?? null
-  let resolvedMailingCity  = (enriched as any).mailing_city  ?? rec.mailing_city  ?? (rec.raw_data as any)?.mailing_city  ?? null
-  let resolvedMailingState = (enriched as any).mailing_state ?? rec.mailing_state ?? (rec.raw_data as any)?.mailing_state ?? null
-  let resolvedMailingZip   = (enriched as any).mailing_zip   ?? rec.mailing_zip   ?? (rec.raw_data as any)?.mailing_zip   ?? null
-  let resolvedMailingVerified = !!((enriched as any).mailing_address_verified ?? rawAddrVerified)
-  let resolvedMailingSource: string | null =
+  const resolvedMailingCity  = (enriched as any).mailing_city  ?? rec.mailing_city  ?? (rec.raw_data as any)?.mailing_city  ?? null
+  const resolvedMailingState = (enriched as any).mailing_state ?? rec.mailing_state ?? (rec.raw_data as any)?.mailing_state ?? null
+  const resolvedMailingZip   = (enriched as any).mailing_zip   ?? rec.mailing_zip   ?? (rec.raw_data as any)?.mailing_zip   ?? null
+  const resolvedMailingVerified = !!((enriched as any).mailing_address_verified ?? rawAddrVerified)
+  const resolvedMailingSource: string | null =
     (enriched as any).mailing_address_source
     ?? rec.mailing_address_source
     ?? (rec.raw_data as any)?.mailing_address_source
     ?? null
 
-  const promoCandidate = {
-    first_name:               enriched.first_name ?? firstName,
-    last_name:                enriched.last_name  ?? lastName,
-    email:                    enriched.email,
-    phone:                    enriched.phone ?? phone,
-    mailing_address:          resolvedMailingAddress,
-    mailing_address_verified: resolvedMailingVerified,
-  }
-  let promoEligibility = evaluateCanonicalLeadEligibility(promoCandidate)
-
-  // ── THE VERIFIED-ADDRESS ARM'S WRITER ──────────────────────────────────────
-  // "a mailing address VERIFIED" is only a real arm of the gate if something
-  // actually verifies. When the record is refused for want of a channel and its
-  // address is the ONLY candidate anchor (no email, no phone), buy ONE Lob
-  // US-verification (~$0.0025) and persist the verdict onto the raw row, then
-  // re-evaluate against the same canonical gate. Bounded by construction: a
-  // record reachable by email or phone never reaches this call, and an address
-  // Lob already ruled undeliverable is never re-bought.
-  // FAIL CLOSED: no LOB_API_KEY / a transient Lob failure verifies nothing, the
-  // gate's refusal stands, and the record stays raw and retryable.
-  if (!promoEligibility.eligible && promoEligibility.failing === "contact_anchor") {
-    const { verifyMailingAddressForPromotion } =
-      await import("@/lib/lead-pipeline/promotion-address-verification")
-    const addrVerdict = await verifyMailingAddressForPromotion({
-      candidate: {
-        email:                    enriched.email,
-        phone:                    enriched.phone ?? phone,
-        mailing_address:          resolvedMailingAddress,
-        mailing_city:             resolvedMailingCity,
-        mailing_state:            resolvedMailingState,
-        mailing_zip:              resolvedMailingZip,
-        mailing_address_verified: resolvedMailingVerified,
-        mailing_address_source:   resolvedMailingSource,
-      },
-      supabase,
-      table: "raw_scraped_leads",
-      id:    rawRecordId,
-    })
-    if (addrVerdict.ran) {
-      resolvedMailingVerified = addrVerdict.verified
-      // Carry Lob's STANDARDIZED parts onto the lead too — the raw row already
-      // took the patch, and a lead holding the pre-standardized string would put
-      // the two rows out of agreement the moment direct mail reads either one.
-      const p = addrVerdict.patch
-      if (typeof p.mailing_address_source === "string") resolvedMailingSource  = p.mailing_address_source
-      if (typeof p.mailing_address        === "string") resolvedMailingAddress = p.mailing_address
-      if (typeof p.mailing_city           === "string") resolvedMailingCity    = p.mailing_city
-      if (typeof p.mailing_state          === "string") resolvedMailingState   = p.mailing_state
-      if (typeof p.mailing_zip            === "string") resolvedMailingZip     = p.mailing_zip
-      promoEligibility = evaluateCanonicalLeadEligibility({
-        ...promoCandidate,
-        mailing_address_verified: resolvedMailingVerified,
-      })
-    }
-  }
+  const promoEligibility = evaluateCanonicalLeadEligibility({
+    first_name: enriched.first_name ?? firstName,
+    last_name:  enriched.last_name  ?? lastName,
+    email:      enriched.email,
+    phone:      enriched.phone ?? phone,
+  })
 
   if (!promoEligibility.eligible) {
     await setStatus(supabase, rawRecordId, 'insufficient_identity_for_promotion', undefined, { dedupeComplete: true })
@@ -687,8 +644,9 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       lifecycle_state:       'unconsented',
       ai_isa_owner:          true,
       minimum_viable_for_isa: !!(enriched.email),
-      // HONEST flag: eligibility can now pass on email alone (owner canonical rule), so the
-      // verified flag carries what enrichment/raw actually determined — never a blanket true.
+      // HONEST flag: eligibility passes on name + phone/email (owner wave 84) and never on the
+      // address, so the verified flag carries what enrichment/raw actually determined — never a
+      // blanket true.
       // email_verified propagates whatever the enrichment determined (PeopleData / verification
       // step); when false the ISA email channel is blocked until a verification step lifts it.
       mailing_address_verified: resolvedMailingVerified,
@@ -698,8 +656,8 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       // column → preview/raw_data jsonb. The raw layer keeps mailing_* as first-class
       // columns, so they must be in the fallback chain or the breakdown is silently lost.
       mailing_address:       resolvedMailingAddress,
-      // Carries 'lob_cass' when the gate's own verification ruled on this address,
-      // so the direct-mail CASS gate does not re-buy a verdict we already paid for.
+      // Carries 'lob_cass' when a prior verification (an operator's verify action or the
+      // direct-mail CASS gate) already ruled on this address, so the send does not re-buy it.
       mailing_address_source: resolvedMailingSource,
       // Carry the FULL address fidelity into leads (was dropping these → enrichment looked
       // incomplete and they never reached the contact): physical address + mailing breakdown.
@@ -840,10 +798,18 @@ async function enrichWithPeopleData(fields: {
     ? deriveSocialProfileUrl(fields.source ?? null, fields.username ?? null)
     : null
 
+  // Lane 84C — LOCATION rides with a NAME. PDL's Person Enrichment input rule
+  // (docs.peopledatalabs.com "Input Parameters"): profile OR email OR phone OR … OR
+  // ((first_name AND last_name) OR name) AND (… locality OR region OR location …). A name with no
+  // location is not a valid query, so the owner's "dedup/enrich/dedup" loop could never turn a
+  // name-only scraped row (the commonest shape the wave-84 gate strands) into a lead. The territory
+  // city/state the record already carries is exactly that qualifier. PDL bills per MATCH only.
+  const pdlLocation = [fields.city, fields.state].filter(Boolean).join(', ') || undefined
   const enrichmentResult = await skipTraceWithPeopleData({
     name:  [fields.first_name, fields.last_name].filter(Boolean).join(' ') || undefined,
     phone: fields.phone   || undefined,
     email: fields.email   || undefined,
+    address: pdlLocation,
     profileUrl: profileUrl ?? undefined,
   }).catch(() => ({ data: null }))
 

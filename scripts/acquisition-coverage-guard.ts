@@ -26,8 +26,9 @@
  *       VALID_AGENT_TYPES runtime readers) + registration.
  *   L9  lane 83A (wave 83) — the OWNER'S intents per source (OWNER_REQUIRED_INTENTS: site chatter
  *       sells; Marketplace buys / relocates / seeks a realtor, and still sells) are DECLARED and
- *       PRODUCED by the source's own parser on a fixture (recordAcquisitionIntents — rule-derived);
- *       the TikTok lane (two Apify hops, territory-scoped, booked per source).
+ *       PRODUCED by the source's own parser on a fixture (recordAcquisitionIntents — rule-derived).
+ *       Lane 84C: the 83A TikTok lane is RETIRED (owner 2026-09-26 "don't need tiktok.") — L9 now
+ *       asserts it stays gone from every registry, with a positive control.
  * Every absence assertion carries a POSITIVE CONTROL fixture (CLAUDE.md §2).
  */
 import { readFileSync, existsSync } from "fs"
@@ -37,7 +38,6 @@ import {
 } from "../lib/lead-pipeline/source-intent-map"
 import { SOURCE_ACQUISITION, acquisitionIntentLabel, OWNER_REQUIRED_INTENTS, recordAcquisitionIntents, type AcquisitionIntent } from "../lib/lead-pipeline/acquisition-coverage"
 import { parseSellerChatter, parseContactAgentChatter } from "../lib/lead-pipeline/scraper-parsers"
-import { sourceTikTokIntent, normalizeTikTokComment } from "../lib/lead-pipeline/social-sourcer"
 import { DEFAULT_SCRAPE_KEYWORDS } from "../lib/lead-pipeline/scrape-keywords"
 import { planSourceSpendBooking, bookSourceSpend, leadCostBySource } from "../lib/lead-pipeline/source-cost-ledger"
 import { CRON_REGISTRY } from "../lib/kernel/cron-dispatch"
@@ -259,8 +259,8 @@ await (async () => {
     rows.length === 2 && rows[0].vendorName === "apify" && rows[0].usageType === "facebook_marketplace" && rows[1].vendorName === "exa" && rows[1].usageType === "exa_buyer_intent" && rows[0].metadata.market_id === "m1")
 })()
 
-// ── L9 · lane 83A — the owner's intents per source + TikTok ───────────────────
-console.log("\n[L9 · owner-named intents are declared AND produced; TikTok lane]")
+// ── L9 · lane 83A — the owner's intents per source (+ lane 84C: TikTok retired) ──
+console.log("\n[L9 · owner-named intents are declared AND produced; TikTok lane retired]")
 const SM9 = { city: "Austin", state: "TX" }
 const fx = (t: string) => t.replace(/\{city\}/g, SM9.city)
 // One producer per owner-named source: its REAL parser on a fixture carrying that intent's evidence
@@ -283,19 +283,20 @@ check("POSITIVE CONTROL: the buyer-only contact-agent parser does NOT produce se
 check("POSITIVE CONTROL: an anonymous seller CTA (no handle) mints nothing", parseSellerChatter(`<div class="make-me-move">Make Me Move</div>`, "zillow", { city: "Austin", state: "TX" } as any).length === 0)
 check("POSITIVE CONTROL: an agent-posted Marketplace listing is still damped, never read as a seeker",
   (() => { const r = normalizeFacebookMarketplaceListing({ id: "x", marketplace_listing_title: "Just listed — call your Realtor", marketplace_listing_seller: { name: "Sam Agent" } }, SM9); return r.intentSignals.includes("agent_listing") && r.intentType === "seller" })())
-// TikTok lane
-check("TikTok: two Apify tasks with ≥2 candidates each (search → comments)", (ACTOR_REGISTRY.tiktok_search?.length ?? 0) >= 2 && (ACTOR_REGISTRY.tiktok_comments?.length ?? 0) >= 2)
-check("TikTok: SourceKey wired (vendor apify, own gate token, channel written, cost carried)",
-  SOURCE_VENDOR.tiktok_intent === "apify" && expandEnabledSources(["tiktok_intent"]).has("tiktok") && writesChannel(route, '"tiktok_intent"') && /enabledSources\.has\("tiktok"\) && market\.city/.test(route))
+// TikTok lane — RETIRED in lane 84C (owner 2026-09-26, verbatim: "don't need tiktok."). The rule
+// asserted: no acquisition registry names it and the cron writes no TikTok channel. Derived from the
+// registries themselves, never a pinned count.
 {
-  const c = normalizeTikTokComment({ cid: "1", text: "we're moving to Austin next spring, need a realtor!", author: { uniqueId: "janeroe", nickname: "Jane Roe" } }, SM9)
-  check("TikTok comment → buyer-side relocator + realtor-seeker anchored on the handle", !!c && c.username === "janeroe" && recordAcquisitionIntents(c).includes("relocate") && recordAcquisitionIntents(c).includes("realtor_seeking"))
-  check("POSITIVE CONTROL: a no-intent comment mints nothing", normalizeTikTokComment({ cid: "2", text: "love this song 😍", author: { uniqueId: "x" } }, SM9) === null)
+  const tiktokKeys = (ALL_SOURCE_KEYS as readonly string[]).filter((k) => /tiktok/i.test(k))
+  const tiktokTasks = Object.keys(ACTOR_REGISTRY).filter((k) => /tiktok/i.test(k))
+  check("TikTok retired: no SourceKey, no SOURCE_VENDOR / SOURCE_ACQUISITION entry, no Apify task",
+    tiktokKeys.length === 0 && !Object.keys(SOURCE_VENDOR).some((k) => /tiktok/i.test(k)) && !Object.keys(SOURCE_ACQUISITION).some((k) => /tiktok/i.test(k)) && tiktokTasks.length === 0,
+    [...tiktokKeys, ...tiktokTasks].join(", "))
+  check("TikTok retired: 'tiktok' / 'tiktok_comments' no longer resolve to a SourceKey", ["tiktok", "tiktok_comments", "tiktok_intent"].every((s) => !(ALL_SOURCE_KEYS as readonly string[]).includes(resolveSourceKey(s))))
+  check("TikTok retired: the cron writes no TikTok channel and gates on no 'tiktok' token", !writesChannel(route, '"tiktok_intent"') && !/enabledSources\.has\("tiktok"\)/.test(route))
+  check("POSITIVE CONTROL: the same channel finder still sees a TikTok write when one exists",
+    writesChannel(`await insertSocial(records, "tiktok_intent", "social_intent", cost)`, '"tiktok_intent"'))
 }
-await (async () => {
-  const r = await sourceTikTokIntent({ city: null, state: "TX" }, ["moving to Austin"])
-  check("POSITIVE CONTROL: TikTok with no territory city makes no call and costs $0", r.records.length === 0 && r.cost === 0)
-})()
 
 // ── registration ─────────────────────────────────────────────────────────────
 console.log("\n[registration]")

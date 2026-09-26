@@ -86,6 +86,17 @@ export async function promoteRawRecordToLead(
     const mailingCity  = rawData.mailing_city ?? null
     const mailingState = rawData.mailing_state ?? null
 
+    // ── THE GATE, AT THE INSERT (lane 84C) ────────────────────────────────────
+    // Owner, wave 84: "if the record/row from scrapping comes in and doesnt have phone and/or
+    // email with first and last name, it can't come in as a lead". This insert used to trust its
+    // caller to have run the evaluator; now it refuses on its own, through THE one predicate, so no
+    // caller can mint a lead the gate would refuse. FAIL CLOSED: the raw row is left untouched.
+    const { evaluateCanonicalLeadEligibility } = await import('@/lib/lead-pipeline/canonical-lead-eligibility')
+    const gate = evaluateCanonicalLeadEligibility({ first_name: firstName, last_name: lastName, email, phone })
+    if (!gate.eligible) {
+      return { success: false, error: `${gate.reason} — record remains raw without promotion` }
+    }
+
     // Platform-origin leads have NO brokerage until Engine 1 distributes them.
     // Brokerage-origin leads keep the brokerage that initiated the scrape.
     const initialBrokerageId = sourceOrigin === 'platform' ? null : brokerageId

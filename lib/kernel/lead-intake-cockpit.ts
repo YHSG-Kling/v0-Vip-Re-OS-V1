@@ -82,7 +82,7 @@ export const REJECTION_REASON_LABEL: Record<string, string> = {
   territory_mismatch: "Outside the scraped market's territory",
   insufficient_contact_data: "Not enough contact data to enrich",
   insufficient_identity: "No usable identity anchor",
-  insufficient_identity_for_promotion: "Missing name + email/phone + verified address",
+  insufficient_identity_for_promotion: "Needs a real first + last name and a phone or email (stays raw; re-enriched daily)",
   duplicate_pre_enrich: "Duplicate of an existing lead/contact (pre-enrichment)",
   duplicate_post_enrich: "Duplicate of an existing lead/contact (post-enrichment)",
 }

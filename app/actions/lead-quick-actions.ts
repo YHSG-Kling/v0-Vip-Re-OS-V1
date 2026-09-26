@@ -131,9 +131,10 @@ export async function verifyLeadAddressAction(params: {
     })
     if (!data) return { success: false, error: "Lob not configured (set LOB_API_KEY)", cost }
     // Stamp the CASS marker too. It is the same Lob US-verification the direct-mail
-    // gate buys (lib/providers/mailing-cass-gate.ts) and the same one the promotion
-    // gate buys (lib/lead-pipeline/promotion-address-verification.ts); without the
-    // marker, a hand-verified address is re-verified — and re-billed — by both.
+    // gate buys (lib/providers/mailing-cass-gate.ts); without the marker, a
+    // hand-verified address is re-verified — and re-billed — at the send. (The
+    // promotion gate's own Lob buyer was retired in lane 84C: the wave-84 gate admits
+    // phone/email only.)
     const { CASS_SOURCE } = await import("@/lib/providers/mailing-cass-gate")
     const { error: verifyWriteError } = await createServiceClient()
       .from("leads")

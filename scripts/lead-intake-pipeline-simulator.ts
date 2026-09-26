@@ -30,12 +30,10 @@
  * No DB, no network — every layer is pure/static, so this runs in CI with no
  * creds. Run: npx tsx scripts/lead-intake-pipeline-simulator.ts
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
 import { stripComments } from "./strip-comments"
 import { calculateFuzzyMatch, isConfidentMatch } from "../lib/lead-pipeline/fuzzy-matcher"
 import { evaluateCanonicalLeadEligibility } from "../lib/lead-pipeline/canonical-lead-eligibility"
-import { needsPromotionAddressVerification } from "../lib/lead-pipeline/promotion-address-verification"
-import { CASS_SOURCE } from "../lib/providers/mailing-cass-gate"
 import {
   RAW_PROCESSING_STATUSES, IN_FLIGHT_STATUSES, REJECTION_STATUSES,
   isTerminalRawProcessingStatus, DEDUPE_STATUSES,
@@ -86,7 +84,7 @@ const idxIdentityGate    = code.indexOf("'insufficient_identity'")
 const idxPreEnrichDedup  = code.indexOf("findBestMatch(preEnrichLookup")
 const idxEnrichSpend     = code.indexOf("enrichWithPeopleData(")
 const idxPostEnrichDedup = code.indexOf("findBestMatch(enriched,")
-const idxEligibilityGate = code.indexOf("evaluateCanonicalLeadEligibility(promoCandidate)")
+const idxEligibilityGate = code.indexOf("const promoEligibility = evaluateCanonicalLeadEligibility(")
 const idxLeadsInsert     = code.search(/\.from\('leads'\)\s*\.insert\(/)
 
 check("every gate/dedupe/spend token is actually present in the source (no silent 0)",
@@ -131,47 +129,34 @@ check("an exact email match IS a confident auto-merge", isConfidentMatch(emailMa
 // LAYER 3 — THE GATE. Eligibility + address verification before the insert,
 // fail-closed on every refusal path.
 // ─────────────────────────────────────────────────────────────────────────────
-console.log("\n[Layer 3 · the conversion gate — eligibility + address verification, fail-closed]")
+console.log("\n[Layer 3 · the conversion gate — owner wave 84: first+last name AND phone and/or email, fail-closed]")
 
 check("gate refuses without BOTH first and last name, even with email+phone",
   !evaluateCanonicalLeadEligibility({ first_name: null, last_name: "Doe", email: "a@b.com", phone: "5551234567" }).eligible)
 check("gate refuses a full name with NO reachable channel",
-  !evaluateCanonicalLeadEligibility({ first_name: "A", last_name: "B" }).eligible)
-check("gate promotes on name + PHONE alone (owner wave-14 wording: phone counts)",
-  evaluateCanonicalLeadEligibility({ first_name: "A", last_name: "B", phone: "5551234567" }).eligible === true)
+  !evaluateCanonicalLeadEligibility({ first_name: "Ann", last_name: "Bee" }).eligible)
+check("gate promotes on name + PHONE alone (owner: 'phone and/or email')",
+  evaluateCanonicalLeadEligibility({ first_name: "Ann", last_name: "Bee", phone: "5551234567" }).eligible === true)
 check("gate promotes on name + EMAIL alone",
-  evaluateCanonicalLeadEligibility({ first_name: "A", last_name: "B", email: "a@b.com" }).eligible === true)
-check("a BARE unverified mailing-address string does NOT satisfy the gate (the round-38 defect this gate replaced)",
-  !evaluateCanonicalLeadEligibility({ first_name: "A", last_name: "B", mailing_address: "123 Main St", mailing_address_verified: false }).eligible)
-check("a VERIFIED mailing address alone DOES satisfy the gate",
-  evaluateCanonicalLeadEligibility({ first_name: "A", last_name: "B", mailing_address: "123 Main St", mailing_address_verified: true }).eligible === true)
+  evaluateCanonicalLeadEligibility({ first_name: "Ann", last_name: "Bee", email: "a@b.com" }).eligible === true)
+check("a BARE unverified mailing-address string does NOT satisfy the gate",
+  !evaluateCanonicalLeadEligibility({ first_name: "Ann", last_name: "Bee", mailing_address: "123 Main St", mailing_address_verified: false } as any).eligible)
+check("a VERIFIED mailing address alone does NOT satisfy the gate either (wave-84 retired the address arm)",
+  !evaluateCanonicalLeadEligibility({ first_name: "Ann", last_name: "Bee", mailing_address: "123 Main St", mailing_address_verified: true } as any).eligible)
+check("the gate-side Lob buyer (promotion-address-verification.ts) is gone and processRawRecord buys no Lob verdict",
+  !existsSync("lib/lead-pipeline/promotion-address-verification.ts") && !/verifyMailingAddressForPromotion|verifyAddressViaLob/.test(code))
 
-check("Lob spend is bought ONLY when the address is the record's ONLY possible anchor",
-  needsPromotionAddressVerification({ mailing_address: "123 Main St", mailing_address_verified: false }) === true)
-check("Lob spend is WITHHELD when an email already makes the record reachable (no spend needed)",
-  needsPromotionAddressVerification({ email: "a@b.com", mailing_address: "123 Main St", mailing_address_verified: false }) === false)
-check("Lob spend is WITHHELD when a phone already makes the record reachable",
-  needsPromotionAddressVerification({ phone: "5551234567", mailing_address: "123 Main St", mailing_address_verified: false }) === false)
-check("an address Lob already ruled on (CASS_SOURCE) is never re-bought",
-  needsPromotionAddressVerification({ mailing_address: "123 Main St", mailing_address_verified: false, mailing_address_source: CASS_SOURCE }) === false)
-
-// Wiring: the gate runs BEFORE the insert, and the ARM'S WRITER (Lob) runs
-// before the gate is re-evaluated — and a refusal genuinely RETURNS (fail
+// Wiring: the gate runs BEFORE the insert, and a refusal genuinely RETURNS (fail
 // closed) rather than falling through into the insert below it.
-const idxAddressVerifyWriter = code.indexOf("verifyMailingAddressForPromotion({")
 const idxFinalRefusal        = code.indexOf("if (!promoEligibility.eligible) {")
-check("address-verification writer runs between the first eligibility check and the final refusal check",
-  idxEligibilityGate < idxAddressVerifyWriter && idxAddressVerifyWriter < idxFinalRefusal)
-check("the FINAL refusal check runs before the leads insert (fail-closed: refuse, don't fall through)",
-  idxFinalRefusal >= 0 && idxFinalRefusal < idxLeadsInsert)
+check("the refusal check follows the gate and runs before the leads insert (fail-closed: refuse, don't fall through)",
+  idxEligibilityGate < idxFinalRefusal && idxFinalRefusal >= 0 && idxFinalRefusal < idxLeadsInsert)
 // The refusal branch must itself terminate the function (a `return` inside it,
 // before the insert token) — a gate that computes a verdict and ignores it is
 // the same failure as never gating at all.
 const refusalBlock = code.slice(idxFinalRefusal, idxLeadsInsert)
 check("the refusal branch actually RETURNS (never reaches the leads insert on refusal)",
   /return\s*\{/.test(refusalBlock) && /success:\s*false/.test(refusalBlock))
-check("FAIL CLOSED, verbatim: no LOB_API_KEY / a transient Lob failure never fabricates `verified: true`",
-  /verified: false, patch: \{\}, reason: decision\.reason/.test(stripComments(readFileSync("lib/lead-pipeline/promotion-address-verification.ts", "utf8"))))
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LAYER 4 — SUBSCRIPTION + TERRITORY gates run UPSTREAM of ingestion. A raw

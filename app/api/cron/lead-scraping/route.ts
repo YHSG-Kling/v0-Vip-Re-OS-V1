@@ -36,7 +36,6 @@ import {
   sourceRealtySiteChatter,
   sourceNewConstructionIntent,
   sourceFacebookMarketplace,
-  sourceTikTokIntent,
   normalizeNextdoorPost,
 } from "@/lib/lead-pipeline/social-sourcer"
 // Lane 83A — the ONE keyword resolver: code defaults per population per territory + the market's own
@@ -750,8 +749,7 @@ export async function GET(request: Request) {
         enabledSources.has("new_construction_intent") ||
         enabledSources.has("permit_prelisting_intent") ||
         enabledSources.has("review_acquisition_intent") ||
-        enabledSources.has("facebook_marketplace") ||
-        enabledSources.has("tiktok")
+        enabledSources.has("facebook_marketplace")
 
       // Lane 82B — AUTONOMY FIX: this block used to require configured lead_scraping_keywords, so a
       // platform with no keyword rows silently ran NONE of the territory-derived lanes below that
@@ -823,7 +821,6 @@ export async function GET(request: Request) {
             reddit:      resolveSourceKeywords("reddit_intent", kwMarket, keywords),
             clForSale:   resolveSourceKeywords("craigslist_fsbo", kwMarket, keywords),
             clWanted:    resolveSourceKeywords("craigslist_wanted", kwMarket, keywords),
-            tiktok:      resolveSourceKeywords("tiktok_intent", kwMarket, keywords),
           }
 
           // motivatedParams carries facebook_group_urls and reddit_subreddits from DB
@@ -981,14 +978,9 @@ export async function GET(request: Request) {
             await insertSocial(records, "tavily", "social_intent", cost)
           }
 
-          // ── TikTok intent (Apify, lane 83A) — territory video search → comment intent ──────
-          // Two hops (social-sourcer.ts::sourceTikTokIntent), territory keyword set only; spend
-          // books per source (insertSocial → addSocialSpend → bookSourceSpend, SOURCE_VENDOR apify).
-          if (enabledSources.has("tiktok") && market.city && kw.tiktok.terms.length > 0) {
-            const { records, cost } = await sourceTikTokIntent(socialMarket, kw.tiktok.terms)
-            sourceCostUsd += cost
-            await insertSocial(records, "tiktok_intent", "social_intent", cost)
-          }
+          // TOMBSTONE — the lane-83A TikTok intent block (Apify search → comments → insertSocial
+          // "tiktok_intent") retired by lane 84C. Owner, 2026-09-26: "don't need tiktok." Tombstone
+          // for the SourceKey is in lib/lead-pipeline/source-intent-map.ts.
 
           // ── WAVE 65 LANES (owner ruling 2026-09-15) — each a DISTINCT capability with its
           // own sourceChannel; never merged with the look-alike lanes above. ────────────────
@@ -1373,9 +1365,9 @@ export async function GET(request: Request) {
 
     // ── DAILY RE-ENRICH SWEEP — give failed-gate raw records another chance ───
     // Canonical business rule: when a raw record fails the lead-creation gate
-    // (insufficient identity / contact / mailing-address-verification), enrichment should KEEP
-    // trying — the info may become available later (PDL surfaces a new email, mailing address
-    // verifies, etc.). We reset stranded rows to 'pending' so the promotion loop above re-runs
+    // (insufficient identity / contact — owner wave 84: a real first + last name AND a phone and/or
+    // email, else it stays RAW and goes "dedup/enrich/dedup, etc."), enrichment should KEEP
+    // trying — the info may become available later (PDL surfaces a name, a phone, an email). We reset stranded rows to 'pending' so the promotion loop above re-runs
     // the full territory → identity → dedup → enrichment → eligibility flow on the next daily
     // cron tick. Capped at 100 rows/run and MAX_PROMOTION_ATTEMPTS attempts/row so a
     // permanently-unenrichable record never burns the budget forever. The cap +

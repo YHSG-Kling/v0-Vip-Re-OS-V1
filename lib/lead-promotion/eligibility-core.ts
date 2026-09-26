@@ -105,29 +105,19 @@ export async function evaluatePromotionEligibilityCore(
     }
   }
 
-  // 4. Canonical eligibility gate — shared helper used by BOTH lead-creation paths so they can
-  //    never drift apart. Owner canonical rule (wave 14): first name AND last name AND
-  //    (email AND/OR phone AND/OR a VERIFIED mailing address). Names resolve first-class
-  //    column → raw_data jsonb, the same chain the pipeline processor uses, so
-  //    enrichment-backfilled names count.
-  //
-  //    THIS EVALUATOR SPENDS NOTHING. The pipeline processor's gate buys one Lob
-  //    verification when an unverified address is a record's only possible anchor
-  //    (lib/lead-pipeline/promotion-address-verification.ts); this file deliberately does
-  //    not, because `'use server'` makes every export here a PUBLIC HTTP endpoint and a
-  //    caller-supplied rawRecordId must never be a lever on vendor spend. It therefore
-  //    reports what the flag currently says — a record whose address has not yet been
-  //    verified reads as ineligible here and becomes eligible once the pipeline's
-  //    verification (or an operator's verifyLeadAddressAction) has ruled.
+  // 4. Canonical eligibility gate — THE predicate every promotion door shares
+  //    (lib/lead-pipeline/canonical-lead-eligibility.ts). Owner rule in force (wave 84,
+  //    2026-09-26): a real first name AND last name AND a phone and/or an email — a mailing
+  //    address, verified or not, no longer makes a lead. Names resolve first-class column →
+  //    raw_data jsonb, the same chain the pipeline processor uses, so enrichment-backfilled
+  //    names count. THIS EVALUATOR SPENDS NOTHING (`'use server'` sits in front of it).
   const { evaluateCanonicalLeadEligibility } = await import("@/lib/lead-pipeline/canonical-lead-eligibility")
   const rawData = rawRecord.raw_data || {}
   const eligibility = evaluateCanonicalLeadEligibility({
-    first_name:               rawRecord.first_name ?? rawData.first_name ?? rawData.firstName,
-    last_name:                rawRecord.last_name ?? rawData.last_name ?? rawData.lastName,
-    email:                    rawRecord.email ?? rawData.email,
-    phone:                    rawRecord.phone ?? rawData.phone,
-    mailing_address:          rawRecord.mailing_address ?? rawData.mailing_address ?? null,
-    mailing_address_verified: rawRecord.mailing_address_verified ?? rawData.mailing_address_verified ?? false,
+    first_name: rawRecord.first_name ?? rawData.first_name ?? rawData.firstName,
+    last_name:  rawRecord.last_name ?? rawData.last_name ?? rawData.lastName,
+    email:      rawRecord.email ?? rawData.email,
+    phone:      rawRecord.phone ?? rawData.phone,
   })
   if (!eligibility.eligible) {
     return {

@@ -87,14 +87,13 @@ export type SourceKey =
   // territory who bought for CASH (the investor list PropStream/BatchData users build). BUYER-side,
   // DISTINCT from batchdata_buybox (demand matched to ONE listing) and from every seller lane.
   | 'batchdata_cash_buyer'
-  // Lane 83A (wave 83, owner verbatim: "since you are the social media expert, add tiktok scraping if
-  // you think it would be beneficial"). TikTok is a SEARCH ENGINE for movers and first-time buyers
-  // (Pew: ~6 in 10 adults under 30 use it; Realtor.com 2025: Gen Z/millennials research neighborhoods
-  // there before contacting an agent). The signal is in the COMMENTS under territory videos ("moving
-  // here in June, need a realtor", "how much would my house sell for?") — a two-hop Apify lane
-  // (territory keyword search → comments → commenter profile) in social-sourcer.ts::sourceTikTokIntent.
-  // DISTINCT from instagram_intent (hashtag posts by the poster) — never merged (CLAUDE.md §6).
-  | 'tiktok_intent'
+  // TOMBSTONE — 'tiktok_intent' (lane 83A) RETIRED by lane 84C. Owner, 2026-09-26, verbatim:
+  // "don't need tiktok." Nothing merged anywhere: the lane had no survivor to merge onto (no other
+  // source reads TikTok comments) and the owner ruled the capability away. Live before retiring
+  // (project hrvaqgvukzxfskkcrwbt, 2026-09-26): 0 lead_scraping_markets.enabled_sources carrying it,
+  // 0 raw_scraped_leads / leads rows with a tiktok source, no CHECK naming it — so no migration.
+  // TikTok as a PUBLISHING / ad platform (social posts, video formats, ad campaigns) is a different
+  // function and is untouched.
 
 export type IntentType = 'buyer' | 'seller' | 'unknown'
 
@@ -719,22 +718,8 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     canPromoteBeforeEnrichment: false,
   },
 
-  // ── TikTok intent (lane 83A) — territory video COMMENTS classified per comment ───────────
-  // buyer / relocation / seller / realtor-seeking, resolved per record by
-  // social-sourcer.ts::normalizeTikTokComment. The commenter's handle is the identity anchor
-  // (social-identity-resolve.ts builds https://www.tiktok.com/@handle for PDL's profile match).
-  tiktok_intent: {
-    intentType:                'unknown',
-    leadType:                  'unknown',
-    motivationType:            'social_intent',
-    behaviorType:              'social_comment_intent',
-    scoreRange:                [30, 60],
-    baseScore:                 40,
-    boostSignals:              ['moving_to', 'relocating', 'looking_to_buy', 'first_home', 'pre_approved', 'need_a_realtor', 'selling', 'how_much_is_my_home_worth'],
-    dampSignals:               ['just_browsing', 'agent_promo', 'no_location'],
-    identityPolicy:            'enrichment_first',
-    canPromoteBeforeEnrichment: false,
-  },
+  // TOMBSTONE — tiktok_intent's scoring entry retired with the SourceKey (lane 84C; owner
+  // 2026-09-26: "don't need tiktok."). See the SourceKey union above for the live read.
 
 }
 
@@ -843,9 +828,8 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
   // unresolvable. The CHANNEL stays distinct on raw_scraped_leads — only scoring/vendor resolve here.
   batchdata_incremental: "batchdata_motivated",
   cash_buyer: "batchdata_cash_buyer",
-  // Lane 83A — TikTok comment intent.
-  tiktok: "tiktok_intent",
-  tiktok_comments: "tiktok_intent",
+  // (lane 84C: the lane-83A aliases tiktok / tiktok_comments retired with tiktok_intent —
+  // owner 2026-09-26 "don't need tiktok.")
   craigslist_iso: "craigslist_wanted",
   google: "google_phrase_intent",
   rental: "rental_listing",
@@ -962,7 +946,7 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   // serves any given call.
   review_acquisition_intent: 'zenrows',
   batchdata_cash_buyer:      'batchdata', // lane 82B — Property Search on the 'cash-buyer' quickList
-  tiktok_intent:             'apify',     // lane 83A — Apify TikTok search + comments actors (apify-actors.ts)
+  // tiktok_intent → 'apify' retired (lane 84C; owner 2026-09-26 "don't need tiktok.")
 }
 
 /**
@@ -1029,7 +1013,7 @@ const GATE_TOKEN: Record<SourceKey, string> = {
   rental_to_buyer_graduation: 'rental_to_buyer_graduation',
   review_acquisition_intent: 'review_acquisition_intent',
   batchdata_cash_buyer:      'batchdata_cash_buyer',
-  tiktok_intent:             'tiktok',
+  // tiktok_intent → gate 'tiktok' retired (lane 84C; owner 2026-09-26 "don't need tiktok.")
 }
 
 /**

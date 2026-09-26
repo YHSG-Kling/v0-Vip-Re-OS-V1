@@ -33,10 +33,8 @@ const PROFILE_URL_BUILDERS: Record<string, (handle: string) => string> = {
   facebook_marketplace: (h) => `https://www.facebook.com/${h}`,
   facebook_recommend_realtor: (h) => `https://www.facebook.com/${h}`,
   linkedin_relocation: (h) => `https://www.linkedin.com/in/${h}`,
-  // Lane 83A — TikTok commenter handle (uniqueId). Whether PDL's profile matcher holds TikTok
-  // profiles is UNRESOLVED (its published profile networks are LinkedIn/Facebook/Twitter/GitHub…);
-  // a no-match is $0 (PDL bills per match), so asking costs nothing when it cannot answer.
-  tiktok_intent: (h) => `https://www.tiktok.com/@${h}`,
+  // tiktok_intent's handle → profile-URL builder retired with the SourceKey (lane 84C; owner
+  // 2026-09-26 "don't need tiktok." — tombstone in source-intent-map.ts's SourceKey union).
 }
 
 /** PURE. Turns a scraped `source` + `username` into the social-profile URL

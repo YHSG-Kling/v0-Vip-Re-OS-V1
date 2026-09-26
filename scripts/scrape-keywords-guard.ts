@@ -33,7 +33,7 @@ import {
 } from "../lib/lead-pipeline/scrape-keywords"
 import {
   normalizeNextdoorPost, normalizeFacebookPost, normalizeFacebookMarketplaceListing, normalizeInstagramPost,
-  normalizeRedditPost, normalizeCraigslistItem, normalizeTikTokComment,
+  normalizeRedditPost, normalizeCraigslistItem,
 } from "../lib/lead-pipeline/social-sourcer"
 import type { NormalizedScrapedRecord } from "../lib/lead-pipeline/raw-record-types"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
@@ -117,7 +117,7 @@ const PRODUCERS: Partial<Record<SourceKey, (text: string) => NormalizedScrapedRe
   reddit_intent: (text) => normalizeRedditPost({ id: "r1", title: text, author: "janeroe" }, SM),
   craigslist_fsbo: (text) => normalizeCraigslistItem({ id: "c1", title: text }, SM),
   craigslist_wanted: (text) => normalizeCraigslistItem({ id: "c2", title: text }, SM),
-  tiktok_intent: (text) => normalizeTikTokComment({ cid: "t1", text, author: { uniqueId: "janeroe" } }, SM),
+  // tiktok_intent's producer retired with the lane (lane 84C; owner 2026-09-26 "don't need tiktok.").
 }
 check("every keyword source has a producer here (derived denominator)", KEYWORD_SOURCE_KEYS.every((k) => !!PRODUCERS[k]), KEYWORD_SOURCE_KEYS.filter((k) => !PRODUCERS[k]).join(", "))
 const unproduced: string[] = []

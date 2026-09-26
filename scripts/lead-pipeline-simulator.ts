@@ -92,24 +92,17 @@ function testFuzzyDedup() {
 }
 
 function testEligibilityGate() {
-  console.log("\n[Layer 1 · promotion gate — evaluateCanonicalLeadEligibility (owner canonical, wave 14: first+last NAME AND (email AND/OR phone AND/OR VERIFIED mailing address))]")
-  const full = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "m@x.com", phone: "3055550142", mailing_address: "PO Box 9", mailing_address_verified: true })
-  check("full identity + email + phone + verified mailing → eligible via ALL THREE channels",
-    full.eligible === true && (full as any).via.includes("email") && (full as any).via.includes("phone")
-      && (full as any).via.includes("verified_mailing_address"))
+  console.log("\n[Layer 1 · promotion gate — evaluateCanonicalLeadEligibility (owner, wave 84: first+last NAME AND (phone AND/OR email); the wave-14 verified-mailing arm is retired)]")
+  const full = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "m@x.com", phone: "3055550142" })
+  check("full identity + email + phone → eligible via BOTH channels",
+    full.eligible === true && (full as any).via.includes("email") && (full as any).via.includes("phone"))
   const nameAndEmail = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "m@x.com" })
-  check("name + email (no phone, no mailing) → eligible via email",
+  check("name + email (no phone) → eligible via email",
     nameAndEmail.eligible === true && (nameAndEmail as any).via.join(",") === "email")
-  const mailingAnchor = evaluateCanonicalLeadEligibility({ first_name: "Walter", last_name: "Sobchak", mailing_address: "742 Evergreen Ter, Miami FL 33101", mailing_address_verified: true })
-  check("name + VERIFIED mailing address (no email, no phone) → eligible via the address arm",
-    mailingAnchor.eligible === true && (mailingAnchor as any).via.join(",") === "verified_mailing_address")
-  // REFUSAL — the word the owner used is VERIFIED. An address scrap is not one.
-  const unverifiedAddress = evaluateCanonicalLeadEligibility({ first_name: "Walter", last_name: "Sobchak", mailing_address: "742 Evergreen Ter, Miami FL 33101" })
-  check("REFUSAL · address present but NOT verified → NOT eligible, failing 'contact_anchor'",
-    unverifiedAddress.eligible === false && (unverifiedAddress as any).failing === "contact_anchor")
-  const verifiedFlagNoAddress = evaluateCanonicalLeadEligibility({ first_name: "Walter", last_name: "Sobchak", mailing_address_verified: true })
-  check("REFUSAL · verified FLAG with no address string is not something you can mail to",
-    verifiedFlagNoAddress.eligible === false && (verifiedFlagNoAddress as any).failing === "contact_anchor")
+  // REFUSAL — wave 84 retired the address arm: a VERIFIED mailing address alone no longer makes a lead.
+  const mailingAnchor = evaluateCanonicalLeadEligibility({ first_name: "Walter", last_name: "Sobchak", mailing_address: "742 Evergreen Ter, Miami FL 33101", mailing_address_verified: true } as any)
+  check("REFUSAL · name + VERIFIED mailing address (no email, no phone) → NOT eligible, failing 'contact_anchor' (wave-84)",
+    mailingAnchor.eligible === false && (mailingAnchor as any).failing === "contact_anchor")
   const emailNoName = evaluateCanonicalLeadEligibility({ email: "m@x.com" })
   check("REFUSAL · email WITHOUT first+last name → failing 'name' (retryable — enrichment can supply names)",
     emailNoName.eligible === false && (emailNoName as any).failing === "name")
@@ -123,12 +116,15 @@ function testEligibilityGate() {
   check("name + PHONE only → eligible via phone (the owner named phone as an anchor)",
     phoneOnly.eligible === true && (phoneOnly as any).via.join(",") === "phone")
   const nothing = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez" })
-  check("REFUSAL · name but all three channels absent → blocked with the honest owner-rule reason",
-    nothing.eligible === false && /email address and\/or a phone number and\/or a VERIFIED mailing address/i.test((nothing as any).reason))
-  check("whitespace-only email/phone/mailing do not fabricate an anchor",
-    evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "   ", phone: " ", mailing_address: "  ", mailing_address_verified: true }).eligible === false)
+  check("REFUSAL · name but no phone and no email → blocked with the honest owner-rule reason",
+    nothing.eligible === false && /phone number and\/or an email address/i.test((nothing as any).reason))
+  check("whitespace-only email/phone do not fabricate an anchor",
+    evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "   ", phone: " " }).eligible === false)
   check("whitespace-only names do not fabricate a name",
     (evaluateCanonicalLeadEligibility({ first_name: "  ", last_name: " ", email: "m@x.com" }) as any).failing === "name")
+  check("REFUSAL · placeholder / entity names are not a person (Unknown Owner, ABC Holdings LLC)",
+    (evaluateCanonicalLeadEligibility({ first_name: "Unknown", last_name: "Owner", phone: "1" }) as any).failing === "name"
+      && (evaluateCanonicalLeadEligibility({ first_name: "ABC Holdings", last_name: "LLC", phone: "1" }) as any).failing === "name")
 }
 
 function testBatchDataNormalize() {
@@ -606,17 +602,16 @@ function testThreeTableDedupAndPromotionConformance() {
   check("enrichment is provider-gated honestly (failure → no fabricated identity; Perplexity gap-fill cost-gated)",
     /catch\(\(\) => \(\{ data: null \}\)\)/.test(pipeline) && /shouldGapFill/.test(pipeline))
 
-  // CANONICAL ELIGIBILITY (wave 14: first+last name AND email-and/or-phone-and/or-VERIFIED-mailing)
-  // in both promotion paths.
-  check("pipeline delegates promotion to THE canonical eligibility gate, feeding it the mailing address",
-    /evaluateCanonicalLeadEligibility/.test(pipeline) && /mailing_address:\s+resolvedMailingAddress/.test(pipeline))
-  // The candidate is now assembled into `promoCandidate` first, because the gate is
-  // evaluated TWICE — once, and again after the verified-address writer has ruled —
-  // and both evaluations must see the same identity. Anchor on the assembly.
+  // CANONICAL ELIGIBILITY (wave 84: first+last name AND phone-and/or-email) in both promotion
+  // paths. The address is still CARRIED onto the lead (mailing_address: resolvedMailingAddress on
+  // the insert) but is no longer fed to the gate as an anchor.
+  const gateCall = pipeline.slice(pipeline.indexOf("const promoEligibility = evaluateCanonicalLeadEligibility({"))
+  check("pipeline delegates promotion to THE canonical eligibility gate, and still carries the mailing address onto the lead",
+    /evaluateCanonicalLeadEligibility/.test(pipeline) && /mailing_address:\s+resolvedMailingAddress/.test(pipeline) && !/mailing_address/.test(gateCall.slice(0, gateCall.indexOf("})"))))
   check("pipeline feeds POST-ENRICH names into the gate (enrichment can SUPPLY a missing name before the pass)",
-    /first_name:\s+enriched\.first_name \?\? firstName,/.test(pipeline.slice(pipeline.indexOf("const promoCandidate = {"))))
-  check("pipeline feeds the PHONE into the gate (the owner's wave-14 anchor)",
-    /phone:\s+enriched\.phone \?\? phone,/.test(pipeline.slice(pipeline.indexOf("const promoCandidate = {"))))
+    /first_name:\s+enriched\.first_name \?\? firstName,/.test(gateCall))
+  check("pipeline feeds the PHONE into the gate (an owner-named anchor)",
+    /phone:\s+enriched\.phone \?\? phone,/.test(gateCall))
   check("enrichWithPeopleData actually backfills first/last name from the provider (names flow into promotion)",
     /first_name:\s+data\.firstName\s+\|\|\s+fields\.first_name/.test(pipeline) && /last_name:\s+data\.lastName\s+\|\|\s+fields\.last_name/.test(pipeline))
   // The evaluator was SPLIT in wave 14: eligibility-evaluator.ts is a "use server"
@@ -629,7 +624,7 @@ function testThreeTableDedupAndPromotionConformance() {
   const evaluatorCore = src("lib/lead-promotion/eligibility-core.ts")
   const evaluatorDoor = src("lib/lead-promotion/eligibility-evaluator.ts")
   check("lead-promotion evaluator delegates to the SAME canonical gate (no drift)",
-    /evaluateCanonicalLeadEligibility/.test(evaluatorCore) && /mailing_address:/.test(evaluatorCore))
+    /evaluateCanonicalLeadEligibility/.test(evaluatorCore) && /phone:\s+rawRecord\.phone/.test(evaluatorCore))
   check("evaluator feeds names first-class-column-first (same resolution chain as the pipeline)",
     /first_name:\s+rawRecord\.first_name \?\? rawData\.first_name/.test(evaluatorCore))
   check("the evaluator's PUBLIC door is gated — tenant from the session, compared to the record's own",
@@ -766,7 +761,7 @@ async function testLivePromotion() {
 
     const elig = evaluateCanonicalLeadEligibility({
       first_name: preview.firstName, last_name: preview.lastName,
-      email: preview.email, phone: preview.phone, mailing_address_verified: true,
+      email: preview.email, phone: preview.phone,
     })
     check("real gate: candidate is promotion-eligible", elig.eligible === true)
 
@@ -811,11 +806,11 @@ async function testLivePromotion() {
     // 6. Negative cases against the real gates (no promotion should occur).
     check("real gate: out-of-territory record rejected",
       recordMatchesTerritory({ city: "Tampa", state: "FL", zip: "33602" }, market as any) === false)
-    check("real gate: candidate with NO email, NO phone and only an UNVERIFIED address is not promotable",
+    check("real gate: candidate with NO email and NO phone is not promotable, even with a VERIFIED address (wave 84)",
       evaluateCanonicalLeadEligibility({
         first_name: "Maria", last_name: "Gonzalez",
-        mailing_address: "742 Evergreen Ter", mailing_address_verified: false,
-      }).eligible === false)
+        mailing_address: "742 Evergreen Ter", mailing_address_verified: true,
+      } as any).eligible === false)
   } finally {
     // Self-cleanup — reverse order, best-effort, runs even on failure.
     for (const c of [...cleanup].reverse()) {

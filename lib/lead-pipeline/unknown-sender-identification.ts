@@ -618,6 +618,9 @@ async function createLeadDirectlyForBrokerage(
       : (c.intentType !== "unknown" ? c.intentType : undefined),
     brokerage_id: brokerageId,
     // no agent_id — a brokerage-owned lead has none until assignment (CLAUDE.md §5).
+    // Lane 84C — the sender WROTE to the brokerage; not a scraped row, so the wave-84 name rule does
+    // not apply (owner 74A: "comes in as a lead not a raw lead"). The email anchor always exists here.
+    origin: "person_initiated_inbound",
   })
 
   return result.success ? ((result.data as { leadId?: string } | undefined)?.leadId ?? null) : null

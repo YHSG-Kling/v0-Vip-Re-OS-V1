@@ -82,7 +82,7 @@ export const SOURCE_ACQUISITION: Record<SourceKey, AcquisitionCoverage> = {
   rental_to_buyer_graduation:  { intents: ["buy"],                                    entry: "lead_scraping_cron", routeChannel: null },
   review_acquisition_intent:   { intents: ["buy", "sell", "realtor_seeking"],         entry: "lead_scraping_cron", routeChannel: '"review_acquisition_intent"' },
   batchdata_cash_buyer:        { intents: ["investor", "buy"],                        entry: "lead_scraping_cron", routeChannel: '"batchdata_cash_buyer"' },
-  tiktok_intent:               { intents: ["buy", "relocate", "sell", "realtor_seeking"], entry: "lead_scraping_cron", routeChannel: '"tiktok_intent"' },
+  // tiktok_intent retired (lane 84C; owner 2026-09-26 "don't need tiktok." — tombstone in source-intent-map.ts).
 }
 
 /**

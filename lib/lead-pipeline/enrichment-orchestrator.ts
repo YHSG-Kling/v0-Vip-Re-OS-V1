@@ -613,6 +613,9 @@ export async function processEnrichmentQueue(
             name,
             phone: (entity.phone ?? batchDataFallback?.phones[0]) ?? undefined,
             email: (entity.email ?? batchDataFallback?.emails[0]) ?? undefined,
+            // Lane 84C — PDL admits a NAME only beside a location qualifier (locality/region/location);
+            // without it a name-only lead could never match. Same rule as pipeline-processor.ts.
+            address: [entity.city ?? entity.mailing_city, entity.state ?? entity.mailing_state].filter(Boolean).join(', ') || undefined,
           }).catch((e) => {
             // After a BatchData match a PDL failure must not undo the match — fall through to the
             // BatchData write below. Without a match it is the drain's own error, as before.
@@ -675,8 +678,9 @@ export async function processEnrichmentQueue(
         // wave-14 conversion ruling made the flag load-bearing at the promotion gate: with the
         // old fallback, "a mailing address verified" would have degraded right back into "any
         // address string", which is the exact arm the ruling excludes. Absent an explicit
-        // provider verdict the flag stays FALSE, and lib/lead-pipeline/promotion-address-verification.ts
-        // buys the real Lob verdict at the gate for the records where it actually decides.
+        // provider verdict the flag stays FALSE. (The gate-side Lob buyer, promotion-address-verification.ts,
+        // was retired in lane 84C: the wave-84 gate admits phone/email only; the real Lob verdict is
+        // bought at the direct-mail send — lib/providers/dispatch.ts needsCassCheck.)
         const mvRaw = (enriched as any).mailingAddressVerified
         const mailingVerified: boolean = mvRaw === true
         const emailFlagVerified: boolean = (enriched as any).emailVerified === true

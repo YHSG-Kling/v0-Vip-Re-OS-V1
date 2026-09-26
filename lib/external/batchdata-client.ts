@@ -1258,63 +1258,15 @@ export async function reverseSkipTraceBatchData(
   return { matches, cost, via: r.via, error: null }
 }
 
-// ─── ADDRESS VERIFY — fallback ONLY when Lob is unconfigured ──────────────────────────
-// Lob stays the survivor for mailing-address verification (lib/external/lob-address-
-// verify.ts, wired through lib/lead-pipeline/promotion-address-verification.ts — CLAUDE.md
-// §1: merge onto the named survivor, never build a second primary). This exists so the
-// SAME capability keeps working when LOB_API_KEY is absent but BATCHDATA_API_KEY is
-// present, rather than the promotion gate silently never verifying an address at all.
-// CONFIRMED (batchdata.io/llms.txt): "Address APIs include Verify, Geocode, Reverse
-// Geocode, and Autocomplete... Address APIs are synchronous-only." Request shape per the
-// community `@land-catalyst/batch-data-sdk` README: `{ requests: [{ street, city, state,
-// zip }] }`. UNRESOLVED: exact V1 path segment ("address/verify" used here, matching the
-// address/geocode and address/autocomplete siblings' naming) not independently confirmed.
-export interface BatchDataAddressVerifyResult {
-  ok: boolean
-  verified: boolean
-  standardized: { street?: string; city?: string; state?: string; zip?: string } | null
-  cost: number
-  error?: string
-}
-
-export async function verifyAddressBatchData(address: {
-  street: string
-  city?: string
-  state?: string
-  zip?: string
-}): Promise<BatchDataAddressVerifyResult> {
-  if (!process.env.BATCHDATA_API_KEY) {
-    return { ok: false, verified: false, standardized: null, cost: 0, error: "BATCHDATA_API_KEY not configured" }
-  }
-  if (!address.street?.trim()) {
-    return { ok: false, verified: false, standardized: null, cost: 0, error: "no street address to verify" }
-  }
-  try {
-    const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
-    const res = await callConnector<Record<string, any>>({
-      connector: "batchdata_address_verify",
-      baseUrl: BATCHDATA_API_URL,
-      path: "address/verify",
-      method: "POST",
-      auth: { style: "bearer", token: resolveBatchDataToken("search") ?? BATCHDATA_API_KEY },
-      body: { requests: [{ street: address.street, city: address.city, state: address.state, zip: address.zip }] },
-    })
-    if (!res.ok || !res.data) {
-      return { ok: false, verified: false, standardized: null, cost: 0, error: res.error ?? `HTTP ${res.status ?? "network"}` }
-    }
-    const row = (res.data.results ?? res.data.results?.addresses ?? [res.data])[0] ?? {}
-    const verified = row.deliverable === true || row.verified === true || row.status === "verified"
-    const std = row.standardized ?? row.address ?? null
-    return {
-      ok: true,
-      verified,
-      standardized: std ? { street: std.street ?? std.primary_line, city: std.city, state: std.state, zip: std.zip ?? std.zip_code } : null,
-      cost: 0.02,
-    }
-  } catch (e) {
-    return { ok: false, verified: false, standardized: null, cost: 0, error: e instanceof Error ? e.message : String(e) }
-  }
-}
+// ─── ADDRESS VERIFY — TOMBSTONE (lane 84C) ────────────────────────────────────────────
+// verifyAddressBatchData / BatchDataAddressVerifyResult (wave 65: the "Lob unconfigured"
+// fallback) are DELETED. Their ONLY caller was lib/lead-pipeline/promotion-address-verification.ts,
+// the gate-side buyer for the wave-14 "verified mailing address" promotion anchor, which the owner's
+// wave-84 ruling removed ("doesnt have phone and/or email with first and last name, it can't come in
+// as a lead"). Mailing-address verification survives where it is still wanted — at the direct-mail
+// send, through Lob (lib/external/lob-address-verify.ts via lib/providers/dispatch.ts needsCassCheck
+// → lib/providers/mailing-cass-gate.ts). A Lob-less environment cannot send Lob mail either, so the
+// fallback had no remaining reader.
 
 // ─── PROPERTY-ENRICHMENT DATASETS — valuation, mortgage-liens, foreclosure, deed, owner ─
 // One address lookup requesting the SAME confirmed dataset names BatchRank uses above
