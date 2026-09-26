@@ -32,14 +32,16 @@
 //      customer-facing video waits for a human approval), and
 //   6. the CLAIM recorded (logTopicUses, asset_id = the video project) AFTER the
 //      asset exists — which is what the performance aggregator joins engagement
-//      to, so next week's pick learns from this one.
+//      to, so next week's pick learns from this one. The slot's persona is stamped
+//      on the staged row (video_metadata.topic_persona — wave 83, lane 83F) so the
+//      aggregator's topic-video pass writes situational_reel rows keyed by it.
 //
 // Every skip is counted BY NAME in the result — "nothing happened" is never silent.
 
 import "server-only"
 import { z } from "zod"
 import {
-  TOPIC_VIDEO_CADENCE_KEY, personaForSlot, personaRotation, resolveTopicVideoCadence, seasonalCategories,
+  TOPIC_VIDEO_CADENCE_KEY, TOPIC_VIDEO_PERSONA_KEY, personaForSlot, personaRotation, resolveTopicVideoCadence, seasonalCategories,
   topicCategoriesForPersona, topicPersonaSide, topicScriptPrompt, topicScriptWords, topicVideoBrief,
   topicVideoContent, topicVideoSlotToday, topicVideosPerWeek, isoWeek,
 } from "./topic-video"
@@ -211,14 +213,32 @@ export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Prom
       })
       const r = await commissionCustomVideo(brief, { brokerageId: t.id, agentUserId: agent.user_id, targetChannel: "instagram" }, svc)
       if (!r.ok || !r.videoProjectId || r.status !== "staged") { bump(out, `director_${r.status}`); continue }
-      if (complianceWarnings && complianceWarnings.length > 0) {
+      // THE PERSONA STAMP (wave 83, lane 83F) — per-persona learning attributes this
+      // video's outcomes to the persona it spoke to, so the persona rides the staged
+      // row (video_metadata[TOPIC_VIDEO_PERSONA_KEY]) where the performance aggregator
+      // reads it back. video_metadata is MERGED, never replaced (the Director's
+      // director_key / composition / cut live there): read it tenant-scoped first; a
+      // refused read leaves the stamp off (counted) rather than overwrite what it
+      // could not see. Compliance warnings ride the SAME tenant-scoped, counted write.
+      const { data: staged, error: stagedErr } = await svc.from("ai_video_projects")
+        .select("video_metadata").eq("id", r.videoProjectId).eq("brokerage_id", t.id).maybeSingle()
+      const stampable = !stagedErr && !!staged
+      if (!stampable) bump(out, "persona_stamp_unreadable")
+      const hasWarnings = !!complianceWarnings && complianceWarnings.length > 0
+      const patch: Record<string, unknown> = {}
+      if (stampable) {
+        const meta = (staged as { video_metadata: Record<string, unknown> | null }).video_metadata ?? {}
+        patch.video_metadata = { ...meta, [TOPIC_VIDEO_PERSONA_KEY]: persona }
+      }
+      if (hasWarnings) patch.compliance_violations = complianceWarnings
+      if (Object.keys(patch).length > 0) {
         const { data: noted, error: noteErr } = await svc.from("ai_video_projects")
-          .update({ compliance_violations: complianceWarnings })
+          .update(patch)
           .eq("id", r.videoProjectId).eq("brokerage_id", t.id).select("id")
-        if (noteErr || !noted || noted.length !== 1) {
-          console.warn("[topic-video-runner] compliance warnings not recorded on the staged row:", noteErr?.message ?? `matched ${noted?.length ?? 0}`)
-          bump(out, "compliance_warnings_unrecorded")
-        } else bump(out, "compliance_warnings_recorded")
+        const landed = !noteErr && !!noted && noted.length === 1
+        if (!landed) console.warn("[topic-video-runner] staged-row stamp not recorded:", noteErr?.message ?? `matched ${noted?.length ?? 0}`)
+        if (stampable) bump(out, landed ? "persona_stamped" : "persona_stamp_unrecorded")
+        if (hasWarnings) bump(out, landed ? "compliance_warnings_recorded" : "compliance_warnings_unrecorded")
       }
 
       await logTopicUses({ topicIds: [topic.id], brokerageId: t.id, assetType: "situational_reel", assetId: r.videoProjectId, agentId: agent.id })

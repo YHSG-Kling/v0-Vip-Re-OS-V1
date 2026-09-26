@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-09-26
  * source: public.live_check_constraints_json()
- * body-sha256: 0edebb7f1267cea3af5abd5f64e3a44f0e38b6ed398a3759732d857debe82d00
+ * body-sha256: c354b93394cc8ef77e6ba53e3491ba5af5718bed597216d8c575b0cf6a8d78b7
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -555,7 +555,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["cancelled", "completed", "running"],
   },
   content_asset_persona_performance: {
-    asset_type: ["blog_post", "direct_mail", "landing_page", "listing_promo", "marketing_plan_item", "newsletter_campaign", "newsletter_video", "podcast_episode", "social_post"],
+    asset_type: ["blog_post", "direct_mail", "landing_page", "listing_promo", "marketing_plan_item", "newsletter_campaign", "newsletter_video", "podcast_episode", "situational_reel", "social_post"],
   },
   content_calendar: {
     status: ["cancelled", "draft", "published", "scheduled"],

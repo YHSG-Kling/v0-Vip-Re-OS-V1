@@ -17,6 +17,10 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { isCampaignPersona } from "@/lib/campaigns/contact-sources"
+import {
+  TOPIC_VIDEO_ASSET_TYPE, TOPIC_VIDEO_PERSONA_KEY, scoreTopicVideoPersona, type TopicVideoOutcome,
+} from "@/lib/video/topic-video"
 
 export type AssetType =
   | "podcast_episode"
@@ -81,7 +85,7 @@ export async function logTopicUses(args: {
  * nested per-asset round-trips inside the per-topic loop (fix from the
  * code-review N+1 finding).
  */
-export async function aggregatePerformance(): Promise<{ topics_updated: number }> {
+export async function aggregatePerformance(): Promise<{ topics_updated: number; topic_video_persona?: TopicVideoPersonaPassResult }> {
   const svc = createServiceClient()
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
 
@@ -220,8 +224,162 @@ export async function aggregatePerformance(): Promise<{ topics_updated: number }
   // newsletter_sends because blog engagement is page views + share
   // clicks, not opens + clicks.
   await aggregateBlogPersonaPerformance(svc, since)
+  // Wave 83 (lane 83F) — per-(topic, persona) scoring for autonomous TOPIC VIDEOS
+  // (asset_type 'situational_reel'). Counted, so the cron's JSON says what it did.
+  const topic_video_persona = await aggregateTopicVideoPersonaPerformance(svc, since)
 
-  return { topics_updated: updated }
+  return { topics_updated: updated, topic_video_persona }
+}
+
+interface TopicVideoPersonaPassResult {
+  uses: number
+  projectsRead: number
+  rowsWritten: number
+  skipped: Record<string, number>
+  refused: Record<string, string>
+}
+
+/**
+ * Wave 83 (lane 83F) — per-(topic, persona) performance for autonomous topic videos.
+ *
+ * THE PERSONA is the one the runner spoke to (lib/video/topic-video-runner.ts stamps
+ * it on the staged row: ai_video_projects.video_metadata[TOPIC_VIDEO_PERSONA_KEY]);
+ * a topic video's viewers have no recipient lifecycle, so attribution is per VIDEO.
+ * A row without the stamp (e.g. manager-signals' contact reels, which also log
+ * situational_reel) is SKIPPED BY NAME — never guessed into a persona.
+ *
+ * THE OUTCOME is only what is really written for the project (see
+ * lib/video/topic-video.ts TopicVideoOutcome): video_performance_tracking
+ * (video_project_id), ai_video_projects.view_count (rpc increment), and
+ * social_posts.engagement_data on the posts carrying the video_url.
+ *
+ * TENANT-SCOPED: every signal row must carry the SAME brokerage_id as the claim
+ * (content_topic_uses.brokerage_id) — a project, tracking row or post from another
+ * tenant is dropped and counted, never folded into this tenant's learning.
+ *
+ * Writes content_asset_persona_performance (asset_type 'situational_reel') with the
+ * upsert .select()-ed and COUNTED; a refused read or write is recorded by name.
+ */
+async function aggregateTopicVideoPersonaPerformance(
+  svc: ReturnType<typeof createServiceClient>,
+  since: string,
+): Promise<TopicVideoPersonaPassResult> {
+  const out: TopicVideoPersonaPassResult = { uses: 0, projectsRead: 0, rowsWritten: 0, skipped: {}, refused: {} }
+  const skip = (why: string, n = 1) => { out.skipped[why] = (out.skipped[why] ?? 0) + n }
+
+  const { data: uses, error: usesErr } = await svc
+    .from("content_topic_uses")
+    .select("topic_id, asset_id, brokerage_id")
+    .eq("asset_type", TOPIC_VIDEO_ASSET_TYPE)
+    .gte("used_at", since)
+    .not("asset_id", "is", null)
+    .limit(5000)
+  if (usesErr) { out.refused.content_topic_uses = usesErr.message; return out }
+  const claims = (uses ?? []) as Array<{ topic_id: string; asset_id: string; brokerage_id: string }>
+  out.uses = claims.length
+  if (claims.length === 0) return out
+  const projectIds = Array.from(new Set(claims.map((u) => u.asset_id)))
+
+  // 1. The projects — tenant, persona stamp, public view counter, video_url.
+  const { data: projects, error: projErr } = await svc
+    .from("ai_video_projects")
+    .select(`id, brokerage_id, video_url, view_count, persona:video_metadata->>${TOPIC_VIDEO_PERSONA_KEY}`)
+    .in("id", projectIds)
+  if (projErr) { out.refused.ai_video_projects = projErr.message; return out }
+  type Project = { id: string; brokerage_id: string; video_url: string | null; view_count: number | null; persona: string | null }
+  const projectById = new Map<string, Project>()
+  for (const p of (projects ?? []) as Project[]) projectById.set(p.id, p)
+  out.projectsRead = projectById.size
+
+  // 2. Engagement tracking keyed by the project.
+  const { data: tracking, error: trackErr } = await svc
+    .from("video_performance_tracking")
+    .select("video_project_id, brokerage_id, total_views, average_completion_rate, click_through_rate, lead_conversions")
+    .in("video_project_id", projectIds)
+  if (trackErr) out.refused.video_performance_tracking = trackErr.message
+  type Tracking = { video_project_id: string; brokerage_id: string; total_views: number | null; average_completion_rate: number | null; click_through_rate: number | null; lead_conversions: number | null }
+  const trackingByProject = new Map<string, Tracking[]>()
+  for (const r of (tracking ?? []) as Tracking[]) {
+    const p = projectById.get(r.video_project_id)
+    if (!p || r.brokerage_id !== p.brokerage_id) { skip("tracking_other_tenant"); continue }
+    trackingByProject.set(r.video_project_id, [...(trackingByProject.get(r.video_project_id) ?? []), r])
+  }
+
+  // 3. Social posts carrying the video (media_urls ⊇ video_url), same tenant only.
+  const projectByUrl = new Map<string, Project>()
+  for (const p of projectById.values()) if (p.video_url) projectByUrl.set(p.video_url, p)
+  const socialByProject = new Map<string, number>()
+  if (projectByUrl.size > 0) {
+    const { data: posts, error: postErr } = await svc
+      .from("social_posts")
+      .select("brokerage_id, media_urls, engagement_data")
+      .overlaps("media_urls", Array.from(projectByUrl.keys()))
+      .limit(20000)
+    if (postErr) out.refused.social_posts = postErr.message
+    type Post = { brokerage_id: string; media_urls: string[] | null; engagement_data: { likes?: number | null; comments?: number | null; shares?: number | null; reactions?: number | null } | null }
+    for (const post of (posts ?? []) as Post[]) {
+      const ed = post.engagement_data ?? {}
+      const sum = (ed.likes ?? 0) + (ed.comments ?? 0) + (ed.shares ?? 0) + (ed.reactions ?? 0)
+      for (const url of post.media_urls ?? []) {
+        const p = projectByUrl.get(url)
+        if (!p) continue
+        if (post.brokerage_id !== p.brokerage_id) { skip("social_post_other_tenant"); continue }
+        socialByProject.set(p.id, (socialByProject.get(p.id) ?? 0) + sum)
+      }
+    }
+  }
+
+  // 4. Compose (topic × persona) from each claim's project outcome.
+  const byTopicPersona = new Map<string, TopicVideoOutcome[]>()
+  for (const u of claims) {
+    const p = projectById.get(u.asset_id)
+    if (!p) { skip("project_not_found"); continue }
+    if (p.brokerage_id !== u.brokerage_id) { skip("project_other_tenant"); continue }
+    const persona = (p.persona ?? "").trim()
+    if (!persona || persona === "other" || !isCampaignPersona(persona)) { skip("no_persona_stamp"); continue }
+    const rows = trackingByProject.get(p.id) ?? []
+    const trackedViews = rows.reduce((s, r) => s + (r.total_views ?? 0), 0)
+    const weighted = (pick: (r: Tracking) => number | null) => trackedViews > 0
+      ? rows.reduce((s, r) => s + (pick(r) ?? 0) * (r.total_views ?? 0), 0) / trackedViews
+      : 0
+    const key = `${u.topic_id}|${persona}`
+    byTopicPersona.set(key, [...(byTopicPersona.get(key) ?? []), {
+      trackedViews,
+      completionPct: weighted((r) => r.average_completion_rate),
+      clickPct: weighted((r) => r.click_through_rate),
+      leadConversions: rows.reduce((s, r) => s + (r.lead_conversions ?? 0), 0),
+      publicViews: p.view_count ?? 0,
+      socialEngagements: socialByProject.get(p.id) ?? 0,
+    }])
+  }
+
+  const computedAt = new Date().toISOString()
+  const upserts: Array<Record<string, unknown>> = []
+  for (const [key, outcomes] of byTopicPersona) {
+    const s = scoreTopicVideoPersona(outcomes)
+    if (!s) { skip("below_min_samples"); continue }
+    const [topic_id, persona] = key.split("|")
+    upserts.push({
+      topic_id,
+      asset_type: TOPIC_VIDEO_ASSET_TYPE,
+      persona,
+      persona_open_rate: s.completionRate,
+      persona_click_rate: s.clickRate,
+      persona_samples_count: s.samples,
+      performance_score: s.performanceScore,
+      computed_at: computedAt,
+    })
+  }
+
+  for (let i = 0; i < upserts.length; i += 200) {
+    const { data: written, error: writeErr } = await svc.from("content_asset_persona_performance")
+      .upsert(upserts.slice(i, i + 200), { onConflict: "topic_id,asset_type,persona" })
+      .select("id")
+    if (writeErr) { out.refused.content_asset_persona_performance = writeErr.message; continue }
+    out.rowsWritten += (written ?? []).length
+  }
+  if (Object.keys(out.refused).length > 0) console.error("[performance-aggregator] topic-video persona pass refusals:", out.refused)
+  return out
 }
 
 /**

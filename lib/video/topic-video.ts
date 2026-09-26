@@ -399,3 +399,91 @@ export function topicScriptPrompt(args: { topic: TopicLike; persona: TopicVideoP
     "Also return a 3-6 word on-screen title, a one-line on-screen hook of at most 12 words, and three on-screen bullets of at most 6 words each.",
   ].join("\n")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PER-PERSONA LEARNING FOR TOPIC VIDEOS (wave 83, lane 83F).
+//
+// A topic video speaks to ONE contact persona: the slot's persona, which the runner
+// passes to pickTopics as recipientPersona. Its viewers are not recipients with a
+// contacts row, so the outcome cannot be attributed per viewer (as the newsletter
+// pass does through newsletter_sends). The persona is attributed per VIDEO instead:
+// the runner stamps it on the staged row (video_metadata[TOPIC_VIDEO_PERSONA_KEY]),
+// and the performance aggregator (lib/content-intel/performance-aggregator.ts,
+// aggregateTopicVideoPersonaPerformance) reads it back beside the outcome signals
+// that are really written for that project, then writes
+// content_asset_persona_performance rows (asset_type 'situational_reel') that
+// pickTopics reads for the same (persona, asset_type).
+
+/** The video_metadata key the runner stamps and the aggregator reads (one spelling). */
+export const TOPIC_VIDEO_PERSONA_KEY = "topic_persona"
+
+/** The ONE asset type a topic video's claim and its persona rows carry. */
+export const TOPIC_VIDEO_ASSET_TYPE = "situational_reel" as const
+
+/** Below this many audience touches a (topic, persona) row is noise and is not written
+ *  (the same floor as pickTopics' MIN_RELIABLE_SAMPLES and the other channel passes). */
+export const TOPIC_VIDEO_MIN_SAMPLES = 5
+
+/**
+ * The outcome of ONE topic video, from the signals that are actually written for it:
+ *   · trackedViews / completionPct / clickPct / leadConversions — video_performance_tracking
+ *     (video_project_id), written by POST /api/video/engagement and
+ *     app/actions/video-generation.ts:recordVideoEngagementEvent (rates are 0..100 %);
+ *   · publicViews — ai_video_projects.view_count, raised by rpc('increment') from
+ *     app/actions/listing-video.ts:trackVideoView (the public /v/[slug] player);
+ *   · socialEngagements — social_posts.engagement_data {likes, comments, shares,
+ *     reactions}, written by lib/social/analytics-sync.ts on the posts carrying the
+ *     video (media_urls ⊇ video_url — the join lib/kernel/video.ts:loadVideoPerformance uses).
+ * share_rate is deliberately NOT read: both writers round-trip it through the previous
+ * percentage and it has lost its count (app/types/video-generation.ts).
+ */
+export interface TopicVideoOutcome {
+  trackedViews: number
+  completionPct: number
+  clickPct: number
+  leadConversions: number
+  publicViews: number
+  socialEngagements: number
+}
+
+export interface TopicVideoPersonaScore {
+  samples: number
+  completionRate: number
+  clickRate: number
+  performanceScore: number
+}
+
+const pct = (n: unknown) => Math.max(0, Math.min(100, Number(n) || 0))
+const cnt = (n: unknown) => Math.max(0, Math.floor(Number(n) || 0))
+
+/**
+ * PURE — sum a (topic, persona)'s videos into one row. Rates are view-weighted over
+ * the tracked views they were computed against. Score cap 16 — the channel headroom
+ * the newsletter and blog persona passes use on the shared 0..30 scale:
+ *   completion up to 6 · click-through up to 4 · social engagement (log) up to 4 ·
+ *   lead conversions 1 each up to 2.
+ * null when the audience touches are below TOPIC_VIDEO_MIN_SAMPLES (never written).
+ */
+export function scoreTopicVideoPersona(outcomes: ReadonlyArray<TopicVideoOutcome>): TopicVideoPersonaScore | null {
+  let tracked = 0, completions = 0, clicks = 0, leads = 0, publicViews = 0, social = 0
+  for (const o of outcomes) {
+    const v = cnt(o.trackedViews)
+    tracked += v
+    completions += (pct(o.completionPct) / 100) * v
+    clicks += (pct(o.clickPct) / 100) * v
+    leads += cnt(o.leadConversions)
+    publicViews += cnt(o.publicViews)
+    social += cnt(o.socialEngagements)
+  }
+  const samples = tracked + publicViews + social
+  if (samples < TOPIC_VIDEO_MIN_SAMPLES) return null
+  const completionRate = tracked > 0 ? (completions / tracked) * 100 : 0
+  const clickRate = tracked > 0 ? (clicks / tracked) * 100 : 0
+  const raw = (completionRate / 100) * 6 + (clickRate / 100) * 4 + Math.min(4, (4 * Math.log10(social + 1)) / 3) + Math.min(2, leads)
+  return {
+    samples,
+    completionRate: Math.round(completionRate * 100) / 100,
+    clickRate: Math.round(clickRate * 100) / 100,
+    performanceScore: Math.max(0, Math.min(16, Math.round(raw))),
+  }
+}

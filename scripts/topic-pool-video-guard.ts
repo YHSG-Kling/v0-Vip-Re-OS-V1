@@ -39,9 +39,10 @@
  * BLIND SPOTS (published): the model's script quality is not judged here (the
  * Director's hook gate + human approval are the judges); pickTopics' SQL is proven
  * by shape, not against the live bank; content_asset_persona_performance's
- * asset_type CHECK does not admit `situational_reel`, so per-persona learning for
- * topic VIDEOS has no rows yet (the persona key now matches; the asset type still
- * needs a CHECK widening — recorded for the integrator).
+ * asset_type CHECK did not admit `situational_reel`, so per-persona learning for
+ * topic VIDEOS had no rows — closed by lane 83F (m663 widening, the aggregator's
+ * topic-video pass, the runner's persona stamp), proven by
+ * test:topic-video-persona-learning.
  */
 import { readFileSync, readdirSync } from "node:fs"
 import { dirname, join } from "node:path"
@@ -83,8 +84,13 @@ console.log("\n── §one-pool · pickTopics is the only door ──")
   const allowed = new Set(["brokerages", "agents", "contacts", "brokerage_settings", "ai_video_projects"])
   check(`the runner touches only brokerages · agents · contacts(persona) · brokerage_settings(cadence) · the Director-staged ai_video_projects note (${fromTables(runner).join(", ")})`,
     fromTables(runner).every((t) => allowed.has(t))
-    && (runner.match(/\.from\(\s*"ai_video_projects"\s*\)/g) ?? []).length === 1
-    && /\.from\("ai_video_projects"\)\s*\.update\(\{ compliance_violations: complianceWarnings \}\)\s*\.eq\("id", r\.videoProjectId\)\.eq\("brokerage_id", t\.id\)\.select\("id"\)/.test(runner)
+    // Wave 83 (lane 83F): the staged row is now touched TWICE — a tenant-scoped read of
+    // video_metadata (to MERGE the persona stamp) and ONE tenant-scoped, .select()-ed write
+    // carrying the stamp and the compliance note (test:topic-video-persona-learning §runner).
+    && (runner.match(/\.from\(\s*"ai_video_projects"\s*\)/g) ?? []).length === 2
+    && /\.from\("ai_video_projects"\)\s*\.select\("video_metadata"\)\.eq\("id", r\.videoProjectId\)\.eq\("brokerage_id", t\.id\)/.test(runner)
+    && /patch\.compliance_violations = complianceWarnings/.test(runner)
+    && /\.from\("ai_video_projects"\)\s*\.update\(patch\)\s*\.eq\("id", r\.videoProjectId\)\.eq\("brokerage_id", t\.id\)\.select\("id"\)/.test(runner)
     && /await postcheckScript\(/.test(runner))
   check("the contacts read is tenant-scoped (brokerage_id = the tenant row) and reads contact_persona only",
     /\.from\("contacts"\)\s*\.select\("contact_persona"\)\.eq\("brokerage_id", t\.id\)/.test(runner))
