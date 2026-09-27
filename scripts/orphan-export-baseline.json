@@ -1071,7 +1071,6 @@
     "app/actions/video/generate-script.ts": 1,
     "app/actions/video/memory-video.ts": 3,
     "app/actions/video/topic-video-cadence.ts": 2,
-    "app/actions/video-content.ts": 4,
     "app/actions/video-generation.ts": 17,
     "app/actions/video-landing.ts": 3,
     "app/actions/video-repurposing.ts": 13,
@@ -4378,6 +4377,7 @@
     "lib/video/topic-video.ts": 20,
     "lib/video/verbal-disclosure.ts": 1,
     "lib/video/video-director.ts": 13,
+    "lib/video/video-event-reactions.ts": 4,
     "lib/video/video-guide.ts": 6,
     "lib/video/video-identity.ts": 1,
     "lib/video/video-metering.ts": 4,
@@ -8275,12 +8275,6 @@
     "app/actions/video/topic-video-cadence.ts": [
       "getTopicVideoCadenceAction",
       "setTopicVideoCadenceAction"
-    ],
-    "app/actions/video-content.ts": [
-      "handleVideoGenerated",
-      "approveAndGenerateVideo",
-      "handleVideoPublished",
-      "handleHighEngagement"
     ],
     "app/actions/video-generation.ts": [
       "getVideoScriptLibrary",
@@ -22198,6 +22192,12 @@
       "commissionVideoExperiment",
       "commissionListingCuts",
       "commissionCustomVideo"
+    ],
+    "lib/video/video-event-reactions.ts": [
+      "reactToVideoReady",
+      "reactToVideoScriptApproved",
+      "reactToVideoPublished",
+      "reactToVideoHighEngagement"
     ],
     "lib/video/video-guide.ts": [
       "needsChecklist",
