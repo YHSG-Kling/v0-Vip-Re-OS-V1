@@ -6,6 +6,7 @@ import {
 } from "@/app/actions/reputation-kernel"
 import { getLifetimeCustomers, getUpcomingAnniversaries } from "@/app/actions/lifetime-customers"
 import { REFERRAL_STATUSES_CONVERTED } from "@/lib/referrals/referral-status"
+import { getReviewRequestDelaySettingAction } from "@/app/actions/settings/brokerage-column-settings"
 import { ReferralsOsClient } from "./referrals-os-client"
 
 export const dynamic = "force-dynamic"
@@ -103,14 +104,23 @@ export default async function ReferralsPage({ searchParams }: Props) {
   // return { success: false, error } rather than throwing. A dropped error here
   // would render as "you have no referrals", which is the one thing an empty
   // referral board must never be able to mean by accident.
-  const [pipelineRes, workspaceRes, clientsRes, anniversaryRes] = await Promise.all([
+  const [pipelineRes, workspaceRes, clientsRes, anniversaryRes, reviewTimingRes] = await Promise.all([
     loadReferralPipelineAction(),
     loadReputationWorkspaceAction(),
     getLifetimeCustomers(),
     getUpcomingAnniversaries(),
+    // Lane 86H — the brokerage's review-request timing (tenant admins only; the action gates).
+    getReviewRequestDelaySettingAction(),
   ])
 
   const loadErrors: string[] = []
+
+  // Not a tenant admin → no card (the action said `forbidden`). Any OTHER refusal is shown:
+  // an admin whose settings read failed must not see the card silently vanish.
+  const reviewRequestTiming = reviewTimingRes.ok ? reviewTimingRes : null
+  if (!reviewTimingRes.ok && !("forbidden" in reviewTimingRes && reviewTimingRes.forbidden)) {
+    loadErrors.push(`Review request timing: ${reviewTimingRes.error}`)
+  }
 
   const pipeline = pipelineRes.success && "data" in pipelineRes ? pipelineRes.data : undefined
   if (!pipelineRes.success) loadErrors.push(`Referrals: ${pipelineRes.error ?? "could not be loaded"}`)
@@ -356,6 +366,7 @@ export default async function ReferralsPage({ searchParams }: Props) {
         sphereContacts={sphereContacts}
         selectedContactId={selectedContactId}
         initialAction={action === "create" ? "create" : null}
+        reviewRequestTiming={reviewRequestTiming}
       />
     </div>
   )

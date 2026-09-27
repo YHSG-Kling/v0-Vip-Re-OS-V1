@@ -12,9 +12,17 @@ import {
 // off the transaction row this cron read on the service client.
 import { draftReviewRequest } from "@/lib/reputation/review-request-draft"
 import { verifyCronAuth } from "@/lib/cron-auth"
+// Lane 86H: the delay, its default and the window it must fit are ONE vocabulary shared with
+// the tenant-admin writer (app/actions/settings/brokerage-column-settings.ts) — the local
+// `DEFAULT_DELAY_DAYS = 5` and the inline 30/1-day window literals moved there unchanged.
+import {
+  normalizeReviewRequestDelay,
+  REVIEW_REQUEST_DEFAULT_DELAY_DAYS,
+  REVIEW_REQUEST_LOOKBACK_DAYS,
+  REVIEW_REQUEST_MIN_AGE_DAYS,
+} from "@/lib/reputation/review-request-delay"
 
-// Default delay in days between closing and sending review request
-const DEFAULT_DELAY_DAYS = 5
+const DAY_MS = 24 * 60 * 60 * 1000
 
 export async function GET(req: NextRequest) {
   // Cron auth — see lib/cron-auth.ts
@@ -38,21 +46,24 @@ export async function GET(req: NextRequest) {
   const errors: string[] = []
 
   try {
-    // Find brokerages and their configured review request delay (or default 5 days)
-    const { data: brokerageSettings } = await supabase
+    // Find brokerages and their configured review request delay (or the default). A refused
+    // read is NOT "nobody configured a delay" (CLAUDE.md §3) — it fails the run instead of
+    // sending every brokerage's requests on the default day.
+    const { data: brokerageSettings, error: settingsError } = await supabase
       .from("brokerage_settings")
       .select("brokerage_id, review_request_delay_days")
+    if (settingsError) throw new Error(`Brokerage review-request delays could not be read: ${settingsError.message}`)
 
     const delayByBrokerage: Record<string, number> = {}
     for (const s of brokerageSettings ?? []) {
-      delayByBrokerage[s.brokerage_id] = s.review_request_delay_days ?? DEFAULT_DELAY_DAYS
+      delayByBrokerage[s.brokerage_id] = normalizeReviewRequestDelay(s.review_request_delay_days)
     }
 
     // Find transactions that closed recently and haven't had a review request sent
     // We look for transactions where close_date was N days ago (per brokerage setting)
     const now = new Date()
-    const windowStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString()
-    const windowEnd   = new Date(now.getTime() - 1  * 24 * 60 * 60 * 1000).toISOString()
+    const windowStart = new Date(now.getTime() - REVIEW_REQUEST_LOOKBACK_DAYS * DAY_MS).toISOString()
+    const windowEnd   = new Date(now.getTime() - REVIEW_REQUEST_MIN_AGE_DAYS  * DAY_MS).toISOString()
 
     const { data: closedTxns, error: txnError } = await supabase
       .from("transactions")
@@ -78,8 +89,8 @@ export async function GET(req: NextRequest) {
         }
 
         const closeDate  = new Date(txn.close_date)
-        const delayDays  = delayByBrokerage[txn.brokerage_id] ?? DEFAULT_DELAY_DAYS
-        const targetDate = new Date(closeDate.getTime() + delayDays * 24 * 60 * 60 * 1000)
+        const delayDays  = delayByBrokerage[txn.brokerage_id] ?? REVIEW_REQUEST_DEFAULT_DELAY_DAYS
+        const targetDate = new Date(closeDate.getTime() + delayDays * DAY_MS)
 
         // Only fire if today is on or after the target send date
         if (now < targetDate) {

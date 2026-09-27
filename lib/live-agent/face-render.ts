@@ -65,10 +65,64 @@ export type FaceRenderProvider = "did" | "simli"
 // the m627 column DEFAULT carries the same order for the database side.
 const DEFAULT_FACE_PROVIDER_ORDER: readonly FaceRenderProvider[] = ["did", "simli"]
 
-function normalizeProviderOrder(raw: unknown): FaceRenderProvider[] {
+/**
+ * THE ONE PROVIDER VOCABULARY (lane 86H) — the providers this reader knows are exactly the
+ * members of the default order; the tenant-admin writer (app/actions/settings/brokerage-
+ * column-settings.ts) validates against THIS list, never a second copy of it.
+ */
+export const FACE_RENDER_PROVIDERS: readonly FaceRenderProvider[] = DEFAULT_FACE_PROVIDER_ORDER
+
+/** Settings-card wording. Twin Studio names no vendor (its page header), so neither does this. */
+export const FACE_RENDER_PROVIDER_LABELS: Record<FaceRenderProvider, string> = {
+  did: "Full live twin",
+  simli: "Lightweight live face",
+}
+
+function isFaceRenderProvider(v: unknown): v is FaceRenderProvider {
+  return typeof v === "string" && (FACE_RENDER_PROVIDERS as readonly string[]).includes(v)
+}
+
+/** READ side — also what the settings card displays, so it shows the order the doors use. */
+export function normalizeProviderOrder(raw: unknown): FaceRenderProvider[] {
   if (!Array.isArray(raw)) return [...DEFAULT_FACE_PROVIDER_ORDER]
-  const cleaned = raw.filter((v): v is FaceRenderProvider => v === "did" || v === "simli")
+  const cleaned = raw.filter(isFaceRenderProvider)
   return cleaned.length > 0 ? cleaned : [...DEFAULT_FACE_PROVIDER_ORDER]
+}
+
+/**
+ * WRITE-side check for brokerage_settings.live_agent_face_provider_order (lane 86H). The
+ * order must be one the session doors will actually HONOUR, so the setting never says
+ * something the live avatar does not do:
+ *   - every entry is a provider this reader knows, each at most once;
+ *   - it LEADS with the default primary — both doors (app/api/did/agents/session,
+ *     app/api/embed/session) always start the primary first and consult this list only
+ *     after the primary failed (`providerOrder.includes(<backup>)`), so an order that put
+ *     a backup first would read as "backup first" while the primary still went first;
+ *   - backups after it are optional — leaving one out turns that fail-over leg off.
+ * Refuses (never repairs) anything else, so the admin is told.
+ */
+export function validateFaceProviderOrder(
+  raw: unknown,
+): { ok: true; order: FaceRenderProvider[] } | { ok: false; error: string } {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return { ok: false, error: "Live face provider order must list at least the primary live face." }
+  }
+  const unknown = raw.filter((v) => !isFaceRenderProvider(v))
+  if (unknown.length > 0) {
+    return { ok: false, error: `Live face provider order names an unknown provider: ${unknown.map(String).join(", ")}.` }
+  }
+  const order = raw as FaceRenderProvider[]
+  if (new Set(order).size !== order.length) {
+    return { ok: false, error: "Live face provider order lists a provider twice." }
+  }
+  const primary = DEFAULT_FACE_PROVIDER_ORDER[0]
+  if (order[0] !== primary) {
+    return {
+      ok: false,
+      error: `Live face provider order must start with the ${FACE_RENDER_PROVIDER_LABELS[primary]} — the live avatar always tries it first.`,
+    }
+  }
+  return { ok: true, order: [...order] }
 }
 
 /**

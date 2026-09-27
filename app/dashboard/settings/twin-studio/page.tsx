@@ -15,6 +15,8 @@ import Link from "next/link"
 import { listMyTwins, listPendingApprovals } from "@/app/actions/twin-studio"
 import { resolveActingContext } from "@/lib/platform/acting-context"
 import { TwinStudioClient } from "./twin-studio-client"
+import { LiveFaceBackupCard } from "./live-face-backup-card"
+import { getLiveFaceProviderSettingAction } from "@/app/actions/settings/brokerage-column-settings"
 import { Skeleton } from "@/app/components/ui/skeleton"
 
 export const dynamic = "force-dynamic"
@@ -31,9 +33,12 @@ async function loadData() {
   }
   const canApprove = isAdminOrBroker({ user_type: ctx.userType })
 
-  const [{ twins }, pendingRes] = await Promise.all([
+  const [{ twins }, pendingRes, liveFaceRes] = await Promise.all([
     listMyTwins(),
     canApprove ? listPendingApprovals() : Promise.resolve({ twins: [] }),
+    // Lane 86H — the brokerage's live-avatar fail-over. The action runs its own tenant-admin
+    // gate (user_type OR a tenant-pinned grant); `forbidden` just means "no card".
+    getLiveFaceProviderSettingAction(),
   ])
 
   return {
@@ -42,6 +47,9 @@ async function loadData() {
     pending: pendingRes.twins,
     canApprove,
     userType: ctx.userType,
+    liveFace: liveFaceRes.ok ? liveFaceRes : null,
+    // Any refusal OTHER than "not a tenant admin" is shown, never a silently missing card.
+    liveFaceError: !liveFaceRes.ok && !("forbidden" in liveFaceRes && liveFaceRes.forbidden) ? liveFaceRes.error : null,
   }
 }
 
@@ -69,6 +77,11 @@ export default async function TwinStudioPage() {
           canApprove={data.canApprove}
         />
       </Suspense>
+
+      {data.liveFace && <LiveFaceBackupCard initial={data.liveFace} />}
+      {data.liveFaceError && (
+        <p className="mt-10 text-sm text-destructive">Live avatar fail-over could not be loaded: {data.liveFaceError}</p>
+      )}
 
       {/* YOUR TWIN IS NOT YOUR ASSISTANT. The twins above are the agent's own
           likeness and voice. The AI assistant is a separate persona with its

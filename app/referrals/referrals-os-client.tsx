@@ -26,6 +26,7 @@ import {
 import { updateReferralStatus, sendReferralThankYou } from "@/app/actions/referrals/referral-actions"
 import type { ReferralStatus } from "@/lib/referrals/referral-status"
 import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
+import { ReviewRequestTimingCard, type ReviewRequestTimingInitial } from "./review-request-timing-card"
 
 interface Referral {
   id: string
@@ -116,6 +117,8 @@ interface ReferralsOsClientProps {
   selectedContactId?: string | null
   /** ?action=create arrived on the URL and should open the create dialog. */
   initialAction?: "create" | null
+  /** Lane 86H — the brokerage's review-request timing; null unless the viewer is a tenant admin. */
+  reviewRequestTiming?: ReviewRequestTimingInitial | null
 }
 
 export function ReferralsOsClient({
@@ -136,6 +139,7 @@ export function ReferralsOsClient({
   sphereContacts,
   selectedContactId,
   initialAction,
+  reviewRequestTiming,
 }: ReferralsOsClientProps) {
   const router = useRouter()
 
@@ -273,7 +277,10 @@ export function ReferralsOsClient({
       {/* Review Requests + Reputation.
           The id is not decoration: AdvocacyActionStack's "Request Review" button
           targeted #review-section and no such element existed anywhere. */}
-      <div id="review-section">
+      <div id="review-section" className="space-y-4">
+        {/* Lane 86H — WHEN the automatic review request goes out (brokerage-wide, tenant
+            admins only); the panel below is the agent's hands-on request for one closing. */}
+        {reviewRequestTiming && <ReviewRequestTimingCard initial={reviewRequestTiming} />}
         <ReviewRequestPanel
           agentId={agentId}
           recentClosings={recentClosings || []}
