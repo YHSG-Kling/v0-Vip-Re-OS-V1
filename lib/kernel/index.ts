@@ -443,7 +443,6 @@ export {
   createDirectMailCampaign,
   previewDirectMailAsset,
   submitDirectMailCampaign,
-  createBlogPost,
   previewBlogPost,
   publishBlogPost,
   previewVideoProject,
@@ -462,7 +461,6 @@ export type {
   MarketingActorContext,
   MarketingWorkspaceData,
   CreateDirectMailCampaignInput,
-  CreateBlogPostInput,
   CreateMarketingCampaignInput,
 } from "./marketing"
 

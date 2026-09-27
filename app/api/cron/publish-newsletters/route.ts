@@ -38,7 +38,7 @@ import {
   resolveSectionsForRecipient,
   assembleNewsletterHtml,
 } from "@/lib/kernel/newsletter/assemble"
-import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { evaluateTenantOutbound } from "@/lib/kernel/tenant-config-reads"
 import { resolveBuyerNotificationPreferences, buyerWantsNotification, type BuyerNotificationPreferences } from "@/lib/notifications/buyer-preferences"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -367,7 +367,7 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     },
     sections: previewSections,
   })
-  const finalCompliance = await evaluateOutbound({
+  const finalCompliance = await evaluateTenantOutbound({
     actorContext: { userId: c.created_by ?? c.agent_id ?? c.brokerage_id, role: "agent", brokerageId: c.brokerage_id },
     journeyType:  "seller",
     // 'other' is the canonical Persona value when no specific persona
@@ -376,16 +376,13 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     persona:      "other",
     messageType:  "email",
     content:      previewAssembled.text,
-    contact: {
-      id: "broadcast_preview",
-      first_name: "Subscriber",
-      last_name: "Audience",
-      contact_type: "buyer",
-      tcpa_consent: true,
-      isa_reengage_allowed: false,
-      dnc_status: false,
-    },
-  }).catch(() => ({ allowed: true, violations: [] as string[] }))
+    // BROADCAST SHAPE (86C): no contact. The stub id "broadcast_preview" it carried is not a
+    // uuid, so compliance_events.entity_id (uuid) refused the audit row (22P02) on every run,
+    // and the per-contact gates it pretended to satisfy belong to the per-recipient pass.
+    //
+    // FAIL CLOSED (86C): a gate that throws DEFERS the campaign (deferCampaign below) instead of
+    // reading as allowed — "nobody checked" must never render as "checked and fine" (§4).
+  }, svc).catch((e: unknown) => ({ allowed: false, violations: [`gate_unavailable:${e instanceof Error ? e.message : String(e)}`] }))
   if (!finalCompliance.allowed) {
     return await deferCampaign(svc, c, `final_compliance:${finalCompliance.violations.slice(0, 3).join("|") || "blocked"}`)
   }

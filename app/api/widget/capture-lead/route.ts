@@ -3,6 +3,15 @@
 // (name / email / phone / intent). Widget form fill = TCPA consent.
 // Creates/merges a contact record (never a lead) and assigns agent from session
 // or brokerage primary fallback. Updates chat_session.capture_state → 'captured'.
+//
+// TOMBSTONE (lane 86C, orphan doctrine §1.1): /api/widget/capture — this route's public twin,
+// kept for waves only because "an off-repo caller cannot be disproved" — is DELETED on the
+// owner's ruling (2026-09-27: "this platform os has not yet been pushed in production", so no
+// deployed integration can exist). Everything it had that this survivor lacked was merged here
+// first: the consent audit row, the CONTACT_CAPTURED lifecycle event and the fail-closed
+// session read (lane M3), and the agents-class owner below (86C). An OFF-SITE form — the
+// capability an external twin would have served — is the 85E lead-magnet embed:
+// lib/lead-magnets/embed-snippet.ts posting to app/api/lead-magnets/submissions/route.ts.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
@@ -77,7 +86,12 @@ export async function POST(req: NextRequest) {
 
     const { contactId, action } = await captureContact({
       brokerageId: session.brokerage_id,
-      agentUserId: session.agent_id ?? null,
+      // chat_sessions.agent_id is an AGENTS id (FK agents(id), live). It was passed as the
+      // deprecated `agentUserId` (users.id), which captureContact crosses via agents.user_id —
+      // an agents id matched no row there, so every widget capture lost its agent and fell to
+      // the brokerage primary. MERGED from the retired twin /api/widget/capture (lane 86C),
+      // which alone passed it as `ownerAgentId`, the agents-class contract (CLAUDE.md §3).
+      ownerAgentId: session.agent_id ?? null,
       source: 'website_widget',
       first_name: first_name ?? null,
       last_name: last_name ?? null,

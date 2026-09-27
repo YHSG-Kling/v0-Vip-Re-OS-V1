@@ -78,7 +78,7 @@ export async function checkSequenceAuthority(
     tcpa_consent: contact.tcpa_consent ?? false,
     isa_reengage_allowed: contact.isa_reengage_allowed ?? false,
   },
-})
+}, { client: supabase })
 
   return result.allowed
     ? { allowed: true }

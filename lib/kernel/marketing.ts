@@ -37,12 +37,10 @@ import { createServiceClient } from "@/lib/supabase/service"
 // carries no "server-only" marker and is imported from the marketing surfaces,
 // so it must never pull the service-role resolver into a page bundle.
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
-import { applyKernelBrandVoice } from "@/lib/kernel/adapters/brand-voice"
 import { evaluateKernelOutbound, isComplianceBlocked, getComplianceReason } from "@/lib/kernel/adapters/compliance"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { generateTextRouted } from "@/lib/ai/models"
 import { VIDEO_FINISHED_STATUSES, VIDEO_IN_PROGRESS_STATUSES } from "@/lib/video/video-status"
 import { canonicalCampaignPieceType, type CampaignPieceType } from "@/lib/direct-mail/piece-type"
 
@@ -810,150 +808,19 @@ export async function submitDirectMailCampaign(params: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 9. createBlogPost
+// 9. createBlogPost — TOMBSTONE (lane 86C, orphan doctrine §1.1)
 //
-// Creates a blog post record with AI-generated content.
-// Input:  ctx, title, keywords, tone?, campaignId?
-// Output: { postId }
-// Tables write: blog_posts
-// Rules:  canAccessFeature('seo_blog_engine'); applyBrandVoice; evaluateOutbound
+// This was an unwired DUPLICATE of the AI blog writer (re-exported by lib/kernel/index.ts,
+// called by nothing). It was merged onto the survivor and deleted:
+//   survivor door  app/actions/blog.ts:68 generateBlogPost (session-gated)
+//   survivor body  lib/kernel/content-creators.ts:921 writeBlogPost
+// What it carried that the survivor lacked, now on the survivor: the umbrella campaign
+// verified in the tenant before it is written (verifyInTenant), and the insert on the service
+// client only after the gate (the survivor wrote through the cookie client, so the sessionless
+// cadence cron was refused every run). What neither had and the survivor now carries: the
+// compliance-first system blocks and the postcheckScript grade (CLAUDE.md §5). Its pre-written
+// `content` path already lives in createBlogPostDraft (content-creators.ts).
 // ─────────────────────────────────────────────────────────────────────────────
-
-export interface CreateBlogPostInput {
-  ctx: MarketingActorContext
-  title?: string
-  keywords: string[]
-  tone?: string
-  campaignId?: string
-  content?: string   // if pre-written, skip AI generation
-}
-
-export async function createBlogPost(
-  input: CreateBlogPostInput
-): Promise<KernelMarketingResult<{ postId: string }>> {
-  const { ctx } = input
-  if (!input.keywords?.length && !input.content) {
-    return { success: false, error: "Provide keywords or content to create a blog post." }
-  }
-
-  const access = await canAccessFeature(ctx.userId, "seo_blog_engine")
-  if (!access.allowed) return { success: false, error: access.reason ?? "Feature access denied" }
-
-    const brandVoice = await applyKernelBrandVoice({
-    brokerageId: ctx.brokerageId,
-    actorUserId: ctx.userId,
-    actorRole: "agent",
-    journeyType: "seller",
-    persona: "seller",
-    messageType: "email",
-    content: input.content || input.title || input.keywords.join(", "),
-  })
-
-  let generatedTitle = input.title || ""
-  let content        = input.content || ""
-  let excerpt        = ""
-  let slug           = ""
-
-  if (!content && input.keywords.length > 0) {
-        const systemPrompt = `You are a real estate content writer. Write in a professional style.
-${brandVoice.notes.length ? `Brand guidance: ${brandVoice.notes.join(" | ")}` : ""}
-${brandVoice.violations.length ? `Avoid: ${brandVoice.violations.join(", ")}` : ""}`
-
-    const userPrompt = `Write a 600-800 word SEO blog post about: ${input.keywords.join(", ")}.
-${input.title ? `Title: ${input.title}` : "Create an engaging title."}
-Return valid JSON: {"title":"...","slug":"...","excerpt":"...","content":"..."}`
-
-    try {
-      const rawResult = await generateTextRouted({
-        system:      systemPrompt,
-        prompt:      userPrompt,
-        brokerageId: ctx.brokerageId,
-        feature:     "seo_blog_engine",
-        userId:      ctx.userId,
-      })
-      const parsed = JSON.parse(rawResult.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim())
-      generatedTitle = parsed.title ?? input.title ?? "Untitled"
-      content        = parsed.content ?? ""
-      excerpt        = parsed.excerpt ?? ""
-      slug           = parsed.slug ?? generatedTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-")
-    } catch {
-      return { success: false, error: "AI generation failed. Please try again." }
-    }
-  } else {
-    slug    = generatedTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-") || `post-${Date.now()}`
-    excerpt = content.slice(0, 200)
-  }
-
-  // Outbound compliance gate
-  const compliance = await evaluateKernelOutbound({
-    actorContext: {
-      userId: ctx.userId,
-      role: "agent",
-      brokerageId: ctx.brokerageId,
-    },
-    journeyType: "seller",
-    persona: "seller",
-    messageType: "email",
-    content,
-    contact: {
-      id: ctx.userId,
-      status: "active",
-    },
-  })
-  if (isComplianceBlocked(compliance)) {
-    return { success: false, blockedReason: getComplianceReason(compliance), error: "Blog content failed compliance check." }
-  }
-
-  const supabase = await createServiceClient()
-
-  // Gate first, then use the service client (§4) — the same block
-  // newsletter creator carries (now lib/kernel/content-creators.ts createNewsletterCampaign,
-  // verifyInTenant), because it is the same hole: this
-  // runs on the service role, so nothing but this predicate stands between the
-  // insert and a cross-tenant campaign link. The FK proves a
-  // marketing_campaigns row EXISTS; it never proves it is OURS, and an
-  // attacker-supplied or stale campaignId would file this tenant's post under
-  // another tenant's campaign — feeding THEIR ROI rollup
-  // (lib/marketing/campaign-measurer.ts reads blog_posts by
-  // marketing_campaign_id). The raw input id is never written; only the
-  // verified one is.
-  let marketingCampaignId: string | null = null
-  if (input.campaignId) {
-    const { data: umbrella, error: umbrellaError } = await supabase
-      .from("marketing_campaigns")
-      .select("id")
-      .eq("id", input.campaignId)
-      .eq("brokerage_id", ctx.brokerageId)
-      .maybeSingle()
-    if (umbrellaError) return { success: false, error: `Could not verify that campaign: ${umbrellaError.message}` }
-    if (!umbrella) return { success: false, error: "That campaign is not on your brokerage." }
-    marketingCampaignId = umbrella.id as string
-  }
-
-  const { data, error } = await supabase
-    .from("blog_posts")
-    .insert({
-      brokerage_id:          ctx.brokerageId,
-      agent_user_id:         ctx.userId,
-      created_by:            ctx.userId,
-      title:                 generatedTitle,
-      slug:                  `${slug}-${Date.now()}`,
-      excerpt,
-      content,
-      publish_status:        "draft",
-      marketing_campaign_id: marketingCampaignId,
-      seo_score:             0,
-      created_at:            new Date().toISOString(),
-      updated_at:            new Date().toISOString(),
-    })
-    .select("id")
-    .single()
-
-  if (error || !data) return { success: false, error: error?.message ?? "Insert failed" }
-
-  await incrementFeatureUsage(ctx.userId, "seo_blog_engine")
-  return { success: true, data: { postId: data.id } }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 10. previewBlogPost

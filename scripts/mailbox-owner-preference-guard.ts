@@ -189,10 +189,16 @@ const setFn = act.slice(act.indexOf("export async function setMailboxOwnerPrefer
 check("both doors gate FIRST on requireRoutingAdmin (broker / admin / team lead) before the service client",
   getFn.indexOf("requireRoutingAdmin()") > -1 && getFn.indexOf("requireRoutingAdmin()") < getFn.indexOf("createServiceClient()")
   && setFn.indexOf("requireRoutingAdmin()") > -1 && setFn.indexOf("requireRoutingAdmin()") < setFn.indexOf("createServiceClient()"))
+// Wave 86 integrator: the save now goes through THE one settings writer (86C,
+// lib/settings/brokerage-settings-merge.ts — merge by key, version-checked, counted);
+// the rule is "session tenant into that writer", not a hand-rolled read-merge-write.
 check("the tenant is the SESSION's (gate.brokerageId), never a parameter",
-  /\.eq\("brokerage_id", gate\.brokerageId\)/.test(setFn) && !/brokerageId\s*:\s*string/.test(setFn.slice(0, setFn.indexOf("{"))))
-check("read-merge-write keeps every other settings key; a zero-row write is a FAILURE (§3)",
-  /\.\.\.prior,/.test(setFn) && /\.\.\.\(prior\.lead_routing \?\? \{\}\)/.test(setFn) && /\.select\("id"\)/.test(setFn) && /write\.data\.length === 0/.test(setFn))
+  /mergeBrokerageSettings\(\s*createServiceClient\(\)\s*,\s*gate\.brokerageId\s*,/.test(setFn) && !/brokerageId\s*:\s*string/.test(setFn.slice(0, setFn.indexOf("{"))))
+check("POSITIVE CONTROL: the session-tenant finder refuses a body-supplied brokerageId",
+  !/mergeBrokerageSettings\(\s*createServiceClient\(\)\s*,\s*gate\.brokerageId\s*,/.test(`await mergeBrokerageSettings(createServiceClient(), input.brokerageId, (s) => ({}))`))
+check("merge-by-key keeps every other settings key (and every other lead_routing key); a refused/zero-row write is a FAILURE (§3)",
+  /mergeBrokerageSettings\(/.test(setFn) && /\.\.\.prior/.test(setFn) && /lead_routing\s*:/.test(setFn) && /if \(!write\.ok\) return \{ success: false/.test(setFn)
+  && !/\.from\("brokerage_settings"\)\s*\.(update|insert|upsert)\(/.test(setFn))
 const panel = stripped("app/dashboard/settings/components/lead-routing-panel.tsx")
 check("the Lead Routing panel carries the switch, loads it and saves it",
   /id="prefer-mailbox-owner"/.test(panel) && /getMailboxOwnerPreference\(\)/.test(panel) && /setMailboxOwnerPreference\(next\)/.test(panel))

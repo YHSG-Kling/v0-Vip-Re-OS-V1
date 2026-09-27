@@ -33,6 +33,16 @@ import type { Persona } from "@/lib/kernel/types"
 // / draftLetterCopy below), each with its own prompt and copy shape; no caller
 // ever carried the union as a value.
 
+/** The client the compliance gate reads and audits through (lane 86C). Mail copy is drafted
+ *  from send orchestration and manager reactors with NO cookie session, so the default cookie
+ *  client read no brand voice and the compliance_events row was refused (findRecentComplianceEventId
+ *  below then found nothing). ctx.brokerageId comes from the caller's verified row or session
+ *  (render-postcard / render-letter / manager-signals / the session-gated preview action). */
+async function tenantGateClient() {
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  return createServiceClient()
+}
+
 /** Map any incoming persona string to the canonical Persona union.
  *  Anything unrecognized falls to "other" so we never narrow off a
  *  valid CRM persona that the compliance gate just doesn't enumerate. */
@@ -326,7 +336,7 @@ export async function draftPostcardCopy(
         journeyType:  ctx.persona.includes("seller") || ctx.persona === "fsbo" || ctx.persona === "expired" ? "seller" : "buyer",
         persona:      normalizePersona(ctx.persona),
         content:      extractCopyForGate(script),
-      })
+      }, { client: await tenantGateClient() })
       return { allowed: r.allowed, violations: r.violations }
     },
   })
@@ -447,7 +457,7 @@ export async function draftLetterCopy(
         journeyType:  ctx.persona.includes("seller") || ctx.persona === "fsbo" || ctx.persona === "expired" ? "seller" : "buyer",
         persona:      normalizePersona(ctx.persona),
         content:      extractCopyForGate(script),
-      })
+      }, { client: await tenantGateClient() })
       return { allowed: r.allowed, violations: r.violations }
     },
   })

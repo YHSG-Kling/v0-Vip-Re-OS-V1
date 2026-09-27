@@ -14,6 +14,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
 import { revalidatePath } from "next/cache"
 import {
   resolveAppreciationSetting, APPRECIATION_HARD_CAP_CENTS,
@@ -61,28 +62,29 @@ export async function setReferralAppreciationSettingAction(input: {
   }
 
   const svc = createServiceClient()
-  const { data: row } = await svc.from("brokerage_settings").select("id, settings").eq("brokerage_id", caller.brokerageId).maybeSingle()
-  const settings = ((row as any)?.settings ?? {}) as Record<string, any>
-  const root = { ...(settings.referral_appreciation ?? {}) }
-
-  if (input.scope === "brokerage") Object.assign(root, entry)
-  else if (input.scope === "team") {
-    const teamId = input.teamId ?? caller.teamId
+  // Resolve WHERE the entry goes first (async lookups), then merge it BY KEY onto the settings the
+  // database holds at write time (86C, version-checked): the old read ignored its refusal and
+  // rewrote the whole object, so a concurrent save of any other key was lost.
+  let teamId: string | null = null
+  let targetAgent: string | null = null
+  if (input.scope === "team") {
+    teamId = input.teamId ?? caller.teamId
     if (!teamId) return { ok: false, error: "teamId required for team scope" }
-    root.byTeam = { ...(root.byTeam ?? {}), [teamId]: entry }
-  } else {
+  } else if (input.scope !== "brokerage") {
     // agent scope — an agent may only set their own; broker/admin may set anyone's.
     const agentId = BROKERAGE_SCOPE_ROLES.has(caller.userType) ? (input.agentId ?? null) : null
-    const targetAgent = agentId ?? (await resolveOwnAgentId(svc, caller.userId))
+    targetAgent = agentId ?? (await resolveOwnAgentId(svc, caller.userId))
     if (!targetAgent) return { ok: false, error: "No agent record to scope the setting to" }
-    root.byAgent = { ...(root.byAgent ?? {}), [targetAgent]: entry }
   }
 
-  const patch = { settings: { ...settings, referral_appreciation: root }, updated_at: new Date().toISOString() }
-  const write = row
-    ? await svc.from("brokerage_settings").update(patch).eq("id", (row as any).id)
-    : await svc.from("brokerage_settings").insert({ brokerage_id: caller.brokerageId, ...patch })
-  if (write.error) return { ok: false, error: write.error.message }
+  const write = await mergeBrokerageSettings(svc, caller.brokerageId, (settings) => {
+    const root = { ...((settings.referral_appreciation as Record<string, any> | undefined) ?? {}) }
+    if (input.scope === "brokerage") Object.assign(root, entry)
+    else if (teamId) root.byTeam = { ...(root.byTeam ?? {}), [teamId]: entry }
+    else if (targetAgent) root.byAgent = { ...(root.byAgent ?? {}), [targetAgent]: entry }
+    return { referral_appreciation: root }
+  })
+  if (!write.ok) return { ok: false, error: write.error }
 
   revalidatePath("/referrals/pipeline")
   return { ok: true, resolved: resolveAppreciationSetting({ [input.scope]: entry } as any) }

@@ -48,7 +48,7 @@ export async function deliverMagnet(
       const r = await evaluateOutbound({
         actorContext: { brokerageId: args.brokerageId, userId: args.agentUserId ?? "", role: "system" },
         journeyType: "buyer", persona: "other", messageType: "email", content,
-      })
+      }, { client: svc })
       return { allowed: r.allowed, violations: r.violations }
     } catch {
       return { allowed: true, violations: [] } // gate unreachable → the deterministic copy is already FH-safe

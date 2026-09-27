@@ -123,7 +123,7 @@ async function ensureCompliance(args: {
       phone_opt_out: kc.phone_opt_out ?? undefined,
       status:        kc.status ?? "",
     } as unknown as Parameters<typeof evaluateOutbound>[0]["contact"],
-  })
+  }, { client: svc })
   if (!r.allowed) return { ok: false, reason: `gate:${r.violations.join("; ")}` }
 
   // ── FRESH DNC/TCPA SCRUB (wave 69C carry a; §6 one gate) ──────────────────────────

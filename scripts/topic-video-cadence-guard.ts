@@ -163,7 +163,10 @@ console.log("\n── §settings · per tenant, jsonb, the ONE key, the ONE reso
   check("gate FIRST, then the service client (the auth call precedes createServiceClient in the setter)",
     (() => { const s = doorS.split("export async function setTopicVideoCadenceAction")[1] ?? ""; return s.indexOf("requireTenantAdminOrSoloOwner") >= 0 && s.indexOf("requireTenantAdminOrSoloOwner") < s.indexOf("createServiceClient") })())
   check("the stored value is bounded by the ONE resolver and the write is COUNTED (an update that matches nothing is a refusal)",
-    /resolveTopicVideoCadence\(\{/.test(doorS) && /wrote\.length !== 1/.test(doorS) && /\.select\("id"\)/.test(doorS))
+    // Re-anchored 86C (rule, not waypoint): the write goes through the ONE settings merge writer,
+    // whose version-checked UPDATE is counted (lib/settings/brokerage-settings-merge.ts).
+    /resolveTopicVideoCadence\(\{/.test(doorS) && /mergeBrokerageSettings\(svc, auth\.brokerageId,/.test(doorS) && /if \(!write\.ok\) return \{ ok: false/.test(doorS)
+      && /upd\.length === 1/.test(readStripped("lib/settings/brokerage-settings-merge.ts")))
   const client = readStripped("app/settings/campaign-bundles/client.tsx")
   check("the tenant's admin can reach it: TopicVideoCadenceCard is mounted on the campaign-bundles settings page", /<TopicVideoCadenceCard\s*\/>/.test(client) && /from "\.\/topic-video-cadence-card"/.test(client))
 }

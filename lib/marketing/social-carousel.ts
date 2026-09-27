@@ -183,7 +183,7 @@ export async function runListingCarousels(svc: any): Promise<ListingCarouselsRes
           const r = await evaluateOutbound({
             actorContext: { brokerageId: l.brokerage_id, userId: agentUserId, role: "system" },
             journeyType: "buyer", persona: "other", messageType: "social", content,
-          })
+          }, { client: svc })
           return { allowed: r.allowed }
         } catch { return { allowed: true } } // the fact-built fallback is FH-safe by construction
       }

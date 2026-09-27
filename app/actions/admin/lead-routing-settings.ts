@@ -20,6 +20,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
 import { createClient } from "@/lib/supabase/server"
 import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
 import { getAgentContext } from "@/lib/identity"
@@ -139,28 +140,14 @@ export async function setMailboxOwnerPreference(
   if (!gate.ok) return { success: false, error: gate.error }
   if (typeof enabled !== "boolean") return { success: false, error: "The mailbox-owner preference is either on or off." }
 
-  const service = createServiceClient()
-  // Read-merge-write: every other key on settings (ce_provider, phone_port_ins, business_registration…)
-  // is kept. The row may not exist yet (brokerage_settings is created lazily) — insert it then.
-  const { data: cur, error: readError } = await service
-    .from("brokerage_settings")
-    .select("id, settings")
-    .eq("brokerage_id", gate.brokerageId)
-    .maybeSingle()
-  if (readError) return { success: false, error: `Could not read the lead-routing settings: ${readError.message}` }
-  const prior = ((cur as { settings?: Record<string, any> } | null)?.settings ?? {}) as Record<string, any>
-  const settings = {
-    ...prior,
-    lead_routing: { ...(prior.lead_routing ?? {}), [MAILBOX_OWNER_PREFERENCE_KEY]: enabled },
-  }
-  const now = new Date().toISOString()
-  const write = cur
-    ? await service.from("brokerage_settings").update({ settings, updated_at: now })
-        .eq("id", (cur as { id: string }).id).eq("brokerage_id", gate.brokerageId).select("id")
-    : await service.from("brokerage_settings").insert({ brokerage_id: gate.brokerageId, settings }).select("id")
-  if (write.error) return { success: false, error: write.error.message }
-  // A write that matched nothing also resolves (§3) — count what came back.
-  if (!write.data || write.data.length === 0) return { success: false, error: "The lead-routing settings row was not saved." }
+  // Merged BY KEY through the one settings writer (lib/settings/brokerage-settings-merge.ts,
+  // version-checked): every other key on settings (ce_provider, phone_port_ins,
+  // business_registration…) survives a concurrent save; the row is created if absent.
+  const write = await mergeBrokerageSettings(createServiceClient(), gate.brokerageId, (settings) => {
+    const prior = ((settings as Record<string, any>)?.lead_routing ?? {}) as Record<string, unknown>
+    return { lead_routing: { ...prior, [MAILBOX_OWNER_PREFERENCE_KEY]: enabled } }
+  })
+  if (!write.ok) return { success: false, error: write.error }
 
   revalidatePath("/dashboard/settings")
   revalidatePath("/dashboard/admin/assignment-rules")

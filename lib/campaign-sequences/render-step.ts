@@ -164,7 +164,9 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
     persona:      (contact as any)?.contact_persona ?? "other",
     messageType:  input.step.channel === "sms" ? "sms" : "email",
     content:      body,
-  })
+    // The sequence runner is a CRON: through the anon cookie client this read no voice at all
+    // (86C). input.brokerageId is the enrollment row's tenant; read on the service client.
+  }, { client: supabase })
 
   // ── For email: assemble signature + unsubscribe + legal ──────────────────
   if (input.step.channel === "email") {

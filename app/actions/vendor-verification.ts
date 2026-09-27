@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
 import { scoreVendorApplication, canTransition, type VendorStatus } from "@/lib/kernel/vendor-verification"
 import { readVendorInsurance, type InsuranceStatus } from "@/lib/kernel/vendor-doc-compliance"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
@@ -234,15 +235,16 @@ export async function setVendorTierPricing(
   monthlyPriceUsd: number,
 ): Promise<{ ok: true; pricing: Record<string, number> }> {
   const { brokerageId } = await requireAdmin()
-  const svc = createServiceClient()
-  const { data: row } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle()
-  const settings = (row as { settings?: Record<string, unknown> } | null)?.settings ?? {}
-  const pricing: Record<string, number> = { ...((settings as any).vendor_tier_pricing ?? {}) }
-  if (Number.isFinite(monthlyPriceUsd) && monthlyPriceUsd >= 0) pricing[tier] = Math.round(monthlyPriceUsd)
-  else delete pricing[tier]
-  const nextSettings = { ...settings, vendor_tier_pricing: pricing }
-  const { error } = await svc.from("brokerage_settings").upsert({ brokerage_id: brokerageId, settings: nextSettings, updated_at: new Date().toISOString() }, { onConflict: "brokerage_id" })
-  if (error) throw new Error(`Failed to save pricing: ${error.message}`)
+  // 86C: merged BY KEY onto the settings the database holds at write time (version-checked); the
+  // old read ignored its refusal and upserted the whole object over every other feature's keys.
+  let pricing: Record<string, number> = {}
+  const write = await mergeBrokerageSettings(createServiceClient(), brokerageId, (settings) => {
+    pricing = { ...((settings.vendor_tier_pricing as Record<string, number> | undefined) ?? {}) }
+    if (Number.isFinite(monthlyPriceUsd) && monthlyPriceUsd >= 0) pricing[tier] = Math.round(monthlyPriceUsd)
+    else delete pricing[tier]
+    return { vendor_tier_pricing: pricing }
+  })
+  if (!write.ok) throw new Error(`Failed to save pricing: ${write.error}`)
   return { ok: true, pricing }
 }
 

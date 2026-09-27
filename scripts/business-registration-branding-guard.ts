@@ -35,7 +35,7 @@ import {
   normalizeEin, maskEin, isHttpUrl, normalizeUsPhone, validateBusinessRegistrationInput, readBusinessRegistration,
   redactDraftForClient, loadBusinessRegistrationSources, pickRepresentative,
   BUSINESS_REGISTRATION_SETTINGS_KEY, BUSINESS_REGISTRATION_SETTINGS_PATH, BUSINESS_REGISTRATION_SETTINGS_LABEL,
-  REGISTRATION_BUSINESS_TYPES,
+  REGISTRATION_BUSINESS_TYPES, REGISTRATION_COMPANY_TYPES, normalizeCompanyType, entityTypeConflict, twilioEntityWireValues,
 } from "../lib/branding/business-registration"
 import { deriveA2pProfile, resolveA2pProfile, runA2pRegistration, tollfreeBusinessType, type TwilioTransport } from "../lib/voice/a2p-registration"
 import { advanceTenantCarrier } from "../lib/voice/carrier-registration-loop"
@@ -241,6 +241,57 @@ async function main() {
     const msg = tw.endUsers.find((e) => e.type === "us_a2p_messaging_profile_information")?.attributes ?? {}
     check("a PUBLIC brand files its exchange + ticker + a brand contact e-mail (TCR 2FA)", msg.company_type === "public" && msg.stock_exchange === "NASDAQ" && msg.stock_ticker === "KLG" && msg.brand_contact_email === "pat@kling.example")
   }
+  // ── 3b · the non-profit spelling (lane 86C; owner: "fix twilio non profit spelling") ──
+  // Twilio (Exa 2026-09-27): company_type `non_profit` (ISV guide + error 30799); TrustHub
+  // business_type "Non-profit Corporation" + business_industry NOT_FOR_PROFIT / GOVERNMENT;
+  // toll-free BusinessType NON_PROFIT / GOVERNMENT. One stored spelling, one mapping.
+  console.log("\n[3b · non-profit — one stored spelling, each Twilio API's exact value]")
+  {
+    check("the stored vocabulary is the A2P API's own: non_profit (and NOT the hyphenated form)",
+      (REGISTRATION_COMPANY_TYPES as readonly string[]).includes("non_profit") && !(REGISTRATION_COMPANY_TYPES as readonly string[]).includes("non-profit"))
+    const aliases = ["non-profit", "Non-Profit", "nonprofit", "non profit", "NON_PROFIT", "US Non Profit", "not-for-profit"]
+    check(`every legacy / Console spelling folds onto non_profit (${aliases.length} spellings)`, aliases.every((a) => normalizeCompanyType(a) === "non_profit"), aliases.map((a) => normalizeCompanyType(a)).join(","))
+    check("government / private / public fold onto themselves", normalizeCompanyType("Government") === "government" && normalizeCompanyType(" PRIVATE ") === "private" && normalizeCompanyType("public") === "public")
+    check("CONTROL: an unknown value is NOT folded into non_profit (the validator names it)", normalizeCompanyType("charity-ish") === "charity-ish")
+    const saved = validateBusinessRegistrationInput({ companyType: "non-profit", businessType: "Non-profit Corporation" }, {})
+    check("the card SAVES a hyphenated entry as non_profit — never a second stored spelling", saved.ok && saved.value.companyType === "non_profit", JSON.stringify(saved))
+    check("a record stored with the legacy spelling READS as non_profit", readBusinessRegistration({ [BUSINESS_REGISTRATION_SETTINGS_KEY]: { companyType: "non-profit" } }).companyType === "non_profit")
+    const clash1 = validateBusinessRegistrationInput({ companyType: "non_profit", businessType: "Corporation" }, {})
+    check("a non-profit filing as 'Corporation' is REFUSED at the card (Twilio requires Non-profit Corporation)", !clash1.ok && clash1.errors.some((e) => /Non-profit Corporation/.test(e)))
+    const clash2 = validateBusinessRegistrationInput({ companyType: "private", businessType: "Non-profit Corporation" }, {})
+    check("a 'Non-profit Corporation' filing as private is REFUSED", !clash2.ok)
+    check("CONTROL: a consistent government registration passes (Non-profit Corporation + government)", validateBusinessRegistrationInput({ companyType: "government", businessType: "Non-profit Corporation" }, {}).ok)
+    check("the same conflict rule refuses at the FILING door too (no drift between card and loop)", entityTypeConflict("Corporation", "non-profit") !== null && entityTypeConflict("Non-profit Corporation", "non_profit") === null)
+
+    const w = twilioEntityWireValues({ businessType: "Non-profit Corporation", industry: "REAL_ESTATE", companyType: "non-profit" })
+    check("wire values for a non-profit: company_type non_profit · business_type 'Non-profit Corporation' · industry NOT_FOR_PROFIT · toll-free NON_PROFIT",
+      w.a2pCompanyType === "non_profit" && w.trusthubBusinessType === "Non-profit Corporation" && w.trusthubIndustry === "NOT_FOR_PROFIT" && w.tollfreeBusinessType === "NON_PROFIT", JSON.stringify(w))
+    const g = twilioEntityWireValues({ businessType: "Non-profit Corporation", industry: "REAL_ESTATE", companyType: "government" })
+    check("wire values for government: company_type government · industry GOVERNMENT · toll-free GOVERNMENT", g.a2pCompanyType === "government" && g.trusthubIndustry === "GOVERNMENT" && g.tollfreeBusinessType === "GOVERNMENT")
+    const p = twilioEntityWireValues({ businessType: "Corporation", industry: "REAL_ESTATE", companyType: "private" })
+    check("CONTROL: a private brokerage keeps its own industry (REAL_ESTATE) and PRIVATE_PROFIT", p.trusthubIndustry === "REAL_ESTATE" && p.tollfreeBusinessType === "PRIVATE_PROFIT" && p.a2pCompanyType === "private")
+    check("tollfreeBusinessType reads the one mapping (a legacy hyphen still files NON_PROFIT)", tollfreeBusinessType({ businessType: "Non-profit Corporation", companyType: "non-profit" }) === "NON_PROFIT")
+
+    // THE REAL RUNNER against the simulated Twilio, for a non-profit tenant stored the legacy way.
+    const npReg = { ...REG, businessType: "Non-profit Corporation", companyType: "non-profit" }
+    const db = tenantDb({ [BUSINESS_REGISTRATION_SETTINGS_KEY]: npReg })
+    const tw = fakeTwilio()
+    await runA2pRegistration(db, "b1", { deps: deps(tw).carrier })
+    const biz = tw.endUsers.find((e) => e.type === "customer_profile_business_information")?.attributes ?? {}
+    const msg = tw.endUsers.find((e) => e.type === "us_a2p_messaging_profile_information")?.attributes ?? {}
+    check("FILED: TrustHub business_type 'Non-profit Corporation' and business_industry NOT_FOR_PROFIT", biz.business_type === "Non-profit Corporation" && biz.business_industry === "NOT_FOR_PROFIT", JSON.stringify(biz))
+    check("FILED: A2P company_type is exactly 'non_profit' (never the hyphen Twilio refuses as 30799)", msg.company_type === "non_profit", JSON.stringify(msg))
+    check("FILED: a non-profit brand carries no stock fields", !("stock_exchange" in msg) && !("stock_ticker" in msg))
+
+    // SOURCE: the hyphenated company_type spelling survives nowhere as a code literal.
+    const HYPHEN = /["'`]non-profit["'`]/
+    const hits = codeFiles().filter((f) => HYPHEN.test(stripComments(src(f))))
+    check(`no app/lib file carries the literal "non-profit" as a value (${codeFiles().length} files, comments stripped)`, hits.length === 0, hits.join(", "))
+    check("CONTROL: the literal finder sees the pre-86C vocabulary line", HYPHEN.test(`export const REGISTRATION_COMPANY_TYPES = ["private", "public", "non-profit", "government"] as const`))
+    const runner = code("lib/voice/a2p-registration.ts")
+    check("the runner files business_type / industry / company_type ONLY through twilioEntityWireValues",
+      /business_type:\s*twilioEntityWireValues\(profile\)\.trusthubBusinessType/.test(runner) && /business_industry:\s*twilioEntityWireValues\(profile\)\.trusthubIndustry/.test(runner) && /company_type:\s*twilioEntityWireValues\(profile\)\.a2pCompanyType/.test(runner))
+  }
   {
     const db = tenantDb({ [BUSINESS_REGISTRATION_SETTINGS_KEY]: { ...REG, ein: "", termsUrl: "" } })
     const tw = fakeTwilio()
@@ -313,8 +364,14 @@ async function main() {
   }
   check("the gate resolves the tenant from the SESSION (acting-context) and the finance-admin predicate (role grants included), failing closed", /resolveWriteContext\(\)/.test(regAction) && /resolveActingContext\(\)/.test(regAction) && /resolveBrokerageFinanceAdmin\(/.test(regAction) && /if \(!admin\.ok\) return \{ ok: false/.test(regAction))
   check("no brokerageId is ever read from the payload", !/input\??\.\s*brokerage/i.test(regAction) && !/identity\??\.\s*brokerage/i.test(regAction))
-  check("the settings write is counted (.select(\"id\")) and zero rows is a refusal", (regAction.match(/\.select\("id"\)/g) ?? []).length >= 2 && /write\.data\.length === 0/.test(regAction))
-  check("the update pins the tenant as well as the row id", /\.eq\("id", src\.settingsRowId\)\.eq\("brokerage_id", g\.brokerageId\)/.test(regAction))
+  // Re-anchored 86C (rule, not waypoint): the write goes through the ONE settings merge writer,
+  // whose UPDATE is counted, pinned to row id AND tenant, and version-checked (the 84D race).
+  const mergeWriter = code("lib/settings/brokerage-settings-merge.ts")
+  check("the settings write is counted (.select(\"id\")) and zero rows is a refusal — through the merge writer",
+    /mergeBrokerageSettings\(svc, g\.brokerageId,/.test(regAction) && /if \(!write\.ok\) return \{ ok: false/.test(regAction)
+    && /\.select\("id"\)/.test(mergeWriter) && /upd\.length === 1/.test(mergeWriter))
+  check("the update pins the tenant as well as the row id (and the version it read)",
+    /\.eq\("id", r\.id\)\s*\.eq\("brokerage_id", brokerageId\)/.test(mergeWriter) && /\.eq\("updated_at", r\.updated_at\)/.test(mergeWriter))
   const page = code("app/settings/branding/page.tsx")
   check("the Business registration card is mounted on the Branding settings page", /<BusinessRegistrationCard\s*\/>/.test(page))
   check("the card's anchor matches the path every 'needs input' message links to", code("app/components/settings/BusinessRegistrationCard.tsx").includes(`id="${BUSINESS_REGISTRATION_SETTINGS_PATH.split("#")[1]}"`) && BUSINESS_REGISTRATION_SETTINGS_PATH.startsWith("/settings/branding"))

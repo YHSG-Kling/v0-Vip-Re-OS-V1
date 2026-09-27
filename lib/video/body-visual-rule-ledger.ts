@@ -37,6 +37,7 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
 import { checkRuleOverrideBounds, type BodyVisualRuleOverride } from "@/lib/video/body-visual-model"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -56,17 +57,12 @@ function entriesOf(settings: Record<string, unknown>): BodyVisualRuleOverride[] 
   return Array.isArray(raw) ? (raw as BodyVisualRuleOverride[]).filter((o) => o && typeof o.id === "string" && typeof o.purpose === "string") : []
 }
 
-async function writeEntries(svc: Svc, brokerageId: string, exists: boolean, settings: Record<string, unknown>, entries: BodyVisualRuleOverride[]): Promise<{ ok: boolean; reason?: string }> {
-  const next = { ...settings, [BODY_VISUAL_OVERRIDES_KEY]: entries }
-  const now = new Date().toISOString()
-  if (exists) {
-    const { data, error } = await svc.from("brokerage_settings").update({ settings: next, updated_at: now }).eq("brokerage_id", brokerageId).select("id")
-    if (error) return { ok: false, reason: error.message }
-    if (!data || data.length !== 1) return { ok: false, reason: `brokerage_settings update matched ${data?.length ?? 0} rows for ${brokerageId} (expected 1)` }
-    return { ok: true }
-  }
-  const { error } = await svc.from("brokerage_settings").insert({ brokerage_id: brokerageId, settings: next })
-  return error ? { ok: false, reason: error.message } : { ok: true }
+/** The ledger key, merged BY KEY through the one settings writer (86C): `mutate` runs on the
+ *  entries the database holds AT WRITE TIME (version-checked, counted), so a concurrent apply,
+ *  revert or any other feature's key is re-read and kept, never overwritten by a stale copy. */
+async function writeEntries(svc: Svc, brokerageId: string, mutate: (fresh: BodyVisualRuleOverride[]) => BodyVisualRuleOverride[]): Promise<{ ok: boolean; reason?: string }> {
+  const write = await mergeBrokerageSettings(svc, brokerageId, (settings) => ({ [BODY_VISUAL_OVERRIDES_KEY]: mutate(entriesOf(settings)) }))
+  return write.ok ? { ok: true } : { ok: false, reason: write.error }
 }
 
 /**
@@ -116,7 +112,8 @@ export async function applyBodyVisualRuleOverride(
   const entries = entriesOf(read.settings)
   const same = entries.find((o) => !o.revertedAt && o.purpose === candidate.purpose && JSON.stringify(o.change) === JSON.stringify(candidate.change))
   if (same) return { ok: true, override: same, signalId: null }
-  const wrote = await writeEntries(svc, brokerageId, read.exists, read.settings, [...entries, candidate])
+  // Re-judged on the FRESH ledger: an identical live entry written concurrently is not doubled.
+  const wrote = await writeEntries(svc, brokerageId, (fresh) => fresh.some((o) => !o.revertedAt && o.purpose === candidate.purpose && JSON.stringify(o.change) === JSON.stringify(candidate.change)) ? fresh : [...fresh, candidate])
   if (!wrote.ok) return { ok: false, reason: `ledger write refused: ${wrote.reason}` }
   const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
   const change = candidate.change.kind === "prefer_treatment"
@@ -143,7 +140,7 @@ export async function revertBodyVisualRuleOverride(brokerageId: string, override
   if (!target) return { ok: false, reason: `no override ${overrideId} on this tenant's ledger` }
   if (target.revertedAt) return { ok: true, override: target, signalId: null }
   const reverted: BodyVisualRuleOverride = { ...target, revertedAt: new Date().toISOString() }
-  const wrote = await writeEntries(svc, brokerageId, read.exists, read.settings, entries.map((o) => (o.id === overrideId ? reverted : o)))
+  const wrote = await writeEntries(svc, brokerageId, (fresh) => fresh.map((o) => (o.id === overrideId && !o.revertedAt ? reverted : o)))
   if (!wrote.ok) return { ok: false, reason: `ledger write refused: ${wrote.reason}` }
   const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
   const signal = await publishManagerSignal({

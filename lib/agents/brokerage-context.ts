@@ -101,7 +101,9 @@ export async function resolveBrokerageContext(params: {
     persona:     params.persona,
     messageType: "narrative",
     content:     "",
-  }).catch(() => null)
+    // 86C: agents spawn from crons and reactors with no session; the anon cookie read returned
+    // an EMPTY voice. params.brokerageId is the spawning run's tenant; read on the service client.
+  }, { client: svc }).catch(() => null)
 
   // 3. Compliance gates — the canonical short-list the agent must self-filter against.
   //    Full enforcement happens at the lib/kernel/compliance.ts:evaluateOutbound chokepoint

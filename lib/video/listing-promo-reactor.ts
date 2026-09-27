@@ -259,7 +259,7 @@ export async function dispatchListingPromoVideo(
           messageType:  "social",
           content:      s,
           // broadcast shape — no per-contact gates
-        })
+        }, { client: svc })
         // REALISM (wave 55): folded into the SAME one-redraft gate as
         // intro-video-reactor.ts, for the same reason (§6 — one retry
         // mechanism, not a second loop for realism) — see that file's gate

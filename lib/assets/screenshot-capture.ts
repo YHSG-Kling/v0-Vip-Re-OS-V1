@@ -327,9 +327,138 @@ export function isPublicPageHost(hostname: string): boolean {
 // pipelines" — the entry-URL check alone is bypassed by redirects): (1) the
 // URL itself (pure, below); (2) every address the host resolves to (DNS, in
 // captureScreenshot); (3) every request the browser makes (the puppeteer
-// adapter aborts any request whose URL fails requestHostRefusal). DNS
-// rebinding between (2) and the browser's own lookup is the residual gap —
-// network egress policy is the control for it (published blind spot).
+// adapter aborts any request whose URL fails requestHostRefusal).
+//
+// DNS REBINDING (lane 86C — the gap 85A published). Checking a name's answers
+// and then letting Chromium resolve it AGAIN is a time-of-check/time-of-use
+// hole: a hostile resolver answers the check with a public address and the
+// browser's own lookup, seconds later, with 169.254.169.254. Closed by never
+// letting the browser resolve anything: each host is resolved ONCE per capture
+// through the checked resolver and PINNED (createHostPinner); every request the
+// page makes — navigation, redirect hop, subresource — is re-checked (the URL
+// rule, then the pin) and FULFILLED by us over a connection to the pinned
+// address (fetchPinned: node:http(s) with its `lookup` fixed to that address,
+// SNI and certificate still checked against the host name), and Chromium is
+// launched with `--host-resolver-rules=MAP * ~NOTFOUND` so a request that ever
+// escaped interception (a websocket, a prefetch) cannot resolve at all. The
+// robots.txt fetch for a general page rides the same pin, each redirect hop
+// re-checked (85A's second published gap).
+
+/** Answers for a host name (A/AAAA), the resolver a capture checks and pins through. */
+type HostLookup = (hostname: string) => Promise<string[]>
+
+type HostPin = { ok: true; address: string; family: 4 | 6 } | { ok: false; reason: string }
+export type HostPinner = (hostname: string) => Promise<HostPin>
+
+/**
+ * One capture's DNS pin: every host is resolved ONCE through `lookupHost`, and
+ * only if EVERY answer is a public address is it pinned (to the first); every
+ * later request to that host reuses the SAME verified address, so a second,
+ * rebound answer is never asked for. A refusal is pinned too (a host that once
+ * answered inward stays refused for the whole capture).
+ */
+export function createHostPinner(lookupHost: HostLookup): HostPinner {
+  const pins = new Map<string, Promise<HostPin>>()
+  return (hostname: string) => {
+    const h = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "")
+    let p = pins.get(h)
+    if (!p) {
+      p = (async (): Promise<HostPin> => {
+        const literal = isIP(h)
+        if (literal) return isPublicIpAddress(h) ? { ok: true, address: h, family: literal as 4 | 6 } : { ok: false, reason: `${h} is not a public address` }
+        let addrs: string[]
+        try { addrs = await lookupHost(h) } catch (e) { return { ok: false, reason: `${h} did not resolve (${(e as Error).message})` } }
+        const inward = addrs.filter((a) => !isPublicIpAddress(a))
+        if (!addrs.length || inward.length) return { ok: false, reason: `${h} resolves to ${inward.length ? `a non-public address (${inward.join(", ")})` : "nothing"}` }
+        return { ok: true, address: addrs[0], family: isIP(addrs[0]) as 4 | 6 }
+      })()
+      pins.set(h, p)
+    }
+    return p
+  }
+}
+
+interface PinnedResponse { status: number; headers: Record<string, string>; body: Buffer }
+
+/** The connection a pinned request is made over: to `address`, never to a fresh lookup of `url.hostname`. */
+export type PinnedTransport = (req: {
+  url: URL; address: string; family: 4 | 6; method: string; headers: Record<string, string>; body?: string; timeoutMs: number
+}) => Promise<PinnedResponse>
+
+const PINNED_MAX_BYTES = 25 * 1024 * 1024
+
+/** Default transport: node:http(s) with `lookup` fixed to the pinned address. TLS still sends
+ *  SNI and verifies the certificate for the HOST NAME; redirects are NOT followed here (the
+ *  browser follows them, and each hop comes back through interception to be re-checked). */
+export const nodePinnedTransport: PinnedTransport = async ({ url, address, family, method, headers, body, timeoutMs }) => {
+  const mod = url.protocol === "https:" ? await import("node:https") : await import("node:http")
+  return await new Promise<PinnedResponse>((resolve, reject) => {
+    const req = mod.request({
+      protocol: url.protocol, hostname: url.hostname, port: url.port || undefined, path: `${url.pathname}${url.search}`,
+      method, headers, servername: url.hostname, timeout: timeoutMs,
+      lookup: (_h: string, _o: unknown, cb: (err: Error | null, addr: string, fam: number) => void) => cb(null, address, family),
+    } as any, (res) => {
+      const chunks: Buffer[] = []
+      let size = 0
+      res.on("data", (c: Buffer) => {
+        size += c.length
+        if (size > PINNED_MAX_BYTES) { req.destroy(new Error("response too large")); return }
+        chunks.push(c)
+      })
+      res.on("end", () => {
+        const out: Record<string, string> = {}
+        for (const [k, v] of Object.entries(res.headers)) if (v !== undefined) out[k] = Array.isArray(v) ? v.join(", ") : String(v)
+        resolve({ status: res.statusCode ?? 502, headers: out, body: Buffer.concat(chunks) })
+      })
+      res.on("error", reject)
+    })
+    req.on("timeout", () => req.destroy(new Error("timed out")))
+    req.on("error", reject)
+    if (body) req.write(body)
+    req.end()
+  })
+}
+
+/**
+ * RE-CHECK AND PIN one request, then make it over the pinned connection. The URL rule
+ * (requestHostRefusal) runs first, then the pin; a refusal never reaches the transport.
+ */
+export async function fetchPinned(
+  url: string,
+  opts: { pin: HostPinner; transport?: PinnedTransport; method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number },
+): Promise<{ ok: true; response: PinnedResponse; address: string } | { ok: false; reason: string }> {
+  const refusal = requestHostRefusal(url)
+  if (refusal) return { ok: false, reason: refusal }
+  const u = new URL(url)
+  const pinned = await opts.pin(u.hostname)
+  if (!pinned.ok) return { ok: false, reason: pinned.reason }
+  try {
+    const response = await (opts.transport ?? nodePinnedTransport)({
+      url: u, address: pinned.address, family: pinned.family, method: opts.method ?? "GET",
+      headers: opts.headers ?? {}, body: opts.body, timeoutMs: opts.timeoutMs ?? 15_000,
+    })
+    return { ok: true, response, address: pinned.address }
+  } catch (e) {
+    return { ok: false, reason: `${u.hostname}: ${(e as Error).message}` }
+  }
+}
+
+/** robots.txt for a GENERAL page over the pin: each redirect hop (≤3) is re-checked and
+ *  pinned; any refusal or non-2xx is "no robots file" (the same reading as before). */
+export async function fetchRobotsPinned(origin: string, pin: HostPinner, transport?: PinnedTransport): Promise<string | null> {
+  let next = `${origin}/robots.txt`
+  for (let hop = 0; hop < 4; hop++) {
+    const r = await fetchPinned(next, { pin, transport, headers: { "user-agent": SCREENSHOT_USER_AGENT }, timeoutMs: 8000 })
+    if (!r.ok) return null
+    const { status, headers, body } = r.response
+    if (status >= 300 && status < 400 && headers.location) { next = new URL(headers.location, next).toString(); continue }
+    return status >= 200 && status < 300 ? body.toString("utf8") : null
+  }
+  return null
+}
+
+/** Chromium flags for a public-network capture: the browser resolves NOTHING itself. */
+export const PINNED_BROWSER_ARGS = ["--host-resolver-rules=MAP * ~NOTFOUND"] as const
 
 /** Names that never resolve to the public internet. */
 const NON_PUBLIC_NAME_SUFFIXES = ["localhost", "local", "internal", "intranet", "lan", "home", "corp", "localdomain", "home.arpa", "arpa", "test", "invalid", "example"] as const
@@ -535,7 +664,17 @@ export interface ProviderCaptureInput {
    *  browser runs on the vendor's network, never ours, so the entry-URL and
    *  DNS checks the seam already ran are the whole of what it needs. */
   publicNetworkOnly?: boolean
+  /** WAVE 86C — the capture's DNS pin (createHostPinner over the seam's checked resolver).
+   *  With publicNetworkOnly, the puppeteer adapter REFUSES to run without it (fail closed):
+   *  every request is re-checked, pinned and fulfilled over the pinned address. */
+  hostPin?: HostPinner
+  /** Test seam (86C): the pinned connection (default node:http(s) with a fixed lookup). */
+  pinnedTransport?: PinnedTransport
 }
+
+/** Response headers a fulfilled request must not replay: the body we hand Chromium is already
+ *  de-chunked and (because we ask for identity) uncompressed. */
+const HOP_HEADERS = new Set(["content-encoding", "transfer-encoding", "content-length", "connection", "keep-alive"])
 
 export interface ScreenshotProvider {
   name: "puppeteer" | "hosted"
@@ -558,27 +697,44 @@ export function redactionCss(selectors: string[]): string {
 export const puppeteerScreenshotProvider: ScreenshotProvider = {
   name: "puppeteer",
   async capture(input) {
+    // FAIL CLOSED (86C): a public-network capture without its DNS pin would hand
+    // Chromium's own resolver the rebinding window — refuse before any launch.
+    const pin = input.hostPin
+    if (input.publicNetworkOnly && !pin) throw new Error("[screenshot-capture] a public-network capture needs its DNS pin (hostPin) — refused rather than letting the browser resolve")
     const { resolveChromiumExecutable, chromiumLaunchArgs } = await import("@/lib/remotion/chromium-executable")
     const executablePath = await resolveChromiumExecutable({ localDiscovery: true })
     if (!executablePath) throw new Error("[screenshot-capture] no chromium executable: set CHROMIUM_EXECUTABLE_PATH or PLAYWRIGHT_BROWSERS_PATH (serverless hosts resolve the @sparticuz/chromium-min pack automatically)")
     const puppeteer = (await import("puppeteer-core")).default
-    const browser = await puppeteer.launch({ executablePath, args: await chromiumLaunchArgs(), headless: true, defaultViewport: null })
+    const args = [...(await chromiumLaunchArgs()), ...(input.publicNetworkOnly ? PINNED_BROWSER_ARGS : [])]
+    const browser = await puppeteer.launch({ executablePath, args, headless: true, defaultViewport: null })
     try {
       const page = await browser.newPage()
       await page.setUserAgent(input.userAgent)
       await page.setViewport({ width: input.viewport.width, height: input.viewport.height, deviceScaleFactor: input.viewport.deviceScaleFactor ?? 1 })
       if (input.cookies?.length) await browser.setCookie(...input.cookies.map((c) => ({ ...c, expires: -1 })))
-      // Public-network guard (85A): every request — the navigation, each
-      // redirect hop, every subresource — is checked before it leaves.
+      // Public-network guard (85A → 86C): every request — the navigation, each
+      // redirect hop, every subresource — is re-checked, PINNED and fulfilled by
+      // us over the pinned address. Chromium resolves nothing (PINNED_BROWSER_ARGS).
       let blocked: string | null = null
-      if (input.publicNetworkOnly) {
+      if (input.publicNetworkOnly && pin) {
         await page.setRequestInterception(true)
         page.on("request", (req) => {
-          const refusal = requestHostRefusal(req.url())
-          if (refusal) {
-            if (req.isNavigationRequest() && req.frame() === page.mainFrame()) blocked = blocked ?? refusal
+          const url = req.url()
+          const scheme = url.slice(0, url.indexOf(":") + 1)
+          if (scheme === "data:" || scheme === "blob:" || scheme === "about:") { req.continue().catch(() => {}); return }
+          const refuse = (why: string) => {
+            if (req.isNavigationRequest() && req.frame() === page.mainFrame()) blocked = blocked ?? why
             req.abort("accessdenied").catch(() => {})
-          } else req.continue().catch(() => {})
+          }
+          const headers: Record<string, string> = { ...req.headers(), "accept-encoding": "identity" }
+          fetchPinned(url, { pin, transport: input.pinnedTransport, method: req.method(), headers, body: req.postData(), timeoutMs: Math.min(20_000, input.timeoutMs) })
+            .then((r) => {
+              if (!r.ok) return refuse(r.reason)
+              const out: Record<string, string> = {}
+              for (const [k, v] of Object.entries(r.response.headers)) if (!HOP_HEADERS.has(k.toLowerCase())) out[k] = v
+              return req.respond({ status: r.response.status, headers: out, body: r.response.body })
+            })
+            .catch(() => refuse("the pinned request failed"))
         })
       }
       await page.goto(input.url, { waitUntil: "networkidle2", timeout: input.timeoutMs }).catch((e) => { if (!blocked) throw e })
@@ -837,6 +993,8 @@ export interface CaptureDeps {
   /** Test seam (85A): every address a general public page's host resolves to
    *  (default: node:dns lookup, all A/AAAA answers). */
   lookupHost?: (hostname: string) => Promise<string[]>
+  /** Test seam (86C): the pinned connection the robots fetch and the browser's requests use. */
+  pinnedTransport?: PinnedTransport
   now?: Date
   timeoutMs?: number
 }
@@ -893,6 +1051,8 @@ export async function captureScreenshot(req: ScreenshotRequest, deps: CaptureDep
   }
 
   let cookies: ProviderCaptureInput["cookies"]
+  // 86C: the capture's DNS pin — set for a general page, handed to the provider.
+  let hostPin: HostPinner | undefined
   if (plan.kind === "os_surface") {
     const findDemo = deps.findDemo ?? (async (s: any) => (await import("@/lib/platform/demo-tenant")).findDemoBrokerage(s))
     const demo = await findDemo(svc)
@@ -908,13 +1068,16 @@ export async function captureScreenshot(req: ScreenshotRequest, deps: CaptureDep
     // Public-network guard, layer 2 (85A): a general page's host must resolve
     // ONLY to public addresses — checked BEFORE robots.txt is fetched, so not
     // even that request is steered inward. Unresolvable = refused (fail closed).
+    // 86C: the check IS the pin — the address verified here is the one the browser's
+    // navigation and the robots.txt fetch connect to (no second lookup to rebind).
     if (plan.pageSubject === "general") {
-      let addrs: string[] = []
-      try { addrs = await (deps.lookupHost ?? defaultLookupHost)(target.hostname) } catch (e) { return { ok: false, reason: `REFUSED: ${target.hostname} did not resolve (${(e as Error).message}) — not captured` } }
-      const inward = addrs.filter((a) => !isPublicIpAddress(a))
-      if (!addrs.length || inward.length) return { ok: false, reason: `REFUSED: ${target.hostname} resolves to ${inward.length ? `a non-public address (${inward.join(", ")})` : "nothing"} — a general public page must be on the public internet (not captured)` }
+      hostPin = createHostPinner(deps.lookupHost ?? defaultLookupHost)
+      const entry = await hostPin(target.hostname)
+      if (!entry.ok) return { ok: false, reason: `REFUSED: ${entry.reason} — a general public page must be on the public internet (not captured)` }
     }
-    const robots = await (deps.fetchRobots ?? defaultFetchRobots)(target.origin)
+    const robots = deps.fetchRobots
+      ? await deps.fetchRobots(target.origin)
+      : hostPin ? await fetchRobotsPinned(target.origin, hostPin, deps.pinnedTransport) : await defaultFetchRobots(target.origin)
     if (!isRobotsAllowed(robots, target.pathname + target.search, SCREENSHOT_USER_AGENT)) {
       return { ok: false, reason: `robots.txt on ${target.hostname} disallows ${target.pathname} for this capture agent — not captured` }
     }
@@ -932,7 +1095,7 @@ export async function captureScreenshot(req: ScreenshotRequest, deps: CaptureDep
       url: plan.targetUrl, viewport: plan.viewport, cookies, redactSelectors: plan.redactSelectors,
       readyWhen: plan.readyWhen,
       userAgent: SCREENSHOT_USER_AGENT, timeoutMs: deps.timeoutMs ?? 45_000,
-      ...(plan.pageSubject === "general" ? { publicNetworkOnly: true } : {}),
+      ...(plan.pageSubject === "general" ? { publicNetworkOnly: true, hostPin, pinnedTransport: deps.pinnedTransport } : {}),
     }))
   } catch (e) {
     return { ok: false, reason: `screenshot provider ${provider.name} failed: ${(e as Error).message}` }

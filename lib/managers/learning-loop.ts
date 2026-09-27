@@ -16,6 +16,7 @@
 // new brokerage is never "tuned" on noise. PURE derivation is unit-tested; the runner does the I/O.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -148,19 +149,14 @@ export async function runManagerLearning(
   const learned: Record<string, LearnedEntry> = {}
   for (const a of adjustments) learned[a.key] = { manager: a.manager, value: a.value, rationale: a.rationale, sample: a.sample, computed_at: now.toISOString() }
 
-  const { data: existing } = await supabase.from("brokerage_settings").select("id, settings").eq("brokerage_id", brokerageId).maybeSingle()
-  const prevSettings = ((existing as { settings?: Record<string, unknown> } | null)?.settings ?? {}) as Record<string, unknown>
-  const nextSettings = { ...prevSettings, learned_adjustments: learned, learned_adjustments_computed_at: now.toISOString() }
-
-  let written = false
-  if (existing) {
-    const { error } = await supabase.from("brokerage_settings").update({ settings: nextSettings, updated_at: now.toISOString() }).eq("brokerage_id", brokerageId)
-    written = !error
-  } else {
-    const { error } = await supabase.from("brokerage_settings").insert({ brokerage_id: brokerageId, settings: nextSettings })
-    written = !error
-  }
-  return { adjustments, written }
+  // 86C: merged BY KEY through the one settings writer (version-checked) — the nightly run no
+  // longer rewrites the whole object over a broker's concurrent veto or any other key.
+  const write = await mergeBrokerageSettings(supabase, brokerageId, {
+    learned_adjustments: learned,
+    learned_adjustments_computed_at: now.toISOString(),
+  })
+  if (!write.ok) console.error("[learning-loop] learned adjustments NOT saved:", write.error)
+  return { adjustments, written: write.ok }
 }
 
 /**
@@ -211,16 +207,14 @@ export async function listLearnedAdjustments(brokerageId: string, client?: Svc):
 /** Set or clear a broker veto on a learned adjustment. Best-effort; returns the new veto state. */
 export async function setLearnedAdjustmentVeto(brokerageId: string, key: string, vetoed: boolean, client?: Svc): Promise<{ ok: boolean; vetoed: boolean }> {
   const supabase = client ?? createServiceClient()
-  const { data } = await supabase.from("brokerage_settings").select("id, settings").eq("brokerage_id", brokerageId).maybeSingle()
-  const settings = ((data as { settings?: Record<string, unknown> } | null)?.settings ?? {}) as Record<string, unknown>
-  const vetoes = { ...((settings.learned_vetoes ?? {}) as Record<string, boolean>) }
-  if (vetoed) vetoes[key] = true
-  else delete vetoes[key]
-  const nextSettings = { ...settings, learned_vetoes: vetoes }
-  if (data) {
-    const { error } = await supabase.from("brokerage_settings").update({ settings: nextSettings, updated_at: new Date().toISOString() }).eq("brokerage_id", brokerageId)
-    return { ok: !error, vetoed }
-  }
-  const { error } = await supabase.from("brokerage_settings").insert({ brokerage_id: brokerageId, settings: nextSettings })
-  return { ok: !error, vetoed }
+  // 86C: the veto map is merged BY KEY onto the settings the database holds at write time
+  // (version-checked), so a veto and the nightly learned-adjustments run can no longer erase
+  // each other; a refused read now refuses instead of writing `{ learned_vetoes }` over it all.
+  const write = await mergeBrokerageSettings(supabase, brokerageId, (settings) => {
+    const vetoes = { ...((settings.learned_vetoes ?? {}) as Record<string, boolean>) }
+    if (vetoed) vetoes[key] = true
+    else delete vetoes[key]
+    return { learned_vetoes: vetoes }
+  })
+  return { ok: write.ok, vetoed }
 }

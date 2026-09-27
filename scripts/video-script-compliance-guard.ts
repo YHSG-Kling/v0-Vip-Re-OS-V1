@@ -453,7 +453,8 @@ const CALLERS = [
   // server-only kernel creator, which also carries the podcast creator's call. The file on the
   // list follows the CALL, for the reason the create-video-project note below records.
   "lib/kernel/content-creators.ts",
-  "app/actions/blog.ts",
+  // app/actions/blog.ts left in wave 86C: generateBlogPost is now a session door onto
+  // lib/kernel/content-creators.ts writeBlogPost (listed above), which carries the call.
   "app/actions/social-media-automation.ts",
   "lib/video/persona-variant-post-pass.ts",
   "lib/video/script-compliance.ts",
@@ -479,7 +480,10 @@ const CALLERS = [
  */
 function evaluateOutboundArgs(src: string): string[] {
   const out: string[] = []
-  const re = /evaluateOutbound\s*\(/g
+  // 86C: a sessionless caller reaches the SAME gate through the service-client door
+  // lib/kernel/tenant-config-reads.ts evaluateTenantOutbound — content-creators calls it that
+  // way, so a regex for the bare name alone would read that file as calling nothing.
+  const re = /\b(?:evaluateOutbound|evaluateTenantOutbound)\s*\(/g
   let m: RegExpExecArray | null
   while ((m = re.exec(src))) {
     let i = m.index + m[0].length

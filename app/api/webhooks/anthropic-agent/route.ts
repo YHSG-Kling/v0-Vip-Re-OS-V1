@@ -149,7 +149,7 @@ export async function POST(request: NextRequest) {
       let complianceViolations: string[] = []
       if (text) {
         try {
-          const { evaluateOutbound } = await import("@/lib/kernel/compliance")
+          const { evaluateTenantOutbound: evaluateOutbound } = await import("@/lib/kernel/tenant-config-reads") // 86C: sessionless — tenant from the verified session row
           // Best-effort load of the contact so the gate runs the per-contact
           // checks (DNC / TCPA / suppression) when the session entity is a contact.
           // For transaction/listing entities, contact stays undefined and only the

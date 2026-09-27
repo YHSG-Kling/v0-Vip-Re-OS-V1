@@ -824,7 +824,7 @@ async function leadStillSendable(args: {
       isa_reengage_allowed: true,
       dnc_status: false,
     } as any,
-  })
+  }, { client: supabase })
   if (!compliance.allowed) {
     return { ok: false, reason: `compliance gate blocked the body: ${compliance.blockedReason ?? (compliance.violations ?? []).join("; ")}` }
   }

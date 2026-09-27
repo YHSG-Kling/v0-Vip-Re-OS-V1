@@ -3566,20 +3566,18 @@ const QUALIFIED_EXTERNAL_ROUTES = new Map<string, string>([
   ["/api/intelligence/memory/update", "service-to-service door onto lib/intelligence/conversation-insights.ts:updateConversationMemory. The IN-TREE trigger for the same writer is app/api/cron/conversation-insights-refresh (its header records the adjudication: 'one code path, two doors'). Auth: Bearer INTERNAL_API_SECRET, explicit 500 when unset (route.ts:12-26)"],
   ["/api/intelligence/kb/embed",     "service-to-service KB embedding onto lib/intelligence/kb-search.ts:embedAndStore — the admin UI embeds IN-PROCESS through app/actions/knowledge/search.ts:embedNow (its header records the repoint away from this route, which a browser could never authenticate to), leaving this as the out-of-process bulk/backfill door. Auth: Bearer INTERNAL_API_SECRET, fails closed 401 when unset (route.ts:6-10)"],
 
-  // ── THE WIDGET'S PUBLIC CAPTURE TWIN (lane M3 2026-08-31) ─────────────────
-  // Adjudicated, NOT deleted, and the difference from the five session-authed
-  // loops deleted this wave is the CREDENTIAL: this door takes a server-minted
-  // widget_session_token, not a Supabase session, and /api/widget/session mints
-  // that token to ANY visitor of a public slug — so an off-repo integration
-  // POSTing here cannot be disproved from this repo (§1: public endpoints are
-  // unreferenced by design; unresolved means leave it). The in-repo widget
-  // clients use the sibling /api/widget/capture-lead (app/widget/[brokerageSlug]/
-  // widget-chat-client.tsx:138), and per §1.1 the halves this twin had that the
-  // WIRED sibling lacked — the consent audit row, the CONTACT_CAPTURED
-  // lifecycle event, the fail-closed session read — were MERGED ONTO
-  // capture-lead first (app/api/widget/capture-lead/route.ts), so whichever
-  // door a caller enters, the ledger comes out the same.
-  ["/api/widget/capture", "public widget capture intake gated by a server-minted widget_session_token proven against the slug's own brokerage (route.ts:74-93, fails closed 503 on a refused read); no Supabase session anywhere in the file, and the token is minted to anonymous visitors by /api/widget/session — an off-repo caller cannot be disproved. In-repo widget clients use /api/widget/capture-lead, onto which this twin's missing halves were merged (§1.1) before this entry was written"],
+  // ── TOMBSTONE: /api/widget/capture, RETIRED 2026-09-27 (lane 86C, §1.1) ────
+  // Carried here since lane M3 as an UNRESOLVED 6d door: public, token-gated, "an off-repo
+  // caller cannot be disproved". The owner's wave-86 ruling disproves it — "this platform os
+  // has not yet been pushed in production" — so no deployed integration can hold the URL, and
+  // 85E's Vercel evidence already showed no production traffic for this repo. Merged first,
+  // then deleted: the in-repo chat widget's survivor is app/api/widget/capture-lead/route.ts
+  // (which already held the consent row, the CONTACT_CAPTURED event and the fail-closed session
+  // read; 86C added the twin's agents-class `ownerAgentId`, which the survivor had been passing
+  // as a users id). The OFF-SITE capability an external twin would serve is 85E's lead-magnet
+  // embed: lib/lead-magnets/embed-snippet.ts → app/api/lead-magnets/submissions/route.ts.
+  // 6d moved 6 → 5 because the door is GONE, not because a finder stopped seeing it: a
+  // re-created route file with no caller reappears in 6b/6d on its own.
 ])
 
 // ─── TOMBSTONES: five session-authed loops DELETED (lane M3, 2026-08-31) ─────

@@ -684,6 +684,7 @@ export async function precheckBriefForFairHousing(
   actor: ScriptComplianceActor,
   brief: string,
   journeyType: "buyer" | "seller",
+  opts?: { client?: QueryableClient | null },
 ): Promise<BriefPrecheckResult> {
   // Deterministic first: this cannot throw and cannot be lost to a DB outage.
   const deterministic = detectFairHousingRedFlags(brief, journeyType)
@@ -698,7 +699,7 @@ export async function precheckBriefForFairHousing(
       persona: SCRIPT_BROADCAST_PERSONA,
       messageType: "social",
       content: brief,
-    })
+    }, opts?.client ? { client: opts.client } : undefined)
     const fairHousingViolations = (preCheck.violations ?? []).filter((v) =>
       v.startsWith("FairHousing:"),
     )
@@ -788,7 +789,10 @@ export async function assessScriptCompliance(
       persona: SCRIPT_BROADCAST_PERSONA,
       messageType: "social",
       content: script,
-    })
+      // 86C: a caller that holds its own client (the sessionless kernel writers pass the service
+      // client) grades through it, so Gate 1 reads the tenant's brand voice and the audit row
+      // lands — the cookie client is anon there and read neither.
+    }, opts?.client ? { client: opts.client } : undefined)
     complianceEventId = postCheck.complianceEventId
     // The kernel gate re-derives the same Fair Housing hits from the same rule
     // array, so drop anything the deterministic pass already reported rather

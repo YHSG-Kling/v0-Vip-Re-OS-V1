@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
 import {
   isCeProviderConnected,
   availableCourses,
@@ -119,35 +120,18 @@ export async function connectCeProvider(config: CeProviderConfig): Promise<{ ok:
     throw new Error("The launch URL must be https")
   }
 
-  const { data: row, error: readError } = await svc
-    .from("brokerage_settings")
-    .select("settings")
-    .eq("brokerage_id", brokerageId)
-    .maybeSingle()
-  // Fail closed: a refused read here would be treated as "no settings yet" and the
-  // upsert would then REPLACE every other setting this brokerage has with `{}`.
-  if (readError) throw new Error(`Could not read brokerage settings: ${readError.message}`)
-
-  const settings = (row as { settings?: Record<string, unknown> } | null)?.settings ?? {}
-  const next = {
-    ...settings,
+  // 86C: merged BY KEY through the one settings writer — it fails closed on a refused read (the
+  // guard this site already had) AND carries every other key as the database holds it at write
+  // time (version-checked), so a concurrent save of another feature's key is never replaced.
+  const write = await mergeBrokerageSettings(svc, brokerageId, {
     ce_provider: {
       name,
       connected: !!config.connected,
       launchBaseUrl,
       catalog: Array.isArray(config.catalog) ? config.catalog : [],
     },
-  }
-  const { data: saved, error } = await svc
-    .from("brokerage_settings")
-    .upsert(
-      { brokerage_id: brokerageId, settings: next, updated_at: new Date().toISOString() },
-      { onConflict: "brokerage_id" },
-    )
-    .select("brokerage_id")
-  if (error) throw new Error(`Failed to connect provider: ${error.message}`)
-  // PROVEN, not assumed — an upsert that matched nothing must not report success.
-  if (!saved || saved.length === 0) throw new Error("The provider settings were not saved")
+  })
+  if (!write.ok) throw new Error(`Failed to connect provider: ${write.error}`)
   return { ok: true }
 }
 

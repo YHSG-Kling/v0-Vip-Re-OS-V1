@@ -68,8 +68,94 @@ export const REGISTRATION_INDUSTRIES = [
 /** customer_profile_business_information.business_regions_of_operation */
 export const REGISTRATION_REGIONS = ["USA_AND_CANADA", "LATIN_AMERICA", "EUROPE", "ASIA", "AFRICA", "AUSTRALIA"] as const
 
-/** us_a2p_messaging_profile_information.company_type */
-export const REGISTRATION_COMPANY_TYPES = ["private", "public", "non-profit", "government"] as const
+/**
+ * us_a2p_messaging_profile_information.company_type — the ONE stored spelling, and it is the
+ * API's own (lane 86C; owner: "fix twilio non profit spelling"). Exa, 2026-09-27:
+ *   · twilio.com/docs/messaging/compliance/a2p-10dlc/onboarding-for-government-and-non-profit-agencies
+ *     (ISV section — the API path this OS files on): "The `company_type` value must be `non_profit`."
+ *   · twilio.com/docs/api/errors/30799: "Use `company_type` `government` for government
+ *     organizations and `company_type` `non_profit` for nonprofit organizations."
+ * 84D stored the hyphenated `non-profit` from the collect-business-info list; that page is the
+ * one outlier, and a brand filed with it fails TCR vetting as 30799. `normalizeCompanyType`
+ * folds every legacy spelling onto this list on read AND write, so no second spelling survives.
+ * The OTHER non-profit spellings are other FIELDS, not other spellings of this one — each is
+ * emitted by twilioEntityWireValues below, the one mapping:
+ *   customer_profile_business_information.business_type      "Non-profit Corporation"
+ *   customer_profile_business_information.business_industry  "NOT_FOR_PROFIT" / "GOVERNMENT"
+ *   Tollfree Verifications BusinessType                        "NON_PROFIT" / "GOVERNMENT"
+ */
+export const REGISTRATION_COMPANY_TYPES = ["private", "public", "non_profit", "government"] as const
+
+/** Every spelling a person, a Console label or an older record uses → the one stored value.
+ *  An unknown value is returned trimmed and lower-cased so the validator can name it. */
+export function normalizeCompanyType(raw: unknown): string {
+  const v = typeof raw === "string" ? raw.trim().toLowerCase() : ""
+  if (!v) return ""
+  const squashed = v.replace(/[\s_\-]+/g, "")
+  if (squashed === "nonprofit" || squashed === "usnonprofit" || squashed === "notforprofit") return "non_profit"
+  if (squashed === "government" || squashed === "gov") return "government"
+  if (squashed === "private" || squashed === "privateprofit") return "private"
+  if (squashed === "public" || squashed === "publicprofit") return "public"
+  return v
+}
+
+/** The TrustHub business_type Twilio REQUIRES for a non-profit or government filer (both
+ *  guides: "The `business_type` value must be `Non-profit Corporation`"). */
+export const NON_PROFIT_BUSINESS_TYPE = "Non-profit Corporation" as const
+
+/** A registration whose entity type and company type contradict each other is refused at
+ *  the card AND at the filing (one rule, both doors) rather than silently rewritten. */
+export function entityTypeConflict(businessType: string, companyType: string): string | null {
+  const ct = normalizeCompanyType(companyType)
+  if (!businessType || !ct) return null
+  const nonProfitLike = ct === "non_profit" || ct === "government"
+  if (nonProfitLike && businessType !== NON_PROFIT_BUSINESS_TYPE) {
+    return `A ${ct === "government" ? "government" : "non profit"} registration files its business type as "${NON_PROFIT_BUSINESS_TYPE}" (Twilio requires it)`
+  }
+  if (!nonProfitLike && businessType === NON_PROFIT_BUSINESS_TYPE) {
+    return `A "${NON_PROFIT_BUSINESS_TYPE}" files its company type as non profit (or government), not ${ct}`
+  }
+  return null
+}
+
+export type TollfreeBusinessType = "PRIVATE_PROFIT" | "PUBLIC_PROFIT" | "NON_PROFIT" | "SOLE_PROPRIETOR" | "GOVERNMENT"
+
+/** The exact value each Twilio API expects for the entity, from the one stored registration. */
+interface TwilioEntityWireValues {
+  /** customer_profile_business_information.business_type */
+  trusthubBusinessType: string
+  /** customer_profile_business_information.business_industry */
+  trusthubIndustry: string
+  /** us_a2p_messaging_profile_information.company_type */
+  a2pCompanyType: string
+  /** Messaging v1 Tollfree Verifications BusinessType (twilio-node tollfreeVerification.d.ts:
+   *  "PRIVATE_PROFIT, PUBLIC_PROFIT, NON_PROFIT, SOLE_PROPRIETOR, GOVERNMENT") */
+  tollfreeBusinessType: TollfreeBusinessType
+}
+
+/**
+ * THE ONE MAPPING (86C). Every non-profit spelling a Twilio request carries comes from here:
+ * the carrier-registration runner (lib/voice/a2p-registration.ts) builds the TrustHub business
+ * info, the A2P messaging profile and the toll-free verification from this and nothing else.
+ * business_industry is DERIVED for non-profit / government filers — both Twilio guides say it
+ * "must be" NOT_FOR_PROFIT / GOVERNMENT — so a tenant whose industry defaulted to REAL_ESTATE
+ * still files the value the special use case needs.
+ */
+export function twilioEntityWireValues(p: { businessType: string; industry: string; companyType: string }): TwilioEntityWireValues {
+  const ct = normalizeCompanyType(p.companyType)
+  const tollfree: TollfreeBusinessType =
+    ct === "government" ? "GOVERNMENT"
+    : ct === "non_profit" || p.businessType === NON_PROFIT_BUSINESS_TYPE ? "NON_PROFIT"
+    : p.businessType === "Sole Proprietorship" ? "SOLE_PROPRIETOR"
+    : ct === "public" ? "PUBLIC_PROFIT"
+    : "PRIVATE_PROFIT"
+  return {
+    trusthubBusinessType: p.businessType,
+    trusthubIndustry: ct === "non_profit" ? "NOT_FOR_PROFIT" : ct === "government" ? "GOVERNMENT" : p.industry,
+    a2pCompanyType: ct,
+    tollfreeBusinessType: tollfree,
+  }
+}
 
 /** authorized_representative_1.job_position */
 export const REGISTRATION_JOB_POSITIONS = ["Director", "GM", "VP", "CEO", "CFO", "General Counsel", "Other"] as const
@@ -191,6 +277,9 @@ export function readBusinessRegistration(settings: unknown): Partial<BusinessReg
     const v = t((rec as Record<string, unknown>)[k])
     if (v) out[k] = v
   }
+  // One vocabulary (86C): a record saved with a legacy spelling ("non-profit") reads as the
+  // one stored spelling, so nothing downstream ever sees two.
+  if (out.companyType) out.companyType = normalizeCompanyType(out.companyType)
   return out
 }
 
@@ -222,7 +311,9 @@ export function validateBusinessRegistrationInput(
   } else if (existing.ein) set("ein", existing.ein)
 
   const oneOf = (k: keyof BusinessRegistration, list: readonly string[], label: string) => {
-    const v = t(r[k])
+    // companyType is folded onto the one spelling first (86C): "non-profit" / "Nonprofit" /
+    // "US Non Profit" all save as non_profit rather than being refused or stored twice.
+    const v = k === "companyType" ? normalizeCompanyType(r[k]) : t(r[k])
     if (!v) return
     if (!list.includes(v)) errors.push(`${label} must be one of: ${list.join(", ")}`)
     else set(k, v)
@@ -266,6 +357,9 @@ export function validateBusinessRegistrationInput(
     else set("repPhone", p)
   }
   set("useCaseDescription", t(r.useCaseDescription).slice(0, 400))
+
+  const conflict = entityTypeConflict(value.businessType ?? "", value.companyType ?? "")
+  if (conflict) errors.push(conflict)
 
   if (errors.length) return { ok: false, errors }
   value.updatedAt = now.toISOString()

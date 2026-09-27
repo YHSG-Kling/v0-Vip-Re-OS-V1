@@ -635,7 +635,7 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
         messageType:  "email",
         content:      s,
         // contact: undefined — broadcast-shape gating
-      })
+      }, { client: svc })
       // REALISM (wave 55): the owner ruling is "the video must not look like
       // a fake ai creation" — folded into this SAME gate rather than a second
       // redraft loop (§6). runWithComplianceRedraft already gives exactly one

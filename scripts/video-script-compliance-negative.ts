@@ -33,7 +33,7 @@ const CALLER_FILES = [
   "app/actions/social/generate-social-post.ts",
   // Wave 85F: the newsletter writer's evaluateOutbound call moved to the kernel creator.
   "lib/kernel/content-creators.ts",
-  "app/actions/blog.ts",
+  // app/actions/blog.ts off in 86C: its gate call moved with the writer to content-creators (above).
   // create-video-project.ts is off this list: it no longer calls evaluateOutbound
   // (only the tombstone comment mentions it), so the NO-STUB-CONTACT mutation had
   // no anchor to substitute and the case could never have proved anything.
@@ -124,7 +124,9 @@ const mutations: Mutation[] = [
   ...CALLER_FILES.map((file) => ({
     id: `NO-STUB-CONTACT-${file.replace(/[^a-z]/gi, "-")}`,
     file,
-    apply: sub("evaluateOutbound({", 'evaluateOutbound({ contact: { id: "stubtest" },'),
+    // 86C: a sessionless caller reaches the gate through evaluateTenantOutbound — mutate either.
+    apply: (src: string) => sub("evaluateOutbound({", 'evaluateOutbound({ contact: { id: "stubtest" },')(src)
+      ?? sub("evaluateTenantOutbound({", 'evaluateTenantOutbound({ contact: { id: "stubtest" },')(src),
   })),
 
   {

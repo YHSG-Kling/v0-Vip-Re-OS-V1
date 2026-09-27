@@ -228,10 +228,12 @@ export async function authorNewsletterContent(input: AuthorNewsletterContentInpu
   const agentId = agent.agentId
 
   const [{ escapeHtmlFull: escapeHtml }, { generateObject }, { resolveModel }, { z },
-    { applyBrandVoice }, { evaluateOutbound }, topicBank, { analyzeContentQuality }, insider, compliance] =
+    { applyTenantBrandVoice, evaluateTenantOutbound }, topicBank, { analyzeContentQuality }, insider, compliance] =
     await Promise.all([
       import("@/lib/format/html"), import("@/lib/ai/generate"), import("@/lib/ai/resolve-model"), import("zod"),
-      import("@/lib/kernel/brand-voice"), import("@/lib/kernel/compliance"), import("@/lib/content-intel/topic-bank"),
+      // The SESSIONLESS door (86C): ctx is verified by this module's contract, so brand voice and
+      // the gate read the tenant's rows on the service client instead of an anon cookie client.
+      import("@/lib/kernel/tenant-config-reads"), import("@/lib/content-intel/topic-bank"),
       import("@/lib/quality-checker"), import("@/lib/newsletter/insider-edit"), import("@/lib/video/script-compliance"),
     ])
   type TopicCandidate = Awaited<ReturnType<typeof topicBank.pickTopics>>[number]
@@ -418,7 +420,7 @@ ${insiderBlock}`,
         return { ...section, content: validated.content || section.content }
       }
       const seedPersona = Array.isArray(section.target_personas) && section.target_personas[0] ? section.target_personas[0] : "seller"
-      const branded = await applyBrandVoice({
+      const branded = await applyTenantBrandVoice({
         brokerageId, actorUserId: userId, actorRole: "agent", journeyType: "seller",
         persona: seedPersona, messageType: "email", content: section.content,
       })
@@ -433,7 +435,7 @@ ${insiderBlock}`,
   for (const section of brandedSections) {
     let verdict: { allowed: boolean; violations: string[] }
     try {
-      verdict = await evaluateOutbound({
+      verdict = await evaluateTenantOutbound({
         actorContext: { userId, role: "agent", brokerageId },
         journeyType: "buyer", persona: "first_time", messageType: "email", content: section.content,
       })
@@ -869,6 +871,320 @@ export async function createBlogPostDraft(input: CreateBlogPostDraftInput): Prom
   return { success: true, postId }
 }
 
+/** The AI blog writer's input. The tenant and the actor are ctx (VERIFIED by the caller); the
+ *  rest is the brief. `agentUserId` attributes the post to another seat of the SAME tenant
+ *  (users id, verified here) — the cadence cron writes for the scope's agent. */
+interface WriteBlogPostInput {
+  ctx: MarketingActorContext
+  client?: ContentClient
+  agentUserId?: string
+  title?: string
+  keywords: string[]
+  campaignId?: string
+  tone?: string
+  /** Source material to repurpose (e.g. a video transcript) — the article is written FROM it. */
+  sourceContent?: string
+  /** When true, generate a branded cover image and set featured_image_url. */
+  generateCoverImage?: boolean
+  /** Topic-bank persona (m136 per-persona weighting) when pullFromTopicBank is set. */
+  recipientPersona?: string
+  /** Cadence-cron path: pick topics from content_topic_bank instead of keywords alone. */
+  pullFromTopicBank?: boolean
+}
+
+interface BlogPostDraftJson {
+  title: string
+  slug: string
+  excerpt: string
+  content: string
+  featuredImagePrompt: string
+}
+
+/**
+ * THE AI BLOG WRITER (lane 86C). The body moved here from app/actions/blog.ts generateBlogPost,
+ * which is now its SESSION door; the cadence cron (app/api/cron/blog-cadence-tick) calls it
+ * directly with the scope row's tenant. Merged onto it (§1.1) from the unwired duplicate
+ * lib/kernel/marketing.ts createBlogPost, deleted with a tombstone:
+ *   · the caller-named umbrella campaign is VERIFIED in this tenant before it is written (the
+ *     survivor wrote `params.campaignId` raw — a foreign id would file this tenant's post under
+ *     another tenant's campaign ROI, lib/marketing/campaign-measurer.ts);
+ *   · the insert runs on the service client after the gate (the survivor wrote through the
+ *     COOKIE client, so the sessionless cadence cron was refused by brok_blog_posts every run,
+ *     and its feature gate read feature_flags as anon and refused first).
+ * What neither copy had — COMPLIANCE-FIRST (§5), the same kit the newsletter and podcast
+ * writers carry: the brief is pre-checked for fair housing before any model sees it,
+ * buildComplianceSystemBlocks (brand voice + ThemFirst + Fair Housing + the brokerage's own
+ * prohibited phrases) is in the SYSTEM prompt, and postcheckScript (gradeWrittenCopy) grades the
+ * article. A hard fair-housing / blocking-phrase flag refuses the draft; advisory findings pass
+ * through as complianceWarnings. evaluateOutbound still runs as the blocking gate.
+ */
+export async function writeBlogPost(input: WriteBlogPostInput): Promise<
+  ContentRefusal | { success: true; postId: string; title: string; content: string; keywordWarnings?: string[]; complianceWarnings: string[] }
+> {
+  const { ctx } = input
+  const refused = actorRefusal(ctx, "blog post")
+  if (refused) return refused
+  const keywords = (input.keywords ?? []).map((k) => String(k).trim()).filter(Boolean)
+
+  const supabase: ContentClient = input.client ?? createServiceClient()
+  const featureClient = supabase as unknown as FeatureClient
+  const brokerageId = ctx.brokerageId
+  const userId = ctx.userId
+
+  // ── 1. Feature gate (through the caller's client — never the anon cookie) ──
+  const access = await canAccessFeature(userId, "seo_blog_engine", undefined, featureClient)
+  if (!access.allowed) return { success: false, error: access.reason || "Feature access denied" }
+
+  // ── 2. Every caller-named id is verified in THIS tenant ──────────────────
+  let agentUserId: string | null = null
+  if (input.agentUserId && input.agentUserId !== userId) {
+    const v = await verifyInTenant(supabase, "users", input.agentUserId, brokerageId, "agent")
+    if (!v.ok) return { success: false, error: v.error }
+    agentUserId = v.id
+  } else if (input.agentUserId) {
+    agentUserId = userId
+  }
+  let marketingCampaignId: string | null = null
+  if (input.campaignId) {
+    const v = await verifyInTenant(supabase, "marketing_campaigns", input.campaignId, brokerageId, "campaign")
+    if (!v.ok) return { success: false, error: v.error }
+    marketingCampaignId = v.id
+  }
+
+  const [compliance, { applyTenantBrandVoice, evaluateTenantOutbound }, topicBank, { logTopicUses }, { generateTextRouted }] =
+    await Promise.all([
+      import("@/lib/video/script-compliance"), import("@/lib/kernel/tenant-config-reads"),
+      import("@/lib/content-intel/topic-bank"), import("@/lib/content-intel/performance-aggregator"),
+      import("@/lib/ai/models"),
+    ])
+  const actor = { userId, brokerageId }
+
+  // ── 3. The brief is screened before any model sees it (deterministic first) ──
+  const brief = [input.title ?? "", keywords.join(", "), (input.sourceContent ?? "").slice(0, 6000)].filter(Boolean).join("\n")
+  if (brief.trim()) {
+    const pre = await compliance.precheckBriefForFairHousing(actor, brief, "buyer", { client: supabase })
+    if (pre.blocked) return { success: false, error: `This topic cannot be written as asked: ${pre.reason}` }
+  }
+
+  // ── 4. Brand voice (the tenant's, on the service client — 86C) ────────────
+  const brandVoice = await applyTenantBrandVoice({
+    brokerageId, actorUserId: agentUserId ?? userId, actorRole: "agent", journeyType: "buyer",
+    persona: "first_time", messageType: "email", content: keywords.join(", "),
+  }, supabase)
+  const toneDescription = input.tone || brandVoice.tone || "professional and helpful"
+
+  // ── 5. Topic-bank seeding (cadence path) ──────────────────────────────────
+  type TopicCandidate = Awaited<ReturnType<typeof topicBank.pickTopics>>[number]
+  let topicSeeds: TopicCandidate[] = []
+  if (input.pullFromTopicBank) {
+    try {
+      topicSeeds = await topicBank.pickTopics({
+        brokerageId,
+        categoriesAny: keywords.length > 0 ? keywords : undefined,
+        limit: 3,
+        markUsed: false,
+        recipientPersona: input.recipientPersona ?? null,
+        assetType: "blog_post",
+      })
+    } catch (e) {
+      console.warn("[content-creators] blog topic-bank pick failed; falling back to keywords-only:", (e as Error).message)
+    }
+  }
+  if (keywords.length === 0 && topicSeeds.length === 0 && !input.sourceContent?.trim()) {
+    return { success: false, error: "Provide keywords, source material or a topic-bank pick to write a blog post." }
+  }
+  const topicSeedBlock = topicSeeds.length > 0
+    ? `\n\nTOPIC INTELLIGENCE THREADS (build the article around these):
+The platform's content-intelligence bank surfaced these as the highest-engagement
+threads for this brokerage's audience right now. Lead with the strongest
+single thread; weave the others as supporting structure.
+
+${topicBank.renderTopicsForPrompt(topicSeeds)}`
+    : ""
+
+  // ── 6. Write — compliance-first: the rules are in the SYSTEM prompt ───────
+  const blocks = await compliance.buildComplianceSystemBlocks(brokerageId, undefined, supabase)
+  const systemPrompt = [
+    `You are a real estate content writer for a professional brokerage. Write in a ${toneDescription} style.
+${brandVoice.keyBrandMessages?.length ? `Key messages to incorporate: ${brandVoice.keyBrandMessages.join(", ")}` : ""}
+${brandVoice.prohibitedWords?.length ? `Avoid these words: ${brandVoice.prohibitedWords.join(", ")}` : ""}
+
+ONLINE VISIBILITY (this brokerage's chosen positioning — NOT SEO keyword stuffing):
+  · Be CITABLE by AI search (Google AI Overviews, ChatGPT, Claude, Perplexity, Gemini). Use clear facts with named entities + named sources where applicable.
+  · Open with a 2-3 sentence summary that an AI engine can pull as a citation snippet.
+  · Use FAQ-style H2/H3 headings written as the QUESTIONS a real-estate buyer/seller actually types.
+  · Attribute non-obvious claims to a source. Never invent a source — when uncertain, soften with "in many markets" rather than fabricate a citation.
+  · Make the article shareable: end with a single specific takeaway readers can quote on social.`,
+    ...blocks,
+  ].join("\n\n")
+
+  const userPrompt = `Write a 700-900 word blog post about real estate topics related to: ${keywords.join(", ") || "the source material below"}.
+${input.sourceContent ? `Base the article on this source material (repurpose its key points; do not invent specific properties, prices, or guarantees):\n"""${input.sourceContent.slice(0, 6000)}"""\n` : ""}${input.title ? `Use this title: ${input.title}` : "Create an engaging title — written as a question or a specific claim the reader is searching for."}
+${topicSeedBlock}
+
+Structure (online-visibility format):
+1. 2-3 sentence opening summary (the citation snippet).
+2. 3-5 H2 sections written as questions the reader would search for.
+3. Each section: a direct answer in the first sentence, then supporting context.
+4. Closing takeaway — one specific actionable sentence (not "contact us").
+
+Compliance fence (non-negotiable):
+  · Never reference protected characteristics (race, color, religion, national origin, sex, disability, familial status).
+  · No "perfect for families", "great for empty-nesters", or similar demographic proxies.
+  · No guaranteed appreciation / valuation / rate claims.
+  · No predictive market direction claims without an attributed source.
+
+Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
+{
+  "title": "The blog post title",
+  "slug": "the-blog-post-slug",
+  "excerpt": "A compelling 150-160 character meta description (also the OG card description)",
+  "content": "The full blog post content with proper HTML headings (h2, h3) and paragraphs",
+  "featuredImagePrompt": "A descriptive prompt for generating a featured image"
+}`
+
+  let draft: BlogPostDraftJson
+  try {
+    const { text } = await generateTextRouted({
+      feature: "blog_post_generation",
+      system: systemPrompt,
+      prompt: userPrompt,
+      temperature: 0.7,
+      brokerageId,
+      userId,
+    })
+    draft = JSON.parse(text.replace(/```json\n?|\n?```/g, "").trim()) as BlogPostDraftJson
+  } catch (err) {
+    console.error("[content-creators] blog generation failed:", err)
+    return { success: false, error: `Failed to generate blog content: ${err instanceof Error ? err.message : String(err)}` }
+  }
+  if (!draft?.content?.trim() || !draft?.title?.trim()) {
+    return { success: false, error: "The model returned a blog post with no title or body." }
+  }
+
+  // ── 7. The blocking gate, then the post-check grade ───────────────────────
+  const gate = await evaluateTenantOutbound({
+    actorContext: { userId, role: "agent", brokerageId },
+    journeyType: "buyer", persona: "first_time", messageType: "email", content: draft.content,
+    // Broadcast payload — no stub contact (lib/video/script-compliance.ts explains why).
+  }, supabase)
+  if (!gate.allowed) return { success: false, error: `Compliance check failed: ${gate.violations.join(", ")}` }
+
+  const graded = await gradeWrittenCopy(actor, `${draft.title}\n\n${draft.content}`, supabase)
+  if (graded.redFlags.length > 0) {
+    return { success: false, error: `The drafted post tripped a hard compliance flag and was not kept: ${graded.redFlags.join("; ")}`, complianceWarnings: graded.redFlags }
+  }
+
+  // ── 8. Optional branded cover image ───────────────────────────────────────
+  let featuredImageUrl: string | null = null
+  if (input.generateCoverImage && draft.featuredImagePrompt) {
+    try {
+      const { generateImage } = await import("@/lib/ai/image-generation")
+      const { data: brokerage } = await supabase
+        .from("brokerages")
+        .select("name, dba_name:dba, license_number, license_state, logo_url, brand_primary_color:primary_color")
+        .eq("id", brokerageId)
+        .maybeSingle()
+      const b = brokerage as { name: string | null; dba_name: string | null; license_number: string | null; license_state: string | null; logo_url: string | null; brand_primary_color: string | null } | null
+      const img = await generateImage({
+        prompt: draft.featuredImagePrompt,
+        purpose: "blog_hero",
+        size: "1792x1024",
+        quality: "standard",
+        brand: {
+          brokerageName: b?.name ?? null,
+          brokerageDba: b?.dba_name ?? null,
+          brokerageLicense: b?.license_number ?? null,
+          brokerageLicenseState: b?.license_state ?? null,
+          logoUrl: b?.logo_url ?? null,
+          primaryColor: b?.brand_primary_color ?? null,
+        },
+      })
+      if (img.success && img.imageUrl) featuredImageUrl = img.imageUrl
+    } catch (imgErr) {
+      console.error("[content-creators] blog cover image failed (non-blocking):", imgErr)
+    }
+  }
+
+  // ── 9. COUNTED insert ─────────────────────────────────────────────────────
+  const { data: rows, error: insertError } = await supabase
+    .from("blog_posts")
+    .insert({
+      brokerage_id: brokerageId,
+      agent_user_id: agentUserId,          // FK users
+      marketing_campaign_id: marketingCampaignId,
+      title: draft.title,
+      slug: draft.slug || draft.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || `post-${Date.now()}`,
+      excerpt: draft.excerpt ?? null,
+      content: draft.content,
+      featured_image_url: featuredImageUrl,
+      publish_status: "draft",
+      visibility_scope: agentUserId ? "agent" : "brokerage",
+      created_by: userId,                  // FK users
+      is_ai_generated: true,
+    })
+    .select("id")
+  const one = exactlyOne(rows, insertError, "Blog post")
+  if (!one.ok) {
+    console.error("[content-creators] AI blog insert:", one.error)
+    return { success: false, error: one.error }
+  }
+  const postId = String(one.row.id)
+
+  if (topicSeeds.length > 0) {
+    void logTopicUses({ topicIds: topicSeeds.map((t) => t.id), brokerageId, assetType: "blog_post", assetId: postId })
+  }
+
+  // ── 10. Keywords — a keyword that cannot be stored is named, never dropped ──
+  const keywordFailures: string[] = []
+  for (let i = 0; i < keywords.length; i++) {
+    const keyword = keywords[i]
+    const isPrimary = i === 0
+    const { data: existingKeyword, error: kwReadErr } = await supabase
+      .from("seo_keywords").select("id").eq("brokerage_id", brokerageId).eq("keyword", keyword).maybeSingle()
+    if (kwReadErr) { keywordFailures.push(`${keyword}: ${kwReadErr.message}`); continue }
+    let seoKeywordId: string
+    if (existingKeyword) {
+      seoKeywordId = (existingKeyword as { id: string }).id
+    } else {
+      const { data: newKeyword, error: kwError } = await supabase
+        .from("seo_keywords")
+        .insert({
+          brokerage_id: brokerageId, keyword, keyword_type: isPrimary ? "primary" : "secondary",
+          search_intent: "informational", visibility_scope: agentUserId ? "agent" : "brokerage",
+          created_by: userId, is_active: true,
+        })
+        .select("id")
+      const kw = exactlyOne(newKeyword, kwError, "SEO keyword")
+      if (!kw.ok) { keywordFailures.push(`${keyword}: ${kw.error}`); continue }
+      seoKeywordId = String(kw.row.id)
+    }
+    const { error: linkError } = await supabase.from("blog_post_keywords").insert({
+      brokerage_id: brokerageId, blog_post_id: postId, seo_keyword_id: seoKeywordId, is_primary: isPrimary,
+    })
+    if (linkError) keywordFailures.push(`${keyword}: link refused (${linkError.message})`)
+  }
+
+  // ── 11. Usage + kernel event (the compliance officer's pre-publish pass) ──
+  const usage = await incrementFeatureUsage(userId, "seo_blog_engine", featureClient)
+  if (!usage.success) console.error("[content-creators] seo_blog_engine usage NOT counted:", usage.error)
+  await processKernelEvent({
+    event: KernelEvent.BLOG_POST_GENERATED,
+    brokerageId,
+    entityType: "blog_post",
+    entityId: postId,
+  }).catch((err) => console.error("[content-creators] BLOG_POST_GENERATED event failed (non-blocking):", err))
+
+  return {
+    success: true,
+    postId,
+    title: draft.title,
+    content: draft.content,
+    ...(keywordFailures.length ? { keywordWarnings: keywordFailures } : {}),
+    complianceWarnings: graded.warnings,
+  }
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // 4. PODCAST — the writer (writePodcastScript) and the creator
 // ═════════════════════════════════════════════════════════════════════════════
@@ -903,7 +1219,7 @@ export async function writePodcastScript(input: {
   // The brief itself is screened before any model sees it (deterministic first; a throw is
   // reported, never read as clean).
   const brief = seed.join(", ")
-  const pre = await compliance.precheckBriefForFairHousing(actor, brief, "buyer")
+  const pre = await compliance.precheckBriefForFairHousing(actor, brief, "buyer", { client: supabase })
   if (pre.blocked) return { success: false, error: `This topic cannot be written as asked: ${pre.reason}` }
 
   const blocks = await compliance.buildComplianceSystemBlocks(ctx.brokerageId, undefined, supabase)
@@ -1005,8 +1321,10 @@ export async function createPodcastEpisode(input: CreatePodcastEpisodeInput): Pr
     verified[col] = v.id
   }
 
-  const { resolveProvider } = await import("@/lib/kernel/providers")
-  const provider = await resolveProvider({ providerType: "video", actorContext: { userId, brokerageId, teamId: undefined } })
+  // Sessionless door (86C): provider_overrides is readable by platform admins only, so the
+  // cookie read answered "system default" for every tenant; ctx is verified, read on service.
+  const { resolveTenantProvider, applyTenantBrandVoice, evaluateTenantOutbound } = await import("@/lib/kernel/tenant-config-reads")
+  const provider = await resolveTenantProvider({ providerType: "video", actorContext: { userId, brokerageId, teamId: undefined } })
 
   let templateData: Record<string, any> | null = null
   if (input.templateId) {
@@ -1036,8 +1354,7 @@ export async function createPodcastEpisode(input: CreatePodcastEpisodeInput): Pr
   }
   if (!finalScript?.trim()) return { success: false, error: "Script or keywords required" }
 
-  const { applyBrandVoice } = await import("@/lib/kernel/brand-voice")
-  const brandVoiceResult = await applyBrandVoice({
+  const brandVoiceResult = await applyTenantBrandVoice({
     brokerageId, actorUserId: userId, actorRole: "agent", journeyType: "buyer",
     persona: "first_time", messageType: "social", content: finalScript,
   })
@@ -1047,8 +1364,7 @@ export async function createPodcastEpisode(input: CreatePodcastEpisodeInput): Pr
 
   // Broadcast content: the agent is not a recipient, so no `contact` (DNC/TCPA skipped, and the
   // compliance_events row can land — an agents id in a contact slot never matched a contact).
-  const { evaluateOutbound } = await import("@/lib/kernel/compliance")
-  const complianceResult = await evaluateOutbound({
+  const complianceResult = await evaluateTenantOutbound({
     actorContext: { userId, brokerageId, teamId: undefined, role: "agent" },
     journeyType: "buyer", persona: "first_time", messageType: "social", content: finalScript,
   })

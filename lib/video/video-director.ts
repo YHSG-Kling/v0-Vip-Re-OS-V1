@@ -1182,7 +1182,7 @@ export async function commissionVideo(
           persona: "other",
           messageType: "social",
           content: s,
-        })
+        }, { client: svc }) // 86C: sessionless — the tenant's brand voice + audit row on the service client
         const tells = scanForAiTells(s)
         return { allowed: r.allowed && tells.length === 0, violations: [...r.violations, ...tells] }
       },
@@ -1670,7 +1670,7 @@ async function draftAndGateHook(
           persona: "other",
           messageType: "social",
           content: s,
-        })
+        }, { client: (await import("@/lib/supabase/service")).createServiceClient() }) // 86C: sessionless — tenant is the commission's own
         return { allowed: r.allowed, violations: r.violations }
       },
     })

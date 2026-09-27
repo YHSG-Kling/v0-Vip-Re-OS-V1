@@ -1721,7 +1721,7 @@ async function sendPortalMessage(
   // housing + content scans). Portal messages bypass TCPA (no phone/email
   // touch) but content quality + brand voice still apply.
   try {
-    const { evaluateOutbound } = await import("@/lib/kernel/compliance")
+    const { evaluateTenantOutbound: evaluateOutbound } = await import("@/lib/kernel/tenant-config-reads") // 86C: sessionless — tenant from the verified session row
     const compliance = await evaluateOutbound({
       actorContext: {
         userId:      session.user_id,

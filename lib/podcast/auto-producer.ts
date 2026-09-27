@@ -371,7 +371,7 @@ segment labels read aloud.${fix}`
       const r = await evaluateOutbound({
         actorContext: { brokerageId: args.brokerageId, userId: args.hostUserId, role: "system" },
         journeyType:  "buyer", persona: "other", messageType: "social", content: script,
-      })
+      }, { client: args.svc })
       return { allowed: r.allowed, violations: r.violations }
     },
   })

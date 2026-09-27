@@ -90,7 +90,7 @@ export async function sendInstantOpenHouseGreeting(
         dnc_status:    false,
         isa_reengage_allowed: false,
       } as never,
-    })
+    }, { client: svc })
 
     if (!result.allowed) {
       return {

@@ -277,7 +277,9 @@ export async function buildCallContext(params: {
   const { providerKey: voiceVendor } = await resolveProvider({
     providerType: 'voice_clone',
     actorContext: { userId: '', brokerageId: params.brokerageId },
-  })
+    // 86C: a voice call context is built from webhooks with no session, and the platform
+    // vendor row is readable only by platform admins — read it on the service client.
+  }, { client: supabase })
 
   return {
     blocked: false,

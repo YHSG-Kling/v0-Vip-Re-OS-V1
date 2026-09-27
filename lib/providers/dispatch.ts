@@ -33,7 +33,7 @@
 import { createRequire } from "node:module"
 const LobSDK = createRequire(import.meta.url)("lob")
 
-import { resolveProvider } from "@/lib/kernel/providers"
+import { resolveProvider as resolveProviderDoor, type ResolveProviderParams } from "@/lib/kernel/providers"
 // placeCall is deliberately NOT imported here any more: the phone dispatcher was
 // merged into lib/voice/twilio-outbound.ts:placeOutboundAiCall (see the PHONE
 // section below). The raw TwiML dial still has its own live caller.
@@ -68,6 +68,16 @@ import {
 import { presenterTypeForTwin } from "@/lib/did/agent-presenter"
 import { transparentPresenterConfig, type DidSubmitEngine } from "@/lib/did/contract"
 import { assetsFromProps, bareTalkingHeadPlan, bodyVisualStamp, gateVisualPlanForDispatch, planWantsKeyedPresenter, type BodyVisualPlan } from "@/lib/video/body-visual-model"
+
+/** Provider cascade for a dispatch (lane 86C). Most sends arrive from crons, webhooks and
+ *  kernel reactors with NO session, and provider_overrides is readable by platform admins only
+ *  (po_select), so the cookie read resolved every tenant — BYO override or superadmin vendor —
+ *  to the system default. The dispatcher's brokerageId is its callers' verified tenant (the same
+ *  one every gate above reads through the service client), so the core reads on the service
+ *  client and pins the user/team tiers to that brokerage itself. */
+function resolveProvider(params: ResolveProviderParams) {
+  return resolveProviderDoor(params, { client: createServiceClient() })
+}
 
 /** True when a governed manager is sending unattended (arms the Fair-Housing content backstop's
  *  hard-block; human-approved sends are flagged-but-allowed). */

@@ -347,7 +347,7 @@ Return ONLY the hook line text — no quotes, no labels.`
       content:      hook,
       // Broadcast payload — see lib/video/script-compliance.ts for why the
       // stub contact is omitted rather than faked.
-    }).catch(() => ({ allowed: true, violations: [] as string[] }))
+    }, { client: createServiceClient() }).catch(() => ({ allowed: true, violations: [] as string[] }))
     if (!gate.allowed) return null
     return hook
   } catch (e) {

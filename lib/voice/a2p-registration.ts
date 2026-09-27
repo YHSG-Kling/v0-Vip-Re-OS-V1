@@ -17,6 +17,7 @@
 import {
   normalizeEin, isEmail, isHttpUrl, repTitleForUserType, loadBusinessRegistrationSources, BUSINESS_REGISTRATION_SETTINGS_LABEL,
   REGISTRATION_BUSINESS_TYPES, REGISTRATION_COMPANY_TYPES, REGISTRATION_JOB_POSITIONS, REGISTRATION_DEFAULTS,
+  normalizeCompanyType, entityTypeConflict, twilioEntityWireValues, type TollfreeBusinessType,
   type BusinessRegistration, type BrokerageIdentityRow, type RepresentativeSeat,
 } from "@/lib/branding/business-registration"
 
@@ -73,7 +74,7 @@ const REQUIRED: Array<[keyof A2pBusinessProfile, string]> = [
   ["businessType", "Business type (LLC, corporation, …)"],
   ["industry", "Industry"],
   ["regionsOfOperation", "Regions of operation"],
-  ["companyType", "Company type (private / public)"],
+  ["companyType", "Company type (private / public / non profit / government)"],
   ["website", "Business website"],
   ["street", "Street address"],
   ["city", "City"],
@@ -102,7 +103,8 @@ const PROFILE_KEYS: ReadonlyArray<keyof A2pBusinessProfile> = [
 export function validateA2pProfile(raw: any): A2pProfileValidation {
   const r = raw ?? {}
   const missing: string[] = []
-  const get = (k: string) => (typeof r[k] === "string" ? r[k].trim() : "")
+  // companyType is read through the one vocabulary (86C): a legacy "non-profit" is non_profit.
+  const get = (k: string) => (typeof r[k] === "string" ? (k === "companyType" ? normalizeCompanyType(r[k]) : r[k].trim()) : "")
   for (const [key, label] of REQUIRED) {
     if (!get(key)) missing.push(label)
   }
@@ -117,6 +119,8 @@ export function validateA2pProfile(raw: any): A2pProfileValidation {
   if (get("companyType") && !(REGISTRATION_COMPANY_TYPES as readonly string[]).includes(get("companyType"))) missing.push(`Company type must be one of: ${REGISTRATION_COMPANY_TYPES.join(", ")}`)
   if (get("contactJobPosition") && !(REGISTRATION_JOB_POSITIONS as readonly string[]).includes(get("contactJobPosition"))) missing.push(`Representative job position must be one of: ${REGISTRATION_JOB_POSITIONS.join(", ")}`)
   if (get("companyType") === "public" && (!get("stockExchange") || !get("stockTicker"))) missing.push("Stock exchange and ticker (public company)")
+  const conflict = entityTypeConflict(get("businessType"), get("companyType"))
+  if (conflict) missing.push(conflict)
   if (missing.length > 0 || !ein || !ein.ok) return { ok: false, missing }
   const isPublic = get("companyType") === "public"
   return {
@@ -522,9 +526,13 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
         // answers from the Branding page's Business registration card (they
         // were hard-coded "Limited Liability Corporation" / REAL_ESTATE /
         // USA_AND_CANADA for every tenant — a corporation was filed as an LLC).
+        // Wave 86C: business_type / business_industry are the EXACT TrustHub values, from the one
+        // mapping (twilioEntityWireValues) — a non-profit or government filer's industry is the
+        // NOT_FOR_PROFIT / GOVERNMENT value Twilio requires, whatever the card defaulted.
         Attributes: JSON.stringify({
           business_name: profile.legalName, business_identity: "direct_customer",
-          business_type: profile.businessType, business_industry: profile.industry,
+          business_type: twilioEntityWireValues(profile).trusthubBusinessType,
+          business_industry: twilioEntityWireValues(profile).trusthubIndustry,
           business_registration_identifier: "EIN", business_registration_number: profile.ein,
           business_regions_of_operation: profile.regionsOfOperation, website_url: profile.website,
           ...(profile.socialMediaUrl ? { social_media_profile_urls: profile.socialMediaUrl } : {}),
@@ -580,8 +588,10 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
         // Wave 84D: company_type from the registration record (was hard-coded
         // "private"); a PUBLIC brand carries its listing and a brand contact
         // e-mail for TCR's 2FA attestation — and ONLY a public one (30796).
+        // Wave 86C: the API's own spelling (`non_profit`, not the hyphenated form 84D stored —
+        // Twilio error 30799), from the one mapping.
         Attributes: JSON.stringify({
-          company_type: profile.companyType,
+          company_type: twilioEntityWireValues(profile).a2pCompanyType,
           ...(profile.companyType === "public" ? { stock_exchange: profile.stockExchange, stock_ticker: profile.stockTicker, brand_contact_email: profile.contactEmail } : {}),
         }),
       })
@@ -957,12 +967,13 @@ export function describeTollfreeState(s: A2pState): string {
 }
 
 /** PURE (wave 84D): Twilio Tollfree Verifications BusinessType from the
- *  registration record (was hard-coded PRIVATE_PROFIT for every tenant). */
-export function tollfreeBusinessType(p: Pick<A2pBusinessProfile, "businessType" | "companyType">): "PRIVATE_PROFIT" | "PUBLIC_PROFIT" | "NON_PROFIT" | "SOLE_PROPRIETOR" | "GOVERNMENT" {
-  if (p.companyType === "government") return "GOVERNMENT"
-  if (p.companyType === "non-profit" || p.businessType === "Non-profit Corporation") return "NON_PROFIT"
-  if (p.businessType === "Sole Proprietorship") return "SOLE_PROPRIETOR"
-  return p.companyType === "public" ? "PUBLIC_PROFIT" : "PRIVATE_PROFIT"
+ *  registration record (was hard-coded PRIVATE_PROFIT for every tenant).
+ *  Wave 86C: it no longer spells anything itself — it reads the one mapping,
+ *  lib/branding/business-registration.ts twilioEntityWireValues, so the toll-free
+ *  NON_PROFIT and the A2P `non_profit` can never drift apart again (84D compared
+ *  against the hyphenated "non-profit" here). */
+export function tollfreeBusinessType(p: Pick<A2pBusinessProfile, "businessType" | "companyType">): TollfreeBusinessType {
+  return twilioEntityWireValues({ businessType: p.businessType, industry: "", companyType: p.companyType }).tollfreeBusinessType
 }
 
 /** PURE (wave 84D): the HELP reply names the brokerage's support line when the

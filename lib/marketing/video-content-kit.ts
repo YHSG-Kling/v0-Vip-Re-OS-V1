@@ -209,7 +209,7 @@ export async function buildVideoContentKit(
         const r = await evaluateOutbound({
           actorContext: { brokerageId: p.brokerage_id, userId: kitAgentUserId ?? "", role: "system" },
           journeyType: "buyer", persona: "other", messageType: "social", content,
-        })
+        }, { client: svc })
         return { allowed: r.allowed }
       } catch { return { allowed: true } } // the fact-built fallback is FH-safe by construction
     }

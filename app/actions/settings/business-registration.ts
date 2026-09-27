@@ -26,6 +26,7 @@
 //     registration loop, the port-in door and the A2P card pull from).
 // The EIN never leaves this file unmasked and is never logged.
 
+import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
 import { resolveBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
@@ -125,16 +126,11 @@ export async function saveBusinessRegistrationAction(
     if (r.error) return { ok: false, error: `Business details not saved: ${r.error}` }
   }
 
-  // 2. The registration record — the whole key replaced (a blank field clears),
-  //    every other settings key carried as read.
-  const settings = { ...src.settings, [BUSINESS_REGISTRATION_SETTINGS_KEY]: v.value }
-  const write = src.settingsRowId
-    ? await svc.from("brokerage_settings").update({ settings, updated_at: new Date().toISOString() }).eq("id", src.settingsRowId).eq("brokerage_id", g.brokerageId).select("id")
-    : await svc.from("brokerage_settings").insert({ brokerage_id: g.brokerageId, settings }).select("id")
-  if (write.error) return { ok: false, error: `Business registration not saved (${write.error.message})${Object.keys(identity).length ? " — the business details above WERE saved" : ""}` }
-  if (!Array.isArray(write.data) || write.data.length === 0) {
-    return { ok: false, error: `Business registration not saved — the database matched no settings row for this brokerage${Object.keys(identity).length ? " (the business details above WERE saved)" : ""}` }
-  }
+  // 2. The registration record — the whole KEY replaced (a blank field clears), merged by key
+  //    onto the settings the database holds AT WRITE TIME (86C: the one merge writer, with a
+  //    version check — a port-in or any other key saved concurrently is never clobbered).
+  const write = await mergeBrokerageSettings(svc, g.brokerageId, { [BUSINESS_REGISTRATION_SETTINGS_KEY]: v.value })
+  if (!write.ok) return { ok: false, error: `Business registration not saved (${write.error})${Object.keys(identity).length ? " — the business details above WERE saved" : ""}` }
 
   const after = await loadBusinessRegistrationSources(svc, g.brokerageId)
   if (!after.ok) return { ok: false, error: `Saved, but the registration could not be re-read (${after.error})` }

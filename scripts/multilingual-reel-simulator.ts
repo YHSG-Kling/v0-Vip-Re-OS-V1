@@ -393,7 +393,7 @@ function testCaptureDoors() {
     ["app/api/qr/submit/route.ts", "public QR sign-in"],
     ["app/api/embed/capture/route.ts", "public embed widget"],
     ["app/api/widget/capture-lead/route.ts", "public chat-widget lead capture"],
-    ["app/api/widget/capture/route.ts", "public chat-widget capture"],
+    // app/api/widget/capture/route.ts RETIRED (lane 86C) onto app/api/widget/capture-lead/route.ts, listed above.
   ]
 
   for (const [file, label] of doors) {
@@ -428,7 +428,7 @@ function testCaptureDoors() {
     "app/api/qr/submit/route.ts",
     "app/api/embed/capture/route.ts",
     "app/api/widget/capture-lead/route.ts",
-    "app/api/widget/capture/route.ts",
+    // (app/api/widget/capture/route.ts retired in 86C — its survivor capture-lead is listed above)
   ]
   for (const file of captureContactDoors) {
     const src = stripComments(readFileSync(`${process.cwd()}/${file}`, "utf8"))

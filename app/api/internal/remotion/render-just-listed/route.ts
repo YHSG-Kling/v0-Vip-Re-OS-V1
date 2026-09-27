@@ -53,7 +53,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 // selector, budget-gated, cached, alignment-returning). Only the type stays.
 import type { CharacterAlignment } from "@/lib/voice/elevenlabs-tts"
 import { buildCaptionPlan } from "@/lib/video/caption-plan"
-import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { evaluateTenantOutbound } from "@/lib/kernel/tenant-config-reads"
 import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
 import { dispatchVideo } from "@/lib/providers/dispatch"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -546,7 +546,7 @@ async function draftAndClearScript(args: {
     // (which re-drafts once and then speaks authored copy) rather than being
     // spoken anyway — the same ruling the gate failure below already makes.
     if (fit.script && !fit.stillOverBudget) {
-      const r = await evaluateOutbound({
+      const r = await evaluateTenantOutbound({
         actorContext: { brokerageId: args.brokerageId, userId: args.agentUserId, role: "system" },
         journeyType:  "seller",
         persona:      "other",
@@ -625,7 +625,7 @@ Return ONLY the script text the avatar will speak — no scene directions.`) + v
   const result = await runWithComplianceRedraft({
     draft: ({ violations }) => draft(violations),
     gate:  async (script) => {
-      const r = await evaluateOutbound({
+      const r = await evaluateTenantOutbound({
         actorContext: { brokerageId: args.brokerageId, userId: args.agentUserId, role: "system" },
         journeyType:  "seller",
         persona:      "other",

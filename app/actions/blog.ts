@@ -2,20 +2,17 @@
 
 // app/actions/blog.ts
 // Layer 9.6 — SEO & Blog Engine Actions
-// Kernel gates: canAccessFeature('seo_blog_engine'), applyBrandVoice, evaluateOutbound, checkBrandCompliance
+// Kernel gates: canAccessFeature('seo_blog_engine'), checkBrandCompliance; the AI writer (applyBrandVoice, evaluateOutbound,
+// postcheckScript) is lib/kernel/content-creators.ts writeBlogPost, reached through generateBlogPost.
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
-import { applyBrandVoice } from "@/lib/kernel/brand-voice"
-import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
-import { pickTopics, renderTopicsForPrompt, type TopicCandidate } from "@/lib/content-intel/topic-bank"
-import { logTopicUses } from "@/lib/content-intel/performance-aggregator"
 import { resolveWordPressCredential, wordPressUnavailableReason } from "@/lib/blog/wordpress-connection"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -54,321 +51,49 @@ export interface UpdateBlogPostParams {
   callToAction?: string
 }
 
-interface BlogPostResult {
-  title: string
-  slug: string
-  excerpt: string
-  content: string
-  featuredImagePrompt: string
-}
-
 // ─── generateBlogPost ─────────────────────────────────────────────────────────
+//
+// THE SESSION DOOR onto the one AI blog writer, lib/kernel/content-creators.ts writeBlogPost
+// (lane 86C). The body moved there: this export is a public HTTP endpoint (§4), and it took
+// BOTH `userId` and `params.brokerageId` from the browser, wrote through the cookie client, and
+// filed `params.campaignId` unverified. Now the tenant and the actor come from the SESSION
+// (resolveBlogActor below): a claimed userId that is not the session's is refused, and a body
+// brokerageId naming another tenant is refused, never quietly corrected. The kernel verifies
+// every caller-named id (agent seat, campaign) in the session's tenant.
+//
+// TOMBSTONE (§1.1): lib/kernel/marketing.ts createBlogPost — the unwired duplicate AI blog
+// writer — was merged onto this survivor and deleted (its campaign verification and its
+// gate-then-service-client insert now live in writeBlogPost).
 
 export async function generateBlogPost(
   userId: string,
   params: GenerateBlogPostParams
-): Promise<{ success: boolean; postId?: string; error?: string; keywordWarnings?: string[] }> {
-  const supabase = await createClient()
-
-  // ── 1. Feature gate ─────────────────────────────────────────────────────────
-  const accessCheck = await canAccessFeature(userId, "seo_blog_engine")
-  if (!accessCheck.allowed) {
-    return { success: false, error: accessCheck.reason || "Feature access denied" }
+): Promise<{ success: boolean; postId?: string; error?: string; keywordWarnings?: string[]; complianceWarnings?: string[] }> {
+  const actor = await resolveBlogActor(userId)
+  if (!actor.ok) return { success: false, error: actor.error }
+  if (params.brokerageId && params.brokerageId !== actor.brokerageId) {
+    return { success: false, error: "That brokerage is not yours — a blog post is written for your own brokerage only." }
   }
 
-  // ── 3. Apply brand voice ────────────────────────────────────────────────────
-  const brandVoice = await applyBrandVoice({
-    brokerageId: params.brokerageId,
-    actorUserId: params.agentUserId,
-    actorRole: "agent",
-    journeyType: "buyer",
-    persona: "first_time",
-    messageType: "email",
-    content: params.keywords.join(", "),
-  }) as any
-
-  const toneDescription = params.tone || brandVoice.tone || "professional and helpful"
-
-  // Wave 29 — topic-bank consumption. When pullFromTopicBank=true (cadence
-  // cron path), the picker returns the strongest threads for this brokerage
-  // (and for the supplied persona when provided). The value_angle of each
-  // picked topic becomes the article's substance. The keywords[] input is
-  // still honored — it widens the picker's category filter.
-  let topicSeeds: TopicCandidate[] = []
-  if (params.pullFromTopicBank) {
-    try {
-      topicSeeds = await pickTopics({
-        brokerageId:       params.brokerageId,
-        categoriesAny:     params.keywords.length > 0 ? params.keywords : undefined,
-        limit:             3,
-        markUsed:          false,
-        recipientPersona:  params.recipientPersona ?? null,
-        assetType:         "blog_post",
-      })
-    } catch (e) {
-      console.warn("[generateBlogPost] topic-bank pick failed; falling back to keywords-only:", (e as Error).message)
-    }
-  }
-  const topicKeywords = params.keywords.join(", ")
-  const topicSeedBlock = topicSeeds.length > 0
-    ? `\n\nWave 29 — TOPIC INTELLIGENCE THREADS (build the article around these):
-The platform's content-intelligence bank surfaced these as the highest-engagement
-threads for this brokerage's audience right now. Lead with the strongest
-single thread; weave the others as supporting structure.
-
-${renderTopicsForPrompt(topicSeeds)}`
-    : ""
-
-  // ── 4. Generate blog post via Claude API ────────────────────────────────────
-  // Wave 29 — reframed from "SEO-keyword optimization" to ONLINE VISIBILITY.
-  // The user's explicit preference: not keyword stuffing, but rather
-  // shareability + AI-citability + cross-channel repurposability. The
-  // structural choices below (FAQ-style sections, named entity emphasis,
-  // 3-sentence summary at top, attributed-claim format) make the article
-  // EXTRACTABLE by Google AI Overviews / ChatGPT browsing / Perplexity /
-  // Gemini citations — that's the modern discoverability signal.
-  const systemPrompt = `You are a real estate content writer for a professional brokerage. Write in a ${toneDescription} style.
-${brandVoice.customInstructions ? `Brand voice instructions: ${brandVoice.customInstructions}` : ""}
-${brandVoice.keyBrandMessages?.length ? `Key messages to incorporate: ${brandVoice.keyBrandMessages.join(", ")}` : ""}
-${brandVoice.prohibitedWords?.length ? `Avoid these words: ${brandVoice.prohibitedWords.join(", ")}` : ""}
-
-ONLINE VISIBILITY (this brokerage's chosen positioning — NOT SEO keyword stuffing):
-  · Be CITABLE by AI search (Google AI Overviews, ChatGPT, Claude, Perplexity, Gemini). Use clear facts with named entities + named sources where applicable.
-  · Open with a 2-3 sentence summary that an AI engine can pull as a citation snippet.
-  · Use FAQ-style H2/H3 headings written as the QUESTIONS a real-estate buyer/seller actually types.
-  · Attribute non-obvious claims to a source (e.g. "According to the National Association of Realtors 2025 Q1 report,…"). Never invent a source — when uncertain, soften with "in many markets" rather than fabricate a citation.
-  · Make the article shareable: end with a single specific takeaway readers can quote on social.`
-
-  const userPrompt = `Write a 700-900 word blog post about real estate topics related to: ${topicKeywords}.
-${params.sourceContent ? `Base the article on this source material (repurpose its key points; do not invent specific properties, prices, or guarantees):\n"""${params.sourceContent.slice(0, 6000)}"""\n` : ""}${params.title ? `Use this title: ${params.title}` : "Create an engaging title — written as a question or a specific claim the reader is searching for."}
-${topicSeedBlock}
-
-Structure (online-visibility format):
-1. 2-3 sentence opening summary (the citation snippet).
-2. 3-5 H2 sections written as questions the reader would search for.
-3. Each section: a direct answer in the first sentence, then supporting context.
-4. Closing takeaway — one specific actionable sentence (not "contact us").
-
-Compliance fence (non-negotiable):
-  · Never reference protected characteristics (race, color, religion, national origin, sex, disability, familial status).
-  · No "perfect for families", "great for empty-nesters", or similar demographic proxies.
-  · No guaranteed appreciation / valuation / rate claims.
-  · No predictive market direction claims without an attributed source.
-
-Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
-{
-  "title": "The blog post title",
-  "slug": "the-blog-post-slug",
-  "excerpt": "A compelling 150-160 character meta description (also the OG card description)",
-  "content": "The full blog post content with proper HTML headings (h2, h3) and paragraphs",
-  "featuredImagePrompt": "A descriptive prompt for generating a featured image"
-}`
-
-  let blogResult: BlogPostResult
-  try {
-    const { text } = await generateText({
-      feature: "blog_post_generation",
-      system: systemPrompt,
-      prompt: userPrompt,
-      temperature: 0.7,
-      brokerageId: params.brokerageId,
-      userId,
-    })
-
-    // Parse JSON response
-    const cleanedText = text.replace(/```json\n?|\n?```/g, "").trim()
-    blogResult = JSON.parse(cleanedText) as BlogPostResult
-  } catch (err) {
-    console.error("[generateBlogPost] AI generation failed:", err)
-    const detail = err instanceof Error ? err.message : String(err)
-    return { success: false, error: `Failed to generate blog content: ${detail}` }
-  }
-
-  // ── 5. Compliance check via evaluateOutbound ────────────────────────────────
-  const complianceResult = await evaluateOutbound({
-    actorContext: {
-      userId,
-      role: "agent",
-      brokerageId: params.brokerageId,
-    },
-    journeyType: "buyer",
-    persona: "first_time",
-    messageType: "email",
-    content: blogResult.content,
-    // Broadcast payload — see lib/video/script-compliance.ts for why the
-    // stub contact is omitted rather than faked.
+  const { writeBlogPost } = await import("@/lib/kernel/content-creators")
+  const result = await writeBlogPost({
+    ctx: { userId: actor.userId, brokerageId: actor.brokerageId },
+    agentUserId: params.agentUserId,
+    title: params.title,
+    keywords: params.keywords ?? [],
+    campaignId: params.campaignId,
+    tone: params.tone,
+    sourceContent: params.sourceContent,
+    generateCoverImage: params.generateCoverImage,
+    recipientPersona: params.recipientPersona,
+    pullFromTopicBank: params.pullFromTopicBank,
   })
-
-  if (!complianceResult.allowed) {
-    return {
-      success: false,
-      error: `Compliance check failed: ${complianceResult.violations.join(", ")}`,
-    }
-  }
-
-  // ── 5b. Optional branded cover image ────────────────────────────────────────
-  let featuredImageUrl: string | null = null
-  if (params.generateCoverImage && blogResult.featuredImagePrompt) {
-    try {
-      const { generateImage } = await import("@/lib/ai/image-generation")
-      // Wave 30 — thread brand hints into the call so the image inherits
-      // brokerage logo + primary color + agent attribution. Without these
-      // the generator falls back to a generic real-estate stock-looking
-      // image; with them every post lands branded and consistent with
-      // the brokerage's other marketing.
-      const { data: brokerage } = await supabase
-        .from("brokerages")
-        .select("name, dba_name:dba, license_number, license_state, logo_url, brand_primary_color:primary_color")
-        .eq("id", params.brokerageId)
-        .maybeSingle()
-      const b = brokerage as { name: string | null; dba_name: string | null; license_number: string | null; license_state: string | null; logo_url: string | null; brand_primary_color: string | null } | null
-      const img = await generateImage({
-        prompt:   blogResult.featuredImagePrompt,
-        purpose:  "blog_hero",
-        size:     "1792x1024",  // 16:9 Open Graph card ratio — works for inline blog hero AND for OG/Twitter card meta tags
-        quality:  "standard",
-        brand: {
-          brokerageName:         b?.name ?? null,
-          brokerageDba:          b?.dba_name ?? null,
-          brokerageLicense:      b?.license_number ?? null,
-          brokerageLicenseState: b?.license_state ?? null,
-          logoUrl:               b?.logo_url ?? null,
-          primaryColor:          b?.brand_primary_color ?? null,
-        },
-      })
-      if (img.success && img.imageUrl) featuredImageUrl = img.imageUrl
-    } catch (imgErr) {
-      console.error("[generateBlogPost] Cover image generation failed (non-blocking):", imgErr)
-    }
-  }
-
-  // ── 6. Insert blog_posts ────────────────────────────────────────────────────
-  const { data: post, error: postError } = await supabase
-    .from("blog_posts")
-    .insert({
-      brokerage_id: params.brokerageId,
-      agent_user_id: params.agentUserId || null,
-      marketing_campaign_id: params.campaignId || null,
-      title: blogResult.title,
-      slug: blogResult.slug,
-      excerpt: blogResult.excerpt,
-      content: blogResult.content,
-      featured_image_url: featuredImageUrl,
-      publish_status: "draft",
-      // "private" is NOT a member of blog_posts_visibility_scope_check
-      // (agent | brokerage | multi_location | platform | team, verified
-      // live) — the same drifted literal fixed 60 lines below for the
-      // sibling seo_keywords insert in THIS function (see the comment
-      // there). Every agent-scoped AI blog post this branch tried to save
-      // was refused with SQLSTATE 23514, checked and reported as a failure
-      // (never silent), but a failure nonetheless: the agent got "Failed to
-      // save blog post" for every AI-generated post scoped to themselves.
-      visibility_scope: params.agentUserId ? "agent" : "brokerage",
-      created_by: userId,
-      is_ai_generated: true,
-    })
-    .select("id")
-    .maybeSingle()
-
-  if (postError || !post) {
-    console.error("[generateBlogPost] Insert failed:", postError)
-    return { success: false, error: "Failed to save blog post" }
-  }
-
-  // Wave 29 — close the content intelligence loop for the blog channel.
-  // Log every topic that seeded this post into content_topic_uses with
-  // asset_type='blog_post' so the daily aggregator can compute per-(topic,
-  // blog_post, persona) performance scores from blog_post_views downstream.
-  // Same Wave 19 pattern the newsletter video and podcast use.
-  if (topicSeeds.length > 0) {
-    void logTopicUses({
-      topicIds:    topicSeeds.map((t) => t.id),
-      brokerageId: params.brokerageId,
-      assetType:   "blog_post",
-      assetId:     post.id,
-    })
-  }
-
-  // ── 7. Link keywords via seo_keywords + blog_post_keywords ──────────────────
-  // Collected rather than only logged: a keyword that cannot be stored is a
-  // silently incomplete blog post, and `continue` alone made that invisible.
-  const keywordFailures: string[] = []
-  for (let i = 0; i < params.keywords.length; i++) {
-    const keyword = params.keywords[i]
-    const isPrimary = i === 0 // First keyword is primary
-
-    // Check if keyword exists in seo_keywords
-    const { data: existingKeyword } = await supabase
-      .from("seo_keywords")
-      .select("id")
-      .eq("brokerage_id", params.brokerageId)
-      .eq("keyword", keyword)
-      .maybeSingle()
-
-    let seoKeywordId: string
-
-    if (existingKeyword) {
-      seoKeywordId = existingKeyword.id
-    } else {
-      // Insert new keyword into seo_keywords
-      const { data: newKeyword, error: kwError } = await supabase
-        .from("seo_keywords")
-        .insert({
-          brokerage_id: params.brokerageId,
-          keyword: keyword,
-          keyword_type: isPrimary ? "primary" : "secondary",
-          search_intent: "informational",
-          // "private" is NOT a member of seo_keywords_visibility_scope_check,
-          // which admits agent | team | brokerage | multi_location | platform
-          // (verified live). Every agent-scoped keyword this function tried to
-          // write was refused with SQLSTATE 23514 — and because the failure was
-          // only console.error'd and then `continue`d past, the blog post was
-          // reported as generated with its keywords silently missing. The
-          // agent-scoped spelling the constraint actually accepts is "agent".
-          visibility_scope: params.agentUserId ? "agent" : "brokerage",
-          created_by: userId,
-          is_active: true,
-        })
-        .select("id")
-        .maybeSingle()
-
-      if (kwError || !newKeyword) {
-        console.error("[generateBlogPost] Keyword insert failed:", kwError)
-        keywordFailures.push(`${keyword}: ${kwError?.message ?? "no row returned"}`)
-        continue
-      }
-      seoKeywordId = newKeyword.id
-    }
-
-    // Link keyword to blog post via blog_post_keywords
-    await supabase.from("blog_post_keywords").insert({
-      brokerage_id: params.brokerageId,
-      blog_post_id: post.id,
-      seo_keyword_id: seoKeywordId,
-      is_primary: isPrimary,
-    })
-  }
-
-  // ── 8. Increment feature usage ──────────────────────────────────────────────
-  await incrementFeatureUsage(userId, "seo_blog_engine")
-
-  // ── 9. Fire kernel event ────────────────────────────────────────────────────
-  await processKernelEvent({
-    event: KernelEvent.BLOG_POST_GENERATED,
-    brokerageId: params.brokerageId,
-    entityType: "blog_post",
-    entityId: post.id,
-  }).catch((err) => {
-    console.error("[blog] generateBlogPost kernel event failed (non-blocking):", err)
-  })
-
-  // The post IS generated, so this is not a failure — but a caller that is told
-  // "success" while some of its keywords were refused has been misled about
-  // what it got. Name them.
+  if (!result.success) return { success: false, error: result.error, complianceWarnings: result.complianceWarnings }
   return {
     success: true,
-    postId: post.id,
-    ...(keywordFailures.length ? { keywordWarnings: keywordFailures } : {}),
+    postId: result.postId,
+    ...(result.keywordWarnings ? { keywordWarnings: result.keywordWarnings } : {}),
+    complianceWarnings: result.complianceWarnings,
   }
 }
 

@@ -38,7 +38,7 @@ import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 // reel-voiceover.ts prepareReelVoiceover (v3 model via the ONE selector,
 // budget-gated, cached, alignment-returning).
 import { buildCaptionPlan } from "@/lib/video/caption-plan"
-import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { evaluateTenantOutbound } from "@/lib/kernel/tenant-config-reads"
 import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
 import { generateTextRouted } from "@/lib/ai/models"
 import { pickTopics, renderTopicsForPrompt } from "@/lib/content-intel/topic-bank"
@@ -319,7 +319,7 @@ Return ONLY the spoken text.`) + fix
     const complianceResult = await runWithComplianceRedraft({
       draft: ({ violations }) => draft(violations),
       gate:  async (s) => {
-        const r = await evaluateOutbound({
+        const r = await evaluateTenantOutbound({
           actorContext: { brokerageId: camp.brokerage_id, userId: ledgerAgentUserId ?? "", role: "system" },
           journeyType:  "buyer", persona: "other", messageType: "email", content: s,
         })

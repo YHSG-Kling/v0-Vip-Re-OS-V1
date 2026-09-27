@@ -11,6 +11,7 @@
  */
 
 import { getAgentContext } from "@/lib/identity"
+import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
 import { createServiceClient } from "@/lib/supabase/service"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import {
@@ -68,19 +69,16 @@ export async function setCapabilityEnabled(id: CapabilityId, enabled: boolean): 
   if (!gate.ok) return { ok: false, error: gate.error }
   if (!gate.canManage) return { ok: false, error: "Only a broker, admin or owner can change AI agent capabilities." }
 
-  const svc = createServiceClient()
-  const { data } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", gate.brokerageId).maybeSingle()
-  const current = parseCapabilitiesSettings((data as { settings?: Record<string, unknown> } | null)?.settings ?? null)
-  const disabled = enabled
-    ? current.disabled.filter((d) => d !== id)
-    : current.disabled.includes(id) ? current.disabled : [...current.disabled, id]
-
-  const nextSettings = { ...((data as { settings?: Record<string, unknown> } | null)?.settings ?? {}), ai_agent_capabilities: { disabled, custom: current.custom } }
-  const { error } = await svc.from("brokerage_settings").upsert(
-    { brokerage_id: gate.brokerageId, settings: nextSettings },
-    { onConflict: "brokerage_id" },
-  )
-  if (error) return { ok: false, error: error.message }
+  // 86C: merged BY KEY onto the settings the database holds at write time (version-checked) —
+  // the old read (whose refusal was never read) → whole-object upsert could wipe other keys.
+  const write = await mergeBrokerageSettings(createServiceClient(), gate.brokerageId, (settings) => {
+    const current = parseCapabilitiesSettings(settings)
+    const disabled = enabled
+      ? current.disabled.filter((d) => d !== id)
+      : current.disabled.includes(id) ? current.disabled : [...current.disabled, id]
+    return { ai_agent_capabilities: { disabled, custom: current.custom } }
+  })
+  if (!write.ok) return { ok: false, error: write.error }
   return { ok: true }
 }
 
@@ -100,17 +98,11 @@ export async function saveCustomTool(def: CustomToolDefinition): Promise<{ ok: b
     }
   }
 
-  const svc = createServiceClient()
-  const { data } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", gate.brokerageId).maybeSingle()
-  const current = parseCapabilitiesSettings((data as { settings?: Record<string, unknown> } | null)?.settings ?? null)
-  const custom = [...current.custom.filter((c) => c.id !== def.id), def]
-
-  const nextSettings = { ...((data as { settings?: Record<string, unknown> } | null)?.settings ?? {}), ai_agent_capabilities: { disabled: current.disabled, custom } }
-  const { error } = await svc.from("brokerage_settings").upsert(
-    { brokerage_id: gate.brokerageId, settings: nextSettings },
-    { onConflict: "brokerage_id" },
-  )
-  if (error) return { ok: false, error: error.message }
+  const write = await mergeBrokerageSettings(createServiceClient(), gate.brokerageId, (settings) => {
+    const current = parseCapabilitiesSettings(settings)
+    return { ai_agent_capabilities: { disabled: current.disabled, custom: [...current.custom.filter((c) => c.id !== def.id), def] } }
+  })
+  if (!write.ok) return { ok: false, error: write.error }
   return { ok: true }
 }
 
@@ -119,16 +111,10 @@ export async function deleteCustomTool(id: string): Promise<{ ok: boolean; error
   if (!gate.ok) return { ok: false, error: gate.error }
   if (!gate.canManage) return { ok: false, error: "Only a broker, admin or owner can remove AI agent tools." }
 
-  const svc = createServiceClient()
-  const { data } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", gate.brokerageId).maybeSingle()
-  const current = parseCapabilitiesSettings((data as { settings?: Record<string, unknown> } | null)?.settings ?? null)
-  const custom = current.custom.filter((c) => c.id !== id)
-
-  const nextSettings = { ...((data as { settings?: Record<string, unknown> } | null)?.settings ?? {}), ai_agent_capabilities: { disabled: current.disabled, custom } }
-  const { error } = await svc.from("brokerage_settings").upsert(
-    { brokerage_id: gate.brokerageId, settings: nextSettings },
-    { onConflict: "brokerage_id" },
-  )
-  if (error) return { ok: false, error: error.message }
+  const write = await mergeBrokerageSettings(createServiceClient(), gate.brokerageId, (settings) => {
+    const current = parseCapabilitiesSettings(settings)
+    return { ai_agent_capabilities: { disabled: current.disabled, custom: current.custom.filter((c) => c.id !== id) } }
+  })
+  if (!write.ok) return { ok: false, error: write.error }
   return { ok: true }
 }

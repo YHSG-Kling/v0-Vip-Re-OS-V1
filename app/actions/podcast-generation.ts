@@ -1191,56 +1191,38 @@ Return as JSON array of {hook: string, body: string, suggested_caption: string, 
 
 export async function generatePodcastBlogPost(params: { episodeId: string }) {
   const { userId, agentId, brokerageId } = await getAgentContext()
-  if (!agentId || !brokerageId) return { success: false, error: "Missing agent context" }
+  if (!userId || !agentId || !brokerageId) return { success: false, error: "Missing agent context" }
   const supabase = await createClient()
-  const { data: episode } = await supabase
+  const { data: episode, error: episodeErr } = await supabase
     .from("podcast_episodes")
     .select("id, title, description, script, category")
     .eq("id", params.episodeId)
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
+  if (episodeErr) return { success: false, error: `Could not read that episode: ${episodeErr.message}` }
   if (!episode) return { success: false, error: "Episode not found" }
   if (!episode.script) return { success: false, error: "Episode has no script" }
-  try {
-    const { text } = await generateTextRouted({
-      brokerageId,
-      userId,
-      agentId,
-      feature: "podcast_blog_post",
-      maxTokens: 1500,
-      temperature: 0.6,
-      prompt: `Turn this podcast episode transcript into a long-form blog post (markdown, 600-900 words).
-Lead with reader value. Use H2 section headers, short paragraphs, and a clear takeaway list at the end.
 
-Title: ${episode.title}
-Description: ${episode.description ?? ""}
-Transcript:
-${episode.script.slice(0, 6000)}`,
-    })
-    const blogTitle = `${episode.title}`
-    // Persist to blog_posts table if it exists; fail gracefully if not.
-    let savedId: string | null = null
-    try {
-      const { data: row } = await supabase
-        .from("blog_posts")
-        .insert({
-          brokerage_id: brokerageId,
-          agent_user_id: userId, // FK→users.id (canonical, matches blog.ts)
-          created_by: userId,
-          title: blogTitle,
-          content: text, // real column (was phantom content_md)
-          publish_status: "draft", // CHECK-valid; was phantom status
-          is_ai_generated: true,
-        })
-        .select("id")
-        .single()
-      savedId = row?.id ?? null
-    } catch {
-      savedId = null
-    }
-    return { success: true, blogPostId: savedId, content: text, title: blogTitle }
-  } catch (error: any) {
-    return { success: false, error: error.message }
+  // MERGED (lane 86C, §1.1): this was a THIRD AI blog writer — a bare "turn this transcript into
+  // a blog post" prompt with no fair-housing block, no gate and no post-check, and a blog_posts
+  // insert whose refusal was swallowed (`catch { savedId = null }`, success reported anyway).
+  // The one writer, lib/kernel/content-creators.ts writeBlogPost, already writes FROM source
+  // material (sourceContent); this door now hands it the episode, for the SESSION's actor.
+  const { writeBlogPost } = await import("@/lib/kernel/content-creators")
+  const written = await writeBlogPost({
+    ctx: { userId, brokerageId },
+    agentUserId: userId,
+    title: episode.title ?? undefined,
+    keywords: episode.category ? [String(episode.category)] : [],
+    sourceContent: [episode.description ?? "", episode.script].filter(Boolean).join("\n\n"),
+  })
+  if (!written.success) return { success: false, error: written.error }
+  return {
+    success: true,
+    blogPostId: written.postId,
+    content: written.content,
+    title: written.title,
+    complianceWarnings: written.complianceWarnings,
   }
 }
 

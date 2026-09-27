@@ -360,7 +360,11 @@ async function main() {
       && ["8.8.8.8", "93.184.216.34", "2606:4700:4700::1111"].every((ip) => isPublicIpAddress(ip)))
     check("requestHostRefusal (every browser request): data:/blob: pass; file:, a private literal and an internal name are refused; a public CDN passes",
       requestHostRefusal("data:image/png;base64,AA") === null && requestHostRefusal("file:///etc/passwd") !== null && requestHostRefusal("http://10.1.2.3/x") !== null && requestHostRefusal("https://svc.internal/x") !== null && requestHostRefusal("https://cdn.jsdelivr.net/x.js") === null)
-    check("puppeteer enforces it per request (interception on, requestHostRefusal on every request, navigation refusal surfaced)", /setRequestInterception\(true\)/.test(seamCode) && /requestHostRefusal\(req\.url\(\)\)/.test(seamCode) && /publicNetworkOnly: true/.test(seamCode))
+    // Re-anchored 86C (rule, not waypoint): every request now goes through fetchPinned, whose
+    // FIRST step is requestHostRefusal (then the DNS pin) — the per-request URL rule still runs.
+    check("puppeteer enforces it per request (interception on, every request through fetchPinned → requestHostRefusal first, navigation refusal surfaced)",
+      /setRequestInterception\(true\)/.test(seamCode) && /fetchPinned\(url,/.test(seamCode)
+      && /export async function fetchPinned[\s\S]{0,400}const refusal = requestHostRefusal\(url\)/.test(seamCode) && /publicNetworkOnly: true/.test(seamCode))
   }
   {
     const provider = providerConfirming(() => []); const svc = makeSvc({ insertId: "gen-1" })

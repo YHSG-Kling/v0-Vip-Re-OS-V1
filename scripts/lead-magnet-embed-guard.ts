@@ -64,6 +64,24 @@ check("the QR card reads the session-gated record arm for an existing code (trac
   /fetch\(`\/api\/lead-magnets\/qr\/\$\{encodeURIComponent\(magnetId\)\}\?brokerageId=/.test(qr) && /setRecordNote\(/.test(qr))
 check("CONTROL: a lead-magnet library WITHOUT the control is recognised", !/buildLeadMagnetEmbedSnippet\(\{/.test(`export function MagnetLibrary() { return null }`))
 
+console.log("\n── §retired · /api/widget/capture retired onto its survivors (lane 86C, owner: not yet in production) ──")
+{
+  const { existsSync } = await import("node:fs")
+  check("the twin route file is gone", !existsSync(join(root, "app/api/widget/capture/route.ts")))
+  const survivor = code("app/api/widget/capture-lead/route.ts")
+  check("the in-repo survivor still captures through the one writer (captureContact)", /captureContact\(\{/.test(survivor))
+  // The capability merged from the twin: chat_sessions.agent_id is agents-class (FK agents(id)).
+  const ownerRule = (src: string) => /ownerAgentId:\s*session\.agent_id/.test(src) && !/agentUserId:\s*session\.agent_id/.test(src)
+  check("the survivor passes the session's agents id as ownerAgentId, never as a users id", ownerRule(survivor))
+  check("CONTROL: the pre-86C survivor shape (agents id as agentUserId) is recognised",
+    !ownerRule(`await captureContact({ brokerageId: session.brokerage_id, agentUserId: session.agent_id ?? null })`))
+  check("the survivor keeps the twin's consent row and lifecycle event", /persistContactConsent\(/.test(survivor) && /KernelEvent\.CONTACT_CAPTURED/.test(survivor))
+  check("the off-site capability is this proof's embed survivor (the route it posts to exists)", existsSync(join(root, "app/api/lead-magnets/submissions/route.ts")))
+  const census = code("scripts/opposite-missing-census.ts")
+  check("the census no longer carries the retired door as a qualified/unresolved entry", !/\["\/api\/widget\/capture",/.test(census))
+  check("CONTROL: the entry finder sees the pre-86C entry shape", /\["\/api\/widget\/capture",/.test(`["/api/widget/capture", "public widget capture"],`))
+}
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { for (const f of failures) console.log(`   - ${f}`); process.exit(1) }

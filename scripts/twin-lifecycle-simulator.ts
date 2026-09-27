@@ -202,13 +202,15 @@ console.log("\n── §C: content-suggestion loop — writer → table → read
   // human-visible output rather than stranded in the table.
   const surfaceFiles = [
     "app/actions/podcast-generation.ts",
-    "app/actions/ai-newsletter.ts",
-    "app/actions/blog.ts",
+    // Waves 85F/86C moved the newsletter and blog WRITERS (and their topic-bank reads) into the
+    // one server-only kernel creator; the surface list follows the reads there (rule, not file).
+    "lib/kernel/content-creators.ts",
     "lib/farm-mail/dispatch-farm-mail.ts",
   ]
   let wiredSurfaces = 0
   for (const s of surfaceFiles) {
-    if (exists(s) && /from\s+"@\/lib\/content-intel\/topic-bank"/.test(src(s))) wiredSurfaces++
+    // Static or dynamic import — both are one binding to the reader.
+    if (exists(s) && /(from\s+|import\(\s*)"@\/lib\/content-intel\/topic-bank"/.test(src(s))) wiredSurfaces++
   }
   check(`at least 2 surfaces import the topic-bank reader (found ${wiredSurfaces}/${surfaceFiles.length})`,
     wiredSurfaces >= 2)

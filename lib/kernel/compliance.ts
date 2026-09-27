@@ -19,7 +19,15 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import type { SupabaseClient } from "@supabase/supabase-js"
 import { applyBrandVoice } from "./brand-voice"
+
+/** The client evaluateOutbound reads and audits through (cookie or service) — structural, so
+ *  the session client, the service client and lib/video/script-compliance's QueryableClient
+ *  all satisfy it. */
+type ComplianceGateClient = Pick<SupabaseClient, "from"> | { from: (table: string) => any }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 import { hasActiveRepresentation } from "./compliance/active-representation"
 import type { EvaluateOutboundParams, ComplianceResult } from "./types"
 import { KernelEvent } from "./events"
@@ -105,8 +113,16 @@ const REPRESENTATION_LOCK_STATES = new Set([
  * contact context, logs the result to compliance_events, and returns a
  * ComplianceResult. Throws only on unrecoverable DB errors.
  */
-export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<ComplianceResult> {
-  const supabase = await createClient()
+export async function evaluateOutbound(
+  params: EvaluateOutboundParams,
+  opts?: { client?: ComplianceGateClient },
+): Promise<ComplianceResult> {
+  // No client = the SESSION door (cookie client; RLS holds the caller to its tenant). A
+  // SESSIONLESS caller (cron, webhook, the voice stage creators) passes the service client,
+  // with actorContext.brokerageId read from a verified row: under the anon cookie client Gate 1
+  // read no brand voice, the contact re-read saw no opt-outs, and the compliance_events audit
+  // row was refused (lane 86C; the brand-voice core is lib/kernel/brand-voice.ts).
+  const supabase = (opts?.client ?? (await createClient())) as Awaited<ReturnType<typeof createClient>>
   const violations: string[] = []
   const suggestedFixes: string[] = []
   let correctedContent: string | undefined
@@ -126,7 +142,7 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
     persona,
     messageType,
     content,
-  })
+  }, { client: supabase })
 
   for (const v of brandResult.violations) {
     violations.push(`BrandVoice: ${v}`)
@@ -144,6 +160,8 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
       .from("contacts")
       .select("tcpa_consent, tcpa_consent_date, dnc_status, email_opt_out, sms_opt_out, phone_opt_out, direct_mail_opt_out")
       .eq("id", contact.id)
+      // Tenant pin: RLS supplied it on the cookie client; the service client (86C) does not.
+      .eq("brokerage_id", actorContext.brokerageId)
       .maybeSingle()
 
     const dncStatus = freshContact?.dnc_status ?? contact.dnc_status ?? false
@@ -272,9 +290,12 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
       violations: violations,            // jsonb — array stored as JSON
       blocked_reason: blockedReason ?? null,
       actor_role: actorContext.role,
-      actor_user_id: actorContext.userId,
+      // Both columns are uuid (live). A sessionless caller's actor ("system", "") or a stub
+      // contact id would 22P02 the WHOLE row — the audit a regulator is handed — so a
+      // non-uuid is recorded as unknown (null) instead of losing the row (86C).
+      actor_user_id: UUID_RE.test(actorContext.userId ?? "") ? actorContext.userId : null,
       entity_type: "contact",
-      entity_id: contact?.id ?? null,
+      entity_id: contact?.id && UUID_RE.test(contact.id) ? contact.id : null,
       message_type: messageType,
     })
     .select("id")

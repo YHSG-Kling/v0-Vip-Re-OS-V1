@@ -36,6 +36,7 @@
 // would clobber a port filed mid-run).
 
 import { isTollFreeNumber } from "@/lib/voice/a2p-registration"
+import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
 
 // ── Vocabulary (Twilio's own statuses, normalised) ──────────────────────────
 
@@ -271,17 +272,18 @@ export async function loadPortIns(svc: any, brokerageId: string): Promise<{ ok: 
   return { ok: true, rowId: (data as any)?.id ?? null, settings, records: Array.isArray(settings.phone_port_ins) ? settings.phone_port_ins : [] }
 }
 
-/** Read-modify-write on the CURRENT settings (re-read here, never a stale copy). */
+/** Read-modify-write of the phone_port_ins KEY through the one merge writer (86C): the mutation
+ *  runs on the settings the database holds at write time, under a version check, so a business
+ *  registration (or any other key) saved concurrently is never clobbered, and a concurrent
+ *  port-in update is re-applied onto the newer list instead of being lost. */
 async function savePortIns(svc: any, brokerageId: string, mutate: (records: PortInRecord[]) => PortInRecord[]): Promise<{ ok: true; records: PortInRecord[] } | { ok: false; error: string }> {
-  const cur = await loadPortIns(svc, brokerageId)
-  if (!cur.ok) return cur
-  const records = mutate(cur.records).slice(0, MAX_RECORDS)
-  const settings = { ...cur.settings, phone_port_ins: records }
-  const write = cur.rowId
-    ? await svc.from("brokerage_settings").update({ settings, updated_at: new Date().toISOString() }).eq("id", cur.rowId).eq("brokerage_id", brokerageId).select("id")
-    : await svc.from("brokerage_settings").insert({ brokerage_id: brokerageId, settings }).select("id")
-  if (write?.error) return { ok: false, error: `port-in record NOT saved (${write.error.message})` }
-  if (cur.rowId && Array.isArray(write?.data) && write.data.length === 0) return { ok: false, error: "port-in record NOT saved (the settings row matched nothing)" }
+  let records: PortInRecord[] = []
+  const write = await mergeBrokerageSettings(svc, brokerageId, (current) => {
+    const existing = Array.isArray(current.phone_port_ins) ? (current.phone_port_ins as PortInRecord[]) : []
+    records = mutate(existing).slice(0, MAX_RECORDS)
+    return { phone_port_ins: records }
+  })
+  if (!write.ok) return { ok: false, error: `port-in record NOT saved (${write.error})` }
   return { ok: true, records }
 }
 
