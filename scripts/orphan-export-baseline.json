@@ -72,7 +72,7 @@
     "lib/ai-isa/portal-link.ts": 1,
     "lib/ai-isa/post-call-outcome.ts": 2,
     "lib/ai-isa/property-lookup-rail.ts": 7,
-    "lib/ai-isa/property-lookup-tools.ts": 2,
+    "lib/ai-isa/property-lookup-tools.ts": 1,
     "lib/ai-isa/reengagement-policy.ts": 2,
     "lib/ai-isa/resolve-isa-settings.ts": 1,
     "lib/ai-isa/voice-dial-batch.ts": 2,
@@ -81,7 +81,7 @@
     "lib/analytics/territory-coverage.ts": 2,
     "lib/analytics/territory-roi.ts": 2,
     "lib/application/listing-lifecycle.ts": 1,
-    "lib/assets/screenshot-capture.ts": 19,
+    "lib/assets/screenshot-capture.ts": 22,
     "lib/auth/role-grants.ts": 1,
     "lib/billing/ai-overage.ts": 1,
     "lib/billing/billing-access.ts": 1,
@@ -156,7 +156,7 @@
     "lib/external/socrata-client.ts": 2,
     "lib/external/socrata-market-registry.ts": 2,
     "lib/external/tavily-client.ts": 1,
-    "lib/external/versium-client.ts": 1,
+    "lib/external/versium-client.ts": 3,
     "lib/external/zenrows-client.ts": 1,
     "lib/external/zyte-client.ts": 2,
     "lib/finance/auto-dispute.ts": 1,
@@ -207,6 +207,7 @@
     "lib/kernel/billing.ts": 1,
     "lib/kernel/board-packet-reel.ts": 1,
     "lib/kernel/board-packet.ts": 1,
+    "lib/kernel/brand-voice.ts": 1,
     "lib/kernel/call-intelligence.ts": 1,
     "lib/kernel/campaign-center.ts": 1,
     "lib/kernel/client-pulse.ts": 2,
@@ -262,6 +263,7 @@
     "lib/kernel/portal-value.ts": 1,
     "lib/kernel/portal.ts": 1,
     "lib/kernel/postclose-concierge.ts": 3,
+    "lib/kernel/providers.ts": 1,
     "lib/kernel/referral-appreciation.ts": 6,
     "lib/kernel/referral-radar.ts": 4,
     "lib/kernel/regulatory-watcher.ts": 5,
@@ -270,7 +272,7 @@
     "lib/kernel/reverse-prospecting.ts": 2,
     "lib/kernel/schema-adaptation.ts": 1,
     "lib/kernel/schema-memory.ts": 2,
-    "lib/kernel/self-book.ts": 3,
+    "lib/kernel/self-book.ts": 4,
     "lib/kernel/service-recovery.ts": 1,
     "lib/kernel/showing-lifecycle.ts": 2,
     "lib/kernel/signal-registry.ts": 1,
@@ -380,7 +382,7 @@
     "lib/platform/demo-tenant.ts": 1,
     "lib/platform/go-live-readiness.ts": 1,
     "lib/platform/impersonation.ts": 1,
-    "lib/platform/manager-ops.ts": 4,
+    "lib/platform/manager-ops.ts": 5,
     "lib/platform/nps.ts": 1,
     "lib/platform/os-sentinel.ts": 3,
     "lib/platform/platform-controls.ts": 1,
@@ -456,7 +458,7 @@
     "lib/video/body-visual-model.ts": 4,
     "lib/video/body-visual-rule-ledger.ts": 1,
     "lib/video/caption-plan.ts": 1,
-    "lib/video/cinema-finish.ts": 4,
+    "lib/video/cinema-finish.ts": 8,
     "lib/video/composite-attribution.ts": 1,
     "lib/video/custom-video-archetypes.ts": 4,
     "lib/video/director-content.ts": 10,
@@ -473,9 +475,10 @@
     "lib/video/script-compliance.ts": 1,
     "lib/video/topic-video.ts": 2,
     "lib/video/video-director.ts": 7,
+    "lib/video/video-metering.ts": 2,
     "lib/video/video-plays.ts": 2,
     "lib/video/video-qr.ts": 1,
-    "lib/voice/a2p-registration.ts": 2,
+    "lib/voice/a2p-registration.ts": 1,
     "lib/voice/carrier-registration-loop.ts": 3,
     "lib/voice/conversation-relay.ts": 3,
     "lib/voice/local-number-search.ts": 2,
@@ -496,7 +499,7 @@
     "remotion/components/QrOutroBadge.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10214,
+  "census": 10262,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -529,7 +532,7 @@
     "app/actions/admin/get-admin-stats.ts": 1,
     "app/actions/admin/invitations.ts": 4,
     "app/actions/admin/invite-user.ts": 1,
-    "app/actions/admin/lead-routing-settings.ts": 2,
+    "app/actions/admin/lead-routing-settings.ts": 4,
     "app/actions/admin/license-tracking.ts": 7,
     "app/actions/admin/locations.ts": 6,
     "app/actions/admin/manager-evals.ts": 11,
@@ -583,7 +586,7 @@
     "app/actions/ai-isa.ts": 17,
     "app/actions/ai-lead-nurturing.ts": 4,
     "app/actions/ai-lead-scoring.ts": 3,
-    "app/actions/ai-listing-intake.ts": 9,
+    "app/actions/ai-listing-intake.ts": 8,
     "app/actions/ai-listing-packet.ts": 5,
     "app/actions/ai-listing-presentation.ts": 2,
     "app/actions/ai-market-intelligence.ts": 3,
@@ -608,7 +611,7 @@
     "app/actions/appraisal-defense.ts": 1,
     "app/actions/approval-sla.ts": 1,
     "app/actions/asset-manager-resolutions.ts": 2,
-    "app/actions/assistant.ts": 6,
+    "app/actions/assistant.ts": 5,
     "app/actions/auth/signup-brokerage.ts": 1,
     "app/actions/auth.ts": 3,
     "app/actions/autonomy-halt.ts": 1,
@@ -629,7 +632,7 @@
     "app/actions/buyer-closing-costs.ts": 1,
     "app/actions/buyer-coaching.ts": 1,
     "app/actions/buyer-execution.ts": 8,
-    "app/actions/buyer-fatigue.ts": 9,
+    "app/actions/buyer-fatigue.ts": 10,
     "app/actions/buyer-financial.ts": 7,
     "app/actions/buyer-insights.ts": 2,
     "app/actions/buyer-lifecycle-core.ts": 16,
@@ -708,11 +711,11 @@
     "app/actions/conversation-analytics.ts": 3,
     "app/actions/convert-outside-inquiry.ts": 1,
     "app/actions/coordination.ts": 4,
-    "app/actions/copilot.ts": 10,
+    "app/actions/copilot.ts": 9,
     "app/actions/counter-offer-diff.ts": 1,
     "app/actions/coverage-mode.ts": 1,
     "app/actions/creative-playbooks.ts": 2,
-    "app/actions/credit-copilot.ts": 8,
+    "app/actions/credit-copilot.ts": 5,
     "app/actions/critical-setup.ts": 1,
     "app/actions/crm-connect.ts": 4,
     "app/actions/crm.ts": 6,
@@ -770,7 +773,7 @@
     "app/actions/investor-deals.ts": 3,
     "app/actions/isa-phone-numbers.ts": 4,
     "app/actions/jobs.ts": 1,
-    "app/actions/journey-tasks.ts": 9,
+    "app/actions/journey-tasks.ts": 6,
     "app/actions/kb-search.ts": 1,
     "app/actions/kernel-bridges.ts": 2,
     "app/actions/knowledge/search.ts": 16,
@@ -806,7 +809,7 @@
     "app/actions/listing-health-actions.ts": 2,
     "app/actions/listing-landing.ts": 9,
     "app/actions/listing-lifecycle-core.ts": 9,
-    "app/actions/listing-lifecycle.ts": 15,
+    "app/actions/listing-lifecycle.ts": 8,
     "app/actions/listing-media.ts": 14,
     "app/actions/listing-promo-manual-trigger.ts": 1,
     "app/actions/listing-risk-agent.ts": 1,
@@ -932,6 +935,7 @@
     "app/actions/seller-updates.ts": 5,
     "app/actions/sequence-step-ai.ts": 2,
     "app/actions/services-config.ts": 10,
+    "app/actions/settings/brokerage-column-settings.ts": 4,
     "app/actions/settings/brokerage-identity.ts": 2,
     "app/actions/settings/business-registration.ts": 2,
     "app/actions/settings/create-commission-structure.ts": 1,
@@ -1377,7 +1381,6 @@
     "app/api/esign/status/[transactionId]/route.ts": 1,
     "app/api/external-portal/actions/complete/route.ts": 1,
     "app/api/external-portal/documents/download/route.ts": 1,
-    "app/api/fatigue/calculate/route.ts": 1,
     "app/api/fatigue/cron/route.ts": 1,
     "app/api/form-wizard/resolve-provider/route.ts": 1,
     "app/api/forms/provider-library/route.ts": 1,
@@ -1459,12 +1462,6 @@
     "app/api/unsubscribe/route.ts": 1,
     "app/api/unsubscribe/token/route.ts": 2,
     "app/api/video/engagement/route.ts": 1,
-    "app/api/video/projects/[projectId]/generate/route.ts": 2,
-    "app/api/video/projects/[projectId]/preview/route.ts": 1,
-    "app/api/video/projects/[projectId]/publish/route.ts": 1,
-    "app/api/video/projects/[projectId]/script/route.ts": 1,
-    "app/api/video/projects/[projectId]/video-action-http.ts": 1,
-    "app/api/video/projects/route.ts": 2,
     "app/api/video-scripts/route.ts": 1,
     "app/api/videos/listing-voiceover/route.ts": 1,
     "app/api/videos/route.ts": 1,
@@ -1501,7 +1498,6 @@
     "app/api/webhooks/whatsapp/route.ts": 2,
     "app/api/webhooks/zapier/route.ts": 1,
     "app/api/webhooks/zoom/route.ts": 1,
-    "app/api/widget/capture/route.ts": 1,
     "app/api/widget/capture-lead/route.ts": 1,
     "app/api/widget/intake/route.ts": 1,
     "app/api/widget/live-agent-request/route.ts": 1,
@@ -2338,6 +2334,7 @@
     "app/dashboard/settings/twin-studio/components/twin-voice-step.tsx": 1,
     "app/dashboard/settings/twin-studio/components/twin-wizard.tsx": 1,
     "app/dashboard/settings/twin-studio/components/voice-recorder.tsx": 1,
+    "app/dashboard/settings/twin-studio/live-face-backup-card.tsx": 1,
     "app/dashboard/settings/twin-studio/twin-studio-client.tsx": 1,
     "app/dashboard/settings/widget/actions.ts": 2,
     "app/dashboard/showings/prep/[showingId]/brief-client.tsx": 1,
@@ -2594,6 +2591,7 @@
     "app/referrals/pipeline/draft-thank-you-button.tsx": 1,
     "app/referrals/pipeline/pipeline-os-client.tsx": 1,
     "app/referrals/referrals-os-client.tsx": 1,
+    "app/referrals/review-request-timing-card.tsx": 1,
     "app/seed/seed-page-client.tsx": 1,
     "app/settings/accounting/error-log-table.tsx": 1,
     "app/settings/accounting/manual-entry-card.tsx": 1,
@@ -2830,7 +2828,7 @@
     "lib/ai-isa/portal-link.ts": 3,
     "lib/ai-isa/post-call-outcome.ts": 3,
     "lib/ai-isa/property-lookup-rail.ts": 12,
-    "lib/ai-isa/property-lookup-tools.ts": 4,
+    "lib/ai-isa/property-lookup-tools.ts": 3,
     "lib/ai-isa/qualification-core.ts": 5,
     "lib/ai-isa/qualification-evaluator.ts": 2,
     "lib/ai-isa/qualification-playbook.ts": 2,
@@ -2862,19 +2860,20 @@
     "lib/application/ai-isa.ts": 3,
     "lib/application/compliance-monitoring.ts": 18,
     "lib/application/lead-application-service.ts": 5,
-    "lib/application/listing-lifecycle.ts": 16,
+    "lib/application/listing-lifecycle.ts": 7,
     "lib/application/listings.ts": 2,
     "lib/application/transactions.ts": 55,
     "lib/approval-workflow/approval-engine.ts": 6,
     "lib/approval-workflow/approval-logger.ts": 5,
-    "lib/assets/screenshot-capture.ts": 32,
+    "lib/assets/screenshot-capture.ts": 35,
     "lib/assets/screenshot-uses.ts": 9,
+    "lib/assistant/smart-suggestion.ts": 1,
     "lib/audiences/audience-sync.ts": 3,
     "lib/auth/authorize-for-user.ts": 1,
     "lib/auth/contact-access.ts": 1,
     "lib/auth/crm-contact-staff.ts": 1,
     "lib/auth/isa-actor.ts": 1,
-    "lib/auth/lead-visibility.ts": 5,
+    "lib/auth/lead-visibility.ts": 6,
     "lib/auth/permissions-client.ts": 3,
     "lib/auth/platform-guard.ts": 5,
     "lib/auth/provision-isa-actor.ts": 1,
@@ -2911,7 +2910,7 @@
     "lib/brand-template-registry/brand-requirements.ts": 5,
     "lib/brand-template-registry/registry-logger.ts": 8,
     "lib/brand-template-registry/template-classifier.ts": 5,
-    "lib/branding/business-registration.ts": 11,
+    "lib/branding/business-registration.ts": 14,
     "lib/branding/resolve-brand-context.ts": 1,
     "lib/brokerage/compliance-identity.ts": 1,
     "lib/brokerage/get-brokerage-settings.ts": 17,
@@ -2995,6 +2994,7 @@
     "lib/charts/geometry.ts": 10,
     "lib/cma/ai-cma-engine.ts": 1,
     "lib/cma/ai-cma-orchestrator.ts": 2,
+    "lib/cma/ai-cma-report.ts": 1,
     "lib/cma/comp-adjustments.ts": 1,
     "lib/cma/comp-provider.ts": 1,
     "lib/cma/comp-supplement-cache.ts": 2,
@@ -3120,6 +3120,8 @@
     "lib/content-intel/reddit-scraper.ts": 1,
     "lib/content-intel/rss-scraper.ts": 1,
     "lib/content-intel/topic-bank.ts": 2,
+    "lib/copilot/seven-day-plan.ts": 1,
+    "lib/credit/credit-event-handlers.ts": 4,
     "lib/crm/import-pull.ts": 4,
     "lib/crm/providers/followupboss.ts": 1,
     "lib/crm/providers/hubspot.ts": 1,
@@ -3174,6 +3176,7 @@
     "lib/documents/client-pdf.ts": 6,
     "lib/documents/contact-legal-writeback.ts": 3,
     "lib/documents/deadline-derivation.ts": 3,
+    "lib/documents/document-access-log.ts": 1,
     "lib/documents/field-extraction-ledger.ts": 1,
     "lib/documents/kernel-review-core.ts": 6,
     "lib/documents/listing-agreement-gate.ts": 1,
@@ -3226,7 +3229,9 @@
     "lib/errors/index.ts": 4,
     "lib/esign-webhooks/download-signed-package.ts": 1,
     "lib/esign-webhooks/finalize-packet.ts": 2,
-    "lib/events/event-helpers.ts": 6,
+    "lib/events/dispatcher-registry.ts": 2,
+    "lib/events/event-helpers.ts": 5,
+    "lib/events/lifecycle-event-core.ts": 1,
     "lib/external/apify-actors.ts": 3,
     "lib/external/apify-client.ts": 8,
     "lib/external/arcgis-permits.ts": 9,
@@ -3257,7 +3262,7 @@
     "lib/external/socrata-client.ts": 4,
     "lib/external/socrata-market-registry.ts": 7,
     "lib/external/tavily-client.ts": 2,
-    "lib/external/versium-client.ts": 2,
+    "lib/external/versium-client.ts": 4,
     "lib/external/vision-property.ts": 1,
     "lib/external/zenrows-client.ts": 5,
     "lib/external/zenrows-normalizer.ts": 1,
@@ -3479,7 +3484,7 @@
     "lib/kernel/board-packet-reel.ts": 3,
     "lib/kernel/board-packet.ts": 2,
     "lib/kernel/brand-compliance.ts": 1,
-    "lib/kernel/brand-voice.ts": 1,
+    "lib/kernel/brand-voice.ts": 2,
     "lib/kernel/calendar-deadline-watcher.ts": 1,
     "lib/kernel/calendar-engine.ts": 1,
     "lib/kernel/calendar-sync.ts": 6,
@@ -3512,7 +3517,7 @@
     "lib/kernel/consent-recovery.ts": 3,
     "lib/kernel/consistency-guardian.ts": 4,
     "lib/kernel/consult-outcome-resolver.ts": 1,
-    "lib/kernel/content-creators.ts": 7,
+    "lib/kernel/content-creators.ts": 8,
     "lib/kernel/content-studio.ts": 7,
     "lib/kernel/continuity-receipt.ts": 3,
     "lib/kernel/contracts.ts": 2,
@@ -3581,7 +3586,7 @@
     "lib/kernel/managing-broker.ts": 3,
     "lib/kernel/marketing/real-estate-compliance-gate.ts": 2,
     "lib/kernel/marketing-bench.ts": 1,
-    "lib/kernel/marketing.ts": 17,
+    "lib/kernel/marketing.ts": 16,
     "lib/kernel/milestone-calendar-bridge.ts": 1,
     "lib/kernel/morning-standup.ts": 3,
     "lib/kernel/neighbor-farm.ts": 3,
@@ -3617,7 +3622,7 @@
     "lib/kernel/postclose-concierge.ts": 4,
     "lib/kernel/preview.ts": 2,
     "lib/kernel/priority-rank.ts": 2,
-    "lib/kernel/providers.ts": 1,
+    "lib/kernel/providers.ts": 2,
     "lib/kernel/referral-appreciation.ts": 8,
     "lib/kernel/referral-radar.ts": 6,
     "lib/kernel/regulatory-watcher.ts": 6,
@@ -3639,7 +3644,7 @@
     "lib/kernel/seat-usage.ts": 5,
     "lib/kernel/second-opinion-runner.ts": 1,
     "lib/kernel/second-opinion.ts": 1,
-    "lib/kernel/self-book.ts": 5,
+    "lib/kernel/self-book.ts": 7,
     "lib/kernel/self-heal-ledger.ts": 5,
     "lib/kernel/seller-decision-room.ts": 1,
     "lib/kernel/seller-listing-timeline.ts": 2,
@@ -3660,6 +3665,7 @@
     "lib/kernel/team-plays.ts": 3,
     "lib/kernel/team-query.ts": 3,
     "lib/kernel/tenancy-principal.ts": 1,
+    "lib/kernel/tenant-config-reads.ts": 3,
     "lib/kernel/tenant-creation-rollback.ts": 1,
     "lib/kernel/tenant-creation.ts": 7,
     "lib/kernel/tenant-guard.ts": 1,
@@ -3696,9 +3702,10 @@
     "lib/knowledge/embedding-service.ts": 10,
     "lib/knowledge/help-topic-categories.ts": 2,
     "lib/lead-assignment/assignment-engine.ts": 3,
-    "lib/lead-assignment/capacity-pick.ts": 2,
+    "lib/lead-assignment/capacity-pick.ts": 3,
     "lib/lead-assignment/contact-assignment.ts": 1,
     "lib/lead-assignment/default-assignment.ts": 1,
+    "lib/lead-assignment/mailbox-owner-preference.ts": 3,
     "lib/lead-assignment/routing-profiles.ts": 1,
     "lib/lead-assignment/rule-matcher.ts": 10,
     "lib/lead-assignment/solo-agent.ts": 1,
@@ -3726,7 +3733,7 @@
     "lib/lead-pipeline/contact-signal-rescrape.ts": 1,
     "lib/lead-pipeline/email-engagement-sourcer.ts": 2,
     "lib/lead-pipeline/email-seek.ts": 2,
-    "lib/lead-pipeline/enrichment-column-map.ts": 18,
+    "lib/lead-pipeline/enrichment-column-map.ts": 19,
     "lib/lead-pipeline/enrichment-merge.ts": 2,
     "lib/lead-pipeline/enrichment-orchestrator.ts": 1,
     "lib/lead-pipeline/enrichment-retry.ts": 3,
@@ -3797,6 +3804,7 @@
     "lib/listing-lifecycle/exception-recovery-limits.ts": 5,
     "lib/listing-lifecycle/integration-deduplication.ts": 5,
     "lib/listing-lifecycle/lifecycle-definitions.ts": 9,
+    "lib/listing-lifecycle/lifecycle-event-tasks.ts": 9,
     "lib/listing-lifecycle/lifecycle-logger.ts": 7,
     "lib/listing-lifecycle/multi-listing-priority.ts": 8,
     "lib/listing-lifecycle/readiness-checker.ts": 1,
@@ -3818,6 +3826,7 @@
     "lib/listings/expiry-decision.ts": 2,
     "lib/listings/listing-activation-gate.ts": 2,
     "lib/listings/listing-compliance-loop.ts": 1,
+    "lib/listings/listing-description-core.ts": 1,
     "lib/listings/listing-metrics-rollup.ts": 1,
     "lib/listings/listing-metrics-shape.ts": 2,
     "lib/listings/listing-slug.ts": 3,
@@ -3837,7 +3846,7 @@
     "lib/listings/seller-weekly-report-runner.ts": 1,
     "lib/listings/seller-weekly-report.ts": 4,
     "lib/listings/tier-assigner.ts": 10,
-    "lib/live-agent/face-render.ts": 1,
+    "lib/live-agent/face-render.ts": 3,
     "lib/managers/accuracy-gate.ts": 10,
     "lib/managers/autonomy-gate.ts": 5,
     "lib/managers/cross-referral.ts": 6,
@@ -3972,7 +3981,7 @@
     "lib/platform/growth-funnel.ts": 7,
     "lib/platform/impersonation.ts": 5,
     "lib/platform/launch-checklist.ts": 1,
-    "lib/platform/manager-ops.ts": 6,
+    "lib/platform/manager-ops.ts": 7,
     "lib/platform/nps.ts": 5,
     "lib/platform/os-sentinel.ts": 5,
     "lib/platform/platform-controls.ts": 5,
@@ -4023,7 +4032,9 @@
     "lib/portal/home-assistant.ts": 4,
     "lib/portal/home-maintenance.ts": 3,
     "lib/portal/home-wealth.ts": 1,
-    "lib/portal/journey-utils.ts": 1,
+    "lib/portal/journey-event-handlers.ts": 3,
+    "lib/portal/journey-milestone-events.ts": 1,
+    "lib/portal/journey-utils.ts": 2,
     "lib/portal/lifetime-segment.ts": 3,
     "lib/portal/next-move.ts": 3,
     "lib/portal/orchestrate-portal-push-send.ts": 1,
@@ -4069,7 +4080,7 @@
     "lib/providers/calendar/free-slots.ts": 1,
     "lib/providers/calendar/graph-event-shape.ts": 2,
     "lib/providers/calendar/index.ts": 4,
-    "lib/providers/calendar/personal-calendar.ts": 6,
+    "lib/providers/calendar/personal-calendar.ts": 7,
     "lib/providers/content-safety.ts": 1,
     "lib/providers/dispatch.ts": 5,
     "lib/providers/elevenlabs/client.ts": 3,
@@ -4135,7 +4146,7 @@
     "lib/remotion/composition-geometry.ts": 2,
     "lib/remotion/content-contract.ts": 7,
     "lib/remotion/media-host.ts": 1,
-    "lib/remotion/music-filter-graph.ts": 6,
+    "lib/remotion/music-filter-graph.ts": 9,
     "lib/remotion/music-mixer.ts": 2,
     "lib/remotion/registry.ts": 7,
     "lib/remotion/render-cache.ts": 6,
@@ -4150,6 +4161,8 @@
     "lib/repurpose/transcribe-core.ts": 1,
     "lib/repurpose/transcribe.ts": 1,
     "lib/reputation/review-landed.ts": 1,
+    "lib/reputation/review-request-delay.ts": 2,
+    "lib/reputation/review-request-draft.ts": 1,
     "lib/revenue-protection/scorer.ts": 1,
     "lib/security/audio-source-allowlist.ts": 2,
     "lib/security/credential-rotation.ts": 3,
@@ -4178,6 +4191,8 @@
     "lib/services/lead-management.service.ts": 6,
     "lib/services/social-publishing.service.ts": 5,
     "lib/services/transaction-management.service.ts": 4,
+    "lib/settings/brokerage-settings-columns.ts": 2,
+    "lib/settings/brokerage-settings-merge.ts": 1,
     "lib/showings/dispatchers.ts": 3,
     "lib/showings/showing-brief.ts": 3,
     "lib/showings/showingtime-ingest.ts": 3,
@@ -4195,6 +4210,7 @@
     "lib/sphere/lifetime-touchpoint-reaper.ts": 1,
     "lib/sphere/next-best-actions.ts": 2,
     "lib/sphere-resonance/run-resonance-scan.ts": 1,
+    "lib/sphere-resonance/touchpoint-draft.ts": 1,
     "lib/state-forms/field-defs.ts": 2,
     "lib/state-forms/registry.ts": 2,
     "lib/storage/browser-upload.ts": 1,
@@ -4246,6 +4262,7 @@
     "lib/transactions/deal-type-resolver.ts": 1,
     "lib/transactions/deal-vendor-notify.ts": 3,
     "lib/transactions/deal-vendor-targets.ts": 1,
+    "lib/transactions/dotloop-document-sync.ts": 1,
     "lib/transactions/earnest-terms.ts": 4,
     "lib/transactions/esign-doc-sync-sweep.ts": 1,
     "lib/transactions/final-compliance-check.ts": 2,
@@ -4317,7 +4334,7 @@
     "lib/video/broll-url.ts": 1,
     "lib/video/caption-plan.ts": 7,
     "lib/video/chapter-video-generator.ts": 1,
-    "lib/video/cinema-finish.ts": 11,
+    "lib/video/cinema-finish.ts": 17,
     "lib/video/cma-reel-orchestrator.ts": 1,
     "lib/video/commission-situation.ts": 1,
     "lib/video/composite-attribution.ts": 6,
@@ -4356,12 +4373,14 @@
     "lib/video/repurpose-planner.ts": 3,
     "lib/video/script-compliance.ts": 9,
     "lib/video/script-structure.ts": 13,
+    "lib/video/stitch-graph.ts": 4,
     "lib/video/topic-video-runner.ts": 1,
     "lib/video/topic-video.ts": 20,
     "lib/video/verbal-disclosure.ts": 1,
     "lib/video/video-director.ts": 13,
     "lib/video/video-guide.ts": 6,
     "lib/video/video-identity.ts": 1,
+    "lib/video/video-metering.ts": 4,
     "lib/video/video-pipeline-reaper-policy.ts": 1,
     "lib/video/video-pipeline-reaper.ts": 1,
     "lib/video/video-plays.ts": 8,
@@ -4649,7 +4668,9 @@
     ],
     "app/actions/admin/lead-routing-settings.ts": [
       "getDefaultAssignmentMethod",
-      "setDefaultAssignmentMethod"
+      "setDefaultAssignmentMethod",
+      "getMailboxOwnerPreference",
+      "setMailboxOwnerPreference"
     ],
     "app/actions/admin/license-tracking.ts": [
       "getBrokerageAgentLicenseStatuses",
@@ -5023,7 +5044,6 @@
     ],
     "app/actions/ai-listing-intake.ts": [
       "aiEnrichPropertyData",
-      "aiGenerateListingDescription",
       "aiSuggestListPrice",
       "aiCheckListingCompliance",
       "getListingCopyComplianceGate",
@@ -5223,7 +5243,6 @@
     ],
     "app/actions/assistant.ts": [
       "handleAutomationTriggered",
-      "generateSmartSuggestion",
       "dismissSuggestion",
       "completeSuggestion",
       "generateAssistantSuggestions",
@@ -5374,6 +5393,7 @@
       "getBuyerFatigueAlerts",
       "dismissFatigueAlert",
       "triggerFatigueCalculation",
+      "recalculateBrokerageFatigue",
       "getBuyerFatigueAlert",
       "getReinvigorationSuggestions",
       "getHighFatigueBuyers",
@@ -5869,7 +5889,6 @@
     "app/actions/copilot.ts": [
       "handleSuggestionAccepted",
       "handleCoachingSessionBooked",
-      "generate7DayPlan",
       "createTransactionMilestone",
       "checkOverdueMilestones",
       "completeMilestone",
@@ -5891,9 +5910,6 @@
     "app/actions/credit-copilot.ts": [
       "updateContactCreditStatus",
       "referToCreditPartner",
-      "handlePartnerStatusUpdate",
-      "handleTargetReached",
-      "handlePartnerReferral",
       "getCreditPipelineStats",
       "advanceCreditFlow",
       "createCreditAccount"
@@ -6253,9 +6269,6 @@
       "getTaskCompletions",
       "getStageProgress",
       "updateStageProgress",
-      "handleTaskCompletedEvent",
-      "handleStageCompletedEvent",
-      "handleAllTasksCompletedEvent",
       "getTaskFormFields"
     ],
     "app/actions/kb-search.ts": [
@@ -6512,14 +6525,7 @@
       "getListingTimeline",
       "getListingTasks",
       "completeListingTask",
-      "handleListingAppointmentBooked",
-      "handleListingAgreementSigned",
-      "handleListingLive",
       "handlePriceReduction",
-      "handleOfferReceived",
-      "handleContingencyCleared",
-      "handleClosingApproaching",
-      "triggerReviewSequence",
       "sendReviewRequest",
       "setMilestonePortalVisibility"
     ],
@@ -7384,6 +7390,12 @@
       "getStageRules",
       "createStageRule",
       "deleteStageRule"
+    ],
+    "app/actions/settings/brokerage-column-settings.ts": [
+      "getReviewRequestDelaySettingAction",
+      "saveReviewRequestDelayAction",
+      "getLiveFaceProviderSettingAction",
+      "saveLiveFaceProviderOrderAction"
     ],
     "app/actions/settings/brokerage-identity.ts": [
       "getBrokerageIdentity",
@@ -9297,9 +9309,6 @@
     "app/api/external-portal/documents/download/route.ts": [
       "GET"
     ],
-    "app/api/fatigue/calculate/route.ts": [
-      "POST"
-    ],
     "app/api/fatigue/cron/route.ts": [
       "GET"
     ],
@@ -9548,26 +9557,6 @@
     "app/api/video/engagement/route.ts": [
       "POST"
     ],
-    "app/api/video/projects/[projectId]/generate/route.ts": [
-      "POST",
-      "GET"
-    ],
-    "app/api/video/projects/[projectId]/preview/route.ts": [
-      "GET"
-    ],
-    "app/api/video/projects/[projectId]/publish/route.ts": [
-      "POST"
-    ],
-    "app/api/video/projects/[projectId]/script/route.ts": [
-      "POST"
-    ],
-    "app/api/video/projects/[projectId]/video-action-http.ts": [
-      "videoActionResponse"
-    ],
-    "app/api/video/projects/route.ts": [
-      "GET",
-      "POST"
-    ],
     "app/api/video-scripts/route.ts": [
       "DELETE"
     ],
@@ -9679,9 +9668,6 @@
       "POST"
     ],
     "app/api/webhooks/zoom/route.ts": [
-      "POST"
-    ],
-    "app/api/widget/capture/route.ts": [
       "POST"
     ],
     "app/api/widget/capture-lead/route.ts": [
@@ -12242,6 +12228,9 @@
     "app/dashboard/settings/twin-studio/components/voice-recorder.tsx": [
       "VoiceRecorder"
     ],
+    "app/dashboard/settings/twin-studio/live-face-backup-card.tsx": [
+      "LiveFaceBackupCard"
+    ],
     "app/dashboard/settings/twin-studio/twin-studio-client.tsx": [
       "TwinStudioClient"
     ],
@@ -13039,6 +13028,9 @@
     ],
     "app/referrals/referrals-os-client.tsx": [
       "ReferralsOsClient"
+    ],
+    "app/referrals/review-request-timing-card.tsx": [
+      "ReviewRequestTimingCard"
     ],
     "app/seed/seed-page-client.tsx": [
       "SeedPageClient"
@@ -14049,7 +14041,6 @@
     ],
     "lib/ai-isa/property-lookup-tools.ts": [
       "toInvestorFacingToolRow",
-      "toIsaFacingToolRow",
       "buildLookupPropertyFactsTool",
       "buildSearchOffmarketOpportunitiesTool"
     ],
@@ -14239,18 +14230,9 @@
       "scheduleListingAppointmentService",
       "handleSellerToLifetimeTransition",
       "advanceListingStageService",
-      "scheduleClosingGift",
       "getListingTimelineService",
       "getListingTasksService",
       "completeListingTaskService",
-      "handleListingAppointmentBookedService",
-      "handleListingAgreementSignedService",
-      "handleListingLiveService",
-      "handlePriceReductionService",
-      "handleOfferReceivedService",
-      "handleContingencyClearedService",
-      "handleClosingApproachingService",
-      "triggerReviewSequenceService",
       "sendReviewRequestService"
     ],
     "lib/application/listings.ts": [
@@ -14336,6 +14318,9 @@
       "unsatisfiedReadyLabels",
       "screenshotCacheKey",
       "isPublicPageHost",
+      "createHostPinner",
+      "fetchPinned",
+      "fetchRobotsPinned",
       "isPublicIpAddress",
       "requestHostRefusal",
       "planScreenshotCapture",
@@ -14359,9 +14344,9 @@
       "listScreenshotStillsForUse",
       "screenshotUrlsForUse",
       "setScreenshotUses",
-      "stillsAsBrollClips",
       "figuresForEducationTopic",
-      "renderFigures"
+      "renderFigures",
+      "nodePinnedTransport"
     ],
     "lib/assets/screenshot-uses.ts": [
       "screenshotSubjectOfRow",
@@ -14373,6 +14358,9 @@
       "tagsWithUses",
       "usesOfRow",
       "screenshotRowUseAllowed"
+    ],
+    "lib/assistant/smart-suggestion.ts": [
+      "writeSmartSuggestion"
     ],
     "lib/audiences/audience-sync.ts": [
       "describeConsentChange",
@@ -14396,7 +14384,8 @@
       "resolveLeadVisibilityForSession",
       "applyLeadRowScope",
       "leadRowInScope",
-      "resolveScopedLeadIds"
+      "resolveScopedLeadIds",
+      "leadDeskRecipientUserIds"
     ],
     "lib/auth/permissions-client.ts": [
       "getClientUserRole",
@@ -14617,6 +14606,9 @@
       "formatTemplateClassification"
     ],
     "lib/branding/business-registration.ts": [
+      "normalizeCompanyType",
+      "entityTypeConflict",
+      "twilioEntityWireValues",
       "normalizeEin",
       "maskEin",
       "redactDraftForClient",
@@ -15085,6 +15077,9 @@
     "lib/cma/ai-cma-orchestrator.ts": [
       "runAiCma",
       "describeCompProvenance"
+    ],
+    "lib/cma/ai-cma-report.ts": [
+      "generateCmaReport"
     ],
     "lib/cma/comp-adjustments.ts": [
       "adjustComps"
@@ -15658,6 +15653,15 @@
       "pickTopics",
       "renderTopicsForPrompt"
     ],
+    "lib/copilot/seven-day-plan.ts": [
+      "writeSevenDayNurturePlan"
+    ],
+    "lib/credit/credit-event-handlers.ts": [
+      "reactToCreditPartnerStatus",
+      "reactToCreditTargetReached",
+      "recordCreditPartnerReferral",
+      "reactToCreditPartnerReferred"
+    ],
     "lib/crm/import-pull.ts": [
       "fubToRow",
       "loftyToRow",
@@ -15905,6 +15909,9 @@
       "deriveDeadlineCandidates",
       "deriveDeadlinesFromDocument"
     ],
+    "lib/documents/document-access-log.ts": [
+      "recordDocumentAccess"
+    ],
     "lib/documents/field-extraction-ledger.ts": [
       "recordFieldExtractions"
     ],
@@ -16147,13 +16154,19 @@
       "finalizeVoiceCockpitPacket",
       "finalizeLegacyEsignArtifacts"
     ],
-    "lib/events/event-helpers.ts": [
+    "lib/events/dispatcher-registry.ts": [
       "registerEventDispatcher",
+      "getRegisteredEventDispatcher"
+    ],
+    "lib/events/event-helpers.ts": [
       "logEventAndTrigger",
       "logMilestoneOverdue",
       "logCreditStatusUpdated",
       "logScriptGenerated",
       "handleWebhookEvent"
+    ],
+    "lib/events/lifecycle-event-core.ts": [
+      "recordLifecycleEvent"
     ],
     "lib/external/apify-actors.ts": [
       "pickActors",
@@ -16369,6 +16382,8 @@
     ],
     "lib/external/versium-client.ts": [
       "versiumQueryFor",
+      "versiumStatusProblem",
+      "parseVersiumFinancialResponse",
       "appendVersiumFinancial"
     ],
     "lib/external/vision-property.ts": [
@@ -17370,6 +17385,7 @@
       "checkBrandCompliance"
     ],
     "lib/kernel/brand-voice.ts": [
+      "resolveBrandVoiceCore",
       "applyBrandVoice"
     ],
     "lib/kernel/calendar-deadline-watcher.ts": [
@@ -17545,6 +17561,7 @@
       "createNewsletterCampaign",
       "createEmailCampaign",
       "createBlogPostDraft",
+      "writeBlogPost",
       "writePodcastScript",
       "createPodcastEpisode",
       "createVideoProject"
@@ -17993,7 +18010,6 @@
       "createDirectMailCampaign",
       "previewDirectMailAsset",
       "submitDirectMailCampaign",
-      "createBlogPost",
       "previewBlogPost",
       "publishBlogPost",
       "previewVideoProject",
@@ -18184,6 +18200,7 @@
       "byPriorityDesc"
     ],
     "lib/kernel/providers.ts": [
+      "resolveProviderCore",
       "resolveProvider"
     ],
     "lib/kernel/referral-appreciation.ts": [
@@ -18326,7 +18343,9 @@
       "filterBookableSlots",
       "excludeShowingConflicts",
       "loadBookableSlots",
-      "bookShowingSlot"
+      "bookShowingSlot",
+      "decideRequestedShowing",
+      "checkRequestedShowingWindow"
     ],
     "lib/kernel/self-heal-ledger.ts": [
       "classifyFlowRemediation",
@@ -18412,6 +18431,11 @@
     ],
     "lib/kernel/tenancy-principal.ts": [
       "isTenancyPrincipal"
+    ],
+    "lib/kernel/tenant-config-reads.ts": [
+      "applyTenantBrandVoice",
+      "resolveTenantProvider",
+      "evaluateTenantOutbound"
     ],
     "lib/kernel/tenant-creation-rollback.ts": [
       "rollbackTenantCreation"
@@ -18696,13 +18720,19 @@
     ],
     "lib/lead-assignment/capacity-pick.ts": [
       "resolveBrokerageMaxLoad",
-      "selectAgentByCapacity"
+      "selectAgentByCapacity",
+      "agentHasHeadroom"
     ],
     "lib/lead-assignment/contact-assignment.ts": [
       "resolveAgentForContact"
     ],
     "lib/lead-assignment/default-assignment.ts": [
       "assignByDefaultMethod"
+    ],
+    "lib/lead-assignment/mailbox-owner-preference.ts": [
+      "mailboxOwnerPreferenceFromSettings",
+      "decideMailboxOwnerPreference",
+      "loadMailboxOwnerFacts"
     ],
     "lib/lead-assignment/routing-profiles.ts": [
       "loadRoutingProfiles"
@@ -18837,6 +18867,7 @@
       "peopleDataProfileToLeadColumns",
       "batchDataPropertyEnrichmentToLeadColumns",
       "batchDataPropertyEnrichmentToContactColumns",
+      "enrichmentProviderOf",
       "normalizeMaritalStatus",
       "normalizeMoneyRange",
       "normalizeModeledCreditBand",
@@ -19187,6 +19218,17 @@
       "getEnabledSystemGates",
       "isSystemGateEnabled"
     ],
+    "lib/listing-lifecycle/lifecycle-event-tasks.ts": [
+      "appointmentBookedTasks",
+      "agreementSignedTasks",
+      "listingLiveTasks",
+      "priceReductionTasks",
+      "offerReceivedTasks",
+      "contingencyClearedTasks",
+      "closingApproachingTasks",
+      "scheduleReviewRequests",
+      "scheduleClosingGiftForListing"
+    ],
     "lib/listing-lifecycle/lifecycle-logger.ts": [
       "logStageTransition",
       "logFailedTransition",
@@ -19292,6 +19334,9 @@
     "lib/listings/listing-compliance-loop.ts": [
       "runListingComplianceLoop"
     ],
+    "lib/listings/listing-description-core.ts": [
+      "generateListingDescriptions"
+    ],
     "lib/listings/listing-metrics-rollup.ts": [
       "rollupListingMetrics"
     ],
@@ -19384,6 +19429,8 @@
       "deleteTierDistribution"
     ],
     "lib/live-agent/face-render.ts": [
+      "normalizeProviderOrder",
+      "validateFaceProviderOrder",
       "resolveFaceRenderProvider"
     ],
     "lib/managers/accuracy-gate.ts": [
@@ -20090,6 +20137,7 @@
     "lib/platform/manager-ops.ts": [
       "percentile",
       "classifyManagerSlo",
+      "loadPlatformPaidAiSpend",
       "loadManagerOps",
       "recommendVoiceToolRoundDeadlineMs",
       "parseContextJson",
@@ -20403,8 +20451,17 @@
     "lib/portal/home-wealth.ts": [
       "computeHomeWealthStory"
     ],
+    "lib/portal/journey-event-handlers.ts": [
+      "reactToJourneyTaskCompleted",
+      "reactToJourneyStageCompleted",
+      "reactToJourneyAllTasksDone"
+    ],
+    "lib/portal/journey-milestone-events.ts": [
+      "emitJourneyCompletionEvents"
+    ],
     "lib/portal/journey-utils.ts": [
-      "calculateJourneyProgress"
+      "calculateJourneyProgress",
+      "detectJourneyMilestones"
     ],
     "lib/portal/lifetime-segment.ts": [
       "normalizeLifetimeSegment",
@@ -20604,6 +20661,7 @@
       "graphShowAsFor",
       "hasPersonalCalendar",
       "createEventViaPersonal",
+      "getBusyViaPersonal",
       "getAvailabilityViaPersonal",
       "updateEventViaPersonal",
       "deleteEventViaPersonal"
@@ -20941,6 +20999,9 @@
       "buildMusicMixFilterGraph",
       "dbToLinearAmplitude",
       "buildMusicDuckFilterGraph",
+      "buildLoudnessMeasureStage",
+      "parseLoudnessMeasurement",
+      "masterTrimGainDb",
       "buildMasterLoudnessStage",
       "withMasterLoudness"
     ],
@@ -21017,6 +21078,13 @@
     ],
     "lib/reputation/review-landed.ts": [
       "onReviewLanded"
+    ],
+    "lib/reputation/review-request-delay.ts": [
+      "normalizeReviewRequestDelay",
+      "validateReviewRequestDelay"
+    ],
+    "lib/reputation/review-request-draft.ts": [
+      "draftReviewRequest"
     ],
     "lib/revenue-protection/scorer.ts": [
       "calculateRevenueProtection"
@@ -21168,6 +21236,13 @@
       "getAgentTransactions",
       "archiveTransaction"
     ],
+    "lib/settings/brokerage-settings-columns.ts": [
+      "saveReviewRequestDelayDays",
+      "saveLiveFaceProviderOrder"
+    ],
+    "lib/settings/brokerage-settings-merge.ts": [
+      "mergeBrokerageSettings"
+    ],
     "lib/showings/dispatchers.ts": [
       "dispatchViaShowingTime",
       "dispatchViaSms",
@@ -21229,6 +21304,9 @@
     ],
     "lib/sphere-resonance/run-resonance-scan.ts": [
       "runDailySphereResonanceScan"
+    ],
+    "lib/sphere-resonance/touchpoint-draft.ts": [
+      "draftSphereTouchpoint"
     ],
     "lib/state-forms/field-defs.ts": [
       "resolveSuggestedDefault",
@@ -21438,6 +21516,9 @@
     ],
     "lib/transactions/deal-vendor-targets.ts": [
       "vendorTargets"
+    ],
+    "lib/transactions/dotloop-document-sync.ts": [
+      "syncDotloopLoopDocuments"
     ],
     "lib/transactions/earnest-terms.ts": [
       "isCalendarDate",
@@ -21788,9 +21869,15 @@
       "easeInOut",
       "dipOpacityAt",
       "edgeFadeFrames",
+      "blurSamplesForStreak",
+      "kenBurnsPeakStreakPx",
       "cinemaMotionBlurFor",
+      "cinemaMotionBlurWindows",
+      "cinemaMotionBlurAt",
+      "cinemaCameraStreakPx",
       "cinemaTypeScale",
       "cinemaFrame",
+      "cinemaCaptionStyle",
       "cinemaMusicFades"
     ],
     "lib/video/cma-reel-orchestrator.ts": [
@@ -22063,6 +22150,12 @@
       "narrationMaxTokens",
       "narrationLengthDirective"
     ],
+    "lib/video/stitch-graph.ts": [
+      "parseFfmpegProbe",
+      "stitchCanvasFrom",
+      "buildStitchPlan",
+      "stitchEncodeArgs"
+    ],
     "lib/video/topic-video-runner.ts": [
       "runTopicPoolVideos"
     ],
@@ -22116,6 +22209,12 @@
     ],
     "lib/video/video-identity.ts": [
       "resolveVideoIdentity"
+    ],
+    "lib/video/video-metering.ts": [
+      "videoMeterUnits",
+      "decideVideoMeter",
+      "gateVideoCreation",
+      "meterVideoCreation"
     ],
     "lib/video/video-pipeline-reaper-policy.ts": [
       "classifyStaleVideo"
