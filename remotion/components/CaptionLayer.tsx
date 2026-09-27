@@ -42,6 +42,7 @@ import {
   type CaptionSource,
   type BuildCaptionPlanOptions,
 } from "../../lib/video/caption-plan"
+import { cinemaCaptionStyle } from "../../lib/video/cinema-finish"
 
 const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
 
@@ -51,7 +52,9 @@ export interface CaptionLayerProps {
   /** Raw VO script text — the layer estimates timing from the composition's own
    *  duration when no precomputed cues are supplied. Even-distribution ESTIMATE. */
   script?: CaptionSource
-  /** Vertical position of the caption band (% from top). Default 78 (lower-third). */
+  /** Vertical position of the caption band's TOP (% from top) — an explicit override.
+   *  Absent (the default), the band's BOTTOM sits on the frame's safe-area bottom inset
+   *  (lib/video/cinema-finish.ts cinemaCaptionStyle), above the platform UI. */
   bottomPercent?: number
   /** Accent color for the underline tick. Defaults to a warm amber. */
   accentColor?: string
@@ -117,6 +120,10 @@ function useResolvedCues(props: CaptionLayerProps): CaptionCue[] {
 
 export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
   const frame = useCurrentFrame()
+  const { width, height } = useVideoConfig()
+  // THE CINEMA TYPE SCALE (wave 86, lane 86B): size, padding, stroke, tick and the
+  // band's place all derive from this frame's short side + safe insets — no literal.
+  const cs = cinemaCaptionStyle(width, height)
   const cues = useResolvedCues(props)
   if (cues.length === 0) return null
 
@@ -125,7 +132,7 @@ export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
 
   const cue = cues[idx]
   const accent = props.accentColor ?? "#F59E0B"
-  const topPercent = props.bottomPercent ?? 78
+  const explicitTop = typeof props.bottomPercent === "number" ? props.bottomPercent : null
 
   // Local frame within the active cue's window drives the pop/fade.
   const localFrame = frame - cue.fromFrame
@@ -165,13 +172,13 @@ export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
       <div
         style={{
           position: "absolute",
-          top: `${topPercent}%`,
+          ...(explicitTop !== null ? { top: `${explicitTop}%` } : { bottom: cs.bandBottom }),
           left: 0,
           right: 0,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
-          padding: "0 8%",
+          padding: `0 ${cs.sidePad}px`,
           opacity,
           scale: enterScale,
         }}
@@ -179,8 +186,8 @@ export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
         <div
           style={{
             backgroundColor: "rgba(0,0,0,0.62)",
-            borderRadius: 16,
-            padding: "18px 30px",
+            borderRadius: cs.radius,
+            padding: `${cs.padY}px ${cs.padX}px`,
             maxWidth: "92%",
             textAlign: "center",
           }}
@@ -188,13 +195,13 @@ export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
           <span
             style={{
               color: "#FFFFFF",
-              fontSize: 56,
-              lineHeight: 1.12,
+              fontSize: cs.fontSize,
+              lineHeight: cs.lineHeight,
               fontWeight: 800,
               letterSpacing: -0.5,
               fontFamily: FONT,
               // High-contrast stroke so the text survives over ANY frame muted.
-              WebkitTextStroke: "2px rgba(0,0,0,0.85)",
+              WebkitTextStroke: `${cs.strokePx}px rgba(0,0,0,0.85)`,
               paintOrder: "stroke fill",
               textShadow: "0 3px 14px rgba(0,0,0,0.55)",
             }}
@@ -210,10 +217,10 @@ export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
         </div>
         <div
           style={{
-            marginTop: 12,
-            width: 64,
-            height: 6,
-            borderRadius: 3,
+            marginTop: cs.tickGap,
+            width: cs.tickWidth,
+            height: cs.tickHeight,
+            borderRadius: cs.tickHeight / 2,
             backgroundColor: accent,
           }}
         />

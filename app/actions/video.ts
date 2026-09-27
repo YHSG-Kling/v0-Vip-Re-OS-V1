@@ -48,25 +48,27 @@ import type {
  * below closes that hole because it compares the project's brokerage_id to the
  * caller's for equality, which a NULL can never satisfy.
  *
- * app/api/video/projects/[projectId]/{script,generate,preview,publish} are the
- * SECOND DOOR onto these same functions — they parse HTTP and delegate here.
- * They do not re-implement the gate.
- *
- * ── NOT ORPHANS. DO NOT RETIRE THEM. (wave 14) ──────────────────────────────
- * A route census keeps re-flagging those four as "duplicates whose survivor is
- * app/actions/video.ts", because their headers say "HTTP door onto
- * app/actions/video.ts". A thin door is not a duplicate — it is the merged
- * RESULT of an earlier consolidation, and two things depend on it existing:
- *   · scripts/video-generation-lane-simulator.ts (npm run test:video-generation-lane,
- *     inside `npm run guard`) reads all four files by path and asserts each one
- *     imports from @/app/actions/video, holds no second tenant check, and calls
- *     no kernel command directly. Delete a file and `code(rel)` returns "" —
- *     every assertion about it fails, and so does the guard.
- *   · ../video-action-http.ts states the doors were kept so "any external
- *     consumer sees no change" in status codes. Nothing in this repo can prove
- *     no such consumer exists. UNRESOLVED, and unresolved means leave it.
- * The same holds for app/api/video/projects/route.ts, which
- * scripts/video-project-consolidation-simulator.ts reads by path.
+ * ── TOMBSTONE: THE SECOND HTTP DOORS ARE RETIRED (wave 86, lane 86B, CLAUDE.md §1.1) ──
+ * app/api/video/projects/[projectId]/{script,generate,preview,publish}/route.ts
+ * and their status-code table ../video-action-http.ts were thin session-authed
+ * doors onto the functions below. Wave 14 kept them "so any external consumer
+ * sees no change", UNRESOLVED because nothing in this repo could disprove such a
+ * consumer. It is now resolved by the OWNER (2026-09-27, verbatim: "this platform
+ * os has not yet been pushed in production") — there is no external consumer to
+ * preserve — with lane 85E's evidence beside it (the connected Vercel project
+ * deploys a different repo; 0 runtime log lines in 30 days). Nothing was merged:
+ * each door carried no logic its survivor lacks (it parsed HTTP and translated
+ * this module's verdict into a status code). The survivors, each already the
+ * implementation its door delegated to:
+ *   · POST …/script           → generateVideoScriptAction          (this file)
+ *   · POST/GET …/generate     → submitVideoGenerationJobAction / loadVideoGenerationStateAction (this file)
+ *   · GET  …/preview          → previewVideoProjectAction          (this file)
+ *   · POST …/publish          → distributeVideoProjectAction / repurposeVideoOutputAction (this file)
+ *   · GET/POST /api/video/projects (the list + create door) → app/actions/video/
+ *     create-video-project.ts getVideoProjects / createVideoProject (its tombstone
+ *     is there), which the creator's kernel (lib/kernel/content-creators.ts
+ *     createVideoProject) now METERS against the tier (lib/video/video-metering.ts).
+ * VideoActionDenialCode / VideoActionResult stay: the Video Studio reads `code`.
  */
 
 /** Why a call was refused. Maps to an HTTP status at the route door. */

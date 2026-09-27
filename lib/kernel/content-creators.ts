@@ -1431,7 +1431,8 @@ export async function createPodcastEpisode(input: CreatePodcastEpisodeInput): Pr
 
 /**
  * ai_video_projects_video_type_check, the ONE list in app code (moved here from
- * app/api/video/projects/route.ts, which now imports it). Regenerated source of truth:
+ * app/api/video/projects/route.ts, retired wave 86 — tombstone at app/actions/video.ts).
+ * Regenerated source of truth:
  * scripts/check-vocabularies.ts (never hand-edit that cache).
  */
 export const AI_VIDEO_PROJECT_TYPES = [
@@ -1456,7 +1457,7 @@ interface VideoProjectFields {
   title: string
   /** The spoken script. Optional ONLY in the scriptPending shell lane. */
   script?: string
-  /** The scriptless shell (POST /api/video/projects/[projectId]/script fills it later). */
+  /** The scriptless shell (app/actions/video.ts generateVideoScriptAction fills it later). */
   scriptPending?: boolean
   videoType: string
   avatarId?: string
@@ -1491,6 +1492,8 @@ interface CreatedVideoProjectResult {
   complianceReviewId?: string
   complianceReasons?: string[]
   realismWarnings?: string[]
+  /** What the tier meter said about this creation (within / approaching / overage / unlimited / unchecked). */
+  videoMeter?: { verdict: string; reason: string }
 }
 
 /**
@@ -1532,6 +1535,13 @@ export async function createVideoProject(input: CreateVideoProjectInput): Promis
       }
     }
   }
+
+  // THE VIDEO GATE IS A METER (owner answer 4; lib/video/video-metering.ts): the tier's
+  // video_minutes allowance is COUNTED against, over-allowance is billed as overage, and
+  // the ONE refusal is a tier that explicitly excludes video (allowance 0).
+  const { gateVideoCreation, meterVideoCreation } = await import("@/lib/video/video-metering")
+  const videoMeter = await gateVideoCreation({ brokerageId, plannedSeconds: input.durationSeconds })
+  if (!videoMeter.allowed) return { success: false, error: videoMeter.reason }
 
   // REALISM — advisory, never a hold (§5).
   let realismWarnings: string[] = []
@@ -1628,6 +1638,12 @@ export async function createVideoProject(input: CreateVideoProjectInput): Promis
   if (!one.ok) return { success: false, error: one.error }
   const project = one.row
 
+  // The creation is real — COUNT it (usage_events row + allowance + billing meter).
+  await meterVideoCreation({
+    brokerageId, agentId: agent.agentId, userId, plannedSeconds: input.durationSeconds,
+    feature: "video_project", projectId: String(project.id), autonomous: false, decision: videoMeter,
+  })
+
   const { error: eventError } = await supabase.from("lifecycle_events").insert({
     entity_type: "video_project",
     entity_id: project.id,
@@ -1651,5 +1667,8 @@ export async function createVideoProject(input: CreateVideoProjectInput): Promis
       .catch((e: unknown) => console.error("[content-creators] video brand compliance queue failed:", e))
   }
 
-  return { success: true, project, ...(realismWarnings.length > 0 ? { realismWarnings } : {}) }
+  return {
+    success: true, project, videoMeter: { verdict: videoMeter.verdict, reason: videoMeter.reason },
+    ...(realismWarnings.length > 0 ? { realismWarnings } : {}),
+  }
 }

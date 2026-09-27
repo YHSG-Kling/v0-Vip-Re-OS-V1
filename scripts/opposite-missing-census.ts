@@ -3424,16 +3424,13 @@ const EXTERNALLY_ADDRESSED = /\/(cron|webhooks?|callback|oauth|auth|health|og|rs
  * accused all five of them on every run, which is the accusing direction of
  * §2's "a guard that cannot see the code it judges".
  *
- * This is EXACTLY the video-generation lane and nothing else. The ruling lives
- * at app/actions/video.ts (the "NOT ORPHANS. DO NOT RETIRE THEM." block) and is
- * load-bearing twice over:
- *   · scripts/video-generation-lane-simulator.ts and
- *     scripts/video-project-consolidation-simulator.ts read these five files BY
- *     PATH and assert their shape — deleting one turns those guards red.
- *   · app/api/video/projects/[projectId]/video-action-http.ts records that the
- *     doors were kept so "any external consumer sees no change" in status codes.
- *     Nothing in this repo can prove no such consumer exists — CLAUDE.md §1's
- *     "unresolved means leave it".
+ * It WAS exactly the video-generation lane: five /api/video/projects/** doors
+ * kept by a written ruling because no in-repo evidence could disprove an
+ * external consumer. WAVE 86 (lane 86B): the owner ruled the OS has never been
+ * in production, so the doors were retired onto the server actions they already
+ * delegated to (tombstones at app/actions/video.ts and app/actions/video/
+ * create-video-project.ts); the two simulators that read them by path now
+ * assert their ABSENCE and the survivors' gates instead.
  *
  * NOT A BLANKET. Exact paths only, so a NEW unaddressed route under
  * /api/video/** still lands in 6b (controlled below), and an entry naming a
@@ -3456,11 +3453,14 @@ const QUALIFIED_EXTERNAL_ROUTES = new Map<string, string>([
   //     anonymous ?track=1 SCAN arm keeps its in-tree twins (/api/qr/scan and
   //     app/qr/[slug]/page.tsx) — an out-of-tree scan reporter stays unresolved,
   //     recorded in the route header.
-  ["/api/video/projects",                       "second HTTP door onto app/actions/video/create-video-project.ts; app/actions/video.ts:68 + scripts/video-project-consolidation-simulator.ts"],
-  ["/api/video/projects/[projectId]/script",    "second HTTP door onto app/actions/video.ts:generateVideoScriptAction; app/actions/video.ts:51-69 + scripts/video-generation-lane-simulator.ts"],
-  ["/api/video/projects/[projectId]/generate",  "second HTTP door onto app/actions/video.ts:submitVideoGenerationJobAction/loadVideoGenerationStateAction; same ruling"],
-  ["/api/video/projects/[projectId]/preview",   "second HTTP door onto app/actions/video.ts:previewVideoProjectAction; same ruling"],
-  ["/api/video/projects/[projectId]/publish",   "second HTTP door onto app/actions/video.ts:distributeVideoProjectAction/repurposeVideoOutputAction; same ruling"],
+  // ── The five /api/video/projects/** doors — RETIRED (wave 86, lane 86B, §1.1) ──
+  // The entries that stood here were the video-generation lane's second HTTP
+  // doors, kept UNRESOLVED because an out-of-tree consumer could not be
+  // disproved. The owner resolved it ("this platform os has not yet been pushed
+  // in production") and the doors were deleted onto their survivors — the
+  // server actions they already delegated to. Tombstones: app/actions/video.ts
+  // (script / generate / preview / publish) and app/actions/video/
+  // create-video-project.ts (the list + create door).
   // ── Service-to-service intake (lane G5 2026-08-28) ────────────────────────
   // Not the video lane's shape — this one is a REMOTE INTAKE door. Its handler
   // authorizes on the `x-internal-api-secret` header (INTERNAL_API_SECRET)

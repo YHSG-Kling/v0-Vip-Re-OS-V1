@@ -488,9 +488,11 @@ export type SocialPlatform = (typeof SOCIAL_PLATFORMS)[number]
 // SURVIVORS:
 //   · THE VOCABULARY → the live CHECK above, cached in
 //     scripts/check-vocabularies.ts and regenerated, never hand-edited.
-//   · ITS ENFORCEMENT AT THE EDGE → app/api/video/projects/route.ts:13, which
-//     validates untrusted input against that same seventeen-value list before
-//     the insert so a bad request is a 400 and not a 500.
+//   · ITS ENFORCEMENT → lib/kernel/content-creators.ts createVideoProject, which
+//     validates the video type against AI_VIDEO_PROJECT_TYPES (that same list)
+//     before the insert so a bad request is a refusal and not a 500. (The HTTP
+//     edge that also checked it, app/api/video/projects/route.ts, was retired
+//     in wave 86 — tombstone at app/actions/video.ts.)
 //   · FORMAT/ASPECT (what `instagram_story`, `reel` and `social_snippet` were
 //     really reaching for) → the Director's format selection and
 //     lib/kernel/video-coordination.ts PROMOTABLE_VIDEO_KINDS for what may be

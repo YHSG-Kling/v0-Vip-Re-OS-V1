@@ -32,8 +32,8 @@
  * 2. REACHABILITY. A capability nobody can invoke is not delivered. Each of the
  *    six must be called from a surface that a route actually renders.
  *
- * 3. ONE IMPLEMENTATION. The API routes must delegate to the actions rather
- *    than carry a second copy of the logic and a second copy of the gate.
+ * 3. ONE IMPLEMENTATION. The actions are the ONE door (wave 86 retired the
+ *    four HTTP doors onto them); no route may come back as a second copy.
  *
  * 4. A creds-gated LIVE layer against the database. It verifies columns, the
  *    identity class of agent_id, and the RLS policy shape that makes the app
@@ -45,7 +45,7 @@
  * satisfy an assertion.
  */
 
-import { readFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, readdirSync } from "node:fs"
 import { resolve } from "node:path"
 import { stripComments } from "./strip-comments"
 
@@ -342,44 +342,48 @@ function reachabilityLayer() {
 // ════════════════════════════════════════════════════════════════════════════
 
 function oneImplementationLayer() {
-  console.log("\n[one · the route is a door onto the action, not a second copy]")
+  // WAVE 86 (lane 86B): the four /api/video/projects/[projectId]/* doors and their
+  // status-code table were RETIRED onto these actions (owner: the OS has never been
+  // in production — no external consumer to preserve). The rule this layer holds is
+  // unchanged — ONE implementation, ONE gate — and it now holds with one door.
+  console.log("\n[one · the retired HTTP doors stay retired; the action is the only door]")
 
-  for (const rel of ROUTES) {
-    const route = code(rel)
-    const short = rel.replace("app/api/video/projects/[projectId]/", "")
-
-    check(`${short} calls the server actions`, /from\s*["']@\/app\/actions\/video["']/.test(route))
-
-    // A second copy of the gate would mean a second thing to get wrong.
-    const readsProjects = /\.from\(\s*["']ai_video_projects["']\s*\)/.test(route)
-    const comparesTenant =
-      /[A-Za-z0-9_$.?]+\.brokerage_id\s*(?:!==|!=|===|==)\s*[A-Za-z0-9_$.?]+/.test(route)
-    check(`${short} does not re-implement the tenant check`, !readsProjects && !comparesTenant)
-
-    // Nor a second copy of the command. Reuse the same discovery the gate layer
-    // uses: a non-empty set means this file imports kernel VALUES, not just the
-    // input types, which is the only way it could re-run a command itself.
-    // (Hand-rolling the regex here is how the first version of this check let a
-    // restored `import { distributeVideoProject }` slip past.)
-    const kernelValues = discoverKernelDelegates(route)
-    check(`${short} does not call the kernel directly`, kernelValues.size === 0)
+  for (const rel of [...ROUTES, HTTP_MAP]) {
+    check(`${rel.replace("app/api/video/projects/[projectId]/", "")} is retired (absent)`, !existsSync(resolve(process.cwd(), rel)))
   }
+  // The tombstone names every survivor (§1: every deletion names its survivor). This
+  // reads PROSE on purpose — the tombstone is the thing being checked for.
+  const tomb = src(ACTIONS)
+  check("the tombstone at app/actions/video.ts names the retired doors and each survivor",
+    /TOMBSTONE/.test(tomb) && ["generateVideoScriptAction", "submitVideoGenerationJobAction", "loadVideoGenerationStateAction",
+      "previewVideoProjectAction", "distributeVideoProjectAction", "repurposeVideoOutputAction"].every((n) => tomb.includes(`→ ${n}`) || tomb.includes(`/ ${n}`)))
 
-  // The HTTP contract survived the move: the door still answers 401/403/404.
-  const http = code(HTTP_MAP)
-  check(
-    "the HTTP door still maps a refusal onto the status codes it always answered",
-    /401/.test(http) && /403/.test(http) && /404/.test(http) && /500/.test(http),
-  )
-  check(
-    "every denial the action can produce has an HTTP status",
-    (() => {
-      const actions = code(ACTIONS)
-      const union = actions.match(/VideoActionDenialCode\s*=([\s\S]*?)(?:\n\n|interface|export)/)?.[1] ?? ""
-      const codes = [...union.matchAll(/["']([a-z_]+)["']/g)].map((m) => m[1])
-      return codes.length >= 4 && codes.every((c) => new RegExp(`\\b${c}\\b`).test(http))
-    })(),
-  )
+  // No second door crept back: no route handler under app/api imports the actions.
+  const importsActions = (text: string) => /from\s*["']@\/app\/actions\/video["']/.test(strip(text))
+  check("POSITIVE CONTROL — the finder sees a route importing the actions",
+    importsActions('import { previewVideoProjectAction } from "@/app/actions/video"\nexport async function GET() {}'))
+  check("NEGATIVE CONTROL — an import named only in a comment is not a door",
+    !importsActions('// import { previewVideoProjectAction } from "@/app/actions/video"\nexport async function GET() {}'))
+  const routeFiles: string[] = []
+  const walk = (dir: string) => {
+    for (const e of readdirSync(resolve(process.cwd(), dir), { withFileTypes: true })) {
+      const rel = `${dir}/${e.name}`
+      if (e.isDirectory()) walk(rel)
+      else if (/^route\.tsx?$/.test(e.name)) routeFiles.push(rel)
+    }
+  }
+  walk("app/api")
+  const doors = routeFiles.filter((f) => importsActions(src(f)))
+  check(`no route handler is a second door onto app/actions/video (${routeFiles.length} route files scanned; found: ${doors.join(", ") || "none"})`,
+    routeFiles.length > 50 && doors.length === 0)
+
+  // The action is still the ONE gate: every denial it can produce is a named code
+  // the Studio can branch on (the vocabulary the retired HTTP table used to map).
+  const actions = code(ACTIONS)
+  const union = actions.match(/VideoActionDenialCode\s*=([\s\S]*?)(?:\n\n|interface|export)/)?.[1] ?? ""
+  const codes = [...union.matchAll(/["']([a-z_]+)["']/g)].map((m) => m[1])
+  check("the action's denial vocabulary survives the door (unauthenticated / no_brokerage / forbidden / project_not_found)",
+    ["unauthenticated", "no_brokerage", "forbidden", "project_not_found"].every((c) => codes.includes(c)))
 }
 
 // ════════════════════════════════════════════════════════════════════════════

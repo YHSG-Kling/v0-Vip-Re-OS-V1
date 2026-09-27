@@ -287,7 +287,7 @@ async function main() {
     check("the geocoder is THE survivor (nominatim-geocode geocodeOne) — no second geocoder, no hand-built Census/Nominatim URL here", /import\("@\/lib\/external\/nominatim-geocode"\)\)\.geocodeOne/.test(np) && !/geocoding\.geo\.census\.gov|nominatim\.openstreetmap\.org/.test(np))
     check("only a FOUND point is memoised (a miss or an outage is retried)", /if \(!geocode && p\) officePointMemo\.set\(key, p\)/.test(np))
     const cols = (t: string) => ((SCHEMA_SNAPSHOT as any)[t] ?? []) as string[]
-    check("no lat/long column exists on brokerages or locations — so nothing is cached on the row and no migration was written (m666 unused)", !cols("brokerages").some((c) => /(^|_)(lat|latitude|lng|lon|longitude)$/.test(c)) && !cols("locations").some((c) => /(^|_)(lat|latitude|lng|lon|longitude)$/.test(c)) && ["geo_lat", "latitude"].every((c) => /(^|_)(lat|latitude|lng|lon|longitude)$/.test(c)) && cols("brokerages").includes("address"))
+    check("no lat/long column exists on brokerages or locations — so nothing is cached on the row and no migration was written", !cols("brokerages").some((c) => /(^|_)(lat|latitude|lng|lon|longitude)$/.test(c)) && !cols("locations").some((c) => /(^|_)(lat|latitude|lng|lon|longitude)$/.test(c)) && ["geo_lat", "latitude"].every((c) => /(^|_)(lat|latitude|lng|lon|longitude)$/.test(c)) && cols("brokerages").includes("address"))
   }
 
   console.log("\n[9 · the surface: one card, pick or port]")

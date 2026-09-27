@@ -484,8 +484,9 @@ export function clipCaptionCuesFromFrame(
  * NeighborhoodSpotlightReel, PartnersMeetingReel, PhotoWalkthroughReel,
  * TeammateExplainerReel). Every one of those reels ALSO ends on a branding/CTA
  * tile — brokerage name, the Equal Housing Opportunity mark, a QR code — drawn
- * in the SAME lower-third band `CaptionLayer`'s default `bottomPercent` (78)
- * occupies. A caption cue whose window reaches into that tile draws ON TOP of
+ * in the SAME lower-third band `CaptionLayer` occupies (its default band now
+ * sits on the safe-area bottom inset — lib/video/cinema-finish.ts
+ * cinemaCaptionStyle, wave 86). A caption cue whose window reaches into that tile draws ON TOP of
  * the compliance mark and the QR code — legible burned-in captions over a
  * video's own branding card is not how a real, professionally-edited
  * real-estate video reads; an un-clipped caption track is a tell that nobody

@@ -928,6 +928,13 @@ export interface CommissionOpts {
    * map (tests). The chosen source + WHY are stamped onto video_metadata for audit.
    */
   formatLearning?: boolean | ScoredFormats
+  /**
+   * Wave 86 (lane 86B) — the commission was made by an AUTONOMOUS path (the topic
+   * runner, a manager signal, a cron play) rather than a person. Recorded on the
+   * video meter's usage_events row; the tier meter never blocks it (only a tier
+   * that explicitly excludes video is refused — lib/video/video-metering.ts).
+   */
+  autonomous?: boolean
 }
 
 // Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
@@ -974,6 +981,16 @@ export async function commissionVideo(
   const directorAgentId = await resolveAgentIdInBrokerage(svc, opts.agentUserId, opts.brokerageId)
   if (!directorAgentId) {
     return { ok: false, status: "failed", reason: "no agent profile for this user in this brokerage" }
+  }
+
+  // THE VIDEO GATE IS A METER (wave 86, owner answer 4 — lib/video/video-metering.ts):
+  // refused ONLY when the tier explicitly excludes video (allowance 0), before any
+  // spend; everything else — overage included, autonomous included — is served and
+  // counted when the row lands (below).
+  const { gateVideoCreation, meterVideoCreation } = await import("@/lib/video/video-metering")
+  const videoMeter = await gateVideoCreation({ brokerageId: opts.brokerageId, plannedSeconds: null })
+  if (!videoMeter.allowed) {
+    return { ok: false, status: "blocked", reason: videoMeter.reason, violations: ["video_excluded_by_tier"] }
   }
 
   // BRAND VOICE (§1/§6, wave 60E — survivor lib/ai-isa/brand-voice-prompt.ts:73
@@ -1587,6 +1604,18 @@ export async function commissionVideo(
     return { ok: false, status: "failed", reason: error?.message ?? "insert failed" }
   }
 
+  // COUNT the creation (usage_events + the tier allowance + the billing meter) at
+  // the plan's own length. The MLS cut is a DERIVED cut of the same plan (one
+  // creation, two deliverables), so only the ads cut spends the allowance.
+  if (cut !== "mls") {
+    await meterVideoCreation({
+      brokerageId: opts.brokerageId, agentId: directorAgentId, userId: opts.autonomous ? null : opts.agentUserId,
+      plannedSeconds: visual.plan.durationInFrames / Math.max(1, visual.plan.fps),
+      feature: opts.autonomous ? "video_director_autonomous" : "video_director",
+      projectId: (inserted as { id: string }).id, autonomous: opts.autonomous === true, decision: videoMeter,
+    })
+  }
+
   return {
     ok: true, status: "staged",
     videoProjectId: (inserted as { id: string }).id,
@@ -1753,6 +1782,16 @@ export async function commissionVideoExperiment(
   const directorAgentId = await resolveAgentIdInBrokerage(svc, opts.agentUserId, opts.brokerageId)
   if (!directorAgentId) {
     return { ok: false, status: "failed", reason: "no agent profile for this user in this brokerage" }
+  }
+
+  // THE VIDEO GATE IS A METER (wave 86, owner answer 4 — lib/video/video-metering.ts):
+  // refused ONLY when the tier explicitly excludes video (allowance 0), before any
+  // spend; everything else — overage included, autonomous included — is served and
+  // counted when the row lands (below).
+  const { gateVideoCreation, meterVideoCreation } = await import("@/lib/video/video-metering")
+  const videoMeter = await gateVideoCreation({ brokerageId: opts.brokerageId, plannedSeconds: null })
+  if (!videoMeter.allowed) {
+    return { ok: false, status: "blocked", reason: videoMeter.reason, violations: ["video_excluded_by_tier"] }
   }
 
   // BRAND VOICE — same cascade + reason as commissionVideo above (§1/§6, wave
@@ -2059,6 +2098,15 @@ export async function commissionVideoExperiment(
     staged.push({ videoProjectId: id, variantIndex: v.index, hookAngle: v.angle, hook: hookLine, qrCodeId: qr?.qrCodeId ?? null })
   }
 
+  // ONE creation, N hook variants of it: the experiment spends the allowance once
+  // (the variants are the platform's optimisation, not N videos the tenant asked for).
+  if (staged.length > 0) {
+    await meterVideoCreation({
+      brokerageId: opts.brokerageId, agentId: directorAgentId, userId: opts.autonomous ? null : opts.agentUserId,
+      plannedSeconds: null, feature: "video_director_experiment", projectId: staged[0].videoProjectId,
+      autonomous: opts.autonomous === true, decision: videoMeter,
+    })
+  }
   return { ok: true, status: "staged", experimentId, compositionId: format.compositionId, variants: staged }
 }
 

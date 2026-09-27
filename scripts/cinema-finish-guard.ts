@@ -215,19 +215,25 @@ console.log("\n── §motion-blur · film-camera blur where the camera moves, 
   console.log(`    denominator: ${moving.length} moving compositions → ${blurred.length} blurred (${blurred.join(", ")})`)
   for (const id of moving) console.log(`      ${id}: ${cinemaMotionBlurFor(id).reason}`)
   const person = (id: string) => (COMPOSITION_TREATMENTS[id] ?? []).some((t) => t === "full_avatar" || t === "avatar_pip")
-  const moves = (id: string) => (COMPOSITION_TREATMENTS[id] ?? []).some((t) => t === "property_photos" || t === "broll")
-  check("RULE: blurred ⇔ a moving composition whose picture moves as a camera (Ken Burns photos / b-roll), with no person on screen and a graded (not true-colour) look",
+  // WAVE 86 (lane 86B): b-roll is FOOTAGE — its camera already integrated a shutter —
+  // so only the SYNTHESISED camera move (the Ken Burns photo push) is a blur reason.
+  const moves = (id: string) => (COMPOSITION_TREATMENTS[id] ?? []).some((t) => t === "property_photos")
+  check("RULE: blurred ⇔ a moving composition whose picture is a SYNTHESISED camera move (Ken Burns photos — footage carries its own blur), with no person on screen and a graded (not true-colour) look",
     moving.every((id) => cinemaMotionBlurFor(id).enabled === (moves(id) && !person(id) && cinemaFinishFor(id).look.id !== "true_color")))
   check("at least one camera-move composition is blurred (the finder still finds; PhotoWalkthroughReel is the Ken Burns reel)", blurred.length > 0 && blurred.includes("PhotoWalkthroughReel"))
   check("NO talking head is blurred (every avatar/PiP composition stays crisp)", moving.filter(person).every((id) => !cinemaMotionBlurFor(id).enabled), moving.filter((id) => person(id) && cinemaMotionBlurFor(id).enabled).join(", "))
   check("POSITIVE CONTROL: the talking-head reel is recognised as a person on screen", person("AgentTalkingHeadReel") && !cinemaMotionBlurFor("AgentTalkingHeadReel").enabled)
   check("no still and no screen is blurred (PostcardFront4x6, ProductPromoReel)", !cinemaMotionBlurFor("PostcardFront4x6").enabled && !cinemaMotionBlurFor("ProductPromoReel").enabled)
-  check(`the docs' values: shutterAngle ${CINEMA_MOTION_BLUR.shutterAngle}° (film standard at 24-60 fps), samples ${CINEMA_MOTION_BLUR.samples} (docs 5-10; lowest kept — colour-destructive)`,
-    CINEMA_MOTION_BLUR.shutterAngle === 180 && CINEMA_MOTION_BLUR.samples >= 5 && CINEMA_MOTION_BLUR.samples <= 10 && blurred.every((id) => cinemaMotionBlurFor(id).samples === CINEMA_MOTION_BLUR.samples))
+  // WAVE 86 (lane 86B): the docs' 5-10 is a QUALITY range for arbitrary motion; the
+  // lane measured the Ken Burns push this OS actually draws and 3 samples reach the
+  // 16-sample smear at the fastest push (4 is the ceiling for an unmeasured move).
+  // The per-window count and the benchmark are held by test:video-stitching.
+  check(`the shutter is the film standard (${CINEMA_MOTION_BLUR.shutterAngle}°) and the sample CEILING is the measured one (${CINEMA_MOTION_BLUR.samples}, at most the docs' 10)`,
+    CINEMA_MOTION_BLUR.shutterAngle === 180 && CINEMA_MOTION_BLUR.samples >= 2 && CINEMA_MOTION_BLUR.samples <= 10 && blurred.every((id) => cinemaMotionBlurFor(id).samples === CINEMA_MOTION_BLUR.samples))
   const layer = readStripped("remotion/components/CinemaFinish.tsx")
-  check("the finish layer mounts CameraMotionBlur from @remotion/motion-blur, gated on the rule, around an AbsoluteFill (docs: children absolutely positioned)",
-    /import\s*\{\s*CameraMotionBlur\s*\}\s*from\s*"@remotion\/motion-blur"/.test(layer) && /blur\.enabled\s*\?/.test(layer)
-    && /<CameraMotionBlur shutterAngle=\{blur\.shutterAngle\} samples=\{blur\.samples\}>\s*<AbsoluteFill/.test(layer) && /cinemaMotionBlurFor\(compositionId\)/.test(layer))
+  check("the finish layer mounts CameraMotionBlur from @remotion/motion-blur, gated PER FRAME on the rule's windows, around an AbsoluteFill (docs: children absolutely positioned)",
+    /import\s*\{\s*CameraMotionBlur\s*\}\s*from\s*"@remotion\/motion-blur"/.test(layer) && /blurSamples\s*>\s*0\s*\?/.test(layer)
+    && /<CameraMotionBlur shutterAngle=\{CINEMA_MOTION_BLUR\.shutterAngle\} samples=\{blurSamples\}>\s*<AbsoluteFill/.test(layer) && /cinemaMotionBlurWindows\(compositionId,/.test(layer))
   // WAVE 84A (owner: "chack on motion blur" — a real render, notes lane84A):
   // the grade is applied ONCE to the integrated exposure (film order: shutter,
   // then grade), so the filter wraps CameraMotionBlur and nothing inside the

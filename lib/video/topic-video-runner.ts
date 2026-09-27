@@ -219,7 +219,10 @@ export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Prom
         topic, persona, host, assets,
         content: topicVideoContent(planned.plan.compositionId, object),
       })
-      const r = await commissionCustomVideo(brief, { brokerageId: t.id, agentUserId: agent.user_id, targetChannel: "instagram" }, svc)
+      // autonomous: the tier video meter COUNTS this creation and never blocks it (only a
+      // tier that explicitly excludes video is refused — lib/video/video-metering.ts).
+      const r = await commissionCustomVideo(brief, { brokerageId: t.id, agentUserId: agent.user_id, targetChannel: "instagram", autonomous: true }, svc)
+      if (r.status === "blocked" && (r.violations ?? []).includes("video_excluded_by_tier")) { bump(out, "video_excluded_by_tier"); continue }
       // Wave 84A — the Director read the plan and checked the buckets before it
       // staged (readyVisualPlanForDispatch); its ledger is counted here, blocked or not.
       if (r.assetReadiness) {

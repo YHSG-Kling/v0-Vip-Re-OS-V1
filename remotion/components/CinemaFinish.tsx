@@ -19,9 +19,12 @@
  *      TransitionSeries); lighter where the voice bridges the cut (J/L cut);
  *   3. a head fade IN from and a tail fade OUT to the BRAND colour — never a
  *      hard cut on black;
- *   4. (wave 83B) film-camera MOTION BLUR (@remotion/motion-blur CameraMotionBlur,
- *      180° shutter, 5 samples) on compositions whose picture moves as a camera
- *      (Ken Burns photos, b-roll) — never a talking head, a screen or a still.
+ *   4. (wave 83B; per-SEGMENT since wave 86, lane 86B) film-camera MOTION BLUR
+ *      (@remotion/motion-blur CameraMotionBlur, 180° shutter) ONLY on the frames of
+ *      a segment whose treatment is a synthesised camera move (the Ken Burns photo
+ *      push) with nobody on screen, and only when that push is fast enough to show
+ *      (cinema-finish.ts cinemaMotionBlurWindows — samples by streak). Every other
+ *      frame renders once: never a talking head, a screen, a card, footage or a still.
  *      (A true two-picture crossfade is documented, not built — cinema-finish.ts
  *      § CROSSFADE says why the cut stays a dip.)
  *
@@ -34,7 +37,8 @@ import React from "react"
 import { AbsoluteFill, Easing, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
 import { CameraMotionBlur } from "@remotion/motion-blur"
 import {
-  CINEMA_EASING, cinemaCutPoints, cinemaFinishFor, cinemaMotionBlurFor, dipOpacityAt, edgeFadeFrames, gradeFilter,
+  CINEMA_EASING, CINEMA_MOTION_BLUR, cinemaCutPoints, cinemaFinishFor, cinemaMotionBlurAt,
+  cinemaMotionBlurWindows, dipOpacityAt, edgeFadeFrames, gradeFilter,
 } from "../../lib/video/cinema-finish"
 import { fitBodyVisualPlan, type BodyVisualPlan } from "../../lib/video/body-visual-model"
 
@@ -53,7 +57,7 @@ function brandColor(props: Record<string, unknown>): string {
 
 export const CinemaFinish: React.FC<CinemaFinishProps> = ({ compositionId, inputProps, children }) => {
   const frame = useCurrentFrame()
-  const { fps, durationInFrames } = useVideoConfig()
+  const { fps, durationInFrames, width, height } = useVideoConfig()
   const spec = cinemaFinishFor(compositionId)
   if (!spec.enabled) return <>{children}</>
 
@@ -61,7 +65,10 @@ export const CinemaFinish: React.FC<CinemaFinishProps> = ({ compositionId, input
   const cuts = cinemaCutPoints(compositionId, durationInFrames, plan)
   const edges = edgeFadeFrames(spec, fps, durationInFrames)
   const dip = dipOpacityAt(frame, cuts, spec, fps)
-  const blur = cinemaMotionBlurFor(compositionId)
+  // THE BLUR WINDOWS (wave 86): the staged plan's camera-move segments (or the body
+  // when no plan is staged), each at the fewest samples its measured streak needs.
+  const blurWindows = cinemaMotionBlurWindows(compositionId, durationInFrames, plan, { width, height, fps, props: inputProps })
+  const blurSamples = cinemaMotionBlurAt(frame, blurWindows)
   const head = interpolate(frame, [0, edges.head], [1, 0], {
     extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: Easing.bezier(...CINEMA_EASING.enter),
   })
@@ -85,11 +92,11 @@ export const CinemaFinish: React.FC<CinemaFinishProps> = ({ compositionId, input
           of the blur's cost was the per-sample grade; colours identical
           (static patch 215,45,45 in all three). */}
       <AbsoluteFill style={{ filter }}>
-        {blur.enabled ? (
-          // Camera moves only (cinema-finish.ts cinemaMotionBlurFor — never a talking head or a
-          // screen). The docs require absolutely positioned children: AbsoluteFill is
+        {blurSamples > 0 ? (
+          // Inside a camera-move window only (cinema-finish.ts cinemaMotionBlurWindows).
+          // The docs require absolutely positioned children: AbsoluteFill is
           // (remotion.dev/docs/motion-blur/camera-motion-blur).
-          <CameraMotionBlur shutterAngle={blur.shutterAngle} samples={blur.samples}>
+          <CameraMotionBlur shutterAngle={CINEMA_MOTION_BLUR.shutterAngle} samples={blurSamples}>
             <AbsoluteFill>{children}</AbsoluteFill>
           </CameraMotionBlur>
         ) : (

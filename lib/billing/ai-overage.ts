@@ -28,8 +28,18 @@ import { currentUsagePeriod } from "@/lib/usage/period"
 import { isStripeConfigured } from "@/lib/billing/stripe-subscription-ops"
 
 // One metric vocabulary — declared in the PURE plan-catalog module (client-safe)
-export { AI_OVERAGE_METRIC } from "./plan-catalog"
-import { AI_OVERAGE_METRIC } from "./plan-catalog"
+export { AI_OVERAGE_METRIC, VIDEO_OVERAGE_METRIC, OVERAGE_BILLED_METRICS, type OverageBilledMetric } from "./plan-catalog"
+import { AI_OVERAGE_METRIC, type OverageBilledMetric } from "./plan-catalog"
+
+// VIDEO RIDES THE SAME WRITETHROUGH (wave 86, lane 86B — owner answer 4, the video
+// feature gate: "tier-METERED — count per tier, overage flows to billing; refuse only
+// when a tier explicitly excludes video"). Video creations meter `video_minutes` on
+// the ONE usage canon (lib/video/video-metering.ts → logMediaUsage), and the overage
+// is DERIVED and BILLED by the functions below with `metric` = VIDEO_OVERAGE_METRIC —
+// the same claim-before-Stripe idempotency, the same ledger, never a second biller.
+// The token-named fields (usedTokens, overageTokens, included_tokens …) carry UNITS of
+// the metric being billed: tokens for AI, minutes for video. Approved
+// ai_quota_overrides extend the AI quota only.
 
 // ── PURE: the overage math contract ──────────────────────────────────────────
 
@@ -93,7 +103,12 @@ export type AIOverageStatus =
  * inside the closed period). Every Supabase read destructures error; a refusal
  * is reported as a refusal, never as a zero.
  */
-export async function getAIOverageStatus(brokerageId: string, at: Date = new Date()): Promise<AIOverageStatus> {
+export async function getAIOverageStatus(
+  brokerageId: string,
+  at: Date = new Date(),
+  /** The billed metric (default the AI tokens; VIDEO_OVERAGE_METRIC for video minutes). */
+  metric: OverageBilledMetric = AI_OVERAGE_METRIC,
+): Promise<AIOverageStatus> {
   const { createServiceClient } = await import("@/lib/supabase/service")
   let svc: ReturnType<typeof createServiceClient>
   try {
@@ -118,7 +133,7 @@ export async function getAIOverageStatus(brokerageId: string, at: Date = new Dat
     .from("plan_limits")
     .select("limit_value, overage_allowed, overage_rate_cents_per_1k")
     .eq("plan_tier", planTier)
-    .eq("metric", AI_OVERAGE_METRIC)
+    .eq("metric", metric)
     .maybeSingle()
   if (limitError) return { ok: false, error: `plan_limits read refused: ${limitError.message}` }
   // No limit row = uncapped tier (matches check-cap) — no overage possible.
@@ -128,23 +143,27 @@ export async function getAIOverageStatus(brokerageId: string, at: Date = new Dat
 
   // 3. Approved overrides still effective INSIDE the period being read
   //    (an override extends the included quota; overage starts after both).
-  const { data: overrides, error: overridesError } = await svc
-    .from("ai_quota_overrides")
-    .select("extra_tokens, effective_until")
-    .eq("brokerage_id", brokerageId)
-    .eq("status", "approved")
-  if (overridesError) return { ok: false, error: `ai_quota_overrides read refused: ${overridesError.message}` }
-  const periodStartMs = Date.parse(periodStartIso)
-  const overrideTokens = (overrides ?? [])
-    .filter(r => !r.effective_until || Date.parse(r.effective_until as string) > periodStartMs)
-    .reduce((sum, r) => sum + Number(r.extra_tokens ?? 0), 0)
+  //    AI tokens only — an override is a TOKEN grant; it never extends another metric.
+  let overrideTokens = 0
+  if (metric === AI_OVERAGE_METRIC) {
+    const { data: overrides, error: overridesError } = await svc
+      .from("ai_quota_overrides")
+      .select("extra_tokens, effective_until")
+      .eq("brokerage_id", brokerageId)
+      .eq("status", "approved")
+    if (overridesError) return { ok: false, error: `ai_quota_overrides read refused: ${overridesError.message}` }
+    const periodStartMs = Date.parse(periodStartIso)
+    overrideTokens = (overrides ?? [])
+      .filter(r => !r.effective_until || Date.parse(r.effective_until as string) > periodStartMs)
+      .reduce((sum, r) => sum + Number(r.extra_tokens ?? 0), 0)
+  }
 
   // 4. Usage — the ONE canon. Reader keys on period_start alone (m474).
   const { data: counter, error: counterError } = await svc
     .from("usage_counters")
     .select("value")
     .eq("brokerage_id", brokerageId)
-    .eq("metric", AI_OVERAGE_METRIC)
+    .eq("metric", metric)
     .eq("period_start", periodStartIso)
     .maybeSingle()
   if (counterError) return { ok: false, error: `usage_counters read refused: ${counterError.message}` }
@@ -197,7 +216,8 @@ export type OverageBillingRun =
  * REFUSES LOUDLY when Stripe is not configured — records nothing: a billed
  * marker without a provider result must be unrepresentable.
  */
-export async function runAIOverageBilling(opts?: { now?: Date }): Promise<OverageBillingRun> {
+export async function runAIOverageBilling(opts?: { now?: Date; metric?: OverageBilledMetric }): Promise<OverageBillingRun> {
+  const metric: OverageBilledMetric = opts?.metric ?? AI_OVERAGE_METRIC
   if (!isStripeConfigured()) {
     return { ok: false, error: "REFUSED: STRIPE_SECRET_KEY is not configured — AI overage billing recorded nothing (never mark billed without a provider result)" }
   }
@@ -221,7 +241,7 @@ export async function runAIOverageBilling(opts?: { now?: Date }): Promise<Overag
   const { data: counters, error: countersError } = await svc
     .from("usage_counters")
     .select("brokerage_id, value")
-    .eq("metric", AI_OVERAGE_METRIC)
+    .eq("metric", metric)
     .eq("period_start", periodStartIso)
   if (countersError) {
     return { ok: false, error: `usage_counters read refused: ${countersError.message}` }
@@ -234,7 +254,7 @@ export async function runAIOverageBilling(opts?: { now?: Date }): Promise<Overag
     const brokerageId = row.brokerage_id as string
     if (!brokerageId) continue
 
-    const status = await getAIOverageStatus(brokerageId, prevInstant)
+    const status = await getAIOverageStatus(brokerageId, prevInstant, metric)
     if (!status.ok) { push({ brokerageId, status: "refused", reason: status.error }); continue }
     if (status.overageTokens <= 0) { push({ brokerageId, status: "skipped", reason: "no_overage" }); continue }
     if (!status.overageAllowed) {
@@ -251,7 +271,7 @@ export async function runAIOverageBilling(opts?: { now?: Date }): Promise<Overag
       .select("id, status")
       .eq("brokerage_id", brokerageId)
       .eq("period_start", periodStartIso)
-      .eq("metric", AI_OVERAGE_METRIC)
+      .eq("metric", metric)
       .maybeSingle()
     if (existingError) { push({ brokerageId, status: "refused", reason: `marker read refused: ${existingError.message}` }); continue }
     if (existing?.status === "billed") { push({ brokerageId, status: "skipped", reason: "already_billed" }); continue }
@@ -281,7 +301,7 @@ export async function runAIOverageBilling(opts?: { now?: Date }): Promise<Overag
       .from("ai_overage_invoices")
       .insert({
         brokerage_id: brokerageId,
-        metric: AI_OVERAGE_METRIC,
+        metric,
         period_start: periodStartIso,
         period_end: periodEndIso,
         included_tokens: Math.max(0, status.includedTokens),
@@ -310,7 +330,9 @@ export async function runAIOverageBilling(opts?: { now?: Date }): Promise<Overag
         currency: "usd",
         amount: status.overageAmountCents,
         ...(sub?.stripe_subscription_id ? { subscription: sub.stripe_subscription_id as string } : {}),
-        description: `AI usage overage — ${status.overageTokens.toLocaleString("en-US")} tokens over the included quota (${periodStartIso.slice(0, 10)} billing period)`,
+        description: metric === AI_OVERAGE_METRIC
+          ? `AI usage overage — ${status.overageTokens.toLocaleString("en-US")} tokens over the included quota (${periodStartIso.slice(0, 10)} billing period)`
+          : `Video overage — ${status.overageTokens.toLocaleString("en-US")} video minutes over the included allowance (${periodStartIso.slice(0, 10)} billing period)`,
       })
       invoiceItemId = item.id
     } catch (stripeErr: any) {

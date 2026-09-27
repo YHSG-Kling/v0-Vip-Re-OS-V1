@@ -50,8 +50,8 @@
  *
  *   1. app/actions/video/create-video-project.ts:createVideoProject — the
  *      canonical creator (8 callers, incl. generateVideoFromScript,
- *      link-to-video, repurpose, CMA assembly, the wizard-staging lane and
- *      POST /api/video/projects).
+ *      link-to-video, repurpose, CMA assembly and the wizard-staging lane;
+ *      the POST /api/video/projects door was retired in wave 86).
  *   2. app/api/did/generate-video — the wizard/board render submit. The wizard
  *      does NOT go through createVideoProject: it inserts ai_video_projects
  *      from the browser and posts here, so this is the only common gate on

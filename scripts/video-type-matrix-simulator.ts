@@ -69,6 +69,7 @@
  * CONTROL; every exclusion is PUBLISHED beside the count. PURE — no ffmpeg, no
  * network, no Remotion render, no database.
  */
+import { buildStitchPlan, JOIN_DISSOLVE_SECONDS } from "../lib/video/stitch-graph"
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -669,8 +670,12 @@ function hybridSection() {
   const route = readCode("app/api/cron/listing-promo-hybrid-composite/route.ts")
   const concat = readCode("lib/video/composite-attribution.ts")
   check("the hybrid route stitches through the ONE concat helper (concatIntroOutro), never its own ffmpeg", /concatIntroOutro\(/.test(route) && !/spawn\(/.test(route))
-  check(`concatIntroOutro trims EACH D-ID bookend to MAX_BRAND_BOOKEND_SECONDS (${MAX_BRAND_BOOKEND_SECONDS}s) before the concat`,
-    /trim=duration=\$\{MAX_BRAND_BOOKEND_SECONDS\}/.test(readStripped("lib/video/composite-attribution.ts")) && /MAX_BRAND_BOOKEND_SECONDS/.test(concat))
+  // WAVE 86 (lane 86B): the D-ID hook and CTA are the agent SPEAKING. The brand-sting
+  // cap (MAX_BRAND_BOOKEND_SECONDS) cut them mid-sentence ("Hi, I'm Jane Smith. Just
+  // listed at 1234 Oak…" is ~5 s), so the hybrid stitches them as SPOKEN bookends:
+  // never trimmed, joined by a dissolve on handles (lib/video/stitch-graph.ts).
+  check("the hybrid route stitches its D-ID bookends as SPOKEN (never trimmed) — the brand-sting cap is for stock clips only",
+    /bookendKind:\s*"spoken"/.test(readStripped("app/api/cron/listing-promo-hybrid-composite/route.ts")) && /kind === "spoken" \? null : MAX_BRAND_BOOKEND_SECONDS/.test(readStripped("lib/video/composite-attribution.ts")))
   check("the hybrid route's middle is the rendered JustListedReel (voiceover baked in-frame) and brand comes through resolveReelBrand",
     /resolveReelBrand\(/.test(route))
   // WAVE 78 — the middle is COMPUTED from the promo narration (listing_promo
@@ -679,10 +684,24 @@ function hybridSection() {
   const g = geometryFor("JustListedReel")!
   const planned = planCompositionDuration({ compositionId: "JustListedReel", wordCount: purposeBudgetFor("JustListedReel").idealWords })
   const middle = planned.durationInFrames / g.fps
-  const complete = middle + 2 * MAX_BRAND_BOOKEND_SECONDS
+  // The complete length is the EXECUTED stitch plan over a spoken hook + CTA of the
+  // hybrid scripts' real length (a ~14-word hook ≈ 5.5 s, a 9-word CTA ≈ 3 s), never
+  // a remembered sum: middle + both bookends + one dissolve per join.
+  const spokenProbe = (d: number) => ({ durationSeconds: d, width: 512, height: 512, fps: 25, hasAudio: true, colorMatrix: null })
+  const hyb = buildStitchPlan({
+    canvas: { width: g.width, height: g.height, fps: g.fps },
+    segments: [
+      { inputIndex: 0, role: "intro", probe: spokenProbe(5.5), capSeconds: null },
+      { inputIndex: 1, role: "main", probe: { ...spokenProbe(middle), width: g.width, height: g.height, fps: g.fps }, capSeconds: null },
+      { inputIndex: 2, role: "outro", probe: spokenProbe(3), capSeconds: null },
+    ],
+  })
+  const complete = hyb.ok ? hyb.totalSeconds : NaN
   const rule = PURPOSE_DURATION_RULES.listing_promo
-  check(`hybrid complete video = ${middle}s planned middle (ideal listing_promo script, body ${planned.bodySeconds}s ∈ [${rule.minSeconds}, ${rule.maxSeconds}]) + 2×${MAX_BRAND_BOOKEND_SECONDS}s bookends = ${complete}s, under the ${compositionSeconds(g)}s cap + bookends`,
-    planned.bodySeconds >= rule.minSeconds && planned.bodySeconds <= rule.maxSeconds && complete < compositionSeconds(g) + 2 * MAX_BRAND_BOOKEND_SECONDS && complete > 2 * MAX_BRAND_BOOKEND_SECONDS)
+  check(`hybrid complete video = ${middle}s planned middle (ideal listing_promo script, body ${planned.bodySeconds}s ∈ [${rule.minSeconds}, ${rule.maxSeconds}]) + 5.5 s hook + 3 s CTA + ${hyb.ok ? hyb.joins.length : "?"} dissolves = ${complete}s — the spoken bookends kept WHOLE and still a minority of the film`,
+    hyb.ok && planned.bodySeconds >= rule.minSeconds && planned.bodySeconds <= rule.maxSeconds
+      && hyb.segments[0].programSeconds === 5.5 && !hyb.segments[0].trimmed
+      && Math.abs(complete - (middle + 5.5 + 3 + 2 * JOIN_DISSOLVE_SECONDS)) < 0.01 && (5.5 + 3) < complete / 2)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

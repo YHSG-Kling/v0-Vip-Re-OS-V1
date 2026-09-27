@@ -47,7 +47,10 @@ import { spawn } from "node:child_process"
 import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { buildMusicMixFilterGraph, buildMusicDuckFilterGraph, withMasterLoudness, buildMasterLoudnessStage } from "./music-filter-graph"
+import {
+  buildMusicMixFilterGraph, buildMusicDuckFilterGraph, withMasterLoudness, buildMasterLoudnessStage,
+  buildLoudnessMeasureStage, parseLoudnessMeasurement, masterTrimGainDb,
+} from "./music-filter-graph"
 import { MUSIC_SIDECHAIN_DUCK_SETTINGS } from "@/lib/video/realism-profile"
 
 // Re-exported unchanged so every existing caller of these names (including
@@ -131,6 +134,8 @@ export interface MixBackgroundMusicResult {
   ducked?:      boolean
   /** true when the loudness master stage actually rendered. */
   mastered?:    boolean
+  /** Wave 86: the measured trim that followed the master (dB applied; 0 = landed on target). */
+  masterTrimDb?: number | null
 }
 
 export async function mixBackgroundMusic(
@@ -253,8 +258,16 @@ export async function mixBackgroundMusic(
       if (!mastered) await runMix(constantFilter)
     }
 
-    const outBuf = await fs.readFile(outPath)
-    return { ok: true, outputBuffer: outBuf, ducked, mastered }
+    let outBuf: Buffer = await fs.readFile(outPath)
+    // THE MEASURED TRIM (wave 86): single-pass loudnorm misses a short programme's
+    // target by up to ~1 LU (measured); one read of what it produced, one linear gain.
+    let masterTrimDb: number | null = null
+    if (mastered) {
+      const trimmed = await trimToMasterTarget(outBuf)
+      outBuf = trimmed.buffer
+      masterTrimDb = trimmed.gainDb
+    }
+    return { ok: true, outputBuffer: outBuf, ducked, mastered, masterTrimDb }
   } catch (e) {
     return { ok: false, outputBuffer: input.videoBuffer, error: (e as Error).message }
   } finally {
@@ -291,9 +304,46 @@ export async function masterAudioLoudness(input: { videoBuffer: Buffer }): Promi
       proc.on("error", reject)
       proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(`ffmpeg loudnorm exit ${code}: ${stderr.slice(-512)}`)))
     })
-    return { ok: true, outputBuffer: await fs.readFile(outPath) }
+    // The same measured trim as the music pass (wave 86) — one loudness for every file.
+    return { ok: true, outputBuffer: (await trimToMasterTarget(await fs.readFile(outPath))).buffer }
   } catch (e) {
     return { ok: false, outputBuffer: input.videoBuffer, error: (e as Error).message }
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+/**
+ * THE MEASURED TRIM (wave 86, lane 86B). Reads the mastered file's integrated
+ * loudness + true peak (the EBU R128 meter, ebur128 — audio only, no output), and when
+ * it missed MASTER_LOUDNESS by more than the tolerance applies ONE linear gain
+ * (music-filter-graph.ts masterTrimGainDb — capped by the true-peak ceiling), the
+ * video stream copied untouched. Never throws: a measurement or a gain pass that
+ * fails returns the file it was handed (gainDb null = not measured).
+ */
+async function trimToMasterTarget(videoBuffer: Buffer): Promise<{ buffer: Buffer; gainDb: number | null }> {
+  if (!FFMPEG_BIN || videoBuffer.length === 0) return { buffer: videoBuffer, gainDb: null }
+  const dir = await fs.mkdtemp(join(tmpdir(), "remotion-trim-"))
+  const inPath = join(dir, "in.mp4")
+  const outPath = join(dir, "out.mp4")
+  const run = (args: string[]) => new Promise<string>((resolve, reject) => {
+    const proc = spawn(FFMPEG_BIN as string, args, { stdio: ["ignore", "ignore", "pipe"] })
+    let stderr = ""
+    proc.stderr.on("data", (c) => { stderr += c.toString() })
+    proc.on("error", reject)
+    proc.on("close", (code) => code === 0 ? resolve(stderr) : reject(new Error(`ffmpeg trim exit ${code}: ${stderr.slice(-400)}`)))
+  })
+  try {
+    await fs.writeFile(inPath, videoBuffer)
+    const measured = parseLoudnessMeasurement(await run(["-hide_banner", "-i", inPath, "-vn", "-af", buildLoudnessMeasureStage(), "-f", "null", "-"]))
+    if (!measured) return { buffer: videoBuffer, gainDb: null }
+    const gainDb = masterTrimGainDb(measured)
+    if (gainDb === 0) return { buffer: videoBuffer, gainDb: 0 }
+    await run(["-y", "-i", inPath, "-map", "0:v", "-map", "0:a", "-c:v", "copy", "-af", `volume=${gainDb}dB`, "-c:a", "aac", "-b:a", "192k", "-ar", "48000", outPath])
+    return { buffer: await fs.readFile(outPath), gainDb }
+  } catch (e) {
+    console.warn("[music-mixer] loudness trim skipped:", (e as Error).message)
+    return { buffer: videoBuffer, gainDb: null }
   } finally {
     await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
   }

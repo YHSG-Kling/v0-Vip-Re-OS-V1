@@ -71,12 +71,18 @@ export async function checkUsageCap(params: {
   const planTier = brokerage.plan_tier ?? "solo_agent"
 
   // 2. Limit for (tier, metric)
-  const { data: limitRow } = await supabase
+  const { data: limitRow, error: limitError } = await supabase
     .from("plan_limits")
     .select("limit_value, soft_limit_threshold")
     .eq("plan_tier", planTier)
     .eq("metric", params.metric)
     .maybeSingle()
+
+  // A REFUSED read is not "no limit row" (§3: supabase-js resolves refusals). Still
+  // advisory — allowed, per the ruling above — but it says nobody could check, so a
+  // caller that must tell "unchecked" from "unlimited" (lib/video/video-metering.ts)
+  // can. Same shape as the unreadable-brokerage fallback.
+  if (limitError) return { ...UNLIMITED, error: `plan_limits read refused: ${limitError.message}` }
 
   if (!limitRow) {
     // No limit row = uncapped (defensive — shouldn't happen after seed).
@@ -92,13 +98,17 @@ export async function checkUsageCap(params: {
   // Canonical UTC period — lib/usage/period.ts is the one definition (#190).
   const { periodStartIso } = currentUsagePeriod()
 
-  const { data: counter } = await supabase
+  const { data: counter, error: counterError } = await supabase
     .from("usage_counters")
     .select("value")
     .eq("brokerage_id", params.brokerageId)
     .eq("period_start", periodStartIso)
     .eq("metric", params.metric)
     .maybeSingle()
+  if (counterError) {
+    // The limit is known, the usage is not: allowed (advisory), and SAID.
+    return { allowed: true, used: 0, limit, percent: 0, soft_warning: false, error: `usage_counters read refused: ${counterError.message}` }
+  }
 
   const used = Number(counter?.value ?? 0) + Math.max(0, params.addQuantity ?? 0)
   const percent = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0

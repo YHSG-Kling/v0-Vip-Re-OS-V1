@@ -38,6 +38,7 @@
  *   §slides    no fade envelope can throw inside interpolate() at a short slot.
  *   §safe      the full-frame presenter sits inside the frame's safe area.
  */
+import { buildStitchPlan } from "../lib/video/stitch-graph"
 import { readFileSync, existsSync } from "node:fs"
 import { dirname, join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -206,14 +207,26 @@ console.log("\n── §trust · the clip that will actually play is measured, n
 console.log("\n── §bookends · the music fade-out ends at the file's real end ──")
 {
   const fadeOutEnd = (graph: string) => { const m = /afade=t=out:st=([\d.]+):d=([\d.]+)/.exec(graph); return m ? Number(m[1]) + Number(m[2]) : null }
+  // WAVE 86 (lane 86B): the file's end is the EXECUTED stitch plan (bookends capped,
+  // one dissolve per join on handles) — the coordinator adds concat.introSeconds +
+  // concat.outroSeconds, which the plan reports exactly (mainStart / afterMain).
   for (const recorded of [10, 1.2, null]) {
     const main = 20
-    const applied = main + appliedBookendSeconds(null, recorded) * 2
+    const probeOf = (d: number | null) => ({ durationSeconds: d, width: 1080, height: 1920, fps: 30, hasAudio: true, colorMatrix: null })
+    const plan = buildStitchPlan({
+      canvas: { width: 1080, height: 1920, fps: 30 },
+      segments: [
+        { inputIndex: 0, role: "intro", probe: probeOf(recorded), capSeconds: MAX_BRAND_BOOKEND_SECONDS },
+        { inputIndex: 1, role: "main", probe: probeOf(main), capSeconds: null },
+        { inputIndex: 2, role: "outro", probe: probeOf(recorded), capSeconds: MAX_BRAND_BOOKEND_SECONDS },
+      ],
+    })
+    if (!plan.ok) { check(`bookends recorded ${recorded ?? "unknown"}s → the stitch plans`, false); continue }
+    const applied = main + plan.mainStartSeconds + plan.afterMainSeconds
     const fades = cinemaMusicFades("JustListedReel", 30)
     const graph = buildMusicTrackFilter({ loop: true, volume: 0.12, videoSeconds: applied, ...fades })
-    const realEnd = main + 2 * Math.min(MAX_BRAND_BOOKEND_SECONDS, recorded ?? MAX_BRAND_BOOKEND_SECONDS)
-    check(`bookends recorded ${recorded ?? "unknown"}s → counted ${appliedBookendSeconds(null, recorded)}s each; the fade-out ends at ${fadeOutEnd(graph)}s = the file's end ${realEnd}s`,
-      fadeOutEnd(graph) !== null && Math.abs((fadeOutEnd(graph) as number) - realEnd) < 0.011)
+    check(`bookends recorded ${recorded ?? "unknown"}s → the stitch adds ${plan.mainStartSeconds}s + ${plan.afterMainSeconds}s; the fade-out ends at ${fadeOutEnd(graph)}s = the file's end ${plan.totalSeconds}s`,
+      fadeOutEnd(graph) !== null && Math.abs((fadeOutEnd(graph) as number) - plan.totalSeconds) < 0.011)
   }
   const pre = buildMusicTrackFilter({ loop: true, volume: 0.12, videoSeconds: 20 + 10 + 10, ...cinemaMusicFades("JustListedReel", 30) })
   check(`CONTROL: the pre-85E sum (recorded 10 s stings) faded out at ${fadeOutEnd(pre)}s — ${(fadeOutEnd(pre) as number) - 25}s past a 25 s file (the bed never faded)`,
@@ -221,8 +234,9 @@ console.log("\n── §bookends · the music fade-out ends at the file's real e
   const coord = code("lib/remotion/render-coordinator.ts")
   check("the coordinator counts what the concat APPLIED (concat.introSeconds / outroSeconds, then appliedBookendSeconds)",
     /concat\.introSeconds\s*\?\?\s*appliedBookendSeconds\(/.test(coord) && /concat\.outroSeconds\s*\?\?\s*appliedBookendSeconds\(/.test(coord))
-  check("concatIntroOutro measures each bookend it stitched and reports the trimmed length",
-    /introSeconds:\s*introPath\s*\?\s*appliedBookendSeconds\(introProbe\)/.test(code("lib/video/composite-attribution.ts")))
+  check("concatIntroOutro reports the EXACT output offsets its plan stitched (main start, after-main)",
+    /introSeconds:\s*introPath\s*\?\s*plan\.mainStartSeconds/.test(code("lib/video/composite-attribution.ts"))
+      && /outroSeconds:\s*outroPath\s*\?\s*plan\.afterMainSeconds/.test(code("lib/video/composite-attribution.ts")))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

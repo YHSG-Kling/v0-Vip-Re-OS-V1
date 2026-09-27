@@ -57,6 +57,8 @@
  * a companion to scripts/avatar-loop-simulator.ts (which proves the D-ID →
  * Remotion input_props handoff with a live-DB layer) and does not repeat it.
  */
+import { buildStitchPlan } from "../lib/video/stitch-graph"
+import { MAX_BRAND_BOOKEND_SECONDS } from "../lib/video/realism-profile"
 import { readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -1064,24 +1066,34 @@ function advancedRealismSection() {
     // Lane 85E: it also imports appliedBookendSeconds (the trimmed length it
     // reports back) — the rule is that the cap comes from the realism home.
     /import \{[^}]*\bMAX_BRAND_BOOKEND_SECONDS\b[^}]*\} from "@\/lib\/video\/realism-profile"/.test(attribution))
-  check("only bookend inputs (intro/outro) are trimmed — the mainIdx is excluded from bookendIdx",
-    /bookendIdx = new Set\(inputs\.map\(\(_, i\) => i\)\.filter\(\(i\) => i !== mainIdx\)\)/.test(attribution))
-  check("both the video AND audio filter chains apply the trim for a bookend segment (a video-only trim would desync audio on concat)",
-    /vTrim = isBookend \? `trim=duration=\$\{MAX_BRAND_BOOKEND_SECONDS\}/.test(attribution) &&
-    /aTrim = isBookend \? `atrim=duration=\$\{MAX_BRAND_BOOKEND_SECONDS\}/.test(attribution))
-  check("the trim is conditional on isBookend — a clip that is NOT a bookend (the main video) gets an empty trim string, never truncated",
-    /const vTrim = isBookend \? `trim=duration=\$\{MAX_BRAND_BOOKEND_SECONDS\},setpts=PTS-STARTPTS,` : ""/.test(attribution))
-
-  // CONTROL: the historical shape (no isBookend distinction at all — every
-  // input scaled/padded identically with no trim) is correctly recognised as
-  // lacking the cap.
-  const noTrimSnippet = `
-    inputs.forEach((_, i) => {
-      normalised.push(\`[\${i}:v]scale=\${W}:\${H}:force_original_aspect_ratio=decrease,pad=\${W}:\${H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v\${i}]\`)
-    })
-  `
+  // WAVE 86 (lane 86B): the graph moved to the PURE half lib/video/stitch-graph.ts
+  // (buildStitchPlan) and each join became a dissolve on handles. The RULE this
+  // block holds is unchanged — a brand bookend is capped, the main never is, and
+  // picture and sound are cut to the SAME length (a video-only trim desyncs) — so
+  // it is asserted by EXECUTING the plan, not by the old variable spellings.
+  const probeOf = (d: number | null, audio = true) => ({ durationSeconds: d, width: 1080, height: 1920, fps: 30, hasAudio: audio, colorMatrix: null })
+  const capped = buildStitchPlan({
+    canvas: { width: 1080, height: 1920, fps: 30 },
+    segments: [
+      { inputIndex: 0, role: "intro", probe: probeOf(10), capSeconds: MAX_BRAND_BOOKEND_SECONDS },
+      { inputIndex: 1, role: "main", probe: probeOf(30), capSeconds: null },
+      { inputIndex: 2, role: "outro", probe: probeOf(8), capSeconds: MAX_BRAND_BOOKEND_SECONDS },
+    ],
+  })
+  check("concatIntroOutro plans through the pure stitch graph and caps only BRAND bookends (never the main, never a spoken bookend)",
+    /buildStitchPlan\(/.test(attribution) && /capSeconds:\s*f\.role === "main" \|\| kind === "spoken" \? null : MAX_BRAND_BOOKEND_SECONDS/.test(attribution))
+  check("only bookend segments are trimmed — the main keeps its whole length",
+    capped.ok && capped.segments[0].trimmed && capped.segments[2].trimmed && !capped.segments[1].trimmed
+      && capped.segments[1].programSeconds === 30 && capped.segments[0].programSeconds === MAX_BRAND_BOOKEND_SECONDS)
+  check("both the video AND audio chains of a trimmed bookend are cut to the SAME length (a video-only trim would desync the joins)",
+    // picture: head + programme + tail in one cut; sound: the programme, then the same handles.
+    capped.ok && new RegExp(`\\[vf0\\]tpad=[^,]*,trim=duration=${capped.segments[0].programSeconds + capped.segments[0].tailHandleSeconds},`).test(capped.filter)
+      && capped.filter.includes(`apad,atrim=duration=${MAX_BRAND_BOOKEND_SECONDS},`) && capped.filter.includes(`apad=pad_dur=${capped.segments[0].tailHandleSeconds}[a0]`))
+  // CONTROL: the historical concat shape (no per-segment exact length) is recognised as uncapped.
+  const noTrimSnippet = "[0:v]scale=1080:1920,setsar=1,fps=30,format=yuv420p[v0];[0:a]aresample=async=1[a0];[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]"
   check("CONTROL: a concat filter graph with no bookend trim is correctly recognised as uncapped",
-    !/isBookend/.test(noTrimSnippet))
+    !/trim=duration=/.test(noTrimSnippet))
+
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

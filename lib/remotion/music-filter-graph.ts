@@ -184,6 +184,57 @@ export const MASTER_LOUDNESS = {
   sampleRate: 48000,
 } as const
 
+// ── THE MEASURED TRIM (wave 86, lane 86B) ────────────────────────────────────
+// The single-pass (dynamic) loudnorm above does not land ON the target for a
+// short programme — loudnorm's own author: "output integrated loudness may be off
+// by a small amount if integration time is not sufficient. For precise integrated
+// loudness, always use dual-pass mode" (k.ylo.ph/2016/04/04/loudnorm). Measured on
+// the lane's real stitched films (EBU R128 ebur128 meter): -12.9, -14.7 and -14.7
+// LUFS against a -14 target. So the master is followed by ONE measurement of the
+// file it produced and, when it missed by more than MASTER_TRIM_TOLERANCE_LU, ONE
+// linear gain — never above what keeps the true peak under the ceiling. (A full
+// two-pass loudnorm would re-run the whole mix graph; the trim re-reads the audio
+// only.) PURE halves here; music-mixer.ts runs them.
+
+/** A master that lands within this of the target is left alone (LU). */
+export const MASTER_TRIM_TOLERANCE_LU = 0.5
+/** Headroom kept under the true-peak ceiling when trimming UP (dB). */
+const TRIM_TP_MARGIN_DB = 0.1
+
+/**
+ * The measuring pass: the EBU R128 meter itself (ebur128, true peak on). Measured
+ * with the same meter a platform — and the lane's proof — reads, not loudnorm's own
+ * analysis (which read the lane's film 0.8 LU away from the meter). PURE.
+ */
+export function buildLoudnessMeasureStage(): string {
+  return "ebur128=peak=true:framelog=quiet"
+}
+
+/** Parse the ebur128 Summary: integrated loudness (I, LUFS) + true peak (Peak, dBFS). PURE. */
+export function parseLoudnessMeasurement(stderr: string): { integratedLufs: number; truePeakDbtp: number } | null {
+  const at = stderr.lastIndexOf("Summary:")
+  if (at < 0) return null
+  const tail = stderr.slice(at)
+  const i = Number(/\bI:\s*(-?[\d.]+|-inf) LUFS/.exec(tail)?.[1] ?? NaN)
+  const tp = Number(/\bPeak:\s*(-?[\d.]+|-inf) dBFS/.exec(tail)?.[1] ?? NaN)
+  return Number.isFinite(i) && Number.isFinite(tp) ? { integratedLufs: i, truePeakDbtp: tp } : null
+}
+
+/**
+ * The linear gain (dB) that moves a measured master onto the target: 0 inside the
+ * tolerance (or for silence), and never more than keeps the true peak at least
+ * TRIM_TP_MARGIN_DB under MASTER_LOUDNESS.truePeakDbtp. PURE.
+ */
+export function masterTrimGainDb(measured: { integratedLufs: number; truePeakDbtp: number }): number {
+  const m = MASTER_LOUDNESS
+  if (!Number.isFinite(measured.integratedLufs) || measured.integratedLufs < -60) return 0 // silence / no programme
+  let gain = m.integratedLufs - measured.integratedLufs
+  if (Math.abs(gain) <= MASTER_TRIM_TOLERANCE_LU) return 0
+  const peakRoom = m.truePeakDbtp - TRIM_TP_MARGIN_DB - measured.truePeakDbtp
+  if (gain > peakRoom) gain = Math.max(0, peakRoom)
+  return Number(gain.toFixed(1))
+}
+
 /** The master stage alone: `<in>loudnorm=I=-14:TP=-1:LRA=11,aresample=48000<out>`. PURE. */
 export function buildMasterLoudnessStage(inputLabel = "[premaster]", outputLabel = "[aout]"): string {
   const m = MASTER_LOUDNESS

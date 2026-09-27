@@ -46,6 +46,12 @@
 // coupons -> here), and importing the reader would drag the service client
 // into a client bundle (caught by the client-server-only guard).
 export const AI_OVERAGE_METRIC = "ai_tokens_monthly" as const
+/** Video creations meter this metric (lib/video/video-metering.ts); its overage bills
+ *  through the SAME writethrough as the AI tokens (lib/billing/ai-overage.ts, m666). */
+export const VIDEO_OVERAGE_METRIC = "video_minutes" as const
+/** Every metric whose overage the period-close writethrough bills (m479 AI + m666 video). */
+export const OVERAGE_BILLED_METRICS = [AI_OVERAGE_METRIC, VIDEO_OVERAGE_METRIC] as const
+export type OverageBilledMetric = (typeof OVERAGE_BILLED_METRICS)[number]
 
 export const CANONICAL_TIERS = ["solo_agent", "team", "brokerage", "multi_location"] as const
 export type CanonicalTierName = (typeof CANONICAL_TIERS)[number]

@@ -11,7 +11,7 @@
     "fetch-no-route": 0,
     "route-no-caller": 0,
     "route-external-caller": 14,
-    "route-unresolved-door": 5
+    "route-unresolved-door": 0
   },
   "keys": {
     "col-write-no-read": [],
@@ -41,12 +41,6 @@
       "/api/voice/twilio/intelligence",
       "/api/workflow/trigger"
     ],
-    "route-unresolved-door": [
-      "/api/video/projects",
-      "/api/video/projects/[projectId]/generate",
-      "/api/video/projects/[projectId]/preview",
-      "/api/video/projects/[projectId]/publish",
-      "/api/video/projects/[projectId]/script"
-    ]
+    "route-unresolved-door": []
   }
 }

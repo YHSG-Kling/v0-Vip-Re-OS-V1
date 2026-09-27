@@ -18,9 +18,9 @@
  * MEASURED AT GENERATION: 440 tables, 778 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-26
+ * generated: 2026-09-27
  * source: public.live_check_constraints_json()
- * body-sha256: c354b93394cc8ef77e6ba53e3491ba5af5718bed597216d8c575b0cf6a8d78b7
+ * body-sha256: 5c0064f4ae446af35e39cb3a21e7f1368ab4a3bc507dec1ba02d5a600ff3372e
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -218,7 +218,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     suggested_tone: ["informational", "professional", "urgent", "warm"],
   },
   ai_overage_invoices: {
-    metric: ["ai_tokens_monthly"],
+    metric: ["ai_tokens_monthly", "video_minutes"],
     status: ["billed", "pending"],
   },
   ai_quota_overrides: {

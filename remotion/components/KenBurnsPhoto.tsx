@@ -50,17 +50,21 @@ export const KenBurnsPhoto: React.FC<{
     extrapolateRight: "clamp",
   })
 
-  // Cross-fade: fade IN over the leading edge, fade OUT over the trailing
-  // cross-fade window so the next clip (which has already mounted underneath)
-  // shows through. The final clip has crossfadeFrames === 0 → no trailing fade.
-  const fadeIn = Math.min(dur, clip.crossfadeFrames > 0 ? clip.crossfadeFrames : 10)
-  const fadeOutStart = dur - clip.crossfadeFrames
-  const opacity = interpolate(
-    frame,
-    [0, fadeIn, Math.max(fadeIn, fadeOutStart), dur],
-    [0, 1, 1, clip.crossfadeFrames > 0 ? 0 : 1],
-    { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
-  )
+  // A TRUE CROSS-DISSOLVE (wave 86, lane 86B — found by a REAL render of
+  // PhotoWalkthroughReel). The incoming photo is mounted LATER, so it paints on
+  // top: it fades IN over the outgoing photo, which stays fully opaque beneath.
+  // The old envelope `[0, fadeIn, max(fadeIn, dur − crossfade), dur]` had two
+  // defects: (1) it ALSO faded the outgoing photo out, so mid-dissolve both were
+  // half transparent and the dark stage showed through — a dip toward black at
+  // every photo change; (2) on the LAST clip (crossfadeFrames 0) the range was
+  // `[0, 10, dur, dur]`, which `interpolate` refuses ("inputRange must be strictly
+  // monotonically increasing … [0,10,36,36]") — the whole render failed on the
+  // last photo of every tour. The FIRST photo no longer fades up from the dark
+  // stage either: the cover → tour cut is carried by CinemaFinish's dip.
+  const fadeIn = Math.max(1, Math.min(clip.crossfadeFrames > 0 ? clip.crossfadeFrames : 10, dur - 1))
+  const opacity = clip.fromFrame === 0 || dur <= 1
+    ? 1
+    : interpolate(frame, [0, fadeIn], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
 
   // Caption fades in just after the photo lands.
   const captionOpacity = interpolate(frame, [Math.min(fadeIn, 8), Math.min(fadeIn, 8) + 12], [0, 1], {

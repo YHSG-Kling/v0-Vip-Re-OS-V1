@@ -35,7 +35,7 @@ import { NextResponse, type NextRequest } from "next/server"
 // lib/remotion/media-host.ts#hostRenderedMedia — Supabase `video-assets`.
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { createServiceClient } from "@/lib/supabase/service"
-import { concatIntroOutro } from "@/lib/video/composite-attribution"
+import { concatIntroOutro, probeRemoteVideoDurationSeconds } from "@/lib/video/composite-attribution"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 
@@ -113,17 +113,35 @@ export async function GET(req: NextRequest) {
       if (!mainResp.ok) throw new Error(`fetch middle failed: ${mainResp.status}`)
       const mainBuf = Buffer.from(await mainResp.arrayBuffer())
 
-      // Stitch via the canonical ffmpeg helper.
+      // Stitch via the canonical ffmpeg helper. The D-ID hook and CTA are the
+      // agent SPEAKING — "spoken" bookends are never trimmed (lane 86B: the
+      // brand-sting cap cut "Hi, I'm Jane Smith. Just listed at 1234 Oak…" to
+      // 2.5 s, mid-sentence), and each join is a dissolve on handles.
       const stitch = await concatIntroOutro({
         mainVideoBuffer: mainBuf,
         introVideoUrl:   introProj.video_url,
         outroVideoUrl:   outroProj.video_url,
+        bookendKind:     "spoken",
       })
+      // THE BED RUNS UNDER THE JOINS (lane 86B): render-just-listed defers the
+      // hybrid middle's music (musicAfterStitch) so ONE bed is mixed here over
+      // the whole stitched film — continuous across both dissolves, ducked
+      // under the agent's voice and the narration, then mastered. A skipped
+      // stitch still gets the bed it was promised (over the middle alone).
+      const deferredMusic = meta.hybrid_music_deferred === true
+      const finished = deferredMusic
+        ? await finishHybridSound(svc, p, stitch.overlayApplied ? stitch.outputBuffer : mainBuf, stitch.overlayApplied ? (stitch.totalSeconds ?? null) : null)
+        : { buffer: stitch.overlayApplied ? stitch.outputBuffer : mainBuf, note: "music already in the middle" }
       if (!stitch.overlayApplied) {
-        // ffmpeg missing or no bookends — keep the Remotion middle as final.
+        // ffmpeg missing or no bookends — keep the Remotion middle as final
+        // (re-hosted only when the deferred bed was just mixed onto it).
+        const middleUrl = deferredMusic && finished.buffer !== mainBuf
+          ? await hostRenderedMedia(svc, `listing-promo/hybrid/${p.id}-middle.mp4`, finished.buffer, "video/mp4")
+          : null
         await svc.from("ai_video_projects").update({
           status: "completed",
-          video_metadata: { ...meta, hybrid_pending: false, hybrid_composited_at: new Date().toISOString(), hybrid_skip_reason: stitch.skippedReason ?? "no_overlay" },
+          ...(middleUrl ? { video_url: middleUrl } : {}),
+          video_metadata: { ...meta, hybrid_pending: false, hybrid_composited_at: new Date().toISOString(), hybrid_skip_reason: stitch.skippedReason ?? "no_overlay", hybrid_sound: finished.note },
         }).eq("id", p.id)
         results.push({ id: p.id, outcome: "completed_no_hybrid", reason: stitch.skippedReason })
         continue
@@ -133,14 +151,18 @@ export async function GET(req: NextRequest) {
       const hybridUrl = await hostRenderedMedia(
         svc,
         `listing-promo/hybrid/${p.id}.mp4`,
-        stitch.outputBuffer,
+        finished.buffer,
         "video/mp4",
       )
 
       await svc.from("ai_video_projects").update({
         status:    "completed",
         video_url: hybridUrl,
-        video_metadata: { ...meta, hybrid_pending: false, hybrid_composited_at: new Date().toISOString(), hybrid_url: hybridUrl },
+        video_metadata: {
+          ...meta, hybrid_pending: false, hybrid_composited_at: new Date().toISOString(), hybrid_url: hybridUrl,
+          // What the stitch actually did (the dissolve offsets) and what the sound pass landed.
+          hybrid_joins: stitch.joins ?? null, hybrid_sound: finished.note,
+        },
       }).eq("id", p.id)
 
       // Move the listing_promo_videos ledger to 'rendering' so the
@@ -240,6 +262,54 @@ export async function GET(req: NextRequest) {
     processed: results.length,
     results,
   })
+}
+
+/**
+ * The deferred music bed + master over the stitched hybrid (lane 86B). Composed
+ * from the SAME survivors the render coordinator's finish uses — the one stock
+ * picker (lib/remotion/stock-pick.ts, the brokerage scope and "upbeat" mood the
+ * middle's render row carries) and the one mixer (lib/remotion/music-mixer.ts:
+ * sidechain duck under the speech on [0:a], -14 LUFS / -1 dBTP master). No bed
+ * in the library → the voice track is still mastered, so the finished file
+ * leaves at the same loudness either way. Never throws: a failed pass returns
+ * the bytes it was handed and says why.
+ */
+async function finishHybridSound(
+  svc: ReturnType<typeof createServiceClient>,
+  p: ProjectRow,
+  videoBuffer: Buffer,
+  /** The stitched film's exact length; null (a skipped stitch) → measured from the middle's URL. */
+  videoSeconds: number | null,
+): Promise<{ buffer: Buffer; note: string }> {
+  try {
+    const [{ pickStockAsset }, { mixBackgroundMusic, masterAudioLoudness }, { MUSIC_DUCK_VOLUME_PCT }] = await Promise.all([
+      import("@/lib/remotion/stock-pick"), import("@/lib/remotion/music-mixer"), import("@/lib/video/realism-profile"),
+    ])
+    const bed = await pickStockAsset(svc, { brokerageId: p.brokerage_id, scopeType: "brokerage", scopeId: p.brokerage_id }, "music", "upbeat")
+    if (bed?.video_url) {
+      const mixed = await mixBackgroundMusic({
+        videoBuffer,
+        musicUrl:        bed.video_url,
+        musicVolumePct:  bed.music_volume_pct ?? MUSIC_DUCK_VOLUME_PCT,
+        loop:            bed.music_loop ?? true,
+        // The fade-out lands on the film's real end (the stitch's exact total, or the
+        // middle measured); an unmeasurable length fades in only, never out against a guess.
+        videoSeconds:    videoSeconds ?? (p.video_url ? await probeRemoteVideoDurationSeconds(p.video_url) : null),
+        duckToNarration: true,
+        master:          true,
+      })
+      if (mixed.ok && mixed.outputBuffer.length > 0) {
+        return { buffer: mixed.outputBuffer, note: `bed ${bed.id} ${mixed.ducked ? "ducked" : "constant"}${mixed.mastered ? " + mastered" : ""}` }
+      }
+      console.warn("[listing-promo-hybrid-composite] deferred bed did not mix:", mixed.skippedReason ?? mixed.error)
+    }
+    const mastered = await masterAudioLoudness({ videoBuffer })
+    if (mastered.ok && mastered.outputBuffer.length > 0) return { buffer: mastered.outputBuffer, note: bed ? "bed failed; voice mastered" : "no bed in library; voice mastered" }
+    return { buffer: videoBuffer, note: `unmastered: ${mastered.skippedReason ?? mastered.error ?? "unknown"}` }
+  } catch (e) {
+    console.warn("[listing-promo-hybrid-composite] sound pass failed; shipping the stitch as-is:", (e as Error).message)
+    return { buffer: videoBuffer, note: `sound pass failed: ${(e as Error).message}` }
+  }
 }
 
 async function findProjectByProviderJob(

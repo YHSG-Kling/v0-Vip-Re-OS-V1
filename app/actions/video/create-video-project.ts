@@ -93,7 +93,7 @@ export interface CreateVideoProjectParams {
   /**
    * THE SHELL LANE, moved here from lib/kernel/video.ts:createVideoProject.
    * That path created a project with a title and a brief and NO script, at
-   * status 'setup', for POST /api/video/projects/[projectId]/script to fill in
+   * status 'setup', for app/actions/video.ts generateVideoScriptAction to fill in
    * later (it reads video_metadata.description as the brief). Collapsing the
    * kernel creator into this one would have lost that lane, so it is explicit
    * here rather than inferred from an empty script — a caller that meant to
@@ -335,6 +335,15 @@ Return only the improved script text, no explanations.`)
 }
 
 // ─── CREATE VIDEO PROJECT ────────────────────────────────────────────────────
+//
+// TOMBSTONE (wave 86, lane 86B, CLAUDE.md §1.1): app/api/video/projects/route.ts
+// was a second, session-authed HTTP door onto THIS file — POST created through
+// createVideoProject below (its body-brokerageId 403, videoType/sourceType
+// checks and the scriptless shell all already live here or in the kernel creator
+// lib/kernel/content-creators.ts createVideoProject), GET listed the caller's
+// projects (getVideoProjects below). Retired on the owner's ruling that the OS
+// is not yet in production — no external consumer to preserve. Survivors:
+// createVideoProject and getVideoProjects in this file.
 
 export async function createVideoProject(params: CreateVideoProjectParams): Promise<{
   success: boolean

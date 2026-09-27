@@ -91,6 +91,7 @@ import { usdOrEmpty } from "@/lib/format/money"
 import path from "node:path"
 import fs from "node:fs/promises"
 import { tmpdir } from "node:os"
+import { DELIVERY_RENDER_OPTIONS } from "@/lib/video/cinema-finish"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -277,6 +278,9 @@ export async function POST(req: NextRequest) {
       script,
       voiceoverAlignment,
       voiceoverDurationSeconds,
+      // The hybrid's ONE music bed is mixed after the D-ID stitch, so it runs
+      // under both joins (lane 86B; listing-promo-hybrid-composite finishHybridSound).
+      musicAfterStitch: hybrid,
     })
     const reelUrl = reel.url
 
@@ -397,6 +401,8 @@ export async function POST(req: NextRequest) {
           hybrid_intro_job_id: introResult.messageId ?? null,
           hybrid_outro_job_id: outroResult.messageId ?? null,
           hybrid_pending:      true,
+          // The composite cron mixes the bed over the stitched film (lane 86B).
+          hybrid_music_deferred: true,
         },
       }).eq("id", projectId)
     }
@@ -759,6 +765,9 @@ async function renderRemotionReel(args: {
   /** The synthesized narration's MEASURED length (from the alignment); null →
    *  the fitted script's word count at the composition's pace sizes the reel. */
   voiceoverDurationSeconds: number | null
+  /** Hybrid: leave the music bed to the composite cron, which mixes ONE bed over
+   *  the stitched film so it runs continuously under the D-ID joins (lane 86B). */
+  musicAfterStitch?: boolean
 }): Promise<{ url: string; compositionId: string; durationSeconds: number; fellBack: boolean; fallbackReason: string | null }> {
   // Bundle Remotion compositions once per cold start. The bundler reads
   // remotion/index.ts which registers RemotionRoot.
@@ -849,7 +858,8 @@ async function renderRemotionReel(args: {
   await renderMedia({
     composition,
     serveUrl: bundleLocation,
-    codec:    "h264",
+    // ONE delivery spec (lib/video/cinema-finish.ts § DELIVERY SPEC).
+    ...DELIVERY_RENDER_OPTIONS,
     outputLocation: outPath,
     inputProps,
     concurrency: 1,
@@ -928,6 +938,7 @@ async function renderRemotionReel(args: {
         input_props: { music_mood: "upbeat" },
       } as Parameters<typeof buildRenderIntent>[0], "brokerage")
       intent.applyBookends = false // hybrid D-ID bookends stitch later — never double
+      if (args.musicAfterStitch) intent.applyMusic = false // the bed goes on AFTER the stitch — never under the middle alone
       const fin = await finalizeCoordinatedRender(intent, rq.renderId, bytes)
       if (fin.ok && fin.outputUrl) {
         finishedUrl = fin.outputUrl

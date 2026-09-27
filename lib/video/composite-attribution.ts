@@ -35,7 +35,11 @@ import path from "node:path"
 import sharp from "sharp"
 import ffmpegPath from "ffmpeg-static"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
-import { MAX_BRAND_BOOKEND_SECONDS, appliedBookendSeconds } from "@/lib/video/realism-profile"
+import { MAX_BRAND_BOOKEND_SECONDS } from "@/lib/video/realism-profile"
+import {
+  buildStitchPlan, parseFfmpegProbe, stitchCanvasFrom, stitchEncodeArgs,
+  type BookendKind, type MediaProbe, type StitchJoin, type StitchRole,
+} from "@/lib/video/stitch-graph"
 
 export interface VideoAttributionBrand {
   brokerageName?: string | null
@@ -313,36 +317,70 @@ async function runFfmpeg(args: string[]): Promise<void> {
 // (video_assets). The result is one seamless video the agent can post to
 // any channel.
 //
-// Implementation uses ffmpeg's concat filter with normalisation:
-//   1. Each input is scaled+padded to the main video's exact resolution
-//      so a 720p drone clip doesn't break a 1080p main render.
-//   2. Audio tracks are normalised to AAC stereo so concat doesn't drop
-//      any segment that lacks an audio track.
-//   3. concat=n=N:v=1:a=1 stitches them in order.
+// THE STITCH (wave 86, lane 86B — owner: "professionally completed especially
+// when stiching the full video together without any hiccups"). The graph is
+// built by the PURE half, lib/video/stitch-graph.ts buildStitchPlan (proven by
+// scripts/video-stitching-simulator.ts and a real render); this half probes the
+// files, runs it and reports what it applied:
+//   1. every segment is CONFORMED to the main render: its frame size (a
+//      different shape gets a blurred cover fill, never bars), SAR 1, its fps
+//      (probed — no literal 30), yuv420p, BT.709; audio 48 kHz stereo fltp;
+//   2. a segment with NO audio stream gets an in-graph silent track of its
+//      exact length — the old `[i:a]` on a silent sting failed the WHOLE stitch;
+//   3. each segment is cut to an EXACT length (picture and sound the same
+//      number), so a join can never drift;
+//   4. every join is a 0.4 s DISSOLVE taken from held-frame + silence HANDLES —
+//      no programme frame and no syllable is consumed or faded;
+//   5. a brand sting is capped at MAX_BRAND_BOOKEND_SECONDS with its trimmed
+//      sound faded (no click); a SPOKEN bookend (bookendKind "spoken" — the
+//      listing-promo hybrid's D-ID hook + CTA) is NEVER trimmed.
 //
-// SKIPPED:
-//   - When neither intro nor outro URL is provided (returns input bytes).
-//   - When any download fails (returns input unchanged so the agent always
-//     gets the main video even if the bookend clips 404).
+// SKIPPED (returns the main bytes untouched, with the reason):
+//   - no intro or outro URL; ffmpeg missing; a download or probe failure; a
+//     length the plan needs could not be measured (a join timed against a
+//     guess is the desync this exists to remove).
 
 export interface ConcatIntroOutroInput {
   /** The branded main video buffer produced by the prior overlay step. */
   mainVideoBuffer: Buffer
   introVideoUrl?: string | null
   outroVideoUrl?: string | null
+  /**
+   * What the bookends ARE. "brand_sting" (default): a brokerage stock clip,
+   * capped at MAX_BRAND_BOOKEND_SECONDS. "spoken": a presenter talking (the
+   * hybrid D-ID hook/CTA) — never trimmed, a person is not cut off mid-sentence.
+   */
+  bookendKind?: BookendKind
 }
 
 /**
- * concatIntroOutro's result also says how long each bookend it APPLIED is
- * after the MAX_BRAND_BOOKEND_SECONDS trim (lane 85E) — the render coordinator
- * times the narration offset, the narration pad and the music fade-out against
- * the video in hand, and a stock clip's recorded duration is not that (a 10 s
- * sting is 2.5 s once trimmed). Probed from the downloaded file, then passed
- * through appliedBookendSeconds; null when that side was not stitched.
+ * concatIntroOutro's result says how much OUTPUT TIME each applied bookend adds
+ * around the main programme (lane 85E asked for the applied, not the recorded,
+ * length; lane 86B makes it the exact plan number): `introSeconds` is where the
+ * main programme's first frame now plays (intro + its dissolve), `outroSeconds`
+ * is what follows the main's last frame (dissolve + outro). The render
+ * coordinator places the narration and times the music fade-out against these.
+ * null when that side was not stitched.
  */
 export interface ConcatIntroOutroResult extends CompositeVideoAttributionResult {
   introSeconds?: number | null
   outroSeconds?: number | null
+  /** The joins actually dissolved (output offsets) — the audit + the proof read them. */
+  joins?: StitchJoin[]
+  /** Exact length of the stitched output (the music pass times its fade-out against it). */
+  totalSeconds?: number | null
+}
+
+async function probeMedia(filePath: string): Promise<MediaProbe> {
+  const empty: MediaProbe = { durationSeconds: null, width: null, height: null, fps: null, hasAudio: false, colorMatrix: null }
+  if (!FFMPEG_BIN) return empty
+  return new Promise((resolve) => {
+    const proc = spawn(FFMPEG_BIN!, ["-hide_banner", "-i", filePath])
+    let stderr = ""
+    proc.stderr.on("data", (chunk) => { stderr += chunk.toString() })
+    proc.on("close", () => resolve(parseFfmpegProbe(stderr)))
+    proc.on("error", () => resolve(empty))
+  })
 }
 
 export async function concatIntroOutro(opts: ConcatIntroOutroInput): Promise<ConcatIntroOutroResult> {
@@ -352,6 +390,7 @@ export async function concatIntroOutro(opts: ConcatIntroOutroInput): Promise<Con
   if (!opts.introVideoUrl && !opts.outroVideoUrl) {
     return { outputBuffer: opts.mainVideoBuffer, overlayApplied: false, skippedReason: "no intro or outro selected" }
   }
+  const kind: BookendKind = opts.bookendKind ?? "brand_sting"
 
   let workDir: string | null = null
   try {
@@ -359,12 +398,6 @@ export async function concatIntroOutro(opts: ConcatIntroOutroInput): Promise<Con
     const mainPath  = path.join(workDir, "main.mp4")
     const outputPath = path.join(workDir, "out.mp4")
     await writeFile(mainPath, opts.mainVideoBuffer)
-
-    // Probe main video to know the canvas size + frame rate the bookends
-    // must be normalised to.
-    const dims = await probeDimensions(mainPath)
-    const W = dims.width  ?? 1280
-    const H = dims.height ?? 720
 
     // Download bookends in parallel (when present)
     const introPath = opts.introVideoUrl ? path.join(workDir, "intro.mp4") : null
@@ -386,72 +419,43 @@ export async function concatIntroOutro(opts: ConcatIntroOutroInput): Promise<Con
     }
     await Promise.all(downloads)
 
-    // Build the input order: intro? -> main -> outro?
-    const inputs: string[] = []
-    if (introPath) inputs.push(introPath)
-    const mainIdx = inputs.length
-    inputs.push(mainPath)
-    if (outroPath) inputs.push(outroPath)
-    // Every index that is a BRAND BOOKEND (intro or outro), never the main
-    // video — wave 56 realism ruling: a brokerage-curated bookend longer than
-    // MAX_BRAND_BOOKEND_SECONDS reads as a canned corporate sting, not a
-    // person. The main video is a talking-head/voiceover reel and must never
-    // be truncated by this cap.
-    const bookendIdx = new Set(inputs.map((_, i) => i).filter((i) => i !== mainIdx))
-
-    // Build the filter graph. Each input segment gets scaled+padded to (W,H)
-    // and re-encoded audio to stereo AAC so concat doesn't choke. A bookend
-    // segment is ALSO trimmed to MAX_BRAND_BOOKEND_SECONDS first (§realism,
-    // wave 56) — a clip shorter than the cap is untouched (trim only ever
-    // shortens, never pads).
-    const normalised: string[] = []
-    inputs.forEach((_, i) => {
-      const isBookend = bookendIdx.has(i)
-      const vTrim = isBookend ? `trim=duration=${MAX_BRAND_BOOKEND_SECONDS},setpts=PTS-STARTPTS,` : ""
-      const aTrim = isBookend ? `atrim=duration=${MAX_BRAND_BOOKEND_SECONDS},asetpts=PTS-STARTPTS,` : ""
-      // Normalise video: scale to fit inside W:H, then pad to exact W:H with black bars,
-      // setsar=1 to avoid aspect-ratio mismatch warnings.
-      normalised.push(`[${i}:v]${vTrim}scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v${i}]`)
-      // Normalise audio: take whatever the input has (or generate silence) and
-      // resample to a common rate. anullsrc creates a silent track when
-      // the segment has no audio so concat=...a=1 doesn't fail.
-      normalised.push(`[${i}:a]${aTrim}aresample=async=1:first_pts=0,aformat=channel_layouts=stereo:sample_rates=48000[a${i}]`)
+    // Input order intro? → main → outro?, each PROBED once (length, shape, fps, audio).
+    const files: Array<{ role: StitchRole; path: string }> = []
+    if (introPath) files.push({ role: "intro", path: introPath })
+    files.push({ role: "main", path: mainPath })
+    if (outroPath) files.push({ role: "outro", path: outroPath })
+    const probes = await Promise.all(files.map((f) => probeMedia(f.path)))
+    const mainProbe = probes[files.findIndex((f) => f.role === "main")]
+    const plan = buildStitchPlan({
+      canvas: stitchCanvasFrom(mainProbe),
+      segments: files.map((f, i) => ({
+        inputIndex: i,
+        role: f.role,
+        probe: probes[i],
+        // The main programme is never capped; a spoken bookend is never capped (wave 86).
+        capSeconds: f.role === "main" || kind === "spoken" ? null : MAX_BRAND_BOOKEND_SECONDS,
+      })),
     })
-    const concatList = inputs.map((_, i) => `[v${i}][a${i}]`).join("")
-    const filter = `${normalised.join(";")};${concatList}concat=n=${inputs.length}:v=1:a=1[outv][outa]`
+    if (!plan.ok) {
+      return { outputBuffer: opts.mainVideoBuffer, overlayApplied: false, skippedReason: plan.reason }
+    }
 
-    // Ensure every input has an audio stream — when an intro/outro is silent,
-    // ffmpeg's filter needs SOME audio track or [i:a] is invalid. The
-    // -af approach is to add silence for inputs that lack audio. Simpler:
-    // when probing reveals no audio, splice in -f lavfi -i anullsrc and
-    // re-map. For first version we rely on aresample being lenient when an
-    // input has audio, and accept failure to silent inputs.
-    const args = [
+    await runFfmpeg([
       "-y",
-      ...inputs.flatMap((p) => ["-i", p]),
-      "-filter_complex", filter,
+      ...files.flatMap((f) => ["-i", f.path]),
+      "-filter_complex", plan.filter,
       "-map", "[outv]",
       "-map", "[outa]",
-      "-c:v", "libx264",
-      "-pix_fmt", "yuv420p",
-      "-preset", "fast",
-      "-c:a", "aac",
-      "-b:a", "128k",
-      "-movflags", "+faststart",
+      ...stitchEncodeArgs(plan.canvas),
       outputPath,
-    ]
-    await runFfmpeg(args)
-    const outputBuffer = await readFile(outputPath)
-    // The applied lengths — the trim only ever shortens, so a probe the cap
-    // bounds is the real contribution; an unprobeable clip counts as the cap.
-    const [introProbe, outroProbe] = await Promise.all([
-      introPath ? probeDuration(introPath) : Promise.resolve(null),
-      outroPath ? probeDuration(outroPath) : Promise.resolve(null),
     ])
+    const outputBuffer = await readFile(outputPath)
     return {
       outputBuffer, overlayApplied: true,
-      introSeconds: introPath ? appliedBookendSeconds(introProbe) : null,
-      outroSeconds: outroPath ? appliedBookendSeconds(outroProbe) : null,
+      introSeconds: introPath ? plan.mainStartSeconds : null,
+      outroSeconds: outroPath ? plan.afterMainSeconds : null,
+      joins: plan.joins,
+      totalSeconds: plan.totalSeconds,
     }
   } catch (err: any) {
     // Bookends are best-effort. Always return the main video so the agent

@@ -879,6 +879,25 @@ export async function calculateOverageExposure(
       active_agents: seatCap === null ? Number.POSITIVE_INFINITY : seatCap + extraSeats,
       ...(((tier.features as any)?.limits ?? {}) as Record<string, number>),
     } as Record<string, number>
+    // VIDEO MINUTES FROM THE CANON THE GATE AND THE INVOICE USE (wave 86, lane 86B).
+    // subscription_tiers.features carries no `limits` object live, so this projection
+    // read the video allowance as 0 and projected EVERY video minute as overage — a
+    // number the tenant saw and the invoice would never match. The allowance is
+    // plan_limits(video_minutes) for the tenant's billed tier (-1 = unlimited): the
+    // row lib/video/video-metering.ts meters against and runAIOverageBilling bills from.
+    const { data: tenantTier, error: tenantTierError } = await supabase
+      .from("brokerages").select("plan_tier").eq("id", input.brokerageId).maybeSingle()
+    if (tenantTierError) return { success: false, error: `Failed to read the plan tier: ${tenantTierError.message}` }
+    const { data: videoLimitRow, error: videoLimitError } = await supabase
+      .from("plan_limits").select("limit_value")
+      .eq("plan_tier", (tenantTier as { plan_tier?: string | null } | null)?.plan_tier ?? "solo_agent")
+      .eq("metric", "video_minutes").maybeSingle()
+    if (videoLimitError) return { success: false, error: `Failed to read the video allowance: ${videoLimitError.message}` }
+    if (videoLimitRow) {
+      const v = Number((videoLimitRow as { limit_value: number }).limit_value)
+      limits.video_minutes = v < 0 ? Number.POSITIVE_INFINITY : v
+    }
+
     const metrics: Record<string, any> = {}
     let totalExposureCents = 0
 

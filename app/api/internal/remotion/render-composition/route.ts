@@ -61,6 +61,7 @@ import { selectComposition, renderMedia, renderStill } from "@remotion/renderer"
 import path from "node:path"
 import fs from "node:fs/promises"
 import { tmpdir } from "node:os"
+import { DELIVERY_RENDER_OPTIONS } from "@/lib/video/cinema-finish"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -279,7 +280,9 @@ export async function POST(req: NextRequest) {
     await renderMedia({
       composition: selected,
       serveUrl:    bundleLocation,
-      codec:       "h264",
+      // ONE delivery spec (lib/video/cinema-finish.ts § DELIVERY SPEC): h264 yuv420p BT.709,
+      // an audio track always present, AAC 48 kHz — what the stitch + mixers conform to.
+      ...DELIVERY_RENDER_OPTIONS,
       outputLocation: outPath,
       inputProps:  inputProps ?? {},
       concurrency: 1,

@@ -12,7 +12,7 @@
 // createVideoProject from lib/kernel/marketing.ts). SURVIVOR:
 // app/actions/video/create-video-project.ts:306 createVideoProject — called
 // "the CANONICAL creator" throughout the codebase (app/api/internal/ai-chat,
-// app/api/video/projects/route.ts, lib/repurpose/actions.ts,
+// lib/repurpose/actions.ts,
 // lib/wizard-staging/content-staging.ts, app/actions/video-generation.ts,
 // app/actions/link-to-video.ts, app/actions/cma-presentation/…) — it holds on
 // a Fair Housing red flag, tenant-gates from the session (not a body

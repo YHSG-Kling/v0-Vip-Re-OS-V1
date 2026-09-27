@@ -296,66 +296,44 @@ function silentFailureLayer() {
     /const\s*\{\s*error:\s*\w+\s*\}\s*=\s*await\s*supabase\s*\.?\s*from\(["']lifecycle_events["']\)/.test(body.replace(/\s*\n\s*/g, " ")))
 }
 
-// ── 4. THE ROUTE — REPOINTED, TENANT-SCOPED, ATTRIBUTION PASSED THROUGH ─────
+// ── 4. THE ROUTE — RETIRED ONTO THE SURVIVOR (wave 86, lane 86B) ────────────
+// app/api/video/projects/route.ts was the second HTTP door onto the survivor. The
+// owner ruled the OS has never been in production, so the door was deleted (§1.1).
+// Every rule this layer held FOR the route is asserted where it now lives — the
+// session door (SURVIVOR) and the one creator (CREATOR) — so retiring the door
+// cannot have retired a guarantee (§2: the rule, not the waypoint).
 
 function routeLayer() {
-  console.log("\n[source · the live caller now uses the survivor]")
-  const route = code(ROUTE)
-  const post = routePostBody()
+  console.log("\n[source · the retired route's guarantees live on the survivor]")
+  check("app/api/video/projects/route.ts is retired (absent)", !existsSync(join(process.cwd(), ROUTE)))
+  check("...and its tombstone names the survivors (prose — the tombstone IS the subject)",
+    /TOMBSTONE[\s\S]{0,200}app\/api\/video\/projects\/route\.ts/.test(src(SURVIVOR)) && /getVideoProjects/.test(src(SURVIVOR)))
 
-  check("the POST handler was found at all", post.length > 0)
-  check("the route imports the survivor, not the kernel creator",
-    /import\s*\{[^}]*\bcreateVideoProject\b[^}]*\}\s*from\s*["']@\/app\/actions\/video\/create-video-project["']/.test(route))
-  check("...and no longer imports createVideoProject from lib/kernel/video",
-    !/import[\s\S]{0,200}?\bcreateVideoProject\b[\s\S]{0,80}?from\s*["']@\/lib\/kernel\/video["']/.test(route))
-  check("POST actually calls createVideoProject", /createVideoProject\s*\(/.test(post))
-
-  // ATTRIBUTION PASSED THROUGH — the whole reason the duplicate outlived itself.
-  // Asked of the params object the route builds, and shorthand (`sourceType,`)
-  // counts: the construct is "this field reaches the creator", not its spelling.
-  const paramsAt = post.search(/CreateVideoProjectParams\s*=\s*\{/)
-  let paramsObj = ""
-  if (paramsAt >= 0) {
-    const open = post.indexOf("{", paramsAt)
-    let depth = 0
-    for (let i = open; i < post.length; i++) {
-      if (post[i] === "{") depth++
-      else if (post[i] === "}") { depth--; if (depth === 0) { paramsObj = post.slice(open, i + 1); break } }
-    }
-  }
-  check("the params object handed to the creator was located", paramsObj.length > 0)
-  const passes = (f: string) => new RegExp(`(^|[{,\\s])${f}\\s*(:|,)`, "m").test(paramsObj)
-  check("POST passes campaignId through", passes("campaignId"))
-  check("POST passes sourceType through", passes("sourceType"))
-  check("POST passes sourceId through", passes("sourceId"))
-  check("POST passes description through", passes("description"))
-
-  // THE AGENTS-CLASS BUG. The old call handed an id to a param the kernel wrote
-  // straight into ai_video_projects.agent_id. The survivor takes a USERS id and
-  // resolves it itself, so the route must pass agentUserId and must NOT pass an
-  // `agentId:` field into this creator at all.
-  check("POST passes agentUserId (users-class), letting the survivor resolve agents",
-    /agentUserId\s*:/.test(post))
-  check("...and passes no `agentId:` into the creator — that param no longer exists",
-    !/\bagentId\s*:/.test(post))
-  check("...and the agents id it passes is not caller-supplied",
-    !/agentUserId\s*:\s*body\./.test(post))
-
-  // TENANT SCOPE. brokerage_id must come from the session, never the body — an
-  // absent body.brokerageId used to produce an untenanted row.
-  check("the brokerage is resolved server-side (requireAuth), not read from the body",
-    /requireAuth/.test(route) && /brokerageId\s*:\s*auth\.brokerageId/.test(post))
+  const door = code(SURVIVOR)
+  const doorStart = door.search(/export\s+async\s+function\s+createVideoProject\s*\(/)
+  const doorBody = doorStart < 0 ? "" : door.slice(doorStart, doorStart + 3000)
+  // TENANT SCOPE — the route's requireAuth + body-brokerage 403, now the door's.
+  check("the tenant is the caller's SESSION (requireCaller), never the body",
+    /requireCaller\(\)/.test(doorBody) && /brokerageId:\s*caller\.brokerageId/.test(doorBody))
   check("...and a body-named brokerage that is not the caller's is refused",
-    /body\.brokerageId[\s\S]{0,120}?auth\.brokerageId[\s\S]{0,120}?403/.test(post))
-  check("...so no `brokerageId: body.` reaches the creator",
-    !/brokerageId\s*:\s*body\./.test(post))
+    /params\.brokerageId\s*&&\s*params\.brokerageId\s*!==\s*caller\.brokerageId/.test(doorBody))
 
-  // videoType has a DB CHECK constraint; unvalidated caller input turns a bad
-  // request into a 500.
-  check("caller-supplied videoType is validated against the CHECK vocabulary",
-    /VIDEO_TYPES/.test(route) && /VIDEO_TYPES\.includes/.test(post))
-  check("caller-supplied sourceType is validated too",
-    /SOURCE_TYPES\.includes/.test(post))
+  const body = survivorCreateBody()
+  // videoType against the CHECK vocabulary — the route's VIDEO_TYPES check.
+  check("the creator validates videoType against the ONE list (AI_VIDEO_PROJECT_TYPES)",
+    /AI_VIDEO_PROJECT_TYPES[\s\S]{0,40}\.includes\(\s*input\.videoType\s*\)/.test(body))
+  // ATTRIBUTION — campaign resolved IN the tenant; source + brief ride video_metadata.
+  check("campaignId is resolved inside the tenant (an FK is not ownership)",
+    /verifyInTenant\(\s*supabase,\s*"marketing_campaigns",\s*input\.campaignId/.test(body))
+  check("sourceType / sourceId / description reach video_metadata",
+    /videoMetadata\.source_type\s*=\s*input\.sourceType/.test(body) && /videoMetadata\.source_id\s*=\s*input\.sourceId/.test(body)
+      && /videoMetadata\.description\s*=\s*input\.description/.test(body))
+  // THE SCRIPTLESS SHELL the route created (scripted later by generateVideoScriptAction).
+  check("the scriptless shell lane survives (scriptPending → status draft)",
+    /!input\.script\?\.trim\(\)\s*&&\s*!input\.scriptPending/.test(body))
+  // THE AGENTS-CLASS RULE — the creator resolves agents.id itself.
+  check("the creator resolves agents.id itself (users → agents), never a caller id",
+    /resolveActorAgentId\(\s*supabase,\s*ctx\s*\)/.test(body) && /agent_id:\s*agent\.agentId/.test(body))
 }
 
 // ── 5. SETTLED OWNER RULINGS ────────────────────────────────────────────────

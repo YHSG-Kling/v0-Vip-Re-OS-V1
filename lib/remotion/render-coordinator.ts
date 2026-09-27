@@ -221,6 +221,11 @@ export async function finalizeCoordinatedRender(
           // what it applied. Summing the clips' recorded duration_seconds
           // timed the music fade-out past the end of a video whose 10 s sting
           // had become 2.5 s — the bed never faded out.
+          // AND THE DISSOLVE (lane 86B): each join is now a 0.4 s dissolve on
+          // handles (lib/video/stitch-graph.ts), so the main programme starts
+          // at intro + dissolve. concatIntroOutro reports exactly that output
+          // offset; the narration placed below and the music fade-out land on
+          // the frames the captions are burned into.
           introClipSeconds = introRow
             ? (concat.introSeconds ?? appliedBookendSeconds(null, introRow.duration_seconds))
             : 0

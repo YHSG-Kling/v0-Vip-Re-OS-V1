@@ -56,6 +56,7 @@
 import { finishForVideo, type VideoFinish } from "./finish-spec"
 import { compositionBookends, compositionPurposes, type VideoPurpose } from "./duration-model"
 import { COMPOSITION_TREATMENTS, safeInsets, type BodyTreatment, type BodyVisualPlan, type SafeInsets } from "./body-visual-model"
+import { kenBurnsPlan, type KenBurnsClip } from "./ken-burns-plan"
 import { DEFAULT_MUSIC_FADE_IN_SECONDS, DEFAULT_MUSIC_FADE_OUT_SECONDS } from "../remotion/music-filter-graph"
 
 // ── § EASING — one set of curves ────────────────────────────────────────────
@@ -262,8 +263,44 @@ export function edgeFadeFrames(spec: CinemaFinishSpec, fps: number, durationInFr
 // shutter — the film order). Controlled A/B, 90 frames × 2 rounds: 112.4 / 94.1 s
 // inside → 71.2 / 67.1 s outside (≈ -33 %), unblurred 25.7 / 19.5 s; colours equal.
 
-/** Treatments whose picture moves like a camera (Ken Burns push, footage). */
-const CAMERA_MOVE_TREATMENTS: ReadonlySet<BodyTreatment> = new Set<BodyTreatment>(["property_photos", "broll"])
+// WAVE 86 (lane 86B — owner: "use the least amount of blur reasons in the plan.
+// trying to keep the cost down on the os without loosing quality"). The rule above
+// was per COMPOSITION: every frame of an eligible reel paid for `samples` re-renders
+// — the cover card, the outro card, the kinetic text, the b-roll — whether the
+// camera moved or not. Measured on the lane's real render (lane86B-notes.md), the
+// rule is now per SEGMENT and per STREAK:
+//   · WHERE — only a plan segment whose treatment is a SYNTHESISED camera move
+//     (property_photos: the Ken Burns push) with nobody on screen. B-ROLL IS
+//     FOOTAGE: a real camera already integrated its own shutter into every frame
+//     (compstart 2024 "Motion Blur for VFX": blur "already baked into the pixels";
+//     adding synthetic blur on top doubles it) — so it is no longer a reason. A
+//     presenter (full or PiP), a screen, a card, text: never.
+//   · WHETHER — blur length ≈ on-screen speed × open time (compstart; RED "shutter
+//     angle"): at 180° the streak is half the per-frame displacement. The Ken Burns
+//     planner's own numbers give that displacement exactly; below
+//     BLUR_VISIBLE_STREAK_PX the averaged image is indistinguishable from the sharp
+//     one (measured PSNR vs a 16-sample reference), so it is not paid for.
+//   · HOW MUCH — the fewest samples whose step (streak ÷ (samples − 1)) stays under
+//     the measured ghosting step, capped at the measured ceiling.
+// No plan staged: the composition-level eligibility below picks the BODY window only
+// (the cover and outro are cards).
+// MEASURED (lane 86B bench: the REAL KenBurnsPhoto driven by the REAL kenBurnsPlan,
+// 1080×1920 at scale 0.5, 60 frames, Chromium 1194 chrome-for-testing, swangle; a
+// "typical" tour = 6 photos over 12 s, a "fast" one = 10 photos over 6 s):
+//   peak streak at 180°: typical 1.2 px, fast 3.6 px.
+//   render time per 60 frames (samples 0/2/3/4/5):
+//     typical 17.8 / 29.9 / 33.5 / 47.3 / 70.1 s — fast 30.5 / 57.9 / 67.7 / 91.4 / 137.8 s
+//   smear achieved vs a 16-sample reference (edge-energy loss; a per-pixel PSNR is
+//   confounded by the sub-frame time shift the sample offsets introduce):
+//     fast push — the reference loses ~24 % of edge energy (a visible smear); 3 samples
+//     reach 90–114 % of it (2 samples: 70–115 %, ragged) → 3 is the minimum that looks right;
+//     typical push — the reference loses 0.4–10 % (a sub-2-px smear on hard synthetic
+//     edges, invisible at playback) → not paid for (1.7–3.9× render time for nothing).
+// So: floor 2 px, step ≤ 2 px (3 samples at the fast push), ceiling 4 (an unmeasured
+// move) — the old flat 5 samples on every frame of an eligible reel cost 3.9–4.5×.
+
+/** Treatments whose picture is a SYNTHESISED camera move (the Ken Burns push). Footage is not. */
+const CAMERA_MOVE_TREATMENTS: ReadonlySet<BodyTreatment> = new Set<BodyTreatment>(["property_photos"])
 /** Treatments that put a person on screen — kept crisp. */
 const PERSON_TREATMENTS: ReadonlySet<BodyTreatment> = new Set<BodyTreatment>(["full_avatar", "avatar_pip"])
 
@@ -271,13 +308,65 @@ export interface CinemaMotionBlur {
   enabled: boolean
   /** Degrees; 180 = the film standard at 24-60 fps (remotion docs). */
   shutterAngle: number
-  /** Time-offset copies averaged per frame (docs: 5-10; lowest kept — colour-destructive). */
+  /** Time-offset copies averaged per frame — the CEILING; a window's own streak picks fewer. */
   samples: number
   reason: string
 }
 
-export const CINEMA_MOTION_BLUR = { shutterAngle: 180, samples: 5 } as const
+/** 180° shutter; `samples` is the measured CEILING (lane 86B bench), a window's streak picks fewer. */
+export const CINEMA_MOTION_BLUR = { shutterAngle: 180, samples: 4 } as const
 
+/** Below this streak (px) the blurred frame is indistinguishable from the sharp one (lane 86B, measured). */
+export const BLUR_VISIBLE_STREAK_PX = 2
+
+/** The largest spacing (px) between two time-offset copies before they read as ghosts (lane 86B, measured). */
+export const BLUR_MAX_SAMPLE_STEP_PX = 2
+
+/** The fewest samples for a streak: 0 below the visible floor, else enough copies that
+ *  no two sit further apart than BLUR_MAX_SAMPLE_STEP_PX, between 2 and the ceiling. PURE. */
+export function blurSamplesForStreak(streakPx: number): number {
+  if (!Number.isFinite(streakPx) || streakPx < BLUR_VISIBLE_STREAK_PX) return 0
+  return Math.max(2, Math.min(CINEMA_MOTION_BLUR.samples, Math.ceil(streakPx / BLUR_MAX_SAMPLE_STEP_PX) + 1))
+}
+
+/** KenBurnsPhoto's easing, Easing.bezier(0.45, 0, 0.55, 1), evaluated at x ∈ [0, 1] (bisection). PURE. */
+function kenBurnsEase(x: number): number {
+  const [x1, y1, x2, y2] = [0.45, 0, 0.55, 1]
+  const bez = (u: number, a: number, b: number) => 3 * (1 - u) * (1 - u) * u * a + 3 * (1 - u) * u * u * b + u * u * u
+  const t = Math.max(0, Math.min(1, x))
+  let lo = 0, hi = 1
+  for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (bez(mid, x1, x2) < t) lo = mid; else hi = mid }
+  return bez((lo + hi) / 2, y1, y2)
+}
+
+/**
+ * The longest on-screen streak (px) a Ken Burns tour draws at `shutterAngle`: the
+ * frame corner's peak per-frame displacement under KenBurnsPhoto's S·T transform
+ * (scale(s) translate(pan%) on the same eased curve), frame by frame, × the
+ * shutter's open fraction. PURE.
+ */
+export function kenBurnsPeakStreakPx(clips: readonly KenBurnsClip[], width: number, height: number, shutterAngle: number = CINEMA_MOTION_BLUR.shutterAngle): number {
+  let peak = 0
+  for (const c of clips) {
+    if (c.durationFrames <= 0) continue
+    const at = (f: number): [number, number] => {
+      const e = kenBurnsEase(f / c.durationFrames)
+      const s = c.startScale + (c.endScale - c.startScale) * e
+      const px = c.panFromXY[0] + (c.panToXY[0] - c.panFromXY[0]) * e
+      const py = c.panFromXY[1] + (c.panToXY[1] - c.panFromXY[1]) * e
+      return [s * (-width / 2 + (px / 100) * width), s * (-height / 2 + (py / 100) * height)]
+    }
+    let prev = at(0)
+    for (let f = 1; f <= c.durationFrames; f++) {
+      const cur = at(f)
+      peak = Math.max(peak, Math.hypot(cur[0] - prev[0], cur[1] - prev[1]))
+      prev = cur
+    }
+  }
+  return Number((peak * (Math.max(0, Math.min(360, shutterAngle)) / 360)).toFixed(2))
+}
+
+/** Composition-level eligibility — the no-plan fallback and the outer gate. */
 export function cinemaMotionBlurFor(compositionId: string, entityType?: string | null): CinemaMotionBlur {
   const off = (reason: string): CinemaMotionBlur => ({ enabled: false, shutterAngle: 0, samples: 0, reason })
   const spec = cinemaFinishFor(compositionId, entityType)
@@ -287,8 +376,91 @@ export function cinemaMotionBlurFor(compositionId: string, entityType?: string |
   const person = treatments.filter((t) => PERSON_TREATMENTS.has(t))
   if (person.length > 0) return off(`a person on screen (${person.join(", ")}) — a talking head stays crisp`)
   const moves = treatments.filter((t) => CAMERA_MOVE_TREATMENTS.has(t))
-  if (moves.length === 0) return off("no camera move — cards and kinetic text only")
-  return { enabled: true, ...CINEMA_MOTION_BLUR, reason: `camera moves (${moves.join(", ")}) — film-camera blur, 180° shutter, 5 samples` }
+  if (moves.length === 0) {
+    return off(treatments.includes("broll")
+      ? "footage only — b-roll already carries its own camera's shutter blur"
+      : "no camera move — cards and kinetic text only")
+  }
+  return { enabled: true, ...CINEMA_MOTION_BLUR, reason: `synthesised camera move (${moves.join(", ")}) — 180° shutter, samples by streak` }
+}
+
+export interface CinemaBlurWindow {
+  /** Composition-absolute frames [from, to). */
+  from: number
+  to: number
+  samples: number
+  streakPx: number | null
+  reason: string
+}
+
+/**
+ * The frame windows that blur, and at how many samples. `streakPx` is the camera's
+ * peak streak when the caller knows it (cinemaCameraStreakPx); unknown → the
+ * ceiling (quality first: an unmeasured move is never under-blurred). PURE.
+ */
+export function cinemaMotionBlurWindows(
+  compositionId: string,
+  durationInFrames: number,
+  plan: BodyVisualPlan | null | undefined,
+  opts: {
+    width: number
+    height: number
+    fps?: number
+    /** A known peak streak (px). Absent → measured from `props` (cinemaCameraStreakPx). */
+    streakPx?: number | null
+    /** The composition's input props — its staged photos give the push its speed. */
+    props?: Record<string, unknown> | null
+  },
+): CinemaBlurWindow[] {
+  const spec = cinemaFinishFor(compositionId)
+  if (!spec.enabled || spec.look.id === "true_color") return []
+  // WHERE first: the camera-move frame windows, before any cost is decided.
+  let spans: Array<{ from: number; to: number; label: string }> = []
+  if (plan && plan.durationInFrames === durationInFrames && Array.isArray(plan.segments)) {
+    spans = plan.segments
+      .filter((s) => CAMERA_MOVE_TREATMENTS.has(s.treatment) && s.presenter === "none" && s.durationInFrames > 0)
+      .map((s) => ({ from: s.from, to: s.from + s.durationInFrames, label: `${s.treatment} segment ${s.index}` }))
+  } else if (cinemaMotionBlurFor(compositionId).enabled) {
+    const { introFrames, outroFrames } = compositionBookends(compositionId)
+    const from = Math.max(0, introFrames), to = Math.max(from, durationInFrames - Math.max(0, outroFrames))
+    if (to > from) spans = [{ from, to, label: "body (no plan staged)" }]
+  }
+  if (spans.length === 0) return []
+  // HOW FAST: the caller's streak, else the staged photos' own push over the shortest window.
+  let streak: number | null = typeof opts.streakPx === "number" && Number.isFinite(opts.streakPx) ? opts.streakPx : null
+  if (streak === null && opts.streakPx === undefined && opts.props) {
+    streak = cinemaCameraStreakPx(opts.props, Math.min(...spans.map((s) => s.to - s.from)), spans.length, { width: opts.width, height: opts.height, fps: opts.fps ?? 30 })
+  }
+  const samples = streak === null ? CINEMA_MOTION_BLUR.samples : blurSamplesForStreak(streak)
+  if (samples === 0) return []
+  const why = streak === null ? "camera move of unmeasured speed — the ceiling" : `peak streak ${streak}px`
+  return spans.map((s) => ({ from: s.from, to: s.to, samples, streakPx: streak, reason: `${s.label} — ${why}` }))
+}
+
+/** Samples at this frame (0 = render without the blur wrapper). PURE. */
+export function cinemaMotionBlurAt(frame: number, windows: readonly CinemaBlurWindow[]): number {
+  for (const w of windows) if (frame >= w.from && frame < w.to) return w.samples
+  return 0
+}
+
+/**
+ * The camera's peak streak for a composition's staged photos, when the photo push is
+ * the house Ken Burns planner (kenBurnsPlan) — the gentlest-to-strongest push any
+ * photo layer here draws (JustListed-family slides zoom ≤ 8 % linearly; the planner
+ * zooms ≤ 12 % + pans ≤ 6 % on an eased curve), so modelling a photo window as a
+ * kenBurnsPlan tour of the photos it shows is an UPPER bound. The photos are shared
+ * evenly across the photo windows. null when the props carry no photos (unknown). PURE.
+ */
+export function cinemaCameraStreakPx(
+  props: Record<string, unknown>,
+  windowFrames: number,
+  photoWindows: number,
+  opts: { width: number; height: number; fps: number },
+): number | null {
+  const urls = Array.isArray(props.imageUrls) ? (props.imageUrls as unknown[]).filter((u) => typeof u === "string" && u) as string[] : []
+  if (urls.length === 0 || windowFrames <= 0) return null
+  const perWindow = Math.max(1, Math.ceil(urls.length / Math.max(1, photoWindows)))
+  return kenBurnsPeakStreakPx(kenBurnsPlan(urls.slice(0, perWindow), windowFrames, { fps: opts.fps }), opts.width, opts.height)
 }
 
 // ── § CROSSFADE — why the cut is still a dip (wave 83B, documented) ─────────
@@ -308,6 +480,32 @@ export function cinemaMotionBlurFor(compositionId: string, entityType?: string |
 // composition is migrated with its proof re-anchored, the cut stays the eased DIP.
 
 
+// ── § DELIVERY SPEC — what every moving render leaves the renderer as ────────
+//
+// WAVE 86 (lane 86B — the stitch). Three renderMedia call sites (render-
+// composition, render-just-listed, render-newsletter-video) each spelled
+// `codec: "h264"` and nothing else, so the file handed to the bookend stitch,
+// the narration mux and the music pass was whatever Remotion defaulted to.
+// MEASURED (lane 86B, @remotion/renderer 4.0.521, a silent PhotoWalkthroughReel):
+//   · the COLOUR MATRIX came out BT.601 (bt470bg) while stock clips and D-ID
+//     renders arrive BT.709 — a colour shift at every stitched join. The spec
+//     renders BT.709 (measured: bt709).
+//   · a silent composition DID still carry a silent AAC track (2.048 s, 48 kHz)
+//     — so `enforceAudioTrack` is not fixing a measured defect today; it PINS
+//     that behaviour, because every ffmpeg pass after the render reads `[0:a]`
+//     and a renderer default is not a contract.
+// ONE spec, spread at every site: yuv420p, BT.709, an audio track always present,
+// AAC at the stitch's 48 kHz.
+export const DELIVERY_RENDER_OPTIONS = {
+  codec: "h264",
+  pixelFormat: "yuv420p",
+  colorSpace: "bt709",
+  enforceAudioTrack: true,
+  audioCodec: "aac",
+  audioBitrate: "192k",
+  sampleRate: 48000,
+} as const
+
 // ── § TYPOGRAPHY + SAFE AREAS ────────────────────────────────────────────────
 
 export interface CinemaTypeScale { caption: number; body: number; title: number; display: number; lineHeight: number }
@@ -321,6 +519,55 @@ export function cinemaTypeScale(width: number, height: number): CinemaTypeScale 
 /** The ONE safe-area survivor, re-exposed with the type scale so a layer asks one place. */
 export function cinemaFrame(width: number, height: number): { safe: SafeInsets; type: CinemaTypeScale } {
   return { safe: safeInsets(width, height), type: cinemaTypeScale(width, height) }
+}
+
+/**
+ * THE BURNED-IN CAPTION on the cinema type scale (wave 86, lane 86B — owner
+ * decision on the 85E open item "should the cinemaFrame type scale drive caption
+ * sizes?": yes). remotion/components/CaptionLayer.tsx hard-coded 56 px, an 18 px
+ * pad, a 64×6 tick and a band whose TOP sat at 78 % of the frame — on a 9:16
+ * reel that put the whole caption inside the bottom 22 % the platforms paint
+ * their own UI over (safeInsets). Now every number is a step of the one scale:
+ *   · text = the `title` step (1.5625 × body; 62 px on a 1080 short side — the
+ *     muted-social caption size, a step above body copy so it reads at arm's length);
+ *   · padding, radius, stroke, tick = fractions of the body step;
+ *   · the band's BOTTOM sits ON the safe-area bottom inset, its sides inside the
+ *     safe left/right — so a 16:9, a 1:1 and a 9:16 frame each get captions sized
+ *     and placed for that frame, never a literal.
+ * PURE.
+ */
+export interface CinemaCaptionStyle {
+  fontSize: number
+  lineHeight: number
+  padX: number
+  padY: number
+  radius: number
+  strokePx: number
+  tickWidth: number
+  tickHeight: number
+  tickGap: number
+  /** px from the frame's bottom edge to the band's bottom edge (the safe inset). */
+  bandBottom: number
+  /** px kept clear on each side (the safe inset). */
+  sidePad: number
+}
+
+export function cinemaCaptionStyle(width: number, height: number): CinemaCaptionStyle {
+  const { safe, type } = cinemaFrame(width, height)
+  const b = type.body
+  return {
+    fontSize: type.title,
+    lineHeight: 1.12,
+    padX: Math.round(b * 0.75),
+    padY: Math.round(b * 0.45),
+    radius: Math.round(b * 0.4),
+    strokePx: Math.max(1, Math.round(b / 20)),
+    tickWidth: Math.round(b * 1.6),
+    tickHeight: Math.max(2, Math.round(b * 0.15)),
+    tickGap: Math.round(b * 0.3),
+    bandBottom: safe.bottom,
+    sidePad: Math.max(safe.left, safe.right),
+  }
 }
 
 // ── § AUDIO — fades derived from the composition, loudness from the master ──

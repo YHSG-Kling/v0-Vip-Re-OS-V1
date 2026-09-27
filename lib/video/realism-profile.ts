@@ -1369,8 +1369,9 @@ export function avatarPipWindowFade(
 // components/CaptionLayer.tsx (already built, wave-prior): word-timed cues
 // from REAL ElevenLabs alignment when available (buildCaptionPlan Path A),
 // ≤4 words/cue by default (maxWordsPerCue default 4, matches the research
-// brief's "≤4 words/cue"), a lower-third safe-area band (bottomPercent
-// default 78) with a high-contrast stroke so text survives over any frame
+// brief's "≤4 words/cue"), a lower-third safe-area band (wave 86: sized on the
+// cinema type scale and seated on the safe bottom inset — cinemaCaptionStyle)
+// with a high-contrast stroke so text survives over any frame
 // muted, and per-cue pop/fade driven by interpolate(useCurrentFrame()) — NO
 // CSS transitions, per remotion-best-practices. AUDITED CORRECT. The one gap
 // this wave found and fixed is NOT the cue shape, it is TIMING: every reel

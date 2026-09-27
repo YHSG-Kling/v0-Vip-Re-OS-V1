@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
-import { runAIOverageBilling } from "@/lib/billing/ai-overage"
+import { runAIOverageBilling, VIDEO_OVERAGE_METRIC } from "@/lib/billing/ai-overage"
 
 /**
  * Cron route — AI overage billing at period close (m479: over-quota AI is
@@ -41,5 +41,16 @@ export async function GET(req: NextRequest) {
       JSON.stringify(result.outcomes.filter(o => o.status !== "billed" && o.status !== "skipped").slice(0, 20)),
     )
   }
-  return NextResponse.json(result)
+  // VIDEO OVERAGE (wave 86, lane 86B — owner answer 4: video is tier-METERED and its
+  // overage flows to billing). The SAME writethrough, keyed on video_minutes; a video
+  // run's refusal is reported beside the AI result, never allowed to hide it.
+  const video = await runAIOverageBilling({ metric: VIDEO_OVERAGE_METRIC })
+  if (!video.ok) console.error("[ai-overage-billing] video overage run refused:", video.error)
+  else if (video.refused > 0 || video.needsReconciliation > 0) {
+    console.error(
+      "[ai-overage-billing] video attention:",
+      JSON.stringify(video.outcomes.filter(o => o.status !== "billed" && o.status !== "skipped").slice(0, 20)),
+    )
+  }
+  return NextResponse.json({ ...result, video })
 }
