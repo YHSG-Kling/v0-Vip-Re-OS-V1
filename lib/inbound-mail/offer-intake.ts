@@ -403,7 +403,9 @@ export async function tryIngestInboundOffer(
     // Kick AI extraction — on completion it hands off (data_steward → listing_concierge) the
     // comparison-ready offer for the net sheet.
     const { extractOfferFromPdf } = await import("@/lib/offers/offer-extractor")
-    void extractOfferFromPdf({ offerId, brokerageId: input.brokerageId, pdfUrl: publicUrl, listingId: match.id }).catch(() => {})
+    // The service client (lane 86F): this runs from the inbound-mail webhook with no
+    // session, where the extractor's cookie client wrote nothing.
+    void extractOfferFromPdf({ offerId, brokerageId: input.brokerageId, pdfUrl: publicUrl, listingId: match.id, client: svc }).catch(() => {})
     return {
       handled: true, outcome: "auto", offerId, listingId: match.id, documentIds: filed.documentIds,
       matchKey, listingSweepTruncated: sweep.truncated,

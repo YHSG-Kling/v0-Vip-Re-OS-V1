@@ -255,71 +255,15 @@ export async function handleCoachingSessionBooked(payload: any) {
 // reading seven, and the delivery half is gone to a caller that actually runs. Both
 // halves of the doctrine are satisfied — merge first, then delete.
 
-export async function generate7DayPlan(payload: any) {
-  const supabase = await createServerClient()
-  const { contact_id, user_id, lead_source, contact_name } = payload
-
-  // Create 7-day nurture sequence tasks
-  const tasks = [
-    { day: 0, title: `Welcome call to ${contact_name || "new lead"}`, priority: "urgent" },
-    { day: 1, title: "Send personalized property recommendations", priority: "high" },
-    { day: 2, title: "Follow up on property interest", priority: "high" },
-    { day: 3, title: "Send market update", priority: "medium" },
-    { day: 4, title: "Check in - any questions?", priority: "medium" },
-    { day: 5, title: "Share neighborhood guide", priority: "medium" },
-    { day: 6, title: "Schedule next steps call", priority: "high" },
-  ]
-
-  // tasks.brokerage_id is NOT NULL (pass 5) — resolve it with the assignee.
-  const { data: nurtureAgent } = await supabase
-    .from("agents").select("id, brokerage_id").eq("user_id", user_id).maybeSingle()
-  if (!nurtureAgent?.id || !nurtureAgent?.brokerage_id) {
-    return { success: false, error: "No agent profile for this user — nurture plan not created" }
-  }
-  // ONE INSERT, AND THE RESULT IS READ. Both writes below used to be awaited
-  // with the result thrown away, and the function then returned
-  // `tasksCreated: tasks.length` — the length of the hardcoded template array
-  // above. That is 7 whether seven rows landed or zero did. It matters here
-  // more than most: the orchestrator fires this on lead.created, and a leads.id
-  // is not a contacts.id — tasks.contact_id FKs contacts, so a lead id makes
-  // every insert FK-reject and the contacts update match nothing, while the
-  // caller is told a seven-touch nurture plan is running.
-  const { data: created, error: taskErr } = await supabase
-    .from("tasks")
-    .insert(
-      tasks.map((task) => ({
-        brokerage_id: nurtureAgent.brokerage_id,
-        contact_id,
-        assigned_to_agent_id: nurtureAgent.id, // agents.id — tasks.assigned_to_agent_id FKs agents
-        title: task.title,
-        due_date: new Date(Date.now() + task.day * 24 * 60 * 60 * 1000).toISOString(),
-        priority: task.priority,
-        auto_generated: true,
-        source: "lead_nurture",
-      })),
-    )
-    .select("id")
-
-  if (taskErr) {
-    return { success: false, error: `Nurture plan not created: ${taskErr.message}` }
-  }
-
-  const { data: marked, error: statusErr } = await supabase
-    .from("contacts")
-    .update({ nurture_status: "7_day_plan_active" })
-    .eq("id", contact_id)
-    .select("id")
-
-  if (statusErr) {
-    return { success: false, error: `Tasks created, but the contact was not marked: ${statusErr.message}` }
-  }
-  if (!marked?.length) {
-    return { success: false, error: "No contact matched that id — the nurture plan has no owner" }
-  }
-
-  // The number of rows that actually landed.
-  return { success: true, tasksCreated: created?.length ?? 0 }
-}
+// TOMBSTONE (lane 86F, orphan doctrine §1.1) — `generate7DayPlan(payload)` LIVED
+// HERE and is gone. It was a "use server" export (a public endpoint taking
+// contact_id AND user_id from the browser) on the COOKIE client, and its only
+// reference — lib/orchestrator/internal.ts EVENT_HANDLERS["lead.created"] — is
+// dispatched with no cookie, so its agents lookup read nothing and it refused.
+// SURVIVOR: lib/copilot/seven-day-plan.ts::writeSevenDayNurturePlan — the same
+// seven tasks and contact mark, server-only, the EVENT row's tenant pinned on
+// every read and write, the contact proven a CONTACT in that tenant (a leads.id
+// is refused, not FK-rejected seven times).
 
 // =====================================================
 // COPILOT SERVER ACTIONS

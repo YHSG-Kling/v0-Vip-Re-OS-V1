@@ -9,6 +9,7 @@ import { dispatchSms } from "@/lib/providers/dispatch"
 // The ONE way a notifications row gets its tenant — the recipient's
 // users.brokerage_id, the exact value badge-counts compares against.
 import { resolveRecipientBrokerageId, resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
+import { recordCreditPartnerReferral } from "@/lib/credit/credit-event-handlers"
 
 // =====================================================
 // CREDIT COPILOT SERVER ACTIONS
@@ -132,6 +133,10 @@ export async function updateContactCreditStatus(params: {
  * capability it had that this lacked — the agent follow-up task — is ported here,
  * and the missing `brokerage_id` is fixed at the handler so the event door, if it is
  * ever opened, cannot mint an untenanted record.
+ *
+ * MERGE COMPLETED (lane 86F): the duplicate is DELETED (tombstone below) and the
+ * body lives once, in lib/credit/credit-event-handlers.ts::recordCreditPartnerReferral,
+ * which this door and the credit.partner_referred event both call.
  */
 export async function referToCreditPartner(params: {
   contact_id: string
@@ -152,249 +157,40 @@ export async function referToCreditPartner(params: {
   const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
   if (!profile?.brokerage_id) throw new Error("No brokerage found")
 
-  // BOTH ENDS OF THE REFERRAL MUST BE THIS TENANT'S. `error` is destructured on
-  // both reads — supabase-js resolves a refused query, and reading a denial as
-  // "not found" here is the right outcome (fail closed) only if we say so
-  // explicitly rather than by accident.
-  const { data: contactRow, error: contactErr } = await supabase
-    .from("contacts")
-    .select("id")
-    .eq("id", params.contact_id)
-    .eq("brokerage_id", profile.brokerage_id)
-    .maybeSingle()
-  if (contactErr) throw new Error("Could not verify the contact")
-  if (!contactRow) throw new Error("Contact not found in your brokerage")
-
-  const { data: partnerRow, error: partnerErr } = await supabase
-    .from("referral_partners")
-    .select("id, partner_name")
-    .eq("id", params.partner_id)
-    .eq("brokerage_id", profile.brokerage_id)
-    .maybeSingle()
-  if (partnerErr) throw new Error("Could not verify the credit partner")
-  if (!partnerRow) throw new Error("Credit partner not found in your brokerage")
-
-  // Create partner referral record. CHECK on status allows
-  //   referred | in_progress | completed | declined.
-  // 'pending' (the legacy value) gets rejected; map to 'referred'.
-  const { data, error } = await supabase
-    .from("credit_partner_referrals")
-    .insert({
-      contact_id: params.contact_id,
-      partner_id: params.partner_id,
-      // partner_name and referred_at were written by the (never-dispatched) event
-      // handler and not by this lane, so the referral list rendered a blank partner
-      // and no referral timestamp. Denormalized from the verified partner row.
-      partner_name: partnerRow.partner_name ?? null,
-      referred_at: new Date().toISOString(),
-      referring_agent_id: user.id,
-      referral_notes: params.referral_notes,
-      expected_timeline: params.expected_timeline,
-      status: "referred",
-      brokerage_id: profile.brokerage_id,
-    })
-    .select()
-    .single()
-
-  if (error) throw error
-
-  // PORTED from handlePartnerReferral: a referral with no follow-up is a referral
-  // that gets forgotten. tasks.brokerage_id and tasks.assigned_to_agent_id are both
-  // NOT NULL, so this only fires when the caller resolves to an agents row —
-  // best-effort, and never fails the referral that already succeeded.
-  try {
-    const { data: agentRow } = await supabase
-      .from("agents")
-      .select("id, brokerage_id")
-      .eq("user_id", user.id)
-      .maybeSingle()
-    if (agentRow?.id && agentRow?.brokerage_id) {
-      await supabase.from("tasks").insert({
-        brokerage_id: agentRow.brokerage_id,
-        contact_id: params.contact_id,
-        assigned_to_agent_id: agentRow.id,
-        title: `Follow up on ${partnerRow.partner_name ?? "credit partner"} referral`,
-        due_date: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
-        priority: "medium",
-      })
-    }
-  } catch (err) {
-    console.error("[credit-copilot] referral follow-up task failed (non-blocking):", err)
-  }
+  // THE BODY MOVED (lane 86F, orphan doctrine §1.1 — the duplicate merged onto
+  // this survivor, then ONE core for both doors): lib/credit/credit-event-
+  // handlers.ts::recordCreditPartnerReferral. It keeps everything this function
+  // proved — both ends of the referral inside the tenant, partner_name from the
+  // verified partner row, the follow-up task — and the orchestrator's
+  // credit.partner_referred event now writes through the same body with the
+  // EVENT row's tenant. This door hands it the SESSION's brokerage and user.
+  const r = await recordCreditPartnerReferral(supabase, profile.brokerage_id, {
+    contactId: params.contact_id,
+    partnerId: params.partner_id,
+    referringUserId: user.id,
+    referralNotes: params.referral_notes ?? null,
+    expectedTimeline: params.expected_timeline ?? null,
+  })
+  if (!r.success) throw new Error(r.error)
+  if (!r.taskWritten) console.error("[credit-copilot] referral follow-up task not written (non-blocking):", r.taskSkipReason)
+  const data = r.referral
 
   return { success: true, referral: data }
 }
 
-// =====================================================
-// EVENT HANDLERS - Called by orchestrator
-// =====================================================
-
-export async function handlePartnerStatusUpdate(payload: any) {
-  const supabase = await createServerClient()
-  const { contact_id, partner_id, old_status, new_status, user_id } = payload
-
-  // Create notification.
-  //
-  // TENANT — the RECIPIENT's `users.brokerage_id`, resolved ONCE here and reused
-  // below rather than re-derived. `user_id` is a users.id; the `agents` row read
-  // further down for the tasks insert is a DIFFERENT id space and its
-  // `brokerage_id` is NOT what badge-counts compares against, so it is not
-  // borrowed for this stamp.
-  const statusTenant = await resolveRecipientBrokerageId(supabase, user_id)
-  if (!statusTenant.ok) {
-    console.error(`[credit-copilot] handlePartnerStatusUpdate: ${statusTenant.reason} — status notification NOT written`)
-  }
-  if (user_id) {
-    if (!statusTenant.ok || !statusTenant.brokerageId) {
-      console.error(
-        `[credit-copilot] handlePartnerStatusUpdate: no brokerage resolves for recipient ${user_id} — status notification NOT written rather than written where the bell cannot count it`,
-      )
-    } else {
-      const { error: statusNotifyError } = await supabase.from("notifications").insert({
-        user_id: user_id,
-        brokerage_id: statusTenant.brokerageId,
-        type: "partner_status_update",
-        title: "Partner Status Updated",
-        body: `Credit partner status changed from ${old_status} to ${new_status}.`,
-        entity_type: "contact",
-        entity_id: contact_id,
-      })
-      if (statusNotifyError) {
-        console.error("[credit-copilot] partner_status_update notification insert refused:", statusNotifyError.message)
-      }
-    }
-  }
-
-  // Create follow-up task based on new status
-  if (new_status === "approved") {
-    const creditAgentRow = await supabase.from("agents").select("id, brokerage_id").eq("user_id", user_id).maybeSingle().then((r: any) => r.data)
-      // tasks.brokerage_id + assigned_to_agent_id are NOT NULL (pass 5) — without both this insert always failed
-      if (creditAgentRow?.id && creditAgentRow?.brokerage_id) await supabase.from("tasks").insert({
-        brokerage_id: creditAgentRow.brokerage_id,
-        contact_id,
-        assigned_to_agent_id: creditAgentRow.id,
-      title: "Schedule credit program kickoff",
-      due_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-      priority: "high",
-    })
-  }
-
-  return { success: true }
-}
-
-export async function handleTargetReached(payload: any) {
-  const supabase = await createServerClient()
-  const { contact_id, target_score, actual_score, user_id } = payload
-
-  // Update contact to ready for home buying
-  await supabase
-    .from("contacts")
-    .update({
-      credit_status: "good",
-      credit_pipeline_stage: "target_score_reached",
-    })
-    .eq("id", contact_id)
-
-  // Create celebration notification.
-  //
-  // TENANT — the RECIPIENT's `users.brokerage_id` (the one resolver; see
-  // lib/notifications/recipient-tenant.ts). `user_id` is a users.id and is never
-  // interchanged with the `agents.id` resolved below for the follow-up task.
-  const targetTenant = await resolveRecipientBrokerageId(supabase, user_id)
-  if (!targetTenant.ok) {
-    console.error(`[credit-copilot] handleTargetReached: ${targetTenant.reason} — celebration notification NOT written`)
-  }
-  if (user_id) {
-    if (!targetTenant.ok || !targetTenant.brokerageId) {
-      console.error(
-        `[credit-copilot] handleTargetReached: no brokerage resolves for recipient ${user_id} — celebration notification NOT written rather than written where the bell cannot count it`,
-      )
-    } else {
-      const { error: targetNotifyError } = await supabase.from("notifications").insert({
-        user_id: user_id,
-        brokerage_id: targetTenant.brokerageId,
-        type: "credit_target_reached",
-        title: "Client Reached Credit Target!",
-        body: `Your client reached their target credit score of ${target_score}. Time to re-engage for home buying!`,
-        entity_type: "contact",
-        entity_id: contact_id,
-        priority: "high",
-      })
-      if (targetNotifyError) {
-        console.error("[credit-copilot] credit_target_reached notification insert refused:", targetNotifyError.message)
-      }
-    }
-  }
-
-  // Create follow-up task
-  const creditAgentRow = await supabase.from("agents").select("id, brokerage_id").eq("user_id", user_id).maybeSingle().then((r: any) => r.data)
-    // tasks.brokerage_id + assigned_to_agent_id are NOT NULL (pass 5) — without both this insert always failed
-    if (creditAgentRow?.id && creditAgentRow?.brokerage_id) await supabase.from("tasks").insert({
-      brokerage_id: creditAgentRow.brokerage_id,
-      contact_id,
-      assigned_to_agent_id: creditAgentRow.id,
-    title: "Re-engage client for home buying",
-    description: "Client has reached target credit score and is ready to start looking at homes!",
-    due_date: new Date().toISOString(),
-    priority: "urgent",
-  })
-
-  return { success: true }
-}
-
-/**
- * Orchestrator handler for `credit.partner_referred`. NOTE (w4s1): nothing in the
- * tree emits that event today — `referToCreditPartner` above is the live door and
- * the survivor for this lane. This stays as the event-bus entrance, hardened so it
- * cannot mint an untenanted record if that door is ever opened.
- */
-export async function handlePartnerReferral(payload: any) {
-  const supabase = await createServerClient()
-  const { contact_id, partner_id, partner_name, user_id } = payload
-
-  // Resolve the referring agent FIRST — it is also where brokerage_id comes from.
-  const creditAgentRow = await supabase
-    .from("agents")
-    .select("id, brokerage_id")
-    .eq("user_id", user_id)
-    .maybeSingle()
-    .then((r: any) => r.data)
-
-  // brokerage_id was omitted entirely, so every row this handler wrote was an
-  // untenanted record about a consumer's credit that no brokerage-scoped query
-  // could ever find again. Without a resolvable tenant there is nothing correct to
-  // write, so it declines rather than writing an orphan row.
-  if (!creditAgentRow?.brokerage_id) {
-    console.error("[credit-copilot] handlePartnerReferral: no brokerage for user", user_id)
-    return { success: false, error: "Could not resolve the referring agent's brokerage" }
-  }
-
-  // Create tracking record. status CHECK = referred|in_progress|completed|declined.
-  await supabase.from("credit_partner_referrals").insert({
-    contact_id,
-    partner_id,
-    partner_name: partner_name ?? null,
-    brokerage_id: creditAgentRow.brokerage_id,
-    referring_agent_id: user_id,
-    status: "referred",
-    referred_at: new Date().toISOString(),
-  })
-
-  // Create follow-up task.
-  // tasks.brokerage_id + assigned_to_agent_id are NOT NULL (pass 5) — without both this insert always failed
-  if (creditAgentRow?.id) {
-    await supabase.from("tasks").insert({
-      brokerage_id: creditAgentRow.brokerage_id,
-      contact_id,
-      assigned_to_agent_id: creditAgentRow.id,
-      title: `Follow up on ${partner_name ?? "credit partner"} referral`,
-      due_date: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
-      priority: "medium",
-    })
-  }
-
-  return { success: true }
-}
+// TOMBSTONE (lane 86F, orphan doctrine §1.1) — the three "EVENT HANDLERS -
+// Called by orchestrator" LIVED HERE and are gone: handlePartnerStatusUpdate,
+// handleTargetReached, handlePartnerReferral. Each was a "use server" export (a
+// public endpoint taking user_id / contact_id from the browser) on the COOKIE
+// client, and their one caller — lib/orchestrator/internal.ts EVENT_HANDLERS,
+// dispatched from cron and webhooks — has no cookie, so they wrote nothing and
+// returned success. handleTargetReached's contacts UPDATE carried no tenant
+// predicate at all.
+// SURVIVOR: lib/credit/credit-event-handlers.ts — reactToCreditPartnerStatus,
+// reactToCreditTargetReached, reactToCreditPartnerReferred (server-only, the
+// EVENT row's tenant pinned on every read and write, the actor proven in it).
+// handlePartnerReferral was additionally a DUPLICATE of referToCreditPartner
+// above; both now write through recordCreditPartnerReferral in that module.
 
 /**
  * The agent is resolved SERVER-side. It previously took an `agentId` argument

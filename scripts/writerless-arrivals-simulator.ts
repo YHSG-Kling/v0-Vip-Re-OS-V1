@@ -444,11 +444,15 @@ function approvalSubjectLayer() {
   const kernelListings = blankComments(src("lib/kernel/listings.ts"))
   check("the caller that ALREADY has the entity passes it, so no second write is needed",
     /subjectId:\s*input\.listingId/.test(kernelListings))
-  const intake = blankComments(src("app/actions/ai-listing-intake.ts"))
+  // lane 86F: the persist-afterwards caller is the listing-description CORE
+  // (lib/listings/listing-description-core.ts) — the body moved out of
+  // app/actions/ai-listing-intake.ts so the presentation builder can run it with
+  // no session. The rule follows the writer: select the new row's id, stamp it.
+  const intake = blankComments(src("lib/listings/listing-description-core.ts"))
   check("the caller that persists AFTERWARDS selects the new row's id",
     /from\("listing_marketing_content"\)[\s\S]{0,300}\.select\("id"\)/.test(intake))
   check("…and stamps the subject with it",
-    /attachApprovalSubject\([\s\S]{0,160}savedContent\?\.id/.test(intake))
+    /attachApprovalSubject\([\s\S]{0,160}contentId\)/.test(intake) && /const contentId = \(saved\?\.id/.test(intake))
   check("…unconditionally — a per-call-site guard is how the id gets dropped again",
     !/if \([^)]*approvalItemId[^)]*\)\s*\{?\s*await attachApprovalSubject/.test(intake))
 

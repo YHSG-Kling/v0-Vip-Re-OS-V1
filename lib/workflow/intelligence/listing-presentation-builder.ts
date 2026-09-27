@@ -25,6 +25,21 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 import { runAiCma } from "@/lib/cma/ai-cma-orchestrator"
 import { getStateForms } from "@/lib/state-forms/registry"
+import { generateListingDescriptions, type ListingDescriptionStyle } from "@/lib/listings/listing-description-core"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
+
+/**
+ * The description core REQUIRES a target style and the appointment deck has no
+ * buyer audience to name, so one is DERIVED from the comp-supported value alone:
+ * "luxury" at or above LUXURY_DECK_VALUE_FLOOR, otherwise "first_time_buyer".
+ * "family" is never chosen here — it is a familial-status framing the Fair
+ * Housing block forbids the writer to lean on. The $1M floor is a stated
+ * assumption (published in the lane notes), not a measured market boundary.
+ */
+const LUXURY_DECK_VALUE_FLOOR = 1_000_000
+function deckDescriptionStyle(estimatedValueMid: number | null | undefined): ListingDescriptionStyle {
+  return typeof estimatedValueMid === "number" && estimatedValueMid >= LUXURY_DECK_VALUE_FLOOR ? "luxury" : "first_time_buyer"
+}
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -440,15 +455,33 @@ export async function buildListingPresentation(
     const stateForms = getStateForms(input.state, "listing")
 
     // 4b. APPOINTMENT-PREP ADDITION: AI property description for the deck.
-    //     Calls the existing aiGenerateListingDescription if it's exported;
-    //     graceful fallback to a brief auto-summary on failure.
+    //
+    //     THE SERVER-ONLY CORE (lane 86F), not the "use server" action. This used
+    //     to dynamic-import app/actions/ai-listing-intake.ts::aiGenerateListingDescription,
+    //     whose first line is getAgentContext() — this builder runs from the
+    //     listing-presentation-prep cron with no cookie, so it was refused
+    //     "Unauthorized" on every run. It also read `descRes.description` /
+    //     `.descriptions.long` / `.descriptions.standard`, keys that action never
+    //     returned, and passed no `style` (a required field). Now: the tenant is
+    //     input.brokerageId, the agents.id is RESOLVED from input.agentUserId inside
+    //     it (users.id and agents.id are disjoint, §3), and the deck reads the REAL
+    //     keys — descriptions.mlsDescription (the compliance-graded channel), with
+    //     marketingDescription second. A description guardContent FLAGGED (or that
+    //     postcheckScript hard-flags for Fair Housing) is not put on a seller-facing
+    //     slide: it is in the approval queue for a human, and the deck falls back to
+    //     the fact summary below.
     let propertyDescription: string | undefined
     try {
-      const intakeMod = await import("@/app/actions/ai-listing-intake")
-      const fn = (intakeMod as any).aiGenerateListingDescription
-      if (typeof fn === "function" && input.agentUserId) {
-        const descRes = await fn({
-          agentId:      input.agentUserId,
+      const agentRecordId = input.agentUserId
+        ? await resolveAgentIdInBrokerage(svc, input.agentUserId, input.brokerageId)
+        : null
+      if (agentRecordId) {
+        const descRes = await generateListingDescriptions(svc, {
+          brokerageId: input.brokerageId,
+          agentId:     agentRecordId,
+          userId:      input.agentUserId ?? null,
+          listingId:   input.listingId ?? null,
+          style:       deckDescriptionStyle(cma.estimatedValueMid),
           propertyData: {
             address:  input.propertyAddress,
             city:     input.city ?? null,
@@ -461,14 +494,18 @@ export async function buildListingPresentation(
             estimatedValue: cma.estimatedValueMid,
           },
         })
-        if (descRes?.success) {
-          propertyDescription = descRes.description
-                              ?? descRes.descriptions?.long
-                              ?? descRes.descriptions?.standard
-                              ?? undefined
+        if (descRes.success && !descRes.hardFairHousingFlag && !descRes.guardResult.flagged && !descRes.guardResult.guardFailed) {
+          propertyDescription = descRes.descriptions.mlsDescription?.trim()
+                              || descRes.descriptions.marketingDescription?.trim()
+                              || undefined
+        } else if (!descRes.success) {
+          console.error("[listing-presentation-builder] description core refused:", descRes.error)
         }
       }
-    } catch { /* description is best-effort */ }
+    } catch (err) {
+      /* description is best-effort — the fact summary below stands in */
+      console.error("[listing-presentation-builder] description core threw:", err)
+    }
     if (!propertyDescription) {
       const parts: string[] = []
       if (effectiveBeds && effectiveBaths) parts.push(`${effectiveBeds}-bed, ${effectiveBaths}-bath`)

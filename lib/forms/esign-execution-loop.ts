@@ -42,7 +42,10 @@
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { evalAnchorExecution, type FormAnchorStatus, type AnchorExecutionResult } from "./esign-anchor-eval"
-import { logEventAndTrigger } from "@/lib/events"
+// The server-only core (lane 86F): this loop runs from the e-sign webhooks and the
+// doc-sync sweep cron — no session — where the cookie-client logEventAndTrigger was
+// refused by RLS. Tenant = the matched offer row's brokerage_id.
+import { recordLifecycleEvent } from "@/lib/events/lifecycle-event-core"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 
@@ -439,14 +442,14 @@ async function applyReadyWrites(
       .eq("id", (matchedOffer as any).id)
     if (offerStampError) console.error(`[esign-execution-loop] offer ${(matchedOffer as any).id} fully-signed stamp refused: ${offerStampError.message}`)
 
-    await logEventAndTrigger({
-      brokerage_id: (matchedOffer as any).brokerage_id ?? "",
+    // offers.contact_id is a CONTACTS id: payload.contact_id, never actor_user_id (§3).
+    const offerEvt = await recordLifecycleEvent(supabase, (matchedOffer as any).brokerage_id ?? "", {
       event_type: OFFER_AUDIT_EVENT.ESIGN_COMPLETED,
-      user_id:    (matchedOffer as any).contact_id,
-      payload:    { offerId: (matchedOffer as any).id, envelopeId: ctx.envelopeId, provider: ctx.providerSource },
+      payload:    { offerId: (matchedOffer as any).id, envelopeId: ctx.envelopeId, provider: ctx.providerSource, contact_id: (matchedOffer as any).contact_id ?? undefined },
       source:     "webhook",
       dedupe_key: `offer-esign-complete-${(matchedOffer as any).id}`,
-    } as any)
+    })
+    if (!offerEvt.ok) console.error(`[esign-execution-loop] offer ${(matchedOffer as any).id} ESIGN_COMPLETED event not recorded: ${offerEvt.error}`)
 
     if (!offerStampError && (matchedOffer as any).brokerage_id) {
       try {

@@ -141,7 +141,10 @@ const EXEMPT_PATH_GLOBS: Array<[string, string]> = [
 const CONTENT_PATHS: Array<[string, string]> = [
   ["lib/agents/generate-client-message.ts", "OUTBOUND MESSAGE — copy sent to a client"],
   ["app/actions/marketing-studio.ts", "MARKETING / AD — campaign creative"],
-  ["app/actions/ai-listing-intake.ts", "LISTING COPY — the public listing description"],
+  // lane 86F: the listing-copy writer moved to a server-only core the autonomous
+  // presentation builder can call; the rule (the copy path imports content
+  // compliance DIRECTLY) follows the writer, not the old filename.
+  ["lib/listings/listing-description-core.ts", "LISTING COPY — the public listing description"],
   ["lib/kernel/video.ts", "VIDEO SCRIPT — compliance-first script authoring"],
 ]
 

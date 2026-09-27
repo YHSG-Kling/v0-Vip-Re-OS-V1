@@ -90,7 +90,10 @@ const RUN_NEGATIVE = !process.argv.includes("--no-negative")
 
 const F = {
   predictions: "app/actions/ai-predictions.ts",
-  cma: "app/actions/ai-cma.ts",
+  // lane 86F: the CMA generator's body (the contacts gate, the spend, the writes)
+  // moved to a server-only core so the autonomous listing-appt-prep chain can run
+  // it; the ruling follows the function that SPENDS, not the old filename.
+  cma: "lib/cma/ai-cma-report.ts",
   leadIntel: "app/actions/lead-intelligence.ts",
   leadsPage: "app/leads/page.tsx",
 }
@@ -811,7 +814,7 @@ A.push({
 const ORDERED_SITES: Array<{ file: string; fn: string }> = [
   { file: F.predictions, fn: "aiPropertyMatchGenius" },
   { file: F.predictions, fn: "optimizeShowingRoute" },
-  { file: F.cma, fn: "generateAICMA" },
+  { file: F.cma, fn: "generateCmaReport" },
 ]
 
 A.push({
@@ -883,9 +886,9 @@ A.push({
       // lines below are what the control actually needs: the binding it swaps and
       // the table it swaps away from.
       file: F.cma,
-      find: `const { data: cmaContact, error: cmaContactError } = await supabase
+      find: `const { data: cmaContact, error: cmaContactError } = await svc
     .from("contacts")`,
-      replace: `const { data: cmaContact, error: cmaContactError } = await supabase
+      replace: `const { data: cmaContact, error: cmaContactError } = await svc
     .from("agents")`,
     },
   ],

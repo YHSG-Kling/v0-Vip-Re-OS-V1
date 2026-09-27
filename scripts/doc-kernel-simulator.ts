@@ -2035,7 +2035,7 @@ async function main() {
         && src("lib/content-guardian/index.ts").includes('from("approval_items")')
         && src("app/actions/journey-tasks.ts").includes("client_portal_activity")
         && !src("app/actions/journey-tasks.ts").includes('from("task_submissions")')
-        && src("app/actions/assistant.ts").includes("action_payload_json")
+        && src("lib/assistant/smart-suggestion.ts").includes("action_payload_json") // the writer moved lane 86F
         && src("app/actions/ai-voice-transcription.ts").includes("assigned_to_agent_id")
         && src("lib/podcast/orchestrate-podcast-preset-publish.ts").includes("podcast_episode_id:")
         && src("lib/intelligence/daily-briefing-generator.ts").includes("overnight_ai_work"))
@@ -3206,7 +3206,7 @@ async function main() {
       check(`PASS 5 — NOT-NULL CONTRACT SWEEP (the sibling of the CHECK sweep; live information_schema dump of required-no-default columns cross-checked against every insert literal): lifecycle_events.brokerage_id was missing from FIFTEEN writers — the ISA's outreach/max-touch/pause events, appointment scheduling, ALL commission lifecycle (approved/paid/disputed/resolved), expenses, report exports, listing launch, auto-disputes, review recovery — every one ALWAYS failed NOT NULL silently; tasks.brokerage_id+assigned_to_agent_id were missing from SEVENTEEN writers including createTask itself (the inbox 'T' verb) and all seven listing-lifecycle handlers (no listing task ever landed) — all fixed with honest context resolution (the listing's own agent, the contact's own agent, the caller's agent row) and honest refusals when no agent exists; offenders now: [${offenders.join(", ") || "none"}]`,
         offenders.length === 0
         && src("app/actions/tasks.ts").includes("cannot create the task")
-        && src("lib/application/listing-lifecycle.ts").includes("listingTaskContext")
+        && src("lib/listing-lifecycle/lifecycle-event-tasks.ts").includes("listingTaskContext") // moved lane 86F (server-only event core)
         && src("lib/kernel/financial.ts").includes("brokerage_id: brokerageId, // NOT NULL (pass 5)")
         && src("lib/ai-isa/isa-outreach-logger.ts").includes("brokerage_id: params.brokerageId,")
         && src("app/actions/credit-copilot.ts").includes("insertCreditTask"))

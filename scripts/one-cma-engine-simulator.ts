@@ -59,8 +59,14 @@ function check(name: string, cond: boolean, detail?: string) {
   }
 }
 
+// LANE 86F: the generator's BODY moved to a server-only core so the autonomous
+// listing-appt-prep chain can run it without a session (the action's cookie gate
+// refused every unattended run). Every body assertion below follows the WRITER
+// to lib/cma/ai-cma-report.ts; `aiCmaDoor` is the "use server" session door that
+// still gates the browser callers and hands the core a verified tenant.
 const F = {
-  aiCma: "app/actions/ai-cma.ts",
+  aiCma: "lib/cma/ai-cma-report.ts",
+  aiCmaDoor: "app/actions/ai-cma.ts",
   orchestrator: "lib/cma/ai-cma-orchestrator.ts",
   compProvider: "lib/cma/comp-provider.ts",
   generator: "app/actions/cma-presentation/cma-generator.ts",
@@ -181,7 +187,7 @@ function testNoFabricatedPrice() {
   )
 
   // The three price columns must be fed from the orchestrator's computed range.
-  const gen = bodyOf(a, "export async function generateAICMA")
+  const gen = bodyOf(a, "export async function generateCmaReport")
   check(
     "price_range_low/high come from the comp-derived range (pricingStrategy, which is clamped)",
     /price_range_low:\s*pricingStrategy\.priceRangeLow/.test(gen) &&
@@ -364,7 +370,8 @@ function testColumnsExist() {
 // ═══════════════════════════════════════════════════════════════════════════
 function testPerCaller() {
   console.log("\n[6 · Per-caller proof — no caller lost a capability]")
-  const ret = SRC.aiCma.slice(SRC.aiCma.indexOf("revalidatePath(\"/dashboard/cma\")"))
+  // The success return of the core (the door returns the core's result unchanged).
+  const ret = SRC.aiCma.slice(Math.max(0, SRC.aiCma.indexOf("id: cmaReport.id") - 80))
 
   // Each entry: caller, the key it reads off generateAICMA's result, why.
   const contract: Array<[string, string, string]> = [
@@ -409,7 +416,7 @@ function testPerCaller() {
 // ═══════════════════════════════════════════════════════════════════════════
 function testServerDiscipline() {
   console.log('\n[7 · "use server" discipline]')
-  for (const key of ["aiCma", "generator", "sellerCma", "appraisalDefense"] as const) {
+  for (const key of ["aiCmaDoor", "generator", "sellerCma", "appraisalDefense"] as const) {
     const src = SRC[key]
     if (!/^"use server"/.test(src.trim())) continue
     const exports = [...src.matchAll(/^export (async )?function (\w+)/gm)]
@@ -418,14 +425,26 @@ function testServerDiscipline() {
     const constExports = [...src.matchAll(/^export const (\w+)/gm)].map((m) => m[1])
     check(`${(F as any)[key]}: no non-async const export`, constExports.length === 0, constExports.join(", "))
   }
-  // generateAICMA's gates must run BEFORE the comps are bought.
-  const gen = bodyOf(SRC.aiCma, "export async function generateAICMA")
-  const authAt = gen.indexOf("supabase.auth.getUser()")
+  // The gates must run BEFORE the comps are bought — in BOTH doors.
+  // Session door: the auth gate + the caller-owns-this-agent read precede the core.
+  const door = bodyOf(SRC.aiCmaDoor, "export async function generateAICMA")
+  const doorAuthAt = door.indexOf("supabase.auth.getUser()")
+  const doorCoreAt = door.indexOf("generateCmaReport(")
+  check("auth gate precedes the paid comp sourcing (the session door proves the user before calling the core)",
+    doorAuthAt >= 0 && doorCoreAt > doorAuthAt && /\.eq\("user_id", user\.id\)/.test(door))
+  // Core: the agent/user pair and the contact are proven IN THE TENANT before the spend.
+  const gen = bodyOf(SRC.aiCma, "export async function generateCmaReport")
+  const agentAt = gen.indexOf('from("agents")')
   const contactAt = gen.indexOf('from("contacts")')
   const spendAt = gen.indexOf("await runAiCma(")
-  check("auth gate precedes the paid comp sourcing", authAt >= 0 && authAt < spendAt)
+  check("the core proves the agents.id/users.id pair in the tenant before the spend",
+    agentAt >= 0 && agentAt < spendAt && /\.eq\("user_id", agentUserId\)[\s\S]{0,60}\.eq\("brokerage_id", brokerageId\)/.test(gen))
   check("the contacts-only gate precedes the paid comp sourcing", contactAt >= 0 && contactAt < spendAt)
-  check("the tenant is resolved before the spend", gen.indexOf("cmaBrokerageId") < spendAt)
+  check("the tenant is resolved before the spend", gen.indexOf("cmaBrokerageId") >= 0 && gen.indexOf("cmaBrokerageId") < spendAt)
+  // Negative control: a core that spent BEFORE the contact gate would fail the rule.
+  const reordered = gen.replace('from("contacts")', "from(\"__moved__\")") + '\n from("contacts")'
+  check("NEGATIVE CONTROL a contact gate moved after the spend is caught",
+    !(reordered.indexOf('from("contacts")') >= 0 && reordered.indexOf('from("contacts")') < reordered.indexOf("await runAiCma(")))
 }
 
 console.log("══════════════════════════════════════════════════")

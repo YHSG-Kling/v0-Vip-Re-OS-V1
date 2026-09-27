@@ -78,6 +78,9 @@ export interface CensusResult {
   targetModules: string[]
   checkedExports: number
   findings: Finding[]
+  /** lane 86F — plain (non-"use server") modules reached sessionless that build the
+   *  COOKIE client and INSERT lifecycle_events: the emitter half of the event bus. */
+  eventWriters: Array<{ file: string; path: string[] }>
 }
 
 /** Credentials a browser session cannot produce, as this tree spells them (read on
@@ -160,9 +163,23 @@ export function runCensus(set: SourceSet): CensusResult {
     for (const m of s.matchAll(/(?:const|let|var)\s+\{([^}]*)\}\s*=\s*await\s+import\(\s*["']([^"']+)["']\s*\)/g)) {
       out.push({ spec: m[2], names: m[1].split(",").map((x) => x.trim().split(/\s*:\s*/)[0].trim()).filter(Boolean) })
     }
+    // `(await import("spec")).member(…)` — the inline shape lib/orchestrator/internal.ts's
+    // EVENT_HANDLERS used for every invoker. It READS one member, so only that member is
+    // an edge (lane 86F; before this rule it fell to the bare-import line below and
+    // expanded to EVERY export of the target — 18 of 86E's 27 hub findings were session
+    // actions nothing sessionless ever called). An occurrence of the specifier in any
+    // other shape still expands to "*" (the over-report direction), control C12b.
+    const inlineMembers = new Map<string, Set<string>>()
+    for (const m of s.matchAll(/\(\s*await\s+import\(\s*["']([^"']+)["']\s*\)\s*\)\s*\.\s*([A-Za-z_$][\w$]*)/g)) {
+      if (!inlineMembers.has(m[1])) inlineMembers.set(m[1], new Set())
+      inlineMembers.get(m[1])!.add(m[2])
+    }
     for (const m of s.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/g)) {
       if (out.some((e) => e.spec === m[1])) continue
-      out.push({ spec: m[1], names: "*" })
+      const esc = m[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      const total = (s.match(new RegExp(`\\bimport\\(\\s*["']${esc}["']\\s*\\)`, "g")) ?? []).length
+      const inline = (s.match(new RegExp(`\\(\\s*await\\s+import\\(\\s*["']${esc}["']\\s*\\)\\s*\\)\\s*\\.\\s*[A-Za-z_$]`, "g")) ?? []).length
+      out.push({ spec: m[1], names: inlineMembers.has(m[1]) && inline === total ? [...inlineMembers.get(m[1])!] : "*" })
     }
     return out
   }
@@ -277,7 +294,31 @@ export function runCensus(set: SourceSet): CensusResult {
       findings.push({ target, exportName, why, importers: imp, path: [...pathTo(imp[0]), target] })
     }
   }
-  return { entries, reachedModules: parent.size, targetModules: [...edges.keys()].sort(), checkedExports, findings }
+  // THE EMITTER RULE (lane 86F). A plain module on a sessionless path that builds the
+  // cookie client and inserts into lifecycle_events writes NOTHING there (RLS has no
+  // session to evaluate) — so the event never lands and never dispatches. The pre-86F
+  // lib/events/event-helpers.ts::logEventAndTrigger was exactly this, reached from the
+  // zapier/dotloop webhooks. Module-level (over-report direction): the cookie-client
+  // import and the insert must both be CODE (comments stripped, strings kept only
+  // for the table name). Control C13.
+  // The insert's RECEIVER must be a binding the file assigns `await create(Server)Client()`
+  // with no `??` seam — a client-injected module (`client ?? await createClient()`) or a
+  // service-client insert is not the shape (C13b). Receiver matching is by NAME within
+  // the file (stated blind spot: a same-named binding in another function counts).
+  const EVENT_INSERT = /([A-Za-z_$][\w$]*)\s*\.from\(\s*["']lifecycle_events["']\s*\)\s*\.insert\(/g
+  const eventWriters: CensusResult["eventWriters"] = []
+  for (const f of parent.keys()) {
+    if (isUseServer(f)) continue
+    const v = views(f)
+    if (!COOKIE_CLIENT_SPECIFIER.test(v.stripped)) continue
+    const code = blankComments(v.stripped)
+    const cookieBound = [...code.matchAll(EVENT_INSERT)].some((m) =>
+      new RegExp(`(?:const|let)\\s+${m[1].replace(/\$/g, "\\$")}\\s*=\\s*await\\s+create(?:Server)?Client\\s*\\(`).test(code))
+    if (!cookieBound) continue
+    eventWriters.push({ file: f, path: pathTo(f) })
+  }
+  eventWriters.sort((a, b) => a.file.localeCompare(b.file))
+  return { entries, reachedModules: parent.size, targetModules: [...edges.keys()].sort(), checkedExports, findings, eventWriters }
 }
 
 // ─── Reporting ────────────────────────────────────────────────────────────────
@@ -389,6 +430,37 @@ console.log("\n═══ 1. POSITIVE CONTROLS — the finder still recognises th
     "app/actions/two.ts": TWO,
   }))
   ok("C11b a namespace import passed along unread expands to EVERY export (over-report, never a silent pass)", c11b.findings.length === 2)
+
+  // C12 — the inline `(await import("x")).member(…)` shape (lib/orchestrator/internal.ts
+  // EVENT_HANDLERS, pre-86F): only the member READ is an edge.
+  const c12 = runCensus(fixture({
+    "app/api/cron/thing/route.ts": `export async function GET() { return (await import("@/app/actions/two")).used() }\n`,
+    "app/actions/two.ts": TWO,
+  }))
+  ok("C12 an inline `(await import(\"x\")).used()` flags `used` only — its unread sibling is not an edge",
+    c12.findings.length === 1 && c12.findings[0].exportName === "used", JSON.stringify(c12.findings.map(key)))
+  // …and the SAME specifier also imported bare (not member-read) stays "every export".
+  const c12b = runCensus(fixture({
+    "app/api/cron/thing/route.ts": `export async function GET() { const p = import("@/app/actions/two"); await (await import("@/app/actions/two")).used(); return p }\n`,
+    "app/actions/two.ts": TWO,
+  }))
+  ok("C12b a specifier ALSO imported in a non-member shape still expands to EVERY export (over-report, never a silent pass)", c12b.findings.length === 2)
+
+  // C13 — the EMITTER shape (pre-86F lib/events/event-helpers.ts): a webhook reaches a
+  // plain helper that builds the COOKIE client and inserts lifecycle_events.
+  const COOKIE_EMITTER = `import { createServerClient } from "@/lib/supabase/server"\nexport async function logEvent(e: any) { const s = await createServerClient(); return s.from("lifecycle_events").insert([e]).select().single() }\n`
+  const c13 = runCensus(fixture({
+    "app/api/webhooks/thing/route.ts": `import { logEvent } from "@/lib/events/helpers"\nexport async function POST() { return logEvent({}) }\n`,
+    "lib/events/helpers.ts": COOKIE_EMITTER,
+  }))
+  ok("C13 a webhook reaching a COOKIE-client lifecycle_events insert IS an event-writer finding (the pre-86F logEventAndTrigger shape), with its path",
+    c13.eventWriters.length === 1 && c13.eventWriters[0].path.join(" > ") === "app/api/webhooks/thing/route.ts > lib/events/helpers.ts", JSON.stringify(c13.eventWriters))
+  // …the same insert on the SERVICE client is not; nor is one that survives only in a tombstone.
+  const c13b = runCensus(fixture({
+    "app/api/webhooks/thing/route.ts": `import { logEvent } from "@/lib/events/core"\nexport async function POST() { return logEvent({}) }\n`,
+    "lib/events/core.ts": `import "server-only"\nimport { createServiceClient } from "@/lib/supabase/service"\n// was: const s = await createServerClient(); s.from("lifecycle_events").insert([e])\nexport async function logEvent(e: any) { return createServiceClient().from("lifecycle_events").insert(e).select("id") }\n`,
+  }))
+  ok("C13b the same insert on the SERVICE client (with a tombstone quoting the old cookie insert) is NOT an event-writer finding", c13b.eventWriters.length === 0)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -424,35 +496,13 @@ const LEDGER: Record<string, Ruling> = {
   "lib/identity/get-agent-context.ts::getAgentContext": { kind: "adjudicated", why: "THE RESOLVER ITSELF — reached only through module-level barrels (lib/identity/index.ts, lib/platform/acting-context.ts). Called sessionless it FAILS CLOSED (isAuthenticated false), which is its contract." },
 
   // ── OPEN — real, not fixed in lane 86E, each with the lane that owns it ──
-  ...group([
-    "app/actions/copilot.ts::analyzeContactPriority",
-    "app/actions/copilot.ts::checkOverdueMilestones",
-    "app/actions/copilot.ts::completeMilestone",
-    "app/actions/copilot.ts::createTransactionMilestone",
-    "app/actions/copilot.ts::executeCopilotTask",
-    "app/actions/copilot.ts::generate7DayPlan",
-    "app/actions/copilot.ts::generateDailyGameplan",
-    "app/actions/copilot.ts::handleCoachingSessionBooked",
-    "app/actions/copilot.ts::suggestNextActions",
-    "app/actions/credit-copilot.ts::advanceCreditFlow",
-    "app/actions/credit-copilot.ts::createCreditAccount",
-    "app/actions/credit-copilot.ts::getCreditPipelineStats",
-    "app/actions/credit-copilot.ts::handlePartnerReferral",
-    "app/actions/credit-copilot.ts::handlePartnerStatusUpdate",
-    "app/actions/credit-copilot.ts::handleTargetReached",
-    "app/actions/credit-copilot.ts::referToCreditPartner",
-    "app/actions/credit-copilot.ts::updateContactCreditStatus",
-    "app/actions/journey-tasks.ts::handleAllTasksCompletedEvent",
-    "app/actions/journey-tasks.ts::handleStageCompletedEvent",
-    "app/actions/journey-tasks.ts::handleTaskCompletedEvent",
-    "app/actions/listing-lifecycle.ts::advanceListingStage",
-    "app/actions/listing-lifecycle.ts::completeListingTask",
-    "app/actions/listing-lifecycle.ts::scheduleListingAppointment",
-    "app/actions/listing-lifecycle.ts::sendReviewRequest",
-    "app/actions/listing-lifecycle.ts::setMilestonePortalVisibility",
-    "app/actions/assistant.ts::generateSmartSuggestion",
-    "app/actions/ai-cma.ts::generateAICMA",
-  ], { kind: "open", owner: "orchestrator event-bus lane (owner ruling first)", why: `THE HUB — ${HUB}'s EVENT_HANDLERS dispatch these from emitEventFromCron (app/api/cron/poll-did-videos and the other cron emitters) on a SERVICE credential with no session; the file says so itself ("session-gated handlers refuse every unattended dispatch — is true and unchanged"). Each handler needs a server-only core like lib/transactions/dotloop-document-sync.ts; 27 handlers is a lane of its own, not a census round.` }),
+  // FIXED in lane 86F (owner ruling "build and fix") — the 27-key "orchestrator
+  // event-bus lane" group LEFT this list. 9 were real hub handlers and now reach
+  // server-only cores (section 4); 18 were session ACTIONS the hub never called,
+  // over-reported because the inline `(await import(x)).member` shape expanded to
+  // every export (control C12 now reads only the member). The hub no longer imports
+  // copilot / credit-copilot / journey-tasks / listing-lifecycle / assistant at all,
+  // and the listing-appt-prep chain reaches the CMA core, not app/actions/ai-cma.ts.
   ...group([
     "app/actions/video-content.ts::approveAndGenerateVideo",
     "app/actions/video-content.ts::handleHighEngagement",
@@ -463,7 +513,9 @@ const LEDGER: Record<string, Ruling> = {
     "app/actions/lead-scraping-config.ts::createScrapingJob",
     "app/actions/lead-scraping-config.ts::updateScrapingJob",
   ], { kind: "open", owner: "scraping (left open by ruling)", why: "app/api/cron/lead-scraping calls these cookie-client job writers directly, so its lead_scraping_jobs rows are written through an empty session. Scraping is excluded from census lanes (owner: 'burned down with only scraping left opened')." }),
-  "app/actions/ai-listing-intake.ts::aiGenerateListingDescription": { kind: "open", owner: "unowned — queued as a follow-up task", why: "app/api/cron/listing-presentation-prep → lib/workflow/intelligence/listing-presentation-builder.ts calls it with no session, so getAgentContext refuses 'Unauthorized' and the deck falls back to an auto-summary every time. A SECOND defect sits behind the first: the builder reads descRes.description / .descriptions.long / .descriptions.standard — keys this action never returns (it returns descriptions.mlsDescription / marketingDescription …) — so even a session call yields no description. Fix = server-only core (compliance guard + brand voice on the service client, tenant from the builder's input.brokerageId, agents.id resolved from input.agentUserId) and read the real keys." },
+  // FIXED in lane 86F — aiGenerateListingDescription LEFT this list: the
+  // listing-presentation builder calls lib/listings/listing-description-core.ts
+  // with its verified tenant and reads the real keys (section 4).
 }
 
 console.log("\n═══ 2. THE CENSUS — \"use server\" exports that sessionless paths import and that read the session ═══")
@@ -497,12 +549,15 @@ const stale = Object.keys(LEDGER).filter((k) => !findingKeys.has(k))
 ok("every LEDGER entry is still a finding (a fixed or retired one must leave the list — it only tightens)", stale.length === 0,
   stale.length ? `no longer a finding — delete from LEDGER in scripts/sessionless-use-server-census.ts: ${stale.join(", ")}` : undefined)
 
-console.log("\n═══ 3. FIXED (lane 86E) — the three sessionless callers now reach a server-only core, not the cookie door ═══")
+console.log("\n═══ 3. FIXED (lanes 86E, 86F) — sessionless callers now reach a server-only core, not the cookie door ═══")
 {
   const FIXED: Array<{ door: string; caller: string; core: string }> = [
     { door: "app/actions/dotloop-integration.ts::syncDotloopDocuments", caller: "app/api/cron/dotloop-sync/route.ts", core: "lib/transactions/dotloop-document-sync.ts" },
     { door: "app/actions/ai-review-automation.ts::aiGenerateReviewRequest", caller: "app/api/cron/review-request-on-close/route.ts", core: "lib/reputation/review-request-draft.ts" },
     { door: "app/actions/ai-sphere-management.ts::aiGenerateTouchpoint", caller: "lib/sphere-resonance/run-resonance-scan.ts", core: "lib/sphere-resonance/touchpoint-draft.ts" },
+    // lane 86F
+    { door: "app/actions/ai-listing-intake.ts::aiGenerateListingDescription", caller: "lib/workflow/intelligence/listing-presentation-builder.ts", core: "lib/listings/listing-description-core.ts" },
+    { door: "app/actions/ai-cma.ts::generateAICMA", caller: "lib/workflow-orchestrator/chains/listing-appt-prep.ts", core: "lib/cma/ai-cma-report.ts" },
   ]
   for (const x of FIXED) {
     ok(`${x.door} is no longer reached by a sessionless path`, !findingKeys.has(x.door))
@@ -516,6 +571,114 @@ console.log("\n═══ 3. FIXED (lane 86E) — the three sessionless callers n
       !SESSION_TOKENS.some((t) => t.on === "identifiers" && t.re.test(blankStrings(coreSrc))))
     ok(`…and it pins every tenant read to the brokerageId it is handed`, (coreStripped.match(/\.eq\("brokerage_id", brokerageId\)/g) ?? []).length >= 2)
   }
+}
+
+console.log("\n═══ 4. THE HUB (lane 86F) — lib/orchestrator/internal.ts reaches server-only cores, not cookie doors ═══")
+{
+  // The cross-file blind spot stated in the header (a target's cross-file callee is
+  // not followed) hid the WORST of the hub: app/actions/listing-lifecycle.ts's
+  // handlers read no session themselves — they delegated to lib/application
+  // services that built the cookie client. So the hub is pinned here by RULE, not
+  // by the finder: every module its source imports is either a server-only core
+  // that builds no cookie client, or a "use server" module whose every imported
+  // export is on the LEDGER above.
+  const HUB_SRC = readFileSync(HUB, "utf8")
+  const hubStripped = stripComments(HUB_SRC)
+  ok("the hub builds no cookie client (no @/lib/supabase/server import) — markEventProcessed / logProcessingResults / the suggestion cards ride the service client",
+    !COOKIE_CLIENT_SPECIFIER.test(hubStripped) && /from\s*["']@\/lib\/supabase\/service["']/.test(hubStripped))
+  const hubSpecs = [...new Set([...hubStripped.matchAll(/(?:from\s*|import\(\s*)["'](@\/[^"']+)["']/g)].map((m) => m[1]))]
+  const hubUseServer: string[] = []
+  for (const spec of hubSpecs) {
+    const base = spec.slice(2)
+    const file = [`${base}.ts`, `${base}.tsx`, join(base, "index.ts")].find((c) => existsSync(c))
+    if (file && hasUseServerDirective(stripComments(readFileSync(file, "utf8")))) hubUseServer.push(file)
+  }
+  const hubFindingTargets = new Set(r.findings.filter((f) => f.path.includes(HUB)).map((f) => f.target))
+  const unledgeredHubDoors = hubUseServer.filter((f) => hubFindingTargets.has(f) && r.findings.some((x) => x.target === f && !LEDGER[key(x)]))
+  ok(`every "use server" module the hub still imports is either session-free or fully LEDGERED (${hubUseServer.join(", ") || "none"})`,
+    unledgeredHubDoors.length === 0, unledgeredHubDoors.join(", "))
+  // Positive control: the finder above DOES see the one door deliberately left
+  // (lane 86B's video handlers), so "0 unledgered" is not a blind 0.
+  ok("…positive control: the hub's remaining cookie door (app/actions/video-content.ts, lane 86B) IS seen by the finder",
+    hubFindingTargets.has("app/actions/video-content.ts"))
+
+  const HUB_CORES = [
+    "lib/assistant/smart-suggestion.ts",
+    "lib/listing-lifecycle/lifecycle-event-tasks.ts",
+    "lib/credit/credit-event-handlers.ts",
+    "lib/portal/journey-event-handlers.ts",
+    "lib/copilot/seven-day-plan.ts",
+  ]
+  for (const core of HUB_CORES) {
+    const raw = existsSync(core) ? readFileSync(core, "utf8") : ""
+    const st = stripComments(raw)
+    const spec = `@/${core.replace(/\.ts$/, "")}`
+    ok(`${core}: imported by the hub`, hubStripped.includes(spec))
+    ok(`…server-only, never "use server", builds no cookie client, reads no session`,
+      /^\s*import\s+["']server-only["']/m.test(st) && !hasUseServerDirective(st) && !COOKIE_CLIENT_SPECIFIER.test(st) &&
+      !SESSION_TOKENS.some((t) => t.on === "identifiers" && t.re.test(blankStrings(raw))))
+    ok(`…and pins its tenant reads to the brokerageId it is handed`, (st.match(/\.eq\("brokerage_id", brokerageId\)/g) ?? []).length >= 1)
+  }
+  // The retired doors are GONE, not merely unreferenced — a "use server" export is a
+  // public endpoint, and the hub was their only caller.
+  const RETIRED: Array<[string, string]> = [
+    ["app/actions/copilot.ts", "generate7DayPlan"],
+    ["app/actions/credit-copilot.ts", "handleTargetReached"],
+    ["app/actions/credit-copilot.ts", "handlePartnerReferral"],
+    ["app/actions/credit-copilot.ts", "handlePartnerStatusUpdate"],
+    ["app/actions/journey-tasks.ts", "handleTaskCompletedEvent"],
+    ["app/actions/listing-lifecycle.ts", "handleOfferReceived"],
+    ["app/actions/listing-lifecycle.ts", "triggerReviewSequence"],
+    ["app/actions/assistant.ts", "generateSmartSuggestion"],
+  ]
+  const exportedDoor = (fn: string) => new RegExp(`export\\s+async\\s+function\\s+${fn}\\b`)
+  // Positive control: the absence test below still recognises a live door, and a
+  // TOMBSTONE naming it (every retired door has one) is not read as one.
+  ok("…positive control: the retired-door finder recognises a live export and ignores a tombstone naming it",
+    exportedDoor("generate7DayPlan").test(blankStrings(stripComments(`"use server"\nexport async function generate7DayPlan(p: any) { return p }\n`))) &&
+    !exportedDoor("generate7DayPlan").test(blankStrings(stripComments(`// TOMBSTONE — \`export async function generate7DayPlan(payload)\` LIVED HERE\n`))))
+  for (const [file, fn] of RETIRED) {
+    const st = existsSync(file) ? blankStrings(stripComments(readFileSync(file, "utf8"))) : ""
+    ok(`${file}::${fn} is no longer an exported "use server" door`, existsSync(file) && !exportedDoor(fn).test(st))
+  }
+}
+
+console.log("\n═══ 5. THE EMITTER (lane 86F) — no sessionless path inserts lifecycle_events on the cookie client ═══")
+{
+  // The four callers (zapier, dotloop, e-sign finalize, e-sign execution loop) now
+  // write through lib/events/lifecycle-event-core.ts on the service client with the
+  // verified row's tenant; logEventAndTrigger is a SESSION door. lib/offers/
+  // offer-extractor.ts (inbound-mail webhook) took the service client through a seam.
+  // What remains is ADJUDICATED with evidence; a NEW writer fails, a stale entry fails.
+  const EVENT_LEDGER: Record<string, string> = {
+    "lib/kernel/education.ts": "MODULE-LEVEL OVER-REPORT through the lib/kernel barrel — app/api/cron/calendar-sync imports ONLY pullCalendarEventsFromProvider from @/lib/kernel (the same evidence as respondToCounter above); education's session writers have no sessionless caller.",
+    "lib/kernel/listings.ts": "MODULE-LEVEL OVER-REPORT through the lib/kernel barrel — reached only via app/api/cron/calendar-sync's `import { pullCalendarEventsFromProvider } from \"@/lib/kernel\"`.",
+    "lib/kernel/offers.ts": "MODULE-LEVEL OVER-REPORT through the lib/kernel barrel — calendar-sync imports only pullCalendarEventsFromProvider; offers.ts's cookie insert helper is reached from its session actions.",
+  }
+  console.log(`  event writers on the cookie client reached sessionless: ${r.eventWriters.length} (${r.eventWriters.filter((w) => EVENT_LEDGER[w.file]).length} adjudicated)`)
+  for (const w of r.eventWriters) console.log(`    ${EVENT_LEDGER[w.file] ? "· adjudicated" : "✗ NEW"}  ${w.file}  path: ${w.path.join(" > ")}`)
+  const newWriters = r.eventWriters.filter((w) => !EVENT_LEDGER[w.file])
+  ok("ZERO unledgered sessionless-reached cookie-client lifecycle_events inserts (C13 proves the finder sees the shape)", newWriters.length === 0,
+    newWriters.map((w) => w.file).join(", "))
+  const writerFiles = new Set(r.eventWriters.map((w) => w.file))
+  const staleWriters = Object.keys(EVENT_LEDGER).filter((f) => !writerFiles.has(f))
+  ok("every EVENT_LEDGER entry is still a finding (it only tightens)", staleWriters.length === 0, staleWriters.join(", "))
+  const core = "lib/events/lifecycle-event-core.ts"
+  const coreRaw = existsSync(core) ? readFileSync(core, "utf8") : ""
+  const coreSt = stripComments(coreRaw)
+  ok(`${core} is server-only, never "use server", builds no cookie client, reads no session`,
+    /^\s*import\s+["']server-only["']/m.test(coreSt) && !hasUseServerDirective(coreSt) && !COOKIE_CLIENT_SPECIFIER.test(coreSt) &&
+    !SESSION_TOKENS.some((t) => t.on === "identifiers" && t.re.test(blankStrings(coreRaw))))
+  ok("…its dedupe read and actor proof are pinned to the brokerageId it is handed, and the insert is counted",
+    (coreSt.match(/\.eq\("brokerage_id", brokerageId\)/g) ?? []).length >= 2 && /from\("lifecycle_events"\)\s*\.insert\([\s\S]{0,700}\.select\(/.test(coreSt))
+  for (const caller of ["app/api/webhooks/zapier/route.ts", "app/api/webhooks/dotloop/route.ts", "lib/esign-webhooks/finalize-packet.ts", "lib/forms/esign-execution-loop.ts"]) {
+    const st = existsSync(caller) ? stripComments(readFileSync(caller, "utf8")) : ""
+    ok(`${caller} writes events through the core, not the cookie-client helper`,
+      st.includes("@/lib/events/lifecycle-event-core") && !/\blogEventAndTrigger\s*\(/.test(st))
+  }
+  const zap = existsSync("app/api/webhooks/zapier/route.ts") ? blankComments(stripComments(readFileSync("app/api/webhooks/zapier/route.ts", "utf8"))) : ""
+  ok("the zapier webhook takes its tenant from the connection record (global_settings.zapier_api_key), never the body",
+    /from\("global_settings"\)[\s\S]{0,120}\.eq\("zapier_api_key"/.test(zap) && /recordLifecycleEvent\(svc, tenant\.brokerageId/.test(zap) && !/brokerage_id:\s*payload\.brokerage_id/.test(zap))
 }
 
 console.log(`\n${"═".repeat(70)}`)

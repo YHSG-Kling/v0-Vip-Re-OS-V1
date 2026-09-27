@@ -11,7 +11,6 @@ import { generateTextRouted as generateText, generateObjectRouted } from "@/lib/
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import { guardContent, attachApprovalSubject } from "@/lib/content-guardian"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { z } from "zod"
@@ -153,144 +152,23 @@ export async function aiEnrichPropertyData(address: string, _agentId?: string) {
 // ============================================
 // 3. AI LISTING DESCRIPTION GENERATOR
 // ============================================
-export async function aiGenerateListingDescription(params: {
-  agentId?: string  // ignored — derived from session
-  propertyData: any
-  style: "luxury" | "family" | "investor" | "first_time_buyer"
-  highlights?: string[]
-  neighborhood?: string
-  /** The listing the copy is for. Stamped as listing_marketing_content.listing_id
-   *  — the column app/dashboard/listings/[id]/share/page.tsx filters on — only
-   *  after the listing is proven to be THIS brokerage's (never a foreign id). */
-  listingId?: string
-}) {
-  try {
-    // Auth gate — burns paid OpenAI inference. Previously accepted a
-    // caller-supplied agentId and "fell back" to looking it up in the DB
-    // when the session user didn't match, which let any caller drive
-    // generation under any other agent's brokerage + brand-voice context.
-    const ctx = await getAgentContext()
-    if (!ctx.isAuthenticated || !ctx.brokerageId) {
-      return { success: false, error: "Unauthorized" }
-    }
-    const brokerageId = ctx.brokerageId
-    // NOT `?? ctx.userId` (m359). Everything this reaches is agents-class —
-    // ai_usage_log, brand_voice_profile, guardContent, the dotloop loop and
-    // aiGenerateListingDescription all key agents(id). The substitution only
-    // fired when the caller had no agents row, i.e. exactly when there was
-    // nothing for those queries to match anyway; it bought a wrong-class id in
-    // place of an honest refusal. This is the spelling test:identity-fallback
-    // could not see until m358.
-    const agentId = ctx.agentId
-    if (!agentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
-
-    const supabase = await createClient()
-
-    // Get agent's brand voice
-    const { data: brandVoice } = await supabase
-      .from("brand_voice_profile")
-      .select("*")
-      .eq("agent_id", agentId)
-      .maybeSingle()
-
-    const { object: descriptions } = await generateObjectRouted({
-      feature: "listing_description",
-      brokerageId, agentId, userId: ctx.userId ?? null,
-      schema: z.object({
-        mlsDescription: z.string().describe("MLS-compliant description, 500 chars max, no superlatives"),
-        marketingDescription: z.string().describe("Marketing headline and paragraph for websites"),
-        socialCaption: z.string().describe("Instagram/Facebook caption with hashtags"),
-        emailTeaser: z.string().describe("Email preview text, 150 chars"),
-        videoScript: z.string().describe("30-second video walkthrough script"),
-        seoTitle: z.string().describe("SEO-optimized page title"),
-        seoDescription: z.string().describe("Meta description for search engines"),
-      }),
-      prompt: `You are a real estate copywriter. Generate multiple descriptions for this listing.
-
-Property Details:
-${JSON.stringify(params.propertyData, null, 2)}
-
-Target Audience: ${params.style}
-Highlights: ${params.highlights?.join(", ") || "None specified"}
-Neighborhood: ${params.neighborhood || "Not specified"}
-${brandVoice ? `Brand Voice: ${brandVoice.tone}, ${brandVoice.style}` : ""}
-
-IMPORTANT RULES:
-- MLS description must be factual, no "best" or "amazing"
-- Include Fair Housing compliant language
-- Marketing can be more persuasive
-- Social should be engaging with relevant hashtags
-- All content must be original`,
-    })
-
-    // Run compliance + BrandVoice guard on MLS description (the regulated channel)
-    const guardResult = await guardContent({
-      content:     descriptions.mlsDescription,
-      agentId,
-      brokerageId,
-      contentType: "listing_description",
-    }).catch((err) => {
-      console.error("[compliance-guard] guardContent threw — treating as guard failure:", err)
-      return { flagged: false, guardFailed: true, violations: [], notes: [], content: "", brandVoiceChecked: false, approvalItemId: null }
-    })
-
-    // Save generated content. listing_marketing_content is listing/brokerage-scoped
-    // (no agent_id/status/target_audience columns) — the audience/style folds into
-    // the content blob like the canonical ai-marketing-automation writer.
-    //
-    // The id is SELECTED now because it is the subject a flagged approval_items row
-    // points at. This path generates text before any row exists, so the scan
-    // (which must run first — see the ordering ruling in lib/content-guardian)
-    // could not name it; the link is stamped immediately after, below.
-    // listing_id: until 2026-09-07 no writer of this table stamped it, so the
-    // share page's `.eq("listing_id", …)` read (the ONE listing-scoped reader)
-    // found nothing — a writerless column the deleted ai-marketing-automation
-    // duplicate had also left null. Stamped only for a listing inside THIS
-    // brokerage; an unknown or foreign id stays null rather than mis-filing.
-    let scopedListingIdForContent: string | null = null
-    const candidateListingId = params.listingId ?? (typeof params.propertyData?.id === "string" ? params.propertyData.id : null)
-    if (candidateListingId && isValidUUID(candidateListingId)) {
-      const { data: owned, error: ownedError } = await supabase
-        .from("listings").select("id").eq("id", candidateListingId).eq("brokerage_id", brokerageId).maybeSingle()
-      if (ownedError) console.error("[AI Listing Intake] listing ownership read refused:", ownedError.message)
-      if (owned) scopedListingIdForContent = candidateListingId
-    }
-    const { data: savedContent, error: savedContentError } = await supabase
-      .from("listing_marketing_content")
-      .insert({
-        brokerage_id: brokerageId,
-        listing_id: scopedListingIdForContent,
-        content_type: "ai_descriptions",
-        content: { ...descriptions, target_audience: params.style },
-      })
-      .select("id")
-      .single()
-    if (savedContentError) {
-      console.error("[AI Listing Intake] listing_marketing_content insert failed:", savedContentError)
-    }
-
-    // `approval_items.item_id` — the column the reviewer opens. Called
-    // unconditionally: it is a no-op when nothing was flagged (approvalItemId is
-    // null) or when the save above was refused, and never throws.
-    await attachApprovalSubject(
-      (guardResult as { approvalItemId?: string | null }).approvalItemId,
-      (savedContent?.id as string | null) ?? null,
-    )
-
-    return {
-      success: true,
-      descriptions,
-      guardResult: {
-        flagged:    guardResult.flagged,
-        violations: guardResult.violations,
-        notes:      guardResult.notes,
-      },
-    }
-  } catch (error) {
-    console.error("[AI Listing Intake] Description error:", error)
-    return handleError(error, "aiGenerateListingDescription")
-  }
-}
+// TOMBSTONE (lane 86F, orphan doctrine §1.1/§1.3) — `aiGenerateListingDescription`
+// LIVED HERE and is gone. Its ONLY caller was lib/workflow/intelligence/
+// listing-presentation-builder.ts step 4b (the listing-presentation-prep cron),
+// which has no cookie — so this session-gated door refused it "Unauthorized" on
+// every run, and the builder then read keys this never returned. Once the body
+// moved to a core the builder can call, nothing called this door, and both of
+// its capabilities already have a live home:
+//   · the multi-channel generation (MLS / marketing / social / email / video /
+//     SEO, compliance-first prompt, guardContent grade, listing_marketing_content
+//     row + approval link): lib/listings/listing-description-core.ts
+//     ::generateListingDescriptions — the builder calls it with its verified tenant;
+//   · the AGENT-facing "write my listing copy" door the listing workspace actually
+//     renders (listing-description-composer.tsx): app/actions/listings-kernel.ts:822
+//     generateListingDescriptionAction (session-gated, listing-scoped, guardContent
+//     with the listing as subject).
+// Keeping a caller-less "use server" copy would be a public endpoint that spends
+// model tokens for nobody (test:wired-surface fails a new orphan action).
 
 // ============================================
 // 4. AI PRICING RECOMMENDATION
@@ -1010,7 +888,8 @@ Provide a 1-2 sentence recommendation for the agent.`,
  *      orchestrator was its only caller. Survivor: lib/state-forms/registry.ts
  *      getStateForms — all 50 states, no DEFAULT, and already the registry that
  *      generateListingAgreement in this file uses. Its own tombstone is above.
- *   3. aiGenerateListingDescription — reachable: ListingDescriptionComposer
+ *   3. aiGenerateListingDescription — (lane 86F) RETIRED onto lib/listings/listing-description-core.ts;
+ *      ListingDescriptionComposer reaches app/actions/listings-kernel.ts generateListingDescriptionAction
  *   4. aiSuggestListPrice        — reachable: ListingIntelligenceCard
  *   5. aiCheckListingCompliance  — reachable: ListingIntelligenceCard
  *   6. createListing (local)     — MERGED onto the survivor; see the tombstone above

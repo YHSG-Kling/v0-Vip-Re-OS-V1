@@ -207,17 +207,21 @@ export async function handleAutomationTriggered(payload: any) {
 // contacts columns (scripts/schema-snapshot.ts:239), so on real rows every
 // branch but its "awareness" default was dead and the two suggestions that
 // could ever fire were generic boilerplate. SURVIVOR lane:
-// smart_assistant_suggestions — writer generateSmartSuggestion below, reader
+// smart_assistant_suggestions — writer lib/assistant/smart-suggestion.ts (writeSmartSuggestion), reader
 // app/actions/contact-details.ts.
 
-/** smart_assistant_suggestions.priority — the live CHECK vocabulary
- *  (scripts/check-vocabularies.ts:1371). "critical" is NOT a member; callers
- *  carrying it map to "high" (lib/intelligence/multi-agent-router.ts:349 makes
- *  the same mapping). */
-type SuggestionPriority = "low" | "medium" | "high"
+// THE WRITER MOVED (lane 86F, orphan doctrine §1 — one core, two doors):
+// lib/assistant/smart-suggestion.ts::writeSmartSuggestion. This file's former
+// `export async function generateSmartSuggestion(input)` was a "use server" door
+// that took `brokerage_id` from its caller and built the COOKIE client, and its
+// other caller — lib/orchestrator/internal.ts's local handlers, dispatched from
+// cron on a service credential — read nothing through it and wrote no card. The
+// orchestrator now calls the core with the service client and the event row's
+// tenant; this file keeps the SESSION half below, module-private (no public
+// endpoint takes a brokerage from the browser any more).
+import { writeSmartSuggestion, type SuggestionPriority } from "@/lib/assistant/smart-suggestion"
 
 interface SuggestionInput {
-  brokerage_id: string
   user_id: string
   context_type: string
   context_id: string
@@ -225,59 +229,25 @@ interface SuggestionInput {
   title: string
   description: string
   action_payload: Record<string, any>
-  /** Optional — the readers ORDER BY this column (app/actions/contact-details.ts
-   *  :199, app/dashboard/coaching/page.tsx:75), and this writer never set it, so
-   *  every row it wrote sorted as NULL. */
   priority?: SuggestionPriority
 }
 
-export async function generateSmartSuggestion(input: SuggestionInput): Promise<void> {
+/** The session door onto the core: the tenant is the SESSION's (the caller
+ *  passes spendActor.brokerageId from getAgentContext), the client is the
+ *  RLS-bound cookie client. Throws on a refused insert, as before. */
+async function persistSessionSuggestion(brokerageId: string, input: SuggestionInput): Promise<void> {
   const supabase = await createServerClient()
-
-  const { data: sugAgentRow } = await supabase
-    .from("agents").select("id").eq("user_id", input.user_id).eq("brokerage_id", input.brokerage_id).maybeSingle()
-  const suggestionAgentId = (sugAgentRow as { id?: string } | null)?.id ?? null
-  if (!suggestionAgentId) return
-
-  // pass 14 (array-literal sweep): the live columns are agent_id /
-  // action_payload_json, and context_id rides metadata (no such column) —
-  // the old user_id/context_id/action_payload keys errored every insert.
-  //
-  // THE METADATA KEY (§6, 2026-09-02). This wrote `metadata.context_id`, a key
-  // NO reader in the tree consults. The one reader that keys on metadata at all
-  // — app/actions/contact-details.ts:192, the /crm "Suggestions for this
-  // contact" card — filters `metadata->>contact_id`, the spelling every OTHER
-  // writer uses (lib/intelligence/intent-classifier.ts:126, ai-reply-coach,
-  // fatigue-calculator, alert-notifier). So the nine orchestrator call sites
-  // routed through here with context_type "contact" (internal.ts:404,:440,…)
-  // wrote rows the contact card could never show. SURVIVOR spelling:
-  // `<context_type>_id` — contact_id / listing_id / transaction_id / video_id /
-  // image_id, which is every context_type the tree passes here. `context_id`
-  // is no longer written.
-  const { error } = await supabase.from("smart_assistant_suggestions").insert([
-    {
-      brokerage_id: input.brokerage_id,
-      // IDENTITY CLASS (m365). pass 14 fixed the COLUMN NAMES here — its
-      // comment above records that the old user_id/context_id keys "errored
-      // every insert" — and left the users id in the renamed agents-class
-      // column. So the insert still errored, just for a different reason: a
-      // rename that moved the bug rather than removing it.
-      agent_id: suggestionAgentId,
-      context_type: input.context_type,
-      suggestion_type: input.suggestion_type,
-      title: input.title,
-      description: input.description,
-      action_payload_json: input.action_payload,
-      metadata: { [`${input.context_type}_id`]: input.context_id },
-      status: "pending",
-      ...(input.priority ? { priority: input.priority } : {}),
-    },
-  ])
-
-  if (error) {
-    console.error("[v0] Error creating suggestion:", error)
-    throw error
-  }
+  const r = await writeSmartSuggestion(supabase, brokerageId, {
+    userId: input.user_id,
+    contextType: input.context_type,
+    contextId: input.context_id,
+    suggestionType: input.suggestion_type,
+    title: input.title,
+    description: input.description,
+    actionPayload: input.action_payload,
+    priority: input.priority,
+  })
+  if (!r.written) throw new Error(`Suggestion not written: ${r.reason}`)
 }
 
 /**
@@ -359,7 +329,7 @@ const PAGE_CONTEXT_TYPE: Record<string, string> = {
  * This was the ONE remaining category-C orphan export: four real rule sets
  * (getContactSuggestions, getListingSuggestions, getTransactionSuggestions,
  * getDashboardSuggestions) that returned an in-memory array to a caller that
- * did not exist. It could not be deleted — `generateSmartSuggestion` above is
+ * did not exist. It could not be deleted — the suggestion writer (writeSmartSuggestion) is
  * an INSERT API, not a rule engine, so there was no duplicate to merge onto,
  * and deleting four rule sets to move a number is forbidden. It could not be
  * wired to the orchestrator — lib/orchestrator/internal.ts:125-130 REFUSES its
@@ -368,7 +338,7 @@ const PAGE_CONTEXT_TYPE: Record<string, string> = {
  * `page`, and nothing emits two of them anyway.
  *
  * WHAT IT DOES NOW: every suggestion the rules produce is written to
- * `smart_assistant_suggestions` THROUGH generateSmartSuggestion, so it lands on
+ * `smart_assistant_suggestions` THROUGH writeSmartSuggestion, so it lands on
  * the three readers that already exist —
  *   · app/actions/contact-details.ts:getContactCopilotSuggestions
  *     (metadata->>contact_id, pending, this agent + brokerage) → the
@@ -432,7 +402,7 @@ export async function generateAssistantSuggestions(
 
   // ── DEDUPE READ — what is already pending for this page ──────────────────
   // RLS-bound; scoped the way the readers scope (agent + brokerage + the
-  // metadata link generateSmartSuggestion writes).
+  // metadata link writeSmartSuggestion writes).
   const supabase = await createServerClient()
   const pendingTitles = new Set<string>()
   if (spendActor.agentId) {
@@ -482,8 +452,7 @@ export async function generateAssistantSuggestions(
   for (const s of suggestions) {
     if (pendingTitles.has(s.title)) { skipped++; continue }
     try {
-      await generateSmartSuggestion({
-        brokerage_id: spendActor.brokerageId,
+      await persistSessionSuggestion(spendActor.brokerageId, {
         user_id: spendActor.userId,
         context_type: contextType,
         context_id: contextId,
@@ -496,7 +465,7 @@ export async function generateAssistantSuggestions(
       persisted++
       pendingTitles.add(s.title) // two rules with one title in a single run write once
     } catch (err) {
-      // generateSmartSuggestion THROWS on a refused insert (it reads its error).
+      // persistSessionSuggestion THROWS on a refused insert (it reads its error).
       // Counted and reported, not swallowed: the array below still renders, but
       // the caller is told the queue is short.
       const msg = err instanceof Error ? err.message : String(err)

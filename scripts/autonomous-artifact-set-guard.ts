@@ -111,7 +111,9 @@ check("the chain hands no packet to the reel step",
 console.log("\n── 3b · the house is valued ONCE, not twice ──")
 {
   const BUILDER_SRC = BUILDER
-  const CMA_ACTION  = src("app/actions/ai-cma.ts")
+  // lane 86F: the generator's success return lives in the server-only core now
+  // (app/actions/ai-cma.ts generateAICMA returns the core's result unchanged).
+  const CMA_ACTION  = src("lib/cma/ai-cma-report.ts")
   check("the builder ACCEPTS a caller-supplied CMA",
     /cma\?:\s*\{/.test(BUILDER_SRC))
   check("…and skips its own paid run when one is given",

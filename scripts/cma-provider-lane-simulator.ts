@@ -91,7 +91,9 @@ const F = {
   orch: "lib/cma/ai-cma-orchestrator.ts",
   readers: "lib/property/rentcast.ts",
   rates: "lib/cma/state-adjustment-rates.ts",
-  action: "app/actions/ai-cma.ts",
+  // lane 86F: the CMA writer (cma_reports / cma_comparables / cma_price_adjustments) moved
+  // to the server-only core the autonomous chain can run; the rule follows the WRITER.
+  action: "lib/cma/ai-cma-report.ts",
 }
 
 let pass = 0

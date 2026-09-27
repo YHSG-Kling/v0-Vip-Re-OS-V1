@@ -426,8 +426,19 @@ console.log("\n═══ 7. The cluster m358 made visible ═══")
   // survivor is app/actions/listings-kernel.ts createListingWithSellerContact),
   // and each carried one of the four refusal sites. The remaining two are
   // asserted here; the survivor is asserted below, so no site went unwatched.
-  ok("...and each of the remaining two refuses instead, so a user without an agents\n    row is told to finish setup rather than handed a silently empty listing intake",
-    (li.match(/No agent profile for this user yet — finish account setup\./g) ?? []).length === 2)
+  // TWO became ONE in lane 86F, again not by weakening the rule: the second site
+  // was aiGenerateListingDescription, RETIRED once its only caller (the listing-
+  // presentation builder) moved to lib/listings/listing-description-core.ts. The
+  // rule follows the body: the core refuses a missing agents id, and the builder
+  // RESOLVES one from the users id inside the tenant — never substitutes it.
+  ok("...and each remaining site refuses instead, so a user without an agents\n    row is told to finish setup rather than handed a silently empty listing intake",
+    (li.match(/No agent profile for this user yet — finish account setup\./g) ?? []).length === 1)
+  const ldc = code(read("lib/listings/listing-description-core.ts"))
+  const lpb = code(read("lib/workflow/intelligence/listing-presentation-builder.ts"))
+  ok("...and the listing-description core REFUSES a missing agents id, and its sessionless\n    caller resolves one (resolveAgentIdInBrokerage) instead of passing the users id",
+    /if \(!agentId\) return \{ success: false, error: "Listing description refused: no agent profile/.test(ldc) &&
+      /resolveAgentIdInBrokerage\(svc, input\.agentUserId, input\.brokerageId\)/.test(lpb) &&
+      !/agentId:\s*input\.agentUserId/.test(lpb))
   // THE SURVIVOR MUST REFUSE TOO — otherwise the merge would have moved the
   // defect instead of the capability. resolveCallerContext returns agentId
   // NULLABLE (broker/admin with no agents row), and lib/kernel/listings.ts

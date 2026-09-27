@@ -1097,7 +1097,15 @@ const W23_WRITER_FLOORS: Array<{ file: string; table: string; floor: number }> =
   // yesterday's briefing notice back. A floor counts writers, so counting the read
   // would demand a second insert that was never supposed to exist.
   { file: "lib/intelligence/daily-briefing-generator.ts", table: "notifications", floor: 1 },
-  { file: "app/actions/credit-copilot.ts", table: "notifications", floor: 3 },
+  // MOVED, not lost (lane 86F). Two of credit-copilot.ts's three notifications
+  // writers were the orchestrator handlers handleTargetReached /
+  // handlePartnerStatusUpdate — cookie-bound "use server" doors a cron dispatch
+  // could never write through. Their ONE shared, tenant-proven writer
+  // (notifyInTenant) now lives in lib/credit/credit-event-handlers.ts, so the
+  // floor follows the write: credit-copilot keeps its budget alert (1) and the
+  // core carries the event notifications (1 site, both reactions call it).
+  { file: "app/actions/credit-copilot.ts", table: "notifications", floor: 1 },
+  { file: "lib/credit/credit-event-handlers.ts", table: "notifications", floor: 1 },
   // MOVED, not lost (wave 26, lane L3). social-publishing.ts's notifications write
   // lived inside `handleContentApproved`, one of THREE functions that approved a
   // social post. It was deleted onto `approveSocialPost` in social-media-automation.ts

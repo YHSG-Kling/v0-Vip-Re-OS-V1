@@ -51,9 +51,16 @@ export interface ListingApptPrepExecutors {
 }
 
 const realExecutors: ListingApptPrepExecutors = {
+  // THE SERVER-ONLY CORE, not the "use server" action (lane 86F). This called
+  // app/actions/ai-cma.ts::generateAICMA, whose first gate is auth.getUser() on
+  // the COOKIE client — and this chain runs from the orchestrator, from the stage
+  // pipeline's service-client automations and from the AI-ISA booking webhook, so
+  // every unattended run was refused "Unauthorized" at step 1. The core takes the
+  // tenant from the RUN and proves the agents.id/users.id pair inside it.
   generateCMA: async (args) => {
-    const { generateAICMA } = await import("@/app/actions/ai-cma")
-    return generateAICMA(args)
+    const { generateCmaReport } = await import("@/lib/cma/ai-cma-report")
+    const { brokerageId, agentUserId, ...params } = args ?? {}
+    return generateCmaReport(createServiceClient(), { brokerageId, agentUserId, params })
   },
   // The SERVER-ONLY core, not the "use server" action wrapping it. This chain is
   // started unattended by lib/ai-isa/book-seller-appointment.ts (a webhook lane
@@ -229,13 +236,17 @@ export const listingApptPrepChain: WorkflowChain = {
           return { success: false, error: "Missing contact or agent context" }
         }
 
-        // Resolve agent row (generateAICMA expects an agents.id, not a users.id)
-        const { data: agent } = await svc
+        // Resolve agent row (the CMA core expects an agents.id, not a users.id) —
+        // INSIDE the run's tenant: users.id and agents.id are disjoint (§3) and a
+        // user with agents rows in two brokerages must not be filed under the other.
+        const { data: agent, error: agentError } = await svc
           .from("agents")
           .select("id")
           .eq("user_id", ctx.agentUserId)
+          .eq("brokerage_id", ctx.brokerageId)
           .maybeSingle()
 
+        if (agentError) return { success: false, error: `Agent lookup refused: ${agentError.message}` }
         if (!agent) return { success: false, error: "Agent profile not found" }
 
         // Use the canonical CMA generator via the injectable executor seam.
@@ -243,7 +254,7 @@ export const listingApptPrepChain: WorkflowChain = {
         // the lib layer at edge); tests inject a fake so no AVM spend in CI.
         //
         // PARAMETER NAMES. This object used `address`/`city`/`state`/`zipCode`/
-        // `sqft` — NOT ONE of which is a key on generateAICMA's CMAParams, which
+        // `sqft` — NOT ONE of which is a key on the CMA core's CMAParams, which
         // reads propertyAddress / propertyCity / propertyState / propertyZip /
         // squareFeet. The `as any` on the call is what let it compile. So every
         // CMA generated from a listing appointment ran with an EMPTY address and
@@ -252,6 +263,9 @@ export const listingApptPrepChain: WorkflowChain = {
         // returned a CMA built on nothing. `listingType` was missing too, which
         // the pricing strategy branches on.
         const cma = await activeExecutors.generateCMA({
+          // The verified tenant + the users.id the core proves owns agent.id there.
+          brokerageId: ctx.brokerageId,
+          agentUserId: ctx.agentUserId,
           agentId: agent.id,
           contactId: ctx.contactId,
           propertyAddress: propertyData.address,

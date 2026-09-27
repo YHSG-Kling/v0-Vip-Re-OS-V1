@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
-import { logEventAndTrigger } from "@/lib/events"
+import { recordLifecycleEvent } from "@/lib/events/lifecycle-event-core"
 import { evaluateEnvelopeExecution } from "@/lib/forms/esign-execution-loop"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -137,31 +137,42 @@ export async function POST(request: NextRequest) {
           .is("completed_at", null)
           .then(() => {}, () => {})
 
-        if (loopFullyExecuted && doc.transaction_id) {
+        // THE TENANT IS THE VERIFIED ROW'S (lane 86F). These two emits passed NO
+        // brokerage_id (the `as any` hid it) through the cookie-client helper, so
+        // each threw MISSING_BROKERAGE_ID — or, had it not, been refused by RLS —
+        // and nothing dispatched. They also put the CONTACT id in user_id, which is
+        // lifecycle_events.actor_user_id (a users FK); the contact now rides the
+        // payload and the actor is left to the core (no user acted here).
+        const docBrokerageId = (doc.brokerage_id as string | null) ?? null
+        if (loopFullyExecuted && doc.transaction_id && docBrokerageId) {
           // Legacy event
-          await logEventAndTrigger({
+          const legacy = await recordLifecycleEvent(supabase, docBrokerageId, {
             event_type: "transaction.documents_complete",
-            user_id: doc.contact_id,
             payload: {
               transactionId: doc.transaction_id,
               loopId: loop_id,
+              contact_id: doc.contact_id ?? undefined,
             },
             source: "webhook",
             dedupe_key: `docs-complete-${doc.transaction_id}`,
-          } as any)
+          })
+          if (!legacy.ok) console.error("[dotloop-webhook] documents_complete event not recorded:", legacy.error)
 
           // Normalized provider event
-          await logEventAndTrigger({
+          const normalized = await recordLifecycleEvent(supabase, docBrokerageId, {
             event_type: "provider.signatures.complete",
-            user_id: doc.contact_id,
             payload: {
               transactionId: doc.transaction_id,
               external_id: loop_id,
               provider: "dotloop",
+              contact_id: doc.contact_id ?? undefined,
             },
             source: "webhook",
             dedupe_key: `provider-sigs-complete-${doc.transaction_id}`,
-          } as any)
+          })
+          if (!normalized.ok) console.error("[dotloop-webhook] signatures.complete event not recorded:", normalized.error)
+        } else if (loopFullyExecuted && doc.transaction_id) {
+          console.error(`[dotloop-webhook] client_documents ${doc.id} carries no brokerage_id — completion events NOT recorded rather than written untenanted`)
         }
       }
 

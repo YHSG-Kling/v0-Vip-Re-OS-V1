@@ -28,7 +28,10 @@
 
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { logEventAndTrigger }  from "@/lib/events"
+// The server-only core, not the cookie-client helper (lane 86F): this module runs
+// from the e-sign webhooks with no session, where logEventAndTrigger was refused by
+// RLS and threw before dispatching. Tenant = the verified row's brokerage_id.
+import { recordLifecycleEvent } from "@/lib/events/lifecycle-event-core"
 import { notifyEsignSigned }   from "@/lib/notifications/notify-helpers"
 import { downloadSignedPackage } from "./download-signed-package"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
@@ -115,10 +118,10 @@ export async function finalizeVoiceCockpitPacket(
     // (lib/kernel/resolve-event-contacts.ts), so with neither, the portal card and
     // sequence enrollment silently had zero contacts to write to. Added below —
     // the contact this document belongs to was already loaded on docRow.
-    await logEventAndTrigger({
-      brokerage_id: docRow.brokerage_id as string,
+    // No `user_id`: the only id on hand is a CONTACTS id, and actor_user_id FKs
+    // users(id) (§3) — the contact rides payload.contact_id, as the note above says.
+    const signedEvt = await recordLifecycleEvent(supabase, docRow.brokerage_id as string, {
       event_type:   KernelEvent.ESIGN_PACKET_SIGNED,
-      user_id:      (docRow.contact_id as string | null) ?? "",
       payload:      {
         documentId: docRow.id,
         documentType: docRow.document_type,
@@ -128,7 +131,8 @@ export async function finalizeVoiceCockpitPacket(
       },
       source:       "webhook",
       dedupe_key:   `voice-packet-signed-${docRow.id}`,
-    } as any)
+    })
+    if (!signedEvt.ok) console.error("[finalize-packet] ESIGN_PACKET_SIGNED event not recorded:", signedEvt.error)
   }
 
   // ── BBA ───────────────────────────────────────────────────────────────────
@@ -148,14 +152,15 @@ export async function finalizeVoiceCockpitPacket(
       })
       .eq("id", matchedBBA.id)
 
-    await logEventAndTrigger({
-      brokerage_id: matchedBBA.brokerage_id as string,
+    // buyer_contact_id is a CONTACTS id — it rides payload.contact_id (the reactor's
+    // contact forward reads exactly that key), never actor_user_id (users FK, §3).
+    const bbaEvt = await recordLifecycleEvent(supabase, matchedBBA.brokerage_id as string, {
       event_type:   KernelEvent.BUYER_BROKER_AGREEMENT_SIGNED,
-      user_id:      matchedBBA.buyer_contact_id as string,
-      payload:      { agreementId: matchedBBA.id, envelopeId, provider },
+      payload:      { agreementId: matchedBBA.id, envelopeId, provider, contact_id: (matchedBBA.buyer_contact_id as string | null) ?? undefined },
       source:       "webhook",
       dedupe_key:   `bba-signed-${matchedBBA.id}`,
-    } as any)
+    })
+    if (!bbaEvt.ok) console.error("[finalize-packet] BUYER_BROKER_AGREEMENT_SIGNED event not recorded:", bbaEvt.error)
 
     // Wave 58 — buyer "go-live" AUTO-handoff: propose an AI-generated welcome into the
     // client_message gate. Called here at the authoritative source because BBA-signed

@@ -438,9 +438,11 @@ export const WEBHOOK_CONTRACT: WebhookContractEntry[] = [
     path: "/api/webhooks/zapier",
     routeFile: "app/api/webhooks/zapier/route.ts",
     scheme: "hmac-sha256",
-    verificationHeaders: ["x-zapier-signature"],
+    // x-zapier-api-key (lane 86F): the brokerage's own global_settings.zapier_api_key —
+    // the TENANT; the HMAC over the platform secret proves only authenticity.
+    verificationHeaders: ["x-zapier-signature", "x-zapier-api-key"],
     secretEnv: ["ZAPIER_WEBHOOK_SECRET"],
-    consoleField: "Zap webhook action URL",
+    consoleField: "Zap webhook action URL (+ header x-zapier-api-key = the brokerage's Zapier key from Settings)",
     failureVisibility: null,
   },
   {

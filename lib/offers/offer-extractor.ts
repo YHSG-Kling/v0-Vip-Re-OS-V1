@@ -31,15 +31,21 @@ export async function extractOfferFromPdf(params: {
   brokerageId: string
   pdfUrl: string
   listingId: string
+  /** CLIENT SEAM (lane 86F): the inbound-mail webhook has no session, and the
+   *  cookie client refused its offers update AND its lifecycle_events insert under
+   *  RLS. A sessionless caller passes the SERVICE client here; brokerageId is then
+   *  the caller's verified tenant and every write below is pinned to it. */
+  client?: any
 }): Promise<{ success: boolean; error?: string; data?: ExtractedOfferData }> {
   const { offerId, brokerageId, pdfUrl, listingId } = params
-  const supabase = await createClient()
+  const supabase = params.client ?? await createClient()
 
   // Mark extraction in progress
   await supabase
     .from("offers")
     .update({ ai_extraction_status: "extracting" })
     .eq("id", offerId)
+    .eq("brokerage_id", brokerageId) // tenant-pinned: the service client (seam above) bypasses RLS
 
   try {
     // Fetch the PDF as base64 for vision-capable model (gateway url-override download)
@@ -187,6 +193,7 @@ Required JSON schema:
       .from("offers")
       .update({ ai_extraction_status: "failed" })
       .eq("id", offerId)
+      .eq("brokerage_id", brokerageId)
 
     return { success: false, error: message }
   }

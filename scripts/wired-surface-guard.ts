@@ -351,6 +351,17 @@ const inertFound: string[] = []
   console.log(`  · ${files.length} tsx files · ${inertFound.length} inert controls`)
 }
 
+/** The `export async function NAME` declarations of a file, read on STRIPPED source. */
+function exportedAsyncNames(src: string): string[] {
+  return [...canonicalStripComments(src).matchAll(/export\s+async\s+function\s+(\w+)/g)].map((m) => m[1])
+}
+{
+  const specimen = `"use server"\n// TOMBSTONE — \`export async function retired(input)\` LIVED HERE\nexport async function live() { return 1 }\n`
+  const got = exportedAsyncNames(specimen)
+  check("DECL-TOMBSTONE a tombstone quoting a retired `export async function` is not a declaration; the live one still is",
+    got.length === 1 && got[0] === "live", JSON.stringify(got))
+}
+
 console.log("\n[repo scan — orphan server actions]")
 const orphanFound: string[] = []
 {
@@ -387,7 +398,12 @@ const orphanFound: string[] = []
     const src = readFileSync(f, "utf8")
     if (!/^["']use server["']/m.test(src)) continue
 
-    const names = [...src.matchAll(/export\s+async\s+function\s+(\w+)/g)].map((m) => m[1])
+    // Declarations are read on STRIPPED source (CLAUDE.md §2 — a tombstone is not a
+    // declaration). Lane 86F: the tombstone app/actions/assistant.ts carries for the
+    // retired `generateSmartSuggestion` door quotes its old signature, and the raw
+    // scan counted that comment as a live, uncalled export — accusing the repo of an
+    // orphan the tombstone records having been REMOVED. Control: DECL-TOMBSTONE below.
+    const names = exportedAsyncNames(src)
     // EXTERNAL reachability — the original test, unchanged: some OTHER file names it.
     const externallyReached = new Set<string>()
     for (const name of names) {

@@ -16,9 +16,41 @@ import { registerEventDispatcher, type OrchestratorEvent as WorkflowEvent } from
 import type { Event, EventInput } from "@/lib/orchestrator"
 import { EVENT_TYPES } from "@/lib/orchestrator"
 
-import { createServerClient } from "@/lib/supabase/server"
-import { generateSmartSuggestion } from "@/app/actions/assistant"
+// THE SERVICE CLIENT, NOT THE COOKIE ONE (lane 86F). This module is dispatched
+// from emitEventFromCron (poll-did-videos, render-composition, the image
+// generators), from logEventAndTrigger's registered dispatcher (webhooks) and
+// from emitEvent under whoever's session emitted — a client in the portal, an
+// agent, or nobody. `createServerClient()` read NOTHING on the unattended paths
+// (and only the emitter's own rows on the others), so the suggestion cards, the
+// processed stamp and event_processing_log were never written from a cron. Every
+// read and write below is now on the service client and pinned to the EVENT
+// ROW's brokerage_id — a lifecycle_events row this system wrote with a verified
+// tenant (emitEvent: the session's; emitEventFromCron: its caller's).
+import { createServiceClient } from "@/lib/supabase/service"
+import { writeSmartSuggestion, type SuggestionPriority } from "@/lib/assistant/smart-suggestion"
 import { sendNotificationToAgent } from "@/app/actions/communications"
+import {
+  appointmentBookedTasks,
+  agreementSignedTasks,
+  listingLiveTasks,
+  priceReductionTasks,
+  offerReceivedTasks,
+  contingencyClearedTasks,
+  closingApproachingTasks,
+  scheduleReviewRequests,
+  scheduleClosingGiftForListing,
+} from "@/lib/listing-lifecycle/lifecycle-event-tasks"
+import {
+  reactToCreditPartnerStatus,
+  reactToCreditTargetReached,
+  reactToCreditPartnerReferred,
+} from "@/lib/credit/credit-event-handlers"
+import {
+  reactToJourneyTaskCompleted,
+  reactToJourneyStageCompleted,
+  reactToJourneyAllTasksDone,
+} from "@/lib/portal/journey-event-handlers"
+import { writeSevenDayNurturePlan } from "@/lib/copilot/seven-day-plan"
 import { getChainsByTrigger } from "@/lib/workflow-orchestrator/chains"
 import { startRun as engineStartRun } from "@/lib/workflow-orchestrator/engine"
 // ONE "finished reel in an email" block — shared with the pre-listing section
@@ -61,7 +93,8 @@ interface ProcessingResult {
 // THE VALUE SHAPE IS AN INVOKER, NOT A FUNCTION REFERENCE. Each entry used to resolve to
 // the handler itself, which quietly assumed every handler takes one `payload`. Two do
 // not, and dispatching them that way would have failed silently:
-//   · scheduleClosingGift(listingId: string) — lib/application/listing-lifecycle.ts:491
+//   · scheduleClosingGiftForListing(svc, brokerageId, listingId) — lib/listing-lifecycle/
+//     lifecycle-event-tasks.ts (lane 86F; was lib/application scheduleClosingGift) —
 //     takes a LISTING ID, not a payload object. Handed the payload it would have queried
 //     `.eq("id", {…})` and matched nothing, which supabase-js reports as success (§3).
 //   · generateAssistantSuggestions(agentId, { page, entity_id, entity_type }) —
@@ -75,19 +108,21 @@ interface ProcessingResult {
 //     transaction.milestone_overdue, credit.status_updated, video.generated. For these the
 //     local handler in this file IS the wiring in force, and the mapped module is a SECOND,
 //     different implementation of the same event (e.g. this file's handleListingLive mints
-//     the tracked QR; listing-lifecycle's handleListingLive does not). Running both would
+//     the tracked QR; lifecycle-event-tasks' listingLiveTasks does not). Running both would
 //     double-fire. Consolidating the two implementations is a separate piece of work in
-//     app/actions/listing-lifecycle.ts + app/actions/video-content.ts, not something this
+//     lib/listing-lifecycle/lifecycle-event-tasks.ts + app/actions/video-content.ts, not something this
 //     dispatch can decide.
 //   · lead.engaged → generateAssistantSuggestions. No `page` value can be derived from a
 //     lead.engaged payload without inventing one, and nothing in the repo emits
 //     lead.engaged, so a guess would buy nothing and could mis-route. Refused explicitly
 //     below rather than guessed.
-//   · journey.task_completed / journey.stage_completed / journey.all_tasks_done. These
-//     three are the only keys with NO EVENT_TYPES member at all, so they cannot be given a
-//     type-safe `case`. They are also not emitted: the portal journey UI does not yet call
-//     completeTask (@/app/actions/journey-tasks), so the events never exist. Adding the
-//     EVENT_TYPES members belongs with the emitter, in lib/events/types.ts.
+//   · RETIRED (lane 86F): journey.task_completed / journey.stage_completed /
+//     journey.all_tasks_done used to sit here as "no EVENT_TYPES member, not emitted".
+//     completeTask (app/actions/journey-tasks.ts) DID emit journey.task_completed — just
+//     without processImmediately, and onto a switch with no case. The members now exist
+//     (EVENT_TYPES.JOURNEY_*), completeTask processes immediately, and the three types are
+//     routed below. stage_completed / all_tasks_done still have no emitter (the portal
+//     records a stage cursor, not a "stage done" fact) — routed so they run when one lands.
 //
 // ─── ASKED AND ANSWERED: the six copilot/assistant "handlers" do NOT belong here ─────
 // app/actions/copilot.ts (handleSuggestionAccepted, handleCoachingSessionBooked,
@@ -104,12 +139,12 @@ interface ProcessingResult {
 //     nearest, `AI_SUGGESTION_ACTIONED`, is emitted by nothing in the repo. Registering a
 //     handler for an event that is never written cannot make it fire.
 //   · The credential blocker people kept naming — `emitEventFromCron` carries a SERVICE
-//     credential and no session, so session-gated handlers refuse every unattended
-//     dispatch — is true and unchanged. Note it applies to the wired handlers too: they
-//     use `createServerClient()` (RLS-bound), the same client this file's own local
-//     handlers and markEventProcessed/logProcessingResults already use, so cron-context
-//     dispatch is bounded by RLS exactly as it was before. That is the pre-existing
-//     property of this module, not something the wiring introduces.
+//     credential and no session, so session-gated handlers refused every unattended
+//     dispatch — is CLOSED (lane 86F, owner ruling "build and fix"). Every registry
+//     entry except lane 86B's four video handlers now reaches a server-only core on the
+//     service client with the EVENT row's tenant, and this file's own local handlers,
+//     markEventProcessed and logProcessingResults moved off createServerClient() with
+//     them (scripts/sessionless-use-server-census.ts pins the cores in its HUB section).
 // Their real dispositions (user actions, telemetry, one duplicate of the daily-briefing
 // cron) are recorded per-function in those two files.
 // =====================================================
@@ -130,56 +165,62 @@ const assistantSuggestionsNotWired: EventHandlerInvoker = async (event) => {
   )
 }
 
+/**
+ * A reaction's `{ success: false, error }` is a FAILURE of the dispatch, not a
+ * quiet return — dispatchRegistered records a throw into event_processing_log,
+ * which is where a repeated failure becomes a manager signal.
+ */
+async function mustSucceed<T extends { success: boolean; error?: string }>(label: string, p: Promise<T>): Promise<T> {
+  const r = await p
+  if (r.success) return r
+  throw new Error(`${label} refused: ${r.error ?? "no reason given"}`)
+}
+
+// EVERY INVOKER HANDS ITS CORE THE SERVICE CLIENT AND THE EVENT ROW'S TENANT
+// (lane 86F). The eight lead/listing/transaction/credit/journey entries used to
+// dynamic-import "use server" wrappers on the COOKIE client — app/actions/
+// copilot.ts, listing-lifecycle.ts, credit-copilot.ts, journey-tasks.ts — that
+// read nothing from a cron or webhook dispatch. Their bodies now live in
+// server-only cores (template lib/transactions/dotloop-document-sync.ts) and the
+// wrappers are deleted with tombstones naming these survivors. The four video
+// entries still reach app/actions/video-content.ts — lane 86B owns that file.
 const EVENT_HANDLERS: Record<string, EventHandlerInvoker> = {
   // Lead events
-  "lead.created": async (e) => (await import("@/app/actions/copilot")).generate7DayPlan(e.payload),
+  "lead.created": async (e) => mustSucceed("7-day nurture plan", writeSevenDayNurturePlan(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
   "lead.tagged_hot": assistantSuggestionsNotWired,
   "lead.engaged": assistantSuggestionsNotWired,
 
   // Listing events
-  "listing.appointment_set": async (e) => (await import("@/app/actions/listing-lifecycle")).handleListingAppointmentBooked(e.payload),
-  "listing.signed": async (e) => (await import("@/app/actions/listing-lifecycle")).handleListingAgreementSigned(e.payload),
-  "listing.live": async (e) => (await import("@/app/actions/listing-lifecycle")).handleListingLive(e.payload),
-  "listing.price_reduction": async (e) => (await import("@/app/actions/listing-lifecycle")).handlePriceReduction(e.payload),
-  "listing.offer_received": async (e) => (await import("@/app/actions/listing-lifecycle")).handleOfferReceived(e.payload),
+  "listing.appointment_set": async (e) => mustSucceed("appointment tasks", appointmentBookedTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
+  "listing.signed": async (e) => mustSucceed("agreement-signed tasks", agreementSignedTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
+  "listing.live": async (e) => mustSucceed("listing-live tasks", listingLiveTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
+  "listing.price_reduction": async (e) => mustSucceed("price-reduction task", priceReductionTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
+  "listing.offer_received": async (e) => mustSucceed("offer-received task", offerReceivedTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
 
   // Transaction events
   "transaction.milestone_overdue": assistantSuggestionsNotWired,
-  "transaction.contingency_cleared": async (e) => (await import("@/app/actions/listing-lifecycle")).handleContingencyCleared(e.payload),
-  "transaction.close_approaching": async (e) => (await import("@/app/actions/listing-lifecycle")).handleClosingApproaching(e.payload),
-  // scheduleClosingGift takes a listings.id, not a payload — see the header.
-  "transaction.closing_soon": async (e) => {
-    const listingId = (e.payload as Record<string, any>)?.listing_id
-    // Leads with the MISSING THING, not with the event name: a message that opens
-    // "transaction.closing_soon …" reads, to error-message-honesty-guard, as a
-    // claim about `transaction` (primaryClaim splits on the first period), so a
-    // message naming exactly what it tested still scored as naming a different
-    // noun. It is also plainly better for the person reading the throw.
-    if (!listingId) throw new Error("No listingId on the transaction.closing_soon payload — scheduleClosingGift needs one (payload key: listing_id)")
-    // Repointed to the lib survivor (lane 63B, CLAUDE.md §1): the only consumer of
-    // app/actions/listing-lifecycle.ts's `export { scheduleClosingGift }` forwarding
-    // re-export was this dynamic import — a "use server" file may only export async
-    // functions (§4), so the bare re-export was itself a hazard. Import the real
-    // implementation directly instead.
-    return (await import("@/lib/application/listing-lifecycle")).scheduleClosingGift(String(listingId))
-  },
-  "transaction.closed": async (e) => (await import("@/app/actions/listing-lifecycle")).triggerReviewSequence(e.payload),
+  "transaction.contingency_cleared": async (e) => mustSucceed("contingency task", contingencyClearedTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
+  "transaction.close_approaching": async (e) => mustSucceed("closing tasks", closingApproachingTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
+  // The closing gift takes a listings.id, not a payload — see the header.
+  "transaction.closing_soon": async (e) =>
+    mustSucceed("closing gift", scheduleClosingGiftForListing(createServiceClient(), e.brokerage_id, (e.payload as Record<string, any>)?.listing_id ?? null)),
+  "transaction.closed": async (e) => mustSucceed("review requests", scheduleReviewRequests(createServiceClient(), e.brokerage_id, e.payload ?? {})),
 
   // Credit events
-  "credit.status_updated": async (e) => (await import("@/app/actions/credit-copilot")).handlePartnerStatusUpdate(e.payload),
-  "credit.target_reached": async (e) => (await import("@/app/actions/credit-copilot")).handleTargetReached(e.payload),
-  "credit.partner_referred": async (e) => (await import("@/app/actions/credit-copilot")).handlePartnerReferral(e.payload),
+  "credit.status_updated": async (e) => mustSucceed("credit partner status", reactToCreditPartnerStatus(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
+  "credit.target_reached": async (e) => mustSucceed("credit target reached", reactToCreditTargetReached(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
+  "credit.partner_referred": async (e) => mustSucceed("credit partner referral", reactToCreditPartnerReferred(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
 
-  // Video events
+  // Video events — lane 86B's (app/actions/video-content.ts), untouched here.
   "video.generated": async (e) => (await import("@/app/actions/video-content")).handleVideoGenerated(e.payload),
   "video.script_approved": async (e) => (await import("@/app/actions/video-content")).approveAndGenerateVideo(e.payload),
   "video.published": async (e) => (await import("@/app/actions/video-content")).handleVideoPublished(e.payload),
   "video.high_engagement": async (e) => (await import("@/app/actions/video-content")).handleHighEngagement(e.payload),
 
-  // Journey/Portal events — no EVENT_TYPES member and no emitter yet; see the header.
-  "journey.task_completed": async (e) => (await import("@/app/actions/journey-tasks")).handleTaskCompletedEvent(e.payload),
-  "journey.stage_completed": async (e) => (await import("@/app/actions/journey-tasks")).handleStageCompletedEvent(e.payload),
-  "journey.all_tasks_done": async (e) => (await import("@/app/actions/journey-tasks")).handleAllTasksCompletedEvent(e.payload),
+  // Journey/Portal events — EVENT_TYPES.JOURNEY_* since lane 86F; routed below.
+  "journey.task_completed": async (e) => mustSucceed("journey task notification", reactToJourneyTaskCompleted(createServiceClient(), e.brokerage_id, e.payload ?? {})),
+  "journey.stage_completed": async (e) => mustSucceed("journey stage message", reactToJourneyStageCompleted(createServiceClient(), e.brokerage_id, e.payload ?? {})),
+  "journey.all_tasks_done": async (e) => mustSucceed("journey complete message", reactToJourneyAllTasksDone(createServiceClient(), e.brokerage_id, e.payload ?? {})),
 }
 
 /**
@@ -334,6 +375,9 @@ export async function orchestrateEvent(event: Event): Promise<void> {
       case EVENT_TYPES.VIDEO_SCRIPT_APPROVED:
       case EVENT_TYPES.VIDEO_PUBLISHED:
       case EVENT_TYPES.VIDEO_HIGH_ENGAGEMENT:
+      case EVENT_TYPES.JOURNEY_TASK_COMPLETED:
+      case EVENT_TYPES.JOURNEY_STAGE_COMPLETED:
+      case EVENT_TYPES.JOURNEY_ALL_TASKS_DONE:
         results.push(await dispatchRegistered(event))
         break
 
@@ -376,13 +420,13 @@ export async function orchestrateEvent(event: Event): Promise<void> {
     }
 
     // Log all processing results
-    await logProcessingResults(event.id, results)
+    await logProcessingResults(event, results)
 
     // Mark event as processed
-    await markEventProcessed(event.id)
+    await markEventProcessed(event)
   } catch (error) {
     console.error(`[v0] Error orchestrating event ${event.id}:`, error)
-    await logProcessingResults(event.id, [
+    await logProcessingResults(event, [
       {
         success: false,
         handler: "orchestrator",
@@ -407,7 +451,7 @@ async function handleLeadCreated(event: WorkflowEvent): Promise<ProcessingResult
     const { contact_id, source, timeline } = event.payload
 
     // Create AI suggestion for follow-up
-    await generateSmartSuggestion({
+    await writeEventSuggestion({
       brokerage_id: event.brokerage_id,
       user_id: event.user_id!,
       context_type: "contact",
@@ -443,7 +487,7 @@ async function handleLeadTaggedHot(event: Event): Promise<ProcessingResult> {
     const { contact_id, reason } = event.payload
 
     // Create urgent AI suggestion
-    await generateSmartSuggestion({
+    await writeEventSuggestion({
       brokerage_id: event.brokerage_id,
       user_id: event.user_id!,
       context_type: "contact",
@@ -486,7 +530,7 @@ async function handleListingAppointmentSet(event: Event): Promise<ProcessingResu
     const { listing_id, appointment_date, contact_id } = event.payload
 
     // Create AI suggestion for prep
-    await generateSmartSuggestion({
+    await writeEventSuggestion({
       brokerage_id: event.brokerage_id,
       user_id: event.user_id!,
       context_type: "listing",
@@ -522,7 +566,7 @@ async function handleListingSigned(event: Event): Promise<ProcessingResult> {
     const { listing_id, go_live_date } = event.payload
 
     // Create checklist for going live
-    await generateSmartSuggestion({
+    await writeEventSuggestion({
       brokerage_id: event.brokerage_id,
       user_id: event.user_id!,
       context_type: "listing",
@@ -609,7 +653,7 @@ async function handleListingLive(event: Event): Promise<ProcessingResult> {
       console.error("[handleListingLive] QR code creation failed:", qrErr)
     }
 
-    await generateSmartSuggestion({
+    await writeEventSuggestion({
       brokerage_id: event.brokerage_id,
       user_id: event.user_id!,
       context_type: "listing",
@@ -644,7 +688,7 @@ async function handleMilestoneOverdue(event: Event): Promise<ProcessingResult> {
     const { milestone_id, milestone_title, days_overdue, listing_id } = event.payload
 
     // Create urgent suggestion
-    await generateSmartSuggestion({
+    await writeEventSuggestion({
       brokerage_id: event.brokerage_id,
       user_id: event.user_id!,
       context_type: "transaction",
@@ -689,7 +733,7 @@ async function handleCreditStatusUpdated(event: Event): Promise<ProcessingResult
 
     if (new_status === "target_reached") {
       // Contact reached target credit score
-      await generateSmartSuggestion({
+      await writeEventSuggestion({
         brokerage_id: event.brokerage_id,
         user_id: event.user_id!,
         context_type: "contact",
@@ -1018,7 +1062,7 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
     // ── 5. Always notify the agent ──────────────────────────────────────────
     if (agentId) {
       const actionSummary = summary.length ? ` Auto-drafted: ${summary.join(", ")}.` : ""
-      await generateSmartSuggestion({
+      await writeEventSuggestion({
         brokerage_id:    event.brokerage_id,
         user_id:         agentId,
         context_type:    "video",
@@ -1215,7 +1259,7 @@ async function handleImageGenerated(event: Event): Promise<ProcessingResult> {
     // 5. Notify the agent
     if (agentId) {
       const actionSummary = summary.length ? ` Auto-drafted: ${summary.join(", ")}.` : ""
-      await generateSmartSuggestion({
+      await writeEventSuggestion({
         brokerage_id:    event.brokerage_id,
         user_id:         agentId,
         context_type:    "image",
@@ -1241,28 +1285,59 @@ async function handleImageGenerated(event: Event): Promise<ProcessingResult> {
 // HELPER FUNCTIONS
 // =====================================================
 
-async function markEventProcessed(eventId: string): Promise<void> {
-  const supabase = await createServerClient()
-
-  // Update both processed flag and processed_at timestamp on lifecycle_events
-  await supabase
-    .from("lifecycle_events")
-    .update({ processed: true, processed_at: new Date().toISOString() })
-    .eq("id", eventId)
+/**
+ * The local handlers' suggestion card, through THE writer
+ * (lib/assistant/smart-suggestion.ts) on the service client. The card's tenant
+ * is the event row's — every call site below passes `event.brokerage_id`. An
+ * unwritten card THROWS with its reason, so the handler records a failure into
+ * event_processing_log instead of reporting success over a card nobody sees.
+ */
+async function writeEventSuggestion(input: {
+  brokerage_id: string
+  user_id: string | null | undefined
+  context_type: string
+  context_id: string | null | undefined
+  suggestion_type: string
+  title: string
+  description: string
+  action_payload: Record<string, unknown>
+  priority?: SuggestionPriority
+}): Promise<void> {
+  const r = await writeSmartSuggestion(createServiceClient(), input.brokerage_id, {
+    userId: input.user_id,
+    contextType: input.context_type,
+    contextId: input.context_id,
+    suggestionType: input.suggestion_type,
+    title: input.title,
+    description: input.description,
+    actionPayload: input.action_payload,
+    priority: input.priority,
+  })
+  if (!r.written) throw new Error(`Suggestion card not written: ${r.reason}`)
 }
 
-async function logProcessingResults(eventId: string, results: ProcessingResult[]): Promise<void> {
-  const supabase = await createServerClient()
-
-  // Fetch the event's brokerage_id so we can insert it into the processing log
-  // (kernel invariant: every row that has a brokerage_id FK must carry it)
-  const { data: ev } = await supabase
+async function markEventProcessed(event: Event): Promise<void> {
+  const svc = createServiceClient()
+  // Tenant-pinned and COUNTED: an update that matches nothing resolves exactly
+  // like one that worked (§3), and an unstamped event is re-processed forever.
+  const { data, error } = await svc
     .from("lifecycle_events")
-    .select("brokerage_id")
-    .eq("id", eventId)
-    .maybeSingle()
+    .update({ processed: true, processed_at: new Date().toISOString() })
+    .eq("id", event.id)
+    .eq("brokerage_id", event.brokerage_id)
+    .select("id")
+  if (error) console.error(`[orchestrator] processed stamp refused for event ${event.id}:`, error.message)
+  else if (!data?.length) console.error(`[orchestrator] processed stamp matched no lifecycle_events row ${event.id} in brokerage ${event.brokerage_id}`)
+}
 
-  const brokerageId = ev?.brokerage_id ?? null
+async function logProcessingResults(event: Event, results: ProcessingResult[]): Promise<void> {
+  const supabase = createServiceClient()
+  const eventId = event.id
+
+  // The event's own brokerage_id (kernel invariant: every row that has a
+  // brokerage_id FK must carry it). It used to be RE-READ through the cookie
+  // client, which from a cron read nothing and stamped NULL.
+  const brokerageId = event.brokerage_id ?? null
 
   const logs = results.map((result) => ({
     event_id:           eventId,
@@ -1273,7 +1348,8 @@ async function logProcessingResults(eventId: string, results: ProcessingResult[]
     processing_time_ms: result.processing_time_ms,
   }))
 
-  await supabase.from("event_processing_log").insert(logs)
+  const { error: logError } = await supabase.from("event_processing_log").insert(logs)
+  if (logError) console.error(`[orchestrator] event_processing_log insert refused for event ${eventId}:`, logError.message)
 
   // READER (orphan doctrine §1.2) for event_processing_log — until now the
   // 5 columns written here (event_id, handler, status, processing_time_ms,

@@ -1,6 +1,5 @@
 "use server"
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireContactAccess } from "@/lib/portal/require-contact-access"
 import { revalidatePath } from "next/cache"
@@ -188,7 +187,9 @@ export async function completeTask(data: {
         form_data: data.formData,
       },
       source: "ui",
-    })
+    // PROCESS NOW (lane 86F). Without this the row landed and nothing ever handed
+    // it to the orchestrator — the agent's "client completed" bell could not ring.
+    }, true)
   } catch (eventError) {
     // The task IS recorded; a failed fan-out must not un-record it.
     console.error("[journey-tasks] Error emitting task completion event:", eventError)
@@ -420,103 +421,15 @@ export async function updateStageProgress(data: {
   return { success: true }
 }
 
-// Event handlers for workflow orchestration
-export async function handleTaskCompletedEvent(payload: any) {
-  const supabase = await createClient()
-  
-  // Notify agent of task completion
-  try {
-    const { data: contact, error: contactError } = await supabase
-      .from("contacts")
-      .select("agent_id, brokerage_id")
-      .eq("id", payload.contact_id)
-      .maybeSingle()
-    if (contactError) console.error("[journey-tasks] task-completed contact read failed:", contactError.message)
-    if (contact?.agent_id) {
-      // Keep-one: `notifications` is the canonical in-app alert table (the bell
-      // reads it) — agent_notifications was a write-only ledger. contacts.agent_id
-      // is agents.id; notifications.user_id is users-class, so resolve through the
-      // canonical identity helper.
-      const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
-      const userId = await resolveAgentRecordToUserId(contact.agent_id)
-      if (userId) {
-        const { error: notifErr } = await supabase.from("notifications").insert({
-          user_id: userId,
-          brokerage_id: contact.brokerage_id,
-          type: "task_completed",
-          title: `Client completed: ${payload.task_name}`,
-          body: `${payload.task_name} completed in the ${payload.stage_name} stage.`,
-          entity_type: "contact",
-          entity_id: payload.contact_id,
-          priority: "medium",
-          channel: "in_app",
-          is_read: false,
-          created_at: new Date().toISOString(),
-        })
-        if (notifErr) console.error("[journey-tasks] task-completed notification insert failed:", notifErr.message)
-      }
-    }
-  } catch { /* non-critical */ }
-  
-  return { success: true }
-}
-
-export async function handleStageCompletedEvent(payload: any) {
-  const supabase = await createClient()
-  
-  // Create a celebration notification. client_portal_messages canonical columns:
-  // body + direction (agent_to_client) + channel + read; agent_id/brokerage_id NOT NULL.
-  try {
-    const { data: c, error: cError } = await supabase
-      .from("contacts").select("agent_id, brokerage_id").eq("id", payload.contact_id).maybeSingle()
-    if (cError) console.error("[journey-tasks] stage-completed contact read failed:", cError.message)
-    if (c?.agent_id && c?.brokerage_id) {
-      const { error: msgError } = await supabase.from("client_portal_messages").insert({
-        contact_id: payload.contact_id,
-        agent_id: c.agent_id,
-        brokerage_id: c.brokerage_id,
-        direction: "agent_to_client",
-        channel: "portal",
-        body: `Stage Complete: ${payload.stage_name}\n\nCongratulations! You've completed the ${payload.stage_name} stage. Moving on to ${payload.next_stage_name}.`,
-        metadata: { kind: "milestone", stage_name: payload.stage_name },
-        read: false,
-      })
-      if (msgError) console.error("[journey-tasks] stage-complete message insert failed:", msgError.message)
-    }
-  } catch {
-    // non-critical
-  }
-
-  return { success: true }
-}
-
-export async function handleAllTasksCompletedEvent(payload: any) {
-  const supabase = await createClient()
-  
-  // Send celebration message (canonical client_portal_messages shape).
-  try {
-    const { data: c, error: cError } = await supabase
-      .from("contacts").select("agent_id, brokerage_id").eq("id", payload.contact_id).maybeSingle()
-    if (cError) console.error("[journey-tasks] all-tasks contact read failed:", cError.message)
-    if (c?.agent_id && c?.brokerage_id) {
-      const { error: msgError } = await supabase.from("client_portal_messages").insert({
-        contact_id: payload.contact_id,
-        agent_id: c.agent_id,
-        brokerage_id: c.brokerage_id,
-        direction: "agent_to_client",
-        channel: "portal",
-        body: "Journey Complete!\n\nCongratulations on completing your real estate journey! We're honored to have been part of this milestone.",
-        metadata: { kind: "celebration" },
-        read: false,
-      })
-      if (msgError) console.error("[journey-tasks] celebration message insert failed:", msgError.message)
-    }
-  } catch {
-    // non-critical
-  }
-
-  return { success: true }
-}
+// TOMBSTONE (lane 86F, orphan doctrine §1.1) — handleTaskCompletedEvent,
+// handleStageCompletedEvent and handleAllTasksCompletedEvent LIVED HERE and are
+// gone. They were "use server" exports on the COOKIE client, reached only from
+// lib/orchestrator/internal.ts EVENT_HANDLERS — which no switch case routed to,
+// and whose dispatch has no agent session to write the agent's notification or
+// an agent-stamped portal message with. SURVIVOR: lib/portal/journey-event-
+// handlers.ts (reactToJourneyTaskCompleted / reactToJourneyStageCompleted /
+// reactToJourneyAllTasksDone) — server-only, service client, the EVENT row's
+// tenant; the switch now routes the three journey types to them.
 
 // Pre-populate form data based on task type
 export async function getTaskFormFields(taskType: string): Promise<{

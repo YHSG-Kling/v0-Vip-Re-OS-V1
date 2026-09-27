@@ -817,50 +817,14 @@ export async function advanceListingStageService(
   return { success: true, stage: toStage, fromStage: gate.fromStage }
 }
 
-export async function scheduleClosingGift(listingId: string) {
-  const supabase = await createClient()
-  const brokerageId = await callerBrokerageId(supabase)
-  if (!brokerageId) {
-    return { success: false, error: "Not authenticated, or no brokerage on this account" }
-  }
-  const { data: listing, error: listingError } = await supabase
-    .from("listings")
-    .select("estimated_close_date, seller_contact_id, agent_id")
-    .eq("id", listingId)
-    .eq("brokerage_id", brokerageId)
-    .maybeSingle()
-
-  // A refused read used to leave `listing` undefined and this function would
-  // return having quietly scheduled nothing — indistinguishable from a listing
-  // with no close date.
-  if (listingError) {
-    console.error("[scheduleClosingGift] could not read the listing:", listingError.message)
-    return { success: false, error: listingError.message }
-  }
-  if (!listing?.estimated_close_date) {
-    return { success: false, error: "Listing has no estimated close date — no gift scheduled" }
-  }
-
-  const closeDate = new Date(listing.estimated_close_date)
-  const orderDate = new Date(closeDate.getTime() - 7 * 24 * 60 * 60 * 1000)
-  // closing_gifts.agent_id — listings.agent_id is an AGENTS id and is carried
-  // through as one; it is not re-labelled as a user.
-  const { error: giftError } = await supabase.from("closing_gifts").insert({
-    listing_id: listingId,
-    contact_id: listing.seller_contact_id,
-    agent_id: listing.agent_id,
-    gift_description: "Closing gift basket",
-    price_cents: 7500,
-    order_date: orderDate.toISOString(),
-    delivery_date: closeDate.toISOString(),
-    status: "scheduled",
-  })
-  if (giftError) {
-    console.error("[scheduleClosingGift] closing_gifts insert failed:", giftError.message)
-    return { success: false, error: giftError.message }
-  }
-  return { success: true }
-}
+// TOMBSTONE (lane 86F, orphan doctrine §1.1) — `scheduleClosingGift(listingId)`
+// LIVED HERE and is gone. Its only caller was the orchestrator's
+// transaction.closing_soon invoker (lib/orchestrator/internal.ts), which runs with
+// no cookie — and this function's first act was callerBrokerageId(), i.e.
+// auth.getUser(), so every unattended dispatch was refused "Not authenticated".
+// SURVIVOR: lib/listing-lifecycle/lifecycle-event-tasks.ts::scheduleClosingGiftForListing
+// — the same insert on the service client with the EVENT row's tenant, now also
+// stamping closing_gifts.brokerage_id (a live column this never wrote).
 
 /**
  * THE ONE LISTING-TIMELINE READ.
@@ -968,232 +932,21 @@ export async function completeListingTaskService(taskId: string) {
 }
 
 
-// ── PASS 5 (NOT NULL contract): tasks requires brokerage_id +
-// assigned_to_agent_id. Every handler below used to insert with only
-// listing_id — ALWAYS rejected, so no listing-lifecycle task ever landed.
-// The listing's own agent is the honest assignee; no agent → honest skip.
-async function listingTaskContext(
-  supabase: any,
-  listingId: string,
-): Promise<{ brokerageId: string; agentId: string } | null> {
-  const { data, error } = await supabase
-    .from("listings")
-    .select("brokerage_id, agent_id") // listings.agent_id FKs agents(id)
-    .eq("id", listingId)
-    .maybeSingle()
-  // A refused read reported itself as "this listing has no agent/brokerage",
-  // sending whoever read the message to fix an assignment that was never wrong.
-  if (error) {
-    console.error(`[listing-lifecycle] listingTaskContext read failed for ${listingId}:`, error.message)
-    return null
-  }
-  if (!data?.brokerage_id || !data?.agent_id) return null
-  return { brokerageId: data.brokerage_id, agentId: data.agent_id }
-}
-
-/**
- * Insert a batch of auto-generated listing tasks, REPORTING what was refused.
- * Every one of these handlers used to loop over `await supabase.insert(...)`
- * with the outcome discarded — the tasks CHECK constraints and the NOT NULL
- * contract could reject every row and the handler still returned
- * `{ success: true }`.
- */
-/**
- * THE WRITER OWNS THE TENANT STAMP.
- *
- * This used to trust each caller to have put brokerage_id on every row. `tasks`
- * RLS permits a NULL brokerage_id, so one unstamped row inserts successfully and
- * is then invisible to every scoped reader — the same silent shape that left
- * listing_stage_history tenant-unscoped for its whole life. Taking the brokerage
- * as a parameter and stamping it here means a caller CANNOT forget, and the
- * anchor is visible at the write rather than several functions away.
- */
-async function insertListingTasks(
-  supabase: any,
-  brokerageId: string,
-  rows: Record<string, unknown>[],
-): Promise<{ success: boolean; inserted: number; error?: string }> {
-  let inserted = 0
-  const failures: string[] = []
-  if (!brokerageId) {
-    return { success: false, inserted: 0, error: "No brokerage on the caller — refusing to write untenanted tasks" }
-  }
-  for (const row of rows) {
-    const { error } = await supabase.from("tasks").insert({ ...row, brokerage_id: brokerageId })
-    if (error) {
-      console.error("[listing-lifecycle] task insert failed:", error.message, row.title)
-      failures.push(`${String(row.title ?? "task")}: ${error.message}`)
-    } else {
-      inserted += 1
-    }
-  }
-  if (failures.length > 0) {
-    return { success: false, inserted, error: `${failures.length} of ${rows.length} tasks were refused — ${failures.join("; ")}` }
-  }
-  return { success: true, inserted }
-}
-
-export async function handleListingAppointmentBookedService(payload: any) {
-  const supabase = await createClient()
-  const { listing_id, contact_id } = payload
-  const taskCtx = await listingTaskContext(supabase, listing_id)
-  if (!taskCtx) return { success: false, error: "Listing has no agent/brokerage — tasks not created" }
-  const tasks = [
-    { title: "Prepare CMA for consultation", dueDays: 1 },
-    { title: "Research comparable sales", dueDays: 1 },
-    { title: "Review property info", dueDays: 0 },
-  ]
-  return insertListingTasks(supabase, taskCtx.brokerageId, tasks.map((task) => ({
-    brokerage_id: taskCtx.brokerageId,
-    assigned_to_agent_id: taskCtx.agentId,
-    listing_id,
-    contact_id,
-    title: task.title,
-    due_date: new Date(Date.now() + task.dueDays * 24 * 60 * 60 * 1000).toISOString(),
-    priority: task.dueDays === 0 ? "urgent" : "high",
-    auto_generated: true,
-  })))
-}
-
-export async function handleListingAgreementSignedService(payload: any) {
-  const supabase = await createClient()
-  const { listing_id } = payload
-  const taskCtx = await listingTaskContext(supabase, listing_id)
-  if (!taskCtx) return { success: false, error: "Listing has no agent/brokerage — tasks not created" }
-  const tasks = [
-    { title: "Order professional photography", dueDays: 1 },
-    { title: "Write compelling listing description", dueDays: 2 },
-    { title: "Set up lockbox", dueDays: 3 },
-    { title: "Input listing into MLS", dueDays: 3 },
-    { title: "Create marketing materials", dueDays: 2 },
-  ]
-  return insertListingTasks(supabase, taskCtx.brokerageId, tasks.map((task) => ({
-    brokerage_id: taskCtx.brokerageId,
-    assigned_to_agent_id: taskCtx.agentId,
-    listing_id,
-    title: task.title,
-    due_date: new Date(Date.now() + task.dueDays * 24 * 60 * 60 * 1000).toISOString(),
-    priority: "high",
-    auto_generated: true,
-  })))
-}
-
-export async function handleListingLiveService(payload: any) {
-  const supabase = await createClient()
-  const { listing_id } = payload
-  const taskCtx = await listingTaskContext(supabase, listing_id)
-  if (!taskCtx) return { success: false, error: "Listing has no agent/brokerage — tasks not created" }
-  const tasks = [
-    { title: "Share on social media", dueDays: 0 },
-    { title: "Send to sphere of influence", dueDays: 1 },
-    { title: "Schedule first open house", dueDays: 3 },
-    { title: "Create video tour", dueDays: 2 },
-  ]
-  return insertListingTasks(supabase, taskCtx.brokerageId, tasks.map((task) => ({
-    brokerage_id: taskCtx.brokerageId,
-    assigned_to_agent_id: taskCtx.agentId,
-    listing_id,
-    title: task.title,
-    due_date: new Date(Date.now() + task.dueDays * 24 * 60 * 60 * 1000).toISOString(),
-    priority: task.dueDays === 0 ? "urgent" : "high",
-    auto_generated: true,
-  })))
-}
-
-export async function handlePriceReductionService(payload: any) {
-  const supabase = await createClient()
-  const { listing_id } = payload
-  const taskCtx = await listingTaskContext(supabase, listing_id)
-  if (!taskCtx) return { success: false, error: "Listing has no agent/brokerage — tasks not created" }
-  return insertListingTasks(supabase, taskCtx.brokerageId, [{
-    brokerage_id: taskCtx.brokerageId,
-    assigned_to_agent_id: taskCtx.agentId,
-    listing_id,
-    title: "Update all marketing with new price",
-    due_date: new Date().toISOString(),
-    priority: "urgent",
-    auto_generated: true,
-  }])
-}
-
-export async function handleOfferReceivedService(payload: any) {
-  const supabase = await createClient()
-  const { listing_id, offer_amount, buyer_name } = payload
-  const taskCtx = await listingTaskContext(supabase, listing_id)
-  if (!taskCtx) return { success: false, error: "Listing has no agent/brokerage — tasks not created" }
-  return insertListingTasks(supabase, taskCtx.brokerageId, [{
-    brokerage_id: taskCtx.brokerageId,
-    assigned_to_agent_id: taskCtx.agentId,
-    listing_id,
-    title: `Review offer from ${buyer_name || "buyer"} - $${(offer_amount || 0).toLocaleString()}`,
-    due_date: new Date().toISOString(),
-    priority: "urgent",
-    auto_generated: true,
-  }])
-}
-
-export async function handleContingencyClearedService(payload: any) {
-  const supabase = await createClient()
-  const { listing_id, contingency_type } = payload
-  const taskCtx = await listingTaskContext(supabase, listing_id)
-  if (!taskCtx) return { success: false, error: "Listing has no agent/brokerage — tasks not created" }
-  return insertListingTasks(supabase, taskCtx.brokerageId, [{
-    brokerage_id: taskCtx.brokerageId,
-    assigned_to_agent_id: taskCtx.agentId,
-    listing_id,
-    title: `${contingency_type} contingency cleared - update transaction status`,
-    due_date: new Date().toISOString(),
-    priority: "high",
-    auto_generated: true,
-  }])
-}
-
-export async function handleClosingApproachingService(payload: any) {
-  const supabase = await createClient()
-  const { listing_id } = payload
-  const taskCtx = await listingTaskContext(supabase, listing_id)
-  if (!taskCtx) return { success: false, error: "Listing has no agent/brokerage — tasks not created" }
-  const tasks = [
-    { title: "Confirm final walkthrough scheduled", dueDays: 0 },
-    { title: "Verify closing disclosure sent", dueDays: 0 },
-    { title: "Confirm wire instructions with title", dueDays: 1 },
-  ]
-  return insertListingTasks(supabase, taskCtx.brokerageId, tasks.map((task) => ({
-    brokerage_id: taskCtx.brokerageId,
-    assigned_to_agent_id: taskCtx.agentId,
-    listing_id,
-    title: task.title,
-    due_date: new Date(Date.now() + task.dueDays * 24 * 60 * 60 * 1000).toISOString(),
-    priority: "urgent",
-    auto_generated: true,
-  })))
-}
-
-export async function triggerReviewSequenceService(payload: any) {
-  const supabase = await createClient()
-  const { contact_id } = payload
-  // review_requests is contact-keyed, one row per platform. listing_id /
-  // scheduled_send_date / platforms were phantom columns.
-  const platforms = ["google", "zillow", "facebook"]
-  const failures: string[] = []
-  for (const platform of platforms) {
-    const { error } = await supabase.from("review_requests").insert({
-      contact_id,
-      platform,
-      status: "scheduled",
-    })
-    // review_requests.status is CHECK-constrained; an unchecked insert here
-    // returned success over three refused rows.
-    if (error) {
-      console.error(`[triggerReviewSequenceService] ${platform} review request refused:`, error.message)
-      failures.push(`${platform}: ${error.message}`)
-    }
-  }
-  if (failures.length > 0) {
-    return { success: false, error: `${failures.length} of ${platforms.length} review requests were refused — ${failures.join("; ")}` }
-  }
-  return { success: true }
-}
+// TOMBSTONE (lane 86F, orphan doctrine §1.1) — the orchestrator's listing /
+// transaction event reactions LIVED HERE and are gone: listingTaskContext,
+// insertListingTasks, handleListingAppointmentBookedService,
+// handleListingAgreementSignedService, handleListingLiveService,
+// handlePriceReductionService, handleOfferReceivedService,
+// handleContingencyClearedService, handleClosingApproachingService and
+// triggerReviewSequenceService. Each built the COOKIE client, and their only
+// caller — the orchestrator's EVENT_HANDLERS, dispatched from cron and webhooks
+// with no session — therefore read no listing under RLS and reported every
+// correct listing as "no agent/brokerage — tasks not created".
+// SURVIVOR: lib/listing-lifecycle/lifecycle-event-tasks.ts — the same writes,
+// server-only, on the service client with the EVENT row's brokerage_id pinned
+// on every read (listingTaskContext / insertListingTasks moved with them; the
+// PASS 5 NOT NULL contract — brokerage_id + assigned_to_agent_id on every task —
+// is kept there, and review_requests now carries its brokerage_id too).
 
 export async function sendReviewRequestService(requestId: string, platform: string) {
   const supabase = await createClient()

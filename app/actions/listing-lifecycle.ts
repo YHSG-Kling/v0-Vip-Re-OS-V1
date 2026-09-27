@@ -7,14 +7,6 @@ import {
   getListingTimelineService,
   getListingTasksService,
   completeListingTaskService,
-  handleListingAppointmentBookedService,
-  handleListingAgreementSignedService,
-  handleListingLiveService,
-  handlePriceReductionService,
-  handleOfferReceivedService,
-  handleContingencyClearedService,
-  handleClosingApproachingService,
-  triggerReviewSequenceService,
   sendReviewRequestService,
 } from "@/lib/application/listing-lifecycle"
 
@@ -328,40 +320,37 @@ export async function completeListingTask(taskId: string) {
   return completeListingTaskService(taskId)
 }
 
-// =====================================================
-// EVENT HANDLERS - Called by orchestrator
-// =====================================================
+// TOMBSTONE (lane 86F, orphan doctrine §1.1) — the eight "EVENT HANDLERS -
+// Called by orchestrator" wrappers LIVED HERE and are gone:
+// handleListingAppointmentBooked, handleListingAgreementSigned,
+// handleListingLive, handlePriceReduction, handleOfferReceived,
+// handleContingencyCleared, handleClosingApproaching, triggerReviewSequence.
+// Each was a "use server" export — a PUBLIC HTTP endpoint with no gate at all —
+// that forwarded a caller's payload to a lib service on the COOKIE client; the
+// one real caller (lib/orchestrator/internal.ts EVENT_HANDLERS, dispatched
+// from cron and webhooks) has no cookie, so every one of them read nothing.
+// SURVIVOR: lib/listing-lifecycle/lifecycle-event-tasks.ts (server-only; the
+// service client with the EVENT row's tenant), which the orchestrator now calls
+// directly. Seven had no browser caller, so no public door was kept for them;
+// handlePriceReduction DOES (app/dashboard/listings/[id]/components/
+// price-reduction-sheet.tsx), so it stays — below — as a SESSION door onto the
+// same core.
 
-export async function handleListingAppointmentBooked(payload: any) {
-  return handleListingAppointmentBookedService(payload)
-}
-
-export async function handleListingAgreementSigned(payload: any) {
-  return handleListingAgreementSignedService(payload)
-}
-
-export async function handleListingLive(payload: any) {
-  return handleListingLiveService(payload)
-}
-
-export async function handlePriceReduction(payload: any) {
-  return handlePriceReductionService(payload)
-}
-
-export async function handleOfferReceived(payload: any) {
-  return handleOfferReceivedService(payload)
-}
-
-export async function handleContingencyCleared(payload: any) {
-  return handleContingencyClearedService(payload)
-}
-
-export async function handleClosingApproaching(payload: any) {
-  return handleClosingApproachingService(payload)
-}
-
-export async function triggerReviewSequence(payload: any) {
-  return triggerReviewSequenceService(payload)
+/**
+ * The price-reduction sheet's "marketing follow-up task" — the SESSION door onto
+ * lib/listing-lifecycle/lifecycle-event-tasks.ts::priceReductionTasks (the same
+ * core the orchestrator's listing.price_reduction event runs). Gated here (it was
+ * an ungated public endpoint), the tenant is the SESSION's and the core refuses
+ * a listing outside it; only `listing_id` is read from the payload — the sheet's
+ * agentId / brokerageId fields are ignored (CLAUDE.md §4).
+ */
+export async function handlePriceReduction(payload: { listing_id?: string } & Record<string, unknown>) {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { priceReductionTasks } = await import("@/lib/listing-lifecycle/lifecycle-event-tasks")
+  return priceReductionTasks(createServiceClient(), ctx.brokerageId, { listing_id: payload?.listing_id ?? null })
 }
 
 /**
@@ -412,8 +401,9 @@ export async function sendReviewRequest(requestId: string, platform: string) {
 // TOMBSTONE (lane 63B, CLAUDE.md §1) — `export { scheduleClosingGift }` was REMOVED
 // here. This file is `"use server"`, so a bare re-export was itself a §4 hazard
 // (every export is a public HTTP endpoint and must be async). Its only consumer,
-// lib/orchestrator/internal.ts:159, now imports the survivor directly:
-// scheduleClosingGift lives at lib/application/listing-lifecycle.ts:820.
+// lib/orchestrator/internal.ts, now imports the survivor directly — since lane
+// 86F lib/listing-lifecycle/lifecycle-event-tasks.ts::scheduleClosingGiftForListing
+// (the lib/application copy was cookie-bound and refused every event dispatch).
 
 // ─── Portal Visibility ────────────────────────────────────────────────────────
 

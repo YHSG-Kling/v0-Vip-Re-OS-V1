@@ -928,9 +928,14 @@ console.log("\n═══ 3g. The MIRROR sweep — this guard's own documented bl
   ok("the AI ISA intro postcard resolves users→agents — the campaign was\n    FK-rejected after the QR mint and AI copy draft had already run",
     /const dmAgentId = /.test(ms) && /agent_id: dmAgentId,/.test(ms))
 
-  const asst = code("app/actions/assistant.ts")
+  // The writer moved to lib/assistant/smart-suggestion.ts in lane 86F (one core,
+  // two doors — the orchestrator's cards and the assistant's session door). The
+  // RULE is unchanged: the agents-class column gets an agents.id RESOLVED from the
+  // users.id (agents.user_id, in the tenant), never the users id itself.
+  const asst = code("lib/assistant/smart-suggestion.ts")
   ok("smart_assistant_suggestions gets a resolved agents id — pass 14 fixed this\n    insert's COLUMN NAMES and left the users id in the renamed agents column,\n    so it still errored, just for a different reason",
-    /agent_id: suggestionAgentId,/.test(asst) && /const suggestionAgentId = /.test(asst))
+    /\.from\("agents"\)[\s\S]{0,120}\.eq\("user_id", input\.userId\)[\s\S]{0,80}\.eq\("brokerage_id", brokerageId\)/.test(asst) &&
+    /const agentId = \(agentRow/.test(asst) && /agent_id: agentId,/.test(asst) && !/agent_id: input\.userId/.test(asst))
 
   const aw = code("lib/intelligence/appointment-whisper.ts")
   ok("the assistant voice lookup resolves first — voice_assistant_config.agent_id\n    is a NOT NULL agents FK, so every row holds an agents id and the users-id\n    filter matched nothing: the whisper fell back to text with the agent's\n    cloned voice sitting configured and unused",
