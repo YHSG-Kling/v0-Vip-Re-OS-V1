@@ -17,7 +17,6 @@
   "lib/assets/screenshot-capture.ts :: scope.brokerageId": 2,
   "lib/buyer-broker/gate.ts :: params.brokerageId": 1,
   "lib/contact-promotion/history-carry.ts :: brokerageId": 2,
-  "lib/fatigue/fatigue-calculator.ts :: brokerageId": 1,
   "lib/kernel/0.1-feature-access.ts :: brokerageId": 1,
   "lib/kernel/actor-attribution.ts :: brokerageId": 1,
   "lib/kernel/lender-linkage.ts :: brokerageId": 1,

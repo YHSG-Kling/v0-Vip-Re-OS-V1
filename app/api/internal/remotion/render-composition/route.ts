@@ -34,6 +34,7 @@
 import "server-only"
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { resolvePlanTier } from "@/lib/billing/plan-tier"
 import { getBundle } from "@/lib/remotion/bundle-cache"
 import { getComposition, recordRenderCompleted, canAccessComposition, type CompositionTier } from "@/lib/remotion/registry"
@@ -65,9 +66,9 @@ export const dynamic = "force-dynamic"
 export const maxDuration = 300
 export const runtime = "nodejs"
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
+// TOMBSTONE (lane 86G): the local `unauthorized()` 401 helper had one caller, the
+// fail-OPEN `if (process.env.CRON_SECRET && …)` gate in POST. Survivor:
+// lib/cron-auth.ts verifyCronAuth (500 when unset, 401 when missing/wrong).
 
 interface ReqBody {
   render_id: string
@@ -76,10 +77,10 @@ interface ReqBody {
 const VALID_TIERS: CompositionTier[] = ["solo_agent", "team", "brokerage", "multi_location", "platform"]
 
 export async function POST(req: NextRequest) {
-  const headerSecret = req.headers.get("authorization")?.replace("Bearer ", "")
-  if (process.env.CRON_SECRET && headerSecret !== process.env.CRON_SECRET) {
-    return unauthorized()
-  }
+  // Fail closed (lane 86G): this read `if (process.env.CRON_SECRET && … !== …)`,
+  // which SKIPPED the check when the secret was unset. Callers send Bearer.
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   let body: ReqBody
   try { body = (await req.json()) as ReqBody } catch { return NextResponse.json({ error: "bad json" }, { status: 400 }) }

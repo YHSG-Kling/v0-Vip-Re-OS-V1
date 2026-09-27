@@ -32,6 +32,7 @@ import { NextResponse, type NextRequest } from "next/server"
 // bucket the Remotion workers and public players already fetch renders from.
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { createServiceClient } from "@/lib/supabase/service"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 // TOMBSTONE (lane 76D): `synthesizeSpeech` from lib/voice/elevenlabs-tts was
 // imported here for a private synthesis path. Survivor: lib/video/
@@ -81,10 +82,10 @@ interface ReqBody { newsletter_campaign_id: string }
 const NEWSLETTER_VIDEO_COMPOSITION = "NewsletterDigestVideo"
 
 export async function POST(req: NextRequest) {
-  const auth = req.headers.get("authorization")?.replace("Bearer ", "")
-  if (process.env.CRON_SECRET && auth !== process.env.CRON_SECRET) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Fail closed (lane 86G): this read `if (process.env.CRON_SECRET && … !== …)`,
+  // which SKIPPED the check when the secret was unset. Callers send Bearer.
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
   let body: ReqBody
   try { body = await req.json() as ReqBody } catch { return NextResponse.json({ error: "bad json" }, { status: 400 }) }
   if (!body.newsletter_campaign_id) return NextResponse.json({ error: "newsletter_campaign_id required" }, { status: 400 })

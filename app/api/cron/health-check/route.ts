@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -192,11 +193,14 @@ const INTEGRATION_SERVICES = [
 ]
 
 export async function POST(request: NextRequest) {
-  // Validate CRON_SECRET
-  const cronSecret = request.headers.get("x-cron-secret")
-  if (cronSecret !== process.env.CRON_SECRET) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Validate CRON_SECRET via the ONE helper (lane 86G). This compared the raw
+  // x-cron-secret header against process.env.CRON_SECRET: no 500 when the secret
+  // is unset, and it never read `Authorization: Bearer` — the header
+  // lib/kernel/cron-dispatch.ts sends on its GET (→ POST below), so every
+  // dispatched run was refused 401. x-cron-secret stays admitted, explicitly,
+  // for the manual trigger in app/actions/system-health.ts.
+  const denied = verifyCronAuth(request, { acceptCronSecretHeader: true })
+  if (denied) return denied
 
   const startTime = Date.now()
   const supabase = createClient(

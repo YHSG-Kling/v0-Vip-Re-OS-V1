@@ -2,9 +2,10 @@
 
 import { createServiceClient }      from "@/lib/supabase/service"
 import { createClient }              from "@/lib/supabase/server"
-import { calculateFatigue }          from "@/lib/fatigue/fatigue-calculator"
+import { calculateFatigue, calculateAllBuyerFatigue, type BuyerFatigueSweepResult } from "@/lib/fatigue/fatigue-calculator"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
-import { requireCaller } from "@/lib/auth/require-caller"
+import { requireCaller, requireTenantAdminOrSoloOwner } from "@/lib/auth/require-caller"
+import { tenantScope } from "@/lib/kernel/tenant-scope"
 
 // Every read in this file used to be unauthenticated and accepted
 // caller-supplied contactId / brokerageId. Any signed-in user could read
@@ -128,6 +129,33 @@ export async function triggerFatigueCalculation(
     return { success: true as const, data: result }
   } catch (err: any) {
     return { success: false as const, error: err.message }
+  }
+}
+
+// ─── RECALCULATE THE WHOLE BROKERAGE (dashboard button) ───────────────────────
+//
+// Lane 86G2. The Buyer Fatigue dashboard's "Recalculate" button used to POST
+// /api/fatigue/calculate from a "use client" component with
+// `x-cron-secret: process.env.CRON_SECRET ?? ""` — CRON_SECRET is not
+// NEXT_PUBLIC_, so the browser always sent "" and every click was refused 401 —
+// and a body `brokerageId` (CLAUDE.md §4: tenant never from a body). Now a
+// session door: tenant admin (or a solo owner — their own broker), tenant from
+// the SESSION, never a parameter; the same ONE sweep core the cron runs, scoped
+// to this brokerage. It writes scores and may attach AI recovery plans across
+// the whole book, which is why an agent seat is refused. Returns COUNTED
+// results so "scored nobody" is distinguishable from "refused".
+
+export async function recalculateBrokerageFatigue(): Promise<
+  | { success: true; data: BuyerFatigueSweepResult }
+  | { success: false; error: string }
+> {
+  const auth = await requireTenantAdminOrSoloOwner()
+  if (!auth.ok) return { success: false, error: auth.error }
+  try {
+    const data = await calculateAllBuyerFatigue(tenantScope(auth.brokerageId, "buyer-fatigue recalculate"))
+    return { success: true, data }
+  } catch (err) {
+    return { success: false, error: (err as Error).message }
   }
 }
 

@@ -4,9 +4,10 @@
 // made calculateFatigue(contactId, brokerageId) and calculateAllBuyerFatigue
 // public HTTP doors onto a service client with the tenant taken from the
 // PARAMETER — CLAUDE.md §4's IDOR shape. Every caller is in-process server
-// code: app/actions/buyer-fatigue.ts (a gated action), app/api/fatigue/cron/
-// route.ts and app/api/fatigue/calculate/route.ts (both gate before calling).
-// The brokerageId parameter is now an in-process contract, not a public one.
+// code: app/actions/buyer-fatigue.ts (session-gated actions) and
+// app/api/fatigue/cron/route.ts (verifyCronAuth before calling). The sweep takes
+// a declared TenantScope (lane 86G2); calculateFatigue's brokerageId is an
+// in-process contract, not a public one.
 // `server-only` makes a future client import fail at build time.
 import "server-only"
 
@@ -19,6 +20,8 @@ import { BUYER_ACTIVE_STAGES } from "@/lib/contacts/buyer-stage"
 import { generateText }        from "ai"
 import { KernelEvent }         from "@/lib/kernel/events"
 import { deriveRiskLevel, type FatigueRiskLevel } from "./fatigue-display"
+import { generateRecoveryPlan } from "./recovery-generator"
+import { applyTenantScope, describeTenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -341,9 +344,43 @@ export async function calculateFatigue(
 // (inline literals only) could not see it; it now comes from the shared ladder.
 const ACTIVE_BUYER_STAGES = BUYER_ACTIVE_STAGES
 
-export async function calculateAllBuyerFatigue(
-  brokerageId?: string
-): Promise<{ processed: number; errors: number }> {
+/** What one sweep did — counted, so a caller can tell "scored nobody" from "refused". */
+export interface BuyerFatigueSweepResult {
+  /** Active buyers the sweep read. */
+  total: number
+  /** calculateFatigue completed (score + snapshot written). */
+  scored: number
+  /** High/critical buyers that got a recovery plan attached. */
+  recovered: number
+  /** Buyers whose score threw — counted, never swallowed silently. */
+  errors: number
+}
+
+/**
+ * THE buyer-fatigue sweep (lane 86G2 — the ONE survivor). Two sweeps existed:
+ * this function (reached only by app/api/fatigue/calculate, which the cron
+ * dispatcher GETs and which exported only POST — every scheduled run 405'd) and
+ * the loop inlined in app/api/fatigue/cron/route.ts (every 12h; its only caller
+ * sent Bearer, which that route never read — every run 401'd). Both reached
+ * calculateFatigue for the same population, so they were a DUPLICATE (CLAUDE.md
+ * §1). Merged here, carrying what each lacked:
+ *   · from the cron loop — the recovery plan for high/critical, `brokerage_id`
+ *     NOT NULL (calculateFatigue needs a tenant), and a READ refusal that fails
+ *     the run instead of reading as "no buyers" (§3 — supabase-js resolves it);
+ *   · from this function — `deleted_at IS NULL`, and "active" as the ONE shared
+ *     ladder BUYER_ACTIVE_STAGES (§6). The cron loop spelled it a second way — a
+ *     local TERMINAL_STAGES of UNDER_CONTRACT/CLOSED/LIFETIME/DISENGAGED — so it
+ *     scored BUYER_ON_HOLD (the ladder: inactive) and skipped
+ *     BUYER_UNDER_CONTRACT (the ladder: active). It also required
+ *     contact_type='buyer', which dropped every contact_type='both' buyer; the
+ *     stage ladder is the definition of an active buyer.
+ *
+ * The tenant is a declared TenantScope: the CRON_SECRET-verified cron passes
+ * platformScope(reason); the session door (app/actions/buyer-fatigue.ts
+ * recalculateBrokerageFatigue) passes tenantScope(session brokerage). An absent
+ * id can no longer decay into "every tenant".
+ */
+export async function calculateAllBuyerFatigue(scope: TenantScope): Promise<BuyerFatigueSweepResult> {
   const supabase = createServiceClient()
 
   const query = supabase
@@ -351,24 +388,41 @@ export async function calculateAllBuyerFatigue(
     .select("id, brokerage_id")
     .in("buyer_stage", ACTIVE_BUYER_STAGES)
     .is("deleted_at", null)
-
-  if (brokerageId) {
-    query.eq("brokerage_id", brokerageId)
+    .not("brokerage_id", "is", null)
+  // Mutates the builder in place (the lib/property-alerts/alert-engine.ts shape —
+  // the generic return form instantiates too deeply here, TS2589).
+  applyTenantScope(query, scope)
+  const { data: contacts, error } = await query
+  if (error) {
+    throw new Error(`[fatigue-sweep] active-buyer read refused (${describeTenantScope(scope)}): ${error.message}`)
   }
 
-  const { data: contacts } = await query
-
-  let processed = 0
-  let errors    = 0
+  const result: BuyerFatigueSweepResult = { total: contacts?.length ?? 0, scored: 0, recovered: 0, errors: 0 }
 
   for (const contact of contacts ?? []) {
+    // calculateFatigue resolves the owning agent itself (contacts.agent_id is an
+    // agents.id; the alert's agent_user_id is a users.id — §3, disjoint ids).
+    let scored: FatigueResult
     try {
-      await calculateFatigue(contact.id, contact.brokerage_id)
-      processed++
-    } catch {
-      errors++
+      scored = await calculateFatigue(contact.id, contact.brokerage_id as string)
+    } catch (err) {
+      console.error("[fatigue-sweep] score failed for", contact.id, err)
+      result.errors++
+      continue
+    }
+    result.scored++
+
+    // Recovery plan for the bands that actually raise an alert (high >= 50).
+    // Best-effort: a plan failure never un-counts the score.
+    if (scored.risk_level === "high" || scored.risk_level === "critical") {
+      try {
+        const recovery = await generateRecoveryPlan(scored)
+        if (recovery.success) result.recovered++
+      } catch (planErr) {
+        console.warn("[fatigue-sweep] recovery plan failed for", contact.id, planErr)
+      }
     }
   }
 
-  return { processed, errors }
+  return result
 }

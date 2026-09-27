@@ -3,7 +3,7 @@
 import { useState, useTransition, useEffect, useCallback } from "react"
 import { useRouter }                                         from "next/navigation"
 import { cn }                                               from "@/lib/utils"
-import { getBrokerageFatigueData }                          from "@/app/actions/buyer-fatigue"
+import { getBrokerageFatigueData, recalculateBrokerageFatigue } from "@/app/actions/buyer-fatigue"
 
 type RiskLevel = "fresh" | "moderate" | "high" | "critical"
 
@@ -51,9 +51,9 @@ const SUMMARY_COLORS: Record<RiskLevel, { bg: string; text: string; label: strin
   fresh:    { bg: "bg-emerald-50 border-emerald-200", text: "text-emerald-700", label: "Fresh" },
 }
 
-// Hard-coded brokerageId pulled from env (server should pass via props in a real RSC)
-// This page is rendered client-side; in production wrap with an RSC to pass brokerageId.
-const DEMO_BROKERAGE_ID = process.env.NEXT_PUBLIC_BROKERAGE_ID ?? ""
+// TOMBSTONE (lane 86G2): DEMO_BROKERAGE_ID (NEXT_PUBLIC_BROKERAGE_ID) was passed
+// as a tenant from the client. Both server actions below take the tenant from the
+// SESSION (CLAUDE.md §4) — getBrokerageFatigueData already ignored it.
 
 export default function BrokerageFatiguePage() {
   const router       = useRouter()
@@ -66,7 +66,7 @@ export default function BrokerageFatiguePage() {
 
   const load = useCallback(() => {
     startTransition(async () => {
-      const res = await getBrokerageFatigueData(DEMO_BROKERAGE_ID)
+      const res = await getBrokerageFatigueData()
       if (res.success) setRows(res.data as FatigueRow[])
       else             setError(res.error)
       setLoaded(true)
@@ -107,13 +107,15 @@ export default function BrokerageFatiguePage() {
   const counts = { critical: 0, high: 0, moderate: 0, fresh: 0 } as Record<RiskLevel, number>
   for (const r of rows) counts[r.risk_level] = (counts[r.risk_level] ?? 0) + 1
 
+  // Was a fetch to /api/fatigue/calculate carrying `process.env.CRON_SECRET ?? ""`
+  // (not NEXT_PUBLIC_ → always "" in the browser → 401 on every click) and a body
+  // brokerageId. TOMBSTONE (lane 86G2) — survivor: the session-gated door
+  // app/actions/buyer-fatigue.ts recalculateBrokerageFatigue (tenant from the
+  // session; no secret in the client).
   function handleRecalculate() {
     startTransition(async () => {
-      await fetch("/api/fatigue/calculate", {
-        method: "POST",
-        headers: { "x-cron-secret": process.env.CRON_SECRET ?? "" },
-        body:    JSON.stringify({ brokerageId: DEMO_BROKERAGE_ID }),
-      })
+      const res = await recalculateBrokerageFatigue()
+      if (!res.success) setError(res.error)
       load()
     })
   }

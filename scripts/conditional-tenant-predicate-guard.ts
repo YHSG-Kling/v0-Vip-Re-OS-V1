@@ -154,10 +154,13 @@ export const CLASSIFICATION: Record<string, { verdict: Verdict; why: string }> =
   // tenantScope(id) for a named tenant. The entry was retired with the site so
   // it cannot sit here reading as enforced (§2). Re-record the baseline with
   // CONDITIONAL_TENANT_PREDICATE_BASELINE=1 npm run test:conditional-tenant-predicate.
-  "lib/fatigue/fatigue-calculator.ts :: brokerageId": {
-    verdict: "platform",
-    why: "calculateAllBuyerFatigue's only caller is app/api/fatigue/calculate/route.ts, which refuses on a wrong x-cron-secret before reading the body. Omitting brokerageId is the platform sweep.",
-  },
+  // lib/fatigue/fatigue-calculator.ts :: brokerageId — GONE (lane 86G2):
+  // calculateAllBuyerFatigue now takes a declared TenantScope and applies it
+  // through applyTenantScope; the CRON_SECRET-gated app/api/fatigue/cron writes
+  // platformScope(reason), the session door recalculateBrokerageFatigue writes
+  // tenantScope(session brokerage). app/api/fatigue/calculate (whose optional
+  // body brokerageId fed the old `if (brokerageId)`) is deleted as a duplicate
+  // sweep. Entry retired with the site so it cannot sit here reading as enforced.
   "lib/video/living-video-sweep.ts :: opts.brokerageId": {
     verdict: "platform",
     why: "refreshLivingVideos is called only from app/api/cron/composition-render-queue/route.ts with { limit: 200 } — a cron sweep across every tenant's living videos, by design.",
@@ -176,7 +179,7 @@ export const CLASSIFICATION: Record<string, { verdict: Verdict; why: string }> =
   },
   "app/api/cron/health-check/route.ts :: targetBrokerageId": {
     verdict: "platform",
-    why: "The route refuses any request without a matching x-cron-secret before reading targetBrokerageId. Omitting it checks every tenant's service_status, which is the health check's purpose.",
+    why: "The route gates on verifyCronAuth (lib/cron-auth.ts: 500 when CRON_SECRET is unset, 401 on a missing/wrong Bearer or x-cron-secret) before reading targetBrokerageId. Omitting it checks every tenant's service_status, which is the health check's purpose.",
   },
   // app/api/leads/raw/route.ts :: brokerageId — GONE (wave 26 lane A): the GET
   // that carried it was merged onto listRawLeadsForReview and tombstoned;

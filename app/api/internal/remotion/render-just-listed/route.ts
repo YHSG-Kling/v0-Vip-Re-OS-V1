@@ -47,6 +47,7 @@ import { NextResponse, type NextRequest } from "next/server"
 // this route was already using for its thumbnail pass.
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { createServiceClient } from "@/lib/supabase/service"
+import { verifyCronAuth } from "@/lib/cron-auth"
 // TOMBSTONE (lane 76D): `synthesizeSpeech` / `synthesizeSpeechWithTimestamps`
 // were imported here for renderVoiceover's private synthesis path. Survivor:
 // lib/video/reel-voiceover.ts prepareReelVoiceover (v3 model via the ONE
@@ -95,9 +96,9 @@ export const dynamic = "force-dynamic"
 export const maxDuration = 300
 export const runtime = "nodejs"
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
+// TOMBSTONE (lane 86G): the local `unauthorized()` 401 helper had one caller, the
+// fail-OPEN `if (process.env.CRON_SECRET && …)` gate in POST. Survivor:
+// lib/cron-auth.ts verifyCronAuth (500 when unset, 401 when missing/wrong).
 
 interface ReqBody {
   listing_promo_video_id: string
@@ -152,10 +153,10 @@ interface BrandContext {
 }
 
 export async function POST(req: NextRequest) {
-  const headerSecret = req.headers.get("authorization")?.replace("Bearer ", "")
-  if (process.env.CRON_SECRET && headerSecret !== process.env.CRON_SECRET) {
-    return unauthorized()
-  }
+  // Fail closed (lane 86G): this read `if (process.env.CRON_SECRET && … !== …)`,
+  // which SKIPPED the check when the secret was unset. Callers send Bearer.
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   let body: ReqBody
   try { body = (await req.json()) as ReqBody } catch { return NextResponse.json({ error: "bad json" }, { status: 400 }) }

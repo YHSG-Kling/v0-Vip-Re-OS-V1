@@ -2796,7 +2796,8 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/newsletter-cadence-tick": "campaign_orchestrator",
   "/api/cron/publish-newsletters": "campaign_orchestrator",
   "/api/fatigue/cron": "campaign_orchestrator",
-  "/api/fatigue/calculate": "campaign_orchestrator",
+  // TOMBSTONE (lane 86G2): "/api/fatigue/calculate" — route deleted as a duplicate
+  // sweep; survivor "/api/fatigue/cron" (same owner) → calculateAllBuyerFatigue.
   // The cross-lane "about to be dropped" digest (wave 26) — same owner as
   // MAINTENANCE_DOMAINS.nothing_dropped_sweep. It unifies the lanes the
   // per-entity monitors each work alone; contacts and transactions stay with
