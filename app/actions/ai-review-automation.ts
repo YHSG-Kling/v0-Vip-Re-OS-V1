@@ -42,19 +42,12 @@ import { respondToReview } from "@/lib/kernel/reputation"
  * Either way the OS reported "review request drafted" and no row existed. The
  * class is now declared once, callers were corrected to honour it, and the
  * users-class columns are RESOLVED rather than guessed.
+ *
+ * TOMBSTONE (lane 86E): resolveNoteBrokerageId — its only caller was the review-
+ * request body, which moved to lib/reputation/review-request-draft.ts. The
+ * brokerage there is no longer looked up from the agent row; it is the VERIFIED
+ * tenant the door hands in (session scope, or the transaction row a cron read).
  */
-async function resolveNoteBrokerageId(
-  supabase: { from: (t: string) => any },
-  agentRecordId: string,
-): Promise<string | null> {
-  const { data } = await supabase
-    .from("agents")
-    .select("brokerage_id")
-    .eq("id", agentRecordId)
-    .limit(1)
-    .maybeSingle()
-  return (data?.brokerage_id as string | undefined) ?? null
-}
 
 /**
  * ai_assistant_notes.source names the PRODUCER CLASS
@@ -268,135 +261,31 @@ export async function aiGenerateReviewRequest(params: {
     return { success: false, error: "Invalid IDs" }
   }
 
+  // SESSION GATE (lane 86E) — this export took agentId from its caller with no
+  // gate at all. requireAgentScope is the file's own gate: the caller's own
+  // agents row, or a supervisor acting for an agent INSIDE their brokerage.
   const supabase = await createClient()
+  const scope = await requireAgentScope(supabase, params.agentId)
+  if (!scope.ok) return { success: false, error: scope.error }
 
+  // THE BODY MOVED (§1 — one core, three doors): lib/reputation/review-request-
+  // draft.ts::draftReviewRequest. The review-request-on-close cron and the
+  // closed-stage hook (lib/transactions/stage-progression.ts) have no cookie and
+  // were refused through this door's cookie client on every deal; they call the
+  // core with the tenant off the transaction row. This door hands it the
+  // SESSION's brokerage and the scoped agents.id.
   try {
-    // Same ambiguity as aiDetermineReviewTiming above: transactions has THREE foreign keys
-    // to contacts (contact_id, buyer_contact_id, seller_contact_id), so a bare
-    // `contacts(...)` embed cannot be resolved and PostgREST fails the ENTIRE query. Name
-    // the constraint so the client on the deal is the one that comes back.
-    const { data: transaction, error: transactionError } = await supabase
-      .from("transactions")
-      .select(`
-        *,
-        contacts!transactions_contact_id_fkey(first_name, last_name, email, phone)
-      `)
-      .eq("id", params.transactionId)
-      .single()
-
-    if (transactionError) {
-      console.error("[aiGenerateReviewRequest] transaction read failed:", transactionError.message)
-      return { success: false, error: transactionError.message }
-    }
-
-    const { data: agent } = await supabase
-      .from("agents")
-      .select("users(first_name, last_name)")
-      .eq("id", params.agentId)
-      .single()
-
-    if (!transaction) {
-      return { success: false, error: "Transaction not found" }
-    }
-
-    // Platform-specific review URLs
-    const platformUrls: Record<string, string> = {
-      google: "https://g.page/r/YOUR_PLACE_ID/review",
-      zillow: "https://www.zillow.com/profile/YOUR_ID/reviews",
-      realtor: "https://www.realtor.com/realestateagents/YOUR_ID/reviews",
-      facebook: "https://facebook.com/YOUR_PAGE/reviews",
-      yelp: "https://www.yelp.com/writeareview/biz/YOUR_BIZ_ID",
-    }
-
-    const { object: request } = await generateObject({
-      model: "openai/gpt-4o",
-      schema: z.object({
-        subject: z.string().optional(),
-        message: z.string(),
-        callScript: z.string().optional(),
-        keyPoints: z.array(z.string()),
-        personalizedOpener: z.string(),
-        softAsk: z.string(),
-        directAsk: z.string(),
-        followUpSequence: z.array(z.object({
-          day: z.number(),
-          channel: z.string(),
-          message: z.string(),
-        })),
-      }),
-      prompt: `Generate a ${params.channel} review request for ${params.platform}:
-
-Agent: ${(agent?.users as any)?.first_name} ${(agent?.users as any)?.last_name}
-Client: ${transaction.contacts?.first_name} ${transaction.contacts?.last_name}
-Property: ${transaction.property_address}
-Transaction type: ${transaction.deal_type}
-Close date: ${transaction.close_date}
-
-Guidelines:
-- Be genuine and grateful, not pushy
-- Reference specific positive moments from the transaction
-- Make it easy with a direct link
-- For ${params.platform}, the review URL is: ${platformUrls[params.platform]}
-
-Generate:
-1. ${params.channel === "email" ? "Email subject and body" : params.channel === "text" ? "Text message (under 300 chars)" : "In-person script"}
-2. Key points to mention
-3. Both a soft ask and direct ask version
-4. 3-touch follow-up sequence if no response`,
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { draftReviewRequest } = await import("@/lib/reputation/review-request-draft")
+    const r = await draftReviewRequest(createServiceClient(), {
+      brokerageId: scope.brokerageId,
+      transactionId: params.transactionId,
+      agentId: scope.agentId,
+      platform: params.platform,
+      channel: params.channel,
     })
-
-    const brokerageId = await resolveNoteBrokerageId(supabase, params.agentId)
-
-    // review_requests.agent_id is agents-class and params.agentId already is
-    // that class (see the header), so it is written straight through. The users
-    // id is still resolved below because ai_assistant_notes.created_by really
-    // does FK users — the two columns want different id spaces on the same actor.
-    const agentUserId = await resolveUserIdForAgentRecord(supabase, params.agentId)
-
-    // Save to review_requests using verified live schema columns only.
-    const { data: rrInsert, error: rrError } = await supabase
-      .from("review_requests")
-      .insert({
-        agent_id:     params.agentId,
-        brokerage_id: brokerageId,
-        contact_id:   transaction.contacts?.id ?? transaction.contact_id ?? null,
-        contact_name: `${transaction.contacts?.first_name ?? ""} ${transaction.contacts?.last_name ?? ""}`.trim() || null,
-        platform:     params.platform,
-        review_url:   platformUrls[params.platform] ?? null,
-        status:       "pending",
-        created_at:   new Date().toISOString(),
-      })
-      .select("id")
-      .single()
-
-    // The error used to be discarded, which is why the FK rejection above was
-    // invisible: the action returned success with reviewRequestId: null and the
-    // UI said the request was drafted.
-    if (rrError || !rrInsert?.id) {
-      return { success: false, error: `Review request could not be saved: ${rrError?.message ?? "no row returned"}` }
-    }
-
-    // Persist AI-generated draft to ai_assistant_notes (note_text is the correct column).
-    // No users id ⇒ no valid created_by, and the note is skipped rather than
-    // written under a substituted actor. The review request itself already landed.
-    if (rrInsert?.id && brokerageId && agentUserId) {
-      await supabase.from("ai_assistant_notes").insert({
-        brokerage_id: brokerageId,
-        created_by:   agentUserId,
-        role:         "agent",
-        note_text:    JSON.stringify(request),
-        note_type:    "review_request_draft",
-        source:       AI_NOTE_SOURCE,
-        created_at:   new Date().toISOString(),
-      })
-    }
-
-    // Return both the structured data AND a flat `message` string the UI can use directly.
-    const messageText = request.message
-      ?? (params.channel === "text" ? request.callScript : null)
-      ?? `Hi ${transaction.contacts?.first_name ?? "there"}, ${request.personalizedOpener ?? ""} ${request.softAsk ?? ""}`.trim()
-
-    return { success: true, data: request, message: messageText, reviewRequestId: rrInsert?.id ?? null }
+    if (!r.success) return { success: false, error: r.error }
+    return { success: true, data: r.data, message: r.message, reviewRequestId: r.reviewRequestId }
   } catch (error) {
     return handleError(error, "aiGenerateReviewRequest")
   }

@@ -120,7 +120,9 @@ export async function runSpeedToLead(
       }
 
       // Dispatch via the canonical entry — already consent/channel gated
-      const result = await doLeadEngagement(lead.id)
+      // Lane 86E: the cron has no session — it PRESENTS the internal secret
+      // (the engagement door no longer treats the env var's presence as one).
+      const result = await doLeadEngagement(lead.id, { internalSecret: process.env.CRON_SECRET })
 
       if (result?.success !== false) {
         // Stamp first touch

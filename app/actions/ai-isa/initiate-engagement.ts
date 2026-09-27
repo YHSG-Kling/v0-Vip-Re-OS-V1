@@ -53,7 +53,11 @@ const SOCIAL_CHANNELS = new Set(['facebook', 'instagram', 'linkedin', 'twitter']
 
 export async function initiateAIISAEngagement(
   leadId: string,
-  opts?: { forceChannel?: 'email' | 'sms' | 'phone' | 'direct_mail' }
+  opts?: {
+    forceChannel?: 'email' | 'sms' | 'phone' | 'direct_mail'
+    /** Set ONLY by trusted in-process callers with no session (the speed-to-lead cron) — CRON_SECRET. */
+    internalSecret?: string
+  }
 ) {
   const supabase = createServiceClient()
   // Hoisted so the catch can anchor the error row to a tenant. Every console that
@@ -66,12 +70,18 @@ export async function initiateAIISAEngagement(
     // Permitted callers:
     //   1. Session-authenticated server actions (UI) — verify ctx.brokerageId
     //      matches the lead row's brokerage_id.
-    //   2. Internal trusted callers (cron, internal server-action chain like
-    //      app/actions/leads.ts post-create). CRON_SECRET must be set so an
-    //      unconfigured deploy does not silently become an open endpoint.
+    //   2. Internal trusted callers with no session (the speed-to-lead cron) —
+    //      they must PRESENT the CRON_SECRET (lane 86E).
+    // WAS: `!hasSession && !!process.env.CRON_SECRET` — the env var's PRESENCE
+    // was the credential. This is a "use server" export (a public endpoint,
+    // CLAUDE.md §4), so any anonymous POST was "trusted internal" on every real
+    // deploy and could fire outbound email/SMS/phone/direct mail at ANY lead id,
+    // on the service client, with no tenant predicate. Found by
+    // scripts/sessionless-use-server-census.ts. Same shape as processInboundEmail.
     const ctx = await getAgentContext()
     const hasSession = ctx.isAuthenticated && !!ctx.brokerageId
-    const isTrustedInternal = !hasSession && !!process.env.CRON_SECRET
+    const cronSecret = process.env.CRON_SECRET
+    const isTrustedInternal = !hasSession && !!cronSecret && !!opts?.internalSecret && opts.internalSecret === cronSecret
     if (!hasSession && !isTrustedInternal) {
       return { success: false, reason: 'Unauthorized' }
     }
@@ -130,7 +140,9 @@ export async function initiateAIISAEngagement(
         if (verdict.contactId) {
           const { initiateAIISAContactEngagement } =
             await import('@/app/actions/ai-isa/initiate-contact-engagement')
-          const rerouted = await initiateAIISAContactEngagement(verdict.contactId, 'reactivation')
+          // The trusted-internal credential travels with the re-route (a session caller's
+          // session is read again there; a cron caller has only this).
+          const rerouted = await initiateAIISAContactEngagement(verdict.contactId, 'reactivation', { internalSecret: opts?.internalSecret })
           return {
             ...rerouted,
             rerouted_to_contact: verdict.contactId,

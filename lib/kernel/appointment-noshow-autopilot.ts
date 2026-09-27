@@ -285,7 +285,8 @@ export async function runAppointmentNoShowAutopilot(
       const { initiateAIISAContactEngagement } = await import(
         "@/app/actions/ai-isa/initiate-contact-engagement"
       )
-      return initiateAIISAContactEngagement(contactId)
+      // Lane 86E: the autopilot has no session — it PRESENTS the internal secret.
+      return initiateAIISAContactEngagement(contactId, undefined, { internalSecret: process.env.CRON_SECRET })
     })
 
   // Fetch open, client-facing appointments in the relevant window: anything starting

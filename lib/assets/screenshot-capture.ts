@@ -86,7 +86,6 @@
 
 import { createHash } from "node:crypto"
 import { isIP } from "node:net"
-import type { PickedBrollClip } from "@/lib/video/broll-picker"
 import type { ProductDemoTopic } from "@/lib/platform/product-demo"
 import {
   SCREENSHOT_KINDS, SCREENSHOT_USES, SCREENSHOT_USES_RULE_VERSION,
@@ -1261,11 +1260,16 @@ export async function setScreenshotUses(
   return { ok: true, uses: valid }
 }
 
-/** PURE: stills as the composition-facing B-roll clip shape (image URLs are
- *  legal BrollClips — remotion/_BrollLayer detects by extension). */
-export function stillsAsBrollClips(urls: string[], captions?: string[]): PickedBrollClip[] {
-  return urls.map((url, i) => ({ url, ...(captions?.[i] ? { caption: captions[i] } : {}) }))
-}
+// TOMBSTONE (lane 86E, §1.3 — the functionality lives elsewhere): `stillsAsBrollClips`
+// re-shaped screenshot URLs as B-roll clips "for B-roll callers" — and no caller ever
+// existed (orphan-export category A: only the screenshot proof named it). It was
+// superseded when the body-visual model (79C) made a still ON SCREEN its own treatment:
+// a still reaches a composition as `screenshot`, staged under the key the composition
+// reads — lib/video/plan-asset-readiness.ts:311 screenshotPropKey (imageUrls for
+// ProductPromoReel, screenshotUrls elsewhere) and read back by
+// lib/video/body-visual-model.ts:788 assetsFromProps. Routing a still through the
+// B-roll layer would plan `broll` while showing a still — and plan-asset-readiness's
+// b-roll rule ("licensed stock or the tenant's own footage") forbids exactly that.
 
 export interface LessonFigure { url: string; caption: string; source: string; capturedAt: string | null }
 

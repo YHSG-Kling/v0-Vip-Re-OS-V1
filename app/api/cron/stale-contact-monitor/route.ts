@@ -177,7 +177,8 @@ export async function GET(request: NextRequest) {
           // routes the AI call to the ghost_recovery purpose and arms the
           // situational voicemail's fresh hook. Passing the real one is what
           // makes the ghosted half of the detector mean anything downstream.
-          const result = await initiateAIISAContactEngagement(contact.id, contact.detection_type)
+          // Lane 86E: a cron has no session — it PRESENTS the secret (env presence is no longer a credential).
+          const result = await initiateAIISAContactEngagement(contact.id, contact.detection_type, { internalSecret: process.env.CRON_SECRET })
           if (result.success) {
             reengaged++
             // THE REEL HANDOFF THIS RE-ENGAGEMENT ALWAYS PROMISED (2026-09-07). The

@@ -23,8 +23,10 @@ import { engageContact, type ISAEngagementReason } from './engage-contact'
  *   1. UI/session-authed server actions (verify ctx.brokerageId matches the
  *      contact row's brokerage_id).
  *   2. Internal trusted callers (cron stale-contact-monitor — already auth'd
- *      via verifyCronAuth at the route layer — and ghost-reengagement which
- *      runs inside cron). CRON_SECRET must be set in env to permit this.
+ *      via verifyCronAuth at the route layer — ghost-reengagement which runs
+ *      inside cron, the manager tick and the no-show autopilot). Since lane 86E
+ *      they must PRESENT CRON_SECRET as opts.internalSecret; the env var being
+ *      set is no longer a credential (it was one any browser could satisfy).
  *
  * ── WHY `reason` IS A PARAMETER ─────────────────────────────────────────────
  *
@@ -41,6 +43,9 @@ import { engageContact, type ISAEngagementReason } from './engage-contact'
 export async function initiateAIISAContactEngagement(
   contactId: string,
   reason: ISAEngagementReason = 'reactivation',
+  /** internalSecret — set ONLY by trusted in-process callers with no session (crons,
+   *  the kernel autopilots) — CRON_SECRET. See the AUTH GATE below (lane 86E). */
+  opts?: { internalSecret?: string },
 ): Promise<{
   success: boolean
   emailSent?: boolean
@@ -57,9 +62,14 @@ export async function initiateAIISAContactEngagement(
 
   try {
     // ── AUTH GATE ────────────────────────────────────────────────────────
+    // WAS: `!hasSession && !!process.env.CRON_SECRET` — the env var's PRESENCE was
+    // the credential, so on every real deploy an anonymous POST to this "use
+    // server" export (a public endpoint, §4) could fire outbound re-engagement at
+    // ANY contact id. The sessionless caller must now PRESENT the secret (lane 86E).
     const ctx = await getAgentContext()
     const hasSession = ctx.isAuthenticated && !!ctx.brokerageId
-    const isTrustedInternal = !hasSession && !!process.env.CRON_SECRET
+    const cronSecret = process.env.CRON_SECRET
+    const isTrustedInternal = !hasSession && !!cronSecret && !!opts?.internalSecret && opts.internalSecret === cronSecret
     if (!hasSession && !isTrustedInternal) {
       return { success: false, reason: 'Unauthorized' }
     }

@@ -286,6 +286,9 @@ const WIRED: Array<{ fn: string; from: string; surface: string }> = [
   { fn: "sendForDotloopSignature", from: F.dotloop, surface: F.docActions },
   { fn: "getDotloopSigningStatus", from: F.dotloop, surface: F.docActions },
   { fn: "getDotloopDocumentStatus", from: F.dotloop, surface: F.docActions },
+  // Lane 86E: the dotloop-sync cron now calls the server-only core
+  // (lib/transactions/dotloop-document-sync.ts); the session door's person surface is here.
+  { fn: "syncDotloopDocuments", from: F.dotloop, surface: F.docActions },
   { fn: "aiClassifyDocument", from: F.docIntel, surface: F.docActions },
   { fn: "aiVerifySignatures", from: F.docIntel, surface: F.docActions },
   { fn: "aiCompareDocuments", from: F.docIntel, surface: F.docCenter },

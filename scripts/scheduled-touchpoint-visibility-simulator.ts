@@ -57,7 +57,11 @@ const src = (p: string) =>
     ? stripComments(readFileSync(p, "utf8"))
     : ""
 
-const SPHERE   = src("app/actions/ai-sphere-management.ts")
+const SPHERE_ACTION = src("app/actions/ai-sphere-management.ts")
+// Lane 86E: the writer moved to the server-only core the autonomous resonance
+// scan calls (the action's cookie client read nothing from the cron). The
+// rules below follow the WRITER; the action must still delegate to it.
+const SPHERE   = src("lib/sphere-resonance/touchpoint-draft.ts")
 const LIFETIME = src("app/actions/lifetime-customers.ts")
 const CALENDAR = src("app/dashboard/calendar/components/os/calendar-shell.tsx")
 
@@ -75,24 +79,28 @@ console.log("\n── the reader that decides whether a touchpoint exists ──
 
 console.log("\n── the AI writer now writes a row the reader can find ──")
 {
-  check("aiGenerateTouchpoint sets scheduled_date",
-    /scheduled_date:\s*\(params\.scheduledFor \?\? new Date\(\)\.toISOString\(\)\)\.split\("T"\)\[0\]/.test(SPHERE))
+  check("aiGenerateTouchpoint delegates to THE writer (lib/sphere-resonance/touchpoint-draft.ts) — it inserts nothing itself",
+    /draftSphereTouchpoint\(/.test(SPHERE_ACTION) && !/from\("scheduled_touchpoints"\)/.test(SPHERE_ACTION) &&
+    /scheduledFor:\s*params\.scheduledFor/.test(SPHERE_ACTION))
+  check("the writer sets scheduled_date",
+    /scheduled_date:\s*\(input\.scheduledFor \?\? new Date\(\)\.toISOString\(\)\)\.split\("T"\)\[0\]/.test(SPHERE))
   check("…defaulting to today rather than leaving it null",
     /scheduledFor\?:\s*string/.test(SPHERE))
-  check("…and carries the tenant anchor",
-    /brokerage_id:\s*contact\.brokerage_id \?\? null/.test(SPHERE))
+  check("…and carries the tenant anchor — the VERIFIED brokerage the contact read was pinned to",
+    /brokerage_id:\s*brokerageId/.test(SPHERE) && /\.from\("contacts"\)[\s\S]{0,400}?\.eq\("brokerage_id", brokerageId\)/.test(SPHERE))
 }
 
 console.log("\n── the write can no longer fail silently ──")
 {
   check("the insert destructures its error",
-    /const \{ data: savedTouchpoint, error: saveError \} = await supabase/.test(SPHERE))
+    /const \{ data: savedTouchpoint, error: saveError \} = await svc/.test(SPHERE))
   check("…and a failed save is reported as a failure, not as success",
-    /if \(saveError \|\| !savedTouchpoint\)[\s\S]{0,200}?success:\s*false/.test(SPHERE))
+    /if \(saveError \|\| !savedTouchpoint\?\.id\)[\s\S]{0,200}?success:\s*false/.test(SPHERE))
   check("…while still returning the draft it generated, so the work is not thrown away",
-    /if \(saveError \|\| !savedTouchpoint\)[\s\S]{0,260}?data:\s*touchpoint/.test(SPHERE))
+    /if \(saveError \|\| !savedTouchpoint\?\.id\)[\s\S]{0,260}?data:\s*touchpoint/.test(SPHERE) &&
+    /if \(!r\.success\) return \{ success: false, error: r\.error, data: r\.data \}/.test(SPHERE_ACTION))
   check("the success path no longer reports an optional id",
-    !/touchpointId:\s*savedTouchpoint\?\.id/.test(SPHERE))
+    !/touchpointId:\s*savedTouchpoint\?\.id/.test(SPHERE) && !/touchpointId:\s*savedTouchpoint\?\.id/.test(SPHERE_ACTION))
 }
 
 console.log("\n── the sibling writer that was right all along still is ──")

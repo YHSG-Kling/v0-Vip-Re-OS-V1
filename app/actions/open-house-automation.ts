@@ -987,8 +987,12 @@ export async function processEventFollowups(eventId: string, client?: any) {
       console.warn("[open-house] hot-lead handoff failed:", err)
     }
 
-    // Generate analytics
-    await generateEventAnalytics(eventId)
+    // Generate analytics — on the SAME client this run holds (lane 86E). The
+    // helper built its own cookie client, so when the post-event cron filled
+    // the seam above with the service client, this last step still read the
+    // event, attendees and invitations through an EMPTY session and wrote an
+    // all-zero open_house_analytics row. Found by the sessionless census.
+    await generateEventAnalytics(eventId, supabase)
 
     revalidatePath("/dashboard/open-house")
     return {
@@ -1035,8 +1039,9 @@ function calculateAttendeeLeadScore(attendee: any): number {
   return Math.min(score, 100)
 }
 
-async function generateEventAnalytics(eventId: string) {
-  const supabase = await createClient()
+async function generateEventAnalytics(eventId: string, client?: any) {
+  // client seam, same as processEventFollowups: the caller's client wins.
+  const supabase = client ?? await createClient()
 
   const { data: event } = await supabase.from("open_house_events").select("*").eq("id", eventId).maybeSingle()
 

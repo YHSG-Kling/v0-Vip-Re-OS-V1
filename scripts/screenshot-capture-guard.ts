@@ -43,7 +43,7 @@ import {
   SCREENSHOT_KINDS, DEFAULT_REDACT_SELECTORS, DEMO_STILL_SURFACES, PUBLIC_PAGE_HOSTS, PUBLIC_PAGE_RATE,
   planScreenshotCapture, assertDemoTenantOnly, isRobotsAllowed, redactionCss, screenshotCacheKey, screenshotAssetRow,
   captureScreenshot, capturePublicPropertyPage, demoSessionCookies, stillUrlsForDemoTopic, stillUrlsForVideoAngle,
-  figuresForEducationTopic, renderFigures, stillsAsBrollClips, resolveScreenshotProvider, seedMissingDemoStill,
+  figuresForEducationTopic, renderFigures, resolveScreenshotProvider, seedMissingDemoStill,
   SCREENSHOT_USES, ZESTIMATE_SCREENSHOT_USES, screenshotUsesFor, usesOfRow,
   type ScreenshotProvider, type ProviderCaptureInput, type ScreenshotAssetRow,
 } from "../lib/assets/screenshot-capture"
@@ -278,7 +278,17 @@ console.log("\n[7 · planners reach it — video, demo, training, refresh]")
 const autopilot = strippedKeepStrings("lib/platform/product-content-autopilot.ts")
 check("video: product-content-autopilot fills composeProductVideoSpec's imageUrls (the ProductPromoReel Ken Burns slot) from demoStillImageUrls", autopilot.includes("demoStillImageUrls(svc, draft.angle)") && /composeProductVideoSpec\(draft\.angle, format, brand, null, imageUrls\)/.test(autopilot))
 check("video: the superadmin manual video action uses the same source", /demoStillImageUrls\(svc, input\.angle\)/.test(strippedKeepStrings("app/actions/superadmin/platform-content.ts")))
-check("video: stillsAsBrollClips yields the composition-facing BrollClip shape (url + optional caption)", JSON.stringify(stillsAsBrollClips(["https://c/1.png", "https://c/2.png"], ["A"])) === JSON.stringify([{ url: "https://c/1.png", caption: "A" }, { url: "https://c/2.png" }]))
+// Lane 86E: stillsAsBrollClips (stills re-shaped as B-roll, never called) is retired onto
+// the body-visual `screenshot` treatment — assert the SURVIVOR rule, not the retired helper.
+{
+  const readiness = strippedKeepStrings("lib/video/plan-asset-readiness.ts")
+  const bodyVisual = strippedKeepStrings("lib/video/body-visual-model.ts")
+  check("video: a still reaches a composition as the `screenshot` treatment — plan-asset-readiness stages it under the key the composition reads (imageUrls for ProductPromoReel, screenshotUrls elsewhere) and body-visual-model reads that key back",
+    /export function screenshotPropKey\(compositionId: string\): string \{\s*return compositionId === "ProductPromoReel" \? "imageUrls" : "screenshotUrls"/.test(readiness) &&
+    /arr\("screenshotUrls"\)/.test(bodyVisual))
+  check("video: …and no still is routed through the B-roll layer (the retired stillsAsBrollClips has no export left to call)",
+    !/export function stillsAsBrollClips/.test(strippedKeepStrings("lib/assets/screenshot-capture.ts")))
+}
 const fakeStills = new Map<string, ScreenshotAssetRow>([
   ["command_center", { id: "1", asset_name: "Command center", asset_url: "https://c/cc.png", thumbnail_url: null, approval_status: "approved", updated_at: null, metadata: { captured_at: "2026-09-20T00:00:00.000Z", surface_id: "command_center" } }],
   ["deals", { id: "2", asset_name: "Deals", asset_url: "https://c/deals.png", thumbnail_url: null, approval_status: "approved", updated_at: null, metadata: { surface_id: "deals" } }],

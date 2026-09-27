@@ -559,13 +559,20 @@ export async function advanceStage(params: {
         // down already resolved the right id; it is now resolved once, for both.
         const agentRecordId = await resolveAgentId(supabase, params.userId)
         if (agentRecordId) {
-          const { aiGenerateReviewRequest } = await import("@/app/actions/ai-review-automation")
-          await aiGenerateReviewRequest({
+          // Lane 86E: this called the "use server" aiGenerateReviewRequest, which read
+          // through the COOKIE client — refused whenever the stage moved without a
+          // session (the autonomous stage paths). The server-only core takes the
+          // tenant this function already holds (params.brokerageId) on the service
+          // client; the result is READ, not dropped.
+          const { draftReviewRequest } = await import("@/lib/reputation/review-request-draft")
+          const drafted = await draftReviewRequest(supabase, {
+            brokerageId: params.brokerageId,
             transactionId: params.transactionId,
             agentId: agentRecordId,
             platform: "google",
             channel: "email",
           })
+          if (!drafted.success) console.error("[stage-progression] post-close review request not drafted (non-blocking):", drafted.error)
         }
 
         // Schedule an agent notification 5 days from now to send the review

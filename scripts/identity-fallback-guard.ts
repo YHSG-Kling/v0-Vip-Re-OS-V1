@@ -239,25 +239,29 @@ console.log("\n═══ 4. The sites fixed in this pass stay fixed ═══")
     /getAgentLifetimeNpvRanked\(\{\s*agentId:\s*authUser\.id/.test(ltc))
 
   const rev = code(read("app/actions/ai-review-automation.ts"))
+  // Lane 86E: the review-request WRITER moved to the server-only core
+  // lib/reputation/review-request-draft.ts (the cron and the stage hook have no
+  // cookie). The rules follow the writer there; lifecycle_events stays in the action.
+  const revCore = code(read("lib/reputation/review-request-draft.ts"))
   // INVERTED BY m366. review_requests.agent_id used to FK users(id), so writing
   // the agents id was rejected 100% of the time and the fix was to resolve
   // agents->users. That column now FKs agents(id) — verified live — so the
   // declared agents id goes in directly and the resolve here would REINTRODUCE
   // the rejection it was added to cure.
   ok("review automation writes the declared agents id to review_requests, which\n    is what that column means since m366",
-    /agent_id:\s*params\.agentId,/.test(rev) && !/agent_id:\s*agentUserId/.test(rev))
-  ok("...and its brokerage lookup no longer tries BOTH id columns — the `.or()`\n    workaround existed only because the caller's class was unknown",
-    !/user_id\.eq\./.test(rev) && /\.eq\("id", agentRecordId\)/.test(rev))
+    /agent_id:\s*agentId,/.test(revCore) && !/agent_id:\s*agentUserId/.test(revCore) && !/agent_id:\s*agentUserId/.test(rev))
+  ok("...and its agent read no longer tries BOTH id columns — the `.or()`\n    workaround existed only because the caller's class was unknown",
+    !/user_id\.eq\./.test(rev) && !/user_id\.eq\./.test(revCore) && /\.eq\("id", agentId\)/.test(revCore))
   ok("...and the review_requests insert error is SURFACED, not discarded — the\n    discarded error is why an FK rejection read as \"review request drafted\"",
-    /const \{ data: rrInsert, error: rrError \}/.test(rev) &&
-    /if \(rrError \|\| !rrInsert\?\.id\)/.test(rev))
+    /const \{ data: rrInsert, error: rrError \}/.test(revCore) &&
+    /if \(rrError \|\| !rrInsert\?\.id\)/.test(revCore))
   ok("...and lifecycle_events.actor_user_id (a users FK) gets the resolved id",
     /actor_user_id: agentUserId/.test(rev))
 
   const stage = code(read("lib/transactions/stage-progression.ts"))
-  ok("stage-progression passes the AGENTS id to aiGenerateReviewRequest — it\n    passed params.userId, so the action threw and the post-close review draft\n    was never generated for any closing",
-    /aiGenerateReviewRequest\(\{[^}]*agentId: agentRecordId/.test(stage) &&
-    !/aiGenerateReviewRequest\(\{[^}]*agentId: params\.userId/.test(stage))
+  ok("stage-progression passes the AGENTS id to the review-request drafter — it\n    passed params.userId, so the action threw and the post-close review draft\n    was never generated for any closing",
+    /(?:aiGenerateReviewRequest|draftReviewRequest)\([^)]*agentId: agentRecordId/.test(stage) &&
+    !/(?:aiGenerateReviewRequest|draftReviewRequest)\([^)]*agentId: params\.userId/.test(stage))
 
   const mail = code(read("app/actions/ai-marketing-automation.ts"))
   // ASSERT THE CONSTRUCT, NOT THE SPELLING. This used to require the select

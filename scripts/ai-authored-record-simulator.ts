@@ -174,6 +174,9 @@ console.log("\n── every ai_assistant_notes write in the repo is storable ─
   const source = CHECK_VOCABULARIES.ai_assistant_notes?.source ?? []
   const files = [
     "app/actions/ai-review-automation.ts",
+    // Lane 86E: the review-request draft note moved with its body to the
+    // server-only core the sessionless cron + stage hook call — scanned there.
+    "lib/reputation/review-request-draft.ts",
     "app/api/internal/ai-note/route.ts",
     "lib/kernel/reporting.ts",
     "lib/kernel/ai-tools.ts",
@@ -191,42 +194,43 @@ console.log("\n── every ai_assistant_notes write in the repo is storable ─
       check(`${f}: the insert supplies brokerage_id`, "brokerage_id" in p)
     }
   }
-  check("all four writer files were scanned and had payloads", payloads >= 5)
+  check("all five writer files were scanned and had payloads", payloads >= 5)
 }
 
 console.log("\n── the review automation resolves its tenant BEFORE it writes ──")
 {
   const v = src("app/actions/ai-review-automation.ts")
-  check("a shared brokerage resolver exists", /async function resolveNoteBrokerageId/.test(v))
+  // Lane 86E: the review-request writer moved to lib/reputation/review-request-
+  // draft.ts (a server-only core, so the review-request-on-close cron and the
+  // closed-stage hook stop being refused by the cookie client). ASSERT THE RULE
+  // where the writer now lives: the tenant is VERIFIED INPUT pinned on every
+  // read, not a lookup off the agent row (resolveNoteBrokerageId is tombstoned).
+  const core = src("lib/reputation/review-request-draft.ts")
+  check("the review-request writer takes its tenant as VERIFIED input and pins the transaction AND the agent to it",
+    /brokerageId:\s*string/.test(core) &&
+    (core.match(/\.eq\("brokerage_id", brokerageId\)/g) ?? []).length >= 2)
+  check("…and the session door hands it the SESSION's scope, never a body brokerage",
+    /requireAgentScope\(supabase, params\.agentId\)/.test(v) && /brokerageId:\s*scope\.brokerageId/.test(v))
   // WAS: "…and it tries BOTH id classes (agents.id or users.id)".
-  // That assertion locked a WORKAROUND in as an invariant. Trying both columns
-  // was never the design — it was the symptom of callers passing two different
-  // id classes into the same parameter, and it kept the ambiguity alive
-  // downstream. m346 declared the class (agents.id), corrected the caller that
-  // disagreed, and resolves agents→users for the users-class columns. The guard
-  // now asserts the resolution rather than the guessing.
+  // That assertion locked a WORKAROUND in as an invariant. m346 declared the
+  // class (agents.id); the guard asserts the resolution rather than the guessing.
   check("…and it takes ONE declared id class — agents.id — instead of guessing",
-    /\.eq\("id", agentRecordId\)/.test(v) && !/user_id\.eq\./.test(v))
-  // SPLIT BY m366, which re-pointed review_requests.agent_id from users(id) to
-  // agents(id). This used to assert that BOTH columns were resolved to a users
-  // id — true when it was written, half-wrong now. Verified live against
-  // pg_constraint: review_requests.agent_id -> agents(id) ON DELETE CASCADE,
-  // lifecycle_events.actor_user_id -> users(id). So one takes the declared
-  // agents id straight, and the other still has to be RESOLVED. Asserting them
-  // together is what made a correct change look like a regression.
+    /\.eq\("id", agentId\)/.test(core) && !/user_id\.eq\./.test(core) && !/user_id\.eq\./.test(v))
+  // SPLIT BY m366: review_requests.agent_id -> agents(id), lifecycle_events.
+  // actor_user_id -> users(id) (verified live against pg_constraint).
   check("review_requests.agent_id takes the declared agents id directly, because " +
         "that column FKs agents(id) since m366",
-    /agent_id:\s*params\.agentId,/.test(v) && !/agent_id:\s*agentUserId/.test(v))
-  check("…while lifecycle_events.actor_user_id is still RESOLVED agents->users, " +
-        "because THAT column still FKs users(id)",
-    /resolveUserIdForAgentRecord\(supabase, params\.agentId\)/.test(v) &&
+    /agent_id:\s*agentId,/.test(core) && !/agent_id:\s*agentUserId/.test(core))
+  check("…while the users-class columns are still RESOLVED agents->users " +
+        "(the core's ai_assistant_notes.created_by, the action's lifecycle_events.actor_user_id)",
+    /resolveUserIdForAgentRecord\(svc, agentId\)/.test(core) && /created_by:\s*agentUserId/.test(core) &&
     /actor_user_id: agentUserId/.test(v))
-  check("the producer class is a named constant, not a subsystem string",
-    /const AI_NOTE_SOURCE = "ai_assistant"/.test(v))
+  check("the producer class is a named constant, not a subsystem string (in the action AND the moved core)",
+    /const AI_NOTE_SOURCE = "ai_assistant"/.test(v) && /const AI_NOTE_SOURCE = "ai_assistant"/.test(core))
   check("no call site still writes the subsystem into source",
     !/source:\s*"ai_review_automation"/.test(v))
-  check("all three note writes go through the constant",
-    (v.match(/source:\s*AI_NOTE_SOURCE/g) ?? []).length === 3)
+  check("all three note writes go through the constant (two in the action, one moved to the core)",
+    (v.match(/source:\s*AI_NOTE_SOURCE/g) ?? []).length + (core.match(/source:\s*AI_NOTE_SOURCE/g) ?? []).length === 3)
   check("the monitoring config REFUSES to claim success when the tenant is unresolved",
     /monitoring was not saved/.test(v))
 }

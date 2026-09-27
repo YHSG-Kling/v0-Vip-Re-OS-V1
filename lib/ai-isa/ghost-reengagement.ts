@@ -254,7 +254,8 @@ export async function runGhostReengagement(
       // route re-engagement to the contact-level engine instead of the lead engine.
       // This ensures consent-aware, contact-scoped nurture on converted records.
       if (lead.contact_id && lead.agent_id) {
-        const contactResult = await initiateAIISAContactEngagement(lead.contact_id)
+        // Lane 86E: this runs inside a cron (no session) — it PRESENTS the internal secret.
+        const contactResult = await initiateAIISAContactEngagement(lead.contact_id, undefined, { internalSecret: process.env.CRON_SECRET })
         if (contactResult.success) {
           sent++
         } else {

@@ -82,7 +82,7 @@ function readBatchrankBand(row: PropertyRowLike): "high" | "medium" | "low" | nu
 
 /** @proofSeam the investor persona's row mapper — asserted by scripts/batchdata-isa-tools-
  *  simulator.ts against a fixture carrying owner_name/owner_phone/owner_email/equity fields
- *  (positive control: the SAME fixture read through toIsaFacingToolRow still carries them). */
+ *  (positive control: the SAME fixture read unredacted through that simulator's identityRowOf still carries them). */
 export function toInvestorFacingToolRow(row: PropertyRowLike): InvestorFacingPropertyRow {
   const addr = (row.address as Record<string, unknown>) ?? {}
   const building = (row.building as Record<string, unknown>) ?? {}
@@ -114,10 +114,14 @@ export function toInvestorFacingToolRow(row: PropertyRowLike): InvestorFacingPro
   }
 }
 
-/** Identity mapper — the positive control the proof reads the SAME fixture through. */
-export function toIsaFacingToolRow(row: PropertyRowLike): PropertyRowLike {
-  return row
-}
+// TOMBSTONE (lane 86E, §1.3 — the functionality lives elsewhere): `toIsaFacingToolRow`
+// was `(row) => row`, exported for ONE reader — the positive control in
+// scripts/batchdata-isa-tools-simulator.ts — and named by no product code (orphan-
+// export category A). No tool ever returns an identity-keeping row to a model: the
+// persona policy's "identity" mode is decided at the reader boundary
+// (toInvestorFacingCandidates audience "brokerage"), not by a row mapper. The
+// identity read now lives beside its only reader (that simulator's local
+// `identityRowOf`), so the control still reads the SAME fixture unredacted.
 
 // ─── TOOL BUILDERS ──────────────────────────────────────────────────────────
 

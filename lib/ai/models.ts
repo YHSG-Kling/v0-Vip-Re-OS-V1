@@ -119,6 +119,13 @@ export const AI_TASK_ROUTING: Record<string, {
   direct_mail_targeting:     { model: "gpt-4o",       fallback: "claude-sonnet", reason: "Audience segment selection — structured criteria objects from past performance" },
   direct_mail_roi_forecast:  { model: "gpt-4o-mini",  fallback: "claude-haiku",  reason: "Campaign ROI projection — arithmetic-shaped structured output" },
   direct_mail_performance:   { model: "gpt-4o-mini",  fallback: "claude-haiku",  reason: "Post-campaign performance analysis — summarises rows already computed" },
+  // ── Lane 86E: two drafters moved off the UNROUTED shim onto server-only cores
+  // (lib/reputation/review-request-draft.ts, lib/sphere-resonance/touchpoint-draft.ts)
+  // so their cron callers work with no session. Same rule as the direct-mail keys:
+  // pinned to the model the call site ALREADY pinned (gpt-4o), so the move changes
+  // the LEDGER (ai_tool_usage now sees the spend), not the cost.
+  review_request_generation: { model: "gpt-4o",       fallback: "claude-sonnet", reason: "Post-close review request — short client email/text/script" },
+  sphere_touchpoint_generation: { model: "gpt-4o",    fallback: "claude-sonnet", reason: "Lifetime-customer touchpoint — personal check-in in the agent's brand voice" },
   blog_post_generation:      { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Long-form blog — SEO + brand voice" },
   ai_reply_coach:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Coaching agent reply drafts — nuanced tone guidance" },
   smart_reply_generation:    { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Generate smart reply suggestions for inbound messages" },

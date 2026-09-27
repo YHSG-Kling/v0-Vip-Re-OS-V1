@@ -5,15 +5,15 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { resolveActorNamesEitherClass } from "@/lib/kernel/actor-attribution"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
-import { recordSelfHeal } from "@/lib/kernel/self-heal-ledger"
 import { hashSharePassword, verifySharePassword } from "@/lib/security/share-password"
 import { revalidatePath } from "next/cache"
 import {
   addParticipant,
-  syncLoopDocuments,
   uploadLoopDocument,
   getLoopActivity,
 } from "@/lib/providers/esign"
+import { syncDotloopLoopDocuments } from "@/lib/transactions/dotloop-document-sync"
+import { recordDocumentAccess } from "@/lib/documents/document-access-log"
 
 interface DotloopSyncData {
   loopId: string
@@ -30,89 +30,23 @@ export async function syncDotloopDocuments(data: DotloopSyncData) {
       return { success: false, error: "Unauthorized" }
     }
 
-    const supabase = await createClient()
-    const svc = createServiceClient()
-
-    // Verify the caller owns the contact (and transaction if provided)
-    const { data: c } = await svc
-      .from("contacts").select("brokerage_id").eq("id", data.contactId).maybeSingle()
-    if (!c || c.brokerage_id !== ctx.brokerageId) {
-      return { success: false, error: "Forbidden: contact not in your brokerage" }
-    }
-    if (data.transactionId) {
-      const { data: t } = await svc
-        .from("transactions").select("brokerage_id").eq("id", data.transactionId).maybeSingle()
-      if (!t || t.brokerage_id !== ctx.brokerageId) {
-        return { success: false, error: "Forbidden: transaction not in your brokerage" }
-      }
-    }
-
-    const sync = await syncLoopDocuments(data.loopId)
-    if (!sync.success) return { success: false, error: sync.error ?? "syncLoopDocuments failed" }
-    const folders = sync.folders
-    let syncedCount = 0
-
-    for (const folder of folders) {
-      for (const document of folder.documents || []) {
-        // Check if already synced
-        const { data: existing } = await supabase
-          .from("client_documents")
-          .select("id")
-          .eq("dotloop_document_id", document.document_id)
-          .single()
-
-        if (!existing) {
-          // Create new document record — stamp brokerage_id from session
-          const { data: inserted, error } = await supabase.from("client_documents").insert({
-            brokerage_id: ctx.brokerageId,
-            contact_id: data.contactId,
-            transaction_id: data.transactionId,
-            dotloop_loop_id: data.loopId,
-            dotloop_document_id: document.document_id,
-            dotloop_folder_name: folder.name,
-            document_name: document.name,
-            document_type: mapFolderToDocType(folder.name),
-            status: document.is_signed ? "signed" : "pending_signature",
-            document_url: document.url,
-          }).select("id").maybeSingle()
-
-          if (!error) {
-            syncedCount++
-            // AUDIT — this is exactly the "event custody does not mint a URL for" the
-            // logger's own header names: a document ARRIVING via provider sync, never
-            // opened through issueGovernedDocumentUrl, so nothing else logs it. Best-
-            // effort: a failed audit row must never fail the sync that already succeeded.
-            if (inserted?.id) {
-              await logDocumentAccess({
-                documentId: inserted.id,
-                accessedByType: "external",
-                accessType: "upload",
-              }).catch((e) => console.error("[dotloop] logDocumentAccess (sync upload) failed:", e))
-            }
-          }
-        }
-      }
-    }
-
-    if (data.transactionId) {
-      // Freshness stamp only — the documents themselves are already written above,
-      // so losing this never loses data; the worst case is the transaction looking
-      // stale and the next cron pass re-syncing. Ledgered rather than silenced so a
-      // permanently-failing stamp (column drift, RLS) shows up in the repair digest.
-      await sentinelWrite(
-        svc,
-        supabase
-          .from("transactions")
-          .update({ last_provider_sync_at: new Date().toISOString() })
-          .eq("id", data.transactionId)
-          .eq("brokerage_id", ctx.brokerageId),
-        { table: "transactions", flow: "dotloop_document_sync", brokerageId: ctx.brokerageId },
-      )
-    }
+    // THE BODY MOVED (lane 86E, orphan doctrine §1 — one core, two doors):
+    // lib/transactions/dotloop-document-sync.ts::syncDotloopLoopDocuments. The
+    // autonomous half (app/api/cron/dotloop-sync) has no cookie and was refused
+    // "Unauthorized" here on every transaction; it now calls the same core with
+    // the tenant off the transaction row. This door keeps its session gate and
+    // hands the core the SESSION's brokerage — never one from the body.
+    const r = await syncDotloopLoopDocuments(createServiceClient(), {
+      brokerageId: ctx.brokerageId,
+      loopId: data.loopId,
+      contactId: data.contactId,
+      transactionId: data.transactionId ?? null,
+    })
+    if (!r.success) return { success: false, error: r.error }
 
     revalidatePath(`/transactions/${data.transactionId}`)
 
-    return { success: true, message: `Synced ${syncedCount} documents`, syncedCount }
+    return { success: true, message: `Synced ${r.syncedCount} documents`, syncedCount: r.syncedCount }
   } catch (error: any) {
     console.error("[v0] Sync Dotloop Documents error:", error)
     return { success: false, error: error.message }
@@ -167,16 +101,7 @@ export async function getDotloopSigningStatus(loopId: string) {
   }
 }
 
-function mapFolderToDocType(folderName: string): string {
-  const lowerName = folderName.toLowerCase()
-  if (lowerName.includes("contract")) return "contract"
-  if (lowerName.includes("disclosure")) return "disclosure"
-  if (lowerName.includes("inspection")) return "inspection"
-  if (lowerName.includes("appraisal")) return "appraisal"
-  if (lowerName.includes("loan")) return "loan_doc"
-  if (lowerName.includes("closing")) return "closing_doc"
-  return "other"
-}
+// mapFolderToDocType MOVED with the sync body to lib/transactions/dotloop-document-sync.ts (lane 86E).
 
 // ============================================
 // DOTLOOP SIGNATURE MANAGEMENT
@@ -1212,35 +1137,11 @@ export async function logDocumentAccess(data: {
     return { success: false, error: "Forbidden: document not in your brokerage" }
   }
 
-  const supabase = await createClient()
-  // CHECKED, AND LEDGERED. An unchecked insert on an AUDIT table is the worst
-  // possible place to lose a row silently — the whole point is that it is
-  // complete — so a refusal here is both returned to the caller AND ledgered
-  // via sentinelWrite (self_heal_events) the same way this file's other three
-  // document_audit_trail writers already are, rather than only the caller's
-  // own best-effort `.catch` seeing it.
-  const { error } = await supabase.from("document_access_log").insert({
-    document_id: data.documentId,
-    accessed_by_type: data.accessedByType,
-    accessed_by_id: data.accessedById,
-    accessed_by_email: data.accessedByEmail,
-    access_type: data.accessType,
-    ip_address: data.ipAddress,
-    user_agent: data.userAgent,
-  })
-
-  if (error) {
-    await recordSelfHeal(svc, {
-      brokerageId: ctx.brokerageId,
-      domain: "data_flow",
-      subject: `document_access_logged:document_access_log`,
-      action: "best_effort_write",
-      outcome: "failed",
-      detail: { flow: "document_access_logged", table: "document_access_log", message: error.message.slice(0, 300), code: (error as any).code ?? null },
-    }).catch(() => null)
-    return { success: false, error: error.message }
-  }
-  return { success: true }
+  // CHECKED, AND LEDGERED — the insert + self-heal moved unchanged to
+  // lib/documents/document-access-log.ts::recordDocumentAccess (lane 86E) so the
+  // sessionless Dotloop sync core writes the SAME row through the SAME writer
+  // (§6). This door keeps its session gate and document-tenant check above.
+  return recordDocumentAccess(svc, ctx.brokerageId, data)
 }
 
 export interface DocumentAccessLogEntry {

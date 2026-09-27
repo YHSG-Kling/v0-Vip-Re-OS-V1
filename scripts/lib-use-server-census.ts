@@ -61,6 +61,7 @@
 import { existsSync, readFileSync } from "node:fs"
 import { walkTs } from "./runtime-roots"
 import { stripComments, blankStrings } from "./strip-comments"
+import { SESSION_TOKENS, hasUseServerDirective } from "./session-tokens"
 
 // ─── The allowlist: files that still carry an ungated directive, BY RULING ───
 //
@@ -79,38 +80,13 @@ import { stripComments, blankStrings } from "./strip-comments"
 const KNOWN_UNGATED: ReadonlyArray<{ file: string; why: string }> = []
 
 // ─── Session tokens ───────────────────────────────────────────────────────────
-interface Token { name: string; re: RegExp; on: "identifiers" | "specifiers" }
-const SESSION_TOKENS: ReadonlyArray<Token> = [
-  { name: "auth.getUser",                            re: /\bauth\.getUser\b/,                              on: "identifiers" },
-  { name: 'createClient() from "@/lib/supabase/server"', re: /from\s*["']@\/lib\/supabase\/server["']/,      on: "specifiers" },
-  { name: "requireCaller",                           re: /\brequireCaller\b/,                              on: "identifiers" },
-  { name: "requireActor",                            re: /\brequireActor\b/,                               on: "identifiers" },
-  { name: "getSession",                              re: /\bgetSession\b/,                                 on: "identifiers" },
-  { name: "cookies()",                               re: /\bcookies\(\)/,                                  on: "identifiers" },
-  { name: "headers()",                               re: /\bheaders\(\)/,                                  on: "identifiers" },
-  { name: "createServerClient",                      re: /\bcreateServerClient\b/,                         on: "identifiers" },
-  { name: "getCurrentUser",                          re: /\bgetCurrentUser\b/,                             on: "identifiers" },
-  { name: "requireUser",                             re: /\brequireUser\b/,                                on: "identifiers" },
-  { name: "getAuthenticatedUser",                    re: /\bgetAuthenticatedUser\b/,                       on: "identifiers" },
-  { name: "resolveActor",                            re: /\bresolveActor\b/,                               on: "identifiers" },
-  { name: "requireAdmin",                            re: /\brequireAdmin\b/,                               on: "identifiers" },
-  { name: "requirePlatform*",                        re: /\brequirePlatform\w*\b/,                         on: "identifiers" },
-  { name: "getAgentContext",                         re: /\bgetAgentContext\b/,                            on: "identifiers" },
-]
-
+// MOVED (lane 86E, §6) to scripts/session-tokens.ts — the sibling census
+// scripts/sessionless-use-server-census.ts asks the same "does this read the
+// session?" question per export, and two copies of a spelling list drift.
 // ─── Classification ───────────────────────────────────────────────────────────
 interface Verdict { directive: boolean; tokens: string[] }
 
-/**
- * Top-level directive by the rule Next applies: the first non-empty line of the
- * COMMENT-STRIPPED source, either quote style, optional semicolon. Same rule as
- * scripts/use-server-export-guard.ts:hasUseServerDirective — restated rather than
- * imported because that module runs its guard at import time.
- */
-function hasUseServerDirective(stripped: string): boolean {
-  const first = stripped.split("\n").find((l) => l.trim().length > 0) ?? ""
-  return /^\s*["']use server["']\s*;?\s*$/.test(first)
-}
+// hasUseServerDirective MOVED with the token list to scripts/session-tokens.ts (lane 86E).
 
 export function classify(src: string): Verdict {
   const stripped = stripComments(src)

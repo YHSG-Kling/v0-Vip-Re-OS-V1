@@ -18,7 +18,11 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { aiGenerateTouchpoint } from "@/app/actions/ai-sphere-management"
+// Lane 86E: this imported the "use server" aiGenerateTouchpoint, which read the
+// contact through the COOKIE client — this cron has none, so every draft came
+// back "Contact not found" and the follow-up was queued with an empty body. The
+// body is now the server-only core, handed the brokerage this scan is walking.
+import { draftSphereTouchpoint } from "@/lib/sphere-resonance/touchpoint-draft"
 // THE RESOLVER, not the server action: this is a cron path with no session, so
 // the action's session-derived per-user tier would always be empty here. Calling
 // the resolver directly lets each contact's OWN agent govern their auto-touch
@@ -38,13 +42,9 @@ type LifeEventType =
   | "death_in_household"
   | "inheritance"
 
-type TouchpointType =
-  | "anniversary"
-  | "birthday"
-  | "check_in"
-  | "market_update"
-  | "holiday"
-  | "referral_ask"
+// TouchpointType — the local restatement is retired onto the drafter's own
+// vocabulary (§6: one spelling), lib/sphere-resonance/touchpoint-draft.ts.
+type TouchpointType = import("@/lib/sphere-resonance/touchpoint-draft").TouchpointType
 
 const SENSITIVE_EVENTS = new Set<LifeEventType>([
   "divorce_filing",
@@ -53,7 +53,7 @@ const SENSITIVE_EVENTS = new Set<LifeEventType>([
   "inheritance",
 ])
 
-/** Map detected life event → appropriate touchpoint type for aiGenerateTouchpoint. */
+/** Map detected life event → appropriate touchpoint type for draftSphereTouchpoint. */
 const EVENT_TO_TOUCHPOINT: Partial<Record<LifeEventType, TouchpointType>> = {
   job_change: "check_in",
   job_change_to_non_local: "check_in",
@@ -220,20 +220,26 @@ async function processBrokerageResonance(
 
       // Non-sensitive event — generate AI touchpoint
       const touchpointType = EVENT_TO_TOUCHPOINT[eventTypeKey] ?? "check_in"
+      const fallbackBody = `Hi — saw the ${humanizeEvent(eventTypeKey).toLowerCase()} news. Just thinking of you. If there's anything I can help with, let me know.`
       let messageBody = ""
       try {
         if (c.agent_id) {
-          const result = await aiGenerateTouchpoint({
+          const result = await draftSphereTouchpoint(supabase, {
+            brokerageId,
             agentId: c.agent_id,
             contactId: c.id,
             touchpointType,
           })
-          if ((result as { success?: boolean; message?: string }).success) {
-            messageBody = (result as { message?: string }).message ?? ""
+          if (result.success) messageBody = result.message
+          else {
+            // A refused draft is REPORTED and falls to the same plain check-in a
+            // thrown draft gets — never an empty body queued as a touch.
+            console.warn(`[sphere-resonance] touchpoint not drafted for contact ${c.id}:`, result.error)
+            messageBody = fallbackBody
           }
         }
       } catch {
-        messageBody = `Hi — saw the ${humanizeEvent(eventTypeKey).toLowerCase()} news. Just thinking of you. If there's anything I can help with, let me know.`
+        messageBody = fallbackBody
       }
 
       const queueAuto = await autoTouchAllowed(c.agent_id)

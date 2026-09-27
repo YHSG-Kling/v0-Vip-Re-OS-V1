@@ -223,7 +223,8 @@ async function isaPickUpRecoveryCall(signal: ManagerSignal, _ctx: { brokerageId:
   if (!contactId) return null
   try {
     const { initiateAIISAContactEngagement } = await import("@/app/actions/ai-isa/initiate-contact-engagement")
-    const res = (await initiateAIISAContactEngagement(contactId)) as { success?: boolean; channel?: string; reason?: string; skipped_reason?: string }
+    // Lane 86E: the manager tick has no session — it PRESENTS the internal secret.
+    const res = (await initiateAIISAContactEngagement(contactId, undefined, { internalSecret: process.env.CRON_SECRET })) as { success?: boolean; channel?: string; reason?: string; skipped_reason?: string }
     return res?.success
       ? `AI ISA picked up the ${label} — consent-gated outreach placed (${res.channel ?? "best channel"})`
       : `AI ISA evaluated the ${label} but held off (${res?.reason ?? res?.skipped_reason ?? "consent/cadence gate"}); the gated message covers it`
@@ -521,7 +522,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const { initiateAIISAContactEngagement } = await import("@/app/actions/ai-isa/initiate-contact-engagement")
     let engaged = 0
     for (const l of withContact) {
-      try { const r = (await initiateAIISAContactEngagement(l.contactId as string)) as { success?: boolean }; if (r?.success) engaged += 1 }
+      try { const r = (await initiateAIISAContactEngagement(l.contactId as string, undefined, { internalSecret: process.env.CRON_SECRET })) as { success?: boolean }; if (r?.success) engaged += 1 }
       catch (e) { console.error("[manager-signals] open_house qualify failed:", e) }
     }
     return `AI ISA picked up ${withContact.length} hot open-house buyer(s) to qualify (${engaged} engaged now, rest consent/cadence-gated)`

@@ -24,18 +24,28 @@ export async function acceptAIISAHandoff(params: {
   leadId: string
   brokerageId: string
   actorUserId: string
+  /** Set ONLY by trusted in-process callers (the intent converters) — CRON_SECRET. */
+  internalSecret?: string
 }): Promise<{ success: boolean; contactId?: string; error?: string }> {
   const service = createServiceClient()
 
   // ── AUTH GATE ────────────────────────────────────────────────────────────
   // Two valid callers:
   //   1. UI (session-authenticated agent/broker) — verify ctx.brokerageId
-  //   2. Trusted server-to-server (e.g. the Twilio voice webhook routes, which
-  //      verify their own signature) — actorUserId === 'system' AND CRON_SECRET
-  //      is configured (proves we're in a real deploy, not an open endpoint).
+  //   2. Trusted server-to-server (the intent converters reached from the voice
+  //      webhooks, which verify their own signature) — actorUserId === 'system'
+  //      AND the caller PRESENTS the CRON_SECRET (lane 86E).
+  // WAS: `actorUserId === 'system' && !!process.env.CRON_SECRET` — the env var's
+  // mere PRESENCE was the credential, and both halves are free to a browser: this
+  // is a "use server" export (a public endpoint, CLAUDE.md §4), so a POST with
+  // { actorUserId: "system", brokerageId: <any>, leadId: <any> } converted another
+  // tenant's lead on the service client with no session at all. The secret must
+  // now be SUPPLIED and match — the same shape processInboundEmail and
+  // lead-signal-ingest already use.
   const ctx = await getAgentContext()
+  const cronSecret = process.env.CRON_SECRET
   const isSystemCaller =
-    params.actorUserId === 'system' && !!process.env.CRON_SECRET
+    params.actorUserId === 'system' && !!cronSecret && !!params.internalSecret && params.internalSecret === cronSecret
   if (!isSystemCaller) {
     if (!ctx.isAuthenticated || !ctx.brokerageId) {
       return { success: false, error: 'Unauthorized' }

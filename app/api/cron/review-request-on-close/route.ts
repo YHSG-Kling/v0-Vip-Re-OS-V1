@@ -6,7 +6,11 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
-import { aiGenerateReviewRequest } from "@/app/actions/ai-review-automation"
+// Lane 86E: this imported app/actions/ai-review-automation.ts::aiGenerateReviewRequest,
+// which read through the COOKIE client — a cron has none, so every deal came back
+// "compose failed". The body is now the server-only core below, handed the tenant
+// off the transaction row this cron read on the service client.
+import { draftReviewRequest } from "@/lib/reputation/review-request-draft"
 import { verifyCronAuth } from "@/lib/cron-auth"
 
 // Default delay in days between closing and sending review request
@@ -99,13 +103,14 @@ export async function GET(req: NextRequest) {
         // Generate the review request — then ACTUALLY SEND IT (informed-audit
         // fix: this cron used to create the pending row, discard the composed
         // message, and report "processed" for a send that never happened).
-        const gen: any = await aiGenerateReviewRequest({
+        const gen = await draftReviewRequest(supabase, {
+          brokerageId:   txn.brokerage_id,
           transactionId: txn.id,
           agentId:       txn.agent_id,
           platform:      "google",
           channel:       "email",
         })
-        if (!gen?.success) { errors.push(`txn ${txn.id}: compose failed`); continue }
+        if (!gen.success) { errors.push(`txn ${txn.id}: compose failed — ${gen.error}`); continue }
 
         const contactEmail = (txn as any).contacts?.email as string | undefined
         if (!contactEmail || !gen.message) {

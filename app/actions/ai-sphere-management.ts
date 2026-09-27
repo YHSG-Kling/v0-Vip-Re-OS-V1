@@ -134,112 +134,40 @@ export async function aiGenerateTouchpoint(params: {
     return { success: false, error: "Invalid IDs" }
   }
 
-  const supabase = await createClient()
+  // SESSION GATE (lane 86E) — this export took agentId from its caller with no
+  // gate (§4: a "use server" export is a public endpoint). The tenant is the
+  // SESSION's; another agent's id is honoured only for tenant staff, and the
+  // core refuses any agent or contact outside that brokerage.
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  if (params.agentId !== ctx.agentId) {
+    const { TENANT_ADMIN_USER_TYPES } = await import("@/lib/auth/resolve-user-role")
+    if (!TENANT_ADMIN_USER_TYPES.has(ctx.userType)) return { success: false, error: "Forbidden: a touchpoint is drafted for your own agent record" }
+  }
 
+  // THE BODY MOVED (§1 — one core, two doors): lib/sphere-resonance/touchpoint-
+  // draft.ts::draftSphereTouchpoint. The autonomous resonance scan has no cookie
+  // and got "Contact not found" through this door's cookie client on every life
+  // event; it calls the core with the brokerage it is scanning. Every rule the
+  // calendar depends on (scheduled_date defaulting to today, the tenant anchor,
+  // a read insert error that still returns the draft) moved with it.
   try {
-    // Get contact details
-    const { data: contact } = await supabase
-      .from("contacts")
-      .select(`
-        *,
-        transactions!transactions_contact_id_fkey(property_address, close_date, purchase_price),
-        activities(activity_type, notes, created_at)
-      `)
-      .eq("id", params.contactId)
-      .single()
-
-    if (!contact) {
-      return { success: false, error: "Contact not found" }
-    }
-
-    // Get agent's brand voice
-    const { data: brandVoice } = await supabase
-      .from("brand_voice_profile")
-      .select("*")
-      .eq("agent_id", params.agentId)
-      .maybeSingle()
-
-    const lastTransaction = contact.transactions?.[0]
-
-    const { object: touchpoint } = await generateObject({
-      model: "openai/gpt-4o",
-      schema: z.object({
-        subject: z.string(),
-        message: z.string(),
-        callScript: z.string().optional(),
-        textMessage: z.string().optional(),
-        giftSuggestion: z.object({
-          item: z.string(),
-          estimatedCost: z.number(),
-          reason: z.string(),
-        }).optional(),
-        personalizedDetails: z.array(z.string()),
-      }),
-      prompt: `Generate a personalized ${params.touchpointType} touchpoint for this lifetime customer:
-
-Contact: ${contact.first_name} ${contact.last_name}
-Relationship: ${contact.contact_type}
-Last property: ${lastTransaction?.property_address || "Unknown"}
-Close date: ${lastTransaction?.close_date || "Unknown"}
-Interests/Notes: ${contact.notes || "None recorded"}
-Recent interactions: ${JSON.stringify(contact.activities?.slice(0, 3) || [])}
-
-Relationship to agent: ${params.relationshipType || contact.contact_type || "Past client"}
-What the agent says matters most right now: ${params.additionalContext?.trim() || "Not specified"}
-
-Brand voice: ${brandVoice?.tone || "Professional yet warm"}
-Agent specialty: ${brandVoice?.specialties || "Residential real estate"}
-
-Generate:
-1. Email subject and message
-2. Optional call script (if personal call appropriate)
-3. Text message version (keep under 160 chars)
-4. Gift suggestion if appropriate for ${params.touchpointType}
-5. 3-5 personalized details to reference`,
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { draftSphereTouchpoint } = await import("@/lib/sphere-resonance/touchpoint-draft")
+    const r = await draftSphereTouchpoint(createServiceClient(), {
+      brokerageId: ctx.brokerageId,
+      agentId: params.agentId,
+      contactId: params.contactId,
+      touchpointType: params.touchpointType,
+      scheduledFor: params.scheduledFor,
+      additionalContext: params.additionalContext,
+      relationshipType: params.relationshipType,
     })
-
-    // Save the touchpoint — use schema-correct columns only.
-    // scheduled_touchpoints uses message_template (text) not content (jsonb).
-    //
-    // scheduled_date AND brokerage_id were both omitted here, and the row still
-    // inserted (both columns are nullable). The consequence was not a failed
-    // write — it was an INVISIBLE one. The only surface that shows these rows is
-    // the calendar, and it reads them with
-    //     .eq("status","scheduled").gte("scheduled_date", …).lt("scheduled_date", …)
-    // A NULL never satisfies a range comparison, so every touchpoint the AI
-    // drafted was stored and could never appear on any day — including the ones
-    // the autonomous sphere-resonance scan writes unattended. The sibling writer
-    // lifetime-customers.ts:scheduleTouchpoint had it right all along: it sets
-    // scheduled_date and the tenant anchor and checks its error.
-    const { data: savedTouchpoint, error: saveError } = await supabase
-      .from("scheduled_touchpoints")
-      .insert({
-        agent_id:         params.agentId,
-        brokerage_id:     contact.brokerage_id ?? null,
-        contact_id:       params.contactId,
-        touchpoint_type:  params.touchpointType,
-        // date column — take the date part only, same as the sibling writer.
-        scheduled_date:   (params.scheduledFor ?? new Date().toISOString()).split("T")[0],
-        message_template: JSON.stringify(touchpoint),
-        status:           "scheduled",
-        ai_generated:     true,
-      })
-      .select()
-      .single()
-
-    // supabase-js RESOLVES a rejected insert, so this error has to be read to
-    // exist. It used to be dropped, and the action returned success with an
-    // undefined touchpointId — indistinguishable from a saved draft.
-    if (saveError || !savedTouchpoint) {
-      return {
-        success: false,
-        error: `Draft written but not scheduled: ${saveError?.message ?? "no row returned"}`,
-        data: touchpoint,
-      }
-    }
+    if (!r.success) return { success: false, error: r.error, data: r.data }
 
     revalidatePath("/sphere")
-    return { success: true, data: touchpoint, touchpointId: savedTouchpoint.id }
+    return { success: true, data: r.data, touchpointId: r.touchpointId }
   } catch (error) {
     return handleError(error, "aiGenerateTouchpoint")
   }

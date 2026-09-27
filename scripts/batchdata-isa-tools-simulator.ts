@@ -58,7 +58,10 @@ import {
 } from "../lib/ai-isa/batchdata-isa-tools"
 // Lane 79B — the row mappers MOVED to the property tool module (tombstone in
 // batchdata-isa-tools.ts); the proof follows the survivor.
-import { toInvestorFacingToolRow, toIsaFacingToolRow } from "../lib/ai-isa/property-lookup-tools"
+import { toInvestorFacingToolRow } from "../lib/ai-isa/property-lookup-tools"
+// The identity read (lane 86E): moved here from lib/ai-isa/property-lookup-tools.ts, where it was
+// exported for this control alone — a raw row read back unredacted.
+const identityRowOf = (row: Record<string, unknown>): Record<string, unknown> => row
 import {
   resolveToolPersona,
   PERSONA_TOOL_POLICY,
@@ -277,9 +280,9 @@ let sphereToolsEligible: Record<string, unknown> = {}
   // POSITIVE CONTROL — the SAME fixture read through the identity mapper still carries
   // every owner/equity field, proving the property-only test above isn't passing because
   // nothing strips anything for anyone.
-  const identityRow = toIsaFacingToolRow(fixture) as any
+  const identityRow = identityRowOf(fixture) as any
   ok(identityRow.owner_name === "Jane Landlord" && identityRow.owner_phone === "5125559876" && identityRow.owner_email === "jane@example.com" && identityRow.equity_percent === 62,
-     "positive control: toIsaFacingToolRow (identity) KEEPS owner_name/owner_phone/owner_email/equity_percent on the SAME fixture row")
+     "positive control: the identity read (identityRowOf) KEEPS owner_name/owner_phone/owner_email/equity_percent on the SAME fixture row")
 
   // Every "property-only" persona in the policy table routes through the SAME redaction —
   // asserted against the table itself so a future persona addition cannot silently default

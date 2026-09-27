@@ -10,6 +10,8 @@
  *   sendForDotloopSignature   (dotloop-integration)       -> signature_requests + provider
  *   getDotloopSigningStatus   (dotloop-integration)       -> loop-wide signed/pending counts
  *   getDotloopDocumentStatus  (dotloop-integration)       -> provider activity for this document
+ *   syncDotloopDocuments      (dotloop-integration)       -> pulls the loop's documents into client_documents
+ *                             (lane 86E: its cron caller moved to the server-only core, so this is its person door)
  *
  * THE DOTLOOP CONTROLS REPORT THE PROVIDER'S REAL ANSWER. With no Dotloop
  * credentials configured the provider layer returns an explicit
@@ -39,6 +41,7 @@ import {
   getDotloopDocumentStatus,
   getDotloopSigningStatus,
   sendForDotloopSignature,
+  syncDotloopDocuments,
 } from "@/app/actions/dotloop-integration"
 import type {
   DocumentAccessLogEntry,
@@ -86,6 +89,7 @@ export function DocumentActionsDialog({
   } | null>(null)
   const [activityVerdict, setActivityVerdict] = useState<Verdict | null>(null)
   const [activities, setActivities] = useState<any[]>([])
+  const [pullVerdict, setPullVerdict] = useState<Verdict | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -195,6 +199,33 @@ export function DocumentActionsDialog({
         ok: true,
         headline: `Sent to ${signers.length} signer(s) on loop ${res.loopId}. A signature packet is now recorded, so the client's Sign button can appear.`,
       })
+      router.refresh()
+    })
+  }
+
+  // THE PERSON HALF OF THE LOOP SYNC (lane 86E). app/api/cron/dotloop-sync is the
+  // autonomous half; it used to call syncDotloopDocuments and was refused
+  // "Unauthorized" (no cookie), so the cron now calls the server-only core
+  // (lib/transactions/dotloop-document-sync.ts) and this session door had no
+  // caller left. Here it pulls the loop's documents into this document's contact
+  // (and transaction) on demand — the tenant is the SESSION's, never the dialog's.
+  const runPullLoop = () => {
+    if (!context?.contactId) return
+    setBusy("pull")
+    setPullVerdict(null)
+    startTransition(async () => {
+      const res: any = await syncDotloopDocuments({
+        loopId,
+        contactId: context.contactId as string,
+        transactionId: context.transactionId ?? undefined,
+      })
+      setBusy(null)
+      if (!res?.success) {
+        // The provider's (or the gate's) own words — a missing credential says so.
+        setPullVerdict({ ok: false, headline: res?.error ?? "Could not pull the loop's documents." })
+        return
+      }
+      setPullVerdict({ ok: true, headline: `${res.syncedCount ?? 0} new document(s) pulled from loop ${loopId}.` })
       router.refresh()
     })
   }
@@ -431,9 +462,20 @@ export function DocumentActionsDialog({
                 {busy === "loop" ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
                 Check loop status
               </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={pending || !loopId.trim() || !context?.contactId}
+                onClick={runPullLoop}
+                title={context?.contactId ? "Pull this loop's documents onto the document's contact" : "This document has no contact to file the loop's documents under"}
+              >
+                {busy === "pull" ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
+                Pull loop documents
+              </Button>
             </div>
 
             <VerdictNote verdict={sendVerdict} />
+            <VerdictNote verdict={pullVerdict} />
 
             {loopStatus ? (
               <p className="text-xs">
