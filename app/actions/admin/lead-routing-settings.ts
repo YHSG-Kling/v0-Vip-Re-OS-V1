@@ -25,6 +25,11 @@ import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
 import { getAgentContext } from "@/lib/identity"
 import { revalidatePath } from "next/cache"
 import { isRuleType, RULE_TYPE_LABELS, type RuleType } from "@/lib/lead-assignment/rule-matcher"
+import {
+  MAILBOX_OWNER_PREFERENCE_DEFAULT,
+  MAILBOX_OWNER_PREFERENCE_KEY,
+  mailboxOwnerPreferenceFromSettings,
+} from "@/lib/lead-assignment/mailbox-owner-preference"
 
 /**
  * May this caller change how the brokerage's leads are assigned?
@@ -101,6 +106,61 @@ export async function setDefaultAssignmentMethod(
     .eq("id", gate.brokerageId)
 
   if (error) return { success: false, error: error.message }
+
+  revalidatePath("/dashboard/settings")
+  revalidatePath("/dashboard/admin/assignment-rules")
+  return { success: true }
+}
+
+// ─── MAILBOX-OWNER PREFERENCE (wave 86, lane 86A2) ─────────────────────────────
+// A lead that landed from an agent's or team lead's own mailbox prefers that owner at assignment
+// (lib/lead-assignment/mailbox-owner-preference.ts — a rung of tier-routing.ts, the one router).
+// DEFAULT ON; the same admins who set the default method (broker / admin / team lead —
+// requireRoutingAdmin above) may turn it off. Stored in the EXISTING jsonb
+// brokerage_settings.settings.lead_routing.prefer_mailbox_owner (UNIQUE brokerage_id; no migration).
+
+export async function getMailboxOwnerPreference(): Promise<{ enabled: boolean; error?: string }> {
+  const gate = await requireRoutingAdmin()
+  if (!gate.ok) return { enabled: MAILBOX_OWNER_PREFERENCE_DEFAULT, error: gate.error }
+  const service = createServiceClient()
+  const { data, error } = await service
+    .from("brokerage_settings")
+    .select("settings")
+    .eq("brokerage_id", gate.brokerageId)
+    .maybeSingle()
+  if (error) return { enabled: MAILBOX_OWNER_PREFERENCE_DEFAULT, error: error.message }
+  return { enabled: mailboxOwnerPreferenceFromSettings((data as { settings?: unknown } | null)?.settings) }
+}
+
+export async function setMailboxOwnerPreference(
+  enabled: boolean,
+): Promise<{ success: boolean; error?: string }> {
+  const gate = await requireRoutingAdmin()
+  if (!gate.ok) return { success: false, error: gate.error }
+  if (typeof enabled !== "boolean") return { success: false, error: "The mailbox-owner preference is either on or off." }
+
+  const service = createServiceClient()
+  // Read-merge-write: every other key on settings (ce_provider, phone_port_ins, business_registration…)
+  // is kept. The row may not exist yet (brokerage_settings is created lazily) — insert it then.
+  const { data: cur, error: readError } = await service
+    .from("brokerage_settings")
+    .select("id, settings")
+    .eq("brokerage_id", gate.brokerageId)
+    .maybeSingle()
+  if (readError) return { success: false, error: `Could not read the lead-routing settings: ${readError.message}` }
+  const prior = ((cur as { settings?: Record<string, any> } | null)?.settings ?? {}) as Record<string, any>
+  const settings = {
+    ...prior,
+    lead_routing: { ...(prior.lead_routing ?? {}), [MAILBOX_OWNER_PREFERENCE_KEY]: enabled },
+  }
+  const now = new Date().toISOString()
+  const write = cur
+    ? await service.from("brokerage_settings").update({ settings, updated_at: now })
+        .eq("id", (cur as { id: string }).id).eq("brokerage_id", gate.brokerageId).select("id")
+    : await service.from("brokerage_settings").insert({ brokerage_id: gate.brokerageId, settings }).select("id")
+  if (write.error) return { success: false, error: write.error.message }
+  // A write that matched nothing also resolves (§3) — count what came back.
+  if (!write.data || write.data.length === 0) return { success: false, error: "The lead-routing settings row was not saved." }
 
   revalidatePath("/dashboard/settings")
   revalidatePath("/dashboard/admin/assignment-rules")

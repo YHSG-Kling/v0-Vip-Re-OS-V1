@@ -9,7 +9,7 @@
 // everyone is slammed (least-loaded wins, the guardian then surfaces the overload).
 
 import type { createServiceClient } from "@/lib/supabase/service"
-import { pickLeastLoadedWithHeadroom, tierMaxLoadForAgentCount } from "@/lib/kernel/capacity-guardian"
+import { pickLeastLoadedWithHeadroom, tierMaxLoadForAgentCount, HIGH_LOAD } from "@/lib/kernel/capacity-guardian"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -40,4 +40,16 @@ export async function selectAgentByCapacity(
   const candidates: Array<{ agentId: string; load: number }> = []
   for (const id of agentIds) candidates.push({ agentId: id, load: await agentWorkingLoad(supabase, brokerageId, id) })
   return pickLeastLoadedWithHeadroom(candidates, maxLoad)
+}
+
+/** Does ONE named agent have capacity headroom — working load under the capacity guardian's
+ *  HIGH_LOAD share of the tier ceiling (the same test pickLeastLoadedWithHeadroom applies to a pool)?
+ *  Used by the mailbox-owner preference (mailbox-owner-preference.ts): a preferred agent who is out
+ *  of capacity is NOT preferred, and the normal rules — which fall back to least-loaded — decide. */
+export async function agentHasHeadroom(supabase: Svc, brokerageId: string, agentId: string): Promise<boolean> {
+  const [load, maxLoad] = await Promise.all([
+    agentWorkingLoad(supabase, brokerageId, agentId),
+    resolveBrokerageMaxLoad(supabase, brokerageId),
+  ])
+  return load / Math.max(1, maxLoad) < HIGH_LOAD
 }

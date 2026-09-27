@@ -66,6 +66,16 @@
 // resolved the refusal and every such assignment wrote NO ledger row, silently.
 // normalizeAssignmentMethod below is the one place the split happens: method into
 // `assignment_method`, attribution into `routing_reason`.
+//
+// ── THE MAILBOX-OWNER PREFERENCE (wave 86, lane 86A2) ────────────────────────
+//
+// A lead that landed RAW from an AGENT's or TEAM LEAD's mailbox (wave 86: "yes all mailboxes should be
+// configured the same.") prefers that mailbox's owner at assignment — a rung of THIS resolver, ahead of
+// the rule pass on the team and brokerage tiers, DEFAULT ON and switchable off in the brokerage's
+// lead-routing settings. Any reason not to (setting off, owner inactive / out of capacity / on a book
+// transfer / off the team's board, a refused read) FALLS THROUGH to the rules below, unchanged. The
+// decision and its facts live in ./mailbox-owner-preference.ts; the ledger method is 'rule_match'
+// (CHECK-legal — no migration) with the attribution in routing_reason.
 
 import type { createServiceClient } from "@/lib/supabase/service"
 import { resolvePlanTier, FALLBACK_TIER, type PlanTier } from "@/lib/billing/plan-tier"
@@ -73,6 +83,7 @@ import { resolveSoloAgentOwner } from "./solo-agent"
 import { assignByDefaultMethod } from "./default-assignment"
 import { evaluateAssignmentEligibility, type LeadRoutingHints } from "./rule-matcher"
 import { handleLeadAssigned } from "@/lib/kernel/lead-acquisition-handlers"
+import { decideMailboxOwnerPreference, loadMailboxOwnerFacts } from "./mailbox-owner-preference"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -271,6 +282,18 @@ async function resolveTierRouting(
         ? ` (tenant carries more than one team; the oldest, ${team.id}, is the routing team)`
         : ""
 
+      // MAILBOX-OWNER PREFERENCE (wave 86) — ahead of the rules, within the team's board only.
+      const teamLeadAgentId = await resolveTeamLeadAgentId(supabase, brokerageId, team.teamLeadUserId)
+      const mailboxPref = decideMailboxOwnerPreference(
+        await loadMailboxOwnerFacts(supabase, brokerageId, lead.id, { memberIds: pool, teamLeadAgentId }),
+      )
+      if (mailboxPref.prefer) {
+        return {
+          tier, agentId: mailboxPref.agentId, method: "rule_match", ruleId: null, held: false,
+          routingReason: `team tier${scopeNote} — ${mailboxPref.reason}`,
+        }
+      }
+
       // Rules first — a team lead's explicit rule outranks their default policy.
       const ruled = await resolveAgentByRules(supabase, brokerageId, lead as never)
       if (ruled.error) {
@@ -317,7 +340,7 @@ async function resolveTierRouting(
       // Nobody on the team is routable → the TEAM LEAD themselves. Same last
       // rung the contact resolver already uses (contact-assignment.ts:243), so
       // leads and contacts cannot disagree about who catches the overflow.
-      const leadAgentId = await resolveTeamLeadAgentId(supabase, brokerageId, team.teamLeadUserId)
+      const leadAgentId = teamLeadAgentId // resolved once above (the mailbox-owner board check reads it too)
       if (leadAgentId) {
         return {
           tier, agentId: leadAgentId, method: "team_lead", ruleId: null, held: false,
@@ -341,6 +364,15 @@ async function resolveTierRouting(
   const tierNote = tier === "team"
     ? "team tier with NO teams row — fell through to the brokerage-wide pool (provisioning gap)"
     : `${tier} tier — the brokerage admin's assignment settings`
+
+  // MAILBOX-OWNER PREFERENCE (wave 86) — ahead of the rules, across the brokerage's roster.
+  const mailboxPref = decideMailboxOwnerPreference(await loadMailboxOwnerFacts(supabase, brokerageId, lead.id, null))
+  if (mailboxPref.prefer) {
+    return {
+      tier, agentId: mailboxPref.agentId, method: "rule_match", ruleId: null, held: false,
+      routingReason: `${tierNote}; ${mailboxPref.reason}`,
+    }
+  }
 
   const ruled = await resolveAgentByRules(supabase, brokerageId, lead as never)
   if (ruled.error) {
