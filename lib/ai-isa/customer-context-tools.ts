@@ -138,46 +138,113 @@ function buildGetMyContextTool(ctx: CustomerContextToolsContext) {
  */
 function buildRequestShowingTool(ctx: CustomerContextToolsContext & { contactId: string }) {
   return tool({
-    description: "Request a showing, call, or meeting for YOURSELF. Logs the request and notifies your agent — they will confirm a specific time. Use when the person asks to see a property, schedule a call, or meet.",
+    description: "Request a showing, call, or meeting for YOURSELF. For a showing of one of OUR listings, pass its listing_id: when the brokerage takes live bookings you get REAL open times from the agent's calendar — offer two or three, then call again with the slot_start they pick and it is booked on the calendar. Otherwise (or for a call/meeting) it logs the request and notifies your agent, who confirms a specific time — say so; never claim a time is confirmed unless this tool returned mode 'booked'.",
     inputSchema: z.object({
       meeting_type: z.enum(["call", "meeting", "showing"]).describe("What kind of meeting was requested"),
       preferred_window: z.string().nullable().describe("Free-text time preference if mentioned, or null"),
       notes: z.string().describe("Any details given (property of interest, etc.)"),
+      listing_id: z.string().nullable().optional().describe("For a showing of one of OUR listings: the id returned by search_our_listings/get_listing_details. Otherwise null"),
+      slot_start: z.string().nullable().optional().describe("ONLY after this tool returned open times: the exact startTime the person picked. Otherwise null"),
     }),
-    execute: async ({ meeting_type, preferred_window, notes }: { meeting_type: "call" | "meeting" | "showing"; preferred_window: string | null; notes: string }) => {
-      const activityType = meeting_type === "call" ? "call" : meeting_type === "showing" ? "showing" : "meeting"
-      const result = await writeFollowUpActivity({
-        brokerageId: ctx.brokerageId,
-        agentId: ctx.agentId ?? null,
-        contactId: ctx.contactId,
-        activityType,
-        // No date resolved yet — the agent confirms a real time; this timestamp is a
-        // placeholder "now" so the row sorts into the near-term queue, same posture as
-        // lib/ai-isa/tools.ts's request_appointment (which logs intent, not a time).
-        scheduledAt: new Date().toISOString(),
-        notes: [preferred_window ? `Preferred: ${preferred_window}` : null, notes].filter(Boolean).join("\n"),
-        title: `Showing/meeting requested: ${meeting_type}`,
-      })
-      if (!result.success) return { success: false, error: result.error }
-      if (ctx.agentId) {
-        const svc = createServiceClient()
-        const { data: agent } = await svc.from("agents").select("user_id").eq("id", ctx.agentId).maybeSingle()
-        if (agent?.user_id) {
-          await sentinelWrite(svc, svc.from("notifications").insert({
-            user_id: agent.user_id,
-            brokerage_id: ctx.brokerageId,
-            type: "appointment_request",
-            title: "A client requested a showing/meeting via AI chat",
-            body: `${meeting_type}${preferred_window ? ` (${preferred_window})` : ""}`,
-            priority: "high",
-            entity_type: "contact",
-            entity_id: ctx.contactId,
-          }), { table: "notifications", flow: "customer_context_tools_notify", brokerageId: ctx.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
-        }
+    execute: async ({ meeting_type, preferred_window, notes, listing_id, slot_start }: { meeting_type: "call" | "meeting" | "showing"; preferred_window: string | null; notes: string; listing_id?: string | null; slot_start?: string | null }) => {
+      // LANE 86D — CALENDAR-AWARE SHOWINGS on the ONE self-booking engine
+      // (lib/kernel/self-book.ts — the portal's "book a tour" survivor: the
+      // listing agent's live free/busy ∪ scheduled showings, opt-in per
+      // brokerage, the NAR-settlement BBA gate, slot re-verified at booking).
+      // Competitors book showings inside the conversation (lane86D notes);
+      // this tool only ever logged a request with a placeholder "now" time.
+      // Falls through to the request path below whenever live booking is not
+      // available — never a promise the calendar did not make.
+      let bookingNote: string | null = null
+      if (meeting_type === "showing" && listing_id) {
+        const live = await tryLiveShowingBooking(ctx, listing_id, slot_start ?? null)
+        if (live.kind !== "fallback") return live.result
+        bookingNote = live.reason
       }
-      return { success: true, meetingType: meeting_type, activityId: result.activityId }
+      const result = await requestShowingFallback(ctx, meeting_type, preferred_window, [bookingNote ? `Live booking unavailable: ${bookingNote}` : null, notes].filter(Boolean).join("\n"))
+      return result.success ? { ...result, mode: "requested" as const } : result
     },
   })
+}
+
+type LiveShowingAttempt =
+  | { kind: "slots" | "booked" | "slot_gone"; result: Record<string, unknown> }
+  | { kind: "fallback"; reason: string }
+
+/** Lane 86D — the live half of request_showing. Tenant-pinned: the listing
+ *  must be THIS brokerage's (a model-supplied id for another tenant's listing
+ *  must not even read its agent's availability). Contact is ctx-locked. */
+async function tryLiveShowingBooking(
+  ctx: CustomerContextToolsContext & { contactId: string },
+  listingId: string,
+  slotStart: string | null,
+): Promise<LiveShowingAttempt> {
+  const svc = createServiceClient()
+  const { data: listing, error: listingError } = await svc.from("listings")
+    .select("id, brokerage_id").eq("id", listingId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+  if (listingError) return { kind: "fallback", reason: `listing read refused (${listingError.message})` }
+  if (!listing) return { kind: "fallback", reason: "that listing is not one of ours" }
+  const { loadBookableSlots, bookShowingSlot } = await import("@/lib/kernel/self-book")
+  if (!slotStart) {
+    const avail = await loadBookableSlots(svc, listingId)
+    if (!avail.enabled || avail.slots.length === 0) return { kind: "fallback", reason: avail.reason ?? "no open times in the booking window" }
+    return {
+      kind: "slots",
+      result: {
+        success: true, mode: "choose_slot",
+        slots: avail.slots.slice(0, 6).map((s) => ({ startTime: s.startTime, endTime: s.endTime })),
+        instruction: "Offer two or three of these times in plain words. When they pick one, call request_showing again with the same listing_id and slot_start set to that startTime.",
+      },
+    }
+  }
+  const booked = await bookShowingSlot(svc, { listingId, contactId: ctx.contactId, slotStartIso: slotStart, via: "ai_agent" })
+  if (booked.ok) return { kind: "booked", result: { success: true, mode: "booked", showingId: booked.showingId, slotStart } }
+  if (booked.errorCode === "slot_gone") {
+    const again = await loadBookableSlots(svc, listingId)
+    return { kind: "slot_gone", result: { success: false, mode: "choose_slot", error: booked.error, slots: again.slots.slice(0, 6).map((s) => ({ startTime: s.startTime, endTime: s.endTime })) } }
+  }
+  // not_enabled / bba_required / not_found / insert refused → the agent handles it.
+  return { kind: "fallback", reason: booked.error ?? booked.errorCode ?? "booking refused" }
+}
+
+/** The pre-86D request path, unchanged: an activity for the agent to confirm + the bell. */
+async function requestShowingFallback(
+  ctx: CustomerContextToolsContext & { contactId: string },
+  meeting_type: "call" | "meeting" | "showing",
+  preferred_window: string | null,
+  notes: string,
+): Promise<{ success: true; meetingType: string; activityId: string } | { success: false; error: string }> {
+  const activityType = meeting_type === "call" ? "call" : meeting_type === "showing" ? "showing" : "meeting"
+  const result = await writeFollowUpActivity({
+    brokerageId: ctx.brokerageId,
+    agentId: ctx.agentId ?? null,
+    contactId: ctx.contactId,
+    activityType,
+    // No date resolved yet — the agent confirms a real time; this timestamp is a
+    // placeholder "now" so the row sorts into the near-term queue, same posture as
+    // lib/ai-isa/tools.ts's request_appointment (which logs intent, not a time).
+    scheduledAt: new Date().toISOString(),
+    notes: [preferred_window ? `Preferred: ${preferred_window}` : null, notes].filter(Boolean).join("\n"),
+    title: `Showing/meeting requested: ${meeting_type}`,
+  })
+  if (!result.success) return { success: false, error: result.error }
+  if (ctx.agentId) {
+    const svc = createServiceClient()
+    const { data: agent } = await svc.from("agents").select("user_id").eq("id", ctx.agentId).maybeSingle()
+    if (agent?.user_id) {
+      await sentinelWrite(svc, svc.from("notifications").insert({
+        user_id: agent.user_id,
+        brokerage_id: ctx.brokerageId,
+        type: "appointment_request",
+        title: "A client requested a showing/meeting via AI chat",
+        body: `${meeting_type}${preferred_window ? ` (${preferred_window})` : ""}`,
+        priority: "high",
+        entity_type: "contact",
+        entity_id: ctx.contactId,
+      }), { table: "notifications", flow: "customer_context_tools_notify", brokerageId: ctx.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
+    }
+  }
+  return { success: true, meetingType: meeting_type, activityId: result.activityId }
 }
 
 /**

@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-24
+ * generated: 2026-09-27
  * source: public.live_schema_json()
- * body-sha256: 5feded2e0631be9fba1f60501d7c0a29265c010ec2921027e739f081c7e79441
+ * body-sha256: f1cf6ae4f90ea1648cef3d55a1978dda9b07ff1125a1ec891b52d12afb8fe6c8
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -108,7 +108,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   ai_subscription_tier: ["admin_user_id", "agent_id", "brokerage_id", "cancelled_at", "created_at", "id", "is_active", "monthly_budget_cents", "subscribed_at", "team_id", "tier_name", "updated_at"],
   ai_suggestions: ["accepted_at", "agent_id", "brokerage_id", "confidence_score", "created_at", "id", "session_id", "suggestion_content", "suggestion_type", "was_accepted"],
   ai_tool_favorites: ["created_at", "id", "tool_name", "user_id"],
-  ai_tool_usage: ["agent_id", "brokerage_id", "context_json", "cost_cents", "created_at", "execution_time_ms", "feature", "id", "input_text", "manager", "model_used", "output_text", "success", "team_id", "tokens_used", "tool_name", "user_id"],
+  ai_tool_usage: ["agent_id", "brokerage_id", "context_json", "cost_cents", "created_at", "execution_time_ms", "feature", "id", "input_text", "manager", "model_used", "output_text", "platform_paid", "success", "team_id", "tokens_used", "tool_name", "user_id"],
   ai_video_projects: ["agent_id", "approval_status", "approved_at", "approved_by", "audience_type", "b_roll_urls", "background_type", "background_url", "brand_voice_context", "brokerage_id", "captions_enabled", "completed_at", "compliance_evaluated_at", "compliance_status", "compliance_violations", "contact_id", "created_at", "duration_seconds", "error_message", "format", "has_verbal_disclosure", "has_visual_brand_overlay", "id", "intro_video_url", "is_ai_generated", "is_published", "learning_module_id", "listing_id", "locale", "marketing_campaign_id", "outro_video_url", "provider_avatar_id", "provider_job_id", "provider_metadata", "provider_status", "provider_template_id", "provider_voice_id", "public_slug", "published_at", "rejected_at", "rejected_by", "rejection_reason", "retry_count", "script_content", "source_script_id", "status", "studio_session_id", "thumbnail_url", "title", "updated_at", "usage_intent", "video_metadata", "video_provider", "video_type", "video_url", "view_count"],
   api_response_logs: ["brokerage_id", "endpoint", "error_type", "id", "is_error", "method", "recorded_at", "response_time_ms", "service_key", "status_code"],
   approval_items: ["agent_id", "brokerage_id", "id", "item_id", "item_type", "review_notes", "reviewed_at", "reviewed_by", "status", "submitted_at"],

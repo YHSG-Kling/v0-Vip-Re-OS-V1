@@ -532,8 +532,12 @@ async function main() {
   // ═══════════════════════════════════════════════════════════════════════════
   check("4.1 the script draft books its tenant, so ai_tool_usage is written", checkDraftBooksTenant(reactor))
   check(
-    "4.2 the ledger gate really is `if (request.brokerageId)` — this is why 4.1 matters",
-    /if\s*\(\s*request\.brokerageId\s*\)/.test(code("lib/ai/models.ts")),
+    "4.2 the ledger gate really keys on `request.brokerageId` — this is why 4.1 matters",
+    // Lane 86D re-anchor (rule, not spelling): the gate became
+    // `if (request.brokerageId || request.platformPaid)` — the platform's own
+    // tenant-less agents book platform_paid (m668). A TENANT call is still
+    // ledgered only through its brokerageId, which is what 4.1 depends on.
+    /if\s*\(\s*request\.brokerageId\b/.test(code("lib/ai/models.ts")),
   )
   check(
     "4.3 the REDRAFT is booked too — it is a second billable call",

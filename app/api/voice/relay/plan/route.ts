@@ -105,7 +105,9 @@ export async function POST(request: NextRequest) {
   const plan = brief
     ? await planTurnWithPrompt(
         `${buildOutboundPrompt(ctx.identity, { objective: brief.objective, contactName: brief.contactName, extraSystemPrompt: brief.systemPrompt }).systemPrompt}${pacing ? `\n\n${pacing}` : ""}`,
-        transcript, req.utterance)
+        transcript, req.utterance, undefined, {},
+        // Lane 86D: the outbound-brief turn books on the calling tenant.
+        { brokerageId: ctx.brokerageId, agentId: (call as any)?.agent_id ?? null })
     : await planReceptionTurn({
         deployment: "tenant", ctx, transcript, utterance: req.utterance, svc, extraRules: pacing,
         // agentId = voice_calls.agent_id (agents.id) — never ctx.agentUserId (users.id). Lane 76A.

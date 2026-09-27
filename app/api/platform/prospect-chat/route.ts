@@ -30,8 +30,11 @@ export const dynamic = "force-dynamic"
  * PUBLIC + UNAUTHENTICATED by design (a prospect has no account). Throttled
  * per caller IP through the SAME limiter the coupon check uses
  * (lib/security/public-rate-limit.ts). No tenant: brokerageId is null on the
- * model call (uncapped platform traffic, booked under the data_steward
- * manager on ai_tool_usage). Identity: the prospect is resolved by the email
+ * model call (uncapped platform traffic — the per-IP limiter is its cap).
+ * LEDGER (lane 86D): this header used to say the spend was "booked under the
+ * data_steward manager on ai_tool_usage" — it was booked nowhere (the routed
+ * ledger write is tenant-keyed). `platformPaid: true` now lands it as a
+ * platform_paid row (m668). Identity: the prospect is resolved by the email
  * THEY give, through the ONE writer — no prospect id ever rides the body.
  */
 
@@ -87,6 +90,11 @@ export async function POST(request: NextRequest) {
       temperature: 0.4, maxTokens: 400,
       tools, maxSteps: 4,
       brokerageId: null, userId: null, manager: "data_steward",
+      // Lane 86D (m668): without this flag the turn was booked NOWHERE — the
+      // routed ledger write is tenant-keyed and m476 refuses a row with
+      // neither user nor tenant. Platform-paid rows land with brokerage_id
+      // NULL, never on a tenant's counters, cap or invoice.
+      platformPaid: true,
     })
     const reply = text.trim() || "Sorry — could you say that once more?"
     return NextResponse.json({ reply })

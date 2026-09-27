@@ -137,7 +137,10 @@ export async function POST(request: NextRequest) {
         const { systemPrompt } = buildOutboundPrompt(ctx!.identity, {
           objective: brief.objective, contactName: brief.contactName, extraSystemPrompt: brief.systemPrompt,
         })
-        return planTurnWithPrompt(systemPrompt, transcript, speech)
+        // Lane 86D: the outbound-brief turn books on the calling tenant (it
+        // used to reach generateTextRouted with no brokerageId — unbooked).
+        return planTurnWithPrompt(systemPrompt, transcript, speech, undefined, {},
+          { brokerageId: ctx!.brokerageId, agentId: (call as any)?.agent_id ?? null })
       })()
     : await planReceptionTurn({
         deployment: "tenant", ctx, transcript, utterance: speech, svc,

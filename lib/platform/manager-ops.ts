@@ -54,10 +54,55 @@ export interface ManagerOpsRow {
 export interface ManagerOps {
   windowHours: number
   managers: ManagerOpsRow[]
-  summary: { totalCostCents: number; totalCalls: number; breaching: number; warning: number }
+  summary: {
+    totalCostCents: number; totalCalls: number; breaching: number; warning: number
+    /** Lane 86D (m668) — of the totals above, what the PLATFORM paid for its
+     *  own tenant-less agents (prospect chat, platform voice line, platform
+     *  live avatar). null = could not be measured (read refused — e.g. m668
+     *  not applied yet), never a silent 0. */
+    platformPaid: PlatformPaidAiSpend | null
+  }
 }
 
 type Svc = ReturnType<typeof createServiceClient>
+
+export interface PlatformPaidAiSpend { calls: number; costCents: number; byFeature: Record<string, { calls: number; costCents: number }> }
+
+/**
+ * THE READER of ai_tool_usage.platform_paid (lane 86D, m668). The platform's
+ * own AI agents serve prospects with no tenant; their spend lands flagged,
+ * with brokerage_id NULL, and this is where a platform operator sees it —
+ * beside the per-manager rollup on the same console. Its own query with its
+ * own error branch: a refused read (the column absent before m668 is
+ * applied) returns null — "unmeasured" — and never takes the manager rollup
+ * down with it.
+ */
+export async function loadPlatformPaidAiSpend(client?: Svc, windowHours = 24): Promise<PlatformPaidAiSpend | null> {
+  const svc = client ?? createServiceClient()
+  const since = new Date(Date.now() - windowHours * 3_600_000).toISOString()
+  const { data, error } = await svc
+    .from("ai_tool_usage")
+    .select("feature, cost_cents")
+    .eq("platform_paid", true)
+    .gte("created_at", since)
+    .limit(50_000)
+  if (error) {
+    console.warn("[manager-ops] platform-paid AI spend unreadable:", error.message)
+    return null
+  }
+  const out: PlatformPaidAiSpend = { calls: 0, costCents: 0, byFeature: {} }
+  for (const r of (data ?? []) as Array<{ feature: string | null; cost_cents: number | null }>) {
+    const cost = Number(r.cost_cents ?? 0)
+    const key = r.feature ?? "unspecified"
+    out.calls += 1
+    out.costCents += cost
+    const f = out.byFeature[key] ?? { calls: 0, costCents: 0 }
+    f.calls += 1
+    f.costCents += cost
+    out.byFeature[key] = f
+  }
+  return out
+}
 
 /** Cross-tenant per-manager cost/latency/error rollup over a window. Unattributed rows roll up
  *  under 'unassigned' (honest — instrumentation grows). */
@@ -94,6 +139,8 @@ export async function loadManagerOps(client?: Svc, windowHours = 24): Promise<Ma
     }
   }).sort((x, y) => y.costCents - x.costCents)
 
+  const platformPaid = await loadPlatformPaidAiSpend(svc, windowHours)
+
   return {
     windowHours, managers,
     summary: {
@@ -101,6 +148,7 @@ export async function loadManagerOps(client?: Svc, windowHours = 24): Promise<Ma
       totalCalls: managers.reduce((s, m) => s + m.calls, 0),
       breaching: managers.filter((m) => m.slo === "breach").length,
       warning: managers.filter((m) => m.slo === "warn").length,
+      platformPaid,
     },
   }
 }

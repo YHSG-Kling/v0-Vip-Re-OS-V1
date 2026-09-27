@@ -34,7 +34,9 @@ export interface ISAToolContext {
   leadId: string
   /** brokerages.id — for tenant scoping on every write */
   brokerageId: string
-  /** agents.id who owns this lead — escalations land in their queue */
+  /** leads.agent_id (an agents.id) — lane 86D: an escalation lands on this
+   *  seat ONLY when it is itself a lead-desk seat (lib/auth/lead-visibility.ts
+   *  leadDeskRecipientUserIds); otherwise on the brokerage's lead desk. */
   agentId: string | null
   /** Free-text snippet of the inbound message — used to log DNC reason */
   inboundExcerpt?: string
@@ -83,36 +85,39 @@ export async function buildISATools(ctx: ISAToolContext) {
   const all = {
     escalate_to_agent: tool({
       description:
-        "Flag this lead for immediate agent attention. Use when the lead asks to speak to a human, has a high-urgency need, or your reply alone won't be enough. Creates a notification for the assigned agent.",
+        "Flag this lead for immediate human attention from the brokerage's lead desk (an ISA or broker — never a producing agent; leads belong to the brokerage). Use when the lead asks to speak to a human, has a high-urgency need, or your reply alone won't be enough.",
       inputSchema: z.object({
-        reason: z.string().describe("One-sentence reason for escalation, agent-readable"),
-        urgency: z.enum(["normal", "high", "critical"]).describe("How fast the agent should respond"),
+        reason: z.string().describe("One-sentence reason for escalation, staff-readable"),
+        urgency: z.enum(["normal", "high", "critical"]).describe("How fast the lead desk should respond"),
       }),
       execute: async ({ reason, urgency }) => {
         const supabase = createServiceClient()
-        if (ctx.agentId) {
-          // Insert a notification on the assigned agent's user account.
-          const { data: agent } = await supabase
-            .from("agents").select("user_id").eq("id", ctx.agentId).maybeSingle()
-          if (agent?.user_id) {
-            // notifications' real shape is type/title/body/entity_* (the previous
-            // notification_type/message/metadata insert was phantom — every ISA
-            // escalation page FAILED silently and no agent was ever notified).
-            // priority check allows low|medium|high|critical → 'normal' maps to medium.
-            // Blind-spot burn-down (lane 75D, notification fan-out census) —
-            // sentinelWrite: an escalation the agent never sees is exactly
-            // the kind of loss this ledgers.
-            await sentinelWrite(supabase, supabase.from("notifications").insert({
-              user_id: agent.user_id,
-              brokerage_id: ctx.brokerageId,
-              type: "isa_escalation",
-              title: urgency === "critical" ? "URGENT: Lead needs your attention" : "Lead needs your attention",
-              body: reason,
-              priority: urgency === "normal" ? "medium" : urgency,
-              entity_type: "lead",
-              entity_id: ctx.leadId,
-            }), { table: "notifications", flow: "isa_tool_escalation_notify", brokerageId: ctx.brokerageId, reason: "the escalation tool call itself already ran; this is the agent's only heads-up" })
-          }
+        // LANE 86D — a LEAD escalation goes to the LEAD DESK, never to a
+        // producing agent (CLAUDE.md §5: agents see CONTACTS only; interaction
+        // on a lead stops at the lead stage). It used to page leads.agent_id's
+        // user unconditionally. The ONE recipient rule is
+        // lib/auth/lead-visibility.ts::leadDeskRecipientUserIds — the lead's own
+        // agent_id is honoured only when that seat IS a lead-desk seat (an ISA).
+        const { leadDeskRecipientUserIds } = await import("@/lib/auth/lead-visibility")
+        const recipients = await leadDeskRecipientUserIds(supabase, ctx.brokerageId, { preferAgentId: ctx.agentId })
+        for (const recipientUserId of recipients) {
+          // notifications' real shape is type/title/body/entity_* (the previous
+          // notification_type/message/metadata insert was phantom — every ISA
+          // escalation page FAILED silently and no one was ever notified).
+          // priority check allows low|medium|high|critical → 'normal' maps to medium.
+          // Blind-spot burn-down (lane 75D, notification fan-out census) —
+          // sentinelWrite: an escalation the desk never sees is exactly
+          // the kind of loss this ledgers.
+          await sentinelWrite(supabase, supabase.from("notifications").insert({
+            user_id: recipientUserId,
+            brokerage_id: ctx.brokerageId,
+            type: "isa_escalation",
+            title: urgency === "critical" ? "URGENT: Lead needs your attention" : "Lead needs your attention",
+            body: reason,
+            priority: urgency === "normal" ? "medium" : urgency,
+            entity_type: "lead",
+            entity_id: ctx.leadId,
+          }), { table: "notifications", flow: "isa_tool_escalation_notify", brokerageId: ctx.brokerageId, reason: "the escalation tool call itself already ran; this is the lead desk's only heads-up" })
         }
         // Always log on the lead so the conversation timeline shows it.
         // The note below records that this row was FK-rejected and "never
@@ -134,7 +139,7 @@ export async function buildISATools(ctx: ISAToolContext) {
         if (escalationActivityError) {
           console.error("[isaTools] ai_isa_escalation activity REJECTED — the escalation is not on the lead's timeline:", escalationActivityError.message)
         }
-        return { success: true, urgency, escalatedAt: new Date().toISOString() }
+        return { success: true, urgency, escalatedAt: new Date().toISOString(), notified: recipients.length }
       },
     }),
 

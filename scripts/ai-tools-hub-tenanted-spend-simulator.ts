@@ -713,9 +713,13 @@ function constructLayer(): void {
   const client = code(F.client)
 
   // F1 — the tenant is the thing that makes the routed lane ledger AND cap.
+  // Lane 86D re-anchor (rule, not spelling): the gate is now
+  // `if (request.brokerageId || request.platformPaid)` — the platform's OWN
+  // tenant-less agents book platform_paid (m668). A tenant tool (this hub) is
+  // still ledgered only through the tenant it hands the lane.
   check("generateTextRouted ledgers ONLY when it is given a tenant (both routed lanes)",
-    (models.match(/if \(request\.brokerageId\) \{\s*await logAIUsage\(\{/g) ?? []).length === 2,
-    `matches=${(models.match(/if \(request\.brokerageId\) \{\s*await logAIUsage\(\{/g) ?? []).length}`)
+    (models.match(/if \(request\.brokerageId\b[^)]*\) \{\s*await logAIUsage\(\{/g) ?? []).length === 2,
+    `matches=${(models.match(/if \(request\.brokerageId\b[^)]*\) \{\s*await logAIUsage\(\{/g) ?? []).length}`)
   check("checkAIFairUse treats a missing tenant as uncapped — which is why the gap was silent",
     /if \(!params\.brokerageId \|\| params\.bypass\) \{/.test(fairUse))
   check("all four education tools now hand the routed lane the session tenant",

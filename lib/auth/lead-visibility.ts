@@ -529,3 +529,46 @@ export async function resolveScopedLeadIds(
 // orphan CLAUDE.md §1 is about. The one surface that needed to SAY the scope
 // out loud — the lead desk's stats bar — renders it inline from the scope's own
 // fields (app/leads/page.tsx), which is one expression, not a helper.
+
+/**
+ * WHO HEARS ABOUT A LEAD (lane 86D, wave 86 owner: "agents never see leads;
+ * interaction on leads stops at the lead stage (ISA/platform), resumes on
+ * contacts"; CLAUDE.md §5).
+ *
+ * Lead-stage notifications (an AI-ISA escalation on a lead thread, a lead's
+ * opt-out) were addressed to `leads.agent_id`'s user — a producing agent seeing
+ * a lead — or to NO user at all (a user_id-less bell nobody's inbox reads).
+ * This is the ONE recipient rule, derived from the lead-desk roster above
+ * rather than restated:
+ *   · the lead's own `agent_id` is honoured ONLY when that seat is itself a
+ *     lead-desk seat (an ISA or admin working the desk) — never a producer;
+ *   · otherwise the brokerage-wide lead desk (BROKERAGE_WIDE_LEAD_USER_TYPES:
+ *     the admin class minus team_lead, plus isa), capped.
+ * A refused read returns [] — the caller's bell does not ring, it never
+ * silently falls back to an agent.
+ */
+export async function leadDeskRecipientUserIds(
+  svc: AnySupabase,
+  brokerageId: string,
+  opts: { preferAgentId?: string | null; limit?: number } = {},
+): Promise<string[]> {
+  if (opts.preferAgentId) {
+    const { data: agent } = await svc.from("agents").select("user_id").eq("id", opts.preferAgentId).maybeSingle()
+    const uid = (agent as { user_id?: string | null } | null)?.user_id ?? null
+    if (uid) {
+      const { data: seat } = await svc.from("users").select("id, user_type")
+        .eq("id", uid).eq("brokerage_id", brokerageId).maybeSingle()
+      const s = seat as { id: string; user_type: string | null } | null
+      if (s && LEAD_DESK_USER_TYPES.has(String(s.user_type))) return [s.id]
+    }
+  }
+  const { data, error } = await svc.from("users").select("id")
+    .eq("brokerage_id", brokerageId)
+    .in("user_type", [...BROKERAGE_WIDE_LEAD_USER_TYPES])
+    .limit(opts.limit ?? 10)
+  if (error) {
+    console.warn("[lead-visibility] lead-desk recipients unreadable:", error.message)
+    return []
+  }
+  return ((data ?? []) as Array<{ id: string }>).map((r) => r.id)
+}

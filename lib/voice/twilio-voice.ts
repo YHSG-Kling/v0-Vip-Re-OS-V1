@@ -355,7 +355,26 @@ type GenerateTextRoutedFn = (args: {
   /** Usage-logging only, never routing — see lib/ai/models.ts RoutedTextRequest. */
   brokerageId?: string | null; agentId?: string | null; manager?: string | null
   contextExtra?: Record<string, unknown> | null
+  /** Lane 86D (m668) — the platform line's tenant-less turns. */
+  platformPaid?: boolean
 }) => Promise<{ text: string }>
+
+/**
+ * WHO A VOICE TURN'S SPEND IS BOOKED TO (lane 86D). A tenant turn books on the
+ * tenant (the answering brokerage + the call row's agents.id); a platform turn
+ * books as platform-paid (m668). BEFORE: only the tenant TOOL round passed a
+ * brokerage, so every plan-only turn — every outbound-brief turn, every tenant
+ * turn with no call row, every tool-round FALLBACK, and every platform turn —
+ * reached generateTextRouted with no brokerageId and was booked nowhere.
+ */
+type VoiceTurnLedger = { brokerageId: string; agentId: string | null } | { platformPaid: true }
+
+/** PURE — the ledger fields a turn passes to generateTextRouted. */
+function voiceLedgerArgs(ledger: VoiceTurnLedger | null): { brokerageId?: string | null; agentId?: string | null; platformPaid?: boolean } {
+  if (!ledger) return {}
+  if ("platformPaid" in ledger) return { brokerageId: null, platformPaid: true }
+  return { brokerageId: ledger.brokerageId, agentId: ledger.agentId }
+}
 type BatchDataIsaToolsFn = (ctx: {
   brokerageId: string; agentId: string | null; persona: ToolPersona; conversationKey: string; contactId: string | null
 }) => Promise<Record<string, unknown>>
@@ -480,13 +499,16 @@ async function runVoiceTurnRound(params: {
   transcript: string | null
   callerUtterance: string
   tools: Record<string, unknown>
-  /** null → no ai_tool_usage failure telemetry (the platform line has no
-   *  brokerage dimension to attribute it to; console.error still fires). */
-  telemetry: { brokerageId: string; agentId: string | null } | null
+  /** Who the spend books to (lane 86D — VoiceTurnLedger). null → not booked
+   *  (only a caller with no tenant context at all; console.error still fires
+   *  on a failed round). Used for BOTH the plan-only call and the tool round,
+   *  and for the failure telemetry row. */
+  telemetry: VoiceTurnLedger | null
   generateFn: GenerateTextRoutedFn
 }): Promise<VoiceTurnPlan> {
   const history = transcriptToMessages(params.transcript)
   const convo = history.map((m) => `${m.role === "assistant" ? "AI" : "Caller"}: ${m.content}`).join("\n")
+  const ledger = voiceLedgerArgs(params.telemetry)
 
   const plainCall = async (): Promise<VoiceTurnPlan> => {
     const { text } = await params.generateFn({
@@ -494,6 +516,11 @@ async function runVoiceTurnRound(params: {
       prompt: `${params.systemPrompt}\n\n${params.turnInstructions}\n\nConversation so far:\n${convo || "(call just connected)"}\nCaller: ${params.callerUtterance}\n\nYour JSON:`,
       temperature: 0.4,
       maxTokens: 300,
+      // Lane 86D: the plan-only call was the ONE voice call with no ledger
+      // fields at all — and it is every turn that has no tools AND every
+      // tool-round fallback.
+      ...ledger,
+      manager: "ai_isa",
     })
     return parseTurnPlan(text)
   }
@@ -517,8 +544,7 @@ async function runVoiceTurnRound(params: {
       tools: params.tools,
       maxSteps: VOICE_TOOL_ROUND_MAX_STEPS,
       abortSignal: AbortSignal.timeout(VOICE_TOOL_ROUND_DEADLINE_MS),
-      brokerageId: params.telemetry?.brokerageId ?? null,
-      agentId: params.telemetry?.agentId ?? null,
+      ...ledger,
       manager: "ai_isa",
       contextExtra: { toolRound: true, deadlineMs: VOICE_TOOL_ROUND_DEADLINE_MS, deadlineHit: false },
     })
@@ -540,13 +566,14 @@ async function runVoiceTurnRound(params: {
     // (a lost telemetry row must never turn a fail-safe fallback into a
     // dropped call).
     try {
-      if (params.telemetry?.brokerageId) {
+      if (ledger.brokerageId || ledger.platformPaid) {
         const { logAIUsage } = await import("@/lib/ai/cost-tracking")
         const { selectModelForTask } = await import("@/lib/ai/models")
         await logAIUsage({
           userId: null,
-          brokerageId: params.telemetry.brokerageId,
-          agentId: params.telemetry.agentId,
+          brokerageId: ledger.brokerageId ?? null,
+          platformPaid: ledger.platformPaid === true,
+          agentId: ledger.agentId ?? null,
           model: selectModelForTask("voice_reception_turn").model,
           inputTokens: 0,
           outputTokens: 0,
@@ -573,13 +600,18 @@ export async function planTurnWithPrompt(
   callerUtterance: string,
   toolCtx?: VoiceToolExecContext,
   deps: VoiceToolRoundDeps = {},
+  /** Lane 86D — who a NO-TOOLS turn books to (an outbound-brief turn, or a
+   *  tenant turn with no call row yet). With toolCtx the tenant is toolCtx's
+   *  own and this is not read. Omitted → not booked (the pre-86D behaviour,
+   *  kept only for a caller that truly has no tenant in reach). */
+  ledger: VoiceTurnLedger | null = null,
 ): Promise<VoiceTurnPlan> {
   const generateFn: GenerateTextRoutedFn = deps.generateTextRouted ?? (await import("@/lib/ai/models")).generateTextRouted
 
   if (!toolCtx) {
     return runVoiceTurnRound({
       systemPrompt, turnInstructions: TURN_INSTRUCTIONS, toolGuidance: "",
-      transcript, callerUtterance, tools: {}, telemetry: null, generateFn,
+      transcript, callerUtterance, tools: {}, telemetry: ledger, generateFn,
     })
   }
 
@@ -634,43 +666,122 @@ export async function planTurnWithPrompt(
   })
 }
 
-/** The booking side-effect BOTH transports share (Gather turn + relay plan):
- *  a real scheduled showing + the agent's heads-up. Best-effort by design —
- *  the spoken confirmation stands; the transcript is on the call record. */
+/** Minutes a caller-booked appointment holds on the agent's calendar. */
+const CALL_BOOKING_DURATION_MINUTES = 30
+
+/** @proofSeam — production callers omit it (lane 86D). */
+interface BookFromCallDeps {
+  checkWindow?: typeof import("@/lib/kernel/self-book").checkRequestedShowingWindow
+  writeFollowUp?: typeof import("@/lib/ai-isa/qualification-signals").writeFollowUpActivity
+  mirrorToCalendar?: (agentUserId: string, event: { title: string; description: string; startTime: string; endTime: string }) => Promise<unknown>
+  text?: (message: string) => Promise<void>
+}
+
+/** What bookShowingFromCall did — returned so a proof (and a future caller)
+ *  can read the outcome instead of inferring it from rows. */
+type BookFromCallOutcome =
+  | { booked: "confirmed"; reason: "calendar_open" }
+  | { booked: "pending_agent_confirmation"; reason: string }
+  | { booked: "failed"; reason: string }
+
+/** The booking side-effect BOTH transports share (Gather turn + relay plan).
+ *
+ *  CALENDAR-AWARE (lane 86D). It used to insert the caller's spoken time as a
+ *  CONFIRMED showing and text "You're booked" without ever reading the
+ *  agent's calendar or already-scheduled showings — double-booking by
+ *  construction. Now the requested window is judged by
+ *  lib/kernel/self-book.ts::checkRequestedShowingWindow FIRST:
+ *    · provably open  → the confirmed showing (as before) + the agent's own
+ *      calendar event (best-effort mirror) + "You're booked" text;
+ *    · anything else (no calendar connected, calendar unreadable, busy, an
+ *      existing showing, too soon) → NO confirmed showing: a `showing`
+ *      follow-up activity at the requested time for the agent to confirm or
+ *      move, a high-priority "needs your confirmation" bell naming the reason,
+ *      and a text telling the caller it is a REQUEST the agent will confirm.
+ *  Best-effort by design — never throws on a live call. */
 export async function bookShowingFromCall(
   svc: any,
   ctx: InboundCallContext,
   call: { id: string; contact_id: string; agent_id: string },
   dateTimeIso: string,
-): Promise<void> {
+  deps: BookFromCallDeps = {},
+): Promise<BookFromCallOutcome> {
   try {
     const when = new Date(dateTimeIso)
-    await svc.from("showings").insert({
+    const endIso = new Date(when.getTime() + CALL_BOOKING_DURATION_MINUTES * 60_000).toISOString()
+    const spoken = when.toLocaleString("en-US", { weekday: "long", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+    const withAgent = ctx.identity.agentName ? ` with ${ctx.identity.agentName}` : ""
+    const text = deps.text ?? ((message: string) => textCallConfirmation(svc, ctx, call.contact_id, message))
+    const checkWindow = deps.checkWindow ?? (await import("@/lib/kernel/self-book")).checkRequestedShowingWindow
+    const verdict = await checkWindow(svc, { agentId: call.agent_id, startIso: when.toISOString(), durationMinutes: CALL_BOOKING_DURATION_MINUTES })
+    // The CALL's agent (voice_calls.agent_id → agents.user_id) is who must
+    // confirm; the answering line's agent is the fallback.
+    const notifyUserId = verdict.agentUserId ?? ctx.agentUserId ?? null
+    const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+
+    if (!verdict.confirm) {
+      const writeFollowUp = deps.writeFollowUp ?? (await import("@/lib/ai-isa/qualification-signals")).writeFollowUpActivity
+      const followUp = await writeFollowUp({
+        brokerageId: ctx.brokerageId, agentId: call.agent_id, contactId: call.contact_id,
+        activityType: "showing", scheduledAt: when.toISOString(),
+        title: `Caller asked for ${spoken} — confirm or offer another time`,
+        notes: `Requested on a live call (voice_calls ${call.id}). Not booked as confirmed: ${verdict.reason.replace(/_/g, " ")}.`,
+      })
+      if (notifyUserId) {
+        await sentinelWrite(svc, svc.from("notifications").insert({
+          user_id: notifyUserId, brokerage_id: ctx.brokerageId, type: "appointment_request",
+          title: "A caller asked for a time — needs your confirmation",
+          body: `${spoken} was requested on a live call. Not auto-booked (${verdict.reason.replace(/_/g, " ")}). Confirm it or offer another time.`,
+          entity_type: "voice_call", entity_id: call.id, priority: "high", channel: "in_app", is_read: false,
+        }), { table: "notifications", flow: "voice_showing_request_notify", brokerageId: ctx.brokerageId, reason: "the follow-up activity carries the request; this is the agent heads-up" })
+      }
+      await text(`Thanks! We've asked ${ctx.identity.agentName ?? "your agent"} to confirm ${spoken} — you'll get a text once it's set. Reply STOP to opt out.`)
+      return followUp.success
+        ? { booked: "pending_agent_confirmation", reason: verdict.reason }
+        : { booked: "failed", reason: `follow-up not written: ${followUp.error}` }
+    }
+
+    const { error: showingError } = await svc.from("showings").insert({
       contact_id: call.contact_id, agent_id: call.agent_id,
       brokerage_id: ctx.brokerageId,
       scheduled_at: when.toISOString(),
       scheduled_date: when.toISOString().slice(0, 10),
       scheduled_time: when.toISOString().slice(11, 19),
-      duration_minutes: 30, status: "scheduled", is_confirmed: true,
+      duration_minutes: CALL_BOOKING_DURATION_MINUTES, status: "scheduled", is_confirmed: true,
       confirmed_at: new Date().toISOString(),
-      scheduling_method: "self_book", notes: "Booked by the AI receptionist on a live call (Twilio lane).",
+      scheduling_method: "self_book", sync_source: "ai_scheduler",
+      notes: "Booked by the AI receptionist on a live call against the agent's live calendar (Twilio lane).",
       listing_id: null,
-    }).then(undefined, () => {})
-    if (ctx.agentUserId) {
-      const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+    })
+    if (showingError) return { booked: "failed", reason: showingError.message }
+    // The agent's own calendar gets the event — a mirror, never the source of truth.
+    if (verdict.agentUserId) {
+      try {
+        const mirror = deps.mirrorToCalendar ?? (async (userId: string, ev: { title: string; description: string; startTime: string; endTime: string }) =>
+          (await import("@/lib/providers/calendar/personal-calendar")).createEventViaPersonal(userId, ev as any))
+        await mirror(verdict.agentUserId, {
+          title: "Appointment booked by the AI receptionist",
+          description: `Booked on a live call (voice_calls ${call.id}). Transcript is on the call record.`,
+          startTime: when.toISOString(), endTime: endIso,
+        })
+      } catch { /* mirror only */ }
+    }
+    if (notifyUserId) {
       await sentinelWrite(svc, svc.from("notifications").insert({
-        user_id: ctx.agentUserId, brokerage_id: ctx.brokerageId, type: "showing_self_booked",
+        user_id: notifyUserId, brokerage_id: ctx.brokerageId, type: "showing_self_booked",
         title: "The AI receptionist booked an appointment on a live call",
-        body: `${when.toLocaleString()} — booked during an inbound call. Transcript is on the call record.`,
+        body: `${when.toLocaleString()} — booked during an inbound call on an open slot of your calendar. Transcript is on the call record.`,
         entity_type: "voice_call", entity_id: call.id, priority: "high", channel: "in_app", is_read: false,
       }), { table: "notifications", flow: "voice_showing_self_booked_notify", brokerageId: ctx.brokerageId, reason: "the showing itself already exists; this is only the agent heads-up" })
     }
     // Written confirmation halves no-shows. TRANSACTIONAL (they called in and
     // booked): EWC skipped per TCPA, DNC/quiet-hours/opt-out still enforced
     // inside sendSMS. Same rail as the showing-lifecycle reminder.
-    await textCallConfirmation(svc, ctx, call.contact_id,
-      `You're booked for ${when.toLocaleString("en-US", { weekday: "long", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}${ctx.identity.agentName ? ` with ${ctx.identity.agentName}` : ""}. Reply R to reschedule. Reply STOP to opt out.`)
-  } catch { /* the spoken confirmation stands; the agent sees the transcript */ }
+    await text(`You're booked for ${spoken}${withAgent}. Reply R to reschedule. Reply STOP to opt out.`)
+    return { booked: "confirmed", reason: "calendar_open" }
+  } catch (e) {
+    return { booked: "failed", reason: e instanceof Error ? e.message : String(e) }
+  }
 }
 
 /** Best-effort transactional confirmation text after a live-call outcome. */
@@ -794,7 +905,7 @@ export async function planReceptionTurn(input: ReceptionTurnInput, deps: VoiceTo
     return runVoiceTurnRound({
       systemPrompt, turnInstructions: PLATFORM_TURN_INSTRUCTIONS, toolGuidance: PLATFORM_TOOL_TURN_GUIDANCE,
       transcript: input.transcript, callerUtterance: input.utterance,
-      tools, telemetry: null, generateFn,
+      tools, telemetry: { platformPaid: true }, generateFn, // lane 86D: platform line books platform-paid (m668)
     })
   }
 
@@ -821,5 +932,6 @@ export async function planReceptionTurn(input: ReceptionTurnInput, deps: VoiceTo
         conversationKey: input.voiceToolCtx.callId,
       }
     : undefined
-  return planTurnWithPrompt(prompt, input.transcript, input.utterance, toolCtx, deps)
+  return planTurnWithPrompt(prompt, input.transcript, input.utterance, toolCtx, deps,
+    { brokerageId: input.ctx.brokerageId, agentId: input.voiceToolCtx?.agentId ?? null })
 }

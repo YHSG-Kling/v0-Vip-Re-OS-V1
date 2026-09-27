@@ -127,18 +127,28 @@ export async function haltEngagementForNegativeReply(params: {
     console.error('[conversationHandler] lead_opted_out activity REJECTED — the agent will not see the opt-out on the timeline:', optOutTimelineError.message)
   }
 
-  // Notify the agent
-  await sentinelWrite(supabase, supabase.from('notifications').insert({
-    brokerage_id: params.brokerageId,
-    type: 'lead_opted_out',
-    title: 'Lead requested to be removed',
-    // notifications uses body, not message — the phantom failed the insert, so the
-    // agent was never told a lead opted out (a compliance-relevant blind spot).
-    body: 'A lead replied with an opt-out signal. They have been marked Do Not Contact.',
-    entity_type: 'lead',
-    entity_id: params.leadId,
-    is_read: false,
-  }), { table: "notifications", flow: "conversation_handler_notify", brokerageId: params.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
+  // Notify the LEAD DESK (lane 86D). This bell used to be written with NO
+  // user_id at all — notifications.user_id is nullable live, so it landed and
+  // no one's inbox ever read it. A lead's opt-out belongs to the brokerage's
+  // lead desk, never a producing agent (CLAUDE.md §5) — the ONE recipient
+  // rule, lib/auth/lead-visibility.ts::leadDeskRecipientUserIds.
+  const { leadDeskRecipientUserIds } = await import('@/lib/auth/lead-visibility')
+  const { data: optedOutLead } = await supabase.from('leads').select('agent_id').eq('id', params.leadId).eq('brokerage_id', params.brokerageId).maybeSingle()
+  const deskUserIds = await leadDeskRecipientUserIds(supabase, params.brokerageId, { preferAgentId: (optedOutLead as { agent_id?: string | null } | null)?.agent_id ?? null })
+  for (const deskUserId of deskUserIds) {
+    await sentinelWrite(supabase, supabase.from('notifications').insert({
+      user_id: deskUserId,
+      brokerage_id: params.brokerageId,
+      type: 'lead_opted_out',
+      title: 'Lead requested to be removed',
+      // notifications uses body, not message — the phantom failed the insert, so the
+      // desk was never told a lead opted out (a compliance-relevant blind spot).
+      body: 'A lead replied with an opt-out signal. They have been marked Do Not Contact.',
+      entity_type: 'lead',
+      entity_id: params.leadId,
+      is_read: false,
+    }), { table: "notifications", flow: "conversation_handler_notify", brokerageId: params.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
+  }
 
   return { halted: true, contactSuppressionError }
 }

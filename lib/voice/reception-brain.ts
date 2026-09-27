@@ -177,7 +177,7 @@ export const TURN_INSTRUCTIONS = [
   '  "callback_when": "<the caller\'s OWN words for when, ONLY when action is callback — e.g. \\"3pm today\\", \\"tomorrow morning\\", \\"in an hour\\". Never convert it yourself.>",',
   '  "callback_reason": "<one short phrase for why they want a call back, ONLY when action is callback>" }',
   "Rules: action 'transfer' when the caller asks for the agent / is urgent / office-hours rule says so.",
-  "action 'book' ONLY after the caller has confirmed a specific date and time out loud.",
+  "action 'book' ONLY after the caller has confirmed a specific date and time out loud. In that turn's 'say', tell them you're putting the request on the agent's calendar and a text will confirm it — never tell them it is already confirmed (the agent's live calendar decides; lib/voice/twilio-voice.ts bookShowingFromCall).",
   "action 'rsvp' ONLY after the caller says yes to attending an open house from the LIVE INVENTORY list — include that listing's address.",
   "action 'seller_lead' when the caller asks what their home is worth or mentions selling — include their property address if they gave it. Never quote a value yourself; say the team will prepare a real valuation.",
   "action 'callback' when you have told the caller someone will call them back, OR they asked for a call back at a specific time — capture callback_when in their own words (never compute a date yourself) and confirm it back to them out loud in your 'say'.",

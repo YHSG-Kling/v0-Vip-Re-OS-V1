@@ -104,34 +104,52 @@ export async function createEventViaPersonal(agentUserId: string, event: Calenda
   return { success: true, eventId: res.data?.id, conferenceUrl: res.data?.onlineMeeting?.joinUrl }
 }
 
-export async function getAvailabilityViaPersonal(agentUserId: string, params: GetAvailabilityParams, owner?: EmailOwner, hours?: WorkingHours): Promise<GetAvailabilityResult | null> {
+/**
+ * The agent's BUSY windows (epoch ms) in [startDate, endDate] — the one
+ * free/busy read both availability shapes use (lane 86D extraction from
+ * getAvailabilityViaPersonal below, behaviour unchanged there). A caller that
+ * needs to judge an EXACT requested window (a caller on a live call naming
+ * "2:30 Thursday", which the hourly free-slot grid can never contain) reads
+ * the busy list itself: lib/kernel/self-book.ts::decideRequestedShowing.
+ * null = no personal calendar connected (never an invented empty calendar).
+ */
+export async function getBusyViaPersonal(
+  agentUserId: string, window: { startDate: string; endDate: string }, owner?: EmailOwner,
+): Promise<{ success: true; busy: Array<{ start: number; end: number }> } | { success: false; error: string } | null> {
   const tok = await getFreshPersonalToken(agentUserId, owner).catch(() => null)
   if (!tok) return null
-  const timeMin = new Date(params.startDate).toISOString()
-  const timeMax = new Date(params.endDate).toISOString()
+  const timeMin = new Date(window.startDate).toISOString()
+  const timeMax = new Date(window.endDate).toISOString()
 
-  let busy: Array<{ start: number; end: number }> = []
   if (tok.provider === "gmail") {
     const res = await callConnector<{ calendars?: { primary?: { busy?: any[] } } }>({
       connector: "google_calendar", baseUrl: GOOGLE_CAL, path: "/freeBusy", method: "POST",
       auth: { style: "bearer", token: tok.accessToken },
       body: { timeMin, timeMax, items: [{ id: "primary" }] },
     })
-    if (!res.ok) return { success: false, slots: [], error: `Google freeBusy (${res.status})` }
-    busy = (res.data?.calendars?.primary?.busy ?? []).map((b: any) => ({ start: Date.parse(b.start), end: Date.parse(b.end) }))
-  } else {
-    const res = await callConnector<{ value?: any[] }>({
-      connector: "outlook_calendar", baseUrl: GRAPH, path: "/me/calendarView", method: "GET",
-      query: { startDateTime: timeMin, endDateTime: timeMax, "$select": "start,end", "$top": "200" },
-      auth: { style: "bearer", token: tok.accessToken },
-      headers: { Prefer: 'outlook.timezone="UTC"' },
-    })
-    if (!res.ok) return { success: false, slots: [], error: `Microsoft calendarView (${res.status})` }
-    busy = (res.data?.value ?? [])
-      .map((ev: any) => ({ start: Date.parse(`${ev.start?.dateTime}Z`), end: Date.parse(`${ev.end?.dateTime}Z`) }))
-      .filter((b: any) => !Number.isNaN(b.start) && !Number.isNaN(b.end))
+    if (!res.ok) return { success: false, error: `Google freeBusy (${res.status})` }
+    return { success: true, busy: (res.data?.calendars?.primary?.busy ?? []).map((b: any) => ({ start: Date.parse(b.start), end: Date.parse(b.end) })) }
   }
+  const res = await callConnector<{ value?: any[] }>({
+    connector: "outlook_calendar", baseUrl: GRAPH, path: "/me/calendarView", method: "GET",
+    query: { startDateTime: timeMin, endDateTime: timeMax, "$select": "start,end", "$top": "200" },
+    auth: { style: "bearer", token: tok.accessToken },
+    headers: { Prefer: 'outlook.timezone="UTC"' },
+  })
+  if (!res.ok) return { success: false, error: `Microsoft calendarView (${res.status})` }
+  return {
+    success: true,
+    busy: (res.data?.value ?? [])
+      .map((ev: any) => ({ start: Date.parse(`${ev.start?.dateTime}Z`), end: Date.parse(`${ev.end?.dateTime}Z`) }))
+      .filter((b: any) => !Number.isNaN(b.start) && !Number.isNaN(b.end)),
+  }
+}
 
+export async function getAvailabilityViaPersonal(agentUserId: string, params: GetAvailabilityParams, owner?: EmailOwner, hours?: WorkingHours): Promise<GetAvailabilityResult | null> {
+  const read = await getBusyViaPersonal(agentUserId, params, owner)
+  if (!read) return null
+  if (!read.success) return { success: false, slots: [], error: read.error }
+  const busy = read.busy
   return { success: true, slots: hours ? computeFreeSlots(busy, params, hours) : computeFreeSlots(busy, params) }
 }
 

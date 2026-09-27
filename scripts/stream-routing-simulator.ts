@@ -175,8 +175,12 @@ console.log("\n[(d) #187 closures — anonymous turns metered, history estimated
 
   // GAP 1 — the cost of a turn ALWAYS lands on the tenant. A staff seat is
   // attribution on the row, never the condition for the row to exist.
+  // Lane 86D re-anchor (rule, not spelling): the gate became
+  // `if (brokerageId || platformPaid)` — the platform's own tenant-less live
+  // avatar books platform_paid (m668). The rule this check guards is unchanged:
+  // a staff seat is never a condition for the row to exist.
   check("streamTextRouted: the ledger gate is the TENANT alone — no userId && brokerageId gate survives",
-    codeHits(body, "if (brokerageId)") === 1 && codeHits(body, "userId && brokerageId") === 0)
+    codeHits(body, "if (brokerageId") === 1 && codeHits(body, "userId && brokerageId") === 0)
 
   const COST = read("lib/ai/cost-tracking.ts")
   const logStart = COST.indexOf("export async function logAIUsage")

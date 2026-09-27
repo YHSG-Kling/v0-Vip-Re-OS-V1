@@ -451,7 +451,12 @@ export async function analyzeFairHousingRiskService(params: {
     const { text } = await generateTextRouted({
       brokerageId: ctx.brokerageId,
       userId: ctx.userId,
-      model: "openai/gpt-4o-mini",
+      // Lane 86D: was `model: "openai/gpt-4o-mini"` — a field the routed lane
+      // IGNORES, so this ran on the Sonnet default. It now rides the table's
+      // own designated fair-housing flag lane, AI_TASK_ROUTING.compliance_check
+      // (claude-haiku: "strongest policy adherence" per
+      // docs/ai-agent-surfaces-2026-09.md §2), rather than a new key.
+      feature: "compliance_check",
       prompt: `Analyze this real estate communication for potential Fair Housing Act violations.
 
 Communication: "${params.communicationText}"

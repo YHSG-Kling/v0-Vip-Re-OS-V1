@@ -191,7 +191,24 @@ export async function logAIUsage(params: {
    * clobber the cost-ledger's own fields.
    */
   contextExtra?: Record<string, unknown> | null
+  /**
+   * Lane 86D (m668) — the PLATFORM's own AI agents (prospect chat, platform
+   * voice line, platform live avatar) serve prospects with no tenant. Their
+   * rows land with brokerage_id NULL and `platform_paid = true`: on the ledger
+   * (manager-ops reads them), never on any tenant's counters, cap or invoice.
+   * Ignored (and never stamped) when a brokerageId is present — tenant spend
+   * is never relabelled platform spend.
+   */
+  platformPaid?: boolean
 }): Promise<void> {
+  // A row with neither tenant, user nor platform flag is refused by
+  // ai_tool_usage_anon_rows_carry_tenant — say so here instead of letting the
+  // insert fail into a console line nobody reads.
+  const platformPaid = !params.brokerageId && params.platformPaid === true
+  if (!params.brokerageId && !params.userId && !platformPaid) {
+    console.warn(`[cost-tracking] ai_tool_usage row for feature "${params.feature}" has no tenant, user or platform flag — not booked`)
+    return
+  }
   try {
     // SERVICE CLIENT, like every other usage writer (log-media-usage,
     // incrementUsage). The ledger's identity fields are server-resolved by the
@@ -223,6 +240,9 @@ export async function logAIUsage(params: {
         manager: params.manager ?? null,
         execution_time_ms: params.executionTimeMs ?? null,
         success: params.success ?? true,
+        // Spread ONLY when true (m668 applied live 2026-09-27; the column
+        // defaults false, so tenant rows need not name it).
+        ...(platformPaid ? { platform_paid: true } : {}),
         context_json: {
           input_tokens: params.inputTokens,
           output_tokens: params.outputTokens,

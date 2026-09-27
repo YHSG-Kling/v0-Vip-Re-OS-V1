@@ -680,7 +680,10 @@ export async function generateOpenHouseFollowupNextAction(input: {
       const { text } = await generateTextRouted({
         brokerageId: brokerage_id,
         agentId: agent_id,
-        model: "openai/gpt-4o-mini",
+        // Lane 86D: was `model: "openai/gpt-4o-mini"` — a field the routed
+        // lane IGNORES, so this ran on the Sonnet default. The pin now lives
+        // in AI_TASK_ROUTING.open_house_followup_draft (lib/ai/models.ts).
+        feature: "open_house_followup_draft",
         prompt: `Generate a brief, personalized follow-up message to ${first_name} after they attended our open house (interest level: ${interest_level}/5). Keep it under 100 words, warm and conversational.`,
       })
       aiMessage = text || ""

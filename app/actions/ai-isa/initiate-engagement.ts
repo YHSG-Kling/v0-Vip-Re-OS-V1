@@ -761,15 +761,26 @@ async function dispatchToChannel(
       bodySnippet: `Social outreach queued via ${channel}. Handle: ${socialHandle ?? 'not on file'}`,
     })
 
-    // Notify agent to send manually if handle is missing
+    // Tell the LEAD DESK to send manually if the handle is missing. Lane 86D:
+    // this bell was written with NO user_id (nullable live — it landed and no
+    // one's inbox read it); a lead-stage task belongs to the brokerage's lead
+    // desk, never a producing agent (CLAUDE.md §5) — the ONE recipient rule,
+    // lib/auth/lead-visibility.ts::leadDeskRecipientUserIds.
     if (!socialHandle) {
-      await sentinelWrite(supabase, supabase.from('notifications').insert({
-        brokerage_id: lead.brokerage_id,
-        type: 'action_required',
-        title: `Social outreach needed — ${channel}`,
-        body: `AI ISA cannot send ${channel} to ${lead.first_name ?? 'lead'} — no handle on file. Please send manually.`,
-        created_at: new Date().toISOString(),
-      }), { table: "notifications", flow: "initiate_engagement_notify", brokerageId: lead.brokerage_id, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
+      const { leadDeskRecipientUserIds } = await import('@/lib/auth/lead-visibility')
+      const deskUserIds = await leadDeskRecipientUserIds(supabase, lead.brokerage_id, { preferAgentId: lead.agent_id ?? null })
+      for (const deskUserId of deskUserIds) {
+        await sentinelWrite(supabase, supabase.from('notifications').insert({
+          user_id: deskUserId,
+          brokerage_id: lead.brokerage_id,
+          type: 'action_required',
+          title: `Social outreach needed — ${channel}`,
+          body: `AI ISA cannot send ${channel} to ${lead.first_name ?? 'lead'} — no handle on file. Please send manually.`,
+          entity_type: 'lead',
+          entity_id: leadId,
+          created_at: new Date().toISOString(),
+        }), { table: "notifications", flow: "initiate_engagement_notify", brokerageId: lead.brokerage_id, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
+      }
     }
 
     return {

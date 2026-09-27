@@ -39,6 +39,10 @@ export function ManagerOpsPanel() {
             {money(data.summary.totalCostCents)} · {data.summary.totalCalls.toLocaleString()} calls
             {data.summary.breaching > 0 && <Badge className="ml-2 text-[10px] bg-red-100 text-red-800">{data.summary.breaching} breaching</Badge>}
             {data.summary.warning > 0 && <Badge className="ml-2 text-[10px] bg-amber-100 text-amber-800">{data.summary.warning} warning</Badge>}
+            {/* Lane 86D (m668): what the platform paid for its own prospect-facing agents. */}
+            <span className="ml-2" title="Platform-paid AI: prospect chat, platform voice line, platform live avatar (no tenant)">
+              · platform-paid {data.summary.platformPaid ? `${money(data.summary.platformPaid.costCents)} / ${data.summary.platformPaid.calls.toLocaleString()} calls` : "unmeasured"}
+            </span>
           </span>
         )}
       </CardHeader>

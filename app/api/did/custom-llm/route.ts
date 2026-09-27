@@ -653,12 +653,16 @@ async function handlePlatformTurn(params: { liveSessionId: string; cleaned: any[
       temperature: 0.6,
       tools,
       maxSteps: 5,
-      // No tenant: uncapped platform traffic booked under the data_steward
-      // manager on ai_tool_usage — the SAME posture the prospect chat takes.
+      // No tenant: uncapped platform traffic (the ACTIVE platform metering row
+      // above is its gate). LEDGER (lane 86D): the old note here said "booked
+      // under the data_steward manager on ai_tool_usage" — with brokerageId
+      // null it was booked nowhere. platformPaid lands it as a platform_paid
+      // row (m668), the SAME posture the prospect chat now takes.
       userId: null,
       brokerageId: null,
       agentId: null,
       manager: "data_steward",
+      platformPaid: true,
     })
   } catch (err) {
     if (err instanceof AIFairUseError) return NextResponse.json({ error: err.message }, { status: 429 })
