@@ -19,6 +19,9 @@
  *       (cheapest phone-keyed provider already wired), fills only empties, never re-bills a phone.
  *   G10 THE UNKNOWN INBOUND-EMAIL SENDER GOES RAW — lands in raw_scraped_leads, runs the one raw path,
  *       becomes a lead only through THE gate; name from signature / display name / first.last@ / PDL.
+ *   G10b EVERY MAILBOX IS CONFIGURED THE SAME (wave 86) — brokerage, agent and team-lead mailboxes reach
+ *       the SAME raw landing with the SAME outcome; POSITIVE CONTROL: a wave-74-shaped router that sends
+ *       agent mail to a contact door fails the same comparator.
  *   G2  CENSUS — every `.from("leads").insert/upsert(` in app/ + lib/ (comment-blanked source) sits in a
  *       file that calls the predicate BEFORE the insert. Derived denominator; POSITIVE CONTROL: an
  *       ungated fixture insert is flagged.
@@ -322,6 +325,55 @@ console.log("\n[G10 · an UNKNOWN inbound-email sender lands RAW → dedup → e
   check("processRawRecord resolves a market-less BROKERAGE-origin row's owner from its own brokerage_id (so the stranded sweep can re-gate it)",
     /const rowBrokerageId = \(rec\.source_origin \?\? 'brokerage'\) === 'brokerage' \? \(rec\.brokerage_id \?\? null\) : null/.test(pp) &&
     /const effectiveBrokerageId = brokerageId \?\? marketBrokerageId \?\? rowBrokerageId/.test(pp))
+
+  // ── G10b · wave 86 (owner verbatim: "yes all mailboxes should be configured the same.") ──
+  // THE RULE: the route an unknown sender takes does not depend on WHOSE mailbox received it. The
+  // same sender + classification is run through the brokerage, an agent and a team-lead mailbox;
+  // every one must reach the SAME raw landing with the SAME outcome, and nothing but the landing
+  // may create anything (no contact-direct door).
+  console.log("\n[G10b · every mailbox (brokerage / agent / team lead) takes the SAME raw path]")
+  const owners: any[] = [
+    { brokerageId: "b1", ownerKind: "brokerage", agentId: null, userId: null },
+    { brokerageId: "b1", ownerKind: "agent", agentId: "ag-1", userId: "u-1" },
+    { brokerageId: "b1", ownerKind: "team_lead", agentId: "ag-2", userId: "u-2" },
+  ]
+  type RouteTrace = { outcome: string; landedOwnerKind: string | null; landedTenant: string | null; leadId: string | null }
+  const traceFor = async (router: typeof us.identifyAndRouteUnknownSender, gatePasses: boolean): Promise<RouteTrace[]> => {
+    const out: RouteTrace[] = []
+    for (const o of owners) {
+      let landedArgs = null as any[] | null
+      const r: any = await router(
+        { mailboxOwner: o, fromEmail: "Pat Buyer <pat.buyer@gmail.com>", subject: "Buying", body: "Want to buy", messageId: `m-${o.ownerKind}` },
+        { classifier: cls({ extractedName: "Pat Buyer" }), svc: fakeSvc,
+          landRaw: (async (...a: any[]) => { landedArgs = a; return gatePasses ? { leadId: "lead-x", rawId: "raw-x", pipelineReason: "lead_creation" } : { leadId: null, rawId: "raw-x", pipelineReason: "promotion_identity_gate: name" } }) as any },
+      )
+      out.push({ outcome: r.outcome, landedOwnerKind: landedArgs?.[0]?.ownerKind ?? null, landedTenant: landedArgs?.[0]?.brokerageId ?? null, leadId: r.leadId ?? null })
+    }
+    return out
+  }
+  // One comparator, used on the real router AND on a positive control.
+  const sameRouteForEveryMailbox = (t: RouteTrace[]) =>
+    t.every((x, i) => x.landedOwnerKind === owners[i].ownerKind && x.landedTenant === "b1")
+    && new Set(t.map((x) => `${x.outcome}|${x.leadId}`)).size === 1
+  for (const gatePasses of [true, false]) {
+    const trace = await traceFor(us.identifyAndRouteUnknownSender, gatePasses)
+    check(`every mailbox reaches the ONE raw landing with the SAME outcome (gate ${gatePasses ? "passes → lead_created" : "refuses → raw_held"})`,
+      sameRouteForEveryMailbox(trace) && trace.every((x) => x.outcome === (gatePasses ? "lead_created" : "raw_held")), JSON.stringify(trace))
+  }
+  // POSITIVE CONTROL: the wave-74 shape — an agent/team-lead mailbox routed to a contact door — IS
+  // caught by the same comparator (it never reaches the landing and its outcome differs).
+  const wave74Router = (async (p: any, o: any) => p.mailboxOwner.ownerKind === "brokerage"
+    ? us.identifyAndRouteUnknownSender(p, o)
+    : { outcome: "contact_created", contactId: "c-1", reason: "intent:buyer" }) as typeof us.identifyAndRouteUnknownSender
+  check("POSITIVE CONTROL: a router that sends agent/team-lead mail to a contact door FAILS the same comparator",
+    !sameRouteForEveryMailbox(await traceFor(wave74Router, true)))
+  const usCode = blankStrings(unknownMod)
+  check("no contact-direct door survives in the module (captureContact( / createContactForAgentMailbox are gone; comments excluded)",
+    !/captureContact\(/.test(usCode) && !/createContactForAgentMailbox/.test(usCode))
+  check("POSITIVE CONTROL: the same finder sees a live captureContact( call",
+    /captureContact\(/.test(blankStrings(blankComments(`const r = await captureContact({ brokerageId })\n`))))
+  check("the raw row records the mailbox owner as PROVENANCE (mailbox_owner_kind / mailbox_owner_agent_id)",
+    /mailbox_owner_kind: mailboxOwner\.ownerKind/.test(landSrc) && /mailbox_owner_agent_id: mailboxOwner\.agentId/.test(landSrc))
 }
 
 // ── G7 · registration ───────────────────────────────────────────────────────

@@ -155,7 +155,7 @@ export async function GET(request: Request) {
         const result = await enrichContactRecord({
           contactId: contact.id,
           brokerageId,
-          source: "auto",
+          trigger: "auto",
           supabase,
         })
         if (result.enriched) {

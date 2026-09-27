@@ -28,11 +28,17 @@ export interface PersonaFacts {
   householdIncome?: string | null
   homeOwnerStatus?: string | null
   homeValue?: number | string | null
-  // m640: PeopleData's estimated net worth range / credit score range — financial-
-  // capacity signals for investor-intent and financing-readiness reads (buying
-  // triggers / pain points below), not the agent-tracked credit-pipeline band.
+  // m640: the estimated net worth range — a financial-capacity signal for the
+  // investor-intent read (buying triggers below).
+  // TOMBSTONE (wave 86, lane 86A): the modeled credit band is DELETED from the persona facts. A
+  // persona's pain_points are read INTO OUTBOUND COPY (app/actions/open-house-automation.ts,
+  // "Pain Points:" in the invitation prompt), so a MODELED credit band here was a credit band
+  // steering outbound messaging — FCRA / fair lending (owner, wave 86: keep the credit band out
+  // of outbound copy, eligibility, pricing and steering). The band's one reader is the agent's
+  // contact card, labelled "modeled estimate" (app/actions/contact-enrichment.ts::
+  // getContactInsights → enrichment-panel.tsx). Guarded by scripts/enrichment-one-rail-guard.ts
+  // Layer 8d (the modeled-credit firewall).
   netWorth?: string | null
-  creditScoreRange?: string | null
   occupation?: string | null
   industry?: string | null
   education?: string | null
@@ -79,14 +85,10 @@ function isHighNetWorthRange(range: string | null | undefined): boolean {
   return n !== null && n >= 500
 }
 
-/** True when the range's low end reads under 650 (subprime/near-prime — financing risk). */
-function isSubprimeCreditRange(range: string | null | undefined): boolean {
-  // Lane 85C — a modeled band may arrive as a descriptor (normalizeModeledCreditBand keeps
-  // excellent / very good / good / fair / poor); "fair" and "poor" are the sub-650 tiers.
-  if (range && /^(fair|poor)$/i.test(range.trim())) return true
-  const n = firstNumber(range)
-  return n !== null && n > 0 && n < 650
-}
+// TOMBSTONE (wave 86, lane 86A): the sub-650 credit-range predicate is DELETED with the credit-band
+// persona fact above — it turned a MODELED credit band into a "credit qualification risk" pain point,
+// which the open-house invitation prompt then wrote outbound copy from. No survivor: the capability
+// itself is what the FCRA / fair-lending ruling forbids (the band stays display-only on the card).
 
 function deriveBuyingTriggers(f: PersonaFacts): string[] {
   const triggers: string[] = []
@@ -105,9 +107,6 @@ function derivePainPoints(f: PersonaFacts): string[] {
   if (f.homeOwnerStatus?.toLowerCase().includes("rent")) pains.push("down_payment_uncertainty", "qualification_anxiety")
   if (f.homeOwnerStatus?.toLowerCase().includes("own")) pains.push("sell_before_buy_timing", "current_rate_lock_in")
   if ((f.childrenCount ?? 0) > 0) pains.push("school_district_constraints")
-  // m640: a sub-650 estimated credit range is a genuine financing-readiness concern —
-  // distinct from the agent-tracked credit_score_band pipeline, additive here.
-  if (isSubprimeCreditRange(f.creditScoreRange)) pains.push("credit_qualification_risk")
   if (pains.length === 0) pains.push("market_timing_uncertainty")
   return pains
 }

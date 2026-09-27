@@ -65,8 +65,25 @@
  *             8c contact enrichment sends city/state/ZIP (positive control: the
  *                pre-85C call is flagged) and maps through the survivor — no
  *                second PeopleData → column mapper anywhere (positive control);
- *             8d FCRA / display: net worth + credit band off the agent card and
- *                off outbound copy, erased on DSR, and every write has a reader.
+ *             8d FCRA / display (REWRITTEN wave 86, lane 86A — owner: "add because most
+ *                audience or info will be used from the contact card"): net worth + the
+ *                credit band ARE on the agent contact card, labelled "modeled estimate",
+ *                back-office seats only; THE MODELED-CREDIT FIREWALL — a comment-stripped
+ *                census of app/ + lib/: the credit band is named ONLY by its allowlisted
+ *                path (provider adapters → the one mapper → the paid rung → the contact
+ *                columns → the card door → the card, + DSR erasure), none of which has an
+ *                egress or model call; so it cannot reach outbound copy, eligibility,
+ *                pricing, steering or a persona. POSITIVE CONTROLS: an outbound fixture
+ *                reading the band, and the pre-86 persona pain-point line, ARE flagged; a
+ *                tombstone naming the band is NOT.
+ *   Layer 8e — wave 86 (lane 86A): VERSIUM IS THE CREDIT-BAND PROVIDER — the client per
+ *             Versium's published API (x-versium-api-key, output[]=financial, US only,
+ *             cfg_maxrecs=1, rcfg_max_time), billed per MATCH from the response's own
+ *             match_counts (a billed match with none of our fields is still booked —
+ *             positive control for the 85C understatement), status codes named, and a
+ *             stubbed-fetch run (zero network) proving the request shape and the booking;
+ *             contacts.enrichment_source means PROVIDER everywhere (§6) — no write of a
+ *             trigger into it anywhere (positive control: the pre-86 line is flagged).
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
@@ -550,8 +567,9 @@ const orch = stripped("lib/lead-pipeline/enrichment-orchestrator.ts")
 check("the drain carries prior household financials forward, then asks the paid rung, BEFORE the entity write",
   orch.indexOf("carryForwardHouseholdFinancials(profile,") > 0 && orch.indexOf("carryForwardHouseholdFinancials(profile,") < orch.indexOf("appendModeledCredit({")
   && orch.indexOf("appendModeledCredit({") < orch.indexOf("...peopleDataProfileToLeadColumns(profile),"))
-check("the persona builder reads the four from the PROFILE (the PDL object never carries them)",
-  /maritalStatus: profile\.marital_status/.test(orch) && /netWorth: profile\.net_worth/.test(orch) && /creditScoreRange: profile\.credit_score_range/.test(orch) && /householdIncome: profile\.household_income/.test(orch))
+check("the persona builder reads marital status / income / net worth from the PROFILE (the PDL object never carries them) — and NOT the credit band (wave 86: a persona feeds outbound copy)",
+  /maritalStatus: profile\.marital_status/.test(orch) && /netWorth: profile\.net_worth/.test(orch) && /householdIncome: profile\.household_income/.test(orch)
+  && !/credit_score_range|creditScoreRange/.test(orch))
 
 console.log("\n[Layer 8c · contact enrichment — ONE mapper, and it sends a location]")
 const cec = stripped("lib/enrichment/contact-enrichment-core.ts")
@@ -581,19 +599,163 @@ check(`NO second PeopleData → column mapper anywhere under app/ lib/ (denomina
 check("POSITIVE CONTROL: the deleted contact-enrichment literal IS flagged", SECOND_MAPPER.test(`enrichmentData = { marital_status: personData.maritalStatus, household_income: personData.householdIncome }`))
 check("the only PDL field contact enrichment still reads directly is its own confidence column", !/personData\.(?!enrichmentConfidence\b)\w+/.test(blankStrings(cecEnrich)))
 
-console.log("\n[Layer 8d · FCRA / display — modeled credit + net worth stay intelligence-only]")
+console.log("\n[Layer 8d · FCRA / display — the card SHOWS the modeled estimates; the credit band never reaches outbound / eligibility / pricing / steering]")
+// THE RULE (owner, wave 86): "add because most audience or info will be used from the contact card" —
+// net worth + the credit band sit on the agent contact card beside income + marital status, labelled
+// "modeled estimate"; the credit band stays out of outbound copy, eligibility, pricing and steering.
 const panel = stripped("app/crm/contacts/[contactId]/components/enrichment-panel.tsx")
 const insights = stripped("app/actions/contact-enrichment.ts")
-const FIN_ON_CARD = /net_worth_range|credit_score_range/
-check("the agent-facing enrichment card neither lists nor selects net worth / the credit band", !FIN_ON_CARD.test(panel) && !FIN_ON_CARD.test(insights.slice(insights.indexOf("export async function getContactInsights"))))
-check("POSITIVE CONTROL: a card that labels the credit band IS flagged", FIN_ON_CARD.test(`["credit_score_range", "Credit band"]`))
+const insightsFn = insights.slice(insights.indexOf("export async function getContactInsights"))
+const LABELLED_MODELED = (field: string) => new RegExp(`\\["${field}",\\s*"[^"]*\\(modeled estimate\\)"\\]`)
+check("the agent contact card LISTS net worth + the credit band, each labelled '(modeled estimate)'",
+  LABELLED_MODELED("net_worth_range").test(panel) && LABELLED_MODELED("credit_score_range").test(panel))
+check("POSITIVE CONTROL: a card entry WITHOUT the modeled-estimate label fails the same predicate",
+  !LABELLED_MODELED("credit_score_range").test(`["credit_score_range", "Credit score"]`))
+check("they sit BESIDE household income + marital status (the next entries in the card's field list)",
+  panel.indexOf('["household_income"') > panel.indexOf('["marital_status"') && panel.indexOf('["net_worth_range"') > panel.indexOf('["household_income"')
+  && panel.indexOf('["credit_score_range"') > panel.indexOf('["net_worth_range"') && panel.indexOf('["credit_score_range"') < panel.indexOf('["home_owner_status"'))
+check("the card states in words that they are modeled marketing estimates, never for eligibility / pricing / what to show",
+  /modeled marketing estimates, not a credit report/.test(read("app/crm/contacts/[contactId]/components/enrichment-panel.tsx")) && /never to decide eligibility, pricing, or which homes to show/.test(read("app/crm/contacts/[contactId]/components/enrichment-panel.tsx")))
+check("the card's door selects both columns and returns them ONLY to a back-office seat (§5 — lenders / vendors / contacts see no financials)",
+  /net_worth_range, credit_score_range/.test(insightsFn) && /\.\.\.\(isCrmContactStaff\(ctx\.userType\) \? \{\s*net_worth_range: contact\.net_worth_range,\s*credit_score_range: contact\.credit_score_range,\s*\} : \{\}\)/.test(insightsFn))
+{
+  const { isCrmContactStaff } = await import("../lib/auth/crm-contact-staff")
+  check("the seat gate admits back-office staff and refuses vendor / lender / contact / an unresolved seat",
+    isCrmContactStaff("agent") && isCrmContactStaff("broker") && !isCrmContactStaff("vendor") && !isCrmContactStaff("lender") && !isCrmContactStaff("contact") && !isCrmContactStaff(""))
+}
+
+// THE MODELED-CREDIT FIREWALL — a census over comment-stripped source (a tombstone naming the band is
+// not a reader, CLAUDE.md §2). THREE shapes of a read: (1) an identifier in CODE (string-blanked, so
+// prose inside a registry string is not a reader — the first run flagged manager-registry.ts and
+// cost-normalizer.ts's `notes` prose, both wrong); (2) a COLUMN-LIST string literal naming the column
+// (`.select("id, credit_score_range")`, a column array) — identifiers, commas, colons, arrows only, so
+// prose never matches; (3) Versium's own field accessed by key (`r["Credit Rating"]`).
+const CREDIT_IDENT = /\bcredit_score_range\b|\bcreditScoreRange\b/
+const STRING_LITERAL = /(["'`])(?:(?!\1)[^\\\n]|\\.)*\1/g
+const COLUMN_LIST = /^.[\w\s,.*:>()-]*.$/
+const bandIn = (strippedSrc: string): boolean =>
+  CREDIT_IDENT.test(blankStrings(strippedSrc))
+  || (strippedSrc.match(STRING_LITERAL) ?? []).some((lit) => CREDIT_IDENT.test(lit) && COLUMN_LIST.test(lit))
+  || /\[\s*["']Credit Rating["']\s*\]/.test(strippedSrc)
+const CREDIT_BAND = { test: bandIn }
+const CREDIT_BAND_PATH: Readonly<Record<string, string>> = {
+  "lib/external/peopledata-client.ts": "provider adapter — types PDL's own field",
+  "lib/external/versium-client.ts": "provider adapter — the credit-band provider",
+  "lib/lead-pipeline/enrichment-column-map.ts": "THE mapper (band-only normalizer, merge, contact columns)",
+  "lib/enrichment/household-financials.ts": "the paid rung + the provider order",
+  "lib/privacy/contact-pii-redaction.ts": "DSR erasure",
+  "app/actions/contact-enrichment.ts": "the contact card's door (back-office seats only)",
+  "app/crm/contacts/[contactId]/components/enrichment-panel.tsx": "the agent contact card (labelled modeled)",
+}
+const outsidePath = CORPUS.filter((p) => !(p in CREDIT_BAND_PATH) && CREDIT_BAND.test(stripped(p)))
+check(`FIREWALL: nothing outside the band's allowlisted path names the credit band — no outbound copy, eligibility, pricing, steering or persona reader (denominator ${CORPUS.length} app/ lib/ files; ${Object.keys(CREDIT_BAND_PATH).length} allowlisted)`,
+  outsidePath.length === 0, outsidePath.join(", "))
+check("POSITIVE CONTROL on the REAL tree: the census predicate SEES the band's real readers (the card door's select, the card, the mapper, DSR erasure)",
+  ["app/actions/contact-enrichment.ts", "app/crm/contacts/[contactId]/components/enrichment-panel.tsx", "lib/lead-pipeline/enrichment-column-map.ts", "lib/privacy/contact-pii-redaction.ts"]
+    .every((p) => CREDIT_BAND.test(stripped(p))))
+check("FIREWALL: every allowlisted file exists (a retired name cannot sit in the list reading as enforced)",
+  Object.keys(CREDIT_BAND_PATH).every((p) => existsSync(p)))
+const EGRESS_OR_MODEL = /@\/lib\/providers\/dispatch|\bdispatch(?:Email|Sms)\s*\(|\bgenerate(?:Text|Object)Routed\s*\(|@\/lib\/providers\/messaging/
+const leakyPath = Object.keys(CREDIT_BAND_PATH).filter((p) => existsSync(p) && EGRESS_OR_MODEL.test(stripped(p)))
+check("FIREWALL: no file on the band's path sends a message or calls a model (so the band cannot ride out through one)",
+  leakyPath.length === 0, leakyPath.join(", "))
+check("POSITIVE CONTROL: an outbound fixture that reads the band IS flagged by the census predicate, and a sender IS flagged by the egress predicate",
+  CREDIT_BAND.test(`const band = contact.credit_score_range\nawait dispatchEmail({ to, body: band })`) && EGRESS_OR_MODEL.test(`await dispatchEmail({ to, body })`))
+check("POSITIVE CONTROL: the pre-86 persona pain-point line (a band → 'credit_qualification_risk' → the open-house invitation prompt) IS flagged",
+  CREDIT_BAND.test(stripComments(`if (isSubprimeCreditRange(f.creditScoreRange)) pains.push("credit_qualification_risk")\n`)))
+check("POSITIVE CONTROL: a tombstone comment naming the band is NOT a reader",
+  !CREDIT_BAND.test(stripComments(`// TOMBSTONE: creditScoreRange / credit_score_range left the persona facts\n`)))
+check("POSITIVE CONTROL: a column-list read (.select / a column array) and Versium's keyed field ARE readers; registry PROSE naming the column is NOT",
+  CREDIT_BAND.test(`await svc.from("contacts").select("id, first_name, credit_score_range").eq("id", id)`)
+  && CREDIT_BAND.test(`const COLS = ["household_income", "credit_score_range"]`)
+  && CREDIT_BAND.test(`const band = row["Credit Rating"]`)
+  && !CREDIT_BAND.test(`const what = "the band (credit_score_range) never reaches outbound copy — FCRA"`))
+const SENTINELS = ["lib/contacts/persona-builder.ts", "lib/ai-isa/personalize-outreach.ts", "app/actions/open-house-automation.ts",
+  "lib/lead-pipeline/canonical-lead-eligibility.ts", "lib/lead-pipeline/enrichment-orchestrator.ts", "lib/ai-isa/email-generator.ts"]
+check(`the high-risk surfaces are IN the census and clean (persona, outreach, open-house invite, lead gate, drain, ISA email): ${SENTINELS.length} named`,
+  SENTINELS.every((p) => CORPUS.includes(p) && !CREDIT_BAND.test(stripped(p))), SENTINELS.filter((p) => !CORPUS.includes(p)).join(", "))
 const outreach = stripped("lib/ai-isa/personalize-outreach.ts")
 check("outbound copy (personalize-outreach) never reads net worth or the credit band", !/net_worth|credit_score/.test(outreach))
 const { CONTACT_PII_NULL_COLUMNS } = await import("../lib/privacy/contact-pii-redaction")
 check("right-to-be-forgotten erases all four household columns", ["marital_status", "household_income", "net_worth_range", "credit_score_range"].every((c) => (CONTACT_PII_NULL_COLUMNS as readonly string[]).includes(c)))
-check("READERS exist for every write: persona-builder reads netWorth + creditScoreRange; contact-creator maps a lead's profile onto the contact",
-  /isHighNetWorthRange\(f\.netWorth\)/.test(stripped("lib/contacts/persona-builder.ts")) && /isSubprimeCreditRange\(f\.creditScoreRange\)/.test(stripped("lib/contacts/persona-builder.ts"))
+check("READERS exist for every write: the card reads net worth + the credit band; persona-builder reads net worth (never the band); contact-creator maps a lead's profile onto the contact",
+  /isHighNetWorthRange\(f\.netWorth\)/.test(stripped("lib/contacts/persona-builder.ts")) && !CREDIT_BAND.test(stripped("lib/contacts/persona-builder.ts"))
+  && /\["credit_score_range"/.test(panel) && /\["net_worth_range"/.test(panel)
   && /peopleDataProfileToContactColumns\(data\.lead\.enrichment_profile/.test(stripped("lib/contact-promotion/contact-creator.ts")))
+console.log(`  firewall: ${CORPUS.length} app/ lib/ files scanned; ${Object.keys(CREDIT_BAND_PATH).length} on the band's path (${Object.values(CREDIT_BAND_PATH).join("; ")})`)
+console.log("  firewall blind spots: a WHOLE-ROW read (select('*') / an embed) that is then stringified into a prompt carries every column without naming one — the census cannot see it; the named sentinels were read by hand for that shape (open-house-automation reads the persona row, whose facts no longer carry the band). The enrichment_profile jsonb carries the band too (household_financials); a reader that JSON.stringify's the whole profile into outbound copy would leak it — engage-contact.ts hands it to email-generator.ts, which reads only `age` (checked above as a sentinel).")
+
+console.log("\n[Layer 8e · Versium, finalized — the credit-band provider; contacts.enrichment_source = PROVIDER]")
+{
+  const vc = await import("../lib/external/versium-client")
+  // Versium's published "Demographic Output Sample" (financial output), trimmed to the fields that matter.
+  const SAMPLE = { versium: { version: "2.0", match_counts: { financial: 1 }, num_matches: 1, num_results: 1, results: [{
+    "Individual Level Match": "Yes", "Home Own or Rent": "Own", "Household Income": "$150,000-199,999",
+    "Estimated Net Worth": "> $499,999", "Credit Rating": "700-749", "Home Value": "$500,000-749,999" }] } }
+  const parsed = vc.parseVersiumFinancialResponse(SAMPLE)
+  check("the published sample parses: band '700-749', income + net worth kept, individual-level match, 1 credit",
+    parsed.data?.credit_score_range === "700-749" && parsed.data?.household_income === "$150,000-199,999" && parsed.data?.net_worth === "> $499,999"
+    && parsed.matchLevel === "individual" && parsed.credits === 1, JSON.stringify(parsed))
+  const none = vc.parseVersiumFinancialResponse({ versium: { match_counts: {}, num_matches: 0, results: [] } })
+  check("a no-match is free: no data, 0 credits", none.data === null && none.credits === 0 && none.matchLevel === null)
+  const billedEmpty = vc.parseVersiumFinancialResponse({ versium: { match_counts: { financial: 1 }, results: [{ "Individual Level Match": "No", "Home Value": "$300,000-349,999" }] } })
+  check("POSITIVE CONTROL (the 85C understatement): a BILLED match carrying none of our fields is still 1 credit (household match), not $0",
+    billedEmpty.data === null && billedEmpty.credits === 1 && billedEmpty.matchLevel === "household")
+  check("inputs follow the API: ZIP+4 → 5-digit, a malformed email is not sent, US only",
+    vc.versiumQueryFor({ firstName: "Ana", lastName: "Reyes", zip: "78756-1234" })?.zip === "78756" && vc.versiumQueryFor({ email: "not-an-email" }) === null
+    && vc.versiumQueryFor({ email: "ana@example.com" })?.country === "US")
+  check("the documented status codes are named for what the operator must do (402 credits, 403 no API access, 401 key, 429 rate)",
+    /credits exhausted/.test(vc.versiumStatusProblem(402)) && /no API access/.test(vc.versiumStatusProblem(403)) && /VERSIUM_API_KEY/.test(vc.versiumStatusProblem(401)) && /rate limit/.test(vc.versiumStatusProblem(429)))
+  check("one price: the financial match cost IS one match credit, and VENDOR_PRICING.versium mirrors it",
+    vc.VERSIUM_FINANCIAL_MATCH_COST_USD === vc.VERSIUM_MATCH_CREDIT_USD && (await import("../lib/vendor-governance/cost-normalizer")).VENDOR_PRICING.versium?.costPerUnit === vc.VERSIUM_MATCH_CREDIT_USD)
+  // Stubbed fetch (ZERO network): the request the client actually builds, and what it books.
+  const realFetch = globalThis.fetch
+  const priorKey = process.env.VERSIUM_API_KEY
+  const seen: { url: string; headers: Record<string, string> }[] = []
+  try {
+    process.env.VERSIUM_API_KEY = "test-key-86a"
+    globalThis.fetch = (async (url: any, init: any) => {
+      seen.push({ url: String(url), headers: init?.headers ?? {} })
+      return new Response(JSON.stringify(SAMPLE), { status: 200, headers: { "content-type": "application/json" } })
+    }) as any
+    const r = await vc.appendVersiumFinancial({ firstName: "Ana", lastName: "Reyes", city: "Austin", state: "TX" })
+    const u = seen[0] ? new URL(seen[0].url) : null
+    check("stubbed run: GET https://api.versium.com/v2/demographic with output[]=financial, cfg_maxrecs=1, rcfg_max_time, country=US",
+      !!u && u.origin + u.pathname === "https://api.versium.com/v2/demographic" && u.searchParams.get("output[]") === "financial"
+      && u.searchParams.get("cfg_maxrecs") === "1" && !!u.searchParams.get("rcfg_max_time") && u.searchParams.get("country") === "US", seen[0]?.url)
+    check("stubbed run: the key rides the x-versium-api-key header (never the query string)",
+      seen[0]?.headers["x-versium-api-key"] === "test-key-86a" && !(seen[0]?.url ?? "").includes("test-key-86a"))
+    check("stubbed run: a match books exactly one credit ($0.05) and returns the band",
+      r.cost === 0.05 && r.credits === 1 && r.data?.credit_score_range === "700-749" && r.matchLevel === "individual", JSON.stringify(r))
+    globalThis.fetch = (async () => new Response(JSON.stringify({ versium: { errors: ["Insufficient credits"] } }), { status: 402 })) as any
+    const broke = await vc.appendVersiumFinancial({ email: "ana@example.com" })
+    check("stubbed run: a 402 (credits exhausted) books $0 and says what to do", broke.cost === 0 && broke.data === null && /credits exhausted/.test(broke.error ?? ""), JSON.stringify(broke))
+  } finally {
+    globalThis.fetch = realFetch
+    if (priorKey === undefined) delete process.env.VERSIUM_API_KEY; else process.env.VERSIUM_API_KEY = priorKey
+  }
+  const setupDoc = read("lib/external/versium-client.ts")
+  check("the owner's setup is documented at the client (credit package — pay-as-you-go has no API; Manage API Keys; VERSIUM_API_KEY) and the key is in .env.example",
+    /OWNER SETUP/.test(setupDoc) && /CREDIT PACKAGE/.test(setupDoc) && /Manage API Keys/.test(setupDoc) && /^VERSIUM_API_KEY=/m.test(read(".env.example")))
+}
+{
+  const ecm = await import("../lib/lead-pipeline/enrichment-column-map")
+  const { VENDOR_PRICING } = await import("../lib/vendor-governance/cost-normalizer")
+  check("ONE provider vocabulary: every ENRICHMENT_PROVIDERS name is a ledger vendor key (VENDOR_PRICING)",
+    ecm.ENRICHMENT_PROVIDERS.every((v) => v in VENDOR_PRICING), ecm.ENRICHMENT_PROVIDERS.filter((v) => !(v in VENDOR_PRICING)).join(", "))
+  check("the mapper writes a PROVIDER into contacts.enrichment_source — never a trigger",
+    ecm.peopleDataProfileToContactColumns({ provider: "versium" }).enrichment_source === "versium"
+    && ecm.peopleDataProfileToContactColumns({ provider: "auto" }).enrichment_source === "peopledata"
+    && ecm.enrichmentProviderOf("manual") === null && ecm.enrichmentProviderOf(" BatchData ") === "batchdata")
+  const TRIGGER_INTO_SOURCE = /\benrichment_source\s*:\s*(?:params\.(?:source|trigger)|options\.\w+|["'](?:auto|manual|import|contact_intake|deal_ended|ghl_sync)["'])/
+  const triggerWriters = CORPUS.filter((p) => TRIGGER_INTO_SOURCE.test(stripped(p)))
+  check(`no file writes a TRIGGER into contacts.enrichment_source (denominator ${CORPUS.length} app/ lib/ files)`, triggerWriters.length === 0, triggerWriters.join(", "))
+  check("POSITIVE CONTROL: the pre-86 contact-enrichment line IS flagged; its tombstone comment is NOT",
+    TRIGGER_INTO_SOURCE.test(`      enrichment_source: params.source ?? "auto",`) && !TRIGGER_INTO_SOURCE.test(stripComments(`// enrichment_source: params.source ?? "auto" was the trigger\n`)))
+  check("contact enrichment writes the provider that answered (PDL via the mapper, else the paid rung), and the trigger rides the ledger metadata",
+    /enrichment_source: enrichmentProvider/.test(cecEnrich) && /paidRungProvider = "versium"/.test(cecEnrich)
+    && /trigger: params\.trigger \?\? "auto"/.test(cecEnrich) && /export type EnrichmentTrigger\s*=/.test(cec) && !/\bEnrichmentSource\b/.test(cec))
+}
 console.log(`  denominators: ${HOUSEHOLD_FINANCIAL_FIELDS.length} household fields · 3 writers (seller-signal probe, drain Step 6f + paid rung, raw acquisition path) + contact enrichment · 1 mapper`)
 console.log("  blind spots: live BatchData demographic VALUE formats and Versium's live payload are not exercised (fixtures follow the providers' published samples); no VERSIUM_API_KEY exists yet, so the credit band stays empty until the owner buys credits")
 

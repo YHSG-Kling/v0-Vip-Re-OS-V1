@@ -51,6 +51,10 @@ import { PeopleDataClient } from "@/lib/external"
 import {
   buildPeopleDataProfile,
   carryForwardHouseholdFinancials,
+  enrichmentProviderOf,
+  householdFinancialContactColumns,
+  householdFinancialsFromProfile,
+  type EnrichmentProvider,
   peopleDataProfileToContactColumns,
 } from "@/lib/lead-pipeline/enrichment-column-map"
 import { OSINTClient } from "@/lib/osint-client"
@@ -107,7 +111,17 @@ export const LIFE_CHANGE_CHECK_INTERVAL_DAYS = 30
 export const MAX_PENDING_CONTACT_ENRICHMENTS = 200
 
 /**
- * Where an enrichment run was triggered FROM.
+ * Where an enrichment run was triggered FROM — the TRIGGER vocabulary.
+ *
+ * ── NOT THE PROVIDER (wave 86, owner verbatim: "more provider unless trigger is needed") ──
+ * This type was spelled `EnrichmentSource` and its value was written into
+ * `contacts.enrichment_source`, while the drain and lead→contact promotion wrote the PROVIDER into
+ * that same column (peopleDataProfileToContactColumns) — one column, two meanings (§6). The column
+ * now means PROVIDER everywhere (enrichment-column-map.ts ENRICHMENT_PROVIDERS). The trigger kept
+ * its meaning under an honest name and is recorded where it was already recorded — the ledger row's
+ * metadata (`vendor_usage_tracking.metadata.trigger`, both the PeopleData and OSINT bookings below).
+ * No contacts column holds it: nothing reads a trigger off a contact (census in the lane-86A notes;
+ * live, 0 of 4 contacts carried a value), so no second field was built.
  *
  * ── "ghl_sync" IS DELIBERATELY ABSENT (owner's wave-5 ruling) ────────────────
  *   "no ghl on when a contact is syncing to it. we only enrich the contact in
@@ -136,7 +150,7 @@ export const MAX_PENDING_CONTACT_ENRICHMENTS = 200
  * through the bulk CRM migration importer (lib/crm/import-pull.ts) is enriched
  * here for OUR system like any other, under 'import'.
  */
-export type EnrichmentSource = "manual" | "auto" | "import" | "contact_intake" | "deal_ended"
+export type EnrichmentTrigger = "manual" | "auto" | "import" | "contact_intake" | "deal_ended"
 
 export interface EnrichmentOutcome {
   success: boolean
@@ -193,7 +207,7 @@ export async function queueContactEnrichment(params: {
   /** Free-form provenance, e.g. 'contact_intake' | 'contact_captured' |
    *  'widget_intake' | 'import' | 'deal_ended'. No CHECK on this column.
    *  NEVER 'ghl_sync' — a GHL sync is not an enrichment trigger (see
-   *  EnrichmentSource above for the ruling and the evidence). */
+   *  EnrichmentTrigger above for the ruling and the evidence). */
   triggerType: string
   enrichmentType?: string
   /** Skip if the contact was enriched within this many days. */
@@ -478,7 +492,7 @@ async function preflight(params: {
 export async function enrichContactRecord(params: {
   contactId: string
   brokerageId: string
-  source?: EnrichmentSource
+  trigger?: EnrichmentTrigger
   forceRefresh?: boolean
   supabase?: SupabaseClient<any, any, any>
 }): Promise<EnrichmentOutcome> {
@@ -595,7 +609,7 @@ export async function enrichContactRecord(params: {
         cost: personData ? PEOPLEDATA_MATCH_COST_USD : PEOPLEDATA_NO_MATCH_COST_USD,
         brokerageId,
         systemSource: "skip_trace",
-        metadata: { lane: "contact_enrichment", source: params.source ?? "auto", matched: Boolean(personData), contactId },
+        metadata: { lane: "contact_enrichment", trigger: params.trigger ?? "auto", matched: Boolean(personData), contactId },
       })
     }
 
@@ -610,6 +624,8 @@ export async function enrichContactRecord(params: {
     // social_handles, net_worth_range and credit_score_range the literal dropped.
     // `data_source` / `confidence_score` stay here: they are this lane's own columns, not the mapper's.
     let profile: Record<string, any> | null = null
+    // The provider that answered THIS pass when PeopleData did not (the paid household rung).
+    let paidRungProvider: EnrichmentProvider | null = null
     if (personData) {
       profile = carryForwardHouseholdFinancials(
         buildPeopleDataProfile(personData),
@@ -644,6 +660,7 @@ export async function enrichContactRecord(params: {
         lane: "contact_enrichment",
       })
       if (credit.filled.length > 0 || profile) profile = credit.profile
+      if (credit.filled.length > 0) paidRungProvider = "versium"
     }
 
     // 4. OSINT — paid, several scrape requests.
@@ -662,7 +679,7 @@ export async function enrichContactRecord(params: {
       unitCount: OSINT_REQUESTS_PER_SEARCH,
       brokerageId,
       contactId,
-      metadata: { lane: "contact_enrichment", source: params.source ?? "auto" },
+      metadata: { lane: "contact_enrichment", trigger: params.trigger ?? "auto" },
     })
 
     if (osintData) {
@@ -685,11 +702,21 @@ export async function enrichContactRecord(params: {
       }
     }
 
-    // The ONE mapper's contact columns (lane 85C). Its `enrichment_source` is the PROVIDER, while
-    // this lane's `enrichment_source` has always recorded the TRIGGER (auto / manual / …) — the
-    // trigger value below keeps winning, unchanged; the provider stays readable on data_source and
-    // enrichment_profile.provider (the two-meanings column is an open item in the lane-85C notes).
-    const { enrichment_source: _providerName, ...mappedColumns } = profile ? peopleDataProfileToContactColumns(profile) : {} as Record<string, unknown>
+    // The ONE mapper's contact columns (lane 85C). Its `enrichment_source` is the PROVIDER — and that
+    // is now the column's only meaning (wave 86, owner: "more provider unless trigger is needed").
+    // TOMBSTONE (§6): the trigger value (`params.source ?? "auto"`) that overwrote the mapper's provider
+    // here is DELETED; the trigger is on the ledger rows' metadata above. A pass where only the paid
+    // household rung answered records that rung's provider; a pass where no provider answered leaves
+    // the column as it was (it never claims a provider that sold nothing).
+    const mappedColumns: Record<string, unknown> = personData && profile ? peopleDataProfileToContactColumns(profile) : {}
+    if (!personData && profile) {
+      // No PDL match: map only the household columns the paid rung may have filled (the rest of the
+      // profile is an older pass's, already on the row).
+      Object.assign(mappedColumns, householdFinancialContactColumns(householdFinancialsFromProfile(profile)))
+    }
+    const enrichmentProvider: EnrichmentProvider | null =
+      personData ? (enrichmentProviderOf(mappedColumns.enrichment_source) ?? "peopledata") : paidRungProvider
+    delete mappedColumns.enrichment_source
 
     // 5. Persist. Tenant-anchored on both the PK and the brokerage.
     //
@@ -719,7 +746,7 @@ export async function enrichContactRecord(params: {
       // second write leaves a contact that looks unenriched and gets re-billed
       // on the next sweep.
       enriched_at: new Date().toISOString(),
-      enrichment_source: params.source ?? "auto",
+      ...(enrichmentProvider && { enrichment_source: enrichmentProvider }),
       last_life_change_check: new Date().toISOString(),
     }
     const { error: updateError } = await supabase

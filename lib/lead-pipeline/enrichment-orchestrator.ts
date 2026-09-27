@@ -1007,7 +1007,11 @@ export async function processEnrichmentQueue(
                   // m640: promoted from the jsonb blob alongside household_income —
                   // see lib/lead-pipeline/enrichment-column-map.ts and the migration header.
                   netWorth: profile.net_worth ?? enriched.netWorth ?? null,
-                  creditScoreRange: profile.credit_score_range ?? enriched.creditScoreRange ?? null,
+                  // TOMBSTONE (wave 86, lane 86A): the modeled credit band is no longer a persona fact.
+                  // The persona's pain_points reach OUTBOUND copy (app/actions/open-house-automation.ts
+                  // puts them in the invitation prompt), so a band there was a band in outbound copy —
+                  // the FCRA / fair-lending line the owner drew. The band's reader is the agent contact
+                  // card (app/actions/contact-enrichment.ts::getContactInsights).
                   homeOwnerStatus: enriched.homeOwnerStatus ?? null,
                   homeValue: enriched.homeValue ?? null,
                   occupation: enriched.currentTitle ?? null,

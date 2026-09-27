@@ -112,7 +112,9 @@ export function peopleDataProfileToContactColumns(
     out.life_events = profile.life_events
   }
 
-  out.enrichment_source = (profile.provider as string | undefined) ?? 'peopledata'
+  // contacts.enrichment_source = THE PROVIDER (wave 86, §6) — only a name in ENRICHMENT_PROVIDERS; a
+  // profile without one was built by buildPeopleDataProfile, whose provider is PeopleData.
+  out.enrichment_source = enrichmentProviderOf(profile.provider) ?? 'peopledata'
   if (opts?.enrichedAt) out.enriched_at = opts.enrichedAt
 
   return out
@@ -383,16 +385,33 @@ export function batchDataPropertyEnrichmentToContactColumns(
 // consumer reporting agencies and their ranges are modeled from marketing data (both vendors state
 // the data may not be used for FCRA-regulated eligibility decisions). normalizeModeledCreditBand
 // therefore stores a BAND only (an exact score is bucketed to a 50-point band, never stored), the
-// profile carries household_financials.credit_basis = MODELED_CREDIT_BASIS, and the band feeds
-// persona / intelligence reads only — never an eligibility, pricing or steering decision, never an
-// outbound message, never an agent-facing card (lane-85C notes).
+// profile carries household_financials.credit_basis = MODELED_CREDIT_BASIS. WHERE THE BAND GOES
+// (wave 86, owner verbatim: "add because most audience or info will be used from the contact card"):
+// net worth and the credit band are SHOWN on the agent-facing contact card beside household income and
+// marital status, labelled "modeled estimate" (app/actions/contact-enrichment.ts::getContactInsights →
+// enrichment-panel.tsx). The credit band is NEVER an input to outbound copy, an eligibility / pricing /
+// steering decision, or a persona trait (FCRA / fair lending) — scripts/enrichment-one-rail-guard.ts
+// Layer 8d (the modeled-credit firewall) holds that with a positive control.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const HOUSEHOLD_FINANCIAL_FIELDS = ['marital_status', 'household_income', 'net_worth', 'credit_score_range'] as const
 export type HouseholdFinancialField = typeof HOUSEHOLD_FINANCIAL_FIELDS[number]
 export type HouseholdFinancials = Partial<Record<HouseholdFinancialField, string>>
-/** The providers that may supply a household financial — one name per provider, the ledger's vendor key. */
-export type HouseholdFinancialProvider = 'batchdata' | 'versium' | 'peopledata'
+/** THE enrichment PROVIDER vocabulary (§6) — one name per provider, the ledger's vendor key
+ *  (vendor_usage_tracking.vendor_name). `contacts.enrichment_source` holds one of these and nothing
+ *  else (wave 86, owner verbatim: "more provider unless trigger is needed"); the TRIGGER (manual /
+ *  auto / import / …) is contact-enrichment-core.ts's EnrichmentTrigger and rides the ledger row's
+ *  metadata, never this column. */
+export const ENRICHMENT_PROVIDERS = ['peopledata', 'batchdata', 'versium'] as const
+export type EnrichmentProvider = typeof ENRICHMENT_PROVIDERS[number]
+/** PURE — a value as an enrichment provider, or null when it is not one (a trigger such as 'auto' /
+ *  'manual', a blank, anything else). */
+export function enrichmentProviderOf(value: unknown): EnrichmentProvider | null {
+  const v = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  return (ENRICHMENT_PROVIDERS as readonly string[]).includes(v) ? (v as EnrichmentProvider) : null
+}
+/** The providers that may supply a household financial — the enrichment provider vocabulary. */
+export type HouseholdFinancialProvider = EnrichmentProvider
 
 /** The provenance stamp for a credit band: a modeled range from marketing data, not a credit report. */
 export const MODELED_CREDIT_BASIS = 'modeled_marketing_estimate'

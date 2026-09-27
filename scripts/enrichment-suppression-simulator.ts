@@ -530,8 +530,10 @@ function leadSourceLayer() {
   //   "no ghl on when a contact is syncing to it. we only enrich the contact in
   //    this system."  — checked as TWO separate claims.
   const contactCore = code(CORE)
-  check("EnrichmentSource no longer admits 'ghl_sync' as a trigger",
-    /export type EnrichmentSource\s*=/.test(contactCore) && !/["']ghl_sync["']/.test(contactCore))
+  // Wave 86 (lane 86A): the trigger vocabulary is spelled EnrichmentTrigger — `EnrichmentSource` named a
+  // trigger while contacts.enrichment_source held a provider (§6); the column is the provider now.
+  check("EnrichmentTrigger (the trigger vocabulary) does not admit 'ghl_sync' as a trigger",
+    /export type EnrichmentTrigger\s*=/.test(contactCore) && !/["']ghl_sync["']/.test(contactCore))
   check("no enrichment module names a ghl_sync trigger anywhere",
     ![CORE, LEAD_CORE, SUPPRESSION, "lib/enrichment/lead-freshness.ts", "lib/enrichment/identifier-guard.ts"]
       .some((f) => /["']ghl_sync["']/.test(code(f))))

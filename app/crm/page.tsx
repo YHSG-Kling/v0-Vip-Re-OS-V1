@@ -3152,7 +3152,8 @@ export default function CRMPage() {
                               <KV label="Source family" value={contactIntelligence.source_family} />
                               <KV label="Source subtype" value={contactIntelligence.source_subtype} />
                               <KV label="Data source" value={contactIntelligence.data_source} />
-                              <KV label="Enrichment source" value={contactIntelligence.enrichment_source} />
+                              {/* contacts.enrichment_source is the PROVIDER (wave 86, §6 — enrichment-column-map.ts ENRICHMENT_PROVIDERS). */}
+                              <KV label="Enrichment provider" value={contactIntelligence.enrichment_source} />
                               <KV
                                 label="Enrichment confidence"
                                 value={

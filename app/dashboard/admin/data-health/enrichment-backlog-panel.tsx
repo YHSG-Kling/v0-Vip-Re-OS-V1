@@ -106,7 +106,7 @@ export function EnrichmentBacklogPanel() {
     const ids = unenriched.map((c) => c.id)
     if (ids.length === 0) return
     startTransition(async () => {
-      const res = await enrichContactsBatch(ids, { source: "manual" })
+      const res = await enrichContactsBatch(ids, { trigger: "manual" })
       setNotice(
         res.error
           ? res.error

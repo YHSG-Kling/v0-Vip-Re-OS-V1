@@ -25,9 +25,13 @@
  * app/api/providers/inbound/route.ts uses, never a second one. Because this
  * door is PER-USER-AWARE (resolvedCredential carries scope: 'agent' | 'team' |
  * 'brokerage'), resolveInboundMailboxOwner can resolve an AGENT or TEAM-LEAD
- * mailbox here (unlike the other door's shared brokerage webhook) — a
- * qualifying sender becomes a CONTACT assigned to that person, never a raw
- * lead, never a brokerage-wide lead for an individual's own inbox.
+ * mailbox here (unlike the other door's shared brokerage webhook).
+ *
+ * ── SUPERSEDED (waves 85 + 86): the wave-74 split (agent/team-lead mailbox → CONTACT, brokerage →
+ * lead) is gone. Wave 86, owner verbatim: "yes all mailboxes should be configured the same." — a
+ * qualifying unknown sender to ANY mailbox lands RAW → dedup → enrich → dedup → THE lead gate
+ * (unknown-sender-identification.ts::landUnknownSenderRaw); the resolved owner is the tenant and the
+ * provenance recorded on the raw row, never a route.
  */
 
 import { type NextRequest, NextResponse } from "next/server"
@@ -323,7 +327,8 @@ export async function POST(request: NextRequest) {
     // never the email body, CLAUDE.md §4). Route through the SAME module the
     // OTHER inbound door (app/api/providers/inbound/route.ts) uses — no second
     // classifier. This route is the PER-USER-AWARE door, so its mailbox owner
-    // can be an AGENT or TEAM LEAD (not always 'brokerage' the way the shared
+    // can be an AGENT or TEAM LEAD (recorded as provenance since wave 86 — every mailbox lands
+    // raw the same way; not always 'brokerage' the way the shared
     // webhook door is) — resolveInboundMailboxOwner reads resolvedCredential's
     // own scope (user → team → brokerage cascade, lib/inbound-mail/
     // resolve-user-provider.ts's existing mailbox/user binding table).
@@ -343,12 +348,12 @@ export async function POST(request: NextRequest) {
           messageId: null,
           raw:       email,
         })
-        if (identified.outcome === "contact_created" && identified.contactId) {
-          contactId = identified.contactId
-        }
-        // "lead_created" / "raw_held" (brokerage mailbox — lane 85B: the sender lands RAW and
-        // goes dedup → enrich → dedup → THE lead gate first), "dropped" (spam/vendor/automated/
-        // no-intent) and "held" (classifier unavailable, fail-closed) all leave
+        // TOMBSTONE (wave 86, lane 86A — owner: "yes all mailboxes should be configured the same."):
+        // the `contact_created` branch that set contactId for an agent/team-lead mailbox is DELETED.
+        // Survivor: lib/lead-pipeline/unknown-sender-identification.ts::landUnknownSenderRaw — EVERY
+        // mailbox (brokerage, agent, team lead) lands the sender RAW → dedup → enrich → dedup → THE
+        // lead gate. So "lead_created" / "raw_held", "dropped" (spam/vendor/automated/no-intent) and
+        // "held" (classifier unavailable, fail-closed) all leave
         // contactId null — a fresh LEAD has no contact to file an attachment
         // under yet, so this email's own attachments (if any) are not filed
         // anywhere by THIS route; the module itself counts the outcome

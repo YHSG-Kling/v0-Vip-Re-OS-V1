@@ -108,21 +108,40 @@
 //     row carries source 'inbound_email_unknown' + cost_per_record = the classifier's own model
 //     cost (already booked to ai_tool_usage; stamped here as the per-record ACQUISITION cost, not a
 //     second booking). lib/lead-intelligence/person-timeline.ts reads it by lead_id once promoted.
-//   · The AGENT / TEAM-LEAD mailbox branch is UNCHANGED — it creates a CONTACT (owner 74A), and the
-//     lead gate governs leads, not contacts. Flagged for the integrator/owner.
+//   · The AGENT / TEAM-LEAD mailbox branch was left creating a CONTACT here — SUPERSEDED in wave 86
+//     (below).
 // TOMBSTONE (CLAUDE.md §1): createLeadDirectlyForBrokerage is DELETED — survivor
 // landUnknownSenderRaw (this file). The wave-74 "never raw_scraped_leads for this source" rule
 // below is SUPERSEDED for the brokerage branch. AUTOMATED_LOCAL_PARTS moved to
 // lib/external/email-verifier.ts (the gate reads it too — one vocabulary, §6).
+//
+// ── WAVE 86 CORRECTION (lane 86A) — owner verbatim, 2026-09-27: ──────────────────────────────────
+//   "yes all mailboxes should be configured the same."
+// An unknown sender to an AGENT or TEAM-LEAD mailbox now takes EXACTLY the brokerage mailbox's path:
+// RAW → dedup → enrich → dedup → THE gate (landUnknownSenderRaw → ingestRawSourceBatch →
+// processRawRecord). The mailbox owner no longer changes the ROUTE; it is recorded as PROVENANCE on
+// the raw row (raw_data.mailbox_owner_kind / mailbox_owner_agent_id — read back by
+// lib/lead-intelligence/person-timeline.ts as "Emailed <whose> mailbox") and on the
+// UNKNOWN_SENDER_IDENTIFIED_AS_LEAD event's metadata (owner_kind). The lead belongs to the BROKERAGE
+// (CLAUDE.md §5) whichever mailbox received the mail; it reaches an agent the way every lead does —
+// qualified by the ISA, then assigned.
+// TOMBSTONE (CLAUDE.md §1): createContactForAgentMailbox (the contact-direct branch — captureContact,
+// a TCPA stamp, a fill-if-empty contact_persona) is DELETED, with its `opts.createContact` seam, the
+// "contact_created" outcome, mapIntentTypeToContactType / mapIntentTypeToPersona (contact-only
+// vocabulary mappers) and KernelEvent.UNKNOWN_SENDER_IDENTIFIED_AS_CONTACT (lib/kernel/events.ts —
+// zero live rows). Survivor: landUnknownSenderRaw (this file), the brokerage branch's own path. What
+// the survivor was missing, merged onto it first: the mailbox owner (now on the raw row and the
+// event). The classifier's intent and persona-relevant reading already ride the raw row
+// (raw_data.classification / motivation_type). The two routes' contact_created branches carry their
+// own tombstones.
 //
 // THE ISA HANDOFF IS NOT DUPLICATED HERE (unchanged from wave 73A). For the
 // brokerage/lead branch, app/api/providers/inbound/route.ts's existing Step 8b
 // already calls app/actions/ai-isa/handle-inbound-email.ts::processInboundEmail
 // for ANY entityType==="lead" with an email — once this module hands the route a
 // fresh leadId, that EXISTING call fires on the ORIGINAL email content and
-// qualification starts through the canonical lane. For the agent/contact branch,
-// captureContact's own CONTACT_CAPTURED event + assignment + welcome machinery is
-// the normal contact-side flow — no second ISA invocation is built here.
+// qualification starts through the canonical lane. Since wave 86 that is true of every mailbox (there
+// is no agent/contact branch any more) — no second ISA invocation is built here.
 
 import "server-only"
 import { z } from "zod"
@@ -134,7 +153,6 @@ import { logAIUsage } from "@/lib/ai/cost-tracking"
 import { KernelEvent } from "@/lib/kernel/events"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { normalizeStreetAddress } from "@/lib/external/permit-signals"
-import { normalizeContactPersona } from "@/lib/campaigns/contact-sources"
 import { AUTOMATED_LOCAL_PARTS, ROLE_LOCAL_PARTS } from "@/lib/external/email-verifier"
 import { calculateCost } from "@/lib/ai/cost-tracking"
 import type { NormalizedScrapedRecord } from "@/lib/lead-pipeline/raw-record-types"
@@ -554,21 +572,9 @@ function mapIntentTypeToLeadSide(t: UnknownSenderIntentType): "buyer" | "seller"
   }
 }
 
-/** contacts.contact_type only admits buyer/seller/both/... (never "unknown") — undefined
- *  leaves the column unset rather than writing an inadmissible value. */
-function mapIntentTypeToContactType(t: UnknownSenderIntentType): "buyer" | "seller" | undefined {
-  const side = mapIntentTypeToLeadSide(t)
-  return side === "unknown" ? undefined : side
-}
-
-/** contacts.contact_persona is the SITUATION vocabulary (CampaignPersona), a different
- *  axis than intentType's buyer/seller/renter — only 'investor' and 'relocation' have an
- *  honest, non-fabricated mapping onto it; every other intentType has no persona to claim. */
-function mapIntentTypeToPersona(t: UnknownSenderIntentType): string | null {
-  if (t === "investor") return "investor"
-  if (t === "relocation") return "relocated"
-  return null
-}
+// TOMBSTONE (wave 86, lane 86A): mapIntentTypeToContactType / mapIntentTypeToPersona are DELETED with
+// the contact-direct branch they served (see the wave-86 header). Survivor for the intent reading:
+// mapIntentTypeToLeadSide (above) on the raw row, plus raw_data.classification / motivation_type.
 
 /** Splits a free-text extracted name into first/last, honestly — a single-word name has no
  *  last name (never fabricated from nothing). */
@@ -695,12 +701,14 @@ interface RawLanding {
  * merge or a gate refusal leaves the sender raw, where the stranded sweep keeps working it.
  */
 async function landUnknownSenderRaw(
-  brokerageId: string,
+  mailboxOwner: ResolvedMailboxOwner,
   sender: { fromEmail: string; displayName: string | null; subject: string | null; body: string; messageId: string | null },
   c: UnknownSenderClassification,
   listingMatch: OwnListingMatch | null,
   costUsd: number,
 ): Promise<RawLanding> {
+  // Wave 86 — every mailbox lands here. The tenant is the VERIFIED mailbox binding's (never a body).
+  const brokerageId = mailboxOwner.brokerageId
   const { firstName, lastName, nameSource } = deriveSenderName({
     extractedName: c.extractedName, displayName: sender.displayName, fromEmail: sender.fromEmail,
   })
@@ -729,6 +737,9 @@ async function landUnknownSenderRaw(
       listing_match: listingMatch,
       motivation_type: listingMatch ? `transactional_${c.transactionalType}` : (c.intentType !== "unknown" ? c.intentType : null),
       classifier_cost_usd: costUsd,
+      // Wave 86 — WHOSE mailbox received it (provenance, not routing: the lead is the brokerage's).
+      mailbox_owner_kind: mailboxOwner.ownerKind,
+      mailbox_owner_agent_id: mailboxOwner.agentId,
     },
   }
 
@@ -762,84 +773,17 @@ async function landUnknownSenderRaw(
   }
 }
 
-/** AGENT / TEAM-LEAD mailbox → CONTACT for that person, DIRECTLY, via the ONE contact-intake
- *  door (captureContact) every other direct-capture source already uses — never a raw lead,
- *  never a second contact-creation path. */
-async function createContactForAgentMailbox(
-  svc: Svc,
-  mailboxOwner: ResolvedMailboxOwner,
-  fromEmail: string,
-  subject: string | null,
-  body: string,
-  messageId: string | null,
-  c: UnknownSenderClassification,
-  listingMatch: OwnListingMatch | null,
-): Promise<string | null> {
-  const { captureContact } = await import("@/lib/contact-pipeline/contact-capture")
-  const { firstName, lastName } = splitExtractedName(c.extractedName)
-
-  try {
-    const result = await captureContact({
-      brokerageId: mailboxOwner.brokerageId,
-      ownerAgentId: mailboxOwner.agentId,
-      // legacy fallback — only set when we could not resolve agents.id directly,
-      // so captureContact's own agents lookup gets a second chance (never both).
-      agentUserId: mailboxOwner.agentId ? null : mailboxOwner.userId,
-      source: "inbound_email_unknown",
-      first_name: firstName ?? fromEmail.split("@")[0] ?? "Unknown",
-      last_name: lastName ?? null,
-      email: fromEmail,
-      phone: c.extractedPhone ?? null,
-      notes: listingMatch
-        ? `Emailed the agent directly about ${listingMatch.matchedAddress} (${c.transactionalType}).`
-        : `Emailed the agent directly — ${c.intentType} intent.`,
-      contact_type: mapIntentTypeToContactType(c.intentType),
-      // "emailing IN is consent for a reply" is the direct email-channel analogue of the
-      // existing wave 49/50 SMS ruling ("texting our own line IS consent for the thread") —
-      // the sender initiated unsolicited contact TO the agent's own mailbox.
-      tcpa_consent: true,
-      tcpa_consent_date: new Date().toISOString(),
-      tcpa_consent_source: "inbound_email:agent_mailbox",
-      tcpa_consent_text:
-        "Sender emailed the agent's own mailbox directly and unsolicited; reply-by-email consent implied by their own outreach.",
-      rawPayload: { subject, body, classification: c, message_id: messageId },
-    })
-
-    // contact_persona — FILL-IF-EMPTY, only when the classifier is confident and the
-    // intent maps onto the situation vocabulary honestly (investor/relocated only —
-    // see mapIntentTypeToPersona; every other intentType has no persona to claim).
-    if (c.confidence >= 0.6) {
-      const persona = normalizeContactPersona(mapIntentTypeToPersona(c.intentType))
-      if (persona) {
-        const { data: existing } = await svc
-          .from("contacts")
-          .select("contact_persona")
-          .eq("id", result.contactId)
-          .maybeSingle()
-        if (!(existing as { contact_persona?: string | null } | null)?.contact_persona) {
-          await sentinelWrite(
-            svc,
-            svc.from("contacts").update({ contact_persona: persona }).eq("id", result.contactId),
-            { table: "contacts", flow: "unknown_sender_contact_persona", brokerageId: mailboxOwner.brokerageId, reason: "classifier-confident persona, fill-if-empty" },
-          )
-        }
-      }
-    }
-
-    return result.contactId
-  } catch (err) {
-    console.error("[unknown-sender-identification] contact create failed:", err instanceof Error ? err.message : err)
-    return null
-  }
-}
+// TOMBSTONE (wave 86, lane 86A — owner: "yes all mailboxes should be configured the same."):
+// createContactForAgentMailbox is DELETED. An agent / team-lead mailbox's unknown sender lands RAW
+// through the survivor, landUnknownSenderRaw (above), exactly like the brokerage mailbox's.
 
 export interface UnknownSenderIdentificationResult {
-  /** "raw_held" (lane 85B) — a brokerage-mailbox sender landed RAW and did not (yet) pass THE gate
-   *  (no name found, or a dedup verdict); the stranded sweep keeps working it. Not a lead. */
-  outcome: "lead_created" | "raw_held" | "contact_created" | "dropped" | "held"
+  /** "raw_held" (lane 85B) — the sender landed RAW and did not (yet) pass THE gate (no name found,
+   *  or a dedup verdict); the stranded sweep keeps working it. Not a lead. Since wave 86 this is true
+   *  of EVERY mailbox — "contact_created" is retired (no mailbox mints a contact directly). */
+  outcome: "lead_created" | "raw_held" | "dropped" | "held"
   leadId?: string
   rawId?: string
-  contactId?: string
   reason: string
 }
 
@@ -854,7 +798,8 @@ export type UnknownSenderClassifierFn = (params: {
  * identifyAndRouteUnknownSender — the entry point BOTH inbound-email doors
  * (app/api/providers/inbound/route.ts and app/api/webhooks/inbound-mail/route.ts)
  * call for a sender that matched no contact and no active lead. `mailboxOwner`
- * (resolveInboundMailboxOwner, above) decides the whole routing outcome — never
+ * (resolveInboundMailboxOwner, above) supplies the TENANT and the provenance; since
+ * wave 86 it no longer picks a route (every mailbox lands raw) — never
  * throws, a caller-side failure here must never break inbound ingress (mirrors
  * every other best-effort door these routes already have).
  *
@@ -863,24 +808,23 @@ export type UnknownSenderClassifierFn = (params: {
  * (its own `InboundClassifier` override). Production callers never pass it —
  * classifyUnknownSenderIntent (the real gpt-4o-mini lane) is the default. This
  * lets scripts/lead-email-conversion-simulator.ts prove the FULL routing
- * decision (dedup, mailbox-owner branch, transactional listing match,
- * lead/contact creation) with a fixed classification and ZERO network calls —
+ * decision (dedup, transactional listing match, the raw landing for every
+ * mailbox) with a fixed classification and ZERO network calls —
  * never a second classifier, the same model call, just not invoked live in CI.
  *
- * `opts.svc`/`opts.createLead`/`opts.createContact` — blind-spot burn-down
+ * `opts.svc`/`opts.landRaw` (lane 75D's `createLead`/`createContact`; `landRaw` replaced
+ * `createLead` in lane 85B and `createContact` was retired in wave 86) — blind-spot burn-down
  * (lane 75D): the SAME injection idiom as `opts.classifier`, closing the gap
  * that this whole function previously called `createServiceClient()`
  * internally with NO seam, so scripts/lead-email-conversion-simulator.ts's
  * routing proof (§5) could only run with a real SUPABASE_SERVICE_ROLE_KEY —
  * every environment without one (most CI/sandbox runs) silently skipped the
  * lead/contact BRANCH-SELECTION logic entirely. Production callers pass
- * none of these three (defaults: real createServiceClient() +
- * landUnknownSenderRaw + createContactForAgentMailbox; `landRaw` replaced `createLead` in lane 85B).
+ * none of these (defaults: real createServiceClient() + landUnknownSenderRaw).
  * A fixture run supplies a minimal in-memory `svc` (covers the read/dedup/
- * transactional-match/drop-audit calls THIS function makes directly) plus
- * fake createLead/createContact functions that stand in for the deep,
- * multi-table `createLeadOnlyRecordForAcquisitionSource`/`captureContact`
- * machinery those two normally delegate to — proving WHICH branch fires and
+ * transactional-match/drop-audit calls THIS function makes directly) plus a
+ * fake landRaw that stands in for the deep ingestRawSourceBatch/processRawRecord
+ * machinery it normally delegates to — proving WHICH branch fires and
  * WITH WHAT arguments, never a claim that the full downstream CRM side
  * effects (assignment, welcome, kernel events) themselves ran without a key;
  * that remains the LIVE section's job.
@@ -897,9 +841,9 @@ export async function identifyAndRouteUnknownSender(
   opts?: {
     classifier?: UnknownSenderClassifierFn
     svc?: Svc
-    /** Lane 85B — replaces the retired `createLead` seam: stands in for landUnknownSenderRaw. */
+    /** Lane 85B — replaces the retired `createLead` seam: stands in for landUnknownSenderRaw.
+     *  (The `createContact` seam is retired with the contact-direct branch, wave 86.) */
     landRaw?: typeof landUnknownSenderRaw
-    createContact?: typeof createContactForAgentMailbox
   },
 ): Promise<UnknownSenderIdentificationResult> {
   const svc = opts?.svc ?? createServiceClient()
@@ -962,73 +906,46 @@ export async function identifyAndRouteUnknownSender(
 
   const routeReason = isTransactional ? `transactional:${c.transactionalType}` : `intent:${c.intentType}`
 
-  // ── Step 5: ROUTE BY MAILBOX OWNER (owner ruling, wave 74; brokerage branch corrected wave 85) ─
-  if (params.mailboxOwner.ownerKind === "brokerage") {
-    // WAVE 85 — "an unknown sender needs to go through enrichment before lead gate": RAW first,
-    // then dedup → enrich → dedup → THE gate (landUnknownSenderRaw). An email already on an
-    // existing lead is that lead (dedup above), never a second raw row.
-    let leadId: string | null = existing?.kind === "lead" ? existing.id : null
-    if (!leadId) {
-      const landing = await (opts?.landRaw ?? landUnknownSenderRaw)(
-        brokerageId,
-        { fromEmail: params.fromEmail, displayName: from.displayName, subject: params.subject, body: params.body, messageId: params.messageId },
-        c, listingMatch, verdict.costUsd ?? 0,
-      )
-      if (!landing.rawId && !landing.leadId) {
-        await recordDrop(svc, brokerageId, "raw_landing_failed", landing.pipelineReason, params.fromEmail, params.messageId)
-        return { outcome: "dropped", reason: `raw_landing_failed:${landing.pipelineReason}` }
-      }
-      if (!landing.leadId) {
-        // Landed RAW and did not pass THE gate (yet) — not a drop, not a lead. Counted by the raw
-        // row itself (RAW_RECORD_CREATED + its processing_status); the sweep keeps working it.
-        return { outcome: "raw_held", rawId: landing.rawId ?? undefined, reason: `${routeReason} → raw (${landing.pipelineReason})` }
-      }
-      leadId = landing.leadId
-    }
-
-    await sentinelWrite(
-      svc,
-      svc.from("lifecycle_events").insert({
-        brokerage_id: brokerageId,
-        entity_type: "lead",
-        entity_id: leadId,
-        event_type: KernelEvent.UNKNOWN_SENDER_IDENTIFIED_AS_LEAD,
-        metadata: {
-          from_email: params.fromEmail, message_id: params.messageId,
-          intent_type: c.intentType, confidence: c.confidence,
-          transactional: listingMatch ? { listing_id: listingMatch.listingId, matched_address: listingMatch.matchedAddress, type: c.transactionalType } : null,
-        },
-      }),
-      { table: "lifecycle_events", flow: "unknown_sender_identified_as_lead", brokerageId },
+  // ── Step 5: ONE ROUTE FOR EVERY MAILBOX (wave 85 brokerage path; wave 86: "yes all mailboxes
+  // should be configured the same.") — "an unknown sender needs to go through enrichment before lead
+  // gate": RAW first, then dedup → enrich → dedup → THE gate (landUnknownSenderRaw). An email already
+  // on an existing lead is that lead (dedup above), never a second raw row. The mailbox owner is
+  // provenance (raw row + event metadata), never a branch.
+  let leadId: string | null = existing?.kind === "lead" ? existing.id : null
+  if (!leadId) {
+    const landing = await (opts?.landRaw ?? landUnknownSenderRaw)(
+      params.mailboxOwner,
+      { fromEmail: params.fromEmail, displayName: from.displayName, subject: params.subject, body: params.body, messageId: params.messageId },
+      c, listingMatch, verdict.costUsd ?? 0,
     )
-
-    return { outcome: "lead_created", leadId, reason: routeReason }
-  }
-
-  // agent / team_lead mailbox → CONTACT
-  const contactId = await (opts?.createContact ?? createContactForAgentMailbox)(
-    svc, params.mailboxOwner, params.fromEmail, params.subject, params.body, params.messageId, c, listingMatch,
-  )
-  if (!contactId) {
-    await recordDrop(svc, brokerageId, "contact_create_failed", null, params.fromEmail, params.messageId)
-    return { outcome: "dropped", reason: "contact_create_failed" }
+    if (!landing.rawId && !landing.leadId) {
+      await recordDrop(svc, brokerageId, "raw_landing_failed", landing.pipelineReason, params.fromEmail, params.messageId)
+      return { outcome: "dropped", reason: `raw_landing_failed:${landing.pipelineReason}` }
+    }
+    if (!landing.leadId) {
+      // Landed RAW and did not pass THE gate (yet) — not a drop, not a lead. Counted by the raw
+      // row itself (RAW_RECORD_CREATED + its processing_status); the sweep keeps working it.
+      return { outcome: "raw_held", rawId: landing.rawId ?? undefined, reason: `${routeReason} → raw (${landing.pipelineReason})` }
+    }
+    leadId = landing.leadId
   }
 
   await sentinelWrite(
     svc,
     svc.from("lifecycle_events").insert({
       brokerage_id: brokerageId,
-      entity_type: "contact",
-      entity_id: contactId,
-      event_type: KernelEvent.UNKNOWN_SENDER_IDENTIFIED_AS_CONTACT,
+      entity_type: "lead",
+      entity_id: leadId,
+      event_type: KernelEvent.UNKNOWN_SENDER_IDENTIFIED_AS_LEAD,
       metadata: {
         from_email: params.fromEmail, message_id: params.messageId,
-        owner_kind: params.mailboxOwner.ownerKind, intent_type: c.intentType, confidence: c.confidence,
+        owner_kind: params.mailboxOwner.ownerKind, owner_agent_id: params.mailboxOwner.agentId,
+        intent_type: c.intentType, confidence: c.confidence,
         transactional: listingMatch ? { listing_id: listingMatch.listingId, matched_address: listingMatch.matchedAddress, type: c.transactionalType } : null,
       },
     }),
-    { table: "lifecycle_events", flow: "unknown_sender_identified_as_contact", brokerageId },
+    { table: "lifecycle_events", flow: "unknown_sender_identified_as_lead", brokerageId },
   )
 
-  return { outcome: "contact_created", contactId, reason: routeReason }
+  return { outcome: "lead_created", leadId, reason: routeReason }
 }

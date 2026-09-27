@@ -94,6 +94,15 @@ const EMPTY = (leadId: string | null, contactId: string | null, brokerageId: str
   behavioralIntentScore: 0, warnings: [],
 })
 
+/** Whose mailbox an unknown sender wrote to (raw_data.mailbox_owner_kind, stamped by
+ *  unknown-sender-identification.ts::landUnknownSenderRaw since wave 86). A row landed before the
+ *  stamp existed came from the brokerage mailbox — the only mailbox that landed raw then. */
+function inboundMailboxLabel(ownerKind: unknown): string {
+  if (ownerKind === "agent") return "an agent's mailbox"
+  if (ownerKind === "team_lead") return "a team lead's mailbox"
+  return "the brokerage"
+}
+
 export async function buildPersonTimeline(params: Params): Promise<PersonTimelineResult> {
   let leadId = params.leadId ?? null
   let contactId = params.contactId ?? null
@@ -171,7 +180,7 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
     // started the record is on raw_data; its subject and a short excerpt are read by JSON path so the
     // timeline keeps it as lead intelligence history without pulling whole scraped payloads.
     const { data, error } = await svc.from("raw_scraped_leads")
-      .select("id, lead_id, source, source_channel, scrape_category, source_subtype, source_origin, scraper_execution_id, created_at, dedupe_status, cost_per_record, inbound_subject:raw_data->>subject, inbound_body:raw_data->>body, inbound_name_source:raw_data->>name_source")
+      .select("id, lead_id, source, source_channel, scrape_category, source_subtype, source_origin, scraper_execution_id, created_at, dedupe_status, cost_per_record, inbound_subject:raw_data->>subject, inbound_body:raw_data->>body, inbound_name_source:raw_data->>name_source, inbound_mailbox_owner_kind:raw_data->>mailbox_owner_kind")
       .in("lead_id", allLeadIds)
     if (error) warnings.push(`raw_scraped_leads read refused: ${error.message}`)
     else {
@@ -180,8 +189,10 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
           id: `raw:${r.id}`,
           type: "scrape_source",
           occurredAt: r.created_at ?? null,
+          // Wave 86 ("yes all mailboxes should be configured the same."): an agent's or team lead's
+          // mailbox lands its unknown sender raw too — the row records whose mailbox it was.
           summary: r.source === "inbound_email_unknown"
-            ? `Emailed the brokerage${r.inbound_subject ? `: "${r.inbound_subject}"` : ""} (unknown sender, landed raw)`
+            ? `Emailed ${inboundMailboxLabel(r.inbound_mailbox_owner_kind)}${r.inbound_subject ? `: "${r.inbound_subject}"` : ""} (unknown sender, landed raw)`
             : `Sourced via ${r.source ?? "an unknown source"}${r.source_channel ? ` (${r.source_channel})` : ""}`,
           sensitivity: "lead_desk_only",
           detail: {
@@ -197,6 +208,7 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
                 subject: r.inbound_subject ?? null,
                 excerpt: typeof r.inbound_body === "string" ? r.inbound_body.slice(0, 280) : null,
                 nameSource: r.inbound_name_source ?? null,
+                mailboxOwnerKind: r.inbound_mailbox_owner_kind ?? null,
               },
             } : {}),
           },

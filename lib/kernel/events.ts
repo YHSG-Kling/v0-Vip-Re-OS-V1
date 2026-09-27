@@ -570,13 +570,16 @@ export enum KernelEvent {
   // ── Unknown inbound sender identification (lane 73A/74A, wave 73/74 rulings) ──
   // Emitted by lib/lead-pipeline/unknown-sender-identification.ts — counted,
   // never silent (CLAUDE.md §2: "a count that moves is the finding"). Wave 74
-  // corrected the routing: a BROKERAGE mailbox still becomes a LEAD
-  // (UNKNOWN_SENDER_IDENTIFIED_AS_LEAD); an AGENT or TEAM-LEAD mailbox becomes a
-  // CONTACT for that person (UNKNOWN_SENDER_IDENTIFIED_AS_CONTACT, new this wave)
-  // — never a raw scraped lead either way.
+  // corrected the routing by mailbox owner; wave 85 sent the brokerage mailbox RAW
+  // → enrich → THE gate; wave 86 ("yes all mailboxes should be configured the
+  // same.") sends EVERY mailbox that way, so the only identified outcome is a LEAD
+  // (UNKNOWN_SENDER_IDENTIFIED_AS_LEAD, metadata.owner_kind names the mailbox).
+  // TOMBSTONE (wave 86, lane 86A): UNKNOWN_SENDER_IDENTIFIED_AS_CONTACT is DELETED
+  // with the contact-direct branch that was its only emitter (zero live rows).
+  // Survivor: UNKNOWN_SENDER_IDENTIFIED_AS_LEAD, emitted by
+  // lib/lead-pipeline/unknown-sender-identification.ts::identifyAndRouteUnknownSender.
   UNKNOWN_SENDER_DROPPED             = 'unknown_sender_dropped',
   UNKNOWN_SENDER_IDENTIFIED_AS_LEAD  = 'unknown_sender_identified_as_lead',
-  UNKNOWN_SENDER_IDENTIFIED_AS_CONTACT = 'unknown_sender_identified_as_contact',
 
   // ── CRM / Contact OS ────────────────────────────────────────────────────
   // Emitted by lib/kernel/crm.ts and app/actions/contacts.ts.

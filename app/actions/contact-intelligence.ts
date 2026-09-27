@@ -21,6 +21,7 @@ export interface ContactIntelligence {
   source_family: string | null
   source_subtype: string | null
   data_source: string | null
+  /** The enrichment PROVIDER (enrichment-column-map.ts ENRICHMENT_PROVIDERS) — never the trigger (wave 86). */
   enrichment_source: string | null
   enrichment_confidence: number | null
   enriched_at: string | null

@@ -24,6 +24,14 @@
  * result and this panel says so in words ("Paused — this contact has a live deal
  * right now"), because a control that silently does nothing is worse than one
  * that explains why.
+ *
+ * MODELED HOUSEHOLD FINANCIALS (wave 86, owner verbatim: "add because most audience or info will be
+ * used from the contact card"). Net worth and the credit band sit beside household income and
+ * marital status, each labelled "modeled estimate" — they are modeled marketing ranges from the
+ * enrichment providers (BatchData's demographic dataset, Versium's financial append), never a credit
+ * report. The panel says so in words: an agent must not use them to decide who qualifies, what to
+ * charge, or what to show someone (FCRA / fair lending). Nothing outbound reads them —
+ * scripts/enrichment-one-rail-guard.ts Layer 8d holds that with a positive control.
  */
 
 import { useCallback, useEffect, useState, useTransition } from "react"
@@ -55,12 +63,17 @@ const FIELD_LABELS: Array<[string, string]> = [
   ["gender", "Gender"],
   ["marital_status", "Marital status"],
   ["household_income", "Household income"],
+  ["net_worth_range", "Net worth (modeled estimate)"],
+  ["credit_score_range", "Credit band (modeled estimate)"],
   ["home_owner_status", "Home ownership"],
   ["home_value_estimate", "Home value estimate"],
   ["length_of_residence", "Length of residence"],
   ["occupation", "Occupation"],
   ["education_level", "Education"],
 ]
+
+/** The fields that are MODELED estimates — the disclaimer renders whenever one is on screen. */
+const MODELED_FIELDS = new Set(["net_worth_range", "credit_score_range"])
 
 const SOCIAL_FIELDS: Array<[string, string]> = [
   ["linkedin_url", "LinkedIn"],
@@ -145,6 +158,7 @@ export function EnrichmentPanel({ contactId }: Props) {
     ? FIELD_LABELS.filter(([k]) => enrichment[k] !== null && enrichment[k] !== undefined && enrichment[k] !== "")
     : []
   const socials = enrichment ? SOCIAL_FIELDS.filter(([k]) => Boolean(enrichment[k])) : []
+  const showsModeled = populated.some(([k]) => MODELED_FIELDS.has(k))
 
   return (
     <Card>
@@ -202,6 +216,13 @@ export function EnrichmentPanel({ contactId }: Props) {
                   </div>
                 ))}
               </dl>
+            )}
+
+            {showsModeled && (
+              <p className="text-[11px] text-muted-foreground">
+                Net worth and credit band are modeled marketing estimates, not a credit report. Use them
+                to understand the household — never to decide eligibility, pricing, or which homes to show.
+              </p>
             )}
 
             {socials.length > 0 && (

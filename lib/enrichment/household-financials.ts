@@ -22,9 +22,14 @@
 //   · persistHouseholdFinancialCaptures writes what the seller-signal probe already bought onto the
 //     lead (enrichment_profile) or contact (first-class columns + enrichment_profile), tenant-anchored.
 //
-// FCRA: the credit band is a MODELED marketing estimate (MODELED_CREDIT_BASIS), stored as a band,
-// read for persona / intelligence only. It never decides eligibility, pricing or steering, never
-// reaches outbound copy, and never renders on an agent-facing card (lane-85C notes).
+// FCRA: the credit band is a MODELED marketing estimate (MODELED_CREDIT_BASIS), stored as a band.
+// Wave 86 (owner verbatim: "add because most audience or info will be used from the contact card"):
+// net worth and the credit band are SHOWN on the agent-facing contact card beside household income
+// and marital status, labelled "modeled estimate" (app/crm/contacts/[contactId]/components/
+// enrichment-panel.tsx via app/actions/contact-enrichment.ts::getContactInsights). The credit band
+// still never reaches outbound copy, an eligibility / pricing / steering decision, or a persona
+// trait (FCRA / fair lending) — the modeled-credit firewall, scripts/enrichment-one-rail-guard.ts
+// Layer 8d, holds that with a positive control.
 
 import {
   householdFinancialContactColumns,
@@ -120,7 +125,7 @@ export async function appendModeledCredit(params: {
         cost: res.cost,
         brokerageId: params.brokerageId,
         systemSource: "skip_trace",
-        metadata: { lane: params.lane, matched: !!res.data },
+        metadata: { lane: params.lane, matched: res.credits != null ? res.credits > 0 : !!res.data, credits: res.credits ?? null, match_level: res.matchLevel ?? null },
       })
     }
     if (res.error) return { profile, asked: true, cost: res.cost, filled: [], skipped: "error", error: res.error }

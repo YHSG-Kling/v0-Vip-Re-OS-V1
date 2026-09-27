@@ -30,7 +30,13 @@
 // lead); no match still resolves 'brokerage' honestly (→ LEAD DIRECTLY, never raw_scraped_leads). On
 // a fresh lead, this sets entityType/entityId exactly as an already-matched lead would, so every step
 // below — including Step 8b's processInboundEmail — runs unchanged and the AI ISA starts qualifying
-// on the ORIGINAL email. An SMS/WhatsApp sender is NOT routed through this
+// on the ORIGINAL email.
+// ── SUPERSEDED ROUTING (waves 85 + 86): wave 85 sent the brokerage mailbox RAW → dedup → enrich →
+// dedup → THE lead gate (never a direct lead insert); wave 86 (owner verbatim: "yes all mailboxes
+// should be configured the same.") sends the agent / team-lead recipient the SAME way — the
+// "→ CONTACT" and "→ LEAD DIRECTLY" readings above are history. The mailbox owner resolved here is
+// the tenant + provenance only (lib/lead-pipeline/unknown-sender-identification.ts header).
+// An SMS/WhatsApp sender is NOT routed through this
 // door: texting the tenant's OWN registered line is an existing, distinct owner ruling (wave
 // 49/50 — "texting in IS consent for the thread", the same provenance the inbound-call lane
 // uses) that already requires a stronger signal (knowing and dialing this specific business
@@ -220,10 +226,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         if (identified.outcome === "lead_created" && identified.leadId) {
           entityType = "lead"
           entityId = identified.leadId
-        } else if (identified.outcome === "contact_created" && identified.contactId) {
-          entityType = "contact"
-          entityId = identified.contactId
         }
+        // TOMBSTONE (wave 86, lane 86A — owner: "yes all mailboxes should be configured the same."):
+        // the `contact_created` branch (an agent/team-lead recipient minted a CONTACT directly) is
+        // DELETED. Every mailbox now lands RAW → dedup → enrich → dedup → THE gate
+        // (lib/lead-pipeline/unknown-sender-identification.ts::landUnknownSenderRaw), so the only
+        // identified outcome is a lead, handled above.
         // "raw_held" (lane 85B, owner wave 85: "an unknown sender needs to go through enrichment
         // before lead gate") — the sender landed RAW and has not passed THE lead gate yet (no name
         // found); the raw row carries the conversation and the lead-scraping cron's stranded sweep

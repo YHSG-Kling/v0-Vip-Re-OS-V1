@@ -415,8 +415,16 @@ async function testUnknownSenderIdentification() {
     /providerType !== "twilio" && inbound\.fromEmail/.test(route))
   check("route.ts: a lead is only minted on outcome 'lead_created' — 'dropped'/'held' leave entityType untouched (falls through to { linked: false }, same as before)",
     /identified\.outcome === "lead_created" && identified\.leadId/.test(route))
-  check("route.ts: a CONTACT is also minted on outcome 'contact_created' (wave 74 — agent/team-lead mailbox case)",
-    /identified\.outcome === "contact_created" && identified\.contactId/.test(route))
+  // WAVE 86 (lane 86A) — owner verbatim: "yes all mailboxes should be configured the same." The
+  // wave-74 contact_created branch is RETIRED in both routes (tombstoned); every mailbox lands raw.
+  const CONTACT_BRANCH = /identified\.outcome === "contact_created"/
+  check("route.ts: NO contact_created branch — an agent/team-lead recipient no longer mints a contact (wave 86: every mailbox lands raw)",
+    !CONTACT_BRANCH.test(route))
+  check("app/api/webhooks/inbound-mail/route.ts: NO contact_created branch either (the per-user door routes the same as the brokerage door)",
+    !CONTACT_BRANCH.test(mailRoute))
+  check("positive control: the retired contact_created branch IS seen by the same finder (live code), and its tombstone comment is NOT",
+    CONTACT_BRANCH.test(blankComments(`if (identified.outcome === "contact_created" && identified.contactId) {`))
+    && !CONTACT_BRANCH.test(blankComments(`// the \`identified.outcome === "contact_created"\` branch is DELETED\n`)))
   check("route.ts: resolveInboundMailboxOwner is called with doorKind 'shared_brokerage_webhook'",
     /doorKind: "shared_brokerage_webhook"/.test(route))
   // Blind-spot burn-down (lane 75D): the shared webhook now DOES carry a
@@ -467,17 +475,15 @@ async function testUnknownSenderIdentification() {
 
   // ── (c) FAIL CLOSED — a classifier that cannot run creates NO row, NO lead, NO contact.
   const heldReturnIdx = mod.indexOf('return { outcome: "held", reason: "classifier_unavailable" }')
-  // Lane 75D — the call sites now go through the opts.landRaw/createContact
-  // injection seam (`(opts?.landRaw ?? landUnknownSenderRaw)(...)` — lane 85B replaced the
-  // retired createLead/createLeadDirectlyForBrokerage seam),
+  // Lane 75D — the call site now goes through the opts.landRaw injection seam
+  // (`(opts?.landRaw ?? landUnknownSenderRaw)(...)` — lane 85B replaced the retired
+  // createLead/createLeadDirectlyForBrokerage seam; wave 86 retired the createContact seam),
   // so the search string is the WHOLE expression, not the bare function name
   // (which still appears earlier, as the function's own DEFINITION — an
   // unanchored search on the bare name would find that instead, CLAUDE.md §2).
   const brokerageCreateIdx = mod.indexOf("opts?.landRaw ?? landUnknownSenderRaw)(", orchestratorStart)
-  const contactCreateIdx = mod.indexOf("opts?.createContact ?? createContactForAgentMailbox)(", orchestratorStart)
-  check("unknown-sender-identification.ts: classifier-unavailable returns 'held' BEFORE either creation call ever runs (no lead, no contact, no row)",
-    heldReturnIdx > -1 && brokerageCreateIdx > -1 && contactCreateIdx > -1 &&
-    heldReturnIdx < brokerageCreateIdx && heldReturnIdx < contactCreateIdx)
+  check("unknown-sender-identification.ts: classifier-unavailable returns 'held' BEFORE the raw landing ever runs (no lead, no row)",
+    heldReturnIdx > -1 && brokerageCreateIdx > -1 && heldReturnIdx < brokerageCreateIdx)
   check("unknown-sender-identification.ts: the held path is a COUNTED drop (lifecycle_events), never a silent no-op",
     /recordDrop\(svc, brokerageId, "classifier_unavailable"/.test(mod))
 
@@ -485,22 +491,25 @@ async function testUnknownSenderIdentification() {
   // reaches a creation call.
   const spamCheckIdx = mod.indexOf("if (c.isSpamOrVendor) {", orchestratorStart)
   const noQualifyCheckIdx = mod.indexOf("if (!c.hasRealEstateIntent && !isTransactional)", orchestratorStart)
-  check("unknown-sender-identification.ts: spam is checked BEFORE either creation call (never promoted)",
-    spamCheckIdx > -1 && spamCheckIdx < brokerageCreateIdx && spamCheckIdx < contactCreateIdx)
-  check("unknown-sender-identification.ts: no-real-estate-intent AND non-transactional is checked BEFORE either creation call (transactional alone still qualifies)",
-    noQualifyCheckIdx > -1 && noQualifyCheckIdx < brokerageCreateIdx && noQualifyCheckIdx < contactCreateIdx)
+  check("unknown-sender-identification.ts: spam is checked BEFORE the raw landing (never promoted)",
+    spamCheckIdx > -1 && spamCheckIdx < brokerageCreateIdx)
+  check("unknown-sender-identification.ts: no-real-estate-intent AND non-transactional is checked BEFORE the raw landing (transactional alone still qualifies)",
+    noQualifyCheckIdx > -1 && noQualifyCheckIdx < brokerageCreateIdx)
 
   // ── (e) WAVE 85 (lane 85B) — owner verbatim: "an unknown sender needs to go through enrichment
   // before lead gate". The wave-74 direct-lead insert for a BROKERAGE mailbox is RETIRED: the
   // sender lands RAW (ingestRawSourceBatch) and takes the one raw path (processRawRecord: dedup →
-  // enrich → dedup → THE gate). The AGENT/TEAM-LEAD mailbox still creates a CONTACT directly, and
-  // the route's EXISTING Step 8b still hands a lead's ORIGINAL email to the ISA.
+  // enrich → dedup → THE gate). WAVE 86: the AGENT/TEAM-LEAD mailbox takes the SAME path (no
+  // contact-direct branch), and the route's EXISTING Step 8b still hands a lead's ORIGINAL email to
+  // the ISA.
   const landFnStart = mod.indexOf("async function landUnknownSenderRaw(")
   const landFn = landFnStart > -1 ? mod.slice(landFnStart, mod.indexOf("\n}\n", landFnStart)) : ""
   check("unknown-sender-identification.ts: the BROKERAGE branch lands RAW — landUnknownSenderRaw calls ingestRawSourceBatch THEN processRawRecord (dedup → enrich → dedup → gate)",
     landFn.indexOf("ingestRawSourceBatch(") > -1 && landFn.indexOf("processRawRecord(") > landFn.indexOf("ingestRawSourceBatch("))
-  check("unknown-sender-identification.ts: the raw row is brokerage-owned from the VERIFIED binding, market NULL (not territory-bound), and carries the classifier cost as its per-record cost",
-    /ingestRawSourceBatch\(\{\s*brokerageId,/.test(landFn) && /marketId: null/.test(landFn) && /batchCostUsd: costUsd > 0 \? costUsd : null/.test(landFn))
+  check("unknown-sender-identification.ts: the raw row is brokerage-owned from the VERIFIED binding (the mailbox owner's tenant), market NULL (not territory-bound), and carries the classifier cost as its per-record cost",
+    /const brokerageId = mailboxOwner\.brokerageId/.test(landFn) && /ingestRawSourceBatch\(\{\s*brokerageId,/.test(landFn) && /marketId: null/.test(landFn) && /batchCostUsd: costUsd > 0 \? costUsd : null/.test(landFn))
+  check("unknown-sender-identification.ts: the raw row records WHOSE mailbox received it (provenance, not routing — wave 86)",
+    /mailbox_owner_kind: mailboxOwner\.ownerKind/.test(landFn) && /mailbox_owner_agent_id: mailboxOwner\.agentId/.test(landFn))
   check("unknown-sender-identification.ts: the conversation is preserved on the raw row (subject, body, message id, classification, name source) — lead intelligence history",
     /subject: sender\.subject/.test(landFn) && /body: sender\.body/.test(landFn) && /message_id: sender\.messageId/.test(landFn) && /classification: c/.test(landFn) && /name_source: nameSource/.test(landFn))
   check("unknown-sender-identification.ts: NO LONGER calls createLeadOnlyRecordForAcquisitionSource — no lead is minted before the gate (wave 85 tombstone)",
@@ -516,9 +525,15 @@ async function testUnknownSenderIdentification() {
     /createLeadOnlyRecordForAcquisitionSource\(/.test(blankStrings(blankComments("await createLeadOnlyRecordForAcquisitionSource({ brokerage_id })\n"))))
   check("positive control: a tombstone NAMING the retired call inside a comment is NOT a call site",
     !/createLeadOnlyRecordForAcquisitionSource\(/.test(blankStrings(blankComments("// createLeadOnlyRecordForAcquisitionSource( was retired\n"))))
-  check("unknown-sender-identification.ts: an AGENT/TEAM-LEAD mailbox creates a contact via captureContact — the ONE contact-intake door, never a second one",
-    /captureContact/.test(mod))
-  check("unknown-sender-identification.ts: dedup (findExistingLeadOrContact) runs BEFORE either creation call — an email already on file never mints a second row",
+  // WAVE 86 — "yes all mailboxes should be configured the same.": the contact-direct branch is gone.
+  const orchestratorSrc = orchestratorStart > -1 ? blankStrings(mod.slice(orchestratorStart)) : ""
+  check("unknown-sender-identification.ts: NO mailbox routes to a contact any more — the orchestrator never branches on ownerKind and never calls captureContact (wave 86)",
+    orchestratorStart > -1 && !/ownerKind\s*===/.test(orchestratorSrc) && !/captureContact\(/.test(blankStrings(mod)) && !/createContactForAgentMailbox/.test(mod))
+  check("positive control: the retired ownerKind branch and a live captureContact( call ARE seen by the same finders",
+    /ownerKind\s*===/.test(blankStrings(`if (params.mailboxOwner.ownerKind === "brokerage") {`)) && /captureContact\(/.test(blankStrings(`const r = await captureContact({ brokerageId })`)))
+  check("unknown-sender-identification.ts: the ONE landing call hands the WHOLE mailbox owner (tenant + provenance), not a bare brokerage id",
+    /opts\?\.landRaw \?\? landUnknownSenderRaw\)\(\s*params\.mailboxOwner,/.test(mod))
+  check("unknown-sender-identification.ts: dedup (findExistingLeadOrContact) runs BEFORE the raw landing — an email already on file never mints a second row",
     mod.indexOf("findExistingLeadOrContact(svc, brokerageId, params.fromEmail)") > -1 &&
     mod.indexOf("findExistingLeadOrContact(svc, brokerageId, params.fromEmail)") < brokerageCreateIdx)
 
@@ -715,23 +730,25 @@ async function testUnknownSenderRouting() {
       }
     }
 
-    // ── (c) AGENT mailbox + intent → CONTACT for that agent (never a raw lead) ──
-    console.log("\n  ── (c) agent mailbox + intent → contact assigned to the agent ──")
+    // ── (c) AGENT mailbox + intent → RAW, exactly like the brokerage mailbox (wave 86, owner:
+    // "yes all mailboxes should be configured the same.") — never a contact minted directly. ──
+    console.log("\n  ── (c) agent mailbox + intent → raw → the gate, the SAME path as (b) ──")
     const agentSenderEmail = `${TAG}_agentmbx@example.com`
     const resultC = await identifyAndRouteUnknownSender(
       { mailboxOwner: agentOwner, fromEmail: agentSenderEmail, subject: "Relocating",
         body: "Hi, I'm relocating for work and need an agent to help me find a place.", messageId: null },
       { classifier: fixedClassifier({ hasRealEstateIntent: true, intentType: "relocation", extractedName: "Sam Relocator", confidence: 0.9 }) },
     )
-    check("(c) outcome contact_created", resultC.outcome === "contact_created" && !!resultC.contactId, JSON.stringify(resultC))
-    if (resultC.contactId) { reg("contacts", "id", resultC.contactId); reg("lifecycle_events", "entity_id", resultC.contactId) }
-    const { data: contactRow } = await svc.from("contacts").select("id, brokerage_id, agent_id, source, contact_persona").eq("id", resultC.contactId ?? "").maybeSingle()
-    check("(c) the contact is assigned to THAT agent's own agents.id (never brokerage-wide, never unassigned)",
-      (contactRow as any)?.agent_id === agentId)
-    check("(c) the contact source is inbound_email_unknown — NEVER a raw lead for an agent mailbox",
-      (contactRow as any)?.source === "inbound_email_unknown")
-    check("(c) contact_persona filled from a confident 'relocation' classification → 'relocated' (CampaignPersona vocabulary)",
-      (contactRow as any)?.contact_persona === "relocated")
+    check("(c) outcome lead_created or raw_held — the agent mailbox lands raw like the brokerage's, never a contact",
+      resultC.outcome === "lead_created" || resultC.outcome === "raw_held", JSON.stringify(resultC))
+    const { data: rawC } = await svc.from("raw_scraped_leads").select("id, source, brokerage_id, raw_data").eq("email", agentSenderEmail).maybeSingle()
+    if ((rawC as any)?.id) reg("raw_scraped_leads", "id", (rawC as any).id)
+    if (resultC.leadId) { reg("leads", "id", resultC.leadId); reg("lifecycle_events", "entity_id", resultC.leadId) }
+    check("(c) the sender LANDED RAW — brokerage-owned, and the raw row records the AGENT's mailbox as provenance",
+      (rawC as any)?.source === "inbound_email_unknown" && (rawC as any)?.brokerage_id === brokerageId
+      && (rawC as any)?.raw_data?.mailbox_owner_kind === "agent" && (rawC as any)?.raw_data?.mailbox_owner_agent_id === agentId)
+    const { count: directContacts } = await svc.from("contacts").select("id", { count: "exact", head: true }).eq("email", agentSenderEmail)
+    check("(c) NO contact was minted for the agent-mailbox sender", (directContacts ?? 0) === 0, `contacts=${directContacts}`)
 
     // ── (d) TRANSACTIONAL — an offer email that matches an in-house listing address,
     // with NO buyer/seller intent language at all — qualifies through the DETERMINISTIC
@@ -1050,8 +1067,8 @@ async function testUnknownSenderRoutingFixture() {
       },
     )
     check("(e) the gate passed inside the raw path → outcome lead_created with the promoted leadId", result.outcome === "lead_created" && (result as any).leadId === "fx-lead-1", JSON.stringify(result))
-    check("(e) landRaw was called with THIS brokerage + the BARE sender address (the From header's display name parsed off) — the raw branch actually fired",
-      Array.isArray(landArgs) && landArgs[0] === brokerageId && (landArgs[1] as any)?.fromEmail === "pat.buyer@leadfixture.test" && (landArgs[1] as any)?.displayName === "Pat Buyer")
+    check("(e) landRaw was called with THIS brokerage's mailbox owner (wave 86: the whole owner — tenant + provenance) + the BARE sender address (the From header's display name parsed off) — the raw branch actually fired",
+      Array.isArray(landArgs) && (landArgs[0] as any)?.brokerageId === brokerageId && (landArgs[0] as any)?.ownerKind === "brokerage" && (landArgs[1] as any)?.fromEmail === "pat.buyer@leadfixture.test" && (landArgs[1] as any)?.displayName === "Pat Buyer")
     check("(e) the conversation rides into the raw landing (subject, body, message id) — lead intelligence history",
       Array.isArray(landArgs) && (landArgs[1] as any)?.subject === "Interested in buying" && /buy a home/.test((landArgs[1] as any)?.body ?? "") && (landArgs[1] as any)?.messageId === "msg-e")
     check("(e) the lead-created lifecycle_events row was inserted in-memory",
@@ -1090,24 +1107,27 @@ async function testUnknownSenderRoutingFixture() {
       svc._insertedLog.some((e) => e.table === "lifecycle_events" && (e.row as any).metadata?.reason === "raw_landing_failed"), JSON.stringify(result))
   }
 
-  // ── (f) AGENT mailbox + intent → contact_created, via the INJECTED createContact
-  // stand-in (never the real captureContact, by design). ──
-  console.log("\n  ── (f) agent mailbox + intent → contact_created (injected createContact), in-memory ──")
-  {
+  // ── (f) AGENT and TEAM-LEAD mailboxes + intent → the SAME raw landing as the brokerage's (wave 86,
+  // owner: "yes all mailboxes should be configured the same."), via the INJECTED landRaw stand-in. ──
+  console.log("\n  ── (f) agent / team-lead mailbox + intent → landRaw (the brokerage's path), in-memory ──")
+  for (const owner of [agentOwner, { brokerageId, ownerKind: "team_lead", agentId: "fx-lead-agent", userId: "fx-lead-user" } as any]) {
     const svc = makeFakeSvc({ contacts: [], leads: [], listings: [] })
-    let createContactArgs: unknown[] | null = null
+    let landArgs: unknown[] | null = null
     const result = await identifyAndRouteUnknownSender(
-      { mailboxOwner: agentOwner, fromEmail: "relocator@leadfixture.test", subject: "Relocating",
+      { mailboxOwner: owner, fromEmail: `relocator-${owner.ownerKind}@leadfixture.test`, subject: "Relocating",
         body: "Hi, I'm relocating for work and need an agent to help me find a place.", messageId: null },
       {
         classifier: fixedClassifier({ hasRealEstateIntent: true, intentType: "relocation", confidence: 0.9 }),
         svc: svc as any,
-        createContact: (async (...args: unknown[]) => { createContactArgs = args; return "fx-contact-1" }) as any,
+        landRaw: (async (...args: unknown[]) => { landArgs = args; return { leadId: `fx-lead-${owner.ownerKind}`, rawId: "fx-raw-f", pipelineReason: "lead_creation" } }) as any,
       },
     )
-    check("(f) outcome contact_created with the injected contactId", result.outcome === "contact_created" && (result as any).contactId === "fx-contact-1", JSON.stringify(result))
-    check("(f) createContact was called with the AGENT-scoped mailboxOwner (never the brokerage-wide one) — the branch selection reached the right side",
-      Array.isArray(createContactArgs) && (createContactArgs[1] as any)?.ownerKind === "agent" && (createContactArgs[1] as any)?.agentId === "fx-agent-1")
+    check(`(f) ${owner.ownerKind} mailbox → lead_created through landRaw (never contact_created)`,
+      result.outcome === "lead_created" && (result as any).leadId === `fx-lead-${owner.ownerKind}` && !("contactId" in (result as any)), JSON.stringify(result))
+    check(`(f) ${owner.ownerKind} mailbox: landRaw received the WHOLE ${owner.ownerKind}-scoped mailbox owner (tenant + provenance)`,
+      Array.isArray(landArgs) && (landArgs[0] as any)?.ownerKind === owner.ownerKind && (landArgs[0] as any)?.brokerageId === brokerageId)
+    check(`(f) ${owner.ownerKind} mailbox: the lead-identified event names the mailbox owner kind`,
+      svc._insertedLog.some((e) => e.table === "lifecycle_events" && (e.row as any).event_type === "unknown_sender_identified_as_lead" && (e.row as any).metadata?.owner_kind === owner.ownerKind))
   }
 
   // ── (g) TRANSACTIONAL — an offer email matching an in-house listing address,
@@ -1133,7 +1153,7 @@ async function testUnknownSenderRoutingFixture() {
     check("(g) the routing reason names it transactional (not a fabricated 'intent:')", result.reason.startsWith("transactional:"), result.reason)
   }
 
-  check("registry: this section makes ZERO real network/DB calls (fakeSvc + injected classifier/landRaw/createContact only) — every check above ran unconditionally, not gated on an env var",
+  check("registry: this section makes ZERO real network/DB calls (fakeSvc + injected classifier/landRaw only) — every check above ran unconditionally, not gated on an env var",
     true)
 }
 
@@ -1163,8 +1183,8 @@ async function main() {
     "UNKNOWN sender is identified before anything is created — bounce/noreply/vendor mail never " +
     "reaches the model. WAVE 85: a BROKERAGE mailbox's sender lands RAW and goes dedup -> enrich -> " +
     "dedup -> THE lead gate (a lead only once a name + email pass; else raw_held) and the SAME Step 8b " +
-    "hands a promoted lead to the ISA; an AGENT/TEAM-LEAD mailbox " +
-    "creates a CONTACT assigned to that person (never a raw lead); a transactional email " +
+    "hands a promoted lead to the ISA; WAVE 86: an AGENT/TEAM-LEAD mailbox takes the SAME raw " +
+    "path (no contact minted directly; the raw row records whose mailbox it was); a transactional email " +
     "(offer/showing/inspection/escrow/contract) qualifies even with no intent words, via a " +
     "deterministic match against the brokerage's own listings; dedup runs first so an email " +
     "already on file never mints a second row; spam/non-qualifying is dropped and counted; a " +

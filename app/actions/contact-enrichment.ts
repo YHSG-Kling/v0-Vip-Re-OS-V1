@@ -30,12 +30,13 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isCrmContactStaff } from "@/lib/auth/crm-contact-staff"
 import {
   enrichContactRecord,
   runLifeChangeCheck,
   listUnenrichedContacts,
   listContactsDueForLifeChangeCheck,
-  type EnrichmentSource,
+  type EnrichmentTrigger,
 } from "@/lib/enrichment/contact-enrichment-core"
 
 /**
@@ -49,7 +50,7 @@ export async function enrichContact(
   contactId: string,
   options: {
     forceRefresh?: boolean
-    source?: EnrichmentSource
+    trigger?: EnrichmentTrigger
   } = {},
 ): Promise<{ success: boolean; enriched: boolean; error?: string }> {
   const ctx = await getAgentContext()
@@ -60,7 +61,7 @@ export async function enrichContact(
   const result = await enrichContactRecord({
     contactId,
     brokerageId: ctx.brokerageId,
-    source: options.source ?? "manual",
+    trigger: options.trigger ?? "manual",
     forceRefresh: options.forceRefresh,
   })
 
@@ -96,7 +97,7 @@ const ENRICH_BATCH_MAX = 200
  */
 export async function enrichContactsBatch(
   contactIds: string[],
-  options: { source?: EnrichmentSource } = {},
+  options: { trigger?: EnrichmentTrigger } = {},
 ): Promise<{ success: number; failed: number; skipped: number; error?: string }> {
   let success = 0
   let failed = 0
@@ -141,7 +142,7 @@ export async function enrichContactsBatch(
     const result = await enrichContactRecord({
       contactId,
       brokerageId: ctx.brokerageId,
-      source: options.source ?? "import",
+      trigger: options.trigger ?? "import",
     })
     if (result.success) {
       if (result.enriched) success++
@@ -492,7 +493,7 @@ export async function getContactInsights(contactId: string): Promise<{
   // chain so the scope on the query itself stays auditable).
   const ENRICHMENT_COLUMNS =
     "id, enriched_at, enrichment_source, confidence_score, data_source, " +
-    "age_range, gender, marital_status, household_income, home_owner_status, " +
+    "age_range, gender, marital_status, household_income, net_worth_range, credit_score_range, home_owner_status, " +
     "home_value_estimate, length_of_residence, occupation, education_level, " +
     "linkedin_url, facebook_url, twitter_url, instagram_url, life_events, " +
     "last_life_event_detected, public_records, court_records, property_records"
@@ -522,6 +523,16 @@ export async function getContactInsights(contactId: string): Promise<{
         gender: contact.gender,
         marital_status: contact.marital_status,
         household_income: contact.household_income,
+        // Wave 86 (owner verbatim: "add because most audience or info will be used from the contact
+        // card"): net worth and the credit band sit beside income and marital status, as MODELED
+        // estimates (the panel labels them so). Back-office staff only — §5 "contacts, lenders and
+        // vendors see no financials", so a vendor/lender seat that reaches this door gets neither.
+        // The band is display-only: it never feeds outbound copy, eligibility, pricing, steering or
+        // a persona (scripts/enrichment-one-rail-guard.ts Layer 8d, the modeled-credit firewall).
+        ...(isCrmContactStaff(ctx.userType) ? {
+          net_worth_range: contact.net_worth_range,
+          credit_score_range: contact.credit_score_range,
+        } : {}),
         home_owner_status: contact.home_owner_status,
         home_value_estimate: contact.home_value_estimate,
         length_of_residence: contact.length_of_residence,
