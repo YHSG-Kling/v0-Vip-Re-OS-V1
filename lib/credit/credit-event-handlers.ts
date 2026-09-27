@@ -64,13 +64,22 @@ async function contactInTenant(client: any, brokerageId: string, contactId: stri
   return { ok: true }
 }
 
+interface NotificationFields {
+  type: string
+  title: string
+  body: string
+  entity_type: string
+  entity_id: string
+  priority?: "low" | "medium" | "high"
+}
+
 /** One notifications row for the recipient — only when the recipient's own
  *  users.brokerage_id IS the tenant (the value the bell compares against). */
 async function notifyInTenant(
   client: any,
   brokerageId: string,
   userId: string | null | undefined,
-  row: Record<string, unknown>,
+  row: NotificationFields,
   out: CreditEventOutcome,
 ): Promise<void> {
   if (!userId) { out.skipped.push("notification: no recipient on the event"); return }
@@ -80,8 +89,18 @@ async function notifyInTenant(
     out.skipped.push(`notification: recipient ${userId} is not in brokerage ${brokerageId}`)
     return
   }
-  const { data, error } = await client
-    .from("notifications").insert({ ...row, user_id: userId, brokerage_id: brokerageId }).select("id").maybeSingle()
+  // The row is written as an EXPLICIT literal — never `{ ...row, … }` — so the tenant stamp
+  // is provable at the write (scripts/ai-insight-tenant-guard.ts cannot see through a spread).
+  const { data, error } = await client.from("notifications").insert({
+    user_id: userId,
+    brokerage_id: brokerageId,
+    type: row.type,
+    title: row.title,
+    body: row.body,
+    entity_type: row.entity_type,
+    entity_id: row.entity_id,
+    priority: row.priority ?? "medium",
+  }).select("id").maybeSingle()
   if (error || !data) out.skipped.push(`notification refused: ${error?.message ?? "no row returned"}`)
   else out.written.push("notification")
 }

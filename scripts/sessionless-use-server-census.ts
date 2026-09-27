@@ -503,12 +503,9 @@ const LEDGER: Record<string, Ruling> = {
   // every export (control C12 now reads only the member). The hub no longer imports
   // copilot / credit-copilot / journey-tasks / listing-lifecycle / assistant at all,
   // and the listing-appt-prep chain reaches the CMA core, not app/actions/ai-cma.ts.
-  ...group([
-    "app/actions/video-content.ts::approveAndGenerateVideo",
-    "app/actions/video-content.ts::handleHighEngagement",
-    "app/actions/video-content.ts::handleVideoGenerated",
-    "app/actions/video-content.ts::handleVideoPublished",
-  ], { kind: "open", owner: "86B (video)", why: `the same ${HUB} dispatch, onto video-content handlers — video creation/publish paths are lane 86B's.` }),
+  // FIXED in lane 86F3 — the four app/actions/video-content.ts keys (approveAndGenerateVideo,
+  // handleHighEngagement, handleVideoGenerated, handleVideoPublished) LEFT this list: the hub
+  // reaches lib/video/video-event-reactions.ts and the "use server" doors are retired.
   ...group([
     "app/actions/lead-scraping-config.ts::createScrapingJob",
     "app/actions/lead-scraping-config.ts::updateScrapingJob",
@@ -597,10 +594,23 @@ console.log("\n═══ 4. THE HUB (lane 86F) — lib/orchestrator/internal.ts 
   const unledgeredHubDoors = hubUseServer.filter((f) => hubFindingTargets.has(f) && r.findings.some((x) => x.target === f && !LEDGER[key(x)]))
   ok(`every "use server" module the hub still imports is either session-free or fully LEDGERED (${hubUseServer.join(", ") || "none"})`,
     unledgeredHubDoors.length === 0, unledgeredHubDoors.join(", "))
-  // Positive control: the finder above DOES see the one door deliberately left
-  // (lane 86B's video handlers), so "0 unledgered" is not a blind 0.
-  ok("…positive control: the hub's remaining cookie door (app/actions/video-content.ts, lane 86B) IS seen by the finder",
-    hubFindingTargets.has("app/actions/video-content.ts"))
+  // Positive control (lane 86F3 — the last real hub door, video-content, is closed, so the
+  // control can no longer lean on a live finding): a hub-SHAPED fixture — a cron reaching
+  // a plain hub module whose EVENT_HANDLERS inline-import a cookie-gated action — IS a
+  // finding whose path runs through the hub, so "0 unledgered" above is not a blind 0.
+  {
+    const hubFixture = runCensus({
+      files: ["app/api/cron/poll/route.ts", "lib/orchestrator/internal.ts", "app/actions/video-content.ts"],
+      read: (f) => ({
+        "app/api/cron/poll/route.ts": `import { emitEventFromCron } from "@/lib/orchestrator/internal"\nexport async function GET() { return emitEventFromCron({}) }\n`,
+        "lib/orchestrator/internal.ts": `const EVENT_HANDLERS = { "video.published": async (e: any) => (await import("@/app/actions/video-content")).handleVideoPublished(e.payload) }\nexport async function emitEventFromCron(i: any) { return EVENT_HANDLERS["video.published"](i) }\n`,
+        "app/actions/video-content.ts": `"use server"\nimport { createServerClient } from "@/lib/supabase/server"\nexport async function handleVideoPublished(p: any) { const s = await createServerClient(); return s.from("ai_video_projects").update({}).eq("id", p.video_id) }\n`,
+      } as Record<string, string>)[f],
+    })
+    ok("…positive control: a hub-shaped fixture (cron → hub → inline-imported cookie door) IS a finding through the hub",
+      hubFixture.findings.length === 1 && hubFixture.findings[0].path.includes("lib/orchestrator/internal.ts") &&
+        hubFixture.findings[0].exportName === "handleVideoPublished", JSON.stringify(hubFixture.findings.map((f) => f.path)))
+  }
 
   const HUB_CORES = [
     "lib/assistant/smart-suggestion.ts",
@@ -608,6 +618,7 @@ console.log("\n═══ 4. THE HUB (lane 86F) — lib/orchestrator/internal.ts 
     "lib/credit/credit-event-handlers.ts",
     "lib/portal/journey-event-handlers.ts",
     "lib/copilot/seven-day-plan.ts",
+    "lib/video/video-event-reactions.ts",
   ]
   for (const core of HUB_CORES) {
     const raw = existsSync(core) ? readFileSync(core, "utf8") : ""
@@ -630,6 +641,10 @@ console.log("\n═══ 4. THE HUB (lane 86F) — lib/orchestrator/internal.ts 
     ["app/actions/listing-lifecycle.ts", "handleOfferReceived"],
     ["app/actions/listing-lifecycle.ts", "triggerReviewSequence"],
     ["app/actions/assistant.ts", "generateSmartSuggestion"],
+    ["app/actions/video-content.ts", "handleVideoGenerated"],
+    ["app/actions/video-content.ts", "approveAndGenerateVideo"],
+    ["app/actions/video-content.ts", "handleVideoPublished"],
+    ["app/actions/video-content.ts", "handleHighEngagement"],
   ]
   const exportedDoor = (fn: string) => new RegExp(`export\\s+async\\s+function\\s+${fn}\\b`)
   // Positive control: the absence test below still recognises a live door, and a

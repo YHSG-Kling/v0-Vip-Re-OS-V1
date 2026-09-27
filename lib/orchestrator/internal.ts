@@ -51,6 +51,12 @@ import {
   reactToJourneyAllTasksDone,
 } from "@/lib/portal/journey-event-handlers"
 import { writeSevenDayNurturePlan } from "@/lib/copilot/seven-day-plan"
+import {
+  reactToVideoReady,
+  reactToVideoScriptApproved,
+  reactToVideoPublished,
+  reactToVideoHighEngagement,
+} from "@/lib/video/video-event-reactions"
 import { getChainsByTrigger } from "@/lib/workflow-orchestrator/chains"
 import { startRun as engineStartRun } from "@/lib/workflow-orchestrator/engine"
 // ONE "finished reel in an email" block — shared with the pre-listing section
@@ -110,7 +116,7 @@ interface ProcessingResult {
 //     different implementation of the same event (e.g. this file's handleListingLive mints
 //     the tracked QR; lifecycle-event-tasks' listingLiveTasks does not). Running both would
 //     double-fire. Consolidating the two implementations is a separate piece of work in
-//     lib/listing-lifecycle/lifecycle-event-tasks.ts + app/actions/video-content.ts, not something this
+//     lib/listing-lifecycle/lifecycle-event-tasks.ts + lib/video/video-event-reactions.ts, not something this
 //     dispatch can decide.
 //   · lead.engaged → generateAssistantSuggestions. No `page` value can be derived from a
 //     lead.engaged payload without inventing one, and nothing in the repo emits
@@ -141,8 +147,8 @@ interface ProcessingResult {
 //     handler for an event that is never written cannot make it fire.
 //   · The credential blocker people kept naming — `emitEventFromCron` carries a SERVICE
 //     credential and no session, so session-gated handlers refused every unattended
-//     dispatch — is CLOSED (lane 86F, owner ruling "build and fix"). Every registry
-//     entry except lane 86B's four video handlers now reaches a server-only core on the
+//     dispatch — is CLOSED (lane 86F, owner ruling "build and fix"; the four video
+//     handlers in 86F3). Every registry entry now reaches a server-only core on the
 //     service client with the EVENT row's tenant, and this file's own local handlers,
 //     markEventProcessed and logProcessingResults moved off createServerClient() with
 //     them (scripts/sessionless-use-server-census.ts pins the cores in its HUB section).
@@ -184,7 +190,7 @@ async function mustSucceed<T extends { success: boolean; error?: string }>(label
 // read nothing from a cron or webhook dispatch. Their bodies now live in
 // server-only cores (template lib/transactions/dotloop-document-sync.ts) and the
 // wrappers are deleted with tombstones naming these survivors. The four video
-// entries still reach app/actions/video-content.ts — lane 86B owns that file.
+// entries followed in lane 86F3 (lib/video/video-event-reactions.ts).
 const EVENT_HANDLERS: Record<string, EventHandlerInvoker> = {
   // Lead events
   "lead.created": async (e) => mustSucceed("7-day nurture plan", writeSevenDayNurturePlan(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
@@ -212,11 +218,12 @@ const EVENT_HANDLERS: Record<string, EventHandlerInvoker> = {
   "credit.target_reached": async (e) => mustSucceed("credit target reached", reactToCreditTargetReached(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
   "credit.partner_referred": async (e) => mustSucceed("credit partner referral", reactToCreditPartnerReferred(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
 
-  // Video events — lane 86B's (app/actions/video-content.ts), untouched here.
-  "video.generated": async (e) => (await import("@/app/actions/video-content")).handleVideoGenerated(e.payload),
-  "video.script_approved": async (e) => (await import("@/app/actions/video-content")).approveAndGenerateVideo(e.payload),
-  "video.published": async (e) => (await import("@/app/actions/video-content")).handleVideoPublished(e.payload),
-  "video.high_engagement": async (e) => (await import("@/app/actions/video-content")).handleHighEngagement(e.payload),
+  // Video events — lane 86F3: the server-only reactions in lib/video/video-event-reactions.ts
+  // (the "use server" handlers in app/actions/video-content.ts are retired onto them).
+  "video.generated": async (e) => mustSucceed("video ready notification", reactToVideoReady(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
+  "video.script_approved": async (e) => mustSucceed("video script approved", reactToVideoScriptApproved(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
+  "video.published": async (e) => mustSucceed("video published", reactToVideoPublished(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
+  "video.high_engagement": async (e) => mustSucceed("video engagement", reactToVideoHighEngagement(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
 
   // Journey/Portal events — EVENT_TYPES.JOURNEY_* since lane 86F; routed below.
   "journey.task_completed": async (e) => mustSucceed("journey task notification", reactToJourneyTaskCompleted(createServiceClient(), e.brokerage_id, e.payload ?? {})),

@@ -1114,7 +1114,10 @@ const W23_WRITER_FLOORS: Array<{ file: string; table: string; floor: number }> =
   // capability rather than the filename; leaving it here would have demanded a
   // second approver be rebuilt to satisfy a count.
   { file: "app/actions/social-media-automation.ts", table: "notifications", floor: 2 },
-  { file: "app/actions/video-content.ts", table: "notifications", floor: 3 },
+  // MOVED, not lost (lane 86F3): the three video notifications writers left the
+  // retired "use server" handlers for ONE tenant-proven writer (notifyInTenant) in the
+  // server-only reactions core, which all four video reactions call.
+  { file: "lib/video/video-event-reactions.ts", table: "notifications", floor: 1 },
   { file: "app/actions/portal-education.ts", table: "notifications", floor: 1 },
   { file: "app/api/widget/intake/route.ts", table: "notifications", floor: 1 },
   { file: "lib/kernel/onboarding-reminders.ts", table: "notifications", floor: 1 },
@@ -3735,9 +3738,11 @@ function main(): void {
     controlled(
       "a direct notifications insert loses brokerage_id",
       {
-        file: "app/actions/video-content.ts",
-        find: '        brokerage_id: readyTenant.brokerageId,\n        type: "video_ready",',
-        replace: '        type: "video_ready",',
+        // Re-aimed lane 86F3: the video notifications writer moved to the server-only
+        // reactions core (one tenant-proven insert all four reactions call).
+        file: "lib/video/video-event-reactions.ts",
+        find: '    user_id: userId,\n    brokerage_id: brokerageId,\n    type: row.type,',
+        replace: '    user_id: userId,\n    type: row.type,',
       },
       assertWaveTwentyThreeInsertsStampTenant,
     )
@@ -3749,16 +3754,16 @@ function main(): void {
     controlled(
       "notifications: brokerage_id demoted into a NESTED object (present as text, absent as a stamp)",
       {
-        file: "app/actions/video-content.ts",
-        find: '        brokerage_id: publishedTenant.brokerageId,\n        type: "video_published",',
-        replace: '        type: "video_published",',
+        file: "lib/video/video-event-reactions.ts",
+        find: '    user_id: userId,\n    brokerage_id: brokerageId,\n    type: row.type,',
+        replace: '    user_id: userId,\n    type: row.type,\n    meta_stamp: "pending",',
       },
       () => {
-        const p = resolve(ROOT, "app/actions/video-content.ts")
+        const p = resolve(ROOT, "lib/video/video-event-reactions.ts")
         const cur = readFileSync(p, "utf8")
         const nested = cur.replace(
-          '        entity_type: "video",\n        entity_id: video_id,\n      })\n      if (publishedNotifyError) {',
-          '        entity_type: "video",\n        entity_id: { brokerage_id: publishedTenant.brokerageId, id: video_id },\n      })\n      if (publishedNotifyError) {',
+          '    meta_stamp: "pending",',
+          '    entity_ref: { brokerage_id: brokerageId },',
         )
         if (nested === cur) {
           failures.push("notifications nested-stamp control second patch did not apply")
@@ -3939,9 +3944,9 @@ function main(): void {
     //     writers and taught everyone to ignore it.
     {
       const c: Control = {
-        file: "app/actions/video-content.ts",
-        find: "        user_id: user_id,\n        brokerage_id: readyTenant.brokerageId,",
-        replace: "        user_id: agentId,\n        brokerage_id: readyTenant.brokerageId,",
+        file: "lib/video/video-event-reactions.ts",
+        find: "    user_id: userId,\n    brokerage_id: brokerageId,\n    type: row.type,",
+        replace: "    user_id: agentId,\n    brokerage_id: brokerageId,\n    type: row.type,",
       }
       const before = raw(c.file)
       const patched = before.replace(c.find, c.replace)
