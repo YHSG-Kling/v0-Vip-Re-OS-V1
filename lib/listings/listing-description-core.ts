@@ -33,11 +33,10 @@
  * on the same client (a `FairHousing:` line is a hard flag the caller honours).
  * The guardContent grade is kept: on the MLS description (the regulated channel) it files a
  * flagged result to approval_items for a human and is linked to the saved row
- * with attachApprovalSubject. BLIND SPOT, published: guardContent's brand-voice
- * half (lib/kernel/brand-voice.ts applyBrandVoice) still reads on the cookie
- * client, so from a cron it checks no brand rules — its Fair Housing scan is
- * deterministic and runs regardless. Lane 86C's lib/kernel/tenant-config-reads.ts
- * (not at this base) is the door that closes it.
+ * with attachApprovalSubject. Its brand-voice half now reads through 86C's tenant
+ * door (lib/kernel/tenant-config-reads.ts applyTenantBrandVoice) on this service
+ * client (lane 86F2) — before, from a cron, it read as anon and checked no brand
+ * rules; the agent-level voice is keyed on the author's users.id.
  *
  * Server-only, never "use server" — this trusts the brokerageId it is handed.
  */
@@ -159,6 +158,10 @@ IMPORTANT RULES:
     agentId,
     brokerageId,
     contentType: "listing_description",
+    // Brand voice through 86C's tenant door on THIS service client and verified
+    // tenant (lane 86F2) — it read as anon from the cron before.
+    client: svc,
+    actorUserId: actorUserId || undefined,
   }).catch((err) => {
     console.error("[listing-description] guardContent threw — treating as guard failure:", err)
     return { flagged: false, guardFailed: true, violations: [] as string[], notes: [] as string[], content: "", brandVoiceChecked: false, approvalItemId: null }

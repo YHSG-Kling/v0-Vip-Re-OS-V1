@@ -283,15 +283,28 @@ async function main() {
     "lib/voicedrop/orchestrate-voicedrop-send.ts",
     "lib/campaign-sequences/compliance-gate.ts",
     "lib/video/script-compliance.ts",
+    // Lane 86F2: the listing-description core runs from the listing-presentation-prep
+    // cron (builder step 4b) with the builder's verified tenant; it reaches brand voice
+    // through guardContent, which is now a resolver call the finder requires a client on.
+    "lib/listings/listing-description-core.ts",
   ]
   // REVIEWED, deliberately NOT in the corpus (published so the exclusion is visible):
   const REVIEWED_SESSION_ONLY: Record<string, string> = {
     "lib/kernel/communications.ts": "evaluateOutboundEligibility's one caller is sendInboxReply, which builds the COOKIE client itself (session door; RLS pins the tenant)",
     "lib/kernel/helpers.ts": "enforceCompliance has ZERO live callers (only prose names it)",
     "lib/kernel/adapters/compliance.ts": "evaluateKernelOutbound is a pass-through wrapper: it forwards opts to evaluateOutbound; its sessionless caller (campaign-sequences/compliance-gate.ts) is in the corpus",
+    "lib/content-guardian/index.ts": "DUAL-MODE (lane 86F2): guardContent with a `client` goes through applyTenantBrandVoice (asserted below); without one it is its session callers' cookie read (lib/kernel/listings.ts generateListingDescription, cookie client). Its sessionless caller is in the corpus and must pass a client",
   }
   for (const [f, why] of Object.entries(REVIEWED_SESSION_ONLY)) console.log(`    reviewed, not in corpus: ${f} — ${why}`)
   ok("the pass-through wrapper really forwards the client (opts → evaluateOutbound)", /\},\s*opts\)/.test(stripComments(read("lib/kernel/adapters/compliance.ts"))))
+  {
+    const cg = stripComments(read("lib/content-guardian/index.ts"))
+    ok("guardContent routes a supplied client through the tenant door (applyTenantBrandVoice) and keys the agent voice on a USERS id",
+      /client\s*\?\s*await \(await import\("@\/lib\/kernel\/tenant-config-reads"\)\)\.applyTenantBrandVoice\(bvParams, client\)/.test(cg) &&
+        !/actorUserId:\s*agentId/.test(cg))
+    ok("POSITIVE CONTROL — that finder flags the pre-86F2 shape (agents id handed over as the users id, no client)",
+      /actorUserId:\s*agentId/.test(`const bvResult = await applyBrandVoice({ content, actorUserId: agentId })`))
+  }
   /** Each call of a resolver in stripped source, and whether it carries a client or is a door. */
   function bareCalls(src: string, file: string): string[] {
     const code = stripComments(src)
@@ -300,7 +313,9 @@ async function main() {
     for (const m of code.matchAll(/\{\s*(\w+)\s*:\s*(\w+)\s*\}\s*=\s*await\s+import\(/g)) imported.set(m[2], m[1])
     for (const m of code.matchAll(/import\s*\{[^}]*?\b(\w+)\s+as\s+(\w+)/g)) imported.set(m[2], m[1])
     const out: string[] = []
-    const re = /\b(applyBrandVoice|resolveProvider|evaluateOutbound|evaluateKernelOutbound)\s*\(/g
+    // guardContent joined in lane 86F2: it reaches applyBrandVoice, so a sessionless
+    // caller must hand it a client too.
+    const re = /\b(applyBrandVoice|resolveProvider|evaluateOutbound|evaluateKernelOutbound|guardContent)\s*\(/g
     let m: RegExpExecArray | null
     while ((m = re.exec(code))) {
       // Declarations are not calls.
@@ -311,7 +326,9 @@ async function main() {
       const bound = imported.get(m[1])
       const isDoor = bound === "evaluateTenantOutbound" || bound === "applyTenantBrandVoice" || bound === "resolveTenantProvider"
       const localWrapper = m[1] === "resolveProvider" && /function\s+resolveProvider\s*\([^)]*\)\s*\{\s*return\s+resolveProviderDoor\([^)]*\{\s*client:/.test(code)
-      if (!isDoor && !localWrapper && !/\{\s*client\s*:/.test(args)) out.push(`${file}: ${args.slice(0, 60).replace(/\s+/g, " ")}`)
+      // guardContent takes ONE params object, so its client is a key anywhere in it.
+      const guardWithClient = m[1] === "guardContent" && /[{,]\s*client\s*:/.test(args)
+      if (!isDoor && !localWrapper && !guardWithClient && !/\{\s*client\s*:/.test(args)) out.push(`${file}: ${args.slice(0, 60).replace(/\s+/g, " ")}`)
     }
     return out
   }
@@ -320,7 +337,7 @@ async function main() {
   for (const f of CORPUS) {
     ok(`corpus file exists: ${f}`, existsSync(join(process.cwd(), f)))
     const src = read(f)
-    callsSeen += (stripComments(src).match(/\b(applyBrandVoice|resolveProvider|evaluateOutbound|evaluateKernelOutbound|applyTenantBrandVoice|resolveTenantProvider|evaluateTenantOutbound)\s*\(/g) ?? []).length
+    callsSeen += (stripComments(src).match(/\b(applyBrandVoice|resolveProvider|evaluateOutbound|evaluateKernelOutbound|guardContent|applyTenantBrandVoice|resolveTenantProvider|evaluateTenantOutbound)\s*\(/g) ?? []).length
     offenders.push(...bareCalls(src, f))
   }
   console.log(`    denominator: ${CORPUS.length} sessionless files, ${callsSeen} resolver call sites (comments stripped)`)
@@ -328,6 +345,9 @@ async function main() {
   ok("the denominator is non-zero (the finder read real calls)", callsSeen >= CORPUS.length)
   const FIXTURE_BAD = `const v = await applyBrandVoice({ brokerageId, content })\nconst p = await resolveProvider({ providerType: "sms", actorContext })`
   ok("POSITIVE CONTROL — the finder flags both bare calls in a fixture", bareCalls(FIXTURE_BAD, "fixture").length === 2)
+  ok("POSITIVE CONTROL — a guardContent call without a client is flagged, with one it is not (lane 86F2)",
+    bareCalls(`await guardContent({ content, agentId, brokerageId, contentType: "listing_description" })`, "fixture").length === 1 &&
+      bareCalls(`await guardContent({ content, agentId, brokerageId, contentType: "listing_description", client: svc })`, "fixture").length === 0)
   const FIXTURE_TOMB = `// TOMBSTONE: this used to call applyBrandVoice({ brokerageId }) on the cookie client\nconst x = await applyTenantBrandVoice({ brokerageId })`
   ok("POSITIVE CONTROL — a tombstone mentioning a bare call is not a call site", bareCalls(FIXTURE_TOMB, "fixture").length === 0)
 

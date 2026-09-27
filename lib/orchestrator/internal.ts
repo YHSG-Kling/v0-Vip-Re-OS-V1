@@ -121,8 +121,9 @@ interface ProcessingResult {
 //     completeTask (app/actions/journey-tasks.ts) DID emit journey.task_completed — just
 //     without processImmediately, and onto a switch with no case. The members now exist
 //     (EVENT_TYPES.JOURNEY_*), completeTask processes immediately, and the three types are
-//     routed below. stage_completed / all_tasks_done still have no emitter (the portal
-//     records a stage cursor, not a "stage done" fact) — routed so they run when one lands.
+//     routed below. stage_completed / all_tasks_done gained their emitter in lane 86F2:
+//     lib/portal/journey-milestone-events.ts decides, after each recorded completion, whether
+//     it finished its stage / the journey (pure rule: journey-utils detectJourneyMilestones).
 //
 // ─── ASKED AND ANSWERED: the six copilot/assistant "handlers" do NOT belong here ─────
 // app/actions/copilot.ts (handleSuggestionAccepted, handleCoachingSessionBooked,

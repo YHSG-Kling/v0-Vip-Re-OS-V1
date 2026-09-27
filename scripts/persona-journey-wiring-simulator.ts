@@ -371,15 +371,17 @@ const CHECKS: Check[] = [
     id: "jt-no-literal-default-brokerage",
     name: 'the journey event fan-out carries a REAL brokerage, not the literal "default"',
     run: () => {
+      // Lane 86F2: the fan-out goes through lib/portal/journey-milestone-events.ts,
+      // and the tenant is the argument handed to it — the rule is unchanged: the
+      // REAL anchor brokerage, never a literal.
       const body = functionBody(src1(F.journeyTasks), "completeTask")
-      return /brokerage_id\s*:\s*anchor\.brokerageId/.test(body) && !/brokerage_id\s*:\s*["'`]default["'`]/.test(body)
+      return /emitJourneyCompletionEvents\(svc,\s*anchor\.brokerageId/.test(body) &&
+        !/brokerage_id\s*:\s*["'`]default["'`]/.test(body) && !/emitJourneyCompletionEvents\(svc,\s*["'`]/.test(body)
     },
     breaks: {
       file: F.journeyTasks,
-      find: `      brokerage_id: anchor.brokerageId,
-      event_type: "journey.task_completed",`,
-      replace: `      brokerage_id: "default",
-      event_type: "journey.task_completed",`,
+      find: `emitJourneyCompletionEvents(svc, anchor.brokerageId, {`,
+      replace: `emitJourneyCompletionEvents(svc, "default", {`,
     },
   },
 

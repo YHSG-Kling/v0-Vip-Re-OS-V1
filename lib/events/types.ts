@@ -56,10 +56,11 @@ export const EVENT_TYPES = {
   IMAGE_GENERATED: "image.generated",
   AI_SUGGESTION_CREATED: "ai.suggestion_created",
   AI_SUGGESTION_ACTIONED: "ai.suggestion_actioned",
-  // The client-portal journey (lane 86F). journey.task_completed is emitted by
-  // app/actions/journey-tasks.ts completeTask through the DISPATCHING emitter
-  // (emitEvent, processImmediately); the stage / all-done pair are routed so the
-  // day their emitter lands the reaction runs (lib/portal/journey-event-handlers.ts).
+  // The client-portal journey (lanes 86F/86F2). All three are emitted from
+  // app/actions/journey-tasks.ts completeTask through lib/portal/journey-milestone-
+  // events.ts — the service core that inserts AND dispatches (recordLifecycleEvent);
+  // stage / all-done only when that completion is the one that finished them.
+  // Reactions: lib/portal/journey-event-handlers.ts.
   JOURNEY_TASK_COMPLETED: "journey.task_completed",
   JOURNEY_STAGE_COMPLETED: "journey.stage_completed",
   JOURNEY_ALL_TASKS_DONE: "journey.all_tasks_done",

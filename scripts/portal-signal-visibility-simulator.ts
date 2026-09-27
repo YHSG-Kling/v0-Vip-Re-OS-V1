@@ -459,6 +459,7 @@ const READS_NEEDING_A_TENANT_FILTER: Record<string, string> = {
   "lib/intelligence/daily-briefing-generator.ts": "service client — an unbounded read spends its row cap on other tenants' rows and starves this agent's own",
   "lib/kernel/client-story-drafts.ts": "service client — the engagement count feeds a story about how active this buyer was",
   "app/actions/journey-tasks.ts": "service client — reads a contact's completions back for the portal",
+  "lib/portal/journey-milestone-events.ts": "service client (lane 86F2) — reads the contact's completions back to decide whether a completion finished its stage / the journey; pinned to the verified tenant",
 }
 const READS_BOUND_BY_RLS: Record<string, string> = {
   "app/actions/contact-details.ts": "cookie-session client — RLS is the tenant bound, and the caller is already authorized on this contact",

@@ -681,6 +681,45 @@ console.log("\n═══ 5. THE EMITTER (lane 86F) — no sessionless path inser
     /from\("global_settings"\)[\s\S]{0,120}\.eq\("zapier_api_key"/.test(zap) && /recordLifecycleEvent\(svc, tenant\.brokerageId/.test(zap) && !/brokerage_id:\s*payload\.brokerage_id/.test(zap))
 }
 
+console.log("\n═══ 6. THE JOURNEY EMITTERS (lane 86F2) — every routed journey type has an emitter that dispatches ═══")
+{
+  // THE RULE, run (pure — lib/portal/journey-utils.ts detectJourneyMilestones).
+  const { detectJourneyMilestones } = await import("../lib/portal/journey-utils")
+  const STAGES = [
+    { id: "s1", name: "Prep", tasks: [{ id: "a" }, { id: "b" }] },
+    { id: "s2", name: "Search", tasks: [{ id: "c" }] },
+  ]
+  const r1 = detectJourneyMilestones(STAGES, new Set(["s1:a"]), "s1:a", true)
+  ok("J1 a completion that leaves its stage unfinished finishes nothing", r1.stage === null && !r1.allDone)
+  const r2 = detectJourneyMilestones(STAGES, new Set(["s1:a", "s1:b"]), "s1:b", true)
+  ok("J2 POSITIVE CONTROL the completion that finishes a stage IS a stage completion, naming the next stage",
+    r2.stage?.id === "s1" && r2.stage?.nextName === "Search" && !r2.allDone, JSON.stringify(r2))
+  const r3 = detectJourneyMilestones(STAGES, new Set(["s1:a", "s1:b", "s2:c"]), "s2:c", true)
+  ok("J3 POSITIVE CONTROL the last task finishes its stage AND the journey", r3.stage?.id === "s2" && r3.stage?.nextName === null && r3.allDone)
+  const r4 = detectJourneyMilestones(STAGES, new Set(["s1:a", "s1:b", "s2:c"]), "s1:b", false)
+  ok("J4 a RE-SUBMITTED task finishes nothing again (the stage was already done)", r4.stage === null && !r4.allDone)
+  const r5 = detectJourneyMilestones(STAGES, new Set(["s1:a", "s1:b", "s2:c"]), "zz:unknown", true)
+  ok("J5 an unknown task id finishes nothing", r5.stage === null && !r5.allDone)
+
+  // THE WIRING, read (comments stripped).
+  const em = stripComments(existsSync("lib/portal/journey-milestone-events.ts") ? readFileSync("lib/portal/journey-milestone-events.ts", "utf8") : "")
+  ok("the emitter is server-only, writes through the DISPATCHING service core, and emits all three journey types",
+    /^\s*import\s+["']server-only["']/m.test(em) && /recordLifecycleEvent\(svc, brokerageId/.test(em) &&
+      ["JOURNEY_TASK_COMPLETED", "JOURNEY_STAGE_COMPLETED", "JOURNEY_ALL_TASKS_DONE"].every((t) => em.includes(`EVENT_TYPES.${t}`)) &&
+      !COOKIE_CLIENT_SPECIFIER.test(em))
+  ok("…decides from SERVER facts: the contact's persona and every completion, both tenant-pinned",
+    /from\("contacts"\)\.select\("contact_persona"\)[\s\S]{0,80}\.eq\("brokerage_id", brokerageId\)/.test(em) &&
+      /from\("client_portal_activity"\)[\s\S]{0,200}\.eq\("brokerage_id", brokerageId\)/.test(em) && /detectJourneyMilestones\(/.test(em))
+  const jt = stripComments(readFileSync("app/actions/journey-tasks.ts", "utf8"))
+  ok("completeTask (the ONLY journey-completion writer) calls the emitter with the tenant requireContactAccess verified",
+    /emitJourneyCompletionEvents\(svc, anchor\.brokerageId/.test(jt) && !/\bemitEvent\s*\(/.test(jt))
+  // Every routed journey type has an emitter somewhere in runtime code.
+  const hubCases = stripComments(readFileSync(HUB, "utf8"))
+  for (const t of ["JOURNEY_TASK_COMPLETED", "JOURNEY_STAGE_COMPLETED", "JOURNEY_ALL_TASKS_DONE"]) {
+    ok(`EVENT_TYPES.${t} is routed by the hub AND emitted`, hubCases.includes(`case EVENT_TYPES.${t}:`) && em.includes(`EVENT_TYPES.${t}`))
+  }
+}
+
 console.log(`\n${"═".repeat(70)}`)
 console.log(`SESSIONLESS "use server" CENSUS — ${pass} passed, ${fail} failed · ${r.findings.length} findings (${r.findings.filter((f) => LEDGER[key(f)]?.kind === "adjudicated").length} adjudicated, ${r.findings.filter((f) => LEDGER[key(f)]?.kind === "open").length} open, ${newFindings.length} new)`)
 if (fail > 0) {

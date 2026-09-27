@@ -10,7 +10,7 @@
  * Wire into every AI content generation route.
  */
 
-import { applyBrandVoice } from "@/lib/kernel/brand-voice"
+import { applyBrandVoice, type BrandVoiceReadClient } from "@/lib/kernel/brand-voice"
 import { createServiceClient } from "@/lib/supabase/service"
 import { detectFairHousingViolations as detectCanonicalFairHousing } from "@/lib/compliance-rules/fair-housing-patterns"
 
@@ -34,6 +34,22 @@ export interface GuardContentParams {
    * and use `attachApprovalSubject` after it has: see the ordering note below.
    */
   subjectId?: string
+  /**
+   * THE CLIENT FOR THE BRAND-VOICE READS (lane 86F2). Omitted — every session
+   * caller — the cookie client (RLS pins the tenant). A SESSIONLESS caller (a cron
+   * or webhook path, e.g. lib/listings/listing-description-core.ts) passes the
+   * SERVICE client with a brokerageId from its VERIFIED context, and the read goes
+   * through 86C's tenant door (lib/kernel/tenant-config-reads.ts
+   * applyTenantBrandVoice) — before this it read as anon and checked NO brand rules.
+   */
+  client?: BrandVoiceReadClient
+  /**
+   * users.id of the author, for the AGENT-level brand voice scope (the resolver
+   * crosses users → agents inside the tenant). `agentId` above is agents-class
+   * (approval_items.agent_id) and used to be handed to the resolver as the users
+   * id — disjoint id spaces (§3), so the agent's own voice never matched.
+   */
+  actorUserId?: string
 }
 
 export interface GuardContentResult {
@@ -98,23 +114,30 @@ function contentTypeToJourney(ct: ContentType): "buyer" | "seller" {
  * are not the same risk.
  */
 export async function guardContent(params: GuardContentParams): Promise<GuardContentResult> {
-  const { content, agentId, brokerageId, contentType, teamId, subjectId } = params
+  const { content, agentId, brokerageId, contentType, teamId, subjectId, client, actorUserId } = params
   const violations: string[] = []
   const notes: string[] = []
   let brandVoiceChecked = false
 
   // 1. Brand voice check
   try {
-    const bvResult = await applyBrandVoice({
+    const bvParams = {
       content,
       brokerageId,
       teamId,
-      actorUserId: agentId,
+      // users.id only — never the agents.id in `agentId` (see the param note).
+      actorUserId,
       actorRole: "agent",
       journeyType: contentTypeToJourney(contentType),
       persona: "professional",
       messageType: contentType,
-    })
+    }
+    // Sessionless caller → the tenant door on its service client; session → cookie.
+    // Loaded at call time: the door is `server-only` and this module is reachable
+    // from plain-tsx simulators.
+    const bvResult = client
+      ? await (await import("@/lib/kernel/tenant-config-reads")).applyTenantBrandVoice(bvParams, client)
+      : await applyBrandVoice(bvParams)
     if (bvResult.violations?.length) violations.push(...bvResult.violations)
     if (bvResult.notes?.length) notes.push(...bvResult.notes)
     brandVoiceChecked = true

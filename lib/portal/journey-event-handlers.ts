@@ -20,8 +20,9 @@
  *      handed to the orchestrator in the first place.
  * All three are closed in lane 86F: EVENT_TYPES gains JOURNEY_TASK_COMPLETED /
  * JOURNEY_STAGE_COMPLETED / JOURNEY_ALL_TASKS_DONE (lib/events/types.ts), the
- * switch routes them through the registry, completeTask processes its event
- * immediately, and the bodies live HERE.
+ * switch routes them through the registry, and the bodies live HERE. Lane 86F2
+ * built the emitter for all three (lib/portal/journey-milestone-events.ts, called
+ * by completeTask after it records a completion).
  *
  * THE SHAPE (template lib/transactions/dotloop-document-sync.ts): server-only,
  * service client, the tenant is the EVENT row's brokerage_id (emitEvent stamps

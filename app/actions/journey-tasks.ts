@@ -3,7 +3,9 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireContactAccess } from "@/lib/portal/require-contact-access"
 import { revalidatePath } from "next/cache"
-import { emitEvent } from "./orchestrator"
+// The journey's task / stage / whole-journey events (lane 86F2): decided and
+// emitted through the service core with the tenant requireContactAccess verified.
+import { emitJourneyCompletionEvents } from "@/lib/portal/journey-milestone-events"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE CLIENT-PORTAL JOURNEY TASK RAIL.
@@ -46,7 +48,7 @@ export type JourneyTaskResult =
 
 /** Resolve the contact's tenant anchor + owning agent for the activity stamp. */
 async function resolveContactAnchor(contactId: string): Promise<
-  | { ok: true; brokerageId: string; agentId: string | null; isContactSelf: boolean }
+  | { ok: true; brokerageId: string; agentId: string | null; isContactSelf: boolean; userId: string }
   | { ok: false; error: string }
 > {
   const access = await requireContactAccess(contactId)
@@ -68,6 +70,7 @@ async function resolveContactAnchor(contactId: string): Promise<
     brokerageId: access.brokerageId,
     agentId: (contact.agent_id as string | null) ?? null,
     isContactSelf: access.isContactSelf,
+    userId: access.userId,
   }
 }
 
@@ -169,30 +172,29 @@ export async function completeTask(data: {
   revalidatePath(`/portal/${data.contactId}`)
   revalidatePath(`/portal/${data.contactId}/journey`)
 
-  // Emit workflow event for task completion. The brokerage is the REAL one —
-  // the literal "default" that used to sit here matches no brokerages.id, so
-  // every subscriber that scoped by tenant dropped the event on the floor.
+  // THE JOURNEY EVENTS (lane 86F2). journey.task_completed always; and, when THIS
+  // completion is the one that finished its stage / the whole journey,
+  // journey.stage_completed / journey.all_tasks_done — decided server-side from the
+  // contact's own persona and every recorded completion. Emitted through the
+  // service core (insert + dispatch) with the tenant requireContactAccess verified:
+  // emitEvent (users.brokerage_id of the session) cannot speak for a CLIENT in their
+  // own portal, and a refused insert there dispatched nothing.
   try {
-    await emitEvent({
-      brokerage_id: anchor.brokerageId,
-      event_type: "journey.task_completed",
-      payload: {
-        contact_id: data.contactId,
-        transaction_id: data.transactionId,
-        task_id: data.taskId,
-        task_name: data.taskName,
-        stage_id: data.stageId,
-        stage_name: data.stageName,
-        task_type: data.taskType,
-        form_data: data.formData,
-      },
-      source: "ui",
-    // PROCESS NOW (lane 86F). Without this the row landed and nothing ever handed
-    // it to the orchestrator — the agent's "client completed" bell could not ring.
-    }, true)
+    const events = await emitJourneyCompletionEvents(svc, anchor.brokerageId, {
+      contactId: data.contactId,
+      actorUserId: anchor.userId,
+      taskId: data.taskId,
+      taskName: data.taskName,
+      stageId: data.stageId ?? null,
+      stageName: data.stageName ?? null,
+      transactionId: data.transactionId ?? null,
+      taskType: data.taskType ?? null,
+      formData: data.formData ?? null,
+    })
+    if (events.errors.length > 0) console.error("[journey-tasks] journey events not all emitted:", events.errors.join(" | "))
   } catch (eventError) {
     // The task IS recorded; a failed fan-out must not un-record it.
-    console.error("[journey-tasks] Error emitting task completion event:", eventError)
+    console.error("[journey-tasks] Error emitting journey events:", eventError)
   }
 
   return { success: true, recorded: "client_portal_activity", stageRecorded }
