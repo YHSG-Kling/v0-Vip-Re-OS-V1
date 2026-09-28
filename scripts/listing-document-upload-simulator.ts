@@ -198,7 +198,8 @@ console.log("\n── the gate runs on the path the uploads actually take ──
   check("it records the pass event through the sessionless lifecycle-event core (never the session-gated action, never startRun)",
     /recordLifecycleEvent\(supabase, params\.brokerageId,/.test(GATE) && !/triggerChainsForEvent/.test(GATE) && !/startRun\(/.test(GATE))
   check("…deduped on the document for good, so a re-scan reuses the event (and its run)",
-    /dedupe_key:\s*`\$\{eventType\}:\$\{params\.documentId\}`/.test(GATE) && /dedupeWindowHours:\s*null/.test(GATE) &&
+    // the key is the event name + the document id however the name is spelled (a const or the literal)
+    /dedupe_key:\s*`(?:\$\{eventType\}|compliance\.listing_agreement_passed):\$\{params\.documentId\}`/.test(GATE) && /dedupeWindowHours:\s*null/.test(GATE) &&
     !/triggerEventId:\s*params\.documentId/.test(GATE))
   check("[control] the key finder catches the retired document-id run key",
     /triggerEventId:\s*params\.documentId/.test("await startRun({ triggerEventId: params.documentId })"))
