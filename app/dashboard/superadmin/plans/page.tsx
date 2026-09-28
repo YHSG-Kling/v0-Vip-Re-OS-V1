@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
-import { listPlanTiersAction, listAIOverageTermsAction } from "@/app/actions/superadmin/plan-catalog"
+import { listPlanTiersAction, listAIOverageTermsAction, listOverageTermsChangeLogAction } from "@/app/actions/superadmin/plan-catalog"
 import { PlanCatalogManager } from "./plan-catalog-manager"
 import { AIOverageTermsCard } from "./ai-overage-terms-card"
 
@@ -15,9 +15,10 @@ export default async function SuperadminPlansPage() {
 
   const res = await listPlanTiersAction()
   const tiers = res.ok ? res.tiers : []
-  // AI overage terms (m479) — administered beside the tier prices, read
-  // through the same superadmin action lane (never a raw table read here).
-  const overage = await listAIOverageTermsAction()
+  // Overage terms (m479 AI, m666 video, wave 87C Stripe metered price) —
+  // administered beside the tier prices, read through the same superadmin
+  // action lane (never a raw table read here), with the audited change log.
+  const [overage, changeLog] = await Promise.all([listAIOverageTermsAction(), listOverageTermsChangeLogAction()])
   const overageTerms = overage.ok ? overage.terms : []
 
   return (
@@ -32,7 +33,8 @@ export default async function SuperadminPlansPage() {
       {!res.ok && <div className="rounded border p-4 text-sm text-red-600">Failed to load tiers: {res.error}</div>}
       <PlanCatalogManager initialTiers={tiers} />
       {!overage.ok && <div className="rounded border p-4 text-sm text-red-600">Failed to load AI overage terms: {overage.error}</div>}
-      <AIOverageTermsCard initialTerms={overageTerms} />
+      {!changeLog.ok && <div className="rounded border p-4 text-sm text-red-600">Failed to load the overage change log: {changeLog.error}</div>}
+      <AIOverageTermsCard initialTerms={overageTerms} initialLog={changeLog.ok ? changeLog.rows : []} />
     </div>
   )
 }

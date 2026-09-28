@@ -17,14 +17,14 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { CheckCircle2, Loader2, User, Briefcase, Building2, MapPin, Tag, Sparkles, AlertTriangle } from "lucide-react"
 import { signupBrokerageAction, type CanonicalTier, type SignupBrokerageResult } from "@/app/actions/auth/signup-brokerage"
-import { formatTierPrice, type PublicTier } from "@/lib/platform/public-tiers"
+import { formatTierPrice, tierPriceLabel, type PublicTier } from "@/lib/platform/public-tiers"
 import { recordTosAcceptanceAction, getCurrentTosVersionAction } from "@/app/actions/public/tos-acceptance"
 import { checkFunnelCouponAction } from "./actions"
 // Lane 79D — the seat band is lane 79A's ONE derivation (client-reachable pure
 // module); the form never restates a seat number. The routing rule itself
 // (sales-assisted vs self-serve) runs SERVER-SIDE in signupBrokerageAction
 // (lib/platform/subscriber-door.ts) — this file only previews it.
-import { tierForSeatCount, TIER_SEAT_BANDS } from "@/lib/billing/plan-catalog"
+import { tierForSeatCount, TIER_SEAT_BANDS, isCustomPricedTier } from "@/lib/billing/plan-catalog"
 
 /** The band line beside a tier card — derived from TIER_SEAT_BANDS, never a literal. */
 function seatBandLine(tierName: string): string {
@@ -76,7 +76,7 @@ export function TrialFunnelForm({ tiers = [], funnelSnapshots = {}, initialTier 
   const seatsNumber = Number(producerSeats)
   const fittedTier = producerSeats.trim() && Number.isFinite(seatsNumber) && seatsNumber > 0 ? tierForSeatCount(seatsNumber) : null
   const fittedPublicTier = fittedTier ? tiers.find((t) => t.tierName === fittedTier) ?? null : null
-  const salesAssisted = tier === "multi_location" || customPricing
+  const salesAssisted = isCustomPricedTier(tier) || customPricing
 
   const [couponInput, setCouponInput] = useState("")
   const [coupon, setCoupon] = useState<CouponState>({ status: "idle" })
@@ -270,8 +270,8 @@ export function TrialFunnelForm({ tiers = [], funnelSnapshots = {}, initialTier 
                   <CardHeader className="pb-3">
                     <CardTitle className="text-base flex items-center gap-1.5"><Icon className="h-4 w-4 text-muted-foreground" />{t.displayName}</CardTitle>
                     <div className="flex items-baseline gap-1">
-                      <span className="text-2xl font-bold">{formatTierPrice(t.monthlyCents)}</span>
-                      <span className="text-xs text-muted-foreground">/ month</span>
+                      <span className="text-2xl font-bold">{tierPriceLabel(t)}</span>
+                      {!t.customPriced && <span className="text-xs text-muted-foreground">/ month</span>}
                     </div>
                     {t.setupCents > 0 ? (
                       <p className="text-[11px] text-muted-foreground">+ {formatTierPrice(t.setupCents)} one-time setup</p>

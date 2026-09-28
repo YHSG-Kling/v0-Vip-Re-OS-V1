@@ -23,6 +23,7 @@ import {
 import type { SaveOffer } from "@/lib/platform/save-offer"
 import { formatSeatLimit, formatTenantSeatLimit, normalizeCatalogSeatLimit } from "@/lib/kernel/tier-role-matrix"
 import { UpgradeModal } from "./upgrade-modal"
+import { isCustomPricedTier } from "@/lib/billing/plan-catalog"
 
 interface CurrentPlanCardProps {
   subscription: any
@@ -53,14 +54,21 @@ export function CurrentPlanCard({ subscription, tier, tiers, brokerageId }: Curr
     ? new Date(subscription.current_period_end).toLocaleDateString()
     : "N/A"
 
-  const monthlyPrice = tier?.monthly_price_cents
-    ? `$${(tier.monthly_price_cents / 100).toFixed(2)}`
-    : "N/A"
-  const annualPrice = tier?.annual_price_cents
-    ? `$${(tier.annual_price_cents / 100).toFixed(2)}`
-    : "N/A"
+  // A custom-priced tier (multi-location) bills the QUOTED amount on the
+  // tenant's own Stripe price, never the catalogue placeholder (wave 87C).
+  const customPriced = isCustomPricedTier(tier?.tier_name)
+  const monthlyPrice = customPriced
+    ? "Custom pricing"
+    : tier?.monthly_price_cents
+      ? `$${(tier.monthly_price_cents / 100).toFixed(2)}`
+      : "N/A"
+  const annualPrice = customPriced
+    ? "Custom pricing"
+    : tier?.annual_price_cents
+      ? `$${(tier.annual_price_cents / 100).toFixed(2)}`
+      : "N/A"
 
-  const annualSavings = tier?.monthly_price_cents && tier?.annual_price_cents
+  const annualSavings = !customPriced && tier?.monthly_price_cents && tier?.annual_price_cents
     ? Math.round(100 - (tier.annual_price_cents / (tier.monthly_price_cents * 12)) * 100)
     : 0
 
@@ -166,9 +174,11 @@ export function CurrentPlanCard({ subscription, tier, tiers, brokerageId }: Curr
             <div className="text-right">
               <p className="text-xl font-semibold">
                 {isAnnual ? annualPrice : monthlyPrice}
-                <span className="text-sm font-normal text-muted-foreground">
-                  /{isAnnual ? "year" : "month"}
-                </span>
+                {!customPriced && (
+                  <span className="text-sm font-normal text-muted-foreground">
+                    /{isAnnual ? "year" : "month"}
+                  </span>
+                )}
               </p>
               {annualSavings > 0 && isAnnual && (
                 <p className="text-xs text-green-600">Save {annualSavings}% annually</p>

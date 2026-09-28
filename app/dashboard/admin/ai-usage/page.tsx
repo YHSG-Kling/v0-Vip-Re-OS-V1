@@ -340,7 +340,9 @@ export default async function AIUsagePage() {
                             )}
                           </td>
                           <td className="py-2 text-xs text-muted-foreground font-mono">
-                            {r.stripeInvoiceItemId ?? (r.stripeCustomerId ? `cust ${r.stripeCustomerId}` : "—")}
+                            {r.billingChannel === "meter_event"
+                              ? `metered on subscription · ${r.stripeMeterEventIdentifier ?? "—"}`
+                              : (r.stripeInvoiceItemId ?? (r.stripeCustomerId ? `cust ${r.stripeCustomerId}` : "—"))}
                           </td>
                         </tr>
                       ))}

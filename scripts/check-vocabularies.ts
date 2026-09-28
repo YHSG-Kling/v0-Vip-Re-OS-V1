@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 440 tables, 778 columns.
+ * MEASURED AT GENERATION: 440 tables, 779 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-27
+ * generated: 2026-09-28
  * source: public.live_check_constraints_json()
- * body-sha256: 5c0064f4ae446af35e39cb3a21e7f1368ab4a3bc507dec1ba02d5a600ff3372e
+ * body-sha256: a6724c86c384767522fc02a50f89414ba63cea903e71d7304b449f2a2aee8f4c
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -218,6 +218,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     suggested_tone: ["informational", "professional", "urgent", "warm"],
   },
   ai_overage_invoices: {
+    billing_channel: ["invoice_item", "meter_event"],
     metric: ["ai_tokens_monthly", "video_minutes"],
     status: ["billed", "pending"],
   },

@@ -20,12 +20,32 @@
 // result. A rerun sees the claim and cannot double-bill. If Stripe is not
 // configured, the run refuses loudly and records NOTHING.
 //
+// TWO PROVIDER CHANNELS, ONE WRITETHROUGH (wave 87C, owner: "make video overage
+// rate and option that the platform could charge on stripe billing
+// subscriptions"): when platform staff have PUBLISHED a tier's overage terms to
+// Stripe (a Billing Meter + a metered price on plan_limits, m669 —
+// lib/billing/stripe-overage-meter.ts), the claimed overage is reported as ONE
+// meter event on the tenant's subscription (deterministic identifier per
+// brokerage + metric + period); otherwise — no published price, a stale rate,
+// no Stripe subscription, an annual cycle, or a link that cannot be made — the
+// invoice item below is the fallback. Same claim, same derivation, same ledger
+// row (billing_channel says which).
+//
 // NOT server-only: the pure derivation is simulator-driven; the impure
 // functions lazily import the service client / Stripe (the
 // stripe-subscription-ops precedent).
 
 import { currentUsagePeriod } from "@/lib/usage/period"
 import { isStripeConfigured } from "@/lib/billing/stripe-subscription-ops"
+import {
+  chooseOverageChannel,
+  linkMeteredPriceOnSubscription,
+  overageMeterIdentifier,
+  reportOverageMeterEvent,
+  type MeteredPriceLink,
+  type OverageChannel,
+  type OverageStripeClient,
+} from "@/lib/billing/stripe-overage-meter"
 
 // One metric vocabulary — declared in the PURE plan-catalog module (client-safe)
 export { AI_OVERAGE_METRIC, VIDEO_OVERAGE_METRIC, OVERAGE_BILLED_METRICS, type OverageBilledMetric } from "./plan-catalog"
@@ -108,13 +128,17 @@ export async function getAIOverageStatus(
   at: Date = new Date(),
   /** The billed metric (default the AI tokens; VIDEO_OVERAGE_METRIC for video minutes). */
   metric: OverageBilledMetric = AI_OVERAGE_METRIC,
+  /** @proofSeam — the period-close run passes ITS client; other callers omit it. */
+  svcOverride?: any,
 ): Promise<AIOverageStatus> {
-  const { createServiceClient } = await import("@/lib/supabase/service")
-  let svc: ReturnType<typeof createServiceClient>
-  try {
-    svc = createServiceClient()
-  } catch (e: any) {
-    return { ok: false, error: `service client unavailable: ${e?.message ?? String(e)}` }
+  let svc: any = svcOverride
+  if (!svc) {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    try {
+      svc = createServiceClient()
+    } catch (e: any) {
+      return { ok: false, error: `service client unavailable: ${e?.message ?? String(e)}` }
+    }
   }
   const { periodStartIso, periodEndIso } = currentUsagePeriod(at)
 
@@ -153,9 +177,9 @@ export async function getAIOverageStatus(
       .eq("status", "approved")
     if (overridesError) return { ok: false, error: `ai_quota_overrides read refused: ${overridesError.message}` }
     const periodStartMs = Date.parse(periodStartIso)
-    overrideTokens = (overrides ?? [])
-      .filter(r => !r.effective_until || Date.parse(r.effective_until as string) > periodStartMs)
-      .reduce((sum, r) => sum + Number(r.extra_tokens ?? 0), 0)
+    overrideTokens = ((overrides ?? []) as Array<{ extra_tokens: number | null; effective_until: string | null }>)
+      .filter(r => !r.effective_until || Date.parse(r.effective_until) > periodStartMs)
+      .reduce((sum: number, r) => sum + Number(r.extra_tokens ?? 0), 0)
   }
 
   // 4. Usage — the ONE canon. Reader keys on period_start alone (m474).
@@ -189,6 +213,39 @@ export interface OverageBillingOutcome {
   amountCents?: number
   overageTokens?: number
   stripeInvoiceItemId?: string
+  /** Wave 87C — how the overage reached Stripe: a meter event on the tenant's
+   *  subscription (the tier's published metered price) or the invoice-item
+   *  fallback; channelReason says why that channel was used. */
+  channel?: OverageChannel
+  channelReason?: string
+  stripeMeterEventIdentifier?: string
+}
+
+/** @proofSeam — production callers never pass these; the proof injects an
+ *  in-memory client and a Stripe stub so the writethrough runs end to end. */
+export interface OverageBillingDeps {
+  svc?: any
+  stripe?: OverageStripeClient & { invoiceItems: { create(params: any): Promise<{ id: string }> } }
+}
+
+/**
+ * The tier's published Stripe metered price for this metric (plan_limits, m669).
+ * A refused read (e.g. m669 not applied yet) is REPORTED — the caller falls back
+ * to the invoice item, it never guesses a link.
+ */
+async function readMeteredLink(svc: any, planTier: string, metric: OverageBilledMetric): Promise<{ link: MeteredPriceLink | null; error: string | null }> {
+  const { data, error } = await svc
+    .from("plan_limits")
+    .select("stripe_meter_id, stripe_metered_price_id, stripe_metered_rate_cents_per_1k")
+    .eq("plan_tier", planTier)
+    .eq("metric", metric)
+    .maybeSingle()
+  if (error) return { link: null, error: error.message }
+  const meterId = (data?.stripe_meter_id as string | null) ?? null
+  const priceId = (data?.stripe_metered_price_id as string | null) ?? null
+  const rate = data?.stripe_metered_rate_cents_per_1k
+  if (!meterId || !priceId || rate == null) return { link: null, error: null }
+  return { link: { meterId, priceId, rateCentsPer1k: Number(rate) }, error: null }
 }
 
 export type OverageBillingRun =
@@ -216,9 +273,10 @@ export type OverageBillingRun =
  * REFUSES LOUDLY when Stripe is not configured — records nothing: a billed
  * marker without a provider result must be unrepresentable.
  */
-export async function runAIOverageBilling(opts?: { now?: Date; metric?: OverageBilledMetric }): Promise<OverageBillingRun> {
+export async function runAIOverageBilling(opts?: { now?: Date; metric?: OverageBilledMetric; deps?: OverageBillingDeps }): Promise<OverageBillingRun> {
   const metric: OverageBilledMetric = opts?.metric ?? AI_OVERAGE_METRIC
-  if (!isStripeConfigured()) {
+  const injected = opts?.deps
+  if (!injected?.stripe && !isStripeConfigured()) {
     return { ok: false, error: "REFUSED: STRIPE_SECRET_KEY is not configured — AI overage billing recorded nothing (never mark billed without a provider result)" }
   }
 
@@ -229,12 +287,22 @@ export async function runAIOverageBilling(opts?: { now?: Date; metric?: OverageB
   const prevInstant = new Date(Date.parse(cur.periodStartIso) - 1)
   const { periodStartIso, periodEndIso } = currentUsagePeriod(prevInstant)
 
-  const { createServiceClient } = await import("@/lib/supabase/service")
-  let svc: ReturnType<typeof createServiceClient>
-  try {
-    svc = createServiceClient()
-  } catch (e: any) {
-    return { ok: false, error: `service client unavailable: ${e?.message ?? String(e)}` }
+  let svc: any = injected?.svc
+  if (!svc) {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    try {
+      svc = createServiceClient()
+    } catch (e: any) {
+      return { ok: false, error: `service client unavailable: ${e?.message ?? String(e)}` }
+    }
+  }
+  // The PLATFORM's Stripe client (the platform is the payee — STRIPE_MONEY_PATHS
+  // tenant_saas_subscription), resolved once and lazily: the unconfigured path
+  // above never loads it.
+  let stripeClient: OverageBillingDeps["stripe"] | null = injected?.stripe ?? null
+  const platformStripe = async (): Promise<NonNullable<OverageBillingDeps["stripe"]>> => {
+    if (!stripeClient) stripeClient = (await import("@/lib/stripe")).stripe as unknown as NonNullable<OverageBillingDeps["stripe"]>
+    return stripeClient
   }
 
   // Candidates: only tenants that actually metered AI tokens in the period.
@@ -254,7 +322,7 @@ export async function runAIOverageBilling(opts?: { now?: Date; metric?: OverageB
     const brokerageId = row.brokerage_id as string
     if (!brokerageId) continue
 
-    const status = await getAIOverageStatus(brokerageId, prevInstant, metric)
+    const status = await getAIOverageStatus(brokerageId, prevInstant, metric, svc)
     if (!status.ok) { push({ brokerageId, status: "refused", reason: status.error }); continue }
     if (status.overageTokens <= 0) { push({ brokerageId, status: "skipped", reason: "no_overage" }); continue }
     if (!status.overageAllowed) {
@@ -295,6 +363,18 @@ export async function runAIOverageBilling(opts?: { now?: Date; metric?: OverageB
     const customerId = (sub?.stripe_customer_id as string | null) ?? null
     if (!customerId) { push({ brokerageId, status: "skipped", reason: "no_stripe_customer", overageTokens: status.overageTokens, amountCents: status.overageAmountCents }); continue }
 
+    // CHANNEL (wave 87C): a tier whose overage terms are published to Stripe as
+    // a metered price bills as a METER EVENT on the tenant's subscription;
+    // anything short of that falls back to the invoice item below. Decided
+    // from the DB only — no Stripe call happens before the claim.
+    const linkRead = await readMeteredLink(svc, status.planTier, metric)
+    let decision = chooseOverageChannel({
+      link: linkRead.link,
+      linkReadError: linkRead.error,
+      currentRateCentsPer1k: status.overageRateCents,
+      stripeSubscriptionId: (sub?.stripe_subscription_id as string | null) ?? null,
+    })
+
     // CLAIM the idempotency row BEFORE calling Stripe. A 23505 means a
     // concurrent run holds the claim — stand down.
     const { data: claim, error: claimError } = await svc
@@ -320,11 +400,54 @@ export async function runAIOverageBilling(opts?: { now?: Date; metric?: OverageB
       continue
     }
 
-    // PROVIDER: one invoice item on the subscription customer — it lands on
-    // the next subscription invoice.
+    // PROVIDER (a): the METER EVENT on the tenant's subscription. The metered
+    // item is linked first (idempotent — added only when missing, a stale price
+    // on the same meter removed so one period can never be metered twice); a
+    // link that cannot be made falls back to the invoice item BEFORE any usage
+    // is reported. The identifier is deterministic per brokerage + metric +
+    // period, so a rerun after an ambiguous failure re-sends the SAME event.
+    if (decision.channel === "meter_event" && linkRead.link) {
+      const stripe = await platformStripe()
+      const linked = await linkMeteredPriceOnSubscription(stripe, sub!.stripe_subscription_id as string, linkRead.link)
+      if (!linked.ok) {
+        decision = { channel: "invoice_item", reason: `metered_link_failed: ${linked.reason}` }
+      } else {
+        const identifier = overageMeterIdentifier(brokerageId, metric, periodStartIso)
+        const reported = await reportOverageMeterEvent(stripe, {
+          metric, stripeCustomerId: customerId, units: status.overageTokens, identifier,
+        })
+        if (!reported.ok) {
+          const { error: releaseError } = await svc
+            .from("ai_overage_invoices")
+            .delete()
+            .eq("id", claim.id)
+            .eq("status", "pending")
+          if (releaseError) {
+            push({ brokerageId, status: "needs_reconciliation", reason: `${reported.error} AND claim release refused: ${releaseError.message}`, channel: "meter_event", stripeMeterEventIdentifier: identifier })
+          } else {
+            push({ brokerageId, status: "refused", reason: reported.error, channel: "meter_event" })
+          }
+          continue
+        }
+        const { error: meterMarkError } = await svc
+          .from("ai_overage_invoices")
+          .update({ status: "billed", billing_channel: "meter_event", stripe_meter_event_identifier: reported.identifier, billed_at: new Date().toISOString() })
+          .eq("id", claim.id)
+        if (meterMarkError) {
+          push({ brokerageId, status: "needs_reconciliation", reason: `meter event reported (${reported.identifier}) but marker update refused: ${meterMarkError.message}`, channel: "meter_event", stripeMeterEventIdentifier: reported.identifier })
+          continue
+        }
+        push({ brokerageId, status: "billed", reason: "meter_event_reported", amountCents: status.overageAmountCents, overageTokens: status.overageTokens, channel: "meter_event", channelReason: decision.reason, stripeMeterEventIdentifier: reported.identifier })
+        continue
+      }
+    }
+
+    // PROVIDER (b): one invoice item on the subscription customer — it lands on
+    // the next subscription invoice. The fallback whenever no metered price is
+    // published for the tier (or it could not be used — decision.reason says why).
     let invoiceItemId: string | null = null
     try {
-      const { stripe } = await import("@/lib/stripe")
+      const stripe = await platformStripe()
       const item = await stripe.invoiceItems.create({
         customer: customerId,
         currency: "usd",
@@ -361,7 +484,7 @@ export async function runAIOverageBilling(opts?: { now?: Date; metric?: OverageB
       push({ brokerageId, status: "needs_reconciliation", reason: `billed at provider (${invoiceItemId}) but marker update refused: ${markError.message}`, stripeInvoiceItemId: invoiceItemId })
       continue
     }
-    push({ brokerageId, status: "billed", reason: "invoice_item_created", amountCents: status.overageAmountCents, overageTokens: status.overageTokens, stripeInvoiceItemId: invoiceItemId })
+    push({ brokerageId, status: "billed", reason: "invoice_item_created", amountCents: status.overageAmountCents, overageTokens: status.overageTokens, stripeInvoiceItemId: invoiceItemId, channel: "invoice_item", channelReason: decision.reason })
   }
 
   return {
@@ -408,6 +531,10 @@ export interface AIOverageInvoiceRow {
   status: string
   stripeCustomerId: string | null
   stripeInvoiceItemId: string | null
+  /** m669 — 'meter_event' (metered line on the tenant's subscription) or 'invoice_item'. */
+  billingChannel: OverageChannel
+  /** m669 — the deterministic meter-event identifier when billed by meter event. */
+  stripeMeterEventIdentifier: string | null
   /** Set only when the provider accepted the invoice item. */
   billedAtIso: string | null
   createdAtIso: string
@@ -454,7 +581,7 @@ export async function getAIOverageBillingHistory(
   const { data, error } = await svc
     .from("ai_overage_invoices")
     .select(
-      "id, period_start, period_end, included_tokens, used_tokens, overage_tokens, overage_rate_cents_per_1k, amount_cents, status, stripe_customer_id, stripe_invoice_item_id, billed_at, created_at",
+      "id, period_start, period_end, included_tokens, used_tokens, overage_tokens, overage_rate_cents_per_1k, amount_cents, status, stripe_customer_id, stripe_invoice_item_id, billing_channel, stripe_meter_event_identifier, billed_at, created_at",
     )
     .eq("brokerage_id", brokerageId)
     .eq("metric", AI_OVERAGE_METRIC)
@@ -474,6 +601,8 @@ export async function getAIOverageBillingHistory(
     status: (r.status as string | null) ?? "pending",
     stripeCustomerId: (r.stripe_customer_id as string | null) ?? null,
     stripeInvoiceItemId: (r.stripe_invoice_item_id as string | null) ?? null,
+    billingChannel: r.billing_channel === "meter_event" ? "meter_event" : "invoice_item",
+    stripeMeterEventIdentifier: (r.stripe_meter_event_identifier as string | null) ?? null,
     billedAtIso: (r.billed_at as string | null) ?? null,
     createdAtIso: r.created_at as string,
   }))

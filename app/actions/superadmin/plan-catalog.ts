@@ -13,8 +13,7 @@ import { headers } from "next/headers"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
-import { validatePlanTierInput, validateAIOverageTermsInput, CANONICAL_TIERS, type PlanTierInput, type AIOverageTermsInput } from "@/lib/billing/plan-catalog"
-import { AI_OVERAGE_METRIC } from "@/lib/billing/ai-overage"
+import { validatePlanTierInput, validateAIOverageTermsInput, CANONICAL_TIERS, OVERAGE_BILLED_METRICS, isOverageBilledMetric, type PlanTierInput, type AIOverageTermsInput } from "@/lib/billing/plan-catalog"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 // Audit — same conventions as the other superadmin billing actions (coupons /
@@ -237,11 +236,14 @@ export async function publishTierToStripeAction(tierId: string): Promise<{ ok: t
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AI OVERAGE TERMS (m479) — administrable exactly like tier pricing.
+// OVERAGE TERMS (m479 AI, m666 video; wave 87C: one mechanism for both, and
+// an optional Stripe Billing metered price per tier) — administrable exactly
+// like tier pricing.
 // Owner ruling (verbatim): "the billing for overage needs to be coded so that
 // we can pass in the cent per limit so the same as how we are handling the
 // subscription tier amount." The per-tier terms (plan_limits.overage_allowed +
-// overage_rate_cents_per_1k on the ai_tokens_monthly rows) are configured HERE,
+// overage_rate_cents_per_1k on the ai_tokens_monthly and video_minutes rows —
+// OVERAGE_BILLED_METRICS) are configured HERE,
 // through the same superadmin gate, the same pure-validator discipline, and the
 // same audit trail as the tier price — never hardcoded, never edited raw.
 // Consumers (lib/ai/fair-use.ts serving, lib/billing/ai-overage.ts billing)
@@ -251,15 +253,25 @@ export async function publishTierToStripeAction(tierId: string): Promise<{ ok: t
 export interface AIOverageTermsRow {
   id: string
   plan_tier: string
+  /** One of OVERAGE_BILLED_METRICS — ai_tokens_monthly (tokens) or video_minutes (minutes). */
   metric: string
-  /** Included monthly tokens for the tier (plan_limits.limit_value; -1 = unlimited). */
+  /** Included monthly units for the tier (plan_limits.limit_value; -1 = unlimited). */
   limit_value: number
   overage_allowed: boolean
-  /** Integer CENTS per 1K tokens — meaningful only when overage_allowed. */
+  /** Integer CENTS per 1K units — meaningful only when overage_allowed. */
   overage_rate_cents_per_1k: number
+  /** m669 — the tier's published Stripe link (null = bills by invoice item). */
+  stripe_meter_id: string | null
+  stripe_metered_price_id: string | null
+  stripe_metered_rate_cents_per_1k: number | null
+  /** false when the m669 columns could not be read — the card says so instead of showing "not published". */
+  stripe_link_readable: boolean
 }
 
-/** The four (canonical tier, ai_tokens_monthly) rows: included limit + overage terms. */
+/** Every (canonical tier, billed metric) row: included limit + overage terms +
+ *  the Stripe metered-price link. The link columns are read SEPARATELY and a
+ *  refusal there (m669 not yet applied) degrades to "unreadable", never breaks
+ *  the terms the platform must still be able to administer. */
 export async function listAIOverageTermsAction(): Promise<{ ok: true; terms: AIOverageTermsRow[] } | { ok: false; error: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
@@ -267,19 +279,40 @@ export async function listAIOverageTermsAction(): Promise<{ ok: true; terms: AIO
   const { data, error } = await svc
     .from("plan_limits")
     .select("id, plan_tier, metric, limit_value, overage_allowed, overage_rate_cents_per_1k")
-    .eq("metric", AI_OVERAGE_METRIC)
+    .in("metric", [...OVERAGE_BILLED_METRICS])
     .in("plan_tier", [...CANONICAL_TIERS])
     .order("limit_value", { ascending: true })
   if (error) return { ok: false, error: error.message }
-  return { ok: true, terms: (data ?? []) as AIOverageTermsRow[] }
+  const { data: links, error: linkError } = await svc
+    .from("plan_limits")
+    .select("id, stripe_meter_id, stripe_metered_price_id, stripe_metered_rate_cents_per_1k")
+    .in("metric", [...OVERAGE_BILLED_METRICS])
+    .in("plan_tier", [...CANONICAL_TIERS])
+  const linkById = new Map<string, any>(((linkError ? [] : links) ?? []).map((l: any) => [l.id as string, l]))
+  const terms: AIOverageTermsRow[] = ((data ?? []) as any[]).map((r) => {
+    const l = linkById.get(r.id)
+    return {
+      id: r.id, plan_tier: r.plan_tier, metric: r.metric,
+      limit_value: Number(r.limit_value), overage_allowed: !!r.overage_allowed,
+      overage_rate_cents_per_1k: Number(r.overage_rate_cents_per_1k ?? 0),
+      stripe_meter_id: l?.stripe_meter_id ?? null,
+      stripe_metered_price_id: l?.stripe_metered_price_id ?? null,
+      stripe_metered_rate_cents_per_1k: l?.stripe_metered_rate_cents_per_1k == null ? null : Number(l.stripe_metered_rate_cents_per_1k),
+      stripe_link_readable: !linkError,
+    }
+  })
+  return { ok: true, terms }
 }
 
 /**
- * Set a tier's AI overage terms. UPDATE-only on the live (tier, ai_tokens_monthly)
- * row — this action can never mint a plan_limits row (a new metric or tier is a
- * migration decision, not a form submit), and the validator refuses any metric
- * other than ai_tokens_monthly, so m479's postcondition (no non-AI metric is
- * overage-enabled) stays true by construction.
+ * Set a tier's overage terms for one billed metric (AI tokens or video
+ * minutes). UPDATE-only on the live (tier, metric) row — this action can never
+ * mint a plan_limits row (a new metric or tier is a migration decision, not a
+ * form submit), and the validator refuses any metric outside
+ * OVERAGE_BILLED_METRICS, so only a billed metric can ever be overage-enabled.
+ * A rate edit does NOT touch Stripe: a published metered price at the old rate
+ * becomes STALE and the period-close run falls back to the invoice item at the
+ * new rate until staff republish (never billed at a rate nobody configured).
  */
 export async function upsertAIOverageTermsAction(input: AIOverageTermsInput): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   const auth = await requireSuperadmin()
@@ -288,6 +321,13 @@ export async function upsertAIOverageTermsAction(input: AIOverageTermsInput): Pr
   if (!v.ok) return { ok: false, error: v.error }
 
   const svc = createServiceClient()
+  const { data: before, error: beforeError } = await svc
+    .from("plan_limits")
+    .select("overage_allowed, overage_rate_cents_per_1k")
+    .eq("plan_tier", v.value.planTier)
+    .eq("metric", v.value.metric)
+    .maybeSingle()
+  if (beforeError) return { ok: false, error: beforeError.message }
   const { data, error } = await svc
     .from("plan_limits")
     .update({
@@ -296,19 +336,86 @@ export async function upsertAIOverageTermsAction(input: AIOverageTermsInput): Pr
       updated_at: new Date().toISOString(),
     })
     .eq("plan_tier", v.value.planTier)
-    .eq("metric", AI_OVERAGE_METRIC)
+    .eq("metric", v.value.metric)
     .select("id")
   if (error) return { ok: false, error: error.message }
   if (!data || data.length === 0) {
-    return { ok: false, error: `no plan_limits row for (${v.value.planTier}, ${AI_OVERAGE_METRIC}) — seed the included limit first; overage terms are never created out of thin air` }
+    return { ok: false, error: `no plan_limits row for (${v.value.planTier}, ${v.value.metric}) — seed the included limit first; overage terms are never created out of thin air` }
   }
   const id = (data[0] as any).id as string
-  await audit(auth.userId, "plan_limits.ai_overage_terms_updated", id, {
+  // THE CHANGE LOG: before → after, so the history reads as a diff.
+  await audit(auth.userId, "plan_limits.overage_terms_updated", id, {
     planTier: v.value.planTier,
-    metric: AI_OVERAGE_METRIC,
+    metric: v.value.metric,
     overageAllowed: v.value.overageAllowed,
     overageRateCentsPer1k: v.value.overageRateCentsPer1k,
+    before: before ? { overageAllowed: !!(before as any).overage_allowed, overageRateCentsPer1k: Number((before as any).overage_rate_cents_per_1k ?? 0) } : null,
   }, "plan_limit")
   revalidatePath("/dashboard/superadmin/plans")
   return { ok: true, id }
+}
+
+/**
+ * PUBLISH a tier's overage terms to Stripe Billing (wave 87C): reuse/create the
+ * metric's Billing Meter, create a monthly metered price at the tier's CURRENT
+ * configured rate, store the link on plan_limits, and attach it to every
+ * Stripe-linked subscription on the tier. From then on the period-close run
+ * reports that tier's overage as meter events on the subscription. Pressing it
+ * again after a rate edit republishes (a new price; the stale one is removed
+ * from each subscription). Refuses — creating nothing — when the terms are off
+ * or Stripe is not configured. An OWNER action: nothing calls it on a schedule.
+ */
+export async function publishOverageMeteredPriceAction(input: { planTier: string; metric: string }): Promise<
+  | { ok: true; priceId: string; meterId: string; linked: number; notLinked: Array<{ brokerageId: string; reason: string }> }
+  | { ok: false; error: string }
+> {
+  const auth = await requireSuperadmin()
+  if (!auth.ok) return auth
+  if (!isOverageBilledMetric(input?.metric)) return { ok: false, error: `'${String(input?.metric)}' is not a billed overage metric` }
+  const { isStripeConfigured } = await import("@/lib/billing/stripe-subscription-ops")
+  if (!isStripeConfigured()) return { ok: false, error: "Stripe is not configured (STRIPE_SECRET_KEY) — nothing was published; overage keeps billing by invoice item" }
+  const svc = createServiceClient()
+  const { stripe } = await import("@/lib/stripe")
+  const { publishOverageMeteredPrice } = await import("@/lib/billing/stripe-overage-meter")
+  const r = await publishOverageMeteredPrice(svc, stripe as any, { planTier: input.planTier, metric: input.metric })
+  if (!r.ok) return { ok: false, error: r.error }
+  const { data: row } = await svc.from("plan_limits").select("id").eq("plan_tier", r.planTier).eq("metric", r.metric).maybeSingle()
+  await audit(auth.userId, "plan_limits.overage_metered_price_published", ((row as any)?.id as string | undefined) ?? null, {
+    planTier: r.planTier, metric: r.metric, meterId: r.meterId, meterCreated: r.meterCreated,
+    priceId: r.priceId, unitAmountDecimalCents: r.unitAmountDecimal, linked: r.linked, notLinked: r.notLinked,
+  }, "plan_limit")
+  revalidatePath("/dashboard/superadmin/plans")
+  return { ok: true, priceId: r.priceId, meterId: r.meterId, linked: r.linked, notLinked: r.notLinked }
+}
+
+export interface OverageTermsChangeRow {
+  id: string
+  action: string
+  actorEmail: string | null
+  details: Record<string, unknown>
+  createdAtIso: string
+}
+
+/** THE AUDITED CHANGE LOG for overage terms and their Stripe publication —
+ *  the reader for the audit rows the two actions above write. */
+export async function listOverageTermsChangeLogAction(limit = 20): Promise<{ ok: true; rows: OverageTermsChangeRow[] } | { ok: false; error: string }> {
+  const auth = await requireSuperadmin()
+  if (!auth.ok) return auth
+  const svc = createServiceClient()
+  const n = Math.max(1, Math.min(100, Math.floor(Number(limit) || 20)))
+  const { data, error } = await svc
+    .from("superadmin_audit_log")
+    .select("id, action, actor_email, details, created_at")
+    .eq("target_type", "plan_limit")
+    .in("action", ["plan_limits.overage_terms_updated", "plan_limits.overage_metered_price_published", "plan_limits.ai_overage_terms_updated"])
+    .order("created_at", { ascending: false })
+    .limit(n)
+  if (error) return { ok: false, error: error.message }
+  return {
+    ok: true,
+    rows: ((data ?? []) as any[]).map((r) => ({
+      id: r.id as string, action: r.action as string, actorEmail: (r.actor_email as string | null) ?? null,
+      details: (r.details ?? {}) as Record<string, unknown>, createdAtIso: r.created_at as string,
+    })),
+  }
 }

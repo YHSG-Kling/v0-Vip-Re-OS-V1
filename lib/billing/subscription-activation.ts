@@ -12,6 +12,8 @@
 // route through ONE brokerage-keyed writer (upsertBrokerageSubscription) so a
 // brokerage can only ever have one live subscription row.
 
+import { customPricingCheckoutRefusal } from "./plan-catalog"
+
 // ── PURE: checkout line items (recurring plan + one-time setup fee) ────────────
 
 export interface CheckoutTier {
@@ -123,7 +125,7 @@ export interface ActivationCheckoutInput {
 
 export type ActivationCheckoutResult =
   | { ok: true; url: string; sessionId: string; setupFeeCents: number; setupFeeWaived: boolean; recurringCents: number }
-  | { ok: false; error: string; notConfigured?: boolean }
+  | { ok: false; error: string; notConfigured?: boolean; customPricing?: boolean }
 
 export async function createActivationCheckout(svc: any, input: ActivationCheckoutInput): Promise<ActivationCheckoutResult> {
   const { data: tier, error: tierErr } = await svc
@@ -133,6 +135,11 @@ export async function createActivationCheckout(svc: any, input: ActivationChecko
     .maybeSingle()
   if (tierErr) return { ok: false, error: `Plan tier read refused: ${tierErr.message}` }
   if (!tier) return { ok: false, error: "Plan tier not found — the activation checkout has no price to charge." }
+  // A CUSTOM-PRICED tier (multi-location) is quoted by a person: its catalogue
+  // amount is a placeholder and is never charged through a self-serve checkout
+  // (wave 87C). Refused BEFORE any Stripe call.
+  const customRefusal = customPricingCheckoutRefusal((tier as { tier_name?: string }).tier_name)
+  if (customRefusal) return { ok: false, error: customRefusal, customPricing: true }
 
   const { data: brokerage, error: bErr } = await svc
     .from("brokerages").select("name, email").eq("id", input.brokerageId).maybeSingle()

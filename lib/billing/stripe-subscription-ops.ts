@@ -51,7 +51,11 @@ export async function stripeSwapPrice(subscriptionId: string | null | undefined,
   try {
     const { stripe } = await import("@/lib/stripe")
     const sub = await stripe.subscriptions.retrieve(subscriptionId)
-    const itemId = (sub as any).items?.data?.[0]?.id
+    // The PLAN line is the first LICENSED item — never a metered overage item
+    // (wave 87C, lib/billing/stripe-overage-meter.ts), which a tier change must
+    // not reprice onto the plan price.
+    const items = ((sub as any).items?.data ?? []) as Array<{ id: string; price?: { recurring?: { usage_type?: string } | null } | string }>
+    const itemId = items.find((it) => typeof it.price !== "object" || (it.price?.recurring?.usage_type ?? "licensed") === "licensed")?.id
     if (!itemId) return { applied: false, skipped: false, error: "subscription has no line item to reprice" }
     await stripe.subscriptions.update(subscriptionId, { items: [{ id: itemId, price: newPriceId }], proration_behavior: "create_prorations" })
     return { applied: true, skipped: false }

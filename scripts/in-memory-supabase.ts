@@ -2,7 +2,7 @@
  * scripts/in-memory-supabase.ts — a small IN-MEMORY supabase-js stand-in for
  * proofs that drive kernel functions end-to-end without a database or the
  * network. Rows live in plain arrays; the builder honours the subset of the
- * query grammar the kernel uses (select / insert / update / eq / neq / in / is
+ * query grammar the kernel uses (select / insert / update / delete / eq / neq / in / is
  * / not / gte / lte / order / limit / maybeSingle / single / then), and it
  * RESOLVES refusals exactly like supabase-js does (CLAUDE.md §3) — a missing
  * table or column comes back as `{ data: null, error }`, never a throw — so a
@@ -17,7 +17,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 export type Row = Record<string, any>
 
-export interface MemWrite { table: string; op: "insert" | "update"; payload: Row; matched: number }
+export interface MemWrite { table: string; op: "insert" | "update" | "delete"; payload: Row; matched: number }
 
 /** The fake, typed as the client the kernel signatures take, plus the proof's window onto its rows. */
 export type MemClient = SupabaseClient<any, any, any> & { tables: Record<string, Row[]>; writes: MemWrite[] }
@@ -47,7 +47,7 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
     const filters: Filter[] = []
     /** Columns named by filters — a missing column in a WHERE is a 42703 too. */
     const filterCols: string[] = []
-    let op: "select" | "insert" | "update" = "select"
+    let op: "select" | "insert" | "update" | "delete" = "select"
     let patch: Row | null = null
     let inserted: Row[] | null = null
     let cols: string[] | null = null
@@ -87,6 +87,13 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
         return { data: selectAfterWrite ? made.map(project) : null, error: null }
       }
       let matched = rows.filter((r) => filters.every((fn) => fn(r)))
+      if (op === "delete") {
+        // Wave 87C (overage claim release): a delete that matches nothing also
+        // RESOLVES with no error, exactly like supabase-js (CLAUDE.md §3).
+        for (const r of matched) rows.splice(rows.indexOf(r), 1)
+        writes.push({ table, op: "delete", payload: {}, matched: matched.length })
+        return { data: selectAfterWrite ? matched.map(project) : null, error: null }
+      }
       if (op === "update") {
         for (const r of matched) Object.assign(r, patch)
         writes.push({ table, op: "update", payload: patch ?? {}, matched: matched.length })
@@ -104,6 +111,7 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
       select(c?: string) { cols = c ? c.split(",").map((s) => s.trim()) : ["*"]; if (op !== "select") selectAfterWrite = true; return b },
       insert(rowOrRows: Row | Row[]) { op = "insert"; inserted = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows]; return b },
       update(p: Row) { op = "update"; patch = p; return b },
+      delete() { op = "delete"; return b },
       eq(col: string, v: unknown) { filterCols.push(col); filters.push((r) => r[col] === v); return b },
       neq(col: string, v: unknown) { filterCols.push(col); filters.push((r) => r[col] !== v); return b },
       in(col: string, vs: string[] | string) { filterCols.push(col); const set = new Set(parseList(vs)); filters.push((r) => set.has(String(r[col]))); return b },

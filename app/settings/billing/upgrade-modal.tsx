@@ -27,6 +27,7 @@ import {
 import { loadStripe } from "@stripe/stripe-js"
 import { startSubscriptionCheckout } from "@/app/actions/billing"
 import { formatSeatLimit, normalizeCatalogSeatLimit } from "@/lib/kernel/tier-role-matrix"
+import { isCustomPricedTier, customPricingDoorPath } from "@/lib/billing/plan-catalog"
 
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!)
 
@@ -54,6 +55,13 @@ export function UpgradeModal({
 
   const handleSelectTier = (tierId: string) => {
     const tierIndex = tiers.findIndex(t => t.id === tierId)
+    // A custom-priced tier (multi-location) is quoted by a person — never a
+    // self-serve checkout at the catalogue placeholder (wave 87C; the server
+    // action refuses it too).
+    if (isCustomPricedTier(tiers[tierIndex]?.tier_name)) {
+      window.location.assign(customPricingDoorPath(tiers[tierIndex].tier_name))
+      return
+    }
     // Only allow upgrades (higher index tiers)
     if (tierIndex > currentTierIndex) {
       setSelectedTierId(tierId)
@@ -149,12 +157,18 @@ export function UpgradeModal({
                   <CardHeader className="text-center pb-2">
                     <CardTitle className="text-lg">{tier.display_name}</CardTitle>
                     <div className="mt-2">
-                      <span className="text-3xl font-bold">
-                        ${(price / 100).toFixed(0)}
-                      </span>
-                      <span className="text-muted-foreground">
-                        /{isAnnual ? "year" : "mo"}
-                      </span>
+                      {isCustomPricedTier(tier.tier_name) ? (
+                        <span className="text-xl font-bold">Custom pricing</span>
+                      ) : (
+                        <>
+                          <span className="text-3xl font-bold">
+                            ${(price / 100).toFixed(0)}
+                          </span>
+                          <span className="text-muted-foreground">
+                            /{isAnnual ? "year" : "mo"}
+                          </span>
+                        </>
+                      )}
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-3">

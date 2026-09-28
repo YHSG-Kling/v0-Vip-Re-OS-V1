@@ -321,6 +321,11 @@ export async function startSubscriptionCheckout(
     .single()
 
   if (tierError || !tier) throw new Error("Tier not found")
+  // A custom-priced tier (multi-location) is quoted by a person — refused
+  // BEFORE any Stripe customer or session is created (wave 87C).
+  const { customPricingCheckoutRefusal } = await import("@/lib/billing/plan-catalog")
+  const customRefusal = customPricingCheckoutRefusal((tier as { tier_name?: string }).tier_name)
+  if (customRefusal) throw new Error(customRefusal)
 
   // Get brokerage info for customer
   const { data: brokerage, error: brokerageError } = await supabase

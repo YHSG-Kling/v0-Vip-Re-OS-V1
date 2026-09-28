@@ -53,6 +53,20 @@ export const VIDEO_OVERAGE_METRIC = "video_minutes" as const
 export const OVERAGE_BILLED_METRICS = [AI_OVERAGE_METRIC, VIDEO_OVERAGE_METRIC] as const
 export type OverageBilledMetric = (typeof OVERAGE_BILLED_METRICS)[number]
 
+/** PURE: is this spelling one of the billed overage metrics? */
+export function isOverageBilledMetric(m: unknown): m is OverageBilledMetric {
+  return typeof m === "string" && (OVERAGE_BILLED_METRICS as readonly string[]).includes(m)
+}
+
+/** What ONE unit of each billed metric is — display copy for the superadmin
+ *  terms card and the Stripe metered-price product name (wave 87C). Keyed by
+ *  the metric vocabulary above, so a new billed metric without a unit is a
+ *  type error rather than a blank label. */
+export const OVERAGE_METRIC_UNIT: Readonly<Record<OverageBilledMetric, { singular: string; plural: string; label: string }>> = Object.freeze({
+  ai_tokens_monthly: { singular: "token", plural: "tokens", label: "AI usage" },
+  video_minutes: { singular: "minute", plural: "minutes", label: "Video" },
+})
+
 export const CANONICAL_TIERS = ["solo_agent", "team", "brokerage", "multi_location"] as const
 export type CanonicalTierName = (typeof CANONICAL_TIERS)[number]
 
@@ -126,6 +140,35 @@ export function seatCountAboveEveryBand(): number {
     if (band !== null && band > top) top = band
   }
   return top + 1
+}
+
+// ── CUSTOM-PRICED TIERS (wave 87C, owner: "multi location tier is custom
+// pricing for seats") ─────────────────────────────────────────────────────────
+// A tier whose seat band is null (TIER_SEAT_BANDS above) is CUSTOM-PRICED: a
+// person quotes it. Derived from the band table — never a second list — so the
+// public price display, the self-serve checkouts and the sales door all agree.
+// Whatever subscription_tiers.monthly_price_cents holds for such a tier is a
+// catalogue placeholder the owner may keep for internal reference; it is never
+// shown as a list price and never charged through a self-serve checkout.
+
+/** PURE: is this tier quoted by a person rather than sold at a list price? */
+export function isCustomPricedTier(tierName: string | null | undefined): boolean {
+  const t = (tierName ?? "").trim()
+  return (CANONICAL_TIERS as readonly string[]).includes(t) && TIER_SEAT_BANDS[t as CanonicalTierName] === null
+}
+
+/** PURE: the door a custom-priced tier's call to action opens — the
+ *  sales-assisted entrance (/get-started with the tier preselected routes to a
+ *  person through lib/platform/subscriber-door.ts planSubscriberEntrance). */
+export function customPricingDoorPath(tierName: string): string {
+  return `/get-started?tier=${encodeURIComponent(tierName)}`
+}
+
+/** PURE: why a self-serve checkout must refuse this tier, or null when it may
+ *  proceed. Every checkout creator asks this BEFORE any Stripe call. */
+export function customPricingCheckoutRefusal(tierName: string | null | undefined): string | null {
+  if (!isCustomPricedTier(tierName)) return null
+  return `The ${String(tierName).replace(/_/g, " ")} plan is custom-priced — a person quotes it, so self-serve checkout is closed for it. Request a quote at ${customPricingDoorPath(String(tierName))}.`
 }
 
 // ── SEAT PACKAGES (wave 79A) ─────────────────────────────────────────────────
@@ -241,27 +284,39 @@ export function comparePlanPriceToStripe(
   return { drifted: false, reason: null, field, dbCents, stripeCents }
 }
 
-// ── AI OVERAGE TERMS (pure) ──────────────────────────────────────────────────
+// ── OVERAGE TERMS (pure) — ONE mechanism for every billed metric ─────────────
 // The m479 overage terms (plan_limits.overage_allowed + overage_rate_cents_per_1k)
 // are PLATFORM-CONFIGURABLE the same way tier pricing is — this is the ONE
 // validator the superadmin upsert action goes through, so malformed terms can
-// never be saved: non-canonical tier, negative / non-integer rate, and — the
-// m479 postcondition doctrine, kept true BY CONSTRUCTION — any metric other
-// than ai_tokens_monthly is REFUSED outright. Rate is integer CENTS per 1K
-// tokens (the same integer-cents discipline as monthly_price_cents).
+// never be saved: non-canonical tier, negative / non-integer rate, and any
+// metric OUTSIDE OVERAGE_BILLED_METRICS is REFUSED outright. Rate is integer
+// CENTS per 1K units (the same integer-cents discipline as monthly_price_cents):
+// tokens for AI, minutes for video.
+//
+// WAVE 87C (owner verbatim 2026-09-28: "make video overage rate and option that
+// the platform could charge on stripe billing subscriptions"). m479 kept the
+// terms AI-only by construction; m666 (APPLIED LIVE, wave 86) then enabled
+// video_minutes overage at 50000 ¢ per 1K minutes on the capped tiers WITHOUT
+// widening this validator — so the video rate lived in a migration and no
+// surface could change it. The metric vocabulary is now OVERAGE_BILLED_METRICS
+// (the same list the period-close writethrough bills, and exactly the values
+// ai_overage_invoices_metric_check admits), so AI and video are administered
+// through one validator, one action and one card. The function keeps its
+// historical name (validateAIOverageTermsInput) because renaming it would move
+// every proof anchored on it without changing what it does.
 
 export interface AIOverageTermsInput {
   planTier: string
   overageAllowed: boolean
-  /** Integer CENTS per 1,000 tokens (m479 column contract). */
+  /** Integer CENTS per 1,000 units of the metric (m479 column contract). */
   overageRateCentsPer1k: number
-  /** Optional; anything other than ai_tokens_monthly is refused. */
+  /** Optional (default ai_tokens_monthly); anything outside OVERAGE_BILLED_METRICS is refused. */
   metric?: string
 }
 
 export interface NormalizedAIOverageTerms {
   planTier: (typeof CANONICAL_TIERS)[number]
-  metric: typeof AI_OVERAGE_METRIC
+  metric: OverageBilledMetric
   overageAllowed: boolean
   overageRateCentsPer1k: number
 }
@@ -270,14 +325,13 @@ export type AIOverageTermsValidation =
   | { ok: true; value: NormalizedAIOverageTerms }
   | { ok: false; error: string }
 
-/** PURE: validate + normalize per-tier AI overage terms. */
+/** PURE: validate + normalize per-tier overage terms for one billed metric. */
 export function validateAIOverageTermsInput(input: AIOverageTermsInput): AIOverageTermsValidation {
-  // Metric: overage exists ONLY for ai_tokens_monthly. No other metric may be
-  // overage-enabled (m479 postcondition), so any other spelling is a refusal —
-  // not a normalization.
+  // Metric: overage exists ONLY for the billed metrics. Any other spelling is a
+  // refusal — not a normalization — so no unbilled metric can be switched on.
   const metric = (input.metric ?? AI_OVERAGE_METRIC).trim()
-  if (metric !== AI_OVERAGE_METRIC) {
-    return { ok: false, error: `overage terms exist only for the '${AI_OVERAGE_METRIC}' metric — no other metric may be overage-enabled (m479)` }
+  if (!isOverageBilledMetric(metric)) {
+    return { ok: false, error: `overage terms exist only for ${OVERAGE_BILLED_METRICS.map((m) => `'${m}'`).join(" and ")} — no other metric may be overage-enabled` }
   }
 
   const planTier = (input.planTier ?? "").trim()
@@ -293,23 +347,23 @@ export function validateAIOverageTermsInput(input: AIOverageTermsInput): AIOvera
   // are refused when malformed, not repaired.
   const rate = input.overageRateCentsPer1k
   if (typeof rate !== "number" || !Number.isFinite(rate) || !Number.isInteger(rate)) {
-    return { ok: false, error: "overage_rate_cents_per_1k must be an integer (cents per 1K tokens)" }
+    return { ok: false, error: `overage_rate_cents_per_1k must be an integer (cents per 1K ${OVERAGE_METRIC_UNIT[metric].plural})` }
   }
   if (rate < 0) {
     return { ok: false, error: "overage_rate_cents_per_1k must be >= 0" }
   }
   // Enabled terms need a real rate: allowed with a 0 rate would SERVE overage
   // that bills nothing (the writethrough skips zero_amount) — free unlimited
-  // AI by accident. Turning overage on is agreeing to a price.
+  // usage by accident. Turning overage on is agreeing to a price.
   if (input.overageAllowed && rate === 0) {
-    return { ok: false, error: "overage_allowed requires a rate > 0 — enabling overage with a 0 rate would serve unlimited AI unbilled" }
+    return { ok: false, error: `overage_allowed requires a rate > 0 — enabling overage with a 0 rate would serve unlimited ${OVERAGE_METRIC_UNIT[metric].label} unbilled` }
   }
 
   return {
     ok: true,
     value: {
       planTier: planTier as (typeof CANONICAL_TIERS)[number],
-      metric: AI_OVERAGE_METRIC,
+      metric,
       overageAllowed: input.overageAllowed,
       overageRateCentsPer1k: rate,
     },

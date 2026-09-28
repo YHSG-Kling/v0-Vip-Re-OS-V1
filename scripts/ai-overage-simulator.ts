@@ -103,7 +103,9 @@ console.log("\n[the reader — ONE usage canon, derived not re-accrued]")
 console.log("\n[the writethrough — idempotent claim, provider-result-or-nothing]")
 {
   const c = code(OVER)
-  check("no Stripe creds → the RUN refuses before touching anything", /if \(!isStripeConfigured\(\)\) \{\s*return \{ ok: false/.test(c))
+  // Wave 87C: the run takes an injected Stripe stub as a @proofSeam, so the
+  // refusal reads "no injected client AND no key" — the rule is unchanged.
+  check("no Stripe creds → the RUN refuses before touching anything", /if \(!injected\?\.stripe && !isStripeConfigured\(\)\) \{\s*return \{ ok: false/.test(c))
   const claimAt  = c.indexOf('from("ai_overage_invoices")\n      .insert(')
   const stripeAt = c.indexOf("stripe.invoiceItems.create(")
   check("the idempotency row is CLAIMED before Stripe is called (insert precedes invoiceItems.create)", claimAt !== -1 && stripeAt !== -1 && claimAt < stripeAt)
@@ -170,7 +172,8 @@ console.log("\n[the admin lane — overage terms administrable like the tier pri
   check("non-integer rate → refused (money is never silently rounded here)", !validateAIOverageTermsInput({ planTier: "team", overageAllowed: true, overageRateCentsPer1k: 2.5 }).ok)
   check("NaN/Infinity rate → refused", !validateAIOverageTermsInput({ planTier: "team", overageAllowed: true, overageRateCentsPer1k: NaN }).ok && !validateAIOverageTermsInput({ planTier: "team", overageAllowed: true, overageRateCentsPer1k: Infinity }).ok)
   check("non-canonical tier → refused", !validateAIOverageTermsInput({ planTier: "enterprise", overageAllowed: true, overageRateCentsPer1k: 2 }).ok)
-  check("any metric other than ai_tokens_monthly → refused (m479 postcondition BY CONSTRUCTION)", !validateAIOverageTermsInput({ planTier: "team", overageAllowed: true, overageRateCentsPer1k: 2, metric: "emails_sent" }).ok)
+  check("any metric outside OVERAGE_BILLED_METRICS → refused (only a billed metric can be overage-enabled)", !validateAIOverageTermsInput({ planTier: "team", overageAllowed: true, overageRateCentsPer1k: 2, metric: "emails_sent" }).ok)
+  check("video_minutes (m666) is administered through the SAME validator (wave 87C)", validateAIOverageTermsInput({ planTier: "team", overageAllowed: true, overageRateCentsPer1k: 50000, metric: "video_minutes" }).ok)
   check("enabled with a 0 rate → refused (never serve unlimited AI unbilled by accident)", !validateAIOverageTermsInput({ planTier: "team", overageAllowed: true, overageRateCentsPer1k: 0 }).ok)
 
   // The action lane — same gate + validator as the tier-price upsert:
@@ -180,11 +183,14 @@ console.log("\n[the admin lane — overage terms administrable like the tier pri
   check("both are behind the SAME superadmin gate as upsertPlanTierAction", /listAIOverageTermsAction[\s\S]{0,200}?requireSuperadmin\(\)/.test(a) && /upsertAIOverageTermsAction[\s\S]{0,200}?requireSuperadmin\(\)/.test(a))
   check("the upsert goes through the pure validator, import-pinned to lib/billing/plan-catalog", /validateAIOverageTermsInput/.test(a) && /from "@\/lib\/billing\/plan-catalog"/.test(blankComments(ACT)))
   check("...and refuses BEFORE any write (validator result gates the update)", /const v = validateAIOverageTermsInput\(input\)\s*\n\s*if \(!v\.ok\) return \{ ok: false, error: v\.error \}/.test(a))
-  check("the metric is pinned to the ONE constant on both read and write (.eq(\"metric\", AI_OVERAGE_METRIC))", (a.match(/\.eq\("metric", AI_OVERAGE_METRIC\)/g) ?? []).length >= 2)
+  // Wave 87C: ONE terms mechanism for every billed metric — the read is pinned
+  // to the OVERAGE_BILLED_METRICS vocabulary and the write to the metric the
+  // validator returned (never the raw input).
+  check("the metric is pinned to the ONE vocabulary on read and to the VALIDATED metric on write", /\.in\("metric", \[\.\.\.OVERAGE_BILLED_METRICS\]\)/.test(a) && (a.match(/\.eq\("metric", v\.value\.metric\)/g) ?? []).length >= 1 && !/\.eq\("metric", input\.metric\)/.test(a))
   check("UPDATE-only: the action can never mint a plan_limits row (no insert/upsert on plan_limits)", !/from\("plan_limits"\)[\s\S]{0,400}?\.(insert|upsert)\(/.test(a))
   check("a missing (tier, metric) row is a REFUSAL, not a silent create", /seed the included limit first/.test(a))
   check("supabase errors are destructured + refusals are refusals in the terms lane", /listAIOverageTermsAction[\s\S]*?\{ data, error \}[\s\S]*?if \(error\) return \{ ok: false, error: error\.message \}/.test(a))
-  check("the terms upsert AUDITS like the tier upsert (superadmin_audit_log via the same helper)", /audit\(auth\.userId, "plan_limits\.ai_overage_terms_updated"/.test(a))
+  check("the terms upsert AUDITS like the tier upsert (superadmin_audit_log via the same helper)", /audit\(auth\.userId, "plan_limits\.overage_terms_updated"/.test(a))
 
   // The surface — the UI reads/writes THROUGH the action, never the table:
   const PLANS = read("app/dashboard/superadmin/plans/page.tsx")

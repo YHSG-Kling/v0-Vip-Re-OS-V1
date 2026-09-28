@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-27
+ * generated: 2026-09-28
  * source: public.live_schema_json()
- * body-sha256: f1cf6ae4f90ea1648cef3d55a1978dda9b07ff1125a1ec891b52d12afb8fe6c8
+ * body-sha256: 0bdf9f919a6a8b20fd6fb89d4c5f377fc976fd73ba7341ff2cedc01e61670e0b
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -100,7 +100,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   ai_isa_settings: ["agent_id", "brokerage_id", "created_at", "elevenlabs_voice_id", "id", "is_active", "owner_type", "require_broker_approval", "settings", "team_id", "updated_at"],
   ai_listing_optimizations: ["brokerage_id", "created_at", "estimated_impact", "generated_at", "id", "optimization_category", "priority", "reasoning", "recommendation", "status", "transaction_id"],
   ai_message_drafts: ["acted_at", "agent_user_id", "brokerage_id", "channel", "confidence_score", "contact_id", "context_summary", "conversation_id", "created_at", "draft_body", "draft_subject", "edit_delta", "final_body", "id", "listing_id", "sent_message_id", "source_message_id", "status", "suggested_tone", "trigger_event"],
-  ai_overage_invoices: ["amount_cents", "billed_at", "brokerage_id", "created_at", "id", "included_tokens", "metric", "overage_rate_cents_per_1k", "overage_tokens", "period_end", "period_start", "status", "stripe_customer_id", "stripe_invoice_item_id", "used_tokens"],
+  ai_overage_invoices: ["amount_cents", "billed_at", "billing_channel", "brokerage_id", "created_at", "id", "included_tokens", "metric", "overage_rate_cents_per_1k", "overage_tokens", "period_end", "period_start", "status", "stripe_customer_id", "stripe_invoice_item_id", "stripe_meter_event_identifier", "used_tokens"],
   ai_predictions: ["actual_outcome", "brokerage_id", "confidence_score", "created_at", "entity_id", "entity_type", "id", "model_version", "outcome_date", "prediction_factors", "prediction_type", "prediction_value", "updated_at"],
   ai_quota_overrides: ["approved_at", "approved_by", "brokerage_id", "created_at", "effective_until", "extra_tokens", "id", "reason", "requested_by", "status"],
   ai_search_citation_observations: ["agent_id", "brokerage_id", "cited_url", "competitors_cited", "id", "observed_at", "observed_on", "outcome", "platform", "project_id", "provider", "public_slug", "query", "team_id"],
@@ -481,7 +481,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   phone_number_events: ["agent_id", "brokerage_id", "cost_usd", "created_at", "event_type", "id", "notes", "phone_number", "source", "twilio_sid"],
   photo_enhancement_jobs: ["agent_id", "brokerage_id", "completed_at", "enhanced_url", "enhancement_type", "error_message", "id", "original_url", "photo_id", "started_at", "status"],
   photo_ordering_rules: ["agent_id", "brokerage_id", "created_at", "id", "is_active", "prioritize_high_quality", "room_sequence", "rule_name", "updated_at"],
-  plan_limits: ["created_at", "id", "limit_value", "metric", "overage_allowed", "overage_rate_cents_per_1k", "plan_tier", "soft_limit_threshold", "updated_at"],
+  plan_limits: ["created_at", "id", "limit_value", "metric", "overage_allowed", "overage_rate_cents_per_1k", "plan_tier", "soft_limit_threshold", "stripe_meter_id", "stripe_metered_price_id", "stripe_metered_rate_cents_per_1k", "updated_at"],
   plan_tasks: ["active", "brokerage_id", "completed", "completed_at", "created_at", "due_date", "id", "last_used", "plan_id", "playbook_name", "steps", "target_persona_ids", "task_description", "trigger_type", "usage_count"],
   platform_affiliates: ["code", "commission_percent", "created_at", "created_by", "duration_months", "email", "id", "name", "notes", "payout_details", "status", "updated_at"],
   platform_config_snapshots: ["captured_by", "created_at", "description", "id", "name", "payload", "source_brokerage_id"],
