@@ -157,14 +157,42 @@ export async function acceptOffer(params: {
 
   if (winnerError) return { success: false, error: winnerError.message }
 
-  // Clear winning flag on all other offers for this listing
-  await supabase
+  // ROLLBACK THAT SAYS WHETHER IT HAPPENED (lane 87E, swallowed-refusal census).
+  // Every revert below used to drop its result and then report "acceptance
+  // rolled back" — a refused revert left the offer reading ACCEPTED with no
+  // transaction behind it while the agent was told it had been undone.
+  const rollbackAcceptance = async (): Promise<string> => {
+    const { error: revertError } = await supabase
+      .from("offers")
+      .update({ is_winning_offer: false, status: "submitted", responded_at: null, updated_at: new Date().toISOString() })
+      .eq("id", offerId)
+      .eq("brokerage_id", brokerageId)
+    const { error: siblingsRevertError } = await supabase
+      .from("offers")
+      .update({ is_winning_offer: false, updated_at: new Date().toISOString() })
+      .eq("listing_id", listingId)
+      .eq("brokerage_id", brokerageId)
+    const refused = [revertError, siblingsRevertError].filter(Boolean).map((e) => e!.message)
+    if (refused.length === 0) return "acceptance rolled back."
+    console.error(`[acceptOffer] ROLLBACK REFUSED for offer ${offerId}:`, refused.join(" | "))
+    return `the rollback was REFUSED (${refused.join(" | ")}) — offer ${offerId} may still read accepted; correct it before re-accepting.`
+  }
+
+  // Clear winning flag on all other offers for this listing. A refusal here would
+  // leave TWO winning offers on one listing, so it is read and the accept undone.
+  const { error: siblingError } = await supabase
     .from("offers")
     // Live column is is_winning_offer; the older winning_offer alias was never deployed.
     .update({ is_winning_offer: false, updated_at: new Date().toISOString() })
     .eq("listing_id", listingId)
     .eq("brokerage_id", brokerageId)
     .neq("id", offerId)
+  if (siblingError) {
+    return {
+      success: false,
+      error: `[acceptOffer] Could not clear the other offers' winning flag (${siblingError.message}) — ${await rollbackAcceptance()}`,
+    }
+  }
 
   // OFFER_ACCEPTED is now emitted once, from the shared chokepoint createTransactionFromOffer (below),
   // which carries the real contract dates (earnest money / inspection / closing) in metadata so the
@@ -197,12 +225,7 @@ export async function acceptOffer(params: {
 
   if (!acceptedOffer) {
     // Revert: clear winning status so offer is not stranded
-    await supabase
-      .from("offers")
-      .update({ is_winning_offer: false, status: "submitted", responded_at: null, updated_at: new Date().toISOString() })
-      .eq("id", offerId)
-      .eq("brokerage_id", brokerageId)
-    return { success: false, error: "[acceptOffer] Could not load offer data — acceptance rolled back." }
+    return { success: false, error: `[acceptOffer] Could not load offer data — ${await rollbackAcceptance()}` }
   }
 
   try {
@@ -236,20 +259,11 @@ export async function acceptOffer(params: {
     // HARD FAIL — revert the offer status so it is not stranded as "accepted"
     // with no corresponding transaction.
     console.error("[acceptOffer] createTransactionFromOffer HARD FAIL — reverting offer:", err)
-    await supabase
-      .from("offers")
-      .update({ is_winning_offer: false, status: "submitted", responded_at: null, updated_at: new Date().toISOString() })
-      .eq("id", offerId)
-      .eq("brokerage_id", brokerageId)
-    // Also clear winning_offer flag on sibling offers we may have cleared
-    await supabase
-      .from("offers")
-      .update({ is_winning_offer: false, updated_at: new Date().toISOString() })
-      .eq("listing_id", listingId)
-      .eq("brokerage_id", brokerageId)
+    // Reverts the winner AND clears the winning flag on every sibling.
+    const rolledBack = await rollbackAcceptance()
     return {
       success: false,
-      error: `[acceptOffer] Transaction creation failed — offer acceptance rolled back. ${err instanceof Error ? err.message : String(err)}`,
+      error: `[acceptOffer] Transaction creation failed — ${rolledBack} ${err instanceof Error ? err.message : String(err)}`,
     }
   }
 
@@ -329,12 +343,18 @@ export async function sendCounterOffer(params: {
 
   if (insertError || !counter) return { success: false, error: insertError?.message ?? "Insert failed" }
 
-  // Mark parent as countered — scoped
-  await supabase
+  // Mark parent as countered — scoped. The counter row already exists, so a
+  // refusal here does not undo the send; it is READ and returned as a warning
+  // instead of leaving the parent reading "submitted" beside its own counter
+  // with nobody told (lane 87E, swallowed-refusal census).
+  const { error: parentStatusError } = await supabase
     .from("offers")
     .update({ status: "countered", updated_at: new Date().toISOString() })
     .eq("id", parentOfferId)
     .eq("brokerage_id", brokerageId)
+  if (parentStatusError) {
+    console.error(`[sendCounterOffer] parent ${parentOfferId} not marked countered:`, parentStatusError.message)
+  }
 
   // Canonical fan-out: lifecycle event + staff notification + buyer/seller
   // portal updates. The counter offer row is the entity.
@@ -353,7 +373,13 @@ export async function sendCounterOffer(params: {
   }).catch(() => {})
 
   revalidatePath(`/dashboard/listings/${listingId}/offers`)
-  return { success: true, counterId: counter.id }
+  return {
+    success: true,
+    counterId: counter.id,
+    warning: parentStatusError
+      ? `The counter was sent, but the original offer still reads its old status: ${parentStatusError.message}`
+      : undefined,
+  }
 }
 
 // ── REJECT OFFER ──────────────────────────────────────────────────────────────
@@ -457,24 +483,38 @@ export async function generateSellerPortalLink(params: {
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
 
   // Write to each active offer's ai_extracted_data merging portal token — scoped
-  const { data: activeOffers } = await supabase
+  const { data: activeOffers, error: activeOffersError } = await supabase
     .from("offers")
     .select("id, ai_extracted_data")
     .eq("listing_id", listingId)
     .eq("brokerage_id", auth.brokerageId)
     .not("status", "in", '("rejected")')
+  if (activeOffersError) return { success: false, error: `Could not read this listing's offers: ${activeOffersError.message}` }
 
+  // The link's token is only good on the offers it was STAMPED onto, so a
+  // refused stamp is a link that opens onto fewer offers than the agent thinks
+  // they are sharing. Each refusal is READ and a partial link is refused rather
+  // than handed out (lane 87E, swallowed-refusal census).
+  const unstamped: string[] = []
   for (const offer of activeOffers ?? []) {
     const merged = {
       ...(offer.ai_extracted_data ?? {}),
       seller_portal_token: token,
       seller_portal_expires_at: expiresAt,
     }
-    await supabase
+    const { error: stampError } = await supabase
       .from("offers")
       .update({ ai_extracted_data: merged, updated_at: new Date().toISOString() })
       .eq("id", offer.id)
       .eq("brokerage_id", auth.brokerageId)
+    if (stampError) unstamped.push(`${offer.id}: ${stampError.message}`)
+  }
+  if (unstamped.length > 0) {
+    console.error("[seller-offers] seller link token not stamped on:", unstamped.join(" | "))
+    return {
+      success: false,
+      error: `The seller link was not created — ${unstamped.length} of ${(activeOffers ?? []).length} offer(s) refused the link token.`,
+    }
   }
 
   const url = `${process.env.NEXT_PUBLIC_APP_URL}/seller/offers/${listingId}?token=${token}`
@@ -895,7 +935,10 @@ RECOMMENDATION: [Accept/Counter/Reject]
 REASONING: [2-3 sentences]`,
   })
 
-  await supabase
+  // Persisted so the offer card and the comparison read the same verdict; a
+  // refusal is READ and reported beside the analysis instead of the card
+  // silently showing the previous one (lane 87E, swallowed-refusal census).
+  const { error: analysisSaveError } = await supabase
     .from("offers")
     .update({
       ai_analysis: {
@@ -910,11 +953,15 @@ REASONING: [2-3 sentences]`,
     })
     .eq("id", offerId)
     .eq("brokerage_id", auth.brokerageId)
+  if (analysisSaveError) {
+    console.error(`[seller-offers] analysis for offer ${offerId} not saved:`, analysisSaveError.message)
+  }
 
   return {
     success:   true,
     analysis,
     net_sheet: { net_to_seller: netToSeller, purchase_price: offer.offer_price },
+    warning: analysisSaveError ? `The analysis was produced but not saved to the offer: ${analysisSaveError.message}` : undefined,
   }
 }
 

@@ -1684,18 +1684,66 @@ for (const t of pairedTables) {
   if (!starRead.has(t)) {
     for (const c of [...w].sort()) if (!r.has(c) && !isPolicyConsumed(t, c)) colWrittenNeverRead.push(`${t}.${c}`)
   }
-  if (!opaqueWrite.has(t)) {
-    const dbWritten = TRIGGER_WRITTEN.get(t)
-    const sqlWritten = SQL_WRITTEN.get(t)
-    const defWritten = DEFAULT_WRITTEN.get(t)
-    for (const c of [...r].sort()) {
-      if (w.has(c) || DB_MANAGED.has(c)) continue
-      if (dbWritten?.has(c)) continue          // a trigger fills this in — see triggerWrittenColumns()
-      if (defWritten?.has(c)) { defaultWritten++; continue }  // a DB DEFAULT computes it — see defaultWrittenColumnsFrom()
-      if (sqlWritten?.has(c)) { sqlSeeded++; continue }  // an applied .sql seeds/backfills it — see sqlWrittenColumns()
-      colReadNeverWritten.push(`${t}.${c}`)
-    }
+  if (!opaqueWrite.has(t)) colReadNeverWritten.push(...readNeverWrittenOn(t, r, w, true))
+}
+
+/**
+ * The 1b rule for ONE paired table — extracted (lane 87E) so the synthetic
+ * end-to-end control below runs the SAME rule the census runs, not a copy of it.
+ * `count` is false for the control, so it cannot move the published exemption
+ * counters.
+ */
+function readNeverWrittenOn(t: string, r: Set<string>, w: Set<string>, count: boolean): string[] {
+  const out: string[] = []
+  const dbWritten = TRIGGER_WRITTEN.get(t)
+  const sqlWritten = SQL_WRITTEN.get(t)
+  const defWritten = DEFAULT_WRITTEN.get(t)
+  for (const c of [...r].sort()) {
+    if (w.has(c) || DB_MANAGED.has(c)) continue
+    if (dbWritten?.has(c)) continue          // a trigger fills this in — see triggerWrittenColumns()
+    if (defWritten?.has(c)) { if (count) defaultWritten++; continue }  // a DB DEFAULT computes it — see defaultWrittenColumnsFrom()
+    if (sqlWritten?.has(c)) { if (count) sqlSeeded++; continue }  // an applied .sql seeds/backfills it — see sqlWrittenColumns()
+    out.push(`${t}.${c}`)
   }
+  return out
+}
+
+// ── C1b — THE 1b RULE, END TO END, ON A FIXTURE (lane 87E) ─────────────────
+// 1b's live canary (writerless-gate-simulator) used to be a REAL writerless
+// read kept alive on purpose — `listing_marketing_services.estimated_cost` —
+// so the class could never reach zero without blinding the proof. Lane 87E
+// built that column's writer (the agent-entered vendor quote). The scanner's
+// sight is now proven HERE instead, on a fixture: a column read by one site and
+// written by none IS reported; the column the same fixture writes is NOT; and
+// once a writer names the column, it leaves 1b.
+{
+  // A LIVE table is required: scanColumns reads only tables in SCHEMA_SNAPSHOT
+  // (a phantom is schema-drift's problem). The real sets are saved and restored,
+  // exactly as the `contacts` probe above does, so the control cannot leave a
+  // mark on the census it is checking. The fixture is the retired canary's shape.
+  const T = "listing_marketing_services"
+  const probeTable = (text: string) => {
+    const saveR = readCols.get(T), saveW = writeCols.get(T), saveO = opaqueWrite.has(T)
+    readCols.delete(T); writeCols.delete(T); opaqueWrite.delete(T)
+    scanColumns("<control>", blankComments(text))
+    const r = new Set(readCols.get(T) ?? []), w = new Set(writeCols.get(T) ?? [])
+    const opaque = opaqueWrite.has(T)
+    readCols.delete(T); writeCols.delete(T); opaqueWrite.delete(T)
+    if (saveR) readCols.set(T, saveR)
+    if (saveW) writeCols.set(T, saveW)
+    if (saveO) opaqueWrite.add(T)
+    return opaque ? [] : readNeverWrittenOn(T, r, w, false)
+  }
+  const fixture =
+    `const { data } = await svc.from("${T}").select("estimated_cost, service_type")\n` +
+    `const { error } = await svc.from("${T}").insert({ service_type: x })\n`
+  const got = probeTable(fixture)
+  control("C1b a column READ and written by NOBODY is reported 1b (fixture, the census's own rule)",
+    got.includes(`${T}.estimated_cost`), got.join(",") || "(none)")
+  control("C1b CONTROL — the column the same fixture WRITES is not reported",
+    !got.includes(`${T}.service_type`), got.join(","))
+  control("C1b CONTROL — once a writer names the column it leaves 1b (a built writer burns the finding)",
+    probeTable(fixture + `await svc.from("${T}").update({ estimated_cost: q }).eq("id", i)\n`).length === 0)
 }
 for (const k of colWrittenNeverRead) add("col-write-no-read", k, colSites.get(k) ?? "?", "column written by code, read by none")
 for (const k of colReadNeverWritten) add("col-read-no-write", k, colSites.get(k) ?? "?", "column read by code, written by none")
@@ -1946,8 +1994,26 @@ const importersOf = new Map<string, Set<string>>()
  * count rather than left implicit.
  */
 const wildcardReachers = new Set<string>()
+/** PURE — does the import-position literal ending at `end` continue with `+ …`? */
+function isConcatenatedSpecifier(code: string, end: number): boolean {
+  return /^\s*\+/.test(code.slice(end, end + 16))
+}
+{
+  const probeConcat = (code: string) => {
+    const lit = stringLiterals(code).find((l) => IMPORT_PREFIX.test(code.slice(Math.max(0, l.start - 64), l.start)))
+    return !!lit && isConcatenatedSpecifier(code, lit.end)
+  }
+  control("C3g a CONCATENATED import specifier (import(\"../\" + x)) is a runtime-built target, not an unresolved in-repo file",
+    probeConcat(`const m = await import("../" + rt.file)`))
+  control("C3g CONTROL — a plain literal specifier is NOT read as concatenated (it must still resolve or count as unresolved)",
+    !probeConcat(`const m = await import("../lib/x")`) && !probeConcat(`import { a } from "./y"\nconst z = 1 + 2`))
+}
 let graphEdges = 0
 let graphUnresolvedInRepo = 0
+/** WHICH in-repo specifiers resolved to no file — a blind-spot count without its
+ *  names cannot be acted on (§2: publish the blind spot beside the number). Lane
+ *  87E: the count went 0 → 1 between census86 and census87 and nothing said where. */
+const graphUnresolvedSites: string[] = []
 
 for (const f of [...productFiles, ...proofFiles]) {
   const code = codeOf.get(f) ?? ""
@@ -1957,9 +2023,18 @@ for (const f of [...productFiles, ...proofFiles]) {
     const before = code.slice(Math.max(0, lit.start - 64), lit.start)
     if (!IMPORT_PREFIX.test(before)) continue
     if (lit.kind === "template" && lit.text.includes("${")) { wildcardReachers.add(f); continue }
+    // A CONCATENATED specifier — `import("../" + rt.file)` — is the same runtime-
+    // built target as a `${…}` template, spelled with `+`. Lane 87E: the census
+    // read the literal half `"../"` as a specifier that resolves to no file, and
+    // the blind-spot count went 0 → 1 (scripts/cron-auth-fail-closed-guard.ts:201)
+    // with nothing to say where. Controls C3g below hold both directions.
+    if (isConcatenatedSpecifier(code, lit.end)) { wildcardReachers.add(f); continue }
     const target = resolveModule(f, lit.text)
     if (target === null) {
-      if (lit.text.startsWith(".") || TS_PATH_ALIASES.some(([p]) => lit.text.startsWith(p))) graphUnresolvedInRepo++
+      if (lit.text.startsWith(".") || TS_PATH_ALIASES.some(([p]) => lit.text.startsWith(p))) {
+        graphUnresolvedInRepo++
+        graphUnresolvedSites.push(`${f} → ${lit.text}`)
+      }
       continue
     }
     di.add(target)
@@ -4208,6 +4283,7 @@ console.log(`               · ${typeStructurallyReachable} reachable through an
 console.log(`               · ${typeInUnaddressedModule} declared in a module NOTHING imports and no framework loads — the structural exclusion does not apply there, because it has no consumer to apply through`)
 console.log(`  C3 graph     · ${graphEdges} resolved import edges over ${TS_PATH_ALIASES.length} tsconfig path alias(es) · ${importersOf.size} modules with at least one importer`)
 console.log(`               · BLIND SPOTS: ${graphUnresolvedInRepo} in-repo specifier(s) that resolve to no file · ${wildcardReachers.size} file(s) whose \`import(\\\`\${…}\\\`)\` target is built at runtime (treated as reaching EVERYTHING, never as evidence against) · a mock registrar (jest.mock/vi.mock) and a specifier assembled outside an import position are not edges this graph can see`)
+for (const site of graphUnresolvedSites.slice(0, 20)) console.log(`                   ↳ unresolved: ${site}`)
 console.log(`  C4 params    · ${paramsExamined} plain params in ${functionsExamined} function declarations · ${paramsUnresolved} unresolved (destructured/defaulted/rest/overload)`)
 console.log(`  C5 dynimport · ${dynImports} sites · ${dynNamedChecked} named-export checks · ${dynExternal} bare package specifiers skipped · ${dynUnresolvedSpecifier} interpolated · ${dynNamedUnresolvable} behind an \`export *\``)
 console.log(`  C6 routes    · ${routeDefs.length} route files with a method export · ${fetchRefs.length} /api/ literals (${fetchRefs.filter((f) => f.isRequest).length} handed to a request)`)

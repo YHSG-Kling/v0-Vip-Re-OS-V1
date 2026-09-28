@@ -47,6 +47,7 @@
 import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { sentinelWrite } from "./write-sentinel"
 import { KernelEvent } from "./events"
 import { requiresAgentRow, requiresOnboardingRow, ownerNeedsTeamRow } from "./tenant-provisioning-spec"
 import { roleDashboardRoute } from "./role-routes"
@@ -201,6 +202,16 @@ export async function createOrRepairUserDomainRecords(
 ): Promise<ProvisioningResult> {
   const service = createServiceClient()
   const created: string[] = []
+  // A domain write that was REFUSED (lane 87E, swallowed-refusal census). Three
+  // of these writes dropped their result and then pushed onto `created`, so a
+  // refused commission profile or onboarding row was reported — and emitted as
+  // USER_DOMAIN_RECORDS_CREATED — as a row that exists. Refusals are logged,
+  // carried on the lifecycle event, and never counted as created.
+  const refused: string[] = []
+  const noteRefusal = (table: string, message: string) => {
+    refused.push(`${table}: ${message}`)
+    console.error(`[kernel/users] ${table} write refused:`, message)
+  }
   let agentId: string | null = null
   let coordinatorId: string | null = null
 
@@ -253,14 +264,17 @@ export async function createOrRepairUserDomainRecords(
 
       if (existingAgent) {
         agentId = existingAgent.id
-        // Ensure brokerage matches (repair case)
-        void service
+        // Ensure brokerage matches (repair case). Awaited and READ: a refused
+        // repair left the agent in the old tenant while this run reported a
+        // repair.
+        const { error: agentRepairError } = await service
           .from("agents")
           .update({ brokerage_id: brokerageId, ...(teamId ? { team_id: teamId } : {}) })
           .eq("id", agentId)
+        if (agentRepairError) noteRefusal("agents", agentRepairError.message)
       } else {
         // Create agents row — only real schema columns
-        const { data: newAgent } = await service
+        const { data: newAgent, error: newAgentError } = await service
           .from("agents")
           .insert({
             user_id:        userId,
@@ -274,6 +288,7 @@ export async function createOrRepairUserDomainRecords(
           })
           .select("id")
           .maybeSingle()
+        if (newAgentError) noteRefusal("agents", newAgentError.message)
 
         if (newAgent?.id) {
           agentId = newAgent.id
@@ -283,7 +298,7 @@ export async function createOrRepairUserDomainRecords(
           // Schema: split_percent (not split_percentage), no updated_at.
           // A solo_agent owner keeps 100% (no brokerage split to take a cut);
           // everyone else defaults to the standard 70/30 until configured.
-          await service
+          const { error: profileError } = await service
             .from("agent_commission_profiles")
             .insert({
               agent_id:     agentId,
@@ -296,7 +311,8 @@ export async function createOrRepairUserDomainRecords(
               created_at:   new Date().toISOString(),
             })
 
-          created.push("agent_commission_profiles")
+          if (profileError) noteRefusal("agent_commission_profiles", profileError.message)
+          else created.push("agent_commission_profiles")
         }
       }
     }
@@ -313,7 +329,7 @@ export async function createOrRepairUserDomainRecords(
         coordinatorId = existingTC.id
       } else {
         const fullName = [params.firstName, params.lastName].filter(Boolean).join(" ") || params.email
-        const { data: newTC } = await service
+        const { data: newTC, error: newTCError } = await service
           .from("transaction_coordinators")
           .insert({
             user_id:          userId,
@@ -325,6 +341,7 @@ export async function createOrRepairUserDomainRecords(
           })
           .select("id")
           .maybeSingle()
+        if (newTCError) noteRefusal("transaction_coordinators", newTCError.message)
 
         if (newTC?.id) {
           coordinatorId = newTC.id
@@ -347,7 +364,7 @@ export async function createOrRepairUserDomainRecords(
         .maybeSingle()
 
       if (!existingOnboarding) {
-        await service
+        const { error: onboardingError } = await service
           .from("agent_onboarding")
           .insert({
             user_id:              userId,
@@ -362,7 +379,8 @@ export async function createOrRepairUserDomainRecords(
             created_at:           new Date().toISOString(),
           })
 
-        created.push("agent_onboarding")
+        if (onboardingError) noteRefusal("agent_onboarding", onboardingError.message)
+        else created.push("agent_onboarding")
       }
     }
 
@@ -414,7 +432,7 @@ export async function createOrRepairUserDomainRecords(
       eventType: created.length > 0
         ? KernelEvent.USER_DOMAIN_RECORDS_CREATED
         : KernelEvent.USER_DOMAIN_RECORDS_REPAIRED,
-      metadata: { domainRecordsCreated: created, agentId, coordinatorId },
+      metadata: { domainRecordsCreated: created, agentId, coordinatorId, ...(refused.length ? { domainRecordsRefused: refused } : {}) },
     })
 
     return { success: true, agentId, coordinatorId, domainRecordsCreated: created }
@@ -567,9 +585,10 @@ export async function assignUserRoleAndEntitlements(
 
     if (userErr) return { success: false, error: userErr.message }
 
-    // Upsert user_role_assignments for RBAC
+    // Upsert user_role_assignments for RBAC. READ (lane 87E): a refused grant left
+    // users.user_type and the RBAC row disagreeing while this reported success.
     if (params.brokerageId) {
-      await service
+      const { error: grantErr } = await service
         .from("user_role_assignments")
         .upsert(
           {
@@ -582,6 +601,9 @@ export async function assignUserRoleAndEntitlements(
           },
           { onConflict: "user_id,role" }
         )
+      if (grantErr) {
+        return { success: false, error: `users.user_type is now ${params.newRole}, but the role grant was refused: ${grantErr.message}` }
+      }
     }
 
     await emitUserProvisionedEvent({
@@ -615,17 +637,26 @@ export async function assignUserToBrokerage(params: {
 
   if (error) return { success: false, error: error.message }
 
-  // Also update agents row if exists
-  await service
+  // Also update agents row if exists, then the role grants. Both READ (lane 87E):
+  // either refused leaves ONE identity in TWO tenants — users in the new
+  // brokerage, the agent row or its grants in the old — while this reported
+  // success. "If exists" stays true: zero matched rows is not a refusal here.
+  const { error: agentMoveErr } = await service
     .from("agents")
     .update({ brokerage_id: params.brokerageId })
     .eq("user_id", params.userId)
+  if (agentMoveErr) {
+    return { success: false, error: `The user moved brokerage, but their agent row was refused: ${agentMoveErr.message}` }
+  }
 
   // Update user_role_assignments
-  await service
+  const { error: grantMoveErr } = await service
     .from("user_role_assignments")
     .update({ brokerage_id: params.brokerageId, updated_at: new Date().toISOString() })
     .eq("user_id", params.userId)
+  if (grantMoveErr) {
+    return { success: false, error: `The user moved brokerage, but their role grants were refused: ${grantMoveErr.message}` }
+  }
 
   await emitUserProvisionedEvent({
     userId:       params.userId,
@@ -656,10 +687,15 @@ export async function assignUserToTeam(params: {
 
   if (error) return { success: false, error: error.message }
 
-  await service
+  // READ (lane 87E): a refused agents.team_id left the team board — which reads
+  // the agent row — without the member this reported as assigned.
+  const { error: agentTeamErr } = await service
     .from("agents")
     .update({ team_id: params.teamId })
     .eq("user_id", params.userId)
+  if (agentTeamErr) {
+    return { success: false, error: `The user joined the team, but their agent row was refused: ${agentTeamErr.message}` }
+  }
 
   await emitUserProvisionedEvent({
     userId:       params.userId,
@@ -760,7 +796,13 @@ async function resolveEmailHolder(
   if (!existing?.id) return { authUserId: null, orphanToMerge: null }
   if (await isAuthUser(service, existing.id)) return { authUserId: existing.id, orphanToMerge: null }
   // Orphan — free the unique email so the trigger can insert the canonical row.
-  await service.from("users").update({ email: `__orphan__:${existing.id}` }).eq("id", existing.id)
+  // READ (lane 87E): a refused sentinel leaves the email held, the trigger's
+  // insert then collides, and the caller used to be told the email was freed.
+  const { error: sentinelErr } = await service.from("users").update({ email: `__orphan__:${existing.id}` }).eq("id", existing.id)
+  if (sentinelErr) {
+    console.error(`[kernel/users] could not free orphan email on ${existing.id}:`, sentinelErr.message)
+    return { authUserId: null, orphanToMerge: null }
+  }
   return { authUserId: null, orphanToMerge: existing.id }
 }
 
@@ -877,7 +919,11 @@ export async function inviteTenantMember(params: TenantMemberParams): Promise<Te
   }
   if (!authUserId) return { success: false, userId: null, agentId: null, error: "Could not resolve auth user id after invite" }
 
-  await service.from("users").upsert(
+  // READ (lane 87E, swallowed-refusal census): this row carries the invitee's
+  // tenant and role. Refused, the member existed with no brokerage and no
+  // user_type while the invite reported success and provisioned domain rows
+  // against it.
+  const { error: memberRowErr } = await service.from("users").upsert(
     {
       id:           authUserId,
       email,
@@ -893,6 +939,9 @@ export async function inviteTenantMember(params: TenantMemberParams): Promise<Te
     },
     { onConflict: "id" }
   )
+  if (memberRowErr) {
+    return { success: false, userId: authUserId, agentId: null, error: `The invite was sent, but the member's user row was refused: ${memberRowErr.message}` }
+  }
 
   try {
     // pass 10: the only unique on user_invitations is a PARTIAL EXPRESSION
@@ -903,11 +952,12 @@ export async function inviteTenantMember(params: TenantMemberParams): Promise<Te
     const invitePayload = { brokerage_id: brokerageId, team_id: teamId, invited_by: callerUserId, email, user_type: userType, first_name: firstName, last_name: lastName, status: "pending" }
     const { data: pending } = await service.from("user_invitations")
       .select("id").eq("brokerage_id", brokerageId).ilike("email", email).eq("status", "pending").maybeSingle()
-    if (pending) {
-      await service.from("user_invitations").update({ ...invitePayload, updated_at: new Date().toISOString() }).eq("id", pending.id)
-    } else {
-      await service.from("user_invitations").insert(invitePayload)
-    }
+    // The catch below only ever saw a THROW; supabase-js RESOLVES a refusal, so
+    // the ledger write's error is read here and warned the same way (lane 87E).
+    const { error: inviteLedgerErr } = pending
+      ? await service.from("user_invitations").update({ ...invitePayload, updated_at: new Date().toISOString() }).eq("id", pending.id)
+      : await service.from("user_invitations").insert(invitePayload)
+    if (inviteLedgerErr) console.warn("[inviteTenantMember] invitation write refused:", inviteLedgerErr.message)
   } catch (err) { console.warn("[inviteTenantMember] invitation write failed:", (err as any)?.message) }
 
   await mergeOrphan(service, orphanToMerge, authUserId)
@@ -1106,7 +1156,11 @@ export async function emitUserProvisionedEvent(params: {
 }): Promise<void> {
   const service = createServiceClient()
 
-  await service
+  // DECLARED allowed-to-fail, on the SERVICE client → sentinelWrite (the
+  // wrapper-choice rule in scripts/silent-write-guard.ts): the provisioning it
+  // records has already happened, so a lost audit row is ledgered for the repair
+  // digest rather than dropped (lane 87E, swallowed-refusal census).
+  await sentinelWrite(service, service
     .from("lifecycle_events")
     .insert({
       entity_type:   "user",
@@ -1116,5 +1170,10 @@ export async function emitUserProvisionedEvent(params: {
       brokerage_id:  params.brokerageId,
       metadata:      params.metadata ?? {},
       created_at:    new Date().toISOString(),
-    })
+    }), {
+    table: "lifecycle_events",
+    flow: "user_provisioning_audit",
+    brokerageId: params.brokerageId,
+    reason: "the provisioning it records has already been written",
+  })
 }

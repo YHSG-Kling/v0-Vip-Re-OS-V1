@@ -259,8 +259,25 @@ function censusLayer() {
   // So distinguish the two. A truncated run is an infrastructure problem to
   // re-run (§8's shape); an empty section from a complete run is a real finding.
   const censusLooksComplete = out.includes("TOTAL") && out.includes("── 2.")
-  check("the 1b section was printed", oneB.length > 0,
-    oneB.length > 0 ? undefined
+  // ── 1b CAN NOW BE ZERO, AND ZERO IS PROVEN RATHER THAN ASSUMED (lane 87E) ──
+  // The census prints a section only for a NON-empty category, and its findings
+  // table prints EVERY category's count. So the count comes from the table
+  // (always present in a complete run), and a zero is accepted only when the
+  // census's own C1b controls — the 1b rule, end to end, on a fixture —
+  // passed in the same run (EVERY control passing is asserted above; the C1b
+  // controls' presence in the census source is asserted below, so deleting them
+  // cannot turn this green). Lane 87E built the last writer 1b listed
+  // (listing_marketing_services.estimated_cost — the vendor quote).
+  const table1b = /^\s*(\d+)\s+1b\. COLUMN read by code, written by NOBODY/m.exec(out)
+  const count1b = table1b ? Number(table1b[1]) : -1
+  const censusSrc = src("scripts/opposite-missing-census.ts")
+  const c1bControls = (censusSrc.match(/control\("C1b /g) ?? []).length
+  check("the findings table reports a 1b count (the census ran to completion)", count1b >= 0,
+    censusLooksComplete ? "no 1b row in the findings table" : "census output TRUNCATED — re-run")
+  check("the census carries its fixture 1b controls (C1b × 3) — the proof a zero is not a blind scanner",
+    c1bControls >= 3, `${c1bControls} C1b control(s)`)
+  check("the 1b section was printed, or 1b is a PROVEN zero", oneB.length > 0 || count1b === 0,
+    oneB.length > 0 || count1b === 0 ? undefined
       : censusLooksComplete
         ? "census output is COMPLETE and 1b is genuinely empty — investigate the scanner"
         : "census output is TRUNCATED (no TOTAL / no section 2 header) — the subprocess did not "
@@ -327,9 +344,9 @@ function censusLayer() {
     .exec(oneB)?.[1] ?? -1)
   const listed1b = oneB.split("\n").filter((l) => /^\s+\S+\.\S+$/.test(l.split("  ")[0] ?? "")
     || /\b\w+\.\w+$/.test(l.trim())).length
-  check("1b still reports genuine writerless reads (the scanner did not go blind)",
-    declared1b > 0 && listed1b >= declared1b,
-    `declared ${declared1b} · listed ${listed1b}`)
+  check("1b's printed count matches its entries (or 1b is a proven zero — C1b above)",
+    count1b === 0 ? oneB.length === 0 : (declared1b > 0 && listed1b >= declared1b && declared1b === count1b),
+    `table ${count1b} · declared ${declared1b} · listed ${listed1b}`)
   for (const col of ["agent_earnings.cap_status", "agent_earnings.cap_progress_pct", "document_checklist.status"]) {
     check(`1b no longer accuses ${col}`, !oneB.includes(col))
   }
@@ -405,8 +422,27 @@ function censusLayer() {
   // cost. Same protocol: if this goes green, either a vendor pricing/quote source
   // landed and the booking writer was repointed onto it (repoint, and say so) or
   // the scanner went blind.
-  check("1b still reports a genuine writerless read no lane has fixed",
-    oneB.includes("listing_marketing_services.estimated_cost"))
+  //
+  // ── CANARY RETIRED ONTO A FIXTURE, WAVE 87 — AND SAYING SO, AS INSTRUCTED ─
+  // IT WAS THE FIRST: A QUOTE SOURCE LANDED. The w38 ruling named the one honest
+  // source — "a figure the agent enters … the way they enter the invoiced amount
+  // at close-out" — and lane 87E built it: recordMarketingServiceQuote
+  // (app/actions/marketing-package-automation.ts) writes the vendor's quote the
+  // agent received onto an OPEN booking, tenant-predicated and counted, with a
+  // "Save quote" control on the marketing package panel. Booking still writes no
+  // figure. That was 1b's last entry, so no live canary is left to name — and
+  // keeping one alive on purpose is what stopped the class reaching zero. The
+  // scanner's sight is now proven by the census's C1b controls on a fixture
+  // table, which the two checks above require.
+  check("listing_marketing_services.estimated_cost left 1b because its WRITER was built (w87 repoint)",
+    !oneB.includes("listing_marketing_services.estimated_cost"))
+  const quoteWrite = writeKeysAt("app/actions/marketing-package-automation.ts", "listing_marketing_services", "update")
+  check("…the writer is recordMarketingServiceQuote's update, and it names the live column",
+    !!quoteWrite?.includes("estimated_cost") && isLiveColumn("listing_marketing_services", "estimated_cost")
+      && /export async function recordMarketingServiceQuote/.test(blankComments(src("app/actions/marketing-package-automation.ts"))),
+    (quoteWrite ?? []).join(","))
+  check("…and booking still writes NO figure (the tier price is never a per-service quote)",
+    !(writeKeysAt("app/actions/marketing-package-automation.ts", "listing_marketing_services", "insert") ?? ["estimated_cost"]).includes("estimated_cost"))
   // The three w38 owner-decision columns must be GONE — the proof that the repoint
   // above was a burn-down and not a blindness.
   for (const col of [

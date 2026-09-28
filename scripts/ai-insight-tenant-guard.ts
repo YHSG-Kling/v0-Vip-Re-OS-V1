@@ -200,8 +200,9 @@
  *     and the control proving nothing), the check is required to flip RED, and
  *     the file is restored and re-verified by sha256.
  */
-import { readFileSync, writeFileSync, existsSync } from "node:fs"
-import { resolve } from "node:path"
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs"
+import { resolve, join } from "node:path"
+import { tmpdir } from "node:os"
 import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
 import { blankComments } from "./strip-comments"
@@ -728,21 +729,86 @@ function findReturnObject(src: string, lo: number, hi: number): number | null {
 /** The `ai_insights` sites — A1/A2 keep their exact original meaning. */
 const aiInsightInsertSites = (file: string): InsertSite[] => insertSites(file, "ai_insights")
 
-/** Every tracked source file that mentions the table. */
-function filesTouching(table: string): string[] {
-  try {
-    const out = execFileSync(
-      "git",
-      ["grep", "-l", "--", `from("${table}")`, "--", "app", "lib", "scripts"],
-      { cwd: ROOT, encoding: "utf8" },
-    )
-    return out
-      .split("\n")
-      .filter((f) => f.endsWith(".ts") || f.endsWith(".tsx"))
-      .filter((f) => f !== SELF)
-  } catch {
-    return [WRITERS]
+/**
+ * THE WORKING TREE, NOT THE INDEX (lane 87E).
+ *
+ * Both enumerators below were `git grep -l` with no `--untracked`, which searches
+ * TRACKED files only. A new writer file that a lane has created but not yet
+ * `git add`ed — exactly the state every lane works in until its patch is cut, and
+ * the state this guard runs in inside a lane's sweep — was never opened, so an
+ * unstamped insert in it passed A1/C1 green. The zero was a blind finder, not a
+ * clean tree (§2). `--untracked` adds untracked files that are not ignored
+ * (.gitignore still applies, so node_modules/.next stay out); tracked files are
+ * already read from the working tree, not the index.
+ *
+ * Exit status 1 from git grep means "no match" — an empty answer, not a failure.
+ * Any other failure THROWS: a finder that cannot run must not report zero
+ * (CLAUDE.md §4 fail closed). Positive control WT1 proves the untracked arm.
+ */
+function grepWorkingTree(needles: readonly string[], pathspecs: readonly string[], cwd: string = ROOT): string[] {
+  const found = new Set<string>()
+  for (const needle of needles) {
+    let out = ""
+    try {
+      out = execFileSync("git", ["grep", "--untracked", "-l", "-F", "--", needle, "--", ...pathspecs], {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      })
+    } catch (e: any) {
+      if (e?.status === 1) continue // no match for this needle
+      throw new Error(`git grep failed in ${cwd} for ${JSON.stringify(needle)}: ${e?.message ?? e}`)
+    }
+    for (const f of out.split("\n")) if (f.endsWith(".ts") || f.endsWith(".tsx")) found.add(f)
   }
+  return [...found].sort()
+}
+
+/**
+ * WT1 — POSITIVE CONTROL for the working-tree enumerator. A scratch repo holds a
+ * TRACKED writer, an UNTRACKED writer, an untracked file that matches nothing,
+ * and an IGNORED writer. grepWorkingTree must return exactly the first two; the
+ * pre-87E form (no `--untracked`) must return only the tracked one — proving the
+ * blind spot was real and that this control can tell the two forms apart.
+ */
+function assertEnumeratorReadsWorkingTree(): boolean {
+  const dir = mkdtempSync(join(tmpdir(), "ai-insight-w1-"))
+  try {
+    const put = (p: string, body: string) => {
+      mkdirSync(resolve(dir, p, ".."), { recursive: true })
+      writeFileSync(resolve(dir, p), body)
+    }
+    execFileSync("git", ["init", "-q"], { cwd: dir, stdio: "ignore" })
+    const writer = `await svc.from("ai_insights").insert({ insight_type: "x" })\n`
+    put("app/tracked-writer.ts", writer)
+    put("app/untracked-writer.ts", writer)
+    put("app/untracked-other.ts", `export const n = 1\n`)
+    put("app/ignored/writer.ts", writer)
+    put(".gitignore", "app/ignored/\n")
+    execFileSync("git", ["add", "app/tracked-writer.ts", ".gitignore"], { cwd: dir, stdio: "ignore" })
+
+    const now = grepWorkingTree([`from("ai_insights")`], ["app"], dir)
+    let old: string[] = []
+    try {
+      old = execFileSync("git", ["grep", "-l", "-F", "--", `from("ai_insights")`, "--", "app"], { cwd: dir, encoding: "utf8" })
+        .split("\n").filter(Boolean)
+    } catch { old = [] }
+    const want = ["app/tracked-writer.ts", "app/untracked-writer.ts"]
+    return check(
+      "WT1 the table enumerator reads the WORKING TREE: an untracked writer is found, an ignored one is not (and the tracked-only form it replaced was blind to it)",
+      JSON.stringify(now) === JSON.stringify(want) && JSON.stringify(old) === JSON.stringify(["app/tracked-writer.ts"]),
+      `working-tree=${JSON.stringify(now)} tracked-only=${JSON.stringify(old)}`,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+/** Every source file in the WORKING TREE (tracked or untracked) that mentions the table. */
+function filesTouching(table: string): string[] {
+  // Both quote styles, for the reason filesTouchingProd records below.
+  return grepWorkingTree([`from("${table}")`, `from('${table}')`], ["app", "lib", "scripts"])
+    .filter((f) => f !== SELF)
 }
 
 const filesTouchingAiInsights = (): string[] => filesTouching("ai_insights")
@@ -1183,21 +1249,8 @@ function filesTouchingProd(table: string): string[] {
   // dropped those files from the scan, and C1 then went green over writers it had
   // never looked at. Caught by a negative control staying green, which is exactly
   // what the applied-check and the control discipline are for.
-  const found = new Set<string>()
-  for (const needle of [`from("${table}")`, `from('${table}')`]) {
-    try {
-      const out = execFileSync("git", ["grep", "-l", "--", needle, "--", "app", "lib"], {
-        cwd: ROOT,
-        encoding: "utf8",
-      })
-      for (const f of out.split("\n")) {
-        if (f.endsWith(".ts") || f.endsWith(".tsx")) found.add(f)
-      }
-    } catch {
-      /* no match for this quote style */
-    }
-  }
-  return [...found].sort()
+  // Working tree, untracked included — see grepWorkingTree.
+  return grepWorkingTree([`from("${table}")`, `from('${table}')`], ["app", "lib"])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3306,6 +3359,7 @@ function main(): void {
   )
 
   console.log("ASSERTIONS")
+  assertEnumeratorReadsWorkingTree()
   assertEveryInsertStampsTenant()
   assertWritersStillExist()
   assertReaderNarrowsByBrokerage()

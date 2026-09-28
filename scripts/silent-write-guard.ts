@@ -135,11 +135,20 @@ export function isSilentWrite(stmt: string, tables: readonly string[] = CONSEQUE
  * module that has more than one.
  */
 export function silentWritesIn(stmt: string, tables: readonly string[] = CONSEQUENTIAL_TABLES): string[] {
-  const out: string[] = []
+  return silentWriteSitesIn(stmt, tables).map((s) => s.table)
+}
+
+/**
+ * PURE — the same verdicts WITH the offset of each `.from(` in `stmt`, so a
+ * census can print `file:line` (lane 87E: scripts/swallowed-refusal-census.ts
+ * `--sites`). One loop, one verdict function — silentWritesIn is this, mapped.
+ */
+export function silentWriteSitesIn(stmt: string, tables: readonly string[] = CONSEQUENTIAL_TABLES): Array<{ table: string; at: number }> {
+  const out: Array<{ table: string; at: number }> = []
   for (const m of stmt.matchAll(/\.from\(["'](\w+)["']\)/g)) {
     if (!tables.includes(m[1])) continue
     const table = judgeOneWrite(stmt, m.index!, m[1])
-    if (table) out.push(table)
+    if (table) out.push({ table, at: m.index! })
   }
   return out
 }
@@ -248,6 +257,14 @@ export function chainFrom(src: string, i: number): string {
   return src.slice(i, p)
 }
 
+/**
+ * LIBRARY MODE (lane 87E). scripts/swallowed-refusal-census.ts widens this
+ * detector from the consequential tables to EVERY live table and imports the pure
+ * functions above. Importing used to RUN this whole guard as a side effect (and
+ * scripts/notification-fanout-simulator.ts still does, unchanged). With
+ * SILENT_WRITE_AS_LIBRARY=1 set before a dynamic import, only the exports load.
+ */
+function runGuard(): void {
 console.log("══════════════════════════════════════════════════")
 console.log(" Silent-write guard (a rejected write must not look like a success)")
 console.log("══════════════════════════════════════════════════")
@@ -546,3 +563,6 @@ console.log(
     ? " ✅ SILENT_WRITE_PASS — every consequential write reads its error or declares it may fail"
     : " ✅ SILENT_WRITE_PASS — no NEW undeclared silent write; the frozen debt may only shrink",
 )
+
+}
+if (process.env.SILENT_WRITE_AS_LIBRARY !== "1") runGuard()

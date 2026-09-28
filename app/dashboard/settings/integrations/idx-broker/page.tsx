@@ -214,7 +214,10 @@ export default function IDXBrokerSettingsPage() {
     const config: any = {}
     if (partnerKey) config.partner_key = partnerKey
 
-    await supabase.from("platform_credentials").upsert(
+    // The save's refusal is READ (lane 87E, swallowed-refusal census). It used to
+    // be dropped, so a refused credential (RLS, a CHECK, the pass-10 unique) left
+    // the page looking saved while the alert engine kept reading nothing.
+    const { error: saveError } = await supabase.from("platform_credentials").upsert(
       {
         // pass 10: the live unique is (owner_id, owner_type, platform) — the
         // legacy brokerage_id/scope columns had no matching unique, so this
@@ -233,7 +236,7 @@ export default function IDXBrokerSettingsPage() {
       { onConflict: "owner_id,owner_type,platform" }
     )
     setSaving(false)
-    setTestResult(null)
+    setTestResult(saveError ? { ok: false, message: `The IDX Broker credential was not saved: ${saveError.message}` } : null)
   }
 
   const handleTest = async () => {
@@ -254,11 +257,19 @@ export default function IDXBrokerSettingsPage() {
   const handleDisconnect = async () => {
     if (!brokerageId || !confirm("Disconnect IDX Broker? All active alerts will be paused.")) return
     setDisconnecting(true)
-    await supabase
+    // Both halves of the disconnect READ their refusal (lane 87E). The dialog
+    // promises the feed is off AND the alerts are paused; either one refused used
+    // to clear the form as if both had happened.
+    const { error: deactivateError } = await supabase
       .from("platform_credentials")
       .update({ is_active: false, updated_at: new Date().toISOString() })
       .eq("brokerage_id", brokerageId)
       .eq("platform", "idxbroker")
+    if (deactivateError) {
+      setDisconnecting(false)
+      setTestResult({ ok: false, message: `IDX Broker was not disconnected: ${deactivateError.message}` })
+      return
+    }
 
     // Pause all brokerage alerts.
     //
@@ -273,7 +284,7 @@ export default function IDXBrokerSettingsPage() {
     // inactive rows are the conversation-criteria proposals awaiting approval,
     // and paused_reason is where their [VOICE_PROPOSAL]/[TEXT_PROPOSAL] evidence
     // lives — overwriting it would drop them off the approval rail.
-    await supabase
+    const { error: pauseError } = await supabase
       .from("property_alerts")
       .update({
         is_active: false,
@@ -287,6 +298,9 @@ export default function IDXBrokerSettingsPage() {
     setDisconnecting(false)
     setCred(null)
     setApiKey("")
+    if (pauseError) {
+      setTestResult({ ok: false, message: `Disconnected, but the brokerage's live alerts were NOT paused: ${pauseError.message}` })
+    }
   }
 
   const handleSaveDefaults = async () => {
@@ -300,7 +314,8 @@ export default function IDXBrokerSettingsPage() {
 
     const merged = { ...(gs?.additional_settings ?? {}), idx_alert_defaults: defaults }
     if (gs?.id) {
-      await supabase.from("global_settings").update({ additional_settings: merged }).eq("id", gs.id)
+      const { error: defaultsError } = await supabase.from("global_settings").update({ additional_settings: merged }).eq("id", gs.id)
+      if (defaultsError) setTestResult({ ok: false, message: `Alert defaults were not saved: ${defaultsError.message}` })
     }
     setSavingDefaults(false)
   }

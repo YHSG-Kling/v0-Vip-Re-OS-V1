@@ -21,6 +21,7 @@ import {
   getMarketingPackageServices,
   getSyndicationStatus,
   getVendorRecommendations,
+  recordMarketingServiceQuote,
   sendServiceReminderToVendor,
   syncListingToPlatforms,
 } from "@/app/actions/marketing-package-automation"
@@ -139,6 +140,38 @@ export function MarketingPackagePanel({ transactionId, activePackage }: Marketin
   // column NULL rather than recording a guess.
   const [completingId, setCompletingId] = useState<string | null>(null)
   const [servicePaid, setServicePaid] = useState<Record<string, string>>({})
+
+  // "Save quote" — the vendor's quote for a booked, open service. The writer
+  // estimated_cost never had (lane 87E): the agent types the figure the vendor
+  // gave them; nothing is ever filled in from the bench or the tier price.
+  const [quotingId, setQuotingId] = useState<string | null>(null)
+  const [serviceQuote, setServiceQuote] = useState<Record<string, string>>({})
+
+  const handleSaveQuote = (serviceId: string) => {
+    const typed = (serviceQuote[serviceId] ?? "").trim()
+    const quoted = typed === "" ? null : Number(typed)
+    if (quoted !== null && (!Number.isFinite(quoted) || quoted < 0)) {
+      setRemindMessage("Enter the vendor's quote as a non-negative number, or leave it blank to clear it.")
+      return
+    }
+    setQuotingId(serviceId)
+    setRemindMessage(null)
+    void (async () => {
+      try {
+        const res = await recordMarketingServiceQuote({ serviceId, quotedCost: quoted })
+        if (!res.success) {
+          setRemindMessage(res.error ?? "Could not save the quote")
+          return
+        }
+        setRemindMessage(quoted === null ? "Quote cleared." : `Quote of ${formatCurrency(quoted)} recorded.`)
+        await loadServices()
+      } catch {
+        setRemindMessage("Could not save the quote")
+      } finally {
+        setQuotingId(null)
+      }
+    })()
+  }
 
   const handleCompleteService = (serviceId: string) => {
     const typed = (servicePaid[serviceId] ?? "").trim()
@@ -405,10 +438,39 @@ export function MarketingPackagePanel({ transactionId, activePackage }: Marketin
                               actual_cost is now written at completion. */}
                           {s.actual_cost !== null && s.actual_cost !== undefined ? (
                             <Badge variant="outline">{formatCurrency(s.actual_cost)} paid</Badge>
-                          ) : s.estimated_cost !== null ? (
-                            <Badge variant="outline">{formatCurrency(s.estimated_cost)}</Badge>
+                          ) : s.estimated_cost !== null && s.estimated_cost !== undefined ? (
+                            <Badge variant="outline">{formatCurrency(s.estimated_cost)} quoted</Badge>
                           ) : null}
                           <Badge variant="secondary">{s.status ?? "scheduled"}</Badge>
+                          {/* The vendor's quote — recordMarketingServiceQuote, open bookings only. */}
+                          {s.vendor && !s.completed_at && (
+                            <>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                inputMode="decimal"
+                                aria-label="Amount the vendor quoted for this service"
+                                placeholder="Quoted $"
+                                className="h-7 w-24 rounded-md border bg-background px-2 text-xs"
+                                value={serviceQuote[s.id] ?? ""}
+                                onChange={(e) =>
+                                  setServiceQuote((prev) => ({ ...prev, [s.id]: e.target.value }))
+                                }
+                              />
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs"
+                                disabled={quotingId === s.id}
+                                onClick={() => handleSaveQuote(s.id)}
+                              >
+                                {quotingId === s.id
+                                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  : "Save quote"}
+                              </Button>
+                            </>
+                          )}
                           {/* Close-out — records completed_at and the invoiced amount. */}
                           {s.vendor && !s.completed_at && (
                             <>

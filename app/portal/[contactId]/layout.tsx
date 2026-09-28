@@ -14,6 +14,7 @@ import { ensureContactPortalUser } from "@/lib/portal/portal-invite-core"
 // THE ONE resolver (§6) — same one app/api/forms/submit/route.ts and
 // app/api/open-house/attend/route.ts use.
 import { resolveCapturedLanguage } from "@/lib/contact-pipeline/contact-capture"
+import { recordPortalFirstAccess } from "@/lib/portal/portal-first-access"
 import { headers } from "next/headers"
 import { resolveActiveImpersonation } from "@/lib/platform/impersonation"
 import PortalNav from "@/app/components/features/portal/base/PortalNav"
@@ -180,61 +181,40 @@ export default async function PortalLayout({
       },
     }).catch(() => {})
 
-    const { data: invite } = await supabase
-      .from("portal_contact_invites")
-      .select("id, status")
-      .eq("contact_id", contactId)
-      .eq("status", "sent")
-      .maybeSingle()
-
-    if (invite) {
-      await supabase
-        .from("portal_contact_invites")
-        .update({ status: "accepted", accepted_at: new Date().toISOString() })
-        .eq("id", invite.id)
-
-      // TIER 3 OF resolveContactLanguage (owner ruling, wave 51/52 — task item
-      // 4: "only forms capture Accept-Language"): portal invite ACCEPTANCE is
-      // the client's own browser hitting this page for the first time, so its
-      // Accept-Language header is a real signal — captured here exactly once,
-      // fill-if-empty (never overwrites a language the contact or an agent
-      // already set explicitly, and never overwrites an earlier capture).
-      // Best-effort: never blocks portal access.
-      try {
-        const existingMetadata = (contact as { metadata?: Record<string, unknown> | null }).metadata ?? null
-        if (!(existingMetadata as any)?.captured_language) {
-          const h = await headers()
-          const capturedLanguage = resolveCapturedLanguage(null, h.get("accept-language"))
-          if (capturedLanguage) {
-            await supabase
-              .from("contacts")
-              .update({ metadata: { ...(existingMetadata ?? {}), captured_language: capturedLanguage } })
-              .eq("id", contactId)
-          }
-        }
-      } catch { /* best-effort — never blocks portal access */ }
-
-      // Notify assigned agent (non-blocking, fire-and-forget)
-      if (contact.agent_id) {
-        supabase
-          .from("agents")
-          .select("user_id")
-          .eq("id", contact.agent_id)
-          .maybeSingle()
-          .then(({ data: agent }) => {
-            if (agent?.user_id) {
-              void supabase.from("notifications").insert({
-                user_id: agent.user_id,
-                brokerage_id: contact.brokerage_id,
-                type: "portal_first_login",
-                title: `${contact.first_name} just opened their portal`,
-                entity_type: "contact",
-                entity_id: contactId,
-              })
-            }
-          }, () => {})
+    // FIRST ACCESS — mark the invite accepted, capture the browser language, tell
+    // the agent. Recorded through lib/portal/portal-first-access.ts on the SERVICE
+    // client, pinned to the tenant of the contact row read above (lane 87E): on
+    // this caller's own session every step was refused in silence — a portal
+    // client cannot read its invite (pci_agent_manage is agent-scoped) nor update
+    // its own contact row — so none of it had ever happened from this door.
+    //
+    // TIER 3 OF resolveContactLanguage (owner ruling, wave 51/52 — task item
+    // 4: "only forms capture Accept-Language"): portal invite ACCEPTANCE is
+    // the client's own browser hitting this page for the first time, so its
+    // Accept-Language header is a real signal — captured exactly once,
+    // fill-if-empty (never overwrites a language the contact or an agent
+    // already set explicitly, and never overwrites an earlier capture).
+    // Best-effort: never blocks portal access.
+    let capturedLanguage: string | null = null
+    const firstAccessMetadata = (contact as { metadata?: Record<string, unknown> | null }).metadata ?? null
+    try {
+      const existingMetadata = firstAccessMetadata
+      if (!(existingMetadata as any)?.captured_language) {
+        const h = await headers()
+        capturedLanguage = resolveCapturedLanguage(null, h.get("accept-language"))
       }
-    }
+    } catch { /* best-effort — never blocks portal access */ }
+
+    await recordPortalFirstAccess({
+      contactId,
+      brokerageId: contact.brokerage_id ?? null,
+      agentId: contact.agent_id ?? null,
+      contactFirstName: contact.first_name ?? null,
+      existingMetadata: firstAccessMetadata,
+      capturedLanguage,
+    }).catch((e: unknown) => {
+      console.warn("[portal] first-access record failed:", e instanceof Error ? e.message : e)
+    })
   }
 
   // Resolve agent via kernel identity function

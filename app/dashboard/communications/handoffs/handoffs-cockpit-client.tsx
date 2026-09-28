@@ -16,6 +16,7 @@ import {
   RefreshCw,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
+import { toast } from "sonner"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -277,13 +278,21 @@ export function HandoffsCockpitClient({ contacts: initialContacts, agentId, brok
   async function handleResumeAI(contactId: string) {
     const supabase = createClient()
 
-    // Update contact to mark AI as re-engaged
-    await supabase
+    // Update contact to mark AI as re-engaged. The refusal is READ and the row
+    // COUNTED (an RLS-filtered update matches nothing with error null, CLAUDE.md
+    // §3): the card used to flip to "AI handling" whether or not the flag landed,
+    // so the ISA stayed parked while the cockpit said it had resumed (lane 87E).
+    const { data: resumed, error: resumeError } = await supabase
       .from("contacts")
       .update({ isa_reengage_allowed: true, isa_reengage_set_at: new Date().toISOString() })
       .eq("id", contactId)
+      .select("id")
+    if (resumeError || (resumed ?? []).length === 0) {
+      toast.error(resumeError ? `AI was not resumed: ${resumeError.message}` : "AI was not resumed — this contact is not editable from your account.")
+      return
+    }
 
-    // Optimistically update state
+    // Update state only once the write is confirmed
     setContacts((prev) =>
       prev.map((c) =>
         c.id === contactId ? { ...c, handoffState: "ai_handling" } : c
@@ -294,10 +303,17 @@ export function HandoffsCockpitClient({ contacts: initialContacts, agentId, brok
   async function handleRemoveCallStop(contactId: string) {
     const supabase = createClient()
 
-    await supabase
+    // Same shape as handleResumeAI: a call-stop that did not clear must not read
+    // as cleared (lane 87E).
+    const { data: cleared, error: clearError } = await supabase
       .from("contacts")
       .update({ call_stop_flag: false })
       .eq("id", contactId)
+      .select("id")
+    if (clearError || (cleared ?? []).length === 0) {
+      toast.error(clearError ? `The call stop was not removed: ${clearError.message}` : "The call stop was not removed — this contact is not editable from your account.")
+      return
+    }
 
     setContacts((prev) =>
       prev.map((c) =>

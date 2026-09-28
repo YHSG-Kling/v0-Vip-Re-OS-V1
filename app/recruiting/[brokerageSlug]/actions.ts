@@ -18,6 +18,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 const VALID_STATUS = "prospect" as const
 
@@ -131,7 +132,15 @@ export async function submitRecruitInquiry(
         channel:       "in_app",
         is_read:       false,
       }))
-      await svc.from("notifications").insert(rows)
+      // A refused insert used to vanish (the try/catch sees only a THROW, and
+      // supabase-js resolves a refusal). sentinelWrite reads the error and
+      // ledgers the loss for the repair digest (lane 87E, swallowed-refusal census).
+      await sentinelWrite(svc, svc.from("notifications").insert(rows), {
+        table: "notifications",
+        flow: "recruit_inquiry_broker_notice",
+        brokerageId: brokerage.id,
+        reason: "the recruit row is already written; the broker notice must not fail the public form",
+      })
     }
   } catch (notifyErr) {
     console.error("[submitRecruitInquiry] Notification failed:", notifyErr)
@@ -146,7 +155,7 @@ export async function submitRecruitInquiry(
         .eq("id", recruiterAgentId)
         .maybeSingle()
       if (agentUser?.user_id) {
-        await svc.from("notifications").insert({
+        await sentinelWrite(svc, svc.from("notifications").insert({
           user_id:       agentUser.user_id,
           brokerage_id:  brokerage.id,
           type:          "recruit_referral_inquiry",
@@ -157,6 +166,11 @@ export async function submitRecruitInquiry(
           priority:      "medium",
           channel:       "in_app",
           is_read:       false,
+        }), {
+          table: "notifications",
+          flow: "recruit_inquiry_referrer_notice",
+          brokerageId: brokerage.id,
+          reason: "the recruit row is already written; the referrer notice must not fail the public form",
         })
       }
     } catch (notifyErr) {

@@ -194,12 +194,11 @@ export async function bookMarketingService(params: {
     // price for a vendor and the package catalog prices a whole TIER, not one
     // service, so there is no honest per-service figure to persist here. A number
     // invented at booking time would be indistinguishable from a quote.
-    // DO NOT ADD `estimated_cost` TO THIS INSERT (even as null): this column is
-    // scripts/writerless-gate-simulator.ts's live CANARY (its "1b still reports a
-    // genuine writerless read" positive control, ~line 396). Writing the key
-    // blinds that control and turns the guard chain red (wave 63 paid for it).
-    // The only sanctioned change is repointing this writer onto a REAL
-    // per-service quote source once one exists in the schema, and saying so there.
+    // The quote arrives LATER, from the vendor, through
+    // recordMarketingServiceQuote below (lane 87E) — the agent types what the
+    // vendor quoted. Booking still writes no figure. The writerless-gate canary
+    // that used to depend on this column staying writerless moved to a
+    // fixture (scripts/opposite-missing-census.ts control C1b).
     const { data: service, error } = await supabase
       .from("listing_marketing_services")
       .insert({
@@ -781,22 +780,15 @@ export async function getMarketingPackageServices(packageId: string) {
   // forever instead of failing loudly. `company_name` is aliased onto the real
   // `name` column because that is the key the panel renders
   // (app/dashboard/listings/[id]/marketing-tier/marketing-package-panel.tsx).
-  // `estimated_cost` IS A READ WITH NO WRITER, AND THAT IS THE RULING — not a
-  // gap to close (orphan doctrine §1, re-checked 2026-09-04). bookMarketingService
-  // (:193) deliberately OMITS the column and says why: the vendor bench carries
-  // no price, and the package catalog prices a whole TIER rather than one
-  // service, so any number written at booking time would be a quote the
-  // brokerage never gave. The column therefore reads NULL on every row, and the
-  // panel is built for that — marketing-package-panel.tsx:397-401 prefers
-  // `actual_cost` (written at close-out) and renders NOTHING when neither
-  // exists, so nothing displays a fabricated or zero price.
-  //
-  // It stays in the select rather than being removed: the moment a real
-  // per-service quote is captured (a vendor price list, or a figure the agent
-  // enters at booking the way they enter the invoiced amount at close-out) this
-  // panel already renders it correctly. Building a writer to satisfy a census
-  // count would be inventing the quote (§1 — deleting or fabricating to move a
-  // number is forbidden).
+  // `estimated_cost` is the VENDOR'S QUOTE, written only by
+  // recordMarketingServiceQuote (this file) from the figure the agent received —
+  // never at booking (bookMarketingService deliberately omits it: the bench
+  // carries no price and the catalog prices a whole tier). It reads NULL until a
+  // quote is entered, and the panel is built for that — it prefers `actual_cost`
+  // (written at close-out), then the quote, and renders NOTHING when neither
+  // exists, so nothing displays a fabricated or zero price. (Lane 87E built the
+  // writer the earlier ruling named: "a figure the agent enters … the way they
+  // enter the invoiced amount at close-out".)
   const { data, error } = await supabase
     .from("listing_marketing_services")
     .select(
@@ -907,6 +899,63 @@ export async function completeMarketingService(params: {
 
   revalidatePath("/dashboard/listings")
   return { success: true, completedAt }
+}
+
+/**
+ * RECORD THE VENDOR'S QUOTE on one booked marketing service — the writer
+ * `estimated_cost` never had (lane 87E; orphan doctrine §1.2, BUILD the missing
+ * half).
+ *
+ * The column was a read with no writer BY RULING: nothing in the schema carries
+ * a per-service vendor price, and the package catalog prices a whole TIER, so
+ * any number written at booking time would be a quote the brokerage never got
+ * (see bookMarketingService above — that ruling stands; booking still writes
+ * nothing here). The ruling itself named the one honest source — "a figure the
+ * agent enters at booking the way they enter the invoiced amount at
+ * close-out" — and this is it: the amount the VENDOR quoted, typed by the agent
+ * who received it, on a service that is booked and not yet completed. Once the
+ * invoice lands, `actual_cost` (completeMarketingService) is what the panel
+ * shows; the quote stays as the comparison.
+ *
+ * Tenant from the SESSION as a predicate on the update, and the update is
+ * COUNTED (CLAUDE.md §3: an UPDATE that matched nothing resolves with error
+ * null — another brokerage's service would otherwise read as quoted). A
+ * completed service is refused: a quote recorded after the invoice is not a
+ * quote. `quotedCost: null` clears a mistyped quote.
+ */
+export async function recordMarketingServiceQuote(params: {
+  serviceId: string
+  quotedCost: number | null
+}): Promise<{ success: boolean; error?: string; quotedCost?: number | null }> {
+  if (!isValidUUID(params.serviceId)) return { success: false, error: "Invalid service ID" }
+
+  let quoted: number | null = null
+  if (params.quotedCost !== null && params.quotedCost !== undefined) {
+    quoted = Number(params.quotedCost)
+    if (!Number.isFinite(quoted) || quoted < 0) {
+      return { success: false, error: "The quote must be a non-negative number." }
+    }
+  }
+
+  const auth = await requireBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const svc = createServiceClient()
+  const { data, error } = await svc
+    .from("listing_marketing_services")
+    .update({ estimated_cost: quoted, updated_at: new Date().toISOString() })
+    .eq("id", params.serviceId)
+    .eq("brokerage_id", auth.brokerageId)
+    .is("completed_at", null)
+    .select("id")
+
+  if (error) return { success: false, error: error.message }
+  if ((data ?? []).length === 0) {
+    return { success: false, error: "That service is not an open booking in your brokerage — a completed service keeps its invoiced amount instead." }
+  }
+
+  revalidatePath("/dashboard/listings")
+  return { success: true, quotedCost: quoted }
 }
 
 /**

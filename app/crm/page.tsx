@@ -1329,7 +1329,23 @@ export default function CRMPage() {
                     channel === "sms"         ? "sms_opt_out" :
                     channel === "phone"       ? "phone_opt_out" :
                                                 "direct_mail_opt_out"
-                  await supabase.from("contacts").update({ [col]: optOut }).eq("id", selectedContactId)
+                  // A CONSENT flag. supabase-js RESOLVES a refusal, and an RLS-filtered
+                  // UPDATE matches zero rows with error null (CLAUDE.md §3) — so the
+                  // error is read AND the rows are counted, and the agent is told when
+                  // the opt-out did not take instead of seeing the toggle flip back
+                  // on the reload with no word (lane 87E, swallowed-refusal census).
+                  const { data: changed, error: optOutError } = await supabase
+                    .from("contacts")
+                    .update({ [col]: optOut })
+                    .eq("id", selectedContactId)
+                    .select("id")
+                  if (optOutError || (changed ?? []).length === 0) {
+                    toast.error(
+                      optOutError
+                        ? `The ${channel} preference was not saved: ${optOutError.message}`
+                        : `The ${channel} preference was not saved — this contact is not editable from your account.`,
+                    )
+                  }
                   if (selectedContactId) loadContactDetail(selectedContactId)
                 }}
                 // Mark dormant / Reactivate landed — refresh the detail (status
