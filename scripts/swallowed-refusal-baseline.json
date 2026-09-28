@@ -19,7 +19,7 @@
   "app/actions/video-voice.ts → voice_clone_training": 1,
   "app/api/cron/actor-health/route.ts → scraper_actor_health": 1,
   "app/api/cron/did-agent-sync/route.ts → agent_avatar_assets": 1,
-  "app/api/cron/director-reel-render/route.ts → ai_video_projects": 4,
+  "app/api/cron/director-reel-render/route.ts → ai_video_projects": 2,
   "app/api/cron/intro-video-email-backfill/route.ts → agent_intro_videos": 2,
   "app/api/cron/lead-scraping/route.ts → batchdata_smart_search_subscriptions": 3,
   "app/api/cron/lead-scraping/route.ts → lead_scraping_markets": 1,
@@ -98,6 +98,5 @@
   "lib/video/persona-variant-post-pass.ts → asset_persona_renders": 6,
   "lib/video/reel-voiceover.ts → narration_cache": 2,
   "lib/video/video-director.ts → ai_video_projects": 4,
-  "lib/video/video-pipeline-reaper.ts → ai_video_projects": 1,
   "lib/voice/studio-session.ts → ai_video_projects": 1
 }
