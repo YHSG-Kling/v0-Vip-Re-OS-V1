@@ -68,6 +68,8 @@ import {
   targetWordCount,
   estimateDurationSeconds,
   videoTypeToContactType,
+  shortFormStructureDirective,
+  assessScriptStructure,
   type GenerateVideoScriptParams,
   type GenerateVideoScriptResult,
 } from "@/lib/video/script-structure"
@@ -283,6 +285,10 @@ ${l.features?.length ? `- Key features: ${l.features.join(", ")}` : ""}
     SCRIPT_QUALITY_CHARTER,
     SPOKEN_REALISM_DIRECTIVE,
     audioTagInstruction,
+    // WAVE 87 (lane 87D) — THE SHAPE, asked for in the prompt (hook ≤ 2 s,
+    // one idea in three beats, ONE persona-aware ask). The pure backstop
+    // (assessScriptStructure) grades the draft below; advisory, never a hold.
+    shortFormStructureDirective({ durationSeconds: duration, persona: journeyType }),
     `Target approximately ${wordTarget} words (for a ${duration}-second video at a natural speaking pace).`,
     `Do NOT include any greeting before the script or explanation after it. Output the script only.`,
   ]
@@ -378,12 +384,15 @@ ${l.features?.length ? `- Key features: ${l.features.join(", ")}` : ""}
   // Never a red flag, never a hold — the owner's "advisory passes" ruling.
   const { scanForAiTells } = await import("@/lib/video/realism-profile")
   const aiTellHits = scanForAiTells(script)
+  // WAVE 87 — the short-form structure backstop (same advisory posture).
+  const structureHits = assessScriptStructure(script).warnings
   const advisory = [
     ...(complianceWarnings ?? []).filter(
       (w) => !redFlags.includes(w) && !w.startsWith(COMPLIANCE_UNKNOWN_PREFIX),
     ),
     ...qualityHits,
     ...aiTellHits,
+    ...structureHits,
   ]
 
   // ── FAIL CLOSED: "we could not check" is a reason to summon a human ─────────

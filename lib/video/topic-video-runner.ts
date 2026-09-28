@@ -179,7 +179,11 @@ export async function runTopicPoolVideos(svc: any, now: Date = new Date()): Prom
       const { buildComplianceSystemBlocks, detectFairHousingRedFlags } = await import("./script-compliance")
       const { withSpokenScriptStandards, scanForAiTells } = await import("./realism-profile")
       const system = (await buildComplianceSystemBlocks(t.id, undefined, svc)).join("\n\n")
-      const basePrompt = withSpokenScriptStandards(topicScriptPrompt({ topic, persona, words, archetype: first.choice.archetype }))
+      // WAVE 87 (lane 87D) — the short-form SHAPE rides the prompt too (hook ≤ 2 s,
+      // three beats, one persona-aware ask): lib/video/script-structure.ts.
+      const { shortFormStructureDirective } = await import("./script-structure")
+      const basePrompt = withSpokenScriptStandards(topicScriptPrompt({ topic, persona, words, archetype: first.choice.archetype })
+        + "\n" + shortFormStructureDirective({ durationSeconds: planned.plan.band.targetSeconds, persona: side }))
       const draft = async (prompt: string) => (await generateObjectRouted({
         feature: "video_script_generation",
         brokerageId: t.id,

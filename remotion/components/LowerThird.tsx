@@ -33,15 +33,28 @@ export interface LowerThirdProps {
   /** Distance from the bottom edge, px. Default 168 (TeammateExplainerReel's
    *  original placement above its progress bar). */
   bottom?: number
+  /**
+   * Wave 87 (lane 87D) — identify-then-leave. When set, the strap slides OUT
+   * over `exitFrames` once it has been fully in for `holdFrames`
+   * (lib/video/cinema-finish.ts cinemaLowerThirdPlacement). Absent → it stays
+   * for the whole Sequence, exactly as before (TeammateExplainerReel).
+   */
+  holdFrames?: number
+  exitFrames?: number
 }
 
-export const LowerThird: React.FC<LowerThirdProps> = ({ agentName, brokerageName, primaryColor, accentColor, bottom = 168 }) => {
+export const LowerThird: React.FC<LowerThirdProps> = ({ agentName, brokerageName, primaryColor, accentColor, bottom = 168, holdFrames, exitFrames = 12 }) => {
   const frame = useCurrentFrame()
+  const enter = interpolate(frame, [0, 16], [-560, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+  const exitStart = typeof holdFrames === "number" && holdFrames > 0 ? 16 + holdFrames : null
+  const exit = exitStart != null
+    ? interpolate(frame, [exitStart, exitStart + Math.max(1, exitFrames)], [0, -560], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+    : 0
   return (
     <div
       style={{
         position: "absolute", left: 0, bottom,
-        translate: `${interpolate(frame, [0, 16], [-560, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px`,
+        translate: `${enter + exit}px`,
       }}
     >
       <div

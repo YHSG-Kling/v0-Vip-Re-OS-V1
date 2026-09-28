@@ -320,8 +320,16 @@ console.log("\n── §wiring · the director, the product spec, the consumer c
     check(`${id}: re-fits the staged plan to its own duration (fitBodyVisualPlan(bodyVisualPlan, "${id}", durationInFrames))`, new RegExp(`fitBodyVisualPlan\\(bodyVisualPlan, "${id}", durationInFrames\\)`).test(src))
   }
   const ath = blankStrings(readStripped("remotion/AgentTalkingHeadReel.tsx"))
+  // Re-anchored wave 87 (lane 87D, §2 — assert the rule, not the spelling): the
+  // strap now sits ABOVE the caption band, a placement DERIVED from the same safe
+  // inset (lib/video/cinema-finish.ts cinemaLowerThirdPlacement — its bottom is
+  // cinemaCaptionStyle's bandBottom = safeInsets().bottom plus the band), after the
+  // lane's real render found the strap hidden under the captions at the bare inset.
+  // Either derivation passes; a typed literal still fails.
   check("AgentTalkingHeadReel: the treatment under the playhead comes from segmentAtFrame; the card and the lower-third sit on the safe insets; no typed bottom:130 / bottom={24} remains",
-    /segmentAtFrame\(plan, frame\)/.test(ath) && /safeInsets\(width, height\)/.test(ath) && /bottom=\{safe\.bottom\}/.test(ath) && !/bottom:\s*130\b/.test(ath) && !/bottom=\{24\}/.test(ath))
+    /segmentAtFrame\(plan, frame\)/.test(ath) && /safeInsets\(width, height\)/.test(ath)
+    && (/bottom=\{safe\.bottom\}/.test(ath) || (/bottom=\{strap\.bottom\}/.test(ath) && /strap = cinemaLowerThirdPlacement\(width, height/.test(ath)))
+    && !/bottom:\s*130\b/.test(ath) && !/bottom=\{24\}/.test(ath))
   const pip = blankStrings(readStripped("remotion/components/AvatarPIP.tsx"))
   check("AvatarPIP: the corner is pipCornerStyle(width, height, position, boxSize) from useVideoConfig (boxSize = the ring, or the keyed figure's larger box) — no typed corner literal",
     /pipCornerStyle\(width, height, position, boxSize\)/.test(pip) && /boxSize = keyed \? Math\.round\(size \* KEYED_SCALE\) : size/.test(pip) && !/top:\s*32\b/.test(pip) && !/bottom:\s*64\b/.test(pip))

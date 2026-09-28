@@ -23,7 +23,11 @@
  * resolved, never substituted). Every write is counted and returned.
  *
  * WHAT A REACTION MAY NOT DO (86B's rails, not bypassed):
- *   · No video is CREATED here. Creation — the tier-metered gate
+ *   · No video is CREATED here. (Wave 87: reactToVideoScriptApproved hands the
+ *     approved script to lib/video/render-from-approval.ts, which COMMISSIONS
+ *     it on the Director's rail — the same meter, hold-free plan gate and
+ *     staged 'queued' row every autonomous video rides; nothing here writes a
+ *     project or a status.) Creation — the tier-metered gate
  *     (lib/video/video-metering.ts gateVideoCreation / meterVideoCreation) and the
  *     fair-housing render hold — lives in lib/kernel/content-creators.ts
  *     createVideoProject, and a render is submitted by lib/kernel/video.ts
@@ -124,9 +128,13 @@ export async function reactToVideoReady(
 
 /**
  * video.script_approved — DISPATCHED. The approval already happened (by the one
- * gated writer); this reaction VERIFIES it on the row and tells the agent the
- * project is ready to render from the studio. It neither re-approves nor fakes a
- * "generating" status (see the header).
+ * gated writer); this reaction VERIFIES it on the row and then RENDERS it
+ * autonomously (wave 87, lane 87D — lib/video/render-from-approval.ts: the
+ * agent's D-ID twin first, voiceover when there is none, on the Director's
+ * metered, plan-gated rail). It neither re-approves nor fakes a "generating"
+ * status (see the header): the commission stages status 'queued' and the render
+ * worker takes it from there; a refusal names its reason to the agent AND fails
+ * this reaction so event_processing_log records it.
  */
 export async function reactToVideoScriptApproved(
   svc: any,
@@ -151,13 +159,29 @@ export async function reactToVideoScriptApproved(
     if (!project.ok) return fail(project.error)
     entityId = project.row.id
   }
-  await notifyInTenant(svc, brokerageId, recipientOf(payload, actorUserId), {
+  const { renderApprovedVideoScript } = await import("./render-from-approval")
+  const render = await renderApprovedVideoScript(svc, brokerageId, {
+    scriptId: script.id,
+    approvedByUserId: (payload?.approved_by as string | undefined) ?? actorUserId ?? null,
+  })
+  const staged = render.ok && !!render.videoProjectId
+  if (staged) out.written.push(render.status === "already_staged" ? "render_already_staged" : "render_commissioned")
+  const hostLine = render.host === "avatar"
+    ? "with your D-ID avatar"
+    : render.host === "voiceover" ? "as a voiceover video (set up your avatar in Settings → Voice & Avatar to appear on camera)" : ""
+  // The AGENT who fronts the video hears about it (proven a user of this tenant
+  // by notifyInTenant); the approver is the fallback recipient.
+  await notifyInTenant(svc, brokerageId, render.agentUserId ?? recipientOf(payload, actorUserId), {
     type: "video_script_approved",
-    title: "Video Script Approved",
-    body: "Your video script was approved. Open the video studio to render it.",
+    title: staged ? "Approved script is rendering" : "Approved script could not be rendered",
+    body: staged
+      ? `Your approved video script is being produced ${hostLine}. You will be notified when it is ready to review.`.replace("  ", " ")
+      : `Your video script was approved, but the video was not started: ${render.reason}`.slice(0, 600),
     entity_type: "video",
-    entity_id: entityId,
+    entity_id: render.videoProjectId ?? entityId,
+    priority: staged ? "medium" : "high",
   }, out)
+  if (!staged) return { ...out, success: false, error: `approved script ${script.id} not rendered (${render.status}): ${render.reason}` }
   return out
 }
 

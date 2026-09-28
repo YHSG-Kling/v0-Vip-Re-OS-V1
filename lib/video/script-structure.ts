@@ -578,3 +578,144 @@ export function narrationLengthDirective(budget: NarrationBudget): string {
   }
   return ceiling
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SHORT-FORM STRUCTURE — HOOK ≤ 2 s, ONE VALUE, ONE ASK (wave 87, lane 87D)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// OWNER (2026-09-28): "all scripts/avatar use/video creation at an advanced
+// level." The writers already carry the compliance blocks, the quality charter
+// (lib/ai/script-standards.ts) and the spoken-realism directive
+// (lib/video/realism-profile.ts); none of them carried the SHAPE a short-form
+// video is judged on in its first two seconds. Research (Exa, 2026):
+//   · dunphy.typito.com 2026-07 — "Hook (0-2s). The first frame is doing 80%
+//     of the work"; one clear CTA in the last 3-5 s, text on screen for all 5;
+//   · reel-e.ai 2026-03 — "the majority of skip decisions happen before the
+//     2-second mark";
+//   · velisto.ai 2026-09 — hook 0-3 s, a one-line promise, 3-5 beats, one CTA;
+//     ~35 spoken words per 15 s (150 wpm); write the screen text separately;
+//   · procontentai.com 2026-04 — value: ONE idea, three items max; the CTA is
+//     one specific next step (never "link in bio").
+// One number, derived from the ONE words-per-minute constant above — never a
+// second pace table.
+
+/** The spoken hook must land inside this many seconds (owner: "hook ≤2s"). */
+export const SHORT_FORM_HOOK_MAX_SECONDS = 2
+
+/** Words a speaker says inside the hook window at WORDS_PER_MINUTE (5 at 150 wpm). */
+export function hookWordBudget(seconds: number = SHORT_FORM_HOOK_MAX_SECONDS): number {
+  return Math.max(1, Math.floor((seconds / 60) * WORDS_PER_MINUTE))
+}
+
+/** Words an ON-SCREEN hook may carry and still be read inside the hook window. */
+export const ON_SCREEN_HOOK_MAX_WORDS = 6
+
+/** Words per on-screen beat (the bullet the screen shows while the voice explains). */
+export const ON_SCREEN_BEAT_MAX_WORDS = 6
+
+/**
+ * The CTA cue set — a closing line that asks for ONE next step. Lower-case
+ * stems matched on word boundaries; a question also counts (a soft ask:
+ * "want the checklist?").
+ */
+const CTA_CUES = [
+  "call", "text", "message", "reach out", "book", "schedule", "comment", "dm", "send",
+  "ask", "reply", "tap", "visit", "save this", "let's talk", "let me know", "grab",
+  "download", "join", "rsvp", "stop by", "email",
+]
+
+function firstClause(sentence: string): string {
+  // The HOOK is the first beat a listener hears, which ends at the first strong
+  // pause — a sentence end, or a dash / colon / semicolon inside it.
+  const cut = sentence.split(/\s[—–-]\s|[:;]/)[0] ?? sentence
+  return cut.trim()
+}
+
+export interface ScriptStructureAssessment {
+  /** The first spoken beat (first clause of the first sentence). */
+  hook: string
+  hookWords: number
+  hookSeconds: number
+  hookWithinBudget: boolean
+  /** Sentences between the hook sentence and the closing ask. */
+  valueBeats: number
+  /** The closing sentence asks for one next step. */
+  ctaPresent: boolean
+  cta: string | null
+  /** ADVISORY lines — a human-approved script is never rewritten by this. */
+  warnings: string[]
+}
+
+/**
+ * PURE. Read a script's short-form shape — hook ≤ SHORT_FORM_HOOK_MAX_SECONDS,
+ * one to five value beats, one closing ask. Advisory by construction (§5:
+ * warnings pass through); the writers put the same rule in the PROMPT
+ * (shortFormStructureDirective) so this is the backstop, not the gate.
+ */
+export function assessScriptStructure(script: string | null | undefined): ScriptStructureAssessment {
+  const sentences = spokenSentences(script)
+  const hook = sentences.length > 0 ? firstClause(sentences[0]) : ""
+  const hookWords = spokenWords(hook).length
+  const hookSeconds = Number(((hookWords / WORDS_PER_MINUTE) * 60).toFixed(2))
+  const hookWithinBudget = hookWords > 0 && hookWords <= hookWordBudget()
+  const last = sentences.length > 1 ? sentences[sentences.length - 1] : null
+  const lastLower = (last ?? "").toLowerCase()
+  const ctaPresent = !!last && (lastLower.trim().endsWith("?")
+    || CTA_CUES.some((c) => new RegExp(`(^|[^a-z'])${c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z]|$)`).test(lastLower)))
+  const valueBeats = Math.max(0, sentences.length - 1 - (ctaPresent ? 1 : 0))
+  const warnings: string[] = []
+  if (hookWords === 0) warnings.push("structure: the script is empty — no hook")
+  else if (!hookWithinBudget) warnings.push(`structure: the spoken hook is ${hookWords} words (~${hookSeconds}s) — lead with a line of ${hookWordBudget()} words or fewer so it lands inside ${SHORT_FORM_HOOK_MAX_SECONDS}s`)
+  if (valueBeats === 0 && sentences.length > 0) warnings.push("structure: no value beat between the hook and the close")
+  if (valueBeats > 5) warnings.push(`structure: ${valueBeats} value beats — short-form holds one idea in three to five beats`)
+  if (!ctaPresent && sentences.length > 1) warnings.push("structure: the close asks for nothing — end on ONE specific next step")
+  return { hook, hookWords, hookSeconds, hookWithinBudget, valueBeats, ctaPresent, cta: ctaPresent ? last : null, warnings }
+}
+
+/**
+ * The structure directive every short-form WRITER carries in its prompt
+ * (compliance-first's twin: the shape is asked for, then checked). The
+ * persona names who the ask is for, never who the viewer "is" (Fair Housing:
+ * speak to the situation, not a group).
+ */
+export function shortFormStructureDirective(args: { durationSeconds: number; persona?: "buyer" | "seller" | null }): string {
+  const hookWords = hookWordBudget()
+  const ask = args.persona === "seller"
+    ? "a no-pressure next step for a homeowner (a quick call about their plans, a no-obligation walkthrough)"
+    : args.persona === "buyer"
+      ? "a no-pressure next step for someone shopping for a home (a question they can send, a list of matching homes)"
+      : "one specific, no-pressure next step"
+  return [
+    `SHORT-FORM STRUCTURE (${args.durationSeconds}-second video):`,
+    `1. HOOK — the first spoken line is ${hookWords} words or fewer so it lands inside ${SHORT_FORM_HOOK_MAX_SECONDS} seconds: the viewer's situation, a specific fact, or a question. Never a greeting or self-introduction.`,
+    "2. VALUE — one idea in three short beats, one sentence each; specifics over adjectives; no numbers you were not given.",
+    `3. CLOSE — the last sentence asks for ${ask}. One ask only; never "link in bio", never urgency or guarantees.`,
+  ].join("\n")
+}
+
+/** What the screen shows for a script: a short on-screen hook, a title, three beats. */
+export interface OnScreenCopy { script: string; title: string; hook: string; bullets: string[] }
+
+function clipWords(text: string, max: number): string {
+  const words = spokenWords(text.replace(/[.!?]+$/, ""))
+  return words.length <= max ? words.join(" ") : `${words.slice(0, max).join(" ")}…`
+}
+
+/**
+ * PURE. The on-screen copy for a script a HUMAN already approved — cut VERBATIM
+ * from its own sentences (a model-authored overlay would put words on screen
+ * nobody approved). Hook = the first clause clipped to ON_SCREEN_HOOK_MAX_WORDS;
+ * beats = the value sentences, each clipped to ON_SCREEN_BEAT_MAX_WORDS (at most
+ * three); title = the library title, else the hook.
+ */
+export function onScreenCopyFromScript(script: string, title: string | null | undefined): OnScreenCopy {
+  const flat = (script ?? "").trim()
+  const shape = assessScriptStructure(flat)
+  const sentences = spokenSentences(flat)
+  const hook = clipWords(shape.hook || sentences[0] || "", ON_SCREEN_HOOK_MAX_WORDS)
+  const valueSentences = sentences.slice(1, shape.ctaPresent ? -1 : undefined)
+  const beats = (valueSentences.length > 0 ? valueSentences : sentences.slice(1)).slice(0, 3)
+    .map((s) => clipWords(s, ON_SCREEN_BEAT_MAX_WORDS)).filter(Boolean)
+  const t = (title ?? "").trim()
+  return { script: flat, title: t ? clipWords(t, 8) : hook, hook, bullets: beats.length > 0 ? beats : [hook] }
+}

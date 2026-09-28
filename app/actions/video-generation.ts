@@ -411,6 +411,33 @@ export async function updateScriptApprovalStatus(
     },
   })
 
+  // ── RENDER FROM APPROVAL (wave 87, lane 87D) ───────────────────────────────
+  // The kernel row above is the ledger; it dispatches nothing, so the routed
+  // video.script_approved reaction had NO emitter and an approved script sat
+  // until someone clicked render in the studio. Emitted through the ONE
+  // dispatching core — service client, the SESSION's tenant (derived above,
+  // never an argument), the approver proven a users row of it — whose hub
+  // reaction renders the script (lib/video/render-from-approval.ts: the agent's
+  // D-ID twin first, voiceover when there is none). The approval stands either
+  // way; a dispatch problem is logged, and the reaction's own refusals reach
+  // the agent as a notification and event_processing_log.
+  if (approvalStatus === "approved") {
+    const { recordLifecycleEvent } = await import("@/lib/events/lifecycle-event-core")
+    const { EVENT_TYPES } = await import("@/lib/events/types")
+    const emitted = await recordLifecycleEvent(supabase, brokerageId, {
+      event_type: EVENT_TYPES.VIDEO_SCRIPT_APPROVED,
+      user_id: actorUserId,
+      source: "ui",
+      entity_type: "video_script",
+      entity_id: scriptId,
+      payload: { script_id: scriptId, approved_by: actorUserId },
+      dedupe_key: `video.script_approved:${scriptId}:${now}`,
+    })
+    if (!emitted.ok) {
+      console.error(`[video-generation] approved script ${scriptId} — render-from-approval event not recorded: ${emitted.error}`)
+    }
+  }
+
   revalidatePath("/dashboard/videos/library")
   return script
 }

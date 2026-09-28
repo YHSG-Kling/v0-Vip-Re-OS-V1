@@ -570,6 +570,35 @@ export function cinemaCaptionStyle(width: number, height: number): CinemaCaption
   }
 }
 
+/**
+ * THE LOWER-THIRD'S PLACE AND TIME (wave 87, lane 87D — found by the lane's
+ * real render of the approval-render talking head). The LowerThird strap and
+ * the burned-in caption band BOTH parked on the safe-area bottom inset, so the
+ * agent's name sat UNDER the caption box for the whole body — half of it
+ * hidden, and the frame carried two bottom bands at once. Broadcast practice
+ * (and the short-form norm): the name strap IDENTIFIES the speaker as they
+ * first appear — in for ~0.5 s, held ~4 s, then out — and it sits clear of the
+ * caption band, never behind it.
+ *   · bottom = the caption band's bottom + a TWO-LINE caption band's height +
+ *     one body-step gap (the band's height from the same cinemaCaptionStyle
+ *     numbers the CaptionLayer draws with — one derivation);
+ *   · holdFrames = LOWER_THIRD_HOLD_SECONDS at the render's fps.
+ * PURE.
+ */
+export const LOWER_THIRD_HOLD_SECONDS = 4
+export const LOWER_THIRD_EXIT_FRAMES = 12
+
+export function cinemaLowerThirdPlacement(width: number, height: number, fps = 30): { bottom: number; holdFrames: number; exitFrames: number } {
+  const cap = cinemaCaptionStyle(width, height)
+  const { type } = cinemaFrame(width, height)
+  const twoLineBand = Math.ceil(cap.fontSize * cap.lineHeight * 2 + cap.padY * 2 + cap.tickHeight + cap.tickGap)
+  return {
+    bottom: cap.bandBottom + twoLineBand + Math.round(type.body * 0.5),
+    holdFrames: Math.round(LOWER_THIRD_HOLD_SECONDS * (fps > 0 ? fps : 30)),
+    exitFrames: LOWER_THIRD_EXIT_FRAMES,
+  }
+}
+
 // ── § AUDIO — fades derived from the composition, loudness from the master ──
 
 /**

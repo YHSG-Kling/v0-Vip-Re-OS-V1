@@ -54,6 +54,7 @@ import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
 import { fitBodyVisualPlan, fullPresenterBox, safeInsets, segmentAtFrame, type BodyTreatment, type BodyVisualPlan } from "../lib/video/body-visual-model"
 import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaFrame, cinemaLowerThirdPlacement } from "../lib/video/cinema-finish"
 
 export interface AgentTalkingHeadReelProps {
   /** Top hook label — short eyebrow (e.g. "MARKET UPDATE", "JUST LISTED",
@@ -176,6 +177,13 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
     : hasBroll ? "avatar_pip" : "full_avatar"
   const showBroll = hasBroll && treatment !== "full_avatar"
   const safe = safeInsets(width, height)
+  // WAVE 87 (lane 87D) — the frame's type scale and the lower-third's place and
+  // time, from the ONE cinema frame (lib/video/cinema-finish.ts). The lane's
+  // real render found the strap parked under the caption band for the whole
+  // body, the topic strip and the EHO/licence footer inside the platform-UI
+  // bands, and the cover's hook set in 28 px caps beneath the agent's name.
+  const { type } = cinemaFrame(width, height)
+  const strap = cinemaLowerThirdPlacement(width, height, FPS)
   // REALISM (wave 55) — null when no measurement or the clip fills the
   // window; a real frame otherwise. `frame` is GLOBAL (called at the
   // composition root, not inside the BODY <Sequence>), and BODY starts at
@@ -249,16 +257,23 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
               fontSize: 22, letterSpacing: 4, textTransform: "uppercase", color: "#fff", opacity: 0.7, marginBottom: 32,
             }}>{brand.brokerageName}</div>
           )}
+          {/* THE HOOK IS THE FIRST FRAME (wave 87, owner: "hook ≤2s"; Exa 2026 —
+              dunphy.typito.com: "the first frame is doing 80% of the work";
+              reel-e.ai: most skips happen before 2 s). It was a 28 px caps
+              eyebrow fading in at 0.2-0.7 s under a 72 px agent name — the
+              name was the headline and the hook the footnote. Now the hook is
+              the display line, on screen from the first frame (only the cut's
+              own SceneFade ramps it), and the name is the attribution under
+              it — the viewer is told WHY to stay before WHO is talking. */}
           <div style={{
-            fontSize: 28, letterSpacing: 6, textTransform: "uppercase",
-            color: brand.accentColor, fontWeight: 700,
-            opacity: interpolate(frame, [5, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
+            fontSize: type.display, fontWeight: 800, color: "#fff", lineHeight: 1.08,
+            maxWidth: width - safe.left - safe.right,
           }}>
             {hook}
           </div>
           <div style={{
-            fontSize: 72, fontWeight: 800, color: "#fff", lineHeight: 1.05, marginTop: 24,
-            opacity: interpolate(frame, [15, 35], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
+            fontSize: type.title, fontWeight: 700, color: brand.accentColor, marginTop: Math.round(type.body * 0.8),
+            opacity: interpolate(frame, [10, 24], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {agentName}
           </div>
@@ -331,11 +346,13 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
               the avatar so a muted viewer reads the message even when
               the audio is off. */}
           <div style={{
-            position: "absolute", top: 24, left: 24, right: 24,
-            padding: "16px 28px",
+            // Wave 87 — inside the safe insets (it sat at a typed 24 px, under
+            // the platforms' top UI band) and on the frame's body type step.
+            position: "absolute", top: safe.top, left: safe.left, right: safe.right,
+            padding: `${Math.round(type.body * 0.4)}px ${Math.round(type.body * 0.7)}px`,
             backgroundColor: brand.accentColor,
             color: brand.primaryColor,
-            fontSize: 26, fontWeight: 700, lineHeight: 1.25,
+            fontSize: type.body, fontWeight: 700, lineHeight: 1.25,
             borderRadius: 8, textAlign: "center",
           }}>
             {caption}
@@ -353,7 +370,9 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
             brokerageName={brand.brokerageName}
             primaryColor={brand.primaryColor}
             accentColor={brand.accentColor}
-            bottom={safe.bottom}
+            bottom={strap.bottom}
+            holdFrames={strap.holdFrames}
+            exitFrames={strap.exitFrames}
           />
         </AbsoluteFill>
         </SceneFade>
@@ -376,8 +395,12 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
             </div>
           )}
           <div style={{
-            position: "absolute", bottom: 24, left: 0, right: 0,
-            textAlign: "center", fontSize: 14, opacity: 0.55, letterSpacing: 1, lineHeight: 1.5,
+            // Wave 87 — the Equal Housing / licence line is a DISCLOSURE: it
+            // sat 24 px from the edge in 14 px type at 55 % — inside the
+            // platform UI band and unreadable on a phone. Now on the safe
+            // bottom inset, at the scale's caption step, at readable contrast.
+            position: "absolute", bottom: safe.bottom, left: safe.left, right: safe.right,
+            textAlign: "center", fontSize: type.caption, opacity: 0.8, letterSpacing: 1, lineHeight: 1.5,
           }}>
             {brand.brokerageName}
             {showEho && " · Equal Housing Opportunity"}

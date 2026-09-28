@@ -935,6 +935,23 @@ export interface CommissionOpts {
    * that explicitly excludes video is refused — lib/video/video-metering.ts).
    */
   autonomous?: boolean
+  /**
+   * Wave 87 (lane 87D) — the FULL narration a human already approved
+   * (lib/video/render-from-approval.ts). It becomes the row's script_content,
+   * which is what director-reel-render hands D-ID to SPEAK (and what the
+   * voiceover path synthesizes). Omitted → the gated hook line, as before (the
+   * situational reels speak their hook).
+   */
+  spokenScript?: string | null
+  /** Wave 87 — the meter's feature label (default video_director / video_director_autonomous). */
+  meterFeature?: string | null
+  /** Wave 87 — advisory compliance findings persisted on the staged row
+   *  (compliance_violations), the way the topic runner records them. Warnings
+   *  pass through (§5); they never block. */
+  complianceWarnings?: string[] | null
+  /** Wave 87 — provenance merged UNDER the Director's own video_metadata keys
+   *  (never over director_key / composition_id / render_cut). */
+  extraMetadata?: Record<string, unknown> | null
 }
 
 // Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
@@ -1568,7 +1585,9 @@ export async function commissionVideo(
       listing_id: opts.listingId ?? null,
       contact_id: opts.contactId ?? null,
       title: opts.title ?? `${hookLine} — ${format.compositionId}`,
-      script_content: hookLine,
+      // The spoken text: an approved full narration when one was handed in
+      // (wave 87), else the gated hook — what director-reel-render speaks.
+      script_content: opts.spokenScript?.trim() || hookLine,
       status: "queued",
       video_type: videoTypeForSituation(situation.kind, situation),
       format: formatForAspect(format.aspect),
@@ -1580,7 +1599,8 @@ export async function commissionVideo(
       is_ai_generated: true,
       approval_status: "pending_review", // gated — a human approves before send
       compliance_status: "passed",       // hook pre-cleared the gate above
-      compliance_violations: [],
+      // Advisory findings a caller post-checked (wave 87) — recorded, never a block.
+      compliance_violations: opts.complianceWarnings?.length ? opts.complianceWarnings : [],
       compliance_evaluated_at: now,
       // The cascade's compact context the hook was actually drafted with (§1,
       // wave 60E) — the render-queue reviewer reads it (see the tombstone at
@@ -1592,7 +1612,7 @@ export async function commissionVideo(
       // Wave 80C — the audit stamp the learning loop reads back (format-learning.ts).
       // Wave 84A — asset_readiness: wanted vs final treatments, the provenance
       // of every asset (reused | created | missing, source, cost), degradations.
-      video_metadata: { ...videoMetadata, supports_bookends: finish.bookends && supportsBookends, body_visual: bodyVisualStamp(visual.plan), asset_readiness: readiness.stamp },
+      video_metadata: { ...(opts.extraMetadata ?? {}), ...videoMetadata, supports_bookends: finish.bookends && supportsBookends, body_visual: bodyVisualStamp(visual.plan), asset_readiness: readiness.stamp },
       provider_metadata: providerMetadata,
       created_at: now,
       updated_at: now,
@@ -1611,7 +1631,7 @@ export async function commissionVideo(
     await meterVideoCreation({
       brokerageId: opts.brokerageId, agentId: directorAgentId, userId: opts.autonomous ? null : opts.agentUserId,
       plannedSeconds: visual.plan.durationInFrames / Math.max(1, visual.plan.fps),
-      feature: opts.autonomous ? "video_director_autonomous" : "video_director",
+      feature: opts.meterFeature || (opts.autonomous ? "video_director_autonomous" : "video_director"),
       projectId: (inserted as { id: string }).id, autonomous: opts.autonomous === true, decision: videoMeter,
     })
   }

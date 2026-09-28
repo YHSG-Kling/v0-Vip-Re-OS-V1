@@ -138,6 +138,36 @@ export async function applyMarketingAssetApproval(
       }
     }
   }
+  if (kind === "video_script") {
+    // WAVE 87 (lane 87D) — APPROVAL RENDERS. This queue approval is the second
+    // writer of video_scripts_library.approval_status (see the tombstone at
+    // app/actions/video-generation.ts updateScriptApprovalStatus); like that
+    // one it dispatched nothing, so an approved script never rendered. The
+    // tenant is the ROW's (every caller tenant-checked it before calling —
+    // "Caller is responsible for auth + tenant/agent scoping"), and the event
+    // goes through the ONE dispatching core, whose hub reaction renders it
+    // (lib/video/render-from-approval.ts). The approval stands either way.
+    const { data: vs, error: vsErr } = await svc.from("video_scripts_library")
+      .select("brokerage_id").eq("id", id).maybeSingle()
+    const scriptTenant = (vs as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    if (vsErr || !scriptTenant) {
+      console.error(`[approval-queue] approved video script ${id} — render event not recorded: ${vsErr?.message ?? "no tenant on the row"}`)
+    } else {
+      const { recordLifecycleEvent } = await import("@/lib/events/lifecycle-event-core")
+      const { EVENT_TYPES } = await import("@/lib/events/types")
+      const emitted = await recordLifecycleEvent(svc, scriptTenant, {
+        event_type: EVENT_TYPES.VIDEO_SCRIPT_APPROVED,
+        source: "ui",
+        entity_type: "video_script",
+        entity_id: id,
+        payload: { script_id: id },
+        // A double-click inside the same minute is one event; the core's own
+        // (script, approved text) key is what keeps a render single.
+        dedupe_key: `video.script_approved:${id}:${Math.floor(Date.now() / 60_000)}`,
+      })
+      if (!emitted.ok) console.error(`[approval-queue] approved video script ${id} — render event not recorded: ${emitted.error}`)
+    }
+  }
   if (kind === "direct_mail") {
     // Direct-mail has TWO terminals, and they key on DIFFERENT status values —
     // so approval must branch on whether the piece has a 1:1 recipient:
