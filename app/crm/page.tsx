@@ -3400,8 +3400,9 @@ export default function CRMPage() {
               : t.charAt(0).toUpperCase() + t.slice(1) + "s"}
           </button>
         ))}
-        {/* Buyer fatigue analytics — re-homed here from the retired /dashboard/buyers lane. */}
-        {typeFilter === "buyer" && (
+        {/* Contact fatigue — re-homed here from the retired /dashboard/buyers lane. Wave 88 (lane 88A):
+            sellers are scored too (unanswered follow-up, missed appointments, unsigned listing agreement). */}
+        {(typeFilter === "buyer" || typeFilter === "seller") && (
           <Link
             href="/dashboard/buyers/fatigue"
             className="ml-auto flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground whitespace-nowrap"

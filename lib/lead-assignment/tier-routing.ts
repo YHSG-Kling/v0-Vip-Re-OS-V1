@@ -75,7 +75,8 @@
 // rule pass on the team and brokerage tiers. It FALLS THROUGH to the rules below only when the owner is
 // inactive / no longer in this brokerage, off the team's board, or on an open book transfer whose
 // covering agent cannot take it (an open transfer with an able covering agent routes to THAT agent), or
-// a read is refused. No capacity fall-through and no on/off setting (both retired in 87A). The decision
+// a read is refused, or when the brokerage has switched the rung OFF (wave 88 lane 88A restored the
+// Settings → Lead Routing switch as an option, DEFAULT ON). No capacity fall-through (retired in 87A). The decision
 // and its facts live in ./mailbox-owner-preference.ts; the ledger method is 'rule_match' (CHECK-legal —
 // no migration) with the attribution in routing_reason.
 

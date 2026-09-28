@@ -39,8 +39,10 @@ import "server-only"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
+  DEFAULT_DECONFLICT_POLICY,
   leadLogChannel,
   sourceChannel,
+  touchTimestampColumn,
   TOUCH_SOURCE_TABLES,
   type DeconflictChannel,
   type TouchSourceTable,
@@ -56,12 +58,9 @@ interface ChannelPolicy {
   windowDays: number
 }
 
-const DEFAULT_POLICY: Record<DeconflictChannel, ChannelPolicy> = {
-  email: { maxTouches: 3, windowDays: 14 },
-  sms:   { maxTouches: 1, windowDays: 7 },
-  phone: { maxTouches: 1, windowDays: 7 },
-  mail:  { maxTouches: 1, windowDays: 30 },
-}
+// The per-channel defaults live in ./lead-channel (DEFAULT_DECONFLICT_POLICY — same values) since
+// wave 88 (lane 88A), so contact fatigue reads the SAME cap this engine enforces (one vocabulary, §6).
+const DEFAULT_POLICY: Record<DeconflictChannel, ChannelPolicy> = DEFAULT_DECONFLICT_POLICY
 
 export interface DeconflictInput {
   brokerageId:   string
@@ -130,7 +129,7 @@ async function countLedger(
 ): Promise<number> {
   const value = sourceChannel(table, channel)
   if (value === null) return 0
-  const tsCol = table === "lifetime_customer_touchpoints" ? "created_at" : "sent_at"
+  const tsCol = touchTimestampColumn(table)
   return safeCount(svc.from(table).select("id", { count: "exact", head: true })
     .eq("brokerage_id", brokerageId).eq("contact_id", contactId)
     .eq("channel", value).gte(tsCol, since))

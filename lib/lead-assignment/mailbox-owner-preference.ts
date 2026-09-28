@@ -2,9 +2,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // THE MAILBOX-OWNER RULE — a rung of THE assignment router, not a second router.
 //
-// Wave 86 follow-up (lane 86A2) built this as a switchable PREFERENCE. Wave 87 (lane 87A) makes it
+// Wave 86 follow-up (lane 86A2) built this as a switchable PREFERENCE. Wave 87 (lane 87A) made it
 // the RULE. Owner, verbatim: "since the email was from the agents' mailbox, it should lead back to the
-// agent."
+// agent." Wave 88 (lane 88A) restores the brokerage switch as the OTHER OPTION — default ON (see below).
 //
 // Wave 86 (owner verbatim: "yes all mailboxes should be configured the same.") sends an unknown sender
 // to an AGENT's or TEAM LEAD's mailbox RAW → dedup → enrich → dedup → THE gate, exactly like the
@@ -17,7 +17,8 @@
 //   · STILL THE BROKERAGE'S LEAD. The rung runs only inside autoAssignLead, AFTER the qualification /
 //     positive-intent gate — nothing reaches the agent before then, and what reaches them is the
 //     CONTACT handleLeadAssigned creates.
-//   · FALL THROUGH to the normal rules ONLY when the owner cannot take it:
+//   · FALL THROUGH to the normal rules when the brokerage has switched the rung OFF, or when the owner
+//     cannot take it:
 //       – the owner is INACTIVE, or NO LONGER IN THIS BROKERAGE (no active agents row here);
 //       – TEAM tier: the owner is OFF the routing team's board (teams see only their own board) and is
 //         not its team lead;
@@ -31,10 +32,13 @@
 //     capacity guardian's HIGH_LOAD share — capacity-pick.ts agentHasHeadroom) is REMOVED: the sender
 //     wrote to that agent, and a busy agent is still their agent. Survivor for the capacity test itself:
 //     lib/lead-assignment/capacity-pick.ts pickLeastLoadedWithHeadroom (the normal rules' pool pick).
-//   · TOMBSTONE (lane 87A): the brokerage ON/OFF SETTING (brokerage_settings.settings.lead_routing.
-//     prefer_mailbox_owner — MAILBOX_OWNER_PREFERENCE_KEY / _DEFAULT / mailboxOwnerPreferenceFromSettings,
-//     and the Settings → Lead Routing switch with its get/setMailboxOwnerPreference doors) is REMOVED:
-//     the owner ruled the direction, so it is not a per-brokerage option. Survivor: this rung, always on.
+//   · THE ON/OFF SWITCH IS BACK AS AN OPTION (wave 88, lane 88A). Owner, verbatim: "We do also need the
+//     mailbox switch back for another option." Lane 87A had retired the brokerage setting
+//     (brokerage_settings.settings.lead_routing.prefer_mailbox_owner); it is restored here — DEFAULT ON
+//     (an absent key, or any non-boolean, reads as ON: the owner's direction stays the default), and a
+//     tenant admin can turn it OFF in Settings → Lead Routing (app/actions/admin/lead-routing-settings.ts
+//     get/setMailboxOwnerPreference, written ONLY through lib/settings/brokerage-settings-merge.ts). OFF
+//     → the normal rules decide every mailbox lead. The capacity fall-through stays retired (87A).
 //   · SOLO-tier tenants never reach this rung: the single agent owns every lead already.
 //
 // The decision is PURE (decideMailboxOwnerPreference) so the proof drives every branch with no DB;
@@ -44,7 +48,24 @@ import type { createServiceClient } from "@/lib/supabase/service"
 
 type Svc = ReturnType<typeof createServiceClient>
 
+/** The settings key — brokerage_settings.settings.lead_routing.prefer_mailbox_owner (restored, 88A). */
+export const MAILBOX_OWNER_PREFERENCE_KEY = "prefer_mailbox_owner"
+/** Default when the brokerage has never saved the switch: ON — the owner's direction ("it should lead
+ *  back to the agent") is the default; OFF is the other option. */
+export const MAILBOX_OWNER_PREFERENCE_DEFAULT = true
+
+/** PURE — the stored settings jsonb → the effective switch. Absent → the default (ON); only an explicit
+ *  boolean `false` turns it off (a garbage value is not a decision to turn it off). */
+export function mailboxOwnerPreferenceFromSettings(settings: unknown): boolean {
+  const lr = settings && typeof settings === "object" ? (settings as Record<string, unknown>).lead_routing : null
+  const v = lr && typeof lr === "object" ? (lr as Record<string, unknown>)[MAILBOX_OWNER_PREFERENCE_KEY] : undefined
+  return typeof v === "boolean" ? v : MAILBOX_OWNER_PREFERENCE_DEFAULT
+}
+
 export interface MailboxOwnerFacts {
+  /** The brokerage's switch (Settings → Lead Routing): true = on (default), false = off, null = the
+   *  settings read was refused, undefined = not read yet (the lead is not a mailbox-owner lead). */
+  enabled?: boolean | null
   /** raw_data.mailbox_owner_kind of the raw row the lead came from ("agent" | "team_lead" | "brokerage" | null). */
   ownerKind: string | null
   /** raw_data.mailbox_owner_agent_id — agents.id (never users.id). */
@@ -75,6 +96,10 @@ export function decideMailboxOwnerPreference(f: MailboxOwnerFacts): MailboxOwner
   const skip = (reason: string): MailboxOwnerDecision => ({ prefer: false, reason: `mailbox-owner rule skipped — ${reason}` })
   if (f.provenanceError) return skip(`the lead's mailbox provenance could not be read (${f.provenanceError})`)
   if (f.ownerKind !== "agent" && f.ownerKind !== "team_lead") return skip("the lead did not land from an agent or team-lead mailbox")
+  // THE SWITCH (88A). Unread (undefined) is the default, ON; a REFUSED read is unknown → fail closed to
+  // the normal rules (always legal), exactly like every other refused read here.
+  if (f.enabled === null) return skip("the brokerage's lead-routing setting could not be read")
+  if (f.enabled === false) return skip("turned off in the brokerage's lead-routing settings")
   if (!f.ownerAgentId) return skip("the receiving mailbox's owner has no agents row")
   if (f.ownerActive !== true) return skip(f.ownerActive === null ? "the owner's agents row could not be read" : "the owner is inactive or no longer in this brokerage")
   if (f.ownerOnTeamBoard === false) return skip("the owner is not on the routing team's board")
@@ -123,6 +148,13 @@ export async function loadMailboxOwnerFacts(
   facts.ownerAgentId = row?.mailbox_owner_agent_id ?? null
   // Not from an agent / team-lead mailbox → nothing else is worth reading.
   if (facts.ownerKind !== "agent" && facts.ownerKind !== "team_lead") return facts
+
+  // THE SWITCH (88A) — the brokerage's own row (UNIQUE brokerage_id), error READ (§3).
+  const { data: bs, error: bsErr } = await supabase
+    .from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle()
+  facts.enabled = bsErr ? null : mailboxOwnerPreferenceFromSettings((bs as { settings?: unknown } | null)?.settings)
+  if (facts.enabled !== true) return facts
+
   if (!facts.ownerAgentId) return facts
   const ownerId = facts.ownerAgentId
 

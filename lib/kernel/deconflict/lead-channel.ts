@@ -100,5 +100,84 @@ export const TOUCH_SOURCE_TABLES = [
   "lifetime_customer_touchpoints",
 ] as const satisfies readonly TouchSourceTable[]
 
+// ─── THE CONTACT TOUCH LEDGER — shared with contact fatigue (wave 88, lane 88A) ──────────────
+//
+// Owner, verbatim: "I feel like over contacting is already built." It is — this engine. So contact
+// fatigue (lib/fatigue/fatigue-calculator.ts) does not keep a second list of "what counts as a
+// touch": it READS the over-touch engine's own ledgers, timestamps, channel words and policy from
+// here, and lib/kernel/deconflict/index.ts counts through the same descriptors. One vocabulary (§6):
+// a touch the cap counts is a follow-up fatigue counts, and a channel the cap calls saturated is the
+// channel fatigue reports as saturated.
+
+/** Every ledger the over-touch cap counts for a CONTACT: the two channel-implicit tables (the whole
+ *  table is one channel) plus the three channel-mapped ones above. */
+export const CONTACT_TOUCH_LEDGERS = [
+  "email_sends",
+  "direct_mail_recipients",
+  ...TOUCH_SOURCE_TABLES,
+] as const
+export type ContactTouchLedger = (typeof CONTACT_TOUCH_LEDGERS)[number]
+
+/** PURE — the column that dates a touch in each ledger (the one the cap's window filters on). */
+export function touchTimestampColumn(table: ContactTouchLedger): "sent_at" | "mailed_at" | "created_at" {
+  if (table === "direct_mail_recipients") return "mailed_at"
+  if (table === "lifetime_customer_touchpoints") return "created_at"
+  return "sent_at"
+}
+
+/** PURE — the engine channel a stored ledger row belongs to (the inverse of sourceChannel).
+ *  email_sends / direct_mail_recipients are channel-implicit; a stored word no engine channel maps
+ *  to (a 'video' / 'social' / 'in_app' row) is null — it is not a capped channel. */
+export function touchChannelOf(table: ContactTouchLedger, stored: string | null | undefined): DeconflictChannel | null {
+  if (table === "email_sends") return "email"
+  if (table === "direct_mail_recipients") return "mail"
+  if (!stored) return null
+  for (const ch of DECONFLICT_CHANNELS) if (CHANNEL_BY_TABLE[table][ch] === stored) return ch
+  return null
+}
+
+export interface DeconflictChannelPolicy {
+  maxTouches: number
+  windowDays: number
+}
+
+/** THE default per-contact over-touch policy (per channel, rolling window) — moved here from
+ *  lib/kernel/deconflict/index.ts (which imports it) so the PURE fatigue reader shares it. */
+export const DEFAULT_DECONFLICT_POLICY: Record<DeconflictChannel, DeconflictChannelPolicy> = {
+  email: { maxTouches: 3, windowDays: 14 },
+  sms:   { maxTouches: 1, windowDays: 7 },
+  phone: { maxTouches: 1, windowDays: 7 },
+  mail:  { maxTouches: 1, windowDays: 30 },
+}
+
+export interface SaturatedChannel {
+  channel: DeconflictChannel
+  touchesInWindow: number
+  policyMax: number
+  windowDays: number
+}
+
+/** PURE — the channels on which a contact is AT or OVER the over-touch cap right now: the next send
+ *  on that channel is the one evaluateDeconflict would suppress (`touches < maxTouches` is its allow
+ *  rule, so `touches >= maxTouches` is saturated). Each channel counts over its OWN window. */
+export function saturatedChannels(
+  touches: ReadonlyArray<{ channel: DeconflictChannel | null; at: string | null }>,
+  now: number = Date.now(),
+  policy: Record<DeconflictChannel, DeconflictChannelPolicy> = DEFAULT_DECONFLICT_POLICY,
+): SaturatedChannel[] {
+  const out: SaturatedChannel[] = []
+  for (const channel of DECONFLICT_CHANNELS) {
+    const p = policy[channel]
+    const since = now - p.windowDays * 86_400_000
+    const n = touches.filter((t) => {
+      if (t.channel !== channel || !t.at) return false
+      const at = Date.parse(t.at)
+      return Number.isFinite(at) && at >= since && at <= now
+    }).length
+    if (n >= p.maxTouches) out.push({ channel, touchesInWindow: n, policyMax: p.maxTouches, windowDays: p.windowDays })
+  }
+  return out
+}
+
 /** @proofSeam the engine reads channels per touch row through CHANNEL_BY_TABLE / leadLogChannel and is typed by DeconflictChannel; the roster exists so scripts/deconflict-channel-simulator.ts can sweep every channel × every touch table (TOUCH_SOURCE_TABLES) and prove each spelling round-trips. */
 export const DECONFLICT_CHANNELS = ["email", "sms", "phone", "mail"] as const

@@ -410,9 +410,15 @@ console.log("\n[G6 · the fatigue doors — every dispatched path answers GET; n
   const sweepAt = core.indexOf("export async function runFatigueSweep(")
   const pop = popAt >= 0 && sweepAt > popAt ? core.slice(popAt, sweepAt) : ""
   const sweep = sweepAt >= 0 ? core.slice(sweepAt) : ""
+  // Lane 88A re-anchor (the RULE): the sweep passes its scope as the population's FIRST argument (a
+  // client and an agent's-book filter may follow), and the input reads carry that scope through the
+  // tenant-scoped reader (fatigueInput applies it per case) while the anchor / lead / prior-score
+  // reads apply it directly.
   check("the core takes a declared TenantScope and applies it to every population read",
-    /runFatigueSweep\(\s*scope:\s*TenantScope/.test(sweep) && /loadFatigueSweepPopulation\(\s*scope\s*\)/.test(sweep)
-      && (pop.match(/applyTenantScope\(/g) ?? []).length >= 4)
+    /runFatigueSweep\(\s*scope:\s*TenantScope/.test(sweep) && /loadFatigueSweepPopulation\(\s*scope\s*[,)]/.test(sweep)
+      && /fatigueInput\(supabase, scope, source,/.test(pop) && (pop.match(/applyTenantScope\(/g) ?? []).length >= 4)
+  check("POSITIVE CONTROL: a population call that drops the sweep's scope is not accepted",
+    !/loadFatigueSweepPopulation\(\s*scope\s*[,)]/.test(`const pop = await loadFatigueSweepPopulation(platformScope(reason))`))
   check("the core reads its refusals (§3) and throws rather than reading as 'nobody to score'",
     (pop.match(/if\s*\(\s*error\s*\)\s*throw/g) ?? []).length >= 4)
   check("the core carries the recovery plan — once per NEW alert", /if\s*\(\s*scored\.alert_raised\s*\)/.test(sweep) && /generateRecoveryPlan\(\s*scored\s*\)/.test(sweep))
@@ -431,9 +437,15 @@ console.log("\n[G6 · the fatigue doors — every dispatched path answers GET; n
   const doorBody = door.slice(0, door.indexOf("\n}\n") + 2)
   check("the session door exists, is async, and takes NO parameter (tenant never from the caller)",
     /export async function recalculateBrokerageFatigue\(\s*\)/.test(action))
-  check("the door gates FIRST (requireTenantAdminOrSoloOwner) and refuses on !ok",
-    /requireTenantAdminOrSoloOwner\(\)/.test(doorBody) && /if\s*\(\s*!auth\.ok\s*\)\s*return/.test(doorBody)
-      && doorBody.indexOf("requireTenantAdminOrSoloOwner(") < doorBody.indexOf("runFatigueSweep("))
+  // Lane 88A re-anchor (the RULE): the admin gate still runs FIRST; a seat that fails it no longer
+  // stops at "Forbidden" but reaches the core ONLY over its own book (owner: "Need fatigue also for
+  // agents") — never the tenant-wide sweep — and a seat with no agent book is still refused.
+  const nonAdmin = doorBody.slice(doorBody.indexOf("if (!auth.ok) {"), doorBody.indexOf("runFatigueSweep(tenantScope(auth.brokerageId"))
+  check("the door gates FIRST (requireTenantAdminOrSoloOwner); a seat that fails it reaches the core ONLY over its own book",
+    /requireTenantAdminOrSoloOwner\(\)/.test(doorBody) && /if\s*\(\s*!auth\.ok\s*\)\s*\{/.test(doorBody)
+      && doorBody.indexOf("requireTenantAdminOrSoloOwner(") < doorBody.indexOf("runFatigueSweep(")
+      && /\{ bookAgentId: viewer\.bookAgentId \}/.test(nonAdmin) && /if \(viewer\.bookAgentId === null\) return \{ success: false/.test(nonAdmin)
+      && /if \(!viewer\.ok\) return/.test(nonAdmin) && !/runFatigueSweep\(tenantScope\(auth\./.test(nonAdmin))
   check("the door scopes the core to the SESSION brokerage", /runFatigueSweep\(\s*tenantScope\(\s*auth\.brokerageId/.test(doorBody))
   check("the door returns the counted result", /return\s*\{\s*success:\s*true\s*,\s*data\s*\}/.test(doorBody))
 

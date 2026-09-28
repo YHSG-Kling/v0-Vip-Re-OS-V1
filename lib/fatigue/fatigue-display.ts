@@ -21,6 +21,69 @@ export interface FatigueScoreInput {
   risk_level:        string | null
   offers_rejected:   number | null
   engagement_trend:  string | null
+  /** The calculator's factor snapshot (buyer_fatigue_scores.contributing_factors jsonb). Optional —
+   *  a row written before wave 88 carries only the buyer-search fields. */
+  contributing_factors?: unknown
+}
+
+// ─── WAVE 88 (lane 88A) — the words for the new inputs ────────────────────────
+// Owner: "Calculating fatigue should also take into consideration responses to follow up, Fatigue
+// for sellers that haven't signed a listing agreement meaning unresponsive to follow up, missed
+// appointments, etc." The calculator (lib/fatigue/fatigue-calculator.ts) scores them; THIS module
+// owns the words, so the alert the calculator writes and the card the agent reads say the same thing.
+
+/** Unanswered follow-ups start to count at this many — one unanswered touch is ordinary. The
+ *  calculator imports it (score) and the card uses it (words), so they cannot disagree. */
+export const UNANSWERED_FOLLOW_UP_FLOOR = 2
+
+/** The factor snapshot, structurally (every field optional — old rows lack the wave-88 ones). */
+export interface FatigueFactorsInput {
+  total_showings?:        number | null
+  total_tour_days?:       number | null
+  days_searching?:        number | null
+  offers_rejected?:       number | null
+  engagement_trend?:      string | null
+  engagement_detail?:     string | null
+  follow_ups_sent?:       number | null
+  replies_received?:      number | null
+  unanswered_follow_ups?: number | null
+  saturated_channels?:    string[] | null
+  missed_appointments?:   number | null
+  unsigned_seller?:       boolean | null
+  seller_unresponsive?:   boolean | null
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+
+/** PURE — one sentence naming what is driving a person's fatigue. */
+export function describeFatigueFactors(f: FatigueFactorsInput | null | undefined): string {
+  if (!f) return "no fatigue signals on file"
+  const n = (v: number | null | undefined) => (typeof v === "number" && Number.isFinite(v) ? v : 0)
+  const parts: string[] = []
+  const showings = n(f.total_showings), tourDays = n(f.total_tour_days), days = n(f.days_searching), offers = n(f.offers_rejected)
+  if (showings || tourDays || offers || days) {
+    parts.push(`${plural(showings, "showing")}, ${plural(tourDays, "tour day")}, ${plural(days, "day")} searching, ${plural(offers, "rejected offer")}`)
+  }
+  const detail = f.engagement_detail ?? f.engagement_trend
+  if (detail && detail !== "no buyer search on file" && detail !== "stable") parts.push(`engagement ${detail}`)
+  const sent = n(f.follow_ups_sent), unanswered = n(f.unanswered_follow_ups)
+  if (unanswered >= UNANSWERED_FOLLOW_UP_FLOOR) {
+    parts.push(n(f.replies_received) === 0
+      ? `no reply to ${plural(sent, "follow-up")} in the last 30 days`
+      : `${unanswered} of ${plural(sent, "follow-up")} unanswered since the last reply`)
+  }
+  const saturated = (f.saturated_channels ?? []).filter(Boolean)
+  if (saturated.length) parts.push(`at the over-touch cap on ${saturated.join(", ")}`)
+  const missed = n(f.missed_appointments)
+  if (missed > 0) parts.push(`${plural(missed, "missed appointment")}`)
+  if (f.seller_unresponsive) parts.push("seller has not signed a listing agreement and is not answering follow-up")
+  else if (f.unsigned_seller) parts.push("seller has not signed a listing agreement yet")
+  return parts.length ? parts.join("; ") : "no fatigue signals on file"
+}
+
+function factorsOf(score: FatigueScoreInput): FatigueFactorsInput | null {
+  const f = score.contributing_factors
+  return f && typeof f === "object" && !Array.isArray(f) ? (f as FatigueFactorsInput) : null
 }
 
 /** Minimal shape this module needs from a fatigue_alerts row. */
@@ -104,6 +167,17 @@ export function buildReachoutGuard(
     }
     if (score.engagement_trend === "declining") {
       parts.push("Engagement is declining.")
+    }
+    // Wave 88 — follow-up responsiveness, the over-touch cap, missed appointments, unsigned sellers.
+    const f = factorsOf(score)
+    if (f) {
+      const unanswered = typeof f.unanswered_follow_ups === "number" ? f.unanswered_follow_ups : 0
+      if (unanswered >= UNANSWERED_FOLLOW_UP_FLOOR) parts.push(`${unanswered} follow-ups unanswered.`)
+      const saturated = (f.saturated_channels ?? []).filter(Boolean)
+      if (saturated.length) parts.push(`At the over-touch cap on ${saturated.join(", ")} — the next send there will be held.`)
+      const missed = typeof f.missed_appointments === "number" ? f.missed_appointments : 0
+      if (missed > 0) parts.push(`${missed} missed appointment${missed > 1 ? "s" : ""}.`)
+      if (f.seller_unresponsive) parts.push("Unsigned seller going quiet.")
     }
     if (safe) {
       parts.push("OK to reach out.")

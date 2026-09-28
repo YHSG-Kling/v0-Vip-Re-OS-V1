@@ -72,6 +72,8 @@ const STRONG_HEALTH = 80
 const WEAK_HEALTH = 50
 /** This many+ stale (cold past DEFAULT_STALE_DAYS) contacts on the agent's book is a LEAK. */
 export const STALE_LEAK_COUNT = 5
+/** This many+ HIGH / CRITICAL fatigue contacts on the agent's book is a LEAK (wave 88). */
+export const FATIGUED_LEAK_COUNT = 3
 /** Education completion at/below this (with assignments on file) is a LEAK. */
 const WEAK_EDUCATION_PCT = 50
 /** Education completion at/above this is a STRENGTH. */
@@ -98,6 +100,10 @@ export interface AgentCoachingStats {
   noShows: number
   /** Relationship hygiene: contacts on the book that have gone cold (stale). */
   staleContacts: number
+  /** Contacts on the book scored HIGH / CRITICAL fatigue (buyer_fatigue_scores.agent_id — wave 88,
+   *  lane 88A: unanswered follow-up, missed appointments, quiet unsigned sellers, search fatigue).
+   *  Optional: a stats row built before wave 88 has none, and none is not zero-faked. */
+  fatiguedContacts?: number
   /** Education. */
   lessonsAssigned: number
   lessonsCompleted: number
@@ -164,6 +170,16 @@ export function composeCoachingBrief(stats: AgentCoachingStats): CoachingBrief {
     leakFocus.push(`Re-engage your ${stats.staleContacts} cold contacts — leads going stale is lost pipeline you already paid for.`)
   }
 
+  // ── Fatigued book (wave 88, lane 88A — "Need fatigue also for agents") ──
+  // The AGENT-LEVEL read of contact fatigue: how many people on this agent's book the one fatigue
+  // calculator scores high/critical. A cold book is the agent not touching people; a fatigued book is
+  // people not answering (or being over-touched, or missing appointments) — the coaching differs.
+  const fatigued = stats.fatiguedContacts ?? 0
+  if (fatigued >= FATIGUED_LEAK_COUNT) {
+    leaks.push(`${fatigued} contacts on your book are showing high fatigue — unanswered follow-up, missed appointments or a quiet unsigned seller. More touches will not fix it; change the approach.`)
+    leakFocus.push(`Work your ${fatigued} fatigued contacts differently — pause the cadence, then one personal, useful touch each (the contact card shows what is driving it).`)
+  }
+
   // ── Deal health (active deals trending healthy vs at-risk) ──
   if (stats.activeDeals > 0 && stats.avgHealthScore != null) {
     if (stats.avgHealthScore >= STRONG_HEALTH) {
@@ -194,6 +210,7 @@ export function composeCoachingBrief(stats: AgentCoachingStats): CoachingBrief {
     stats.appointments >= MIN_SAMPLE ||
     stats.tours >= MIN_SAMPLE ||
     stats.staleContacts >= STALE_LEAK_COUNT ||
+    (stats.fatiguedContacts ?? 0) >= FATIGUED_LEAK_COUNT ||
     (stats.activeDeals > 0 && stats.avgHealthScore != null) ||
     (stats.lessonsAssigned > 0 && stats.educationCompletionPct != null) ||
     stats.closings > 0
@@ -424,6 +441,20 @@ async function buildCoachingStats(
     if (c.agent_id) staleCount.set(c.agent_id, (staleCount.get(c.agent_id) ?? 0) + 1)
   }
 
+  // Fatigued book (wave 88, lane 88A): contacts on the agent's book the one fatigue calculator
+  // scored high / critical — buyer_fatigue_scores.agent_id (agents.id, stamped by calculateFatigue).
+  // A refused read leaves the metric ABSENT (undefined), never zero.
+  const fatiguedCount = new Map<string, number>()
+  const { data: fatigued, error: fatiguedErr } = await supabase
+    .from("buyer_fatigue_scores").select("agent_id")
+    .eq("brokerage_id", brokerageId).in("agent_id", agentIds)
+    .in("risk_level", ["high", "critical"])
+    .limit(20000)
+  if (fatiguedErr) console.error("[agent-coaching] fatigue read refused:", fatiguedErr.message)
+  for (const f of (fatigued ?? []) as Array<{ agent_id: string | null }>) {
+    if (f.agent_id) fatiguedCount.set(f.agent_id, (fatiguedCount.get(f.agent_id) ?? 0) + 1)
+  }
+
   return agents.map((a) => {
     const card = cardById.get(a.id)
     return {
@@ -438,6 +469,7 @@ async function buildCoachingStats(
       appointments: (a.user_id && apptCount.get(a.user_id)) || 0,
       noShows: (a.user_id && noShowCount.get(a.user_id)) || 0,
       staleContacts: staleCount.get(a.id) ?? 0,
+      fatiguedContacts: fatiguedErr ? undefined : (fatiguedCount.get(a.id) ?? 0),
       lessonsAssigned: card?.lessonsAssigned ?? 0,
       lessonsCompleted: card?.lessonsCompleted ?? 0,
       educationCompletionPct: card?.educationCompletionPct ?? null,

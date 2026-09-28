@@ -16,6 +16,7 @@
 import { generateTextRouted } from "@/lib/ai/models"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { FatigueResult } from "./fatigue-calculator"
+import { describeFatigueFactors } from "./fatigue-display"
 
 // Retyped off the surviving calculator. The fatigue-scorer this used to import
 // spoke a risk vocabulary (watch/warning) the buyer_fatigue_scores CHECK rejects,
@@ -52,7 +53,11 @@ export async function generateRecoveryPlan(
         `- Tour days: ${score.factors.total_tour_days}\n` +
         `- Days searching: ${score.factors.days_searching}\n` +
         `- Rejected offers: ${score.factors.offers_rejected}\n` +
-        `- Engagement: ${score.factors.engagement_trend}\n` +
+        `- Engagement: ${score.factors.engagement_detail ?? score.factors.engagement_trend}\n` +
+        // Wave 88 (lane 88A): follow-up responsiveness, missed appointments, unsigned sellers — the
+        // same sentence the alert and the contact card carry (fatigue-display).
+        `- Signals: ${describeFatigueFactors(score.factors)}\n` +
+        `If follow-up is going unanswered, the plan must pause or slow outreach — never add more.\n` +
         `Generate a recovery plan.`,
     })
 

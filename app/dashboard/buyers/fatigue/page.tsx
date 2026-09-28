@@ -4,6 +4,7 @@ import { useState, useTransition, useEffect, useCallback } from "react"
 import { useRouter }                                         from "next/navigation"
 import { cn }                                               from "@/lib/utils"
 import { getBrokerageFatigueData, recalculateBrokerageFatigue } from "@/app/actions/buyer-fatigue"
+import { describeFatigueFactors, UNANSWERED_FOLLOW_UP_FLOOR, type FatigueFactorsInput } from "@/lib/fatigue/fatigue-display"
 
 type RiskLevel = "fresh" | "moderate" | "high" | "critical"
 
@@ -17,6 +18,9 @@ interface FatigueRow {
   offers_rejected:  number
   engagement_trend: string | null
   last_calculated_at: string | null
+  /** Wave 88 (lane 88A): the calculator's factor snapshot — follow-up responsiveness, missed
+   *  appointments, unsigned sellers (absent on rows scored before wave 88). */
+  contributing_factors?: FatigueFactorsInput | null
   contacts: {
     id:         string
     first_name: string
@@ -139,9 +143,10 @@ export default function BrokerageFatiguePage() {
       {/* Header */}
       <div className="border-b border-border bg-card px-6 py-4 flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold">Buyer Fatigue Dashboard</h1>
+          <h1 className="text-xl font-semibold">Contact Fatigue</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Everyone with showings, tours, offers or engagement signals, ranked by fatigue risk
+            Buyers and sellers with showings, tours, offers, engagement, follow-up or missed appointments,
+            ranked by fatigue risk. Agents see the contacts on their own book.
           </p>
         </div>
         <button
@@ -149,7 +154,7 @@ export default function BrokerageFatiguePage() {
           disabled={isPending}
           className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
         >
-          {isPending ? "Recalculating..." : "Recalculate All"}
+          {isPending ? "Recalculating..." : "Recalculate"}
         </button>
       </div>
 
@@ -214,6 +219,8 @@ export default function BrokerageFatiguePage() {
                     { label: "Risk Level",     key: null },
                     { label: "Days Searching", key: "days_searching" as SortKey },
                     { label: "Showings",       key: "total_showings" as SortKey },
+                    { label: "Follow-up",      key: null },
+                    { label: "Missed Appts",   key: null },
                     { label: "Alerts",         key: null },
                   ].map(col => (
                     <th
@@ -239,6 +246,9 @@ export default function BrokerageFatiguePage() {
                     ? `${row.contacts.users.first_name} ${row.contacts.users.last_name}`
                     : "—"
                   const contactId = row.contacts?.id ?? row.contact_id
+                  const f = row.contributing_factors ?? null
+                  const unanswered = f?.unanswered_follow_ups ?? 0
+                  const sent = f?.follow_ups_sent ?? 0
 
                   return (
                     <tr
@@ -267,6 +277,13 @@ export default function BrokerageFatiguePage() {
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{row.days_searching}</td>
                       <td className="px-4 py-3 text-muted-foreground">{row.total_showings}</td>
+                      <td className="px-4 py-3 text-muted-foreground" title={describeFatigueFactors(f)}>
+                        {sent === 0 ? "—" : unanswered >= UNANSWERED_FOLLOW_UP_FLOOR
+                          ? <span className="text-orange-700">{unanswered} of {sent} unanswered</span>
+                          : `${sent} sent`}
+                        {f?.seller_unresponsive ? <span className="ml-1 text-xs text-red-700">· unsigned seller</span> : null}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">{f?.missed_appointments ? f.missed_appointments : "—"}</td>
                       <td className="px-4 py-3 text-muted-foreground">
                         {(row.risk_level === "high" || row.risk_level === "critical") ? (
                           <span className="inline-block h-2 w-2 rounded-full bg-orange-400" />

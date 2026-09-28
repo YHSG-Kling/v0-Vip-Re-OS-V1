@@ -19,9 +19,19 @@ import { resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
 import { BUYER_CONCLUDED_STAGES } from "@/lib/contacts/buyer-stage"
 import { generateTextRouted }  from "@/lib/ai/models"
 import { KernelEvent }         from "@/lib/kernel/events"
-import { deriveRiskLevel, type FatigueRiskLevel } from "./fatigue-display"
+import { deriveRiskLevel, describeFatigueFactors, UNANSWERED_FOLLOW_UP_FLOOR, type FatigueRiskLevel } from "./fatigue-display"
 import { generateRecoveryPlan } from "./recovery-generator"
-import { applyTenantScope, describeTenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
+import { applyTenantScope, describeTenantScope, tenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
+// THE over-contact capability (lib/kernel/deconflict — "over contacting is already built", owner,
+// wave 88): fatigue reads the engine's own touch ledgers, timestamps, channel words and cap.
+import {
+  CONTACT_TOUCH_LEDGERS,
+  DEFAULT_DECONFLICT_POLICY,
+  saturatedChannels,
+  touchChannelOf,
+  touchTimestampColumn,
+  type ContactTouchLedger,
+} from "@/lib/kernel/deconflict/lead-channel"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -36,7 +46,25 @@ export interface FatigueFactors {
   days_searching:            number
   offers_rejected:           number
   engagement_decline_factor: number // 0 | 1 | 2
+  /** The buyer_fatigue_scores.engagement_trend CHECK word: increasing | stable | declining | stopped. */
   engagement_trend:          string
+  /** The human reading behind the trend word ("no recent activity", "sharp decline", …) — for copy. */
+  engagement_detail:         string
+  // ── Wave 88 (lane 88A) — responsiveness to follow-up, missed appointments, unsigned sellers ──
+  /** Outbound touches in the follow-up window, from the over-touch engine's own ledgers. */
+  follow_ups_sent:           number
+  /** Replies (inbound messages / portal messages / inbound calls / logged ISA replies) in the window. */
+  replies_received:          number
+  /** Follow-ups sent AFTER the most recent reply in the window (all of them when nobody replied). */
+  unanswered_follow_ups:     number
+  /** Engine channels at / over the over-touch cap right now (the next send would be suppressed). */
+  saturated_channels:        string[]
+  /** No-shows in the missed-appointment window (calendar_events marked 'no_show' on this contact). */
+  missed_appointments:       number
+  /** A seller (contact_type seller | both) with no signed listing agreement. */
+  unsigned_seller:           boolean
+  /** …who is also not answering follow-up — the owner's "unresponsive to follow up". */
+  seller_unresponsive:       boolean
 }
 
 export interface FatigueResult {
@@ -69,7 +97,8 @@ function riskLabel(r: RiskLevel): string {
 // on leads and contacts which is user run. should be run on how the fatigue
 // calculation is derived."
 //
-// calculateFatigue derives a score from FOUR inputs and nothing else — completed
+// As of lane 87A, calculateFatigue derived a score from FOUR inputs (wave 88 adds three families —
+// see below; the rule is unchanged) — completed
 // showings (count + days searching), completed tours (distinct tour days),
 // rejected offers, and the buyer_behavior_log engagement trend. So the people a
 // sweep scores are exactly the people who HAVE at least one of those inputs; a
@@ -91,20 +120,144 @@ function riskLabel(r: RiskLevel): string {
 // scored and never faked. After conversion the owner's ruling applies ("once a
 // lead converts … only contacts get the actions") — the score lands on the contact.
 
-/** The four sources calculateFatigue derives from, in formula order. */
-export const FATIGUE_INPUT_SOURCES = ["showings", "tours", "offers", "buyer_behavior_log"] as const
+//
+// ── WAVE 88 (lane 88A) — THE SAME CALCULATOR, MORE INPUTS ─────────────────────
+// Owner, verbatim: "Need fatigue also for agents. Calculating fatigue should also take into
+// consideration responses to follow up, Fatigue for sellers that haven't signed a listing agreement
+// meaning unresponsive to follow up, missed appointments, etc." · "I feel like over contacting is
+// already built."
+//
+// Extended, not rewritten: the four buyer-search inputs and their formula are unchanged, and three
+// input families join them — declared HERE, so the population keeps deriving from the formula:
+//   · FOLLOW-UP TOUCHES — the over-touch engine's own ledgers (CONTACT_TOUCH_LEDGERS from
+//     lib/kernel/deconflict/lead-channel.ts, the "already built" over-contact capability), dated by
+//     the engine's own columns, inside the engine's longest window. Not a second touch list.
+//   · MISSED APPOINTMENTS — calendar_events marked 'no_show' (the appointment-noshow autopilot's
+//     mark, entity_type 'contact', entity_id = contacts.id) — the one appointment ledger.
+//   · RESPONSES (FATIGUE_RESPONSE_SOURCES below) TEMPER, never raise: a reply resets the
+//     unanswered-follow-up count. They are read through their own one reader and do not make a
+//     person on their own (someone who only wrote in has nothing to be fatigued by).
+// A seller's unsigned listing agreement is a QUALIFIER on the follow-up signal (it raises only when
+// that seller is also not answering), read from listing_agreements for sellers only.
+
+/** The buyer-search inputs (lane 87A's four), in formula order. */
+const BUYER_SEARCH_SOURCES = ["showings", "tours", "offers", "buyer_behavior_log"] as const
+/** The missed-appointment input: calendar_events is THE appointment ledger (the listing-appointment
+ *  engine books into it; the no-show autopilot marks it). `appointments` also carries a 'no_show'
+ *  status but NOTHING in the tree writes that table (test:writerless-reads) — reading it would be a
+ *  dead feature wearing a working query, so it is deliberately not an input. */
+const MISSED_APPOINTMENT_SOURCES = ["calendar_events"] as const
+
+/** Every source calculateFatigue derives a RAISING term from — buyer search, the over-touch
+ *  engine's follow-up ledgers, missed appointments. The population is exactly who these name. */
+export const FATIGUE_INPUT_SOURCES = [
+  ...BUYER_SEARCH_SOURCES,
+  ...CONTACT_TOUCH_LEDGERS,
+  ...MISSED_APPOINTMENT_SOURCES,
+] as const
 export type FatigueInputSource = (typeof FATIGUE_INPUT_SOURCES)[number]
 
-/** THE one reader of a fatigue input: the source's table + the row filter the formula counts.
- *  Keyed on the person (contacts.id) by every caller. */
-function fatigueInput(supabase: Svc, source: FatigueInputSource, columns: string, count?: "exact") {
+/** The follow-up window: the over-touch engine's LONGEST channel window (mail, 30d) — derived, so
+ *  every channel's cap window fits inside the rows read. */
+export const FOLLOW_UP_WINDOW_DAYS = Math.max(...Object.values(DEFAULT_DECONFLICT_POLICY).map((p) => p.windowDays))
+/** The missed-appointment window — the coaching horizon lib/kernel/agent-coaching.ts reads no-shows over. */
+const MISSED_APPOINTMENT_WINDOW_DAYS = 90
+// UNANSWERED_FOLLOW_UP_FLOOR (unanswered follow-ups start to count at 2 — one is ordinary) lives in
+// the pure ./fatigue-display beside deriveRiskLevel, so the card's words and the score agree.
+
+const DAY_MS = 86_400_000
+const sinceIso = (days: number) => new Date(Date.now() - days * DAY_MS).toISOString()
+
+/** The column naming the person in each input (calendar_events keys its subject on entity_id). */
+function fatiguePersonColumn(source: FatigueInputSource): "contact_id" | "entity_id" {
+  return source === "calendar_events" ? "entity_id" : "contact_id"
+}
+
+/** THE one reader of a fatigue input: the source's table + the row filter the formula counts,
+ *  TENANT-SCOPED BY CONSTRUCTION (wave 88, lane 88A): every case applies the caller's TenantScope
+ *  itself, so no read of an input can leave the tenant — the calculator passes tenantScope(its
+ *  brokerage), the sweep passes its own scope (platform → no predicate, by declaration). Before,
+ *  the four buyer-search reads were pinned only through the person (the contact was tenant-checked
+ *  first); the tenant is now on every input row read as well. Keyed on the person by every caller. */
+function fatigueInput(supabase: Svc, scope: TenantScope, source: FatigueInputSource, columns: string, count?: "exact") {
   const opts = count ? { count } : undefined
+  const followUpSince = sinceIso(FOLLOW_UP_WINDOW_DAYS)
+  const missedSince = sinceIso(MISSED_APPOINTMENT_WINDOW_DAYS)
   switch (source) {
-    case "showings":           return supabase.from("showings").select(columns, opts).eq("status", "completed")
-    case "tours":              return supabase.from("tours").select(columns, opts).eq("status", "completed")
-    case "offers":             return supabase.from("offers").select(columns, opts).eq("status", "rejected")
-    case "buyer_behavior_log": return supabase.from("buyer_behavior_log").select(columns, opts)
+    case "showings":           { const q = supabase.from("showings").select(columns, opts).eq("status", "completed"); applyTenantScope(q, scope); return q }
+    case "tours":              { const q = supabase.from("tours").select(columns, opts).eq("status", "completed"); applyTenantScope(q, scope); return q }
+    case "offers":             { const q = supabase.from("offers").select(columns, opts).eq("status", "rejected"); applyTenantScope(q, scope); return q }
+    case "buyer_behavior_log": { const q = supabase.from("buyer_behavior_log").select(columns, opts); applyTenantScope(q, scope); return q }
+    // Follow-up touches — the over-touch engine's ledgers, windowed on its own timestamp columns.
+    case "email_sends":                    { const q = supabase.from("email_sends").select(columns, opts).gte(touchTimestampColumn("email_sends"), followUpSince); applyTenantScope(q, scope); return q }
+    case "direct_mail_recipients":         { const q = supabase.from("direct_mail_recipients").select(columns, opts).gte(touchTimestampColumn("direct_mail_recipients"), followUpSince); applyTenantScope(q, scope); return q }
+    case "isa_outreach_log":               { const q = supabase.from("isa_outreach_log").select(columns, opts).gte(touchTimestampColumn("isa_outreach_log"), followUpSince); applyTenantScope(q, scope); return q }
+    case "marketing_campaign_touchpoints": { const q = supabase.from("marketing_campaign_touchpoints").select(columns, opts).gte(touchTimestampColumn("marketing_campaign_touchpoints"), followUpSince); applyTenantScope(q, scope); return q }
+    case "lifetime_customer_touchpoints":  { const q = supabase.from("lifetime_customer_touchpoints").select(columns, opts).gte(touchTimestampColumn("lifetime_customer_touchpoints"), followUpSince); applyTenantScope(q, scope); return q }
+    // Missed appointments.
+    case "calendar_events":    { const q = supabase.from("calendar_events").select(columns, opts).eq("entity_type", "contact").eq("status", "no_show").gte("start_at", missedSince); applyTenantScope(q, scope); return q }
   }
+}
+
+/** The replies that answer a follow-up — the INBOUND lanes the one inbox reader
+ *  (lib/kernel/communications.ts) already treats as inbound, plus the ISA log's own reply stamp. */
+export const FATIGUE_RESPONSE_SOURCES = ["isa_outreach_log", "messages", "client_portal_messages", "voice_calls"] as const
+type FatigueResponseSource = (typeof FATIGUE_RESPONSE_SOURCES)[number]
+
+/** THE one reader of a reply: `at` is when the person answered. Windowed like the follow-ups and
+ *  tenant-scoped by construction, like fatigueInput. */
+function fatigueResponse(supabase: Svc, scope: TenantScope, source: FatigueResponseSource) {
+  const since = sinceIso(FOLLOW_UP_WINDOW_DAYS)
+  switch (source) {
+    case "isa_outreach_log":       { const q = supabase.from("isa_outreach_log").select("at:replied_at").not("replied_at", "is", null).gte("replied_at", since); applyTenantScope(q, scope); return q }
+    case "messages":               { const q = supabase.from("messages").select("at:created_at").eq("direction", "inbound").gte("created_at", since); applyTenantScope(q, scope); return q }
+    case "client_portal_messages": { const q = supabase.from("client_portal_messages").select("at:created_at").eq("direction", "client_to_agent").gte("created_at", since); applyTenantScope(q, scope); return q }
+    case "voice_calls":            { const q = supabase.from("voice_calls").select("at:created_at").eq("direction", "inbound").gte("created_at", since); applyTenantScope(q, scope); return q }
+  }
+}
+
+/** Rows read per ledger per person (a contact touched more than this in 30 days is saturated anyway). */
+const PER_PERSON_READ_LIMIT = 200
+
+// ── Weights of the wave-88 terms (the buyer-search weights above them are unchanged) ──
+/** Per unanswered follow-up past the floor, up to UNANSWERED_CAP. */
+const W_UNANSWERED = 4
+const UNANSWERED_CAP = 8
+/** Per channel at / over the over-touch cap. */
+const W_SATURATED_CHANNEL = 8
+/** Per missed appointment, up to MISSED_CAP. */
+const W_MISSED_APPOINTMENT = 15
+const MISSED_CAP = 3
+/** A seller with no signed listing agreement who is not answering follow-up. */
+const W_SELLER_UNRESPONSIVE = 20
+
+/** PURE — follow-up responsiveness from dated touches and replies. `unanswered` counts the touches
+ *  AFTER the latest reply (all of them when nobody replied). */
+export function followUpResponsiveness(
+  touches: ReadonlyArray<{ at: string | null }>,
+  replies: ReadonlyArray<{ at: string | null }>,
+): { sent: number; replies: number; unanswered: number; lastReplyAt: string | null } {
+  const ms = (s: string | null) => (s ? Date.parse(s) : NaN)
+  const replyTimes = replies.map((r) => ms(r.at)).filter(Number.isFinite)
+  const last = replyTimes.length ? Math.max(...replyTimes) : null
+  const dated = touches.map((t) => ms(t.at)).filter(Number.isFinite)
+  return {
+    sent: dated.length,
+    replies: replyTimes.length,
+    unanswered: last === null ? dated.length : dated.filter((t) => t > last).length,
+    lastReplyAt: last === null ? null : new Date(last).toISOString(),
+  }
+}
+
+/** PURE — the wave-88 points, so the proof drives every term with no DB. */
+export function responsivenessPoints(f: Pick<FatigueFactors, "unanswered_follow_ups" | "saturated_channels" | "missed_appointments" | "seller_unresponsive">): number {
+  const unanswered = f.unanswered_follow_ups >= UNANSWERED_FOLLOW_UP_FLOOR
+    ? Math.min(f.unanswered_follow_ups, UNANSWERED_CAP) * W_UNANSWERED
+    : 0
+  return unanswered
+    + f.saturated_channels.length * W_SATURATED_CHANNEL
+    + Math.min(f.missed_appointments, MISSED_CAP) * W_MISSED_APPOINTMENT
+    + (f.seller_unresponsive ? W_SELLER_UNRESPONSIVE : 0)
 }
 
 // ─── MAIN CALCULATOR ─────────────────────────────────────────────────────────
@@ -121,25 +274,27 @@ export async function calculateFatigue(
   // under the wrong tenant.
   const { data: contact, error: contactErr } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, agent_id")
+    .select("id, first_name, last_name, agent_id, contact_type")
     .eq("id", contactId)
     .eq("brokerage_id", brokerageId)
     .is("deleted_at", null)
     .maybeSingle()
   if (contactErr) throw new Error(`[fatigue] contact read refused: ${contactErr.message}`)
   if (!contact) throw new Error(`[fatigue] contact ${contactId} is not a live contact of brokerage ${brokerageId}`)
+  // Every input read below goes through the tenant-scoped readers with THIS brokerage.
+  const scope = tenantScope(brokerageId, "fatigue calculate")
 
   // ── 1. Load all raw stats ──────────────────────────────────────────────────
 
   const [showingsRes, toursRes, offersRes, signalsRes] = await Promise.all([
     // Total completed showings for this buyer
-    fatigueInput(supabase, "showings", "id, scheduled_at", "exact").eq("contact_id", contactId),
+    fatigueInput(supabase, scope, "showings", "id, scheduled_at", "exact").eq("contact_id", contactId),
     // Distinct tour days
-    fatigueInput(supabase, "tours", "tour_date").eq("contact_id", contactId),
+    fatigueInput(supabase, scope, "tours", "tour_date").eq("contact_id", contactId),
     // Rejected offers
-    fatigueInput(supabase, "offers", "id, created_at", "exact").eq("contact_id", contactId),
+    fatigueInput(supabase, scope, "offers", "id, created_at", "exact").eq("contact_id", contactId),
     // Behavior log signals with timestamps for engagement trend
-    fatigueInput(supabase, "buyer_behavior_log", "created_at, signal_value")
+    fatigueInput(supabase, scope, "buyer_behavior_log", "created_at, signal_value")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(200),
@@ -193,30 +348,90 @@ export async function calculateFatigue(
     s => now - new Date(s.created_at).getTime() <= ms7d
   )
 
-  let engagementDeclineFactor = 0
-  let engagementTrend = "stable"
+  // The buyer-engagement term applies to a person with a BUYER SEARCH on file (any of the four
+  // buyer-search inputs). Before wave 88 every scored person had one; now a seller or sphere contact
+  // can be scored on follow-up alone, and "no behavior-log signal in 7 days" says nothing about them —
+  // it would hand every such contact a flat +40 (lane 87A's "flat 40" defect, reborn).
+  const hasBuyerSearch = totalShowings > 0 || totalTourDays > 0 || offersRejected > 0 || signals.length > 0
 
-  if (noSignals7d || (prior14Sum > 0 && recent14Sum / prior14Sum <= 0.4)) {
+  let engagementDeclineFactor = 0
+  // engagementTrend is the buyer_fatigue_scores.engagement_trend CHECK word (increasing | stable |
+  // declining | stopped); engagementDetail is the human reading. Lane 88A: the trend used to carry
+  // "no recent activity" / "sharp decline" — words the CHECK refuses, so every such upsert was
+  // REFUSED (23514) and the person was never scored (live had 0 rows, so nobody saw it).
+  let engagementTrend = "stable"
+  let engagementDetail = hasBuyerSearch ? "stable" : "no buyer search on file"
+
+  if (hasBuyerSearch && (noSignals7d || (prior14Sum > 0 && recent14Sum / prior14Sum <= 0.4))) {
     engagementDeclineFactor = 2
-    engagementTrend = noSignals7d ? "no recent activity" : "sharp decline"
-  } else if (prior14Sum > 0 && recent14Sum / prior14Sum <= 0.7) {
+    engagementTrend = noSignals7d ? "stopped" : "declining"
+    engagementDetail = noSignals7d ? "no recent activity" : "sharp decline"
+  } else if (hasBuyerSearch && prior14Sum > 0 && recent14Sum / prior14Sum <= 0.7) {
     engagementDeclineFactor = 1
     engagementTrend = "declining"
-  } else if (recent14Sum >= prior14Sum) {
+    engagementDetail = "declining"
+  } else if (hasBuyerSearch && recent14Sum >= prior14Sum) {
     engagementTrend = "increasing"
+    engagementDetail = "increasing"
   }
 
+  // ── 1b. Follow-up responsiveness, missed appointments, unsigned sellers (wave 88, lane 88A) ──
+  // Touches come from the over-touch engine's own ledgers (CONTACT_TOUCH_LEDGERS), replies from the
+  // inbound lanes (FATIGUE_RESPONSE_SOURCES); both tenant-scoped by their readers, every refusal
+  // thrown (§3).
+  const [touchRes, replyRes, calNoShowRes] = await Promise.all([
+    Promise.all(CONTACT_TOUCH_LEDGERS.map((ledger: ContactTouchLedger) => {
+      const ts = touchTimestampColumn(ledger)
+      const columns = ledger === "email_sends" || ledger === "direct_mail_recipients" ? `at:${ts}` : `at:${ts}, channel`
+      return fatigueInput(supabase, scope, ledger, columns)
+        .eq("contact_id", contactId)
+        .limit(PER_PERSON_READ_LIMIT)
+    })),
+    Promise.all(FATIGUE_RESPONSE_SOURCES.map((source) =>
+      fatigueResponse(supabase, scope, source)
+        .eq("contact_id", contactId)
+        .limit(PER_PERSON_READ_LIMIT),
+    )),
+    fatigueInput(supabase, scope, "calendar_events", "id", "exact").eq("entity_id", contactId),
+  ])
+
+  const touches: Array<{ at: string | null; channel: ReturnType<typeof touchChannelOf> }> = []
+  touchRes.forEach((res, i) => {
+    const ledger = CONTACT_TOUCH_LEDGERS[i]
+    if (res.error) throw new Error(`[fatigue] ${ledger} read refused for ${contactId}: ${res.error.message}`)
+    for (const r of (res.data ?? []) as unknown as Array<{ at: string | null; channel?: string | null }>) {
+      touches.push({ at: r.at, channel: touchChannelOf(ledger, r.channel ?? null) })
+    }
+  })
+  const replies: Array<{ at: string | null }> = []
+  replyRes.forEach((res, i) => {
+    if (res.error) throw new Error(`[fatigue] ${FATIGUE_RESPONSE_SOURCES[i]} reply read refused for ${contactId}: ${res.error.message}`)
+    replies.push(...((res.data ?? []) as unknown as Array<{ at: string | null }>))
+  })
+  if (calNoShowRes.error) throw new Error(`[fatigue] calendar_events no-show read refused for ${contactId}: ${calNoShowRes.error.message}`)
+
+  const responsiveness = followUpResponsiveness(touches, replies)
+  const saturated = saturatedChannels(touches, now)
+  const missedAppointments = calNoShowRes.count ?? 0
+
+  // A SELLER who has not signed a listing agreement (contacts.contact_type seller | both — the
+  // listing_agreements row is the seller's signature: seller_signed_at, or esign_status fully_signed).
+  let unsignedSeller = false
+  const contactType = (contact as { contact_type?: string | null }).contact_type ?? null
+  if (contactType === "seller" || contactType === "both") {
+    const { data: agreements, error: agreementsErr } = await supabase
+      .from("listing_agreements")
+      .select("seller_signed_at, esign_status")
+      .eq("seller_contact_id", contactId)
+      .eq("brokerage_id", brokerageId)
+      .eq("agreement_type", "listing")
+    if (agreementsErr) throw new Error(`[fatigue] listing agreement read refused for ${contactId}: ${agreementsErr.message}`)
+    unsignedSeller = !((agreements ?? []) as Array<{ seller_signed_at: string | null; esign_status: string | null }>)
+      .some((a) => !!a.seller_signed_at || a.esign_status === "fully_signed")
+  }
+  const sellerUnresponsive = unsignedSeller && responsiveness.unanswered >= UNANSWERED_FOLLOW_UP_FLOOR
+
   // ── 2. Apply formula ───────────────────────────────────────────────────────
-
-  const rawScore =
-    (totalShowings   * 3) +
-    (totalTourDays   * 8) +
-    (daysSearching   / 10) +
-    (offersRejected  * 15) +
-    (engagementDeclineFactor * 20)
-
-  const score     = Math.min(100, Math.round(rawScore))
-  const riskLevel = deriveRiskLevel(score)
 
   const factors: FatigueFactors = {
     total_showings:            totalShowings,
@@ -225,7 +440,29 @@ export async function calculateFatigue(
     offers_rejected:           offersRejected,
     engagement_decline_factor: engagementDeclineFactor,
     engagement_trend:          engagementTrend,
+    engagement_detail:         engagementDetail,
+    follow_ups_sent:           responsiveness.sent,
+    replies_received:          responsiveness.replies,
+    unanswered_follow_ups:     responsiveness.unanswered,
+    saturated_channels:        saturated.map((s) => s.channel),
+    missed_appointments:       missedAppointments,
+    unsigned_seller:           unsignedSeller,
+    seller_unresponsive:       sellerUnresponsive,
   }
+
+  const searchPoints =
+    (totalShowings   * 3) +
+    (totalTourDays   * 8) +
+    (daysSearching   / 10) +
+    (offersRejected  * 15) +
+    (engagementDeclineFactor * 20)
+  const followUpPoints = responsivenessPoints(factors)
+  const rawScore = searchPoints + followUpPoints
+
+  const score     = Math.min(100, Math.round(rawScore))
+  const riskLevel = deriveRiskLevel(score)
+  // The ONE factor sentence (fatigue-display) — the same words the contact card shows.
+  const summary   = describeFatigueFactors(factors)
 
   // ── 3. Upsert buyer_fatigue_scores — COUNTED (§3) ──────────────────────────
   // The upsert's result was never read, so a refused write reported a score that
@@ -237,6 +474,10 @@ export async function calculateFatigue(
       {
         contact_id:           contactId,
         brokerage_id:         brokerageId,
+        // The OWNING AGENT (agents.id — the column FKs agents). Was never written, so no reader could
+        // ask "which of my contacts are fatigued" by agent; lane 88A builds the missing writer
+        // (agent coaching's fatigued-book count and the agent's own list read it).
+        agent_id:             contact.agent_id ?? null,
         fatigue_score:        score,
         risk_level:           riskLevel,
         total_showings:       totalShowings,
@@ -270,13 +511,13 @@ export async function calculateFatigue(
     if (existingErr) throw new Error(`[fatigue] open-alert read refused for ${contactId}: ${existingErr.message}`)
 
     if (!existingAlert) {
-      const buyerName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || "This buyer"
+      const buyerName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || "This contact"
+      // Who this person is to the agent — a buyer's SEARCH fatigue and a quiet seller's follow-up
+      // fatigue need different coaching (wave 88).
+      const role = contactType === "seller" ? "seller" : contactType === "both" ? "buyer and seller" : hasBuyerSearch ? "buyer" : "contact"
 
       // AI-generated reinvigoration message (non-blocking on failure)
-      let alertMessage = `${buyerName} has a fatigue score of ${score} (${riskLabel(riskLevel)}). ` +
-        `${totalShowings} showings, ${totalTourDays} tour days, ` +
-        `${daysSearching} days searching, ${offersRejected} rejected offers. ` +
-        `Engagement trend: ${engagementTrend}.`
+      let alertMessage = `${buyerName} has a fatigue score of ${score} (${riskLabel(riskLevel)}). ${summary}.`
 
       // Routed + booked (§5: ai_tool_usage is the cost ledger). Was a raw
       // generateText pinned to claude-opus-4-5 with no ledger row — the most
@@ -286,12 +527,10 @@ export async function calculateFatigue(
           feature: "buyer_fatigue_coaching",
           brokerageId,
           system:
-            "You are a real estate agent coach. Write a single concise action recommendation (2 sentences max) for an agent whose buyer is showing signs of fatigue. Be specific and actionable.",
+            "You are a real estate agent coach. Write a single concise action recommendation (2 sentences max) for an agent whose client is showing signs of fatigue — search fatigue, unanswered follow-up, missed appointments, or a seller who has gone quiet before signing. Be specific and actionable, and never recommend contacting them MORE often when follow-up is going unanswered.",
           prompt:
-            `Buyer: ${buyerName}. Score: ${score}/100 (${riskLevel}). ` +
-            `${totalShowings} showings, ${totalTourDays} tour days, ` +
-            `${daysSearching} days searching, ${offersRejected} rejected offers. ` +
-            `Engagement: ${engagementTrend}. What should the agent do?`,
+            `Client (${role}): ${buyerName}. Score: ${score}/100 (${riskLevel}). ${summary}. ` +
+            `What should the agent do?`,
           maxTokens: 120,
         })
         if (text.trim()) alertMessage = text.trim()
@@ -317,7 +556,9 @@ export async function calculateFatigue(
           contact_id:               contactId,
           brokerage_id:             brokerageId,
           agent_user_id:            fatigueAgentUserId,
-          alert_type:               "fatigue_threshold_crossed",
+          // Which kind of fatigue crossed the line (CHECK-legal words): mostly unanswered follow-up /
+          // missed appointments → 'disengagement_risk'; mostly the buyer search → as before.
+          alert_type:               followUpPoints > searchPoints ? "disengagement_risk" : "fatigue_threshold_crossed",
           fatigue_score_at_trigger: score,
           risk_level:               riskLevel,
           message:                  alertMessage,
@@ -359,7 +600,9 @@ export async function calculateFatigue(
         const { error: suggestionError } = await supabase.from("smart_assistant_suggestions").insert({
           agent_id:           contact.agent_id,
           brokerage_id:       owningAgent.brokerageId,
-          title:              `${buyerName} showing signs of search fatigue`,
+          title:              followUpPoints > searchPoints
+            ? `${buyerName} is going quiet on follow-up`
+            : `${buyerName} showing signs of search fatigue`,
           description:        alertMessage,
           context_type:       "buyer_fatigue",
           action_type:        "view_buyer",
@@ -407,7 +650,9 @@ const ANCHOR_CHUNK = 200
 /** Default per-run cap on people scored — stalest first; the remainder is counted `deferred`
  *  and goes first next run (never-scored, then oldest last_calculated_at). */
 export const FATIGUE_SWEEP_DEFAULT_MAX_PERSONS = 2000
-/** Default people scored in parallel — each is 5 reads + 1 counted write; AI only on a NEW alert. */
+/** Default people scored in parallel — each is ~16 bounded reads (1 anchor, 4 buyer-search, 5 touch
+ *  ledgers, 4 reply lanes, 1 no-show count, +1 listing-agreement read for a seller) + 1 counted
+ *  write; AI only on a NEW alert. */
 const DEFAULT_CONCURRENCY = 4
 
 function chunk<T>(xs: readonly T[], n: number): T[][] {
@@ -448,12 +693,20 @@ export interface FatigueSweepPopulation {
  *      "days searching" means nothing after the close). NULL buyer_stage stays IN;
  *   3. tagged when the contact is a lead's conversion, and the scope's unconverted
  *      leads counted — they have nothing the formula derives from.
+ *   (wave 88) The inputs now include the over-touch engine's follow-up ledgers and the
+ *   no-show marks, so a SELLER or sphere contact who is being followed up is IN even
+ *   with no buyer search; `filter.bookAgentId` narrows to ONE AGENT'S BOOK (and skips
+ *   the lead count — agents never see leads).
  *
  * Every read is error-checked; a refusal throws (the run fails, never "nobody to score").
  */
-export async function loadFatigueSweepPopulation(scope: TenantScope, client?: Svc): Promise<FatigueSweepPopulation> {
+export async function loadFatigueSweepPopulation(
+  scope: TenantScope,
+  client?: Svc,
+  filter: { bookAgentId?: string | null } = {},
+): Promise<FatigueSweepPopulation> {
   const supabase = client ?? createServiceClient()
-  const where = describeTenantScope(scope)
+  const where = describeTenantScope(scope) + (filter.bookAgentId ? ` · agent book ${filter.bookAgentId}` : "")
 
   // ── 1. people named by an input ──
   const named = new Set<string>()
@@ -461,15 +714,17 @@ export async function loadFatigueSweepPopulation(scope: TenantScope, client?: Sv
   for (const source of FATIGUE_INPUT_SOURCES) {
     for (let page = 0; ; page++) {
       if (page >= INPUT_MAX_PAGES) { inputsCapped.push(source); break }
-      const q = fatigueInput(supabase, source, "contact_id")
-        .not("contact_id", "is", null)
+      // The person column: contact_id everywhere but calendar_events (entity_id, entity_type 'contact').
+      const person = fatiguePersonColumn(source)
+      // The reader applies the scope itself (tenant → brokerage_id predicate; platform → none).
+      const q = fatigueInput(supabase, scope, source, person)
+        .not(person, "is", null)
         .order("id", { ascending: true })
         .range(page * INPUT_PAGE_SIZE, page * INPUT_PAGE_SIZE + INPUT_PAGE_SIZE - 1)
-      applyTenantScope(q, scope)
       const { data, error } = await q
       if (error) throw new Error(`[fatigue-sweep] ${source} read refused (${where}): ${error.message}`)
-      const rows = (data ?? []) as unknown as Array<{ contact_id: string | null }>
-      for (const r of rows) if (r.contact_id) named.add(r.contact_id)
+      const rows = (data ?? []) as unknown as Array<Record<string, string | null>>
+      for (const r of rows) { const id = r[person]; if (id) named.add(id) }
       if (rows.length < INPUT_PAGE_SIZE) break
     }
   }
@@ -487,6 +742,9 @@ export async function loadFatigueSweepPopulation(scope: TenantScope, client?: Sv
     // Mutates the builder in place (the lib/property-alerts/alert-engine.ts shape —
     // the generic return form instantiates too deeply here, TS2589).
     applyTenantScope(q, scope)
+    // AN AGENT'S OWN BOOK (wave 88, lane 88A — "Need fatigue also for agents"): contacts.agent_id is
+    // an agents.id; the caller resolved it from the SESSION (never a parameter a browser chose).
+    if (filter.bookAgentId) q.eq("agent_id", filter.bookAgentId)
     const { data, error } = await q
     if (error) throw new Error(`[fatigue-sweep] contact anchor read refused (${where}): ${error.message}`)
     for (const c of (data ?? []) as Array<{ id: string; brokerage_id: string; buyer_stage: string | null }>) {
@@ -508,10 +766,16 @@ export async function loadFatigueSweepPopulation(scope: TenantScope, client?: Sv
   }
 
   // ── 3b. leads with nothing to derive from (unconverted) — counted, not scored ──
-  const lq = supabase.from("leads").select("id", { count: "exact", head: true }).is("contact_id", null)
-  applyTenantScope(lq, scope)
-  const { count: leadsWithoutInputs, error: leadsErr } = await lq
-  if (leadsErr) throw new Error(`[fatigue-sweep] unconverted-lead count refused (${where}): ${leadsErr.message}`)
+  // An agent's book run skips this: leads belong to the BROKERAGE (CLAUDE.md §5) and an agent
+  // never sees them — not even as a count.
+  let leadsWithoutInputs: number | null = 0
+  if (!filter.bookAgentId) {
+    const lq = supabase.from("leads").select("id", { count: "exact", head: true }).is("contact_id", null)
+    applyTenantScope(lq, scope)
+    const { count, error: leadsErr } = await lq
+    if (leadsErr) throw new Error(`[fatigue-sweep] unconverted-lead count refused (${where}): ${leadsErr.message}`)
+    leadsWithoutInputs = count
+  }
 
   // ── 4. staleness, for the per-run cap (never-scored first, then oldest) ──
   for (const ids of chunk([...anchored.keys()], ANCHOR_CHUNK)) {
@@ -578,6 +842,9 @@ export interface FatigueSweepResult {
 export interface FatigueSweepOptions {
   /** Max people scored this run (default FATIGUE_SWEEP_DEFAULT_MAX_PERSONS). */
   maxPersons?: number
+  /** An AGENT'S OWN BOOK only (contacts.agent_id = this agents.id) — resolved by the caller from
+   *  the session (app/actions/buyer-fatigue.ts recalculateBrokerageFatigue's agent path). */
+  bookAgentId?: string | null
   /** People scored in parallel (default 4). */
   concurrency?: number
 }
@@ -599,15 +866,15 @@ export interface FatigueSweepOptions {
  * brokerage_id NOT NULL, and attaches a plan once per NEW alert.
  *
  * COST-AWARE: people are scored stalest-first up to `maxPersons` (the rest are
- * counted `deferred`) with bounded concurrency; each person is 5 reads + 1 counted
- * write; the only model calls happen when a NEW alert is raised (the alert note and
+ * counted `deferred`) with bounded concurrency; each person is ~16 bounded reads + 1
+ * counted write (see DEFAULT_CONCURRENCY); the only model calls happen when a NEW alert is raised (the alert note and
  * its recovery plan, both routed + booked under `buyer_fatigue_coaching`).
  */
 export async function runFatigueSweep(scope: TenantScope, opts: FatigueSweepOptions = {}): Promise<FatigueSweepResult> {
   const maxPersons = Math.max(0, Math.floor(opts.maxPersons ?? FATIGUE_SWEEP_DEFAULT_MAX_PERSONS))
   const concurrency = Math.max(1, Math.floor(opts.concurrency ?? DEFAULT_CONCURRENCY))
 
-  const pop = await loadFatigueSweepPopulation(scope)
+  const pop = await loadFatigueSweepPopulation(scope, undefined, { bookAgentId: opts.bookAgentId ?? null })
   const batch = pop.persons.slice(0, maxPersons)
 
   const result: FatigueSweepResult = {

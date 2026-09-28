@@ -18,14 +18,33 @@ import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 // lib/auth/require-caller.ts:requireCaller (this lane's fold-in of the
 // 2026-09-03 wave-26 survivor)
 
-async function verifyContactAccess(contactId: string, brokerageId: string): Promise<boolean> {
-  const svc = createServiceClient()
-  const { data: contact } = await svc
+// ─── ONE CONTACT — THE AGENT'S OWN BOOK (wave 88, lane 88A) ───────────────────
+// Owner: "Need fatigue also for agents." The per-contact doors below (the contact card's fatigue
+// guard / widget / panel, on-demand calculate, dismiss, AI suggestions) checked the contact's
+// BROKERAGE only — any seat could read any contact's fatigue in the tenant, and the contact read's
+// refusal was swallowed into "Forbidden". Now the SAME viewer the list readers use decides: the
+// tenant admin roster sees the whole brokerage; an agent sees the contacts on THEIR OWN book
+// (contacts.agent_id = their agents.id); a seat with no agents row is refused (§4 fail closed).
+// Every fatigue row is a contacts row, so no lead can surface (§5).
+async function verifyContactAccess(
+  contactId: string,
+  auth: { userId: string; brokerageId: string; userType: string | null },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const viewer = await resolveFatigueViewer(auth)
+  if (!viewer.ok) return viewer
+  const { data: contact, error } = await createServiceClient()
     .from("contacts")
-    .select("brokerage_id")
+    .select("agent_id")
     .eq("id", contactId)
+    .eq("brokerage_id", auth.brokerageId)
+    .is("deleted_at", null)
     .maybeSingle()
-  return !!contact && contact.brokerage_id === brokerageId
+  if (error) return { ok: false, error: `Could not load that contact: ${error.message}` }
+  if (!contact) return { ok: false, error: "Forbidden" }
+  if (viewer.bookAgentId !== null && (contact as { agent_id: string | null }).agent_id !== viewer.bookAgentId) {
+    return { ok: false, error: "Forbidden — fatigue is shown for the contacts on your own book" }
+  }
+  return { ok: true }
 }
 
 // ─── WHO SEES WHICH FATIGUE ROWS (wave 87, lane 87A) ──────────────────────────
@@ -59,9 +78,8 @@ async function resolveFatigueViewer(auth: { userId: string; brokerageId: string;
 export async function getBuyerFatigueScore(contactId: string) {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false as const, error: auth.error }
-  if (!(await verifyContactAccess(contactId, auth.brokerageId))) {
-    return { success: false as const, error: "Forbidden" }
-  }
+  const access = await verifyContactAccess(contactId, auth)
+  if (!access.ok) return { success: false as const, error: access.error }
 
   const supabase = createServiceClient()
   const { data, error } = await supabase
@@ -80,9 +98,8 @@ export async function getBuyerFatigueScore(contactId: string) {
 export async function getBuyerFatigueAlerts(contactId: string) {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false as const, error: auth.error }
-  if (!(await verifyContactAccess(contactId, auth.brokerageId))) {
-    return { success: false as const, error: "Forbidden" }
-  }
+  const access = await verifyContactAccess(contactId, auth)
+  if (!access.ok) return { success: false as const, error: access.error }
 
   const supabase = createServiceClient()
   const { data, error } = await supabase
@@ -105,14 +122,18 @@ export async function dismissFatigueAlert(alertId: string) {
 
   const supabase = createServiceClient()
 
-  // Verify the alert belongs to caller's brokerage before mutating
-  const { data: alert } = await supabase
+  // Verify the alert belongs to caller's brokerage before mutating — and (wave 88) that an agent
+  // dismisses only an alert on a contact on their own book (the same viewer as every door here).
+  const { data: alert, error: alertReadErr } = await supabase
     .from("fatigue_alerts")
-    .select("brokerage_id")
+    .select("brokerage_id, contact_id")
     .eq("id", alertId)
+    .eq("brokerage_id", auth.brokerageId)
     .maybeSingle()
+  if (alertReadErr) return { success: false as const, error: `Could not load that fatigue alert: ${alertReadErr.message}` }
   if (!alert) return { success: false as const, error: "Alert not found" }
-  if (alert.brokerage_id !== auth.brokerageId) return { success: false as const, error: "Forbidden" }
+  const access = await verifyContactAccess((alert as { contact_id: string }).contact_id, auth)
+  if (!access.ok) return { success: false as const, error: access.error }
 
   const { error } = await supabase
     .from("fatigue_alerts")
@@ -136,9 +157,8 @@ export async function triggerFatigueCalculation(
 ) {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false as const, error: auth.error }
-  if (!(await verifyContactAccess(contactId, auth.brokerageId))) {
-    return { success: false as const, error: "Forbidden" }
-  }
+  const access = await verifyContactAccess(contactId, auth)
+  if (!access.ok) return { success: false as const, error: access.error }
 
   try {
     const result = await calculateFatigue(contactId, auth.brokerageId)
@@ -177,15 +197,36 @@ export async function triggerFatigueCalculation(
 // session door: tenant admin (or a solo owner — their own broker), tenant from
 // the SESSION, never a parameter; the same ONE sweep core the cron runs, scoped
 // to this brokerage. It writes scores and may attach AI recovery plans across
-// the whole book, which is why an agent seat is refused. Returns COUNTED
-// results so "scored nobody" is distinguishable from "refused".
+// the whole book, which is why an agent seat does not get the brokerage run —
+// since wave 88 (lane 88A) an agent seat gets the same core over THEIR OWN
+// book instead (below). Returns COUNTED results so "scored nobody" is
+// distinguishable from "refused".
 
 export async function recalculateBrokerageFatigue(): Promise<
   | { success: true; data: FatigueSweepResult }
   | { success: false; error: string }
 > {
   const auth = await requireTenantAdminOrSoloOwner()
-  if (!auth.ok) return { success: false, error: auth.error }
+  if (!auth.ok) {
+    // AN AGENT'S OWN BOOK (wave 88, lane 88A — owner: "Need fatigue also for agents"). A seat that is
+    // not the tenant admin no longer just gets "Forbidden": the SAME core runs over the contacts on
+    // THEIR OWN book (contacts.agent_id = their agents.id, resolved from the session by the one
+    // viewer), inside the session tenant. No lead is read or counted (§5).
+    const caller = await requireCaller()
+    if (!caller.ok) return { success: false, error: caller.error }
+    const viewer = await resolveFatigueViewer(caller)
+    if (!viewer.ok) return { success: false, error: viewer.error }
+    if (viewer.bookAgentId === null) return { success: false, error: auth.error }
+    try {
+      const data = await runFatigueSweep(
+        tenantScope(caller.brokerageId, "buyer-fatigue recalculate — agent's own book"),
+        { bookAgentId: viewer.bookAgentId },
+      )
+      return { success: true, data }
+    } catch (err) {
+      return { success: false, error: (err as Error).message }
+    }
+  }
   try {
     const data = await runFatigueSweep(tenantScope(auth.brokerageId, "buyer-fatigue recalculate"))
     return { success: true, data }
@@ -201,9 +242,8 @@ export async function recalculateBrokerageFatigue(): Promise<
 export async function getBuyerFatigueAlert(contactId: string) {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false as const, error: auth.error }
-  if (!(await verifyContactAccess(contactId, auth.brokerageId))) {
-    return { success: false as const, error: "Forbidden" }
-  }
+  const access = await verifyContactAccess(contactId, auth)
+  if (!access.ok) return { success: false as const, error: access.error }
 
   const supabase = await createClient()
   const { data, error } = await supabase
@@ -229,9 +269,8 @@ export async function getReinvigorationSuggestions(
   // Burns paid AI inference — auth required
   const auth = await requireCaller()
   if (!auth.ok) return { success: false as const, error: auth.error }
-  if (!(await verifyContactAccess(contactId, auth.brokerageId))) {
-    return { success: false as const, error: "Forbidden" }
-  }
+  const access = await verifyContactAccess(contactId, auth)
+  if (!access.ok) return { success: false as const, error: access.error }
 
   const supabase = createServiceClient()
 

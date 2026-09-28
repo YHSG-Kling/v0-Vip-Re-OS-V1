@@ -21,15 +21,18 @@
  * owner: "since the email was from the agents' mailbox, it should lead back to the agent."): a lead
  * that landed from an agent's or team lead's own mailbox goes back to that owner when it is qualified
  * and assigned (it is the brokerage's lead until then; the agent only ever receives the contact).
- * TOMBSTONE: the "Prefer the mailbox owner" SWITCH and its get/setMailboxOwnerPreference doors are
- * removed — there is no per-brokerage option to set. Survivor: the always-on rung
- * lib/lead-assignment/mailbox-owner-preference.ts. The panel now STATES the rule instead.
+ * WAVE 88 (lane 88A) — THE SWITCH IS BACK AS AN OPTION. Owner: "We do also need the mailbox switch
+ * back for another option." The panel states the rule AND carries its switch: DEFAULT ON (back to the
+ * agent), OFF → the normal rules decide. Read and written through get/setMailboxOwnerPreference (the
+ * write goes through lib/settings/brokerage-settings-merge.ts, the one settings writer); honoured by
+ * lib/lead-assignment/mailbox-owner-preference.ts decideMailboxOwnerPreference.
  */
 
 import { useEffect, useState, useTransition } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
+import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
@@ -49,6 +52,8 @@ import {
 import {
   getDefaultAssignmentMethod,
   setDefaultAssignmentMethod,
+  getMailboxOwnerPreference,
+  setMailboxOwnerPreference,
 } from "@/app/actions/admin/lead-routing-settings"
 
 export function LeadRoutingPanel() {
@@ -56,6 +61,35 @@ export function LeadRoutingPanel() {
   const [saved, setSaved] = useState<RuleType>("load_balance")
   const [loading, setLoading] = useState(true)
   const [isPending, startTransition] = useTransition()
+  const [preferMailboxOwner, setPreferMailboxOwner] = useState(true)
+  const [prefLoading, setPrefLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    getMailboxOwnerPreference().then((r) => {
+      if (cancelled) return
+      if (r.error) toast.error(r.error)
+      setPreferMailboxOwner(r.enabled)
+      setPrefLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  function togglePreferMailboxOwner(next: boolean) {
+    const previous = preferMailboxOwner
+    setPreferMailboxOwner(next)
+    startTransition(async () => {
+      const res = await setMailboxOwnerPreference(next)
+      if (!res.success) {
+        setPreferMailboxOwner(previous)
+        toast.error(res.error ?? "Could not save the mailbox-owner switch.")
+        return
+      }
+      toast.success(next
+        ? "Leads from an agent's own mailbox will go back to that agent when assigned."
+        : "Leads from an agent's own mailbox will follow the normal rules.")
+    })
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -129,14 +163,23 @@ export function LeadRoutingPanel() {
           </div>
         )}
 
-        <div className="space-y-0.5 rounded-md border px-3 py-2" data-rule="mailbox-owner">
-          <p className="text-sm font-medium">Emails to an agent&apos;s own mailbox go back to that agent</p>
-          <p className="text-xs text-muted-foreground">
-            When someone new emails an agent&apos;s or team lead&apos;s own mailbox, the lead is still the
-            brokerage&apos;s — but once it is qualified, the contact goes to the agent they wrote to. If that
-            agent&apos;s book is on an open transfer, it goes to the covering agent. Only when the agent is
-            inactive, no longer with the brokerage or off the team&apos;s board do the normal rules decide.
-          </p>
+        <div className="flex items-start justify-between gap-3 rounded-md border px-3 py-2" data-rule="mailbox-owner">
+          <div className="space-y-0.5">
+            <Label htmlFor="prefer-mailbox-owner">Emails to an agent&apos;s own mailbox go back to that agent</Label>
+            <p className="text-xs text-muted-foreground">
+              When someone new emails an agent&apos;s or team lead&apos;s own mailbox, the lead is still the
+              brokerage&apos;s — but once it is qualified, the contact goes to the agent they wrote to. If that
+              agent&apos;s book is on an open transfer, it goes to the covering agent. Only when the agent is
+              inactive, no longer with the brokerage or off the team&apos;s board do the normal rules decide.
+              Turn this off to send every mailbox lead through the normal rules instead.
+            </p>
+          </div>
+          <Switch
+            id="prefer-mailbox-owner"
+            checked={preferMailboxOwner}
+            onCheckedChange={togglePreferMailboxOwner}
+            disabled={prefLoading || isPending}
+          />
         </div>
 
         <div className="flex items-center justify-between gap-3 pt-1">
