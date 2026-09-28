@@ -25,7 +25,6 @@ const EVENT_COLORS: Record<UnifiedCalendarEvent["eventType"], string> = {
   follow_up: "bg-teal-500/20 border-teal-500 text-teal-700 dark:text-teal-300",
   isa_appointment: "bg-violet-500/20 border-violet-500 text-violet-700 dark:text-violet-300",
   listing_appointment: "bg-indigo-500/20 border-indigo-500 text-indigo-700 dark:text-indigo-300",
-  listing_appointment: "bg-indigo-500/20 border-indigo-500 text-indigo-700 dark:text-indigo-300",
   time_block: "bg-zinc-500/20 border-zinc-500 text-zinc-700 dark:text-zinc-300",
 }
 

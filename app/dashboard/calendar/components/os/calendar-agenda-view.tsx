@@ -25,7 +25,6 @@ const EVENT_TYPE_LABELS: Record<UnifiedCalendarEvent["eventType"], { label: stri
   follow_up: { label: "Follow-up", color: "bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300" },
   isa_appointment: { label: "ISA Appt", color: "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300" },
   listing_appointment: { label: "Listing Appt", color: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300" },
-  listing_appointment: { label: "Listing Appt", color: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300" },
   time_block: { label: "Blocked Time", color: "bg-zinc-100 text-zinc-700 dark:bg-zinc-900/30 dark:text-zinc-300" },
 }
 
