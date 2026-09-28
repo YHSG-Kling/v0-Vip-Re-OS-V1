@@ -227,15 +227,22 @@ export async function recordSelfHeal(svc: any, evt: {
   outcome: SelfHealOutcome
   detail?: Record<string, unknown>
 }): Promise<void> {
-  const { error: ledgerErr } = await svc.from("self_heal_events").insert({
-    brokerage_id: evt.brokerageId,
-    domain: evt.domain,
-    subject: evt.subject,
-    action: evt.action,
-    outcome: evt.outcome,
-    detail: (evt.detail ?? {}) as any,
-  })
-  if (ledgerErr) console.error(`[self-heal-ledger] self_heal_events row refused: ${ledgerErr.message}`)
+  // Best-effort and NEVER throws (its callers record a heal after the decision already ran),
+  // but a refusal is READ and reported, never swallowed (CLAUDE.md §3) — a resolved { error }
+  // and a thrown/rejected insert both land in the same log line.
+  try {
+    const { error: ledgerErr } = (await svc.from("self_heal_events").insert({
+      brokerage_id: evt.brokerageId,
+      domain: evt.domain,
+      subject: evt.subject,
+      action: evt.action,
+      outcome: evt.outcome,
+      detail: (evt.detail ?? {}) as any,
+    })) ?? {}
+    if (ledgerErr) console.error(`[self-heal-ledger] self_heal_events row refused: ${ledgerErr.message}`)
+  } catch (e) {
+    console.error(`[self-heal-ledger] self_heal_events insert threw: ${e instanceof Error ? e.message : String(e)}`)
+  }
 }
 
 export interface SelfHealRollup {
