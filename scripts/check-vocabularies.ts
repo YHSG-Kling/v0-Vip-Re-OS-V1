@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-09-28
  * source: public.live_check_constraints_json()
- * body-sha256: a6724c86c384767522fc02a50f89414ba63cea903e71d7304b449f2a2aee8f4c
+ * body-sha256: ef59aad0b26249922623f508c72b877026bd9b1465264281eb862e9c769ccaee
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -782,7 +782,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   lead_deduplication_log: {
     action_taken: ["created", "merged", "queued_for_enrichment", "skipped"],
-    stage: ["lead_creation", "post_enrichment", "pre_enrichment", "viability_gate"],
+    stage: ["identity_gate", "lead_creation", "post_enrichment", "pre_enrichment", "promotion_identity_gate", "territory_gate", "viability_gate"],
   },
   lead_enrichment_queue: {
     enrichment_type: ["duplicate_check", "osint_profile", "phone_validation", "property_match", "skip_trace"],

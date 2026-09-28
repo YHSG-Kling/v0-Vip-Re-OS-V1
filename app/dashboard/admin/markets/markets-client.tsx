@@ -52,13 +52,24 @@ export interface PropertyParamsRow {
   is_active: boolean
 }
 
+/** Lane 88G — the REAL columns of lead_scraping_motivated_params (the four fields this row carried
+ *  before — min equity %, max DOM, include expired, include FSBO — were never columns: every save
+ *  was refused with PGRST204). `signal_types` is what the cron reads for BatchData triggers and
+ *  OSINT court record types alike. */
 export interface MotivatedParamsRow {
   id: string
-  min_equity_percent: number | null
-  max_days_on_market: number | null
-  include_expired_listings: boolean
-  include_fsbo: boolean
+  signal_types: string[]
   is_active: boolean
+  facebook_group_urls: string[]
+  reddit_subreddits: string[]
+  lookback_days: number | null
+}
+
+/** One option in the "Motivated signals" picker — derived server-side (page.tsx) from the cron's
+ *  own vocabularies. `court` = searched by the OSINT court-records lane, `batchdata` = a quickList. */
+interface MotivatedSignalOption {
+  value: string
+  source: "batchdata" | "court"
 }
 
 export interface MarketRow {
@@ -139,12 +150,14 @@ export function MarketsSetupClient({
   initialJobs,
   suggestedZip,
   initialFeed,
+  signalTypeOptions = [],
 }: {
   initialMarkets: MarketRow[]
   initialKeywords: KeywordRow[]
   initialJobs: JobRow[]
   suggestedZip: string | null
   initialFeed: BatchDataFeedView
+  signalTypeOptions?: MotivatedSignalOption[]
 }) {
   const marketLabel = (marketId: string): string => {
     const m = initialMarkets.find((x) => x.id === marketId)
@@ -172,10 +185,11 @@ export function MarketsSetupClient({
   const [maxPrice, setMaxPrice] = useState("")
   const [minBeds, setMinBeds] = useState("")
   const [maxBeds, setMaxBeds] = useState("")
-  const [minEquity, setMinEquity] = useState("")
-  const [maxDom, setMaxDom] = useState("")
-  const [includeExpired, setIncludeExpired] = useState(true)
-  const [includeFsbo, setIncludeFsbo] = useState(true)
+  const [signalTypes, setSignalTypes] = useState<string[]>([])
+  const [motivatedActive, setMotivatedActive] = useState(true)
+  const [groupUrls, setGroupUrls] = useState("")
+  const [subreddits, setSubreddits] = useState("")
+  const [lookbackDays, setLookbackDays] = useState("")
 
   // Keyword composer
   const [kwText, setKwText] = useState("")
@@ -243,10 +257,11 @@ export function MarketsSetupClient({
     setMaxPrice(m.propertyParams?.max_price?.toString() ?? "")
     setMinBeds(m.propertyParams?.min_beds?.toString() ?? "")
     setMaxBeds(m.propertyParams?.max_beds?.toString() ?? "")
-    setMinEquity(m.motivatedParams?.min_equity_percent?.toString() ?? "")
-    setMaxDom(m.motivatedParams?.max_days_on_market?.toString() ?? "")
-    setIncludeExpired(m.motivatedParams?.include_expired_listings !== false)
-    setIncludeFsbo(m.motivatedParams?.include_fsbo !== false)
+    setSignalTypes(m.motivatedParams?.signal_types ?? [])
+    setMotivatedActive(m.motivatedParams?.is_active !== false)
+    setGroupUrls((m.motivatedParams?.facebook_group_urls ?? []).join("\n"))
+    setSubreddits((m.motivatedParams?.reddit_subreddits ?? []).join("\n"))
+    setLookbackDays(m.motivatedParams?.lookback_days?.toString() ?? "")
     setOpenParamsFor(m.id)
   }
 
@@ -258,10 +273,11 @@ export function MarketsSetupClient({
         min_beds: num(minBeds), max_beds: num(maxBeds),
       }
       const motivatedPayload = {
-        min_equity_percent: num(minEquity),
-        max_days_on_market: num(maxDom),
-        include_expired_listings: includeExpired,
-        include_fsbo: includeFsbo,
+        signal_types: signalTypes,
+        is_active: motivatedActive,
+        facebook_group_urls: groupUrls.split(/[\n,]+/).map((x) => x.trim()).filter(Boolean),
+        reddit_subreddits: subreddits.split(/[\n,]+/).map((x) => x.trim()).filter(Boolean),
+        ...(num(lookbackDays) !== undefined ? { lookback_days: num(lookbackDays) as number } : {}),
       }
 
       const propRes = m.propertyParams
@@ -292,11 +308,12 @@ export function MarketsSetupClient({
           is_active: savedProp.is_active !== false,
         } : row.propertyParams,
         motivatedParams: savedMot ? {
-          id: savedMot.id, min_equity_percent: savedMot.min_equity_percent ?? null,
-          max_days_on_market: savedMot.max_days_on_market ?? null,
-          include_expired_listings: savedMot.include_expired_listings !== false,
-          include_fsbo: savedMot.include_fsbo !== false,
+          id: savedMot.id,
+          signal_types: Array.isArray(savedMot.signal_types) ? savedMot.signal_types : [],
           is_active: savedMot.is_active !== false,
+          facebook_group_urls: Array.isArray(savedMot.facebook_group_urls) ? savedMot.facebook_group_urls : [],
+          reddit_subreddits: Array.isArray(savedMot.reddit_subreddits) ? savedMot.reddit_subreddits : [],
+          lookback_days: typeof savedMot.lookback_days === "number" ? savedMot.lookback_days : null,
         } : row.motivatedParams,
       } : row))
       setParamsNotice("Scrape parameters saved.")
@@ -498,23 +515,41 @@ export function MarketsSetupClient({
                       <p className="text-[11px] text-muted-foreground">
                         What the property-data lane treats as a motivated owner in this market.
                       </p>
-                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                        <input className="rounded-md border bg-background px-2 py-1 text-xs" placeholder="Min equity %"
-                          inputMode="numeric" value={minEquity} onChange={(e) => setMinEquity(e.target.value)} />
-                        <input className="rounded-md border bg-background px-2 py-1 text-xs" placeholder="Max days on market"
-                          inputMode="numeric" value={maxDom} onChange={(e) => setMaxDom(e.target.value)} />
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        Motivated signals: none checked runs the defaults (high equity, pre-foreclosure, absentee
+                        from property data; divorce, bankruptcy, eviction, probate, code violations from court
+                        records). Each property-data signal is a separate billed pull; expired listings are a
+                        Data sources toggle.
+                      </p>
+                      <label className="mt-2 flex items-center gap-1.5 text-xs">
+                        <input type="checkbox" checked={motivatedActive}
+                          onChange={(e) => setMotivatedActive(e.target.checked)} />
+                        Motivated-seller pulls on for this market
+                      </label>
+                      <div className="mt-2 grid gap-1.5 sm:grid-cols-3">
+                        {signalTypeOptions.map((o) => (
+                          <label key={o.value} className="flex items-center gap-1.5 text-xs">
+                            <input
+                              type="checkbox"
+                              checked={signalTypes.includes(o.value)}
+                              onChange={(e) => setSignalTypes((prev) => e.target.checked
+                                ? Array.from(new Set([...prev, o.value]))
+                                : prev.filter((x) => x !== o.value))}
+                            />
+                            <span>{o.value.replace(/_/g, " ")}</span>
+                            <span className="text-[10px] text-muted-foreground">{o.source === "court" ? "court" : "property"}</span>
+                          </label>
+                        ))}
                       </div>
-                      <div className="mt-2 flex flex-wrap gap-4 text-xs">
-                        <label className="flex items-center gap-1.5">
-                          <input type="checkbox" checked={includeExpired}
-                            onChange={(e) => setIncludeExpired(e.target.checked)} />
-                          Include expired listings
-                        </label>
-                        <label className="flex items-center gap-1.5">
-                          <input type="checkbox" checked={includeFsbo}
-                            onChange={(e) => setIncludeFsbo(e.target.checked)} />
-                          Include FSBO
-                        </label>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                        <textarea className="rounded-md border bg-background px-2 py-1 text-xs" rows={2}
+                          placeholder="Facebook group URLs (one per line) — none: the city group is guessed"
+                          value={groupUrls} onChange={(e) => setGroupUrls(e.target.value)} />
+                        <textarea className="rounded-md border bg-background px-2 py-1 text-xs" rows={2}
+                          placeholder="Subreddits (one per line) — none: the city + first-time-buyer defaults"
+                          value={subreddits} onChange={(e) => setSubreddits(e.target.value)} />
+                        <input className="rounded-md border bg-background px-2 py-1 text-xs" placeholder="Lookback days (1-365)"
+                          inputMode="numeric" value={lookbackDays} onChange={(e) => setLookbackDays(e.target.value)} />
                       </div>
                     </div>
 

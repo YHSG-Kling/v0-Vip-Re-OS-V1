@@ -109,6 +109,18 @@ export interface BatchDataRecord {
     vacancyDate?:     string
     vacancyType?:     string
   }
+  /** Lane 88G — the `listing` dataset the same Property Search row carries (confirmed from the
+   *  provider's own field catalogue, list_property_dataset_fields "listing", 2026-09-28:
+   *  listing.price / maxListPrice / minListPrice / daysOnMarket / status). Read so a PRICE CUT
+   *  (price below the listing's own max list price) is visible to the scorer and the active-listing
+   *  feed stores the LIST price instead of the AVM (it wrote `estimatedValue` into list_price). */
+  listing?: {
+    price?:           number
+    maxListPrice?:    number
+    minListPrice?:    number
+    daysOnMarket?:    number
+    status?:          string
+  }
   // The full motivated-seller spectrum BatchData covers — downsizers (high
   // equity), divorce, foreclosure / pre-foreclosure, tax lien, expired listings,
   // investor/absentee owners, vacant, and tired landlords.
@@ -116,6 +128,8 @@ export interface BatchDataRecord {
     // Lane 82B (owner, wave 82: "motivated sellers (fsbo, expired, probate/divorce, etc.)") — the
     // quickLists BatchData publishes that no trigger reached before (see QUICKLIST_SLUG below).
     | 'fsbo' | 'senior_owner' | 'canceled_listing' | 'lis_pendens' | 'notice_of_default' | 'involuntary_lien'
+    // Lane 88G — three published quickLists no trigger reached (see BATCHDATA_MOTIVATION_TYPES).
+    | 'auction' | 'mailing_vacant' | 'failed_listing'
   motivationConfidence: number
   /** Lane 85C — the property row's `demographic` dataset (marital status / household income / net
    *  worth) that a Property Search returns with every permitted dataset and this normalizer used to
@@ -137,6 +151,19 @@ export const BATCHDATA_MOTIVATION_TYPES = [
   // ('notice-of-lis-pendens', 'notice-of-default', 'involuntary-lien'). Divorce STILL has no
   // quickList — it stays on the OSINT court-records lane (osint_signal).
   'fsbo', 'senior_owner', 'canceled_listing', 'lis_pendens', 'notice_of_default', 'involuntary_lien',
+  // Lane 88G (wave 88, lane-87F scraping gaps #3 same-day filings, #4 change-of-address, #6 stale
+  // listings) — data we ALREADY BUY, never a new vendor: three more published quickLists
+  // (BATCHDATA_QUICKLISTS, confirmed against the provider's quicklist dataset catalogue 2026-09-28):
+  //   auction        → 'active-auction'         — the trustee/sheriff sale is SCHEDULED: the latest,
+  //                                                most time-boxed foreclosure stage the recorder shows.
+  //   mailing_vacant → 'mailing-address-vacant' — the owner's OWN mailing address is vacant: they
+  //                                                moved without updating the county — the lawful
+  //                                                change-of-address proxy (USPS NCOALink may NOT be
+  //                                                used to build new-mover lists; its licence confines
+  //                                                it to correcting a mailer's own list).
+  //   failed_listing → 'failed-listing'         — a listing that failed to close (stale/withdrawn
+  //                                                sibling of canceled/expired).
+  'auction', 'mailing_vacant', 'failed_listing',
 ] as const
 
 /** The default high-intent seller trio used when no explicit triggers are given (API caps at 3). */
@@ -156,6 +183,12 @@ const TRIGGER_ALIASES: Record<string, string> = {
   'notice-of-lis-pendens': 'lis_pendens', 'lis-pendens': 'lis_pendens',
   'notice-of-default': 'notice_of_default', nod: 'notice_of_default',
   'involuntary-lien': 'involuntary_lien',
+  // Lane 88G — tax-delinquent spellings (the county "tax delinquent list" gap maps onto the SAME
+  // 'tax-default' quickList this platform already buys) + the three new triggers' spellings.
+  tax_delinquent: 'tax_lien', 'tax-delinquent': 'tax_lien', delinquent_tax: 'tax_lien', delinquent_taxes: 'tax_lien',
+  'active-auction': 'auction', foreclosure_auction: 'auction', trustee_sale: 'auction', sheriff_sale: 'auction',
+  'mailing-address-vacant': 'mailing_vacant', change_of_address: 'mailing_vacant', moved_away: 'mailing_vacant', owner_moved: 'mailing_vacant',
+  'failed-listing': 'failed_listing', stale_listing: 'failed_listing',
 }
 function canonicalTrigger(t: string): string {
   const k = String(t).trim().toLowerCase().replace(/\s+/g, '_')
@@ -225,6 +258,10 @@ const QUICKLIST_SLUG: Record<string, string> = {
   lis_pendens:       'notice-of-lis-pendens',
   notice_of_default: 'notice-of-default',
   involuntary_lien:  'involuntary-lien',
+  // Lane 88G
+  auction:           'active-auction',
+  mailing_vacant:    'mailing-address-vacant',
+  failed_listing:    'failed-listing',
   // Lane 82B — BUYER-side (investor) list, deliberately NOT in BATCHDATA_MOTIVATION_TYPES so a
   // seller pull can never reach it; pulled only by the cron's batchdata_cash_buyer step.
   cash_buyer:        'cash-buyer',
@@ -241,6 +278,56 @@ export function quickListSlugsFor(triggers: readonly string[]): string[] {
   return validQuickLists(triggers.map((t) => QUICKLIST_SLUG[t]).filter(Boolean) as string[])
 }
 
+/** The two camelCase flags whose kebab form is NOT the published slug (word order differs). */
+const QUICKLIST_CAMEL_EXCEPTIONS: Record<string, string> = {
+  absenteeOwnerInState: 'in-state-absentee-owner',
+  absenteeOwnerOutOfState: 'out-of-state-absentee-owner',
+}
+
+/**
+ * Lane 88G — PURE. Every quickList a provider property row is ON, as the published kebab slugs.
+ *
+ * FIXES THE "ONE FILE, TWO BELIEFS" DEFECT that lib/external/batchdata-seller-signals.ts::
+ * readQuickList documented and worked around: Property Search returns `quickLists` as an OBJECT of
+ * camelCase booleans (the provider's own quicklist dataset catalogue, re-confirmed 2026-09-28 via
+ * list_property_dataset_fields: `quickLists.preforeclosure`, `quickLists.taxDefault`, 38 flags), but
+ * normalizeBatchDataProperty read it as `Array.isArray(p.quickLists)` — so every object-shaped
+ * response lost its WHOLE quickList set. Downstream that silently blinded: the expired/canceled
+ * detection in scraper-parsers.ts::normalizeBatchDataRecord, the active-listing feed's status read
+ * (listings-batchdata-feed.ts::statusFromQuickLists → "unknown" → every record skipped), the
+ * inventory radar, and any multi-signal stack (one pull already says a parcel is tax-default AND
+ * vacant AND absentee — for free). Accepts both wire shapes, like readQuickList; unknown names are
+ * dropped (validated against BATCHDATA_QUICKLISTS), never invented.
+ */
+export function quickListSlugsFromRow(p: Record<string, any> | null | undefined): string[] {
+  const raw = p?.quickLists ?? p?.quick_lists ?? (Array.isArray(p?.tags) ? p?.tags : undefined)
+  const out = new Set<string>()
+  const add = (slug: string) => { if (BATCHDATA_QUICKLISTS.has(slug)) out.add(slug) }
+  if (Array.isArray(raw)) {
+    for (const v of raw) if (typeof v === 'string') add(v.trim().toLowerCase())
+  } else if (raw && typeof raw === 'object') {
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (v !== true) continue
+      add(QUICKLIST_CAMEL_EXCEPTIONS[k] ?? k.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase())
+    }
+  }
+  return [...out]
+}
+
+/**
+ * Lane 88G — PURE. Published quickList slug → the internal motivation trigger that pulls it (the
+ * inverse of QUICKLIST_SLUG, so the SAME trigger vocabulary names a record's co-occurring signals —
+ * CLAUDE.md §6). null for a slug no trigger maps to (owner-occupied, has-hoa, on-market …): those
+ * are facts, not motivation, and never enter a signal stack.
+ */
+export function triggerForQuickListSlug(slug: string): string | null {
+  for (const [trigger, s] of Object.entries(QUICKLIST_SLUG)) {
+    // 'distressed' is a legacy alias of pre_foreclosure's slug — the canonical trigger wins.
+    if (s === slug && trigger !== 'distressed') return trigger
+  }
+  return null
+}
+
 /** Pure: a BatchData Property Search `results.properties[]` row → BatchDataRecord. */
 export function normalizeBatchDataProperty(p: Record<string, any>, requestedType: string): BatchDataRecord {
   const addr      = p.address ?? {}
@@ -250,15 +337,13 @@ export function normalizeBatchDataProperty(p: Record<string, any>, requestedType
   const mortgage  = p.mortgage  ?? p.openMortgageInfo  ?? {}
   const lastSale  = p.lastSale  ?? p.sale              ?? p.transferInfo ?? {}
   const vacancy   = p.vacancy   ?? {}
+  const listing   = p.listing   ?? {}
   const fullName  = typeof owner.fullName === 'string' ? owner.fullName.trim() : ''
   const ownerFirst = owner.firstName ?? (fullName ? fullName.split(/\s+/)[0] : '')
   const ownerLast  = owner.lastName  ?? (fullName ? fullName.split(/\s+/).slice(1).join(' ') : '')
-  const quickListsRaw =
-    Array.isArray(p.quickLists)      ? p.quickLists
-    : Array.isArray(p.quick_lists)   ? p.quick_lists
-    : Array.isArray(p.tags)          ? p.tags
-    : []
-  const quickLists = quickListsRaw.filter((x: any) => typeof x === 'string')
+  // Lane 88G — BOTH wire shapes (object of camelCase flags AND the legacy array) through the ONE
+  // reader; was `Array.isArray(p.quickLists)`, which dropped every object-shaped response's set.
+  const quickLists = quickListSlugsFromRow(p)
 
   // Compact helper: drop undefined keys so sub-objects stay compact in the raw_data JSONB.
   const compact = <T extends Record<string, unknown>>(o: T): T | undefined => {
@@ -317,6 +402,13 @@ export function normalizeBatchDataProperty(p: Record<string, any>, requestedType
       isVacant:    vacancy.isVacant    ?? p.isVacant,
       vacancyDate: vacancy.vacancyDate ?? p.vacancyDate,
       vacancyType: vacancy.vacancyType,
+    }),
+    listing: compact({
+      price:        typeof listing.price === 'number' ? listing.price : undefined,
+      maxListPrice: typeof listing.maxListPrice === 'number' ? listing.maxListPrice : undefined,
+      minListPrice: typeof listing.minListPrice === 'number' ? listing.minListPrice : undefined,
+      daysOnMarket: typeof listing.daysOnMarket === 'number' ? listing.daysOnMarket : undefined,
+      status:       typeof listing.status === 'string' ? listing.status : undefined,
     }),
     motivationType: (requestedType as BatchDataRecord['motivationType']) ?? 'distressed',
     motivationConfidence: 0.7,
@@ -440,13 +532,16 @@ export async function fetchMotivatedSellers(params: FetchMotivatedSellersOptions
   }
 }
 
-export async function searchProperties(address: string): Promise<{
+export async function searchProperties(address: string, opts?: { take?: number }): Promise<{
   matches: any[]
   cost: number
 }> {
   // BatchData v1 Property Search by free-text address (POST /api/v1/property/search).
+  // Lane 88G — `take` is optional (default 5, unchanged for every existing caller); the neighbour
+  // farm asks for the block's size.
+  const take = Math.max(1, Math.min(100, Math.floor(opts?.take ?? 5)))
   const data = await batchDataPropertySearch(
-    { searchCriteria: { query: address }, options: { take: 5, skip: 0 } },
+    { searchCriteria: { query: address }, options: { take, skip: 0 } },
     "BatchData property search error",
   )
 
@@ -454,6 +549,19 @@ export async function searchProperties(address: string): Promise<{
     matches: data?.results?.properties ?? data?.results ?? [],
     cost: 0.02,
   }
+}
+
+/**
+ * Lane 88G — PURE. The STREET-level query a just-sold / just-listed neighbour farm sends: the
+ * listing's street without its house number ("123 Main St" → "Main St, Tampa, FL"), so the search
+ * returns the BLOCK rather than the one home. realNeighborScraper sent the full listing address with
+ * take 5, which returns the sold home itself (and at most a handful of exact-match variants) — the
+ * farm could never identify its neighbours. null when no street survives (a PO box, a bare number).
+ */
+export function neighborStreetQuery(listingAddress: string, city: string | null, state: string | null): string | null {
+  const street = String(listingAddress ?? "").split(",")[0].replace(/^\s*\d+[a-z]?(-\d+)?\s+/i, "").replace(/\s+(apt|unit|#)\s*\S+$/i, "").trim()
+  if (!street || /^p\.?\s*o\.?\s*box/i.test(street) || !/[a-z]/i.test(street)) return null
+  return [street, city, state].filter(Boolean).join(", ")
 }
 
 // ─── BatchRank propensity ─────────────────────────────────────────────────────────────
@@ -578,10 +686,12 @@ export async function enrichPropertyWithBatchData(address: string): Promise<{
     "BatchData enrichment error",
   )
   const prop = (data?.results?.properties ?? data?.results ?? [])[0] ?? {}
-  const ql = prop.quickLists ?? {}
+  // Lane 88G — through the ONE quickList reader: `ql['tax-default']` never matched the object shape
+  // (the flag is camelCase `taxDefault`), and `foreclosure` is not a published quickList at all.
+  const ql = new Set(quickListSlugsFromRow(prop))
   // Distress/vacancy signals imply a likely fixer; otherwise unknown.
   const condition: 'turnkey' | 'fixer' | 'unknown' =
-    ql.vacant || ql.foreclosure || ql.preforeclosure || ql['tax-default'] ? 'fixer' : 'unknown'
+    ql.has('vacant') || ql.has('notice-of-sale') || ql.has('preforeclosure') || ql.has('tax-default') ? 'fixer' : 'unknown'
 
   return {
     condition,

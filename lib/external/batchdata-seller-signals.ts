@@ -254,6 +254,16 @@ export const CASH_BUYER_SIGNAL_TYPE = "cash_buyer"
 export const EXPIRED_LISTING_SIGNAL_TYPE = "expired_listing"
 export const WITHDRAWN_LISTING_SIGNAL_TYPE = "withdrawn"
 export const SOLD_LISTING_SIGNAL_TYPE = "sold"
+/**
+ * Lane 88G (wave 88 — lane-87F scraping gap #6: "no price-reduction / stale-listing lane"). The SAME
+ * active-listing monitor that files the three transitions above now also files a PRICE CUT: the
+ * address stayed on-market and its LIST price (listing.price — the feed used to store the AVM in
+ * list_price) dropped since the last pass. ATTACH-ONLY, like every transition here: it is filed only
+ * against a lead/contact the brokerage already owns, and strength stays 'weak' — the home is still
+ * listed with a broker (NAR Code of Ethics Article 16), so the cut is a WATCH fact (it predicts the
+ * expired/withdrawn transition that makes the owner prospectable), never a prompt to solicit.
+ */
+export const PRICE_REDUCED_SIGNAL_TYPE = "price_reduced"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ADDED 2026-08-22 — THE FOUR THAT ARE DERIVED FROM PROTECTED-CLASS SOURCES
@@ -504,6 +514,12 @@ export const BATCHDATA_SELLER_SIGNAL_SOURCES: readonly SellerSignalSourceSpec[] 
       label: "Listing sold (status transition, active-listing monitor)",
       sources: ["listing.status", "listing.statusCategory", "sale.lastSale.date", "sale.lastSale.price"],
       why: "The active-listing monitor observed this address's MLS status change FROM on-market TO sold. Filed as a SUPPRESSION-adjacent fact (the same posture as `active_listing`, above) — a sold property is not a prospecting target — but recorded under its own name because 'sold' is a materially different fact than 'still on market with another broker' for anything reading this signal downstream (e.g. closing out a stale seller-track).",
+    },
+    {
+      signalType: PRICE_REDUCED_SIGNAL_TYPE,
+      label: "List price reduced (active-listing monitor)",
+      sources: ["listing.price", "listing.maxListPrice", "listing.minListPrice", "listing.daysOnMarket"],
+      why: "The active-listing monitor observed this address's LIST price drop between two passes while it stayed on-market. A price cut plus days on market is the classic leading indicator of an expiring listing; it is filed WEAK and attach-only because the home is still represented by another broker (NAR Code of Ethics Article 16) — a watch fact for the agent who already knows this owner, never a solicitation prompt.",
     },
 
     // ── THE FOUR PROTECTED-CLASS-DERIVED TYPES (findings #297 / #304) ───────

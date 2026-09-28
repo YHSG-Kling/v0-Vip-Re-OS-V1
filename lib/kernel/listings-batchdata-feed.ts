@@ -52,6 +52,7 @@ import {
   EXPIRED_LISTING_SIGNAL_TYPE,
   WITHDRAWN_LISTING_SIGNAL_TYPE,
   SOLD_LISTING_SIGNAL_TYPE,
+  PRICE_REDUCED_SIGNAL_TYPE,
   buildBatchDataSignalRow,
   type SignalEntityKind,
   type DerivedSellerSignal,
@@ -89,6 +90,31 @@ function statusFromQuickLists(quickLists: readonly string[] | undefined): "activ
   if (ql.has("recently-sold")) return "sold"
   if (ql.has("on-market") || ql.has("active-listing") || ql.has("pending-listing")) return "active"
   return "unknown"
+}
+
+/** Lane 88G — a list-price drop smaller than this is rounding / a relist artefact, not a price cut. */
+const PRICE_CUT_MIN_FRACTION = 0.01
+
+/**
+ * Lane 88G — PURE. Did an address that stayed ACTIVE drop its LIST price since the last pass?
+ * Both prices must be real positive numbers; an unknown previous price is never a cut.
+ */
+export function detectPriceCut(params: {
+  previousStatus: string | null
+  status: string
+  previousPrice: number | null | undefined
+  price: number | null | undefined
+  /** The provider's own listing.maxListPrice — when present it must CORROBORATE the cut (a stored
+   *  previous price that was the AVM fallback must never read as a reduction). */
+  maxListPrice?: number | null
+}): { cut: boolean; fraction: number } {
+  const prev = Number(params.previousPrice), next = Number(params.price)
+  if (params.previousStatus !== "active" || params.status !== "active") return { cut: false, fraction: 0 }
+  if (params.previousPrice == null || params.price == null) return { cut: false, fraction: 0 }
+  if (!Number.isFinite(prev) || !Number.isFinite(next) || prev <= 0 || next <= 0) return { cut: false, fraction: 0 }
+  if (typeof params.maxListPrice === "number" && params.maxListPrice <= next) return { cut: false, fraction: 0 }
+  const fraction = (prev - next) / prev
+  return { cut: fraction >= PRICE_CUT_MIN_FRACTION, fraction: Math.round(fraction * 1000) / 1000 }
 }
 
 const STATUS_SIGNAL_TYPE: Record<"active" | "expired" | "withdrawn" | "sold", string> = {
@@ -148,7 +174,7 @@ export async function runActiveListingDiscoveryForMarket(
     // ── upsert the feed row and detect a transition ─────────────────────────
     const { data: existing, error: readErr } = await supabase
       .from("market_active_listings")
-      .select("id, current_status")
+      .select("id, current_status, list_price")
       .eq("market_id", market.id)
       .eq("address_key", addressKey)
       .maybeSingle()
@@ -159,6 +185,15 @@ export async function runActiveListingDiscoveryForMarket(
     const previousStatus = existing?.current_status ?? null
     const isTransition = previousStatus !== null && previousStatus !== status
     const isFirstSeen = previousStatus === null
+    // Lane 88G — the LIST price (listing.price), not the AVM. estimatedValue stays only as the
+    // fallback for a row whose listing dataset is absent, so buyer criteria-fit keeps a number.
+    const listPrice = record.listing?.price ?? record.estimatedValue ?? null
+    const priceCut = detectPriceCut({
+      previousStatus, status,
+      previousPrice: (existing as { list_price?: number | null } | null)?.list_price ?? null,
+      price: record.listing?.price ?? null,
+      maxListPrice: record.listing?.maxListPrice ?? null,
+    })
 
     const { error: upsertErr } = await supabase
       .from("market_active_listings")
@@ -172,7 +207,7 @@ export async function runActiveListingDiscoveryForMarket(
           state: record.propertyState ?? record.state ?? market.state,
           zip: record.propertyZip ?? record.zip ?? null,
           current_status: status,
-          list_price: record.estimatedValue ?? null,
+          list_price: listPrice,
           // m639 — criteria-fit specs (beds/baths/sqft/property_type), nullable: honest when a
           // pull's building sub-object is absent, never a fabricated 0/null-string default.
           beds: record.beds ?? null,
@@ -194,19 +229,35 @@ export async function runActiveListingDiscoveryForMarket(
     // Only a genuine TRANSITION (not "first time we've ever seen this address")
     // is signal-worthy — a feed's first pass over a territory would otherwise
     // file a signal for every already-active listing it happens to discover.
-    if (!isTransition) continue
-    transitions++
+    // Lane 88G — a PRICE CUT on a still-active listing is the second signal-worthy change (a watch
+    // fact: attach-only, weak — the home is still represented, NAR Code of Ethics Article 16).
+    if (!isTransition && !priceCut.cut) continue
+    if (isTransition) transitions++
 
     const matched = await findLeadOrContactByAddress(supabase, market.brokerage_id, addressKey)
     if (!matched) continue
 
-    const signal: DerivedSellerSignal = {
-      signalType: STATUS_SIGNAL_TYPE[status],
-      strength: status === "expired" || status === "withdrawn" ? "moderate" : "weak",
-      variant: `t:${previousStatus}->${status}`,
-      reason: `Active-listing monitor observed this address's MLS status change from ${previousStatus} to ${status}`,
-      observed: { previous_status: previousStatus, new_status: status, quicklists: record.quickLists ?? [] },
-    }
+    const signal: DerivedSellerSignal = isTransition
+      ? {
+          signalType: STATUS_SIGNAL_TYPE[status],
+          strength: status === "expired" || status === "withdrawn" ? "moderate" : "weak",
+          variant: `t:${previousStatus}->${status}`,
+          reason: `Active-listing monitor observed this address's MLS status change from ${previousStatus} to ${status}`,
+          observed: { previous_status: previousStatus, new_status: status, quicklists: record.quickLists ?? [] },
+        }
+      : {
+          signalType: PRICE_REDUCED_SIGNAL_TYPE,
+          strength: "weak",
+          variant: `p:${(existing as { list_price?: number | null } | null)?.list_price ?? "?"}->${record.listing?.price ?? "?"}`,
+          reason: "Active-listing monitor observed this still-listed address's list price drop since the last pass",
+          observed: {
+            previous_list_price: (existing as { list_price?: number | null } | null)?.list_price ?? null,
+            list_price: record.listing?.price ?? null,
+            max_list_price: record.listing?.maxListPrice ?? null,
+            days_on_market: record.listing?.daysOnMarket ?? null,
+            cut_fraction: priceCut.fraction,
+          },
+        }
     const row = buildBatchDataSignalRow({
       signal,
       entity: matched.entity,

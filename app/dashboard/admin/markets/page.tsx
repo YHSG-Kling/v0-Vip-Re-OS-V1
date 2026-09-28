@@ -8,6 +8,8 @@ import {
   getBatchDataFeedStatus,
 } from "@/app/actions/lead-scraping-config"
 import { MarketsSetupClient } from "./markets-client"
+import { BATCHDATA_MOTIVATION_TYPES } from "@/lib/external/batchdata-client"
+import { ALL_RECORD_TYPES } from "@/lib/osint-client"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
@@ -99,11 +101,13 @@ export default async function MarketsSetupPage() {
             motivatedParams: mp
               ? {
                   id: mp.id,
-                  min_equity_percent: mp.min_equity_percent ?? null,
-                  max_days_on_market: mp.max_days_on_market ?? null,
-                  include_expired_listings: mp.include_expired_listings !== false,
-                  include_fsbo: mp.include_fsbo !== false,
+                  // Lane 88G — the real columns (signal_types, is_active); the four fields read here
+                  // before were never columns of lead_scraping_motivated_params.
+                  signal_types: Array.isArray(mp.signal_types) ? mp.signal_types : [],
                   is_active: mp.is_active !== false,
+                  facebook_group_urls: Array.isArray(mp.facebook_group_urls) ? mp.facebook_group_urls : [],
+                  reddit_subreddits: Array.isArray(mp.reddit_subreddits) ? mp.reddit_subreddits : [],
+                  lookback_days: typeof mp.lookback_days === "number" ? mp.lookback_days : null,
                 }
               : null,
           }
@@ -134,7 +138,21 @@ export default async function MarketsSetupPage() {
           activeListingSources: feed.activeListingSources,
           error: feed.success ? null : (feed.error ?? "feed status unavailable"),
         }}
+        signalTypeOptions={MOTIVATED_SIGNAL_OPTIONS}
       />
     </div>
   )
 }
+
+/**
+ * Lane 88G — the "Motivated signals" picker's options, DERIVED from the two vocabularies the cron
+ * reads (never a hand list, CLAUDE.md §6): BatchData's pullable triggers (BATCHDATA_MOTIVATION_TYPES
+ * minus 'expired', which is its own Data-sources toggle) and the OSINT court record types
+ * (ALL_RECORD_TYPES). Built server-side so the client bundle never imports either provider client.
+ */
+const MOTIVATED_SIGNAL_OPTIONS: Array<{ value: string; source: "batchdata" | "court" }> = [
+  ...BATCHDATA_MOTIVATION_TYPES.filter((t) => t !== "expired").map((value) => ({ value, source: "batchdata" as const })),
+  ...(ALL_RECORD_TYPES as readonly string[])
+    .filter((t) => !(BATCHDATA_MOTIVATION_TYPES as readonly string[]).includes(t))
+    .map((value) => ({ value, source: "court" as const })),
+]

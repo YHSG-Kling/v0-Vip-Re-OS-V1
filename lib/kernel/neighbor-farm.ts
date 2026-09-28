@@ -54,19 +54,29 @@ export function scoreNeighbor(tenureYears: number | null, ownerOccupied: boolean
 
 /** Real scrape via the existing BatchData client (single egress: connector-gateway). */
 export const realNeighborScraper: NeighborScraper = async (params) => {
-  const { searchProperties } = await import("@/lib/external/batchdata-client")
-  const near = [params.listingAddress, params.city, params.state].filter(Boolean).join(", ")
-  const res = await searchProperties(near).catch(() => ({ matches: [] as any[] }))
+  const { searchProperties, quickListSlugsFromRow, neighborStreetQuery } = await import("@/lib/external/batchdata-client")
+  // Lane 88G — the BLOCK, not the house: a street-level query sized to the farm (was the full
+  // listing address with take 5, which returns the sold home itself). The sold/listed home is then
+  // excluded by its own house number — the seller is never their own neighbour.
+  const near = neighborStreetQuery(params.listingAddress, params.city, params.state)
+  if (!near) return []
+  const res = await searchProperties(near, { take: params.maxResults + 1 }).catch(() => ({ matches: [] as any[] }))
+  const ownKey = String(params.listingAddress ?? "").split(",")[0].trim().toLowerCase().replace(/\s+/g, " ")
   const out: NeighborCandidate[] = []
-  for (const p of (res.matches ?? []).slice(0, params.maxResults)) {
+  for (const p of (res.matches ?? []).slice(0, params.maxResults + 1)) {
     const addr = p?.address ?? {}
     const street = addr.street ?? addr.formattedAddress ?? p?.formattedAddress ?? null
     if (!street) continue
+    if (String(street).trim().toLowerCase().replace(/\s+/g, " ") === ownKey) continue
+    if (out.length >= params.maxResults) break
     const owner = p?.owner ?? p?.ownership ?? {}
     const tenure = typeof owner.ownershipLengthYears === "number" ? owner.ownershipLengthYears
       : (owner.ownershipLength ?? null)
     if (params.minTenureYears && tenure !== null && tenure < params.minTenureYears) continue
-    const ownerOccupied = !!(p?.quickLists?.["owner-occupied"] ?? p?.ownerOccupied)
+    // Lane 88G — the ONE quickList reader (both wire shapes). `p.quickLists["owner-occupied"]` never
+    // matched the provider's object of camelCase flags (`ownerOccupied`), so every neighbour scored
+    // as not-owner-occupied.
+    const ownerOccupied = quickListSlugsFromRow(p).includes("owner-occupied") || p?.owner?.ownerOccupied === true || p?.ownerOccupied === true
     out.push({
       address: street, city: addr.city ?? params.city, state: addr.state ?? params.state, zip: addr.zip ?? null,
       ownerName: owner.fullName ?? owner.owner1FullName ?? null,

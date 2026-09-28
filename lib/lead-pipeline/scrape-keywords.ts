@@ -57,6 +57,32 @@ export function intentSignalsFromText(text: string | null | undefined): string[]
 }
 
 /**
+ * Lane 88G — DISTRESS / SITUATION signals the SAME lexicon reads out of a post (lane-87F scraping
+ * gaps #6 price cuts and #8 eviction/bankruptcy, plus the court events a seller says out loud).
+ * Every SOURCE_MAP boost list already named `price_reduced` / `must_sell` / `motivated` for the
+ * FSBO, Craigslist, Marketplace and portal lanes, but NO normalizer ever emitted them — the boosts
+ * were dead. The canonical spellings are lib/lead-pipeline/signal-stacking.ts::STACK_FAMILY keys, so
+ * a post that says "price reduced — divorce forces sale" stacks two families.
+ */
+const DISTRESS_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
+  ["price_reduced", /\b(price (reduced|drop(ped)?|cut|improvement)|reduced (price|to \$?\d)|new (lower )?price|just reduced|priced? to sell)\b/i],
+  ["must_sell", /\b(must sell|need(s)? to sell (fast|quick(ly)?|asap|now)|sell(ing)? (fast|asap|as is)|motivated seller|bring (all )?offers|obo)\b/i],
+  ["divorce", /\b(divorc(e|ing|ed)|separation)\b/i],
+  ["probate", /\b(probate|inherited (a |the )?(house|home|property)|estate sale|executor|passed away)\b/i],
+  ["pre_foreclosure", /\b(behind on (my |our |the )?(mortgage|payments)|pre-?foreclosure|facing foreclosure|avoid foreclosure|short sale)\b/i],
+  ["eviction", /\b(evict(ion|ing|ed)?|problem tenants?|tenants? (won'?t|not) pay(ing)?)\b/i],
+  ["bankruptcy", /\b(bankrupt(cy)?|chapter (7|13))\b/i],
+  ["tired_landlord", /\b(tired (of being a )?landlord|done being a landlord|sick of tenants)\b/i],
+]
+
+/** PURE — distress signals a text evidences (added beside the population signals by every social normalizer). */
+export function distressSignalsFromText(text: string | null | undefined): string[] {
+  const t = String(text ?? "")
+  if (!t.trim()) return []
+  return DISTRESS_PATTERNS.filter(([, re]) => re.test(t)).map(([s]) => s)
+}
+
+/**
  * PURE — the record-level intentType a text resolves to. A relocator and an investor are buyers
  * (they acquire); a person only asking for an agent stays "unknown" (buyer or seller is resolved at
  * enrichment/qualification) unless the same text also says which.

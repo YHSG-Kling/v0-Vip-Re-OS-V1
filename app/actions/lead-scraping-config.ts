@@ -477,21 +477,60 @@ export async function updatePropertyParams(
 // MOTIVATED SELLER PARAMETERS (for BatchData)
 // ============================================
 
+// Lane 88G — THE PANEL COULD NEVER SAVE. Both actions wrote motivation_types / min_equity_percent /
+// max_days_on_market / include_expired_listings / include_fsbo — none of which is a column of the
+// live table (hrvaqgvukzxfskkcrwbt, 2026-09-28: id, market_id, signal_types, lookback_days,
+// is_active, facebook_group_urls, reddit_subreddits, review_source_urls; 0 rows). PGRST204 refuses
+// the WHOLE insert, so no market ever had motivated params and the operator could never choose a
+// trigger. They now write the columns the cron reads: `signal_types` (BatchData triggers + court
+// record types, one list — batchDataTriggersFor / osintRecordTypesFor each take their own) and
+// `is_active`. Equity/DOM thresholds have no column and no reader; they are not offered.
+function cleanSignalTypes(v: unknown): string[] {
+  if (!Array.isArray(v)) return []
+  return Array.from(new Set(v.filter((x): x is string => typeof x === "string").map((x) => x.trim().toLowerCase()).filter((x) => /^[a-z_]{2,40}$/.test(x)))).slice(0, 40)
+}
+// The same door also writes the three columns the cron READS and nothing wrote (lane 88G — the
+// opposite-missing census 1b): facebook_group_urls + reddit_subreddits (the social block's group /
+// subreddit lists — without them it GUESSES a city group URL) and lookback_days (the territory row's
+// window, selected by scrape-territories.ts / kernel/scraping.ts).
+function cleanFacebookGroupUrls(v: unknown): string[] {
+  if (!Array.isArray(v)) return []
+  return Array.from(new Set(v.filter((x): x is string => typeof x === "string").map((x) => x.trim())
+    .filter((x) => /^https:\/\/(www\.|m\.)?facebook\.com\/groups\/[A-Za-z0-9._-]+\/?$/.test(x)))).slice(0, 20)
+}
+function cleanSubreddits(v: unknown): string[] {
+  if (!Array.isArray(v)) return []
+  return Array.from(new Set(v.filter((x): x is string => typeof x === "string").map((x) => x.trim().replace(/^\/?r\//i, ""))
+    .filter((x) => /^[A-Za-z0-9_]{2,21}$/.test(x)))).slice(0, 20)
+}
+function cleanLookbackDays(v: unknown): number | undefined {
+  const n = Math.floor(Number(v))
+  return Number.isFinite(n) && n >= 1 && n <= 365 ? n : undefined
+}
+
 export async function createMotivatedParams(
   marketId: string,
   params: {
-    motivation_types?: string[]
-    min_equity_percent?: number
-    max_days_on_market?: number
-    include_expired_listings?: boolean
-    include_fsbo?: boolean
+    signal_types?: string[]
+    is_active?: boolean
+    facebook_group_urls?: string[]
+    reddit_subreddits?: string[]
+    lookback_days?: number
   },
 ) {
   try {
     const supabase = await createClient()
+    const lookback = cleanLookbackDays(params.lookback_days)
     const { data, error } = await supabase
       .from("lead_scraping_motivated_params")
-      .insert({ market_id: marketId, ...params })
+      .insert({
+        market_id: marketId,
+        signal_types: cleanSignalTypes(params.signal_types),
+        is_active: params.is_active !== false,
+        facebook_group_urls: cleanFacebookGroupUrls(params.facebook_group_urls),
+        reddit_subreddits: cleanSubreddits(params.reddit_subreddits),
+        ...(lookback !== undefined ? { lookback_days: lookback } : {}),
+      })
       .select()
       .single()
 
@@ -507,19 +546,25 @@ export async function createMotivatedParams(
 export async function updateMotivatedParams(
   id: string,
   updates: Partial<{
-    motivation_types: string[]
-    min_equity_percent: number
-    max_days_on_market: number
-    include_expired_listings: boolean
-    include_fsbo: boolean
+    signal_types: string[]
     is_active: boolean
+    facebook_group_urls: string[]
+    reddit_subreddits: string[]
+    lookback_days: number
   }>,
 ) {
   try {
     const supabase = await createClient()
+    const patch: Record<string, unknown> = {}
+    if (updates.signal_types !== undefined) patch.signal_types = cleanSignalTypes(updates.signal_types)
+    if (updates.is_active !== undefined) patch.is_active = updates.is_active !== false
+    if (updates.facebook_group_urls !== undefined) patch.facebook_group_urls = cleanFacebookGroupUrls(updates.facebook_group_urls)
+    if (updates.reddit_subreddits !== undefined) patch.reddit_subreddits = cleanSubreddits(updates.reddit_subreddits)
+    const lookback = cleanLookbackDays(updates.lookback_days)
+    if (lookback !== undefined) patch.lookback_days = lookback
     const { data, error } = await supabase
       .from("lead_scraping_motivated_params")
-      .update(updates)
+      .update(patch)
       .eq("id", id)
       .select()
       .single()

@@ -141,7 +141,9 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     behaviorType:              'motivated_seller',
     scoreRange:                [55, 95],
     baseScore:                 70,
-    boostSignals:              ['foreclosure', 'pre_foreclosure', 'divorce', 'bankruptcy', 'distressed', 'absentee', 'tax_lien', 'high_equity', 'vacant', 'fsbo', 'senior_owner', 'canceled_listing', 'lis_pendens', 'notice_of_default', 'involuntary_lien'],
+    // Lane 88G — + probate / auction / mailing_vacant / failed_listing / expired / price_reduced: a pull now
+    // stamps EVERY quickList the parcel is on (scraper-parsers.ts::normalizeBatchDataRecord), not just its trigger.
+    boostSignals:              ['foreclosure', 'pre_foreclosure', 'divorce', 'bankruptcy', 'distressed', 'absentee', 'tax_lien', 'high_equity', 'vacant', 'fsbo', 'senior_owner', 'canceled_listing', 'lis_pendens', 'notice_of_default', 'involuntary_lien', 'probate', 'auction', 'mailing_vacant', 'failed_listing', 'expired', 'price_reduced'],
     dampSignals:               ['low_confidence', 'incomplete'],
     identityPolicy:            'immediate',
     canPromoteBeforeEnrichment: true,
@@ -412,7 +414,9 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     behaviorType:              'osint_signal',
     scoreRange:                [45, 80],
     baseScore:                 60,
-    boostSignals:              ['owner_occupied', 'high_equity', 'long_tenure', 'life_event', 'distressed'],
+    // Lane 88G — the court record TYPE each filing carries (osint-sourcer.ts stamps it as the signal) now
+    // scores; the list named none of them, so a divorce, a probate and an eviction filing all scored 60.
+    boostSignals:              ['owner_occupied', 'high_equity', 'long_tenure', 'life_event', 'distressed', 'divorce', 'probate', 'estate', 'foreclosure', 'tax_lien', 'eviction', 'bankruptcy', 'code_violation'],
     dampSignals:               ['renter', 'low_confidence'],
     identityPolicy:            'enrichment_first',
     canPromoteBeforeEnrichment: false,
@@ -502,7 +506,9 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     behaviorType:              'batchdata_smart_search_match',
     scoreRange:                [50, 90],
     baseScore:                 65,
-    boostSignals:              ['foreclosure', 'pre_foreclosure', 'divorce', 'bankruptcy', 'distressed', 'absentee', 'tax_lien', 'high_equity', 'vacant', 'fsbo', 'senior_owner', 'canceled_listing', 'lis_pendens', 'notice_of_default', 'involuntary_lien'],
+    // Lane 88G — + probate / auction / mailing_vacant / failed_listing / expired / price_reduced: a pull now
+    // stamps EVERY quickList the parcel is on (scraper-parsers.ts::normalizeBatchDataRecord), not just its trigger.
+    boostSignals:              ['foreclosure', 'pre_foreclosure', 'divorce', 'bankruptcy', 'distressed', 'absentee', 'tax_lien', 'high_equity', 'vacant', 'fsbo', 'senior_owner', 'canceled_listing', 'lis_pendens', 'notice_of_default', 'involuntary_lien', 'probate', 'auction', 'mailing_vacant', 'failed_listing', 'expired', 'price_reduced'],
     dampSignals:               ['low_confidence', 'incomplete'],
     identityPolicy:            'immediate',
     canPromoteBeforeEnrichment: true,

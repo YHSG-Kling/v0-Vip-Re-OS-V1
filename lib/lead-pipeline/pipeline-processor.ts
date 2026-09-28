@@ -313,13 +313,16 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
 
   if (preEnrichDuplicate) {
     await setStatus(supabase, rawRecordId, 'duplicate_pre_enrich', undefined, { dedupeComplete: true })
+    // Lane 88G — the verdict is unchanged (still a duplicate, still skipped); its SIGNALS now join the
+    // existing lead's stack instead of being dropped with the row.
+    const preStack = await stackOntoDuplicateLead(supabase, preEnrichDuplicate, rawRecordId, rec)
     await logDeduplication({
       raw_record_id:             rawRecordId,
       duplicate_of_lead_id:      preEnrichDuplicate.type === 'lead'    ? preEnrichDuplicate.id : null,
       duplicate_of_contact_id:   preEnrichDuplicate.type === 'contact' ? preEnrichDuplicate.id : null,
       stage:                     'pre_enrichment',
       match_score:               preEnrichDuplicate.score,
-      match_details:             { ...preEnrichDuplicate.details, match_table: preEnrichDuplicate.type, ...(preEnrichDuplicate.type === 'raw' ? { duplicate_of_raw_id: preEnrichDuplicate.id } : {}) },
+      match_details:             { ...preEnrichDuplicate.details, match_table: preEnrichDuplicate.type, ...(preEnrichDuplicate.type === 'raw' ? { duplicate_of_raw_id: preEnrichDuplicate.id } : {}), ...(preStack ? { signal_stack: preStack } : {}) },
       action_taken:              'skipped',
       skip_reason:               'Pre-enrichment duplicate found',
       old_enrichment_confidence: preEnrichDuplicate.enrichment_confidence,
@@ -462,6 +465,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
         .eq('id', postEnrichDuplicate.id)
 
       await setStatus(supabase, rawRecordId, 'duplicate_post_enrich', undefined, { dedupeComplete: true })
+      const mergeStack = await stackOntoDuplicateLead(supabase, postEnrichDuplicate, rawRecordId, rec)
       await logDeduplication({
         raw_record_id:             rawRecordId,
         lead_id:                   postEnrichDuplicate.type === 'lead'    ? postEnrichDuplicate.id : null,
@@ -469,7 +473,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
         duplicate_of_contact_id:   postEnrichDuplicate.type === 'contact' ? postEnrichDuplicate.id : null,
         stage:                     'post_enrichment',
         match_score:               postEnrichDuplicate.score,
-        match_details:             postEnrichDuplicate.details,
+        match_details:             { ...postEnrichDuplicate.details, ...(mergeStack ? { signal_stack: mergeStack } : {}) },
         action_taken:              'merged',
         skip_reason:               null,
         old_enrichment_confidence: oldConfidence,
@@ -499,13 +503,14 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       }
 
       await setStatus(supabase, rawRecordId, 'duplicate_post_enrich', undefined, { dedupeComplete: true })
+      const keepStack = await stackOntoDuplicateLead(supabase, postEnrichDuplicate, rawRecordId, rec)
       await logDeduplication({
         raw_record_id:             rawRecordId,
         duplicate_of_lead_id:      postEnrichDuplicate.type === 'lead'    ? postEnrichDuplicate.id : null,
         duplicate_of_contact_id:   postEnrichDuplicate.type === 'contact' ? postEnrichDuplicate.id : null,
         stage:                     'post_enrichment',
         match_score:               postEnrichDuplicate.score,
-        match_details:             postEnrichDuplicate.details,
+        match_details:             { ...postEnrichDuplicate.details, ...(keepStack ? { signal_stack: keepStack } : {}) },
         action_taken:              Object.keys(fillEmpty).length > 0 ? 'merged' : 'skipped',
         skip_reason:               'Existing record has equal or better confidence (empties filled)',
         old_enrichment_confidence: oldConfidence,
@@ -633,7 +638,14 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   const batchRankAdjustedScore = batchRankPropensity !== null
     ? Math.round(fusedScore * 0.7 + batchRankPropensity * 0.3)
     : fusedScore
-  const fusedUrgency = scoreToUrgencyLevel(batchRankAdjustedScore)
+  // ── MULTI-SIGNAL STACK (lane 88G) — this row's own distress signals plus every raw row the dedup
+  // passes logged as ITS duplicate (the same person from another source) → distinct families →
+  // a cross-source boost on top of the fused score. $0 (no vendor call); a refused read stacks only
+  // the row's own signals (measured:false), never a fabricated family. lib/lead-pipeline/signal-stacking.ts.
+  const { readRawSignalStack, applyStackBoost } = await import("@/lib/lead-pipeline/signal-stacking")
+  const signalStack = await readRawSignalStack(supabase, rawRecordId, rec.normalized_preview?.intentSignals ?? [])
+  const stackedScore = applyStackBoost(batchRankAdjustedScore, signalStack.stack)
+  const fusedUrgency = scoreToUrgencyLevel(stackedScore)
   const sourceLeadType = sourceSemantics.leadType !== 'unknown'
     ? sourceSemantics.leadType
     : (rec.normalized_preview?.intentType as 'buyer' | 'seller' | 'unknown' | undefined ?? 'unknown')
@@ -675,7 +687,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       motivation_type:       (rec.raw_data?.motivation_type as string | null) ?? sourceSemantics.motivationType,
       motivation_confidence: fusedMotivationConfidence,
       urgency_level:         fusedUrgency,
-      lead_score:            batchRankAdjustedScore,
+      lead_score:            stackedScore,
       enrichment_status:     'completed',
       enrichment_confidence: enriched.enrichmentConfidence,
       last_enriched_at:      new Date().toISOString(),
@@ -746,7 +758,11 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     lead_id:                   newLead.id,
     stage:                     'lead_creation',
     match_score:               0,
-    match_details:             {},
+    // Lane 88G — the stack the lead was born with, so the timeline's dedup_decision event shows WHY
+    // the score is what it is (families, boost, and the sibling raw rows that contributed).
+    match_details:             signalStack.stack.count > 0
+      ? { promotion_stack: { families: signalStack.stack.families, boost: signalStack.stack.boost, sibling_raw_ids: signalStack.siblingRawIds, measured: signalStack.measured } }
+      : {},
     action_taken:              'created',
     skip_reason:               null,
     new_enrichment_confidence: enriched.enrichmentConfidence,
@@ -1091,8 +1107,43 @@ async function findBestMatch(
 
 async function logDeduplication(log: any, supabase: ReturnType<typeof createServiceClient>) {
   try {
-    await supabase.from('lead_deduplication_log').insert(log)
+    // Lane 88G — supabase-js RESOLVES refusals (CLAUDE.md §3): the try/catch never saw one, so the
+    // three gate stages this file writes (territory_gate / identity_gate / promotion_identity_gate)
+    // were refused by lead_deduplication_log_stage_check on every write and nobody was told
+    // (m676 widens the CHECK). Still never blocks dedup — but the refusal is now said out loud.
+    const { error } = await supabase.from('lead_deduplication_log').insert(log)
+    if (error) console.warn(`[pipeline-processor] lead_deduplication_log write refused (stage ${log?.stage ?? '?'}): ${error.message}`)
   } catch (err: unknown) {
-    // Silent fail - logging should not block deduplication
+    // Logging must not block deduplication.
+  }
+}
+
+/**
+ * Lane 88G — a raw row judged a duplicate of an existing LEAD adds its distress signals to that
+ * lead's stack (lib/lead-pipeline/signal-stacking.ts::stackDuplicateOntoLead). Returns the applied
+ * stack for the dedup log's match_details (the idempotency stamp), or null when nothing moved.
+ * Contacts are NOT stacked: a contact belongs to an agent's book, and its motivation lives on the
+ * motivated_seller_signals probe lane (published blind spot). Best-effort — never blocks dedup.
+ */
+async function stackOntoDuplicateLead(
+  supabase: ReturnType<typeof createServiceClient>,
+  dup: { type: string; id: string },
+  rawRecordId: string,
+  rec: RawRecord,
+): Promise<Record<string, unknown> | null> {
+  if (dup.type !== 'lead') return null
+  try {
+    const { stackDuplicateOntoLead } = await import('@/lib/lead-pipeline/signal-stacking')
+    const res = await stackDuplicateOntoLead(supabase, {
+      leadId: dup.id, rawRecordId, signals: rec.normalized_preview?.intentSignals ?? [],
+    })
+    if (!res.applied) {
+      if (res.reason && /refused|matched no row/.test(res.reason)) console.warn(`[pipeline-processor] signal stack not applied to lead ${dup.id}: ${res.reason}`)
+      return null
+    }
+    return { families: res.families, prior_boost: res.priorBoost, boost: res.boost, delta: res.delta, lead_score: res.leadScore }
+  } catch (err) {
+    console.warn('[pipeline-processor] signal stack threw (dedup unaffected):', err instanceof Error ? err.message : String(err))
+    return null
   }
 }

@@ -275,10 +275,22 @@ const SCRAPER_LANE = new Set([
 // (a customer conversation) and app/actions/ai-predictions.ts's dead `new BatchDataClient()` was
 // deleted, so neither imports BatchData any more (scripts/provider-cost-routing-guard.ts holds each).
 const BLIND_SPOTS = new Set<string>([])
+// (e) Lane 88G — VOCABULARY-ONLY importers: they import a PURE constant/function from the BatchData
+// client (the trigger list for the admin "Motivated signals" picker; the quickList→trigger inverse
+// map the record normalizer stamps) and must NEVER reach the provider. Held by rule below: a file
+// in this set that gains a BD_REACH token goes red, so the exemption cannot quietly become a reach.
+const VOCABULARY_ONLY = new Set<string>([
+  "app/dashboard/admin/markets/page.tsx",   // BATCHDATA_MOTIVATION_TYPES → the picker's options
+  "lib/lead-pipeline/scraper-parsers.ts",   // triggerForQuickListSlug → the record's signal stack
+])
 const importers = CORPUS.filter((p) => BD_IMPORT.test(stripped(p)) && (BD_REACH.test(blankStrings(stripped(p))) || /BatchData/.test(stripped(p))))
 const gatedOk: string[] = [], gatedBad: string[] = [], unknown: string[] = []
+const vocabularyReaching = [...VOCABULARY_ONLY].filter((p) => BD_REACH.test(blankStrings(stripped(p))))
+check(`every VOCABULARY-ONLY importer (${VOCABULARY_ONLY.size}) still reaches NOTHING — no BD_REACH token in stripped+blanked source`, vocabularyReaching.length === 0, vocabularyReaching.join(", "))
+check("POSITIVE CONTROL: the same reach finder flags a vocabulary importer that starts calling the provider",
+  BD_REACH.test(blankStrings(`import { BATCHDATA_MOTIVATION_TYPES } from "@/lib/external/batchdata-client"\nawait fetchMotivatedSellers({ state: "TX" })`)))
 for (const p of importers) {
-  if (TRANSPORT.has(p) || SCRAPER_LANE.has(p) || BLIND_SPOTS.has(p)) continue
+  if (TRANSPORT.has(p) || SCRAPER_LANE.has(p) || BLIND_SPOTS.has(p) || VOCABULARY_ONLY.has(p)) continue
   if (GATED.includes(p)) {
     const src = blankStrings(stripped(p))
     // The rail DEFINES its BatchData rung as a function above the ladder loop and INVOKES it only

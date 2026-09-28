@@ -23,7 +23,7 @@ import { parseCraigslistHtml, buildRealtySiteChatterUrl, parseContactAgentChatte
 // Lane 83A — the ONE intent lexicon (scrape-keywords.ts): every social normalizer adds the canonical
 // relocation / realtor-seeking / investor signals a post's text evidences, so a population the
 // coverage registry claims is one the classifier actually produces.
-import { intentSignalsFromText, intentTypeFromText, matchResolvedKeyword, type ResolvedKeywords } from "./scrape-keywords"
+import { intentSignalsFromText, distressSignalsFromText, intentTypeFromText, matchResolvedKeyword, type ResolvedKeywords } from "./scrape-keywords"
 import { buildAgentSeekingPhrases, buildNewConstructionPhrases } from "./source-intent-map"
 
 export interface SocialMarket {
@@ -52,9 +52,11 @@ export function detectIntent(text: string): "buyer" | "seller" | "unknown" {
   return seller && buyer ? "unknown" : intentTypeFromText(text)
 }
 
-/** Lane 83A — a normalizer's own signals plus the lexicon's canonical ones, de-duplicated. */
+/** Lane 83A — a normalizer's own signals plus the lexicon's canonical ones, de-duplicated.
+ *  Lane 88G — plus the lexicon's DISTRESS signals (price cut, must sell, divorce, probate, eviction,
+ *  bankruptcy …) so the dead `price_reduced`/`must_sell` boosts fire and a post can stack. */
 function withTextSignals(own: string[], text: string): string[] {
-  return Array.from(new Set([...own, ...intentSignalsFromText(text)]))
+  return Array.from(new Set([...own, ...intentSignalsFromText(text), ...distressSignalsFromText(text)]))
 }
 
 // Real-estate INVESTOR signals — investors are buyers acquiring income/flip

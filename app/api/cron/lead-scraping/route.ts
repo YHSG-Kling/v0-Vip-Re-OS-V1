@@ -43,7 +43,7 @@ import {
 import { resolveSourceKeywords, renderKeywordQuery, type ScrapeKeywordRow } from "@/lib/lead-pipeline/scrape-keywords"
 import { sourcePermitPrelistingIntent, routePermitPrelistingHits } from "@/lib/lead-pipeline/permit-sourcer"
 import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-territories"
-import { sourceOsintRecords } from "@/lib/lead-pipeline/osint-sourcer"
+import { sourceOsintRecords, osintRecordTypesFor } from "@/lib/lead-pipeline/osint-sourcer"
 import { sourceSiteVisitorIntent } from "@/lib/lead-pipeline/site-visitor-sourcer"
 import { sourceEmailEngagementIntent } from "@/lib/lead-pipeline/email-engagement-sourcer"
 import { sourceRentalToBuyerGraduation } from "@/lib/lead-pipeline/rental-graduation-sourcer"
@@ -513,9 +513,16 @@ export async function GET(request: Request) {
       // 2. SCRAPE MOTIVATED SELLERS (BatchData)
       // ============================================
       // STEP 4 gate
-      if ((enabledSources.has("batchdata_motivated") || enabledSources.has("expired_listing")) && market.lead_scraping_motivated_params?.length > 0) {
-        const motivatedParams = market.lead_scraping_motivated_params[0]
-        if (motivatedParams.is_active) {
+      // Lane 88G — a market with NO motivated-params row runs on the default triggers
+      // (batchDataTriggersFor(undefined) → the high-intent trio), exactly as the admin panel already
+      // TOLD the operator ("the buyer and motivated-seller lanes run on defaults"). The block used to
+      // require a row — and the panel's insert named five columns the live table does not have
+      // (PGRST204, measured 2026-09-28: 0 rows), so no row could ever exist and the default-ON
+      // batchdata_motivated source never ran. A row with is_active=false still turns it off.
+      if (enabledSources.has("batchdata_motivated") || enabledSources.has("expired_listing")) {
+        const motivatedParams: { is_active?: boolean | null; signal_types?: string[] | null } =
+          market.lead_scraping_motivated_params?.[0] ?? { is_active: true, signal_types: [] }
+        if (motivatedParams.is_active !== false) {
           // STEP 5 — open scraper_executions record
           const { data: execRecord } = await supabase
             .from("scraper_executions")
@@ -657,7 +664,7 @@ export async function GET(request: Request) {
           // has not opted in.
           if (enabledSources.has("batchdata_incremental")) {
             try {
-              const lanes = quickListSlugsFor(batchDataTriggersFor(motivatedParams.signal_types))
+              const lanes = quickListSlugsFor(batchDataTriggersFor(motivatedParams.signal_types ?? null))
               for (const quicklist of lanes) {
                 const r = await runIncrementalPropertySearchForMarket(supabase, market, { quicklist, lane: quicklist })
                 results.total_leads_created += r.inserted
@@ -1141,11 +1148,18 @@ export async function GET(request: Request) {
       // filings in the territory → motivated-seller raw records (platform-owned).
       if (enabledSources.has("osint_signal")) {
         try {
+          // Lane 88G — cost-down: only the court types BatchData cannot serve (divorce, bankruptcy,
+          // eviction, probate/estate filings, code violations, buyer life events) unless the market
+          // names its own court types in signal_types (osint-sourcer.ts::osintRecordTypesFor).
+          const osintParams = market.lead_scraping_motivated_params?.[0] as { is_active?: boolean | null; signal_types?: string[] | null } | undefined
+          const osintTypes = osintRecordTypesFor(osintParams?.signal_types ?? null, {
+            batchdataRuns: enabledSources.has("batchdata_motivated") && osintParams?.is_active !== false,
+          })
           const { records, cost } = await sourceOsintRecords({
             city: market.city,
             state: market.state,
             county: market.counties?.[0] ?? null,
-          })
+          }, { recordTypes: osintTypes })
           territorySpendUsd += cost
           await bookSourceSpend({ source: "osint_signal", cost, brokerageId: market.brokerage_id, marketId: market.id })
           const { inserted: osintInserted } = await insertRawBatch({
@@ -1224,9 +1238,11 @@ export async function GET(request: Request) {
         if ((m.spend_this_month ?? 0) >= (m.monthly_budget_usd ?? 100)) continue
         const mSources = expandEnabledSources(m.enabled_sources ?? [...DEFAULT_MARKET_SOURCES])
         if (!mSources.has("batchdata_motivated")) continue
-        const mMotivated = m.lead_scraping_motivated_params?.[0]
-        if (!mMotivated?.is_active) continue
-        const quicklists = quickListSlugsFor(batchDataTriggersFor(mMotivated.signal_types))
+        // Lane 88G — same default as the pull above: no params row ⇒ the default trio, never "skip".
+        const mMotivated: { is_active?: boolean | null; signal_types?: string[] | null } =
+          m.lead_scraping_motivated_params?.[0] ?? { is_active: true, signal_types: [] }
+        if (mMotivated.is_active === false) continue
+        const quicklists = quickListSlugsFor(batchDataTriggersFor(mMotivated.signal_types ?? null))
         for (const quicklist of quicklists) {
           const list = geosByQuicklist.get(quicklist) ?? []
           list.push({ marketId: m.id, priority: m.priority ?? 0, city: m.city ?? null, state: m.state, zip: null })

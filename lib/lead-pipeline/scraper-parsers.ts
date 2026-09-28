@@ -8,6 +8,7 @@
 
 import * as cheerio from "cheerio"
 import { isViableRecord, type NormalizedScrapedRecord } from "./raw-record-types"
+import { triggerForQuickListSlug } from "@/lib/external/batchdata-client"
 
 export interface MarketGeo {
   city: string | null
@@ -259,12 +260,26 @@ export function normalizeBatchDataRecord(
     motivation === 'expired' ||
     quickLists.some((q) => /(expired|canceled|cancelled|failed)-listing/i.test(String(q)))
 
+  // Lane 88G — THE STACK A PULL ALREADY BOUGHT. Every quickList the parcel is on becomes its canonical
+  // trigger signal (triggerForQuickListSlug — the SAME trigger vocabulary the pull uses), so one
+  // tax-default pull that is also vacant + absentee reads as three families to calculateSourceScore
+  // (+5 per boost signal) and to lib/lead-pipeline/signal-stacking.ts. Was ONE signal: the trigger.
+  // A listing whose current price sits below its own max list price carries `price_reduced`.
+  const stacked = quickLists.map((q) => triggerForQuickListSlug(String(q))).filter((t): t is string => !!t && t !== "cash_buyer")
+  const listing = (record.listing ?? {}) as { price?: number; maxListPrice?: number }
+  const priceCut = typeof listing.price === "number" && typeof listing.maxListPrice === "number" && listing.price > 0 && listing.price < listing.maxListPrice
+  const intentSignals = Array.from(new Set([
+    ...(isExpired ? ["expired_listing"] : [motivation]),
+    ...stacked,
+    ...(priceCut ? ["price_reduced"] : []),
+  ]))
+
   return {
     sourceRecordId: `batchdata-${idSlug || Date.now()}`,
     source: isExpired ? "expired_listing" : "batchdata_motivated",
     behaviorType: isExpired ? "expired_listing" : "motivated_seller",
     intentType: "seller",
-    intentSignals: isExpired ? ["expired_listing"] : [motivation],
+    intentSignals,
     firstName:       firstName || null,
     lastName:        lastName  || null,
     email:           (record.email  as string | null | undefined) ?? null,
