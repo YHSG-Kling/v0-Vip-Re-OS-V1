@@ -193,12 +193,24 @@ export const PARTNER_ROLES: readonly UserDomainRole[] = ["vendor"]
 //                              an active `agents` record.
 //
 //   FREE_STAFF_ROLES           never a seat, even when the desk gave them an
-//                              agents record for operational reasons (the ISA
-//                              holds contacts, so AGENT_ROLES seeds one; that
-//                              is a desk, not a licence).
+//                              agents record for operational reasons; that is
+//                              a desk, not a licence.
 //
-// The solo owner is therefore still seat 1 of 2 (they produce), a TC or ISA
-// they hire is free, and their second seat is a second producer. A broker on
+//   SYSTEM_AI_USER_TYPES       NOT A PERSON (lane 88B2, owner wave 88 verbatim:
+//                              "Isa is a system ai ai isa."). `isa` names the
+//                              platform's AI ISA, which acts through each
+//                              brokerage's SYSTEM identity (lib/auth/isa-actor.ts)
+//                              — so it was REMOVED from FREE_STAFF_ROLES: it is
+//                              not on the invite / create / role-change menu, it
+//                              is not "free staff" in the seat meter, and it never
+//                              produces (roleProducesOnTier). It stays STORABLE
+//                              (users_user_type_check unchanged) and read-roster
+//                              code (LEAD_DESK_USER_TYPES) reads it harmlessly —
+//                              the same shape as `lender`, which is a vendor
+//                              category, not a seat.
+//
+// The solo owner is therefore still seat 1 of 2 (they produce), a TC they hire
+// is free, and their second seat is a second producer. A broker on
 // a team tenant is seat 3 of 10 the day they are seated, and seat 0 the day
 // the tenant marks them non-producing. Positive controls in
 // scripts/seat-cap-simulator.ts, scripts/seat-bands-guard.ts and
@@ -208,7 +220,10 @@ export const PARTNER_ROLES: readonly UserDomainRole[] = ["vendor"]
 export const PRODUCER_SEAT_ROLES: readonly UserDomainRole[] = ["agent", "team_lead"]
 export const LICENSED_SEAT_ROLES: readonly UserDomainRole[] = ["broker", "broker_owner"]
 export const SEAT_BY_PRODUCTION_ROLES: readonly UserDomainRole[] = ["admin"]
-export const FREE_STAFF_ROLES: readonly UserDomainRole[] = ["broker_admin", "tc", "isa", "compliance_officer"]
+export const FREE_STAFF_ROLES: readonly UserDomainRole[] = ["broker_admin", "tc", "compliance_officer"]
+/** The AI's user types — storable, never a human seat (see the roster notes above). The ONE list:
+ *  lib/auth/lead-visibility.ts derives its human-escalation subtraction from it. */
+export const SYSTEM_AI_USER_TYPES: readonly UserDomainRole[] = ["isa"]
 
 /**
  * The full WORKING roster of the OS — every user type a tenant may seat at a
@@ -511,6 +526,9 @@ export function canBeManagingBroker(role: UserDomainRole | string | null | undef
  */
 export function roleProducesOnTier(role: UserDomainRole | string, tier: string | null | undefined): boolean {
   if ((FREE_STAFF_ROLES as readonly string[]).includes(role)) return false
+  // Lane 88B2 — the AI ISA's type never produces, even though the provisioning spec seeds it a
+  // desk (AGENT_ROLES) for any legacy row: it is the AI, not a producer.
+  if ((SYSTEM_AI_USER_TYPES as readonly string[]).includes(role)) return false
   if ((LICENSED_SEAT_ROLES as readonly string[]).includes(role)) return true
   return requiresAgentRow(role, tier ?? null)
 }
@@ -957,6 +975,9 @@ export function roleRefusalReason(role: UserDomainRole | string): string | null 
   }
   if (role === "lender") {
     return "Lenders join through the vendor directory, not as a workspace seat — invite them as a vendor and pick the lender category."
+  }
+  if ((SYSTEM_AI_USER_TYPES as readonly string[]).includes(role)) {
+    return "The ISA is the platform's AI ISA — it works every lead through the brokerage's system identity and is not a workspace seat. Invite a person as an admin, broker, team lead or TC instead."
   }
   return `'${role}' is not a workspace seat and cannot be invited on any plan.`
 }

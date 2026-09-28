@@ -26,7 +26,9 @@ const USER_TYPE_OPTIONS = [
   { value: "broker", label: "Broker" },
   { value: "admin", label: "Admin" },
   { value: "tc", label: "Transaction Coordinator" },
-  { value: "isa", label: "ISA" },
+  // 'isa' REMOVED (lane 88B2, owner wave 88: "Isa is a system ai ai isa.") — this <Select>
+  // WRITES users.user_type; the ISA is the platform's AI (system identity), never a role a person
+  // is changed into. app/actions/admin/update-user.ts refuses it via roleRefusalReason.
   { value: "team_lead", label: "Team Lead" },
   { value: "vendor", label: "Vendor" },
   // 'lender' REMOVED (owner ruling: lender is a vendor CATEGORY, not a user type).

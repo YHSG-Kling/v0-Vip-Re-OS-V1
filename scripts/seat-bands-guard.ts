@@ -152,9 +152,12 @@ check("prospect-conversion no longer carries its own band table (the 1/15/75 tab
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[2 · STAFF ARE FREE — producers count, staff never do; the producer past the team band is refused; a brokerage past its band too; multi_location never]")
-check("the four rosters partition the working roster: producers by type (agent, team_lead), licensed (broker, broker_owner — wave 80A), by production (admin), free staff (broker_admin, tc, isa, compliance_officer)",
+// Lane 88B2 (owner, wave 88: "Isa is a system ai ai isa.") RE-ANCHORED: `isa` names the platform's
+// AI ISA (SYSTEM_AI_USER_TYPES), not a person — it left FREE_STAFF_ROLES and the working roster.
+check("the four rosters partition the working roster: producers by type (agent, team_lead), licensed (broker, broker_owner — wave 80A), by production (admin), free staff (broker_admin, tc, compliance_officer); the AI ISA's type is on none of them",
   [...PRODUCER_SEAT_ROLES].sort().join() === "agent,team_lead" && [...LICENSED_SEAT_ROLES].sort().join() === "broker,broker_owner" && [...SEAT_BY_PRODUCTION_ROLES].sort().join() === "admin"
-  && [...FREE_STAFF_ROLES].sort().join() === "broker_admin,compliance_officer,isa,tc"
+  && [...FREE_STAFF_ROLES].sort().join() === "broker_admin,compliance_officer,tc"
+  && !(WORKSPACE_STAFF_ROLES as readonly string[]).includes("isa")
   && new Set(WORKSPACE_STAFF_ROLES).size === PRODUCER_SEAT_ROLES.length + LICENSED_SEAT_ROLES.length + SEAT_BY_PRODUCTION_ROLES.length + FREE_STAFF_ROLES.length
   && !PARTNER_ROLES.some((p) => (WORKSPACE_STAFF_ROLES as readonly string[]).includes(p)))
 check("roleConsumesSeat: producer types always; licensed unless EXEMPTED (produces:false); by-production only with the fact; staff/partners/contacts never — even 'producing'",
@@ -187,7 +190,7 @@ const workspace = [
   { id: "owner", user_type: "admin" },          // the solo/team owner — admin wearing an agents row: PRODUCES
   { id: "a1", user_type: "agent" },
   { id: "tc", user_type: "tc" },
-  { id: "isa", user_type: "isa" },              // has an agents row (desk), still free
+  { id: "isa", user_type: "isa" },              // a LEGACY AI-ISA-typed row with a desk: neither a seat nor staff (lane 88B2)
   { id: "co", user_type: "compliance_officer" },
   { id: "ba", user_type: "broker_admin" },
   { id: "brk", user_type: "broker" },           // no agents row — still a SEAT (licensed by type, wave 80A)
@@ -202,17 +205,17 @@ const agentsFx: Fixture = { data: [{ user_id: "owner", is_active: true }, { user
 const tenantFx: Fixture = { data: [{ billing_metadata: { non_producing_user_ids: ["bor"] } }], error: null }
 {
   const usage = await resolveSeatUsage(fakeSvc({ users: usersFx(workspace), agents: agentsFx, brokerages: tenantFx, user_role_assignments: { data: [], error: null } }), "b1")
-  check("13 people → 4 seats (owner-admin producing, the agent, the broker with no agents row, the producing broker_owner); tc/isa/compliance/broker_admin/EXEMPTED broker are FREE staff (5); partners, contacts, system, suspended never count",
-    usage.ok && usage.seatCount === 4 && [...usage.seatHolderIds].sort().join() === "a1,brk,own2,owner" && usage.freeStaffCount === 5 && usage.peopleCount === 13 && usage.nonProducingIds.join() === "bor", JSON.stringify(usage))
+  check("13 people → 4 seats (owner-admin producing, the agent, the broker with no agents row, the producing broker_owner); tc/compliance/broker_admin/EXEMPTED broker are FREE staff (4); the AI ISA's type, partners, contacts, system, suspended never count",
+    usage.ok && usage.seatCount === 4 && [...usage.seatHolderIds].sort().join() === "a1,brk,own2,owner" && usage.freeStaffCount === 4 && usage.peopleCount === 13 && usage.nonProducingIds.join() === "bor", JSON.stringify(usage))
   const noExemption = await resolveSeatUsage(fakeSvc({ users: usersFx(workspace), agents: agentsFx, user_role_assignments: { data: [], error: null } }), "b1")
   control("without the exemption the same broker of record IS a seat (5) — the list, not the agents table, is what frees a licensed producer", noExemption.seatCount === 5 && noExemption.seatHolderIds.includes("bor") && noExemption.nonProducingIds.length === 0)
   const plusTc = await resolveSeatUsage(fakeSvc({ users: usersFx([...workspace, { id: "tc2", user_type: "tc" }, { id: "isa2", user_type: "isa" }]), agents: { data: [...(agentsFx.data as unknown[]), { user_id: "isa2", is_active: true }], error: null }, brokerages: tenantFx, user_role_assignments: { data: [], error: null } }), "b1")
-  check("POSITIVE CONTROL (the ruling): adding a TC and an ISA does NOT move the seat count", plusTc.seatCount === usage.seatCount && plusTc.freeStaffCount === usage.freeStaffCount + 2)
+  check("POSITIVE CONTROL (the ruling): adding a TC and an ISA-typed row does NOT move the seat count (the TC is free staff; the AI ISA's type is not staff at all)", plusTc.seatCount === usage.seatCount && plusTc.freeStaffCount === usage.freeStaffCount + 1)
   const plusAgent = await resolveSeatUsage(fakeSvc({ users: usersFx([...workspace, { id: "a2", user_type: "agent" }]), agents: agentsFx, brokerages: tenantFx, user_role_assignments: { data: [], error: null } }), "b1")
   check("…while adding an AGENT does (the counter is not stuck)", plusAgent.seatCount === usage.seatCount + 1)
   // The retired rule — every working type is a seat — would have said 9 here.
   const retiredRule = workspace.filter((u) => (u as { status?: string }).status !== "suspended" && (WORKSPACE_STAFF_ROLES as readonly string[]).includes(u.user_type)).length
-  control("the retired every-staff-is-a-seat rule counts 9 of the same roster — the defect this pins", retiredRule === 9 && retiredRule !== usage.seatCount)
+  control(`the retired every-staff-is-a-seat rule counts ${retiredRule} of the same roster (more than the ${usage.seatCount} producers) — the defect this pins`, retiredRule > usage.seatCount)
   const exemptRefused = await resolveSeatUsage(fakeSvc({ users: usersFx(workspace), agents: agentsFx, brokerages: { data: null, error: { message: "brokerages refused" } }, user_role_assignments: { data: [], error: null } }), "b1")
   check("a refused exemption read makes the count ok:false (a swallowed refusal would bill the broker the tenant exempted)", exemptRefused.ok === false)
   const granted = await resolveSeatUsage(fakeSvc({ users: usersFx([{ id: "c1", user_type: "contact" }, { id: "ad", user_type: "admin" }]), agents: { data: [], error: null }, user_role_assignments: { data: [{ user_id: "c1", role: "agent" }, { user_id: "ad", role: "tc" }], error: null } }), "b1")

@@ -19,6 +19,10 @@
  *       `isa` minus compliance_officer (a READ admission, inert for zero rows) — only the HUMAN
  *       escalation subtracts the AI seat.
  *   D · the calendar's ISA lens is labelled for what it is — the AI ISA's bookings.
+ *   E · (lane 88B2) a human cannot be invited / created / role-changed INTO the ISA, and the seat
+ *       meter never counts it: lib/kernel/tier-role-matrix.ts SYSTEM_AI_USER_TYPES is the ONE list,
+ *       off FREE_STAFF_ROLES and the invite menu, refused by roleRefusalReason, never producing;
+ *       every creation menu drops it; the user_type stays STORABLE (no CHECK change).
  * Rule, not waypoint; every absence has a positive control. Blind spot: the census regex reads
  * comment-stripped `.eq("user_type", "isa")` / an `.in("user_type", […])` literal naming "isa" — a
  * roster spread from a Set is judged through A (behavior), not by the census.
@@ -144,6 +148,39 @@ async function main() {
   const bar = code("app/dashboard/calendar/components/os/calendar-role-filter-bar.tsx")
   ok("the role filter labels the lens \"AI ISA\" (booked by the AI ISA), not a human ISA seat", /value: "isa", label: "AI ISA"/.test(bar) && !/label: "ISA"/.test(bar))
   ok("the ISA calendar page is titled for the AI ISA", /title: "AI ISA Calendar/.test(code("app/dashboard/isa/calendar/page.tsx")))
+
+  // ── E · not a seat, not on any human menu (lane 88B2) ────────────────────────────
+  console.log("\n[E · the ISA is not a human seat: menus, seat meter, role change]")
+  const T = await import("../lib/kernel/tier-role-matrix")
+  const TIERS = ["solo_agent", "team", "brokerage", "multi_location", "unknown_tier"]
+  ok("SYSTEM_AI_USER_TYPES is the one list and names the AI ISA", (T.SYSTEM_AI_USER_TYPES as readonly string[]).join() === "isa")
+  ok("the AI ISA's type is off FREE_STAFF_ROLES and the working roster (the invite menu)",
+    !(T.FREE_STAFF_ROLES as readonly string[]).includes("isa") && !(T.WORKSPACE_STAFF_ROLES as readonly string[]).includes("isa"))
+  ok("no tier may invite / seat it (tierAllowsRole, seatableUserTypes against the live vocabulary)",
+    TIERS.every((t) => !T.tierAllowsRole(t, "isa" as any) && !(T.seatableUserTypes(t, ["isa", "agent", "tc"]) as readonly string[]).includes("isa")))
+  const why = T.roleRefusalReason("isa") ?? ""
+  ok("roleRefusalReason names it as the AI ISA (update-user and both invite doors surface this sentence)", /AI ISA/.test(why) && /not a workspace seat/.test(why), why)
+  ok("the seat meter: it never consumes a seat and never produces — even with the desk the provisioning spec seeds",
+    !T.roleConsumesSeat("isa", { produces: true }) && TIERS.every((t) => !T.roleProducesOnTier("isa", t)))
+  ok("POSITIVE CONTROL: a real staff type is still invitable and free (tc)", T.tierAllowsRole("team", "tc") && !T.roleConsumesSeat("tc", { produces: true }))
+  const { CHECK_VOCABULARIES } = await import("./check-vocabularies")
+  ok("still STORABLE — users_user_type_check keeps 'isa' (no CHECK change; legacy rows stay readable)",
+    ((CHECK_VOCABULARIES as any).users?.user_type ?? []).includes("isa"))
+  const MENUS: Record<string, RegExp> = {
+    "app/actions/superadmin/tenant-users.ts": /TENANT_CREATABLE_ROLES = new Set<string>\(\[([^\]]*)\]/,
+    "app/dashboard/superadmin/brokerages/[id]/tenant-users-panel.tsx": /CREATABLE_ROLES = \[([^\]]*)\]/,
+    "app/actions/admin/invite-user.ts": /BROKERAGE_ASSIGNABLE_ROLES = new Set\(\[([^\]]*)\]/,
+    "app/dashboard/admin/users/[userId]/user-edit-form.tsx": /USER_TYPE_OPTIONS = \[([\s\S]*?)\n\]/,
+    "app/api/internal/voice-command/route.ts": /"role": one of \[([^\]]*)\]/,
+  }
+  for (const [f, re] of Object.entries(MENUS)) {
+    const m = code(f).match(re)
+    ok(`menu ${f} offers no ISA`, !!m && !/["']isa["']/.test(m[1]), m ? m[1].replace(/\s+/g, " ").slice(0, 140) : "menu not found")
+  }
+  ok("POSITIVE CONTROL: the menu finder recognises a menu that still offers it",
+    /["']isa["']/.test((`const CREATABLE_ROLES = ["admin", "tc", "isa"]`.match(MENUS["app/dashboard/superadmin/brokerages/[id]/tenant-users-panel.tsx"]) ?? ["", ""])[1]))
+  ok("lead-visibility's AI subtraction derives from the ONE list (no second spelling)",
+    /new Set<string>\(SYSTEM_AI_USER_TYPES\)/.test(code("lib/auth/lead-visibility.ts")))
 
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${pass} passed, ${fail} failed`)

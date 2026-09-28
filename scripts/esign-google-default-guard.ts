@@ -20,6 +20,10 @@
  *   B · provider resolution: resolveProviderCore("esign") with no override answers google_esign; an
  *       explicit Dotloop override still wins; getTransactionProviderByName("google_esign") refuses with
  *       the send-from-Drive sentence; Dotloop still instantiates.
+ *   D · (lane 88B2) the workflow send step's e-sign provider is the tenant's e-sign SELECTION (default
+ *       Google), INDEPENDENT of the transaction-management connection: a tenant whose TM is Dotloop
+ *       (or Brokermint) and who never chose e-sign sends via Google; a selected API provider needs its
+ *       own connection (a different TM vendor never stands in). Run on the REAL adapter.
  *   C · no silent Dotloop default survives in the resolution / settings / UI / onboarding sources,
  *       and the send-for-esign step, launchEsignEnvelope, the actor resolver, the forms library and
  *       onboarding all name the Google default.
@@ -44,9 +48,15 @@ function ok(name: string, cond: boolean, detail = "") {
   else { fail++; console.log(`  ✗ ${name}${detail ? `\n      ${detail}` : ""}`) }
 }
 
+const G = globalThis as any
+// Lane 88B2 — the workflow send step's two reads are stubbed at the module edge so the REAL adapter
+// runs: the e-sign SELECTION (tenant-config-reads) and the TM CREDENTIAL (kernel/forms).
+G.__88B2 = { selection: "google_esign", tm: { success: true, data: { provider_name: "not_configured", is_configured: false, access_token: null, account_id: null } } }
 const STUB_BY_SPEC: Record<string, string> = {
   "server-only": "export{}",
   "@/lib/supabase/service": "export const createServiceClient = () => { throw new Error('no service client in the proof') }",
+  "@/lib/kernel/tenant-config-reads": "export const resolveTenantProvider = async () => ({ providerKey: globalThis.__88B2.selection, config: {}, scope: 'brokerage' })",
+  "@/lib/kernel/forms": "export const resolveTransactionFormsProvider = async () => globalThis.__88B2.tm",
 }
 registerHooks({
   resolve(spec: string, ctx: any, next: any) {
@@ -115,8 +125,8 @@ async function main() {
   const kp = code("lib/kernel/providers.ts")
   ok("SYSTEM_DEFAULTS.esign reads the ONE catalog default", /esign:\s*DEFAULT_ESIGN_PROVIDER/.test(kp))
   const sfe = code("lib/workflow/adapters/send-for-esign.ts")
-  ok("send-for-esign: an unconfigured brokerage uses the default (manual-send via Drive), a REFUSED resolution still stops",
-    /else if \(result\.success\) \{[\s\S]{0,200}provider = DEFAULT_ESIGN_PROVIDER/.test(sfe) && /if \(!provider \|\| provider === "not_configured"\)/.test(sfe))
+  ok("send-for-esign: WHICH provider = the e-sign selection (resolveTenantProvider esign), not the TM connection",
+    /resolveTenantProvider\(\{\s*providerType: "esign"/.test(sfe) && /result\.data\.provider_name === entry\.name/.test(sfe))
   ok("send-for-esign: the manual-send bell names the provider's own window + the Google eSignature steps",
     /manualEntry\?\.portalSend/.test(sfe) && /Tools → eSignature → Request signature/.test(sfe))
   ok("launchEsignEnvelope: unconfigured → names the Google default and its Drive window (still an honest refusal)",
@@ -131,6 +141,44 @@ async function main() {
   ok("onboarding: the required e-sign category is met by the default (no connection needed)",
     /typeConnected\.has\(t\) \|\| t === "esign"/.test(code("app/dashboard/onboarding/tech-stack/tech-stack-client.tsx")))
   ok("onboarding checklist copy names the Google default", /Google eSignature/.test(code("lib/onboarding/setup-readiness.ts")))
+
+  // ── D · the send step is independent of the TM connection (lane 88B2) ──────────────
+  console.log("\n[D · workflow send step: e-sign = the e-sign selection (default Google), TM stays TM]")
+  const { memSupabase: mem } = await import("./in-memory-supabase")
+  const { sendForEsignAdapter } = await import("../lib/workflow/adapters/send-for-esign")
+  const DOC = "e1000000-0000-4000-8000-000000000001"
+  const run = async () => {
+    const db = mem({ documents: [{ id: DOC, document_type: "listing_agreement", status: "draft_ready", content: null, state_code: "TX", transaction_id: null, listing_id: null, storage_url: null, metadata: {}, contact_id: "c1" }], notifications: [] })
+    const res = await sendForEsignAdapter.execute({ enrollmentId: "en1", step: {} as any, contact: { id: "c1", first_name: "Pat" } as any, brokerageId: BRK, agentUserId: "u-agent", agentId: null, supabase: db, previousOutputs: {} } as any)
+    return { res, db }
+  }
+  G.__88B2.selection = "google_esign"
+  G.__88B2.tm = { success: true, data: { provider_name: "dotloop", is_configured: true, access_token: "tok", account_id: "acct" } }
+  const tmDotloop = await run()
+  ok("TM = Dotloop (connected), no e-sign choice → the step sends via GOOGLE eSignature (manual-send to Drive), never Dotloop",
+    tmDotloop.res.providerKey === "google_esign" && tmDotloop.res.status === "skipped" && (tmDotloop.res.output as any)?.status === "manual_send_required", JSON.stringify(tmDotloop.res))
+  const bell = (tmDotloop.db as any).tables.notifications.find((n: any) => n.type === "esign_provider_manual_send")
+  ok("…and the agent's bell names Google eSignature + Drive + Request signature", !!bell && /Google eSignature/.test(bell.title) && /drive\.google\.com/.test(bell.body) && /Request signature/.test(bell.body), JSON.stringify(bell))
+  G.__88B2.tm = { success: true, data: { provider_name: "brokermint", is_configured: true, access_token: "tok", account_id: "acct" } }
+  const tmBrokermint = await run()
+  ok("TM = Brokermint (no e-sign) → Google eSignature, not \"send manually from Brokermint\"", tmBrokermint.res.providerKey === "google_esign", JSON.stringify(tmBrokermint.res))
+  G.__88B2.selection = "docusign"
+  G.__88B2.tm = { success: true, data: { provider_name: "dotloop", is_configured: true, access_token: "tok", account_id: "acct" } }
+  const mismatch = await run()
+  ok("e-sign SELECTED = DocuSign but only Dotloop (TM) is connected → refused by name; Dotloop never stands in",
+    mismatch.res.status === "error" && /DocuSign/.test(String(mismatch.res.error)) && mismatch.res.providerKey === "esign", JSON.stringify(mismatch.res))
+  G.__88B2.selection = "dotloop"
+  G.__88B2.tm = { success: false, error: "platform_credentials refused" }
+  const refused = await run()
+  ok("a refused credential read for a selected API provider fails CLOSED (error, reason named)", refused.res.status === "error" && /refused/.test(String(refused.res.error)), JSON.stringify(refused.res))
+  // POSITIVE CONTROL — the retired rule (provider = whatever TM credential is connected) would have
+  // picked Dotloop in the first world; the finder for it still recognises that shape.
+  const RETIRED_TM_DRIVES_ESIGN = /if \(result\.success && result\.data\?\.is_configured\) \{\s*provider\s*=\s*result\.data\.provider_name/
+  ok("POSITIVE CONTROL: the retired TM-drives-e-sign shape is recognised, and is absent from the step",
+    RETIRED_TM_DRIVES_ESIGN.test(`if (result.success && result.data?.is_configured) {\n          provider            = result.data.provider_name`) && !RETIRED_TM_DRIVES_ESIGN.test(sfe))
+  const kpSrc = code("lib/kernel/providers.ts")
+  ok("the TM system default (SYSTEM_DEFAULTS.transaction) is left as the tenant's TM choice — and it no longer feeds the e-sign step",
+    /transaction:\s*"dotloop"/.test(kpSrc) && !/providerType:\s*"transaction"/.test(sfe))
 
   console.log(`\n  scanned for a silent Dotloop default: ${NAMED.join(", ")}`)
   console.log("\n──────────────────────────────────────────────────")

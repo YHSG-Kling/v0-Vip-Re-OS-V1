@@ -201,8 +201,12 @@ export async function searchUsersByEmailAction(query: string): Promise<
 // invite flow — see lib/kernel/lender-linkage.ts, which is the source of truth
 // for lender identity, and roleRefusalReason() in tier-role-matrix.ts for the
 // sentence a caller gets.
+// 'isa' REMOVED (lane 88B2, owner wave 88: "Isa is a system ai ai isa."). The ISA is the
+// platform's AI acting through each brokerage's system identity (lib/auth/isa-actor.ts), not a
+// person — and this door's superadminOverride waives the tier matrix, so it is the one surface
+// that could still mint a human `isa` seat after SYSTEM_AI_USER_TYPES left the invite menu.
 const TENANT_CREATABLE_ROLES = new Set<string>([
-  "admin", "broker", "agent", "team_lead", "tc", "isa", "compliance_officer", "vendor",
+  "admin", "broker", "agent", "team_lead", "tc", "compliance_officer", "vendor",
 ])
 
 /**

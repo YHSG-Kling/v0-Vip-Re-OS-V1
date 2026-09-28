@@ -3,11 +3,11 @@
  * eSignature provider.
  *
  * IMPORTANT: The eSign provider is per-AGENT/BROKERAGE — not hardcoded.
- * resolveTransactionFormsProvider() reads platform_credentials and returns
- * whichever provider the user/brokerage has connected (dotloop, docusign,
- * skyslope, formsimplicity, brokermint, authentisign). The same lookup
- * powers the FormWizard's "Send for signature" button — this adapter mirrors
- * that flow so workflow-driven sends behave identically to manual ones.
+ * Lane 88B2: WHICH provider is the tenant's e-sign SELECTION (provider_overrides `esign`,
+ * default Google eSignature — lib/kernel/providers.ts SYSTEM_DEFAULTS), independent of the
+ * transaction-management connection; resolveTransactionFormsProvider() (platform_credentials)
+ * supplies only the CREDENTIAL of a selected API provider (dotloop, docusign, skyslope,
+ * formsimplicity, authentisign).
  *
  * Pre-condition: the document must already have status='draft_ready' or
  * 'review' (i.e. the agent has approved the packet in the FormWizard).
@@ -85,30 +85,70 @@ export const sendForEsignAdapter: ChannelAdapter = {
     const { step, brokerageId, contact, agentUserId, supabase, previousOutputs } = ctx
 
     // ── Resolve the agent's configured eSign provider ────────────────────
-    // Step-level override beats brokerage default; brokerage default beats nothing.
+    // Step-level override beats the tenant's e-sign SELECTION; the selection's default is Google.
+    //
+    // LANE 88B2 (owner, wave 88: "google esign is default not dotloop."). This step used to take
+    // its e-sign provider from resolveTransactionFormsProvider — the most recent TRANSACTION-
+    // MANAGEMENT credential (dotloop / skyslope / brokermint / …). So the TM choice DROVE e-sign:
+    // a tenant that connected Dotloop for its loops auto-sent every signature through Dotloop, and
+    // one on Brokermint (no e-sign at all) was told to "send manually from Brokermint". E-sign is
+    // now its OWN choice: WHICH provider comes from the provider_overrides `esign` cascade
+    // (resolveTenantProvider → lib/kernel/providers.ts; user → team → brokerage → superadmin →
+    // SYSTEM_DEFAULTS.esign = Google eSignature). The TM connection is consulted ONLY for the
+    // CREDENTIAL of an API provider the tenant actually SELECTED for e-sign. TM stays the tenant's
+    // choice for loops and forms; it no longer picks the signer.
     let provider: string = (step as any).esign_provider ?? ""
     let providerCredentials: { access_token: string | null; account_id: string | null } | null = null
+    let selectionRefusal: string | null = null
 
     if (!provider) {
       try {
-        const { resolveTransactionFormsProvider } = await import("@/lib/kernel/forms")
-        const result = await resolveTransactionFormsProvider({ brokerage_id: brokerageId })
-        if (result.success && result.data?.is_configured) {
-          provider            = result.data.provider_name
-          providerCredentials = {
-            access_token: result.data.access_token,
-            account_id:   result.data.account_id,
+        const { resolveTenantProvider } = await import("@/lib/kernel/tenant-config-reads")
+        const { getCatalogEntry } = await import("@/lib/integrations/providers/catalog")
+        // Sessionless door (workflow run): the tenant is the run's verified brokerageId.
+        const selection = await resolveTenantProvider({
+          providerType: "esign",
+          actorContext: { userId: agentUserId ?? "", brokerageId },
+        })
+        const selected = selection.providerKey
+        const entry = getCatalogEntry(selected)
+        if (entry?.portalSend) {
+          // Google eSignature (the default) — portal-send: the manual-send rail below hands the agent
+          // their Drive with the steps. No credential exists or is needed.
+          provider = entry.name
+        } else if (entry && entry.capabilities.esign) {
+          // An API provider the tenant SELECTED for e-sign: its credential, from the connection.
+          const { resolveTransactionFormsProvider } = await import("@/lib/kernel/forms")
+          const result = await resolveTransactionFormsProvider({ brokerage_id: brokerageId })
+          if (result.success && result.data?.is_configured && result.data.provider_name === entry.name) {
+            provider            = entry.name
+            providerCredentials = {
+              access_token: result.data.access_token,
+              account_id:   result.data.account_id,
+            }
+          } else {
+            // Selected but not connected (or the connection is a different vendor, or the read was
+            // refused): fail closed and say which — never fall back to whatever TM is connected.
+            selectionRefusal = `E-sign is set to ${entry.label}, but no active ${entry.label} connection was found${result.success ? "" : ` (${result.error ?? "credential read refused"})`}. Connect it in Settings → Integrations, or switch e-sign back to the Google eSignature default.`
           }
-        } else if (result.success) {
-          // Lane 88B (owner, wave 88: "google esign is default not dotloop."): a brokerage with no
-          // connected e-sign provider uses the DEFAULT — Google eSignature — which sends from the
-          // agent's own Google Drive (portal-send, no API). It reaches the manual-send path below
-          // with the Drive link, instead of erroring "no eSign provider configured". A REFUSED
-          // resolution (result.success false) still stops here: fail closed, never guess.
-          const { DEFAULT_ESIGN_PROVIDER } = await import("@/lib/integrations/providers/catalog")
-          provider = DEFAULT_ESIGN_PROVIDER
+        } else {
+          selectionRefusal = `The e-sign selection '${selected}' is not an e-sign provider. Choose one in Settings → Integrations (the default is Google eSignature).`
         }
       } catch { /* fall through */ }
+    }
+
+    if (selectionRefusal) {
+      if (agentUserId) {
+        await sentinelWrite(supabase, supabase.from("notifications").insert({
+          user_id: agentUserId,
+          brokerage_id: brokerageId,
+          type: "esign_provider_not_configured",
+          title: "Connect your selected eSign provider",
+          body: selectionRefusal,
+          priority: "high",
+        }), { table: "notifications", flow: "esign_provider_not_configured_notify", brokerageId, reason: "the step already reports status:error; this is only the agent heads-up" })
+      }
+      return { status: "error", providerKey: "esign", error: selectionRefusal }
     }
 
     if (!provider || provider === "not_configured") {

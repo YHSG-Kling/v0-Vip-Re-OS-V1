@@ -67,6 +67,7 @@ import {
   isPlatformStaffIdentity,
 } from "@/lib/auth/resolve-user-role"
 import { readRoleGrants } from "@/lib/auth/role-grants"
+import { SYSTEM_AI_USER_TYPES } from "@/lib/kernel/tier-role-matrix"
 
 type AnySupabase = SupabaseClient<any, any, any>
 
@@ -175,7 +176,9 @@ export const BROKERAGE_WIDE_LEAD_USER_TYPES: ReadonlySet<string> = new Set(
  * the lead-desk rosters (never a restated list), so the human escalation desk is broker / broker_owner
  * / admin brokerage-wide, plus the TEAM LEAD of the team working the lead.
  */
-const AI_ISA_SEAT_USER_TYPES: ReadonlySet<string> = new Set(["isa"])
+// Lane 88B2: DERIVED from the one list of the AI's user types (lib/kernel/tier-role-matrix.ts), so
+// the seat menu and the human-escalation desk cannot disagree about what "the ISA" is (§6).
+const AI_ISA_SEAT_USER_TYPES: ReadonlySet<string> = new Set<string>(SYSTEM_AI_USER_TYPES)
 const HUMAN_LEAD_DESK_USER_TYPES: ReadonlySet<string> = new Set(
   [...LEAD_DESK_USER_TYPES].filter((t) => !AI_ISA_SEAT_USER_TYPES.has(t)),
 )

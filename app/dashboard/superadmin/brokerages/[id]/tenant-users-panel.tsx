@@ -23,7 +23,8 @@ import { inviteProductionQuestion } from "@/lib/kernel/tier-role-matrix"
 // offering a role the action refuses is a dead end. 'lender' removed with it (owner
 // ruling: lender is a vendor CATEGORY, not a user type — invite them as a vendor
 // and pick the lender category).
-const CREATABLE_ROLES = ["admin", "broker", "agent", "team_lead", "tc", "isa", "compliance_officer", "vendor"]
+// 'isa' removed (lane 88B2 — the ISA is the system AI, not a person to create).
+const CREATABLE_ROLES = ["admin", "broker", "agent", "team_lead", "tc", "compliance_officer", "vendor"]
 
 function fmtLastLogin(iso: string | null): string {
   if (!iso) return "—"

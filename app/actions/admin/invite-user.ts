@@ -56,8 +56,10 @@ export interface InviteUserResult {
 // tierAllowsRole below already refused it — see roleRefusalReason in
 // lib/kernel/tier-role-matrix.ts — so this entry was a second spelling of a value
 // that could not be invited, and the kind of leftover that gets copied forward.
+// 'isa' removed (lane 88B2, owner wave 88: "Isa is a system ai ai isa.") — a human cannot be
+// invited as the ISA; seatableUserTypes below already refuses it (SYSTEM_AI_USER_TYPES).
 const BROKERAGE_ASSIGNABLE_ROLES = new Set([
-  "agent", "tc", "isa", "team_lead", "compliance_officer", "vendor",
+  "agent", "tc", "team_lead", "compliance_officer", "vendor",
 ])
 
 // Roles only platform staff can assign. Tenant admins/brokers CAN invite

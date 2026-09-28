@@ -241,9 +241,12 @@ async function main() {
     && !seatDecision("solo_agent", 3, 3).paths.some((p) => p.kind === "upgrade"))
 
   console.log("\n[3 · WHAT IS A SEAT — producers only; staff, contacts, lenders, vendors are NOT]")
-  check("the working roster is the nine staff user types (the invite menu), partitioned into producer / licensed / by-production / free",
-    ["admin", "broker", "broker_admin", "broker_owner", "team_lead", "agent", "tc", "isa", "compliance_officer"]
+  // Lane 88B2 (owner, wave 88: "Isa is a system ai ai isa.") RE-ANCHORED: the ISA is the platform's
+  // AI (SYSTEM_AI_USER_TYPES), so it left the invite menu — a human cannot be invited as the ISA.
+  check("the working roster is the eight human staff user types (the invite menu), partitioned into producer / licensed / by-production / free — the AI ISA's type is not on it",
+    ["admin", "broker", "broker_admin", "broker_owner", "team_lead", "agent", "tc", "compliance_officer"]
       .every((r) => (WORKSPACE_STAFF_ROLES as readonly string[]).includes(r))
+    && !(WORKSPACE_STAFF_ROLES as readonly string[]).includes("isa")
     && WORKSPACE_STAFF_ROLES.length === PRODUCER_SEAT_ROLES.length + LICENSED_SEAT_ROLES.length + SEAT_BY_PRODUCTION_ROLES.length + FREE_STAFF_ROLES.length)
   for (const nonSeat of ["contact", "lender", "vendor", "system", "tc", "isa", "compliance_officer", "broker_admin"]) {
     check(`'${nonSeat}' consumes NO seat`, roleConsumesSeat(nonSeat as any, { produces: true }) === false)
