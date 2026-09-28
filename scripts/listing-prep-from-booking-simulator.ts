@@ -31,7 +31,7 @@
  * path added later that writes calendar_events without calling the starter is caught
  * only if it lives in one of the files §3 names (the cron safety net still reaches it).
  */
-import { readFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { stripComments } from "./strip-comments"
 import {
@@ -43,6 +43,7 @@ import {
   startListingPresentationPrepFromBooking,
   LISTING_APPOINTMENT_BOOKING_EVENT_TYPES,
 } from "../lib/listing-presentation/booking-prep"
+import { canonicalCalendarEventType } from "../lib/kernel/calendar-types"
 
 let passed = 0
 let failed = 0
@@ -53,6 +54,15 @@ function check(name: string, ok: boolean, detail = "") {
 }
 const ROOT = process.cwd()
 const code = (rel: string) => stripComments(readFileSync(join(ROOT, rel), "utf8"))
+function walkTs(dir: string, out: string[] = []): string[] {
+  for (const name of readdirSync(dir)) {
+    if (name === "node_modules" || name.startsWith(".")) continue
+    const p = join(dir, name)
+    if (statSync(p).isDirectory()) walkTs(p, out)
+    else if (/\.(ts|tsx)$/.test(name)) out.push(p)
+  }
+  return out
+}
 
 // ── In-memory service client ─────────────────────────────────────────────────
 type Row = Record<string, any>
@@ -106,10 +116,10 @@ function world(): Record<string, Row[]> {
       { contact_id: HV, brokerage_id: T, property_address: "77 Bay Dr", city: "Tampa", state: "FL", zip_code: "33611", bedrooms: 3, bathrooms: 2, square_feet: 1700, year_built: 1988, submitted_at: "2026-08-01" },
     ],
     calendar_events: [
-      // agent calendar: listing_consultation, contact entity, agents.id in metadata.agentId, no agent_user_id
-      { id: "e-cal", brokerage_id: T, entity_type: "contact", entity_id: SELLER, event_type: "listing_consultation", status: null, start_at: "2026-10-20T15:00:00Z", location: "9 Oak St, Tampa, FL 33602", metadata: { agentId: AGENT }, agent_user_id: null },
+      // agent calendar (one spelling since 87B2), contact entity, agents.id in metadata.agentId, no agent_user_id
+      { id: "e-cal", brokerage_id: T, entity_type: "contact", entity_id: SELLER, event_type: "listing_appointment", status: null, start_at: "2026-10-20T15:00:00Z", location: "9 Oak St, Tampa, FL 33602", metadata: { agentId: AGENT }, agent_user_id: null },
       // buyer "consultation"
-      { id: "e-buyer", brokerage_id: T, entity_type: "contact", entity_id: BUYER, event_type: "listing_consultation", status: null, start_at: "2026-10-20T15:00:00Z", location: "somewhere", metadata: {}, agent_user_id: USER },
+      { id: "e-buyer", brokerage_id: T, entity_type: "contact", entity_id: BUYER, event_type: "listing_appointment", status: null, start_at: "2026-10-20T15:00:00Z", location: "somewhere", metadata: {}, agent_user_id: USER },
       // home-value self-booking: entity agent, contact in metadata, agents.id in metadata.agent_id
       { id: "e-hv", brokerage_id: T, entity_type: "agent", entity_id: AGENT, event_type: "listing_appointment", status: null, start_at: "2026-10-21T15:00:00Z", location: null, metadata: { contact_id: HV, agent_id: AGENT, property_address: "77 Bay Dr" }, agent_user_id: USER },
       // listing consult: the listing's seller (BUYER-typed contact that IS the listing's seller)
@@ -118,10 +128,12 @@ function world(): Record<string, Row[]> {
       { id: "e-pending", brokerage_id: T, entity_type: "contact", entity_id: SELLER, event_type: "listing_appointment", status: "pending_agent_confirmation", start_at: "2026-10-23T15:00:00Z", location: null, metadata: {}, agent_user_id: USER },
       // superseded hold
       { id: "e-cancelled", brokerage_id: T, entity_type: "contact", entity_id: SELLER, event_type: "listing_appointment", status: "cancelled", start_at: "2026-10-23T15:00:00Z", location: null, metadata: {}, agent_user_id: USER },
+      // a generic ISA meeting — not a listing appointment
+      { id: "e-isa-generic", brokerage_id: T, entity_type: "contact", entity_id: SELLER, event_type: "isa_appointment", status: "scheduled", start_at: "2026-10-24T15:00:00Z", location: null, metadata: {}, agent_user_id: USER },
       // a showing is not a listing appointment
       { id: "e-showing", brokerage_id: T, entity_type: "contact", entity_id: SELLER, event_type: "showing", status: null, start_at: "2026-10-23T15:00:00Z", location: null, metadata: {}, agent_user_id: USER },
-      // ISA seller milestone row
-      { id: "e-isa", brokerage_id: T, entity_type: "contact", entity_id: SELLER, event_type: "isa_appointment", status: "scheduled", start_at: "2026-10-24T15:00:00Z", location: null, metadata: {}, agent_user_id: USER },
+      // ISA seller milestone row (stored as the one listing-appointment spelling since 87B2)
+      { id: "e-isa", brokerage_id: T, entity_type: "contact", entity_id: SELLER, event_type: "listing_appointment", status: "scheduled", start_at: "2026-10-24T15:00:00Z", location: null, metadata: {}, agent_user_id: USER },
       // a row whose contact lives in ANOTHER tenant
       { id: "e-foreign", brokerage_id: OTHER, entity_type: "contact", entity_id: SELLER, event_type: "listing_appointment", status: null, start_at: "2026-10-24T15:00:00Z", location: null, metadata: {}, agent_user_id: null },
     ],
@@ -138,12 +150,14 @@ async function main() {
   check("an untyped contact with a valuation request is a seller", classifySellerPrepContext({ contactId: "c", contactType: null, isListingSeller: false, hasValuationRequest: true }).seller === true)
   check("NEGATIVE: no contact at all is refused", (classifySellerPrepContext({ contactId: null, contactType: "seller", isListingSeller: true, hasValuationRequest: true }) as any).reason === "no_seller_contact")
 
-  check("both listing-appointment spellings pass the booking gate",
-    LISTING_APPOINTMENT_BOOKING_EVENT_TYPES.every((et) => bookingPrepGate({ eventType: et, status: "scheduled" }).go))
+  check("ONE listing-appointment spelling (87B2, §6) and it passes the booking gate",
+    LISTING_APPOINTMENT_BOOKING_EVENT_TYPES.length === 1 && LISTING_APPOINTMENT_BOOKING_EVENT_TYPES[0] === "listing_appointment" &&
+    bookingPrepGate({ eventType: "listing_appointment", status: "scheduled" }).go)
+  check("the retired 'listing_consultation' spelling is folded at the write, never read as a second kind",
+    canonicalCalendarEventType("listing_consultation") === "listing_appointment" && !bookingPrepGate({ eventType: "listing_consultation", status: null }).go)
+  check("[control] the fold leaves every other event type alone", canonicalCalendarEventType("listing_price_strategy") === "listing_price_strategy" && canonicalCalendarEventType("isa_appointment") === "isa_appointment")
   check("NEGATIVE: a showing is refused as not a listing appointment", (bookingPrepGate({ eventType: "showing", status: null }) as any).outcome === "refused")
-  check("an ISA row passes ONLY when its caller asserts it is a listing appointment",
-    bookingPrepGate({ eventType: "isa_appointment", status: null, isaListingAppointment: true }).go &&
-    !bookingPrepGate({ eventType: "isa_appointment", status: null }).go)
+  check("a generic ISA meeting ('isa_appointment') is NOT a listing appointment", !bookingPrepGate({ eventType: "isa_appointment", status: null }).go)
   check("a cancelled/superseded booking is skipped", (bookingPrepGate({ eventType: "listing_appointment", status: "cancelled" }) as any).outcome === "skipped")
   check("a tentative hold awaiting the agent is DEFERRED (the confirm starts it)", (bookingPrepGate({ eventType: "listing_appointment", status: "pending_agent_confirmation" }) as any).outcome === "deferred")
 
@@ -190,9 +204,9 @@ async function main() {
     check("superseded hold: skipped", canc.status === "skipped")
     const show = await startListingPresentationPrepFromBooking(client, { calendarEventId: "e-showing", origin: "sim" })
     check("a showing: refused", show.status === "refused")
-    const isaNoFlag = await startListingPresentationPrepFromBooking(client, { calendarEventId: "e-isa", origin: "sim" })
-    check("an ISA row without the caller's listing assertion: refused", isaNoFlag.status === "refused")
-    const isa = await resolveBookingPrepContext(client, { calendarEventId: "e-isa", isaListingAppointment: true, propertyHint: { address: "5 Pine Ct, Tampa, FL 33605", bedrooms: 3 } })
+    const isaGeneric = await startListingPresentationPrepFromBooking(client, { calendarEventId: "e-isa-generic", origin: "sim" })
+    check("a generic ISA meeting row: refused (no caller flag can promote it any more)", isaGeneric.status === "refused")
+    const isa = await resolveBookingPrepContext(client, { calendarEventId: "e-isa", propertyHint: { address: "5 Pine Ct, Tampa, FL 33605", bedrooms: 3 } })
     check("ISA seller milestone: the caller's captured property is used (hint, state parsed)",
       isa.ok && isa.context.property.source === "caller_hint" && isa.context.property.propertyAddress === "5 Pine Ct" && isa.context.property.state === "FL" && isa.context.property.bedrooms === 3)
 
@@ -229,6 +243,22 @@ async function main() {
   check("[control] the old-start finder catches the retired shape",
     OLD_START.test(`await triggerChainsForEvent({ eventType: "listing.appointment_set", brokerageId })`) &&
     OLD_START.test(`await startRun({ chainKey: "listing-appt-prep", brokerageId })`))
+
+  // §6 — ONE SPELLING at every writer (lane 87B2).
+  const scheduler = code("lib/ai-isa/appointment-scheduler.ts")
+  const milestone = code("lib/ai-isa/book-seller-appointment.ts")
+  check("the ISA seller milestone books the ONE listing-appointment spelling",
+    /event_type:\s*params\.eventType \?\? CalendarEventType\.ISA_APPOINTMENT/.test(scheduler) && /eventType: CalendarEventType\.LISTING_APPOINTMENT/.test(milestone) && !/isaListingAppointment/.test(milestone))
+  const cal = code("app/actions/ai-calendar-management.ts")
+  check("the agent calendar folds the posted type at the write and gates prep on the survivor",
+    /event_type: canonicalCalendarEventType\(/.test(cal) && /canonicalCalendarEventType\(params\.type \?\? ""\) === CalendarEventType\.LISTING_APPOINTMENT/.test(cal))
+  const LEGACY = /["']listing_consultation["']/
+  const legacyHits = ["app", "lib"].flatMap((d) => walkTs(join(ROOT, d)))
+    .filter((f) => !f.endsWith("lib/kernel/calendar-types.ts"))
+    .filter((f) => LEGACY.test(stripComments(readFileSync(f, "utf8"))))
+    .map((f) => f.slice(ROOT.length + 1))
+  check("no reader or writer in app/ + lib/ still names 'listing_consultation' (the fold lives only in calendar-types)", legacyHits.length === 0, legacyHits.join(", "))
+  check("[control] the legacy-spelling finder sees a live literal", LEGACY.test(stripComments(`event_type: "listing_consultation"`)))
 
   const starter = code("lib/listing-presentation/booking-prep.ts")
   check("the starter keys the prep run on the BOOKING ROW", /triggerEventId:\s*ctx\.calendarEventId/.test(starter))

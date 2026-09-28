@@ -41,6 +41,11 @@ export async function scheduleISAAppointment(params: {
    *  unconfigured / API rejection → the appointment still books, honestly
    *  in-person/phone, with the refusal recorded in metadata.zoom_outcome. */
   meetingMode?: 'zoom' | 'in_person' | 'phone'
+  /** WHAT this meeting IS (lane 87B2, §6). Default: a generic ISA appointment. The
+   *  seller milestone (lib/ai-isa/book-seller-appointment.ts) books a LISTING
+   *  appointment and says so, so its row carries the one listing-appointment
+   *  spelling every reader (prep, reminders, recap, no-show) matches. */
+  eventType?: CalendarEventType.ISA_APPOINTMENT | CalendarEventType.LISTING_APPOINTMENT
 }): Promise<string> {
   if (!params.leadId && !params.contactId) {
     throw new Error('scheduleISAAppointment requires either leadId or contactId')
@@ -154,8 +159,8 @@ export async function scheduleISAAppointment(params: {
       agent_user_id:       params.agentId,
       entity_type:         entityType,
       entity_id:           entityId,
-      event_type:          CalendarEventType.ISA_APPOINTMENT,
-      title:               'ISA Appointment',
+      event_type:          params.eventType ?? CalendarEventType.ISA_APPOINTMENT,
+      title:               params.eventType === CalendarEventType.LISTING_APPOINTMENT ? 'Listing Appointment' : 'ISA Appointment',
       start_at:            params.startAt.toISOString(),
       end_at:              params.endAt.toISOString(),
       timezone_name:       params.timezoneName,

@@ -199,7 +199,7 @@ async function testLive() {
 
     // (A) NO appointment fired, NO listing-appt-prep chain ran
     const { count: apptCountA } = await svc.from("calendar_events")
-      .select("id", { count: "exact", head: true }).eq("entity_id", contactId!).eq("event_type", "isa_appointment")
+      .select("id", { count: "exact", head: true }).eq("entity_id", contactId!).eq("event_type", "listing_appointment")
     check("(A) NO listing appointment was scheduled on intent-conversion", (apptCountA ?? 0) === 0, `got ${apptCountA}`)
     const { count: chainCountA } = await svc.from("workflow_runs")
       .select("id", { count: "exact", head: true }).eq("contact_id", contactId!).eq("chain_key", "listing-appt-prep")
@@ -245,7 +245,7 @@ async function testLive() {
     const { data: cal } = await svc.from("calendar_events")
       .select("id, entity_type, entity_id, event_type").eq("id", b.calendarEventId ?? "").maybeSingle()
     check("(B) ISA appointment row exists on the contact",
-      (cal as any)?.entity_type === "contact" && (cal as any)?.entity_id === contactId && (cal as any)?.event_type === "isa_appointment",
+      (cal as any)?.entity_type === "contact" && (cal as any)?.entity_id === contactId && (cal as any)?.event_type === "listing_appointment",
       JSON.stringify(cal))
 
     check("(B) listing-appt-prep chain run started", !!b.chainRunId, "no chainRunId")

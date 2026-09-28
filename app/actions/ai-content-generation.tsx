@@ -973,6 +973,22 @@ export async function updateABTestResults(
 // AI CONTENT GENERATION FUNCTIONS
 // ============================================
 
+// TOMBSTONE (lane 87B2, §1.1 + §6): the FOURTH listing-description WRITER that lived in
+// this function — buildListingDescriptionPrompt + a bare generateAIResponse call, with a
+// "family_with_kids: Schools, safety, space" persona guide (a familial-status framing the
+// Fair Housing Act forbids in advertising) and no compliance block in the prompt — is
+// RETIRED onto the ONE server-only writer, lib/listings/listing-description-core.ts
+// ::generateListingDescriptions (compliance blocks + style guide IN the prompt,
+// postcheckScript + guardContent on the MLS copy). MERGED FIRST onto the core: requested
+// length (short/medium/long → `length`), the headline, feature bullets, neighborhood
+// paragraph, SEO keywords and the long-form website copy (schema fields), and the
+// measured usage (so this door's content_generation_logs row prices the SAME call the
+// core booked to ai_tool_usage). `emphasize` → the core's highlights; `targetPersona` →
+// the ONE style vocabulary (lib/listings/listing-description-styles.ts — "family"-type
+// personas normalise to the neutral default). What stays HERE is this door's own job:
+// the session gate + feature-access meter, the enrichment merge, the content-rail
+// artifact (ai_generated_content, read by Content OS / the tools hub / the description
+// approval card) in the SAME shape its readers already parse, and the cost log.
 export async function generateListingDescription(params: {
   propertyId?: string
   agentId: string
@@ -985,16 +1001,15 @@ export async function generateListingDescription(params: {
     return { success: false, error: "Invalid agent ID" }
   }
 
-  // Hoisted so the FAILURE log can record the real prompt and elapsed time.
-  // The deleted logContentGeneration was handed the literal string
-  // "Error occurred" here, so every failed listing description was logged
-  // against a prompt nobody wrote.
-  let promptText: string | null = null
   const startTime = Date.now()
+  let promptText: string | null = null
 
   try {
     // ── LAYER 0.1: Feature Access Gate ────────────────────────────────────────
     const agentContext = await getAgentContext()
+    if (!agentContext.isAuthenticated || !agentContext.brokerageId) {
+      return { success: false, error: "Listing description refused: sign in to a brokerage first." }
+    }
     const featureCheck = await canAccessFeature(agentContext.userId, "ai_listing_generation")
     if (!featureCheck.allowed) {
       return { success: false, error: featureCheck.reason || "Feature access denied" }
@@ -1002,91 +1017,83 @@ export async function generateListingDescription(params: {
 
     const supabase = await createClient()
 
-    // ── THE ENRICHMENT USED TO BE COMPUTED AND THEN THROWN AWAY ──────────────
-    //
-    // WAS: `propertyData` was seeded from `params.propertyDetails`, and then, if
-    // `params.propertyId` was a valid uuid, a fresh starred listing read ASSIGNED
-    // OVER it — `propertyData = data`, an overwrite rather than a merge.
-    //
-    // (The old shape is described rather than quoted because a quoted supabase
-    // chain in a comment is indistinguishable from a real one to the tenant-scope
-    // guard, which would read it as an unscoped listings query.)
-    //
-    // enhancedGenerateListingDescription (below in this file) exists to assemble
-    // neighborhood data, comparable sales and SEO keywords and hand them here as
-    // `propertyDetails` — and it also passes `propertyId`. So the branch fired on
-    // every one of its calls and REPLACED the enriched object with a bare listing
-    // row. The comps, the neighborhood profile and the keywords never reached
-    // buildListingDescriptionPrompt; they were fetched, paid for (getNeighborhoodData
-    // is an AI call) and discarded. The "enhanced" generator produced exactly the
-    // same prompt as the plain one.
-    //
-    // NOW A MERGE, WHICH KEEPS THE CONTRACT INTACT FOR EVERY CALLER:
-    //   · caller passes propertyId only (the bulk path at ~line 2790, and
-    //     generateListingDescription's external callers) — spread of an undefined
-    //     `propertyDetails` is a no-op, so they get precisely the listing row they
-    //     got before. Unchanged.
-    //   · caller passes both (the enhanced path) — it still gets the full
-    //     `select("*")` listing row underneath, so no column it relied on
-    //     disappears, PLUS its own enrichment layered on top.
-    //
-    // Order matters: the caller's object wins on conflict, because it is a
-    // superset built FROM the listing (or from the named transaction embed) and
-    // carries the extra keys. buildListingDescriptionPrompt JSON-stringifies this
-    // whole object, so the added keys reach the model verbatim.
+    // THE ENRICHMENT MERGE (kept): the listing row underneath, the caller's enrichment
+    // (neighborhood data, comps, SEO keywords from enhancedGenerateListingDescription)
+    // layered on top — never an overwrite. Tenant-pinned to the SESSION's brokerage.
     let propertyData = params.propertyDetails
     if (params.propertyId && isValidUUID(params.propertyId)) {
       const { data, error: listingError } = await supabase
-        .from("listings").select("*").eq("id", params.propertyId).single()
-      // supabase-js RESOLVES a failed query. Unchecked, a refused listing read set
-      // propertyData to null and this function went on to ask the model to write a
-      // description of `null` — and, on the enhanced path, silently discarded the
-      // enrichment on the way. Keep whatever the caller supplied and say what broke.
+        .from("listings").select("*").eq("id", params.propertyId).eq("brokerage_id", agentContext.brokerageId).maybeSingle()
       if (listingError) {
         console.error("[generateListingDescription] Listing read failed:", listingError.message)
         if (!propertyData) return { success: false, error: "Property not found" }
-      } else {
-        propertyData = { ...(data ?? {}), ...(params.propertyDetails ?? {}) }
+      } else if (data) {
+        propertyData = { ...data, ...(params.propertyDetails ?? {}) }
+      } else if (!propertyData) {
+        return { success: false, error: "Property not found in your brokerage" }
       }
     }
+    if (!propertyData) return { success: false, error: "Listing description refused: no property details to describe." }
+    promptText = `listing_description core · length=${params.length} · persona=${params.targetPersona ?? "general"} · ${JSON.stringify(propertyData).slice(0, 400)}`
 
-    const { data: brandVoice } = await supabase
-      .from("brand_voice_profile")
-      .select("*")
-      .eq("agent_id", params.agentId)
-      .maybeSingle()
-
-    const prompt = buildListingDescriptionPrompt(propertyData, params, brandVoice)
-    promptText = prompt
-
-    const response = await generateAIResponse({
-      prompt,
-      metadata: {
-        userId: agentContext.userId,
-        brokerageId: agentContext.brokerageId,
-        agentId: agentContext.agentId,
-        feature: "listing_description",
-      },
+    // THE ONE WRITER — on the service client, with the SESSION's tenant; the core proves
+    // params.agentId is an agents row IN that tenant before any spend (fails closed).
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { generateListingDescriptions } = await import("@/lib/listings/listing-description-core")
+    const { normalizeListingDescriptionStyle } = await import("@/lib/listings/listing-description-styles")
+    const core = await generateListingDescriptions(createServiceClient(), {
+      brokerageId: agentContext.brokerageId,
+      agentId: params.agentId,
+      userId: agentContext.userId || null,
+      listingId: params.propertyId && isValidUUID(params.propertyId) ? params.propertyId : null,
+      propertyData,
+      style: normalizeListingDescriptionStyle(params.targetPersona),
+      highlights: params.emphasize,
+      length: params.length,
+      source: "content_rail",
     })
+    if (!core.success) return { success: false, error: core.error }
 
-    const result = parseAIJsonResponse(response.text)
+    // THE CONTENT-RAIL SHAPE its readers already parse (medium_description, headline, …).
+    // A hard Fair-Housing flag (or a check that could not run) WITHHOLDS the copy — the
+    // draft sits in the approval queue for a human (§5).
+    const withheld = core.hardFairHousingFlag || !!core.guardResult.guardFailed
+    if (withheld) {
+      return {
+        success: false,
+        error: core.hardFairHousingFlag
+          ? "Held for a human Fair Housing review — the draft is in the approval queue."
+          : "The compliance check could not run — the draft is held rather than shown unchecked.",
+      }
+    }
+    const d = core.descriptions
+    const result = {
+      short_description: d.emailTeaser,
+      medium_description: d.marketingDescription || d.mlsDescription,
+      long_description: d.longDescription || d.marketingDescription,
+      mls_description: d.mlsDescription,
+      headline: d.headline,
+      key_features_bullets: d.keyFeatureBullets,
+      neighborhood_paragraph: d.neighborhoodParagraph,
+      seo_keywords_used: d.seoKeywords,
+      social_caption: d.socialCaption,
+      compliance_status: core.guardResult.flagged ? "needs_review" : "approved",
+      compliance_flags: [...core.complianceWarnings, ...core.guardResult.violations],
+    }
     const generationTime = Date.now() - startTime
 
     const { data: savedContent, error: saveError } = await supabase
       .from("ai_generated_content")
       .insert({
         agent_id: params.agentId,
-        // agc_insert is has_brokerage_access(brokerage_id), and
-        // has_brokerage_access(NULL) is false — without this the row is
-        // refused and contentId comes back undefined to every caller.
         brokerage_id: agentContext.brokerageId,
         property_id: params.propertyId,
         content_type: "listing_description",
         content_subtype: params.length,
         generated_content: result,
         target_persona: params.targetPersona,
-        ai_model_used: response.model,
-        compliance_status: result.compliance_status || "pending",
+        ai_model_used: core.usage.model,
+        compliance_status: result.compliance_status,
         seo_keywords: result.seo_keywords_used,
         compliance_approved: false,
       })
@@ -1097,25 +1104,16 @@ export async function generateListingDescription(params: {
       console.error("[generateListingDescription] Content insert failed:", saveError)
     }
 
-    // Repointed off the deleted logContentGeneration onto the survivor. This
-    // is a strict upgrade, not a like-for-like swap: the log now lands in
-    // content_generation_logs where success / generation_time_ms / total_tokens
-    // are REAL COLUMNS (they are not on ai_generated_content, which is why the
-    // old reader reported zeroes), it books the actual cost from the split
-    // prompt/completion counts instead of a single opaque total, and it links
-    // the telemetry row to the artifact row via content_id.
+    // Priced from the core's MEASURED usage on the canonical table — the same model and
+    // tokens generateObjectRouted booked to ai_tool_usage for this call.
     const costLog = await logGenerationCost({
       contentId: savedContent?.id,
       contentType: "listing_description",
-      prompt,
-      model: response.model,
-      promptTokens: response.tokensUsed?.input,
-      completionTokens: response.tokensUsed?.output,
-      totalTokens: response.tokensUsed?.total,
-      // The CANONICAL cost — the exact figure logAIUsage has already written to
-      // ai_tool_usage.cost_cents for this same call. Passing it instead of
-      // letting this row be re-priced is what makes the two ledgers agree.
-      costUsd: response.costCents / 100,
+      prompt: promptText,
+      model: core.usage.model,
+      promptTokens: core.usage.inputTokens,
+      completionTokens: core.usage.outputTokens,
+      totalTokens: core.usage.totalTokens,
       generationTimeMs: generationTime,
       success: true,
     })
@@ -1130,9 +1128,6 @@ export async function generateListingDescription(params: {
     return { success: true, data: result, contentId: savedContent?.id }
   } catch (error) {
     console.error("Generate listing description error:", error)
-    // model is deliberately omitted: a throw can happen before the model call,
-    // and attributing a failure to a model that never ran would put a fake
-    // charge in the cost ledger. logGenerationCost books $0 for a failure log.
     const failLog = await logGenerationCost({
       contentType: "listing_description",
       prompt: promptText ?? undefined,
@@ -1511,64 +1506,10 @@ export async function generateBlogPost(params: {
 // PROMPT BUILDERS
 // ============================================
 
-function buildListingDescriptionPrompt(propertyData: any, params: any, brandVoice: any): string {
-  return `You are an expert real estate copywriter specializing in compelling listing descriptions.
-
-CREATE LISTING DESCRIPTION for:
-
-PROPERTY DETAILS:
-${JSON.stringify(propertyData, null, 2)}
-
-TARGET BUYER PERSONA: ${params.targetPersona || "general"}
-${getPersonaGuidance(params.targetPersona)}
-
-DESCRIPTION LENGTH: ${params.length}
-- Short: 160 characters (social media preview)
-- Medium: 500-800 words (MLS standard)
-- Long: 1200+ words (dedicated property website)
-
-${brandVoice ? `BRAND VOICE: Tone: ${brandVoice.tone}, Language: ${brandVoice.style}` : ""}
-
-EMPHASIZE: ${params.emphasize?.join(", ") || "key features"}
-
-WRITING STRUCTURE:
-
-**HEADLINE:**
-- Benefit-driven, not feature-driven
-- Create emotional pull
-
-**OPENING PARAGRAPH:**
-Paint picture of LIVING here. Start with lifestyle vision.
-
-**FEATURE HIGHLIGHTS:**
-Present features as BENEFITS:
-❌ "Granite countertops" 
-✅ "Chef's kitchen with granite countertops perfect for entertaining"
-
-**NEIGHBORHOOD SECTION:**
-${getNeighborhoodGuidance(params.targetPersona)}
-
-**COMPLIANCE:**
-✓ No discriminatory language
-✓ Use "Primary bedroom" not "Master bedroom"
-
-POWER WORDS: Spacious, sun-drenched, updated, pristine, thoughtfully designed
-
-OUTPUT FORMAT (JSON):
-{
-  "short_description": "160 char version",
-  "medium_description": "500-800 words",
-  "long_description": "1200+ words",
-  "headline": "Benefit-driven headline",
-  "key_features_bullets": ["5-7 features as benefits"],
-  "neighborhood_paragraph": "Neighborhood section",
-  "seo_keywords_used": ["keyword1", "keyword2"],
-  "compliance_status": "approved",
-  "compliance_flags": [],
-  "target_persona_match_score": 0.87,
-  "unique_selling_propositions": ["USP1", "USP2"]
-}`
-}
+// TOMBSTONE (lane 87B2): buildListingDescriptionPrompt — the prompt of the fourth
+// listing-description writer — is gone with it; survivor
+// lib/listings/listing-description-core.ts::generateListingDescriptions (see the
+// tombstone on generateListingDescription above).
 
 // TOMBSTONE (§1, wave 56 dead-code sweep): `buildSocialPostPrompt` and
 // `buildEmailPrompt` stood here, never called by anything — generateSocialPost
@@ -1576,9 +1517,9 @@ OUTPUT FORMAT (JSON):
 // content generation service" (generateContent, content_type "social_post" /
 // "email") before this file's export list was trimmed, and these two
 // per-type builders were left behind as the old path's leftovers.
-// `buildListingDescriptionPrompt` and `buildBlogPostPrompt` are NOT part of
-// this tombstone — both are still called (lines ~1059, ~1430) by actions
-// that never migrated to the consolidated service, so they stay live.
+// `buildBlogPostPrompt` is NOT part of this tombstone — it is still called by an
+// action that never migrated to the consolidated service, so it stays live
+// (buildListingDescriptionPrompt left in lane 87B2 — tombstone above).
 // Survivor for the social/email prompt-building capability:
 // lib/content-generation/content-generator.ts (case "social_post" ~line 292;
 // content_type "email" handling ~line 498).
@@ -1622,23 +1563,10 @@ OUTPUT FORMAT (JSON):
 // HELPER FUNCTIONS
 // ============================================
 
-function getPersonaGuidance(persona?: string): string {
-  const guidance: Record<string, string> = {
-    first_time_buyer: "TONE: Reassuring, educational. INCLUDE: Move-in ready status.",
-    luxury_buyer: "TONE: Sophisticated, exclusive. INCLUDE: Architectural details.",
-    investor: "TONE: Data-driven. INCLUDE: Numbers, cash flow potential.",
-    downsizer: "TONE: Practical. INCLUDE: Low-maintenance, single-level.",
-    family_with_kids: "TONE: Warm. INCLUDE: Schools, safety, space.",
-  }
-  return guidance[persona || ""] || "TONE: Professional and engaging"
-}
-
-function getNeighborhoodGuidance(persona?: string): string {
-  if (persona === "family_with_kids") return "Emphasize: Schools, parks, safety"
-  if (persona === "young_professional") return "Emphasize: Commute times, walkability"
-  if (persona === "investor") return "Emphasize: Rental potential, appreciation"
-  return "Emphasize: Community, convenience"
-}
+// TOMBSTONE (lane 87B2): getPersonaGuidance / getNeighborhoodGuidance stood here — their
+// only caller was buildListingDescriptionPrompt (retired onto the description core). NOT
+// carried over: "family_with_kids → Schools, safety, space", a familial-status framing;
+// the core's ONE style vocabulary (lib/listings/listing-description-styles.ts) replaces them.
 
 // TOMBSTONE (§1, wave 56 dead-code sweep): `getPlatformGuidance` stood here —
 // its only caller was `buildSocialPostPrompt`, deleted above in the same

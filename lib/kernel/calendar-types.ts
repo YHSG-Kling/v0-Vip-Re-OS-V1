@@ -35,6 +35,26 @@ export enum CalendarEventType {
   OPEN_HOUSE          = 'open_house',
 }
 
+/**
+ * ONE SPELLING PER APPOINTMENT KIND (lane 87B2, CLAUDE.md §6). A listing appointment
+ * was stored three ways — 'listing_appointment' (this enum), the agent calendar
+ * scheduler's 'listing_consultation', and the AI-ISA seller milestone's
+ * 'isa_appointment' (scheduleISAAppointment's generic ISA meeting). Readers matched
+ * different subsets, so the reminder cadence, the meeting recap and the prep safety net
+ * each missed a different third of the same meetings. Every writer now stores
+ * LISTING_APPOINTMENT; a legacy spelling a stale client still posts is folded here, at
+ * the write. (Live 2026-09-28: calendar_events carries no CHECK on event_type and
+ * 0 rows, so no backfill/migration was owed.)
+ */
+const LEGACY_CALENDAR_EVENT_TYPE_ALIASES: Record<string, CalendarEventType> = {
+  listing_consultation: CalendarEventType.LISTING_APPOINTMENT,
+}
+
+/** A posted/stored event_type → its one spelling (unknown values pass through unchanged). */
+export function canonicalCalendarEventType(eventType: string): string {
+  return LEGACY_CALENDAR_EVENT_TYPE_ALIASES[eventType] ?? eventType
+}
+
 export interface CalendarEventMetadata {
   reminderSentAt?:         string
   escalationLevel?:        number

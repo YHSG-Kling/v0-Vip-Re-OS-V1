@@ -24,7 +24,8 @@
  *   · the daily cron (app/api/cron/listing-presentation-prep) built presentations
  *     for every 'listing_appointment' row it found, including CANCELLED
  *     (superseded) holds and rows whose contact was not a seller, and never saw
- *     the calendar path's 'listing_consultation' rows at all.
+ *     the calendar path's 'listing_consultation' rows at all (lane 87B2 merged that
+ *     spelling — and the ISA milestone's 'isa_appointment' — onto 'listing_appointment').
  *
  * THE SHAPE NOW. Every booking path hands THIS core the calendar_events row it
  * just wrote. The core:
@@ -56,28 +57,22 @@
 import "server-only"
 import type { createServiceClient } from "@/lib/supabase/service"
 import { splitOneLineAddress } from "@/lib/ai-isa/property-lookup-rail"
+import { CalendarEventType } from "@/lib/kernel/calendar-types"
 
 type Svc = ReturnType<typeof createServiceClient>
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
 
 /**
- * The calendar_events.event_type spellings that ARE a listing appointment.
- * 'listing_appointment' is the canonical CalendarEventType; 'listing_consultation'
- * is what the agent calendar's scheduler writes for an "Initial Consultation"
- * (app/crm/components/listing-consultation-scheduler.tsx). Two spellings of one
- * idea is a §6 finding (published in the lane notes); until the writer is merged
- * the scan reads both so a calendar-booked seller is not invisible to the net.
+ * THE ONE calendar_events.event_type spelling of a listing appointment
+ * (CalendarEventType.LISTING_APPOINTMENT). Lane 87B2 (§6) merged the other two onto
+ * it at their writers: the agent calendar's 'listing_consultation' (scheduler value +
+ * canonicalCalendarEventType at createAppointment) and the AI-ISA seller milestone's
+ * generic 'isa_appointment' (scheduleISAAppointment now takes eventType, and
+ * book-seller-appointment passes LISTING_APPOINTMENT). The lane-87B caller flag
+ * `isaListingAppointment` is RETIRED with it — no reader needs a second spelling.
  */
-export const LISTING_APPOINTMENT_BOOKING_EVENT_TYPES = ["listing_appointment", "listing_consultation"] as const
-
-/**
- * The AI-ISA seller milestone books through scheduleISAAppointment, which stamps
- * 'isa_appointment' (an ISA meeting of any kind). Only a caller that KNOWS it is
- * booking a listing appointment (book-seller-appointment.ts) may pass it through,
- * by setting `isaListingAppointment: true`; the safety-net scan never reads it.
- */
-const ISA_APPOINTMENT_EVENT_TYPE = "isa_appointment"
+export const LISTING_APPOINTMENT_BOOKING_EVENT_TYPES = [CalendarEventType.LISTING_APPOINTMENT] as const
 
 /** contact_type values that ARE the seller side (CHECK vocabulary: scripts/check-vocabularies.ts). */
 const SELLER_SIDE_CONTACT_TYPES = new Set(["seller", "both"])
@@ -122,12 +117,9 @@ export function classifySellerPrepContext(input: {
 export function bookingPrepGate(input: {
   eventType: string | null
   status: string | null
-  isaListingAppointment?: boolean
 }): { go: true } | { go: false; outcome: "refused" | "deferred" | "skipped"; reason: string } {
   const et = (input.eventType ?? "").trim()
-  const isListingKind =
-    (LISTING_APPOINTMENT_BOOKING_EVENT_TYPES as readonly string[]).includes(et) ||
-    (input.isaListingAppointment === true && et === ISA_APPOINTMENT_EVENT_TYPE)
+  const isListingKind = (LISTING_APPOINTMENT_BOOKING_EVENT_TYPES as readonly string[]).includes(et)
   if (!isListingKind) return { go: false, outcome: "refused", reason: `not_a_listing_appointment:${et || "none"}` }
   const st = (input.status ?? "").trim().toLowerCase()
   if (CANCELLED_BOOKING_STATUSES.has(st)) return { go: false, outcome: "skipped", reason: `booking_${st}` }
@@ -217,8 +209,6 @@ interface ResolveBookingPrepParams {
   calendarEventId: string
   /** The tenant a SESSION caller holds. The booking row must be in it. */
   expectedBrokerageId?: string | null
-  /** Set ONLY by the AI-ISA seller milestone, whose row is 'isa_appointment'. */
-  isaListingAppointment?: boolean
   /** A listing the caller KNOWS this booking is for (tenant-verified here). */
   listingId?: string | null
   /** Property facts the caller captured at booking (address/city/state/zip…). */
@@ -251,7 +241,7 @@ export async function resolveBookingPrepContext(svc: Svc, params: ResolveBooking
     return { ok: false, outcome: "refused", reason: "booking_not_in_caller_tenant" }
   }
 
-  const gate = bookingPrepGate({ eventType: r.event_type, status: r.status, isaListingAppointment: params.isaListingAppointment })
+  const gate = bookingPrepGate({ eventType: r.event_type, status: r.status })
   if (!gate.go) return { ok: false, outcome: gate.outcome, reason: gate.reason }
 
   const meta = r.metadata ?? {}

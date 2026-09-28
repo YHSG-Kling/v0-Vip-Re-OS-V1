@@ -66,7 +66,9 @@ export const MAX_RECAP_POINTS = 5
 export const MEETING_EVENT_TYPES = [
   "isa_appointment",
   "buyer_consultation",
-  "listing_consultation",
+  // The ONE listing-appointment spelling (lane 87B2, §6) — was "listing_consultation",
+  // which missed every AI-ISA / home-value / listing-consult booking.
+  "listing_appointment",
   "listing_presentation",
   "consultation",
   "appointment",

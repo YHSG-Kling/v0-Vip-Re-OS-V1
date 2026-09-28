@@ -103,9 +103,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // lib/listing-presentation/booking-prep.ts::startListingPresentationPrepFromBooking
   // (the agent calendar, the listing consult, the AI-ISA/voice booking at the
   // agent's confirm, the seller's own self-booking from the report page or the
-  // portal). This scan catches the bookings that missed that event, and reads
-  // BOTH spellings of a listing appointment ("listing_appointment" and the agent
-  // calendar's "listing_consultation" — LISTING_APPOINTMENT_BOOKING_EVENT_TYPES).
+  // portal). This scan catches the bookings that missed that event, and reads the
+  // ONE spelling of a listing appointment ("listing_appointment" —
+  // LISTING_APPOINTMENT_BOOKING_EVENT_TYPES; lane 87B2 merged the calendar's
+  // "listing_consultation" and the ISA milestone's "isa_appointment" onto it).
   // The seller check, the tenant (the booking row's own brokerage_id), the
   // seller's property and the agent's users.id are resolved by the SAME core the
   // booking paths use — never a second resolver here.

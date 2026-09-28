@@ -66,6 +66,15 @@ export const LISTING_DESCRIPTIONS_SCHEMA = z.object({
   videoScript: z.string().describe("30-second video walkthrough script"),
   seoTitle: z.string().describe("SEO-optimized page title"),
   seoDescription: z.string().describe("Meta description for search engines"),
+  // MERGED FIRST from the content rail's writer (lane 87B2 — app/actions/
+  // ai-content-generation.tsx generateListingDescription, tombstoned there): the
+  // structured pieces its readers (Content OS, the AI tools hub, the description
+  // approval card) render, which this schema lacked.
+  headline: z.string().describe("Benefit-driven headline about the property"),
+  keyFeatureBullets: z.array(z.string()).describe("5-7 property features, each as a short benefit"),
+  neighborhoodParagraph: z.string().describe("Neighborhood amenities and location FACTS — never who lives there"),
+  seoKeywords: z.array(z.string()).describe("SEO keywords used in the copy"),
+  longDescription: z.string().describe("A long-form property-website description (1200+ words) ONLY when the requested length is long; otherwise an empty string"),
 })
 export type ListingDescriptions = z.infer<typeof LISTING_DESCRIPTIONS_SCHEMA>
 
@@ -79,11 +88,14 @@ export interface ListingDescriptionInput {
   propertyData: Record<string, unknown>
   style: ListingDescriptionStyle
   highlights?: string[]
+  /** Requested length (merged from the content rail): short = 160-char preview,
+   *  medium = MLS-standard, long = also a long-form website description. */
+  length?: "short" | "medium" | "long"
   neighborhood?: string
   /** The listing the copy is for — stamped only when it is THIS tenant's. */
   listingId?: string | null
   /** Who asked: the agent tool, the copilot, the new-listing kit, the presentation deck. */
-  source?: "agent_tool" | "agent_copilot" | "new_listing_kit" | "listing_presentation"
+  source?: "agent_tool" | "agent_copilot" | "new_listing_kit" | "listing_presentation" | "content_rail"
 }
 
 export type ListingDescriptionResult =
@@ -97,6 +109,9 @@ export type ListingDescriptionResult =
       /** listing_marketing_content.id, or null when the save was refused (reported, not thrown). */
       contentId: string | null
       saveError?: string
+      /** The routed call's measured usage (model + tokens) — the SAME call
+       *  generateObjectRouted already booked to ai_tool_usage. */
+      usage: { model: string; inputTokens: number; outputTokens: number; totalTokens: number }
     }
   | { success: false; error: string }
 
@@ -131,7 +146,7 @@ export async function generateListingDescriptions(
   // normalizes; nothing outside the vocabulary reaches the prompt).
   const style = normalizeListingDescriptionStyle(input.style)
 
-  const { object: descriptions } = await generateObjectRouted({
+  const { object: descriptions, usage } = await generateObjectRouted({
     feature: "listing_description",
     brokerageId, agentId, userId: input.userId ?? null,
     schema: LISTING_DESCRIPTIONS_SCHEMA,
@@ -155,7 +170,8 @@ IMPORTANT RULES:
 - Never say who the home is "perfect for" or "ideal for" (families, couples, retirees, any group)
 - Marketing can be more persuasive
 - Social should be engaging with relevant hashtags
-- All content must be original`,
+- All content must be original
+- Requested length: ${input.length ?? "medium"} (short = a 160-character preview leads the marketing copy; long = also fill longDescription, otherwise leave it empty)`,
   })
 
   // COMPLIANCE-FIRST, BOTH HALVES — the kernel grade of the MLS copy (the same
@@ -224,6 +240,7 @@ IMPORTANT RULES:
     complianceWarnings,
     hardFairHousingFlag,
     contentId,
+    usage: { model: String(usage.model), inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens },
     ...(saveErr ? { saveError: saveErr.message } : {}),
   }
 }

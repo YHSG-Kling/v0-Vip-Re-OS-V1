@@ -50,7 +50,7 @@ export const APPOINTMENT_EVENT_TYPES = [
   "isa_appointment",
   "showing",
   "buyer_consultation",
-  "listing_consultation",
+  // "listing_consultation" RETIRED (lane 87B2, §6) — merged onto "listing_appointment" below.
   "listing_presentation",
   "consultation",
   "appointment",

@@ -32,7 +32,7 @@ export type UnifiedCalendarEvent = {
   title: string
   startAt: string
   endAt: string
-  eventType: "showing" | "tour" | "open_house" | "inspection" | "appraisal" | "closing" | "appointment" | "task" | "follow_up" | "isa_appointment" | "time_block"
+  eventType: "showing" | "tour" | "open_house" | "inspection" | "appraisal" | "closing" | "appointment" | "task" | "follow_up" | "isa_appointment" | "listing_appointment" | "time_block"
   source: "showings" | "calendar_events" | "open_houses" | "transactions" | "tasks" | "scheduled_touchpoints" | "buyer_tours" | "calendar_blocks"
   location?: string
   contactId?: string
@@ -231,7 +231,7 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           title: derivedTitle,
           startAt: e.start_at,
           endAt: e.end_at ?? new Date(new Date(e.start_at).getTime() + 30 * 60000).toISOString(),
-          eventType: e.event_type === "isa_appointment" ? "isa_appointment" : "appointment",
+          eventType: e.event_type === "isa_appointment" || e.event_type === "listing_appointment" ? e.event_type : "appointment",
           source: "calendar_events",
           contactId: e.entity_type === "contact" ? e.entity_id : undefined,
           metadata: meta,
@@ -372,8 +372,10 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
   // Filter events by role
   const filteredEvents = events.filter((e) => {
     if (activeRole === "all") return true
-    if (activeRole === "isa") return e.eventType === "isa_appointment" || e.eventType === "follow_up"
-    if (activeRole === "listing") return ["showing", "open_house"].includes(e.eventType)
+    // Wave 87 (integrator): an ISA books listing appointments (lane 87B2 made listing_appointment the one
+    // spelling), so the ISA view and the listing view both show them — the ISA sees what it booked.
+    if (activeRole === "isa") return ["isa_appointment", "follow_up", "listing_appointment"].includes(e.eventType)
+    if (activeRole === "listing") return ["showing", "open_house", "listing_appointment"].includes(e.eventType)
     if (activeRole === "transaction") return ["inspection", "appraisal", "closing"].includes(e.eventType)
     if (activeRole === "buyer") return e.eventType === "tour"
     return true // agent sees all

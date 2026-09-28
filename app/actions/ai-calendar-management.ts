@@ -9,6 +9,7 @@ import { handleError } from "@/lib/errors"
 import { z } from "zod"
 import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { CalendarEventType, canonicalCalendarEventType } from "@/lib/kernel/calendar-types"
 
 /**
  * AI CALENDAR & SCHEDULING MANAGEMENT
@@ -114,7 +115,9 @@ export async function createAppointment(params: {
         entity_type: entityType,
         start_at: params.startTime,
         end_at: params.endTime,
-        event_type: params.type || "showing",
+        // ONE spelling per kind (lane 87B2, §6): a stale client's legacy
+        // "listing_consultation" is stored as "listing_appointment".
+        event_type: canonicalCalendarEventType(params.type || "showing"),
         brokerage_id: params.brokerageId,
         metadata: {
           title: params.title,
@@ -148,7 +151,7 @@ export async function createAppointment(params: {
     // ::lookupPropertyForConversation, purpose listing_intake), whose public-records rung
     // IS lib/property/address-lookup.ts::lookupPropertyByAddress — the same Perplexity
     // reader, on the verified tenant, cache and RentCast first.
-    if (params.type === "listing_consultation" && params.contactId && data?.id) {
+    if (canonicalCalendarEventType(params.type ?? "") === CalendarEventType.LISTING_APPOINTMENT && params.contactId && data?.id) {
       try {
         const session = await getAgentContext()
         if (!session.isAuthenticated || !session.brokerageId) {

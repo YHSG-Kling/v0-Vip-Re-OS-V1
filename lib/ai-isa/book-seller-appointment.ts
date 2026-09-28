@@ -34,6 +34,7 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
 import { startListingPresentationPrepFromBooking } from "@/lib/listing-presentation/booking-prep"
+import { CalendarEventType } from "@/lib/kernel/calendar-types"
 
 export interface BookSellerListingAppointmentParams {
   brokerageId: string
@@ -180,6 +181,8 @@ export async function bookSellerListingAppointment(
       timezoneName: params.timezoneName,
       location: params.location,
       notes: params.notes,
+      // The ONE listing-appointment spelling (lane 87B2, §6) — this milestone IS one.
+      eventType: CalendarEventType.LISTING_APPOINTMENT,
     })
   } catch (err) {
     return {
@@ -204,15 +207,13 @@ export async function bookSellerListingAppointment(
   // milestone's converted contact carries contact_type='seller' from the lead's
   // intent), takes the seller's property from what this call captured, and keys the
   // run on the booking row — the same key every other booking path and the cron
-  // safety net use. scheduleISAAppointment stamps 'isa_appointment', which is an ISA
-  // meeting of ANY kind, so this caller — which KNOWS it is booking a listing
-  // appointment — says so explicitly (isaListingAppointment).
+  // safety net use. The row is stored as 'listing_appointment' (lane 87B2 — the one
+  // spelling; it used to be the generic 'isa_appointment' and needed a caller flag).
   let chainRunId: string | undefined
   let chainDeduped: boolean | undefined
   const prep = await startListingPresentationPrepFromBooking(svc, {
     calendarEventId,
     expectedBrokerageId: params.brokerageId,
-    isaListingAppointment: true,
     propertyHint: propertyData,
     origin: "ai_isa_seller_milestone",
   })

@@ -140,6 +140,26 @@ async function main() {
   const aiMarketing = code("app/actions/ai-marketing-automation.ts")
   check("the third description writer (enhanceListingDescription, 'family' buyer style) is gone",
     !/export async function enhanceListingDescription\(/.test(aiMarketing) && !/growing family/.test(aiMarketing))
+  // Lane 87B2 — the FOURTH writer (the content rail's generateListingDescription in
+  // app/actions/ai-content-generation.tsx) is merged onto the core.
+  const rail = code("app/actions/ai-content-generation.tsx")
+  const railAt = rail.indexOf("export async function generateListingDescription(")
+  const railBody = railAt >= 0 ? rail.slice(railAt, rail.indexOf("\nexport ", railAt + 10)) : ""
+  check("the content-rail door writes through the ONE core (session tenant, no second prompt/model call)",
+    /generateListingDescriptions\(createServiceClient\(\), \{\s*brokerageId: agentContext\.brokerageId/.test(railBody) &&
+    !/generateAIResponse\(/.test(railBody) && !/function buildListingDescriptionPrompt/.test(rail))
+  check("[control] the second-writer finder catches a door that still calls the model itself",
+    /generateAIResponse\(/.test(`const response = await generateAIResponse({ prompt })`))
+  check("the rail's 'family_with_kids → schools, safety' persona guidance is gone (familial status)",
+    !/family_with_kids/.test(rail) && !/function getPersonaGuidance/.test(rail))
+  check("the rail maps its persona onto the ONE vocabulary and withholds a hard-flagged draft",
+    /style: normalizeListingDescriptionStyle\(params\.targetPersona\)/.test(railBody) && /core\.hardFairHousingFlag \|\| !!core\.guardResult\.guardFailed/.test(railBody))
+  check("MERGED FIRST onto the core: length, headline, bullets, neighborhood, SEO keywords, long copy + measured usage",
+    /length\?: "short" \| "medium" \| "long"/.test(core) && /headline: z\.string\(\)/.test(core) && /keyFeatureBullets:/.test(core) &&
+    /neighborhoodParagraph:/.test(core) && /seoKeywords:/.test(core) && /longDescription:/.test(core) && /usage: \{ model: String\(usage\.model\)/.test(core))
+  check("the rail keeps the shape its readers parse (medium/long/short_description, headline, bullets)",
+    /medium_description:/.test(railBody) && /long_description:/.test(railBody) && /short_description:/.test(railBody) && /key_features_bullets:/.test(railBody))
+
   const tool = code("lib/listings/listing-description-tool.ts")
   check("MERGED FIRST: the survivor carries the enhancer's input — the listing's current public remarks",
     /currentPublicRemarks:/.test(tool) && /public_remarks/.test(tool))
