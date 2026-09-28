@@ -43,7 +43,7 @@ import {
   type CachePoisoningFinding,
 } from "./composition-cache"
 import { resolveCodeRevision } from "./code-revision"
-import { shouldApplyBookends } from "./render-decision"
+import { shouldApplyBookends, stitchedIntroCategory } from "./render-decision"
 import { MUSIC_DUCK_VOLUME_PCT } from "@/lib/video/realism-profile"
 import { compositionSeconds } from "./composition-geometry"
 
@@ -66,10 +66,12 @@ export async function predictFinishInputs(
   const finish: FinishInputs = { ...NO_FINISH, narrationAudioUrl: opts.narrationAudioUrl ?? null }
   try {
     const wantsBookends = opts.applyBookends ?? shouldApplyBookends(composition)
-    if (wantsBookends && (composition.stock_intro_category || composition.stock_outro_category)) {
+    // Same decision the coordinator stitches with (wave 87 hook-first rule).
+    const introCategory = stitchedIntroCategory(composition)
+    if (wantsBookends && (introCategory || composition.stock_outro_category)) {
       const [intro, outro] = await Promise.all([
-        composition.stock_intro_category
-          ? pickStockAsset(svc, scope, composition.stock_intro_category)
+        introCategory
+          ? pickStockAsset(svc, scope, introCategory)
           : Promise.resolve(null),
         composition.stock_outro_category
           ? pickStockAsset(svc, scope, composition.stock_outro_category)

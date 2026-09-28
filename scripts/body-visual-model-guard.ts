@@ -235,8 +235,15 @@ console.log("\n── §tiling · segments tile the body exactly, before and aft
   }
   const p = planFor("AgentTalkingHeadReel", FULL_ASSETS)
   check("a plan pasted onto another composition is refused by the re-fit (null), never a wrong layout", fitBodyVisualPlan(p, "MarketUpdateReel", p.durationInFrames) === null)
+  // Re-anchored wave 87 (lane 87D2 — the talking head is hook-first, zero-frame
+  // intro): frame 0 is a bookend only when the plan HAS an intro; the rule is
+  // "null inside a bookend, the body's segment inside the body".
   check("segmentAtFrame finds the segment under the playhead and null in the bookends",
-    segmentAtFrame(p, p.body.from) === p.segments[0] && segmentAtFrame(p, 0) === null && segmentAtFrame(p, p.durationInFrames - 1) === null)
+    segmentAtFrame(p, p.body.from) === p.segments[0]
+    && segmentAtFrame(p, 0) === (p.intro.durationInFrames > 0 ? null : p.segments[0])
+    && segmentAtFrame(p, p.durationInFrames - 1) === null)
+  const withIntro = planFor("AgentExplainerReel", FULL_ASSETS)
+  check("CONTROL a plan WITH an intro still reads null at frame 0 (the bookend finder is not blind)", withIntro.intro.durationInFrames > 0 && segmentAtFrame(withIntro, 0) === null)
   let same = true
   for (const total of [1, 7, 60, 150, 299, 300, 2820]) for (const n of [1, 2, 3, 4, 5, 8, 12]) {
     const a = evenShotSlots(total, n), b = weightedShotSlots(total, Array.from({ length: n }, () => 1))

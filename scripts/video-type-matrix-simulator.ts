@@ -98,6 +98,7 @@ import { narrationWindowBudget, narrationWindowSeconds } from "../lib/video/narr
 // that mirrored it now reads narrationWindowFrames / planCompositionDuration.
 import {
   COMPOSITION_DURATION_RULES, PURPOSE_DURATION_RULES, narrationWindowFrames, planCompositionDuration, purposeBudgetFor,
+  compositionOpensOnHook,
 } from "../lib/video/duration-model"
 import {
   MEMORY_VIDEO_COMPOSITION_ID, MEMORY_VIDEO_COVER_SECONDS, MEMORY_VIDEO_MAX_SECONDS, MEMORY_VIDEO_OUTRO_SECONDS, MEMORY_VIDEO_PURPOSE,
@@ -329,7 +330,10 @@ function checkWindow(r: Resolved, host: Host) {
     r.window.from >= 0 && r.window.to <= r.total && r.window.to > r.window.from)
   if (host === "avatar") {
     check(`${label}: an avatar host declares its window on <CaptionLayer visibleFromFrame/hiddenFromFrame> (the one place the composition says where real audio plays)`,
-      r.window.declared && r.window.from > 0)
+      // 87D2: a HOOK-FIRST avatar host speaks from frame 0 by rule (its intro is
+      // zero), so its declared window starts at 0; every other avatar host's
+      // starts after its cover.
+      r.window.declared && (r.window.from > 0 || (compositionOpensOnHook(r.id) && r.window.from === 0)))
     // WAVE 78 — DERIVED, not mirrored: [intro, total − outro) from the ONE
     // registry's bookends equals the composition's OWN window, at the cap AND
     // at a planned duration (a table could only ever say it at the cap).
@@ -718,8 +722,13 @@ function advancementsSection() {
   check(`the lower-third is mounted by the avatar-led personal reels (${mounts.map((f) => f.replace("remotion/", "")).join(", ")})`,
     mounts.includes("remotion/AgentTalkingHeadReel.tsx") && mounts.includes("remotion/TeammateExplainerReel.tsx"))
   const th = readStripped("remotion/AgentTalkingHeadReel.tsx")
-  check("AgentTalkingHeadReel wraps COVER, BODY and OUTRO in <SceneFade> — a dissolve at every cut with the timeline untouched",
-    (th.match(/<SceneFade>/g) ?? []).length === 3 && (th.match(/<\/SceneFade>/g) ?? []).length === 3)
+  // Re-anchored wave 87 (lane 87D2): the RULE is "every tile is wrapped", not
+  // "there are three" — the talking head is hook-first now (no cover tile; the
+  // brand rides over the first words), so it has TWO tiles, BODY and OUTRO.
+  const thTiles = (th.match(/<Sequence from=\{[^}]*\} durationInFrames=\{(?:COVER|BODY|OUTRO)\}>\s*(?:\{\/\*[\s\S]*?\*\/\}\s*)*<SceneFade>/g) ?? []).length
+  const thAllTiles = (th.match(/<Sequence from=\{[^}]*\} durationInFrames=\{(?:COVER|BODY|OUTRO)\}>/g) ?? []).length
+  check(`AgentTalkingHeadReel wraps EVERY tile (${thAllTiles}: BODY + OUTRO, + COVER when declared) in <SceneFade> — a dissolve at every cut with the timeline untouched`,
+    thAllTiles >= 2 && thTiles === thAllTiles && (th.match(/<SceneFade>/g) ?? []).length === thAllTiles && (th.match(/<\/SceneFade>/g) ?? []).length === thAllTiles)
   const fade = readStripped("remotion/components/SceneFade.tsx")
   check("SceneFade anchors its tail fade on useVideoConfig().durationInFrames (the enclosing Sequence's own length) and clamps both sides",
     /useVideoConfig\(\)/.test(fade) && (fade.match(/extrapolateLeft: "clamp", extrapolateRight: "clamp"/g) ?? []).length >= 2)

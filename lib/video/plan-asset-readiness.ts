@@ -446,7 +446,9 @@ const DEFAULT_DEPS: DefaultDeps = {
   async stockCategories(compositionId) {
     const { getComposition } = await import("@/lib/remotion/registry")
     const c = await getComposition(compositionId)
-    return { intro: c?.stock_intro_category ?? null, outro: c?.stock_outro_category ?? null }
+    // The intro the coordinator will actually stitch (wave 87: none before a hook-first film).
+    const { stitchedIntroCategory } = await import("@/lib/remotion/render-decision")
+    return { intro: c ? stitchedIntroCategory(c) : null, outro: c?.stock_outro_category ?? null }
   },
 }
 

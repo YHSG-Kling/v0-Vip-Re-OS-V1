@@ -16,6 +16,7 @@
  */
 import type { CompositionTier, RemotionCompositionRow } from "./registry"
 import type { RenderIntent } from "./render-coordinator"
+import { compositionOpensOnHook } from "../video/duration-model"
 
 /** A composition with <=1 frame is a still card (renderStill → PNG):
  *  thumbnails, postcards, lead-magnet, newsletter-thumb. Everything
@@ -55,6 +56,21 @@ export function isPickableStatus(status: string): boolean {
 export function shouldApplyBookends(composition: RemotionCompositionRow): boolean {
   if (isStillComposition(composition.duration_frames)) return false
   return composition.supports_bookends
+}
+
+/**
+ * THE STOCK CATEGORY STITCHED IN FRONT OF THE FILM (wave 87, lane 87D2 — owner:
+ * "hook first"). A hook-first composition (lib/video/duration-model.ts
+ * compositionOpensOnHook) never gets a brand_intro clip before its first word:
+ * the live registry row carries stock_intro_category 'brand_intro' for the
+ * talking head, which put up to MAX_BRAND_BOOKEND_SECONDS + a dissolve of sting
+ * in front of the hook. The brand moves to the END (the outro category is
+ * untouched). ONE decision for the coordinator, the render-cache predictor and
+ * the plan-asset readiness pass — a key that predicted an intro the
+ * coordinator no longer stitches would never hit. PURE.
+ */
+export function stitchedIntroCategory(composition: Pick<RemotionCompositionRow, "composition_id" | "stock_intro_category">): string | null {
+  return compositionOpensOnHook(composition.composition_id) ? null : (composition.stock_intro_category ?? null)
 }
 
 /** A queued render row carries everything needed to reconstruct the

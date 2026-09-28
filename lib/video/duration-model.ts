@@ -361,12 +361,30 @@ export interface CompositionDurationSpec {
    * visibleFromFrame) and fails when the two disagree.
    */
   narrationFrom?: "cover"
+  /**
+   * WAVE 87 (lane 87D2) — the composition OPENS ON ITS HOOK: the first spoken
+   * word lands inside HOOK_FIRST_MAX_SPEECH_ONSET_SECONDS of the finished
+   * film. Its own intro is zero frames (the brand rides OVER the first words
+   * and closes the film), and the finish never stitches a brand intro clip in
+   * front of it (render-decision.ts stitchedIntroCategory). Proven against the
+   * real render (scripts/render-from-approval-simulator.ts §hook-first).
+   */
+  hookFirst?: true
   note?: string
 }
 
 export const COMPOSITION_DURATION_RULES: Record<string, CompositionDurationSpec> = {
   // ── Avatar-hosted ──
-  AgentTalkingHeadReel:  { purpose: "welcome", alsoServes: ["seller_update"], host: "avatar", introFrames: 60, outroFrames: 60, bodyMode: "narration" },
+  // WAVE 87 (lane 87D2 — owner: "videos must finish as professional, hook
+  // first"): the talking head OPENS ON ITS HOOK. Its 60-frame silent cover
+  // card held the presenter's first word to 2.0 s (measured on the lane's real
+  // render); the cover is now a brief brand STING laid OVER the first spoken
+  // words inside the body (remotion/AgentTalkingHeadReel.tsx, timed from the
+  // real narration by hookStingFrames), the brand's own card moves to the end
+  // (the outro tile + the logo_outro stitch), and no brand_intro clip is
+  // stitched in front (compositionOpensOnHook → render-decision.ts
+  // stitchedIntroCategory). Speech starts at frame 0.
+  AgentTalkingHeadReel:  { purpose: "welcome", alsoServes: ["seller_update"], host: "avatar", introFrames: 0, outroFrames: 60, bodyMode: "narration", hookFirst: true },
   MarketUpdateReel:      { purpose: "market_update", host: "avatar", introFrames: 60, outroFrames: 60, bodyMode: "narration" },
   EquityReportReel:      { purpose: "anniversary_equity", host: "avatar", introFrames: 60, outroFrames: 120, bodyMode: "narration" },
   AgentExplainerReel:    { purpose: "explainer", alsoServes: ["lead_reel"], host: "avatar", introFrames: 90, outroFrames: 90, bodyMode: "narration" },
@@ -408,6 +426,14 @@ export function compositionDurationSpec(compositionId: string): CompositionDurat
  * An unregistered id gets no chrome (the whole duration is body): a component
  * must still render, and a missing row is what the proof fails on.
  */
+/** A hook-first film's first spoken word lands inside this many seconds (owner: hook first). */
+export const HOOK_FIRST_MAX_SPEECH_ONSET_SECONDS = 0.5
+
+/** Does this composition open on its hook (no cover card, no stitched brand intro)? PURE. */
+export function compositionOpensOnHook(compositionId: string | null | undefined): boolean {
+  return !!compositionId && COMPOSITION_DURATION_RULES[compositionId]?.hookFirst === true
+}
+
 export function compositionBookends(compositionId: string): { introFrames: number; outroFrames: number } {
   const spec = COMPOSITION_DURATION_RULES[compositionId]
   return spec ? { introFrames: spec.introFrames, outroFrames: spec.outroFrames } : { introFrames: 0, outroFrames: 0 }

@@ -409,10 +409,13 @@ function sourcesSection() {
   check("CONTROL: a HARDCODED body (const BODY = 10 * FPS) tiles at its own 420 frames…", tileChain(specimen, buildScope(specimen, specGeo), 420).ok)
   check("CONTROL: …and FAILS at any other duration (600) — the hardcoded body cannot follow the narration", !tileChain(specimen, buildScope(specimen, specGeo), 600).ok)
   check("CONTROL: the hardcoded-body finder recognises the retired lines", HARDCODED_BODY.test("const BODY   = 10 * FPS") && HARDCODED_BODY.test("const BODY  = Math.round(24.5 * FPS)") && HARDCODED_BODY.test("const STAT   = 4 * FPS"))
-  const derivedSpecimen = "const BOOKENDS = compositionBookends(\"AgentTalkingHeadReel\")\nconst COVER = BOOKENDS.introFrames\nconst OUTRO = BOOKENDS.outroFrames\nconst timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: OUTRO })\nconst BODY = timeline.body.durationInFrames\n<Sequence from={0} durationInFrames={COVER}>\n<Sequence from={COVER} durationInFrames={BODY}>\n<Sequence from={COVER + BODY} durationInFrames={OUTRO}>"
+  // Re-anchored wave 87 (lane 87D2): the specimen needs a composition WITH a
+  // cover to exercise the three-tile idiom; the talking head is hook-first now
+  // (zero-frame intro, no cover tile), so the specimen names the explainer.
+  const derivedSpecimen = "const BOOKENDS = compositionBookends(\"AgentExplainerReel\")\nconst COVER = BOOKENDS.introFrames\nconst OUTRO = BOOKENDS.outroFrames\nconst timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: OUTRO })\nconst BODY = timeline.body.durationInFrames\n<Sequence from={0} durationInFrames={COVER}>\n<Sequence from={COVER} durationInFrames={BODY}>\n<Sequence from={COVER + BODY} durationInFrames={OUTRO}>"
   check("CONTROL: the DERIVED idiom tiles at 420 AND at 600 (the body follows the duration)",
-    tileChain(derivedSpecimen, buildScope(derivedSpecimen, { ...specGeo, duration_frames: 420 }, "AgentTalkingHeadReel"), 420).ok
-    && tileChain(derivedSpecimen, buildScope(derivedSpecimen, { ...specGeo, duration_frames: 600 }, "AgentTalkingHeadReel"), 600).ok)
+    tileChain(derivedSpecimen, buildScope(derivedSpecimen, { ...specGeo, duration_frames: 420 }, "AgentExplainerReel"), 420).ok
+    && tileChain(derivedSpecimen, buildScope(derivedSpecimen, { ...specGeo, duration_frames: 600 }, "AgentExplainerReel"), 600).ok)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

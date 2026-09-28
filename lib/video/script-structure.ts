@@ -719,3 +719,55 @@ export function onScreenCopyFromScript(script: string, title: string | null | un
   const t = (title ?? "").trim()
   return { script: flat, title: t ? clipWords(t, 8) : hook, hook, bullets: beats.length > 0 ? beats : [hook] }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THE HOOK STING — how long the brand + hook headline ride OVER the first
+// spoken words of a hook-first film (wave 87, lane 87D2 — owner: "hook first").
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// A hook-first composition (lib/video/duration-model.ts compositionOpensOnHook)
+// has no cover card: the presenter speaks from frame 0 and the brand sting sits
+// over the hook. The sting must last exactly as long as the HOOK is being said
+// — too short and the headline flashes, too long and it covers the value beat
+// — so its length is DERIVED FROM THE REAL MEDIA (86B/86E rule), in order:
+//   1. word-timed caption cues (the TTS alignment) — the frame the hook's last
+//      word ends;
+//   2. the measured avatar clip — the hook's share of the words × the clip's
+//      measured seconds;
+//   3. only then the avatar pace estimate.
+// Clamped to [HOOK_STING_MIN_SECONDS, HOOK_STING_MAX_SECONDS] and never past
+// the body. PURE.
+
+export const HOOK_STING_MIN_SECONDS = 1.2
+export const HOOK_STING_MAX_SECONDS = 3
+
+export function hookStingFrames(args: {
+  script: string | null | undefined
+  cues?: ReadonlyArray<{ fromFrame: number; durationFrames: number; words?: ReadonlyArray<{ fromFrame: number }> ; text: string }> | null
+  avatarDurationSeconds?: number | null
+  bodyFrames: number
+  fps: number
+  /** The host's pace, from lib/video/duration-model.ts hostWordsPerMinute (the estimate rung only). */
+  wordsPerMinute: number
+}): { frames: number; source: "cues" | "measured_clip" | "estimate" } {
+  const fps = args.fps > 0 ? args.fps : 30
+  const clamp = (f: number) => Math.max(1, Math.min(Math.max(1, args.bodyFrames), Math.round(Math.min(HOOK_STING_MAX_SECONDS * fps, Math.max(HOOK_STING_MIN_SECONDS * fps, f)))))
+  const shape = assessScriptStructure(args.script)
+  const hookWords = Math.max(1, shape.hookWords)
+  const cues = (args.cues ?? []).filter((c) => Number.isFinite(c.fromFrame) && Number.isFinite(c.durationFrames))
+  if (cues.length > 0) {
+    let seen = 0
+    for (const c of cues) {
+      const n = spokenWords(c.text).length
+      if (seen + n >= hookWords) return { frames: clamp(c.fromFrame + c.durationFrames), source: "cues" }
+      seen += n
+    }
+  }
+  const total = spokenWords(args.script).length
+  const measured = Number(args.avatarDurationSeconds)
+  if (total > 0 && Number.isFinite(measured) && measured > 0) {
+    return { frames: clamp((hookWords / total) * measured * fps), source: "measured_clip" }
+  }
+  // The host pace is the caller's (duration-model hostWordsPerMinute — one number, §6).
+  return { frames: clamp((hookWords / Math.max(1, args.wordsPerMinute)) * 60 * fps), source: "estimate" }
+}

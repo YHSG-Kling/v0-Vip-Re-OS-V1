@@ -46,7 +46,7 @@ import { mixBackgroundMusic } from "./music-mixer"
 import { pickStockAsset } from "./stock-pick"
 import { computeArtifactKey, type FinishInputs } from "./composition-cache"
 import { stagesSpeech, stagesVoiceover } from "./content-contract"
-import { shouldApplyBookends, outputExtension, outputContentType } from "./render-decision"
+import { shouldApplyBookends, stitchedIntroCategory, outputExtension, outputContentType } from "./render-decision"
 import { MUSIC_DUCK_VOLUME_PCT, appliedBookendSeconds } from "@/lib/video/realism-profile"
 import { cinemaMusicFades } from "@/lib/video/cinema-finish"
 
@@ -189,10 +189,13 @@ export async function finalizeCoordinatedRender(
   // composition never gets bookends) — one decision, shared with the cache
   // predictor and proven by the render simulator.
   const wantsBookends = intent.applyBookends ?? shouldApplyBookends(composition)
-  if (wantsBookends && (composition.stock_intro_category || composition.stock_outro_category)) {
+  // Wave 87 (lane 87D2) — a hook-first composition gets NO brand intro in front
+  // of its first word (render-decision.ts stitchedIntroCategory); the outro stands.
+  const introCategory = stitchedIntroCategory(composition)
+  if (wantsBookends && (introCategory || composition.stock_outro_category)) {
     const [introRow, outroRow] = await Promise.all([
-      composition.stock_intro_category
-        ? pickStockAsset(svc, intent, composition.stock_intro_category)
+      introCategory
+        ? pickStockAsset(svc, intent, introCategory)
         : Promise.resolve(null),
       composition.stock_outro_category
         ? pickStockAsset(svc, intent, composition.stock_outro_category)

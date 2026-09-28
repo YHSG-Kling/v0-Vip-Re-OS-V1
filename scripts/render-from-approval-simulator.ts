@@ -43,6 +43,9 @@ import {
 } from "../lib/video/script-structure"
 import { cinemaCaptionStyle, cinemaLowerThirdPlacement } from "../lib/video/cinema-finish"
 import { safeInsets } from "../lib/video/body-visual-model"
+import { compositionBookends, compositionOpensOnHook, narrationStartFrame, HOOK_FIRST_MAX_SPEECH_ONSET_SECONDS } from "../lib/video/duration-model"
+import { stitchedIntroCategory } from "../lib/remotion/render-decision"
+import { hookStingFrames } from "../lib/video/script-structure"
 import { renderApprovedVideoScript } from "../lib/video/render-from-approval"
 import { reapStaleVideoWorkflows, sweepStuckVideoRenders } from "../lib/video/video-pipeline-reaper"
 
@@ -250,9 +253,42 @@ function frame() {
   const ath = stripped("remotion/AgentTalkingHeadReel.tsx")
   check("the strap is placed and timed by cinemaLowerThirdPlacement", /bottom=\{strap\.bottom\}/.test(ath) && /holdFrames=\{strap\.holdFrames\}/.test(ath))
   check("no typed 24 px edge offsets remain (topic strip and disclosure footer inside the safe insets)", !/top: 24,/.test(ath) && !/bottom: 24,/.test(ath) && /top: safe\.top/.test(ath) && /bottom: safe\.bottom, left: safe\.left/.test(ath))
-  check("the cover's hook is the display line (type.display) with no delayed fade of its own", /fontSize: type\.display[\s\S]{0,160}\{hook\}/.test(ath) && !/interpolate\(frame, \[5, 20\]/.test(ath))
+  // 87D2 — the hook is no longer on a cover card: it is the sting's headline over
+  // the first spoken words (the rule is "the hook opens the film", not a font step).
+  check("the hook headline opens the film (the hook sting, from frame 0) with no delayed fade of its own", /\{stingFrames > 0 && \([\s\S]{0,1400}\{hook\}/.test(ath) && !/interpolate\(frame, \[5, 20\]/.test(ath))
   const lt = stripped("remotion/components/LowerThird.tsx")
   check("LowerThird slides OUT after holdFrames (absent → unchanged for its other caller)", /exitStart = typeof holdFrames === "number"/.test(lt) && /translate: `\$\{enter \+ exit\}px`/.test(lt))
+}
+
+function hookFirst() {
+  console.log("§hook-first — the talking head speaks from frame 0 (87D2)")
+  check("the talking head is declared hook-first with a ZERO-frame cover; its narration starts at frame 0",
+    compositionOpensOnHook("AgentTalkingHeadReel") && compositionBookends("AgentTalkingHeadReel").introFrames === 0 && narrationStartFrame("AgentTalkingHeadReel") === 0)
+  check(`the rule's own number: the first word within ${HOOK_FIRST_MAX_SPEECH_ONSET_SECONDS}s (narration start / fps)`, narrationStartFrame("AgentTalkingHeadReel") / 30 <= HOOK_FIRST_MAX_SPEECH_ONSET_SECONDS)
+  const row = (id: string) => ({ composition_id: id, stock_intro_category: "brand_intro" })
+  check("NO brand intro clip is stitched in front of a hook-first film (the live row's brand_intro is dropped; the outro stands)", stitchedIntroCategory(row("AgentTalkingHeadReel")) === null)
+  check("CONTROL a composition that is not hook-first keeps its registered brand intro", stitchedIntroCategory(row("AgentExplainerReel")) === "brand_intro")
+  const s = (x: string) => stripped(x)
+  check("the coordinator, the render-cache predictor and the readiness pass all ask the ONE decision (stitchedIntroCategory)",
+    /const introCategory = stitchedIntroCategory\(composition\)/.test(s("lib/remotion/render-coordinator.ts"))
+    && /const introCategory = stitchedIntroCategory\(composition\)/.test(s("lib/remotion/render-cache.ts"))
+    && /stitchedIntroCategory\(c\)/.test(s("lib/video/plan-asset-readiness.ts"))
+    && !/pickStockAsset\([^)]*composition\.stock_intro_category/.test(s("lib/remotion/render-coordinator.ts") + s("lib/remotion/render-cache.ts")))
+  // The sting lasts as long as the HOOK is said — derived from real media, in order.
+  const script = "Pricing high rarely pays. Homes priced right draw more offers. Want a look?"
+  const cues = [{ text: "Pricing high", fromFrame: 0, durationFrames: 20 }, { text: "rarely pays.", fromFrame: 20, durationFrames: 25 }, { text: "Homes priced right", fromFrame: 45, durationFrames: 30 }]
+  const byCues = hookStingFrames({ script, cues, bodyFrames: 400, fps: 30, wordsPerMinute: 135 })
+  check("sting from the word-timed cues: ends where the hook's last word ends (45 f; clamped ≥ 1.2 s = 36 f)", byCues.source === "cues" && byCues.frames === 45, byCues)
+  const byClip = hookStingFrames({ script, avatarDurationSeconds: 8, bodyFrames: 400, fps: 30, wordsPerMinute: 135 })
+  check("no cues → the hook's share of the MEASURED clip (4/13 × 8 s ≈ 74 f)", byClip.source === "measured_clip" && Math.abs(byClip.frames - Math.round((4 / 13) * 8 * 30)) <= 1, byClip)
+  const byPace = hookStingFrames({ script, bodyFrames: 400, fps: 30, wordsPerMinute: 135 })
+  check("nothing measured → the host pace (the estimate rung is labelled as such)", byPace.source === "estimate" && byPace.frames === Math.round((4 / 135) * 60 * 30), byPace)
+  check("the sting never outlasts HOOK_STING_MAX_SECONDS or the body", hookStingFrames({ script: "one two three four five six seven eight nine ten eleven twelve. Go.", bodyFrames: 60, fps: 30, wordsPerMinute: 135 }).frames === 60
+    && hookStingFrames({ script: "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen. Go.", avatarDurationSeconds: 60, bodyFrames: 900, fps: 30, wordsPerMinute: 135 }).frames === 90)
+  const ath = stripped("remotion/AgentTalkingHeadReel.tsx")
+  check("the composition has no silent cover tile (no Sequence at frame 0 of length COVER), times the sting with hookStingFrames, and the strap follows the sting",
+    !/<Sequence from=\{0\} durationInFrames=\{COVER\}>/.test(ath) && /hookStingFrames\(\{ script: captionScript \?\? hook, cues: captionsCues/.test(ath) && /<Sequence from=\{stingFrames\} layout="none">/.test(ath))
+  check("CONTROL the pre-87D2 cover tile is recognised by that finder", /<Sequence from=\{0\} durationInFrames=\{COVER\}>/.test(`<Sequence from={0} durationInFrames={COVER}>`))
 }
 
 function writers() {
@@ -269,6 +305,7 @@ async function main() {
   await core()
   wiring()
   frame()
+  hookFirst()
   writers()
   console.log(`\nrender-from-approval: ${pass} passed, ${fail} failed (denominator ${pass + fail})`)
   process.exit(fail === 0 ? 0 : 1)

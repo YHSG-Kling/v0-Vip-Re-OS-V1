@@ -10,8 +10,12 @@
  * Composition shape (14s @ 30fps = 420 frames, 1080×1080 square so it
  * survives Meta/IG feed crop):
  *
- *   0–2s   COVER         — brand logo + hook label + agent name
- *   2–12s  AVATAR VIDEO  — embed the D-ID MP4 via Remotion's <Video>;
+ *   WAVE 87 (lane 87D2 — owner: "hook first"): NO cover. The presenter speaks
+ *   from frame 0; the brand badge + hook headline ride OVER the first spoken
+ *   words (the hook sting, timed from the real narration), the name strap
+ *   follows it, and the brand's card closes the film (OUTRO + logo_outro).
+ *   (Was: 0–2s COVER — brand logo + hook label + agent name, silent.)
+ *   BODY   AVATAR VIDEO  — embed the D-ID MP4 via Remotion's <Video>;
  *                          persistent caption strip on top with the
  *                          line being spoken (passed in as `caption`)
  *                          so the muted-feed viewer reads it too
@@ -49,9 +53,9 @@ import { BrollLayer } from "./_BrollLayer"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { LowerThird } from "./components/LowerThird"
 import { SceneFade } from "./components/SceneFade"
-import { avatarFadeOutFrame } from "../lib/video/script-structure"
+import { avatarFadeOutFrame, hookStingFrames } from "../lib/video/script-structure"
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
-import { compositionBookends } from "../lib/video/duration-model"
+import { compositionBookends, hostWordsPerMinute } from "../lib/video/duration-model"
 import { fitBodyVisualPlan, fullPresenterBox, safeInsets, segmentAtFrame, type BodyTreatment, type BodyVisualPlan } from "../lib/video/body-visual-model"
 import type { CaptionCue } from "../lib/video/caption-plan"
 import { cinemaFrame, cinemaLowerThirdPlacement } from "../lib/video/cinema-finish"
@@ -184,6 +188,10 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
   // bands, and the cover's hook set in 28 px caps beneath the agent's name.
   const { type } = cinemaFrame(width, height)
   const strap = cinemaLowerThirdPlacement(width, height, FPS)
+  // WAVE 87 (lane 87D2) — the hook sting's length, from the REAL media: the
+  // word-timed cues, else the measured D-ID clip, else the avatar pace. The
+  // sting is the ONLY place the hook headline and the brand open the film.
+  const stingFrames = hookStingFrames({ script: captionScript ?? hook, cues: captionsCues ?? null, avatarDurationSeconds: avatarDurationSeconds ?? null, bodyFrames: BODY, fps: FPS, wordsPerMinute: hostWordsPerMinute("avatar") }).frames
   // REALISM (wave 55) — null when no measurement or the clip fills the
   // window; a real frame otherwise. `frame` is GLOBAL (called at the
   // composition root, not inside the BODY <Sequence>), and BODY starts at
@@ -241,45 +249,16 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
           <Audio src={voiceoverUrl} />
         </Sequence>
       )}
-      {/* COVER — 0-2s. Brand badge + hook + agent name. */}
-      <Sequence from={0} durationInFrames={COVER}>
-        {/* SceneFade (lane 77D): a dissolve at every cut, timeline untouched —
-            see remotion/components/SceneFade.tsx for why not TransitionSeries. */}
-        <SceneFade>
-        <AbsoluteFill style={{
-          display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-          padding: 64, textAlign: "center",
-        }}>
-          {brand.logoUrl ? (
-            <SafeImg src={brand.logoUrl} style={{ height: 72, objectFit: "contain", marginBottom: 32, opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }} />
-          ) : (
-            <div style={{
-              fontSize: 22, letterSpacing: 4, textTransform: "uppercase", color: "#fff", opacity: 0.7, marginBottom: 32,
-            }}>{brand.brokerageName}</div>
-          )}
-          {/* THE HOOK IS THE FIRST FRAME (wave 87, owner: "hook ≤2s"; Exa 2026 —
-              dunphy.typito.com: "the first frame is doing 80% of the work";
-              reel-e.ai: most skips happen before 2 s). It was a 28 px caps
-              eyebrow fading in at 0.2-0.7 s under a 72 px agent name — the
-              name was the headline and the hook the footnote. Now the hook is
-              the display line, on screen from the first frame (only the cut's
-              own SceneFade ramps it), and the name is the attribution under
-              it — the viewer is told WHY to stay before WHO is talking. */}
-          <div style={{
-            fontSize: type.display, fontWeight: 800, color: "#fff", lineHeight: 1.08,
-            maxWidth: width - safe.left - safe.right,
-          }}>
-            {hook}
-          </div>
-          <div style={{
-            fontSize: type.title, fontWeight: 700, color: brand.accentColor, marginTop: Math.round(type.body * 0.8),
-            opacity: interpolate(frame, [10, 24], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
-          }}>
-            {agentName}
-          </div>
-        </AbsoluteFill>
-        </SceneFade>
-      </Sequence>
+      {/* TOMBSTONE (wave 87, lane 87D2 — owner: "hook first"): the COVER tile
+          (brand logo + hook display line + agent name on a silent brand card,
+          a 60-frame Sequence at frame 0) is DELETED. The
+          registry now gives this composition a zero-frame cover
+          (lib/video/duration-model.ts AgentTalkingHeadReel hookFirst), so the
+          presenter speaks from frame 0. Where each piece went: the brand badge
+          and the hook headline → THE HOOK STING over the first spoken words in
+          the BODY below (timed by hookStingFrames from the real narration); the
+          agent's name → the LowerThird strap that follows the sting; the
+          brand's own card → the OUTRO tile + the stitched logo_outro. */}
 
       {/* BODY — 2-12s. Avatar video centered in a brand letterbox,
           caption strip on top, brokerage chrome at corners. */}
@@ -342,12 +321,40 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
             </div>
           )}
 
+          {/* THE HOOK STING (wave 87, lane 87D2 — owner: "hook first"). With no
+              cover card the presenter speaks from frame 0; the brand badge and
+              the hook headline ride OVER those first words, for exactly as long
+              as the hook is being said (hookStingFrames: the word-timed cues,
+              else the measured clip, else the host pace), then give the top of
+              the frame to the topic strip. */}
+          {stingFrames > 0 && (
+            <div style={{
+              position: "absolute", top: safe.top, left: safe.left, right: safe.right,
+              padding: `${Math.round(type.body * 0.5)}px ${Math.round(type.body * 0.7)}px`,
+              backgroundColor: `${brand.primaryColor}E0`, borderRadius: 12, textAlign: "center",
+              boxShadow: `inset 0 -${Math.max(3, Math.round(type.body * 0.12))}px 0 ${brand.accentColor}`,
+              opacity: interpolate(frame - COVER, [stingFrames - 10, stingFrames], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
+            }}>
+              {brand.logoUrl ? (
+                <SafeImg src={brand.logoUrl} style={{ height: Math.round(type.body * 1.1), objectFit: "contain", marginBottom: Math.round(type.body * 0.3) }} />
+              ) : (
+                <div style={{ fontSize: type.caption, letterSpacing: 3, textTransform: "uppercase", color: "#fff", opacity: 0.75, marginBottom: Math.round(type.body * 0.25) }}>{brand.brokerageName}</div>
+              )}
+              {/* One step under the cover's display size: the real render showed
+                  a display-size two-line headline reaching the presenter's brow;
+                  at this step the band ends above a head-and-shoulders face. */}
+              <div style={{ fontSize: Math.round(type.title * 1.15), fontWeight: 800, color: "#fff", lineHeight: 1.05 }}>{hook}</div>
+            </div>
+          )}
+
           {/* Caption strip — top, brand-accent background. Sits above
               the avatar so a muted viewer reads the message even when
               the audio is off. */}
           <div style={{
             // Wave 87 — inside the safe insets (it sat at a typed 24 px, under
             // the platforms' top UI band) and on the frame's body type step.
+            // 87D2: it takes the top of the frame once the hook sting leaves.
+            opacity: stingFrames > 0 ? interpolate(frame - COVER, [stingFrames - 4, stingFrames + 8], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) : 1,
             position: "absolute", top: safe.top, left: safe.left, right: safe.right,
             padding: `${Math.round(type.body * 0.4)}px ${Math.round(type.body * 0.7)}px`,
             backgroundColor: brand.accentColor,
@@ -365,15 +372,19 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
               wave 79C: at the frame's safe bottom inset (it sat at a typed
               24 px, inside a feed's caption/actions band), in the band the
               floating card leaves under itself. */}
-          <LowerThird
-            agentName={agentName}
-            brokerageName={brand.brokerageName}
-            primaryColor={brand.primaryColor}
-            accentColor={brand.accentColor}
-            bottom={strap.bottom}
-            holdFrames={strap.holdFrames}
-            exitFrames={strap.exitFrames}
-          />
+          {/* 87D2: the name strap identifies the speaker as the hook sting
+              leaves (never two brand chips at once). */}
+          <Sequence from={stingFrames} layout="none">
+            <LowerThird
+              agentName={agentName}
+              brokerageName={brand.brokerageName}
+              primaryColor={brand.primaryColor}
+              accentColor={brand.accentColor}
+              bottom={strap.bottom}
+              holdFrames={strap.holdFrames}
+              exitFrames={strap.exitFrames}
+            />
+          </Sequence>
         </AbsoluteFill>
         </SceneFade>
       </Sequence>
