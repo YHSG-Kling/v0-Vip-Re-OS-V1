@@ -189,7 +189,7 @@ export async function POST(request: NextRequest) {
       if (!twin || twin.agent_id !== auth.agentId) {
         return NextResponse.json({ error: "Twin not found" }, { status: 404 })
       }
-      await supabase
+      const { error: voiceLinkErr } = await supabase
         .from("agent_avatar_assets")
         .update({
           voice_id: elevenlabs_voice_id,
@@ -197,6 +197,7 @@ export async function POST(request: NextRequest) {
           updated_at: new Date().toISOString(),
         })
         .eq("id", twin_id)
+      if (voiceLinkErr) return NextResponse.json({ error: `The voice was cloned but could not be attached to the twin: ${voiceLinkErr.message}` }, { status: 500 })
 
       logMediaUsage({
         brokerageId: auth.brokerageId,

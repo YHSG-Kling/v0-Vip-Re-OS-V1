@@ -163,14 +163,16 @@ export async function promoteRawRecordToLead(
       throw new Error(`Lead insert failed: ${insertError.message}`)
     }
 
-    // Update raw_scraped_leads to link to new lead
-    await supabase
+    // Update raw_scraped_leads to link to new lead — READ (lane 88F): the lead exists now,
+    // so a refused link is logged and returned as a warning rather than dropped.
+    const { error: linkErr } = await supabase
       .from('raw_scraped_leads')
       .update({ 
         lead_id: newLead.id,
         processed_at: new Date().toISOString()
       })
       .eq('id', rawRecordId)
+    if (linkErr) console.error(`[lead-promoter] raw ${rawRecordId} → lead ${newLead.id} link refused:`, linkErr.message)
 
     // ── LEAD ENRICHMENT (wave 5, DIRECT HOOK) ────────────────────────────────
     // "enrichment also needs to still happen with raw leads" (owner).
@@ -206,6 +208,7 @@ export async function promoteRawRecordToLead(
     return {
       success: true,
       leadId: newLead.id,
+      ...(linkErr ? { warning: `raw_scraped_leads link refused: ${linkErr.message}` } : {}),
     }
   } catch (error: any) {
     return {

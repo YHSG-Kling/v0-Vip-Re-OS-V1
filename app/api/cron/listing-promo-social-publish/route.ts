@@ -27,6 +27,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 // reel's cover frame are the same words seen by the same audience.
 import { promoEventLabel } from "@/lib/video/promo-composition"
 import { usdOrEmpty } from "@/lib/format/money"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -124,9 +125,9 @@ export async function GET(req: NextRequest) {
     // human intervention, not silent waiting.
     const projectStatus = r.project?.status ?? null
     if (projectStatus === "failed") {
-      await svc.from("listing_promo_videos")
+      await sentinelWrite(svc, svc.from("listing_promo_videos")
         .update({ status: "failed", error_message: "render failed (ai_video_projects.status='failed')" })
-        .eq("id", r.id)
+        .eq("id", r.id), { table: "listing_promo_videos", flow: "listing_promo_ledger_fail", reason: "ledger fail stamp; the outcome is reported in the cron results" })
       results.push({ id: r.id, outcome: "deferred", reason: "render_failed" })
       continue
     }
@@ -134,9 +135,9 @@ export async function GET(req: NextRequest) {
       const createdMs = r.created_at ? Date.parse(r.created_at) : null
       const stuckPastGrace = createdMs !== null && (Date.now() - createdMs > 24 * 60 * 60 * 1000)
       if (stuckPastGrace) {
-        await svc.from("listing_promo_videos")
+        await sentinelWrite(svc, svc.from("listing_promo_videos")
           .update({ status: "failed", error_message: "render did not complete within 24h grace window" })
-          .eq("id", r.id)
+          .eq("id", r.id), { table: "listing_promo_videos", flow: "listing_promo_ledger_fail", reason: "ledger fail stamp; the outcome is reported in the cron results" })
         results.push({ id: r.id, outcome: "deferred", reason: "render_stuck_past_grace_window" })
       }
       continue // otherwise still rendering — wait next tick
@@ -217,14 +218,14 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    await svc.from("listing_promo_videos")
+    await sentinelWrite(svc, svc.from("listing_promo_videos")
       .update({
         status:          inserted > 0 ? "social_drafted" : "failed",
         social_post_ids: postIds,
         drafted_at:      inserted > 0 ? new Date().toISOString() : null,
         error_message:   inserted === 0 ? "social_posts insert failed for all platforms" : null,
       })
-      .eq("id", r.id)
+      .eq("id", r.id), { table: "listing_promo_videos", flow: "listing_promo_ledger_drafted", reason: "ledger close after the social drafts were inserted (their own writes are counted above)" })
 
     results.push({
       id:        r.id,

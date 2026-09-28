@@ -230,3 +230,33 @@ export async function verifyScrapeTestCronDoorAction(marketId: string, source: s
     return { error: String(err), status: 500 as const }
   }
 }
+
+/**
+ * RETRY A FAILED SOURCE BATCH — the server door the diagnostics page's Retry button needs
+ * (lane 88F, hidden wire). scrape-diagnostics-client.tsx ("use client") imported
+ * lib/kernel/scraping.ts::retryFailedSourceBatch DIRECTLY: a plain module that builds the
+ * SERVICE client, bundled into the browser, where the service key does not exist — every
+ * Retry click could only throw, and the acting user id was whatever the client sent.
+ * Gate first (platform superadmin, the same gate the page and verifyScrapeTestCronDoorAction
+ * use), then the kernel command on the server; the retrier is the SESSION user, never a
+ * parameter. The brokerage id is a lookup key the command re-checks against the execution
+ * row (`.eq('brokerage_id', …)`), not a grant.
+ */
+export async function retryFailedSourceBatchAction(executionId: string, brokerageId: string) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, rawRecordsRequeued: 0, error: 'Unauthorized' }
+
+  const { data: userRow, error: userErr } = await supabase
+    .from('users')
+    .select('user_type, platform_role')
+    .eq('id', user.id)
+    .maybeSingle()
+  if (userErr) return { success: false, rawRecordsRequeued: 0, error: `users read refused: ${userErr.message}` }
+  if (!userRow || !isPlatformSuperadminIdentity(userRow.user_type, userRow.platform_role)) {
+    return { success: false, rawRecordsRequeued: 0, error: 'Forbidden — platform staff only' }
+  }
+
+  const { retryFailedSourceBatch } = await import('@/lib/kernel/scraping')
+  return retryFailedSourceBatch({ executionId, brokerageId, retriedByUserId: user.id })
+}

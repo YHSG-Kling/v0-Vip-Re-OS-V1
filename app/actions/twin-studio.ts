@@ -153,16 +153,18 @@ export async function setDefaultTwin(twinId: string): Promise<{ ok: boolean; err
   }
 
   // Clear other defaults, set this one
-  await supabase
+  const { error: clearDefaultErr } = await supabase
     .from("agent_avatar_assets")
     .update({ is_default: false })
     .eq("agent_id", ctx.agentId)
     .neq("id", twinId)
+  if (clearDefaultErr) return { ok: false, error: `Could not clear the other default twins: ${clearDefaultErr.message}` }
 
-  await supabase
+  const { error: setDefaultErr } = await supabase
     .from("agent_avatar_assets")
     .update({ is_default: true })
     .eq("id", twinId)
+  if (setDefaultErr) return { ok: false, error: `Could not set the default twin: ${setDefaultErr.message}` }
 
   // Sync voice_id to agents.voice_id (canonical for ISA + video gen).
   // Without this, the rest of the platform keeps using the previous default.
@@ -200,7 +202,8 @@ export async function deleteTwin(twinId: string): Promise<{ ok: boolean; error?:
     }
   }
 
-  await supabase.from("agent_avatar_assets").delete().eq("id", twinId)
+  const { error: deleteTwinErr } = await supabase.from("agent_avatar_assets").delete().eq("id", twinId)
+  if (deleteTwinErr) return { ok: false, error: `Could not delete the twin: ${deleteTwinErr.message}` }
   revalidatePath("/dashboard/settings/twin-studio")
   return { ok: true }
 }
@@ -292,7 +295,7 @@ export async function approveTwin(twinId: string): Promise<{ ok: boolean; error?
   if (!twin) return { ok: false, error: "Twin not found" }
   if (twin.brokerage_id !== ctx.brokerageId) return { ok: false, error: "Forbidden" }
 
-  await supabase
+  const { error: approveTwinErr } = await supabase
     .from("agent_avatar_assets")
     .update({
       approval_status: "approved",
@@ -301,6 +304,7 @@ export async function approveTwin(twinId: string): Promise<{ ok: boolean; error?
       rejection_reason: null,
     })
     .eq("id", twinId)
+  if (approveTwinErr) return { ok: false, error: `Could not approve the twin: ${approveTwinErr.message}` }
 
   revalidatePath("/dashboard/settings/twin-studio")
   return { ok: true }
@@ -326,7 +330,7 @@ export async function rejectTwin(params: {
   if (!twin) return { ok: false, error: "Twin not found" }
   if (twin.brokerage_id !== ctx.brokerageId) return { ok: false, error: "Forbidden" }
 
-  await supabase
+  const { error: rejectTwinErr } = await supabase
     .from("agent_avatar_assets")
     .update({
       approval_status: "rejected",
@@ -336,6 +340,7 @@ export async function rejectTwin(params: {
       is_default: twin.is_default ? false : undefined,
     })
     .eq("id", params.twinId)
+  if (rejectTwinErr) return { ok: false, error: `Could not reject the twin: ${rejectTwinErr.message}` }
 
   revalidatePath("/dashboard/settings/twin-studio")
   return { ok: true }
@@ -585,22 +590,25 @@ export async function finalizeTwin(params: {
   }
   if (Object.keys(details).length > 0) {
     details.updated_at = new Date().toISOString()
-    await supabase.from("agent_avatar_assets").update(details).eq("id", params.twinId)
+    const { error: detailsErr } = await supabase.from("agent_avatar_assets").update(details).eq("id", params.twinId)
+    if (detailsErr) return { ok: false, error: `Could not save the twin details: ${detailsErr.message}` }
   }
 
   // setDefault is only honored when the twin is ready + approved — same gate
   // as setDefaultTwin().
   if (params.setAsDefault && twin.status === "ready" && twin.approval_status === "approved") {
-    await supabase
+    const { error: clearOthersErr } = await supabase
       .from("agent_avatar_assets")
       .update({ is_default: false })
       .eq("agent_id", ctx.agentId)
       .neq("id", params.twinId)
+    if (clearOthersErr) return { ok: false, error: `Could not clear the other default twins: ${clearOthersErr.message}` }
 
-    await supabase
+    const { error: makeDefaultErr } = await supabase
       .from("agent_avatar_assets")
       .update({ is_default: true })
       .eq("id", params.twinId)
+    if (makeDefaultErr) return { ok: false, error: `Could not set the default twin: ${makeDefaultErr.message}` }
 
     if (twin.voice_id) {
       await syncAgentVoiceId({ agentId: ctx.agentId, elevenlabsVoiceId: twin.voice_id })

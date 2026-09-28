@@ -39,7 +39,7 @@
 import { readFileSync, existsSync, writeFileSync } from "node:fs"
 import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { join } from "node:path"
-import { stripComments } from "./strip-comments"
+import { stripComments, blankStrings } from "./strip-comments"
 
 let pass = 0, fail = 0
 /** Live undeclared-silent-write sites this run found. Read by the closing line,
@@ -214,15 +214,26 @@ function judgeOneWrite(stmt: string, at: number, table: string): string | null {
   // anywhere in the chunk. Requiring the name (not merely "something was assigned")
   // keeps this from becoming a blanket amnesty for assignment.
   const bound = /(?:const|let|var)\s+(\w+)\s*=\s*[\w.$]*\s*$/.exec(lookbehind)
+  // The bound builder may be awaited THROUGH A WRAPPER that takes it as its first
+  // argument — `await applyTenantScope(q, scope).select("id")` (lane 88F: the
+  // provider-event fan-out's tenant-scoped updates read their error exactly this
+  // way and were reported as swallowed). The name must still be the wrapper's
+  // FIRST argument and the destructure must still name `error`.
   const boundAndInspected = bound !== null && new RegExp(
-    `\\{[^}]*\\berror\\b[^}]*\\}\\s*=\\s*await\\s+${bound[1]}\\b`,
+    `\\{[^}]*\\berror\\b[^}]*\\}\\s*=\\s*await\\s+(?:[\\w$.]+\\s*\\(\\s*)?${bound[1]}\\b`,
   ).test(stmt)
   const captured =
     /(const|let|var)\s*\{[^}]*\berror\b/.test(lookbehind) ||
     /(const|let|var)\s+\w+\s*=\s*await/.test(lookbehind) ||
     /\breturn\s+await/.test(lookbehind) ||
     /(^|\n)\s*return\s+[^\n]*$/.test(lookbehind) ||
-    boundAndInspected
+    // REASSIGNMENT into an already-declared `error` — the PGRST204 retry idiom
+    // `;({ error } = await svc.from(…)…)` (lane 88F: reputation, closing-cost).
+    /\(\s*\{[^}]*\berror\b[^}]*\}\s*=\s*await\s+[\w.$]*\s*$/.test(lookbehind) ||
+    boundAndInspected ||
+    // The three STRUCTURAL shapes (lane 88F) — only computed when nothing above
+    // matched, because they walk the chunk backwards.
+    capturedByEnclosingExpression(stmt, at)
   // Explicitly thrown away — only when it hangs off THIS chain.
   const swallowed =
     /\.catch\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/.test(chain) ||
@@ -255,6 +266,189 @@ export function chainFrom(src: string, i: number): string {
     p = q
   }
   return src.slice(i, p)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE STRUCTURAL SHAPES — lane 88F (census round 33)
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * ~30 of the 202 writes the swallowed-refusal census reported after wave 87 READ
+ * their error — the finder could not see it, because every recognition above
+ * expects the binding immediately to the LEFT of the write's own receiver. Three
+ * shapes put something in between, and each was measured on live code:
+ *
+ *   1. TERNARY ARM — `const { error } = row ? await svc.from(t).update(p)… : await
+ *      svc.from(t).insert(r)`, or `const write = …` later read as `write.error`
+ *      (coupons, platform-brand, calendar-sync, analytics-sync, users.ts …). The
+ *      arm's receiver is preceded by `? await` / `: await`, and the declaration sits
+ *      left of the condition. The BUILDER variant (arms without `await`, the name
+ *      awaited later, possibly through a wrapper) is provider-event-fanout's.
+ *   2. PROMISE.ALL ELEMENT — `const [a, b] = await Promise.all([ x.from(t)…, … ])`
+ *      then `a.error` / `b.error` (lib/kernel/marketing.ts, the CRM search client).
+ *   3. MAP ARROW — `const ups = ids.map((id) => x.from(t).update(…))`,
+ *      `const results = await Promise.all(ups)`, `results.find((r) => r.error)`
+ *      (tour-planner reorder).
+ *
+ * EVERY recognition asks for the SAME thing the direct shapes ask for: the result
+ * lands in a binding and THAT binding's `error` is read. A shape that binds but
+ * never reads — or reads a DIFFERENT element's error — is still flagged; the
+ * negative controls in runGuard() and the census's PC11–PC15 hold that.
+ *
+ * Structure is read from `blankStrings` of the chunk (offsets preserved), so a
+ * bracket or `?` inside a string literal cannot unbalance the walk.
+ */
+let maskKey = "", maskVal = ""
+function masked(stmt: string): string {
+  if (stmt !== maskKey) { maskKey = stmt; maskVal = blankStrings(stmt) }
+  return maskVal
+}
+
+/** PURE — index where the receiver of the `.from(` at `at` begins (`svc`, `this.svc`). */
+function receiverStart(m: string, at: number): number {
+  let p = at
+  while (p > 0 && /\s/.test(m[p - 1])) p--
+  while (p > 0 && /[\w$.]/.test(m[p - 1])) p--
+  return p
+}
+
+/** PURE — the text before `p`, right-trimmed. */
+function headBefore(m: string, p: number): string {
+  return m.slice(0, p).replace(/\s+$/, "")
+}
+
+/**
+ * PURE — walking LEFT from `k`, the depth-0 `=` of a `const|let|var` declaration
+ * this expression belongs to. Null when the walk leaves an enclosing bracket
+ * (an argument, an object literal), meets a `;`, or lands on a bare reassignment.
+ */
+function enclosingDeclaration(m: string, k: number): { binding: string; eq: number } | null {
+  let depth = 0
+  for (let i = k - 1; i >= 0; i--) {
+    const c = m[i]
+    if (c === ")" || c === "]" || c === "}") depth++
+    else if (c === "(" || c === "[" || c === "{") { if (depth === 0) return null; depth-- }
+    else if (depth === 0 && c === ";") return null
+    else if (depth === 0 && c === "=") {
+      const prev = m[i - 1] ?? "", next = m[i + 1] ?? ""
+      if ("=!<>+-*/%&|^?".includes(prev) || next === "=" || next === ">") continue
+      const decl = /(?:const|let|var)\s+(\{[^{}]*\}|\[[^[\]]*\]|[\w$]+)\s*$/.exec(m.slice(Math.max(0, i - 400), i))
+      return decl ? { binding: decl[1], eq: i } : null
+    }
+  }
+  return null
+}
+
+/** PURE — a depth-0 conditional `?` between from..to (not `?.`, not `??`). */
+function hasConditional(m: string, from: number, to: number): boolean {
+  let depth = 0
+  for (let i = from; i < to; i++) {
+    const c = m[i]
+    if ("([{".includes(c)) depth++
+    else if (")]}".includes(c)) depth--
+    else if (c === "?" && depth === 0 && m[i + 1] !== "." && m[i + 1] !== "?" && m[i - 1] !== "?") return true
+  }
+  return false
+}
+
+function escapeName(n: string): string { return n.replace(/\$/g, "\\$") }
+
+/** PURE — is `name.error` (or `name?.error`) read after `from`? */
+function nameReadsError(m: string, name: string, from: number): boolean {
+  return new RegExp(`(?<![\\w$.])${escapeName(name)}\\s*(?:\\?\\.|\\.)\\s*error\\b`).test(m.slice(from))
+}
+
+/** PURE — is an ARRAY of results read for its errors (`r.find((x) => x.error)`, `for (const x of r) … x.error`, `r[i].error`)? */
+function resultsReadError(m: string, name: string, from: number): boolean {
+  const rest = m.slice(from)
+  const n = escapeName(name)
+  return new RegExp(`(?<![\\w$.])${n}\\s*\\.\\s*(?:find|some|filter|every|forEach|map|flatMap|findIndex)\\s*\\(\\s*\\(?\\s*([\\w$]+)[^=]*=>[\\s\\S]{0,200}?(?<![\\w$.])\\1\\s*(?:\\?\\.|\\.)\\s*error\\b`).test(rest)
+    || new RegExp(`for\\s*\\(\\s*(?:const|let)\\s+([\\w$]+)\\s+of\\s+${n}\\s*\\)[\\s\\S]{0,300}?(?<![\\w$.])\\1\\s*(?:\\?\\.|\\.)\\s*error\\b`).test(rest)
+    || new RegExp(`(?<![\\w$.])${n}\\s*\\[[^\\]]+\\]\\s*(?:\\?\\.|\\.)\\s*error\\b`).test(rest)
+}
+
+/** PURE — does the declared binding read the error of what was assigned to it? */
+function bindingReadsError(m: string, binding: string, from: number, awaited: boolean): boolean {
+  if (binding.startsWith("{")) return awaited && /\berror\b/.test(binding)
+  if (binding.startsWith("[")) return false
+  if (awaited) return nameReadsError(m, binding, from) || new RegExp(`\\{[^}]*\\berror\\b[^}]*\\}\\s*=\\s*${escapeName(binding)}\\b`).test(m.slice(from))
+  // A builder bound unawaited: its name must be awaited later (directly or as a
+  // wrapper's first argument) into a destructure naming `error`.
+  return new RegExp(`\\{[^}]*\\berror\\b[^}]*\\}\\s*=\\s*await\\s+(?:[\\w$.]+\\s*\\(\\s*)?${escapeName(binding)}\\b`).test(m.slice(from))
+}
+
+/** PURE — shape 1: the write is an ARM of a conditional bound by a declaration. */
+function capturedByTernaryArm(m: string, at: number): boolean {
+  let head = headBefore(m, receiverStart(m, at))
+  const awaited = /(?<![\w$])await$/.test(head)
+  if (awaited) head = head.slice(0, -5).replace(/\s+$/, "")
+  if (!/[?:]$/.test(head) || /\?\.$|\?\?$/.test(head)) return false
+  const decl = enclosingDeclaration(m, head.length - 1)
+  if (!decl || !hasConditional(m, decl.eq + 1, head.length)) return false
+  return bindingReadsError(m, decl.binding, decl.eq, awaited)
+}
+
+/** PURE — shape 2: the write is an ELEMENT of `await Promise.all([ … ])`. */
+function capturedByPromiseAll(m: string, at: number): boolean {
+  const head = headBefore(m, receiverStart(m, at))
+  if (!/[[,]$/.test(head)) return false
+  let depth = 0, index = 0, open = -1
+  for (let i = head.length - 1; i >= 0; i--) {
+    const c = m[i]
+    if (")]}".includes(c)) depth++
+    else if ("([{".includes(c)) { if (depth === 0) { open = i; break } depth-- }
+    else if (c === "," && depth === 0) index++
+  }
+  if (open < 0 || m[open] !== "[") return false
+  const before = m.slice(Math.max(0, open - 300), open)
+  const call = /(?:const|let|var)\s+(\[[^[\]]*\]|[\w$]+)\s*=\s*await\s+Promise\.all\s*\(\s*$/.exec(before)
+  if (!call) return false
+  const binding = call[1]
+  if (binding.startsWith("[")) {
+    const name = binding.slice(1, -1).split(",")[index]?.trim()
+    return !!name && /^[\w$]+$/.test(name) && nameReadsError(m, name, open)
+  }
+  return resultsReadError(m, binding, open)
+}
+
+/** PURE — shape 3: the write is the BODY of a `.map(… => …)` whose results are awaited and read. */
+function capturedByMapArrow(m: string, at: number): boolean {
+  const head = headBefore(m, receiverStart(m, at))
+  if (!/=>$/.test(head)) return false
+  // the unmatched `(` that opens the .map call
+  let depth = 0, open = -1
+  for (let i = head.length - 3; i >= 0; i--) {
+    const c = m[i]
+    if (")]}".includes(c)) depth++
+    else if ("([{".includes(c)) { if (depth === 0) { open = i; break } depth-- }
+  }
+  if (open < 0 || m[open] !== "(" || !/\.map\s*$/.test(m.slice(0, open))) return false
+  // walk left over the receiver chain (`ids.filter(…).map`) to where it begins
+  let p = m.slice(0, open).replace(/\.map\s*$/, "").length
+  for (;;) {
+    while (p > 0 && /\s/.test(m[p - 1])) p--
+    if (m[p - 1] === ")") {
+      let d = 0
+      for (p = p - 1; p >= 0; p--) { if (m[p] === ")") d++; else if (m[p] === "(") { d--; if (d === 0) break } }
+    }
+    while (p > 0 && /[\w$]/.test(m[p - 1])) p--
+    if (m[p - 1] === ".") { p--; continue }
+    break
+  }
+  const before = headBefore(m, p)
+  // `const results = await Promise.all(ids.map(…))`
+  const direct = /(?:const|let|var)\s+([\w$]+)\s*=\s*await\s+Promise\.all\s*\($/.exec(before)
+  if (direct) return resultsReadError(m, direct[1], open)
+  // `const ups = ids.map(…)` … `const results = await Promise.all(ups)`
+  const arr = /(?:const|let|var)\s+([\w$]+)\s*=$/.exec(before)
+  if (!arr) return false
+  const awaitedAs = new RegExp(`(?:const|let|var)\\s+([\\w$]+)\\s*=\\s*await\\s+Promise\\.all\\s*\\(\\s*${escapeName(arr[1])}\\s*\\)`).exec(m.slice(open))
+  return !!awaitedAs && resultsReadError(m, awaitedAs[1], open)
+}
+
+/** PURE — any of the three structural shapes. */
+function capturedByEnclosingExpression(stmt: string, at: number): boolean {
+  const m = masked(stmt)
+  return capturedByTernaryArm(m, at) || capturedByPromiseAll(m, at) || capturedByMapArrow(m, at)
 }
 
 /**
@@ -311,6 +505,48 @@ console.log("\n[pure — the detector]")
     isSilentWrite(
       `let query = svc.from("contacts").update(p).eq("id", i)\n` +
       `const { error } = await somethingElse`) === "contacts")
+
+  // THE STRUCTURAL SHAPES (lane 88F) — each accept paired with a reject that must
+  // still fire, for the same reason as the two recognitions above.
+  check("88F accepts a TERNARY ARM whose declaration destructures `error` (both arms)",
+    silentWritesIn(
+      `const { error } = row\n  ? await svc.from("contacts").update(p).eq("id", i)\n  : await svc.from("contacts").insert(r)\nif (error) throw error`).length === 0)
+  check("...and STILL flags the same ternary bound to `{ data }` only",
+    silentWritesIn(
+      `const { data } = row\n  ? await svc.from("contacts").update(p).eq("id", i)\n  : await svc.from("contacts").insert(r)`).length === 2)
+  check("88F accepts a ternary bound to a NAME that is later read as `name.error`",
+    silentWritesIn(
+      `const write = row ? await svc.from("contacts").update(p).eq("id", i) : await svc.from("contacts").insert(r)\nif (write.error) return`).length === 0)
+  check("...and STILL flags it when the name is never read for its error",
+    silentWritesIn(
+      `const write = row ? await svc.from("contacts").update(p).eq("id", i) : await svc.from("contacts").insert(r)\nreturn ok`).length === 2)
+  check("88F accepts a BUILDER ternary awaited through a wrapper into `{ error }`",
+    silentWritesIn(
+      `let q = open\n  ? svc.from("contacts").update(a).eq("id", i)\n  : svc.from("contacts").update(b).eq("id", i)\nconst { data, error } = await applyTenantScope(q, scope).select("id")`).length === 0)
+  check("...and STILL flags the builder ternary awaited with its error dropped",
+    silentWritesIn(
+      `let q = open\n  ? svc.from("contacts").update(a).eq("id", i)\n  : svc.from("contacts").update(b).eq("id", i)\nawait applyTenantScope(q, scope)`).length === 2)
+  check("88F accepts a Promise.all ELEMENT whose destructured slot is read for `error`",
+    silentWritesIn(
+      `const [u, v] = await Promise.all([\n  svc.from("contacts").update(p).eq("id", i),\n  svc.from("commissions").insert(r),\n])\nif (u.error || v.error) return`).length === 0)
+  check("...and STILL flags the element whose OWN slot is never read (a sibling's check is not its check)",
+    silentWritesIn(
+      `const [u, v] = await Promise.all([\n  svc.from("contacts").update(p).eq("id", i),\n  svc.from("commissions").insert(r),\n])\nif (u.error) return`).join() === "commissions")
+  check("88F accepts a .map ARROW whose awaited results are searched for `error`",
+    silentWritesIn(
+      `const ups = ids.filter(ok).map((id, n) =>\n  svc.from("contacts").update({ n }).eq("id", id))\nconst results = await Promise.all(ups)\nconst failed = results.find((r) => r.error)`).length === 0)
+  check("...and STILL flags the .map arrow whose results are never read",
+    silentWritesIn(
+      `const ups = ids.map((id) => svc.from("contacts").update({ a: 1 }).eq("id", id))\nawait Promise.all(ups)`).join() === "contacts")
+  check("88F accepts a REASSIGNMENT into an already-declared error — `;({ error } = await …)`",
+    silentWritesIn(`;({ error } = await svc.from("contacts").update(p).eq("id", i))`).length === 0)
+  check("...and STILL flags a reassignment that keeps only `data`",
+    silentWritesIn(`;({ data } = await svc.from("contacts").update(p).eq("id", i))`).join() === "contacts")
+  check("...and an OBJECT-LITERAL value (`{ k: svc.from(…).insert(…) }`) is not mistaken for a ternary arm",
+    silentWritesIn(`const plan = { k: svc.from("contacts").insert(r) }\nawait plan.k`).join() === "contacts")
+  check("...and a `?`/`[` inside a STRING cannot unbalance the walk (structure reads blankStrings)",
+    silentWritesIn(
+      `const write = row ? await svc.from("contacts").update({ note: "a ] ? [ b" }).eq("id", i) : await svc.from("contacts").insert(r)\nif (write.error) return`).length === 0)
 
   // No `.from("…")` in this fixture on purpose: the schema-drift guard also
   // scans this file and would read a fake table name here as a real one.

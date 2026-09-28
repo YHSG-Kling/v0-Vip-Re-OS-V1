@@ -701,13 +701,15 @@ export async function resumeAwaitingProviderExplainers(
   try {
     const { createServiceClient } = await import("@/lib/supabase/service")
     const svc = createServiceClient()
-    const { data } = await svc
+    const { data, error } = await svc
       .from("ai_video_projects")
       .update({ status: "queued", error_message: null, updated_at: new Date().toISOString() })
       .eq("brokerage_id", brokerageId)
       .eq("status", "generating")
       .contains("video_metadata", { lane: "avatar_explainer", awaiting_provider: "did" })
       .select("id")
+    // Refused ≠ "nothing was waiting" (lane 88F): logged, still reported as 0 resumed.
+    if (error) console.error("[avatar-explainer] resume of D-ID-parked explainers refused:", error.message)
     return { resumed: (data ?? []).length }
   } catch {
     return { resumed: 0 }

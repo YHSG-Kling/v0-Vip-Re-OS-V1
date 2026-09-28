@@ -333,10 +333,10 @@ export async function ensureDIDAgent(
   if (params.cache) {
     await params.cache.write(didAgentId)
   } else if (params.twinId) {
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("agent_avatar_assets")
       .update({ did_agent_id: didAgentId, updated_at: new Date().toISOString() })
-      .eq("id", params.twinId)
+      .eq("id", params.twinId), { table: "agent_avatar_assets", flow: "did_agent_id_cache", reason: "cache of the D-ID agent id; the next start re-resolves it" })
   } else {
     await sentinelWrite(supabase, supabase
       .from("agent_voice_profiles")

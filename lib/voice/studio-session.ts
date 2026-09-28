@@ -464,11 +464,10 @@ export async function commissionStudioSession(
       videoProjectIds.push(r.videoProjectId)
       commissioned++
       // Link the video project to this session.
-      await svc
+      await sentinelWrite(svc, svc
         .from("ai_video_projects")
         .update({ studio_session_id: sessionId })
-        .eq("id", r.videoProjectId)
-        .then(() => {}, () => { /* best-effort link — session is already anchored */ })
+        .eq("id", r.videoProjectId), { table: "ai_video_projects", flow: "studio_session_link", reason: "best-effort link — the session is already anchored" })
     } else {
       skipped++
     }

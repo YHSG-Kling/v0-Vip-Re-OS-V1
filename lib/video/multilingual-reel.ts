@@ -492,7 +492,7 @@ export async function commissionMultilingualReel(
       // up the multilingual model + language_code. This is additive — the render
       // cron reads these from video_metadata; rows without them use the default model.
       const now = new Date().toISOString()
-      await svc
+      const { error: localeStampErr } = await svc
         .from("ai_video_projects")
         .update({
           locale,
@@ -515,6 +515,7 @@ export async function commissionMultilingualReel(
           updated_at: now,
         })
         .eq("id", commResult.videoProjectId)
+      if (localeStampErr) { results.push({ locale, ok: false, status: commResult.status, videoProjectId: commResult.videoProjectId, compositionId: commResult.compositionId, translatedScript, reason: `translated script not saved: ${localeStampErr.message}`, error: `translated script not saved: ${localeStampErr.message}` }); continue }
     }
 
     results.push({

@@ -106,6 +106,32 @@ function valueImports(src: string): string[] {
 const isServerOnly = (src: string) => /(?:^|\n)\s*import\s+["']server-only["']/.test(src)
 
 /**
+ * LANE 88F — THE SAME HAZARD WITHOUT THE MARKER. A module that BUILDS the service-role
+ * client (`createServiceClient(` imported from @/lib/supabase/service) but never wrote
+ * `import "server-only"` was invisible to this guard: scrape-diagnostics-client.tsx
+ * imported lib/kernel/scraping.ts::retryFailedSourceBatch directly, so the Retry button
+ * ran service-role code in the browser (where the key does not exist — every click could
+ * only throw) with the acting user id taken from the client. The marker is a convention;
+ * the service-client build is the fact. Read STRIPPED (a tombstone naming it is not a
+ * call site), and the same "use server" boundary stops the walk.
+ */
+const buildsServiceClient = (src: string) => {
+  const code = stripComments(src)
+  return /from\s*["']@\/lib\/supabase\/service["']/.test(code) && /\bcreateServiceClient\s*\(/.test(code)
+}
+// POSITIVE + NEGATIVE CONTROL (§2) — the widened terminal recognises the lane-88F shape
+// (a plain kernel module building the service client) and not a tombstone naming it.
+{
+  const pc = buildsServiceClient(`import { createServiceClient } from "@/lib/supabase/service"\nexport async function retry() { const s = createServiceClient() }`)
+  const nc = buildsServiceClient(`// was: createServiceClient() from "@/lib/supabase/service"\nexport const x = 1`)
+  if (!pc || nc) {
+    console.log(`  ✗ service-client terminal control failed (positive ${pc}, tombstone ${nc})`)
+    console.log("\n ❌ CLIENT_SERVER_ONLY_FAIL")
+    process.exit(1)
+  }
+}
+
+/**
  * The leading directive, if any — read AFTER stripping the comment header.
  *
  * A directive only has to precede the first STATEMENT, so `"use server"` sitting below a
@@ -160,7 +186,7 @@ for (const entry of clientFiles) {
       // Stop at the server-action boundary BEFORE testing for server-only: a "use server"
       // module is allowed to import the kernel, and routing through one is the fix.
       if (isServerActionModule(src)) continue
-      if (isServerOnly(src)) { found = nextChain; break }
+      if (isServerOnly(src) || buildsServiceClient(src)) { found = nextChain; break }
       // A nested "use client" module is itself an entry we check separately; it cannot
       // legally reach server-only either, so following through it would only duplicate.
       if (!isClientModule(src)) queue.push({ file: target, chain: nextChain })

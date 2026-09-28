@@ -5,6 +5,8 @@ import { scrapeFacebookGroupPosts, scrapeRedditPosts } from '@/lib/external'
 import { trackVendorUsage } from '@/lib/vendor-tracking'
 import { analyzeLead } from '@/lib/ai'
 import { processRawRecord } from '@/lib/lead-pipeline'
+import { ingestRawSourceBatch } from '@/lib/kernel/scraping'
+import type { NormalizedScrapedRecord } from '@/lib/lead-pipeline/raw-record-types'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 
 const FACEBOOK_GROUP_TEMPLATES = [
@@ -116,25 +118,22 @@ export async function scrapeSocialMedia(params: {
         // queries by brokerage, and the neighborhood report reads property
         // history across a whole zip. Stamping a tenant here would fragment the
         // dedup pool. Same call as platform_credentials in m273.
-        const { data: rawRecord } = await supabase
-          .from('batchdata_motivated_sellers_raw')
-          .insert({
-            first_name: null,
-            last_name: null,
-            email: null,
-            phone: null,
-            residential_city: targetCity,
-            residential_state: targetState,
-            motivation_type: analysis.intent,
-            motivation_confidence: Math.round(analysis.confidence * 100),
-            raw_json: post,
-            created_at: new Date().toISOString()
-          })
-          .select('id')
-          .single()
+        const banked = await bankSocialPost(supabase, {
+          channel: 'facebook_group',
+          sourceRecordId: `fb-${post.id ?? post.post_id ?? post.url ?? `${groupName}-${String(post.text || post.message || '').slice(0, 60)}`}`,
+          post,
+          text: post.text || post.message || '',
+          username: post.from?.name ?? null,
+          city: targetCity,
+          state: targetState,
+          intent: analysis.intent,
+          confidence: analysis.confidence,
+          brokerageId,
+        })
+        if (banked.error) results.errors.push(`Facebook-${groupName}: ${banked.error}`)
 
-        if (rawRecord?.id) {
-          const pipelineResult = await processRawRecord(rawRecord.id, brokerageId)
+        if (banked.rawLeadId) {
+          const pipelineResult = await processRawRecord(banked.rawLeadId, brokerageId)
 
           if (pipelineResult.action === 'created') {
             results.leadsCreated++
@@ -187,25 +186,22 @@ export async function scrapeSocialMedia(params: {
       // TENANCY: brokerage_id deliberately NULL — platform raw-lead pool, not
       // tenant data. See the matching note on the Facebook insert above; the
       // tenant-scoped artifact is created by processRawRecord(..., brokerageId).
-      const { data: rawRecord } = await supabase
-        .from('batchdata_motivated_sellers_raw')
-        .insert({
-          first_name: null,
-          last_name: null,
-          email: null,
-          phone: null,
-          residential_city: post.subreddit === targetCity || post.subreddit === targetState ? targetCity : null,
-          residential_state: targetState,
-          motivation_type: analysis.intent,
-          motivation_confidence: Math.round(analysis.confidence * 100),
-          raw_json: post,
-          created_at: new Date().toISOString()
-        })
-        .select('id')
-        .single()
+      const banked = await bankSocialPost(supabase, {
+        channel: 'reddit',
+        sourceRecordId: `reddit-${post.id ?? post.url ?? `${post.subreddit}-${post.author}-${String(post.title || '').slice(0, 60)}`}`,
+        post,
+        text: `${post.title || ''}\n\n${post.selftext || ''}`,
+        username: post.author ?? null,
+        city: post.subreddit === targetCity || post.subreddit === targetState ? targetCity : null,
+        state: targetState,
+        intent: analysis.intent,
+        confidence: analysis.confidence,
+        brokerageId,
+      })
+      if (banked.error) results.errors.push(`Reddit: ${banked.error}`)
 
-      if (rawRecord?.id) {
-        const pipelineResult = await processRawRecord(rawRecord.id, brokerageId)
+      if (banked.rawLeadId) {
+        const pipelineResult = await processRawRecord(banked.rawLeadId, brokerageId)
 
         if (pipelineResult.action === 'created') {
           results.leadsCreated++
@@ -264,5 +260,84 @@ export async function scrapeSocialMedia(params: {
   return {
     success: true,
     ...results
+  }
+}
+
+/**
+ * BANK ONE SOCIAL POST — both halves, READ (lane 88F, hidden wire).
+ *
+ * This action inserted each post into batchdata_motivated_sellers_raw (read by the
+ * motivated-seller list and the neighborhood report — kept) and then handed THAT row's
+ * id to processRawRecord, which reads raw_scraped_leads (pipeline-processor.ts STEP 3:
+ * "Read from raw_scraped_leads (not batchdata_motivated_sellers_raw)"). The id could never
+ * be found, so no post from this door ever became a lead — and the insert's own refusal
+ * was dropped too (swallowed-refusal census). The raw record now enters through THE raw
+ * writer (lib/kernel/scraping.ts::ingestRawSourceBatch — viability, territory, dedup,
+ * source attribution) and it is THAT row the pipeline promotes.
+ */
+async function bankSocialPost(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  args: {
+    channel: 'facebook_group' | 'reddit'
+    sourceRecordId: string
+    post: unknown
+    text: string
+    username: string | null
+    city: string | null
+    state: string
+    intent: string
+    confidence: number
+    brokerageId: string
+  },
+): Promise<{ rawLeadId: string | null; error: string | null }> {
+  // TENANCY: brokerage_id deliberately NULL on the motivated-seller pool row (see the
+  // note at the Facebook call site below); the raw LEAD carries the brokerage because
+  // this is an explicit brokerage-triggered scrape (ingestRawSourceBatch's own rule).
+  const { error: poolErr } = await supabase
+    .from('batchdata_motivated_sellers_raw')
+    .insert({
+      first_name: null,
+      last_name: null,
+      email: null,
+      phone: null,
+      residential_city: args.city,
+      residential_state: args.state,
+      motivation_type: args.intent,
+      motivation_confidence: Math.round(args.confidence * 100),
+      raw_json: args.post,
+      created_at: new Date().toISOString()
+    })
+  if (poolErr) console.error(`[scrape-social-media] motivated-seller pool insert refused (${args.channel}):`, poolErr.message)
+
+  const intent = args.intent.toLowerCase()
+  const intentType: NormalizedScrapedRecord['intentType'] =
+    /sell|fsbo|distress|motivated/.test(intent) ? 'seller'
+    : /buy|relocat/.test(intent) ? 'buyer'
+    : 'unknown'
+  const record: NormalizedScrapedRecord = {
+    sourceRecordId: args.sourceRecordId,
+    source: args.channel,
+    behaviorType: 'social_intent',
+    intentType,
+    intentSignals: intentType === 'seller' ? ['selling'] : intentType === 'buyer' ? ['looking_to_buy'] : [],
+    username: args.username,
+    city: args.city,
+    state: args.state,
+    motivationScore: Math.round(args.confidence * 100),
+    rawPayload: { text: args.text.slice(0, 2000), analyzed_intent: args.intent },
+  } as NormalizedScrapedRecord
+  try {
+    const batch = await ingestRawSourceBatch({
+      brokerageId: args.brokerageId,
+      marketId: null,
+      source: 'social_intent',
+      sourceFamily: 'social_intent',
+      sourceChannel: args.channel,
+      records: [record],
+      executionId: null,
+    })
+    return { rawLeadId: batch.rawIds[0] ?? null, error: batch.skipped_refused > 0 ? 'raw_scraped_leads insert refused' : null }
+  } catch (err) {
+    return { rawLeadId: null, error: err instanceof Error ? err.message : String(err) }
   }
 }

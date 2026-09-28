@@ -514,7 +514,7 @@ Return ONLY the spoken text.`) + fix
       ?? await hostRenderedMedia(svc, `newsletter-video/reels/${ledger.id}.mp4`, bytes, "video/mp4")
 
     // 6. ai_video_projects + ledger close.
-    const { data: project } = await svc.from("ai_video_projects").insert({
+    const { data: project, error: projectErr } = await svc.from("ai_video_projects").insert({
       brokerage_id:    camp.brokerage_id,
       agent_id:        ledger.agent_id,
       title:           `Newsletter video — ${camp.subject_line ?? camp.campaign_name ?? camp.id}`,
@@ -539,6 +539,8 @@ Return ONLY the spoken text.`) + fix
         narration_budget_notes:   budgetNotes,
       },
     }).select("id").single()
+    // READ (lane 88F): `project!.id` below used to dereference a refused insert.
+    if (projectErr || !project) throw new Error(`ai_video_projects insert refused: ${projectErr?.message ?? "no row returned"}`)
 
     const { error: renderDoneErr } = await svc.from("newsletter_video_renders").update({
       status:          "completed",

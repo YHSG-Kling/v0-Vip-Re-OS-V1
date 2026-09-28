@@ -1753,10 +1753,10 @@ export async function generateVideoFromScript(params: {
         // on the project so the agent is told, rather than watching a queue row
         // that never moves.
         const reason = (didRes as { error?: string }).error ?? "provider not configured"
-        await supabase
+        await sentinelWrite(supabase, supabase
           .from("ai_video_projects")
           .update({ error_message: `Render not started: ${reason}` })
-          .eq("id", project.id)
+          .eq("id", project.id), { table: "ai_video_projects", flow: "did_kick_deferred_note", reason: "explanatory note on a queued row; the row stays queued and the deferral is logged" })
         console.warn("[v0] D-ID kick deferred, video stays queued:", reason)
       }
     }

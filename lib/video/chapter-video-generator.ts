@@ -47,6 +47,7 @@ import {
   targetWordCount,
 } from "@/lib/video/script-structure"
 import { withSpokenScriptStandards, scanForAiTells } from "@/lib/video/realism-profile"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 /**
  * The declared runtime of one presentation chapter clip. Drip-ready content:
@@ -316,13 +317,13 @@ export async function generatePropertyChapterVideos(
         // HONEST REFUSAL. The provider never took the job, so the row must not
         // sit in a state that claims a render is in flight — the reaper and the
         // videos board would both report a lie for two hours.
-        await svc
+        await sentinelWrite(svc, svc
           .from("ai_video_projects")
           .update({
             status:        "failed",
             error_message: `Render not started: ${submission.error ?? "the video provider refused the job"}`.slice(0, 800),
           })
-          .eq("id", project.id)
+          .eq("id", project.id), { table: "ai_video_projects", flow: "chapter_video_render_fail", reason: "honest failure stamp; the refusal is returned to the caller" })
         failures.push(chapter.title)
         continue
       }
@@ -404,16 +405,13 @@ export async function generatePropertyChapterVideos(
       // 'queued' in any useful sense — say so, so the board and the reaper are
       // reading a fact. Best-effort: the throw is already the record of truth.
       if (projectId) {
-        await svc
+        await sentinelWrite(svc, svc
           .from("ai_video_projects")
           .update({
             status:        "failed",
             error_message: `Render not started: ${(err as Error)?.message ?? "chapter video generation threw"}`.slice(0, 800),
           })
-          .eq("id", projectId)
-          .then(({ error: markErr }) => {
-            if (markErr) console.error(`[chapter-video-generator] could not mark project ${projectId} failed:`, markErr.message)
-          })
+          .eq("id", projectId), { table: "ai_video_projects", flow: "chapter_video_render_fail", reason: "honest failure stamp; the throw is the record of truth" })
       }
     }
   }

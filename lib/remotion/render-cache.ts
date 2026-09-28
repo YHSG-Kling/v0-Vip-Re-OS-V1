@@ -46,6 +46,7 @@ import { resolveCodeRevision } from "./code-revision"
 import { shouldApplyBookends, stitchedIntroCategory } from "./render-decision"
 import { MUSIC_DUCK_VOLUME_PCT } from "@/lib/video/realism-profile"
 import { compositionSeconds } from "./composition-geometry"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export { RENDER_CACHE_LEAK_SIGNAL }
 
@@ -225,9 +226,9 @@ export async function stampRenderKeys(
   keys: { frameKey: string; artifactKey: string },
 ): Promise<void> {
   try {
-    await svc.from("remotion_composition_renders")
+    await sentinelWrite(svc, svc.from("remotion_composition_renders")
       .update({ frame_key: keys.frameKey, artifact_key: keys.artifactKey })
-      .eq("id", renderId)
+      .eq("id", renderId), { table: "remotion_composition_renders", flow: "render_cache_identity", reason: "identity keys are an optimization; the render is the deliverable" })
   } catch { /* identity is an optimization; the render is the deliverable */ }
 }
 

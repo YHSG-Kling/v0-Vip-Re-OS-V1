@@ -73,15 +73,11 @@ import { stripComments, blankComments, blankStrings } from "./strip-comments"
 
 const root = process.cwd()
 
-const SCRAPING_PATH_PREFIXES = [
-  "lib/lead-pipeline/",
-  "lib/external/",
-  "app/actions/lead-intelligence.ts",
-  "lib/kernel/intent-campaign.ts",
-  "lib/kernel/scraping.ts",
-  "app/actions/lead-scraping-config.ts",
-  "app/api/cron/lead-scraping/",
-]
+/** RETIRED (lane 88F): the owner reopened scraping — "lead scrapping lane can be changed
+ *  if necessary and benefinicial" — so scraping paths are judged like every other path.
+ *  Measured before retiring: 4 names read only here were undocumented (GEOAPIFY_API_KEY, HTML_EXTRACTOR_MODEL, SOCRATA_APP_TOKEN, VISION_PROPERTY_MODEL) — now in .env.example. The list is kept EMPTY rather than deleted so the
+ *  report lines below keep printing their (now zero) excluded count. */
+const SCRAPING_PATH_PREFIXES: readonly string[] = []
 function isScrapingPath(relPath: string): boolean {
   return SCRAPING_PATH_PREFIXES.some((p) => relPath === p || relPath.startsWith(p))
 }
@@ -360,7 +356,7 @@ if (typeof process !== "undefined" && /env-var-parity\.ts$/.test(process.argv[1]
   console.log(" ENV-VAR PARITY CENSUS — process.env.X read vs. X documented")
   console.log("═".repeat(70))
   console.log(`  ${reads.length} total read site(s) · ${new Set(reads.map((r) => r.name)).size} distinct name(s) read across ${new Set(reads.map((r) => r.file.split("/")[0])).size} runtime root(s)`)
-  console.log(`  ${readNamesScraping.size} distinct name(s) read under former scraping-freeze paths — COUNTED since lane 88E (scraping reopened wave 82)`)
+  console.log(`  ${readNamesScraping.size} distinct name(s) read only under scraping paths (exclusion retired in lane 88F — always 0)`)
   console.log(`  ${docNames.size} distinct name(s) documented across .env.example / vercel.json / .github/workflows/*.yml`)
   console.log(`  ${undocumented.length} read with NO documented source`)
   console.log(`  ${unreadDocumented.length} documented but never read`)

@@ -60,19 +60,11 @@ import { stripComments, blankStrings } from "./strip-comments"
 
 const root = process.cwd()
 
-/** The wave-55 scraping freeze, restated here rather than imported — this file
- *  has no reason to depend on frozen code, and the freeze list is short enough
- *  to keep in sync by eye against CLAUDE.md's lane rules. A path matches if it
- *  STARTS WITH one of these (file) or CONTAINS one as a path segment (dir). */
-const SCRAPING_PATH_PREFIXES = [
-  "lib/lead-pipeline/",
-  "lib/external/",
-  "app/actions/lead-intelligence.ts",
-  "lib/kernel/intent-campaign.ts",
-  "lib/kernel/scraping.ts",
-  "app/actions/lead-scraping-config.ts",
-  "app/api/cron/lead-scraping/",
-]
+/** RETIRED (lane 88F): the owner reopened scraping — "lead scrapping lane can be changed
+ *  if necessary and benefinicial" — so scraping paths are judged like every other path.
+ *  Measured before retiring: 0 dead imports under these paths. The list is kept EMPTY rather than deleted so the
+ *  report lines below keep printing their (now zero) excluded count. */
+const SCRAPING_PATH_PREFIXES: readonly string[] = []
 
 function isScrapingPath(relPath: string): boolean {
   return SCRAPING_PATH_PREFIXES.some((p) => relPath === p || relPath.startsWith(p))
@@ -214,7 +206,7 @@ if (typeof process !== "undefined" && /dead-import-census\.ts$/.test(process.arg
   console.log(" DEAD-IMPORT CENSUS — a named import nothing in its file uses again")
   console.log("═".repeat(70))
   console.log(`  ${findings.length} dead named import(s) across app/ + lib/`)
-  console.log(`  ${scraping.length} under the wave-55 scraping freeze — excluded from PASS/FAIL, never auto-fixed`)
+  console.log(`  ${scraping.length} excluded as scraping (exclusion retired in lane 88F — always 0)`)
   console.log(`  ${live.length} live (non-scraping) — the burn-down list`)
   console.log("")
   console.log("  BLIND SPOTS: JSX-text mentions and bare re-exports read as USED (under-")

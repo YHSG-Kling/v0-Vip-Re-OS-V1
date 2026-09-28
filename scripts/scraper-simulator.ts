@@ -1248,6 +1248,14 @@ function testPerplexityEnrichment() {
   const base = { first_name: "Ann", last_name: "Lee", email: null, phone: "8135551234", enrichmentConfidence: 0.4 }
   check("shouldGapFill: full name + no email → yes", shouldGapFill(base))
   check("shouldGapFill: has email → no", !shouldGapFill({ ...base, email: "a@x.com" }))
+  // lane 88F — the spend decision reads THE lead predicate (isLeadEligibleIdentity + its name test)
+  check("shouldGapFill: a PLACEHOLDER name can never become a lead → no spend",
+    !shouldGapFill({ ...base, first_name: "Current", last_name: "Owner" }) && !shouldGapFill({ ...base, first_name: "Oak", last_name: "Holdings LLC" }))
+  check("shouldGapFill: an UNUSABLE email on file (noreply@) is still a gap → yes",
+    shouldGapFill({ ...base, email: "noreply@acme.com" }))
+  check("mergeEnrichment replaces an unusable email with a usable find, never the reverse",
+    mergeEnrichment({ ...base, email: "noreply@acme.com" }, { email: "ann.lee@gmail.com" }).email === "ann.lee@gmail.com"
+    && mergeEnrichment({ ...base, email: "ann.lee@gmail.com" }, { email: "noreply@acme.com" }).email === "ann.lee@gmail.com")
   const merged = mergeEnrichment(base, { email: "ann.lee@example.com", currentBrokerage: "Old Realty" })
   check("fills missing email from Perplexity", merged.email === "ann.lee@example.com")
   check("does not overwrite existing phone", merged.phone === "8135551234")

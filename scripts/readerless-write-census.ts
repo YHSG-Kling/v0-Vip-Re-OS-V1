@@ -93,16 +93,12 @@
  *     same "-style" shape (created_by, updated_by, deleted_at, deleted_by,
  *     is_deleted) — a foreign key or timestamp is not a feature waiting for a
  *     reader, it is plumbing every table carries.
- *   · SCRAPING_TABLES — the scraper-pipeline mechanics tables (lead_scraping_*,
- *     scraper_*, raw_scraped_leads, batchdata_motivated_sellers_raw,
- *     lead_deduplication_log, lead_enrichment_queue). Named below, listed in the
- *     summary, and skipped: their writers live in lib/kernel/scraping.ts,
- *     lib/external/*, app/actions/lead-intelligence.ts — files this lane is
- *     explicitly not allowed to touch (they belong to other lanes), so a finding
- *     here would be unactionable noise. This is NOT the whole lead-intelligence
- *     surface (lead_osint_data, google_search_activity, etc. are NOT scraping-
- *     pipeline mechanics and are left in scope) — narrowly the scraper/dedup/
- *     enrichment-queue infrastructure itself.
+ *   · (RETIRED, lane 88F) SCRAPING_TABLES — the 11 scraper-pipeline mechanics
+ *     tables were skipped while scraping was frozen for census lanes. The owner
+ *     reopened scraping ("lead scrapping lane can be changed if necessary and
+ *     benefinicial"), and measured with the skip removed the census found 0
+ *     readerless columns across the 173 it had never judged — so the skip only
+ *     hid sight. Every table is judged now.
  *
  * ── STATED BLIND SPOTS (CLAUDE.md §2: publish them beside the number) ─────────
  *   · Dynamic column names — `.update({ [expr]: v })` where `expr` is not a
@@ -179,17 +175,6 @@ function isBookkeeping(col: string): boolean {
   return BOOKKEEPING_EXACT.has(col) || /^(created_by|updated_by|deleted_at|deleted_by|is_deleted)$/.test(col)
 }
 
-/** Scraper-PIPELINE MECHANICS tables — see header. Writers live in files this lane
- *  does not touch (lib/kernel/scraping.ts, lib/external/*, app/actions/lead-
- *  intelligence.ts), so a finding here would be unactionable. Narrowly the
- *  scraper/dedup/enrichment-queue infra, NOT the broader lead-intelligence
- *  provenance tables (lead_osint_data etc.), which stay in scope. */
-const SCRAPING_TABLES = new Set([
-  "lead_scraping_jobs", "lead_scraping_keywords", "lead_scraping_markets",
-  "lead_scraping_motivated_params", "lead_scraping_property_params",
-  "raw_scraped_leads", "scraper_actor_health", "scraper_executions",
-  "lead_deduplication_log", "lead_enrichment_queue", "batchdata_motivated_sellers_raw",
-])
 
 /**
  * DB-ONLY-READ EXEMPTIONS, curated (CLAUDE.md §3: "a column written only by a
@@ -964,7 +949,6 @@ function main() {
   // ── Classify every live table+column ─────────────────────────────────────
   const tables = Object.keys(SCHEMA_SNAPSHOT).sort()
   let totalCols = 0
-  let scrapingSkipped = 0
   let bookkeepingExempt = 0
   let totalWritten = 0
   let totalRead = 0
@@ -973,10 +957,8 @@ function main() {
   const findingsByTable = new Map<string, Finding[]>()
 
   for (const table of tables) {
-    const isScraping = SCRAPING_TABLES.has(table)
     for (const col of SCHEMA_SNAPSHOT[table]) {
       totalCols++
-      if (isScraping) { scrapingSkipped++; continue }
       if (isBookkeeping(col)) { bookkeepingExempt++; continue }
 
       const key = `${table}.${col}`
@@ -1035,7 +1017,7 @@ function main() {
   console.log(" READERLESS-WRITE CENSUS — columns written, never read")
   console.log("══════════════════════════════════════════════════")
   console.log(` ${tables.length} tables in schema-snapshot · ${totalCols} columns scanned`)
-  console.log(` ${scrapingSkipped} columns skipped — SCRAPING_TABLES (${[...SCRAPING_TABLES].sort().join(", ")})`)
+  console.log(` 0 columns skipped — every table judged (the SCRAPING_TABLES skip was retired in lane 88F)`)
   console.log(` ${bookkeepingExempt} columns exempt — bookkeeping (id/created_at/updated_at/brokerage_id-style)`)
   console.log(` ${totalWritten} columns written · ${totalRead} columns read`)
   console.log(` ${dbOnlyReads.length} columns read ONLY by the database (CHECK/RLS/trigger, no app-level reader):`)

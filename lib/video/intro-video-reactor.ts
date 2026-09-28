@@ -103,6 +103,7 @@ import {
 } from "@/lib/video/anniversary-script"
 import type { Persona, JourneyType } from "@/lib/kernel/types"
 import { withSpokenScriptStandards, scanForAiTells, describeAiTellCoverage } from "@/lib/video/realism-profile"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 /**
  * THE WORD BUDGET THE SPOKEN SCRIPT HAS, DERIVED FROM THE COMPOSITION THAT
@@ -485,7 +486,7 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   // written only by a DB trigger reads as writerless); a column read only by an
   // index expression reads as readerless.
   if (contact.video_opt_out) {
-    await svc.from("agent_intro_videos").insert({
+    await sentinelWrite(svc, svc.from("agent_intro_videos").insert({
       brokerage_id: input.brokerageId,
       contact_id:   input.contactId,
       agent_id:     agentRecordId,
@@ -494,7 +495,7 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
       status:       "suppressed",
       delivery_channel: delivery,
       error_message: "contact has video_opt_out=true",
-    })
+    }), { table: "agent_intro_videos", flow: "intro_video_skip_ledger", reason: "skip ledger row for an opted-out contact; nothing is sent either way" })
     return { ok: true, status: "suppressed", reason: "video_opt_out" }
   }
 
@@ -506,7 +507,7 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     .eq("agent_id", agentRecordId)
     .maybeSingle()
   if (!profile?.elevenlabs_voice_id || (!profile.did_photo_url && !profile.did_video_url)) {
-    await svc.from("agent_intro_videos").insert({
+    await sentinelWrite(svc, svc.from("agent_intro_videos").insert({
       brokerage_id: input.brokerageId,
       contact_id:   input.contactId,
       agent_id:     agentRecordId,
@@ -515,7 +516,7 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
       status:       "failed",
       delivery_channel: delivery,
       error_message: "agent has no voice/avatar profile — Settings → Voice & Avatar",
-    })
+    }), { table: "agent_intro_videos", flow: "intro_video_skip_ledger", reason: "skip ledger row for an agent with no voice/avatar; nothing is sent either way" })
     return { ok: false, status: "failed", reason: "agent voice/avatar profile not configured" }
   }
 
@@ -665,9 +666,9 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     // one. The discarded draft used to own this catch; the loop owns it now, so
     // the ledger still lands on 'failed' with the model's own message when the
     // AI Gateway refuses, times out, or the redraft throws.
-    await svc.from("agent_intro_videos")
+    await sentinelWrite(svc, svc.from("agent_intro_videos")
       .update({ status: "failed", error_message: `script: ${(err as Error).message}`.slice(0, 800) })
-      .eq("id", introVideoId!)
+      .eq("id", introVideoId!), { table: "agent_intro_videos", flow: "intro_video_fail", reason: "failure stamp; the failure is returned to the caller" })
     return { ok: false, status: "failed", reason: "script generation failed" }
   }
   if (complianceResult.ok) {
@@ -729,9 +730,9 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     }
   } else {
     const reason = complianceResult.violations.join("; ").slice(0, 800)
-    await svc.from("agent_intro_videos")
+    await sentinelWrite(svc, svc.from("agent_intro_videos")
       .update({ status: "failed", error_message: `compliance failed after redraft: ${reason}` })
-      .eq("id", introVideoId!)
+      .eq("id", introVideoId!), { table: "agent_intro_videos", flow: "intro_video_fail", reason: "failure stamp; the failure is returned to the caller" })
     return {
       ok:         false,
       status:     "failed",
@@ -857,15 +858,16 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     .select("id")
     .single()
   if (projErr || !project) {
-    await svc.from("agent_intro_videos")
+    await sentinelWrite(svc, svc.from("agent_intro_videos")
       .update({ status: "failed", error_message: `ai_video_projects: ${projErr?.message}` })
-      .eq("id", introVideoId!)
+      .eq("id", introVideoId!), { table: "agent_intro_videos", flow: "intro_video_fail", reason: "failure stamp; the failure is returned to the caller" })
     return { ok: false, status: "failed", reason: "video project insert failed" }
   }
 
-  await svc.from("agent_intro_videos")
+  const { error: introLinkErr } = await svc.from("agent_intro_videos")
     .update({ video_project_id: project.id, status: "rendering" })
     .eq("id", introVideoId!)
+  if (introLinkErr) return { ok: false, status: "failed", reason: `intro ledger could not be linked to its video project: ${introLinkErr.message}` }
 
   // ─── ASK FOR THE ASSEMBLY, NOT JUST THE AVATAR ──────────────────────────────
   // OWNER RULING: "the video for the welcome email/portal info for the newly
@@ -962,15 +964,15 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     // at 'queued'; leaving it there while agent_intro_videos says 'failed' is
     // two tables disagreeing about the same render, and the videos board reads
     // the one that still claims to be in flight.
-    await svc.from("agent_intro_videos")
+    await sentinelWrite(svc, svc.from("agent_intro_videos")
       .update({ status: "failed", error_message: `dispatchVideo: ${submission.error ?? "no provider job id returned"}` })
-      .eq("id", introVideoId!)
-    await svc.from("ai_video_projects")
+      .eq("id", introVideoId!), { table: "agent_intro_videos", flow: "intro_video_fail", reason: "failure stamp; the failure is returned to the caller" })
+    await sentinelWrite(svc, svc.from("ai_video_projects")
       .update({
         status:        "failed",
         error_message: `Render not started: ${submission.error ?? "the video provider returned no job id"}`.slice(0, 800),
       })
-      .eq("id", project.id)
+      .eq("id", project.id), { table: "ai_video_projects", flow: "intro_video_fail", reason: "failure stamp; the failure is returned to the caller" })
     return { ok: false, status: "failed", reason: submission.error ?? "dispatchVideo failed" }
   }
 

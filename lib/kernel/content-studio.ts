@@ -319,7 +319,7 @@ export async function approveContentItem(
 
   // The REAL flip — exactly approveMarketingAssetAction's update, fenced on the
   // pending_review state + brokerage so it's brokerage-scoped and double-safe.
-  const { data: updated } = await supabase
+  const { data: updated, error: approveErr } = await supabase
     .from("ai_video_projects")
     .update({ approval_status: "approved", approved_by: approverUserId, approved_at: new Date().toISOString() })
     .eq("id", videoProjectId)
@@ -328,6 +328,8 @@ export async function approveContentItem(
     .select("id")
     .maybeSingle()
 
+  // A refusal is not a state change under us (lane 88F) — name it.
+  if (approveErr) return { ok: false, note: `Couldn't approve — the write was refused: ${approveErr.message}` }
   if (!updated) return { ok: false, note: "Couldn't approve — it may have changed state." }
 
   // THE LANDING PAGE, AT THE APPROVAL MOMENT (wave 81D — owner: "automatic

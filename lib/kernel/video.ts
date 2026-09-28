@@ -41,6 +41,7 @@ import { buildComplianceSystemBlocks, postcheckScript } from "@/lib/video/script
 // by test:video-type-matrix's DERIVED writer scan (a routed model call + a
 // spoken sink), which is why a roster could not have caught it.
 import { withSpokenScriptStandards, scanForAiTells } from "@/lib/video/realism-profile"
+import { bestEffort } from "@/lib/db/best-effort"
 
 // ============================================================================
 // TYPES & CONTRACTS
@@ -410,14 +411,14 @@ export async function submitVideoGenerationJob(
       brokerageId,
     })
   } catch (dispatchErr) {
-    await supabase
+    await bestEffort(supabase
       .from("ai_video_projects")
       .update({
         status:          "draft",
         provider_status: null,
         updated_at:      new Date().toISOString(),
       })
-      .eq("id", input.projectId)
+      .eq("id", input.projectId), "restoring the draft status after a dispatch failure; the dispatch error is surfaced to the caller")
     throw dispatchErr
   }
 

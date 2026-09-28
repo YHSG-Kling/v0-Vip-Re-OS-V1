@@ -283,7 +283,16 @@ check("owner: site chatter carries SELL", SOURCE_ACQUISITION.realty_site_chatter
 check("owner: Marketplace carries buy + relocate + realtor_seeking (and keeps FSBO sell)", (["buy", "relocate", "realtor_seeking", "sell"] as AcquisitionIntent[]).every((i) => SOURCE_ACQUISITION.facebook_marketplace.intents.includes(i)))
 check("POSITIVE CONTROL: the buyer-only contact-agent parser does NOT produce sell (the old chatter could not)",
   !parseContactAgentChatter(`<div class="contact-agent" data-user="Jane Roe"></div>`, "zillow", { city: "Austin", state: "TX" } as any).some((r) => recordAcquisitionIntents(r).includes("sell")))
-check("POSITIVE CONTROL: an anonymous seller CTA (no handle) mints nothing", parseSellerChatter(`<div class="make-me-move">Make Me Move</div>`, "zillow", { city: "Austin", state: "TX" } as any).length === 0)
+// lane 88F — the classifier is no longer proof-only: the raw→lead promotion derives its
+// lead_type fallback from it (a signal-only seller record no longer promotes as 'unknown').
+{
+  const pp = stripped("lib/lead-pipeline/pipeline-processor.ts")
+  check("88F: the promotion's lead_type fallback reads recordAcquisitionIntents over normalized_preview (the one classifier)",
+    /recordAcquisitionIntents\(\s*\{[\s\S]{0,160}normalized_preview\?\.intentSignals/.test(pp) && /:\s*signalLeadType\b/.test(pp))
+  check("88F POSITIVE CONTROL: a signal-only seller (no intentType) classifies as sell and not buy — the case the old fallback read as 'unknown'",
+    (() => { const r = recordAcquisitionIntents({ intentType: null, intentSignals: ["selling"] }); return r.includes("sell") && !r.includes("buy") })())
+}
+check("POSITIVE CONTROL: an anonymous seller CTA (no handle) mints nothing",parseSellerChatter(`<div class="make-me-move">Make Me Move</div>`, "zillow", { city: "Austin", state: "TX" } as any).length === 0)
 check("POSITIVE CONTROL: an agent-posted Marketplace listing is still damped, never read as a seeker",
   (() => { const r = normalizeFacebookMarketplaceListing({ id: "x", marketplace_listing_title: "Just listed — call your Realtor", marketplace_listing_seller: { name: "Sam Agent" } }, SM9); return r.intentSignals.includes("agent_listing") && r.intentType === "seller" })())
 // TikTok lane — RETIRED in lane 84C (owner 2026-09-26, verbatim: "don't need tiktok."). The rule

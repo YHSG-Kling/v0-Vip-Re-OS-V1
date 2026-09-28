@@ -453,7 +453,7 @@ async function runPostRenderCoordination(
   }
   if (row.entity_type !== "video_project" || !row.entity_id) return
   try {
-    await svc.from("ai_video_projects")
+    const { error: reelCompleteErr } = await svc.from("ai_video_projects")
       .update({
         status: "completed",
         video_url: outputUrl,
@@ -461,6 +461,7 @@ async function runPostRenderCoordination(
         updated_at: new Date().toISOString(),
       })
       .eq("id", row.entity_id)
+    if (reelCompleteErr) throw new Error(`ai_video_projects completion refused: ${reelCompleteErr.message}`)
     const { publishVideoCoordinationSignals } = await import("@/lib/kernel/video-coordination")
     await publishVideoCoordinationSignals(row.entity_id, svc)
   } catch (e) {

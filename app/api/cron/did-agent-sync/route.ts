@@ -85,9 +85,9 @@ export async function GET(request: Request) {
       if (result.ok) { synced++; continue }
       if (result.error === "NOT_FOUND") {
         notFoundCleared++
-        await svc.from("agent_avatar_assets")
+        await sentinelWrite(svc, svc.from("agent_avatar_assets")
           .update({ did_agent_id: null, updated_at: new Date().toISOString() })
-          .eq("id", row.id).then(undefined, () => {})
+          .eq("id", row.id), { table: "agent_avatar_assets", flow: "did_agent_sync_not_found_clear", reason: "clearing a stale D-ID agent id; the next sweep re-clears it" })
         continue
       }
       failed++

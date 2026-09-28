@@ -81,6 +81,8 @@ export interface CensusResult {
   /** lane 86F — plain (non-"use server") modules reached sessionless that build the
    *  COOKIE client and INSERT lifecycle_events: the emitter half of the event bus. */
   eventWriters: Array<{ file: string; path: string[] }>
+  /** lane 88F — plain modules reached sessionless that build the COOKIE client (no seam). */
+  cookieModules: Array<{ file: string; path: string[] }>
 }
 
 /** Credentials a browser session cannot produce, as this tree spells them (read on
@@ -318,7 +320,23 @@ export function runCensus(set: SourceSet): CensusResult {
     eventWriters.push({ file: f, path: pathTo(f) })
   }
   eventWriters.sort((a, b) => a.file.localeCompare(b.file))
-  return { entries, reachedModules: parent.size, targetModules: [...edges.keys()].sort(), checkedExports, findings, eventWriters }
+  // THE PLAIN-MODULE RULE (lane 88F). The walk judges "use server" exports and the event
+  // emitters; a PLAIN module on a sessionless path that builds the cookie client with no
+  // injection seam reads nothing too — lib/recruit-pipeline/recruit-processor.ts (reached
+  // only from the lead-scraping cron) did exactly that. Module-level, same receiver rule as
+  // the emitter: `const x = await create(Server)Client(` with no `??` seam.
+  const cookieModules: CensusResult["cookieModules"] = []
+  for (const f of parent.keys()) {
+    if (isUseServer(f)) continue
+    if (/^app\/api\//.test(f)) continue // routes are section 7's own check
+    const v = views(f)
+    if (!COOKIE_CLIENT_SPECIFIER.test(v.stripped)) continue
+    const code = blankComments(v.stripped)
+    if (!/(?:const|let)\s+[\w$]+\s*=\s*await\s+create(?:Server)?Client\s*\(/.test(code)) continue
+    cookieModules.push({ file: f, path: pathTo(f) })
+  }
+  cookieModules.sort((a, b) => a.file.localeCompare(b.file))
+  return { entries, reachedModules: parent.size, targetModules: [...edges.keys()].sort(), checkedExports, findings, eventWriters, cookieModules }
 }
 
 // ─── Reporting ────────────────────────────────────────────────────────────────
@@ -506,10 +524,10 @@ const LEDGER: Record<string, Ruling> = {
   // FIXED in lane 86F3 — the four app/actions/video-content.ts keys (approveAndGenerateVideo,
   // handleHighEngagement, handleVideoGenerated, handleVideoPublished) LEFT this list: the hub
   // reaches lib/video/video-event-reactions.ts and the "use server" doors are retired.
-  ...group([
-    "app/actions/lead-scraping-config.ts::createScrapingJob",
-    "app/actions/lead-scraping-config.ts::updateScrapingJob",
-  ], { kind: "open", owner: "scraping (left open by ruling)", why: "app/api/cron/lead-scraping calls these cookie-client job writers directly, so its lead_scraping_jobs rows are written through an empty session. Scraping is excluded from census lanes (owner: 'burned down with only scraping left opened')." }),
+  // FIXED in lane 88F (scraping reopened by the owner: "lead scrapping lane can be changed
+  // if necessary and benefinicial") — createScrapingJob / updateScrapingJob LEFT this list:
+  // the cron writes lead_scraping_jobs through lib/lead-pipeline/scraping-job-ledger.ts on
+  // its service client and the two "use server" doors are retired (section 7).
   // FIXED in lane 86F — aiGenerateListingDescription LEFT this list: the
   // listing-presentation builder calls lib/listings/listing-description-core.ts
   // with its verified tenant and reads the real keys (section 4).
@@ -740,8 +758,74 @@ console.log("\n═══ 6. THE JOURNEY EMITTERS (lane 86F2) — every routed jo
   }
 }
 
+console.log("\n═══ 7. THE ROUTE ITSELF (lane 88F) — no cron/webhook route builds the cookie client ═══")
+{
+  // The walk above judges "use server" EXPORTS a sessionless route imports. It never judged
+  // the ROUTE: app/api/cron/lead-scraping/route.ts built `await createClient()` itself, so
+  // every read in the run was anon (resolveActiveScrapeTerritories saw no subscriptions; the
+  // run was a no-op) — a blind spot of the census, not a finding it could see.
+  const routeBuildsCookieClient = (raw: string) => {
+    const code = stripComments(raw)
+    return COOKIE_CLIENT_SPECIFIER.test(code) && /\bawait\s+create(?:Server)?Client\s*\(/.test(code)
+  }
+  ok("POSITIVE CONTROL: a cron route that imports @/lib/supabase/server and awaits createClient() IS found",
+    routeBuildsCookieClient(`import { createClient } from "@/lib/supabase/server"\nexport async function GET() { const s = await createClient() }`))
+  ok("NEGATIVE CONTROL: a TOMBSTONE naming the old cookie client is not a call site (§2)",
+    !routeBuildsCookieClient(`// was: const supabase = await createClient() from "@/lib/supabase/server"\nimport { createServiceClient } from "@/lib/supabase/service"\nconst s = createServiceClient()`))
+  const sessionlessRoutes = r.entries.map((e) => e.file).filter((f) => /^app\/api\//.test(f))
+  const offenders = sessionlessRoutes.filter((f) => existsSync(f) && routeBuildsCookieClient(readFileSync(f, "utf8")))
+  console.log(`  DENOMINATOR: ${sessionlessRoutes.length} sessionless route files (cron / webhook / credential-admitted)`)
+  ok(`no sessionless route builds the cookie client itself (${offenders.length} found)`, offenders.length === 0, offenders.join(", "))
+  const cron = existsSync("app/api/cron/lead-scraping/route.ts") ? stripComments(readFileSync("app/api/cron/lead-scraping/route.ts", "utf8")) : ""
+  ok("the lead-scraping cron writes its job ledger through the server-only core on its service client",
+    /from\s*["']@\/lib\/lead-pipeline\/scraping-job-ledger["']/.test(cron) && /openScrapingJob\(\s*supabase\b/.test(cron) && /const\s+supabase\s*=\s*serviceClient\b/.test(cron))
+  const core = existsSync("lib/lead-pipeline/scraping-job-ledger.ts") ? readFileSync("lib/lead-pipeline/scraping-job-ledger.ts", "utf8") : ""
+  const coreStripped = stripComments(core)
+  ok("…the core is server-only, never \"use server\", builds no cookie client, and COUNTS its update (§3)",
+    /^\s*import\s+["']server-only["']/m.test(coreStripped) && !hasUseServerDirective(coreStripped) && !COOKIE_CLIENT_SPECIFIER.test(coreStripped) && /\.select\("id"\)[\s\S]{0,200}\.length === 0/.test(coreStripped))
+  const doors = existsSync("app/actions/lead-scraping-config.ts") ? stripComments(readFileSync("app/actions/lead-scraping-config.ts", "utf8")) : ""
+  ok("…and the two public \"use server\" job doors are retired (createScrapingJob / updateScrapingJob)",
+    !/export\s+async\s+function\s+(createScrapingJob|updateScrapingJob)\b/.test(doors))
+
+  // PLAIN MODULES on a sessionless path that build the cookie client (runCensus → cookieModules).
+  // MODULE GRAIN, and it OVER-REPORTS (§2 blind spot, published): reached-through-a-barrel is
+  // not called — lib/kernel/index.ts alone drags a dozen session-mode helpers onto the
+  // calendar-sync cron's path. So this is a RATCHET, not a zero: the 30 measured on
+  // 2026-09-28 (lane 88F, after recruit-processor was fixed) are frozen and may only
+  // shrink; a NEW plain module that builds the cookie client on a sessionless path fails.
+  const PLAIN_COOKIE_MODULE_BASELINE = new Set([
+    "lib/ai/cost-tracking.ts", "lib/ai/models.ts", "lib/ai/pipeline.ts", "lib/application/ai-isa.ts",
+    "lib/application/compliance-monitoring.ts", "lib/application/lead-application-service.ts",
+    "lib/application/listing-lifecycle.ts", "lib/application/listings.ts", "lib/application/transactions.ts",
+    "lib/auth/require-caller.ts", "lib/campaigns/roi-calculator.ts", "lib/communications/vendor-communications.tsx",
+    "lib/compliance-rules/compliance-logger.ts", "lib/events/event-helpers.ts", "lib/kernel/0.1-feature-access.ts",
+    "lib/kernel/agent-onboarding.ts", "lib/kernel/ai-model.ts", "lib/kernel/calendar-engine.ts",
+    "lib/kernel/calendar-sync.ts", "lib/kernel/education.ts", "lib/kernel/helpers.ts", "lib/kernel/listings.ts",
+    "lib/kernel/notification-center.ts", "lib/kernel/offers.ts", "lib/kernel/onboarding-reminders.ts",
+    "lib/kernel/portal.ts", "lib/kernel/video.ts", "lib/platform/require-capability.ts", "lib/security/rbac.ts",
+    "lib/security/server-action-guard.ts",
+  ])
+  const pcPlain = runCensus({
+    files: ["app/api/cron/raw/route.ts", "lib/raw/processor.ts"],
+    read: (f) => f.endsWith("route.ts")
+      ? `import { verifyCronAuth } from "@/lib/cron-auth"\nimport { processRaw } from "@/lib/raw/processor"\nexport async function GET(req: Request) { verifyCronAuth(req); return processRaw("x") }\n`
+      : `import { createClient } from "@/lib/supabase/server"\nexport async function processRaw(id: string) {\n  const supabase = await createClient()\n  return supabase.from("t").select("id").eq("id", id)\n}\n`,
+  })
+  ok("POSITIVE CONTROL: a plain module reached from a cron that awaits the cookie client IS a cookieModule (the recruit-processor shape)",
+    pcPlain.cookieModules.length === 1 && pcPlain.cookieModules[0].file === "lib/raw/processor.ts")
+  const newPlain = r.cookieModules.filter((m) => !PLAIN_COOKIE_MODULE_BASELINE.has(m.file))
+  const shrunkPlain = [...PLAIN_COOKIE_MODULE_BASELINE].filter((f) => !r.cookieModules.some((m) => m.file === f))
+  console.log(`  PLAIN MODULES reached sessionless that build the cookie client (no seam): ${r.cookieModules.length} (frozen ${PLAIN_COOKIE_MODULE_BASELINE.size}; module grain, over-reports through barrels)`)
+  for (const m of newPlain) console.log(`    ✗ NEW ${m.file}  path: ${m.path.join(" > ")}`)
+  if (shrunkPlain.length) console.log(`  ↓ ${shrunkPlain.length} left the list — remove from PLAIN_COOKIE_MODULE_BASELINE: ${shrunkPlain.join(", ")}`)
+  ok(`no NEW plain module on a sessionless path builds the cookie client (${newPlain.length} new)`, newPlain.length === 0,
+    newPlain.map((m) => m.file).join(", "))
+  ok("lib/recruit-pipeline/recruit-processor.ts (lead-scraping cron only) is on the service client — off the list",
+    !r.cookieModules.some((m) => m.file === "lib/recruit-pipeline/recruit-processor.ts"))
+}
+
 console.log(`\n${"═".repeat(70)}`)
-console.log(`SESSIONLESS "use server" CENSUS — ${pass} passed, ${fail} failed · ${r.findings.length} findings (${r.findings.filter((f) => LEDGER[key(f)]?.kind === "adjudicated").length} adjudicated, ${r.findings.filter((f) => LEDGER[key(f)]?.kind === "open").length} open, ${newFindings.length} new)`)
+console.log(`SESSIONLESS "use server" CENSUS —${pass} passed, ${fail} failed · ${r.findings.length} findings (${r.findings.filter((f) => LEDGER[key(f)]?.kind === "adjudicated").length} adjudicated, ${r.findings.filter((f) => LEDGER[key(f)]?.kind === "open").length} open, ${newFindings.length} new)`)
 if (fail > 0) {
   console.log("\nFailures:")
   for (const f of failures) console.log(`  · ${f}`)

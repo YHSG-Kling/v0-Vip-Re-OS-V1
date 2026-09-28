@@ -8,6 +8,7 @@ import {
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { updateConversationMemory } from "@/lib/intelligence/conversation-insights"
+import { classifyIntent } from "@/lib/intelligence/intent-classifier"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -65,6 +66,7 @@ export async function GET(req: NextRequest) {
 
   let refreshed = 0
   let skippedFresh = 0
+  let classified = 0
   const failures: string[] = []
 
   try {
@@ -74,7 +76,7 @@ export async function GET(req: NextRequest) {
     // refreshed honestly and is not selected at all.
     const { data: convs, error: convErr } = await supabase
       .from("conversations")
-      .select("id, brokerage_id, last_message_at")
+      .select("id, brokerage_id, contact_id, last_message_at, intent_classified_at")
       .not("brokerage_id", "is", null)
       .gte("last_message_at", cutoff)
       .order("last_message_at", { ascending: false })
@@ -82,7 +84,10 @@ export async function GET(req: NextRequest) {
 
     if (convErr) throw new Error(`conversations read refused: ${convErr.message}`)
 
-    const candidates = (convs ?? []) as Array<{ id: string; brokerage_id: string; last_message_at: string }>
+    const candidates = (convs ?? []) as Array<{
+      id: string; brokerage_id: string; contact_id: string | null
+      last_message_at: string; intent_classified_at: string | null
+    }>
 
     // Existing insight freshness, one query for the whole batch.
     const staleness = new Map<string, string>() // conversation_id → last_updated_at
@@ -113,6 +118,40 @@ export async function GET(req: NextRequest) {
         // Collected, never swallowed — and never allowed to sink the sweep.
         failures.push(`conversation ${conv.id}: ${err?.message ?? String(err)}`)
       }
+
+      // ── INTENT, THE SECOND TRIGGER (lane 88F) ────────────────────────────────
+      // lib/intelligence/intent-classifier.ts::classifyIntent writes the contact
+      // conversation's intent_* columns, the smart-assistant suggestion and the
+      // proactive intervention (price reduction, cancellation risk, refi interest).
+      // Its ONLY door was POST /api/intelligence/classify — an INTERNAL_API_SECRET
+      // route with no in-tree sender and, pre-production, no off-repo holder
+      // (docs/SERVICE-SECRETS.md §1) — so the capability never ran. Same fix as the
+      // memory writer above: one code path, two doors. Only a CONTACT conversation
+      // whose newest activity is newer than its last classification, on its newest
+      // INBOUND message — bounded by the same per-run cap (at most one classification
+      // per conversation the sweep refreshes, so the AI ceiling is 2 × MAX_REFRESHES_PER_RUN).
+      const classifiedAt = conv.intent_classified_at ? new Date(conv.intent_classified_at).getTime() : 0
+      if (conv.contact_id && classifiedAt < new Date(conv.last_message_at).getTime()) {
+        try {
+          const { data: inbound, error: inboundErr } = await supabase
+            .from("messages")
+            .select("body")
+            .eq("conversation_id", conv.id)
+            .eq("brokerage_id", conv.brokerage_id)
+            .eq("direction", "inbound")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle()
+          if (inboundErr) throw new Error(`messages read refused: ${inboundErr.message}`)
+          const body = ((inbound as { body?: string | null } | null)?.body ?? "").trim()
+          if (body) {
+            await classifyIntent(body, conv.contact_id, conv.id, conv.brokerage_id)
+            classified++
+          }
+        } catch (err: any) {
+          failures.push(`conversation ${conv.id} intent: ${err?.message ?? String(err)}`)
+        }
+      }
     }
 
     await recordCronSuccessAction({
@@ -121,6 +160,7 @@ export async function GET(req: NextRequest) {
       metadata: {
         candidates: candidates.length,
         refreshed,
+        classified,
         skippedFresh,
         capped: refreshed >= MAX_REFRESHES_PER_RUN,
         failures: failures.slice(0, 10),
@@ -131,6 +171,7 @@ export async function GET(req: NextRequest) {
       ok: true,
       candidates: candidates.length,
       refreshed,
+      classified,
       skippedFresh,
       failures,
     })

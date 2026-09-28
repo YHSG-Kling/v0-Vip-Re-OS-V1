@@ -329,7 +329,7 @@ export default function VideoKanbanBoard() {
 
     try {
       // Reset status
-      await supabase
+      const { error: resetErr } = await supabase
         .from("ai_video_projects")
         .update({
           status: "draft",
@@ -338,6 +338,7 @@ export default function VideoKanbanBoard() {
           retry_count: (video.retry_count || 0) + 1,
         })
         .eq("id", videoId)
+      if (resetErr) throw new Error(`Could not reset the video for regeneration: ${resetErr.message}`)
 
       // Resolve the agent's D-ID avatar + ElevenLabs voice for re-render.
       // The avatar/explainer video engine is D-ID + ElevenLabs ONLY.
@@ -447,10 +448,11 @@ export default function VideoKanbanBoard() {
     if (!confirm("Are you sure you want to delete this video?")) return
 
     try {
-      await supabase
+      const { error: deleteVideoErr } = await supabase
         .from("ai_video_projects")
         .delete()
         .eq("id", videoId)
+      if (deleteVideoErr) throw new Error(`Could not delete the video: ${deleteVideoErr.message}`)
 
       setVideos(prev => prev.filter(v => v.id !== videoId))
     } catch (error) {

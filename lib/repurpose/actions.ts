@@ -749,7 +749,7 @@ export async function repurposeUrlToBrandedVideo(input: {
   const projectId = created.project.id
 
   // Persist the distribution intent so the completion hook drafts per-channel posts.
-  await supabase
+  const { error: intentErr } = await supabase
     .from("ai_video_projects")
     .update({
       video_metadata: {
@@ -758,6 +758,7 @@ export async function repurposeUrlToBrandedVideo(input: {
       },
     })
     .eq("id", projectId)
+  if (intentErr) console.error("[repurpose] distribution intent not saved — per-channel drafts will not be made:", intentErr.message)
 
   // Intro/outro stock clips (applied by the poll cron via ffmpeg concat). Optional.
   const { data: clips } = await supabase

@@ -92,6 +92,7 @@ import path from "node:path"
 import fs from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { DELIVERY_RENDER_OPTIONS } from "@/lib/video/cinema-finish"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -347,9 +348,10 @@ export async function POST(req: NextRequest) {
       projectId = project.id
     }
 
-    await svc.from("listing_promo_videos").update({
+    const { error: promoLinkErr } = await svc.from("listing_promo_videos").update({
       video_project_id: projectId,
     }).eq("id", promo.id)
+    if (promoLinkErr) throw new Error(`listing_promo_videos link refused: ${promoLinkErr.message}`)
 
     // Audit row + reactor (was a bare insert nobody downstream heard).
     await emitKernelEvent({
@@ -388,7 +390,7 @@ export async function POST(req: NextRequest) {
         systemSource:   `listing_promo_hybrid.outro`,
         metadata: { ai_video_project_id: projectId, hook_position: "outro" },
       })
-      await svc.from("ai_video_projects").update({
+      await sentinelWrite(svc, svc.from("ai_video_projects").update({
         video_metadata: {
           promo_event_type: promo.event_type,
           promo_ledger_id:  promo.id,
@@ -404,7 +406,7 @@ export async function POST(req: NextRequest) {
           // The composite cron mixes the bed over the stitched film (lane 86B).
           hybrid_music_deferred: true,
         },
-      }).eq("id", projectId)
+      }).eq("id", projectId), { table: "ai_video_projects", flow: "just_listed_hybrid_metadata", reason: "hybrid bookkeeping on the staged project; the promo ledger carries the render state" })
     }
 
     return NextResponse.json({
@@ -417,18 +419,18 @@ export async function POST(req: NextRequest) {
     })
   } catch (err) {
     const msg = (err as Error).message
-    await svc.from("listing_promo_videos").update({
+    await sentinelWrite(svc, svc.from("listing_promo_videos").update({
       status:        "failed",
       error_message: msg.slice(0, 800),
-    }).eq("id", promo.id)
+    }).eq("id", promo.id), { table: "listing_promo_videos", flow: "just_listed_render_fail", reason: "failure stamp in the catch; the error is returned to the caller" })
     // BOTH ledgers. The staged project row (script persistence) would otherwise
     // sit at 'queued' claiming to be in flight while the promo ledger says
     // failed — two tables disagreeing about the same render.
     if (stagedProject) {
-      await svc.from("ai_video_projects").update({
+      await sentinelWrite(svc, svc.from("ai_video_projects").update({
         status:        "failed",
         error_message: `Render failed: ${msg}`.slice(0, 800),
-      }).eq("id", stagedProject.id)
+      }).eq("id", stagedProject.id), { table: "ai_video_projects", flow: "just_listed_render_fail", reason: "failure stamp in the catch; the error is returned to the caller" })
     }
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   }

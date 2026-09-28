@@ -428,7 +428,7 @@ async function updateComplianceRecord(ctx: {
       .maybeSingle()
 
     const currentMeta = (existing?.video_metadata ?? {}) as Record<string, unknown>
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("ai_video_projects")
       .update({
         video_metadata: {
@@ -438,7 +438,7 @@ async function updateComplianceRecord(ctx: {
         },
         updated_at: now,
       })
-      .eq("id", contentId)
+      .eq("id", contentId), { table: "ai_video_projects", flow: "kernel_brand_compliance_stamp", reason: "compliance annotation on the project; the verdict is returned to the caller" })
   } else if (contentType === "listing_media") {
     // listing_media.kernel_compliance_passed confirmed in live schema
     await sentinelWrite(supabase, supabase

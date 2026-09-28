@@ -172,7 +172,7 @@ export async function GET(request: NextRequest) {
           // carried (m316) — fixing one and not its sibling is how a defect
           // class survives being found.
           if (statusRes.status === 404) {
-            await supabase
+            await sentinelWrite(supabase, supabase
               .from("ai_video_projects")
               .update({
                 status: "failed",
@@ -180,7 +180,7 @@ export async function GET(request: NextRequest) {
                 error_message: `D-ID no longer has job ${video.provider_job_id} (404 on /${mode}) — it expired or was never created`,
                 retry_count: (video.retry_count ?? 0) + 1,
               })
-              .eq("id", video.id)
+              .eq("id", video.id), { table: "ai_video_projects", flow: "poll_did_video_not_found", reason: "terminal stamp; a refused stamp leaves the row generating and the next poll re-reads the 404" })
             if (agentUserId) {
               const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
               await sentinelWrite(supabase, supabase.from("notifications").insert({
@@ -208,12 +208,12 @@ export async function GET(request: NextRequest) {
           const errBody = statusRes.data ?? { description: statusRes.error }
           const failure = classifyDidError(statusRes.status, errBody)
           if (failure.retryable) continue
-          await supabase.from("ai_video_projects").update({
+          await sentinelWrite(supabase, supabase.from("ai_video_projects").update({
             status: "failed",
             provider_status: failure.kind,
             error_message: failure.userMessage,
             retry_count: (video.retry_count ?? 0) + 1,
-          }).eq("id", video.id)
+          }).eq("id", video.id), { table: "ai_video_projects", flow: "poll_did_video_terminal", reason: "terminal stamp; a refused stamp leaves the row generating and the next poll re-classifies it" })
           await recordRenderOutcome(supabase, video.id, video.provider_job_id, {
             status: "failed",
             errorMessage: failure.userMessage,
@@ -543,7 +543,7 @@ export async function GET(request: NextRequest) {
           const finalVideoUrl = brandedVideoUrl ?? persistedVideoUrl
           const finalThumbnailUrl = persistedThumbnailUrl
 
-          await supabase
+          const { error: completeErr } = await supabase
             .from("ai_video_projects")
             .update({
               status: "completed",
@@ -582,6 +582,7 @@ export async function GET(request: NextRequest) {
               },
             })
             .eq("id", video.id)
+          if (completeErr) throw new Error(`ai_video_projects completion refused for ${video.id}: ${completeErr.message}`)
 
           // ─── Playbook → capture-page attach ─────────────────────────────
           // Playbook-installed presentation videos carry lead_magnet_id in
@@ -750,7 +751,7 @@ export async function GET(request: NextRequest) {
           const errorMsg: string = classifyDidError(null, data.error ?? data).userMessage
           const retryCount = video.retry_count ?? 0
 
-          await supabase
+          await sentinelWrite(supabase, supabase
             .from("ai_video_projects")
             .update({
               status: "failed",
@@ -758,7 +759,7 @@ export async function GET(request: NextRequest) {
               error_message: errorMsg,
               retry_count: retryCount + 1,
             })
-            .eq("id", video.id)
+            .eq("id", video.id), { table: "ai_video_projects", flow: "poll_did_video_failed", reason: "failure stamp; the render outcome ledger records the failure too" })
 
           await recordRenderOutcome(supabase, video.id, video.provider_job_id, {
             status: "failed",

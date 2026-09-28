@@ -70,6 +70,7 @@ import {
   PENDING_WELCOME_STATUSES,
   WELCOME_VIDEO_WAIT_MS,
 } from "@/lib/contact-promotion/conversion-welcome"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -383,9 +384,9 @@ async function deliverAnniversaryPortalCards(
       continue
     }
     if (verdict.action === "close") {
-      await svc.from("agent_intro_videos")
+      await sentinelWrite(svc, svc.from("agent_intro_videos")
         .update({ status: verdict.ledgerStatus, error_message: verdict.reason })
-        .eq("id", raw.id)
+        .eq("id", raw.id), { table: "agent_intro_videos", flow: "intro_video_backfill_close", reason: "ledger close on a row the backfill decided to stop; the next run re-decides" })
       out.push({ id: raw.id, outcome: verdict.ledgerStatus, reason: verdict.reason })
       continue
     }
@@ -423,9 +424,9 @@ async function deliverAnniversaryPortalCards(
       continue
     }
 
-    await svc.from("agent_intro_videos")
+    await sentinelWrite(svc, svc.from("agent_intro_videos")
       .update({ status: "delivered", delivered_at: new Date().toISOString(), error_message: null })
-      .eq("id", raw.id)
+      .eq("id", raw.id), { table: "agent_intro_videos", flow: "intro_video_backfill_delivered", reason: "delivery stamp AFTER the send; a lost stamp is ledgered so the repair digest shows a possible re-send" })
     out.push({ id: raw.id, outcome: "delivered", reason: verdict.reason })
   }
 

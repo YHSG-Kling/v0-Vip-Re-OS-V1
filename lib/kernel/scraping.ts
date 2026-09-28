@@ -23,6 +23,7 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
+import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 import { recordMatchesTerritory } from '@/lib/lead-pipeline/source-intent-map'
 import { resolveScrapeTerritoriesFrom } from '@/lib/lead-pipeline/scrape-territories'
 import type { NormalizedScrapedRecord } from '@/lib/lead-pipeline/raw-record-types'
@@ -118,6 +119,8 @@ export interface IngestBatchResult {
   skipped_duplicate: number
   skipped_not_viable: number
   skipped_territory: number
+  /** Inserts the database REFUSED (not 23505) — lane 88F; they used to be counted as duplicates. */
+  skipped_refused: number
   rawIds: string[]
 }
 
@@ -346,7 +349,7 @@ export async function runScrapeSourcesChronologically(
   const cronStartedAt = Date.now()
 
   // Open cron_execution_logs record
-  const { data: cronLog } = await supabase
+  const { data: cronLog, error: cronLogErr } = await supabase
     .from('cron_execution_logs')
     .insert({
       cron_name:    'lead-scraping',
@@ -359,13 +362,15 @@ export async function runScrapeSourcesChronologically(
     .maybeSingle()
 
   const cronLogId = (cronLog as any)?.id ?? null
+  // A refused run-log open is REPORTED on the run, never mistaken for "no log needed".
+  if (cronLogErr) console.error('[kernel/scraping] cron_execution_logs open refused:', cronLogErr.message)
 
   const result: RunScrapeResult = {
     marketsProcessed:      0,
     totalRawInserted:      0,
     totalDuplicatesSkipped: 0,
     cronLogId,
-    errors:                [],
+    errors:                cronLogErr ? [`cron_execution_logs open refused: ${cronLogErr.message}`] : [],
   }
 
   try {
@@ -407,7 +412,7 @@ export async function runScrapeSourcesChronologically(
     const markets = resolution.territories
 
     // Write SCRAPING_CRON_STARTED lifecycle event
-    await supabase.from('lifecycle_events').insert({
+    await scrapeEvent(supabase, {
       entity_type: 'system',
       entity_id:   cronLogId ?? '00000000-0000-0000-0000-000000000000',
       event_type:  KernelEvent.SCRAPING_CRON_STARTED,
@@ -424,7 +429,7 @@ export async function runScrapeSourcesChronologically(
       // Budget gate — skip territory if monthly budget exhausted
       if ((market.spend_this_month ?? 0) >= (market.monthly_budget_usd ?? 100)) {
         result.errors.push(`Budget exhausted: ${market.name} ($${market.spend_this_month}/$${market.monthly_budget_usd})`)
-        await supabase.from('lifecycle_events').insert({
+        await scrapeEvent(supabase, {
           entity_type: 'system',
           entity_id:   market.id,
           event_type:  KernelEvent.SCRAPING_BUDGET_EXHAUSTED,
@@ -445,15 +450,15 @@ export async function runScrapeSourcesChronologically(
     // Update cron_execution_logs — success
     const durationMs = Date.now() - cronStartedAt
     if (cronLogId) {
-      await supabase.from('cron_execution_logs').update({
+      await sentinelWrite(supabase, supabase.from('cron_execution_logs').update({
         status:           'completed',
         duration_ms:      durationMs,
         records_processed: result.totalRawInserted,
         completed_at:     new Date().toISOString(),
-      }).eq('id', cronLogId)
+      }).eq('id', cronLogId), { table: 'cron_execution_logs', flow: 'scraping_run_log_close', brokerageId: params.brokerageId ?? null, reason: 'run-history row; the run result is returned to the caller either way' })
     }
 
-    await supabase.from('lifecycle_events').insert({
+    await scrapeEvent(supabase, {
       entity_type: 'system',
       entity_id:   cronLogId ?? '00000000-0000-0000-0000-000000000000',
       event_type:  KernelEvent.SCRAPING_CRON_COMPLETED,
@@ -468,15 +473,15 @@ export async function runScrapeSourcesChronologically(
     const durationMs = Date.now() - cronStartedAt
 
     if (cronLogId) {
-      await supabase.from('cron_execution_logs').update({
+      await sentinelWrite(supabase, supabase.from('cron_execution_logs').update({
         status:       'failed',
         duration_ms:  durationMs,
         error_message: msg,
         completed_at: new Date().toISOString(),
-      }).eq('id', cronLogId)
+      }).eq('id', cronLogId), { table: 'cron_execution_logs', flow: 'scraping_run_log_close', brokerageId: params.brokerageId ?? null, reason: 'run-history row on the failure path; the error is returned to the caller' })
     }
 
-    await supabase.from('lifecycle_events').insert({
+    await scrapeEvent(supabase, {
       entity_type: 'system',
       entity_id:   cronLogId ?? '00000000-0000-0000-0000-000000000000',
       event_type:  KernelEvent.SCRAPING_CRON_FAILED,
@@ -488,6 +493,24 @@ export async function runScrapeSourcesChronologically(
     result.errors.push(msg)
     return result
   }
+}
+
+// ─── scrapeEvent — every scraping lifecycle echo, DECLARED (lane 88F) ────────
+// Fourteen `await supabase.from('lifecycle_events').insert(…)` echoes dropped their
+// result (swallowed-refusal census). Each one is an AUDIT ECHO of a step whose own
+// write is read separately below — losing it must not fail the scrape, but it must
+// not vanish either: the sentinel ledgers the loss to self_heal_events for the repair
+// digest (service client — the ledger is reachable).
+async function scrapeEvent(
+  supabase: ReturnType<typeof createServiceClient>,
+  row: Record<string, unknown>,
+): Promise<boolean> {
+  return sentinelWrite(supabase, supabase.from('lifecycle_events').insert(row), {
+    table: 'lifecycle_events',
+    flow: 'scraping_lifecycle_echo',
+    brokerageId: (row.brokerage_id as string | null | undefined) ?? null,
+    reason: 'audit echo of a scrape step; the step\'s own write is read where it happens',
+  })
 }
 
 // ─── 2. ingestRawSourceBatch ─────────────────────────────────────────────────
@@ -504,6 +527,7 @@ export async function ingestRawSourceBatch(
     skipped_duplicate: 0,
     skipped_not_viable: 0,
     skipped_territory: 0,
+    skipped_refused: 0,
     rawIds: [],
   }
 
@@ -534,7 +558,7 @@ export async function ingestRawSourceBatch(
   }
 
   // Emit SCRAPE_SOURCE_RUN_STARTED
-  await supabase.from('lifecycle_events').insert({
+  await scrapeEvent(supabase, {
     entity_type: 'system',
     entity_id:   params.marketId,
     event_type:  KernelEvent.SCRAPE_SOURCE_RUN_STARTED,
@@ -682,7 +706,10 @@ export async function ingestRawSourceBatch(
         continue
       }
       if (insertError || !inserted) {
-        result.skipped_duplicate++
+        // A REFUSAL is not a duplicate (lane 88F): this branch used to add it to
+        // skipped_duplicate, so an RLS/CHECK/PGRST204 refusal read as "already had it".
+        result.skipped_refused++
+        console.error('[kernel/scraping] raw_scraped_leads insert refused:', insertError?.message ?? 'no row returned')
         continue
       }
 
@@ -690,7 +717,7 @@ export async function ingestRawSourceBatch(
       result.rawIds.push((inserted as any).id)
 
       // Emit RAW_RECORD_CREATED per record — used for audit trail
-      await supabase.from('lifecycle_events').insert({
+      await scrapeEvent(supabase, {
         entity_type: 'raw_scraped_lead',
         entity_id:   (inserted as any).id,
         event_type:  KernelEvent.RAW_RECORD_CREATED,
@@ -705,15 +732,15 @@ export async function ingestRawSourceBatch(
     // caller closes once after all its ingestRawSourceBatch calls, so it is never stomped
     // mid-phase by an earlier sub-source batch finishing first.
     if (execId && ownsExecution) {
-      await supabase.from('scraper_executions').update({
+      await sentinelWrite(supabase, supabase.from('scraper_executions').update({
         status:            'completed',
         total_items_found: params.records.length,
         leads_created:     result.inserted,
         completed_at:      new Date().toISOString(),
-      }).eq('id', execId)
+      }).eq('id', execId), { table: 'scraper_executions', flow: 'scrape_execution_close', brokerageId: params.brokerageId ?? null, reason: 'execution bookkeeping; the batch counts are returned to the caller' })
     }
 
-    await supabase.from('lifecycle_events').insert({
+    await scrapeEvent(supabase, {
       entity_type: 'system',
       entity_id:   params.marketId,
       event_type:  KernelEvent.SCRAPE_SOURCE_RUN_COMPLETED,
@@ -726,14 +753,14 @@ export async function ingestRawSourceBatch(
     batchError = err instanceof Error ? err : new Error(String(err))
 
     if (execId && ownsExecution) {
-      await supabase.from('scraper_executions').update({
+      await sentinelWrite(supabase, supabase.from('scraper_executions').update({
         status:        'failed',
         error_message: batchError.message,
         completed_at:  new Date().toISOString(),
-      }).eq('id', execId)
+      }).eq('id', execId), { table: 'scraper_executions', flow: 'scrape_execution_close', brokerageId: params.brokerageId ?? null, reason: 'execution bookkeeping on the failure path; scraper-health reads the ledger' })
     }
 
-    await supabase.from('lifecycle_events').insert({
+    await scrapeEvent(supabase, {
       entity_type: 'system',
       entity_id:   params.marketId,
       event_type:  KernelEvent.SCRAPE_SOURCE_RUN_FAILED,
@@ -986,7 +1013,7 @@ async function logDedupDecision(
   matchScore: number,
   reason: string,
 ) {
-  await supabase.from('lead_deduplication_log').insert({
+  await sentinelWrite(supabase, supabase.from('lead_deduplication_log').insert({
     raw_record_id:           params.rawRecordId,
     brokerage_id:            params.brokerageId,
     stage:                   params.stage,
@@ -997,9 +1024,9 @@ async function logDedupDecision(
     duplicate_of_lead_id:    matchType === 'lead'    ? matchId : null,
     duplicate_of_contact_id: matchType === 'contact' ? matchId : null,
     created_at:              new Date().toISOString(),
-  })
+  }), { table: 'lead_deduplication_log', flow: 'raw_dedup_audit', brokerageId: params.brokerageId ?? null, reason: 'audit row of a dedup decision the caller already acted on' })
 
-  await supabase.from('lifecycle_events').insert({
+  await scrapeEvent(supabase, {
     entity_type: 'raw_scraped_lead',
     entity_id:   params.rawRecordId,
     event_type:  KernelEvent.RAW_RECORD_DEDUPLICATED,
@@ -1020,13 +1047,17 @@ export async function enrichRawRecord(
 
   try {
     // Update raw record to 'enriching'
-    await supabase
+    const { error: statusErr } = await supabase
       .from('raw_scraped_leads')
       .update({ processing_status: 'enriching', updated_at: new Date().toISOString() })
       .eq('id', params.rawRecordId)
+    if (statusErr) {
+      console.error('[kernel/scraping] raw_scraped_leads enriching flip refused:', statusErr.message)
+      return { queued: false, queueId: null }
+    }
 
     // Write to lead_enrichment_queue — the worker picks this up
-    const { data: queueEntry } = await supabase
+    const { data: queueEntry, error: queueErr } = await supabase
       .from('lead_enrichment_queue')
       .insert({
         brokerage_id:      params.brokerageId,
@@ -1043,9 +1074,14 @@ export async function enrichRawRecord(
       .select('id')
       .maybeSingle()
 
+    if (queueErr || !queueEntry) {
+      // Not queued is not "queued with no id" — the caller is told (lane 88F).
+      console.error('[kernel/scraping] lead_enrichment_queue insert refused:', queueErr?.message ?? 'no row returned')
+      return { queued: false, queueId: null }
+    }
     const queueId = (queueEntry as any)?.id ?? null
 
-    await supabase.from('lifecycle_events').insert({
+    await scrapeEvent(supabase, {
       entity_type: 'raw_scraped_lead',
       entity_id:   params.rawRecordId,
       event_type:  KernelEvent.RAW_RECORD_ENRICHED,
@@ -1091,10 +1127,11 @@ export async function gateRawRecordToLead(
         ((market as any).zip_codes?.includes(params.normalizedZip))
 
       if (!inTerritory) {
-        await supabase.from('raw_scraped_leads')
+        const { error: tmErr } = await supabase.from('raw_scraped_leads')
           .update({ processing_status: 'territory_mismatch', updated_at: new Date().toISOString() })
           .eq('id', params.rawRecordId)
-        await supabase.from('lifecycle_events').insert({
+        if (tmErr) console.error('[kernel/scraping] territory_mismatch status write refused:', tmErr.message)
+        await scrapeEvent(supabase, {
           entity_type: 'raw_scraped_lead',
           entity_id:   params.rawRecordId,
           event_type:  KernelEvent.RAW_RECORD_TERRITORY_GATED,
@@ -1102,17 +1139,18 @@ export async function gateRawRecordToLead(
           metadata:    { record_city: recordCity, market_city: marketCity },
           created_at:  new Date().toISOString(),
         })
-        return { decision: 'territory_mismatch', reason: `Record city ${recordCity} outside market ${marketCity}, ${marketState}` }
+        return { decision: 'territory_mismatch', reason: `Record city ${recordCity} outside market ${marketCity}, ${marketState}${tmErr ? ` (status write refused: ${tmErr.message})` : ''}` }
       }
     }
   }
 
   // Identity gate — require at least one usable anchor before enrichment spend
   if (!params.passesIdentityGate) {
-    await supabase.from('raw_scraped_leads')
+    const { error: idErr } = await supabase.from('raw_scraped_leads')
       .update({ processing_status: 'insufficient_identity', updated_at: new Date().toISOString() })
       .eq('id', params.rawRecordId)
-    await supabase.from('lifecycle_events').insert({
+    if (idErr) console.error('[kernel/scraping] insufficient_identity status write refused:', idErr.message)
+    await scrapeEvent(supabase, {
       entity_type: 'raw_scraped_lead',
       entity_id:   params.rawRecordId,
       event_type:  KernelEvent.RAW_RECORD_IDENTITY_GATED,
@@ -1120,10 +1158,10 @@ export async function gateRawRecordToLead(
       metadata:    {},
       created_at:  new Date().toISOString(),
     })
-    return { decision: 'insufficient_identity', reason: 'No email, phone, full name+location, or property address' }
+    return { decision: 'insufficient_identity', reason: `No email, phone, full name+location, or property address${idErr ? ` (status write refused: ${idErr.message})` : ''}` }
   }
 
-  await supabase.from('lifecycle_events').insert({
+  await scrapeEvent(supabase, {
     entity_type: 'raw_scraped_lead',
     entity_id:   params.rawRecordId,
     event_type:  KernelEvent.RAW_RECORD_VIABILITY_GATED,
@@ -1345,7 +1383,7 @@ export async function retryFailedSourceBatch(
     }
 
     // Reset raw records to pending
-    await supabase
+    const { data: requeued, error: requeueErr } = await supabase
       .from('raw_scraped_leads')
       .update({
         processing_status: 'pending',
@@ -1353,9 +1391,14 @@ export async function retryFailedSourceBatch(
         updated_at:        new Date().toISOString(),
       })
       .in('id', recordIds)
+      .select('id')
+    if (requeueErr) {
+      return { success: false, rawRecordsRequeued: 0, error: `raw_scraped_leads requeue refused: ${requeueErr.message}` }
+    }
+    const requeuedCount = (requeued ?? []).length
 
     // Reset execution status
-    await supabase
+    const { error: execResetErr } = await supabase
       .from('scraper_executions')
       .update({
         status:        'pending',
@@ -1364,22 +1407,25 @@ export async function retryFailedSourceBatch(
         leads_created: 0,
       })
       .eq('id', params.executionId)
+    if (execResetErr) {
+      return { success: false, rawRecordsRequeued: requeuedCount, error: `${requeuedCount} record(s) requeued but the execution reset was refused: ${execResetErr.message}` }
+    }
 
     // Emit SCRAPE_BATCH_RETRIED event
-    await supabase.from('lifecycle_events').insert({
+    await scrapeEvent(supabase, {
       entity_type: 'scraper_execution',
       entity_id:   params.executionId,
       event_type:  KernelEvent.SCRAPE_BATCH_RETRIED,
       brokerage_id: params.brokerageId,
       metadata:    {
-        records_requeued: recordIds.length,
+        records_requeued: requeuedCount,
         retried_by:       params.retriedByUserId,
         scraper_type:     (execution as any).scraper_type,
       },
       created_at:   new Date().toISOString(),
     })
 
-    return { success: true, rawRecordsRequeued: recordIds.length, error: null }
+    return { success: true, rawRecordsRequeued: requeuedCount, error: null }
   } catch (err) {
     return { success: false, rawRecordsRequeued: 0, error: err instanceof Error ? err.message : String(err) }
   }

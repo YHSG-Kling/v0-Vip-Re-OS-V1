@@ -41,6 +41,7 @@ import { computeNarrationKey } from "@/lib/remotion/composition-cache"
 import { DEFAULT_LANGUAGE } from "@/lib/video/multilingual-reel"
 import { VOICEOVER_MAX_SCRIPT_CHARS } from "@/lib/video/duration-model"
 import { elevenLabsModelForLane, withNaturalPauses, stripNaturalPauseMarkup, alignmentWithoutPauseMarkup } from "@/lib/video/realism-profile"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export interface ReelVoiceover {
   url: string
@@ -229,9 +230,9 @@ async function loadCachedNarration(
       hit_count: number; duration_seconds: number | null
     }
     if (!row.audio_url) return null
-    await svc.from("narration_cache")
+    await sentinelWrite(svc, svc.from("narration_cache")
       .update({ hit_count: (row.hit_count ?? 0) + 1, last_used_at: new Date().toISOString() })
-      .eq("id", row.id)
+      .eq("id", row.id), { table: "narration_cache", flow: "narration_cache_hit", reason: "cache hit counter; the cached audio is returned either way" })
     return {
       url: row.audio_url,
       alignment: (row.alignment as CharacterAlignment | null) ?? null,
@@ -253,7 +254,7 @@ async function storeCachedNarration(p: {
     // Upsert on the unique (brokerage, voice, script_hash): two producers can
     // race on the same script, and the loser must UPDATE the row rather than
     // fail the whole synthesis on a constraint violation.
-    await svc.from("narration_cache").upsert({
+    await sentinelWrite(svc, svc.from("narration_cache").upsert({
       brokerage_id: p.brokerageId,
       voice_id: p.voiceId,
       script_hash: p.scriptHash,
@@ -264,6 +265,6 @@ async function storeCachedNarration(p: {
       first_render_key: p.renderKey,
       duration_seconds: p.durationSeconds,
       last_used_at: new Date().toISOString(),
-    }, { onConflict: "brokerage_id,voice_id,script_hash" })
+    }, { onConflict: "brokerage_id,voice_id,script_hash" }), { table: "narration_cache", flow: "narration_cache_store", reason: "cache write; the synthesized audio is returned either way" })
   } catch { /* the clip is already hosted; the cache row is the optimization */ }
 }

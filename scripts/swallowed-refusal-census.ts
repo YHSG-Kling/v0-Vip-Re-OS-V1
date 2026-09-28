@@ -138,6 +138,24 @@ console.log("\n[positive controls — the finder still sees the defect before an
   check("PC10 the ratchet reports a NEW site and a GROWN site, and passes an unchanged or shrunk one",
     grewOver(new Map([["a.ts → tasks", 1], ["b.ts → leads", 3]]), { "b.ts → leads": 2 }).length === 2
     && grewOver(new Map([["b.ts → leads", 1]]), { "b.ts → leads": 2 }).length === 0)
+  // ── lane 88F — the ~30 over-reported sites were FINDER blind spots, fixed in the
+  //    one detector (silent-write-guard.ts "THE STRUCTURAL SHAPES"). Each accept is
+  //    paired with the reject that must still fire, in a .tsx whole-file chunk too.
+  check("PC11 a TERNARY ARM bound to `{ error }` is read; the same ternary bound to `{ data }` is still found (×2 arms)",
+    swallowedIn("lib/x.ts", `const { error } = row\n  ? await svc.from("tasks").update(p).eq("id", i)\n  : await svc.from("tasks").insert(r)\nif (error) throw error`).length === 0
+    && swallowedIn("lib/x.ts", `const { data } = row\n  ? await svc.from("tasks").update(p).eq("id", i)\n  : await svc.from("tasks").insert(r)`).join() === "tasks,tasks")
+  check("PC12 a ternary bound to a NAME counts only when `name.error` is read",
+    swallowedIn("lib/x.ts", `const write = row ? await svc.from("tasks").update(p).eq("id", i) : await svc.from("tasks").insert(r)\nif (write.error) return`).length === 0
+    && swallowedIn("lib/x.ts", `const write = row ? await svc.from("tasks").update(p).eq("id", i) : await svc.from("tasks").insert(r)\nreturn write.data`).length === 2)
+  check("PC13 a BUILDER awaited through a wrapper (`await applyTenantScope(q, s)`) counts only with `{ error }`",
+    swallowedIn("lib/x.ts", `let q = svc.from("tasks").update(p).eq("id", i)\nconst { data, error } = await applyTenantScope(q, scope).select("id")`).length === 0
+    && swallowedIn("lib/x.ts", `let q = svc.from("tasks").update(p).eq("id", i)\nawait applyTenantScope(q, scope)`).join() === "tasks")
+  check("PC14 a Promise.all ELEMENT counts only when ITS OWN slot's error is read (in a .tsx whole-file chunk)",
+    swallowedIn("app/x/c.tsx", `const A = () => <p>Don't</p>\nasync function f() {\n  const [a, b] = await Promise.all([\n    s.from("tasks").upsert(x),\n    s.from("leads").upsert(y),\n  ])\n  if (a.error) return\n}`).join() === "leads")
+  check("PC15 a .map ARROW counts only when the awaited results are searched for `error`; a `;({ data } = await …)` reassignment is still found",
+    swallowedIn("lib/x.ts", `const ups = ids.map((id, n) =>\n  s.from("tasks").update({ n }).eq("id", id))\nconst results = await Promise.all(ups)\nif (results.find((r) => r.error)) return`).length === 0
+    && swallowedIn("lib/x.ts", `const ups = ids.map((id) => s.from("tasks").delete().eq("id", id))\nawait Promise.all(ups)`).join() === "tasks"
+    && swallowedIn("lib/x.ts", `;({ data } = await s.from("tasks").update(p).eq("id", i))`).join() === "tasks")
 }
 
 const SITES = process.argv.includes("--sites")

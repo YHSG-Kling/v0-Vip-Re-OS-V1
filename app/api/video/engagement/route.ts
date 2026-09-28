@@ -5,6 +5,7 @@ import { requireAuth } from "@/lib/kernel/api-auth"
 import { requireContactAccess } from "@/lib/portal/require-contact-access"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { bestEffort } from "@/lib/db/best-effort"
 
 // ============================================
 // LAYER 8.5 VIDEO ENGAGEMENT TRACKING API
@@ -461,7 +462,7 @@ async function checkPerformanceThresholds(
   const clickThroughRate = tracking.click_through_rate || 0
 
   // Always fire VIDEO_PERFORMANCE_UPDATED
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     entity_type: "video_performance",
     entity_id: tracking.id,
     brokerage_id: brokerageId,
@@ -473,7 +474,7 @@ async function checkPerformanceThresholds(
       video_asset_id: tracking.video_asset_id,
       video_project_id: tracking.video_project_id,
     },
-  })
+  }), "performance audit echo; the engagement tracking row itself is written above")
 
   await processKernelEvent({
     event: KernelEvent.VIDEO_PERFORMANCE_UPDATED,
@@ -488,7 +489,7 @@ async function checkPerformanceThresholds(
     completionRate >= PERFORMANCE_THRESHOLDS.HIGH_PERFORMER.minCompletionRate &&
     clickThroughRate >= PERFORMANCE_THRESHOLDS.HIGH_PERFORMER.minClickThroughRate
   ) {
-    await supabase.from("lifecycle_events").insert({
+    await bestEffort(supabase.from("lifecycle_events").insert({
       entity_type: "video_performance",
       entity_id: tracking.id,
       brokerage_id: brokerageId,
@@ -499,7 +500,7 @@ async function checkPerformanceThresholds(
         click_through_rate: clickThroughRate,
         thresholds: PERFORMANCE_THRESHOLDS.HIGH_PERFORMER,
       },
-    })
+    }), "performance audit echo; the engagement tracking row itself is written above")
 
     await processKernelEvent({
       event: KernelEvent.VIDEO_HIGH_PERFORMER_DETECTED,
@@ -515,7 +516,7 @@ async function checkPerformanceThresholds(
     completionRate <= PERFORMANCE_THRESHOLDS.LOW_PERFORMER.maxCompletionRate &&
     clickThroughRate <= PERFORMANCE_THRESHOLDS.LOW_PERFORMER.maxClickThroughRate
   ) {
-    await supabase.from("lifecycle_events").insert({
+    await bestEffort(supabase.from("lifecycle_events").insert({
       entity_type: "video_performance",
       entity_id: tracking.id,
       brokerage_id: brokerageId,
@@ -526,7 +527,7 @@ async function checkPerformanceThresholds(
         click_through_rate: clickThroughRate,
         thresholds: PERFORMANCE_THRESHOLDS.LOW_PERFORMER,
       },
-    })
+    }), "performance audit echo; the engagement tracking row itself is written above")
 
     await processKernelEvent({
       event: KernelEvent.VIDEO_LOW_PERFORMER_DETECTED,

@@ -583,16 +583,16 @@ async function createPlaybookVideo(args: {
     metadata: { ai_video_project_id: (project as any).id, lead_magnet_id: args.magnetId },
   })
   if (!submission.success || !submission.messageId) {
-    await svc.from("ai_video_projects")
+    await sentinelWrite(svc, svc.from("ai_video_projects")
       .update({ status: "failed", error_message: submission.error ?? "dispatch failed" })
-      .eq("id", (project as any).id)
+      .eq("id", (project as any).id), { table: "ai_video_projects", flow: "creative_playbook_render_fail", reason: "failure stamp on a render the provider refused; the playbook notes carry the failure to the caller" })
     notes.push(`${args.videoStep.label}: render submit failed — ${submission.error ?? "provider error"}.`)
     return null
   }
 
   // Link the D-ID job so poll-did-videos completes it (eligibility: status
   // 'generating' + provider_job_id + provider_metadata.provider='did').
-  await svc.from("ai_video_projects").update({
+  const { error: linkErr } = await svc.from("ai_video_projects").update({
     status: "generating",
     provider_job_id: submission.messageId,
     provider_status: "processing",
@@ -608,6 +608,7 @@ async function createPlaybookVideo(args: {
       input_props: { screenshotUrls: args.screenshotUrls ?? [] },
     },
   }).eq("id", (project as any).id)
+  if (linkErr) { notes.push(`${args.videoStep.label}: render submitted but the D-ID job could not be linked (${linkErr.message}) — it will not be collected.`); return null }
 
   notes.push("Video: rendering now with your avatar + voice — it attaches to the capture page automatically when done.")
   return (project as any).id as string

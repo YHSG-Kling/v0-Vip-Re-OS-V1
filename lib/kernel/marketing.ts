@@ -43,6 +43,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { VIDEO_FINISHED_STATUSES, VIDEO_IN_PROGRESS_STATUSES } from "@/lib/video/video-status"
 import { canonicalCampaignPieceType, type CampaignPieceType } from "@/lib/direct-mail/piece-type"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 // ─── RESULT CONTRACT ──────────────────────────────────────────────────────────
 
@@ -1028,25 +1029,26 @@ export async function distributeVideoAsset(params: {
         contact: undefined,
       })
       if (isComplianceBlocked(compliance)) {
-        await supabase.from("ai_video_projects").update({
+        await sentinelWrite(supabase, supabase.from("ai_video_projects").update({
           compliance_status:     "failed",
           compliance_violations: compliance.violations ?? [],
           compliance_evaluated_at: new Date().toISOString(),
-        }).eq("id", params.projectId)
+        }).eq("id", params.projectId), { table: "ai_video_projects", flow: "video_distribution_compliance_blocked", reason: "blocked stamp; distribution is refused to the caller either way" })
         return { success: false, error: `Compliance blocked distribution: ${compliance.blockedReason ?? "review required"}` }
       }
-      await supabase.from("ai_video_projects").update({
+      const { error: passStampErr } = await supabase.from("ai_video_projects").update({
         compliance_status:     "passed",
         compliance_violations: [],
         compliance_evaluated_at: new Date().toISOString(),
       }).eq("id", params.projectId)
+      if (passStampErr) return { success: false, error: `Compliance passed but could not be recorded: ${passStampErr.message}` }
     } catch (err) {
       // Compliance adapter failure → mark needs_review, refuse to distribute
-      await supabase.from("ai_video_projects").update({
+      await sentinelWrite(supabase, supabase.from("ai_video_projects").update({
         compliance_status:     "needs_review",
         compliance_violations: [{ error: err instanceof Error ? err.message : String(err) }],
         compliance_evaluated_at: new Date().toISOString(),
-      }).eq("id", params.projectId)
+      }).eq("id", params.projectId), { table: "ai_video_projects", flow: "video_distribution_compliance_review", reason: "needs_review stamp in the catch; distribution is refused either way" })
       return { success: false, error: "Compliance evaluator unavailable; refusing to distribute customer-facing video." }
     }
   }

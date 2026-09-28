@@ -229,7 +229,13 @@ function s6() {
   check("dedup VERDICTS are unchanged — each stacked branch still sets its duplicate status first",
     /'duplicate_pre_enrich'[\s\S]{0,200}stackOntoDuplicateLead/.test(raw) && (raw.match(/'duplicate_post_enrich'[\s\S]{0,120}stackOntoDuplicateLead/g) ?? []).length === 2)
   check("contacts are never stacked (a contact is an agent's book)", /if \(dup\.type !== 'lead'\) return null/.test(raw))
-  check("the dedup-log writer READS its error (supabase-js resolves refusals)", /const \{ error \} = await supabase\.from\('lead_deduplication_log'\)\.insert\(log\)/.test(raw))
+  // Rule, not waypoint: the dedup-log write's refusal is READ or LEDGERED (lane 88F moved it onto
+  // sentinelWrite, which ledgers a refusal) — either shape passes, a bare awaited insert does not.
+  const dedupLogReadsRefusal = (src: string) =>
+    /const \{ error \} = await supabase\.from\('lead_deduplication_log'\)\.insert\(log\)/.test(src)
+    || /sentinelWrite\(supabase, supabase\.from\('lead_deduplication_log'\)\.insert\(log\)/.test(src)
+  check("the dedup-log writer READS or LEDGERS its refusal (supabase-js resolves refusals)", dedupLogReadsRefusal(raw))
+  check("POSITIVE CONTROL: a bare awaited dedup-log insert is flagged", !dedupLogReadsRefusal(`await supabase.from('lead_deduplication_log').insert(log)`))
   const fixture = "async function x(){ await supabase.from('lead_deduplication_log').insert(log) }"
   check("POSITIVE CONTROL: the finder rejects the old swallow shape", !/const \{ error \} = await supabase\.from\('lead_deduplication_log'\)\.insert\(log\)/.test(fixture))
 }

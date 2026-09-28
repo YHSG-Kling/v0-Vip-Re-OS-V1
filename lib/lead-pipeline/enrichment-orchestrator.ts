@@ -198,18 +198,31 @@ export async function processEnrichmentQueue(
     // Raw-record rows (both null) are enriched inline by the pipeline, not via
     // this queue — fail them with a clear reason instead of looping retries.
     if (!entry.lead_id && !entry.contact_id) {
-      await supabase
+      const { error: guardErr } = await supabase
         .from('lead_enrichment_queue')
         .update({ status: 'failed', error_message: 'No lead_id or contact_id to enrich' })
         .eq('id', entry.id)
+      if (guardErr) console.error(`[enrichment-orchestrator] queue ${entry.id} fail-mark refused:`, guardErr.message)
+      result.failed++
       continue
     }
 
-    // Step 1: Mark processing
-    await supabase
+    // Step 1: CLAIM (pending → processing), COUNTED (lane 88F). This was a bare update
+    // whose result was dropped: a refusal left the row 'pending' while the paid lanes ran
+    // anyway, and a concurrent drain could run the same row twice. Only the run that moves
+    // it out of 'pending' works it; a refused claim is a failure, a lost race is a skip.
+    const { data: claimed, error: claimErr } = await supabase
       .from('lead_enrichment_queue')
       .update({ status: 'processing' })
       .eq('id', entry.id)
+      .eq('status', 'pending')
+      .select('id')
+    if (claimErr) {
+      console.error(`[enrichment-orchestrator] queue ${entry.id} claim refused:`, claimErr.message)
+      result.failed++
+      continue
+    }
+    if ((claimed ?? []).length === 0) continue
 
     // Step 2: Determine entity type
     const entityType: EntityType = entry.lead_id ? 'lead' : 'contact'
@@ -241,7 +254,7 @@ export async function processEnrichmentQueue(
         // otherwise burn its three attempts against a deal that lasts weeks) and
         // the create-time / deal-ended triggers will re-queue it once the deal
         // ends.
-        await supabase
+        const { error: skipErr } = await supabase
           .from('lead_enrichment_queue')
           .update({
             status: 'skipped',
@@ -250,6 +263,7 @@ export async function processEnrichmentQueue(
             completed_at: new Date().toISOString(),
           })
           .eq('id', entry.id)
+        if (skipErr) console.error(`[enrichment-orchestrator] queue ${entry.id} suppression skip-mark refused:`, skipErr.message)
         continue
       }
     }
@@ -273,7 +287,7 @@ export async function processEnrichmentQueue(
         supabase,
         trigger: entry.trigger_type,
       })
-      await supabase
+      const { error: lifeMarkErr } = await supabase
         .from('lead_enrichment_queue')
         .update({
           status: check.success ? 'completed' : 'failed',
@@ -282,6 +296,7 @@ export async function processEnrichmentQueue(
           completed_at: new Date().toISOString(),
         })
         .eq('id', entry.id)
+      if (lifeMarkErr) console.error(`[enrichment-orchestrator] queue ${entry.id} life-change completion refused:`, lifeMarkErr.message)
       if (check.success) result.succeeded++
       else result.failed++
       continue
@@ -447,7 +462,7 @@ export async function processEnrichmentQueue(
             console.error('[enrichment-orchestrator] free-lane queue retry write failed:', retryError.message)
           }
           if (isFinal) {
-            await supabase.from('automation_errors').insert({
+            await sentinelWrite(supabase, supabase.from('automation_errors').insert({
               brokerage_id: brokerageId,
               workflow_name: 'enrichment_processor',
               lead_id: entityType === 'lead' ? entityId : null,
@@ -455,7 +470,7 @@ export async function processEnrichmentQueue(
               context_json: JSON.stringify({ entityType, entityId, queueEntryId: entry.id, lane: plan.label, reason: free!.reachable ? 'no_data' : 'provider_unavailable' }),
               status: 'open',
               severity: 'low',
-            })
+            }), { table: 'automation_errors', flow: 'enrichment_final_retry_escalation', brokerageId, reason: 'ops escalation row; the queue row already carries the terminal status and message' })
           }
           result.failed++
         }
@@ -762,8 +777,13 @@ export async function processEnrichmentQueue(
         }
 
         // Step 6a: Update entity table
+        // The PAID result landing on the entity — READ on both branches (lane 88F: the
+        // lead branch dropped it; the contact branch logged it and marked the queue done
+        // regardless). A refusal is carried onto the queue row below, not retried: the
+        // provider already billed, and a retry would bill again.
+        let entityWriteRefusal: string | null = null
         if (entityType === 'lead') {
-          await supabase
+          const { error: leadWriteError } = await supabase
             .from('leads')
             .update({
               ...(primaryEmail && { email: primaryEmail }),
@@ -798,6 +818,10 @@ export async function processEnrichmentQueue(
               ...(primaryEmail && { minimum_viable_for_isa: true }),
             })
             .eq('id', entityId)
+          if (leadWriteError) {
+            entityWriteRefusal = `leads write refused: ${leadWriteError.message}`
+            console.error(`[enrichment] lead enrichment write REFUSED for ${entityId} — paid result NOT persisted:`, leadWriteError.message)
+          }
 
           // Back-fill raw_scraped_leads so a record that previously failed the canonical eligibility
           // gate can re-pass on the next sweep. Without this, a stranded raw_scraped_leads row would
@@ -807,7 +831,7 @@ export async function processEnrichmentQueue(
               .from('leads').select('raw_record_id').eq('id', entityId).maybeSingle()
             const rawId = leadRow?.raw_record_id
             if (rawId) {
-              await supabase.from('raw_scraped_leads').update({
+              await sentinelWrite(supabase, supabase.from('raw_scraped_leads').update({
                 email_verified:           emailFlagVerified,
                 ...(hasMailingData && {
                   mailing_address:          mailingStreet,
@@ -818,7 +842,7 @@ export async function processEnrichmentQueue(
                 }),
                 processed_at:             new Date().toISOString(),
                 updated_at:               new Date().toISOString(),
-              }).eq('id', rawId)
+              }).eq('id', rawId), { table: 'raw_scraped_leads', flow: 'enrichment_raw_backfill', brokerageId, reason: 'mirror of the lead write onto its raw row so the stranded sweep can re-pass it; the lead row is the record' })
             }
           } catch (e) {
             console.warn('[enrichment-orchestrator] raw_scraped_leads back-fill skipped:', e)
@@ -877,6 +901,7 @@ export async function processEnrichmentQueue(
             })
             .eq('id', entityId)
           if (enrichmentWriteError) {
+            entityWriteRefusal = `contacts write refused: ${enrichmentWriteError.message}`
             console.error(`[enrichment] contact enrichment write REFUSED for ${entityId} — paid result NOT persisted:`, enrichmentWriteError.message)
           }
         }
@@ -884,10 +909,12 @@ export async function processEnrichmentQueue(
         // Step 6b: Update queue entry. The result carries the LANE STAMP so a
         // reader never has to guess whether the free lane contributed — and, when
         // it did, what it could and could not reach.
-        await supabase
+        const { error: completeErr } = await supabase
           .from('lead_enrichment_queue')
           .update({
             status: 'completed',
+            // A refused entity write is stated on the row (not retried — the provider billed).
+            error_message: entityWriteRefusal,
             // Both legs when BatchData supplied the contact points and PDL the profile (lane 83A).
             enrichment_cost: cost + batchDataFallbackCost,
             enrichment_results: {
@@ -901,6 +928,7 @@ export async function processEnrichmentQueue(
             completed_at: new Date().toISOString(),
           })
           .eq('id', entry.id)
+        if (completeErr) console.error(`[enrichment-orchestrator] queue ${entry.id} completion refused:`, completeErr.message)
 
         // Step 6c: Track vendor usage — PLATFORM LEDGER (vendor_usage_tracking) at the
         // cost the client reported (PEOPLEDATA_MATCH_COST_USD on a match). Vendor key
@@ -918,28 +946,28 @@ export async function processEnrichmentQueue(
 
         // Step 6d: Lead-specific post-enrichment
         if (entityType === 'lead') {
-          await supabase.from('lifecycle_events').insert({
+          await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
             entity_type: 'lead',
             entity_id: entityId,
             brokerage_id: brokerageId,
             event_type: KernelEvent.ENRICHMENT_COMPLETED,
             metadata: { queueEntryId: entry.id, cost },
             created_at: new Date().toISOString(),
-          })
+          }), { table: 'lifecycle_events', flow: 'enrichment_lifecycle_echo', brokerageId, reason: 'audit echo; the enrichment itself is on the entity and queue rows' })
 
           await handleLeadScored({ leadId: entityId, brokerageId })
         }
 
         // Step 6e: Contact-specific post-enrichment
         if (entityType === 'contact') {
-          await supabase.from('lifecycle_events').insert({
+          await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
             entity_type: 'contact',
             entity_id: entityId,
             brokerage_id: brokerageId,
             event_type: KernelEvent.CONTACT_ENRICHMENT_COMPLETED,
             metadata: { queueEntryId: entry.id, cost },
             created_at: new Date().toISOString(),
-          })
+          }), { table: 'lifecycle_events', flow: 'enrichment_lifecycle_echo', brokerageId, reason: 'audit echo; the enrichment itself is on the entity and queue rows' })
 
           await processKernelEvent({
             event: KernelEvent.CONTACT_ENRICHMENT_COMPLETED,
@@ -959,13 +987,13 @@ export async function processEnrichmentQueue(
             const { calculateLeadScore } = await import('@/lib/lead-governance/multi-factor-scorer')
             const scoreResult = calculateLeadScore(contact)
 
-            await supabase.from('lead_score_history').insert({
+            await sentinelWrite(supabase, supabase.from('lead_score_history').insert({
               contact_id: entityId,
               brokerage_id: brokerageId,
               score: scoreResult.finalScore,
               factors: scoreResult.factors as unknown as Record<string, unknown>,
               scored_at: new Date().toISOString(),
-            })
+            }), { table: 'lead_score_history', flow: 'enrichment_rescore_history', brokerageId, reason: 'score history row; the score is recomputed from the contact on the next enrichment or scoring pass' })
 
             await sentinelWrite(
               supabase,
@@ -982,14 +1010,14 @@ export async function processEnrichmentQueue(
               },
             )
 
-            await supabase.from('lifecycle_events').insert({
+            await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
               entity_type: 'contact',
               entity_id: entityId,
               brokerage_id: brokerageId,
               event_type: KernelEvent.CONTACT_SCORED,
               metadata: { score: scoreResult.finalScore },
               created_at: new Date().toISOString(),
-            })
+            }), { table: 'lifecycle_events', flow: 'enrichment_lifecycle_echo', brokerageId, reason: 'audit echo; the enrichment itself is on the entity and queue rows' })
 
             // PERSONA-AT-ENRICHMENT (burn-down round 5): the moment verified
             // demographics land, the contact's detailed persona is built from
@@ -1182,7 +1210,7 @@ export async function processEnrichmentQueue(
           })
         }
         const { nextRetry, isFinal, status } = enrichmentRetryOutcome(entry.retry_count, entry.max_retries ?? MAX_RETRIES, step7Fault)
-        await supabase
+        const { error: noMatchMarkErr } = await supabase
           .from('lead_enrichment_queue')
           .update({
             retry_count: nextRetry,
@@ -1200,9 +1228,11 @@ export async function processEnrichmentQueue(
               + (free ? ` — ${describeFreeLane(free)}` : ''),
           })
           .eq('id', entry.id)
+        // Refused, the row would sit in 'processing' where no drain selects it — say so.
+        if (noMatchMarkErr) console.error(`[enrichment-orchestrator] queue ${entry.id} retry-mark refused (row left processing):`, noMatchMarkErr.message)
 
         if (isFinal) {
-          await supabase.from('automation_errors').insert({
+          await sentinelWrite(supabase, supabase.from('automation_errors').insert({
             brokerage_id: brokerageId,
             workflow_name: 'enrichment_processor',
             lead_id: entityType === 'lead' ? entityId : null,
@@ -1210,7 +1240,7 @@ export async function processEnrichmentQueue(
             context_json: JSON.stringify({ entityType, entityId, queueEntryId: entry.id, reason: 'no_match' }),
             status: 'open',
             severity: 'low',
-          })
+          }), { table: 'automation_errors', flow: 'enrichment_final_retry_escalation', brokerageId, reason: 'ops escalation row; the queue row already carries the terminal status and message' })
         }
 
         // Lowercase 'peopledata'; PLATFORM LEDGER at the reported cost — a PDL no-match
@@ -1242,7 +1272,7 @@ export async function processEnrichmentQueue(
       }
       const { nextRetry, isFinal, status } = enrichmentRetryOutcome(entry.retry_count, entry.max_retries ?? MAX_RETRIES, fault)
 
-      await supabase
+      const { error: failMarkErr } = await supabase
         .from('lead_enrichment_queue')
         .update({
           retry_count: nextRetry,
@@ -1250,10 +1280,11 @@ export async function processEnrichmentQueue(
           error_message: message,
         })
         .eq('id', entry.id)
+      if (failMarkErr) console.error(`[enrichment-orchestrator] queue ${entry.id} retry-mark refused (row left processing):`, failMarkErr.message)
 
       // Step 8: Log to automation_errors on final retry
       if (isFinal) {
-        await supabase.from('automation_errors').insert({
+        await sentinelWrite(supabase, supabase.from('automation_errors').insert({
           brokerage_id: brokerageId,
           workflow_name: 'enrichment_processor',
           lead_id: entityType === 'lead' ? entityId : null,
@@ -1261,7 +1292,7 @@ export async function processEnrichmentQueue(
           context_json: JSON.stringify({ entityType, entityId, queueEntryId: entry.id }),
           status: 'open',
           severity: 'medium',
-        })
+        }), { table: 'automation_errors', flow: 'enrichment_final_retry_escalation', brokerageId, reason: 'ops escalation row; the queue row already carries the terminal status and message' })
       }
 
       result.failed++

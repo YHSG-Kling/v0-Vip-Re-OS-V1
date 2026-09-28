@@ -52,6 +52,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { burnPersonaOverlay } from "@/lib/video/persona-overlay"
 import { generateTextRouted } from "@/lib/ai/models"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export type PersonaVariantAssetType =
   | "newsletter_campaign"
@@ -112,8 +113,8 @@ export async function runPersonaVariantPostPass(args: PersonaVariantPostPassArgs
         persona,
         status:       "queued" as const,
       }))
-      await svc.from("asset_persona_renders")
-        .upsert(queuedRows, { onConflict: "asset_type,asset_id,persona" })
+      await sentinelWrite(svc, svc.from("asset_persona_renders")
+        .upsert(queuedRows, { onConflict: "asset_type,asset_id,persona" }), { table: "asset_persona_renders", flow: "persona_variant_post_pass", reason: "per-persona render ledger; post-pass is additive and per-persona isolated" })
     } catch (e) {
       console.error("[persona-variant-post-pass] pre-stage failed:", (e as Error).message)
     }
@@ -126,11 +127,11 @@ export async function runPersonaVariantPostPass(args: PersonaVariantPostPassArgs
     // share a Chromium pool. Per-persona failures stay isolated.
     for (const persona of personas) {
       try {
-        await svc.from("asset_persona_renders")
+        await sentinelWrite(svc, svc.from("asset_persona_renders")
           .update({ status: "rendering" })
           .eq("asset_type", args.assetType)
           .eq("asset_id", args.assetId)
-          .eq("persona", persona)
+          .eq("persona", persona), { table: "asset_persona_renders", flow: "persona_variant_post_pass", reason: "per-persona render ledger; post-pass is additive and per-persona isolated" })
 
         // Draft the persona hook line — gated by evaluateOutbound BEFORE
         // any render dollar.
@@ -143,11 +144,11 @@ export async function runPersonaVariantPostPass(args: PersonaVariantPostPassArgs
           agentUserId:  args.agentUserId,
         })
         if (!hookText) {
-          await svc.from("asset_persona_renders")
+          await sentinelWrite(svc, svc.from("asset_persona_renders")
             .update({ status: "skipped", failure_reason: "persona hook draft failed compliance" })
             .eq("asset_type", args.assetType)
             .eq("asset_id", args.assetId)
-            .eq("persona", persona)
+            .eq("persona", persona), { table: "asset_persona_renders", flow: "persona_variant_post_pass", reason: "per-persona render ledger; post-pass is additive and per-persona isolated" })
           continue
         }
 
@@ -204,7 +205,7 @@ export async function runPersonaVariantPostPass(args: PersonaVariantPostPassArgs
           // Thumbnail (when present) still differentiates the inbox preview;
           // composite falls back to the main video for this persona at
           // recipient routing time.
-          await svc.from("asset_persona_renders")
+          await sentinelWrite(svc, svc.from("asset_persona_renders")
             .update({
               status:              "completed",
               thumbnail_url:       thumbUrl,
@@ -214,7 +215,7 @@ export async function runPersonaVariantPostPass(args: PersonaVariantPostPassArgs
             })
             .eq("asset_type", args.assetType)
             .eq("asset_id", args.assetId)
-            .eq("persona", persona)
+            .eq("persona", persona), { table: "asset_persona_renders", flow: "persona_variant_post_pass", reason: "per-persona render ledger; post-pass is additive and per-persona isolated" })
           continue
         }
 
@@ -225,7 +226,7 @@ export async function runPersonaVariantPostPass(args: PersonaVariantPostPassArgs
           "video/mp4",
         )
 
-        await svc.from("asset_persona_renders")
+        await sentinelWrite(svc, svc.from("asset_persona_renders")
           .update({
             status:              "completed",
             thumbnail_url:       thumbUrl,
@@ -234,17 +235,17 @@ export async function runPersonaVariantPostPass(args: PersonaVariantPostPassArgs
           })
           .eq("asset_type", args.assetType)
           .eq("asset_id", args.assetId)
-          .eq("persona", persona)
+          .eq("persona", persona), { table: "asset_persona_renders", flow: "persona_variant_post_pass", reason: "per-persona render ledger; post-pass is additive and per-persona isolated" })
       } catch (e) {
         console.error(`[persona-variant-post-pass] ${args.assetType}/${args.assetId}/${persona} failed:`, (e as Error).message)
-        await svc.from("asset_persona_renders")
+        await sentinelWrite(svc, svc.from("asset_persona_renders")
           .update({
             status:         "failed",
             failure_reason: ((e as Error).message ?? "unknown").slice(0, 500),
           })
           .eq("asset_type", args.assetType)
           .eq("asset_id", args.assetId)
-          .eq("persona", persona)
+          .eq("persona", persona), { table: "asset_persona_renders", flow: "persona_variant_post_pass", reason: "per-persona render ledger; post-pass is additive and per-persona isolated" })
       }
     }
   } catch (outerErr) {

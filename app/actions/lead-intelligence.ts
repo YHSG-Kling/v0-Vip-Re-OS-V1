@@ -2726,6 +2726,9 @@ export async function scrapeExternalBehavior(
 
     const rawRecords: NormalizedScrapedRecord[] = []
     const discoveredAddresses: string[] = []
+    // Refused provenance/intelligence writes, READ and returned (lane 88F) — the two
+    // inserts below dropped their result, so a refused row read as a tracked property.
+    const writeRefusals: string[] = []
 
     // THE ONE BATCHDATA GATE (wave 81 lane B): enriching scraped behaviour with BatchData
     // is ACQUISITION — asked ONCE for the batch; refused → the scraped rows are kept
@@ -2745,7 +2748,7 @@ export async function scrapeExternalBehavior(
 
       const propertyDetails = enrichedData[0] || {}
 
-      await supabase.from("external_behavior").insert({
+      const { error: behaviorErr } = await supabase.from("external_behavior").insert({
         brokerage_id: auth.brokerageId,
         source: property.source || "zillow",
         activity_type: "property_view",
@@ -2761,7 +2764,7 @@ export async function scrapeExternalBehavior(
       })
 
       // Store enriched property intelligence
-      await supabase.from("property_intelligence").insert({
+      const { error: intelErr } = await supabase.from("property_intelligence").insert({
         brokerage_id: auth.brokerageId,
         property_address: property.address,
         city: targetLocation.city,
@@ -2772,6 +2775,8 @@ export async function scrapeExternalBehavior(
         bathrooms: property.bathrooms || propertyDetails.bathrooms,
         square_feet: property.sqft || propertyDetails.squareFeet,
       })
+      if (behaviorErr) writeRefusals.push(`external_behavior (${property.address ?? "no address"}): ${behaviorErr.message}`)
+      if (intelErr) writeRefusals.push(`property_intelligence (${property.address ?? "no address"}): ${intelErr.message}`)
 
       if (property.address) {
         discoveredAddresses.push(property.address)
@@ -2808,7 +2813,8 @@ export async function scrapeExternalBehavior(
       })
     }
 
-    return { success: true, propertiesTracked: allProperties.length, discoveredAddresses, rawIngested: ingest?.inserted ?? 0 }
+    if (writeRefusals.length) console.error("[lead-intelligence] scrapeExternalBehavior write refusals:", writeRefusals.slice(0, 5))
+    return { success: true, propertiesTracked: allProperties.length, discoveredAddresses, rawIngested: ingest?.inserted ?? 0, writeRefusals }
   } catch (error) {
     console.error("[v0] External behavior scraping error:", error)
     await collectError({ workflowName: "lead_intelligence_external_behavior", errorMessage: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined, severity: "low", brokerageId: auth.brokerageId, context: { city: targetLocation.city, state: targetLocation.state } })
@@ -2935,7 +2941,7 @@ export async function trackExternalActivity(
 //        this function CONSUMED via BatchDataClient.getMotivatedSellers
 //        (lib/external/batchdata-client.ts:9). Untouched, four live consumers.
 //   2. SOCIAL SCRAPE → motivated-seller record
-//      → app/actions/scrape-social-media.ts:41 `scrapeSocialMedia`, surfaced at
+//      → app/actions/scrape-social-media.ts:43 `scrapeSocialMedia`, surfaced at
 //        app/dashboard/admin/lead-intake/social-scrape-trigger.tsx:11. That one
 //        is admin-gated, meters its scraper calls into billing_usage, and files
 //        through lib/lead-pipeline `processRawRecord`, which carries the dedupe

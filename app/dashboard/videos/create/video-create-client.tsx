@@ -62,6 +62,7 @@ import { BrollPicker } from "../components/BrollPicker"
 import { listImageLibraryAction, type LibraryAssetRow } from "@/app/actions/marketing/image-library"
 import { TeammateExplainerCard } from "./teammate-explainer-card"
 import { DescribeVideoCard } from "./describe-video-card"
+import { bestEffort } from "@/lib/db/best-effort"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -683,9 +684,9 @@ export default function VideoCreatePage() {
           // than held for review (there is no review queue on this lane).
           const lines: string[] = Array.isArray(result?.violations) ? result.violations : []
           const message = [result?.error, ...lines].filter(Boolean).join("\n") || "Failed to generate video"
-          await supabase.from("ai_video_projects")
+          await bestEffort(supabase.from("ai_video_projects")
             .update({ status: "failed", error_message: message.slice(0, 800) })
-            .eq("id", project.id)
+            .eq("id", project.id), "failure stamp; the error is thrown to the form right below")
           throw new Error(message)
         }
         router.push("/dashboard/videos/board")
@@ -773,10 +774,10 @@ export default function VideoCreatePage() {
           )
         }
         // Update project status on failure
-        await supabase
+        await bestEffort(supabase
           .from("ai_video_projects")
           .update({ status: "failed", error_message: result.error })
-          .eq("id", project.id)
+          .eq("id", project.id), "failure stamp; the error is thrown to the form right below")
         throw new Error(result.error || "Failed to generate video")
       }
 

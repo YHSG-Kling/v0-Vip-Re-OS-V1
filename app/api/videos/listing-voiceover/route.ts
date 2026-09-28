@@ -90,6 +90,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { isValidUUID } from "@/lib/validations"
+import { bestEffort } from "@/lib/db/best-effort"
 
 export async function POST(request: NextRequest) {
   try {
@@ -283,11 +284,11 @@ export async function POST(request: NextRequest) {
     })
     if (!queued.ok) {
       console.error("[ListingVoiceover] render enqueue refused:", queued.error)
-      await supabase
+      await bestEffort(supabase
         .from("ai_video_projects")
         .update({ status: "failed", error_message: (queued.error ?? "render enqueue failed").slice(0, 800) })
         .eq("id", video_project_id)
-        .eq("brokerage_id", auth.brokerageId)
+        .eq("brokerage_id", auth.brokerageId), "failure stamp; the caller receives the 500 below")
       return NextResponse.json({ error: "Failed to queue the slideshow render" }, { status: 500 })
     }
 

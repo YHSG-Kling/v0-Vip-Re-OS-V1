@@ -279,7 +279,7 @@ export async function markVideoStarted(videoId: string): Promise<{
       .maybeSingle()
 
     if (!existing) {
-      await supabase.from("video_completion_tracking").insert({
+      const { error: trackInsertErr } = await supabase.from("video_completion_tracking").insert({
         agent_id: agentId,
         brokerage_id: brokerageId,
         training_video_id: videoId,
@@ -287,6 +287,7 @@ export async function markVideoStarted(videoId: string): Promise<{
         last_position_seconds: 0,
         completed: false,
       })
+      if (trackInsertErr) console.error("[training] video_completion_tracking insert refused:", trackInsertErr.message)
     }
 
     // Fire kernel events — only when brokerageId is available

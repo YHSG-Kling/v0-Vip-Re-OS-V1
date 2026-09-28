@@ -119,7 +119,6 @@ export default async function ScrapeDiagnosticsPage() {
         data={diagnostics}
         actorHealth={actorHealth ?? []}
         isSuperadmin={isSuperadmin}
-        currentUserId={user.id}
       />
       <IntentPhraseCard
         stats={intentPhraseStats}

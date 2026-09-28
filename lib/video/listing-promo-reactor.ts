@@ -71,6 +71,7 @@ import {
   narrationMaxTokens,
 } from "@/lib/video/script-structure"
 import { withSpokenScriptStandards, scanForAiTells } from "@/lib/video/realism-profile"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 // Wave 27 — extended from 3 event types to the full 7-moment listing
 // lifecycle. The reactor remains the single dispatcher; per-event branches
@@ -233,9 +234,9 @@ export async function dispatchListingPromoVideo(
     .eq("agent_id", agentRecordId)
     .maybeSingle()
   if (!profile?.elevenlabs_voice_id || (!profile.did_photo_url && !profile.did_video_url)) {
-    await svc.from("listing_promo_videos")
+    await sentinelWrite(svc, svc.from("listing_promo_videos")
       .update({ status: "failed", error_message: "agent has no voice/avatar profile" })
-      .eq("id", ledgerId!)
+      .eq("id", ledgerId!), { table: "listing_promo_videos", flow: "listing_promo_fail", reason: "failure stamp; the failure is returned to the caller" })
     return { ok: false, status: "failed", reason: "agent voice/avatar profile not configured" }
   }
 
@@ -270,9 +271,9 @@ export async function dispatchListingPromoVideo(
     })
     if (!result.ok) {
       const reason = result.violations.join("; ").slice(0, 800)
-      await svc.from("listing_promo_videos")
+      await sentinelWrite(svc, svc.from("listing_promo_videos")
         .update({ status: "failed", error_message: `compliance failed after redraft: ${reason}` })
-        .eq("id", ledgerId!)
+        .eq("id", ledgerId!), { table: "listing_promo_videos", flow: "listing_promo_fail", reason: "failure stamp; the failure is returned to the caller" })
       return {
         ok:         false,
         status:     "failed",
@@ -282,9 +283,9 @@ export async function dispatchListingPromoVideo(
     }
     script = result.script
   } catch (err) {
-    await svc.from("listing_promo_videos")
+    await sentinelWrite(svc, svc.from("listing_promo_videos")
       .update({ status: "failed", error_message: `script: ${(err as Error).message}` })
-      .eq("id", ledgerId!)
+      .eq("id", ledgerId!), { table: "listing_promo_videos", flow: "listing_promo_fail", reason: "failure stamp; the failure is returned to the caller" })
     return { ok: false, status: "failed", reason: "script generation failed" }
   }
 
@@ -342,12 +343,13 @@ export async function dispatchListingPromoVideo(
   //    exact text it will speak); the pre-clear we just did is the FAST-FAIL
   //    guard — a script that fails compliance here never reaches the cron and
   //    render dollars are never spent on it.
-  await svc.from("listing_promo_videos")
+  const { error: pendingErr } = await svc.from("listing_promo_videos")
     .update({
       status:         "remotion_pending",
       error_message:  null,
     })
     .eq("id", ledgerId!)
+  if (pendingErr) return { ok: false, status: "failed", reason: `promo ledger could not be queued for render: ${pendingErr.message}` }
 
   return {
     ok:        true,

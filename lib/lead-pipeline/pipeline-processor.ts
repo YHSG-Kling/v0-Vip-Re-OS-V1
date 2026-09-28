@@ -21,7 +21,9 @@ import { meterVendorSpend } from '@/lib/vendor-governance/meter-vendor'
 // from a scrape carries the same demographics blob as a drained one.
 import { buildPeopleDataProfile, demographicsFromProfile, peopleDataProfileToLeadColumns, householdFinancialsFromBatchData, mergeHouseholdFinancials } from './enrichment-column-map'
 import { mergeEnrichment, shouldGapFill, enrichViaPerplexity, type BaseEnrichment } from './perplexity-enrichment'
+import { recordAcquisitionIntents } from './acquisition-coverage'
 import { KernelEvent } from '@/lib/kernel/events'
+import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 import { emitKernelEvent } from '@/lib/kernel/emit'
 import {
   calculateSourceScore,
@@ -124,8 +126,10 @@ async function setStatus(
   // this is the writer the raw-lead admin bench's reader
   // (app/actions/lead-promotion/promote-lead.ts:101,124) never had.
   opts?: { dedupeComplete?: boolean },
-) {
-  await supabase
+): Promise<boolean> {
+  // READ (lane 88F). Every gate verdict in this file lands here; a refused status write
+  // left the raw row 'pending' and the next sweep re-ran (and re-billed) it silently.
+  const { error } = await supabase
     .from('raw_scraped_leads')
     .update({
       processing_status: status,
@@ -141,6 +145,11 @@ async function setStatus(
       ...(opts?.dedupeComplete ? { dedupe_status: 'complete' satisfies DedupeStatus } : {}),
     })
     .eq('id', rawRecordId)
+  if (error) {
+    console.error(`[pipeline-processor] raw ${rawRecordId} status '${status}' write refused:`, error.message)
+    return false
+  }
+  return true
 }
 
 export async function processRawRecord(rawRecordId: string, brokerageId?: string | null): Promise<PipelineResult> {
@@ -624,9 +633,9 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
         const br = await fetchBatchRankPropensity(lookupAddress)
         if (br.available && br.score !== null) {
           batchRankPropensity = br.score
-          await supabase.from('raw_scraped_leads').update({
+          await sentinelWrite(supabase, supabase.from('raw_scraped_leads').update({
             normalized_preview: { ...(rec.normalized_preview ?? {}), batchrank_propensity: br.score, batchrank_category: br.category },
-          }).eq('id', rawRecordId).then(() => {}, () => {})
+          }).eq('id', rawRecordId), { table: 'raw_scraped_leads', flow: 'batchrank_propensity_stamp', brokerageId: effectiveBrokerageId ?? null, reason: 'audit copy of the score; the score itself is used in-memory for this promotion' })
         }
       } catch { /* fail closed — no score, no block on promotion */ }
     }
@@ -646,9 +655,24 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   const signalStack = await readRawSignalStack(supabase, rawRecordId, rec.normalized_preview?.intentSignals ?? [])
   const stackedScore = applyStackBoost(batchRankAdjustedScore, signalStack.stack)
   const fusedUrgency = scoreToUrgencyLevel(stackedScore)
+  // THE RECORD'S OWN SIGNALS, read by the one classifier the coverage guard derives
+  // per-source coverage from (acquisition-coverage.ts::recordAcquisitionIntents — lane
+  // 88F wired it here; it was an export only proofs called). The old fallback read
+  // normalized_preview.intentType alone, so a record whose normalizer emitted a
+  // `selling` / `looking_to_buy` SIGNAL without an intentType promoted as 'unknown' and
+  // paid for the AI read to guess what the scraper had already said. One-sided evidence
+  // only: a record evidencing BOTH sell and buy stays 'unknown' for the AI read.
+  const signalIntents = recordAcquisitionIntents({
+    intentType:    rec.normalized_preview?.intentType ?? null,
+    intentSignals: rec.normalized_preview?.intentSignals ?? null,
+  })
+  const signalLeadType: 'buyer' | 'seller' | 'unknown' =
+    signalIntents.includes('sell') && !signalIntents.includes('buy') ? 'seller'
+    : signalIntents.includes('buy') && !signalIntents.includes('sell') ? 'buyer'
+    : 'unknown'
   const sourceLeadType = sourceSemantics.leadType !== 'unknown'
     ? sourceSemantics.leadType
-    : (rec.normalized_preview?.intentType as 'buyer' | 'seller' | 'unknown' | undefined ?? 'unknown')
+    : signalLeadType
   const fusedLeadType = aiIntent ? resolveLeadType(sourceLeadType, aiIntent.intentType) : sourceLeadType
   const fusedMotivationConfidence = aiIntent
     ? Math.max((rec.raw_data?.motivation_confidence as number | null) ?? (computedScore / 100), aiIntent.confidence * (aiIntent.score / 100))
@@ -741,7 +765,10 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   }
 
   // ── STEP 3: Update raw_scraped_leads with lead_id and promoted status ───────
-  await supabase
+  // READ (lane 88F): the lead now exists, so a refused link leaves the raw row in flight
+  // and the next sweep would re-run it against its own lead (dedup catches it, after a
+  // paid enrichment). Stated on the result instead of reported as a clean promotion.
+  const { error: linkErr } = await supabase
     .from('raw_scraped_leads')
     .update({
       lead_id:           newLead.id,
@@ -752,6 +779,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       dedupe_status:     'complete' satisfies DedupeStatus,
     })
     .eq('id', rawRecordId)
+  if (linkErr) console.error(`[pipeline-processor] raw ${rawRecordId} → lead ${newLead.id} link refused:`, linkErr.message)
 
   await logDeduplication({
     raw_record_id:             rawRecordId,
@@ -830,7 +858,9 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     success: true,
     action: 'created',
     leadId: newLead.id,
-    reason: 'New lead created successfully',
+    reason: linkErr
+      ? `New lead created; its raw row could not be linked (${linkErr.message}) — the sweep's dedup will match it to this lead`
+      : 'New lead created successfully',
     stage: 'lead_creation',
   }
 }
@@ -1106,16 +1136,12 @@ async function findBestMatch(
 // ─── Audit logging ────────────────────────────────────────────────────────────
 
 async function logDeduplication(log: any, supabase: ReturnType<typeof createServiceClient>) {
-  try {
-    // Lane 88G — supabase-js RESOLVES refusals (CLAUDE.md §3): the try/catch never saw one, so the
-    // three gate stages this file writes (territory_gate / identity_gate / promotion_identity_gate)
-    // were refused by lead_deduplication_log_stage_check on every write and nobody was told
-    // (m676 widens the CHECK). Still never blocks dedup — but the refusal is now said out loud.
-    const { error } = await supabase.from('lead_deduplication_log').insert(log)
-    if (error) console.warn(`[pipeline-processor] lead_deduplication_log write refused (stage ${log?.stage ?? '?'}): ${error.message}`)
-  } catch (err: unknown) {
-    // Logging must not block deduplication.
-  }
+  // Logging must not block deduplication — but a lost audit row is LEDGERED, not silent
+  // (lane 88F; was a try/catch that swallowed both a throw and a resolved refusal).
+  await sentinelWrite(supabase, supabase.from('lead_deduplication_log').insert(log), {
+    table: 'lead_deduplication_log', flow: 'raw_dedup_audit', brokerageId: log?.brokerage_id ?? null,
+    reason: 'audit row of a dedup decision already acted on',
+  })
 }
 
 /**

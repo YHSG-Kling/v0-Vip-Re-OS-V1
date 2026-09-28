@@ -39,6 +39,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { concatIntroOutro, probeRemoteVideoDurationSeconds } from "@/lib/video/composite-attribution"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -133,11 +134,11 @@ export async function GET(req: NextRequest) {
         const middleUrl = deferredMusic && finished.buffer !== mainBuf
           ? await hostRenderedMedia(svc, `listing-promo/hybrid/${p.id}-middle.mp4`, finished.buffer, "video/mp4")
           : null
-        await svc.from("ai_video_projects").update({
+        await sentinelWrite(svc, svc.from("ai_video_projects").update({
           status: "completed",
           ...(middleUrl ? { video_url: middleUrl } : {}),
           video_metadata: { ...meta, hybrid_pending: false, hybrid_composited_at: new Date().toISOString(), hybrid_skip_reason: stitch.skippedReason ?? "no_overlay", hybrid_sound: finished.note },
-        }).eq("id", p.id)
+        }).eq("id", p.id), { table: "ai_video_projects", flow: "listing_promo_hybrid_complete", reason: "completion stamp; a refused stamp leaves hybrid_pending set, so the next tick re-composites" })
         results.push({ id: p.id, outcome: "completed_no_hybrid", reason: stitch.skippedReason })
         continue
       }
@@ -150,7 +151,7 @@ export async function GET(req: NextRequest) {
         "video/mp4",
       )
 
-      await svc.from("ai_video_projects").update({
+      await sentinelWrite(svc, svc.from("ai_video_projects").update({
         status:    "completed",
         video_url: hybridUrl,
         video_metadata: {
@@ -158,14 +159,14 @@ export async function GET(req: NextRequest) {
           // What the stitch actually did (the dissolve offsets) and what the sound pass landed.
           hybrid_joins: stitch.joins ?? null, hybrid_sound: finished.note,
         },
-      }).eq("id", p.id)
+      }).eq("id", p.id), { table: "ai_video_projects", flow: "listing_promo_hybrid_complete", reason: "completion stamp; a refused stamp leaves hybrid_pending set, so the next tick re-composites" })
 
       // Move the listing_promo_videos ledger to 'rendering' so the
       // social-publish cron picks it up.
       if (p.listing_id) {
-        await svc.from("listing_promo_videos")
+        await sentinelWrite(svc, svc.from("listing_promo_videos")
           .update({ status: "rendering" })
-          .eq("video_project_id", p.id)
+          .eq("video_project_id", p.id), { table: "listing_promo_videos", flow: "listing_promo_ledger_rendering", reason: "ledger advance to rendering; the social-publish cron re-reads the project status" })
 
         // Wave 28 — fire the per-persona post-pass against the final
         // composite. Listing-promo's audience is the brokerage's entire
@@ -243,11 +244,11 @@ export async function GET(req: NextRequest) {
       // treated it as neither stale nor terminal and never escalated; the m365
       // trigger left the queue row spinning; and the board's red failure UI never
       // rendered, so a failed render sat in the "Queued" column.
-      await svc.from("ai_video_projects").update({
+      await sentinelWrite(svc, svc.from("ai_video_projects").update({
         status:         "failed",
         error_message:  msg.slice(0, 800),
         video_metadata: { ...meta, hybrid_pending: false, hybrid_error: msg.slice(0, 400) },
-      }).eq("id", p.id)
+      }).eq("id", p.id), { table: "ai_video_projects", flow: "listing_promo_hybrid_fail", reason: "failure stamp on the failure path; the watchdog reaps a row left in flight" })
       results.push({ id: p.id, outcome: "failed", reason: msg })
     }
   }

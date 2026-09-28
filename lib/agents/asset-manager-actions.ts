@@ -167,10 +167,12 @@ async function runHandler(
       {
         // ai_video_projects has no is_active either (live-verified) — unpublish
         // is the retire semantics for a video project.
-        const { count } = await svc.from("ai_video_projects")
+        const { count, error: retireErr } = await svc.from("ai_video_projects")
           .update({ is_published: false }, { count: "exact" })
           .eq("id", assetId)
           .eq("brokerage_id", brokerageId)
+        // A refused retire is a failure, not "asset not found" (lane 88F).
+        if (retireErr) return { status: "failed", result: { table: "ai_video_projects", asset_id: assetId, error: retireErr.message } }
         if ((count ?? 0) > 0) {
           return { status: "succeeded", result: { table: "ai_video_projects", asset_id: assetId, reason } }
         }

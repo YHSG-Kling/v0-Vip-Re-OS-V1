@@ -33,6 +33,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -93,11 +94,11 @@ export async function GET(request: NextRequest) {
         // it the same as a transient error is what let broken avatars sit at
         // 'pending' forever with nothing to show the agent.
         if (statusRes.status === 404) {
-          await supabase.from("agent_avatar_assets").update({
+          await sentinelWrite(supabase, supabase.from("agent_avatar_assets").update({
             status: "failed",
             error_message: "D-ID has no record of this avatar job — it was never accepted. Re-record the avatar.",
             updated_at: new Date().toISOString(),
-          }).eq("id", asset.id)
+          }).eq("id", asset.id), { table: "agent_avatar_assets", flow: "poll_did_avatar_not_found", reason: "terminal stamp; a refused stamp leaves the row pending and the next poll re-reads the 404" })
           results.failed++
           continue
         }
@@ -110,11 +111,11 @@ export async function GET(request: NextRequest) {
           const body = statusRes.data ?? { description: statusRes.error }
           const failure = classifyDidError(statusRes.status, body)
           if (failure.retryable) continue
-          await supabase.from("agent_avatar_assets").update({
+          await sentinelWrite(supabase, supabase.from("agent_avatar_assets").update({
             status: "failed",
             error_message: failure.userMessage,
             updated_at: new Date().toISOString(),
-          }).eq("id", asset.id)
+          }).eq("id", asset.id), { table: "agent_avatar_assets", flow: "poll_did_avatar_terminal", reason: "terminal stamp; a refused stamp leaves the row pending and the next poll re-classifies it" })
           console.error(`[poll-did-avatars] terminal for ${asset.id}: ${failure.operatorMessage}`)
           results.failed++
           continue

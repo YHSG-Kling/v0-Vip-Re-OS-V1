@@ -55,6 +55,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { findVerifiedConsent } from "@/lib/did/consent"
 import { SIMLI_BASE } from "./client"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -171,10 +172,10 @@ export async function ensureSimliFaceForAgent(
     return { ok: false, kind: "ProviderError", error: res.error ?? `Simli face creation failed (HTTP ${res.status ?? "?"})` }
   }
 
-  await svc
+  await sentinelWrite(svc, svc
     .from("agent_avatar_assets")
     .update({ simli_face_id: faceId, updated_at: new Date().toISOString() })
-    .eq("id", twin.id)
+    .eq("id", twin.id), { table: "agent_avatar_assets", flow: "simli_face_id_cache", reason: "cache of the created Simli face id; the face itself exists at the provider and is returned" })
 
   return { ok: true, faceId, created: true }
 }

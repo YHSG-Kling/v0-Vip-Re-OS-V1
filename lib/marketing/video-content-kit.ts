@@ -223,9 +223,10 @@ export async function buildVideoContentKit(
       brokerageName: (b as any)?.name ?? null,
     }, { gate })
 
-    await svc.from("ai_video_projects").update({
+    const { error: kitSaveErr } = await svc.from("ai_video_projects").update({
       video_metadata: { ...((p.video_metadata as object) ?? {}), content_kit: kit },
     }).eq("id", projectId)
+    if (kitSaveErr) return { ok: false, kit, reason: `content kit composed but not saved: ${kitSaveErr.message}` }
 
     return { ok: true, kit }
   } catch (e) {

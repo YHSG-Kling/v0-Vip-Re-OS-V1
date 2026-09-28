@@ -180,10 +180,10 @@ export async function distributePlatformLead(params: {
 
   // 9. Stamp the raw record too so downstream visibility is consistent
   if (lead.raw_record_id) {
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("raw_scraped_leads")
       .update({ brokerage_id: targetBrokerageId, updated_at: nowIso })
-      .eq("id", lead.raw_record_id)
+      .eq("id", lead.raw_record_id), { table: "raw_scraped_leads", flow: "platform_lead_distribution_raw_stamp", brokerageId: targetBrokerageId, reason: "visibility mirror of the lead's distribution (the lead row, checked above, is the record)" })
   }
 
   return {

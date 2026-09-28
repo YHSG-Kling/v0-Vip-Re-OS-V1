@@ -70,10 +70,15 @@ export async function GET(request: Request) {
   const row = candidates[0]
 
   // 2. Claim atomically (queued → generating) so a concurrent tick can't double-submit.
-  const { data: claimed } = await svc.from("ai_video_projects")
+  const { data: claimed, error: claimErr } = await svc.from("ai_video_projects")
     .update({ status: "generating", updated_at: new Date().toISOString() })
     .eq("id", row.id).eq("status", "queued")
     .select("id").maybeSingle()
+  // A REFUSED claim is not "already claimed" (lane 88F) — say which it was.
+  if (claimErr) {
+    console.error(`[director-reel-render] claim refused for ${row.id}:`, claimErr.message)
+    return NextResponse.json({ ran_at: ranAt, processed: 0, error: `claim refused: ${claimErr.message}` }, { status: 500 })
+  }
   if (!claimed) {
     return NextResponse.json({ ran_at: ranAt, processed: 0, note: "row already claimed" })
   }
@@ -122,9 +127,9 @@ export async function GET(request: Request) {
       )
       if (!presenter.canRender) {
         // GRACEFUL DEGRADE — the agent hasn't finished their avatar setup. Park + notify them.
-        await svc.from("ai_video_projects")
+        await sentinelWrite(svc, svc.from("ai_video_projects")
           .update({ status: "awaiting_presenter_setup", error_message: "agent has no D-ID avatar configured", updated_at: new Date().toISOString() })
-          .eq("id", row.id)
+          .eq("id", row.id), { table: "ai_video_projects", flow: "director_reel_park_awaiting_presenter", reason: "park stamp; a refused park leaves the row generating, which the stuck-render watchdog reaps" })
         await sentinelWrite(svc, svc.from("notifications").insert({
           user_id: agentUserId, brokerage_id: brokerageId, type: "avatar_setup_needed",
           title: "Finish your avatar to unlock AI videos",

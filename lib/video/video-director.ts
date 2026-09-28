@@ -71,6 +71,7 @@ import {
 } from "@/lib/video/render-cut"
 // Wave 81C — ANY TYPE OF VIDEO: a described video planned by archetype rule.
 import { planCustomVideo, type CustomVideoBrief, type CustomVideoPlan } from "@/lib/video/custom-video-archetypes"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 // ============================================================================
 // SITUATION + FORMAT CONTRACTS (pure)
@@ -1914,6 +1915,15 @@ export async function commissionVideoExperiment(
   const now = new Date().toISOString()
   const staged: NonNullable<CommissionExperimentResult["variants"]> = []
   const insertedIds: string[] = []
+  // All-or-nothing rollback of staged experiment rows — one declared write (lane 88F):
+  // the four rollbacks used to drop each delete's refusal inside a try/catch-noop.
+  const rollbackStaged = async () => {
+    for (const id of insertedIds) {
+      try {
+        await sentinelWrite(svc, svc.from("ai_video_projects").delete().eq("id", id), { table: "ai_video_projects", flow: "director_experiment_rollback", reason: "rollback of staged experiment rows; a surviving row is ledgered for the repair digest" })
+      } catch { /* the sentinel already ledgered it */ }
+    }
+  }
 
   for (const v of variantDefs) {
     const gated = await draftAndGateHook(
@@ -1929,7 +1939,7 @@ export async function commissionVideoExperiment(
     )
     if (!gated.ok) {
       // Roll back any rows already staged for this experiment so it's all-or-nothing.
-      for (const id of insertedIds) { try { await svc.from("ai_video_projects").delete().eq("id", id) } catch { /* noop */ } }
+      await rollbackStaged()
       return {
         ok: false, status: "blocked",
         experimentId, compositionId: format.compositionId,
@@ -1960,7 +1970,7 @@ export async function commissionVideoExperiment(
     const { missingContentProps, describeMissingContent } = await import("@/lib/remotion/content-contract")
     const missingContent = missingContentProps(format.compositionId, contentProps)
     if (missingContent.length > 0) {
-      for (const id of insertedIds) { try { await svc.from("ai_video_projects").delete().eq("id", id) } catch { /* noop */ } }
+      await rollbackStaged()
       return {
         ok: false, status: "blocked",
         experimentId, compositionId: format.compositionId,
@@ -2051,7 +2061,7 @@ export async function commissionVideoExperiment(
       },
     })
     if (!readiness.ok) {
-      for (const id of insertedIds) { try { await svc.from("ai_video_projects").delete().eq("id", id) } catch { /* noop */ } }
+      await rollbackStaged()
       return {
         ok: false, status: "blocked",
         experimentId, compositionId: format.compositionId,
@@ -2110,7 +2120,7 @@ export async function commissionVideoExperiment(
       .maybeSingle()
 
     if (error || !inserted) {
-      for (const id of insertedIds) { try { await svc.from("ai_video_projects").delete().eq("id", id) } catch { /* noop */ } }
+      await rollbackStaged()
       return { ok: false, status: "failed", experimentId, reason: error?.message ?? "insert failed" }
     }
     const id = (inserted as { id: string }).id

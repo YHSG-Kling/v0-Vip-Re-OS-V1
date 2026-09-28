@@ -1,7 +1,7 @@
 import {
 NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { ZenrowsClient, BatchDataClient, batchDataTriggersFor } from "@/lib/external"
 import {
   createSmartSearchSubscription,
@@ -52,7 +52,9 @@ import { sourceExaBuyerIntent } from "@/lib/lead-pipeline/exa-sourcer"
 import { sourceTavilyIntent } from "@/lib/lead-pipeline/tavily-sourcer"
 import { sourceRecruitProspects } from "@/lib/recruit-pipeline/recruit-sourcer"
 import { processRawRecruit } from "@/lib/recruit-pipeline/recruit-processor"
-import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scraping-config"
+// lane 88F — the job ledger is a server-only core on the cron's service client (the
+// "use server" createScrapingJob/updateScrapingJob doors ran with no cookie session).
+import { openScrapingJob, updateScrapingJobRow } from "@/lib/lead-pipeline/scraping-job-ledger"
 import {
   type NormalizedScrapedRecord,
   isViableRecord,
@@ -129,18 +131,23 @@ export async function GET(request: Request) {
   await recordCronStartAction({ context_id: contextId })
 
   // Emit SCRAPING_CRON_STARTED lifecycle event
-  void serviceClient.from("lifecycle_events").insert({
+  void sentinelWrite(serviceClient, serviceClient.from("lifecycle_events").insert({
     entity_type:  "system",
     entity_id:    cronLogId ?? "00000000-0000-0000-0000-000000000000",
     event_type:   KernelEvent.SCRAPING_CRON_STARTED,
     brokerage_id: null,
     metadata:     { triggered_by: "cron", context_id: contextId },
     created_at:   new Date().toISOString(),
-  })
+  }), { table: "lifecycle_events", flow: "scraping_cron_echo", reason: "run-level audit echo; the run result is returned and logged by the cron kernel" })
 
   console.log("[Lead Scraping Cron] Starting scheduled scraping with full enrichment pipeline...")
 
-  const supabase = await createClient()
+  // SERVICE CLIENT (lane 88F). This was `await createClient()` — the COOKIE client — in a
+  // route whose only caller is the scheduler (verifyCronAuth above). With no session every
+  // read ran as anon: resolveActiveScrapeTerritories saw no subscriptions and the whole run
+  // was a no-op, and every write was RLS-refused. The tenant on each write comes from the
+  // market row the run resolved, never from the request.
+  const supabase = serviceClient
 
   // ── Instantiate the scraper clients used below ────────────────────────────
   // Enrichment (PeopleData/OSINT/validation) runs inside processRawRecord during
@@ -365,7 +372,7 @@ export async function GET(request: Request) {
         const propertyParams = market.lead_scraping_property_params[0]
         if (propertyParams.is_active) {
           // STEP 5 — open scraper_executions record
-          const { data: execRecord } = await supabase
+          const { data: execRecord, error: execOpenErr } = await supabase
             .from("scraper_executions")
             .insert({
               brokerage_id: market.brokerage_id,
@@ -375,8 +382,11 @@ export async function GET(request: Request) {
             })
             .select("id")
             .single()
+          // A refused open is REPORTED, not carried as a null id into every close (lane 88F).
+          if (execOpenErr) results.errors.push(`scraper_executions open refused for ${market.name}: ${execOpenErr.message}`)
 
-          const job = await createScrapingJob({
+          const job = await openScrapingJob(supabase, {
+            brokerage_id: market.brokerage_id ?? null,
             job_type: "property_search",
             market_id: market.id,
             source: "zenrows_property",
@@ -388,7 +398,7 @@ export async function GET(request: Request) {
           let sourceCostUsd = 0
 
           try {
-            await updateScrapingJob(job.job?.id, {
+            await updateScrapingJobRow(supabase, job.job?.id, {
               status: "running",
               started_at: new Date().toISOString(),
             })
@@ -472,7 +482,7 @@ export async function GET(request: Request) {
               }
             }
 
-            await updateScrapingJob(job.job?.id, {
+            await updateScrapingJobRow(supabase, job.job?.id, {
               status: "completed",
               leads_found: sourceItemsFound,
               leads_created: sourceLeadsCreated,
@@ -480,7 +490,7 @@ export async function GET(request: Request) {
             })
           } catch (error) {
             sourceErr = error as Error
-            await updateScrapingJob(job.job?.id, {
+            await updateScrapingJobRow(supabase, job.job?.id, {
               status: "failed",
               error_message: String(error),
               completed_at: new Date().toISOString(),
@@ -489,14 +499,14 @@ export async function GET(request: Request) {
           }
 
           // STEP 5 — close scraper_executions record
-          await supabase.from("scraper_executions").update({
+          await sentinelWrite(supabase, supabase.from("scraper_executions").update({
             status: sourceErr ? "failed" : "completed",
             completed_at: new Date().toISOString(),
             total_items_found: sourceItemsFound,
             leads_created: sourceLeadsCreated,
             api_cost: sourceCostUsd,
             error_message: sourceErr?.message ?? null,
-          }).eq("id", execRecord?.id)
+          }).eq("id", execRecord?.id), { table: "scraper_executions", flow: "scrape_execution_close", brokerageId: market.brokerage_id ?? null, reason: "execution bookkeeping; the source outcome is already in results and scraper-health" })
 
           // Data Steward owns scraping health: a sustained source outage escalates to the broker.
           if (sourceErr) {
@@ -524,7 +534,7 @@ export async function GET(request: Request) {
           market.lead_scraping_motivated_params?.[0] ?? { is_active: true, signal_types: [] }
         if (motivatedParams.is_active !== false) {
           // STEP 5 — open scraper_executions record
-          const { data: execRecord } = await supabase
+          const { data: execRecord, error: execOpenErr } = await supabase
             .from("scraper_executions")
             .insert({
               brokerage_id: market.brokerage_id,
@@ -534,8 +544,11 @@ export async function GET(request: Request) {
             })
             .select("id")
             .single()
+          // A refused open is REPORTED, not carried as a null id into every close (lane 88F).
+          if (execOpenErr) results.errors.push(`scraper_executions open refused for ${market.name}: ${execOpenErr.message}`)
 
-          const job = await createScrapingJob({
+          const job = await openScrapingJob(supabase, {
+            brokerage_id: market.brokerage_id ?? null,
             job_type: "motivated_sellers",
             market_id: market.id,
             source: "batchdata",
@@ -548,7 +561,7 @@ export async function GET(request: Request) {
           let expiredCostUsd = 0
 
           try {
-            await updateScrapingJob(job.job?.id, {
+            await updateScrapingJobRow(supabase, job.job?.id, {
               status: "running",
               started_at: new Date().toISOString(),
             })
@@ -612,7 +625,7 @@ export async function GET(request: Request) {
             results.total_leads_found += sourceItemsFound
             results.total_leads_created += leadsCreated
 
-            await updateScrapingJob(job.job?.id, {
+            await updateScrapingJobRow(supabase, job.job?.id, {
               status: "completed",
               leads_found: sourceItemsFound,
               leads_created: leadsCreated,
@@ -620,7 +633,7 @@ export async function GET(request: Request) {
             })
           } catch (error) {
             sourceErr = error as Error
-            await updateScrapingJob(job.job?.id, {
+            await updateScrapingJobRow(supabase, job.job?.id, {
               status: "failed",
               error_message: String(error),
               completed_at: new Date().toISOString(),
@@ -629,14 +642,14 @@ export async function GET(request: Request) {
           }
 
           // STEP 5 — close scraper_executions record
-          await supabase.from("scraper_executions").update({
+          await sentinelWrite(supabase, supabase.from("scraper_executions").update({
             status: sourceErr ? "failed" : "completed",
             completed_at: new Date().toISOString(),
             total_items_found: sourceItemsFound,
             leads_created: leadsCreated,
             api_cost: motivatedCostUsd + expiredCostUsd,
             error_message: sourceErr?.message ?? null,
-          }).eq("id", execRecord?.id)
+          }).eq("id", execRecord?.id), { table: "scraper_executions", flow: "scrape_execution_close", brokerageId: market.brokerage_id ?? null, reason: "execution bookkeeping; the source outcome is already in results and scraper-health" })
 
           // Platform ledger, per source (lane 82B).
           await bookSourceSpend({ source: "batchdata_motivated", cost: motivatedCostUsd, brokerageId: market.brokerage_id, marketId: market.id })
@@ -765,7 +778,7 @@ export async function GET(request: Request) {
       // gate on their own resolved keyword set (lane 83A: code defaults per territory — scrape-keywords.ts); everything else runs on the territory alone.
       if (socialSourcesEnabled) {
         // STEP 5 — open scraper_executions record
-        const { data: execRecord } = await supabase
+        const { data: execRecord, error: execOpenErr } = await supabase
           .from("scraper_executions")
           .insert({
             brokerage_id: market.brokerage_id,
@@ -775,8 +788,11 @@ export async function GET(request: Request) {
           })
             .select("id")
             .maybeSingle()
+        // A refused open is REPORTED, not carried as a null id into every close (lane 88F).
+        if (execOpenErr) results.errors.push(`scraper_executions open refused for ${market.name}: ${execOpenErr.message}`)
 
-        const job = await createScrapingJob({
+        const job = await openScrapingJob(supabase, {
+          brokerage_id: market.brokerage_id ?? null,
           job_type: "social_scrape",
           market_id: market.id,
           source: "social_platforms",
@@ -811,7 +827,7 @@ export async function GET(request: Request) {
         let sourceErr: Error | null = null
 
         try {
-          await updateScrapingJob(job.job?.id, {
+          await updateScrapingJobRow(supabase, job.job?.id, {
             status: "running",
             started_at: new Date().toISOString(),
           })
@@ -1100,14 +1116,14 @@ export async function GET(request: Request) {
 
           results.total_leads_created += socialLeadsCreated
 
-          await updateScrapingJob(job.job?.id, {
+          await updateScrapingJobRow(supabase, job.job?.id, {
             status: "completed",
             leads_created: socialLeadsCreated,
             completed_at: new Date().toISOString(),
           })
         } catch (error) {
           sourceErr = error as Error
-          await updateScrapingJob(job.job?.id, {
+          await updateScrapingJobRow(supabase, job.job?.id, {
             status: "failed",
             error_message: String(error),
             completed_at: new Date().toISOString(),
@@ -1116,14 +1132,14 @@ export async function GET(request: Request) {
         }
 
         // STEP 5 — close scraper_executions record
-        await supabase.from("scraper_executions").update({
+        await sentinelWrite(supabase, supabase.from("scraper_executions").update({
           status: sourceErr ? "failed" : "completed",
           completed_at: new Date().toISOString(),
           total_items_found: socialLeadsCreated,
           leads_created: socialLeadsCreated,
           api_cost: sourceCostUsd + realtyChatterCostUsd + reviewAcquisitionCostUsd + exaCostUsd,
           error_message: sourceErr?.message ?? null,
-        }).eq("id", execRecord?.id).then(() => {}, () => {})
+        }).eq("id", execRecord?.id), { table: "scraper_executions", flow: "scrape_execution_close", brokerageId: market.brokerage_id ?? null, reason: "execution bookkeeping; the source outcome is already in results and scraper-health" })
 
         // Data Steward owns scraping health: a sustained source outage escalates to the broker.
         if (sourceErr) {
@@ -1197,14 +1213,16 @@ export async function GET(request: Request) {
       }
 
       // STEP 6 — Update territory spend and last_scraped_at after all sources run.
-      await supabase
+      // The budget gate reads spend_this_month, so a refused spend write is a budget
+      // that silently stops counting — READ and reported (lane 88F; was .then(() => {}, () => {})).
+      const { error: spendErr } = await supabase
         .from("lead_scraping_markets")
         .update({
           spend_this_month: (market.spend_this_month ?? 0) + territorySpendUsd,
           last_scraped_at: new Date().toISOString(),
         })
         .eq("id", market.id)
-        .then(() => {}, () => {})
+      if (spendErr) results.errors.push(`territory spend write refused for ${market.name} ($${territorySpendUsd.toFixed(4)} not counted): ${spendErr.message}`)
     }
 
     // ============================================
@@ -1278,9 +1296,10 @@ export async function GET(request: Request) {
         if (active && active.geographyCount !== w.geographies.length) {
           const del = await deleteSmartSearchSubscription(active.subscriptionId)
           if (del.ok) smartSearchAccountLiveCount = Math.max(0, smartSearchAccountLiveCount - 1)
-          await supabase.from("batchdata_smart_search_subscriptions")
+          const { error: supersedeErr } = await supabase.from("batchdata_smart_search_subscriptions")
             .update({ status: "cancelled", last_error: del.ok ? "superseded by pooled membership change" : `delete failed: ${del.error}`, updated_at: new Date().toISOString() })
             .eq("quicklist", w.quicklist).eq("status", "active")
+          if (supersedeErr) results.errors.push(`smart-search membership cancel refused (${w.quicklist}): ${supersedeErr.message}`)
           activeByQuicklist.delete(w.quicklist)
         }
       }
@@ -1289,9 +1308,10 @@ export async function GET(request: Request) {
         if (!wants.some((w) => w.quicklist === quicklist)) {
           const del = await deleteSmartSearchSubscription(active.subscriptionId)
           if (del.ok) smartSearchAccountLiveCount = Math.max(0, smartSearchAccountLiveCount - 1)
-          await supabase.from("batchdata_smart_search_subscriptions")
+          const { error: retireErr } = await supabase.from("batchdata_smart_search_subscriptions")
             .update({ status: "cancelled", last_error: del.ok ? "no active territory wants this quicklist anymore" : `delete failed: ${del.error}`, updated_at: new Date().toISOString() })
             .eq("quicklist", quicklist).eq("status", "active")
+          if (retireErr) results.errors.push(`smart-search membership cancel refused (${quicklist}): ${retireErr.message}`)
         }
       }
 
@@ -1308,7 +1328,7 @@ export async function GET(request: Request) {
         if (entry.action === "keep") continue
         if (entry.action === "defer") {
           for (const g of entry.geographies) {
-            await supabase.from("batchdata_smart_search_subscriptions").upsert(
+            const { error: deferErr } = await supabase.from("batchdata_smart_search_subscriptions").upsert(
               {
                 market_id: g.marketId, quicklist: entry.quicklist, status: "deferred",
                 webhook_url: process.env.BATCHDATA_SMART_SEARCH_WEBHOOK_URL ?? "",
@@ -1318,6 +1338,7 @@ export async function GET(request: Request) {
               },
               { onConflict: "market_id,quicklist" },
             )
+            if (deferErr) results.errors.push(`smart-search deferral write refused (${entry.quicklist}, market ${g.marketId}): ${deferErr.message}`)
           }
           continue
         }
@@ -1397,7 +1418,9 @@ export async function GET(request: Request) {
       .order('updated_at', { ascending: true })
       .limit(100)
     for (const r of stranded ?? []) {
-      await supabase
+      // The attempt counter is the sweep's only brake (MAX_PROMOTION_ATTEMPTS): a refused
+      // reset that still re-ran the record would retry it forever — skip it, reported (lane 88F).
+      const { error: resetErr } = await supabase
         .from('raw_scraped_leads')
         .update({
           processing_status:         'pending',
@@ -1406,6 +1429,10 @@ export async function GET(request: Request) {
           updated_at:                new Date().toISOString(),
         })
         .eq('id', r.id)
+      if (resetErr) {
+        results.errors.push(`Re-enrich reset refused for ${r.id}: ${resetErr.message}`)
+        continue
+      }
       try {
         const promo = await processRawRecord(r.id)
         if (promo.action === 'created') {
@@ -1485,14 +1512,14 @@ export async function GET(request: Request) {
       metadata: { ...results, duration_ms: durationMs },
     })
 
-    await serviceClient.from("lifecycle_events").insert({
+    await sentinelWrite(serviceClient, serviceClient.from("lifecycle_events").insert({
       entity_type:  "system",
       entity_id:    cronLogId ?? "00000000-0000-0000-0000-000000000000",
       event_type:   KernelEvent.SCRAPING_CRON_COMPLETED,
       brokerage_id: null,
       metadata:     { ...results, duration_ms: durationMs, context_id: contextId },
       created_at:   new Date().toISOString(),
-    }).then(() => {}, () => {})
+    }), { table: "lifecycle_events", flow: "scraping_cron_echo", reason: "run-level audit echo; the run result is returned and logged by the cron kernel" })
 
     // RELIST DETECTION — a property de-listed (expired/withdrawn) and back on the
     // market is a textbook motivated-seller signal. The detector joins this run's
@@ -1531,14 +1558,14 @@ export async function GET(request: Request) {
     // Close cron context — failure
     await recordCronFailureAction({ context_id: contextId, error: error as Error | string, stage: "main-processing" })
 
-    await serviceClient.from("lifecycle_events").insert({
+    await sentinelWrite(serviceClient, serviceClient.from("lifecycle_events").insert({
       entity_type:  "system",
       entity_id:    cronLogId ?? "00000000-0000-0000-0000-000000000000",
       event_type:   KernelEvent.SCRAPING_CRON_FAILED,
       brokerage_id: null,
       metadata:     { error: String(error), duration_ms: durationMs, context_id: contextId },
       created_at:   new Date().toISOString(),
-    }).then(() => {}, () => {})
+    }), { table: "lifecycle_events", flow: "scraping_cron_echo", reason: "run-level audit echo; the run result is returned and logged by the cron kernel" })
 
     return NextResponse.json({ error: String(error), results, context_id: contextId }, { status: 500 })
   }

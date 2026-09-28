@@ -45,6 +45,7 @@ import { requireAuth } from "@/lib/kernel/api-auth"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
+import { bestEffort } from "@/lib/db/best-effort"
 
 const DID_API_BASE = "https://api.d-id.com"
 
@@ -235,10 +236,10 @@ export async function POST(request: NextRequest) {
         brokerageId: auth.brokerageId,
       })
       if (!compliance.passed) {
-        await supabase
+        await bestEffort(supabase
           .from("ai_video_projects")
           .update({ status: "failed", error_message: `Compliance: ${compliance.violations.join("; ")}` })
-          .eq("id", video_project_id)
+          .eq("id", video_project_id), "failure stamp; the caller receives the compliance refusal in the response")
         return NextResponse.json(
           { error: "Brand compliance check failed", violations: compliance.violations },
           { status: 422 }
@@ -380,10 +381,10 @@ export async function POST(request: NextRequest) {
       )
     }
     if (Object.keys(cinematicUpdates).length > 0) {
-      await supabase
+      await bestEffort(supabase
         .from("ai_video_projects")
         .update(cinematicUpdates)
-        .eq("id", video_project_id)
+        .eq("id", video_project_id), "cinematic settings mirror; the render payload below carries them either way")
     }
 
     const didPayload = isVideoSource

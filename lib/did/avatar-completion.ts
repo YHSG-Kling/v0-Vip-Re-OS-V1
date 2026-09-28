@@ -215,13 +215,14 @@ export async function applyAvatarOutcome(
     const avatarUrl = rehosted ?? didAssetUrl
     const warning = avatarWarning(data)
 
-    await supabase.from("agent_avatar_assets").update({
+    const { error: readyErr } = await supabase.from("agent_avatar_assets").update({
       status: "ready",
       thumbnail_url: avatarUrl,
       avatar_url: avatarUrl, // the profile-facing, self-hosted avatar URL
       error_message: warning,
       updated_at: now,
     }).eq("id", assetId)
+    if (readyErr) return { applied: false, outcome: "unknown", reason: `ready stamp refused: ${readyErr.message}` }
 
     // Mirror onto agent_voice_profiles for default avatars so generate-video and
     // chat-widget lookups get it on a single join. The PROFILE stores the bucket
@@ -258,11 +259,12 @@ export async function applyAvatarOutcome(
     // "InvalidFaceError".
     const failure = classifyDidError(null, data.error ?? data)
 
-    await supabase.from("agent_avatar_assets").update({
+    const { error: failStampErr } = await supabase.from("agent_avatar_assets").update({
       status: "failed",
       error_message: failure.userMessage,
       updated_at: now,
     }).eq("id", assetId)
+    if (failStampErr) return { applied: false, outcome: "unknown", reason: `failed stamp refused: ${failStampErr.message}` }
 
     if (notifyUserId) {
       await sentinelWrite(supabase, supabase.from("notifications").insert({
@@ -284,9 +286,10 @@ export async function applyAvatarOutcome(
   // draft | validating | created | started | training-started — still working.
   // Promoted pending → processing only, so a row already marked processing does
   // not churn updated_at on every tick and every redelivery.
-  await supabase.from("agent_avatar_assets")
+  const { error: inFlightErr } = await supabase.from("agent_avatar_assets")
     .update({ status: "processing", updated_at: now })
     .eq("id", assetId).eq("status", "pending")
+  if (inFlightErr) return { applied: false, outcome: "unknown", reason: `processing stamp refused: ${inFlightErr.message}` }
 
   return { applied: true, outcome: "in_flight" }
 }

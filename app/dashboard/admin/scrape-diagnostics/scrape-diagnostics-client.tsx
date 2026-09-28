@@ -1,8 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { runScrapeTestAction, verifyScrapeTestCronDoorAction } from "@/app/actions/admin/run-scrape-test"
-import { retryFailedSourceBatch } from "@/lib/kernel/scraping"
+import { runScrapeTestAction, verifyScrapeTestCronDoorAction, retryFailedSourceBatchAction } from "@/app/actions/admin/run-scrape-test"
 import type { ScrapingDiagnosticsData } from "@/lib/kernel/scraping"
 
 // ─── Sub-component types ──────────────────────────────────────────────────────
@@ -115,12 +114,10 @@ export function ScrapeDiagnosticsClient({
   data,
   actorHealth,
   isSuperadmin,
-  currentUserId,
 }: {
   data: ScrapingDiagnosticsData
   actorHealth: Array<{ id: string; task: string; actor_id: string; alive: boolean; last_checked: string | null; last_error: string | null }>
   isSuperadmin: boolean
-  currentUserId: string
 }) {
   const [activeTab,       setActiveTab]       = useState<Tab>("overview")
   const [selectedMarketId, setSelectedMarketId] = useState(data.markets[0]?.id ?? "")
@@ -195,11 +192,8 @@ export function ScrapeDiagnosticsClient({
     setRetryingId(executionId)
     setRetryMessages(prev => ({ ...prev, [executionId]: "" }))
     try {
-      const result = await retryFailedSourceBatch({
-        executionId,
-        brokerageId,
-        retriedByUserId: currentUserId,
-      })
+      // lane 88F — through the gated server action; the retrier is the session user.
+      const result = await retryFailedSourceBatchAction(executionId, brokerageId)
       setRetryMessages(prev => ({
         ...prev,
         [executionId]: result.success

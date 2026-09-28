@@ -77,15 +77,11 @@ import { stripComments, blankStrings } from "./strip-comments"
 
 const root = process.cwd()
 
-const SCRAPING_PATH_PREFIXES = [
-  "lib/lead-pipeline/",
-  "lib/external/",
-  "app/actions/lead-intelligence.ts",
-  "lib/kernel/intent-campaign.ts",
-  "lib/kernel/scraping.ts",
-  "app/actions/lead-scraping-config.ts",
-  "app/api/cron/lead-scraping/",
-]
+/** RETIRED (lane 88F): the owner reopened scraping — "lead scrapping lane can be changed
+ *  if necessary and benefinicial" — so scraping paths are judged like every other path.
+ *  Measured before retiring: 0 unread-state findings under these paths. The list is kept EMPTY rather than deleted so the
+ *  report lines below keep printing their (now zero) excluded count. */
+const SCRAPING_PATH_PREFIXES: readonly string[] = []
 function isScrapingPath(relPath: string): boolean {
   return SCRAPING_PATH_PREFIXES.some((p) => relPath === p || relPath.startsWith(p))
 }
@@ -454,7 +450,7 @@ if (typeof process !== "undefined" && /unread-state-census\.ts$/.test(process.ar
   console.log(" UNREAD-STATE CENSUS — useState/useEffect halves a \"use client\" file never wires")
   console.log("═".repeat(70))
   console.log(`  ${findings.length} finding(s) across app/ "use client" files`)
-  console.log(`  ${scraping.length} under the wave-55 scraping freeze — excluded from PASS/FAIL, never auto-fixed`)
+  console.log(`  ${scraping.length} excluded as scraping (exclusion retired in lane 88F — always 0)`)
   console.log(`  ${live.length} live (non-scraping) — the burn-down list`)
   console.log("")
   console.log("  BLIND SPOTS: word-boundary, not scope-aware (checks 1/2 under-accuse on")

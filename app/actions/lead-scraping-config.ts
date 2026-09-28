@@ -602,52 +602,12 @@ export async function getScrapingJobs(limit = 50) {
   }
 }
 
-export async function createScrapingJob(jobData: {
-  job_type: string
-  market_id?: string
-  source: string
-}) {
-  try {
-    const supabase = await createClient()
-    const { data, error } = await supabase
-      .from("lead_scraping_jobs")
-      .insert({
-        ...jobData,
-        status: "pending",
-      })
-      .select()
-      .single()
-
-    if (error) throw error
-    return { success: true, job: data }
-  } catch (error) {
-    console.error("[v0] Error creating scraping job:", error)
-    return { success: false, error: String(error) }
-  }
-}
-
-export async function updateScrapingJob(
-  id: string,
-  updates: Partial<{
-    status: string
-    leads_found: number
-    leads_created: number
-    error_message: string
-    started_at: string
-    completed_at: string
-  }>,
-) {
-  try {
-    const supabase = await createClient()
-    const { error } = await supabase.from("lead_scraping_jobs").update(updates).eq("id", id)
-
-    if (error) throw error
-    return { success: true }
-  } catch (error) {
-    console.error("[v0] Error updating scraping job:", error)
-    return { success: false, error: String(error) }
-  }
-}
+// TOMBSTONE (lane 88F, CLAUDE.md §1.3) — createScrapingJob / updateScrapingJob lived here as
+// "use server" doors on the COOKIE client. Their only caller was the lead-scraping cron,
+// which has no session, so every job row was refused (0 rows live) — and as public
+// endpoints any signed-in user could mint or rewrite job rows. Survivor:
+// lib/lead-pipeline/scraping-job-ledger.ts:44 (openScrapingJob) and :62 (updateScrapingJobRow),
+// a server-only core on the cron's service client. getScrapingJobs above stays the reader.
 
 // ============================================
 // BATCHDATA FEED STATUS (wave 66 integration — the READER half of m635/m636)

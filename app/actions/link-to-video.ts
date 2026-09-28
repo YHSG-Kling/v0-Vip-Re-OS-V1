@@ -30,6 +30,7 @@ import {
   PROHIBITED_PHRASE_RED_FLAG_PREFIX,
   COMPLIANCE_UNKNOWN_PREFIX,
 } from "@/lib/video/script-compliance"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 // Every function in this file used to be unauthenticated. Caller could
 // generate AI video scripts attributed to any organization (burning AI
@@ -296,7 +297,7 @@ Return JSON: {
 
     const complianceResult = JSON.parse(complianceResponse.text)
 
-    await supabase
+    const { error: complianceSaveErr } = await supabase
       .from("video_generation_queue")
       .update({
         compliance_check_passed: complianceResult.passed && complianceResult.score >= 75,
@@ -304,6 +305,7 @@ Return JSON: {
         script_status: complianceResult.passed ? "approved" : "needs_revision",
       })
       .eq("id", videoQueueId)
+    if (complianceSaveErr) return { success: false, error: `Compliance ran but could not be saved: ${complianceSaveErr.message}` }
 
     revalidatePath("/content-studio")
     return { success: true, compliance: complianceResult }
@@ -456,10 +458,10 @@ export async function startVideoGeneration(videoQueueId: string) {
 
     if (render.status === "error" || !render.videoId) {
       const reason = render.note ?? "the video provider refused the job"
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("ai_video_projects")
         .update({ status: "failed", error_message: `Render not started: ${reason}` })
-        .eq("id", projectId)
+        .eq("id", projectId), { table: "ai_video_projects", flow: "link_to_video_render_fail", reason: "failure stamp; the caller is told the render did not start" })
       // The queue row follows to 'failed' through the m365 trigger.
       revalidatePath("/content-studio")
       return { success: false, error: reason }
@@ -634,7 +636,8 @@ Requirements:
 Return only the caption text.`,
     })
 
-    await supabase.from("video_generation_queue").update({ social_caption: captionResponse.text }).eq("id", videoQueueId)
+    const { error: captionSaveErr } = await supabase.from("video_generation_queue").update({ social_caption: captionResponse.text }).eq("id", videoQueueId)
+    if (captionSaveErr) return { success: false, error: `Caption generated but not saved: ${captionSaveErr.message}` }
 
     revalidatePath("/content-studio")
     return { success: true, caption: captionResponse.text }

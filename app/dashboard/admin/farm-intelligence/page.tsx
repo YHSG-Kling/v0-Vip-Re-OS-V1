@@ -3,11 +3,10 @@
 import { bestEffort } from "@/lib/db/best-effort"
 import { useEffect, useState, useTransition } from "react"
 import { createClient } from "@/lib/supabase/client"
-import {
-  seedTerritoriesFromServiceArea,
-  setFarmTerritoryMode,
-  type TerritoryMetricsRow,
-} from "@/lib/territory/metrics-aggregator"
+import type { TerritoryMetricsRow } from "@/lib/territory/metrics-aggregator"
+// lane 88F — the service-role territory writers are reached through gated server doors
+// (tenant from the SESSION), never imported into this client bundle.
+import { seedFarmTerritoriesFromServiceAreaAction, setFarmTerritoryModeAction } from "@/app/actions/admin/brokerage-intelligence-doors"
 import { toast } from "sonner"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -175,9 +174,11 @@ export default function FarmIntelligencePage() {
         if (mergeChoice === "overwrite") {
           await bestEffort(supabase.from("farm_territories").delete().eq("brokerage_id", brokerageId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
         }
-        await seedTerritoriesFromServiceArea(brokerageId)
+        const seeded = await seedFarmTerritoriesFromServiceAreaAction()
+        if (!seeded.ok) { toast.error(`Could not seed territories: ${seeded.error}`); return }
       }
-      await setFarmTerritoryMode(brokerageId, chosen)
+      const set = await setFarmTerritoryModeAction(chosen)
+      if (!set.ok) { toast.error(`Could not save the territory mode: ${set.error}`); return }
       setMode(chosen)
       setMergeChoice(null)
       await load()

@@ -1752,7 +1752,13 @@ console.log("\n[6c · the duplicate verdict — RESOLVED BY DELETION, wave 14]")
   check("…the tombstone still names the batchdata survivor at file:line",
     leadIntelRaw.includes("lib/external/batchdata-client.ts:320"))
   check("…and names a survivor for each of the other halves it carried",
-    leadIntelRaw.includes("app/actions/scrape-social-media.ts:41")
+    // RULE, not waypoint (lane 88F): the file:line the tombstone names must still HOLD the
+    // survivor's export — a fixed line number went stale the moment the file grew.
+    (() => {
+      const ref = leadIntelRaw.match(/app\/actions\/scrape-social-media\.ts:(\d+) `scrapeSocialMedia`/)
+      const line = ref ? (src("app/actions/scrape-social-media.ts").split("\n")[Number(ref[1]) - 1] ?? "") : ""
+      return /export async function scrapeSocialMedia\b/.test(line)
+    })()
     && leadIntelRaw.includes("lib/osint-client.ts:357")
     && leadIntelRaw.includes("scrapeSocialSignalsWithZenRows"))
   check("…and the survivor's four live consumers are untouched",

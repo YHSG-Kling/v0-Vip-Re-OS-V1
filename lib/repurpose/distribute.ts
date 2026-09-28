@@ -122,10 +122,11 @@ export async function distributeRepurposedVideoAsDraft(
   }
 
   // Mark distributed so a cron re-poll / retry can't draft duplicates.
-  await supabase
+  const { error: markErr } = await supabase
     .from("ai_video_projects")
     .update({ video_metadata: { ...(metadata ?? {}), repurpose: { ...intent, distributed: true } } })
     .eq("id", projectId)
+  if (markErr) return { success: true, created, error: `drafts created but the project was not marked distributed (${markErr.message}) — a retry could draft again` }
 
   return { success: true, created }
 }
