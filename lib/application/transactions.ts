@@ -1,3 +1,4 @@
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { milestoneJourneyFor } from "@/lib/transactions/milestone-catalog"
@@ -1736,7 +1737,7 @@ Return JSON with detailed breakdown.`
   if (costs.data) {
     for (const [costType, costData] of Object.entries(costs.data.costs || {})) {
       const cost: any = costData
-      await supabase.from("cost_breakdown_tracking").insert({
+      await bestEffort(supabase.from("cost_breakdown_tracking").insert({
         // TENANT ANCHOR (§4) — brokerage_id is a live column
         // (schema-snapshot.ts:260) this insert never stamped, so every row
         // written here was untenanted until the new reader
@@ -1750,7 +1751,7 @@ Return JSON with detailed breakdown.`
         estimated_amount: cost.amount || cost.total || cost,
         party: isSeller ? "seller" : "buyer", // CHECK: buyer|seller
         status: "estimated",
-      })
+      }), "AI-generated estimate lines for display; the transaction is unaffected")
     }
   }
 
@@ -1823,14 +1824,14 @@ Tone: Honest, reassuring, specific (no vague language)`
     const update = JSON.parse(await runPipelineSimple(updatePrompt, { feature: "transaction_update" }))
 
   if (update.data?.update) {
-    await supabase.from("client_friendly_updates").insert({
+    await bestEffort(supabase.from("client_friendly_updates").insert({
       transaction_id: transactionId,
       update_text: update.data.update,
       update_type: "status_change",
       ai_generated: true,
       tone: "informative",
       sent_via: "portal",
-    })
+    }), "AI-generated client update text; regenerated on the next status change")
     return { success: true, update: update.data.update }
   }
 
@@ -2198,7 +2199,7 @@ Return:
     // the explanation beside every health score has been blank on every deal,
     // and the model that produced the score is the only thing that can write it,
     // which is why the prompt above now asks for it.
-    await supabase.from("transaction_health_factors").insert({
+    await bestEffort(supabase.from("transaction_health_factors").insert({
       transaction_id: transactionId,
       factor_type: "comprehensive",
       factor_score: analysis.data.health_score || 100,
@@ -2207,25 +2208,25 @@ Return:
       red_flags: analysis.data.red_flags || [],
       warning_signs: analysis.data.warning_signs || [],
       recommendations: analysis.data.recommendations || [],
-    })
+    }), "health breakdown history row; the analysis is returned to the caller")
 
-    await supabase
+    await bestEffort(supabase
       .from("transactions")
       .update({
         health_score: analysis.data.health_score || 100,
         health_status: analysis.data.health_status || "healthy",
       })
-      .eq("id", transactionId)
+      .eq("id", transactionId), "health score cache on the deal; recomputed by every analysis")
 
     if (analysis.data.requires_intervention) {
-      await supabase.from("proactive_interventions").insert({
+      await bestEffort(supabase.from("proactive_interventions").insert({
         transaction_id: transactionId,
         issue_detected: analysis.data.red_flags?.[0] || "Health score declined",
         severity: analysis.data.health_status === "critical" ? "critical" : "medium",
         ai_recommendation: analysis.data.recommendations?.[0] || "Review transaction status",
         resolved: false,
         client_impacted: true,
-      })
+      }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     }
   }
 
@@ -2292,7 +2293,7 @@ export async function deliverEducationalContent(transactionId: string, stage: st
     .maybeSingle()
   if (existing) return { success: false, message: "Content already delivered" }
 
-  await supabase.from("learning_assignments").insert({
+  await bestEffort(supabase.from("learning_assignments").insert({
     brokerage_id:    transaction.brokerage_id,
     module_id:       moduleRow.id,
     contact_id:      contactId,
@@ -2300,7 +2301,7 @@ export async function deliverEducationalContent(transactionId: string, stage: st
     signal_metadata: { transaction_id: transactionId, stage },
     priority_score:  70,
     status:          "open",
-  })
+  }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
   return { success: true, content: moduleRow, message: `Educational content delivered for ${stage} stage` }
 }
@@ -2375,19 +2376,19 @@ Calculate health scores (0-100):
     const health = JSON.parse(await runPipelineSimple(prompt, { feature: "transaction_health" }))
     if (!health.data) throw new Error("Health analysis failed")
 
-    await supabase
+    await bestEffort(supabase
       .from("transactions")
       .update({
         health_score: health.data.overall_health,
         health_status:
           health.data.overall_health < 50 ? "critical" : health.data.overall_health < 75 ? "at_risk" : "healthy",
       })
-      .eq("id", transactionId)
+      .eq("id", transactionId), "health score cache on the deal; recomputed by every analysis")
 
     // Same two stamps as the issue-analysis writer above — one vocabulary, so
     // the breakdown's narrative behaves identically whichever analysis produced
     // the row.
-    await supabase.from("transaction_health_factors").insert({
+    await bestEffort(supabase.from("transaction_health_factors").insert({
       transaction_id: transactionId,
       factor_type: "comprehensive",
       factor_score: health.data.overall_health,
@@ -2395,7 +2396,7 @@ Calculate health scores (0-100):
       scored_at: new Date().toISOString(),
       red_flags: health.data.risk_factors,
       recommendations: health.data.recommendations,
-    })
+    }), "health breakdown history row; the analysis is returned to the caller")
 
     return { success: true, health: health.data }
   } catch (error) {
@@ -2462,13 +2463,13 @@ Current Delays: ${JSON.stringify(delays)}
     const impact = JSON.parse(await runPipelineSimple(prompt, { feature: "transaction_impact" }))
 
   if (impact.data?.client_communication_needed) {
-    await supabase.from("timeline_transparency").insert({
+    await bestEffort(supabase.from("timeline_transparency").insert({
       transaction_id: transactionId,
       delays,
       reason_for_delays: impact.data.action_items,
       impact_on_closing: impact.data.days_delayed,
       communicated_to_client: true,
-    })
+    }), "delay transparency record from an AI impact read returned to the caller")
   }
 
   return { success: true, delays, impact: impact.data }
@@ -2494,12 +2495,13 @@ export async function celebrateMilestone(transactionId: string, milestone: strin
   const celebration = celebrations[milestone]
   if (!celebration) return { success: false, message: "No celebration for this milestone" }
 
-  await supabase.from("client_friendly_updates").insert({
+  const { error: celebrationErr } = await supabase.from("client_friendly_updates").insert({
     transaction_id: transactionId,
     update_text: celebration.message,
     update_type: "celebration",
     tone: celebration.tone,
   })
+  if (celebrationErr) return { success: false, message: `Celebration not recorded: ${celebrationErr.message}` }
 
   return { success: true, celebration, message: "Celebration moment recorded" }
 }
@@ -3107,11 +3109,12 @@ export async function autoProgressMilestone(transactionId: string, completedMile
   // contacts.persona is a phantom; contact_persona is the real column.
   const persona = transaction.contacts?.contact_persona || "buyer"
 
-  await supabase
+  const { error: milestoneDoneErr } = await supabase
     .from("transaction_milestones")
     .update({ status: "completed", completed_at: new Date().toISOString() })
     .eq("transaction_id", transactionId)
     .eq("milestone_name", completedMilestone)
+  if (milestoneDoneErr) console.error(`[transactions] milestone completion refused: ${milestoneDoneErr.message}`)
 
   await celebrateMilestone(transactionId, completedMilestone.toLowerCase().replace(/ /g, "_"))
 

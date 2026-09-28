@@ -28,6 +28,7 @@
  * rather than guarding them, matching lib/showings/showing-brief.ts.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchEmail } from "@/lib/providers/dispatch"
 import { buildHomeValueEmailHtml, buildHomeValueEmailSubject } from "@/lib/marketing/home-value-email"
@@ -220,7 +221,7 @@ export async function generateAnnualHomeValueReportsCronTick() {
       cadence:       "anniversary",
     })
 
-    await supabase.from("lifetime_customer_touchpoints").insert({
+    await sentinelWrite(supabase, supabase.from("lifetime_customer_touchpoints").insert({
       brokerage_id:           c.brokerage_id,
       agent_id:               c.agent_id,
       contact_id:             c.buyer_contact_id,
@@ -231,7 +232,7 @@ export async function generateAnnualHomeValueReportsCronTick() {
       sent_date:              emailResult.sent ? new Date().toISOString().slice(0, 10) : null,
       related_transaction_id: c.id,
       engagement_data:        { ...report, email_dispatch: emailResult },
-    })
+    }), { table: "lifetime_customer_touchpoints", flow: "lifetime_customer_touchpoints_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
     generated.push({ contactId: c.buyer_contact_id as string, transactionId: c.id as string, ok: true })
   }
@@ -388,7 +389,7 @@ export async function generateQuarterlyHomeValueReportsCronTick() {
       cadence:      "quarterly",
     })
 
-    await supabase.from("lifetime_customer_touchpoints").insert({
+    await sentinelWrite(supabase, supabase.from("lifetime_customer_touchpoints").insert({
       brokerage_id:           c.brokerage_id,
       agent_id:               c.agent_id,
       contact_id:             c.buyer_contact_id,
@@ -399,7 +400,7 @@ export async function generateQuarterlyHomeValueReportsCronTick() {
       sent_date:              emailResult.sent ? new Date().toISOString().slice(0, 10) : null,
       related_transaction_id: c.id,
       engagement_data:        { ...report, period_key: periodKey, email_dispatch: emailResult },
-    })
+    }), { table: "lifetime_customer_touchpoints", flow: "lifetime_customer_touchpoints_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
     generated.push({
       contactId:     c.buyer_contact_id as string,

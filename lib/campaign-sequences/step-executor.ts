@@ -99,10 +99,11 @@ export async function executeSequenceStep(
   const step = pickStepVariant(stepRows as any[], enrollment.ab_variant)
 
   if (!step) {
-    await supabase
+    const { error: enrollDoneErr } = await supabase
       .from("sequence_enrollments")
       .update({ status: "completed", completed_at: new Date().toISOString(), next_step_at: null })
       .eq("id", enrollmentId)
+    if (enrollDoneErr) console.error(`[step-executor] enrollment NOT marked completed (the worker may revisit it): ${enrollDoneErr.message}`)
 
     await processKernelEvent({
       event: KernelEvent.ISA_MAX_TOUCHES_REACHED,
@@ -419,10 +420,11 @@ export async function executeSequenceStep(
 
     if (decision.action === "reschedule") {
       // Retry the SAME step (current_step unchanged) after the backoff — touch preserved.
-      await supabase.from("sequence_enrollments").update({
+      const { error: rescheduleErr } = await supabase.from("sequence_enrollments").update({
         next_step_at: decision.nextStepAt,
         step_outputs: { ...previousOutputs, __defers: { ...defers, [stepKey]: decision.attempt } },
       }).eq("id", enrollmentId)
+      if (rescheduleErr) console.error(`[step-executor] over-touch reschedule NOT saved: ${rescheduleErr.message}`)
       return { status: "skipped", reason: `over-touch: rescheduled (attempt ${decision.attempt}/${MAX_DEFERS})` }
     }
     // Cap exhausted — advance so a perpetually-capped contact never stalls the cadence forever.
@@ -465,11 +467,9 @@ export async function executeSequenceStep(
       [namedKey]: dispatchResult.output,
     }
 
-    void Promise.resolve(
-      supabase.from("sequence_enrollments")
+    void sentinelWrite(supabase, supabase.from("sequence_enrollments")
         .update({ step_outputs: updatedOutputs })
-        .eq("id", enrollmentId)
-    ).catch(() => {})
+        .eq("id", enrollmentId), { table: "sequence_enrollments", flow: "sequence_enrollments_write", reason: "step output carry-forward for later steps' templates; the step itself already ran" })
   }
 
   // ── Step 10: the per-step ledger (ONE row, every path — m302) ──────────────
@@ -533,7 +533,7 @@ export async function executeSequenceStep(
   }
 
   if (finalLeadId) {
-    const { data: outreachRow } = await supabase.from("isa_outreach_log").insert({
+    const { data: outreachRow, error: outreachLogErr } = await supabase.from("isa_outreach_log").insert({
       lead_id: finalLeadId,
       brokerage_id: brokerageId,
       channel: step.channel,
@@ -541,10 +541,11 @@ export async function executeSequenceStep(
       sent_at: dispatchResult.status === "sent" ? now : null,
       compliance_passed: true,
     }).select("id").single()
+    if (outreachLogErr) console.error(`[step-executor] ISA outreach log row NOT written: ${outreachLogErr.message}`)
     isaOutreachLogId = outreachRow?.id ?? null
   }
 
-  supabase.from("message_provider_logs").insert({
+  void sentinelWrite(supabase, supabase.from("message_provider_logs").insert({
     brokerage_id: brokerageId,
     channel: step.channel,
     provider_key: dispatchResult.providerKey,
@@ -554,7 +555,7 @@ export async function executeSequenceStep(
     error_message: dispatchResult.error ?? null,
     outreach_log_id: isaOutreachLogId,
     // message_provider_logs timestamp column is sent_at (defaults now()) — no created_at.
-  })
+  }), { table: "message_provider_logs", flow: "sequence_provider_log", reason: "provider log of a step already dispatched" })
 
   // ── Step 13: Kernel events ─────────────────────────────────────────────────
   if (dispatchResult.status === "sent") {

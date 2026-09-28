@@ -6,6 +6,7 @@
 // channels). Marketing-staff-gated (capability map), audited; drafts move
 // draft → approved → posted (permalink recorded when it actually goes out).
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
@@ -99,7 +100,7 @@ export async function generateProductVideoDraftAction(input: { angle: string; fo
   if (input.topicId) {
     const { data: t } = await svc.from("platform_content_topics").select("id, topic").eq("id", input.topicId).maybeSingle()
     topicText = (t as any)?.topic ?? null
-    if (topicText) await svc.from("platform_content_topics").update({ status: "used", used_at: new Date().toISOString() }).eq("id", input.topicId)
+    if (topicText) await sentinelWrite(svc, svc.from("platform_content_topics").update({ status: "used", used_at: new Date().toISOString() }).eq("id", input.topicId), { table: "platform_content_topics", flow: "platform_content_topics_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
   // Lane 78B — the reel's image slot (imageUrls) is filled from the demo
   // stills the screenshot seam keeps fresh (same source the autopilot uses).

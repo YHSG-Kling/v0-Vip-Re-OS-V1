@@ -88,10 +88,11 @@ export async function acceptAIISAHandoff(params: {
 
     // 2. Qualified — satisfies Engine 2's gate (lead_stage='qualified' + consented).
     if (lead.lead_stage !== 'qualified') {
-      await service
+      const { error: qualifyErr } = await service
         .from('leads')
         .update({ lead_stage: 'qualified', ai_isa_owner: false, updated_at: new Date().toISOString() })
         .eq('id', lead.id)
+      if (qualifyErr) return { success: false, error: `Could not mark the lead qualified for hand-off: ${qualifyErr.message}` }
     }
 
     // 3. Engine 2 — the ONE assignment path: tier-aware routing (solo/team/brokerage/
@@ -137,14 +138,14 @@ export async function acceptAIISAHandoff(params: {
   }
 
   try {
-    await service.from('lifecycle_events').insert({
+    await sentinelWrite(service, service.from('lifecycle_events').insert({
       entity_type: 'lead',
       entity_id: lead.id,
       brokerage_id: lead.brokerage_id,
       event_type: 'AI_ISA_HANDOFF_ACCEPTED',
       metadata: { actorUserId: params.actorUserId, contactId, channel: 'voice_or_ui', manager: 'ai_isa' },
       created_at: new Date().toISOString(),
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
   } catch { /* non-blocking */ }
 
   return { success: true, contactId }

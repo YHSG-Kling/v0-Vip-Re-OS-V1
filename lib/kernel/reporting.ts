@@ -45,6 +45,7 @@
 //   agents, team_performance, brokerage_earnings, isa_outreach_log,
 //   ai_isa_qualifications
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { resolveReportScope } from "./reporting-scope"
@@ -1099,7 +1100,7 @@ export async function exportReportPdf(
     const reportUrl = issued.url
 
     // Store the signed URL in ai_assistant_notes for audit trail
-    await supabase.from("ai_assistant_notes").insert({
+    await sentinelWrite(supabase, supabase.from("ai_assistant_notes").insert({
       brokerage_id: ctx.brokerageId, // NOT NULL
       created_by:   ctx.userId,      // NOT NULL (no agent_id column)
       entity_type:  "report",
@@ -1107,7 +1108,7 @@ export async function exportReportPdf(
       note_text:    JSON.stringify({ type: "pdf_export", url: reportUrl, title, reportType }), // was phantom note
       source:       "ai_assistant",
       created_at:   new Date().toISOString(),
-    }).select()
+    }).select(), { table: "ai_assistant_notes", flow: "ai_assistant_notes_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
     await emitEvent(supabase, ctx, KernelEvent.REPORT_EXPORTED_PDF, crypto.randomUUID(), {
       reportType, blobUrl: reportUrl,

@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
@@ -264,7 +265,7 @@ Rules:
       const appended = lead?.notes
         ? `${lead.notes}\n\n[AI Note - ${ts}]\n${noteText}`
         : `[AI Note - ${ts}]\n${noteText}`
-      await service.from("leads").update({ notes: appended }).eq("id", leadId)
+      await sentinelWrite(service, service.from("leads").update({ notes: appended }).eq("id", leadId), { table: "leads", flow: "lead_note_append", reason: "appends the AI note to the lead for display; the note is recorded on its own rows" })
     }
 
     // ── 5. transaction_lenders.notes (role=lender + entity=transaction) ───────
@@ -280,7 +281,7 @@ Rules:
         const appended = tl.notes
           ? `${tl.notes}\n\n[Lender Note - ${ts}]\n${noteText}`
           : `[Lender Note - ${ts}]\n${noteText}`
-        await service.from("transaction_lenders").update({ notes: appended }).eq("id", tl.id)
+        await sentinelWrite(service, service.from("transaction_lenders").update({ notes: appended }).eq("id", tl.id), { table: "transaction_lenders", flow: "lender_note_append", reason: "appends the lender note for display; the note itself is recorded on its own rows above" })
       }
     }
 
@@ -299,7 +300,7 @@ Rules:
         const appended = booking.notes
           ? `${booking.notes}\n\n[Vendor Note - ${ts}]\n${noteText}`
           : `[Vendor Note - ${ts}]\n${noteText}`
-        await service.from("vendor_bookings").update({ notes: appended }).eq("id", booking.id)
+        await sentinelWrite(service, service.from("vendor_bookings").update({ notes: appended }).eq("id", booking.id), { table: "vendor_bookings", flow: "vendor_note_append", brokerageId: brokerageId, reason: "appends the vendor note to the booking for display; the note itself is recorded on its own rows above" })
       }
     }
 
@@ -310,7 +311,7 @@ Rules:
     // the foreign key will reject anyway.
     if (createTask && taskTitle?.trim() && actingAgentId) {
       const dueDate = new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0]
-      const { data: task } = await service
+      const { data: task, error: noteTaskErr } = await service
         .from("tasks")
         .insert({
           brokerage_id: brokerageId,
@@ -325,6 +326,7 @@ Rules:
         })
         .select("id")
         .maybeSingle()
+      if (noteTaskErr) console.error(`[ai-note] follow-up task NOT created: ${noteTaskErr.message}`)
       taskId = task?.id ?? null
     }
 

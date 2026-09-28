@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import {
 NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -120,7 +121,7 @@ export async function GET(request: NextRequest) {
               .slice(0, 3)
               .join(", ") || "Deal health score below threshold"
 
-            await supabase.from("proactive_interventions").insert({
+            await sentinelWrite(supabase, supabase.from("proactive_interventions").insert({
               transaction_id: tx.id,
               brokerage_id: tx.brokerage_id,
               issue_detected: issueDetected,
@@ -128,7 +129,7 @@ export async function GET(request: NextRequest) {
               ai_recommendation: result.aiNarrative || null,
               client_impacted: true,
               resolved: false,
-            })
+            }), { table: "proactive_interventions", flow: "proactive_interventions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
           }
         }
 
@@ -288,7 +289,7 @@ export async function POST(request: NextRequest) {
           .slice(0, 3)
           .join(", ") || "Deal health score below threshold"
 
-        await supabase.from("proactive_interventions").insert({
+        await sentinelWrite(supabase, supabase.from("proactive_interventions").insert({
           transaction_id: tx.id,
           brokerage_id: tx.brokerage_id,
           issue_detected: issueDetected,
@@ -296,7 +297,7 @@ export async function POST(request: NextRequest) {
           ai_recommendation: result.aiNarrative || null,
           client_impacted: true,
           resolved: false,
-        })
+        }), { table: "proactive_interventions", flow: "proactive_interventions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       }
     }
 

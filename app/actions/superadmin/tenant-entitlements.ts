@@ -200,8 +200,11 @@ export async function setTenantFeatureOverrideAction(params: {
   const svc = createServiceClient()
 
   // Replace any existing BROKERAGE-scoped override for this feature (never touches user/team scope).
-  await svc.from("feature_access_overrides").delete()
+  // A refused delete would leave the OLD override in force under the new one (or,
+  // for "clear", report cleared while access is unchanged).
+  const { error: clearErr } = await svc.from("feature_access_overrides").delete()
     .eq("brokerage_id", params.brokerageId).eq("feature_key", params.featureKey).is("user_id", null).is("team_id", null)
+  if (clearErr) return { ok: false, error: `Could not replace the existing override: ${clearErr.message}` }
 
   if (params.action !== "clear") {
     const kind = normalizeOverrideType(params.action)
@@ -325,7 +328,7 @@ export async function setTenantAutonomyHaltAction(params: {
     // feature matrix). It is enabled for every tier by default — only the override kills it.
     const { data: flag } = await svc.from("feature_flags").select("feature_key").eq("feature_key", TENANT_AUTONOMY_FEATURE_KEY).maybeSingle()
     if (!flag) {
-      await svc.from("feature_flags").insert({
+      const { error: flagSeedErr } = await svc.from("feature_flags").insert({
         feature_key: TENANT_AUTONOMY_FEATURE_KEY,
         display_name: "Autonomous AI managers",
         description: "Unattended AI manager sends (the autonomous dispatch path). Disabling this for a tenant halts their autonomy; approved/human sends are unaffected.",
@@ -333,6 +336,7 @@ export async function setTenantAutonomyHaltAction(params: {
         enabled: true, superadmin_only: false,
         solo_agent_access: true, team_access: true, brokerage_access: true, multi_location_access: true,
       })
+      if (flagSeedErr) console.error(`[tenant-entitlements] autonomy feature flag NOT seeded: ${flagSeedErr.message}`)
     }
     const { error } = await svc.from("feature_access_overrides").insert({
       brokerage_id: params.brokerageId, feature_key: TENANT_AUTONOMY_FEATURE_KEY, override_type: "disable",

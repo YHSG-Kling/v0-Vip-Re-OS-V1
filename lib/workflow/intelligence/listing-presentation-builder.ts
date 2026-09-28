@@ -609,7 +609,7 @@ export async function buildListingPresentation(
     // 6. Stage the listing-agreement packet (so the agent can sign at the table)
     let packetDocumentId: string | null = null
     try {
-      const { data: packetDoc } = await svc.from("documents").insert({
+      const { data: packetDoc, error: packetDocErr } = await svc.from("documents").insert({
         brokerage_id:  input.brokerageId,
         contact_id:    input.contactId,
         document_type: "listing_agreement",
@@ -633,6 +633,7 @@ export async function buildListingPresentation(
         }, null, 2),
         created_at: new Date().toISOString(),
       }).select("id").single()
+      if (packetDocErr) console.error(`[listing-presentation] listing-agreement packet NOT staged: ${packetDocErr.message}`)
       packetDocumentId = packetDoc?.id ?? null
     } catch { /* packet creation is best-effort */ }
 

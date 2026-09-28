@@ -50,6 +50,7 @@
  * entitlement must not become a financial one. See PAID_ACCESS_GRANTED_SCOPES.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveActorNames } from "@/lib/kernel/actor-attribution"
@@ -251,7 +252,7 @@ export async function assignVendorToContactAction(
   }
 
   // Granting an outside party access to a client's PII is an auditable event.
-  await svc.from("audit_log").insert({
+  await sentinelWrite(svc, svc.from("audit_log").insert({
     after: {
       brokerage_id:   auth.brokerageId,
       vendor_id:      input.vendorId,
@@ -265,7 +266,7 @@ export async function assignVendorToContactAction(
     action:      "vendor_contact_access.granted",
     entity_type: "vendor_contact_assignment",
     entity_id:   assignmentId,
-  })
+  }), { table: "audit_log", flow: "vendor_contact_access_granted_audit", brokerageId: auth.brokerageId, reason: "the assignment already landed (checked above); a lost audit echo is ledgered for the compliance digest" })
 
   revalidatePath("/dashboard/vendors")
   revalidatePath("/portal/vendor")
@@ -308,13 +309,13 @@ export async function revokeVendorContactAccessAction(params: {
     }
   }
 
-  await svc.from("audit_log").insert({
+  await sentinelWrite(svc, svc.from("audit_log").insert({
     after:       { brokerage_id: auth.brokerageId, assignment_id: params.assignmentId, revoke_reason: params.reason ?? null, revoked_by: auth.userId },
     user_id:     auth.userId,
     action:      "vendor_contact_access.revoked",
     entity_type: "vendor_contact_assignment",
     entity_id:   params.assignmentId,
-  })
+  }), { table: "audit_log", flow: "vendor_contact_access_revoked_audit", brokerageId: auth.brokerageId, reason: "the revoke already landed (counted above); a lost audit echo is ledgered for the compliance digest" })
 
   revalidatePath("/dashboard/vendors")
   revalidatePath("/portal/vendor")
@@ -393,14 +394,14 @@ export async function setVendorAccessLevelAction(
   }
 
   // Opening (or closing) every client record to an outside party is auditable.
-  await svc.from("audit_log").insert({
+  await sentinelWrite(svc, svc.from("audit_log").insert({
     before:      { access_level: before },
     after:       { brokerage_id: auth.brokerageId, vendor_id: input.vendorId, access_level: accessLevel, reason: input.reason ?? null },
     user_id:     auth.userId,
     action:      accessLevel === PAID_CONTACT_ACCESS_LEVEL ? "vendor_contact_access.bench_wide_opened" : "vendor_contact_access.bench_wide_closed",
     entity_type: "vendor",
     entity_id:   input.vendorId,
-  })
+  }), { table: "audit_log", flow: "vendor_bench_access_audit", brokerageId: auth.brokerageId, reason: "the access-level change already landed (counted above); a lost audit echo is ledgered for the compliance digest" })
 
   revalidatePath("/dashboard/vendors")
   revalidatePath("/portal/vendor")

@@ -216,6 +216,7 @@
  *     `client_welcome_co_owned` is catalogued in lib/kernel/signal-registry.ts.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import {
   buildWelcomeSituation,
@@ -928,9 +929,9 @@ export async function ensureClientWelcome(svc: Svc, contact: {
       })
       return { ...base, state: "held_for_approval", reason }
     }
-    await svc.from("agent_client_messages")
+    await sentinelWrite(svc, svc.from("agent_client_messages")
       .update({ status: "failed", send_error: reason.slice(0, 500) })
-      .eq("id", messageId)
+      .eq("id", messageId), { table: "agent_client_messages", flow: "client_welcome_failed_stamp", reason: "failure stamp; the failure is returned and the agent is notified below" })
     await notifyAgentBestEffort(svc, {
       brokerageId: contact.brokerageId, agentUserId, contactId: contact.id,
       contactName: addressing.addressAs, sent: false,

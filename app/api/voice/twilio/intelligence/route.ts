@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
   if (ciSummary && !(call as any).summary) patch.summary = ciSummary
   if (ciSentiment && !(call as any).sentiment) patch.sentiment = ciSentiment
   if (Object.keys(patch).length > 0) {
-    await svc.from("voice_calls").update(patch).eq("id", (call as any).id).then(undefined, () => {})
+    await sentinelWrite(svc, svc.from("voice_calls").update(patch).eq("id", (call as any).id), { table: "voice_calls", flow: "voice_ci_summary", reason: "webhook must ack; a lost summary/sentiment write is ledgered" })
   }
   let complianceEscalations = 0
   if (results.length > 0) {
@@ -91,10 +91,9 @@ export async function POST(request: NextRequest) {
       label: r?.predicted_label ?? null,
       probability: r?.predicted_probability ?? null,
     }))
-    await svc.from("call_analyses")
+    await sentinelWrite(svc, svc.from("call_analyses")
       .update({ intent_signals: { twilio_ci: compact, transcript_sid: transcriptSid } })
-      .eq("voice_call_id", (call as any).id)
-      .then(undefined, () => {})
+      .eq("voice_call_id", (call as any).id), { table: "call_analyses", flow: "call_analyses_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
     // COMPLIANCE WATCH: custom operators named for regulatory risk (define
     // them in the Twilio console — fair-housing phrases, steering,

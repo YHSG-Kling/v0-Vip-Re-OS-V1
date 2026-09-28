@@ -126,7 +126,7 @@ export async function runSpeedToLead(
 
       if (result?.success !== false) {
         // Stamp first touch
-        await supabase
+        const { error: firstTouchErr } = await supabase
           .from("leads")
           .update({
             first_touched_at:    now.toISOString(),
@@ -134,7 +134,8 @@ export async function runSpeedToLead(
             updated_at:          now.toISOString(),
           })
           .eq("id", lead.id)
-          .is("first_touched_at", null) // idempotency guard at DB layer
+          .is("first_touched_at", null)
+        if (firstTouchErr) console.error(`[speed-to-lead] first touch NOT stamped (speed-to-lead SLA will read as untouched): ${firstTouchErr.message}`) // idempotency guard at DB layer
 
         leadsTouched++
       } else {
@@ -261,7 +262,7 @@ async function logError(
   context?: Record<string, unknown>,
 ): Promise<void> {
   try {
-    await supabase.from("automation_errors").insert({
+    await sentinelWrite(supabase, supabase.from("automation_errors").insert({
       brokerage_id:  brokerageId,
       workflow_name: workflow,
       error_message: message,
@@ -269,7 +270,7 @@ async function logError(
       severity:      "medium",
       status:        "open",
       created_at:    new Date().toISOString(),
-    })
+    }), { table: "automation_errors", flow: "automation_errors_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   } catch {
     // never throw from the error logger
   }

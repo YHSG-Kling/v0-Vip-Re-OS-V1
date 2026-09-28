@@ -296,7 +296,7 @@ export async function acceptOfferConditionally(
   if (!complianceState.passed) {
     // Write hold state to transaction_compliance_log so it is visible in UI
     const supabase = createServiceClient()
-    await supabase.from("transaction_compliance_log").insert({
+    await sentinelWrite(supabase, supabase.from("transaction_compliance_log").insert({
       brokerage_id:   brokerageId,
       check_type:     "offer_acceptance_gate",
       check_label:    "Compliance Bridge — Offer Acceptance Blocked",
@@ -305,7 +305,7 @@ export async function acceptOfferConditionally(
       is_blocking:    true,
       checked_at:     new Date().toISOString(),
       created_at:     new Date().toISOString(),
-    })
+    }), { table: "transaction_compliance_log", flow: "offer_acceptance_gate_hold", brokerageId: brokerageId, reason: "the acceptance is refused regardless (returned); the hold row is its UI echo" })
 
     return {
       success: true,   // not a system error — a business hold
@@ -334,7 +334,7 @@ export async function acceptOfferConditionally(
   if (acceptError) return { success: false, error: acceptError.message }
 
   // Reject all other pending/countered offers on same listing
-  await supabase
+  const { error: siblingWinnerErr } = await supabase
     .from("offers")
     .update({
       is_winning_offer: false,
@@ -342,6 +342,7 @@ export async function acceptOfferConditionally(
     })
     .eq("listing_id", listingId)
     .neq("id", offerId)
+  if (siblingWinnerErr) console.error(`[kernel/transactions] sibling offers' winning flag NOT cleared — two winners possible: ${siblingWinnerErr.message}`)
 
   // Step 3: Create transaction
   const { data: offerRow } = await supabase
@@ -370,11 +371,15 @@ export async function acceptOfferConditionally(
   })
 
   if (!txResult.success) {
-    // Hard rollback — revert offer status so it is not stranded
-    await supabase
+    // Hard rollback — revert offer status so it is not stranded. The message used
+    // to say "rolled back" whether or not the revert landed.
+    const { error: rollbackErr } = await supabase
       .from("offers")
       .update({ status: "submitted", responded_at: null, is_winning_offer: false, updated_at: new Date().toISOString() })
       .eq("id", offerId)
+    if (rollbackErr) {
+      return { success: false, error: `Transaction creation failed (${txResult.error}) AND the acceptance rollback was refused (${rollbackErr.message}) — the offer is stranded as accepted` }
+    }
     return { success: false, error: `Transaction creation failed — acceptance rolled back: ${txResult.error}` }
   }
 
@@ -457,7 +462,7 @@ export async function createTransactionFromCompliantAcceptedOffer(
 
     // Write compliance log entry confirming bridge succeeded
     const supabase = createServiceClient()
-    await supabase.from("transaction_compliance_log").insert({
+    await sentinelWrite(supabase, supabase.from("transaction_compliance_log").insert({
       brokerage_id:   brokerageId,
       transaction_id: result.transactionId,
       check_type:     "offer_acceptance_gate",
@@ -466,7 +471,7 @@ export async function createTransactionFromCompliantAcceptedOffer(
       is_blocking:    false,
       checked_at:     new Date().toISOString(),
       created_at:     new Date().toISOString(),
-    })
+    }), { table: "transaction_compliance_log", flow: "offer_acceptance_gate_pass", brokerageId: brokerageId, reason: "pass echo after the transaction was created" })
 
     return { success: true, data: { transactionId: result.transactionId } }
   } catch (err) {
@@ -835,14 +840,14 @@ export async function createManualTransaction(
     if (error || !data) return { success: false, error: error?.message ?? "Insert failed" }
 
     // Write initial timeline entry
-    await supabase.from("transaction_timeline").insert({
+    await sentinelWrite(supabase, supabase.from("transaction_timeline").insert({
       transaction_id: data.id,
       brokerage_id:   input.brokerageId,
       activity_type:  "transaction_created",
       description:    "Transaction created manually",
       performed_by:   input.agentId,
       created_at:     new Date().toISOString(),
-    })
+    }), { table: "transaction_timeline", flow: "transaction_created_timeline", brokerageId: input.brokerageId, reason: "timeline echo after the transaction row landed (checked above)" })
 
     return { success: true, data: { transactionId: data.id } }
   } catch (e: any) {
@@ -937,14 +942,14 @@ export async function completeTransactionMilestone(params: {
 
     if (error) return { success: false, error: error.message }
 
-    await supabase.from("transaction_timeline").insert({
+    await sentinelWrite(supabase, supabase.from("transaction_timeline").insert({
       transaction_id: params.transactionId,
       brokerage_id:   params.brokerageId,
       activity_type:  "milestone_completed",
       description:    "Milestone marked as completed",
       performed_by:   params.completedBy,
       created_at:     new Date().toISOString(),
-    })
+    }), { table: "transaction_timeline", flow: "milestone_completed_timeline", brokerageId: params.brokerageId, reason: "timeline echo after the milestone update landed (checked above)" })
 
     return { success: true }
   } catch (e: any) {
@@ -1052,19 +1057,21 @@ export async function updateLenderState(params: {
       updated_at:               new Date().toISOString(),
     }
 
-    let err
+    // (Was a reassigned `;({ error: err } = await …)` — read, but in a shape no
+    // census could see. Same behaviour, one binding per write.)
     if (existing?.id) {
-      ;({ error: err } = await supabase
+      const { error: lenderUpdErr } = await supabase
         .from("transaction_lenders")
         .update(payload)
-        .eq("id", existing.id))
+        .eq("id", existing.id)
+      if (lenderUpdErr) return { success: false, error: lenderUpdErr.message }
     } else {
-      ;({ error: err } = await supabase
+      const { error: lenderInsErr } = await supabase
         .from("transaction_lenders")
-        .insert({ ...payload, created_at: new Date().toISOString() }))
+        .insert({ ...payload, created_at: new Date().toISOString() })
+      if (lenderInsErr) return { success: false, error: lenderInsErr.message }
     }
 
-    if (err) return { success: false, error: err.message }
     return { success: true }
   } catch (e: any) {
     return { success: false, error: e?.message ?? "Unknown error in updateLenderState" }
@@ -1205,16 +1212,18 @@ export async function closeTransactionCommand(params: {
       )
     }
 
+    // Both echo rows RESOLVE their refusals (§3); the close itself already landed,
+    // so each is declared allowed-to-fail and a loss is ledgered (service client).
     await Promise.all([
-      supabase.from("transaction_timeline").insert({
+      sentinelWrite(supabase, supabase.from("transaction_timeline").insert({
         transaction_id: params.transactionId,
         brokerage_id:   params.brokerageId,
         activity_type:  "transaction_closed",
         description:    params.reason ? `Transaction closed: ${params.reason}` : "Transaction closed",
         performed_by:   params.agentId,
         created_at:     nowIso,
-      }),
-      supabase.from("lifecycle_events").insert({
+      }), { table: "transaction_timeline", flow: "transaction_closed_timeline", brokerageId: params.brokerageId, reason: "timeline echo after the close landed" }),
+      sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
         brokerage_id:  params.brokerageId,
         entity_type:   "transaction",
         entity_id:     params.transactionId,
@@ -1228,7 +1237,7 @@ export async function closeTransactionCommand(params: {
         // this sweep was named for (rich payload in-process, empty on disk).
         metadata:      { reason: params.reason ?? null, close_date: today },
         created_at:    nowIso,
-      }),
+      }), { table: "lifecycle_events", flow: "transaction_closed_event_row", brokerageId: params.brokerageId, reason: "the persisted TRANSACTION_CLOSED row the portal projector re-reads; fan-out below runs regardless" }),
       ...activityWrites,
     ])
 
@@ -1303,11 +1312,10 @@ export async function closeTransactionCommand(params: {
           metadata:    { transaction_id: params.transactionId },
         })
       } catch {}
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("listings")
         .update({ status: "sold", updated_at: nowIso })
-        .eq("id", txBefore.listing_id)
-        .then(() => null, () => null)
+        .eq("id", txBefore.listing_id), { table: "listings", flow: "listing_sold_on_close", brokerageId: params.brokerageId, reason: "listing status mirror on close; the transaction close already landed" })
     }
 
     // 2. Buyer + seller contacts → lifetime_customer
@@ -1392,8 +1400,7 @@ export async function closeTransactionCommand(params: {
             }
           })
         )
-        await supabase.from("lifetime_customer_touchpoints").insert(rows)
-          .then(() => null, () => null)
+        await sentinelWrite(supabase, supabase.from("lifetime_customer_touchpoints").insert(rows), { table: "lifetime_customer_touchpoints", flow: "lifetime_customer_touchpoints_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       }
     } catch {}
 
@@ -1435,7 +1442,7 @@ export async function closeTransactionCommand(params: {
     try {
       const reviewContactId = txBefore?.buyer_contact_id ?? txBefore?.contact_id ?? null
       if (reviewContactId) {
-        await supabase.from("review_requests").insert({
+        await sentinelWrite(supabase, supabase.from("review_requests").insert({
           brokerage_id: params.brokerageId,
           // AGENTS id since m366. This was params.agentId (users-class), which
           // was correct while the column FK'd users and became an FK violation
@@ -1446,7 +1453,7 @@ export async function closeTransactionCommand(params: {
           contact_id:   reviewContactId,
           status:       "scheduled",
           created_at:   nowIso,
-        }).then(() => null, () => null)
+        }), { table: "review_requests", flow: "post_close_review_request", brokerageId: params.brokerageId, reason: "post-close review request; never blocks the close" })
       }
     } catch {
       // Non-critical — close success is not dependent on review scheduling
@@ -1484,7 +1491,7 @@ export async function reopenTransactionCommand(params: {
 
     if (error) return { success: false, error: error.message }
 
-    await supabase.from("transaction_timeline").insert({
+    await sentinelWrite(supabase, supabase.from("transaction_timeline").insert({
       transaction_id: params.transactionId,
       brokerage_id:   params.brokerageId,
       activity_type:  "transaction_reopened",
@@ -1492,9 +1499,9 @@ export async function reopenTransactionCommand(params: {
       performed_by:   params.requestingUserId,
       metadata:       { reason: params.reason, role: params.requestingUserRole } as any,
       created_at:     new Date().toISOString(),
-    })
+    }), { table: "transaction_timeline", flow: "transaction_reopened_timeline", brokerageId: params.brokerageId, reason: "timeline echo after the reopen landed (checked above)" })
 
-    await supabase.from("audit_log").insert({
+    await sentinelWrite(supabase, supabase.from("audit_log").insert({
       entity_type: "transaction",
       entity_id:   params.transactionId,
       action:      "reopen",
@@ -1502,7 +1509,7 @@ export async function reopenTransactionCommand(params: {
       before:      { status: "closed", stage: "CLOSED" } as any,
       after:       { status: "active", stage: "CLOSING_PREP" } as any,
       created_at:  new Date().toISOString(),
-    })
+    }), { table: "audit_log", flow: "transaction_reopen_audit", brokerageId: params.brokerageId, reason: "audit echo of a reopen already written to the transaction timeline above" })
 
     return { success: true }
   } catch (e: any) {
@@ -1623,7 +1630,7 @@ export async function recalculateCommissionStateCommand(params: {
     }
 
     // Write commission_calculations record for audit trail
-    await supabase.from("commission_calculations").insert({
+    await sentinelWrite(supabase, supabase.from("commission_calculations").insert({
       transaction_id:       params.transactionId,
       brokerage_id:         params.brokerageId,
       agent_id:             agentRecordId,
@@ -1633,7 +1640,7 @@ export async function recalculateCommissionStateCommand(params: {
       breakdown_json:       { gross_commission: grossCommission, agent_commission: agentNet },
       calculation_version:  1,
       calculated_at:        new Date().toISOString(),
-    } as any)
+    } as any), { table: "commission_calculations", flow: "commission_calculation_audit", brokerageId: params.brokerageId, reason: "audit trail of a recalculation whose stamp already landed (checked above)" })
 
     return {
       success: true,
@@ -1674,14 +1681,14 @@ export async function emitClientFriendlyUpdateCommand(params: {
     if (error) return { success: false, error: error.message }
 
     // Write timeline entry so agent sees the update was sent
-    await supabase.from("transaction_timeline").insert({
+    await sentinelWrite(supabase, supabase.from("transaction_timeline").insert({
       transaction_id: params.transactionId,
       brokerage_id:   params.brokerageId,
       activity_type:  "client_update_sent",
       description:    `Client update sent: ${params.updateText.slice(0, 120)}`,
       performed_by:   params.agentId,
       created_at:     new Date().toISOString(),
-    })
+    }), { table: "transaction_timeline", flow: "client_update_timeline", brokerageId: params.brokerageId, reason: "timeline echo after the client update landed (checked above)" })
 
     return { success: true }
   } catch (e: any) {

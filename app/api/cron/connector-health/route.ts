@@ -160,7 +160,7 @@ export async function GET(req: Request) {
         if (probe && probe.status !== "ok") {
           platformFailures++
           attention++
-          await svc.from("self_heal_events").insert({
+          const { error: probeLedgerErr } = await svc.from("self_heal_events").insert({
             brokerage_id: null,
             domain: "data_flow",
             subject: `platform_provider:${provider}`,
@@ -168,10 +168,11 @@ export async function GET(req: Request) {
             outcome: "failed",
             detail: { provider, status: probe.status, http_status: probe.httpStatus, drifted: probe.drifted, message: probe.error ?? probe.status },
           })
+          if (probeLedgerErr) console.error(`[connector-health] provider probe failure NOT ledgered: ${probeLedgerErr.message}`)
         }
       } catch (err) {
         platformFailures++
-        await svc.from("self_heal_events").insert({
+        const { error: probeLedgerErr } = await svc.from("self_heal_events").insert({
           brokerage_id: null,
           domain: "data_flow",
           subject: `platform_provider:${provider}`,
@@ -179,6 +180,7 @@ export async function GET(req: Request) {
           outcome: "failed",
           detail: { provider, status: "unreachable", message: err instanceof Error ? err.message : String(err) },
         })
+        if (probeLedgerErr) console.error(`[connector-health] provider probe failure NOT ledgered: ${probeLedgerErr.message}`)
       }
     }
   }

@@ -68,10 +68,11 @@ async function writeExternalMatchReference(
     .eq("notes", MARKET_WATCH_REF_MARKER).maybeSingle()
   if (existing) {
     const id = (existing as { id: string }).id
-    await svc.from("saved_properties").update({
+    const { error: savedRefreshErr } = await svc.from("saved_properties").update({
       property_address: row.property_address, list_price: row.list_price,
       bedrooms: row.bedrooms, bathrooms: row.bathrooms, ai_match_score: row.ai_match_score, saved_at: new Date().toISOString(),
     }).eq("id", id)
+    if (savedRefreshErr) console.error(`[external-match] saved property refresh NOT saved: ${savedRefreshErr.message}`)
     return id
   }
   const { data, error } = await svc.from("saved_properties").insert({ ...row, saved_at: new Date().toISOString() }).select("id").maybeSingle()
@@ -178,7 +179,11 @@ export async function purgeStaleExternalReferences(svc: Svc, ttlDays = EXTERNAL_
   // Skip any row the buyer engaged with — a saved/toured home is never a "stale suggestion".
   const ids = rows.filter((r) => !isDurableBuyerInterest(r.interest_level, r.added_to_tour)).map((r) => r.id)
   if (ids.length === 0) return { purged: 0 }
-  try { await svc.from("property_matches").delete().in("property_id", ids) } catch {}
-  await svc.from("saved_properties").delete().in("id", ids)
+  try {
+    const { error: matchPurgeErr } = await svc.from("property_matches").delete().in("property_id", ids)
+    if (matchPurgeErr) console.error(`[external-match] stale property matches NOT purged: ${matchPurgeErr.message}`)
+  } catch {}
+  const { error: purgeErr } = await svc.from("saved_properties").delete().in("id", ids)
+  if (purgeErr) console.error(`[external-match] stale saved properties NOT purged: ${purgeErr.message}`)
   return { purged: ids.length }
 }

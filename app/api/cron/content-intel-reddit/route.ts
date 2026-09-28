@@ -10,6 +10,7 @@
  *
  * Auth: CRON_SECRET.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { fetchTopThreads, type RedditWindow } from "@/lib/content-intel/reddit-scraper"
@@ -83,14 +84,14 @@ export async function GET(req: NextRequest) {
         if (existing.data) {
           // Refresh score + raw_data; preserve current status (so an
           // already-used topic stays used).
-          await svc.from("content_topic_bank")
+          await sentinelWrite(svc, svc.from("content_topic_bank")
             .update({
               engagement_score: row.engagement_score,
               raw_data:         row.raw_data,
               scraped_at:       row.scraped_at,
               categories:       row.categories,
             })
-            .eq("id", (existing.data as { id: string }).id)
+            .eq("id", (existing.data as { id: string }).id), { table: "content_topic_bank", flow: "content_topic_bank_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
           updated++
         } else {
           const ins = await svc.from("content_topic_bank").insert(row)
@@ -106,10 +107,10 @@ export async function GET(req: NextRequest) {
   }
 
   // Stale sweep — flip topics past expires_at to 'stale' so the picker stops returning them.
-  await svc.from("content_topic_bank")
+  await sentinelWrite(svc, svc.from("content_topic_bank")
     .update({ status: "stale" })
     .eq("status", "fresh")
-    .lt("expires_at", new Date().toISOString())
+    .lt("expires_at", new Date().toISOString()), { table: "content_topic_bank", flow: "content_topic_bank_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   return NextResponse.json({
     ran_at: new Date().toISOString(),

@@ -272,7 +272,7 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
 
   let cdaId: string
   if (existing) {
-    await supabase
+    const { error: prelimCdErr } = await supabase
       .from("closing_disclosure_agreement")
       .update({
         preliminary_cd_uploaded_at: new Date().toISOString(),
@@ -281,6 +281,7 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
         // Don't downgrade status if the agent already started drafting.
       })
       .eq("id", existing.id)
+    if (prelimCdErr) return { success: false as const, error: `Could not record the preliminary CD upload: ${prelimCdErr.message}` }
     cdaId = existing.id
   } else {
     const { data: created, error } = await supabase
@@ -367,7 +368,7 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
   // Create a "Draft and submit CDA" task for the agent so it shows up in
   // their tasks queue alongside the notification. Resolve agents.id as
   // assigned_to_agent_id (FK target).
-  await supabase.from("tasks").insert({
+  const { error: cdaTaskErr } = await supabase.from("tasks").insert({
     brokerage_id:         txn.brokerage_id,
     contact_id:           (txnFull as any)?.buyer_contact_id
                           ?? (txnFull as any)?.contact_id
@@ -382,6 +383,7 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
     status:               "pending",
     priority:             "high",
   })
+  if (cdaTaskErr) console.error(`[cda-portal] 'Draft and submit CDA' task NOT created: ${cdaTaskErr.message}`)
 
   // Fan out via the canonical kernel event router so any sequences listening
   // for CD_RECEIVED auto-enroll, buyer/seller portals get a transparency
@@ -472,7 +474,8 @@ export async function draftOrUpdateCdaAction(input: {
   if (existing) {
     cdaId = existing.id
     revision = existing.revision_number
-    await supabase.from("closing_disclosure_agreement").update(payload).eq("id", cdaId)
+    const { error: cdaSaveErr } = await supabase.from("closing_disclosure_agreement").update(payload).eq("id", cdaId)
+    if (cdaSaveErr) return { success: false as const, error: `Could not save the CDA: ${cdaSaveErr.message}` }
   } else {
     const { data: created, error } = await supabase
       .from("closing_disclosure_agreement")
@@ -632,7 +635,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
   })
 
   const submitPriorFieldValues = ((cda as { field_values?: Record<string, unknown> | null }).field_values ?? {}) as Record<string, unknown>
-  await supabase
+  const { error: cdaSubmitErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({
       status: "submitted",
@@ -644,6 +647,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
       updated_at: now,
     })
     .eq("id", cda.id)
+  if (cdaSubmitErr) return { success: false as const, error: `Could not submit the CDA: ${cdaSubmitErr.message}` }
 
   await recordRevision({
     cdaId: cda.id,
@@ -799,7 +803,7 @@ export async function approveCdaAction(input: { cdaId: string }) {
   // Compliance APPROVES — it does NOT apply the broker's signature. broker_approved_at
   // / broker_id are set later by brokerSignCdaAction (a separate, explicit step), and
   // the cda_delivered milestone completes only when the signed CDA is sent to title.
-  await supabase
+  const { error: cdaApproveErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({
       status: "approved",
@@ -808,6 +812,7 @@ export async function approveCdaAction(input: { cdaId: string }) {
       updated_at: now,
     })
     .eq("id", cda.id)
+  if (cdaApproveErr) return { success: false as const, error: `Could not record compliance approval: ${cdaApproveErr.message}` }
 
   await recordRevision({
     cdaId: cda.id,
@@ -945,7 +950,7 @@ export async function brokerSignCdaAction(input: { cdaId: string }) {
   })
 
   const priorFieldValues = ((cda as { field_values?: Record<string, unknown> | null }).field_values ?? {}) as Record<string, unknown>
-  await supabase
+  const { error: cdaBrokerSignErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({
       broker_approved_at: now,
@@ -954,6 +959,7 @@ export async function brokerSignCdaAction(input: { cdaId: string }) {
       updated_at: now,
     })
     .eq("id", cda.id)
+  if (cdaBrokerSignErr) return { success: false as const, error: `Could not record the broker signature: ${cdaBrokerSignErr.message}` }
 
   // AUTONOMOUS COMMISSION APPROVAL — the broker signing the CDA IS the broker approving the
   // commission (in the manual flow the broker calls markCommissionApproved). Advance the related
@@ -1031,7 +1037,7 @@ export async function requestCdaChangesAction(input: { cdaId: string; reason: st
 
   const now = new Date().toISOString()
   const nextRevision = cda.revision_number + 1
-  await supabase
+  const { error: cdaChangesErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({
       status: "changes_requested",
@@ -1045,6 +1051,7 @@ export async function requestCdaChangesAction(input: { cdaId: string; reason: st
       updated_at: now,
     })
     .eq("id", cda.id)
+  if (cdaChangesErr) return { success: false as const, error: `Could not record the change request: ${cdaChangesErr.message}` }
 
   await recordRevision({
     cdaId: cda.id,
@@ -1303,7 +1310,7 @@ export async function manualOverrideCdaAction(input: { cdaId: string; reason: st
   }
 
   const now = new Date().toISOString()
-  await supabase
+  const { error: cdaOverrideErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({
       manual_override_by:     auth.userId,
@@ -1312,6 +1319,7 @@ export async function manualOverrideCdaAction(input: { cdaId: string; reason: st
       updated_at:             now,
     })
     .eq("id", cda.id)
+  if (cdaOverrideErr) return { success: false as const, error: `Could not record the manual override: ${cdaOverrideErr.message}` }
 
   await recordRevision({
     cdaId:                cda.id,

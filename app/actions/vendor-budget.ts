@@ -7,6 +7,7 @@
 //     resolved from users.platform_role) → full spend + per-vendor breakdown.
 //   • Only superadmin may flip the brokerage-warning visibility toggle.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
@@ -181,13 +182,13 @@ export async function setBrokerageBudgetWarningVisibility(enabled: boolean): Pro
     .eq("id", true)
   if (error) return { ok: false, error: error.message }
 
-  await svc.from("superadmin_audit_log").insert({
+  await sentinelWrite(svc, svc.from("superadmin_audit_log").insert({
     actor_user_id: actor.userId,
     actor_email: actor.email,
     action: "set_brokerage_budget_warning_visibility",
     target_type: "platform_settings",
     details: { enabled },
-  }).then(() => {}, () => {})
+  }), { table: "superadmin_audit_log", flow: "budget_warning_visibility_audit", reason: "audit echo of a platform setting already checked above" })
 
   return { ok: true, enabled }
 }

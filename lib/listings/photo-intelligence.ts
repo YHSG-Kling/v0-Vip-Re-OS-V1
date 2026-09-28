@@ -31,6 +31,7 @@
  * (applyEnhancements, buildMultipartBody, prompts). Never import from a
  * client component.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import sharp from "sharp"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
@@ -235,8 +236,8 @@ export async function enhanceListingPhoto(
   const jobId = (job as { id: string }).id
 
   const fail = async (error: string): Promise<EnhanceResult> => {
-    if (jobId) await svc.from("photo_enhancement_jobs")
-      .update({ status: "failed", error_message: error }).eq("id", jobId)
+    if (jobId) await sentinelWrite(svc, svc.from("photo_enhancement_jobs")
+      .update({ status: "failed", error_message: error }).eq("id", jobId), { table: "photo_enhancement_jobs", flow: "photo_enhancement_jobs_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     return { ok: false, jobId, enhancedUrl: null, error }
   }
 
@@ -445,8 +446,8 @@ async function runPhotoEdit(
   const jobId = (job as { id: string }).id
 
   const fail = async (error: string): Promise<StagedPhotoResult> => {
-    if (jobId) await svc.from("photo_enhancement_jobs")
-      .update({ status: "failed", error_message: error }).eq("id", jobId)
+    if (jobId) await sentinelWrite(svc, svc.from("photo_enhancement_jobs")
+      .update({ status: "failed", error_message: error }).eq("id", jobId), { table: "photo_enhancement_jobs", flow: "photo_enhancement_jobs_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     return { ok: false, jobId, assetId: null, stagedUrl: null, error }
   }
 

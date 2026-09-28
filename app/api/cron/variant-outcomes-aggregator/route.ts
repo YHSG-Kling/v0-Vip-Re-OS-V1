@@ -30,6 +30,7 @@
  * window start prevents double-counting across overlapping cron
  * windows.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 
@@ -126,14 +127,14 @@ export async function GET(req: NextRequest) {
       // would normally land first via recordVariantSend, but a slow
       // bandit pick path could let scans arrive first if the variant
       // FK is somehow stale; cover the case.)
-      await svc.from("direct_mail_variant_outcomes").insert({
+      await sentinelWrite(svc, svc.from("direct_mail_variant_outcomes").insert({
         variant_id:    v.variantId,
         brokerage_id:  v.brokerageId,
         sends_count:   0,
         scans_count:   v.scans,
         last_scan_at:  v.lastScanAt,
         updated_at:    new Date().toISOString(),
-      })
+      }), { table: "direct_mail_variant_outcomes", flow: "variant_outcome_seed", reason: "analytics aggregate; recomputed on the next window" })
       updated++
       continue
     }
@@ -141,13 +142,13 @@ export async function GET(req: NextRequest) {
       // Already advanced past this window — skip to avoid double-count.
       continue
     }
-    await svc.from("direct_mail_variant_outcomes")
+    await sentinelWrite(svc, svc.from("direct_mail_variant_outcomes")
       .update({
         scans_count:   (existing.scans_count as number) + v.scans,
         last_scan_at:  v.lastScanAt,
         updated_at:    new Date().toISOString(),
       })
-      .eq("id", existing.id)
+      .eq("id", existing.id), { table: "direct_mail_variant_outcomes", flow: "variant_outcome_scans", reason: "analytics aggregate; recomputed on the next window" })
     updated++
   }
 

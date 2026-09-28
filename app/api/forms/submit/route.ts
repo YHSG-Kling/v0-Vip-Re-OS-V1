@@ -2,6 +2,7 @@
 // tcpa_consent = TRUE (form fill = digital opt-in)
 // No lead created. No lead_id set anywhere in this flow.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { captureContact } from '@/lib/contact-pipeline/contact-capture'
@@ -133,10 +134,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }).catch(() => {})
 
     // ── Step 6: Link submission to contact ────────────────────────────────────
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from('form_submissions')
       .update({ contact_id: contactId })
-      .eq('id', submission.id)
+      .eq('id', submission.id), { table: "form_submissions", flow: "form_submissions_write", reason: "submission→contact link; the contact is already captured" })
 
     // ── Step 7: Emit lifecycle event ──────────────────────────────────────────
     // Was a direct lifecycle_events insert — audit-only, no reactor fan-out, so

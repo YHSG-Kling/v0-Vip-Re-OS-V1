@@ -407,8 +407,11 @@ export async function createTenantCore(service: any, input: TenantCreationInput)
       if (snap) { snapshotName = snap.name; payload = snap.payload as Record<string, unknown> }
     }
     if (payload) {
-      const { applied } = await applySnapshotPayload(payload as never, brokerageId, userId, service)
+      const { applied, refused } = await applySnapshotPayload(payload as never, brokerageId, userId, service)
       snapshotApplied = applied
+      // Best-effort by ruling (creation never fails on the snapshot), but a refused
+      // layer is reported on the result, not read as applied.
+      if (refused.length > 0) snapshotError = `snapshot layers refused: ${refused.join("; ")}`
     }
   } catch (err) {
     snapshotError = err instanceof Error ? err.message : "Snapshot apply failed"

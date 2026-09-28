@@ -23,6 +23,7 @@
 // never flooded with history.
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 import { createServiceClient } from "@/lib/supabase/service"
 import {
@@ -363,14 +364,15 @@ export async function drainTenantWebhookDeliveries(client?: Svc): Promise<DrainR
       const attemptedAt = new Date().toISOString()
 
       if (post.ok) {
-        await svc
+        const { error: deliveredErr } = await svc
           .from("tenant_webhook_deliveries")
           .update({ status: "delivered", delivered_at: attemptedAt, response_status: post.status, error_detail: null })
           .eq("id", raw.id)
-        await svc
+        if (deliveredErr) console.error(`[tenant-webhooks] delivered webhook NOT marked delivered (it may be re-sent): ${deliveredErr.message}`)
+        await sentinelWrite(svc, svc
           .from("tenant_webhook_subscriptions")
           .update({ last_success_at: attemptedAt, updated_at: attemptedAt })
-          .eq("id", sub.id)
+          .eq("id", sub.id), { table: "tenant_webhook_subscriptions", flow: "tenant_webhook_subscriptions_write", reason: "subscription health stamp" })
         result.delivered += 1
         continue
       }
@@ -379,7 +381,7 @@ export async function drainTenantWebhookDeliveries(client?: Svc): Promise<DrainR
       const delayMs = nextAttemptDelayMs(attempts)
       if (delayMs === null) {
         // MAX_DELIVERY_ATTEMPTS reached — the row is dead; the subscription wears it.
-        await svc
+        const { error: deadErr } = await svc
           .from("tenant_webhook_deliveries")
           .update({
             status: "dead",
@@ -388,10 +390,11 @@ export async function drainTenantWebhookDeliveries(client?: Svc): Promise<DrainR
             error_detail: `dead after ${MAX_DELIVERY_ATTEMPTS} attempts — ${post.error ?? "unknown error"}`.slice(0, 2000),
           })
           .eq("id", raw.id)
-        await svc
+        if (deadErr) console.error(`[tenant-webhooks] dead delivery NOT marked dead (it may be retried): ${deadErr.message}`)
+        await sentinelWrite(svc, svc
           .from("tenant_webhook_subscriptions")
           .update({ failure_count: (sub.failure_count ?? 0) + 1, last_failure_at: attemptedAt, updated_at: attemptedAt })
-          .eq("id", sub.id)
+          .eq("id", sub.id), { table: "tenant_webhook_subscriptions", flow: "tenant_webhook_subscriptions_write", reason: "subscription failure counter" })
         result.dead += 1
         // Rail outcome onto the governed bus + ledger — the managers (and the human
         // on the Command Center feed) see the endpoint death, not just a status column.
@@ -407,7 +410,7 @@ export async function drainTenantWebhookDeliveries(client?: Svc): Promise<DrainR
           })
         }
       } else {
-        await svc
+        const { error: retryErr } = await svc
           .from("tenant_webhook_deliveries")
           .update({
             status: "failed",
@@ -417,10 +420,11 @@ export async function drainTenantWebhookDeliveries(client?: Svc): Promise<DrainR
             error_detail: (post.error ?? "unknown error").slice(0, 2000),
           })
           .eq("id", raw.id)
-        await svc
+        if (retryErr) console.error(`[tenant-webhooks] retry schedule NOT saved on the delivery: ${retryErr.message}`)
+        await sentinelWrite(svc, svc
           .from("tenant_webhook_subscriptions")
           .update({ last_failure_at: attemptedAt, updated_at: attemptedAt })
-          .eq("id", sub.id)
+          .eq("id", sub.id), { table: "tenant_webhook_subscriptions", flow: "tenant_webhook_subscriptions_write", reason: "subscription health stamp" })
         result.retried += 1
         // Per-delivery failure onto the self-heal ledger (flow 'webhook_delivery') —
         // the repair digest ranks endpoints that fail weekly as root causes.

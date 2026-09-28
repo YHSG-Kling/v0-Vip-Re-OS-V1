@@ -126,14 +126,14 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Update session with contact_id and capture state ─────────────────
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from('chat_sessions')
       .update({
         capture_state: 'captured',
         contact_id: contactId,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', session.id)
+      .eq('id', session.id), { table: "chat_sessions", flow: "chat_sessions_write", reason: "session capture-state stamp; the contact is already captured" })
 
     // ── Emit lifecycle event (merged from /api/widget/capture) ────────────
     // The kernel's CONTACT_CAPTURED consumers (notification engine, timeline)

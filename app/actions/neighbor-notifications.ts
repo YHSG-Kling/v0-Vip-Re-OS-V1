@@ -133,7 +133,7 @@ export async function createNeighborNotificationCampaign(params: {
 
   // Insert recipients
   if (candidates.length > 0) {
-    await supabase.from("neighbor_notification_recipients").insert(
+    const { error: recipientsInsErr } = await supabase.from("neighbor_notification_recipients").insert(
       candidates.map((c) => ({
         campaign_id: campaign.id,
         brokerage_id: params.brokerageId,
@@ -151,11 +151,13 @@ export async function createNeighborNotificationCampaign(params: {
         status: "identified",
       }))
     )
+    if (recipientsInsErr) return { success: false, error: `Campaign created, but its recipients were not saved: ${recipientsInsErr.message}` }
 
-    await supabase
+    const { error: identifiedCountErr } = await supabase
       .from("neighbor_notification_campaigns")
       .update({ recipients_identified: candidates.length, updated_at: new Date().toISOString() })
       .eq("id", campaign.id)
+    if (identifiedCountErr) console.error(`[neighbor-notifications] recipients_identified NOT updated: ${identifiedCountErr.message}`)
   }
 
   revalidatePath(`/dashboard/listings/${params.listingId}`)
@@ -221,10 +223,11 @@ export async function launchNeighborNotification(params: {
   }
 
   // Mark sending
-  await supabase
+  const { error: markSendingErr } = await supabase
     .from("neighbor_notification_campaigns")
     .update({ status: "sending", updated_at: new Date().toISOString() })
     .eq("id", params.campaignId)
+  if (markSendingErr) return { success: false, error: `Could not start the send: ${markSendingErr.message}` }
 
   // Create direct mail campaign + recipients via existing infrastructure.
   // This integrates with the existing createDirectMailCampaign action.
@@ -281,7 +284,8 @@ export async function launchNeighborNotification(params: {
         zip: r.property_zip ?? "",
         delivery_status: "queued",
       }))
-      await supabase.from("direct_mail_recipients").insert(dmRecipientRows)
+      const { error: dmRecipientsErr } = await supabase.from("direct_mail_recipients").insert(dmRecipientRows)
+      if (dmRecipientsErr) throw new Error(`Direct-mail recipients were not staged: ${dmRecipientsErr.message}`)
     }
 
     // STAGED, NOT SENT. This used to write status:"sent" and
@@ -297,7 +301,7 @@ export async function launchNeighborNotification(params: {
     // The truthful terminal state is "sending": staged and awaiting a
     // dispatcher. Nothing here fabricates a send, and recipients_sent stays
     // untouched until something actually mails.
-    await supabase
+    const { error: dmLinkErr } = await supabase
       .from("neighbor_notification_campaigns")
       .update({
         direct_mail_campaign_id: dmCampaign.id,
@@ -305,13 +309,15 @@ export async function launchNeighborNotification(params: {
         updated_at: new Date().toISOString(),
       })
       .eq("id", params.campaignId)
+    if (dmLinkErr) throw new Error(`Direct-mail campaign created but not linked to the neighbor campaign: ${dmLinkErr.message}`)
 
     // Mark recipients as queued
-    await supabase
+    const { error: queuedErr } = await supabase
       .from("neighbor_notification_recipients")
       .update({ status: "queued" })
       .eq("campaign_id", params.campaignId)
       .eq("status", "identified")
+    if (queuedErr) console.error(`[neighbor-notifications] recipients NOT marked queued: ${queuedErr.message}`)
 
     revalidatePath(`/dashboard/listings`)
     return {
@@ -320,10 +326,11 @@ export async function launchNeighborNotification(params: {
       note: "Postcards are staged for mailing. A neighbor-mail dispatcher must approve and release them before anything is printed — nothing has been sent yet.",
     }
   } catch (err: any) {
-    await supabase
+    const { error: resetDraftErr } = await supabase
       .from("neighbor_notification_campaigns")
       .update({ status: "draft", updated_at: new Date().toISOString() })
       .eq("id", params.campaignId)
+    if (resetDraftErr) console.error(`[neighbor-notifications] failed send could NOT be reset to draft (it will read as sending): ${resetDraftErr.message}`)
     return { success: false, error: err.message ?? "Direct mail send failed" }
   }
 }

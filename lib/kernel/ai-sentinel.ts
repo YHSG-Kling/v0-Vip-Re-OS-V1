@@ -44,6 +44,7 @@
 // NOT server-only (simulator-driven, like the rest of the kernel loaders). Only ever
 // writes through a caller-supplied / service client — never import client-side.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { FAIR_HOUSING_PATTERNS } from "@/lib/compliance-rules/fair-housing-patterns"
 
@@ -371,14 +372,14 @@ export async function runSentinelOnInbound(
       supabase,
     )
     if (pub.ok && pub.signalId && !pub.reason) {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("manager_signals")
         .update({
           status: "consumed",
           consumed_at: now,
           consumed_action: `license-risk escalation executed: automation halted on the ${entityType} + broker/compliance paged (priority ${priority}); no auto-reply`,
         })
-        .eq("id", pub.signalId)
+        .eq("id", pub.signalId), { table: "manager_signals", flow: "sentinel_escalation_consume", reason: "consumes the escalation signal already executed" })
     }
   } catch (e) {
     // The bus audit line is non-blocking — a halt + escalation must never depend on it.

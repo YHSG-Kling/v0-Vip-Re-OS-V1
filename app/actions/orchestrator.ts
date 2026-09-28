@@ -16,6 +16,7 @@
  *     role and verifies the event belongs to the caller's brokerage.
  */
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import type { Event, EventInput } from "@/lib/orchestrator"
 import { orchestrateEvent } from "@/lib/orchestrator/internal"
@@ -187,10 +188,10 @@ export async function orchestrateEventById(eventId: string) {
     return { success: true }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error"
-    await supabase
+    await bestEffort(supabase
       .from("lifecycle_events")
       .update({ processed: true, processed_at: new Date().toISOString(), error: errorMessage })
-      .eq("id", eventId)
+      .eq("id", eventId), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
     return { success: false, error: errorMessage }
   }
 }

@@ -220,7 +220,7 @@ export async function resolveSocialMedia(
     if (!result.success || !result.imageUrl) return null
 
     // Capture into the library so the NEXT post reuses it (one asset → many uses).
-    const { data: captured } = await svc.from("marketing_assets").insert({
+    const { data: captured, error: captureAssetErr } = await svc.from("marketing_assets").insert({
       brokerage_id: params.brokerageId,
       agent_user_id: params.agentUserId ?? null,
       visibility_scope: "brokerage",
@@ -234,6 +234,7 @@ export async function resolveSocialMedia(
       approval_status: "approved",
       metadata: { captured_from: "social_cadence_pairing", topic: params.topicTitle ?? null },
     }).select("id").maybeSingle()
+    if (captureAssetErr) console.error(`[social-media-pairing] asset capture NOT saved: ${captureAssetErr.message}`)
 
     return {
       mediaUrls: [result.imageUrl],

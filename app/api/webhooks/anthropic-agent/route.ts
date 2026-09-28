@@ -15,6 +15,7 @@
  *                                  managed_agent_sessions row as ended.
  *   - everything else            — log + ack.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -119,9 +120,9 @@ export async function POST(request: NextRequest) {
 
   switch (eventType) {
     case "session.status_run_started":
-      await svc.from("managed_agent_sessions")
+      await sentinelWrite(svc, svc.from("managed_agent_sessions")
         .update({ status: "running", last_event_at: now })
-        .eq("id", sessionRow.id)
+        .eq("id", sessionRow.id), { table: "managed_agent_sessions", flow: "managed_agent_sessions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       break
 
     case "session.status_idled": {
@@ -311,20 +312,20 @@ export async function POST(request: NextRequest) {
         // the violations back to the agent's next session.events.send so it can
         // self-correct). Persist on the session row so admin UI can show why a
         // draft was held.
-        await svc.from("managed_agent_sessions")
+        await sentinelWrite(svc, svc.from("managed_agent_sessions")
           .update({
             last_agent_message: `[blocked by compliance] ${complianceViolations.join("; ")}`,
           })
-          .eq("id", sessionRow.id)
+          .eq("id", sessionRow.id), { table: "managed_agent_sessions", flow: "managed_agent_sessions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
         console.warn(`[anthropic-webhook] agent draft BLOCKED (session=${sessionId}):`, complianceViolations)
       }
       break
     }
 
     case "session.status_terminated":
-      await svc.from("managed_agent_sessions")
+      await sentinelWrite(svc, svc.from("managed_agent_sessions")
         .update({ status: "terminated", last_event_at: now, ended_at: now })
-        .eq("id", sessionRow.id)
+        .eq("id", sessionRow.id), { table: "managed_agent_sessions", flow: "managed_agent_sessions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       break
 
     case "span.outcome_evaluation_end": {
@@ -340,7 +341,7 @@ export async function POST(request: NextRequest) {
       const explanation = (data.explanation as string | null) ?? null
       const usage = (data.usage ?? {}) as { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number }
       if (outcomeId) {
-        await svc.from("agent_outcome_evaluations").insert({
+        await sentinelWrite(svc, svc.from("agent_outcome_evaluations").insert({
           brokerage_id:             sessionRow.brokerage_id,
           managed_agent_session_id: sessionRow.id,
           anthropic_outcome_id:     outcomeId,
@@ -350,7 +351,7 @@ export async function POST(request: NextRequest) {
           input_tokens:             usage.input_tokens             ?? null,
           output_tokens:            usage.output_tokens            ?? null,
           cache_read_input_tokens:  usage.cache_read_input_tokens  ?? null,
-        })
+        }), { table: "agent_outcome_evaluations", flow: "agent_outcome_evaluations_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       }
       break
     }

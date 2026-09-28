@@ -59,6 +59,7 @@
  *   · messages.compliance_issues is character varying[], not jsonb.
  */
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { requirePermission } from "@/lib/security"
 import { revalidatePath } from "next/cache"
@@ -1148,10 +1149,10 @@ export async function applyChatTemplate(templateId: string, sessionId: string) {
   if (!template) throw new Error("Template not found")
 
   // Increment usage count
-  await supabase
+  await bestEffort(supabase
     .from("chat_templates")
     .update({ usage_count: (template.usage_count || 0) + 1 })
-    .eq("id", templateId)
+    .eq("id", templateId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
   // Get session context for personalization
   const { data: session } = await supabase.from("conversations").select("*, contacts(*)").eq("id", sessionId).single()

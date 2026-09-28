@@ -36,6 +36,7 @@
  *   - participants → transaction_participants
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent }         from "@/lib/kernel/events"
 import { emitKernelEvent }     from "@/lib/kernel/emit"
@@ -846,7 +847,7 @@ export async function calculateDealHealth(params: {
   // ═══════════════════════════════════════════════════════════════════════════
 
   // 1. deal_health_scores: UPSERT by transaction_id
-  await supabase.from("deal_health_scores").upsert(
+  await sentinelWrite(supabase, supabase.from("deal_health_scores").upsert(
     {
       transaction_id:   transactionId,
       brokerage_id:     brokerageId,
@@ -860,13 +861,14 @@ export async function calculateDealHealth(params: {
       scored_at:        calculatedAt,
     },
     { onConflict: "transaction_id" }
-  )
+  ), { table: "deal_health_scores", flow: "deal_health_scores_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   // 2. transactions.health_score: UPDATE every run
-  await supabase
+  const { error: healthScoreErr } = await supabase
     .from("transactions")
     .update({ health_score: overallScore })
     .eq("id", transactionId)
+  if (healthScoreErr) console.error(`[health-scorer] transactions.health_score not updated: ${healthScoreErr.message}`)
 
   // 2b. WRITER-LESS BURN-DOWN: the deal-health PAGE renders per-factor rows and
   // a score time-series from deal_health_factors + deal_health_snapshots — both
@@ -895,9 +897,10 @@ export async function calculateDealHealth(params: {
       COMMUNICATION: "communication_recency",
       PARTICIPANTS:  "party_responsiveness",
     }
-    await supabase.from("deal_health_factors").delete().eq("transaction_id", transactionId)
+    const { error: factorsClearErr } = await supabase.from("deal_health_factors").delete().eq("transaction_id", transactionId)
+    if (factorsClearErr) console.error(`[health-scorer] prior health factors NOT cleared (duplicates possible): ${factorsClearErr.message}`)
     if (components.length > 0) {
-      await supabase.from("deal_health_factors").insert(components.map((c) => ({
+      const { error: factorsInsErr } = await supabase.from("deal_health_factors").insert(components.map((c) => ({
         brokerage_id:      brokerageId,
         transaction_id:    transactionId,
         factor_type:       FACTOR_TYPE[c.category] ?? "timeline_adherence",
@@ -909,6 +912,7 @@ export async function calculateDealHealth(params: {
         detail:            JSON.stringify({ issues: c.issues, category: c.category }),
         scored_at:         calculatedAt,
       })))
+      if (factorsInsErr) console.error(`[health-scorer] health factors NOT saved: ${factorsInsErr.message}`)
     }
     // Snapshot the time-series point when the score moved or the last point is stale (>20h)
     const { data: lastSnap } = await supabase
@@ -921,13 +925,13 @@ export async function calculateDealHealth(params: {
     const lastAt = lastSnap?.created_at ? new Date(lastSnap.created_at as string).getTime() : 0
     const stale = Date.now() - lastAt > 20 * 60 * 60 * 1000
     if (stale || (lastSnap && lastSnap.score !== overallScore)) {
-      await supabase.from("deal_health_snapshots").insert({
+      await sentinelWrite(supabase, supabase.from("deal_health_snapshots").insert({
         brokerage_id:   brokerageId,
         transaction_id: transactionId,
         score:          overallScore,
         risk_level:     riskLevel,
         factors:        scoreComponents,
-      })
+      }), { table: "deal_health_snapshots", flow: "deal_health_snapshots_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
   } catch (err) {
     console.error("[health-scorer] factors/snapshot persist failed (non-blocking):", err)
@@ -938,10 +942,11 @@ export async function calculateDealHealth(params: {
   const scoreRunId = crypto.randomUUID()
 
   // Delete old components for this transaction
-  await supabase
+  const { error: componentsClearErr } = await supabase
     .from("deal_health_components")
     .delete()
     .eq("transaction_id", transactionId)
+  if (componentsClearErr) console.error(`[health-scorer] prior components NOT cleared (duplicates possible): ${componentsClearErr.message}`)
 
   // Insert new component rows with consistent score_run_id
   const componentRows = components.map(c => ({
@@ -957,7 +962,8 @@ export async function calculateDealHealth(params: {
     scored_at:          calculatedAt,
   }))
 
-  await supabase.from("deal_health_components").insert(componentRows)
+  const { error: componentsInsErr } = await supabase.from("deal_health_components").insert(componentRows)
+  if (componentsInsErr) console.error(`[health-scorer] health components NOT saved: ${componentsInsErr.message}`)
 
   // ─── Emit kernel event if risk level changed ──────────────────────────────
   // emitKernelEvent does BOTH the lifecycle_events insert AND fans into the reactor (staff

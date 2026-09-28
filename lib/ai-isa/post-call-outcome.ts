@@ -28,6 +28,7 @@
 //
 // Never throws — the voice webhook must never 500 over post-call work.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { voiceSignalFor, signalScore, signalTemperature } from "./qualification-core"
 import { detectOptOutIntent } from "./opt-out-utils"
 import { isAnalyzableCall, analyzeVoiceCallRow } from "@/lib/voice/call-analysis"
@@ -168,11 +169,11 @@ export async function routePostCallOutcome(svc: any, voiceCallId: string): Promi
     //    calls; a no-match update is a harmless no-op for non-ISA calls). A scoring
     //    failure must never skip the routing below.
     try {
-      await svc.from("ai_isa_calls").update({
+      await sentinelWrite(svc, svc.from("ai_isa_calls").update({
         lead_quality_score: signalScore(signal),
         appointment_set: appointmentIntent,
         ai_response_summary: summary ? summary.slice(0, 500) : null,
-      }).eq("voice_call_id", call.id)
+      }).eq("voice_call_id", call.id), { table: "ai_isa_calls", flow: "isa_call_scoring", reason: "best-effort scoring; must never skip the routing below" })
     } catch { /* best-effort scoring */ }
 
     // 4. CONVERSION FINALITY — decide WHICH branch owns this call before either
@@ -207,11 +208,11 @@ export async function routePostCallOutcome(svc: any, voiceCallId: string): Promi
     //     job, running alongside this). Additive + idempotent.
     if (leadBranchOwns) {
       try {
-        await svc.from("leads").update({
+        await sentinelWrite(svc, svc.from("leads").update({
           lead_temperature: signalTemperature(signal),
           lead_score: signalScore(signal),
           updated_at: new Date().toISOString(),
-        }).eq("id", call.lead_id)
+        }).eq("id", call.lead_id), { table: "leads", flow: "isa_rolling_qualification", reason: "best-effort rolling qualification (by ruling)" })
       } catch { /* best-effort rolling qualification */ }
       return { ok: true, processed: true, branch: "lead", signal, negative: isOptOut || isNegative, positive: isPositive }
     }

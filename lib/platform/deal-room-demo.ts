@@ -659,9 +659,9 @@ export async function teardownDealRoomStory(svc: Svc, brokerageId: string): Prom
 
   // Revert the staged stall facts on the round-21 listing (the row itself stays).
   try {
-    await svc.from("listings")
+    await sentinelWrite(svc, svc.from("listings")
       .update({ showing_count: null })
-      .eq("id", DEAL_ROOM_STALL_LISTING_ID).eq("brokerage_id", brokerageId)
+      .eq("id", DEAL_ROOM_STALL_LISTING_ID).eq("brokerage_id", brokerageId), { table: "listings", flow: "listings_write", reason: "demo teardown; the residue sweep below re-counts every predicate" })
   } catch { /* column may not exist — nothing staged then */ }
 
   // ── RESIDUE SWEEP — every predicate re-counted; any survivor fails the teardown ──
@@ -801,7 +801,7 @@ export async function seedDealRoomDemo(): Promise<DealRoomSeedReport> {
       }
       ids.leadId = promo.leadId
       // Stamp the rail-minted row with the demo marker (marking, not forking).
-      await svc.from("leads").update({ tags: [DEAL_ROOM_TAG], notes: `[${DEAL_ROOM_TAG}] staged showcase prospect — promoted through the REAL production pipeline (processRawRecord).` }).eq("id", promo.leadId).eq("brokerage_id", brokerageId)
+      await sentinelWrite(svc, svc.from("leads").update({ tags: [DEAL_ROOM_TAG], notes: `[${DEAL_ROOM_TAG}] staged showcase prospect — promoted through the REAL production pipeline (processRawRecord).` }).eq("id", promo.leadId).eq("brokerage_id", brokerageId), { table: "leads", flow: "leads_write", reason: "demo marker on a staged showcase lead" })
       const { data: born } = await svc.from("leads").select("lifecycle_state, ai_isa_owner").eq("id", promo.leadId).single()
       steps.push({
         beat: "1 · scraped lead → territory match → promotion", rail: "real", ok: true,
@@ -861,7 +861,7 @@ export async function seedDealRoomDemo(): Promise<DealRoomSeedReport> {
         beat: "3b · demand evidence (live under-ask offer)", rail: "staged", ok: !offErr,
         detail: offErr ? offErr.message : `offer $552,000 vs $585,000 ask (marked)`,
       })
-      await svc.from("listings").update({ showing_count: 11 }).eq("id", stallListing.id).eq("brokerage_id", brokerageId)
+      await sentinelWrite(svc, svc.from("listings").update({ showing_count: 11 }).eq("id", stallListing.id).eq("brokerage_id", brokerageId), { table: "listings", flow: "listings_write", reason: "demo staging marker" })
 
       const { raiseCrossManagerReferral } = await import("@/lib/managers/cross-referral")
       const raised = await raiseCrossManagerReferral({

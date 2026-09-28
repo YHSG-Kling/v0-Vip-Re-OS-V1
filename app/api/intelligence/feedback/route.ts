@@ -1,3 +1,4 @@
+import { bestEffort } from "@/lib/db/best-effort"
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -79,14 +80,14 @@ export async function POST(request: NextRequest) {
 
     // If source is smart_assistant_suggestions, update the rating there too
     if (sourceRecordType === "smart_assistant_suggestions") {
-      await supabase
+      await bestEffort(supabase
         .from("smart_assistant_suggestions")
         .update({
           rating,
           rating_at: new Date().toISOString(),
           feedback_text: feedbackText || null,
         })
-        .eq("id", sourceRecordId)
+        .eq("id", sourceRecordId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     }
 
     // Emit kernel event — audit row + reactor. The bare insert it replaces carried

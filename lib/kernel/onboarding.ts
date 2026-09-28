@@ -214,7 +214,7 @@ export async function markOnboardingStepComplete(
 
     // Update agent_onboarding — NO updated_at column
     if (onboardingRow?.id) {
-      await service
+      const { error: progressErr } = await service
         .from("agent_onboarding")
         .update({
           completion_percentage:  newPct,
@@ -225,6 +225,7 @@ export async function markOnboardingStepComplete(
           } : {}),
         })
         .eq("id", onboardingRow.id)
+      if (progressErr) console.error(`[kernel/onboarding] onboarding progress NOT saved: ${progressErr.message}`)
     }
 
     // Emit completion event

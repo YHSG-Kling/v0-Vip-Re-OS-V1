@@ -26,6 +26,7 @@
  * loses every OTHER message's truth behind it. Twilio posts form-encoded.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ingestProviderTruth } from "@/lib/outcomes/reconciliation-ledger"
@@ -124,7 +125,7 @@ export async function POST(request: NextRequest) {
         const rank: Record<string, number> = { sent: 1, delivered: 2, read: 3, failed: 2 }
         const current = rank[row.status ?? ""] ?? 0
         if ((rank[mapped] ?? 0) >= current) {
-          await svc.from("messages").update({ status: mapped, updated_at: now }).eq("id", row.id)
+          await sentinelWrite(svc, svc.from("messages").update({ status: mapped, updated_at: now }).eq("id", row.id), { table: "messages", flow: "twilio_sms_inbox_status", reason: "inbox mirror of a reconciliation that already landed; must not un-ACK" })
           inboxUpdated = true
         }
       }

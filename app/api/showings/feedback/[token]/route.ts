@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 // TOMBSTONE (dead-import tranche): `processKernelEvent` was imported here and
@@ -154,7 +155,7 @@ Additional notes: ${additionalNotes || "none"}`,
     }
 
     // 4. UPDATE showing_feedback_requests: interest_score + ai_analysis
-    await supabase
+    const { error: interestErr } = await supabase
       .from("showing_feedback_requests")
       .update({
         interest_score: OFFER_INTEREST_SCORE[offerInterest] ?? 50,
@@ -167,6 +168,7 @@ Additional notes: ${additionalNotes || "none"}`,
         },
       })
       .eq("id", requestId)
+    if (interestErr) console.error(`[showing-feedback] interest score NOT saved on the feedback request: ${interestErr.message}`)
 
     // 5. Call aiAnalyzeShowingFeedback (non-blocking)
     aiAnalyzeShowingFeedback(requestId).catch(() => {})
@@ -222,7 +224,7 @@ Additional notes: ${additionalNotes || "none"}`,
             // Brand-voice draft unavailable — the deterministic ack stands.
           }
 
-          await supabase.from("client_portal_messages").insert({
+          const { error: feedbackAckErr } = await supabase.from("client_portal_messages").insert({
             contact_id: ackShowing.contact_id,
             brokerage_id: fbReq.brokerage_id,
             agent_id: ackShowing.agent_id,
@@ -235,6 +237,7 @@ Additional notes: ${additionalNotes || "none"}`,
               feedback_request_id: requestId,
             },
           })
+          if (feedbackAckErr) console.error(`[showing-feedback] acknowledgement NOT delivered to the client portal: ${feedbackAckErr.message}`)
         }
       }
     } catch {
@@ -307,7 +310,7 @@ Additional notes: ${additionalNotes || "none"}`,
 
         const responseRate = totalShowings ? (n / totalShowings) * 100 : null
 
-        await supabase
+        await sentinelWrite(supabase, supabase
           .from("showing_analytics")
           .upsert(
             {
@@ -327,7 +330,7 @@ Additional notes: ${additionalNotes || "none"}`,
               updated_at:                  new Date().toISOString(),
             },
             { onConflict: "listing_id" }
-          )
+          ), { table: "showing_analytics", flow: "showing_analytics_write", reason: "listing analytics rollup; recomputed on the next feedback" })
       }
 
       // 7. Kernel event — canonical fan-out. Staff (listing agent via the

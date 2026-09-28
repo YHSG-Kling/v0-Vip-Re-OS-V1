@@ -70,6 +70,7 @@
  * Replies flow OUT through the tenant's connected account tooling — this
  * route only ingests.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { metaSubscriptionHandshake, verifyMetaSignature } from "@/lib/meta/verify-signature"
@@ -225,7 +226,7 @@ export async function POST(req: NextRequest) {
         if (existing) {
           conversationId = (existing as any).id
           conversationContactId = ((existing as any).contact_id as string | null) ?? resolvedContactId
-          await svc.from("conversations").update({
+          await sentinelWrite(svc, svc.from("conversations").update({
             last_message_at: nowIso,
             message_count: (Number((existing as any).message_count) || 0) + 1,
             unread_count: (Number((existing as any).unread_count) || 0) + 1,
@@ -239,9 +240,9 @@ export async function POST(req: NextRequest) {
               last_message: ev.text,
             },
             updated_at: nowIso,
-          }).eq("id", (existing as any).id)
+          }).eq("id", (existing as any).id), { table: "conversations", flow: "meta_dm_thread_counters", reason: "thread counters; the inbound DM is persisted below" })
         } else {
-          const { data: createdConv } = await svc.from("conversations").insert({
+          const { data: createdConv, error: convInsErr } = await svc.from("conversations").insert({
             brokerage_id: brokerageId,
             agent_id: threadAgentId,
             contact_id: resolvedContactId,
@@ -256,6 +257,7 @@ export async function POST(req: NextRequest) {
               last_message: ev.text,
             },
           }).select("id").single()
+          if (convInsErr) console.error(`[meta-dm] inbound DM thread NOT created (the DM will not reach the inbox): ${convInsErr.message}`)
           conversationId = ((createdConv as any)?.id as string | null) ?? null
           conversationContactId = resolvedContactId
         }
@@ -264,7 +266,7 @@ export async function POST(req: NextRequest) {
         // every DM lands in messages, the ONE timeline table; once the thread
         // is linked to a contact, the DM appears on that contact's inbox.
         if (conversationId) {
-          await svc.from("messages").insert({
+          const { error: dmMsgErr } = await svc.from("messages").insert({
             conversation_id: conversationId,
             contact_id: conversationContactId,
             brokerage_id: brokerageId,
@@ -276,7 +278,8 @@ export async function POST(req: NextRequest) {
             status: "delivered",
             created_at: nowIso,
             updated_at: nowIso,
-          }).then(() => {}, () => {})
+          })
+          if (dmMsgErr) console.error(`[meta-dm] inbound DM NOT persisted to the inbox: ${dmMsgErr.message}`)
         }
       } catch { /* per-event best-effort — the ack stands */ }
     }

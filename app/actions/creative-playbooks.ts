@@ -16,6 +16,7 @@
 // D-ID + ElevenLabs pipeline (the agent's own avatar + cloned voice) and
 // attached to the capture page when the poll cron completes it.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getPlaybook, type PlaybookStep } from "@/lib/marketing/creative-playbooks"
@@ -395,7 +396,7 @@ export async function installCreativePlaybook(
   if (magnetId) {
     const { data: magnetRow } = await svc
       .from("lead_capture_forms").select("landing_content").eq("id", magnetId).maybeSingle()
-    await svc.from("lead_capture_forms").update({
+    await sentinelWrite(svc, svc.from("lead_capture_forms").update({
       landing_content: {
         ...(((magnetRow as any)?.landing_content as Record<string, unknown>) ?? {}),
         playbookKey: playbook.key,
@@ -405,7 +406,7 @@ export async function installCreativePlaybook(
         estimateStillAssetId: approvedStillId,
         installedAt: new Date().toISOString(),
       },
-    }).eq("id", magnetId)
+    }).eq("id", magnetId), { table: "lead_capture_forms", flow: "lead_capture_forms_write", reason: "playbook annotation on the landing content; the playbook assets already exist" })
   }
 
   revalidatePath("/settings/campaign-bundles")

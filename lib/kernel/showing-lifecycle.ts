@@ -22,6 +22,7 @@
 // scheduling_method 'showingtime'), the phantom webhook expectation is retired —
 // wiring requires a ShowingTime partnership; nothing pretends otherwise.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { randomUUID } from "node:crypto"
 import { getBuyerNotificationPreferences, buyerWantsNotification } from "@/lib/notifications/buyer-preferences"
 
@@ -77,12 +78,12 @@ export async function runShowingLifecycle(svc: any, now: Date = new Date()): Pro
       // agent_id: NOT NULL FK to agents.id (the showing's agent); direction
       // CHECK is agent_to_client — validated live.
       if (s.contact_id && s.agent_id && appUrl) {
-        await svc.from("client_portal_messages").insert({
+        await sentinelWrite(svc, svc.from("client_portal_messages").insert({
           contact_id: s.contact_id, brokerage_id: s.brokerage_id, agent_id: s.agent_id,
           direction: "agent_to_client", channel: "portal",
           body: composeFeedbackAsk(address, `${appUrl}/showings/feedback/${token}`),
           metadata: { kind: "showing_feedback_ask", showing_id: s.id },
-        }).then(undefined, () => {})
+        }), { table: "client_portal_messages", flow: "showing_feedback_ask", reason: "portal feedback ask; a loss is ledgered" })
       }
       r.feedbackRequested += 1
     } catch { r.errors += 1 }

@@ -126,7 +126,13 @@ export async function createFeeType(input: CreateFeeTypeInput): Promise<{
       brokerage_id: ctx.brokerageId,
       is_active: true,
     }))
-    await svc.from("agent_fee_assignments").insert(rows)
+    // The fee type landed; a refused assignment means the named agents are NOT
+    // charged while this used to report success. Say so — the fee type exists and
+    // the assignment can be retried from the fee's edit screen.
+    const { error: assignErr } = await svc.from("agent_fee_assignments").insert(rows)
+    if (assignErr) {
+      return { success: false, feeTypeId: feeType.id, error: `Fee created, but assigning it to the selected agents was refused: ${assignErr.message}` }
+    }
   }
 
   return { success: true, feeTypeId: feeType.id }

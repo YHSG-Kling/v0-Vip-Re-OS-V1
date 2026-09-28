@@ -177,6 +177,7 @@ export async function reassignContactAction(input: {
   const targetUserId: string | null = (target as any).user_id ?? null
 
   const result: ReassignContactResult = { ...empty, ok: false }
+  const refusals: string[] = []
 
   // ── 1. The contact row ──
   //
@@ -205,11 +206,12 @@ export async function reassignContactAction(input: {
   // ── 2. Their leads (ownership follows the client — same as the bulk flow,
   //       filtered to this contact's lead rows) ──
   {
-    const { count } = await svc
+    const { count, error: leadsMoveErr } = await svc
       .from("leads")
       .update({ agent_id: input.toAgentId, updated_at: nowIso }, { count: "exact" })
       .eq("brokerage_id", auth.brokerageId)
       .eq("contact_id", input.contactId)
+    if (leadsMoveErr) refusals.push(`leads: ${leadsMoveErr.message}`)
     result.leadsMoved = count ?? 0
   }
 
@@ -217,13 +219,14 @@ export async function reassignContactAction(input: {
   //       attribution — identical rule to the bulk flow) ──
   if (fromAgentId) {
     for (const roleCol of ["agent_id", "buyer_agent_id", "seller_agent_id"] as const) {
-      const { count } = await svc
+      const { count, error: dealRoleErr } = await svc
         .from("transactions")
         .update({ [roleCol]: input.toAgentId, updated_at: nowIso }, { count: "exact" })
         .eq("brokerage_id", auth.brokerageId)
         .eq(roleCol, fromAgentId)
         .or(`contact_id.eq.${input.contactId},buyer_contact_id.eq.${input.contactId},seller_contact_id.eq.${input.contactId}`)
         .in("status", ACTIVE_DEAL_STATUSES as unknown as string[])
+      if (dealRoleErr) refusals.push(`deal ${roleCol}: ${dealRoleErr.message}`)
       result.dealRolesMoved += count ?? 0
     }
   }
@@ -233,30 +236,32 @@ export async function reassignContactAction(input: {
   if (fromAgentId) {
     // ONE spelling of "this task is done" (wave 81A, §6) — the bulk move set's list.
     const OPEN_TASK_EXCLUDE = `(${CLOSED_TASK_STATUSES.join(",")})`
-    const { count } = await svc
+    const { count, error: tasksMoveErr } = await svc
       .from("tasks")
       .update({ assigned_to_agent_id: input.toAgentId }, { count: "exact" })
       .eq("brokerage_id", auth.brokerageId)
       .eq("contact_id", input.contactId)
       .eq("assigned_to_agent_id", fromAgentId)
       .not("status", "in", OPEN_TASK_EXCLUDE)
+    if (tasksMoveErr) refusals.push(`open tasks: ${tasksMoveErr.message}`)
     result.openTasksMoved = count ?? 0
   }
 
   // ── 5. Their ACTIVE property alerts (property_alerts.agent_user_id is a
   //       users.id) — re-pointed to the new agent so alert delivery follows ──
   if (targetUserId) {
-    const { count } = await svc
+    const { count, error: alertsMoveErr } = await svc
       .from("property_alerts")
       .update({ agent_user_id: targetUserId, updated_at: nowIso }, { count: "exact" })
       .eq("brokerage_id", auth.brokerageId)
       .eq("contact_id", input.contactId)
       .eq("is_active", true)
+    if (alertsMoveErr) refusals.push(`property alerts: ${alertsMoveErr.message}`)
     result.alertsMoved = count ?? 0
   }
 
   // ── Audit (same lifecycle_events idiom as the bulk flow) — best-effort ──
-  await svc
+  await sentinelWrite(svc, svc
     .from("lifecycle_events")
     .insert({
       brokerage_id: auth.brokerageId,
@@ -274,8 +279,7 @@ export async function reassignContactAction(input: {
         alerts_moved: result.alertsMoved,
       },
       created_at: nowIso,
-    })
-    .then(() => {}, (e: unknown) => console.error("[reassignContact] audit failed:", e))
+    }), { table: "lifecycle_events", flow: "contact_reassigned_audit", reason: "audit echo of a reassignment already made (best-effort by design)" })
 
   // ── Tell the receiving agent (in-app notification, mirrors the bulk flow) ──
   if (targetUserId) {
@@ -353,6 +357,14 @@ export async function reassignContactAction(input: {
   revalidatePath("/crm")
   revalidatePath(`/crm/contacts/${input.contactId}`)
 
+  // The contact itself moved (checked above). A refused follow-on move used to
+  // count as zero moved and report ok — the old agent kept the deal roles / tasks
+  // / alerts while the UI said the handoff was complete.
+  if (refusals.length > 0) {
+    result.ok = false
+    result.error = `Contact moved, but some of their work did not: ${refusals.join("; ")}`
+    return result
+  }
   result.ok = true
   return result
 }

@@ -359,8 +359,9 @@ export async function submitLicenseDetails(
       return { success: false, error: "Failed to save license details" }
     }
 
-    // Update agents table
-    await supabase
+    // Update agents table — the profile the license gate and the public agent
+    // page read. The license row landed; a refused mirror is reported, not hidden.
+    const { error: agentLicenseErr } = await supabase
       .from("agents")
       .update({
         license_number: data.licenseNumber,
@@ -369,6 +370,10 @@ export async function submitLicenseDetails(
         updated_at: new Date().toISOString(),
       })
       .eq("id", agentId)
+    if (agentLicenseErr) {
+      console.error("[L11-License] license saved but the agent profile was not updated:", agentLicenseErr.message)
+      return { success: false, error: "License saved, but your agent profile could not be updated — please retry" }
+    }
 
     // Get or create step completion record
     const { data: stepRecord } = await supabase
@@ -381,7 +386,7 @@ export async function submitLicenseDetails(
       .single()
 
     if (stepRecord) {
-      await supabase.from("agent_step_completions").upsert({
+      const { error: stepDoneErr } = await supabase.from("agent_step_completions").upsert({
         agent_id: await resolveAgentId(supabase as any, user.id),
         brokerage_id: agent.brokerage_id,
         step_id: stepRecord.id,
@@ -390,6 +395,7 @@ export async function submitLicenseDetails(
       }, {
         onConflict: "agent_id,step_id",
       })
+      if (stepDoneErr) console.error(`[onboarding/license] license step completion NOT recorded: ${stepDoneErr.message}`)
     }
 
     // Fire kernel event
@@ -870,7 +876,7 @@ export async function markComplianceComplete(
         .single()
 
     if (stepRecord) {
-      await supabase.from("agent_step_completions").upsert({
+      const { error: stepDoneErr } = await supabase.from("agent_step_completions").upsert({
         agent_id: agentId,
         brokerage_id: agent.brokerage_id,
         step_id: stepRecord.id,
@@ -879,6 +885,7 @@ export async function markComplianceComplete(
       }, {
         onConflict: "agent_id,step_id",
       })
+      if (stepDoneErr) console.error(`[onboarding/license] step completion NOT recorded: ${stepDoneErr.message}`)
     }
     }
 
@@ -897,13 +904,14 @@ export async function markComplianceComplete(
 
       if (onboarding) {
         // Update onboarding to move to brand setup
-        await supabase
+        const { error: onboardingStepErr } = await supabase
           .from("agent_onboarding")
           .update({
             status: "in_progress",
             updated_at: now,
           })
           .eq("id", onboarding.id)
+        if (onboardingStepErr) console.error(`[onboarding/license] onboarding status NOT advanced: ${onboardingStepErr.message}`)
 
         // Transition lifecycle
         await transitionLifecycle({

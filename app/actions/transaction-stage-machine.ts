@@ -1,5 +1,6 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { TransactionOrchestrator } from "@/lib/transactions/transaction-orchestrator"
@@ -131,7 +132,7 @@ export async function advanceTransactionStage(params: {
     if (updateErr) return { success: false, error: updateErr.message }
 
     // Audit trail — explicit override event with reason + actor role in metadata
-    await svc.from("lifecycle_events").insert({
+    await sentinelWrite(svc, svc.from("lifecycle_events").insert({
       brokerage_id:  params.brokerageId,
       entity_type:   "transaction",
       entity_id:     params.transactionId,
@@ -146,7 +147,7 @@ export async function advanceTransactionStage(params: {
         original_reason:      params.reason ?? null,
       },
       created_at: new Date().toISOString(),
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     revalidatePath(`/dashboard/transactions/${params.transactionId}`)
     revalidatePath(`/dashboard/coordinator`)

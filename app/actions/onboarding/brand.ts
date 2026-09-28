@@ -366,7 +366,7 @@ export async function saveBrandVoice(
     }
 
     // Update wizard step
-    await supabase
+    const { error: wizardStepErr } = await supabase
       .from("brokerage_brand_settings")
       .upsert({
         brokerage_id: brokerageId,
@@ -375,6 +375,7 @@ export async function saveBrandVoice(
       }, {
         onConflict: "brokerage_id",
       })
+    if (wizardStepErr) console.error(`[onboarding/brand] wizard step NOT saved: ${wizardStepErr.message}`)
 
     return { success: true }
   } catch (error) {
@@ -396,11 +397,12 @@ export async function saveTemplate(
     const brokerageId = adminAuth.brokerageId
 
     // Deactivate existing templates of the same type
-    await supabase
+    const { error: templatesDeactivateErr } = await supabase
       .from("brand_templates")
       .update({ is_active: false })
       .eq("brokerage_id", brokerageId)
       .eq("template_type", data.templateType)
+    if (templatesDeactivateErr) console.error(`[onboarding/brand] prior templates NOT deactivated: ${templatesDeactivateErr.message}`)
 
     // Insert new template
     const { data: template, error: templateError } = await supabase
@@ -422,7 +424,7 @@ export async function saveTemplate(
 
     // Update brand settings with signature/letterhead
     if (data.templateType === "email_signature") {
-      await supabase
+      const { error: signatureErr } = await supabase
         .from("brokerage_brand_settings")
         .upsert({
           brokerage_id: brokerageId,
@@ -432,8 +434,9 @@ export async function saveTemplate(
         }, {
           onConflict: "brokerage_id",
         })
+      if (signatureErr) return { success: false, error: `Could not save the email signature: ${signatureErr.message}` }
     } else if (data.templateType === "letterhead") {
-      await supabase
+      const { error: letterheadErr } = await supabase
         .from("brokerage_brand_settings")
         .upsert({
           brokerage_id: brokerageId,
@@ -443,6 +446,7 @@ export async function saveTemplate(
         }, {
           onConflict: "brokerage_id",
         })
+      if (letterheadErr) return { success: false, error: `Could not save the letterhead: ${letterheadErr.message}` }
     }
 
     return { success: true, templateId: template.id }
@@ -602,7 +606,7 @@ export async function uploadLogo(
       .getPublicUrl(fileName)
 
     // Update global_settings with logo URL
-    await supabase
+    const { error: logoSaveErr } = await supabase
       .from("global_settings")
       .upsert({
         brokerage_id: brokerageId,
@@ -611,6 +615,7 @@ export async function uploadLogo(
       }, {
         onConflict: "brokerage_id",
       })
+    if (logoSaveErr) return { success: false, error: `Logo uploaded, but it was not saved to your brand settings: ${logoSaveErr.message}` }
 
     return { success: true, logoUrl: urlData.publicUrl }
   } catch (error) {

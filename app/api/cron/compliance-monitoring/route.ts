@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { type NextRequest, NextResponse } from "next/server"
 import { rawRoleVariantsFor } from "@/lib/security/types"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -172,7 +173,7 @@ export async function GET(request: NextRequest) {
 
     if (expiredContent && expiredContent.length > 0) {
       const expiredIds = expiredContent.map((c) => c.id)
-      await supabase.from("approved_content_library").update({ is_active: false }).in("id", expiredIds)
+      await sentinelWrite(supabase, supabase.from("approved_content_library").update({ is_active: false }).in("id", expiredIds), { table: "approved_content_library", flow: "approved_content_library_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       results.expired_content_deactivated = expiredContent.length
     }
 
@@ -206,7 +207,9 @@ export async function GET(request: NextRequest) {
         detected_at: new Date().toISOString(),
       }))
 
-      await supabase.from("compliance_flags").insert(violations)
+      // A refused flag insert used to report the violations as recorded.
+      const { error: coldFlagErr } = await supabase.from("compliance_flags").insert(violations)
+      if (coldFlagErr) console.error(`[compliance-monitoring] ${violations.length} cold-lead compliance flag(s) NOT recorded: ${coldFlagErr.message}`)
       results.cold_lead_violations_detected = coldLeadViolations.length
     }
 
@@ -233,7 +236,8 @@ export async function GET(request: NextRequest) {
         detected_at: new Date().toISOString(),
       }))
 
-      await supabase.from("compliance_flags").insert(violations)
+      const { error: unapprovedFlagErr } = await supabase.from("compliance_flags").insert(violations)
+      if (unapprovedFlagErr) console.error(`[compliance-monitoring] ${violations.length} unapproved-content compliance flag(s) NOT recorded: ${unapprovedFlagErr.message}`)
     }
 
     // CROSS-CHANNEL CONSISTENCY GUARDIAN — flag any queued client message whose

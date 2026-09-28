@@ -58,7 +58,13 @@ export function LenderActions({
     setError(null)
 
     try {
-      await issueClearToClose({ transactionId, lenderId })
+      // issueClearToClose now also reports a refused lender-record write BY
+      // RETURN (lane 87G) — read it before claiming the CTC landed.
+      const r = await issueClearToClose({ transactionId, lenderId })
+      if (r && "success" in r && r.success === false) {
+        setError(("error" in r && r.error) || "Failed to issue Clear to Close")
+        return
+      }
       setCtcSuccess(true)
       router.refresh()
     } catch (err: any) {

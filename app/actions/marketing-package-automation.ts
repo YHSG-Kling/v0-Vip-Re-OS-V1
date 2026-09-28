@@ -1,5 +1,6 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -395,13 +396,13 @@ async function initializeSyndicationTracking(transactionId: string) {
   ]
 
   for (const platform of platforms) {
-    await supabase.from("listing_syndication_tracking").insert({
+    await bestEffort(supabase.from("listing_syndication_tracking").insert({
       transaction_id: transactionId,
       platform_name: platform.name,
       platform_category: platform.category,
       syndication_status: "pending",
       last_synced_at: new Date().toISOString(),
-    })
+    }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
   }
 }
 
@@ -696,7 +697,7 @@ OUTPUT FORMAT (JSON):
     // Save optimizations
     if (optimizations.optimizations && Array.isArray(optimizations.optimizations)) {
       for (const opt of optimizations.optimizations) {
-        await supabase.from("ai_listing_optimizations").insert({
+        await bestEffort(supabase.from("ai_listing_optimizations").insert({
           transaction_id: transactionId,
           optimization_category: opt.category,
           recommendation: opt.recommendation,
@@ -705,7 +706,7 @@ OUTPUT FORMAT (JSON):
           estimated_impact: opt.estimated_impact,
           status: "pending",
           generated_at: new Date().toISOString(),
-        })
+        }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
       }
     }
 

@@ -1,6 +1,7 @@
 // ROUTED, was raw — see lib/ai/models.ts:conversation_insight_extraction. The
 // key is pinned to claude-sonnet, the model this call site already passed, so
 // only the ledger changes.
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { generateObjectRouted } from '@/lib/ai/models'
 import { z } from 'zod'
 import { createServiceClient } from '@/lib/supabase/service'
@@ -497,13 +498,13 @@ export async function updateConversationMemory(
   }
 
   // Step 5: Update conversations table with summary and token count
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from('conversations')
     .update({
       last_ai_context_summary: insights.context_summary,
       context_window_tokens: estimatedTokens,
     })
-    .eq('id', conversationId)
+    .eq('id', conversationId), { table: "conversations", flow: "conversations_write", reason: "AI context summary cache; recomputed on the next analysis" })
 
   // Step 6: Kernel event — audit row + reactor. `payload` → `metadata`: metadata is
   // the column every reader (portal templates, dedupe, timelines) uses; payload was

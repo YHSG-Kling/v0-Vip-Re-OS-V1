@@ -307,7 +307,7 @@ async function writeLog(
 ): Promise<string | undefined> {
   try {
     const svc = createServiceClient()
-    const { data } = await svc
+    const { data, error: complianceLogErr } = await svc
       .from("outbound_message_compliance_log")
       .insert({
         brokerage_id:         input.brokerageId ?? null,
@@ -323,6 +323,7 @@ async function writeLog(
       })
       .select("id")
       .single()
+    if (complianceLogErr) console.error(`[tcpa-gate] outbound compliance decision NOT recorded: ${complianceLogErr.message}`)
     return data?.id as string | undefined
   } catch (err) {
     console.error("[tcpa-gate] log write failed:", err)

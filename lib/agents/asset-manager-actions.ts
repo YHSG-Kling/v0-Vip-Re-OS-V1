@@ -74,7 +74,7 @@ export async function executeAssetManagerAction(
   approverUserId: string,
 ): Promise<ActionHandlerResult> {
   const svc = createServiceClient()
-  const { data: claimed } = await svc.from("asset_manager_actions")
+  const { data: claimed, error: actionClaimErr } = await svc.from("asset_manager_actions")
     .update({
       status:      "executing",
       approved_at: new Date().toISOString(),
@@ -85,6 +85,7 @@ export async function executeAssetManagerAction(
     .in("status", ["proposed", "approved"])
     .select("brokerage_id, action_type, action_input")
     .single()
+  if (actionClaimErr) console.error(`[asset-manager] action claim refused: ${actionClaimErr.message}`)
   if (!claimed) {
     return { status: "skipped", result: { reason: "row not in proposed/approved state" } }
   }
@@ -96,9 +97,10 @@ export async function executeAssetManagerAction(
   } catch (e) {
     outcome = { status: "failed", result: { error: (e as Error).message } }
   }
-  await svc.from("asset_manager_actions")
+  const { error: actionOutcomeErr } = await svc.from("asset_manager_actions")
     .update({ status: outcome.status, result: outcome.result })
     .eq("id", actionId)
+  if (actionOutcomeErr) console.error(`[asset-manager] action outcome NOT recorded: ${actionOutcomeErr.message}`)
   return outcome
 }
 
@@ -153,10 +155,11 @@ async function runHandler(
       // retirement there is approval_status='rejected'. ai_video_projects
       // keeps its is_active flag. At most one match per asset_id.
       {
-        const { count } = await svc.from("marketing_assets")
+        const { count, error: rejectAssetErr } = await svc.from("marketing_assets")
           .update({ approval_status: "rejected" }, { count: "exact" })
           .eq("id", assetId)
           .eq("brokerage_id", brokerageId)
+        if (rejectAssetErr) console.error(`[asset-manager] asset rejection refused: ${rejectAssetErr.message}`)
         if ((count ?? 0) > 0) {
           return { status: "succeeded", result: { table: "marketing_assets", asset_id: assetId, reason } }
         }

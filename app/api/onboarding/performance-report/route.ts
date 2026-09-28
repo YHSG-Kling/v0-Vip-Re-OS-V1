@@ -2,6 +2,7 @@
 // VIP Real Estate AI OS — Layer 11
 // API route for generating AI-powered performance reports
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
@@ -145,7 +146,7 @@ Make the narrative personalized and actionable. If they're doing well, acknowled
         const reportData = JSON.parse(jsonMatch[0])
         
         const serviceClient = createServiceClient()
-        await serviceClient
+        await sentinelWrite(serviceClient, serviceClient
           .from('agent_performance_reports')
           .insert({
             agent_id: agentId,
@@ -163,7 +164,7 @@ Make the narrative personalized and actionable. If they're doing well, acknowled
             },
             ai_summary: reportData.ai_narrative,
             recommendations: reportData.recommended_actions,
-          })
+          }), { table: "agent_performance_reports", flow: "agent_performance_reports_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       } catch (err) {
         console.error('[PerformanceReport] Error saving report:', err)
       }

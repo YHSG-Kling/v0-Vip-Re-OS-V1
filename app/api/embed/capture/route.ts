@@ -82,10 +82,10 @@ export async function POST(request: NextRequest) {
         resolvedAgentId = pool[0]
       }
       // Advance the cursor so the next capture gets a different agent.
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("embed_widgets")
         .update({ last_routed_agent_id: resolvedAgentId })
-        .eq("id", widget.id)
+        .eq("id", widget.id), { table: "embed_widgets", flow: "embed_widgets_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
   }
 
@@ -134,10 +134,10 @@ export async function POST(request: NextRequest) {
     },
   )
 
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("embed_sessions")
     .update({ contact_id: result.contactId })
-    .eq("id", body.sessionId)
+    .eq("id", body.sessionId), { table: "embed_sessions", flow: "embed_sessions_write", reason: "session→contact link; the contact is already captured" })
 
   return NextResponse.json({ contactId: result.contactId })
 }

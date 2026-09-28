@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -241,19 +242,19 @@ export async function POST(req: NextRequest) {
             .eq("id", event.qr_code_id!)
             .single()
           if (qr) {
-            await supabase
+            await sentinelWrite(supabase, supabase
               .from("qr_codes")
               .update({
                 scan_count: (qr.scan_count ?? 0) + 1,
                 lead_count: (qr.lead_count ?? 0) + 1,
               })
-              .eq("id", event.qr_code_id!)
+              .eq("id", event.qr_code_id!), { table: "qr_codes", flow: "qr_codes_write", reason: "QR scan/lead counters (reporting)" })
           }
         })
     }
 
     // 5. Direct lifecycle_events insert
-    await supabase.from("lifecycle_events").insert({
+    await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
       brokerage_id: event.brokerage_id,
       entity_type: "listing_stage_machine",
       entity_id: event.listing_id,
@@ -266,7 +267,7 @@ export async function POST(req: NextRequest) {
         working_with_agent: workingWithAgent,
         hear_about_us: hearAboutUs ?? null,
       },
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     // 6. processKernelEvent
     // contactId + metadata.eventId are carried so lib/kernel/event-reactor.ts's

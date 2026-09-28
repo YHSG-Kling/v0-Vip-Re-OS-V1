@@ -19,6 +19,7 @@
  * for this column) is DELETED; this file plus
  * lib/buyer-search/listing-source-order.ts::resolveActiveListingSources are the survivors.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireSuperadmin } from "@/lib/auth/platform-guard"
@@ -90,14 +91,14 @@ export async function setBrokerageActiveListingSourcesAction(params: {
   if (error) return { ok: false, sources: [], error: error.message }
 
   try {
-    await svc.from("superadmin_audit_log").insert({
+    await sentinelWrite(svc, svc.from("superadmin_audit_log").insert({
       actor_user_id: auth.userId,
       actor_email: auth.email,
       action: "brokerage.active_listing_sources_set",
       target_type: "brokerage",
       target_id: params.brokerageId,
       details: { sources: normalized },
-    })
+    }), { table: "superadmin_audit_log", flow: "active_listing_sources_audit", reason: "audit echo of a settings write already checked above" })
   } catch {
     // Non-fatal — the write above already landed; audit failure must not undo it.
   }

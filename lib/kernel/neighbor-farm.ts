@@ -11,6 +11,7 @@
 // never spend BatchData credits; production uses the real connector-gateway client.
 // NOT server-only (simulator-driven).
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -120,7 +121,7 @@ export async function stageNeighborFarm(
   }).catch(() => [] as NeighborCandidate[])
 
   if (candidates.length > 0) {
-    await supabase.from("neighbor_notification_recipients").insert(
+    const { error: farmRecipientsErr } = await supabase.from("neighbor_notification_recipients").insert(
       candidates.map((c) => ({
         campaign_id: campaignId, brokerage_id: brokerageId,
         property_address: c.address, property_city: c.city, property_state: c.state, property_zip: c.zip,
@@ -129,9 +130,10 @@ export async function stageNeighborFarm(
         life_stage_match: c.lifeStageMatch, scoring_signals: c.signals, status: "identified",
       })),
     )
-    await supabase.from("neighbor_notification_campaigns")
+    if (farmRecipientsErr) console.error(`[neighbor-farm] recipients NOT saved: ${farmRecipientsErr.message}`)
+    await sentinelWrite(supabase, supabase.from("neighbor_notification_campaigns")
       .update({ recipients_identified: candidates.length, updated_at: new Date().toISOString() })
-      .eq("id", campaignId)
+      .eq("id", campaignId), { table: "neighbor_notification_campaigns", flow: "neighbor_notification_campaigns_write", reason: "identified-count cache on the campaign" })
   }
   return { campaignId, identified: candidates.length, created: true }
 }

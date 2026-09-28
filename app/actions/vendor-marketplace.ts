@@ -1,5 +1,7 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
@@ -389,14 +391,14 @@ export async function createVendorBooking(data: {
   if (error) throw error
 
   // Add timeline entry
-  await supabase.from("transaction_timeline").insert({
+  await bestEffort(supabase.from("transaction_timeline").insert({
     transaction_id: data.transactionId,
     brokerage_id: profile?.brokerage_id,
     activity_type: "vendor_booked",
     description: `Vendor booked for ${data.serviceType}`,
     performed_by: user.id,
     metadata: { vendor_id: data.vendorId, service_type: data.serviceType }
-  })
+  }), "timeline echo of a vendor booking already written (checked above)")
 
   const { revalidatePath } = await import("next/cache")
   revalidatePath(`/dashboard/transactions/${data.transactionId}`)
@@ -912,14 +914,14 @@ async function recomputeVendorReviewStats(vendorId: string, brokerageId: string)
   // vendor_ratings is unique on vendor_id — upsert the review columns without disturbing the booking rollup.
   const { data: existing } = await svc.from("vendor_ratings").select("id").eq("vendor_id", vendorId).maybeSingle()
   if (existing) {
-    await svc.from("vendor_ratings").update({
+    await sentinelWrite(svc, svc.from("vendor_ratings").update({
       review_avg: stats.avg, review_count: stats.count, verified_review_count: stats.verifiedCount, last_updated: new Date().toISOString(),
-    }).eq("id", (existing as any).id)
+    }).eq("id", (existing as any).id), { table: "vendor_ratings", flow: "vendor_ratings_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   } else {
-    await svc.from("vendor_ratings").insert({
+    await sentinelWrite(svc, svc.from("vendor_ratings").insert({
       vendor_id: vendorId, brokerage_id: brokerageId,
       review_avg: stats.avg, review_count: stats.count, verified_review_count: stats.verifiedCount, total_bookings: 0, last_updated: new Date().toISOString(),
-    })
+    }), { table: "vendor_ratings", flow: "vendor_ratings_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
   return stats
 }
@@ -1068,7 +1070,8 @@ export async function flagVendorReview(reviewId: string, reason: string): Promis
 
   const { moderationAfterFlag } = await import("@/lib/kernel/vendor-review-moderation")
   const newStatus = moderationAfterFlag((review as any).moderation_status, flagCount)
-  await svc.from("vendor_reviews").update({ flag_count: flagCount, moderation_status: newStatus, updated_at: new Date().toISOString() }).eq("id", reviewId)
+  const { error: flagCountErr } = await svc.from("vendor_reviews").update({ flag_count: flagCount, moderation_status: newStatus, updated_at: new Date().toISOString() }).eq("id", reviewId)
+  if (flagCountErr) console.error(`[vendor-marketplace] review flag/moderation NOT saved: ${flagCountErr.message}`)
   return { flagCount, status: newStatus }
 }
 

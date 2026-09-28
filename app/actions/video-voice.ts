@@ -5,6 +5,8 @@
 // CANONICAL TABLE: public.agent_voice_profiles, public.voice_clone_training
 // ============================================
 
+import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
@@ -213,7 +215,7 @@ export async function createVoiceProfile(data: {
   }
 
   // Write lifecycle event — kernel-visible
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     entity_type: "voice_profile",
     entity_id: profile.id,
     brokerage_id: data.brokerageId,
@@ -223,7 +225,7 @@ export async function createVoiceProfile(data: {
       profile_name: data.profileName,
       agent_id: data.agentId,
     },
-  })
+  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   // Fire kernel event
   await processKernelEvent({
@@ -310,7 +312,7 @@ export async function updateVoiceProfileSamples(
   }
 
   // Write lifecycle event
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     entity_type: "voice_profile",
     entity_id: profileId,
     brokerage_id: brokerageId,
@@ -320,7 +322,7 @@ export async function updateVoiceProfileSamples(
       sample_count: recordedCount,
       total_required: VOICE_CLONE_SAMPLE_PHRASES.length,
     },
-  })
+  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   revalidatePath("/dashboard/videos/voice")
   return profile
@@ -368,14 +370,14 @@ export async function setDefaultVoiceProfile(
   }
 
   // Write lifecycle event
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     entity_type: "voice_profile",
     entity_id: profileId,
     brokerage_id: brokerageId,
     event_type: KernelEvent.VOICE_CLONE_DEFAULT_SET,
     actor_user_id: actorUserId ?? null,
     metadata: { agent_id: agentId },
-  })
+  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   await processKernelEvent({
     event: KernelEvent.VOICE_CLONE_DEFAULT_SET,
@@ -474,7 +476,7 @@ export async function startVoiceCloneTraining(
   }
 
   // Write lifecycle event — KERNEL-VISIBLE
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     entity_type: "voice_training",
     entity_id: trainingJob.id,
     brokerage_id: brokerageId,
@@ -484,7 +486,7 @@ export async function startVoiceCloneTraining(
       profile_id: profileId,
       sample_count: recordedCount,
     },
-  })
+  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   // Fire kernel event
   await processKernelEvent({
@@ -625,7 +627,7 @@ export async function updateTrainingJobStatus(
       ? KernelEvent.VOICE_CLONE_TRAINING_FAILED
       : KernelEvent.VOICE_CLONE_TRAINING_STARTED
 
-  await supabase.from("lifecycle_events").insert({
+  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
     entity_type: "voice_training",
     entity_id: trainingId,
     brokerage_id: job.brokerage_id,
@@ -636,13 +638,13 @@ export async function updateTrainingJobStatus(
       quality_score: providerResponse?.quality_score ?? null,
       error_message: errorMessage ?? null,
     },
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // Fire VOICE_CLONE_READY if completed with acceptable quality
   if (status === "completed") {
     const qualityScore = providerResponse?.quality_score ?? 100
     if (qualityScore >= 70) {
-      await supabase.from("lifecycle_events").insert({
+      await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
         entity_type: "voice_profile",
         entity_id: job.voice_profile_id,
         brokerage_id: job.brokerage_id,
@@ -652,7 +654,7 @@ export async function updateTrainingJobStatus(
           voice_id: providerResponse?.voice_id,
           quality_score: qualityScore,
         },
-      })
+      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
       await processKernelEvent({
         event: KernelEvent.VOICE_CLONE_READY,

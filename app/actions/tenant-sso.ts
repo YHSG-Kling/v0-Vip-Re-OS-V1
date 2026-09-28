@@ -28,6 +28,7 @@
 // connection matching the typed email's domain. It never returns domain
 // lists, brokerage names, or error detail — no tenant enumeration surface.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
@@ -112,14 +113,14 @@ async function requireBrokerageAdmin(): Promise<AdminGate | { ok: false; error: 
 
 async function audit(svc: any, userId: string, action: string, entityId: string, after: Record<string, unknown>) {
   try {
-    await svc.from("audit_log").insert({
+    await sentinelWrite(svc, svc.from("audit_log").insert({
       user_id: userId,
       action,
       entity_type: "tenant_sso_connection",
       entity_id: entityId,
       before: null,
       after,
-    })
+    }), { table: "audit_log", flow: "tenant_sso_audit", reason: "audit echo of an SSO action that already completed" })
   } catch {
     /* audit is best-effort — never fail the user action on a log write */
   }
@@ -287,7 +288,7 @@ export async function configureSsoAction(rawEmailDomain: string, rawMetadataUrl:
   if (!result.configured) {
     // MOCK-SAFE: row stays 'pending'; the panel carries the unconfigured note.
   } else if (result.ok) {
-    const { data } = await svc.from("tenant_sso_connections")
+    const { data, error: activateErr } = await svc.from("tenant_sso_connections")
       .update({
         status: "active",
         supabase_sso_provider_id: result.providerId,
@@ -296,12 +297,16 @@ export async function configureSsoAction(rawEmailDomain: string, rawMetadataUrl:
         updated_at: nowIso,
       })
       .eq("id", row.id).select(ROW_COLUMNS).single()
+    // The provider IS registered; a refused stamp leaves the row 'pending' while
+    // the panel shows 'active' from the fallback below — say so in the log.
+    if (activateErr) console.error(`[tenant-sso] provider ${result.providerId} registered but the connection row was not activated: ${activateErr.message}`)
     row = data ?? { ...row, status: "active", supabase_sso_provider_id: result.providerId }
   } else {
     const detail = result.samlNotEnabled ? SAML_NOT_ENABLED_DETAIL : result.error
-    const { data } = await svc.from("tenant_sso_connections")
+    const { data, error: errStampErr } = await svc.from("tenant_sso_connections")
       .update({ status: "error", error_detail: detail, updated_at: nowIso })
       .eq("id", row.id).select(ROW_COLUMNS).single()
+    if (errStampErr) console.error(`[tenant-sso] registration failed (${detail}) and the error stamp was refused: ${errStampErr.message}`)
     row = data ?? { ...row, status: "error", error_detail: detail }
   }
 

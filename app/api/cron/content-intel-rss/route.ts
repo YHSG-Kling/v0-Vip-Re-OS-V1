@@ -9,6 +9,7 @@
  *
  * Auth: CRON_SECRET.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { fetchRssFeed } from "@/lib/content-intel/rss-scraper"
@@ -73,7 +74,7 @@ export async function GET(req: NextRequest) {
           expires_at:       new Date(Date.now() + 21 * 86_400_000).toISOString(),
         }
         if (existing.data) {
-          await svc.from("content_topic_bank")
+          await sentinelWrite(svc, svc.from("content_topic_bank")
             .update({
               engagement_score: row.engagement_score,
               raw_data:         row.raw_data,
@@ -81,7 +82,7 @@ export async function GET(req: NextRequest) {
               categories:       row.categories,
               value_angle:      row.value_angle,
             })
-            .eq("id", (existing.data as { id: string }).id)
+            .eq("id", (existing.data as { id: string }).id), { table: "content_topic_bank", flow: "content_topic_bank_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
           updated++
         } else {
           const ins = await svc.from("content_topic_bank").insert(row)

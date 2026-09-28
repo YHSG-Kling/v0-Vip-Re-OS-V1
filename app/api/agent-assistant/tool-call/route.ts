@@ -131,10 +131,10 @@ export async function POST(request: NextRequest) {
       .limit(1)
       .maybeSingle()
     if (pending) {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("agent_assistant_sessions")
         .update({ conversation_id: conversationId })
-        .eq("id", pending.id)
+        .eq("id", pending.id), { table: "agent_assistant_sessions", flow: "agent_assistant_sessions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       session = pending as SessionRow
     }
   }
@@ -202,8 +202,10 @@ export async function POST(request: NextRequest) {
   const latencyMs = Date.now() - start
 
   // ── Audit log + counter ────────────────────────────────────────────────
+  // Both are audit/counter writes that must not fail the tool response — declared
+  // allowed-to-fail and ledgered, instead of dropped (the result was discarded).
   await Promise.all([
-    supabase.from("agent_assistant_tool_calls").insert({
+    sentinelWrite(supabase, supabase.from("agent_assistant_tool_calls").insert({
       // Tenant comes from the agent_assistant_sessions row this call hangs off
       // (session.brokerage_id) — NOT from caller context: this webhook is
       // authenticated by a shared ElevenLabs secret, so there is no session
@@ -218,11 +220,11 @@ export async function POST(request: NextRequest) {
       success,
       error_message: errorMessage,
       latency_ms: latencyMs,
-    }),
-    supabase
+    }), { table: "agent_assistant_tool_calls", flow: "assistant_tool_call_audit", brokerageId: session.brokerage_id, reason: "audit row of a tool call already executed and returned" }),
+    sentinelWrite(supabase, supabase
       .from("agent_assistant_sessions")
       .update({ tool_call_count: (session.tool_call_count ?? 0) + 1 })
-      .eq("id", session.id),
+      .eq("id", session.id), { table: "agent_assistant_sessions", flow: "assistant_tool_call_counter", brokerageId: session.brokerage_id, reason: "usage counter" }),
   ])
 
   // ElevenLabs accepts string or object as the tool response; we return the
@@ -1210,11 +1212,12 @@ async function stageOfferPacket(
     if (offerRow?.id) {
       // tenant anchor (scope burn-down): update pinned to the just-created doc id
       // AND the session's brokerage.
-      await supabase
+      const { error: offerLinkErr } = await supabase
         .from("documents")
         .update({ metadata: { ...docMetadata, linked_offer_id: offerRow.id } })
         .eq("id", doc.id)
         .eq("brokerage_id", session.brokerage_id)
+      if (offerLinkErr) console.error(`[agent-assistant] offer created but the draft document was not linked to it: ${offerLinkErr.message}`)
     }
 
     const contactName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
@@ -2556,7 +2559,7 @@ async function dispatchTransactionPacket(
 
   // 4. Update both artifact statuses
   if (bba) {
-    await supabase
+    const { error: bbaPendingErr } = await supabase
       .from("buyer_broker_agreements")
       .update({
         status:               "pending_signature",
@@ -2564,9 +2567,10 @@ async function dispatchTransactionPacket(
         signature_request_id: externalTxId,
       })
       .eq("id", bba.id)
+    if (bbaPendingErr) console.error(`[agent-assistant] envelope sent but the buyer-broker agreement was not marked pending_signature: ${bbaPendingErr.message}`)
   }
   if (offerDoc) {
-    await supabase
+    const { error: offerDocPendingErr } = await supabase
       .from("documents")
       .update({
         status: "pending_signature",
@@ -2579,6 +2583,7 @@ async function dispatchTransactionPacket(
         },
       })
       .eq("id", offerDoc.id)
+    if (offerDocPendingErr) console.error(`[agent-assistant] envelope sent but the offer document was not marked pending_signature: ${offerDocPendingErr.message}`)
 
     // Mirror the envelope id onto the linked `offers` row so the post-signed
     // chain (compliance.passed → ACCEPTED → convertOfferToTransaction) can
@@ -2586,7 +2591,7 @@ async function dispatchTransactionPacket(
     // dead-ended at documents.status='signed' and no transaction was created.
     const linkedOfferId = (offerDoc as any).metadata?.linked_offer_id as string | undefined
     if (linkedOfferId) {
-      await supabase
+      const { error: offerSubmittedErr } = await supabase
         .from("offers")
         .update({
           provider_envelope_id: externalTxId,
@@ -2597,6 +2602,7 @@ async function dispatchTransactionPacket(
           status:               "submitted",
         })
         .eq("id", linkedOfferId)
+      if (offerSubmittedErr) console.error(`[agent-assistant] envelope sent but the offer was not marked submitted (the signed-webhook convergence will not find it): ${offerSubmittedErr.message}`)
     }
   }
 

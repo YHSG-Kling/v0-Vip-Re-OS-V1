@@ -1,5 +1,6 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
@@ -808,7 +809,7 @@ Return JSON:
     const qualityCheck = JSON.parse(qualityResult)
 
     // Update packet job with quality check in config
-    await supabase
+    await bestEffort(supabase
       .from("listing_packet_jobs")
       .update({
         config: {
@@ -818,7 +819,7 @@ Return JSON:
         },
       })
       .eq("id", packetId)
-      .eq("brokerage_id", auth.brokerageId)
+      .eq("brokerage_id", auth.brokerageId), "quality-check annotation on the packet job; the check result is returned to the caller")
 
     return { success: true, qualityCheck }
   } catch (error) {

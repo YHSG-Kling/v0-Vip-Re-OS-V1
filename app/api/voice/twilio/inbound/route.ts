@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveInboundContext, validateTwilioSignature } from "@/lib/voice/twilio-voice"
@@ -67,10 +68,10 @@ export async function POST(request: NextRequest) {
       brandName: pctx.brandName, tagline: pctx.tagline, tierLines: pctx.tierLines, hasTransfer: !!pctx.forwardNumber,
       voicePitch: pctx.voicePitch, receptionGreeting: pctx.receptionGreeting,
     })
-    await svc.from("platform_reception_calls").insert({
+    await sentinelWrite(svc, svc.from("platform_reception_calls").insert({
       call_sid: callSid, phone_from: from, phone_to: to,
       transcript: appendTranscript(null, null, firstMessage),
-    }).then(undefined, () => {})
+    }), { table: "platform_reception_calls", flow: "reception_call_open", reason: "the call must be answered; a lost call row is ledgered" })
     return xml(answerTwiml(firstMessage, url.replace(/\/inbound$/, "/turn")))
   }
 
@@ -143,7 +144,7 @@ export async function POST(request: NextRequest) {
   // Vapi function-tools onto the Twilio-native lane.)
   if (contactId) {
     try {
-      await svc.from("inbound_call_classifications").insert({
+      await sentinelWrite(svc, svc.from("inbound_call_classifications").insert({
         brokerage_id: ctx.brokerageId,
         caller_phone: from,
         caller_phone_digits: callerDigits,
@@ -151,7 +152,7 @@ export async function POST(request: NextRequest) {
         ai_handled: true,
         resulting_contact_id: contactId,
         classified_at: new Date().toISOString(),
-      })
+      }), { table: "inbound_call_classifications", flow: "inbound_call_classification", reason: "the call must be answered; a lost classification row is ledgered" })
     } catch { /* best-effort — never block the answer */ }
   }
 

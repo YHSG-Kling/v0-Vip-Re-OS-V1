@@ -1,5 +1,6 @@
 "use client"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { useEffect, useState, useTransition } from "react"
 import { createClient } from "@/lib/supabase/client"
 import {
@@ -172,7 +173,7 @@ export default function FarmIntelligencePage() {
           return
         }
         if (mergeChoice === "overwrite") {
-          await supabase.from("farm_territories").delete().eq("brokerage_id", brokerageId)
+          await bestEffort(supabase.from("farm_territories").delete().eq("brokerage_id", brokerageId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
         }
         await seedTerritoriesFromServiceArea(brokerageId)
       }
@@ -188,10 +189,10 @@ export default function FarmIntelligencePage() {
     const zipList = newZips.split(/[\s,]+/).map((z) => z.trim()).filter(Boolean)
 
     if (editTerritory) {
-      await supabase
+      await bestEffort(supabase
         .from("farm_territories")
         .update({ name: newName, zip_codes: zipList, marketing_budget_monthly: parseFloat(newBudget) || 0 })
-        .eq("id", editTerritory.id)
+        .eq("id", editTerritory.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     } else {
       // Check for duplicate by (brokerage_id, name)
       const { data: dup } = await supabase
@@ -202,13 +203,13 @@ export default function FarmIntelligencePage() {
         .maybeSingle()
       if (dup) { toast.error("A territory with this name already exists"); return }
 
-      await supabase.from("farm_territories").insert({
+      await bestEffort(supabase.from("farm_territories").insert({
         brokerage_id: brokerageId,
         name: newName,
         zip_codes: zipList,
         marketing_budget_monthly: parseFloat(newBudget) || 0,
         is_active: true,
-      })
+      }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     }
     setShowTerritoryModal(false)
     setEditTerritory(null)
@@ -217,7 +218,7 @@ export default function FarmIntelligencePage() {
   }
 
   async function handleToggleTerritory(t: FarmTerritory) {
-    await supabase.from("farm_territories").update({ is_active: !t.is_active }).eq("id", t.id)
+    await bestEffort(supabase.from("farm_territories").update({ is_active: !t.is_active }).eq("id", t.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     await load()
   }
 

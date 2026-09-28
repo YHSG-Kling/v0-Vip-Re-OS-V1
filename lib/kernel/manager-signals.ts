@@ -18,6 +18,7 @@
 // NOT server-only (by convention, like command-center.ts) so simulators drive it end-to-end.
 // Only ever writes through a caller-supplied/service client — never import client-side.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey } from "@/lib/kernel/manager-registry"
 // Pure predicate only (the engine itself stays a lazy import in the handler below, as before).
@@ -689,11 +690,11 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       .order("effective_date", { ascending: false }).limit(1).maybeSingle()
     const brokerageNet = brokerageNetFromSplit(commission, (prof as any)?.split_percent ?? null)
     // First production datapoint (year 1) — recruiting_analytics, now carrying the REAL brokerage net.
-    await ctx.supabase.from("recruiting_analytics").insert({
+    await sentinelWrite(ctx.supabase, ctx.supabase.from("recruiting_analytics").insert({
       brokerage_id: ctx.brokerageId, recruited_agent_id: agentId, year_number: 1,
       gross_commission_generated: commission, brokerage_net_from_agent: brokerageNet,
       transaction_count: 1, computed_at: new Date().toISOString(),
-    })
+    }), { table: "recruiting_analytics", flow: "recruiting_analytics_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     // Recompute the recruited agent's ROI now that a real production datapoint exists (writes the
     // recruiting_roi row the dashboard reads — previously it had NO production writer).
     try {
@@ -1859,9 +1860,9 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     })
     if (error) return null
     // Bump last_activity_at so the ISA workspace queue (ordered by it) floats this lead up.
-    await ctx.supabase.from("leads")
+    await sentinelWrite(ctx.supabase, ctx.supabase.from("leads")
       .update({ last_activity_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-      .eq("id", leadId).eq("brokerage_id", ctx.brokerageId)
+      .eq("id", leadId).eq("brokerage_id", ctx.brokerageId), { table: "leads", flow: "leads_write", reason: "queue-priority bump; the manager signal already landed" })
 
     const actions = [`prioritized ISA-owned lead ${leadId} for seller-intent qualification (${(intentScore * 100).toFixed(0)}/100)`]
 
@@ -3834,9 +3835,10 @@ export async function consumeManagerSignals(
     try { action = await handler(signal, { brokerageId: params.brokerageId, supabase }) }
     catch (e) { console.error(`[manager-signals] handler failed for ${signal.id}:`, e); skipped += 1; continue }
     if (!action) { skipped += 1; continue }
-    await supabase.from("manager_signals")
+    const { error: consumeErr } = await supabase.from("manager_signals")
       .update({ status: "consumed", consumed_at: new Date().toISOString(), consumed_action: action })
       .eq("id", signal.id).eq("status", "open")
+    if (consumeErr) console.error(`[manager-signals] handled signal NOT marked consumed (it may be handled again): ${consumeErr.message}`)
     consumed += 1
   }
   return { consumed, skipped }

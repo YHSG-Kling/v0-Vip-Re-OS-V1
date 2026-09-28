@@ -15,6 +15,7 @@
  *  - Returns { success: boolean; error?: string; data?: T } — never throws.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { SupabaseClient }   from "@supabase/supabase-js"
 import { createClient }          from "@/lib/supabase/server"
 import { createServiceClient }   from "@/lib/supabase/service"
@@ -41,14 +42,14 @@ async function emitOfferEvent(params: {
   const supabase = createServiceClient()
   const { event, brokerageId, entityId, actorUserId, metadata } = params
 
-  await supabase.from("lifecycle_events").insert({
+  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
     brokerage_id:  brokerageId,
     entity_type:   "offer",
     entity_id:     entityId,
     event_type:    event,
     actor_user_id: actorUserId,
     metadata:      metadata ?? {},
-  }).throwOnError()
+  }).throwOnError(), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // Resolve buyer (offer.contact_id) + seller (listing.seller_contact_id) so the
   // canonical fan-out can reach both sides' portals. Only events with a portal
@@ -358,10 +359,11 @@ export async function issueCounterOffer(params: {
   // issued. We DO set has_counter=true (the agent-UI checkbox signal that a
   // counter exists) and status='countered' so any "open offers" filter still
   // sees that this offer received a counter.
-  await supabase
+  const { error: counteredFlagErr } = await supabase
     .from("offers")
     .update({ status: "countered", has_counter: true })
     .eq("id", offerId)
+  if (counteredFlagErr) return { success: false, error: `Counter created, but the original offer was not marked countered: ${counteredFlagErr.message}` }
 
   await emitOfferEvent({
     event:       KernelEvent.OFFER_OS_COUNTERED,
@@ -451,17 +453,18 @@ export async function acceptOffer(params: {
   // + lib/inbound-mail/offer-intake.ts — it is also the column default), so
   // omitting it stranded competing intake offers as open after an accept.
   if ((offer as any).listing_id) {
-    await supabase
+    const { error: siblingRejectErr } = await supabase
       .from("offers")
       .update({ status: "rejected" })
       .eq("listing_id", (offer as any).listing_id)
       .neq("id", offerId)
       .in("status", ["pending", "submitted", "countered"])
+    if (siblingRejectErr) console.error(`[kernel/offers] competing offers on the listing NOT marked rejected after acceptance: ${siblingRejectErr.message}`)
   }
 
   // Update linked transaction if present
   if ((offer as any).transaction_id) {
-    await supabase
+    const { error: underContractErr } = await supabase
       .from("transactions")
       .update({
         status:         "under_contract",
@@ -470,6 +473,7 @@ export async function acceptOffer(params: {
         close_date:     (offer as any).closing_date ?? null,
       })
       .eq("id", (offer as any).transaction_id)
+    if (underContractErr) console.error(`[kernel/offers] offer accepted but the linked transaction was NOT moved under contract: ${underContractErr.message}`)
   }
 
   await emitOfferEvent({

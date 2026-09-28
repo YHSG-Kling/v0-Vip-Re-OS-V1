@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { CRITICAL_MILESTONES } from "./transaction-stages"
 import { resolveMilestoneIdentity } from "./milestone-identity"
@@ -159,11 +160,10 @@ export async function ensureRequiredMilestones(
   }
 
   for (const fill of dateFills) {
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("transaction_milestones")
       .update({ target_date: fill.date, updated_at: now })
-      .eq("id", fill.rowId)
-      .then(() => null, () => null)
+      .eq("id", fill.rowId), { table: "transaction_milestones", flow: "transaction_milestones_write", reason: "target-date backfill for display; re-derived on the next milestone read" })
   }
 
   // Mirror deadline-bearing milestones into transaction_deadlines so the
@@ -324,7 +324,7 @@ export async function completeMilestone(params: CompleteMilestoneParams): Promis
   // as completed too, not just the Milestones tab).
   const mapped = DEADLINE_BEARING.find(d => d.milestone === milestoneName)
   if (mapped) {
-    await supabase
+    const { error: deadlineDoneErr } = await supabase
       .from("transaction_deadlines")
       .update({
         status:       "completed",
@@ -335,7 +335,7 @@ export async function completeMilestone(params: CompleteMilestoneParams): Promis
       .eq("transaction_id", transactionId)
       .eq("brokerage_id", brokerageId)
       .eq("deadline_type", mapped.deadlineType)
-      .then(() => null, () => null)
+    if (deadlineDoneErr) console.error(`[milestone-service] mirrored deadline NOT completed (the deadline watcher will keep flagging it): ${deadlineDoneErr.message}`)
   }
 
   // Log lifecycle event via kernel

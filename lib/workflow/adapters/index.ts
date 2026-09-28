@@ -52,19 +52,20 @@ const inAppAdapter: ChannelAdapter = {
       return { status: "error", providerKey: "in_app", error: "No agent record for in_app message" }
     }
 
-    const { data: convRow } = await supabase
+    const { data: convRow, error: convUpsertErr } = await supabase
       .from("conversations")
       .upsert(
         { contact_id: contact.id, agent_id: resolvedAgentId, brokerage_id: brokerageId, status: "active", updated_at: new Date().toISOString() },
         { onConflict: "contact_id,agent_id" }
       )
       .select("id").single()
+    if (convUpsertErr) console.error(`[workflow-adapter] in-app conversation NOT resolved: ${convUpsertErr.message}`)
 
     if (!convRow?.id) {
       return { status: "error", providerKey: "in_app", error: "Could not resolve conversation" }
     }
 
-    const { data: msgRow } = await supabase.from("messages").insert({
+    const { data: msgRow, error: inAppMsgErr } = await supabase.from("messages").insert({
       conversation_id: convRow.id,
       contact_id: contact.id,
       agent_id: resolvedAgentId,
@@ -77,6 +78,7 @@ const inAppAdapter: ChannelAdapter = {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }).select("id").single()
+    if (inAppMsgErr) console.error(`[workflow-adapter] in-app message NOT recorded: ${inAppMsgErr.message}`)
 
     return {
       status: msgRow ? "sent" : "error",

@@ -45,6 +45,7 @@
 // changes nothing the second time.
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 /** How far back an enrollment may have started and still claim the deal. Matches
@@ -117,10 +118,10 @@ export async function resolveSequenceConversions(
       .select("conversions_total")
       .eq("id", sequenceId)
       .maybeSingle()
-    await svc
+    await sentinelWrite(svc, svc
       .from("campaign_sequences")
       .update({ conversions_total: Number(seq?.conversions_total ?? 0) + count })
-      .eq("id", sequenceId)
+      .eq("id", sequenceId), { table: "campaign_sequences", flow: "campaign_sequences_write", reason: "conversion counter for reporting" })
   }
 
   return {

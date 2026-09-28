@@ -1,5 +1,6 @@
 'use server'
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from '@/lib/supabase/service'
 import { createClient } from '@/lib/supabase/server'
 import { captureContact } from '@/lib/contact-pipeline/contact-capture'
@@ -174,7 +175,7 @@ async function processImportRows(params: {
     }
   }
 
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from('lead_imports')
     .update({
       created_count: created,
@@ -185,7 +186,7 @@ async function processImportRows(params: {
       completed_at: new Date().toISOString(),
     })
     .eq('id', params.importId)
-    .eq('brokerage_id', brokerageId)
+    .eq('brokerage_id', brokerageId), { table: "lead_imports", flow: "lead_imports_write", reason: "import summary counters; the counts are returned to the caller" })
 
   // Audit row + reactor (was a bare insert nobody downstream heard).
   await emitKernelEvent({

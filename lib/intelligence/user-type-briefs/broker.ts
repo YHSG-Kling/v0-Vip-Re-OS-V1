@@ -16,6 +16,7 @@
 // brokerageId / userId are now an IN-PROCESS CONTRACT: with the door closed,
 // the server caller that supplies them is the gate.
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
@@ -288,7 +289,7 @@ export async function generateBrokerBrief(params: {
   }
 
   // 6. Cache result
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("ai_daily_briefings")
     .upsert({
       user_id: params.userId,
@@ -299,7 +300,7 @@ export async function generateBrokerBrief(params: {
       market_pulse: JSON.stringify(metrics),
       ai_model_used: "claude-sonnet-routed",
       generated_at: new Date().toISOString(),
-    }, { onConflict: "agent_id,briefing_date" })
+    }, { onConflict: "agent_id,briefing_date" }), { table: "ai_daily_briefings", flow: "ai_daily_briefings_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   return {
     userId: params.userId,

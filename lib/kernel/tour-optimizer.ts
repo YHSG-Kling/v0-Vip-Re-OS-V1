@@ -34,6 +34,7 @@
 // Dependency-light + NOT server-only (cron + simulator + client all import it), exactly
 // like offer-net-sheet.ts and portal-value.ts.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { createServiceClient } from "@/lib/supabase/service"
 import type { CopyGenerator } from "@/lib/kernel/ai-copy"
 
@@ -496,7 +497,7 @@ export async function optimizeTourRoute(
   // Persist the new order + per-leg ESTIMATED drives + recomputed times. Un-geocoded
   // stops keep their (re-indexed, original-relative) order with null drive.
   for (const s of sequenced) {
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("tour_stops")
       .update({
         order_index: s.order_index,
@@ -504,14 +505,14 @@ export async function optimizeTourRoute(
         ...(times.has(s.id) ? { suggested_time: times.get(s.id) } : {}),
       })
       .eq("id", s.id)
-      .eq("tour_id", tourId)
+      .eq("tour_id", tourId), { table: "tour_stops", flow: "tour_stops_write", reason: "route order/drive-time annotation; recomputed on the next optimize" })
   }
 
   // tours.total_drive_time_minutes — the idempotency stamp + the agent-review number.
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("tours")
     .update({ total_drive_time_minutes: totalDrive, updated_at: now.toISOString() })
-    .eq("id", tourId)
+    .eq("id", tourId), { table: "tours", flow: "tours_write", reason: "drive-time total / idempotency stamp; recomputed on the next optimize" })
 
   // Persist the route to showing_routes (the table that exists for exactly this).
   // agent_id on showing_routes FKs agents.id; tours.agent_id is the agent's users.id, so
@@ -538,7 +539,7 @@ export async function optimizeTourRoute(
       property_address: (s as any).property_address ?? null,
     }))
     const estMiles = sequenced.reduce((sum, s) => sum + (s.haversineMiles ?? 0), 0)
-    const { data: route } = await supabase
+    const { data: route, error: routeInsErr } = await supabase
       .from("showing_routes")
       .insert({
         agent_id: agentRowId,
@@ -553,6 +554,7 @@ export async function optimizeTourRoute(
       })
       .select("id")
       .maybeSingle()
+    if (routeInsErr) console.error(`[tour-optimizer] showing route NOT persisted: ${routeInsErr.message}`)
     routeId = (route as any)?.id
   }
 
@@ -703,10 +705,11 @@ export async function pushTourRecap(
   // stamps them at lock-in for the itinerary report, and that record must not be
   // overwritten. (The recap's own idempotency is the card above, not this column.)
   if ((tour as any).report_sent_at == null) {
-    await supabase
+    const { error: reportStampErr } = await supabase
       .from("tours")
       .update({ report_sent_at: now.toISOString(), report_url: (tour as any).report_url ?? portalUrl })
       .eq("id", tourId)
+    if (reportStampErr) console.error(`[tour-optimizer] tour report NOT stamped sent: ${reportStampErr.message}`)
   }
 
   return { ...base, ok: true, pushed: pushed.pushed, cardId: pushed.id }

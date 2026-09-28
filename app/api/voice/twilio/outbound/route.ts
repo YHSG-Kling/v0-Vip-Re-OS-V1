@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveInboundContext, validateTwilioSignature } from "@/lib/voice/twilio-voice"
@@ -123,11 +124,11 @@ export async function POST(request: NextRequest) {
         mergedAiNotes = JSON.stringify({ ...JSON.parse(mergedAiNotes ?? "{}"), voicemail_audio_url: playUrl })
       } catch { /* keep the original ai_notes — the dial-time brief must not be lost */ }
     }
-    await svc.from("voice_calls").update({
+    await sentinelWrite(svc, svc.from("voice_calls").update({
       status: "completed", outcome: "voicemail", ended_at: new Date().toISOString(),
       transcription: appendTranscript(null, null, vm),
       ai_notes: mergedAiNotes,
-    }).eq("id", (call as any).id).then(undefined, () => {})
+    }).eq("id", (call as any).id), { table: "voice_calls", flow: "voice_voicemail_close", reason: "the call must be answered; a lost status stamp is ledgered" })
     return xml(playUrl ? twimlPlay(playUrl) : twimlHangup(vm))
   }
 
@@ -144,10 +145,10 @@ export async function POST(request: NextRequest) {
     const { RECORDING_DISCLOSURE } = await import("@/lib/communication/call-disclosures")
     opener = `${RECORDING_DISCLOSURE}${opener}`.slice(0, 550)
   }
-  await svc.from("voice_calls").update({
+  await sentinelWrite(svc, svc.from("voice_calls").update({
     status: "in_progress",
     transcription: appendTranscript((call as any).transcription, null, opener),
-  }).eq("id", (call as any).id).then(undefined, () => {})
+  }).eq("id", (call as any).id), { table: "voice_calls", flow: "voice_in_progress", reason: "the call must be answered; a lost status stamp is ledgered" })
 
   return xml(answerOutboundTwiml(opener, url.replace(/\/outbound$/, "/turn"), brief.elevenlabsVoiceId ?? ctx.identity.elevenlabsVoiceId))
 }

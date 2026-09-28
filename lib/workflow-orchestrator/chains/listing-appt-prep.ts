@@ -757,7 +757,7 @@ export const listingApptPrepChain: WorkflowChain = {
             kitAgentId = await resolveUserIdToAgentRecord(ctx.agentUserId, ctx.brokerageId)
           }
 
-          await svc.from("direct_mail_campaigns").insert({
+          const { error: kitMailErr } = await svc.from("direct_mail_campaigns").insert({
             brokerage_id:    ctx.brokerageId,
             agent_id:        kitAgentId,
             contact_id:      ctx.contactId,
@@ -775,6 +775,7 @@ export const listingApptPrepChain: WorkflowChain = {
             compliance_event_id: result.complianceEventId ?? null,
             created_at:          new Date().toISOString(),
           })
+          if (kitMailErr) console.error(`[listing-appt-prep] pre-listing kit mailing NOT queued: ${kitMailErr.message}`)
         }
 
         const anyOk = sent.some((s) => s.success)

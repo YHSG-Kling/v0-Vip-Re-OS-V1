@@ -10,6 +10,7 @@
  * modules listing instead.
  */
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
@@ -221,10 +222,10 @@ export async function cloneTemplate(templateId: string) {
     .single()
   if (cloneError) return { error: "Failed to clone template" }
 
-  await supabase
+  await bestEffort(supabase
     .from("template_marketplace")
     .update({ usage_count: ((template.usage_count as number) || 0) + 1 })
-    .eq("id", templateId)
+    .eq("id", templateId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
   revalidatePath("/academy")
   return { success: true, playbook: clonedPlaybook }

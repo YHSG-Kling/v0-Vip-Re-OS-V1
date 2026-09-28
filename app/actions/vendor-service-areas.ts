@@ -35,6 +35,7 @@
  * lib/vendors/vendor-service-area.ts :: VENDOR_COVERAGE_PRICING_IMPLICATIONS.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
@@ -219,13 +220,13 @@ export async function declareVendorServiceAreaAction(
 
   // Declaring where a licensed company may work is an auditable event: it is the
   // fact the booking gate will later refuse or permit on.
-  await svc.from("audit_log").insert({
+  await sentinelWrite(svc, svc.from("audit_log").insert({
     after: { ...payload, declared_via: auth.via },
     user_id: auth.userId,
     action: "vendor_service_area.declared",
     entity_type: "vendor_service_area",
     entity_id: serviceAreaId,
-  })
+  }), { table: "audit_log", flow: "vendor_service_area_declared_audit", reason: "the service area already landed; a lost audit echo is ledgered" })
 
   revalidatePath("/dashboard/vendors")
   revalidatePath("/portal/vendor")
@@ -282,13 +283,13 @@ export async function withdrawVendorServiceAreaAction(params: {
     }
   }
 
-  await svc.from("audit_log").insert({
+  await sentinelWrite(svc, svc.from("audit_log").insert({
     after: { platform_vendor_id: params.platformVendorId, service_area_id: params.serviceAreaId, status, via: auth.via },
     user_id: auth.userId,
     action: "vendor_service_area.withdrawn",
     entity_type: "vendor_service_area",
     entity_id: params.serviceAreaId,
-  })
+  }), { table: "audit_log", flow: "vendor_service_area_withdrawn_audit", reason: "the withdrawal already landed (counted above); a lost audit echo is ledgered" })
 
   revalidatePath("/dashboard/vendors")
   revalidatePath("/portal/vendor")

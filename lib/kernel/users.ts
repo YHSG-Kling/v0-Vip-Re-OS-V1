@@ -1083,7 +1083,9 @@ export async function provisionTenantOwner(params: TenantOwnerParams): Promise<T
   }
 
   // 3. Pin/enrich the public.users row (trigger created it; guarantee id + fields).
-  await service.from("users").upsert(
+  // THE OWNER'S SEAT. A refused pin used to proceed to team + domain records for
+  // a users row that never took its admin type / tenant — return the refusal.
+  const { error: ownerPinErr } = await service.from("users").upsert(
     {
       id:           authUserId,
       email,
@@ -1097,6 +1099,9 @@ export async function provisionTenantOwner(params: TenantOwnerParams): Promise<T
     },
     { onConflict: "id" }
   )
+  if (ownerPinErr) {
+    return { success: false, userId: authUserId, agentId: null, teamId: null, inviteSent, inviteError, error: `Owner seat not recorded: ${ownerPinErr.message}` }
+  }
 
   // 3b. Merge any freed orphan email's children onto the canonical auth-id row.
   await mergeOrphan(service, orphanToMerge, authUserId)
@@ -1115,12 +1120,20 @@ export async function provisionTenantOwner(params: TenantOwnerParams): Promise<T
     if (existingTeam) {
       teamId = existingTeam.id
     } else {
-      const { data: newTeam } = await service.from("teams")
+      const { data: newTeam, error: newTeamErr } = await service.from("teams")
         .insert({ name: brokerageName, brokerage_id: brokerageId, team_lead_id: authUserId })
         .select("id").maybeSingle()
+      if (newTeamErr) {
+        return { success: false, userId: authUserId, agentId: null, teamId: null, inviteSent, inviteError, error: `Team tier requires a team, and it was refused: ${newTeamErr.message}` }
+      }
       teamId = newTeam?.id ?? null
     }
-    if (teamId) await service.from("users").update({ team_id: teamId }).eq("id", authUserId)
+    if (teamId) {
+      const { error: teamAnchorErr } = await service.from("users").update({ team_id: teamId }).eq("id", authUserId)
+      if (teamAnchorErr) {
+        return { success: false, userId: authUserId, agentId: null, teamId, inviteSent, inviteError, error: `Owner could not be anchored to team ${teamId}: ${teamAnchorErr.message}` }
+      }
+    }
   }
 
   // 5. Tier-aware domain records — agents row for a solo/team owner, onboarding,

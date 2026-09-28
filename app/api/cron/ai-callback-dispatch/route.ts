@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
@@ -112,27 +113,28 @@ export async function GET(request: Request) {
         malformed++
         // A callback task this sweep cannot even parse can never be dialed —
         // cancel rather than spin on it forever every tick.
-        await svc.from("tasks").update({ status: "cancelled", updated_at: nowIso }).eq("id", taskId).eq("status", "pending").then(undefined, () => {})
+        await sentinelWrite(svc, svc.from("tasks").update({ status: "cancelled", updated_at: nowIso }).eq("id", taskId).eq("status", "pending"), { table: "tasks", flow: "ai_callback_cancel_malformed", reason: "cancels an unparseable callback task; a loss only re-skips it next tick" })
         continue
       }
 
       // ── CLAIM (compare-and-swap) — the idempotency stamp. A concurrent run
       // (or a manual re-trigger) that lost the race gets zero rows back and
       // moves on rather than dialing twice.
-      const { data: claimed } = await svc
+      const { data: claimed, error: claimErr } = await svc
         .from("tasks")
         .update({ status: "in_progress", updated_at: nowIso })
         .eq("id", taskId).eq("status", "pending")
         .select("id")
         .maybeSingle()
+      if (claimErr) console.error(`[ai-callback-dispatch] callback task claim refused (skipped this tick): ${claimErr.message}`)
       if (!claimed) { alreadyClaimed++; continue }
 
       if ((note.attempts ?? 0) >= MAX_CALLBACK_ATTEMPTS) {
         cancelled++
-        await svc.from("tasks").update({
+        await sentinelWrite(svc, svc.from("tasks").update({
           status: "cancelled", updated_at: nowIso,
           description: `${(t as any).description}\n[GAVE UP after ${note.attempts} attempts — needs a human callback]`.slice(0, 2000),
-        }).eq("id", taskId).then(undefined, () => {})
+        }).eq("id", taskId), { table: "tasks", flow: "ai_callback_give_up", reason: "gives up after max attempts; a loss is ledgered" })
         continue
       }
 
@@ -186,10 +188,10 @@ export async function GET(request: Request) {
           // A gate refusal (DNC / suppressed / quiet hours / autonomy held) is
           // not a transient dial failure — retrying next tick would just refuse
           // again. Cancel with the reason on record rather than spin.
-          await svc.from("tasks").update({
+          await sentinelWrite(svc, svc.from("tasks").update({
             status: "cancelled", updated_at: nowIso,
             description: `${(t as any).description}\n[BLOCKED: ${placed.error}]`.slice(0, 2000),
-          }).eq("id", taskId).then(undefined, () => {})
+          }).eq("id", taskId), { table: "tasks", flow: "ai_callback_blocked", reason: "cancels a gate-refused callback with the reason; a loss is ledgered" })
         } else {
           dialFailed++
           refusals.push({ task_id: taskId, error: placed.error })
@@ -197,18 +199,18 @@ export async function GET(request: Request) {
           // stamp and release the claim back to 'pending' so the NEXT tick (or
           // a due_date the caller can still make) retries.
           const bumped = bumpCallbackAttempt(note)
-          await svc.from("tasks").update({
+          await sentinelWrite(svc, svc.from("tasks").update({
             status: "pending", updated_at: nowIso,
             description: encodeCallbackNote(bumped),
-          }).eq("id", taskId).then(undefined, () => {})
+          }).eq("id", taskId), { table: "tasks", flow: "ai_callback_release", reason: "releases the claim for retry; a loss is ledgered" })
         }
         continue
       }
 
       dialed++
-      await svc.from("tasks").update({
+      await sentinelWrite(svc, svc.from("tasks").update({
         status: "completed", completed_at: nowIso, updated_at: nowIso,
-      }).eq("id", taskId).then(undefined, () => {})
+      }).eq("id", taskId), { table: "tasks", flow: "ai_callback_done", reason: "the call already placed; a lost completion stamp is ledgered" })
 
       // Signal routing (lib/kernel/signal-routing.ts) — FROM ai_isa, branch by
       // contact side, never self-route. Best-effort: the call already placed

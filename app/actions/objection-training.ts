@@ -12,6 +12,7 @@
  * total feeds Smarter-this-week digest aggregations.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
@@ -137,12 +138,12 @@ export async function startObjectionPracticeSession(params: {
   }
 
   // Insert the opening line as turn 0 (prospect's first line)
-  await svc.from("objection_training_turns").insert({
+  await sentinelWrite(svc, svc.from("objection_training_turns").insert({
     session_id: session.id,
     turn_index: 0,
     speaker: "prospect",
     text: scenario.openingLine,
-  })
+  }), { table: "objection_training_turns", flow: "objection_training_turns_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   return { success: true, sessionId: session.id, openingLine: scenario.openingLine }
 }
@@ -191,12 +192,12 @@ export async function submitPracticeTurn(params: {
   const nextIndex = turns.length
 
   // Save the agent turn first (with placeholder score)
-  await svc.from("objection_training_turns").insert({
+  await sentinelWrite(svc, svc.from("objection_training_turns").insert({
     session_id: params.sessionId,
     turn_index: nextIndex,
     speaker: "agent",
     text: params.agentResponse,
-  })
+  }), { table: "objection_training_turns", flow: "objection_training_turns_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   // Build conversation transcript for AI
   const transcript = [
@@ -212,23 +213,23 @@ export async function submitPracticeTurn(params: {
   })
 
   // Persist the score on the agent turn we just inserted
-  await svc
+  await sentinelWrite(svc, svc
     .from("objection_training_turns")
     .update({
       turn_score: aiResult.agentTurnScore,
       feedback: aiResult.agentTurnFeedback,
     })
     .eq("session_id", params.sessionId)
-    .eq("turn_index", nextIndex)
+    .eq("turn_index", nextIndex), { table: "objection_training_turns", flow: "objection_training_turns_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   // Insert the prospect's reply as the next turn (or signal end)
   if (!aiResult.shouldEnd && aiResult.prospectReply) {
-    await svc.from("objection_training_turns").insert({
+    await sentinelWrite(svc, svc.from("objection_training_turns").insert({
       session_id: params.sessionId,
       turn_index: nextIndex + 1,
       speaker: "prospect",
       text: aiResult.prospectReply,
-    })
+    }), { table: "objection_training_turns", flow: "objection_training_turns_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
 
   return {
@@ -289,7 +290,7 @@ export async function endPracticeSession(params: {
     spendActor: { brokerageId: ctx.brokerageId ?? null, userId: ctx.userId ?? null },
   })
 
-  await svc
+  await sentinelWrite(svc, svc
     .from("objection_training_sessions")
     .update({
       status: "completed",
@@ -299,7 +300,7 @@ export async function endPracticeSession(params: {
       improvements: finalEval.improvements,
       completed_at: new Date().toISOString(),
     })
-    .eq("id", params.sessionId)
+    .eq("id", params.sessionId), { table: "objection_training_sessions", flow: "objection_training_sessions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   return {
     success: true,

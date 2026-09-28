@@ -194,7 +194,7 @@ export async function GET(req: NextRequest) {
     for (const platform of PLATFORMS) {
       const caption = captionFor(platform, { hook, address, cityState, price })
       try {
-        const { data: post } = await svc
+        const { data: post, error: promoPostErr } = await svc
           .from("social_posts")
           .insert({
             brokerage_id:     r.brokerage_id,
@@ -210,6 +210,7 @@ export async function GET(req: NextRequest) {
           })
           .select("id")
           .maybeSingle()
+        if (promoPostErr) console.error(`[listing-promo-social] social post NOT created: ${promoPostErr.message}`)
         if (post?.id) {
           postIds.push(post.id as string)
           inserted++

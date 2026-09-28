@@ -34,6 +34,7 @@
  * budget unauthenticated or write across tenants.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { STANDARD_TIMELINES, type StandardTimeline } from "@/constants/crm-standards"
@@ -230,7 +231,7 @@ export async function trackBehavior(sessionData: {
     if (signal) {
       totalSessions = (signal.total_sessions || 0) + 1
       // Update existing signal
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("behavioral_signals")
         .update({
           last_seen_date: new Date().toISOString(),
@@ -238,7 +239,7 @@ export async function trackBehavior(sessionData: {
           ip_address: sessionData.ip_address,
           user_agent: sessionData.user_agent,
         })
-        .eq("id", signal.id)
+        .eq("id", signal.id), { table: "behavioral_signals", flow: "behavioral_signals_write", reason: "visit analytics on an existing signal" })
 
       signalId = signal.id
     } else {
@@ -343,24 +344,24 @@ Investor signals: ROI calculators, rental income tools, market analysis pages`
         }
 
         // Update behavioral signal with AI insights
-        await supabase
+        await sentinelWrite(supabase, supabase
           .from("behavioral_signals")
           .update({
             intent_type: intent.intent_type as string | null,
             intent_confidence_score: intent.confidence as number | null,
           })
-          .eq("id", signalId)
+          .eq("id", signalId), { table: "behavioral_signals", flow: "behavioral_signals_write", reason: "AI intent annotation; recomputed on the next visit" })
 
         // Flag for enrichment if high intent and multiple sessions
         if ((intent.confidence as number) >= 70 && totalSessions >= 3) {
-          await supabase.from("intelligence_signals_log").insert({
+          await sentinelWrite(supabase, supabase.from("intelligence_signals_log").insert({
             lead_profile_id: signalId,
             brokerage_id: brokerageId,
             signal_type: "high_intent_behavioral",
             signal_data_json: intent,
             signal_strength: 10,
             detected_at: new Date().toISOString(),
-          })
+          }), { table: "intelligence_signals_log", flow: "intelligence_signals_log_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
         }
 
         return { success: true, signalId, intent }
@@ -656,7 +657,7 @@ export async function scrapeSocialSignalsWithZenRows(
     const rawRecords: NormalizedScrapedRecord[] = []
 
     for (const post of posts) {
-      const { data: signal } = await supabase
+      const { data: signal, error: socialSignalErr } = await supabase
         .from("social_intelligence")
         .insert({
           brokerage_id: brokerageId,
@@ -675,6 +676,7 @@ export async function scrapeSocialSignalsWithZenRows(
         })
         .select()
         .single()
+      if (socialSignalErr) console.error(`[lead-intelligence] social intelligence row NOT saved: ${socialSignalErr.message}`)
 
       if (signal) {
         signals.push(signal)
@@ -2550,7 +2552,8 @@ export async function resolveIdentity(behavioralSignalId: string) {
         .maybeSingle()
 
       if (contact) {
-        await supabase.from("behavioral_signals").update({ identified: true, contact_id: contact.id }).eq("id", signal.id)
+        const { error: identifyErr } = await supabase.from("behavioral_signals").update({ identified: true, contact_id: contact.id }).eq("id", signal.id)
+        if (identifyErr) console.error(`[lead-intelligence] visitor identified but the signal was NOT linked to the contact: ${identifyErr.message}`)
         return { success: true, contact, method: "email_match" }
       }
     }
@@ -2622,7 +2625,7 @@ Timeline: ${profile.estimated_timeline}
     // canonical stamp): sent | delivered | failed | replied. This call fires at dispatch
     // time, before any provider callback could report delivered/failed/replied, so 'sent'
     // is the only truthful value here — same posture as the canonical ISA writer.
-    await supabase.from("intelligent_outreach_log").insert({
+    await sentinelWrite(supabase, supabase.from("intelligent_outreach_log").insert({
       brokerage_id: auth.brokerageId,
       contact_id:   profileRow?.contact_id ?? null,
       outreach_type: "value_first_email",
@@ -2630,7 +2633,7 @@ Timeline: ${profile.estimated_timeline}
       content:       JSON.stringify({ subject: (emailData.data as any)?.subject, body: (emailData.data as any)?.emailBody, value_offer: valueOffer }),
       result:        "sent",
       created_at:    new Date().toISOString(),
-    })
+    }), { table: "intelligent_outreach_log", flow: "intelligent_outreach_log_write", reason: "outreach log of an email already dispatched" })
 
     return { success: true, email: emailData.data, valueOffer }
   } catch (error) {

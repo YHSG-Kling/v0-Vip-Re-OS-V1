@@ -3331,10 +3331,17 @@ export function TransactionDetailClient({
                                     onClick={async () => {
                                       const supabase = createClient()
                                       const now = new Date().toISOString()
-                                      await supabase
+                                      // Read + count: an RLS-filtered update resolves with zero
+                                      // rows and no error — never flip the task on a refusal.
+                                      const { data: doneRows, error: doneErr } = await supabase
                                         .from("compliance_tasks")
                                         .update({ status: "complete", completed_at: now, completed_by: userId })
                                         .eq("id", task.id)
+                                        .select("id")
+                                      if (doneErr || (doneRows ?? []).length === 0) {
+                                        toast.error(`Could not complete the task: ${doneErr?.message ?? "not permitted"}`)
+                                        return
+                                      }
                                       setComplianceTasks((prev) =>
                                         prev.map((t) =>
                                           t.id === task.id
@@ -3353,10 +3360,15 @@ export function TransactionDetailClient({
                                     className="h-7 text-xs"
                                     onClick={async () => {
                                       const supabase = createClient()
-                                      await supabase
+                                      const { data: waivedRows, error: waiveErr } = await supabase
                                         .from("compliance_tasks")
                                         .update({ status: "waived" })
                                         .eq("id", task.id)
+                                        .select("id")
+                                      if (waiveErr || (waivedRows ?? []).length === 0) {
+                                        toast.error(`Could not waive the task: ${waiveErr?.message ?? "not permitted"}`)
+                                        return
+                                      }
                                       setComplianceTasks((prev) =>
                                         prev.map((t) =>
                                           t.id === task.id ? { ...t, status: "waived" } : t

@@ -1,5 +1,6 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
@@ -370,7 +371,7 @@ export async function processVoiceCommand(params: {
     // (command_type left NULL — its CHECK doesn't cover these free-form intents);
     // contact_id/session_id have no columns here, folded into entities jsonb;
     // response → action_result jsonb.
-    await supabase.from("voice_commands").insert({
+    await bestEffort(supabase.from("voice_commands").insert({
       user_id: caller.userId,
       brokerage_id: caller.brokerageId,
       raw_transcript: commandText,
@@ -381,7 +382,7 @@ export async function processVoiceCommand(params: {
       success,
       confidence_score: intent.confidence,
       source: "web",
-    })
+    }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     // Update session command count. §3 — supabase-js RESOLVES a refusal, so a
     // bare `await supabase.rpc(...)` here reported success whether the counter

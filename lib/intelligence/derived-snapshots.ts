@@ -36,7 +36,8 @@ async function runPropertySmartInsights(svc: Svc, brokerageId: string, now: Date
   const rows = (listings ?? []) as Array<{ id: string; mls_number: string; list_price: number | null; created_at: string; listing_date: string | null }>
   if (rows.length === 0) return 0
 
-  await svc.from("property_smart_insights").delete().eq("brokerage_id", brokerageId)
+  const { error: insightsClearErr } = await svc.from("property_smart_insights").delete().eq("brokerage_id", brokerageId)
+  if (insightsClearErr) console.error(`[derived-snapshots] prior property insights NOT cleared (duplicates possible): ${insightsClearErr.message}`)
   let written = 0
   for (const l of rows) {
     const listedAt = l.listing_date ?? l.created_at
@@ -95,7 +96,8 @@ async function runTeamHeatmapSnapshots(svc: Svc, brokerageId: string, now: Date)
   for (const s of ((shows ?? []) as any[])) bump(s.agent_id, zipFromAddress(s.listings?.address), "buyer", 0)
   if (agg.size === 0) return 0
 
-  await svc.from("team_heatmap_snapshots").delete().eq("brokerage_id", brokerageId).eq("snapshot_date", snapshotDate)
+  const { error: heatmapClearErr } = await svc.from("team_heatmap_snapshots").delete().eq("brokerage_id", brokerageId).eq("snapshot_date", snapshotDate)
+  if (heatmapClearErr) console.error(`[derived-snapshots] prior heatmap rows NOT cleared (duplicates possible): ${heatmapClearErr.message}`)
   const rows = [...agg.values()].map((a) => ({
     brokerage_id: brokerageId,
     snapshot_date: snapshotDate,

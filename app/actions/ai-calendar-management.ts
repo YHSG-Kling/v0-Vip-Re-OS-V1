@@ -1,5 +1,6 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { generateObject } from "@/lib/ai/generate"
@@ -570,7 +571,7 @@ Create a balanced follow-up schedule that:
     // Create follow-up appointments
     const { data: tpBrok } = await supabase.from("agents").select("brokerage_id").eq("id", params.agentId).maybeSingle()
     for (const followUp of followUpPlan.scheduledFollowUps) {
-      await supabase.from("scheduled_touchpoints").insert({
+      await bestEffort(supabase.from("scheduled_touchpoints").insert({
         contact_id: followUp.contactId,
         agent_id: params.agentId,
         brokerage_id: tpBrok?.brokerage_id,
@@ -580,7 +581,7 @@ Create a balanced follow-up schedule that:
           .filter(Boolean).join(" | "),
         ai_generated: true,
         status: "scheduled",
-      })
+      }), "AI-suggested follow-up slots; the plan is returned to the agent either way")
     }
 
     revalidatePath("/calendar")
@@ -725,10 +726,10 @@ export async function syncCalendar(params: {
     if (error) throw error
 
     // Update last_sync_at on the provider account
-    await supabase
+    await bestEffort(supabase
       .from("calendar_provider_accounts")
       .update({ last_sync_at: now })
-      .eq("id", providerAccount.id)
+      .eq("id", providerAccount.id), "last-sync stamp; the sync result is returned to the caller")
 
     return { success: true, syncLog: data }
   } catch (error) {
@@ -850,12 +851,12 @@ Create a brief including:
     })
 
     // Save the meeting brief
-    await supabase.from("meeting_briefs").upsert({
+    await bestEffort(supabase.from("meeting_briefs").upsert({
       appointment_id: params.appointmentId,
       agent_id: params.agentId,
       brief_content: meetingBrief,
       generated_at: new Date().toISOString(),
-    }, { onConflict: "appointment_id,agent_id" })
+    }, { onConflict: "appointment_id,agent_id" }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     return { success: true, meetingBrief }
   } catch (error) {
@@ -981,12 +982,12 @@ Create a balanced weekly plan that:
     })
 
     // Save the weekly plan
-    await supabase.from("weekly_plans").upsert({
+    await bestEffort(supabase.from("weekly_plans").upsert({
       agent_id: params.agentId,
       week_start: params.weekStartDate,
       plan_content: weeklyPlan,
       generated_at: new Date().toISOString(),
-    }, { onConflict: "agent_id,week_start" })
+    }, { onConflict: "agent_id,week_start" }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     return { success: true, weeklyPlan }
   } catch (error) {

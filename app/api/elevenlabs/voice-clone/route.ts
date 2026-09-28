@@ -7,6 +7,7 @@
  * Returns: { elevenlabs_voice_id: string }
  */
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
@@ -144,10 +145,10 @@ export async function POST(request: NextRequest) {
     // ISA voice path: save the clone as the brokerage's default ISA voice, so the
     // AI ISA speaks in this custom voice when no per-agent clone applies.
     if (isa_default) {
-      await supabase
+      await bestEffort(supabase
         .from("brokerages")
         .update({ default_isa_voice_id: elevenlabs_voice_id })
-        .eq("id", auth.brokerageId)
+        .eq("id", auth.brokerageId), "the clone exists and is returned; the brokerage default can be set again from voice settings")
 
       logMediaUsage({
         brokerageId: auth.brokerageId,

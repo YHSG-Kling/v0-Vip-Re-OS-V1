@@ -274,13 +274,14 @@ async function pauseActiveSequenceEnrollmentsOnReply(contactId: string): Promise
   if (!active || active.length === 0) return
 
   const ids = active.map(e => e.id)
-  await supabase
+  const { error: pauseOnReplyErr } = await supabase
     .from('sequence_enrollments')
     .update({
       status:        'paused',
       next_step_at:  null,  // step worker will skip until manually resumed
     })
     .in('id', ids)
+  if (pauseOnReplyErr) console.error(`[ingest-message] active sequences NOT paused on the inbound reply — automated touches may continue: ${pauseOnReplyErr.message}`)
 
   // One kernel event per paused enrollment — audit row + reactor. suppressEnrollment:
   // this IS the sequence engine reacting to a reply; its own event must not re-enroll.

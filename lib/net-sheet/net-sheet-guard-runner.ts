@@ -210,13 +210,16 @@ export async function runNetSheetSurpriseGuard(input: NetSheetGuardInput, client
   // RECORD the reconciliation (audit + idempotency), regardless of escalation.
   let reconciliationId: string | undefined
   try {
-    const { data: rec } = await svc.from("net_sheet_reconciliations").insert({
+    const { data: rec, error: recErr } = await svc.from("net_sheet_reconciliations").insert({
       brokerage_id: input.brokerageId, transaction_id: t.id, offer_id: t.offer_id ?? null,
       estimated_net: recon.estimatedNet, actual_net: recon.actualNet,
       variance_amount: recon.varianceAmount, variance_pct: recon.variancePct,
       surprise_level: recon.surpriseLevel, line_item_deltas: recon.lineDeltas,
       settlement_signature: sig, escalated,
     }).select("id").single()
+    // The record is also the IDEMPOTENCY key: a refused insert means the next run
+    // reconciles (and may escalate) this closing again. Best-effort, never silent.
+    if (recErr) console.error(`[net-sheet-guard] net_sheet_reconciliations insert refused for transaction ${t.id}: ${recErr.message}`)
     reconciliationId = (rec as any)?.id
   } catch { /* record best-effort */ }
 

@@ -98,7 +98,7 @@ export async function distributeRepurposedVideoAsDraft(
     const hashtags = extractHashtags(content)
     const body = content.replace(/(^|\s)#[\p{L}0-9_]+/gu, "").replace(/\s{2,}/g, " ").trim() || content
 
-    const { data: post } = await supabase
+    const { data: post, error: repurposePostErr } = await supabase
       .from("social_posts")
       .insert({
         brokerage_id: project.brokerage_id,
@@ -117,6 +117,7 @@ export async function distributeRepurposedVideoAsDraft(
       })
       .select("id")
       .maybeSingle()
+    if (repurposePostErr) console.error(`[repurpose] social post NOT created: ${repurposePostErr.message}`)
     if (post) created++
   }
 

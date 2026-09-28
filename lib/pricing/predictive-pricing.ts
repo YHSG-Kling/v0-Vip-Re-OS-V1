@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { generateAIResponse } from "@/lib/ai"
 import { createServiceClient } from "@/lib/supabase/service"
 import { processKernelEvent } from "@/lib/kernel"
@@ -176,14 +177,14 @@ Respond ONLY with valid JSON (no markdown):
   } catch { /* cache invalidation is never load-bearing */ }
 
   // Record in pricing_history
-  await supabase.from("pricing_history").insert({
+  await sentinelWrite(supabase, supabase.from("pricing_history").insert({
     listing_id: listingId,
     brokerage_id: brokerageId,
     price: predictedPrice,
     // pricing_history.price_type says 'prediction'.
     price_type: "prediction",
     notes: `Confidence: ${confidenceScore}% | Trend: ${trendDirection} ${trendPercentage}%`,
-  })
+  }), { table: "pricing_history", flow: "pricing_history_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   // Check thresholds — insert price_trend_alert if needed
   const currentListPrice = Number(listing.list_price) || 0
@@ -192,7 +193,7 @@ Respond ONLY with valid JSON (no markdown):
     if (priceDeltaPct >= 5) {
       const severity = priceDeltaPct >= 10 ? "high" : "medium"
       const direction = predictedPrice < currentListPrice ? "below" : "above"
-      await supabase.from("price_trend_alerts").insert({
+      await sentinelWrite(supabase, supabase.from("price_trend_alerts").insert({
         listing_id: listingId,
         brokerage_id: brokerageId,
         // price_trend_alerts has no 'price_gap'. A prediction BELOW the list
@@ -205,10 +206,10 @@ Respond ONLY with valid JSON (no markdown):
           direction === "below"
             ? "Consider a price reduction to align with market prediction."
             : "Market may support a higher list price — review comps.",
-      })
+      }), { table: "price_trend_alerts", flow: "price_trend_alerts_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
       // Fire PRICE_ALERT_TRIGGERED kernel event
-      await supabase.from("lifecycle_events").insert({
+      await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
         brokerage_id: brokerageId,
         entity_type: "listing",
         entity_id: listingId,
@@ -221,7 +222,7 @@ Respond ONLY with valid JSON (no markdown):
           delta_pct: priceDeltaPct,
           severity,
         },
-      })
+      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
       await processKernelEvent({
         event: KernelEvent.PRICE_ALERT_TRIGGERED,
         brokerageId,

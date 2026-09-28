@@ -130,7 +130,8 @@ export async function ensureAgentBrokerage(): Promise<EnsureAgentBrokerageResult
   if (bErr || !brokerage) return { ok: false, error: `Brokerage creation failed: ${bErr?.message ?? "unknown"}` }
 
   // 2. Anchor the user to it.
-  await svc.from("users").update({ brokerage_id: brokerage.id }).eq("id", u.id)
+  const { error: anchorErr } = await svc.from("users").update({ brokerage_id: brokerage.id }).eq("id", u.id)
+  if (anchorErr) return { ok: false, error: `Brokerage ${brokerage.id} was created but your account could not be anchored to it: ${anchorErr.message}` }
 
   // 3. Canonical domain records (agents + commission + onboarding + RBAC),
   //    tier-aware — the SAME repair path signup + login-time repair use.

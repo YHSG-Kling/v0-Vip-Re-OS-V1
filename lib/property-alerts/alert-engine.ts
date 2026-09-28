@@ -12,6 +12,7 @@
 // first-look consent gate. The one thing the other had that this lacked was the
 // buyer SNOOZE, ported below: without it, a buyer who muted their search kept
 // receiving alerts from this path regardless.
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { emitKernelEvent }     from "@/lib/kernel/emit"
 import { KernelEvent }         from "@/lib/kernel/events"
@@ -152,7 +153,7 @@ export async function runAlert(alertId: string): Promise<RunAlertResult> {
     // An HONEST zero: a source answered and nothing new qualified. The degraded
     // note, when present, says which part of the search was thinner than it
     // should have been, so this zero is never mistaken for a complete sweep.
-    await supabase.from("property_alerts").update({ last_run_at: new Date().toISOString(), last_match_count: 0 }).eq("id", alertId)
+    await sentinelWrite(supabase, supabase.from("property_alerts").update({ last_run_at: new Date().toISOString(), last_match_count: 0 }).eq("id", alertId), { table: "property_alerts", flow: "property_alerts_write", reason: "last-run stamp; the zero-match run is logged just below" })
     await logDelivery({ supabase, alertId, brokerageId, contactId: alert.contact_id, batchId,
       propertiesChecked, propertiesMatched: 0, propertiesSent: 0,
       apiCalled: searchResult.api_called, responseTimeMs: searchResult.response_time_ms,
@@ -460,7 +461,7 @@ async function logDelivery(params: {
   responseTimeMs: number | null
   error?: string
 }) {
-  await params.supabase.from("property_alert_delivery_log").insert({
+  await sentinelWrite(params.supabase, params.supabase.from("property_alert_delivery_log").insert({
     brokerage_id:       params.brokerageId,
     alert_id:           params.alertId,
     contact_id:         params.contactId,
@@ -473,5 +474,5 @@ async function logDelivery(params: {
     idx_api_called:     params.apiCalled,
     idx_response_time_ms: params.responseTimeMs,
     error_message:      params.error ?? null,
-  })
+  }), { table: "property_alert_delivery_log", flow: "property_alert_delivery_log_write", reason: "delivery log of a run already completed" })
 }

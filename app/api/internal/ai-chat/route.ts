@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { readRoleGrants, allRoles, selectPrimaryRole, selectTenantBrokerageId, selectVendorId } from "@/lib/auth/role-grants"
@@ -554,7 +555,7 @@ export async function POST(req: NextRequest) {
 
   let newSessionId: string | null = null
   if (!sessionId) {
-    const { data: newSession } = await service
+    const { data: newSession, error: sessionInsErr } = await service
       .from("chat_sessions")
       .insert({
         contact_id: null,
@@ -567,6 +568,7 @@ export async function POST(req: NextRequest) {
       })
       .select("id")
       .single()
+    if (sessionInsErr) console.error(`[internal-ai-chat] chat session NOT created (turns will not persist): ${sessionInsErr.message}`)
     newSessionId = newSession?.id ?? null
   }
 
@@ -582,12 +584,12 @@ export async function POST(req: NextRequest) {
           ? lastMsg.parts.filter((p: { type: string }) => p.type === "text").map((p: { text: string }) => p.text).join("")
           : (lastMsg.content as string ?? "")
 
-      service.from("chat_messages").insert({
+      void sentinelWrite(service, service.from("chat_messages").insert({
         session_id: persistTo,
         role: "user",
         content: textContent,
         metadata: { source: "internal", role },
-      }).then(() => {}, () => {})
+      }), { table: "chat_messages", flow: "internal_chat_turn", reason: "chat history persistence; never blocks the streamed answer" })
     }
   }
 

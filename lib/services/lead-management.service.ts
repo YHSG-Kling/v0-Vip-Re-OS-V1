@@ -379,7 +379,7 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
         // conflict target is the primary key (id), which never collides on an
         // insert, so an unqualified .upsert() fails exactly the same way. The
         // deprecated scorer this replaces did precisely that.
-        await supabase.from("lead_scores").upsert({
+        const { error: leadScoreRowErr } = await supabase.from("lead_scores").upsert({
           contact_id: params.id,
           agent_id: record.agent_id,
           brokerage_id: record.brokerage_id ?? null,
@@ -401,10 +401,11 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
           ai_confidence: behavior.eventCount > 0 ? 0.9 : 0.7,
           computed_at: new Date().toISOString(),
         }, { onConflict: "contact_id" })
+        if (leadScoreRowErr) console.error(`[lead-management] lead score row NOT saved: ${leadScoreRowErr.message}`)
       }
     } else {
       // Update leads table
-      await supabase
+      const { error: leadScoreErr } = await supabase
         .from("leads")
         .update({
           lead_score: totalScore,
@@ -414,6 +415,7 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
           last_activity_at: new Date().toISOString(),
         })
         .eq("id", params.id)
+      if (leadScoreErr) console.error(`[lead-management] lead score NOT saved: ${leadScoreErr.message}`)
 
       // Store scoring snapshot in lead_engagement_scores (live: overall_score + per-factor
       // int columns + score_breakdown jsonb; no score_type/score_value/factors columns).

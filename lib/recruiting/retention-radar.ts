@@ -109,11 +109,11 @@ export async function runRetentionRadar(
       .order("score_date", { ascending: false }).limit(1).maybeSingle()
     const previousScore = (prev as any)?.composite_score ?? null
 
-    await svc.from("agent_retention_scores").upsert({
+    await sentinelWrite(svc, svc.from("agent_retention_scores").upsert({
       brokerage_id: params.brokerageId, agent_id: a.id, score_date: today,
       composite_score: rs.score, previous_score: previousScore, tier: rs.tier,
       score_trend: scoreTrendOf(rs.score, previousScore), driving_signals: rs.drivingSignals, signal_breakdown: rs.breakdown as any,
-    }, { onConflict: "agent_id,score_date" })
+    }, { onConflict: "agent_id,score_date" }), { table: "agent_retention_scores", flow: "agent_retention_scores_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     out.scored++
     if (!isAtRisk(rs.score)) continue
     out.atRisk++

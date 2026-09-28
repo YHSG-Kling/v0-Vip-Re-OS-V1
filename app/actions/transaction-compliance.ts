@@ -1,5 +1,6 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
@@ -80,7 +81,7 @@ export async function seedTransactionComplianceChecks(
   }
 
   // Log timeline entry
-  await supabase.from("transaction_timeline").insert({
+  await sentinelWrite(supabase, supabase.from("transaction_timeline").insert({
     transaction_id: transactionId,
     brokerage_id: brokerageId,
     activity_type: "compliance_checks_seeded",
@@ -88,7 +89,7 @@ export async function seedTransactionComplianceChecks(
     performed_by: user?.id,
     metadata: { check_count: checksToInsert.length },
     created_at: new Date().toISOString(),
-  })
+  }), { table: "transaction_timeline", flow: "transaction_timeline_write", reason: "timeline echo of compliance checks already inserted (checked above)" })
 
   return { success: true, inserted: checksToInsert.length }
 }
@@ -177,7 +178,7 @@ export async function updateComplianceCheck(params: {
   }
 
   // Create timeline entry for compliance change (normalized status)
-  await supabase.from("transaction_timeline").insert({
+  await sentinelWrite(supabase, supabase.from("transaction_timeline").insert({
     transaction_id: params.transactionId,
     brokerage_id: brokerageId,
     activity_type: "compliance_check_updated",
@@ -193,7 +194,7 @@ export async function updateComplianceCheck(params: {
       failure_reason: params.failureReason,
     },
     created_at: new Date().toISOString(),
-  })
+  }), { table: "transaction_timeline", flow: "transaction_timeline_write", reason: "timeline echo of a compliance update already written (checked above)" })
 
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
   revalidatePath("/dashboard/compliance")
@@ -443,7 +444,7 @@ export async function batchPassComplianceChecks(params: {
   }
 
   // Log timeline entry
-  await supabase.from("transaction_timeline").insert({
+  await sentinelWrite(supabase, supabase.from("transaction_timeline").insert({
     transaction_id: params.transactionId,
     brokerage_id: brokerageId,
     activity_type: "compliance_batch_pass",
@@ -451,7 +452,7 @@ export async function batchPassComplianceChecks(params: {
     performed_by: user.id,
     metadata: { check_ids: params.checkIds, status: STATUS_PASS },
     created_at: new Date().toISOString(),
-  })
+  }), { table: "transaction_timeline", flow: "transaction_timeline_write", reason: "timeline echo of a batch pass already written (checked above)" })
 
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
   revalidatePath("/dashboard/compliance")

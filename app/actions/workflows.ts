@@ -225,14 +225,15 @@ Generate a specific 7-day plan with daily actions.`,
     })
 
     // Archive existing plan
-    await supabase
+    const { error: planArchiveErr } = await supabase
       .from("copilot_plans")
       .update({ status: "superseded", updated_at: new Date().toISOString() })
       .eq("contact_id", contactId)
       .eq("status", "active")
+    if (planArchiveErr) console.error(`[workflows] prior copilot plan NOT superseded: ${planArchiveErr.message}`)
 
     // Insert new plan
-    const { data: newPlan } = await supabase
+    const { data: newPlan, error: planInsErr } = await supabase
       .from("copilot_plans")
       .insert({
         contact_id: contactId,
@@ -246,6 +247,7 @@ Generate a specific 7-day plan with daily actions.`,
       })
       .select()
       .single()
+    if (planInsErr) console.error(`[workflows] copilot plan NOT saved: ${planInsErr.message}`)
 
     return { success: true, plan: newPlan }
   } catch (error: any) {
@@ -516,7 +518,7 @@ export async function sendMessage(
     const conversationId = await ensureConversationForContact(supabase, { contactId, brokerageId, agentId })
     if (!conversationId) return { success: false, error: "Could not resolve conversation" }
 
-    const { data: msg } = await supabase
+    const { data: msg, error: msgInsErr } = await supabase
       .from("messages")
       .insert({
         conversation_id: conversationId,
@@ -530,6 +532,7 @@ export async function sendMessage(
       })
       .select()
       .single()
+    if (msgInsErr) return { success: false, error: `Could not record the message: ${msgInsErr.message}` }
 
     return { success: true, messageId: msg?.id }
   } catch (error: any) {

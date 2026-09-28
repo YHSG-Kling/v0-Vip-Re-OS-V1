@@ -13,6 +13,7 @@
  * Uses Claude to generate an action-oriented summary with priorities.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -932,10 +933,10 @@ export async function markBriefingOpened(agentId: string): Promise<void> {
     .from("agents").select("user_id").or(`user_id.eq.${agentId},id.eq.${agentId}`).maybeSingle()
   const briefingUserId = idRow?.user_id ?? agentId
 
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("ai_daily_briefings")
     .update({ opened_at: new Date().toISOString() })
     .eq("user_id", briefingUserId)
     .eq("briefing_date", today)
-    .is("opened_at", null)
+    .is("opened_at", null), { table: "ai_daily_briefings", flow: "ai_daily_briefings_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 }

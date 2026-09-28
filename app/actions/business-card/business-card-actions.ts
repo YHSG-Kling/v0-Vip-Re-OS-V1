@@ -106,7 +106,7 @@ export async function uploadBusinessCard(params: {
   const viable = hasName && hasContact
 
   // 5) Always insert scan row (audit trail regardless of viability)
-  const { data: scan } = await supabase
+  const { data: scan, error: scanRowErr } = await supabase
     .from("business_card_scans")
     .insert({
       id: scanId,
@@ -121,6 +121,7 @@ export async function uploadBusinessCard(params: {
     })
     .select("id")
     .single()
+  if (scanRowErr) console.error(`[business-card] scan audit row NOT recorded: ${scanRowErr.message}`)
 
   // BUSINESS_CARD_UPLOADED — was a direct lifecycle_events insert (audit-only,
   // no reactor fan-out: notification_rules' live business_card_uploaded row
@@ -271,13 +272,13 @@ export async function uploadBusinessCard(params: {
     }).eq("id", scan!.id)
     if (scanUpdateVendorError) console.error("[businessCardUpload] scan classification update (vendor) failed:", scanUpdateVendorError)
 
-    await supabase.from("lifecycle_events").insert({
+    await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
       brokerage_id: brokerageId,
       entity_type: "vendor",
       entity_id: vendor.id,
       event_type: KernelEvent.BUSINESS_CARD_APPROVED,
       metadata: { scanId: scan!.id, routed_to: "vendor", category: category ?? VENDOR_CATEGORY_OTHER, card_subject_type: cardSubjectType },
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     await processKernelEvent({
       event: KernelEvent.BUSINESS_CARD_APPROVED,
@@ -325,13 +326,13 @@ export async function uploadBusinessCard(params: {
     }).eq("id", scan!.id)
     if (scanUpdateAgentError) console.error("[businessCardUpload] scan classification update (agent) failed:", scanUpdateAgentError)
 
-    await supabase.from("lifecycle_events").insert({
+    await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
       brokerage_id: brokerageId,
       entity_type: "recruit",
       entity_id: recruit.id,
       event_type: KernelEvent.BUSINESS_CARD_APPROVED,
       metadata: { scanId: scan!.id, routed_to: "recruit", card_subject_type: cardSubjectType },
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     await processKernelEvent({
       event: KernelEvent.BUSINESS_CARD_APPROVED,
@@ -357,13 +358,13 @@ export async function uploadBusinessCard(params: {
     }).eq("id", scan!.id)
     if (scanUpdateSphereError) console.error("[businessCardUpload] scan classification update (sphere/unknown) failed:", scanUpdateSphereError)
 
-    await supabase.from("lifecycle_events").insert({
+    await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
       brokerage_id: brokerageId,
       entity_type: "business_card",
       entity_id: scan!.id,
       event_type: KernelEvent.BUSINESS_CARD_APPROVED,
       metadata: { scanId: scan!.id, card_subject_type: cardSubjectType },
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     await processKernelEvent({
       event: KernelEvent.BUSINESS_CARD_APPROVED,
@@ -419,13 +420,13 @@ export async function uploadBusinessCard(params: {
     .eq("id", scan!.id)
   if (scanUpdateContactError) console.error("[businessCardUpload] scan classification update (contact) failed:", scanUpdateContactError)
 
-  await supabase.from("lifecycle_events").insert({
+  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
     entity_type: "contact",
     entity_id: contactId,
     event_type: KernelEvent.BUSINESS_CARD_APPROVED,
     metadata: { scanId: scan!.id, autoApproved: true, card_subject_type: cardSubjectType },
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   await processKernelEvent({
     event: KernelEvent.BUSINESS_CARD_APPROVED,

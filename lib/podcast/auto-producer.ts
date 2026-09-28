@@ -30,6 +30,7 @@
  * cheap no-op.
  */
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { createServiceClient } from "@/lib/supabase/service"
 // Was `import { put } from "@vercel/blob"`. Survivor:
@@ -128,7 +129,7 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
       .maybeSingle()
     const voiceId = (profile as { elevenlabs_voice_id?: string } | null)?.elevenlabs_voice_id ?? null
     if (!voiceId) {
-      await svc.from("podcast_auto_runs").update({ status: "skipped", error_message: "host has no elevenlabs_voice_id" }).eq("id", ledgerId)
+      await sentinelWrite(svc, svc.from("podcast_auto_runs").update({ status: "skipped", error_message: "host has no elevenlabs_voice_id" }).eq("id", ledgerId), { table: "podcast_auto_runs", flow: "podcast_auto_runs_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       return { ok: true, status: "skipped", reason: "host voice profile not configured" }
     }
 
@@ -211,21 +212,22 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
       assetId:     episode.id,
     })
 
-    await svc.from("podcast_auto_runs").update({
+    const { error: renderedErr } = await svc.from("podcast_auto_runs").update({
       status:             "rendered",
       podcast_episode_id: episode.id,
       script_word_count:  wordCount,
       duration_seconds:   durationSeconds,
       completed_at:       new Date().toISOString(),
     }).eq("id", ledgerId)
+    if (renderedErr) console.error(`[podcast-auto] run NOT marked rendered: ${renderedErr.message}`)
 
     return { ok: true, status: "rendered", podcast_episode_id: episode.id, ledger_id: ledgerId }
   } catch (err) {
     const msg = (err as Error).message
-    await svc.from("podcast_auto_runs").update({
+    await sentinelWrite(svc, svc.from("podcast_auto_runs").update({
       status:        "failed",
       error_message: msg.slice(0, 800),
-    }).eq("id", ledgerId)
+    }).eq("id", ledgerId), { table: "podcast_auto_runs", flow: "podcast_auto_runs_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     return { ok: false, status: "failed", reason: msg, ledger_id: ledgerId }
   }
 }

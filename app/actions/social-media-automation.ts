@@ -5,6 +5,7 @@
 // Canonical Tables: social_posts, social_media_accounts, social_engagement_tracking, social_publish_log
 // DO NOT use social_media_posts or social_accounts
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
@@ -410,7 +411,7 @@ export async function scheduleSocialPost(params: {
 
     // Link to marketing campaign if provided
     if (params.campaignId && isValidUUID(params.campaignId)) {
-      await supabase.from("marketing_assets").insert({
+      await bestEffort(supabase.from("marketing_assets").insert({
         brokerage_id: brokerageId,
         campaign_id: params.campaignId,
         asset_type: "social_post",
@@ -419,7 +420,7 @@ export async function scheduleSocialPost(params: {
         source_id: post.id,
         approval_status: "pending",
         created_at: new Date().toISOString(),
-      })
+      }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     }
 
     // Increment feature usage
@@ -427,7 +428,7 @@ export async function scheduleSocialPost(params: {
       .catch((err) => console.warn("[social-media-automation] Usage increment failed:", err))
 
     // Fire kernel event
-    await supabase.from("lifecycle_events").insert({
+    await bestEffort(supabase.from("lifecycle_events").insert({
       entity_type: "social_post",
       entity_id: post.id,
       brokerage_id: brokerageId,
@@ -439,7 +440,7 @@ export async function scheduleSocialPost(params: {
         listing_id: params.listingId,
         campaign_id: params.campaignId,
       },
-    })
+    }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
     await processKernelEvent({
       event: KernelEvent.SOCIAL_POST_SCHEDULED,
@@ -1268,23 +1269,23 @@ export async function retryFailedPost(postId: string, userId: string) {
     if (!post) return { success: false, error: "Post not found or not in failed state" }
 
     // Log the retry attempt
-    await supabase.from("social_publish_log").insert({
+    await bestEffort(supabase.from("social_publish_log").insert({
       social_post_id: postId,
       brokerage_id: post.brokerage_id,
       platform: post.platform,
       account_id: post.social_account_id,
       publish_status: "queued",
       created_at: new Date().toISOString(),
-    })
+    }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
-    await supabase.from("lifecycle_events").insert({
+    await bestEffort(supabase.from("lifecycle_events").insert({
       entity_type: "social_post",
       entity_id: postId,
       brokerage_id: post.brokerage_id,
       event_type: "social_post_retry_queued",
       actor_user_id: userId,
       metadata: { retried_at: new Date().toISOString() },
-    })
+    }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
     revalidatePath("/dashboard/social")
     return { success: true, data: post }
@@ -1320,14 +1321,14 @@ export async function deleteSocialPost(postId: string, userId: string) {
     if (error) throw error
     if (!post) return { success: false, error: "Post not found or already published — cannot delete" }
 
-    await supabase.from("lifecycle_events").insert({
+    await bestEffort(supabase.from("lifecycle_events").insert({
       entity_type: "social_post",
       entity_id: postId,
       brokerage_id: post.brokerage_id,
       event_type: "social_post_deleted",
       actor_user_id: userId,
       metadata: { deleted_at: new Date().toISOString() },
-    })
+    }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
     revalidatePath("/dashboard/social")
     return { success: true }

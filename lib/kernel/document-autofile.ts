@@ -638,7 +638,7 @@ export async function runAutoFile(
 
   // 4. Below the floor → leave UNFILED + flag for a human (never misfile).
   if (!meetsFloor(confidence)) {
-    await supabase
+    const { error: needsReviewErr } = await supabase
       .from("client_documents")
       .update({
         ai_metadata: {
@@ -654,10 +654,11 @@ export async function runAutoFile(
         },
       })
       .eq("id", documentId)
+    if (needsReviewErr) console.error(`[document-autofile] needs-review flag NOT recorded on the document: ${needsReviewErr.message}`)
 
     let eventId: string | undefined
     if (row.brokerage_id) {
-      const { data: ev } = await supabase
+      const { data: ev, error: flagEventErr } = await supabase
         .from("lifecycle_events")
         .insert({
           brokerage_id: row.brokerage_id,
@@ -670,6 +671,7 @@ export async function runAutoFile(
         })
         .select("id")
         .maybeSingle()
+      if (flagEventErr) console.error(`[document-autofile] AUTOFILE_FLAGGED event NOT recorded: ${flagEventErr.message}`)
       eventId = (ev as { id?: string } | null)?.id
     }
 
@@ -743,12 +745,13 @@ export async function runAutoFile(
     update.document_url = storage.newPublicUrl
   }
 
-  await supabase.from("client_documents").update(update).eq("id", documentId)
+  const { error: fileErr } = await supabase.from("client_documents").update(update).eq("id", documentId)
+  if (fileErr) console.error(`[document-autofile] document filing (type/url) NOT recorded: ${fileErr.message}`)
 
   // RECORD the filing on the canonical lifecycle_events ledger.
   let eventId: string | undefined
   if (row.brokerage_id) {
-    const { data: ev } = await supabase
+    const { data: ev, error: filedEventErr } = await supabase
       .from("lifecycle_events")
       .insert({
         brokerage_id: row.brokerage_id,
@@ -774,6 +777,7 @@ export async function runAutoFile(
       })
       .select("id")
       .maybeSingle()
+    if (filedEventErr) console.error(`[document-autofile] AUTOFILE event NOT recorded: ${filedEventErr.message}`)
     eventId = (ev as { id?: string } | null)?.id
   }
 

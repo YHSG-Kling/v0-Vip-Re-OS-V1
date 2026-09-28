@@ -200,15 +200,23 @@ export async function publishLaunchingCampaigns(
 
     const res = await connector.publishCampaign({ structure, cred })
     if (res.ok) {
-      await supabase.from("ad_campaigns").update({
+      // The provider campaign now EXISTS (and can spend). A refused 'live' stamp
+      // loses its external id, so the next run would publish it AGAIN — never silent.
+      const { error: liveErr } = await supabase.from("ad_campaigns").update({
         status: "live",
         targeting_config: { ...tc, external_campaign_id: res.externalCampaignId ?? null, last_publish_error: null },
       }).eq("id", c.id)
+      if (liveErr) {
+        console.error(`[ad-publish] campaign ${c.id} published as ${res.externalCampaignId ?? "?"} but the live stamp was refused: ${liveErr.message}`)
+        failed++
+        continue
+      }
       published++
     } else {
-      await supabase.from("ad_campaigns").update({
+      const { error: errStampErr } = await supabase.from("ad_campaigns").update({
         targeting_config: { ...tc, last_publish_error: res.error ?? "publish failed" },
       }).eq("id", c.id)
+      if (errStampErr) console.error(`[ad-publish] campaign ${c.id} publish failed (${res.error ?? "?"}) and the error stamp was refused: ${errStampErr.message}`)
       failed++
     }
   }

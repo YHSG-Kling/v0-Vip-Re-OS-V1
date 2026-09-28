@@ -1,5 +1,6 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
@@ -155,7 +156,7 @@ Be thorough but practical. Focus on actionable issues.`,
     })
 
     // Save review results
-    const { data: savedReview } = await supabase
+    const { data: savedReview, error: reviewSaveErr } = await supabase
       .from("contract_reviews")
       .insert({
         document_id: params.documentId,
@@ -177,6 +178,8 @@ Be thorough but practical. Focus on actionable issues.`,
       })
       .select()
       .single()
+    // The review is returned either way; a refused save means no record of it exists.
+    if (reviewSaveErr) console.error(`[ai-contract-review] review for document ${params.documentId} NOT saved: ${reviewSaveErr.message}`)
 
     // Create tasks for critical issues. pass 14 (variable-insert sweep):
     // transaction_tasks has NO agent_id/source columns — assignment keys on
@@ -199,7 +202,7 @@ Be thorough but practical. Focus on actionable issues.`,
         ai_generated: true,
       }))
 
-      await supabase.from("transaction_tasks").insert(tasks)
+      await sentinelWrite(supabase, supabase.from("transaction_tasks").insert(tasks), { table: "transaction_tasks", flow: "transaction_tasks_write", reason: "AI follow-up tasks from a review whose findings are returned to the caller" })
     }
 
     // Log compliance event if issues found. Canonical gate-event schema is

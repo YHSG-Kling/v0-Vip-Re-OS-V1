@@ -28,6 +28,7 @@
 //       deterministic composeSellerLaunch copy as the fallback floor). Approval-first.
 // Both ride the war room's own once-per-listing guard for idempotency.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { NeighborScraper } from "@/lib/kernel/neighbor-farm"
 import type { PromoDispatcher } from "@/lib/kernel/voice-delegation"
@@ -204,7 +205,7 @@ export async function runLaunchWarRoom(
           : { success: false as const }
         const { data: magnetRow } = await supabase
           .from("lead_capture_forms").select("landing_content").eq("id", magnet.magnetId).maybeSingle()
-        await supabase.from("lead_capture_forms").update({
+        await sentinelWrite(supabase, supabase.from("lead_capture_forms").update({
           landing_content: {
             ...(((magnetRow as any)?.landing_content as Record<string, unknown>) ?? {}),
             headline: head.body,
@@ -214,7 +215,7 @@ export async function runLaunchWarRoom(
             qrCodeId: (pub as any)?.qrCodeId ?? null,
             installedAt: now.toISOString(),
           },
-        }).eq("id", magnet.magnetId)
+        }).eq("id", magnet.magnetId), { table: "lead_capture_forms", flow: "lead_capture_forms_write", reason: "magnet copy annotation for the launch" })
         result.capturePagesStaged += 1
         staged.capturePage = true
       }
@@ -399,9 +400,9 @@ export async function runLaunchWarRoom(
       entityType: "listing", entityId: l.id,
     }, supabase)
     if (conv.ok && conv.signalId && !conv.reason) {
-      await supabase.from("manager_signals")
+      await sentinelWrite(supabase, supabase.from("manager_signals")
         .update({ status: "consumed", consumed_at: now.toISOString(), consumed_action: "launch war room staged across the bench (gated)" })
-        .eq("id", conv.signalId)
+        .eq("id", conv.signalId), { table: "manager_signals", flow: "launch_war_room_consume", reason: "consumes the signal for a launch already staged" })
     }
 
     result.launches += 1

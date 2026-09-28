@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
@@ -513,7 +514,7 @@ export async function advanceStage(params: {
       //    doesn't belong to. Unstamped it would be readable AND writable by
       //    every brokerage (`brokerage_id IS NULL OR …` policy), which for a
       //    portal-access grant means any tenant could toggle a client's portal.
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("contact_portal_modules")
         .upsert({
           brokerage_id: closedTxn.brokerage_id,
@@ -523,12 +524,12 @@ export async function advanceStage(params: {
           // FKs agents(id), not users(id) — a raw user id is FK-rejected (agent-identity rule).
           enabled_by_agent_id: await resolveAgentId(supabase, params.userId),
           enabled_at: new Date().toISOString(),
-        }, { onConflict: "contact_id,module_key" })
+        }, { onConflict: "contact_id,module_key" }), { table: "contact_portal_modules", flow: "contact_portal_modules_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
 
     // 4. Mark the listing as sold
     if (closedTxn?.listing_id) {
-      await supabase
+      const { error: listingSoldErr } = await supabase
         .from("listings")
         .update({
           status: "sold",
@@ -538,6 +539,7 @@ export async function advanceStage(params: {
         })
         .eq("id", closedTxn.listing_id)
         .eq("brokerage_id", params.brokerageId)
+      if (listingSoldErr) console.error(`[stage-progression] listing NOT marked sold on close: ${listingSoldErr.message}`)
 
       // A newly-closed listing grades the listing_price accuracy rail — drop the
       // accuracy-gate's cached verdicts so autonomy reflects the new track record

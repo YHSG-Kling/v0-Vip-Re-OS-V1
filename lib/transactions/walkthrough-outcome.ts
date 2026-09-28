@@ -12,6 +12,7 @@
  * creates the branch's tasks (NOT-NULL assignee contract honored).
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 type Svc = SupabaseClient<any, any, any>
@@ -69,17 +70,18 @@ export async function recordWalkthroughOutcome(svc: Svc, input: {
 }): Promise<{ tasksCreated: number; flaggedShaky: boolean }> {
   const plan = composeWalkthroughFollowUp(input.outcome, input.addressAs)
 
-  await svc.from("lifecycle_events").insert({
+  await sentinelWrite(svc, svc.from("lifecycle_events").insert({
     brokerage_id: input.brokerageId,
     entity_type: "transaction",
     entity_id: input.transactionId,
     event_type: "walkthrough_outcome",
     actor_user_id: input.actorUserId,
     metadata: { outcome: input.outcome },
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   if (plan.flagShaky) {
-    await svc.from("transactions").update({ deal_shaky: true }).eq("id", input.transactionId)
+    const { error: shakyFlagErr } = await svc.from("transactions").update({ deal_shaky: true }).eq("id", input.transactionId)
+    if (shakyFlagErr) console.error(`[walkthrough-outcome] deal NOT flagged shaky: ${shakyFlagErr.message}`)
   }
 
   let tasksCreated = 0

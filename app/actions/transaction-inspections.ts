@@ -310,7 +310,7 @@ export async function uploadInspectionReportAction(params: {
   })
 
   // Add as transaction document
-  await supabase.from("transaction_documents").insert({
+  const { error: inspectionDocErr } = await supabase.from("transaction_documents").insert({
     transaction_id: params.transactionId,
     brokerage_id:   auth.brokerageId,
     doc_type:       "inspection_report",
@@ -320,6 +320,7 @@ export async function uploadInspectionReportAction(params: {
     uploaded_by:    auth.userId,
     uploaded_at:    new Date().toISOString(),
   })
+  if (inspectionDocErr) return { success: false, error: `Inspection recorded, but the report was not added to the transaction documents: ${inspectionDocErr.message}` }
 
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
   return { success: true }

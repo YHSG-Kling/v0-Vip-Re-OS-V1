@@ -7,6 +7,7 @@
  * window is open. Both set and clear land on the lifecycle ledger.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isTenancyPrincipal } from "@/lib/kernel/tenancy-principal"
@@ -51,14 +52,14 @@ export async function setCoverageAction(input: {
   }).eq("id", input.awayAgentId)
   if (error) return { ok: false, error: error.message }
 
-  await gate.svc.from("lifecycle_events").insert({
+  await sentinelWrite(gate.svc, gate.svc.from("lifecycle_events").insert({
     brokerage_id: gate.brokerageId,
     entity_type: "agent",
     entity_id: input.awayAgentId,
     event_type: setting ? "coverage_started" : "coverage_cleared",
     actor_user_id: gate.userId,
     metadata: { covering_agent_id: input.coveringAgentId, until: input.until ?? null },
-  }).then(() => {}, () => {})
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return { ok: true }
 }

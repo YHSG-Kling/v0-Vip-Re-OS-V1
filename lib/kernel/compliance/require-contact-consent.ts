@@ -62,7 +62,7 @@ export async function persistContactConsent(params: PersistConsentParams): Promi
 
   // 1. Update leads row if provided
   if (params.leadId) {
-    await supabase
+    const { error: leadConsentErr } = await supabase
       .from('leads')
       .update({
         tcpa_consent:            params.consented,
@@ -74,6 +74,7 @@ export async function persistContactConsent(params: PersistConsentParams): Promi
         updated_at:              now,
       })
       .eq('id', params.leadId)
+    if (leadConsentErr) console.error(`[require-contact-consent] TCPA consent NOT recorded on the lead: ${leadConsentErr.message}`)
   }
 
   // 2. Update contacts row if provided
@@ -101,7 +102,7 @@ export async function persistContactConsent(params: PersistConsentParams): Promi
   }
 
   // 3. Always insert a consent event for audit trail
-  await supabase.from('contact_consent_events').insert({
+  const { error: consentEventErr } = await supabase.from('contact_consent_events').insert({
     contact_id:     params.contactId ?? null,
     lead_id:        params.leadId ?? null,
     brokerage_id:   params.brokerageId,
@@ -114,6 +115,7 @@ export async function persistContactConsent(params: PersistConsentParams): Promi
     user_agent:     params.userAgent ?? null,
     created_at:     now,
   })
+  if (consentEventErr) console.error(`[require-contact-consent] consent event NOT recorded on the consent ledger: ${consentEventErr.message}`)
 
   // Reported AFTER the audit event so a refused consent write still leaves the
   // attempt on the trail — the caller learns the row does not agree with it.

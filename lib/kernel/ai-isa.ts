@@ -44,6 +44,7 @@
 // lifecycle_events       — all major state transitions (insert)
 // contact_suppression_list — opt-out / stop handling (insert)
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { ActorRole, LeadLifecycleStage } from "@/lib/kernel/types"
 
@@ -545,7 +546,7 @@ export async function evaluateAiIsaEligibility(
     // Record evaluation in ai_isa_qualifications
     // Live schema uses qualification_result/stage/qualified_at/qualification_signals
     // (structured rationale). evaluator id + blockers + reasons go into signals jsonb.
-    await supabase
+    const { error: qualRecordErr } = await supabase
       .from("ai_isa_qualifications")
       .insert({
         brokerage_id: ctx.brokerageId,
@@ -561,6 +562,7 @@ export async function evaluateAiIsaEligibility(
         stage: lead.lifecycle_state ?? null,
         qualified_at: new Date().toISOString(),
       })
+    if (qualRecordErr) console.error(`[kernel/ai-isa] qualification record NOT saved: ${qualRecordErr.message}`)
 
     return {
       success: true,
@@ -670,7 +672,7 @@ export async function assignAiIsaToLeadAfterGate(
 
     if (updateErr) throw updateErr
 
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("lifecycle_events")
       .insert({
         brokerage_id: ctx.brokerageId,
@@ -681,7 +683,7 @@ export async function assignAiIsaToLeadAfterGate(
           assigned_by: ctx.userId,
           campaign_id: campaignId ?? null,
         },
-      })
+      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { success: true }
   } catch (err) {
@@ -740,14 +742,15 @@ export async function startAiIsaAutomation(
       return { success: false, blocked: true, blockedReason: "Lead is under representation" }
     }
 
-    await Promise.all([
+    const startWrites = await Promise.all([
       supabase
         .from("leads")
         .update({ ai_outreach_paused: false, updated_at: new Date().toISOString() })
         .eq("id", leadId)
-        .eq("brokerage_id", ctx.brokerageId),
+        .eq("brokerage_id", ctx.brokerageId)
+        .select("id"),
 
-      supabase.from("ai_isa_activities").insert({
+      sentinelWrite(supabase, supabase.from("ai_isa_activities").insert({
         brokerage_id: ctx.brokerageId,
         lead_id: leadId,
         activity_type: "automation_started",
@@ -755,10 +758,15 @@ export async function startAiIsaAutomation(
         summary: notes ?? null,
         qualifying_response: { actor_user_id: ctx.userId, campaign_id: campaignId ?? null },
         created_at: new Date().toISOString(),
-      }),
+      }), { table: "ai_isa_activities", flow: "isa_automation_started", brokerageId: ctx.brokerageId, reason: "activity echo of the lead flag written (and checked) beside it" }),
     ])
+    // The lead flag IS the start: a refused (or tenant-mismatched, zero-row) write used
+    // to return success while AI outreach stayed in its old state.
+    const startLeadFlag = startWrites[0]
+    if (startLeadFlag.error) return { success: false, error: `Could not start AI ISA automation: ${startLeadFlag.error.message}` }
+    if ((startLeadFlag.data ?? []).length === 0) return { success: false, error: "Lead not found in this brokerage — AI ISA automation unchanged" }
 
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("lifecycle_events")
       .insert({
         brokerage_id: ctx.brokerageId,
@@ -766,7 +774,7 @@ export async function startAiIsaAutomation(
         entity_id: leadId,
         event_type: "ai_isa_automation_started",
         metadata: { channel, campaign_id: campaignId ?? null, actor: ctx.userId },
-      })
+      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { success: true }
   } catch (err) {
@@ -808,24 +816,30 @@ export async function pauseAiIsaAutomation(
 
     const supabase = createServiceClient()
 
-    await Promise.all([
+    const pauseWrites = await Promise.all([
       supabase
         .from("leads")
         .update({ ai_outreach_paused: true, updated_at: new Date().toISOString() })
         .eq("id", leadId)
-        .eq("brokerage_id", ctx.brokerageId),
+        .eq("brokerage_id", ctx.brokerageId)
+        .select("id"),
 
-      supabase.from("ai_isa_activities").insert({
+      sentinelWrite(supabase, supabase.from("ai_isa_activities").insert({
         brokerage_id: ctx.brokerageId,
         lead_id: leadId,
         activity_type: "automation_paused",
         summary: reason,
         qualifying_response: { actor_user_id: ctx.userId },
         created_at: new Date().toISOString(),
-      }),
+      }), { table: "ai_isa_activities", flow: "isa_automation_paused", brokerageId: ctx.brokerageId, reason: "activity echo of the lead flag written (and checked) beside it" }),
     ])
+    // The lead flag IS the pause: a refused (or tenant-mismatched, zero-row) write used
+    // to return success while AI outreach stayed in its old state.
+    const pauseLeadFlag = pauseWrites[0]
+    if (pauseLeadFlag.error) return { success: false, error: `Could not pause AI ISA automation: ${pauseLeadFlag.error.message}` }
+    if ((pauseLeadFlag.data ?? []).length === 0) return { success: false, error: "Lead not found in this brokerage — AI ISA automation unchanged" }
 
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("lifecycle_events")
       .insert({
         brokerage_id: ctx.brokerageId,
@@ -833,7 +847,7 @@ export async function pauseAiIsaAutomation(
         entity_id: leadId,
         event_type: "ai_isa_automation_paused",
         metadata: { reason, actor: ctx.userId },
-      })
+      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { success: true }
   } catch (err) {
@@ -883,24 +897,30 @@ export async function resumeAiIsaAutomation(
       return { success: false, blocked: true, blockedReason: "Lead is under representation — AI ISA permanently blocked" }
     }
 
-    await Promise.all([
+    const resumeWrites = await Promise.all([
       supabase
         .from("leads")
         .update({ ai_outreach_paused: false, updated_at: new Date().toISOString() })
         .eq("id", leadId)
-        .eq("brokerage_id", ctx.brokerageId),
+        .eq("brokerage_id", ctx.brokerageId)
+        .select("id"),
 
-      supabase.from("ai_isa_activities").insert({
+      sentinelWrite(supabase, supabase.from("ai_isa_activities").insert({
         brokerage_id: ctx.brokerageId,
         lead_id: leadId,
         activity_type: "automation_resumed",
         summary: notes ?? null,
         qualifying_response: { actor_user_id: ctx.userId },
         created_at: new Date().toISOString(),
-      }),
+      }), { table: "ai_isa_activities", flow: "isa_automation_resumed", brokerageId: ctx.brokerageId, reason: "activity echo of the lead flag written (and checked) beside it" }),
     ])
+    // The lead flag IS the resume: a refused (or tenant-mismatched, zero-row) write used
+    // to return success while AI outreach stayed in its old state.
+    const resumeLeadFlag = resumeWrites[0]
+    if (resumeLeadFlag.error) return { success: false, error: `Could not resume AI ISA automation: ${resumeLeadFlag.error.message}` }
+    if ((resumeLeadFlag.data ?? []).length === 0) return { success: false, error: "Lead not found in this brokerage — AI ISA automation unchanged" }
 
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("lifecycle_events")
       .insert({
         brokerage_id: ctx.brokerageId,
@@ -908,7 +928,7 @@ export async function resumeAiIsaAutomation(
         entity_id: leadId,
         event_type: "ai_isa_automation_resumed",
         metadata: { actor: ctx.userId, notes: notes ?? null },
-      })
+      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { success: true }
   } catch (err) {
@@ -951,8 +971,11 @@ export async function handoffToHumanAgent(
 
     const supabase = createServiceClient()
 
-    const [handoffRes] = await Promise.all([
-      supabase
+    // Sequential, not Promise.all: the ownership flip's result was dropped on the
+    // floor (only the handoff insert was destructured), so a refused flip left the
+    // ISA still owning a lead a human had been handed. The flip now follows the
+    // handoff row it depends on, and its refusal is read.
+    const handoffRes = await supabase
         .from("agent_handoffs")
         .insert({
           brokerage_id: ctx.brokerageId,
@@ -972,18 +995,18 @@ export async function handoffToHumanAgent(
           created_at: new Date().toISOString(),
         })
         .select("id")
-        .single(),
-
-      supabase
-        .from("leads")
-        .update({ ai_isa_owner: false, updated_at: new Date().toISOString() })
-        .eq("id", leadId)
-        .eq("brokerage_id", ctx.brokerageId),
-    ])
+        .single()
 
     if (handoffRes.error) throw handoffRes.error
 
-    await supabase
+    const { error: ownerFlipErr } = await supabase
+      .from("leads")
+      .update({ ai_isa_owner: false, updated_at: new Date().toISOString() })
+      .eq("id", leadId)
+      .eq("brokerage_id", ctx.brokerageId)
+    if (ownerFlipErr) throw new Error(`Handoff ${handoffRes.data.id} created, but the lead's AI ISA ownership was not released: ${ownerFlipErr.message}`)
+
+    await sentinelWrite(supabase, supabase
       .from("lifecycle_events")
       .insert({
         brokerage_id: ctx.brokerageId,
@@ -995,7 +1018,7 @@ export async function handoffToHumanAgent(
           assigned_agent_id: assignedAgentId ?? null,
           reason: handoffReason,
         },
-      })
+      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { success: true, data: { handoffId: handoffRes.data.id } }
   } catch (err) {
@@ -1069,15 +1092,16 @@ export async function recordAiIsaOutcome(
     }
 
     // Update lead
-    await supabase
+    const { error: outcomeLeadErr } = await supabase
       .from("leads")
       .update(leadUpdate)
       .eq("id", leadId)
       .eq("brokerage_id", ctx.brokerageId)
+    if (outcomeLeadErr) return { success: false, error: `Could not record the outcome on the lead: ${outcomeLeadErr.message}` }
 
     // Insert activity. `outcome` is a text column (the categorical result);
     // structured context (actor, appointment date) lives in qualifying_response jsonb.
-    await supabase.from("ai_isa_activities").insert({
+    await sentinelWrite(supabase, supabase.from("ai_isa_activities").insert({
       brokerage_id: ctx.brokerageId,
       lead_id: leadId,
       activity_type: "outcome_recorded",
@@ -1088,13 +1112,13 @@ export async function recordAiIsaOutcome(
         appointment_date: appointmentDate ?? null,
       },
       created_at: now,
-    })
+    }), { table: "ai_isa_activities", flow: "ai_isa_activities_write", reason: "activity echo of an outcome recorded on the lead above" })
 
     // Update the call record if callId is provided. ai_isa_calls has no
     // categorical outcome column — the result is captured above; here we
     // persist the appointment booking on the call row.
     if (callId) {
-      await supabase
+      const { error: apptOnCallErr } = await supabase
         .from("ai_isa_calls")
         .update({
           appointment_set: outcome === "appointment_set",
@@ -1102,9 +1126,10 @@ export async function recordAiIsaOutcome(
         })
         .eq("id", callId)
         .eq("brokerage_id", ctx.brokerageId)
+      if (apptOnCallErr) console.error(`[kernel/ai-isa] appointment outcome NOT recorded on the ISA call: ${apptOnCallErr.message}`)
     }
 
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("lifecycle_events")
       .insert({
         brokerage_id: ctx.brokerageId,
@@ -1112,7 +1137,7 @@ export async function recordAiIsaOutcome(
         entity_id: leadId,
         event_type: "ai_isa_outcome_recorded",
         metadata: { outcome, call_id: callId ?? null, actor: ctx.userId },
-      })
+      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     // ── Side-effects gated on outcome ────────────────────────────────────
     if (outcome === "explicit_opt_out") {
@@ -1226,7 +1251,7 @@ export async function routeHistoryToCanonicalEntity(
     const now = new Date().toISOString()
 
     // Write the inbound event
-    await supabase.from("lifecycle_events").insert({
+    await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
       brokerage_id: ctx.brokerageId,
       entity_type: entityType,
       entity_id: entityId,
@@ -1236,7 +1261,7 @@ export async function routeHistoryToCanonicalEntity(
         text: inboundText.slice(0, 500),
         provider_message_id: providerMessageId ?? null,
       },
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     // Update last activity. leads has last_activity_at; contacts tracks
     // recency via last_contacted_at (no last_activity_at column).
@@ -1271,7 +1296,9 @@ export async function routeHistoryToCanonicalEntity(
           .maybeSingle()
         suppressContactId = leadLink?.contact_id ?? null
       }
-      await supabase.from("contact_suppression_list").insert({
+      // FAIL CLOSED, same as the contact opt-out below: an inbound STOP whose
+      // suppression row was refused must not be acknowledged as honoured.
+      const { error: suppressErr } = await supabase.from("contact_suppression_list").insert({
         brokerage_id: ctx.brokerageId,
         contact_id: suppressContactId,
         channel,
@@ -1279,14 +1306,22 @@ export async function routeHistoryToCanonicalEntity(
         source: inboundText.slice(0, 200),
         created_at: now,
       })
+      if (suppressErr) {
+        console.error(`[ai-isa] TCPA suppression row REFUSED for ${entityType} ${entityId}:`, suppressErr.message)
+        return { success: false, error: `Opt-out suppression write refused: ${suppressErr.message}` }
+      }
 
       // Mark the lead/contact as opted out
       if (entityType === "lead") {
-        await supabase
+        const { error: leadOptOutErr } = await supabase
           .from("leads")
           .update({ opted_out_at: now, ai_outreach_paused: true, updated_at: now })
           .eq("id", entityId)
           .eq("brokerage_id", ctx.brokerageId)
+        if (leadOptOutErr) {
+          console.error(`[ai-isa] lead opt-out write REFUSED for ${entityId}:`, leadOptOutErr.message)
+          return { success: false, error: `Lead opt-out write refused: ${leadOptOutErr.message}` }
+        }
       } else {
         // FAIL CLOSED (CLAUDE.md §4). supabase-js RESOLVES a refused UPDATE, so
         // this discarded result let a rejected opt-out return `{ success: true }`

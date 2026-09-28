@@ -339,7 +339,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   // ── Step 6: Write lifecycle_events ─────────────────────────────────────────
   // DB column is `metadata` (jsonb) — pass plain object, not JSON.stringify
-  await supabase.from("lifecycle_events").insert({
+  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
     brokerage_id: inbound.brokerageId,
     entity_type: entityType,
     entity_id: entityId,
@@ -352,7 +352,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       subject: inbound.subject,
       text: (inbound.text ?? "").slice(0, 500),
     },
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // ── Step 6b: Behavioural event log — sms_reply ─────────────────────────────
   // The contact texting back is a scored responsiveness signal (sms_reply,
@@ -398,10 +398,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       },
     )
   } else {
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("leads")
       .update({ last_activity_at: now })
-      .eq("id", entityId)
+      .eq("id", entityId), { table: "leads", flow: "inbound_last_activity", reason: "last-activity stamp; the inbound message itself is recorded above" })
   }
 
   // ── Step 7b: Opt-out detection ─────────────────────────────────────────────
@@ -438,7 +438,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         ownerAgentId = (l as { agent_id?: string | null } | null)?.agent_id ?? null
       }
 
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("smart_assistant_suggestions")
         .insert({
           brokerage_id: inbound.brokerageId,
@@ -457,8 +457,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             entityId,
             brokerageId: inbound.brokerageId,
           }),
-        })
-        .then(() => {}, () => {})
+        }), { table: "smart_assistant_suggestions", flow: "smart_assistant_suggestions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
       // Alert the humans who own consent — compliance officers + admins. Best-effort.
       try {

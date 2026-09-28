@@ -375,12 +375,12 @@ export async function executeAgentDeactivation(
 
   const nowIso = new Date().toISOString()
   const audit = async (entityId: string, action: string, meta: Record<string, unknown>) => {
-    await svc.from("lifecycle_events").insert({
+    await sentinelWrite(svc, svc.from("lifecycle_events").insert({
       brokerage_id: brokerageId, entity_type: "contact", entity_id: entityId,
       event_type: "AGENT_DEACTIVATION_REASSIGN",
       metadata: { action, from_agent: agentId, to_agent: successorAgentId, by: actorUserId ?? null, ...meta },
       created_at: nowIso,
-    }).then(() => {}, () => {})
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
   }
 
   // ── Contacts ──

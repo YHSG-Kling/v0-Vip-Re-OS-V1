@@ -4,6 +4,7 @@
 // Layer 9.5 — Ad Campaign Creation and AI Creative Generation
 // Kernel gates: canAccessFeature('ad_creator'), resolveProvider, applyBrandVoice, evaluateOutbound
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
@@ -143,7 +144,7 @@ export async function createAdCampaign(
   }
 
   // ── 3. Lifecycle event + kernel event ───────────────────────────────────────
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
     entity_type: "ad_campaign",
     entity_id: campaign.id,
@@ -154,7 +155,7 @@ export async function createAdCampaign(
       objective: params.objective,
       campaign_name: params.campaignName,
     },
-  })
+  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   // ── 4. Increment usage ──────────────────────────────────────────────────────
   await incrementFeatureUsage(userId, "ad_creator")
@@ -486,11 +487,11 @@ export async function approveCreativeVariation(
     }
 
     // Also mark the variation as rejected so the UI surfaces the failure
-    await supabase
+    await bestEffort(supabase
       .from("ad_creative_variations")
       .update({ approval_status: "rejected" })
       .eq("id", variationId)
-      .eq("brokerage_id", brokerageId)
+      .eq("brokerage_id", brokerageId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     return {
       success: false,
@@ -554,14 +555,14 @@ export async function rejectCreativeVariation(
   // ad_creative_variations has no rejection_reason column (verified against the
   // live schema), so it is recorded on the lifecycle ledger instead, where the
   // approval rail already reads ad_creative events.
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
     entity_type: "ad_creative_variation",
     entity_id: variationId,
     event_type: "ad_creative_rejected",
     actor_user_id: userId,
     metadata: { reason: reason ?? null },
-  })
+  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   return { success: true }
 }
@@ -626,7 +627,7 @@ export async function launchAdCampaign(
   }
 
   // ── 3. Record lifecycle event ───────────────────────────────────────────────
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
     entity_type: "ad_campaign",
     entity_id: campaignId,
@@ -636,7 +637,7 @@ export async function launchAdCampaign(
       platform: campaign.platform,
       campaign_name: campaign.campaign_name,
     },
-  })
+  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   return { success: true }
 }

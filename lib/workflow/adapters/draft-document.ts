@@ -75,10 +75,11 @@ export const draftDocumentAdapter: ChannelAdapter = {
     // (not a default — different state = different forms). Block if state can't be resolved.
     if ((docType === "offer" || docType === "listing_agreement" || docType === "brokerage_representation") && !resolvedState) {
       if (docId) {
-        await supabase.from("documents").update({
+        const { error: stateReviewErr } = await supabase.from("documents").update({
           status: "review",
           metadata: { error: "Property state could not be resolved — state-specific forms unavailable." },
         }).eq("id", docId)
+        if (stateReviewErr) console.error(`[draft-document] state-required review flag NOT recorded on the document: ${stateReviewErr.message}`)
       }
       return { status: "error", providerKey: "document", error: "Property state required to select correct forms" }
     }
@@ -106,11 +107,12 @@ export const draftDocumentAdapter: ChannelAdapter = {
         const { getBrokerageRepresentationForm } = await import("@/lib/state-forms/registry")
         const formName = getBrokerageRepresentationForm(resolvedState!)
         if (docId) {
-          await supabase.from("documents").update({
+          const { error: repFormErr } = await supabase.from("documents").update({
             content: `Brokerage representation form for ${resolvedState}: ${formName}.\n\nThis disclosure must be signed at engagement.`,
             status: "draft_ready",
             metadata: { state: resolvedState, form_name: formName },
           }).eq("id", docId)
+          if (repFormErr) console.error(`[draft-document] brokerage representation form NOT saved on the document: ${repFormErr.message}`)
         }
       } else if (docType === "invoice") {
         // ── THIS STEP REPORTED SUCCESS AND WROTE NOTHING, FOR AS LONG AS IT EXISTED ──
@@ -145,10 +147,11 @@ export const draftDocumentAdapter: ChannelAdapter = {
           // letting the status reconciliation below flip it to draft_ready over an
           // invoice that was never written.
           if (docId) {
-            await supabase.from("documents").update({
+            const { error: invoiceReviewErr } = await supabase.from("documents").update({
               status: "review",
               metadata: { error: drafted.error ?? "Invoice draft failed" },
             }).eq("id", docId)
+            if (invoiceReviewErr) console.error(`[draft-document] invoice failure NOT recorded on the document: ${invoiceReviewErr.message}`)
           }
           return { status: "error", providerKey: "document", error: drafted.error ?? "Invoice draft failed" }
         }
@@ -180,9 +183,10 @@ export const draftDocumentAdapter: ChannelAdapter = {
       const { data: current } = await supabase
         .from("documents").select("status").eq("id", docId).maybeSingle()
       if (current?.status === "draft") {
-        await supabase.from("documents")
+        const { error: draftReadyErr } = await supabase.from("documents")
           .update({ status: "draft_ready" })
           .eq("id", docId)
+        if (draftReadyErr) console.error(`[draft-document] document NOT promoted to draft_ready: ${draftReadyErr.message}`)
       }
     }
 

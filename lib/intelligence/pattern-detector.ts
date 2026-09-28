@@ -12,6 +12,7 @@
 // brokerageId / agentId are now an IN-PROCESS CONTRACT: with the door closed,
 // the server caller that supplies them is the gate.
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateText } from "ai"
@@ -235,7 +236,7 @@ export async function scanEntityForPatterns(
       }
 
       // Insert pattern_predictions
-      const { data: prediction } = await supabase
+      const { data: prediction, error: predictionInsErr } = await supabase
         .from("pattern_predictions")
         .insert({
           detection_id: detection.id,
@@ -250,9 +251,10 @@ export async function scanEntityForPatterns(
         })
         .select()
         .single()
+      if (predictionInsErr) console.error(`[pattern-detector] prediction NOT saved: ${predictionInsErr.message}`)
 
       // Insert smart_assistant_suggestions
-      await supabase.from("smart_assistant_suggestions").insert({
+      await sentinelWrite(supabase, supabase.from("smart_assistant_suggestions").insert({
         agent_id: resolvedAgentId,
         brokerage_id: brokerageId,
         title: pattern.recommended_action,
@@ -262,7 +264,7 @@ export async function scanEntityForPatterns(
         context_type: "behavioral_pattern",
         action_type: pattern.recommended_action, // real column (was phantom suggested_action)
         metadata: { detection_id: detection.id, pattern_id: pattern.id, pattern_slug: pattern.pattern_slug }, // context_id has no column
-      })
+      }), { table: "smart_assistant_suggestions", flow: "smart_assistant_suggestions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
       // emitKernelEvent does INSERT + reactor fan-out (notifications + sequences + portal) in one
       // call. Bare lifecycle_events inserts dropped agent notifications for new pattern detections.
@@ -652,16 +654,16 @@ export async function recordPredictionOutcome(
 ): Promise<void> {
   const supabase = createServiceClient()
 
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("pattern_predictions")
     .update({
       outcome,
       outcome_recorded_at: new Date().toISOString(),
     })
-    .eq("id", predictionId)
+    .eq("id", predictionId), { table: "pattern_predictions", flow: "pattern_predictions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   // Log to ai_feedback_log
-  await supabase.from("ai_feedback_log").insert({
+  await sentinelWrite(supabase, supabase.from("ai_feedback_log").insert({
     agent_id: agentId,
     brokerage_id: brokerageId,
     source_system: "behavioral_pattern",
@@ -669,7 +671,7 @@ export async function recordPredictionOutcome(
     source_record_id: predictionId,
     rating: outcome === "correct" ? 1 : -1,
     context_snapshot: { prediction_id: predictionId, outcome }, // real jsonb col (was phantom context)
-  })
+  }), { table: "ai_feedback_log", flow: "ai_feedback_log_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   // Emit outcome event through the canonical emitter — INSERT + reactor fan-out.
   await emitKernelEvent({

@@ -1,6 +1,7 @@
 // SYSTEM: QR Scan Audit (Contact-first, Track B)
 // Scan = audit event only. No contact created. No consent. Redirect to landing.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
@@ -110,7 +111,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
 
     // ── Step 2: Insert qr_scan_events (audit row only) ────────────────────────
-    await supabase.from('qr_scan_events').insert({
+    await sentinelWrite(supabase, supabase.from('qr_scan_events').insert({
       qr_code_id: qr.id,
       brokerage_id: qr.brokerage_id,
       campaign_id: campaignId,
@@ -118,7 +119,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       user_agent: userAgent,
       referrer,
       is_first_scan: qr.scan_count === 0,
-    })
+    }), { table: "qr_scan_events", flow: "qr_scan_events_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
     // ── Step 2b: Record the scan as a DIRECT MAIL RESPONSE ───────────────────
     // `direct_mail_responses` is what the mail dashboard's Responses tab reads and
@@ -228,10 +229,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
 
     // ── Step 3: Increment scan_count ──────────────────────────────────────────
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from('qr_codes')
       .update({ scan_count: (qr.scan_count ?? 0) + 1 })
-      .eq('id', qr.id)
+      .eq('id', qr.id), { table: "qr_codes", flow: "qr_codes_write", reason: "QR scan counter (reporting)" })
 
     // ── Step 4: Emit lifecycle event + fan out ────────────────────────────────
     // fanOutKernelEvent fires processKernelEvent (staff alerts) + auto-enrolls
@@ -249,13 +250,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       destination_type: qr.destination_type ?? null,
       purpose:          qr.purpose ?? null,
     }
-    await supabase.from('lifecycle_events').insert({
+    await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
       brokerage_id: qr.brokerage_id,
       entity_type: 'qr_scan',
       entity_id: qr.id,
       event_type: KernelEvent.QR_SCAN_RECEIVED,
       metadata: eventMeta,
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
     try {
       // Row already written above → skipInsert (fan-out only).
       const { emitKernelEvent } = await import('@/lib/kernel/emit')

@@ -501,13 +501,22 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
 
     case "flow_e": // Funded/Closed
       // Mark as complete
-      await supabase
-        .from("credit_accounts")
-        .update({
-          account_status: "closed",
-          closed_at: new Date().toISOString(),
-        })
-        .eq("id", accountId)
+      {
+        // The stage already moved (advanceCreditFlow); a refused close leaves the
+        // account open while the contact below is marked target-reached. Counted:
+        // an RLS-filtered update resolves with zero rows and no error.
+        const { data: closedRows, error: closeErr } = await supabase
+          .from("credit_accounts")
+          .update({
+            account_status: "closed",
+            closed_at: new Date().toISOString(),
+          })
+          .eq("id", accountId)
+          .select("id")
+        if (closeErr || (closedRows ?? []).length === 0) {
+          throw new Error(`Could not close credit account ${accountId}: ${closeErr?.message ?? "no row matched (not visible to you)"}`)
+        }
+      }
 
       // Update contact status
       await bestEffort(
@@ -601,7 +610,9 @@ async function trackCreditUsage(agentId: string, amount: number) {
   const limit = usage?.credit_budget_limit || 5000 // default limit
 
   // Update usage (UNIQUE(agent_id, period_start) → conflict target accumulates)
-  await supabase.from("agent_credit_budgets").upsert(
+  // A refused upsert means this spend was never counted against the budget —
+  // the next check reads the old total and under-reports. Never silent.
+  const { error: budgetErr } = await supabase.from("agent_credit_budgets").upsert(
     {
       agent_id: agentId,
       credit_budget_used: newUsed,
@@ -611,6 +622,7 @@ async function trackCreditUsage(agentId: string, amount: number) {
     },
     { onConflict: "agent_id,period_start" },
   )
+  if (budgetErr) throw new Error(`Could not record credit usage against the budget: ${budgetErr.message}`)
 
   // Check if approaching limit
   const percentUsed = (newUsed / limit) * 100

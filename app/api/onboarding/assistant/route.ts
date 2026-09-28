@@ -1,3 +1,4 @@
+import { bestEffort } from "@/lib/db/best-effort"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { convertToModelMessages } from 'ai'
 import type { UIMessage } from 'ai'
@@ -107,12 +108,12 @@ ${kbContext || 'No specific documentation found for this query.'}${memoryContext
       agentId,
       onFinish: async ({ text: aiResponse }) => {
         // INSERT onboarding_ai_chats
-        await supabase.from('onboarding_ai_chats').insert({
+        await bestEffort(supabase.from('onboarding_ai_chats').insert({
           brokerage_id: brokerageId,
           agent_id: agentId,
           question: latestQuery,
           ai_response: aiResponse,
-        })
+        }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
         const noKBResults = kbResults.length === 0
         const uncertainResponse =
@@ -136,7 +137,7 @@ ${kbContext || 'No specific documentation found for this query.'}${memoryContext
 
           // brokerage_id was missing — without it the escalation is invisible to every
           // brokerage-scoped admin view (smart_assistant_suggestions is a tenant table).
-          await supabase.from('smart_assistant_suggestions').insert({
+          await bestEffort(supabase.from('smart_assistant_suggestions').insert({
             agent_id: agentId,
             brokerage_id: brokerageId,
             title: 'Setup question needs admin review',
@@ -144,7 +145,7 @@ ${kbContext || 'No specific documentation found for this query.'}${memoryContext
             context_type: 'onboarding_setup',
             priority: 'medium',
             status: 'pending',
-          })
+          }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
           // Tell the brokerage's admins — the escalation previously reached no human (the suggestion
           // sat unscoped with no notification). Mirrors the onboarding-health cron's admin alert.

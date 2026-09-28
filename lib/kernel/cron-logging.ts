@@ -22,6 +22,7 @@
 // can identify any cron without touching individual cron files.
 // recordCronStart() becomes an UPDATE (not insert) on the same row.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
@@ -386,7 +387,7 @@ export async function recordCronSuccess(
 
     // Upsert cron_health_snapshot so health dashboard sees the latest run
     if (logEntry.cron_name) {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("cron_health_snapshot")
         .upsert({
           cron_name:              logEntry.cron_name,
@@ -397,8 +398,7 @@ export async function recordCronSuccess(
           last_records_processed: input.records_processed ?? logEntry.records_processed ?? 0,
           last_error_message:     null,
           updated_at:             completed_at,
-        }, { onConflict: "cron_name" })
-        .then(() => {}) // fire-and-forget; don't fail the cron
+        }, { onConflict: "cron_name" }), { table: "cron_health_snapshot", flow: "cron_health_snapshot_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" }) // fire-and-forget; don't fail the cron
     }
 
     try {
@@ -482,7 +482,7 @@ export async function recordCronFailure(
 
     // Upsert cron_health_snapshot with failure state
     if (logEntry.cron_name) {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("cron_health_snapshot")
         .upsert({
           cron_name:              logEntry.cron_name,
@@ -493,8 +493,7 @@ export async function recordCronFailure(
           last_records_processed: logEntry.records_processed ?? 0,
           last_error_message:     truncatedError,
           updated_at:             completed_at,
-        }, { onConflict: "cron_name" })
-        .then(() => {})
+        }, { onConflict: "cron_name" }), { table: "cron_health_snapshot", flow: "cron_health_snapshot_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
 
     try {

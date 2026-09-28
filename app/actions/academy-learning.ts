@@ -20,6 +20,7 @@
  * the caller's own ids — the same pattern as learning-modules.ts.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -138,10 +139,10 @@ export async function markModuleViewed(
     })
     if (error) return { ok: false, error: error.message }
   } else if (!existing.viewed_at && existing.status !== "completed") {
-    await svc
+    await sentinelWrite(svc, svc
       .from("learning_assignments")
       .update({ status: existing.status === "assigned" || !existing.status ? "viewed" : existing.status, viewed_at: new Date().toISOString() })
-      .eq("id", existing.id)
+      .eq("id", existing.id), { table: "learning_assignments", flow: "learning_assignments_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
 
   // Best-effort view counter (single canonical RPC).
@@ -204,18 +205,18 @@ export async function submitModuleQuiz(
     .eq("agent_user_id", ctx.userId)
     .maybeSingle()
   if (existing) {
-    await svc
+    await sentinelWrite(svc, svc
       .from("learning_assignments")
       .update({ ...progress, viewed_at: existing.viewed_at ?? nowIso })
-      .eq("id", existing.id)
+      .eq("id", existing.id), { table: "learning_assignments", flow: "learning_assignments_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   } else {
-    await svc.from("learning_assignments").insert({
+    await sentinelWrite(svc, svc.from("learning_assignments").insert({
       brokerage_id: ctx.brokerageId,
       module_id: moduleId,
       agent_user_id: ctx.userId,
       signal_source: "academy_self_serve",
       ...progress,
-    })
+    }), { table: "learning_assignments", flow: "learning_assignments_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
 
   // Certification — only for REQUIRED modules, only on a pass, idempotent.

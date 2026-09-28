@@ -12,6 +12,7 @@
  * an inbound message triggers a draft.  No new KernelEvents required.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { generateAIResponse }  from "@/lib/ai"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext }     from "@/lib/identity"
@@ -349,10 +350,10 @@ export async function acceptDraft(params: AcceptDraftParams): Promise<{ success:
   if (error) return { success: false, error: error.message }
 
   // Dismiss associated smart_assistant_suggestion
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("smart_assistant_suggestions")
     .update({ status: "dismissed" })
-    .contains("action_payload_json", `"draftId":"${params.draftId}"`)
+    .contains("action_payload_json", `"draftId":"${params.draftId}"`), { table: "smart_assistant_suggestions", flow: "smart_assistant_suggestions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   return { success: true }
 }
@@ -383,10 +384,10 @@ export async function rejectDraft(params: RejectDraftParams): Promise<{ success:
 
   if (error) return { success: false, error: error.message }
 
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("smart_assistant_suggestions")
     .update({ status: "dismissed" })
-    .contains("action_payload_json", `"draftId":"${params.draftId}"`)
+    .contains("action_payload_json", `"draftId":"${params.draftId}"`), { table: "smart_assistant_suggestions", flow: "smart_assistant_suggestions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   return { success: true }
 }

@@ -253,19 +253,19 @@ export function HandoffsCockpitClient({ contacts: initialContacts, agentId, brok
   async function handleDraftAction(draftId: string, action: "approve" | "dismiss") {
     const supabase = createClient()
 
-    if (action === "approve") {
-      await supabase
-        .from("ai_message_drafts")
-        .update({ status: "accepted", acted_at: new Date().toISOString() })
-        .eq("id", draftId)
-    } else {
-      await supabase
-        .from("ai_message_drafts")
-        .update({ status: "dismissed", acted_at: new Date().toISOString() })
-        .eq("id", draftId)
+    // Read + count, same as handleResumeAI below: an RLS-filtered update matches
+    // nothing with error null, and the card used to clear the draft regardless.
+    const { data: actedRows, error: actErr } = await supabase
+      .from("ai_message_drafts")
+      .update({ status: action === "approve" ? "accepted" : "dismissed", acted_at: new Date().toISOString() })
+      .eq("id", draftId)
+      .select("id")
+    if (actErr || (actedRows ?? []).length === 0) {
+      toast.error(actErr ? `The draft was not ${action === "approve" ? "approved" : "dismissed"}: ${actErr.message}` : "The draft was not updated — it is not editable from your account.")
+      return
     }
 
-    // Optimistically remove the pending draft from the card
+    // Remove the (now actually acted-on) pending draft from the card
     setContacts((prev) =>
       prev.map((c) =>
         c.pendingDraft?.id === draftId

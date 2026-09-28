@@ -702,13 +702,14 @@ export async function launchEsignEnvelope(input: {
     }
 
     // Update submission status
-    await supabase
+    const { error: sentForSigErr } = await supabase
       .from("form_submissions")
       .update({
         status:     "sent_for_signature",
         updated_at: new Date().toISOString(),
       })
       .eq("id", input.form_submission_id)
+    if (sentForSigErr) console.error(`[kernel/forms] submission NOT marked sent_for_signature: ${sentForSigErr.message}`)
 
     // Emit event
     // Audit row + reactor (integrator, 2026-09-03 — was a bare insert).

@@ -159,7 +159,7 @@ export async function buildISATools(ctx: ISAToolContext) {
         // lead_score >= 50) could never fire for conversation-scored leads: the
         // qualify→assign chain was starved.
         const tempScore = signalScore(signal)
-        await supabase
+        const { error: tempScoreErr } = await supabase
           .from("leads")
           .update({
             lead_temperature: signalTemperature(signal),
@@ -168,6 +168,7 @@ export async function buildISATools(ctx: ISAToolContext) {
           })
           .eq("id", ctx.leadId)
           .eq("brokerage_id", ctx.brokerageId)
+        if (tempScoreErr) console.error(`[ai-isa/tools] lead temperature/score NOT saved: ${tempScoreErr.message}`)
         const { error: qualificationActivityError } = await supabase.from("activities").insert({
           contact_id: null,
           entity_type: "lead",

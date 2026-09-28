@@ -13,6 +13,7 @@
 // /api/widget/session against a slug-resolved tenant, so there is no
 // caller-supplied identity left to trust.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from '@/lib/supabase/service'
 import { NextRequest, NextResponse } from 'next/server'
 import { queueContactEnrichment } from '@/lib/enrichment/contact-enrichment-core'
@@ -214,14 +215,14 @@ export async function POST(req: NextRequest) {
 
     // ── 4. Attach session to contact ────────────────────────────────────────
     // Keyed on the row already resolved above rather than re-matching the token.
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from('chat_sessions')
       .update({ contact_id: contactId, capture_state: 'captured', updated_at: new Date().toISOString() })
-      .eq('id', session.id)
+      .eq('id', session.id), { table: "chat_sessions", flow: "chat_sessions_write", reason: "session capture-state stamp; the contact is already captured" })
 
     // ── 5. Log consent event ─────────────────────────────────────────────────
     if (tcpa_consent) {
-      await supabase.from('contact_consent_events').insert({
+      const { error: widgetConsentErr } = await supabase.from('contact_consent_events').insert({
         contact_id: contactId,
         brokerage_id,
         agent_id: assignedAgentId,
@@ -232,6 +233,7 @@ export async function POST(req: NextRequest) {
         ip_address: ip_address ?? null,
         user_agent: user_agent ?? null,
       })
+      if (widgetConsentErr) console.error(`[widget-intake] TCPA consent NOT recorded on the consent ledger: ${widgetConsentErr.message}`)
     }
 
     // ── 6. Create activity record for audit trail ────────────────────────────
@@ -315,7 +317,7 @@ export async function POST(req: NextRequest) {
     // `lifecycle_events` is a different table with its own readers and belongs
     // to a different census than this wave's two; it is named rather than
     // silently changed.
-    await supabase.from('lifecycle_events').insert({
+    await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
       brokerage_id,
       event_type: isNewContact ? 'contact_created' : 'contact_updated',
       entity_type: 'contact',
@@ -329,7 +331,7 @@ export async function POST(req: NextRequest) {
         utm_medium: utm_medium ?? null,
         utm_campaign: utm_campaign ?? null,
       },
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return NextResponse.json({
       success: true,

@@ -1,5 +1,6 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
@@ -156,6 +157,6 @@ export async function recordCeCompletionFromProvider(
 
   const { data: all } = await svc.from("agent_ce_completions").select("hours").eq("agent_id", ctx.agentId).limit(500)
   const total = sumCeHours((all ?? []) as Array<{ hours: number | null }>)
-  await svc.from("agents").update({ ce_hours_completed: total }).eq("id", ctx.agentId)
+  await sentinelWrite(svc, svc.from("agents").update({ ce_hours_completed: total }).eq("id", ctx.agentId), { table: "agents", flow: "agent_ce_hours_cache", reason: "agents.ce_hours_completed is a derived cache of agent_ce_completions (the ledger, already written); recomputed on every completion" })
   return { recorded: true, ceHoursCompleted: total }
 }

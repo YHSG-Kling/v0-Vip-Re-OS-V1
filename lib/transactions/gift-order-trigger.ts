@@ -40,12 +40,13 @@ export async function checkAndTriggerGiftOrder(params: {
 
   // Create or update gift_ordered milestone
   if (existingGift) {
-    await supabase
+    const { error: giftMilestoneErr } = await supabase
       .from("transaction_milestones")
       .update({ status: 'pending' })
       .eq("id", existingGift.id)
+    if (giftMilestoneErr) console.error(`[gift-order] gift_ordered milestone NOT reset to pending: ${giftMilestoneErr.message}`)
   } else {
-    await supabase
+    const { error: giftMilestoneErr } = await supabase
       .from("transaction_milestones")
       .insert({
         transaction_id: params.transactionId,
@@ -56,6 +57,7 @@ export async function checkAndTriggerGiftOrder(params: {
         status: 'pending',
         target_date: null
       })
+    if (giftMilestoneErr) console.error(`[gift-order] gift_ordered milestone NOT created: ${giftMilestoneErr.message}`)
   }
 
   // Create TC activity — Agent task (correct location, no changes) — activity_type: tc.gift.order

@@ -176,8 +176,9 @@ export async function issuePortalInvite(
   if (existing) {
     if (existing.status === "revoked") return { success: false, error: "Invite revoked for this contact" }
     if (new Date(existing.expires_at) < now) {
-      await supabase.from("portal_contact_invites")
+      const { error: reviveErr } = await supabase.from("portal_contact_invites")
         .update({ status: "pending", expires_at: newExpiry }).eq("id", existing.id)
+      if (reviveErr) return { success: false, error: `Could not renew the expired invite: ${reviveErr.message}` }
     }
     inviteId = existing.id
   } else {
@@ -214,7 +215,8 @@ export async function issuePortalInvite(
     })
     if (!otpErr) {
       emailSent = true
-      await supabase.from("portal_contact_invites").update({ status: "sent" }).eq("id", inviteId)
+      const { error: sentStampErr } = await supabase.from("portal_contact_invites").update({ status: "sent" }).eq("id", inviteId)
+      if (sentStampErr) console.error(`[portal-invite] invite email sent but NOT marked sent: ${sentStampErr.message}`)
     }
   }
 

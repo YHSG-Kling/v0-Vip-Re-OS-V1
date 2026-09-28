@@ -14,6 +14,7 @@
 // the tenant's own creds; the whisper endpoints are gated by a shared token
 // (we set these URLs ourselves at dial time — nothing else may drive them).
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { InboundCallContext } from "./twilio-voice"
 
 const xmlEscape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
@@ -91,8 +92,8 @@ export async function startWarmBridge(svc: any, ctx: InboundCallContext, input: 
     if (!res.ok || !res.data?.sid) return false
 
     if (input.voiceCallId) {
-      await svc.from("voice_calls").update({ call_type: "warm_transfer", outcome: "warm_bridge_ringing" })
-        .eq("id", input.voiceCallId).then(undefined, () => {})
+      await sentinelWrite(svc, svc.from("voice_calls").update({ call_type: "warm_transfer", outcome: "warm_bridge_ringing" })
+        .eq("id", input.voiceCallId), { table: "voice_calls", flow: "warm_transfer_ringing", reason: "the bridge is already ringing; a lost outcome stamp is ledgered" })
     }
     return true
   } catch { return false }

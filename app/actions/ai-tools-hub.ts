@@ -1,5 +1,6 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { generateTextRouted as generateText, type RoutedUsage } from "@/lib/ai/models"
 import { calculateCost, type AIModel } from "@/lib/ai/cost-tracking"
@@ -982,10 +983,10 @@ export async function toggleToolFavorite(userId: string, toolName: string) {
     .maybeSingle()
   
   if (existing) {
-    await supabase.from("ai_tool_favorites").delete().eq("id", existing.id)
+    await bestEffort(supabase.from("ai_tool_favorites").delete().eq("id", existing.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     return { favorited: false }
   } else {
-    await supabase.from("ai_tool_favorites").insert({ user_id: userId, tool_name: toolName })
+    await bestEffort(supabase.from("ai_tool_favorites").insert({ user_id: userId, tool_name: toolName }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     return { favorited: true }
   }
 }

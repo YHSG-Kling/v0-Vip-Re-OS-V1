@@ -224,18 +224,19 @@ export async function ensureBuyerMoveCase(
     // Keep the buyer's task edits; just refresh the recommendation + friction from current state.
     const tasks = ((existing as any).tasks ?? []) as MoveTask[]
     const decision = decideBuyerMode({ tasks, daysToClose: dtc, buyerRequestedHelp: (existing as any).service_mode === "handoff" })
-    await svc.from("buyer_move_cases").update({
+    const { error: moveRefreshErr } = await svc.from("buyer_move_cases").update({
       recommended_mode: decision.recommended_mode,
       friction_score: decision.friction_score,
       closing_date: closingDate,
       updated_at: new Date().toISOString(),
     }).eq("id", (existing as any).id)
+    if (moveRefreshErr) console.error(`[buyer-move] move-case recommendation refresh NOT saved: ${moveRefreshErr.message}`)
     return { created: false, case: hydrate({ ...(existing as any), recommended_mode: decision.recommended_mode, friction_score: decision.friction_score, closing_date: closingDate }) }
   }
 
   const tasks = buildMoveInTasks(closingDate)
   const decision = decideBuyerMode({ tasks, daysToClose: dtc })
-  const { data: created } = await svc
+  const { data: created, error: createCaseErr } = await svc
     .from("buyer_move_cases")
     .insert({
       transaction_id: params.transactionId,
@@ -251,6 +252,7 @@ export async function ensureBuyerMoveCase(
     })
     .select("*")
     .maybeSingle()
+  if (createCaseErr) console.error(`[buyer-move] move case NOT created for transaction ${params.transactionId}: ${createCaseErr.message}`)
   return { created: !!created, case: created ? hydrate(created) : null }
 }
 
@@ -273,7 +275,7 @@ export async function updateMoveTask(
   const dtc = daysToClose((row as any).closing_date, params.now)
   const decision = decideBuyerMode({ tasks, daysToClose: dtc, buyerRequestedHelp: (row as any).service_mode === "handoff" })
   const allDone = tasks.every((t) => t.status === "done" || t.status === "skipped")
-  const { data: updated } = await svc
+  const { data: updated, error: taskSaveErr } = await svc
     .from("buyer_move_cases")
     .update({
       tasks: tasks as any,
@@ -285,6 +287,7 @@ export async function updateMoveTask(
     .eq("id", (row as any).id)
     .select("*")
     .maybeSingle()
+  if (taskSaveErr) console.error(`[buyer-move] move-case task update refused: ${taskSaveErr.message}`)
   return { ok: !!updated, case: updated ? hydrate(updated) : null }
 }
 

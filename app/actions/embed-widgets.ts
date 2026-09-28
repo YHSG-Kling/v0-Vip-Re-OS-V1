@@ -237,7 +237,8 @@ export async function deleteEmbed(id: string): Promise<{ ok: boolean; error?: st
     return { ok: false, error: "Forbidden" }
   }
 
-  await supabase.from("embed_widgets").delete().eq("id", id)
+  const { error: widgetDeleteErr } = await supabase.from("embed_widgets").delete().eq("id", id)
+  if (widgetDeleteErr) return { ok: false, error: `Could not delete the widget: ${widgetDeleteErr.message}` }
   revalidatePath("/dashboard/settings/embeds")
   return { ok: true }
 }

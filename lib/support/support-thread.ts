@@ -61,7 +61,7 @@ export async function postTicketReply(
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
   if (params.authorKind === "staff" && !(ticket as any).first_response_at) patch.first_response_at = new Date().toISOString()
   if (params.authorKind === "staff" && (ticket as any).status === "open") patch.status = "in_progress"
-  await svc.from("support_tickets").update(patch).eq("id", params.ticketId).then(undefined, () => {})
+  await sentinelWrite(svc, svc.from("support_tickets").update(patch).eq("id", params.ticketId), { table: "support_tickets", flow: "support_ticket_touch", reason: "first-response/status stamp; the message itself already landed" })
 
   // ── NOTIFY THE OTHER SIDE, AND WHO THAT IS DEPENDS ON THE LANE ─────────────
   // Before support_tickets carried a lane, an asking-side reply ALWAYS alerted

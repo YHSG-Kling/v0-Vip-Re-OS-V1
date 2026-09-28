@@ -329,7 +329,9 @@ export async function postReferralPayout(
     // under the m573 shape; the row posts with basis null, exactly like every
     // legacy percent-era row.
     delete payload.basis
-    ;({ data, error } = await svc.from("referral_payouts").insert(payload).select("id").single())
+    const retry = await svc.from("referral_payouts").insert(payload).select("id").single()
+    data = retry.data
+    error = retry.error
   }
   if (error) {
     const code = (error as { code?: string }).code

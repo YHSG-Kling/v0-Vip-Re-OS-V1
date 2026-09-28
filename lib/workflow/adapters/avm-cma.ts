@@ -64,7 +64,7 @@ export const avmCmaAdapter: ChannelAdapter = {
     }
 
     // Pending documents record so the variable graph can reference document_id
-    const { data: doc } = await supabase
+    const { data: doc, error: pendingDocErr } = await supabase
       .from("documents")
       .insert({
         brokerage_id: brokerageId,
@@ -76,14 +76,17 @@ export const avmCmaAdapter: ChannelAdapter = {
       })
       .select("id")
       .single()
+    // The report still generates without its pending row, but nothing will hold it.
+    if (pendingDocErr) console.error(`[avm-cma] pending ${reportType} document NOT created: ${pendingDocErr.message}`)
 
     const docId = doc?.id
 
     if (!propertyContext) {
       if (docId) {
-        await supabase.from("documents")
+        const { error: docCompleteErr } = await supabase.from("documents")
           .update({ status: "complete", content: "Insufficient property context to generate report." })
           .eq("id", docId)
+        if (docCompleteErr) console.error(`[avm-cma] report document NOT marked complete: ${docCompleteErr.message}`)
       }
       return {
         status: "sent",
@@ -144,10 +147,11 @@ export const avmCmaAdapter: ChannelAdapter = {
           }
           // tenant anchor (scope burn-down): pinned to the doc this run created
           // AND the workflow's brokerage.
-          await supabase.from("documents")
+          const { error: cmaDocErr } = await supabase.from("documents")
             .update(cmaDocUpdate)
             .eq("id", docId)
             .eq("brokerage_id", brokerageId)
+          if (cmaDocErr) console.error(`[avm-cma] CMA content NOT saved on the report document: ${cmaDocErr.message}`)
         }
 
         return {
@@ -185,7 +189,7 @@ export const avmCmaAdapter: ChannelAdapter = {
         } as any)
 
         if (docId) {
-          await supabase.from("documents")
+          const { error: avmDocErr } = await supabase.from("documents")
             .update({
               status: "complete",
               content: avm
@@ -196,6 +200,7 @@ export const avmCmaAdapter: ChannelAdapter = {
                 : { error: "no avm result" },
             })
             .eq("id", docId)
+          if (avmDocErr) console.error(`[avm-cma] AVM content NOT saved on the report document: ${avmDocErr.message}`)
         }
 
         return {
@@ -239,7 +244,8 @@ export const avmCmaAdapter: ChannelAdapter = {
       }
 
       if (docId) {
-        await supabase.from("documents").update({ status: "complete" }).eq("id", docId)
+        const { error: reportDoneErr } = await supabase.from("documents").update({ status: "complete" }).eq("id", docId)
+        if (reportDoneErr) console.error(`[avm-cma] market report document NOT marked complete: ${reportDoneErr.message}`)
       }
       return {
         status: "sent",
@@ -250,9 +256,10 @@ export const avmCmaAdapter: ChannelAdapter = {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       if (docId) {
-        await supabase.from("documents")
+        const { error: reportReviewErr } = await supabase.from("documents")
           .update({ status: "review", metadata: { error: msg } })
           .eq("id", docId)
+        if (reportReviewErr) console.error(`[avm-cma] report failure NOT recorded on the document: ${reportReviewErr.message}`)
       }
       return { status: "error", providerKey: "avm", error: msg }
     }

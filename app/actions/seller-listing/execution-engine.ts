@@ -20,6 +20,7 @@
  */
 // Agent task (correct location, no changes) — activity_type: seller.appointment.scheduled, seller.cma.started, seller.presentation.*, seller.decision.*, and all seller lifecycle events
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { auditListingDocuments } from "@/lib/compliance/required-documents"
@@ -302,14 +303,14 @@ export async function scheduleListingAppointment(params: {
   ]
 
   for (const sub of subEvents) {
-    await supabase.from("lifecycle_events").insert({
+    await bestEffort(supabase.from("lifecycle_events").insert({
       brokerage_id:  brokerageId,
       entity_type:   "listing_stage_machine",
       entity_id:     listingId,
       event_type:    sub.event_type,
       actor_user_id: userId,
       metadata:      sub.metadata,
-    })
+    }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
   }
 
   return { success: true }
@@ -1041,7 +1042,7 @@ export async function markAgreementSigned(params: {
     ],
     fallback: { subject: "Open house", body: ohFloor },
   })
-  await supabase.from("social_posts").insert({
+  const { error: ohSocialErr } = await supabase.from("social_posts").insert({
     brokerage_id:      brokerageId,
     listing_id:        listingId,
     user_id:           userId,
@@ -1055,9 +1056,10 @@ export async function markAgreementSigned(params: {
     created_at:        new Date().toISOString(),
     updated_at:        new Date().toISOString(),
   })
+  if (ohSocialErr) console.error(`[execution-engine] open-house social post NOT created: ${ohSocialErr.message}`)
 
   // INSERT open_house_events for open_house_event_date
-  await supabase.from("open_house_events").insert({
+  const { error: ohEventErr } = await supabase.from("open_house_events").insert({
     brokerage_id:          brokerageId,
     listing_id:            listingId,
     agent_id:              await resolveAgentId(supabase as any, userId),
@@ -1068,6 +1070,7 @@ export async function markAgreementSigned(params: {
     registration_required: false,
     created_at:            new Date().toISOString(),
   })
+  if (ohEventErr) console.error(`[execution-engine] open-house event NOT created for the listing: ${ohEventErr.message}`)
 
   // ── 7. transitionLifecycle + processKernelEvent ───────────────────────────
   await transitionLifecycle({
@@ -1298,14 +1301,14 @@ export async function markRepairFailed(params: {
   }
 
   // Sub-event: kernel event + lifecycle_events row
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
     entity_type:  "listing_stage_machine",
     entity_id:    listingId,
     event_type:   KernelEvent.LISTING_REPAIR_FAILED,
     actor_user_id: userId,
     metadata: { repair_id: repairId, reason },
-  })
+  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
   await processKernelEvent({
     event:      KernelEvent.LISTING_REPAIR_FAILED,
     brokerageId,
@@ -1356,14 +1359,14 @@ export async function scheduleMediaCapture(params: {
   }
 
   // Sub-event: kernel event + lifecycle_events row
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
     entity_type:  "listing_stage_machine",
     entity_id:    listingId,
     event_type:   KernelEvent.LISTING_MEDIA_SCHEDULED,
     actor_user_id: userId,
     metadata: { scheduled_date: scheduledDate, vendor_id: vendorId ?? null },
-  })
+  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
   await processKernelEvent({
     event:      KernelEvent.LISTING_MEDIA_SCHEDULED,
     brokerageId,
@@ -1809,14 +1812,14 @@ export async function submitToMLSAdmin(params: {
   }
 
   // Sub-event: kernel event + lifecycle_events row
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
     entity_type:  "listing_stage_machine",
     entity_id:    listingId,
     event_type:   KernelEvent.LISTING_MLS_SUBMITTED_TO_ADMIN,
     actor_user_id: userId,
     metadata: {},
-  })
+  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
   await processKernelEvent({
     event:      KernelEvent.LISTING_MLS_SUBMITTED_TO_ADMIN,
     brokerageId,
@@ -1933,14 +1936,14 @@ export async function activateMLS(params: {
   })
 
   // Sub-event within MLS_ACTIVE stage — no stage change → lifecycle_events
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     brokerage_id:  brokerageId,
     entity_type:   "listing_stage_machine",
     entity_id:     listingId,
     event_type:    "seller.listing.syndicated",
     actor_user_id: userId,
     metadata:      { mls_number: mlsNumber },
-  })
+  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   return { success: true }
 }
@@ -2103,14 +2106,14 @@ export async function recordShowingCompleted(params: {
   }
 
   // Sub-event: kernel event + lifecycle_events row
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
     entity_type:  "listing_stage_machine",
     entity_id:    listingId,
     event_type:   KernelEvent.LISTING_SHOWING_COMPLETED,
     actor_user_id: userId,
     metadata: { showing_id: showingId, feedback: feedback ?? null },
-  })
+  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
   await processKernelEvent({
     event:      KernelEvent.LISTING_SHOWING_COMPLETED,
     brokerageId,

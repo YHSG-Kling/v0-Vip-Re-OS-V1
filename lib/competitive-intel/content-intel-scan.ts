@@ -220,7 +220,8 @@ async function scanKeywordsForBrokerage(
 
   // Fresh scan replaces this source's prior rows (no unique index — pass-10
   // delete-then-insert; other sources' rows are untouched).
-  await svc.from("keyword_intelligence").delete().eq("brokerage_id", b.id).eq("source", "exa_content_scan")
+  const { error: kwClearErr } = await svc.from("keyword_intelligence").delete().eq("brokerage_id", b.id).eq("source", "exa_content_scan")
+  if (kwClearErr) console.error(`[content-intel-scan] prior keyword rows NOT cleared (duplicates possible): ${kwClearErr.message}`)
 
   let written = 0
   for (const niche of NICHES) {

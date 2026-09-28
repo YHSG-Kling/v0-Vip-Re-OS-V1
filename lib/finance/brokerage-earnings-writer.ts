@@ -87,7 +87,13 @@ export async function runBrokerageEarningsRollup(svc: Svc, now: Date = new Date(
 
       // No unique index exists on (brokerage_id, period_type) — pass-10 rule:
       // never point an onConflict at a unique that isn't there. Delete-then-insert.
-      await svc.from("brokerage_earnings").delete().eq("brokerage_id", b.id)
+      // A refused delete followed by the insert would DOUBLE this tenant's earnings
+      // rows (no unique to collapse them). Refused → skip, loudly.
+      const { error: earnClearErr } = await svc.from("brokerage_earnings").delete().eq("brokerage_id", b.id)
+      if (earnClearErr) {
+        console.error(`[brokerage-earnings] clear refused for ${b.id} — earnings NOT rewritten this run: ${earnClearErr.message}`)
+        continue
+      }
       const { error: earnErr } = await svc.from("brokerage_earnings").insert(periods.map((p) => ({
         brokerage_id: b.id,
         period_type: p.period_type,
@@ -100,6 +106,7 @@ export async function runBrokerageEarningsRollup(svc: Svc, now: Date = new Date(
         computed_at: now.toISOString(),
       })))
       if (!earnErr) out.rowsWritten += periods.length
+      else console.error(`[brokerage-earnings] insert refused for ${b.id}: ${earnErr.message}`)
 
       // brokerage_p_l — one row per month. Fold ONLY brokerage-scoped expenses
       // (agent_id NULL AND team_id NULL — owner rule: team financials never
@@ -126,7 +133,11 @@ export async function runBrokerageEarningsRollup(svc: Svc, now: Date = new Date(
       const totalExpenses = bucket.marketing + bucket.office + bucket.tech + bucket.operating
       const tracked = exp.length > 0
       const netProfit = m.net - (tracked ? totalExpenses : 0)
-      await svc.from("brokerage_p_l").delete().eq("brokerage_id", b.id).eq("period_label", monthLabel)
+      const { error: plClearErr } = await svc.from("brokerage_p_l").delete().eq("brokerage_id", b.id).eq("period_label", monthLabel)
+      if (plClearErr) {
+        console.error(`[brokerage-earnings] brokerage_p_l clear refused for ${b.id} — P&L NOT rewritten this run: ${plClearErr.message}`)
+        continue
+      }
       const { error: plErr } = await svc.from("brokerage_p_l").insert({
         brokerage_id: b.id,
         period_label: monthLabel,
@@ -141,6 +152,7 @@ export async function runBrokerageEarningsRollup(svc: Svc, now: Date = new Date(
         computed_at: now.toISOString(),
       })
       if (!plErr) out.rowsWritten++
+      else console.error(`[brokerage-earnings] brokerage_p_l insert refused for ${b.id}: ${plErr.message}`)
     } catch { /* per-brokerage isolation — one tenant's failure never blocks the fleet */ }
   }
   return out

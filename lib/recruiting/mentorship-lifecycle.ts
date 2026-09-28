@@ -8,6 +8,7 @@
 // end_date) so it doesn't linger. Reuses the gated proposal rail (nothing auto-sends); the matcher is
 // untouched. Pure cadence/graduation logic is unit-tested; the runner does the I/O.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
 
@@ -77,7 +78,7 @@ export async function runMentorshipLifecycle(
     // GRADUATION — mentee completed onboarding certification → end the pairing.
     const { data: ob } = await svc.from("agent_onboarding").select("certification_achieved").eq("agent_id", r.mentee_agent_id).maybeSingle()
     if (shouldGraduate(r.status, (ob as any)?.certification_achieved ?? null)) {
-      await svc.from("agent_mentor_relationships").update({ status: "completed", end_date: now.toISOString() }).eq("id", r.id)
+      await sentinelWrite(svc, svc.from("agent_mentor_relationships").update({ status: "completed", end_date: now.toISOString() }).eq("id", r.id), { table: "agent_mentor_relationships", flow: "agent_mentor_relationships_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       out.graduated++
       continue
     }

@@ -435,7 +435,7 @@ export async function GET(
         try {
           const { data: agentRow } = await supabase.from("agents").select("id").eq("user_id", stateData.userId).maybeSingle()
           if (agentRow?.id) {
-            await supabase
+            const { error: mirrorErr } = await supabase
               .from("agent_api_credentials")
               .upsert(
                 {
@@ -452,6 +452,10 @@ export async function GET(
                 },
                 { onConflict: "agent_id,service_name" }
               )
+            // The personal-email adapter sends from THIS row — a refused mirror
+            // means the agent's mail does not go from their mailbox. Non-fatal
+            // (the owner-scoped token is saved) but never silent.
+            if (mirrorErr) console.error(`[OAuth] agent-scoped mailbox credential NOT mirrored for agent ${agentRow.id}: ${mirrorErr.message}`)
           }
         } catch (agentCredErr) {
           console.error("[OAuth] Failed to mirror agent-scoped credential:", agentCredErr)
@@ -462,7 +466,7 @@ export async function GET(
       // Update brokerage_integrations + kernel event — TENANT connects only (a platform-scope
       // connect has no brokerage to anchor these to).
       if (stateData.brokerageId) {
-        await supabase
+        const { error: integrationStatusErr } = await supabase
           .from("brokerage_integrations")
           .upsert({
             brokerage_id: stateData.brokerageId,
@@ -475,6 +479,7 @@ export async function GET(
           }, {
             onConflict: "brokerage_id,provider_name",
           })
+        if (integrationStatusErr) console.error(`[OAuth] credentials stored but brokerage_integrations NOT marked connected: ${integrationStatusErr.message}`)
 
         // Fire kernel event
         await processKernelEvent({

@@ -330,7 +330,9 @@ export async function signupBrokerageAction(
             .maybeSingle()
           const existingBm = (bmRow as any)?.billing_metadata
           const bm = existingBm && typeof existingBm === "object" ? existingBm : {}
-          await service
+          // The checkout/billing rail applies the coupon FROM this bag — a refused
+          // merge means the discount is never applied, so it must not read "applied".
+          const { error: couponBagErr } = await service
             .from("brokerages")
             .update({
               billing_metadata: {
@@ -351,7 +353,12 @@ export async function signupBrokerageAction(
               updated_at: new Date().toISOString(),
             })
             .eq("id", brokerage.id)
-          couponApplied = { code: check.code, summary: check.summary }
+          if (couponBagErr) {
+            couponError = `Coupon redeemed but not attached to the account's billing record: ${couponBagErr.message}`
+            console.warn("[signupBrokerage] coupon billing_metadata merge refused:", couponBagErr.message)
+          } else {
+            couponApplied = { code: check.code, summary: check.summary }
+          }
         }
       }
     } catch (err) {
@@ -377,7 +384,7 @@ export async function signupBrokerageAction(
         .maybeSingle()
       const existingBm = (bmRow as any)?.billing_metadata
       const bm = existingBm && typeof existingBm === "object" ? existingBm : {}
-      await service
+      const { error: intentErr } = await service
         .from("brokerages")
         .update({
           billing_metadata: {
@@ -392,6 +399,7 @@ export async function signupBrokerageAction(
           updated_at: new Date().toISOString(),
         })
         .eq("id", brokerage.id)
+      if (intentErr) console.warn("[signupBrokerage] territory-zip carry refused (non-fatal):", intentErr.message)
     }
   } catch (err) { console.warn("[signupBrokerage] territory-zip carry failed (non-fatal):", (err as any)?.message) }
 

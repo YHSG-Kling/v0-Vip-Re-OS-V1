@@ -203,9 +203,10 @@ export const sendForEsignAdapter: ChannelAdapter = {
               transactionId: (document as any).transaction_id,
               recipientType: recipient,
             })
-            await supabase.from("documents")
+            const { error: esignReviewErr } = await supabase.from("documents")
               .update({ status: "review", metadata: { ...(document.metadata as any), esign_loop_id: result?.loopId } })
               .eq("id", documentId)
+            if (esignReviewErr) console.error(`[send-for-esign] loop created but the document was NOT moved to review: ${esignReviewErr.message}`)
             const packetRecorded = await recordSignaturePacket(supabase, {
               brokerageId, documentId,
               contactId: contact?.id ?? null,
@@ -240,9 +241,10 @@ export const sendForEsignAdapter: ChannelAdapter = {
               agentUserId,
               documentId,
             })
-            await supabase.from("documents")
+            const { error: esignReviewErr } = await supabase.from("documents")
               .update({ status: "review", metadata: { ...(document.metadata as any), esign_loop_id: result?.loopId } })
               .eq("id", documentId)
+            if (esignReviewErr) console.error(`[send-for-esign] loop created but the document was NOT moved to review: ${esignReviewErr.message}`)
             const packetRecorded = await recordSignaturePacket(supabase, {
               brokerageId, documentId,
               contactId: contact?.id ?? null,
@@ -356,7 +358,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
           }
         }
 
-        await supabase.from("documents")
+        const { error: esignReviewErr } = await supabase.from("documents")
           .update({
             status: "review",
             metadata: {
@@ -366,6 +368,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
             },
           })
           .eq("id", documentId)
+        if (esignReviewErr) console.error(`[send-for-esign] envelope sent but the document was NOT moved to review: ${esignReviewErr.message}`)
 
         let packetRecorded = false
         if (signers.length > 0) {
@@ -414,12 +417,13 @@ export const sendForEsignAdapter: ChannelAdapter = {
       }), { table: "notifications", flow: "esign_provider_manual_send_notify", brokerageId, reason: "the step already reports status:skipped; this is only the agent heads-up" })
     }
 
-    await supabase.from("documents")
+    const { error: manualEsignErr } = await supabase.from("documents")
       .update({
         status: "review",
         metadata: { ...(document.metadata as any), esign_provider: provider, esign_pending_manual: true },
       })
       .eq("id", documentId)
+    if (manualEsignErr) console.error(`[send-for-esign] manual-send flag NOT recorded on the document: ${manualEsignErr.message}`)
 
     return {
       status: "skipped",

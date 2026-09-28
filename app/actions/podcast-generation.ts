@@ -1,5 +1,6 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 // Was `import { put } from "@vercel/blob"`. Survivor:
@@ -210,13 +211,13 @@ export async function generatePodcastAudio(episodeId: string) {
     })
 
     // Update status to generating
-    await supabase
+    await bestEffort(supabase
       .from("podcast_episodes")
       .update({
         status: "generating",
         generation_started_at: new Date().toISOString(),
       })
-      .eq("id", episodeId)
+      .eq("id", episodeId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     // Break script into segments
     const segments = parseScriptIntoSegments(episode.script)
@@ -254,7 +255,7 @@ export async function generatePodcastAudio(episodeId: string) {
     const totalDuration = audioSegments.reduce((sum, seg) => sum + seg.duration, 0)
 
     // Update episode with final audio
-    const { data: completedEpisode } = await supabase
+    const { data: completedEpisode, error: episodeDoneErr } = await supabase
       .from("podcast_episodes")
       .update({
         audio_url: finalAudioUrl,
@@ -266,6 +267,7 @@ export async function generatePodcastAudio(episodeId: string) {
       .eq("id", episodeId)
       .select()
       .single()
+    if (episodeDoneErr) console.error(`[podcast-generation] episode NOT marked completed: ${episodeDoneErr.message}`)
 
     // ══════════════════════════════════════════════════════════════════════════
     // KERNEL: Process Episode Generated Event
@@ -289,13 +291,13 @@ export async function generatePodcastAudio(episodeId: string) {
     console.error("[v0] Error generating podcast audio:", error)
 
     // Update status to failed
-    await supabase
+    await bestEffort(supabase
       .from("podcast_episodes")
       .update({
         status: "failed",
         error_message: error.message,
       })
-      .eq("id", episodeId)
+      .eq("id", episodeId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     // ══════════════════════════════════════════════════════════════════════════
     // KERNEL: Process Episode Failed Event
@@ -557,7 +559,7 @@ export async function publishPodcastEpisode(
     // One log row per requested channel, all reflecting the single real syndication result.
     const distributionResults: { channel: string; success: boolean; error?: string }[] = []
     for (const channel of channels) {
-      const { data: logEntry } = await supabase
+      const { data: logEntry, error: distLogErr } = await supabase
         .from("podcast_distribution_log")
         .insert({
           brokerage_id: brokerageId,
@@ -567,10 +569,11 @@ export async function publishPodcastEpisode(
         })
         .select()
         .single()
+      if (distLogErr) console.error(`[podcast-generation] distribution log row NOT created: ${distLogErr.message}`)
 
       if (syndication.ok) {
         if (logEntry) {
-          await supabase
+          await bestEffort(supabase
             .from("podcast_distribution_log")
             .update({
               distribution_status: "published",
@@ -578,15 +581,15 @@ export async function publishPodcastEpisode(
               external_episode_id: syndication.episodeId,
               provider_response: { provider: "transistor", share_url: syndication.shareUrl ?? null },
             })
-            .eq("id", logEntry.id)
+            .eq("id", logEntry.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
         }
         distributionResults.push({ channel, success: true })
       } else {
         if (logEntry) {
-          await supabase
+          await bestEffort(supabase
             .from("podcast_distribution_log")
             .update({ distribution_status: "failed", error_message: syndication.error })
-            .eq("id", logEntry.id)
+            .eq("id", logEntry.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
         }
         distributionResults.push({ channel, success: false, error: syndication.error })
       }
@@ -1255,7 +1258,7 @@ ${(episode.script ?? "").slice(0, 1500)}`,
     })
     let teaserId: string | null = null
     try {
-      const { data: row } = await supabase
+      const { data: row, error: teaserErr } = await supabase
         .from("newsletter_teasers")
         .insert({
           brokerage_id: brokerageId,
@@ -1267,6 +1270,7 @@ ${(episode.script ?? "").slice(0, 1500)}`,
         })
         .select("id")
         .single()
+      if (teaserErr) console.error(`[podcast-generation] newsletter teaser NOT recorded: ${teaserErr.message}`)
       teaserId = row?.id ?? null
     } catch {
       teaserId = null

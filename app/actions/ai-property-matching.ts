@@ -183,9 +183,9 @@ Score each property 0-100 based on how well it matches the buyer's explicit pref
       generated_at: new Date().toISOString(),
     }))
 
-    await supabase.from("property_matches").upsert(matchInserts, {
+    await sentinelWrite(supabase, supabase.from("property_matches").upsert(matchInserts, {
       onConflict: "contact_id,property_id",
-    })
+    }), { table: "property_matches", flow: "property_matches_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
     revalidatePath(`/portal/${params.contactId}/matches`)
 

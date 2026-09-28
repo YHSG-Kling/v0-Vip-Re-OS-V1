@@ -33,6 +33,7 @@
  * router knows what's actually published where.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -240,7 +241,7 @@ export async function publishLearningModuleAction(
       successfulChannels.push(ch)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("learning_module_channel_publications")
         .upsert({
           module_id:     mod.id,
@@ -248,14 +249,14 @@ export async function publishLearningModuleAction(
           channel:       ch,
           status:        "failed",
           error_message: msg,
-        }, { onConflict: "module_id,channel" })
+        }, { onConflict: "module_id,channel" }), { table: "learning_module_channel_publications", flow: "learning_module_channel_publications_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       results.push({ channel: ch, status: "failed", error: msg })
     }
   }
 
   // Flip module to 'published' once at least one channel succeeded
   if (successfulChannels.length > 0) {
-    await supabase
+    const { error: modulePublishErr } = await supabase
       .from("learning_modules")
       .update({
         status:       "published",
@@ -264,6 +265,7 @@ export async function publishLearningModuleAction(
         updated_at:   new Date().toISOString(),
       })
       .eq("id", mod.id)
+    if (modulePublishErr) console.error(`[learning-modules] module NOT marked published: ${modulePublishErr.message}`)
   }
 
   revalidatePath("/dashboard/admin/learning-modules")

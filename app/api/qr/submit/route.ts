@@ -1,6 +1,7 @@
 // SYSTEM: QR Form Submit → Contact creation (Contact-first, Track B)
 // Form submission = TCPA consent. Creates contact via captureContact().
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { captureContact, resolveCapturedLanguage } from '@/lib/contact-pipeline/contact-capture'
@@ -107,10 +108,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     // ── Step 4: Increment lead_count only on new contact creation ─────────────
     if (action === 'created') {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from('qr_codes')
         .update({ lead_count: (qr.lead_count ?? 0) + 1 })
-        .eq('id', qr.id)
+        .eq('id', qr.id), { table: "qr_codes", flow: "qr_codes_write", reason: "QR lead counter (reporting)" })
 
       // Wave 36 — variant lead attribution. If this QR was attached to
       // a direct_mail_campaigns row that carried a variant_id, bump the
@@ -145,22 +146,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
             .eq('brokerage_id', qr.brokerage_id)
             .maybeSingle()
           if (existingOutcomes) {
-            await supabase
+            await sentinelWrite(supabase, supabase
               .from('direct_mail_variant_outcomes')
               .update({
                 leads_count: ((existingOutcomes.leads_count as number) ?? 0) + 1,
                 updated_at:  new Date().toISOString(),
               })
-              .eq('id', existingOutcomes.id)
+              .eq('id', existingOutcomes.id), { table: "direct_mail_variant_outcomes", flow: "direct_mail_variant_outcomes_write", reason: "variant analytics counter; the lead itself is captured above" })
           } else {
-            await supabase.from('direct_mail_variant_outcomes').insert({
+            await sentinelWrite(supabase, supabase.from('direct_mail_variant_outcomes').insert({
               variant_id:   c.variant_id,
               brokerage_id: qr.brokerage_id,
               sends_count:  0,
               scans_count:  0,
               leads_count:  1,
               updated_at:   new Date().toISOString(),
-            })
+            }), { table: "direct_mail_variant_outcomes", flow: "direct_mail_variant_outcomes_write", reason: "variant analytics counter; the lead itself is captured above" })
           }
         }
       } catch (e) {
@@ -215,10 +216,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       .maybeSingle()
 
     if (scanEvent) {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from('qr_scan_events')
         .update({ contact_id: contactId })
-        .eq('id', scanEvent.id)
+        .eq('id', scanEvent.id), { table: "qr_scan_events", flow: "qr_scan_events_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
 
     // ── Step 6: Emit lifecycle event + fan out ────────────────────────────────
@@ -226,13 +227,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // campaign_sequences with trigger_event='contact_captured' (so e.g.
     // a "QR-captured lead" nurture drip starts immediately) AND emits a
     // welcome portal message for the new contact.
-    await supabase.from('lifecycle_events').insert({
+    await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
       brokerage_id: qr.brokerage_id,
       entity_type: 'contact',
       entity_id: contactId,
       event_type: KernelEvent.CONTACT_CAPTURED,
       metadata: { source: 'qr_scan', slug, qrCodeId, action },
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     if (action === 'created') {
       try {

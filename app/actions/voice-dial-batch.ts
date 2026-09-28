@@ -64,9 +64,10 @@ export async function rejectDialBatchAction(batchId: string): Promise<{ ok: bool
   const ownsIt = (batch as any).proposed_by_agent_id && (batch as any).proposed_by_agent_id === actor.agentId
   if (!ownsIt && !actor.isManager) return { ok: false, error: "Forbidden — not your batch" }
 
-  const { data } = await svc.from("ai_isa_call_batches")
+  const { data, error: rejectErr } = await svc.from("ai_isa_call_batches")
     .update({ status: "rejected", approved_by: actor.userId, approved_at: new Date().toISOString() })
     .eq("id", batchId).eq("brokerage_id", actor.brokerageId).eq("status", "proposed").select("id").maybeSingle()
+  if (rejectErr) return { ok: false, error: `Could not reject the batch: ${rejectErr.message}` }
   revalidatePath("/dashboard/admin/voice-dial-batches")
   return { ok: !!data, error: data ? undefined : "not in proposed state" }
 }

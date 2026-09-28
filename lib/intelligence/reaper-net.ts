@@ -13,6 +13,7 @@
 // one registry, one runner, one ledger — instead of five copies hand-wired into
 // two crons. The crons now call runReaperNet() by lane.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 
@@ -201,7 +202,7 @@ export async function recordReaperRun(
   client?: Svc,
 ): Promise<void> {
   const svc = client ?? createServiceClient()
-  await svc.from("reaper_runs").insert({
+  await sentinelWrite(svc, svc.from("reaper_runs").insert({
     brokerage_id: row.brokerageId,
     domain: row.domain,
     manager: row.manager,
@@ -209,7 +210,7 @@ export async function recordReaperRun(
     escalated: row.escalated,
     reaped: row.reaped,
     detail: row.detail ?? null,
-  }).then(() => {}, () => {})
+  }), { table: "reaper_runs", flow: "reaper_runs_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 }
 
 export interface ReaperNetReport {

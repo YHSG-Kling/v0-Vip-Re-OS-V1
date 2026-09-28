@@ -32,6 +32,7 @@
 // credential row's `config` json — no new tables.
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { graphGet } from "@/lib/providers/meta/client"
 import {
@@ -152,10 +153,11 @@ export async function getPlatformSocialAccounts(svc: ServiceClient): Promise<Pla
   // Lazy seed: insert missing channels (unique(platform) makes races harmless).
   const missing = PLATFORM_SOCIAL_CHANNELS.filter((c) => !byChannel.has(c))
   if (missing.length > 0) {
-    const { data: seeded } = await svc
+    const { data: seeded, error: seedAccountsErr } = await svc
       .from("platform_social_accounts")
       .insert(missing.map((platform) => ({ platform })))
       .select("id, platform, account_name, status, credential_ref, connected_at, last_verified_at")
+    if (seedAccountsErr) console.error(`[platform-social] platform social accounts NOT seeded: ${seedAccountsErr.message}`)
     for (const r of (seeded ?? []) as any[]) byChannel.set(r.platform, r)
   }
 
@@ -630,9 +632,9 @@ export async function verifyPlatformChannel(svc: ServiceClient, channel: Platfor
   }
 
   const markError = async (error: string): Promise<VerifyResult> => {
-    await svc.from("platform_social_accounts")
+    await sentinelWrite(svc, svc.from("platform_social_accounts")
       .update({ status: "error", updated_at: new Date().toISOString() })
-      .eq("id", account.id)
+      .eq("id", account.id), { table: "platform_social_accounts", flow: "platform_social_accounts_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     return { ok: false, status: "error", error }
   }
 
@@ -655,7 +657,8 @@ export async function verifyPlatformChannel(svc: ServiceClient, channel: Platfor
   const nowIso = new Date().toISOString()
   const patch: Record<string, unknown> = { status: "connected", last_verified_at: nowIso, updated_at: nowIso }
   if (profile.name) patch.account_name = profile.name
-  await svc.from("platform_social_accounts").update(patch).eq("id", account.id)
+  const { error: verifiedErr } = await svc.from("platform_social_accounts").update(patch).eq("id", account.id)
+  if (verifiedErr) console.error(`[platform-social] verification result NOT saved (status stays stale): ${verifiedErr.message}`)
   if (profile.accountId) {
     // test_status/'pass' + the resolved provider account id ARE the verification
     // result. Written silently, a refusal meant Verify reported "connected"

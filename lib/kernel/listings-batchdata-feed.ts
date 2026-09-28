@@ -35,6 +35,7 @@
  * charter.
  */
 
+import { bestEffort } from "@/lib/db/best-effort"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { ingestRawSourceBatch } from "@/lib/kernel/scraping"
 import { isViableRecord } from "@/lib/lead-pipeline/raw-record-types"
@@ -295,10 +296,10 @@ export async function runIncrementalPropertySearchForMarket(
       // Token lacks `property-search-sessions` — record the downgrade and retry
       // once WITHOUT a session, so this run still produces the plain skip/take
       // page rather than coming back empty.
-      await supabase.from("batchdata_incremental_search_state").upsert(
+      await bestEffort(supabase.from("batchdata_incremental_search_state").upsert(
         { market_id: market.id, lane: params.lane, session_supported: false, last_error: pull.error, updated_at: new Date().toISOString() },
         { onConflict: "market_id,lane" },
-      )
+      ), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
       const fallback = await fetchIncrementalPropertySearch({
         quicklist: params.quicklist, city: market.city, state: market.state, take: 100,
       })
@@ -327,14 +328,14 @@ async function ingestIncrementalRecords(
     vendorName: "batchdata", usageType: "incremental_property_search", cost: pull.cost,
     brokerageId: market.brokerage_id, metadata: { market_id: market.id, lane },
   })
-  await supabase.from("batchdata_incremental_search_state").upsert(
+  await bestEffort(supabase.from("batchdata_incremental_search_state").upsert(
     {
       market_id: market.id, lane,
       page_cursor: nextPageCursor, results_found: pull.resultsFound,
       last_error: null, last_run_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     },
     { onConflict: "market_id,lane" },
-  )
+  ), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
   const records = pull.records
     .map((r) => ({

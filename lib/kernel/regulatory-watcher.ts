@@ -31,6 +31,7 @@
 // (change-signature, period) via the m224 upsert. NOT server-only — the simulator
 // imports it directly.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isoWeekTag } from "@/lib/kernel/commission-forecaster"
 
@@ -533,9 +534,9 @@ export async function runRegulatoryWatcher(
       if (escalated) {
         flagged.escalated = true
         result.escalated += 1
-        await supabase.from("reg_change_observations")
+        await sentinelWrite(supabase, supabase.from("reg_change_observations")
           .update({ escalated_at: now.toISOString() })
-          .eq("brokerage_id", brokerageId).eq("change_signature", sig).eq("period", period)
+          .eq("brokerage_id", brokerageId).eq("change_signature", sig).eq("period", period), { table: "reg_change_observations", flow: "reg_change_observations_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
         // REGULATORY → CURRICULUM AUTOPILOT — don't just warn, TRAIN: author a gated training module on
         // the change (idempotent per signature) so the learning-router pushes it to agents + brokers.

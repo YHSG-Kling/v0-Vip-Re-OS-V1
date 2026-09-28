@@ -264,14 +264,14 @@ export async function createLeadMagnet(
   }
 
   // 2. Log lifecycle event
-  await supabase.from("lifecycle_events").insert({
+  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
     entity_type: "lead_capture_form",
     entity_id: form.id,
     event_type: "lead_magnet_created",
     actor_user_id: input.createdBy,
     brokerage_id: input.brokerageId,
     metadata: { magnetType: input.magnetType, title: input.title },
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return {
     success: true,
@@ -313,10 +313,11 @@ export async function publishLeadMagnet(
   let shareCardUrl: string | undefined
 
   // Activate the form
-  await supabase
+  const { error: activateErr } = await supabase
     .from("lead_capture_forms")
     .update({ is_active: true })
     .eq("id", input.magnetId)
+  if (activateErr) return { success: false, error: `Could not activate the lead magnet: ${activateErr.message}` }
 
   // Create QR code if requested.
   // MERGED-THEN-DELETED: this used to be its own `qr_codes` insert with slug `lm-<formSlug>` and
@@ -378,14 +379,14 @@ export async function publishLeadMagnet(
   }
 
   // Log lifecycle event
-  await supabase.from("lifecycle_events").insert({
+  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
     entity_type: "lead_capture_form",
     entity_id: input.magnetId,
     event_type: "lead_magnet_published",
     actor_user_id: input.actorUserId,
     brokerage_id: input.brokerageId,
     metadata: { channels: input.channels, landingUrl, publishedAt },
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return {
     success: true,
@@ -733,7 +734,7 @@ export async function captureFormSubmission(
 
   // If it was a home valuation, create a valuation_request record
   if (data.property_address && contactId) {
-    await supabase.from("valuation_requests").insert({
+    const { error: valuationReqErr } = await supabase.from("valuation_requests").insert({
       brokerage_id: input.brokerageId,
       agent_id: form.agent_id,
       contact_id: contactId,
@@ -748,6 +749,7 @@ export async function captureFormSubmission(
       qualification_data: input.submissionData,
       submitted_at: submittedAt,
     })
+    if (valuationReqErr) console.error(`[lead-magnets] home-valuation request NOT recorded: ${valuationReqErr.message}`)
 
     // MANAGER-ORCHESTRATED — a valuation lead magnet (they gave us a property address) is strong
     // inbound seller intent. Hand it to the Listing Concierge over the bus for a gated precise-CMA
@@ -800,14 +802,14 @@ export async function captureFormSubmission(
   }
 
   // Log lifecycle event
-  await supabase.from("lifecycle_events").insert({
+  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
     entity_type: "form_submission",
     entity_id: submission.id,
     event_type: "form_submission_captured",
     actor_user_id: contactId ?? null,
     brokerage_id: input.brokerageId,
     metadata: { formId: input.formId, contactId, source: input.source },
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // Notify agent — non-fatal
   if (form.agent_id) {

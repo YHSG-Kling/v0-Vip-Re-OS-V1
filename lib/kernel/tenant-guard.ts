@@ -50,6 +50,7 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 
 // ─── Error class — DELETED ──────────────────────────────────────────────────
@@ -85,14 +86,14 @@ export async function logTenantFinding(input: {
 }): Promise<void> {
   try {
     const svc = createServiceClient()
-    await svc.from("tenant_safety_findings").insert({
+    await sentinelWrite(svc, svc.from("tenant_safety_findings").insert({
       scan_run_id:    input.scanRunId,
       finding_type:   input.findingType,
       table_name:     input.tableName,
       severity:       input.severity ?? "high",
       details:        input.details ?? {},
       affected_rows:  input.affectedRows ?? null,
-    })
+    }), { table: "tenant_safety_findings", flow: "tenant_guard_finding", reason: "a finding must never break the guarded path; a lost finding is ledgered for the repair digest" })
   } catch (err) {
     console.error("[tenant-guard] logTenantFinding failed (non-fatal):", err)
   }

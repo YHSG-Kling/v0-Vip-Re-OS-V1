@@ -1,5 +1,6 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
@@ -48,14 +49,14 @@ export async function saveWidgetSettings({
     .maybeSingle()
 
   if (agent?.brokerage_id) {
-    await service.from("lifecycle_events").insert({
+    await sentinelWrite(service, service.from("lifecycle_events").insert({
       brokerage_id: agent.brokerage_id,
       event_type: "widget_settings_updated",
       entity_type: "agent",
       entity_id: agentId,
       actor_user_id: user.id,
       metadata: { widget_enabled: enabled, widget_position: position },
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
   }
 
   revalidatePath("/dashboard/settings/widget")
@@ -129,14 +130,14 @@ export async function saveAIIdentity({
   }
 
   // Emit lifecycle event
-  await service.from("lifecycle_events").insert({
+  await sentinelWrite(service, service.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
     event_type: "ai_identity_updated",
     entity_type: agentId ? "agent" : "brokerage",
     entity_id: agentId ?? brokerageId,
     actor_user_id: user.id,
     metadata: { assistant_name: assistantName, tone, formality_level: formalityLevel },
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   revalidatePath("/dashboard/settings/widget")
   return { success: true }

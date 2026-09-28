@@ -109,7 +109,7 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
     console.log(`[LeadGovernance] Score calculated: ${scoringResult.finalScore}/100`)
 
     // STEP 3: UPDATE LEAD WITH SCORE — scoped to caller's brokerage
-    await supabase
+    const { error: scoreSaveErr } = await supabase
       .from('leads')
       .update({
         lead_score: scoringResult.finalScore,
@@ -117,6 +117,7 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
       })
       .eq('id', leadId)
       .eq('brokerage_id', brokerageId)
+    if (scoreSaveErr) console.error(`[LeadGovernance] lead score NOT saved: ${scoreSaveErr.message}`)
 
     // STEP 4: LOG SCORING EXPLANATION — Agent task (correct location, no changes) — activity_type: lead_scoring, agent_assignment, routing_decision, promotion_signal
     let agentAssigned: string | null = null
@@ -200,7 +201,7 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
         }
         console.log(`[LeadGovernance] Lead ${leadId} held for manual assignment`)
       } else if (selectedAgentId) {
-        await supabase
+        const { error: assignErr } = await supabase
           .from('leads')
           .update({
             agent_id: selectedAgentId,
@@ -210,6 +211,7 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
           })
           .eq('id', leadId)
           .eq('brokerage_id', brokerageId)
+        if (assignErr) console.error(`[LeadGovernance] lead assignment NOT saved: ${assignErr.message}`)
 
         agentAssigned = selectedAgentId
 

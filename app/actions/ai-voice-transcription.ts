@@ -171,7 +171,7 @@ Extract:
     // very_negative violated it and this insert was silently dropped. Map to
     // the CHECK vocabulary.
     const sentimentForDb = analysis.sentiment.replace(/^very_/, "")
-    const { data: savedAnalysis } = await supabase
+    const { data: savedAnalysis, error: analysisSaveErr } = await supabase
       .from("call_analyses")
       .insert({
         transcript_id: params.transcriptId,
@@ -198,6 +198,7 @@ Extract:
       })
       .select()
       .single()
+    if (analysisSaveErr) console.error(`[ai-voice-transcription] call analysis NOT saved: ${analysisSaveErr.message}`)
 
     // ── COACHING INSIGHTS — the projection this analysis never had ───────────
     // `coaching_opportunities` above is a jsonb blob on the analysis row, and
@@ -246,7 +247,8 @@ Extract:
         source: "call_analysis",
       }))
 
-      await supabase.from("tasks").insert(tasks)
+      const { error: callTasksErr } = await supabase.from("tasks").insert(tasks)
+      if (callTasksErr) console.error(`[ai-voice-transcription] follow-up tasks from the call analysis NOT created: ${callTasksErr.message}`)
     }
 
     // Log compliance flags if any

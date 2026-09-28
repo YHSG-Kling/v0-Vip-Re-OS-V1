@@ -16,6 +16,7 @@
  *
  * Auth: CRON_SECRET.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { apifyToken } from "@/lib/env/aliases"
@@ -107,7 +108,7 @@ export async function GET(req: NextRequest) {
           geo_relevance:    cfg.geo_relevance ?? null,
         }
         if (existing.data) {
-          await svc.from("content_topic_bank")
+          await sentinelWrite(svc, svc.from("content_topic_bank")
             .update({
               engagement_score: row.engagement_score,
               raw_data:         row.raw_data,
@@ -116,7 +117,7 @@ export async function GET(req: NextRequest) {
               value_angle:      row.value_angle,
               geo_relevance:    row.geo_relevance,
             })
-            .eq("id", (existing.data as { id: string }).id)
+            .eq("id", (existing.data as { id: string }).id), { table: "content_topic_bank", flow: "content_topic_bank_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
           updated++
         } else {
           const ins = await svc.from("content_topic_bank").insert(row)

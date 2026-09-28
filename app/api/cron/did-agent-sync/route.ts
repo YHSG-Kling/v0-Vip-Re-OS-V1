@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
@@ -114,9 +115,9 @@ export async function GET(request: Request) {
       if (result.ok) { synced++; continue }
       if (result.error === "NOT_FOUND") {
         notFoundCleared++
-        await svc.from("agent_voice_profiles")
+        await sentinelWrite(svc, svc.from("agent_voice_profiles")
           .update({ did_agent_id: null, updated_at: new Date().toISOString() })
-          .eq("agent_id", row.agent_id).then(undefined, () => {})
+          .eq("agent_id", row.agent_id), { table: "agent_voice_profiles", flow: "agent_voice_profiles_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
         continue
       }
       failed++

@@ -75,6 +75,7 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { didRequest } from "./gateway"
 import { classifyDidError } from "./contract"
@@ -337,12 +338,12 @@ export async function ensureDIDAgent(
       .update({ did_agent_id: didAgentId, updated_at: new Date().toISOString() })
       .eq("id", params.twinId)
   } else {
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("agent_voice_profiles")
       .upsert(
         { agent_id: params.agentId, did_agent_id: didAgentId },
         { onConflict: "agent_id" },
-      )
+      ), { table: "agent_voice_profiles", flow: "agent_voice_profiles_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
 
   return {

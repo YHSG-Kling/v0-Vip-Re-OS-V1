@@ -13,6 +13,7 @@
  *   7. Qualification signal evaluation
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { generateTextRouted as generateText } from '@/lib/ai/models'
 import { createServiceClient } from '@/lib/supabase/service'
 import { shouldStopAutoResponding, haltEngagementForNegativeReply } from '@/lib/ai-isa/conversation-handler'
@@ -527,7 +528,7 @@ export async function processInboundEmail(params: {
   // ai_isa_activities (lead_id, outcome 'replied' — the unified inbox's lead
   // lane reads these as the lead's inbound turns) and the most recent email
   // send is stamped replied (isa_outreach_log's designed semantic).
-  await supabase.from('ai_isa_activities').insert({
+  await sentinelWrite(supabase, supabase.from('ai_isa_activities').insert({
     brokerage_id: lead.brokerage_id,
     lead_id: params.leadId,
     contact_id: null, // leads are NOT contacts
@@ -536,7 +537,7 @@ export async function processInboundEmail(params: {
     outcome: 'replied',
     summary: `${params.subject} — ${params.body}`.slice(0, 500),
     created_at: new Date().toISOString(),
-  }).then(() => null, () => null)
+  }), { table: "ai_isa_activities", flow: "ai_isa_activities_write", reason: "inbound-turn echo for the unified inbox; the reply itself is processed regardless" })
   const { data: lastSend } = await supabase
     .from('isa_outreach_log')
     .select('id')
@@ -546,10 +547,9 @@ export async function processInboundEmail(params: {
     .limit(1)
     .maybeSingle()
   if (lastSend) {
-    await supabase.from('isa_outreach_log')
+    await sentinelWrite(supabase, supabase.from('isa_outreach_log')
       .update({ status: 'replied', replied_at: new Date().toISOString() })
-      .eq('id', lastSend.id)
-      .then(() => null, () => null)
+      .eq('id', lastSend.id), { table: "isa_outreach_log", flow: "isa_outreach_log_write", reason: "replied stamp on the last send (reporting)" })
   }
 
   // ── Send reply via kernel dispatch ───────────────────────��───────�����────────

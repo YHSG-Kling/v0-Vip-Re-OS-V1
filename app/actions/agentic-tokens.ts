@@ -5,6 +5,7 @@
 // Minting returns the RAW token exactly once (only its sha256 is stored). Scopes
 // follow the AGIS action model (e.g. "valuation:read", "lead:read", or "*"). Audit-logged.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateAgentToken, hashAgentToken } from "@/lib/agentic-os/agent-credentials"
 import { requireSuperadmin } from "@/lib/auth/platform-guard"
@@ -42,9 +43,9 @@ import { requirePlatformCapability } from "@/lib/platform/require-capability"
 //     not "the gate is wider".
 
 function audit(svc: ReturnType<typeof createServiceClient>, actor: { userId: string; email: string }, action: string, details: Record<string, unknown>) {
-  void svc.from("superadmin_audit_log").insert({
+  void sentinelWrite(svc, svc.from("superadmin_audit_log").insert({
     actor_user_id: actor.userId, actor_email: actor.email, action, target_type: "agent_credentials", details,
-  }).then(() => {}, () => {})
+  }), { table: "superadmin_audit_log", flow: "agentic_token_audit", reason: "audit echo of a token action that already completed" })
 }
 
 /** Mint a new agentic-API token. Returns the raw token ONCE. Superadmin only. */

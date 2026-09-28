@@ -131,7 +131,7 @@ export async function produceClientDocument(
     // which is why the opposite-missing census cannot see the term and reports
     // the column as read by nobody. Deleting it would hand every agent the whole
     // brokerage's client PDFs (§4). Nothing to build and nothing to delete (§1).
-    const { data: doc } = await svc.from("generated_documents").insert({
+    const { data: doc, error: genDocErr } = await svc.from("generated_documents").insert({
       brokerage_id: params.brokerageId,
       agent_id: docAgentId,
       contact_id: params.contactId ?? null,
@@ -148,6 +148,9 @@ export async function produceClientDocument(
       metadata: { ...(params.metadata ?? {}), title: params.spec.title },
     }).select("id").single()
 
+    // The PDF is stored (pdfUrl), but a refused ledger row means it never appears
+    // in the agent's library — report it instead of a clean ok.
+    if (genDocErr) return { ok: false, documentId: null, pdfUrl, error: `PDF stored but not recorded in the document library: ${genDocErr.message}` }
     return { ok: true, documentId: (doc as { id: string } | null)?.id ?? null, pdfUrl, error: null }
   } catch (e) {
     return { ok: false, documentId: null, pdfUrl: null, error: e instanceof Error ? e.message : String(e) }

@@ -1,3 +1,4 @@
+import { bestEffort } from "@/lib/db/best-effort"
 import { generateAIResponse } from "@/lib/ai"
 import { createClient } from "@/lib/supabase/server"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -138,7 +139,7 @@ Return ONLY a valid JSON object with this exact schema (no markdown, no commenta
 
   // Update seller_net_estimate on each offer row
   for (const o of enriched) {
-    await supabase
+    const { error: netEstimateErr } = await supabase
       .from("offers")
       .update({
         seller_net_estimate: o.net_to_seller,
@@ -147,6 +148,7 @@ Return ONLY a valid JSON object with this exact schema (no markdown, no commenta
         updated_at: new Date().toISOString(),
       })
       .eq("id", o.id)
+    if (netEstimateErr) console.error(`[offer-analyzer] seller net estimate NOT saved on offer: ${netEstimateErr.message}`)
   }
 
   // ── PERSIST THE COMPARISON ───────────────────────────────────────────────
@@ -228,7 +230,7 @@ Return ONLY a valid JSON object with this exact schema (no markdown, no commenta
   const comparisonId = (compRow as { id: string } | null)?.id ?? null
 
   // lifecycle_events + kernel event
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
     entity_type: "listing_stage_machine",
     entity_id: listingId,
@@ -242,7 +244,7 @@ Return ONLY a valid JSON object with this exact schema (no markdown, no commenta
       // to the row instead of re-deriving "latest for this listing".
       comparison_id: comparisonId,
     },
-  })
+  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   await processKernelEvent({
     event: KernelEvent.OFFER_COMPARISON_GENERATED,

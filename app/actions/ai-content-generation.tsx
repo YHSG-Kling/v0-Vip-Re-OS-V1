@@ -1440,7 +1440,7 @@ export async function generateBlogPost(params: {
     const result = parseAIJsonResponse(response.text)
     const generationTime = Date.now() - startTime
 
-    const { data: savedContent } = await supabase
+    const { data: savedContent, error: savedContentErr } = await supabase
       .from("ai_generated_content")
       .insert({
         agent_id: params.agentId,
@@ -1454,6 +1454,7 @@ export async function generateBlogPost(params: {
       })
       .select()
       .single()
+    if (savedContentErr) console.error(`[ai-content] generated blog post NOT saved: ${savedContentErr.message}`)
 
     // The keywords used are already stored on the content row above
     // (ai_generated_content.seo_keywords). The previous per-keyword insert into the seo_keywords
@@ -3960,7 +3961,7 @@ export async function saveDescriptionToListing(params: {
   }
 
   // 2. Mark the ai_generated_content record as approved — same scope.
-  await supabase
+  const { error: approveContentErr } = await supabase
     .from("ai_generated_content")
     .update({
       compliance_approved: true,
@@ -3969,6 +3970,7 @@ export async function saveDescriptionToListing(params: {
     })
     .eq("id", params.contentId)
     .eq("brokerage_id", ctx.brokerageId)
+  if (approveContentErr) console.error(`[ai-content] content approval NOT recorded on ai_generated_content: ${approveContentErr.message}`)
 
   revalidatePath(`/dashboard/listings/${params.listingId}`)
   revalidatePath(`/dashboard/listings/${params.listingId}/lifecycle`)

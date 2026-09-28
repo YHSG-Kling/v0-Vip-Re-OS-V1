@@ -177,13 +177,18 @@ export async function maybeSendVendorW9Reminder(
   // being claimable, so a concurrent caller loses the race instead of
   // double-sending.
   const cutoffIso = new Date(now.getTime() - W9_REMINDER_PERIOD_DAYS * 86_400_000).toISOString()
-  const { data: claimed } = await svc
+  const { data: claimed, error: claimErr } = await svc
     .from("vendor_tax_documents")
     .update({ reminder_last_sent_at: now.toISOString(), updated_at: now.toISOString() })
     .eq("vendor_id", args.vendorId)
     .eq("brokerage_id", args.brokerageId)
     .or(`reminder_last_sent_at.is.null,reminder_last_sent_at.lt.${cutoffIso}`)
     .select("id")
+  // A REFUSED claim is not a lost race — say which one it was (still no send).
+  if (claimErr) {
+    console.error(`[w9] reminder claim refused for vendor ${args.vendorId}: ${claimErr.message}`)
+    return { sent: false, reason: "unavailable" }
+  }
   if (!claimed || claimed.length === 0) return { sent: false, reason: "claim_lost" }
 
   try {

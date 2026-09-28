@@ -11,6 +11,7 @@
 //
 // Pure prompt/guard is testable; answerTutorQuestion takes an injectable generator so tests spend no tokens.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { createServiceClient } from "@/lib/supabase/service"
 import { isLifetimeCustomerType } from "@/lib/contact-types"
 type Svc = ReturnType<typeof createServiceClient>
@@ -137,15 +138,16 @@ export async function answerTutorQuestion(
 
   // Log the turn (feeds the question→curriculum loop). Best-effort; never blocks the answer.
   try {
-    const { data: session } = await svc.from("chat_sessions").insert({
+    const { data: session, error: tutorSessionErr } = await svc.from("chat_sessions").insert({
       brokerage_id: brokerageId, contact_id: input.contactId, session_type: "portal_widget", source: "education_tutor", status: "active",
     }).select("id").single()
+    if (tutorSessionErr) console.error(`[client-tutor] tutor session NOT created (the turn will not be logged): ${tutorSessionErr.message}`)
     const sid = (session as any)?.id
     if (sid) {
-      await svc.from("chat_messages").insert([
+      await sentinelWrite(svc, svc.from("chat_messages").insert([
         { session_id: sid, role: "user", content: question },
         { session_id: sid, role: "assistant", content: answer },
-      ])
+      ]), { table: "chat_messages", flow: "chat_messages_write", reason: "turn log for the curriculum loop; the answer is returned regardless" })
     }
   } catch { /* logging best-effort */ }
 

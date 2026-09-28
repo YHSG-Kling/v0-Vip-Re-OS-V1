@@ -1,3 +1,4 @@
+import { bestEffort } from "@/lib/db/best-effort"
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -147,7 +148,7 @@ export async function POST(request: NextRequest) {
 
       // Insert any errors
       if (errors.length > 0) {
-        await supabase.from("sync_errors").insert(
+        await bestEffort(supabase.from("sync_errors").insert(
           errors.map((e) => ({
             sync_log_id: syncLog.id,
             brokerage_id: profile.brokerage_id,
@@ -157,11 +158,11 @@ export async function POST(request: NextRequest) {
             error_message: e.error_message,
             created_at: new Date().toISOString(),
           }))
-        )
+        ), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
       }
 
       // Update sync log with results
-      await supabase
+      await bestEffort(supabase
         .from("accounting_sync_log")
         .update({
           status: recordsFailed > 0 ? "completed_with_errors" : "completed",
@@ -170,7 +171,7 @@ export async function POST(request: NextRequest) {
           completed_at: new Date().toISOString(),
           error_summary: recordsFailed > 0 ? `${recordsFailed} records failed to sync` : null,
         })
-        .eq("id", syncLog.id)
+        .eq("id", syncLog.id), "closes the sync log row; the records themselves already synced (or failed) and are counted in the response")
 
       // Kernel event for sync completed — audit row + reactor.
       await emitKernelEvent({
@@ -195,14 +196,14 @@ export async function POST(request: NextRequest) {
       })
     } catch (syncError) {
       // Update sync log with failure
-      await supabase
+      await bestEffort(supabase
         .from("accounting_sync_log")
         .update({
           status: "failed",
           completed_at: new Date().toISOString(),
           error_summary: syncError instanceof Error ? syncError.message : "Unknown error",
         })
-        .eq("id", syncLog.id)
+        .eq("id", syncLog.id), "marks the sync log failed on the error path; the response already reports the failure")
 
       return NextResponse.json({
         success: false,

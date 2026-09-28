@@ -1,5 +1,6 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { parseStorageObjectUrl } from "@/lib/storage/parse-object-url"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -192,16 +193,16 @@ Provide detailed analysis including document type classification, key informatio
     })
 
     // Update transaction_documents with extracted_data and classification_confidence
-    await supabase
+    await bestEffort(supabase
       .from("transaction_documents")
       .update({ 
         extracted_data: analysis,
         classification_confidence: analysis.confidenceScore,
       })
-      .eq("id", documentId)
+      .eq("id", documentId), "AI extraction annotations; the analysis is returned to the caller")
 
     // Insert into document_extraction_log
-    await supabase.from("document_extraction_log").insert({
+    await bestEffort(supabase.from("document_extraction_log").insert({
       transaction_doc_id: documentId,
       transaction_id: document.transaction_id,
       brokerage_id: document.brokerage_id,
@@ -211,7 +212,7 @@ Provide detailed analysis including document type classification, key informatio
       raw_text: JSON.stringify(analysis.keyInformation),
       processing_status: "completed",
       processed_at: new Date().toISOString(),
-    })
+    }), "extraction log row for an analysis already returned")
 
     // Log activity — POST-AUTHORIZATION AUDIT WRITE, service client on purpose
     // (m483): the gate above (getAgentContext + tenant check on the document) is
@@ -569,13 +570,13 @@ Use simple language, avoid jargon, and be reassuring.`,
     // For transaction documents this would work properly
 
     // Step 6: Update client_documents record
-    await supabase
+    await bestEffort(supabase
       .from("client_documents")
       .update({
         doc_category: classification.document_type,
         document_type: classification.document_type,
       })
-      .eq("id", documentId)
+      .eq("id", documentId), "classification annotation on the uploaded document; the classification is returned to the caller")
 
     // Step 7: For contract document types — run state-specific signature compliance scan
     // Plan FIX 0B/J10: when any contract is uploaded, scan for signature/initial completeness per state requirements
@@ -666,7 +667,7 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
 
         // Persist scan as a row in compliance_checks (table created by migration 565)
         // Schema: id, contract_review_id (nullable), check_type, status, findings JSONB
-        await supabase
+        await bestEffort(supabase
           .from("compliance_checks")
           .insert({
             check_type: "signature_completeness",
@@ -688,8 +689,7 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
               state: brokerageState,
               source: "client_document_upload",
             } as any,
-          })
-          .then(() => {}, (err) => console.error("[v0] compliance_checks insert error:", err))
+          }), "persisted copy of a signature scan whose result is returned to the caller in the same response")
 
         // Activity log entry — surfaces issues to agent. POST-AUTHORIZATION
         // AUDIT WRITE, service client on purpose (m483): this function runs in

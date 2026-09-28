@@ -17,6 +17,7 @@
  *      (cost_per_lead, leads) — NEVER vanity metrics (impressions, ctr). The pure
  *      evaluator encodes this so it is auditable + unit-tested.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 
 // ── Hard guardrails (server-enforced) ───────────────────────────────────────
@@ -243,12 +244,13 @@ export interface AdActionResult { status: "succeeded" | "failed" | "skipped"; re
  *  between claim and completion. */
 export async function executeAdManagerAction(actionId: string, approverUserId: string): Promise<AdActionResult> {
   const svc = createServiceClient()
-  const { data: claimed } = await svc.from("ad_manager_actions")
+  const { data: claimed, error: actionClaimErr } = await svc.from("ad_manager_actions")
     .update({ status: "executing", approved_at: new Date().toISOString(), approved_by: approverUserId })
     .eq("id", actionId)
     .in("status", ["proposed", "approved"])
     .select("brokerage_id, action_type, action_input")
     .single()
+  if (actionClaimErr) console.error(`[ad-manager] action claim refused: ${actionClaimErr.message}`)
   if (!claimed) return { status: "skipped", result: { reason: "not in proposed/approved state" } }
   const row = claimed as { brokerage_id: string; action_type: string; action_input: Record<string, unknown> }
 
@@ -258,7 +260,8 @@ export async function executeAdManagerAction(actionId: string, approverUserId: s
   } catch (e) {
     outcome = { status: "failed", result: { error: (e as Error).message } }
   }
-  await svc.from("ad_manager_actions").update({ status: outcome.status, result: outcome.result, executed_at: new Date().toISOString() }).eq("id", actionId)
+  const { error: actionOutcomeErr } = await svc.from("ad_manager_actions").update({ status: outcome.status, result: outcome.result, executed_at: new Date().toISOString() }).eq("id", actionId)
+  if (actionOutcomeErr) console.error(`[ad-manager] action outcome NOT recorded: ${actionOutcomeErr.message}`)
   return outcome
 }
 
@@ -360,13 +363,18 @@ async function runAdHandler(
       // Store the assembled provider structure; flip to 'launching'. The publisher
       // (ad-publish, async) makes the real Meta/Google create calls and flips to live.
       const assembled = assembleAd(asm.input)
-      await svc.from("ad_campaigns").update({ status: "launching", targeting_config: { ...(campaign.targeting_config ?? {}), assembled_ad: assembled.meta ?? assembled.google } }).eq("id", campaignId)
-      await svc.from("lifecycle_events").insert({ brokerage_id: brokerageId, entity_type: "ad_campaign", entity_id: campaignId, event_type: "ad_campaign_launched", actor_user_id: null, metadata: { via: "ads_manager" } })
+      // A refused flip used to report "succeeded" while the campaign never reached
+      // the publisher's 'launching' queue.
+      const { error: launchErr } = await svc.from("ad_campaigns").update({ status: "launching", targeting_config: { ...(campaign.targeting_config ?? {}), assembled_ad: assembled.meta ?? assembled.google } }).eq("id", campaignId)
+      if (launchErr) return { status: "failed", result: { error: `ad campaign launch refused: ${launchErr.message}` } }
+      await sentinelWrite(svc, svc.from("lifecycle_events").insert({ brokerage_id: brokerageId, entity_type: "ad_campaign", entity_id: campaignId, event_type: "ad_campaign_launched", actor_user_id: null, metadata: { via: "ads_manager" } }), { table: "lifecycle_events", flow: "ad_campaign_launched_echo", brokerageId, reason: "lifecycle echo after the launch flip landed" })
       return { status: "succeeded", result: { campaign_id: campaignId, status: "launching", validated: true } }
     }
     case "pause_ad_campaign": {
       if (!["live", "launching"].includes(campaign.status)) return { status: "skipped", result: { reason: `campaign is ${campaign.status}, nothing to pause` } }
-      await svc.from("ad_campaigns").update({ status: "paused" }).eq("id", campaignId)
+      // A refused pause reported "succeeded" while the campaign kept SPENDING.
+      const { error: pauseErr } = await svc.from("ad_campaigns").update({ status: "paused" }).eq("id", campaignId)
+      if (pauseErr) return { status: "failed", result: { error: `ad campaign pause refused: ${pauseErr.message}` } }
       return { status: "succeeded", result: { campaign_id: campaignId, status: "paused" } }
     }
     case "shift_ad_budget":
@@ -376,7 +384,8 @@ async function runAdHandler(
       // HARD CAP enforced at execution — clamp to the ceiling + scale limit even if
       // the proposal (or an edited approval) asked for more.
       const applied = clampDailyBudget(requested, currentDaily)
-      await svc.from("ad_campaigns").update({ daily_budget: applied }).eq("id", campaignId)
+      const { error: budgetErr } = await svc.from("ad_campaigns").update({ daily_budget: applied }).eq("id", campaignId)
+      if (budgetErr) return { status: "failed", result: { error: `ad budget change refused: ${budgetErr.message}` } }
       return { status: "succeeded", result: { campaign_id: campaignId, requested_daily_budget: requested, applied_daily_budget: applied, capped: applied < requested } }
     }
     default:

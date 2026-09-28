@@ -4,6 +4,7 @@
 // BODY census round 3, 2026-09-09. Its only reader here (the newsletter writer) moved to
 // lib/kernel/content-creators.ts authorNewsletterContent in wave 85F, which imports it.
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { LIFETIME_CUSTOMER_SEGMENT } from "@/lib/contact-types"
 import { generateObject } from "@/lib/ai/generate"
@@ -645,24 +646,25 @@ export async function sendNewsletter(params: { newsletterId: string; agentId?: s
         // a literal null: nothing to merge. The one live template_id writer is
         // the workflow-OS path below (queueNewsletterForContact), where the row
         // has no campaign and the template is its only content source.
-        await supabase.from("newsletter_sends").insert({
+        await bestEffort(supabase.from("newsletter_sends").insert({
           brokerage_id:        sessionBrokerageId,
           campaign_id:         params.newsletterId,
           contact_id:          subscriber.contact_id ?? null,
           status,
           provider_message_id: result.messageId ?? null,
           sent_at:             status === "sent" ? new Date().toISOString() : null,
-        })
+        }), "per-recipient send row after the dispatch already happened")
       } catch { /* per-recipient log failure shouldn't block remaining recipients */ }
     }
 
     const sendRecord = { id: null as string | null }
 
-    await supabase
+    const { error: nlSentErr } = await supabase
       .from("newsletter_campaigns")
       .update({ status: "sent" })
       .eq("id", params.newsletterId)
       .eq("brokerage_id", sessionBrokerageId)
+    if (nlSentErr) console.error(`[ai-newsletter] newsletter sent but the campaign was NOT marked sent (a scheduler may pick it up again): ${nlSentErr.message}`)
 
     // Kernel: Fire NEWSLETTER_SENT event
     processKernelEvent({
@@ -1223,15 +1225,16 @@ export async function queueNewsletterForContact(params: {
     // delivered denominator as `sent_at IS NOT NULL` and the queue→send latency
     // as queued_at→sent_at, so stamping a failed send here inflated both.
     if (sendRow?.id) {
-      void Promise.resolve(
+      void bestEffort(
         supabase
           .from("newsletter_sends")
           .update({
             status: result.success ? "sent" : "failed",
             ...(result.success && { sent_at: new Date().toISOString() }),
           })
-          .eq("id", sendRow.id)
-      ).catch(() => {})
+          .eq("id", sendRow.id),
+        "per-recipient send outcome; the dispatch result is returned to the caller",
+      )
     }
 
     return { success: result.success, newsletterId, error: result.error }

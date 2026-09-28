@@ -42,6 +42,7 @@
 // avatar/twin image bytes. Neither is re-implemented here.
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { rehostAvatarImage } from "@/lib/did/avatar-completion"
@@ -179,9 +180,9 @@ async function sweepAvatarAssets(svc: Svc): Promise<RehostSweepResult> {
       if (updateError) throw new Error(`row update refused: ${updateError.message}`)
 
       if (row.is_default && row.agent_id) {
-        await svc.from("agent_voice_profiles")
+        await sentinelWrite(svc, svc.from("agent_voice_profiles")
           .update({ avatar_url: rehosted })
-          .eq("agent_id", row.agent_id)
+          .eq("agent_id", row.agent_id), { table: "agent_voice_profiles", flow: "agent_voice_profiles_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       }
       result.rehosted++
     } catch (e: any) {

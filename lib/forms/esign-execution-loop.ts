@@ -40,6 +40,7 @@
 // Exercised by scripts/esign-anchor-simulator.ts.
 
 import "server-only"
+import { bestEffort } from "@/lib/db/best-effort"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { evalAnchorExecution, type FormAnchorStatus, type AnchorExecutionResult } from "./esign-anchor-eval"
 // The server-only core (lane 86F): this loop runs from the e-sign webhooks and the
@@ -479,10 +480,11 @@ async function applyReadyWrites(
 
   if (matchedAgreement && !(matchedAgreement as any).fully_executed_at) {
     wroteSomething = true
-    await supabase
+    const { error: agreementExecutedErr } = await supabase
       .from("listing_agreements")
       .update({ esign_status: "fully_signed", fully_executed_at: now })
       .eq("id", (matchedAgreement as any).id)
+    if (agreementExecutedErr) console.error(`[esign-execution-loop] listing agreement NOT marked fully executed: ${agreementExecutedErr.message}`)
 
     const { data: listingRow } = await supabase
       .from("listings")
@@ -502,10 +504,10 @@ async function applyReadyWrites(
         metadata:    { agreementId: (matchedAgreement as any).id, envelopeId: ctx.envelopeId, provider: ctx.providerSource, source: "esign-execution-loop" },
       }, supabase)
 
-      await supabase
+      await bestEffort(supabase
         .from("listings")
         .update({ stage_entered_at: now })
-        .eq("id", (matchedAgreement as any).listing_id)
+        .eq("id", (matchedAgreement as any).listing_id), "stage clock stamp; the stage itself was set by the kernel transition above")
 
       try {
         const { runListingComplianceLoop } = await import("@/lib/listings/listing-compliance-loop")

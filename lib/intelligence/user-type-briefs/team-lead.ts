@@ -14,6 +14,7 @@
 // brokerageId / userId are now an IN-PROCESS CONTRACT: with the door closed,
 // the server caller that supplies them is the gate.
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 /**
  * Team Lead brief — agents who lead a team get the agent brief PLUS
@@ -220,9 +221,9 @@ export async function generateTeamLeadBrief(params: {
     .eq("briefing_date", today)
     .maybeSingle()
   if (existingBrief?.id) {
-    await supabase.from("ai_daily_briefings").update(briefRow).eq("id", existingBrief.id)
+    await sentinelWrite(supabase, supabase.from("ai_daily_briefings").update(briefRow).eq("id", existingBrief.id), { table: "ai_daily_briefings", flow: "ai_daily_briefings_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   } else {
-    await supabase.from("ai_daily_briefings").insert(briefRow)
+    await sentinelWrite(supabase, supabase.from("ai_daily_briefings").insert(briefRow), { table: "ai_daily_briefings", flow: "ai_daily_briefings_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
 
   return {

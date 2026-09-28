@@ -1,3 +1,4 @@
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
@@ -601,23 +602,23 @@ export async function monitorTRIDComplianceService(transactionId: string, client
     }
   }
 
-  await supabase
+  await bestEffort(supabase
     .from("trid_timeline")
     .update({
       compliance_status: violations.length > 0 ? "violation" : "compliant",
       violations,
     })
-    .eq("id", timeline.id)
+    .eq("id", timeline.id), "TRID compliance status cache; the violations are also written as alerts below and re-evaluated on each check")
 
   for (const violation of violations) {
-    await supabase.from("compliance_alerts").insert({
+    await bestEffort(supabase.from("compliance_alerts").insert({
       brokerage_id: tridBrokerageId,
       transaction_id: transactionId,
       alert_type: violation.type,
       severity: violation.severity,
       message: violation.message,
       details: violation,
-    })
+    }), "violations are written onto the TRID timeline above; the alert row is the notification copy")
   }
 
   revalidatePath(`/transactions/${transactionId}`)
@@ -698,7 +699,7 @@ export async function applyDocumentRetentionService(transactionId: string, clien
     .eq("transaction_id", transactionId)
 
   for (const doc of documents || []) {
-    await supabase.from("document_retention").upsert(
+    await bestEffort(supabase.from("document_retention").upsert(
       {
         document_id: doc.id,
         retention_category: "transaction",
@@ -710,7 +711,7 @@ export async function applyDocumentRetentionService(transactionId: string, clien
         brokerage_id: transaction.brokerage_id,
       },
       { onConflict: "document_id" },
-    )
+    ), "retention schedule upsert is idempotent and re-run on each close check")
   }
 
   return { success: true, documents_processed: documents?.length || 0 }

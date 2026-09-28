@@ -45,6 +45,7 @@
 //
 // NOT server-only (simulator-driven). Pure helpers carry the scoring; the runner does I/O.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { CopyGenerator } from "@/lib/kernel/ai-copy"
 
@@ -543,7 +544,7 @@ export async function runListingInventoryRadar(
       if (!alreadyStamped) patch.notes = existingNotes ? `${existingNotes}\n${note}` : note
       if (intentFloor > curScore) patch.lead_score = intentFloor
       if (Object.keys(patch).length > 0) {
-        await supabase.from("leads").update(patch).eq("id", leadId).eq("brokerage_id", brokerageId)
+        await sentinelWrite(supabase, supabase.from("leads").update(patch).eq("id", leadId).eq("brokerage_id", brokerageId), { table: "leads", flow: "leads_write", reason: "intent annotation/score floor on the lead; the routing signal below fires regardless" })
       }
     }
 

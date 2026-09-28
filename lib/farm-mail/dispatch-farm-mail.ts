@@ -41,6 +41,7 @@
  * actually mailing. maxRecipients caps each agent's per-cycle spend.
  */
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { pickTopics, type TopicCandidate } from "@/lib/content-intel/topic-bank"
 import { orchestrateRenderAndSend } from "@/lib/direct-mail/orchestrate-send"
@@ -307,7 +308,7 @@ export async function dispatchFarmMail(
       else fellBack++
 
       // Record the direct_mail_campaigns row.
-      const { data: dmCampaign } = await svc
+      const { data: dmCampaign, error: farmCampaignErr } = await svc
         .from("direct_mail_campaigns")
         .insert({
           brokerage_id:    args.brokerageId,
@@ -329,17 +330,18 @@ export async function dispatchFarmMail(
         })
         .select("id")
         .single()
+      if (farmCampaignErr) console.error(`[farm-mail] direct-mail campaign row NOT recorded: ${farmCampaignErr.message}`)
 
       // Close the self-learning loop: log the topic use against this
       // campaign so the aggregator joins it to qr_scan_events later.
       if (topic && dmCampaign?.id) {
-        await svc.from("content_topic_uses").insert({
+        await sentinelWrite(svc, svc.from("content_topic_uses").insert({
           topic_id:     topic.id,
           brokerage_id: args.brokerageId,
           asset_type:   "direct_mail_postcard",
           asset_id:     dmCampaign.id,
           used_at:      new Date().toISOString(),
-        })
+        }), { table: "content_topic_uses", flow: "content_topic_uses_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       }
     }
 

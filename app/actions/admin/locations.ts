@@ -157,8 +157,12 @@ export async function deleteLocationAction(id: string): Promise<{ ok: true } | {
   // would handle that one — this is explicit anyway because agents.location_id
   // is the pre-m423 column and is not covered by that FK behaviour, and because
   // clearing them in the same place keeps the two from drifting.
-  await svc.from("users").update({ location_id: null }).eq("location_id", id).eq("brokerage_id", auth.brokerageId)
-  await svc.from("agents").update({ location_id: null }).eq("location_id", id).eq("brokerage_id", auth.brokerageId)
+  // Either refusal leaves people pointing at an office about to be deleted — stop
+  // before the delete rather than strand them.
+  const { error: usersUnassignErr } = await svc.from("users").update({ location_id: null }).eq("location_id", id).eq("brokerage_id", auth.brokerageId)
+  if (usersUnassignErr) return { ok: false, error: `Could not unassign users from this office: ${usersUnassignErr.message}` }
+  const { error: agentsUnassignErr } = await svc.from("agents").update({ location_id: null }).eq("location_id", id).eq("brokerage_id", auth.brokerageId)
+  if (agentsUnassignErr) return { ok: false, error: `Could not unassign agents from this office: ${agentsUnassignErr.message}` }
   const { error } = await svc.from("locations").delete().eq("id", id).eq("brokerage_id", auth.brokerageId)
   if (error) return { ok: false, error: error.message }
   revalidatePath("/dashboard/admin/locations")

@@ -51,6 +51,7 @@
  * Response: { received: true, enrollments: number }
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -157,7 +158,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   // ── Log the webhook event for audit ───────────────────────────────────────
-  void Promise.resolve(
+  void sentinelWrite(supabase,
     supabase.from("workflow_webhook_events").insert({
       brokerage_id: brokerageId,
       contact_id:   contactId,
@@ -165,8 +166,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       source:       source ?? "webhook",
       payload:      { ...metadata, authorised_via: authorisedVia },
       received_at:  new Date().toISOString(),
-    })
-  ).catch(() => {})
+    }),
+    { table: "workflow_webhook_events", flow: "workflow_trigger_audit", brokerageId, reason: "audit row of an inbound trigger; the enrollment below proceeds regardless" },
+  )
 
   // ── Find matching active sequences ────────────────────────────────────────
   const { data: sequences } = await supabase

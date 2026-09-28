@@ -27,6 +27,7 @@
  * (un-park) and AI ISA engagement begins off the distributed_at stamp.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isPhoneOnSuppressionList, isEmailOnSuppressionList } from "./suppression-list"
 
@@ -165,7 +166,7 @@ export async function distributePlatformLead(params: {
     return { success: false, reason: `Lead distribution write failed: ${updateErr.message}` }
   }
 
-  await supabase.from("platform_lead_distributions").insert({
+  await sentinelWrite(supabase, supabase.from("platform_lead_distributions").insert({
     zip_code: zip,
     brokerage_id: targetBrokerageId,
     lead_id: leadId,
@@ -175,7 +176,7 @@ export async function distributePlatformLead(params: {
     source_family: lead.source_family,
     motivation_type: lead.motivation_type,
     urgency_level: lead.urgency_level,
-  })
+  }), { table: "platform_lead_distributions", flow: "platform_lead_distributions_write", reason: "distribution audit row after the lead distribution write landed (checked above)" })
 
   // 9. Stamp the raw record too so downstream visibility is consistent
   if (lead.raw_record_id) {

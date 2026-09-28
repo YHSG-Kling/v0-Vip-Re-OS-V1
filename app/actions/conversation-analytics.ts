@@ -1,5 +1,6 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 
 // =====================================================
@@ -399,7 +400,7 @@ export async function runWeeklyAIAudit() {
         flaggedCount += flags.length
 
         // Insert new flags
-        await supabase.from("conversation_audit_flags").insert(
+        await bestEffort(supabase.from("conversation_audit_flags").insert(
           flags.map((flag) => ({
             conversation_id: conv.id,
             risk_type: flag.type,
@@ -408,7 +409,7 @@ export async function runWeeklyAIAudit() {
             flagged_text: flag.text,
             recommended_action: flag.recommendation,
           }))
-        )
+        ), "risk flags from an analytics sweep; the sweep re-flags on its next run")
       }
     }
 

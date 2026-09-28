@@ -246,10 +246,11 @@ export async function approveIsaDialBatch(
   const droppedForConsent = proposed.length - dialTargets.length
 
   // Claim the batch first (proposed → completed) so a concurrent approve can't double-dial.
-  const { data: claimed } = await supabase
+  const { data: claimed, error: batchClaimErr } = await supabase
     .from("ai_isa_call_batches")
     .update({ status: "completed", approved_by: params.approverUserId, approved_at: new Date().toISOString(), completed_at: new Date().toISOString() })
     .eq("id", params.batchId).eq("status", "proposed").select("id").maybeSingle()
+  if (batchClaimErr) return { ok: false, dialTargets: [], dialedCount: 0, attemptedCount: 0, droppedForConsent: 0, error: `Could not claim the batch: ${batchClaimErr.message}` }
   if (!claimed) return { ok: false, dialTargets: [], dialedCount: 0, attemptedCount: 0, droppedForConsent: 0, error: "batch already actioned" }
 
   // Dial each consented target + record the governed attempt into ai_isa_calls.
@@ -261,19 +262,20 @@ export async function approveIsaDialBatch(
     catch (e) { outcome = { contactId: t.contact_id, placed: false, voiceCallId: null, error: (e as Error).message } }
     if (outcome.placed) placed += 1
     results.push(outcome)
-    await supabase.from("ai_isa_calls").insert({
+    await sentinelWrite(supabase, supabase.from("ai_isa_calls").insert({
       brokerage_id: params.brokerageId,
       contact_id: t.contact_id,
       voice_call_id: outcome.voiceCallId,
       script_used: script ? script.slice(0, 500) : null,
       ai_response_summary: (outcome.placed ? "call placed via AI ISA dial batch" : (outcome.error ?? "not placed")).slice(0, 500),
-    })
+    }), { table: "ai_isa_calls", flow: "isa_dial_batch_attempt", reason: "per-attempt ISA row; the call (or its failure) already happened" })
   }
 
-  await supabase.from("ai_isa_call_batches").update({
+  const { error: batchResultsErr } = await supabase.from("ai_isa_call_batches").update({
     dialed_count: placed,
     call_results: { attempted: dialTargets.length, placed, dropped_for_consent: droppedForConsent, outcomes: results },
   }).eq("id", params.batchId)
+  if (batchResultsErr) console.error(`[voice-dial-batch] batch results NOT recorded: ${batchResultsErr.message}`)
 
   return { ok: true, dialTargets, dialedCount: placed, attemptedCount: dialTargets.length, droppedForConsent }
 }

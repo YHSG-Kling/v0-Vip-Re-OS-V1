@@ -1,5 +1,6 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 
@@ -51,10 +52,10 @@ export async function logTransactionDelay(params: {
       return { success: true, delay: data, error: `Delay saved, but the client notice failed: ${updateError.message}` }
     }
 
-    void supabase
+    void bestEffort(supabase
       .from("timeline_transparency")
       .update({ communicated_to_client: true })
-      .eq("transaction_id", params.transactionId)
+      .eq("transaction_id", params.transactionId), "marks the delay as communicated after the client notice already landed")
   }
 
   return { success: true, delay: data }

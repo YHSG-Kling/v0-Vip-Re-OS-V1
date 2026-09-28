@@ -1,5 +1,7 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateObject } from "@/lib/ai/generate"
@@ -114,14 +116,14 @@ export async function sendMessage(params: {
       .eq("id", params.conversationId)
       .single()
 
-    await supabase
+    await bestEffort(supabase
       .from("conversations")
       .update({
         last_message_at: now,
         updated_at:      now,
         message_count:   (convRow?.message_count ?? 0) + 1,
       })
-      .eq("id", params.conversationId)
+      .eq("id", params.conversationId), "thread counters on a message that already landed")
 
     // Step 3: Dispatch via provider layer
     let dispatchResult: { success: boolean; messageId?: string; error?: string; providerKey: string } = {
@@ -219,7 +221,7 @@ export async function sendMessage(params: {
     // Fire-and-forget: log message provider activity without blocking response
     ;(async () => {
       try {
-        await serviceClient.from("message_provider_logs").insert({
+        await sentinelWrite(serviceClient, serviceClient.from("message_provider_logs").insert({
           brokerage_id:        agentForLog?.brokerage_id ?? null,
           message_id:          message.id,
           provider_key:        dispatchResult.providerKey,
@@ -229,7 +231,7 @@ export async function sendMessage(params: {
           provider_status:     dispatchResult.success ? "sent" : "failed",
           error_message:       dispatchResult.error ?? null,
           // message_provider_logs timestamp column is sent_at (defaults now()) — no created_at.
-        })
+        }), { table: "message_provider_logs", flow: "comm_hub_provider_log", reason: "fire-and-forget provider log of a dispatch whose result is already returned" })
       } catch (err) {
         // Silent fail for logging - don't block message send on log failure
       }
@@ -553,7 +555,7 @@ Generate ONLY the response message, no explanations.`,
     ;(async () => {
       try {
         // audit_log has no brokerage_id column; user_id is the auth user id
-        await supabase
+        await bestEffort(supabase
           .from("audit_log")
           .insert({
             action: "ai_response_generated",
@@ -567,7 +569,7 @@ Generate ONLY the response message, no explanations.`,
               sentiment: sentimentAnalysis,
               brokerage_id: effBrokerageId,
             },
-          })
+          }), "fire-and-forget audit of an AI response already returned to the caller")
       } catch (err) {
         // Silent fail - audit logging should not block response generation
       }

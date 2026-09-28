@@ -106,8 +106,8 @@ export async function GET(req: NextRequest) {
           // Populate agent_earnings — THE table the earnings P&L dashboard reads
           // (period_type mtd/ytd). Without this the dashboard showed $0 on closed
           // deals because the close path never aggregated agent_commissions here.
-          const upsertEarnings = (period_type: "mtd" | "ytd", period_label: string, a: ReturnType<typeof agg>) =>
-            supabase.from("agent_earnings").upsert(
+          const upsertEarnings = async (period_type: "mtd" | "ytd", period_label: string, a: ReturnType<typeof agg>) => {
+            const res = await supabase.from("agent_earnings").upsert(
               {
                 agent_id: agent.id,
                 brokerage_id: agent.brokerage_id,
@@ -129,12 +129,14 @@ export async function GET(req: NextRequest) {
               },
               { onConflict: "agent_id,period_type,period_label" }
             )
+            return res
+          }
 
-          await Promise.all([
-            upsertEarnings("ytd", yearLabel, y),
-            upsertEarnings("mtd", monthLabel, m),
+          // Each upsert RESOLVES its refusal (§3) — the old Promise.all dropped all
+          // three results, so `processed` counted agents whose earnings never landed.
+          const upsertMonthly = async () => {
             // Keep agent_monthly_earnings (separate monthly history table) populated too.
-            supabase.from("agent_monthly_earnings").upsert(
+            const res = await supabase.from("agent_monthly_earnings").upsert(
               {
                 agent_id: agent.id,
                 brokerage_id: agent.brokerage_id,
@@ -145,8 +147,16 @@ export async function GET(req: NextRequest) {
                 updated_at: computedAt,
               },
               { onConflict: "agent_id,month_year" }
-            ),
+            )
+            return res
+          }
+          const earningsWrites = await Promise.all([
+            upsertEarnings("ytd", yearLabel, y),
+            upsertEarnings("mtd", monthLabel, m),
+            upsertMonthly(),
           ])
+          const refusedEarnings = earningsWrites.map((r) => r.error?.message).filter(Boolean)
+          if (refusedEarnings.length > 0) throw new Error(`earnings upsert refused: ${refusedEarnings.join("; ")}`)
           processed++
         } catch (err: any) {
           errors.push(`Agent ${agent.id}: ${err.message}`)

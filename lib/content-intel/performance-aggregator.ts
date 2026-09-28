@@ -16,6 +16,7 @@
  * (their performance_score drops back to 0 over time).
  */
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isCampaignPersona } from "@/lib/campaigns/contact-sources"
 import {
@@ -204,9 +205,9 @@ export async function aggregatePerformance(): Promise<{ topics_updated: number; 
       podcastPlays,
     })
     try {
-      await svc.from("content_topic_bank")
+      await sentinelWrite(svc, svc.from("content_topic_bank")
         .update({ performance_score: Math.max(0, Math.min(30, Math.round(score))) })
-        .eq("id", topicId)
+        .eq("id", topicId), { table: "content_topic_bank", flow: "content_topic_bank_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       updated++
     } catch (e) {
       console.error(`[performance-aggregator] update score failed for topic ${topicId}:`, (e as Error).message)
@@ -523,8 +524,8 @@ async function aggregateBlogPersonaPerformance(
   try {
     for (let i = 0; i < upserts.length; i += 200) {
       const chunk = upserts.slice(i, i + 200).map((u) => ({ ...u, computed_at: new Date().toISOString() }))
-      await svc.from("content_asset_persona_performance")
-        .upsert(chunk, { onConflict: "topic_id,asset_type,persona" })
+      await sentinelWrite(svc, svc.from("content_asset_persona_performance")
+        .upsert(chunk, { onConflict: "topic_id,asset_type,persona" }), { table: "content_asset_persona_performance", flow: "content_asset_persona_performance_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
   } catch (e) {
     console.error("[performance-aggregator] blog persona perf upsert failed:", (e as Error).message)
@@ -679,8 +680,8 @@ async function aggregatePersonaPerformance(
       // own asset_type so the same topic can carry distinct scores per
       // medium for the same persona.
       const stamped = chunk.map((u) => ({ ...u, asset_type: "newsletter_campaign" }))
-      await svc.from("content_asset_persona_performance")
-        .upsert(stamped, { onConflict: "topic_id,asset_type,persona" })
+      await sentinelWrite(svc, svc.from("content_asset_persona_performance")
+        .upsert(stamped, { onConflict: "topic_id,asset_type,persona" }), { table: "content_asset_persona_performance", flow: "content_asset_persona_performance_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
   } catch (e) {
     console.error("[performance-aggregator] persona perf upsert failed:", (e as Error).message)

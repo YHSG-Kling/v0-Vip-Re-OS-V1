@@ -21,6 +21,7 @@
  * provider for {{contact}}" so the workflow doesn't silently fail.
  */
 
+import { bestEffort } from "@/lib/db/best-effort"
 import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
 
 export const sendGiftAdapter: ChannelAdapter = {
@@ -160,7 +161,7 @@ export const sendGiftAdapter: ChannelAdapter = {
           // agent's own name, on their own card.
           const { composeShoppableLinks } = await import("@/lib/gifting/shoppable-links")
           const shop = composeShoppableLinks(recommendedGift.name, { budgetMax: recommendedGift.cost || null })
-          void Promise.resolve(supabase.from("tasks").insert({
+          void bestEffort(supabase.from("tasks").insert({
             brokerage_id: brokerageId,
             contact_id:   contact.id,
             assigned_to_agent_id: agentId,
@@ -172,7 +173,7 @@ export const sendGiftAdapter: ChannelAdapter = {
             source_enrollment_id: ctx.enrollmentId,
             status: "pending",
             created_at: new Date().toISOString(),
-          })).catch(() => {})
+          }), "pay-for-gift reminder task; the gift order itself already placed")
         }
 
         return {
@@ -305,7 +306,7 @@ async function createPickProviderTask(
       : null,
   ].filter(Boolean).join("\n")
 
-  const { data: task } = await supabase.from("tasks").insert({
+  const { data: task, error: giftTaskErr } = await supabase.from("tasks").insert({
     brokerage_id: brokerageId,
     contact_id:   contact?.id ?? null,
     assigned_to_agent_id: agentId,
@@ -320,6 +321,7 @@ async function createPickProviderTask(
     status: "pending",
     created_at: new Date().toISOString(),
   }).select("id").single()
+  if (giftTaskErr) console.error(`[send-gift] gift-selection task NOT created: ${giftTaskErr.message}`)
 
   return {
     status: "sent",

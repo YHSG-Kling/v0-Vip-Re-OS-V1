@@ -349,13 +349,12 @@ export async function assignLeadToAgent(leadId: string, agentId: string) {
     })
 
     // m489 keeps assignment_method to the METHOD alone; WHO decided goes here.
-    await supabase
+    await bestEffort(supabase
       .from("assignment_log")
       .update({ routing_reason: `[admin_manual] handed off by user ${userId} (${userType})` })
       .eq("lead_id", leadId)
       .eq("brokerage_id", brokerageId)
-      .is("routing_reason", null)
-      .then(() => {}, () => {})
+      .is("routing_reason", null), "who-decided annotation on the assignment log; the assignment itself landed above")
 
     await bestEffort(
       supabase.from("activities").insert({

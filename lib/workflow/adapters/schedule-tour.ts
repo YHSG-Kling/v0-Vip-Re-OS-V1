@@ -9,6 +9,7 @@
  * (lib/kernel/tour-optimizer.optimizeTourRoute) with this step's service client.
  */
 
+import { bestEffort } from "@/lib/db/best-effort"
 import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
 
 export const scheduleTourAdapter: ChannelAdapter = {
@@ -88,10 +89,10 @@ export const scheduleTourAdapter: ChannelAdapter = {
     }
 
     // Mark the saved properties as added to a tour.
-    await supabase
+    await bestEffort(supabase
       .from("saved_properties")
       .update({ added_to_tour: true })
-      .in("id", orderedProps.map((p: any) => p.id))
+      .in("id", orderedProps.map((p: any) => p.id)), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     // Route optimization (best-effort) — the canonical Tour Day Optimizer KERNEL,
     // called directly with this step's service client. The action wrapper

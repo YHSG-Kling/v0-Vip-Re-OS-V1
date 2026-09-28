@@ -36,6 +36,7 @@
  *   · The existing voice_commands audit log (route handler writes it)
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { SituationKind, TargetChannel } from "@/lib/video/video-director"
 import type { createServiceClient } from "@/lib/supabase/service"
 
@@ -478,7 +479,7 @@ export async function commissionStudioSession(
     : commissioned > 0 ? "partial"
     : "failed"
 
-  await svc
+  await sentinelWrite(svc, svc
     .from("studio_sessions")
     .update({
       commissioned_count: commissioned,
@@ -486,8 +487,7 @@ export async function commissionStudioSession(
       status: finalStatus,
       updated_at: new Date().toISOString(),
     })
-    .eq("id", sessionId)
-    .then(() => {}, () => { /* non-fatal */ })
+    .eq("id", sessionId), { table: "studio_sessions", flow: "studio_sessions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   const spoken = composeSessionCommissionSpoken({ plan, commissioned, skipped, videoProjectIds })
 

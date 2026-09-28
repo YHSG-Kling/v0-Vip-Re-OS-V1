@@ -158,7 +158,7 @@ Return ONLY valid JSON matching this structure exactly:
   }
 
   // 4. Cache as system-default row (brokerage_id = null)
-  const { data: inserted } = await supabase
+  const { data: inserted, error: coachingCacheErr } = await supabase
     .from("buyer_stage_coaching")
     .insert({
       brokerage_id:             null,
@@ -176,6 +176,7 @@ Return ONLY valid JSON matching this structure exactly:
     })
     .select("id")
     .single()
+  if (coachingCacheErr) console.error(`[buyer-coaching] coaching cache row NOT saved: ${coachingCacheErr.message}`)
 
   return {
     success:  true,

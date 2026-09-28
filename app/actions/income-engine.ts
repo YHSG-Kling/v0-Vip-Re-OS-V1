@@ -156,9 +156,10 @@ export async function computeAndPersistGapAction(params?: {
   }
 
   // 4. Clear old actions for THIS snapshot (re-running replaces, doesn't append)
-  await svc.from("income_gap_recommended_actions")
+  const { error: actionsClearErr } = await svc.from("income_gap_recommended_actions")
     .delete()
     .eq("gap_analysis_id", persisted.id)
+  if (actionsClearErr) console.error(`[income-engine] prior recommended actions NOT cleared (duplicates possible): ${actionsClearErr.message}`)
 
   // 5. Insert ranked actions
   if (actions.length > 0) {

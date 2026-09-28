@@ -31,6 +31,7 @@
  * so once acceptance completes the vendor lands on a working portal.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { randomBytes } from "node:crypto"
@@ -274,7 +275,7 @@ export async function acceptVendorInviteAction(
   }
   if (new Date(invitation.expires_at).getTime() < Date.now()) {
     // Mark expired so admins can clean up
-    await svc.from("vendor_invitations").update({ status: "expired" }).eq("id", invitation.id)
+    await sentinelWrite(svc, svc.from("vendor_invitations").update({ status: "expired" }).eq("id", invitation.id), { table: "vendor_invitations", flow: "vendor_invitations_write", reason: "expiry stamp; the expired response is returned regardless" })
     return { ok: false, error: "Invitation has expired — ask the brokerage to send a new one" }
   }
 
@@ -323,14 +324,16 @@ export async function acceptVendorInviteAction(
           "This email already has a vendor login with another brokerage. A vendor can work with more than one brokerage — ask this brokerage to add your company to their vendor list, which costs you nothing — but a single login cannot yet be shared across brokerages. Accept this invitation from a different email address to hold a separate seat.",
       }
     }
-    await svc.from("users").update({
+    // THE SEAT is the invitation's contract (see below) — every half is READ.
+    const { error: seatUpdErr } = await svc.from("users").update({
       user_type:    "vendor",
       role:         "vendor",
       brokerage_id: invitation.brokerage_id,
       updated_at:   new Date().toISOString(),
     }).eq("id", user.id)
+    if (seatUpdErr) return { ok: false, error: `Could not set up your vendor seat: ${seatUpdErr.message}` }
   } else {
-    await svc.from("users").insert({
+    const { error: seatInsErr } = await svc.from("users").insert({
       id:           user.id,
       email:        user.email.toLowerCase(),
       first_name:   (user.user_metadata?.first_name as string) ?? "",
@@ -342,16 +345,21 @@ export async function acceptVendorInviteAction(
       created_at:   new Date().toISOString(),
       updated_at:   new Date().toISOString(),
     })
+    if (seatInsErr) return { ok: false, error: `Could not create your vendor seat: ${seatInsErr.message}` }
   }
 
   // Link auth user ↔ vendor record via user_role_assignments
   // Upsert pattern: delete any existing vendor assignment for this user, then insert.
-  await svc.from("user_role_assignments")
+  // A refused delete would make the insert collide on UNIQUE(user_id, role);
+  // a refused insert leaves a vendor seat linked to NO vendor (every portal gate
+  // then refuses) while acceptance reported success.
+  const { error: unlinkErr } = await svc.from("user_role_assignments")
     .delete()
     .eq("user_id", user.id)
     .not("vendor_id", "is", null)
+  if (unlinkErr) return { ok: false, error: `Could not replace your previous vendor link: ${unlinkErr.message}` }
 
-  await svc.from("user_role_assignments").insert({
+  const { error: linkErr } = await svc.from("user_role_assignments").insert({
     user_id:      user.id,
     vendor_id:    invitation.vendor_id,
     brokerage_id: invitation.brokerage_id,
@@ -359,6 +367,7 @@ export async function acceptVendorInviteAction(
     created_at:   new Date().toISOString(),
     updated_at:   new Date().toISOString(),
   })
+  if (linkErr) return { ok: false, error: `Could not link your login to the vendor company: ${linkErr.message}` }
 
   // ── THE VENDOR'S GLOBAL PLATFORM IDENTITY — the writer that never existed ──
   // (§1.2, built 2026-08-27.) vendor_marketplace_profiles is the table the
@@ -469,11 +478,12 @@ export async function acceptVendorInviteAction(
   }
 
   // Mark invitation accepted
-  await svc.from("vendor_invitations").update({
+  const { error: inviteAcceptedErr } = await svc.from("vendor_invitations").update({
     status:      "accepted",
     accepted_by: user.id,
     accepted_at: new Date().toISOString(),
   }).eq("id", invitation.id)
+  if (inviteAcceptedErr) console.error(`[vendor-invite] seat created but invitation NOT marked accepted (the link stays usable): ${inviteAcceptedErr.message}`)
 
   // Legacy-invite attribution catch-up: invitations sent before the round-37
   // stamp still know their inviter (m1057 invited_by). First-inviter-wins; the

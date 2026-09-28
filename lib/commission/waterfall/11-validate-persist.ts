@@ -378,18 +378,24 @@ export async function validateAndPersist(
       const newPaidToDate = capTracking.cap_paid_to_date + centsToDollars(context.amountTowardsCap)
       const isCapped = newPaidToDate >= capTracking.cap_amount
 
-      await supabase
+      // A refused cap write leaves cap_paid_to_date behind the money actually
+      // collected — the next calc under-credits the cap. Read it; and never
+      // celebrate a cap crossing that did not land.
+      const { error: capWriteErr } = await supabase
         .from('agent_cap_tracking')
         .update({
           cap_paid_to_date: newPaidToDate,
           is_capped: isCapped
         })
         .eq('id', capTracking.id)
+      if (capWriteErr) {
+        console.error(`[commission-engine] agent_cap_tracking update REFUSED for ${capTracking.id} (cap progress not advanced by ${centsToDollars(context.amountTowardsCap)}): ${capWriteErr.message}`)
+      }
 
       // AUTONOMOUS CAP-CRUSH MOMENT — if this calc is the one that CROSSED the cap, the Finance Manager
       // celebrates the agent (they keep 100% now) and hands the live proof to Recruiting on the bus.
       // Best-effort, deduped per anniversary — never blocks the calc.
-      try {
+      if (!capWriteErr) try {
         const { detectCapCrush, celebrateCapCrush } = await import('@/lib/finance/cap-crush')
         const { justCrossed } = detectCapCrush({ capAmount: capTracking.cap_amount, paidBefore: capTracking.cap_paid_to_date, paidAfter: newPaidToDate })
         if (justCrossed) {

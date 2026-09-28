@@ -56,8 +56,8 @@ export async function POST(request: NextRequest) {
     const digit = String(form?.get("Digits") ?? "")
     if (digit !== "1") return xml('<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna-Neural">No problem — I\'ll take a message.</Say><Hangup/></Response>')
     if (voiceCallId) {
-      await svc.from("voice_calls").update({ outcome: "warm_transferred", status: "completed", ended_at: new Date().toISOString() })
-        .eq("id", voiceCallId).then(undefined, () => {})
+      await sentinelWrite(svc, svc.from("voice_calls").update({ outcome: "warm_transferred", status: "completed", ended_at: new Date().toISOString() })
+        .eq("id", voiceCallId), { table: "voice_calls", flow: "voice_warm_transferred", reason: "the bridge proceeds regardless; a lost outcome stamp is ledgered" })
     }
     return xml(twimlJoinConference(conf))
   }
@@ -88,8 +88,8 @@ export async function POST(request: NextRequest) {
       }
     } catch { /* the caller's own hangup remains the worst case */ }
     if ((vc as any)?.id) {
-      await svc.from("voice_calls").update({ outcome: "warm_bridge_missed", status: "completed", ended_at: new Date().toISOString() })
-        .eq("id", (vc as any).id).then(undefined, () => {})
+      await sentinelWrite(svc, svc.from("voice_calls").update({ outcome: "warm_bridge_missed", status: "completed", ended_at: new Date().toISOString() })
+        .eq("id", (vc as any).id), { table: "voice_calls", flow: "voice_warm_bridge_missed", reason: "the agent is notified below regardless; a lost outcome stamp is ledgered" })
     }
     // The agent hears about the miss immediately.
     if (bId) {

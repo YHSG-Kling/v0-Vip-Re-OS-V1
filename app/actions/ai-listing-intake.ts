@@ -683,10 +683,11 @@ export async function createOrPullDotloop(params: {
 
     // Update listing with loop ID — ownership verified above
     if (params.listingId) {
-      await supabase.from("listings")
+      const { error: loopLinkErr } = await supabase.from("listings")
         .update({ dotloop_loop_id: loopId })
         .eq("id", params.listingId)
         .eq("brokerage_id", brokerageId)
+      if (loopLinkErr) console.error(`[ai-listing-intake] dotloop loop created but NOT linked to the listing: ${loopLinkErr.message}`)
     }
 
     return {

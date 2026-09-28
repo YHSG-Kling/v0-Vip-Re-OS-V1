@@ -1,5 +1,6 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 import { isValidUUID } from "@/lib/validations"
 import {
@@ -1131,14 +1132,14 @@ export async function triggerGhostRecovery(params: {
   if (!dispatchResult.success) return { success: false, error: dispatchResult.error }
 
   // Step 4: Insert engagement tracking row
-  await service.from("ai_isa_engagement_tracking").insert({
+  await sentinelWrite(service, service.from("ai_isa_engagement_tracking").insert({
     brokerage_id: auth.brokerageId,
     contact_id:   params.contactId,
     campaign_id:  params.campaignId,
     channel:      "email",
     event_type:   "sent",
     event_at:     new Date().toISOString(),
-  })
+  }), { table: "ai_isa_engagement_tracking", flow: "isa_engagement_sent", brokerageId: auth.brokerageId, reason: "engagement analytics row for a send that already dispatched" })
 
   return { success: true }
 }
@@ -1235,13 +1236,13 @@ export async function retryGhostContact(params: {
   }
 
   // Log engagement event
-  await service.from("ai_isa_engagement_tracking").insert({
+  await sentinelWrite(service, service.from("ai_isa_engagement_tracking").insert({
     brokerage_id: auth.brokerageId,
     contact_id: params.contactId,
     channel: params.channel,
     event_type: "sent",
     event_at: new Date().toISOString(),
-  })
+  }), { table: "ai_isa_engagement_tracking", flow: "isa_engagement_sent", brokerageId: auth.brokerageId, reason: "engagement analytics row for a send that already dispatched" })
 
   return { success: true }
 }

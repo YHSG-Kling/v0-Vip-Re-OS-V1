@@ -7,6 +7,7 @@
 // RULE: context_json in automation_errors is TEXT — always JSON.stringify().
 // RULE: Only this file writes leads.lifecycle_state. No other file may do so.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -84,7 +85,7 @@ export async function handleLeadCaptured(params: {
 
   await assertValidTransition('raw', 'unconsented', leadId)
 
-  await supabase
+  const { error: toUnconsentedErr } = await supabase
     .from('leads')
     .update({
       lifecycle_state: 'unconsented',
@@ -92,14 +93,15 @@ export async function handleLeadCaptured(params: {
       updated_at: new Date().toISOString(),
     })
     .eq('id', leadId)
+  if (toUnconsentedErr) throw new Error(`handleLeadCaptured: lifecycle transition raw→unconsented refused: ${toUnconsentedErr.message}`)
 
-  await supabase.from('lifecycle_events').insert({
+  await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
     entity_type: 'lead',
     entity_id: leadId,
     event_type: KernelEvent.LEAD_CAPTURED,
     brokerage_id: brokerageId,
     created_at: new Date().toISOString(),
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // ── LEAD ENRICHMENT (wave 5) ───────────────────────────────────────────────
   // This used to be a bare INSERT into lead_enrichment_queue right here:
@@ -136,14 +138,14 @@ export async function handleLeadCaptured(params: {
   }
 
   const targetAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
-  await supabase.from('lead_sla_tracking').insert({
+  await sentinelWrite(supabase, supabase.from('lead_sla_tracking').insert({
     lead_id: leadId,
     brokerage_id: brokerageId,
     sla_type: 'first_contact',
     target_at: targetAt,
     breached: false,
     created_at: new Date().toISOString(),
-  })
+  }), { table: "lead_sla_tracking", flow: "lead_sla_first_contact", brokerageId: brokerageId, reason: "SLA timer row; the stale-lead processor re-derives breaches from lead timestamps" })
 
   await processKernelEvent({
     event: KernelEvent.LEAD_CAPTURED,
@@ -196,7 +198,7 @@ export async function handleLeadScored(params: {
     : result.finalScore >= 25 ? 'cool'
     : 'cold'
 
-  await supabase
+  const { error: scoreErr } = await supabase
     .from('leads')
     .update({
       lead_score: result.finalScore,
@@ -205,8 +207,9 @@ export async function handleLeadScored(params: {
       updated_at: new Date().toISOString(),
     })
     .eq('id', leadId)
+  if (scoreErr) throw new Error(`handleLeadScored: lead score write refused: ${scoreErr.message}`)
 
-  await supabase.from('lead_score_history').insert({
+  await sentinelWrite(supabase, supabase.from('lead_score_history').insert({
     lead_id: leadId,
     brokerage_id: brokerageId,
     score: result.finalScore,
@@ -214,15 +217,15 @@ export async function handleLeadScored(params: {
     explanation: result.explanation,
     urgency_level: urgencyLevel,
     scored_at: new Date().toISOString(),
-  })
+  }), { table: "lead_score_history", flow: "lead_score_history", brokerageId: brokerageId, reason: "score history row after the score landed" })
 
-  await supabase.from('lifecycle_events').insert({
+  await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
     entity_type: 'lead',
     entity_id: leadId,
     event_type: KernelEvent.LEAD_SCORED,
     brokerage_id: brokerageId,
     created_at: new Date().toISOString(),
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   await processKernelEvent({
     event: KernelEvent.LEAD_SCORED,
@@ -256,7 +259,7 @@ export async function handleISAQualificationStarted(params: {
 
   await assertValidTransition('unconsented', 'isa_qualifying', leadId)
 
-  await supabase
+  const { error: toQualifyingErr } = await supabase
     .from('leads')
     .update({
       lifecycle_state: 'isa_qualifying',
@@ -264,24 +267,25 @@ export async function handleISAQualificationStarted(params: {
       updated_at: new Date().toISOString(),
     })
     .eq('id', leadId)
+  if (toQualifyingErr) throw new Error(`handleISAQualificationStarted: lifecycle transition unconsented→isa_qualifying refused: ${toQualifyingErr.message}`)
 
   const targetAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString()
-  await supabase.from('lead_sla_tracking').insert({
+  await sentinelWrite(supabase, supabase.from('lead_sla_tracking').insert({
     lead_id: leadId,
     brokerage_id: brokerageId,
     sla_type: 'qualification',
     target_at: targetAt,
     breached: false,
     created_at: new Date().toISOString(),
-  })
+  }), { table: "lead_sla_tracking", flow: "lead_sla_qualification", brokerageId: brokerageId, reason: "SLA timer row; breaches re-derive from lead timestamps" })
 
-  await supabase.from('lifecycle_events').insert({
+  await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
     entity_type: 'lead',
     entity_id: leadId,
     event_type: KernelEvent.ISA_QUALIFICATION_STARTED,
     brokerage_id: brokerageId,
     created_at: new Date().toISOString(),
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   await processKernelEvent({
     event: KernelEvent.ISA_QUALIFICATION_STARTED,
@@ -304,7 +308,7 @@ export async function handleConsentReceived(params: {
 
   await assertValidTransition('isa_qualifying', 'consented', leadId)
 
-  await supabase
+  const { error: toConsentedErr } = await supabase
     .from('leads')
     .update({
       lifecycle_state: 'consented',
@@ -312,15 +316,16 @@ export async function handleConsentReceived(params: {
       updated_at: new Date().toISOString(),
     })
     .eq('id', leadId)
+  if (toConsentedErr) throw new Error(`handleConsentReceived: lifecycle transition isa_qualifying→consented refused: ${toConsentedErr.message}`)
 
-  await supabase.from('lifecycle_events').insert({
+  await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
     entity_type: 'lead',
     entity_id: leadId,
     event_type: KernelEvent.CONSENT_RECEIVED,
     brokerage_id: brokerageId,
     metadata: { consentSource },
     created_at: new Date().toISOString(),
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   await processKernelEvent({
     event: KernelEvent.CONSENT_RECEIVED,
@@ -340,13 +345,13 @@ export async function handleLeadReadyForAssignment(params: {
   const { leadId, brokerageId } = params
   const supabase = createServiceClient()
 
-  await supabase.from('lifecycle_events').insert({
+  await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
     entity_type: 'lead',
     entity_id: leadId,
     event_type: KernelEvent.LEAD_READY_FOR_ASSIGNMENT,
     brokerage_id: brokerageId,
     created_at: new Date().toISOString(),
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   await processKernelEvent({
     event: KernelEvent.LEAD_READY_FOR_ASSIGNMENT,
@@ -406,7 +411,7 @@ export async function handleLeadAssigned(params: {
   // makes the normal one — reached an agent with the column still null, and the
   // lead-lineage console (app/dashboard/admin/lead-lineage) rendered "Handed at: —"
   // for exactly the assignments it exists to audit.
-  await supabase
+  const { error: assignLeadErr } = await supabase
     .from('leads')
     .update({
       lifecycle_state: 'assigned',
@@ -416,8 +421,9 @@ export async function handleLeadAssigned(params: {
       updated_at: new Date().toISOString(),
     })
     .eq('id', leadId)
+  if (assignLeadErr) throw new Error(`handleLeadAssigned: lead assignment write refused: ${assignLeadErr.message}`)
 
-  await supabase.from('assignment_log').insert({
+  await sentinelWrite(supabase, supabase.from('assignment_log').insert({
     lead_id: leadId,
     brokerage_id: brokerageId,
     agent_id: agentId,
@@ -425,28 +431,28 @@ export async function handleLeadAssigned(params: {
     assignment_method: method,
     score_at_assignment: Math.round(scoreAtAssignment),
     created_at: new Date().toISOString(),
-  })
+  }), { table: "assignment_log", flow: "lead_assignment_log", brokerageId: brokerageId, reason: "assignment audit row after the assignment landed (checked above)" })
 
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from('lead_sla_tracking')
     .update({ completed_at: new Date().toISOString() })
     .eq('lead_id', leadId)
     .eq('sla_type', 'assignment')
-    .is('completed_at', null)
+    .is('completed_at', null), { table: "lead_sla_tracking", flow: "lead_sla_assignment_done", brokerageId: brokerageId, reason: "closes the assignment SLA timer after the assignment landed" })
 
   // ASSIGNMENT ATTRIBUTION (round 38): the LEAD_ASSIGNED event itself carries
   // WHICH policy routed the lead (matched rule + method + agent) — the same
   // attribution assignment_log records, mirrored onto the kernel event so the
   // event stream is self-describing. The assignment-policy outcomes rail
   // (lib/analytics/assignment-outcomes.ts) grades policies off assignment_log.
-  await supabase.from('lifecycle_events').insert({
+  await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
     entity_type: 'lead',
     entity_id: leadId,
     event_type: KernelEvent.LEAD_ASSIGNED,
     brokerage_id: brokerageId,
     metadata: { assignment: { rule_id: ruleId ?? null, method, agent_id: agentId } },
     created_at: new Date().toISOString(),
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // Convert lead → contact through THE canonical, lossless converter (Data Steward
   // owned — lib/contact-promotion/contact-creator.ts). This replaced a second,
@@ -579,14 +585,14 @@ export async function handleLeadAssigned(params: {
     }
   }
 
-  await supabase.from('lifecycle_events').insert({
+  await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
     entity_type: 'lead',
     entity_id: leadId,
     event_type: KernelEvent.LEAD_CONVERTED_TO_CONTACT,
     brokerage_id: brokerageId,
     metadata: { contactId: contact.id },
     created_at: new Date().toISOString(),
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   await processKernelEvent({
     event: KernelEvent.LEAD_ASSIGNED,

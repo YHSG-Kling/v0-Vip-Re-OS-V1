@@ -30,6 +30,7 @@
  * Auth: CRON_SECRET via Authorization: Bearer or ?secret= (matches the rest
  * of the cron fleet).
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchEmail } from "@/lib/providers/dispatch"
@@ -165,9 +166,10 @@ async function deferCampaign(
   c: CampaignRow,
   reason: string,
 ): Promise<CampaignResult> {
-  await svc.from("newsletter_campaigns")
+  const { error: deferErr } = await svc.from("newsletter_campaigns")
     .update({ status: "deferred", defer_reason: reason })
     .eq("id", c.id)
+  if (deferErr) console.error(`[publish-newsletters] campaign NOT marked deferred: ${deferErr.message}`)
   processKernelEvent({
     event:       KernelEvent.NEWSLETTER_SEND_DEFERRED,
     brokerageId: c.brokerage_id,
@@ -388,12 +390,13 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
   }
 
   // Claim the campaign so concurrent ticks don't re-send it.
-  const { data: claimed } = await svc
+  const { data: claimed, error: claimErr } = await svc
     .from("newsletter_campaigns")
     .update({ status: "sending" })
     .eq("id", c.id)
     .in("status", ["scheduled"])
     .select("id")
+  if (claimErr) console.error(`[publish-newsletters] campaign claim refused (treated as not claimed): ${claimErr.message}`)
   if (!claimed?.length) {
     return {
       campaign_id: c.id, brokerage_id: c.brokerage_id, agent_id: c.agent_id,
@@ -429,7 +432,8 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
   }
 
   if (subs.length === 0) {
-    await svc.from("newsletter_campaigns").update({ status: "sent" }).eq("id", c.id)
+    const { error: emptySentErr } = await svc.from("newsletter_campaigns").update({ status: "sent" }).eq("id", c.id)
+    if (emptySentErr) console.error(`[publish-newsletters] empty campaign NOT marked sent: ${emptySentErr.message}`)
     return {
       campaign_id: c.id, brokerage_id: c.brokerage_id, agent_id: c.agent_id,
       outcome: "sent_empty", recipients: 0, sent: 0, suppressed: 0, errors: 0,
@@ -498,11 +502,11 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
           // ai-newsletter insert named above omits it on the platform's main
           // newsletter path, and PostgREST refuses the WHOLE row on a NOT NULL
           // violation (§3), so that path could not work if it were required.
-          await svc.from("newsletter_sends").insert({
+          await sentinelWrite(svc, svc.from("newsletter_sends").insert({
             brokerage_id: c.brokerage_id, campaign_id: c.id, contact_id: s.contact_id,
             template_id: null, status: "suppressed",
             provider_message_id: null, sent_at: null,
-          })
+          }), { table: "newsletter_sends", flow: "newsletter_suppressed_row", reason: "suppressed-recipient record; never blocks the remaining recipients" })
         } catch { /* non-blocking */ }
         continue
       }
@@ -622,7 +626,7 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
       // context.campaignSubject), so this wrote the campaign's own subject back
       // onto every recipient row and nothing ever read the copy. See the fuller
       // tombstone on the suppressed-row insert above.
-      await svc.from("newsletter_sends").insert({
+      await sentinelWrite(svc, svc.from("newsletter_sends").insert({
         brokerage_id:        c.brokerage_id,
         campaign_id:         c.id,
         contact_id:          s.contact_id,
@@ -630,13 +634,14 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
         status,
         provider_message_id: result.messageId ?? null,
         sent_at:             status === "sent" ? new Date().toISOString() : null,
-      })
+      }), { table: "newsletter_sends", flow: "newsletter_send_row", reason: "per-recipient send row after the dispatch already happened; never blocks the remaining recipients" })
     } catch { /* row write failure shouldn't block remaining recipients */ }
   }
 
-  await svc.from("newsletter_campaigns")
+  const { error: sentStampErr } = await svc.from("newsletter_campaigns")
     .update({ status: "sent" })
     .eq("id", c.id)
+  if (sentStampErr) console.error(`[publish-newsletters] campaign sent but NOT marked sent (it stays 'sending'): ${sentStampErr.message}`)
 
   // ── CLOSE THE LEDGER ROW THE SCHEDULER OPENED ─────────────────────────────
   // newsletter_scheduled_sends is the send LEDGER: two schedulers

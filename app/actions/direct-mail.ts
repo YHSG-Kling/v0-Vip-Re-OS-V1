@@ -304,10 +304,11 @@ export async function deleteMailCampaign(campaignId: string) {
     }
 
     // Delete recipients first
-    await supabase
+    const { error: recipientsClearErr } = await supabase
       .from("direct_mail_recipients")
       .delete()
       .eq("campaign_id", campaignId)
+    if (recipientsClearErr) return { success: false, error: `Could not remove the campaign's recipients: ${recipientsClearErr.message}` }
 
     // Delete the campaign
     const { error } = await supabase

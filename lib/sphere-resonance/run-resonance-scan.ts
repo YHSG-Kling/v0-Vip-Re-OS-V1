@@ -17,6 +17,7 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 // Lane 86E: this imported the "use server" aiGenerateTouchpoint, which read the
 // contact through the COOKIE client — this cron has none, so every draft came
@@ -202,7 +203,7 @@ async function processBrokerageResonance(
       // Sensitive events — surface for human review only, never auto-touch
       if (SENSITIVE_EVENTS.has(eventTypeKey)) {
         sensitiveSkipped++
-        await supabase.from("predictive_listing_actions").insert({
+        await sentinelWrite(supabase, supabase.from("predictive_listing_actions").insert({
           contact_id: c.id,
           agent_id: c.agent_id,
           brokerage_id: brokerageId,
@@ -213,7 +214,7 @@ async function processBrokerageResonance(
           status: "pending_review",
           // No scheduled_send_at — agent must take action
           cancel_reason: evidenceKey,  // used for idempotency lookup
-        })
+        }), { table: "predictive_listing_actions", flow: "predictive_listing_actions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
         surfacedOnly++
         continue
       }

@@ -32,6 +32,7 @@
 // ai_assistant_notes    — entity attachment (insert)
 // lifecycle_events      — entity attachment events (insert)
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { ActorRole } from "@/lib/kernel/types"
 
@@ -342,7 +343,7 @@ export async function attachAiOutputToEntity(
     if (noteErr) throw noteErr
 
     // Write lifecycle event
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("lifecycle_events")
       .insert({
         brokerage_id: ctx.brokerageId,
@@ -354,8 +355,7 @@ export async function attachAiOutputToEntity(
           saved_output_id: savedOutputId,
           actor_user_id: ctx.userId,
         },
-      })
-      .then(() => void 0, () => void 0) // lifecycle event is non-fatal
+      }), { table: "lifecycle_events", flow: "ai_note_attached_echo", reason: "lifecycle echo after the note landed" }) // lifecycle event is non-fatal
 
     return { success: true }
   } catch (err) {

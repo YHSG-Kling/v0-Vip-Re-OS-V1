@@ -32,6 +32,7 @@
  * component rendering the portal page) can degrade to showing what's already in the DB.
  */
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getTransactionProvider } from "@/lib/integrations/providers/provider-resolver"
 import type { ProviderDocument } from "@/lib/integrations/providers/transaction-provider.interface"
@@ -102,12 +103,12 @@ export async function syncTransactionDocumentsFromProvider(
       providerSource = linkedOffer.esign_provider as string
       externalId    = linkedOffer.provider_envelope_id as string
       // Backfill so subsequent sync calls hit the fast path.
-      await svc.from("transactions")
+      await sentinelWrite(svc, svc.from("transactions")
         .update({
           external_provider_source:         providerSource,
           external_provider_transaction_id: externalId,
         })
-        .eq("id", input.transactionId)
+        .eq("id", input.transactionId), { table: "transactions", flow: "provider_link_backfill", reason: "fast-path backfill; the slow path re-derives the link on the next sync" })
     }
   }
 
@@ -176,10 +177,10 @@ export async function syncTransactionDocumentsFromProvider(
   }
 
   // 6. Stamp last_provider_sync_at so the staleness gate above can skip the next call.
-  await svc
+  await sentinelWrite(svc, svc
     .from("transactions")
     .update({ last_provider_sync_at: new Date().toISOString() })
-    .eq("id", input.transactionId)
+    .eq("id", input.transactionId), { table: "transactions", flow: "provider_sync_stamp", reason: "staleness stamp; a lost stamp only means the next call syncs again" })
 
   return { ok: true, synced, skipped: null, error: null }
 }
@@ -305,10 +306,10 @@ export async function syncListingDocumentsFromProvider(
   }
 
   // 6. Stamp last_provider_sync_at on the LISTING row.
-  await svc
+  await sentinelWrite(svc, svc
     .from("listings")
     .update({ last_provider_sync_at: new Date().toISOString() })
-    .eq("id", input.listingId)
+    .eq("id", input.listingId), { table: "listings", flow: "listing_provider_sync_stamp", reason: "staleness stamp; a loss only means the next call syncs again" })
 
   return { ok: true, synced, skipped: null, error: null }
 }

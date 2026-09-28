@@ -21,6 +21,7 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 export type AttributionModel = "first_touch" | "last_touch" | "linear" | "time_decay"
@@ -120,7 +121,7 @@ export async function attributeTransactionSafe(
       const credit = Math.round(gci * weight * 100) / 100
       perModelTotals[model] += credit
       const tp = perCampaign.get(campaignId)!
-      await svc
+      await sentinelWrite(svc, svc
         .from("marketing_attribution_credits")
         .upsert({
           brokerage_id:        txn.brokerage_id as string,
@@ -133,7 +134,7 @@ export async function attributeTransactionSafe(
           first_touchpoint_at: tp.firstSentAt,
           last_touchpoint_at:  tp.lastSentAt,
           touchpoint_count:    tp.count,
-        }, { onConflict: "campaign_id,transaction_id,attribution_model" })
+        }, { onConflict: "campaign_id,transaction_id,attribution_model" }), { table: "marketing_attribution_credits", flow: "marketing_attribution_credit", brokerageId: txn.brokerage_id as string, reason: "per-model credit rows are recomputed idempotently (upsert on campaign+transaction+model) on the next attribution run; a loss is ledgered" })
     }
   }
 
@@ -149,14 +150,14 @@ export async function attributeTransactionSafe(
       (s, r) => s + Number((r as { credit_dollars: number | null }).credit_dollars ?? 0),
       0,
     )
-    await svc
+    await sentinelWrite(svc, svc
       .from("marketing_campaigns")
       .update({
         attributed_gci_total:   total,
         attribution_synced_at:  new Date().toISOString(),
         updated_at:             new Date().toISOString(),
       })
-      .eq("id", campaignId)
+      .eq("id", campaignId), { table: "marketing_campaigns", flow: "attribution_rollup", reason: "rollup cache recomputed on every attribution run" })
   }
 
   const totalCredits: number = (Object.values(perModelTotals) as number[])

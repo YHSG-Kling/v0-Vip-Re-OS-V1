@@ -11,6 +11,7 @@
  * Not server-only: uses the service client + the pure builder. Never import
  * from a client component.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { enqueueCmaReelRender } from "@/lib/video/cma-reel-orchestrator"
 import {
@@ -112,11 +113,11 @@ async function renderCmaSectionForPresentation(
   if (!enq.ok) return { ok: false, skipped: enq.error }
 
   // Attach the render to the CMA section so the drip delivers a video.
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("presentation_sections")
     .update({ render_id: enq.renderId })
     .eq("presentation_id", presentationId)
-    .eq("section_key", "cma")
+    .eq("section_key", "cma"), { table: "presentation_sections", flow: "presentation_sections_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   return { ok: true, renderId: enq.renderId }
 }
@@ -365,9 +366,9 @@ export async function renderSectionsForPresentation(
       .select("id")
       .single()
     if (error || !render) { skipped++; continue }
-    await supabase.from("presentation_sections")
+    await sentinelWrite(supabase, supabase.from("presentation_sections")
       .update({ render_id: (render as { id: string }).id })
-      .eq("presentation_id", presentationId).eq("section_key", s.section_key)
+      .eq("presentation_id", presentationId).eq("section_key", s.section_key), { table: "presentation_sections", flow: "presentation_sections_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     rendered++
   }
 

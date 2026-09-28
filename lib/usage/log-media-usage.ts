@@ -15,6 +15,7 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { currentUsagePeriod } from "./period"
 
@@ -57,7 +58,10 @@ export async function logMediaUsage(params: LogMediaUsageParams): Promise<void> 
   const supabase = createServiceClient()
 
   // 1. Per-event audit row
-  await supabase.from("usage_events").insert({
+  // THE BILLED ROW (usage_events is what is invoiced). supabase-js RESOLVES a
+  // refusal, so the old `.then(() => {}, warn)` only ever saw a THROW — a refused
+  // row vanished. sentinelWrite reads it and ledgers the loss; still never throws.
+  await sentinelWrite(supabase, supabase.from("usage_events").insert({
     brokerage_id: params.brokerageId,
     team_id: params.teamId ?? null,
     agent_id: params.agentId ?? null,
@@ -69,7 +73,10 @@ export async function logMediaUsage(params: LogMediaUsageParams): Promise<void> 
     feature: params.feature ?? null,
     cost_cents: params.costCents ?? null,
     metadata: params.metadata ?? {},
-  }).then(() => {}, (e) => console.warn("[usage] event insert failed", e))
+  }), {
+    table: "usage_events", flow: "media_usage_event", brokerageId: params.brokerageId,
+    reason: "usage logging never fails the media operation it meters; a lost billed row is ledgered for the repair digest",
+  })
 
   // 2. Monthly counter — UPSERT with delta increment
   // Period: calendar month UTC. UNIQUE(brokerage_id, period_start, period_end, metric).
@@ -89,13 +96,15 @@ export async function logMediaUsage(params: LogMediaUsageParams): Promise<void> 
     .maybeSingle()
 
   if (existing) {
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("usage_counters")
       .update({ value: (existing.value ?? 0) + Math.ceil(params.quantity) })
-      .eq("id", existing.id)
-      .then(() => {}, (e) => console.warn("[usage] counter update failed", e))
+      .eq("id", existing.id), {
+      table: "usage_counters", flow: "media_usage_counter", brokerageId: params.brokerageId,
+      reason: "display counter (billing reads usage_events); a lost increment is ledgered",
+    })
   } else {
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("usage_counters")
       .insert({
         brokerage_id: params.brokerageId,
@@ -103,8 +112,10 @@ export async function logMediaUsage(params: LogMediaUsageParams): Promise<void> 
         period_end: periodEndIso,
         metric: params.metric,
         value: Math.ceil(params.quantity),
-      })
-      .then(() => {}, (e) => console.warn("[usage] counter insert failed", e))
+      }), {
+      table: "usage_counters", flow: "media_usage_counter", brokerageId: params.brokerageId,
+      reason: "display counter (billing reads usage_events); a lost increment is ledgered",
+    })
   }
 
   // 3. THE BILLING METER — `billing_usage.video_minutes`.

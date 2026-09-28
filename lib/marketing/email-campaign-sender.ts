@@ -18,6 +18,7 @@
  *   · every message rides dispatchEmail — the ONE consent-gated egress
  *   · honest lifecycle: sending → sent with real counts; kernel event
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { KernelEvent, processKernelEvent } from "@/lib/kernel"
 
 type Svc = any
@@ -66,10 +67,11 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
   if (!html) return { ok: false, sent: 0, failed: 0, recipients: 0, error: "Campaign has no content (body or template)" }
 
   // Claim before the loop so a concurrent tick can't double-send.
-  const { data: claimed } = await svc.from("email_campaigns")
+  const { data: claimed, error: claimErr } = await svc.from("email_campaigns")
     .update({ status: "sending" })
     .eq("id", campaignId).neq("status", "sending").neq("status", "sent")
     .select("id").maybeSingle()
+  if (claimErr) return { ok: false, sent: 0, failed: 0, recipients: 0, error: `Campaign claim refused: ${claimErr.message}` }
   if (!claimed) return { ok: false, sent: 0, failed: 0, recipients: 0, error: "Campaign claimed by another worker" }
 
   // From: the campaign agent's real address, else the tenant's configured
@@ -93,7 +95,7 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
   if (!fromEmail) {
     // Refuse before spending the tenant's quota to fail. The campaign returns
     // to its prior status so a human can configure a sender and re-run it.
-    await svc.from("email_campaigns").update({ status: campaign.status }).eq("id", campaignId)
+    await sentinelWrite(svc, svc.from("email_campaigns").update({ status: campaign.status }).eq("id", campaignId), { table: "email_campaigns", flow: "email_campaign_status_restore", reason: "status restore on a refusal that is returned in the same step" })
     return { ok: false, sent: 0, failed: 0, recipients: 0, error: NO_SENDER_ERROR }
   }
 
@@ -114,7 +116,7 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
         email = (contact as { email: string | null } | null)?.email ?? null
       }
       if (!email) {
-        await svc.from("email_sends").update({ status: "failed" }).eq("id", row.id)
+        await sentinelWrite(svc, svc.from("email_sends").update({ status: "failed" }).eq("id", row.id), { table: "email_sends", flow: "email_send_row", reason: "per-recipient failure row; counted as failed" })
         failed++
         continue
       }
@@ -146,11 +148,12 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
       // them would trade one orphan for two — a write with no reader is the
       // same defect as a read with no writer (CLAUDE.md §1), and the failure is
       // already on the record as status='failed'. Build the reader first.
-      await svc.from("email_sends").update({
+      const { error: sendRowErr } = await svc.from("email_sends").update({
         status: result.success ? "sent" : "failed",
         ...(result.success && { sent_at: new Date().toISOString() }),
         provider_message_id: result.messageId ?? null,
       }).eq("id", row.id)
+      if (sendRowErr) console.error(`[email-campaign-sender] per-recipient send outcome NOT recorded: ${sendRowErr.message}`)
       if (result.success) sent++; else failed++
     }
   } else if (campaign.audience_segment_id) {
@@ -173,13 +176,13 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
       .is("removed_at", null)
       .limit(2000)
     if (memberError) {
-      await svc.from("email_campaigns").update({ status: campaign.status }).eq("id", campaignId)
+      await sentinelWrite(svc, svc.from("email_campaigns").update({ status: campaign.status }).eq("id", campaignId), { table: "email_campaigns", flow: "email_campaign_status_restore", reason: "status restore on a refusal that is returned in the same step" })
       return { ok: false, sent: 0, failed: 0, recipients: 0, error: `Segment resolution failed: ${memberError.message}` }
     }
     const memberIds = [...new Set(((members ?? []) as Array<{ contact_id: string | null }>)
       .map((m) => m.contact_id).filter(Boolean))] as string[]
     if (memberIds.length === 0) {
-      await svc.from("email_campaigns").update({ status: campaign.status }).eq("id", campaignId)
+      await sentinelWrite(svc, svc.from("email_campaigns").update({ status: campaign.status }).eq("id", campaignId), { table: "email_campaigns", flow: "email_campaign_status_restore", reason: "status restore on a refusal that is returned in the same step" })
       return { ok: false, sent: 0, failed: 0, recipients: 0, error: "No contacts in the target segment" }
     }
     const { data: segContacts, error: segContactsError } = await svc.from("contacts")
@@ -187,14 +190,14 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
       .in("id", memberIds)
       .eq("brokerage_id", campaign.brokerage_id)
     if (segContactsError) {
-      await svc.from("email_campaigns").update({ status: campaign.status }).eq("id", campaignId)
+      await sentinelWrite(svc, svc.from("email_campaigns").update({ status: campaign.status }).eq("id", campaignId), { table: "email_campaigns", flow: "email_campaign_status_restore", reason: "status restore on a refusal that is returned in the same step" })
       return { ok: false, sent: 0, failed: 0, recipients: 0, error: `Segment contact lookup failed: ${segContactsError.message}` }
     }
     const seenEmails = new Set<string>()
     const segRecipients = ((segContacts ?? []) as Array<{ id: string; email: string | null }>)
       .filter((r) => r.email && !seenEmails.has(r.email) && seenEmails.add(r.email))
     if (segRecipients.length === 0) {
-      await svc.from("email_campaigns").update({ status: campaign.status }).eq("id", campaignId)
+      await sentinelWrite(svc, svc.from("email_campaigns").update({ status: campaign.status }).eq("id", campaignId), { table: "email_campaigns", flow: "email_campaign_status_restore", reason: "status restore on a refusal that is returned in the same step" })
       return { ok: false, sent: 0, failed: 0, recipients: 0, error: "No segment contacts have an email address" }
     }
     for (const contact of segRecipients) {
@@ -225,7 +228,7 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
     const uniqueSubs = ((subs ?? []) as Array<{ id: string; email: string; contact_id: string | null }>)
       .filter((s) => s.email && !seen.has(s.email) && seen.add(s.email))
     if (uniqueSubs.length === 0) {
-      await svc.from("email_campaigns").update({ status: campaign.status }).eq("id", campaignId)
+      await sentinelWrite(svc, svc.from("email_campaigns").update({ status: campaign.status }).eq("id", campaignId), { table: "email_campaigns", flow: "email_campaign_status_restore", reason: "status restore on a refusal that is returned in the same step" })
       return { ok: false, sent: 0, failed: 0, recipients: 0, error: "No subscribed recipients" }
     }
     for (const sub of uniqueSubs) {
@@ -246,7 +249,7 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
         // `subject` is NOT copied onto the send row (wave 26, §1 duplicate):
         // it is email_campaigns.subject_line, read at :57 and dispatched at
         // :238 above — campaign_id is the join, the campaign is the survivor.
-        await svc.from("newsletter_sends").insert({
+        await sentinelWrite(svc, svc.from("newsletter_sends").insert({
           brokerage_id: campaign.brokerage_id,
           contact_id: sub.contact_id,
           campaign_id: campaignId,
@@ -258,18 +261,19 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
           // them was a permanent zero.
           provider_message_id: result.messageId ?? null,
           sent_at: result.success ? new Date().toISOString() : null,
-        })
+        }), { table: "newsletter_sends", flow: "newsletter_send_row", reason: "per-recipient send row after the dispatch already happened" })
       }
       if (result.success) sent++; else failed++
     }
   }
 
-  await svc.from("email_campaigns").update({
+  const { error: campaignSentErr } = await svc.from("email_campaigns").update({
     status: "sent",
     sent_at: new Date().toISOString(),
     recipient_count: recipients,
     delivered_count: sent,
   }).eq("id", campaignId)
+  if (campaignSentErr) console.error(`[email-campaign-sender] campaign sent but NOT marked sent (it stays 'sending'): ${campaignSentErr.message}`)
 
   await processKernelEvent({
     event: KernelEvent.EMAIL_CAMPAIGN_SENT,

@@ -68,9 +68,9 @@ export async function reapStuckManagerSignals(brokerageId: string, client?: Svc)
         dedupe:      false,
       }, svc)
       if (republished.ok && republished.signalId !== row.id) {
-        await svc.from("manager_signals")
+        await sentinelWrite(svc, svc.from("manager_signals")
           .update({ status: "expired", consumed_at: new Date().toISOString(), consumed_action: `auto-replayed (attempt ${replays + 1}/${2}) — re-handed to ${row.to_manager}` })
-          .eq("id", row.id).eq("status", "open")
+          .eq("id", row.id).eq("status", "open"), { table: "manager_signals", flow: "signal_reaper_replay_expire", reason: "expires the replayed original; a loss leaves it for the next reap" })
         result.replayed += 1
         continue
       }
@@ -103,9 +103,9 @@ export async function reapStuckManagerSignals(brokerageId: string, client?: Svc)
     const reason = action === "expire_escalate"
       ? "expired: handoff did not complete within window — escalated to a human"
       : "expired: feed display TTL reached"
-    await svc.from("manager_signals")
+    await sentinelWrite(svc, svc.from("manager_signals")
       .update({ status: "expired", consumed_at: new Date().toISOString(), consumed_action: reason })
-      .eq("id", row.id).eq("status", "open")
+      .eq("id", row.id).eq("status", "open"), { table: "manager_signals", flow: "signal_reaper_expire", reason: "expires a stale signal; a loss leaves it for the next reap" })
     result.expired += 1
   }
 

@@ -20,6 +20,7 @@
  * Overdue requests are surfaced in the admin dashboard with red badges.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
@@ -337,13 +338,13 @@ export async function verifyDSARIdentityAction(params: {
     return { ok: false, error: "No open request matched — it may belong to another brokerage, be unattributed, or already be closed. Nothing was verified." }
   }
 
-  await svc.from("audit_log").insert({
+  await sentinelWrite(svc, svc.from("audit_log").insert({
     after:       { brokerage_id: auth.brokerageId, request_id: params.requestId, identity_method: params.method, verified_by: auth.userId },
     user_id:     auth.userId,
     action:      "dsar.identity_verified",
     entity_type: "data_subject_request",
     entity_id:   params.requestId,
-  })
+  }), { table: "audit_log", flow: "dsar_identity_verified_audit", brokerageId: auth.brokerageId, reason: "the request row's verified state already landed (counted above); a lost audit echo is ledgered for the compliance digest" })
 
   revalidatePath("/dashboard/admin/privacy/requests")
   return { ok: true }
@@ -521,13 +522,13 @@ export async function fulfillExportRequestAction(requestId: string): Promise<
   // The 45-day clock's answer is a legal event. audit_log is the platform's
   // existing ledger (already the record for billing overrides and retention
   // acceptances) — write there rather than standing up a parallel privacy log.
-  await svc.from("audit_log").insert({
+  await sentinelWrite(svc, svc.from("audit_log").insert({
     after:       { brokerage_id: auth.brokerageId, request_id: requestId, subject_email: email, summary, contact_records: bundle.contact_records.length, communications: bundle.communications.length, transactions: bundle.transactions.length },
     user_id:     auth.userId,
     action:      "dsar.export_fulfilled",
     entity_type: "data_subject_request",
     entity_id:   requestId,
-  })
+  }), { table: "audit_log", flow: "dsar_export_fulfilled_audit", brokerageId: auth.brokerageId, reason: "the export bundle is already built and returned; a lost audit echo is ledgered for the compliance digest" })
 
   revalidatePath("/dashboard/admin/privacy/requests")
   return { ok: true, bundle }
@@ -669,13 +670,13 @@ export async function denyDSARRequestAction(params: {
     return { ok: false, error: "No open request matched — it may belong to another brokerage, be unattributed, or already be closed. Nothing was denied." }
   }
 
-  await svc.from("audit_log").insert({
+  await sentinelWrite(svc, svc.from("audit_log").insert({
     after:       { brokerage_id: auth.brokerageId, request_id: params.requestId, denied_reason: params.reason.trim(), denied_by: auth.userId },
     user_id:     auth.userId,
     action:      "dsar.request_denied",
     entity_type: "data_subject_request",
     entity_id:   params.requestId,
-  })
+  }), { table: "audit_log", flow: "dsar_request_denied_audit", brokerageId: auth.brokerageId, reason: "the request row's denied state already landed (counted above); a lost audit echo is ledgered for the compliance digest" })
 
   revalidatePath("/dashboard/admin/privacy/requests")
   return { ok: true }

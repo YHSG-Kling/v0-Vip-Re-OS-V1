@@ -3,6 +3,7 @@
  * Handles text embedding generation using OpenAI/Vercel AI Gateway
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { embed, embedMany } from 'ai'
 import { createServiceClient } from '@/lib/supabase/service'
 import { createHash } from 'crypto'
@@ -192,10 +193,10 @@ export async function processPendingEmbeddings(limit: number = 10): Promise<{
   for (const item of pending) {
     try {
       // Mark as processing
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from('embedding_queue')
         .update({ status: 'processing', attempts: item.attempts + 1 })
-        .eq('id', item.id)
+        .eq('id', item.id), { table: "embedding_queue", flow: "embedding_queue_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
       // Process based on source table
       if (item.source_table === 'help_topics_kb') {
@@ -205,24 +206,24 @@ export async function processPendingEmbeddings(limit: number = 10): Promise<{
       }
 
       // Mark as completed
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from('embedding_queue')
         .update({
           status: 'completed',
           processed_at: new Date().toISOString(),
         })
-        .eq('id', item.id)
+        .eq('id', item.id), { table: "embedding_queue", flow: "embedding_queue_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
       processed++
     } catch (error) {
       // Mark as failed
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from('embedding_queue')
         .update({
           status: item.attempts + 1 >= 3 ? 'failed' : 'pending',
           error_message: error instanceof Error ? error.message : 'Unknown error',
         })
-        .eq('id', item.id)
+        .eq('id', item.id), { table: "embedding_queue", flow: "embedding_queue_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
       failed++
     }

@@ -18,6 +18,7 @@
  * a deterministic fallback. NOT server-only (simulator-driven).
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { CopyGenerator } from "@/lib/kernel/ai-copy"
 
@@ -113,20 +114,21 @@ export async function answerAgentQuestion(
     const { data: session } = await sessionQ.limit(1).maybeSingle()
     let sessionId = (session as any)?.id as string | undefined
     if (!sessionId) {
-      const { data: created } = await svc.from("chat_sessions").insert({
+      const { data: created, error: guideSessionErr } = await svc.from("chat_sessions").insert({
         brokerage_id: input.brokerageId,
         agent_id: agentId,
         session_type: "internal_assistant",
         source: "agent_guide",
         status: "active",
       }).select("id").single()
+      if (guideSessionErr) console.error(`[agent-guide] guide session NOT created (the question will not be logged): ${guideSessionErr.message}`)
       sessionId = (created as any)?.id
     }
     if (sessionId) {
-      await svc.from("chat_messages").insert({
+      await sentinelWrite(svc, svc.from("chat_messages").insert({
         session_id: sessionId, role: "user", content: question,
         metadata: { surface: "agent_guide", asked_by_user_id: input.userId, matched_modules: matches.length },
-      })
+      }), { table: "chat_messages", flow: "chat_messages_write", reason: "question log for the curriculum loop; the answer is returned regardless" })
       gapLogged = matches.length === 0
     }
   } catch { /* logging is best-effort — the answer still flows */ }

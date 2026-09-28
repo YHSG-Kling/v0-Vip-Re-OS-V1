@@ -52,6 +52,7 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   BLOG_PENDING_PUBLISH_STATUS,
@@ -113,17 +114,18 @@ export async function applyMarketingAssetApproval(
     const { data: nl } = await svc.from("newsletter_campaigns")
       .select("status, send_date").eq("id", id).maybeSingle()
     if (nl && (nl.status === "draft" || nl.status === "pending_review")) {
-      await svc.from("newsletter_campaigns").update({
+      const { error: nlScheduleErr } = await svc.from("newsletter_campaigns").update({
         status: "scheduled",
         send_date: nl.send_date ?? new Date().toISOString(),
       }).eq("id", id)
+      if (nlScheduleErr) console.error(`[approval-queue] approved newsletter NOT scheduled: ${nlScheduleErr.message}`)
     }
   }
   if (kind === "blog") {
     const { data: bp } = await svc.from("blog_posts")
       .select("publish_status").eq("id", id).maybeSingle()
     if (bp && bp.publish_status === "draft") {
-      await svc.from("blog_posts").update({ publish_status: "approved" }).eq("id", id)
+      await sentinelWrite(svc, svc.from("blog_posts").update({ publish_status: "approved" }).eq("id", id), { table: "blog_posts", flow: "blog_posts_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
   }
   if (kind === "podcast") {
@@ -134,7 +136,7 @@ export async function applyMarketingAssetApproval(
         .select("channel_name").eq("brokerage_id", ep.brokerage_id).eq("is_enabled", true)
       const names = ((channels ?? []) as Array<{ channel_name: string }>).map((c) => c.channel_name)
       if (names.length > 0) {
-        await svc.from("podcast_episodes").update({ publish_channels: names }).eq("id", id)
+        await sentinelWrite(svc, svc.from("podcast_episodes").update({ publish_channels: names }).eq("id", id), { table: "podcast_episodes", flow: "podcast_episodes_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       }
     }
   }
@@ -188,10 +190,11 @@ export async function applyMarketingAssetApproval(
     const isOneToOne = !!(dm && ((dm as { contact_id?: string | null }).contact_id
       || (dm as { lead_id?: string | null }).lead_id))
     if (!isOneToOne) {
-      await svc.from("direct_mail_campaigns")
+      const { error: dmApproveErr } = await svc.from("direct_mail_campaigns")
         .update({ status: "approved" })
         .eq("id", id)
         .eq("status", "planning")
+      if (dmApproveErr) console.error(`[approval-queue] approved direct-mail campaign NOT marked approved (the drain will not pick it up): ${dmApproveErr.message}`)
     }
   }
 
@@ -223,9 +226,9 @@ export async function applyMarketingAssetRejection(
   }
 
   if (kind === "blog") {
-    await svc.from("blog_posts")
+    await sentinelWrite(svc, svc.from("blog_posts")
       .update({ publish_status: BLOG_REJECTED_PUBLISH_STATUS })
-      .eq("id", id)
+      .eq("id", id), { table: "blog_posts", flow: "blog_posts_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
 
   return { ok: true }

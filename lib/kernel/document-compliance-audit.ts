@@ -48,6 +48,7 @@
 // NOT server-only (simulator-driven, like the rest of the kernel loaders). Only ever writes
 // through a caller-supplied/service client.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -752,11 +753,11 @@ export async function runDocumentComplianceAudit(
     audited_at: now.toISOString(),
     source: "document_compliance_audit",
   }
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("client_documents")
     .update({ ai_metadata: { ...(d.ai_metadata ?? {}), [AUDIT_META_KEY]: auditRecord } })
     .eq("id", d.id)
-    .eq("brokerage_id", d.brokerage_id)
+    .eq("brokerage_id", d.brokerage_id), { table: "client_documents", flow: "client_documents_write", reason: "audit annotation on the document; findings escalate below regardless and the audit re-runs on schedule" })
 
   // Only findings escalate. A clean pass and an honest 'not_audited' do NOT alert anyone.
   let escalated = 0
@@ -867,14 +868,14 @@ async function escalateToBroker(
       contactId: args.contactId,
     }, supabase)
     if (pub.ok && pub.signalId && !pub.reason) {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("manager_signals")
         .update({
           status: "consumed",
           consumed_at: args.now.toISOString(),
           consumed_action: `document compliance audit escalated ${args.classified.findings.length} finding(s) to ${escalated} broker recipient(s)`,
         })
-        .eq("id", pub.signalId)
+        .eq("id", pub.signalId), { table: "manager_signals", flow: "doc_audit_consume", reason: "consumes the escalation signal already executed" })
     }
   } catch {
     /* bus audit line is best-effort — the broker escalation already landed */

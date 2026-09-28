@@ -30,6 +30,7 @@
 //   10. exportFinancialReport — CSV/PDF export with audit trail
 //   11. emailFinancialReport — send report via email_queue
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 // BROKERAGE-WIDE MONEY GATES: every role check in this file guards commission /
 // expense / report surfaces backed by the SERVICE client (RLS bypassed), so the
@@ -888,11 +889,15 @@ export async function recalculateCommissionState(
     // and the cap RESETS when the anniversary year elapses (computeCapState — pure, tested).
     const now = new Date()
     let capped = 0
+    // A refused cap write leaves the agent's cap state (and every split computed
+    // from it) stale while this used to report the recalculation done — read each
+    // error, and count rows so a write that matched nothing is not "updated".
+    const capRefusals: string[] = []
 
     for (const record of capTracking ?? []) {
       const st = computeCapState(record as CapRecordLite, now)
       if (st.changed) {
-        await supabase
+        const { data: capUpdated, error: capErr } = await supabase
           .from("agent_cap_tracking")
           .update({
             is_capped: st.isCapped,
@@ -901,12 +906,21 @@ export async function recalculateCommissionState(
               : {}),
           })
           .eq("id", record.id)
+          .select("id")
+        if (capErr) capRefusals.push(`${record.id}: ${capErr.message}`)
+        else if ((capUpdated ?? []).length === 0) capRefusals.push(`${record.id}: matched no row`)
       }
       if (st.isCapped) capped++
     }
+    if (capRefusals.length > 0) {
+      return {
+        success: false,
+        error: `Cap recalculation incomplete — ${capRefusals.length} agent cap record(s) were not updated: ${capRefusals.slice(0, 3).join("; ")}`,
+      }
+    }
 
     // Emit lifecycle event
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("lifecycle_events")
       .insert({
         brokerage_id: brokerageId, // NOT NULL (pass 5)
@@ -915,7 +929,7 @@ export async function recalculateCommissionState(
         event_type:  KernelEvent.COMMISSION_STATE_RECALCULATED,
         metadata:    { recalculated: capTracking?.length ?? 0, capped },
         created_at:  new Date().toISOString(),
-      })
+      }), { table: "lifecycle_events", flow: "commission_state_recalculated_echo", brokerageId: brokerageId, reason: "lifecycle echo of a completed recalculation; the cap rows are the record" })
 
     return {
       success: true,
@@ -979,7 +993,7 @@ export async function markCommissionApproved(
     }
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
-    await supabase.from("commission_splits").update({ status: "approved", updated_at: approvedAt }).eq("commission_id", commissionId)
+    await sentinelWrite(supabase, supabase.from("commission_splits").update({ status: "approved", updated_at: approvedAt }).eq("commission_id", commissionId), { table: "commission_splits", flow: "commission_splits_mirror_approved", brokerageId: brokerageId, reason: "mirror of agent_commissions (already approved, the source of truth); the tracking-drift reaper heals a single-sided miss — ledgered so the miss is visible" })
 
     // …and onto the deal stamp, so approval is visible on the retained record too.
     await syncAgentLedgerToStamp(supabase, {
@@ -989,7 +1003,7 @@ export async function markCommissionApproved(
     })
 
     // Emit lifecycle event
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("lifecycle_events")
       .insert({
         brokerage_id: brokerageId, // NOT NULL (pass 5)
@@ -998,7 +1012,7 @@ export async function markCommissionApproved(
         event_type:  KernelEvent.COMMISSION_APPROVED,
         metadata:    { oldStatus, newStatus, approvedBy },
         created_at:  approvedAt,
-      })
+      }), { table: "lifecycle_events", flow: "commission_approved_echo", brokerageId: brokerageId, reason: "lifecycle echo after the approval landed" })
 
     return {
       success: true,
@@ -1058,7 +1072,7 @@ export async function markCommissionPaid(
     }
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
-    await supabase.from("commission_splits").update({ status: "paid", paid_at: paidAt, updated_at: paidAt }).eq("commission_id", commissionId)
+    await sentinelWrite(supabase, supabase.from("commission_splits").update({ status: "paid", paid_at: paidAt, updated_at: paidAt }).eq("commission_id", commissionId), { table: "commission_splits", flow: "commission_splits_mirror_paid", brokerageId: brokerageId, reason: "mirror of agent_commissions (already paid, the source of truth); the tracking-drift reaper heals a single-sided miss — ledgered so the miss is visible" })
 
     // Mirror onto the DEAL STAMP (transaction_commissions) — the record real-estate
     // retention keeps for seven years. Paying the agent here without stamping the
@@ -1071,7 +1085,7 @@ export async function markCommissionPaid(
     })
 
     // Emit lifecycle event
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("lifecycle_events")
       .insert({
         brokerage_id: brokerageId, // NOT NULL (pass 5)
@@ -1080,7 +1094,7 @@ export async function markCommissionPaid(
         event_type:  KernelEvent.COMMISSION_PAID,
         metadata:    { oldStatus, newStatus, paidAt, method },
         created_at:  paidAt,
-      })
+      }), { table: "lifecycle_events", flow: "commission_paid_echo", brokerageId: brokerageId, reason: "lifecycle echo after the payout record landed" })
 
     // Update agent cap tracking (cap_paid_to_date)
     const { data: agentEarnings } = await supabase
@@ -1098,13 +1112,13 @@ export async function markCommissionPaid(
         .maybeSingle()
 
       if (capRecord) {
-        await supabase
+        await sentinelWrite(supabase, supabase
           .from("agent_cap_tracking")
           .update({
             cap_paid_to_date: (capRecord.cap_paid_to_date ?? 0) + (agentEarnings.agent_commission ?? 0),
           })
           .eq("agent_id", agentEarnings.agent_id)
-          .eq("brokerage_id", brokerageId)
+          .eq("brokerage_id", brokerageId), { table: "agent_cap_tracking", flow: "cap_paid_to_date_on_payout", brokerageId: brokerageId, reason: "cap progress after a landed payout must not unwind the payout; a refusal is ledgered for the repair digest and recalculateCommissionState re-derives cap state" })
       }
     }
 
@@ -1181,13 +1195,13 @@ export async function markCommissionDisputed(input: {
     }
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
-    await supabase.from("commission_splits").update({ status: "disputed", updated_at: now }).eq("commission_id", commissionId)
+    await sentinelWrite(supabase, supabase.from("commission_splits").update({ status: "disputed", updated_at: now }).eq("commission_id", commissionId), { table: "commission_splits", flow: "commission_splits_mirror_disputed", brokerageId: brokerageId, reason: "mirror of agent_commissions (dispute already filed, the source of truth); ledgered so the miss is visible" })
 
-    await supabase.from("lifecycle_events").insert({
+    await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
       brokerage_id: brokerageId, // NOT NULL (pass 5)
       entity_type: "agent_commission", entity_id: commissionId,
       event_type: KernelEvent.COMMISSION_DISPUTED, metadata: { reason: trimmed, disputedBy: ctx.userId }, created_at: now,
-    }).then(() => {}, () => {})
+    }), { table: "lifecycle_events", flow: "commission_disputed_echo", brokerageId: brokerageId, reason: "lifecycle echo after the dispute landed" })
 
     return { success: true, data: { commissionId, status: "disputed" } }
   } catch (error) {
@@ -1246,14 +1260,14 @@ export async function resolveCommissionDispute(input: {
     }
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
-    await supabase.from("commission_splits").update({ status: nextStatus, updated_at: now }).eq("commission_id", commissionId)
+    await sentinelWrite(supabase, supabase.from("commission_splits").update({ status: nextStatus, updated_at: now }).eq("commission_id", commissionId), { table: "commission_splits", flow: "commission_splits_mirror_dispute_resolved", brokerageId: brokerageId, reason: "mirror of agent_commissions (resolution already landed, the source of truth); ledgered so the miss is visible" })
 
-    await supabase.from("lifecycle_events").insert({
+    await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
       brokerage_id: brokerageId, // NOT NULL (pass 5)
       entity_type: "agent_commission", entity_id: commissionId,
       event_type: nextStatus === "approved" ? KernelEvent.COMMISSION_APPROVED : KernelEvent.COMMISSION_CALCULATED,
       metadata: { dispute_resolution: resolution, notes: notes ?? null, resolvedBy: ctx.userId }, created_at: now,
-    }).then(() => {}, () => {})
+    }), { table: "lifecycle_events", flow: "commission_dispute_resolved_echo", brokerageId: brokerageId, reason: "lifecycle echo after the resolution landed" })
 
     return { success: true, data: { commissionId, status: nextStatus } }
   } catch (error) {
@@ -1347,7 +1361,7 @@ export async function createExpenseRecord(
     }
 
     // Emit lifecycle event
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("lifecycle_events")
       .insert({
         brokerage_id: ctx.brokerageId, // NOT NULL (pass 5)
@@ -1356,7 +1370,7 @@ export async function createExpenseRecord(
         event_type:  KernelEvent.EXPENSE_CREATED,
         metadata:    { agentId, category, amount, description },
         created_at:  now,
-      })
+      }), { table: "lifecycle_events", flow: "expense_created_echo", brokerageId: ctx.brokerageId, reason: "lifecycle echo after the expense row landed" })
 
     return {
       success: true,
@@ -1508,10 +1522,10 @@ export async function createCommissionRecord(
     }
 
     if (capRow && !cappedAmount) {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("agent_cap_tracking")
         .update({ cap_paid_to_date: (capRow.cap_paid_to_date || 0) + brokerageShare })
-        .eq("id", capRow.id)
+        .eq("id", capRow.id), { table: "agent_cap_tracking", flow: "cap_paid_to_date_on_commission", brokerageId: ctx.brokerageId, reason: "cap progress after a landed commission must not unwind it; a refusal is ledgered for the repair digest and recalculateCommissionState re-derives cap state" })
     }
 
     await processKernelEvent({
@@ -1683,7 +1697,7 @@ export async function emailFinancialReport(
     }
 
     // Emit lifecycle event
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("lifecycle_events")
       .insert({
         brokerage_id: brokerageId, // NOT NULL (pass 5)
@@ -1692,7 +1706,7 @@ export async function emailFinancialReport(
         event_type:  KernelEvent.REPORT_EMAILED,
         metadata:    { reportType, recipients, subject },
         created_at:  queuedAt,
-      })
+      }), { table: "lifecycle_events", flow: "report_emailed_echo", brokerageId: brokerageId, reason: "lifecycle echo after the email_queue rows landed" })
 
     return {
       success: true,

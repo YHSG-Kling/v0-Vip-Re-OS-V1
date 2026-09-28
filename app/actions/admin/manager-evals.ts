@@ -14,6 +14,7 @@
  * (platform staff see all brokerages).
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
@@ -278,9 +279,9 @@ export async function getManagerTrustScorecard(): Promise<
     const cfg = (a.config ?? {}) as Record<string, unknown>
     if (cfg.autonomy_recommended === recommended) return
     try {
-      await svc.from("managed_agents")
+      await sentinelWrite(svc, svc.from("managed_agents")
         .update({ config: { ...cfg, autonomy_recommended: recommended, autonomy_recommended_at: new Date().toISOString() } })
-        .eq("id", a.id as string)
+        .eq("id", a.id as string), { table: "managed_agents", flow: "managed_agents_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     } catch { /* best-effort — the scorecard read must not fail on a cache write */ }
   }))
 

@@ -388,10 +388,11 @@ export async function createTourPlan(params: CreateTourParams) {
     sync_source:   'manual' as const,
   }))
 
-  const { data: insertedShowings } = await supabase
+  const { data: insertedShowings, error: tourShowingsErr } = await supabase
     .from('showings')
     .insert(showingInserts.filter(s => s.listing_id))
     .select('id, listing_id')
+  if (tourShowingsErr) console.error(`[tour-planner] tour showings NOT created: ${tourShowingsErr.message}`)
 
   // Back-link showing_id onto tour_stops
   if (insertedShowings?.length) {
@@ -400,10 +401,10 @@ export async function createTourPlan(params: CreateTourParams) {
         (ts, i) => stopsWithTimes[i]?.listingId === showing.listing_id
       )
       if (matchingStop) {
-        await supabase
+        await sentinelWrite(supabase, supabase
           .from('tour_stops')
           .update({ showing_id: showing.id })
-          .eq('id', matchingStop.id)
+          .eq('id', matchingStop.id), { table: "tour_stops", flow: "tour_stops_write", reason: "back-link from stop to showing" })
       }
     }
   }
@@ -411,22 +412,22 @@ export async function createTourPlan(params: CreateTourParams) {
   // Mark saved_properties.added_to_tour = true
   const listingIds = stops.map(s => s.listingId).filter(Boolean) as string[]
   if (listingIds.length) {
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from('saved_properties')
       .update({ added_to_tour: true })
       .eq('contact_id', contactId)
-      .in('listing_id', listingIds)
+      .in('listing_id', listingIds), { table: "saved_properties", flow: "saved_properties_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
 
   // lifecycle_events: tour.planned
-  await supabase.from('lifecycle_events').insert({
+  await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
     brokerage_id:  brokerageId,
     entity_type:   'buyer_lifecycle',
     entity_id:     contactId,
     event_type:    'tour.planned',
     actor_user_id: agentUserId,
     metadata:      { stop_count: stops.length, tour_id: tourId },
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // Advance buyer state → BUYER_TOURING
   await emitLifecycleTransition({
@@ -655,15 +656,15 @@ export async function finalizeTour(params: {
 
   // Buyer-portal message + lifecycle event
   if (reportChannels.includes('portal') && tour.contact_id) {
-    await supabase.from('client_portal_messages').insert({
+    await sentinelWrite(supabase, supabase.from('client_portal_messages').insert({
       contact_id: tour.contact_id,
       direction:  "agent_to_client",
       body:       'Your tour is confirmed. Tap to view the itinerary, route, and per-property details.',
       created_at: nowIso,
-    }).then(() => null, () => null)
+    }), { table: "client_portal_messages", flow: "client_portal_messages_write", reason: "portal heads-up for a tour already confirmed" })
   }
 
-  await supabase.from('lifecycle_events').insert({
+  await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
     brokerage_id:  brokerageId,
     entity_type:   'tour',
     entity_id:     tourId,
@@ -675,7 +676,7 @@ export async function finalizeTour(params: {
       all_confirmed:    allConfirmed,
       calendar_events:  calendarEventCount,
     },
-  }).then(() => null, () => null)
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // ── MERGED FORWARD FROM THE DELETED `confirmTour` WRAPPER ──────────────────
   // Two writes the wrapper did and this function did not: the agent's own
@@ -826,19 +827,19 @@ export async function confirmTourStop(params: ConfirmStopParams) {
   // Only the agent's calendar gets the event here; the contact's calendar is written
   // when the full tour is confirmed and sent (confirmTour below).
   try {
-    await supabase.from('calendar_events').insert({
+    await sentinelWrite(supabase, supabase.from('calendar_events').insert({
       brokerage_id:        brokerageId,
       entity_type:         'tour_stop',
       entity_id:           tourStopId,
       event_type:          'showing',
       start_at:            confirmedTime,
       is_system_generated: true,
-    })
+    }), { table: "calendar_events", flow: "calendar_events_write", reason: "agent calendar echo of a confirmed stop" })
   } catch { /* non-critical */ }
 
   // Update linked showing
   if (showingId && isValidUUID(showingId)) {
-    await supabase
+    const { error: showingConfirmErr } = await supabase
       .from('showings')
       .update({
         scheduled_at:           confirmedTime,
@@ -853,6 +854,7 @@ export async function confirmTourStop(params: ConfirmStopParams) {
         scheduling_reference:   schedulingReference ?? null,
       })
       .eq('id', showingId)
+    if (showingConfirmErr) console.error(`[tour-planner] linked showing NOT marked confirmed: ${showingConfirmErr.message}`)
   }
 
   // Check if all stops confirmed → update tour
@@ -864,10 +866,11 @@ export async function confirmTourStop(params: ConfirmStopParams) {
   const allConfirmed = allStops?.every(s => s.is_confirmed) ?? false
 
   if (allConfirmed) {
-    await supabase
+    const { error: tourConfirmErr } = await supabase
       .from('tours')
       .update({ all_confirmed: true, status: 'confirmed' })
       .eq('id', tourId)
+    if (tourConfirmErr) console.error(`[tour-planner] tour NOT marked all-confirmed: ${tourConfirmErr.message}`)
 
     await sentinelWrite(supabase, supabase.from('notifications').insert({
       user_id:     agentUserId,
@@ -1081,13 +1084,14 @@ export async function stampTourStopPresence(params: {
   // the thing that must not lie; the status is a consequence of it.
   let tourStatus: string | null = tourRow.status ?? null
   if (phase === 'arrived' && tourRow.status !== 'in_progress') {
-    const { data: advanced } = await supabase
+    const { data: advanced, error: tourAdvanceErr } = await supabase
       .from('tours')
       .update({ status: 'in_progress' })
       .eq('id', stopRow.tour_id)
       .eq('brokerage_id', brokerageId)
       .in('status', ['planned', 'scheduling', 'confirmed'])
       .select('id, status')
+    if (tourAdvanceErr) console.error(`[tour-planner] tour NOT advanced to in_progress: ${tourAdvanceErr.message}`)
     if (advanced?.length) tourStatus = (advanced[0] as { status: string }).status
   }
 
@@ -1127,18 +1131,19 @@ export async function rateTourStop(params: RateStopParams) {
   if (stopRow.brokerage_id !== brokerageId) return { success: false, error: 'Forbidden' }
   if (stopRow.contact_id !== contactId) return { success: false, error: 'Contact ID mismatch' }
 
-  await supabase
+  const { error: stopRatingErr } = await supabase
     .from('tour_stops')
     .update({ buyer_interest_level: interestLevel, buyer_note: note ?? null })
     .eq('id', tourStopId)
     .eq('brokerage_id', brokerageId)
+  if (stopRatingErr) return { success: false, error: `Could not save the rating: ${stopRatingErr.message}` }
 
   if (showingId && isValidUUID(showingId)) {
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from('showings')
       .update({ buyer_interest_level: interestLevel, feedback: note ?? null })
       .eq('id', showingId)
-      .eq('brokerage_id', brokerageId)
+      .eq('brokerage_id', brokerageId), { table: "showings", flow: "showings_write", reason: "mirror of the stop rating (saved and checked above) onto the showing" })
   }
 
   // Canonical learner vocabulary (matches preference-updater SIGNAL_WEIGHTS); legacy 'no' → not_for_us.
@@ -1225,15 +1230,16 @@ export async function completeTour(params: CompleteTourParams) {
   // Batch-update tour_stops — scope each by brokerage_id + tour_id
   for (const r of stopRatings) {
     if (!isValidUUID(r.tourStopId)) continue
-    await supabase
+    const { error: stopRatingErr } = await supabase
       .from('tour_stops')
       .update({ buyer_interest_level: r.interestLevel, buyer_note: r.note ?? null })
       .eq('id', r.tourStopId)
       .eq('tour_id', tourId)
       .eq('brokerage_id', brokerageId)
+    if (stopRatingErr) console.error(`[tour-planner] stop rating NOT saved: ${stopRatingErr.message}`)
 
     if (r.showingId && isValidUUID(r.showingId)) {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from('showings')
         .update({
           buyer_interest_level: r.interestLevel,
@@ -1242,16 +1248,17 @@ export async function completeTour(params: CompleteTourParams) {
           completed_at:         new Date().toISOString(),
         })
         .eq('id', r.showingId)
-        .eq('brokerage_id', brokerageId)
+        .eq('brokerage_id', brokerageId), { table: "showings", flow: "showings_write", reason: "mirror of the stop rating onto the showing" })
     }
   }
 
   // Complete the tour
-  await supabase
+  const { error: tourDoneErr } = await supabase
     .from('tours')
     .update({ status: 'completed', notes: agentNote ?? null })
     .eq('id', tourId)
     .eq('brokerage_id', brokerageId)
+  if (tourDoneErr) return { success: false, error: `Could not complete the tour: ${tourDoneErr.message}` }
 
   const signalWeights: Record<string, number> = { love_it: 10, like_it: 3, maybe: 1, not_for_us: -5 }
   const logInserts = stopRatings.map(r => {

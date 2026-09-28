@@ -27,6 +27,7 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { scheduleISAAppointment } from "./appointment-scheduler"
 import { promoteLeadToContactService } from "@/lib/contact-promotion"
@@ -103,11 +104,12 @@ export async function bookSellerListingAppointment(
   // convert once qualified), so record the qualification the appointment
   // evidences before the safety-convert — same stamp acceptAIISAHandoff writes.
   if (!wasAlreadyConverted && (preLead as { lead_stage?: string | null } | null)?.lead_stage !== "qualified") {
-    await svc
+    const { error: qualifyErr } = await svc
       .from("leads")
       .update({ lead_stage: "qualified", ai_isa_owner: false, updated_at: new Date().toISOString() })
       .eq("id", params.leadId)
       .eq("brokerage_id", params.brokerageId)
+    if (qualifyErr) console.error(`[book-seller-appointment] lead NOT stamped qualified before the safety-convert: ${qualifyErr.message}`)
   }
 
   const promotion = await promoteLeadToContactService(params.leadId)
@@ -122,11 +124,10 @@ export async function bookSellerListingAppointment(
 
   // Link the lead → its contact on the canonical leads.contact_id column (best-effort).
   if (!alreadyConverted) {
-    await svc
+    await sentinelWrite(svc, svc
       .from("leads")
       .update({ contact_id: contactId })
-      .eq("id", params.leadId)
-      .then(() => null, () => null)
+      .eq("id", params.leadId), { table: "leads", flow: "lead_contact_link", reason: "canonical lead→contact link (best-effort by design)" })
   }
 
   // ── Step 2: WELCOME — fire CONTACT_AGENT_ASSIGNED ONLY on a fresh safety-convert ─

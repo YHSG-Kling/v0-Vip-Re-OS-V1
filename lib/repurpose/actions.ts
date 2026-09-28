@@ -4,6 +4,7 @@
 // Server actions for Layer 9.11 Omnipresence Repurposer Pipeline
 // All async functions with full kernel wiring
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
@@ -144,7 +145,7 @@ async function logRepurpose(
     createdBy: string
   },
 ): Promise<void> {
-  await supabase.from("repurposed_content_log").insert({
+  await bestEffort(supabase.from("repurposed_content_log").insert({
     brokerage_id: row.brokerageId,
     source_type: row.sourceType,
     source_id: row.sourceId,
@@ -157,7 +158,7 @@ async function logRepurpose(
     notes: row.notes.slice(0, 1000),
     created_by: row.createdBy,
     created_at: new Date().toISOString(),
-  })
+  }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -288,10 +289,10 @@ export async function executePipeline(params: {
       return { success: false, error: "Pipeline not found" }
     }
 
-    await supabase
+    await bestEffort(supabase
       .from("repurpose_pipelines")
       .update({ updated_at: new Date().toISOString() })
-      .eq("id", params.pipelineId)
+      .eq("id", params.pipelineId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     // ── Fire kernel event: OMNIPRESENCE_PIPELINE_STARTED ──
     await processKernelEvent({
@@ -429,10 +430,10 @@ export async function executePipeline(params: {
       }
     }
 
-    await supabase
+    await bestEffort(supabase
       .from("repurpose_pipelines")
       .update({ updated_at: new Date().toISOString() })
-      .eq("id", params.pipelineId)
+      .eq("id", params.pipelineId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     // ── Fire kernel event: OMNIPRESENCE_PIPELINE_COMPLETED ──
     await processKernelEvent({

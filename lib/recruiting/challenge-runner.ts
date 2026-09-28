@@ -4,6 +4,7 @@
 // consolidated data over the challenge window, ranks them, and on end crowns winners + awards prize
 // points into the SAME gamification ledger + proposes a gated winner announcement. Best-effort.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { rankParticipants, challengeStatus, type ChallengeType, type Participant } from "@/lib/recruiting/challenges"
 
@@ -76,7 +77,7 @@ export async function runChallengeScoring(svc: Svc, params: { brokerageId: strin
     for (const r of ranked) {
       const rowId = idByAgent.get(r.agentId)
       if (!rowId) continue
-      await svc.from("challenge_participants").update({ current_value: r.value, current_rank: r.rank, is_winner: ending ? r.isWinner : false }).eq("id", rowId)
+      await sentinelWrite(svc, svc.from("challenge_participants").update({ current_value: r.value, current_rank: r.rank, is_winner: ending ? r.isWinner : false }).eq("id", rowId), { table: "challenge_participants", flow: "challenge_participants_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
 
     if (ending && c.status !== "ended") {
@@ -95,10 +96,12 @@ export async function runChallengeScoring(svc: Svc, params: { brokerageId: strin
           })
           if (!awarded.ok) console.error(`[challenge-runner] prize not awarded for challenge ${c.id}: ${awarded.error}`)
         }
-        await svc.from("challenge_participants").update({ prize_awarded: true }).eq("challenge_id", c.id).eq("is_winner", true)
+        const { error: prizeStampErr } = await svc.from("challenge_participants").update({ prize_awarded: true }).eq("challenge_id", c.id).eq("is_winner", true)
+        if (prizeStampErr) console.error(`[challenge-runner] prize NOT marked awarded (may re-award): ${prizeStampErr.message}`)
         out.prizesAwarded += winners.length
       }
-      await svc.from("challenges").update({ status: "ended", updated_at: now.toISOString() }).eq("id", c.id)
+      const { error: challengeEndErr } = await svc.from("challenges").update({ status: "ended", updated_at: now.toISOString() }).eq("id", c.id)
+      if (challengeEndErr) console.error(`[challenge-runner] challenge NOT marked ended (may finalize again): ${challengeEndErr.message}`)
       out.finalized += 1
       try {
         const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")

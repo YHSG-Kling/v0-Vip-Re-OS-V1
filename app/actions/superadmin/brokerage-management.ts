@@ -316,7 +316,7 @@ export async function changeBrokerageTierAction(params: {
   brokerageId: string
   newTier:     CanonicalTier
   reason:      string
-}): Promise<{ ok: boolean; error?: string; previousTier?: string; stripeApplied?: boolean; stripeError?: string }> {
+}): Promise<{ ok: boolean; error?: string; previousTier?: string; stripeApplied?: boolean; stripeError?: string; aiEntitlementError?: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   if (!["solo_agent","team","brokerage","multi_location"].includes(params.newTier)) {
@@ -372,6 +372,9 @@ export async function changeBrokerageTierAction(params: {
   // admin AI operations on ai_subscription_tier — writer-less, so NO admin
   // could ever pass the entitlement check. Tier changes keep it in lockstep:
   // one active row per brokerage, admin_user_id = the brokerage's admin/broker.
+  // Best-effort, but NEVER silent: a refused entitlement write leaves the tenant's
+  // AI gate on the OLD tier, so the refusal rides the audit row and the return.
+  let aiEntitlementError: string | undefined
   try {
     const { data: adminUser } = await svc
       .from("users").select("id").eq("brokerage_id", params.brokerageId)
@@ -397,12 +400,18 @@ export async function changeBrokerageTierAction(params: {
         // have told a tenant how long they had been on AI. It is now set ONCE, on the
         // insert that creates the entitlement, and carried forward untouched — and a row
         // that never recorded one keeps its NULL rather than being back-dated to today.
-        await svc.from("ai_subscription_tier").update(tierRowPayload).eq("id", (existingTier as any).id)
+        const { error: tierUpdErr } = await svc.from("ai_subscription_tier").update(tierRowPayload).eq("id", (existingTier as any).id)
+        if (tierUpdErr) aiEntitlementError = `ai_subscription_tier update refused: ${tierUpdErr.message}`
       } else {
-        await svc.from("ai_subscription_tier").insert({ ...tierRowPayload, subscribed_at: nowIso })
+        const { error: tierInsErr } = await svc.from("ai_subscription_tier").insert({ ...tierRowPayload, subscribed_at: nowIso })
+        if (tierInsErr) aiEntitlementError = `ai_subscription_tier insert refused: ${tierInsErr.message}`
       }
     }
-  } catch { /* entitlement sync is best-effort — the audit log below is the record */ }
+  } catch (e) {
+    /* entitlement sync is best-effort — the audit log below is the record */
+    aiEntitlementError = `ai_subscription_tier sync threw: ${e instanceof Error ? e.message : String(e)}`
+  }
+  if (aiEntitlementError) console.error(`[brokerage-management] tier change for ${params.brokerageId}: ${aiEntitlementError}`)
 
   await writeAuditLog({
     actorUserId: auth.userId,
@@ -410,7 +419,7 @@ export async function changeBrokerageTierAction(params: {
     action:      "brokerage.tier_changed",
     targetType:  "brokerage",
     targetId:    params.brokerageId,
-    details:     { previous_tier: previousTier, new_tier: params.newTier, reason: tierChangeReason, stripe_applied: stripeApplied, stripe_error: stripeError ?? null },
+    details:     { previous_tier: previousTier, new_tier: params.newTier, reason: tierChangeReason, stripe_applied: stripeApplied, stripe_error: stripeError ?? null, ai_entitlement_error: aiEntitlementError ?? null },
   })
 
   // BUILT (orphan doctrine §1.2 — no duplicate existed, the capability is wanted).
@@ -447,7 +456,7 @@ export async function changeBrokerageTierAction(params: {
 
   revalidatePath(`/dashboard/superadmin/brokerages/${params.brokerageId}`)
   revalidatePath("/dashboard/superadmin/brokerages")
-  return { ok: true, previousTier, stripeApplied, stripeError }
+  return { ok: true, previousTier, stripeApplied, stripeError, aiEntitlementError }
 }
 
 // ── SUSPEND / REACTIVATE / CANCEL ────────────────────────────────────────────
@@ -653,7 +662,10 @@ export async function extendTrialAction(params: { brokerageId: string; days: num
       return { ok: false, error: `Could not extend the trial on the subscription: ${trialError.message}` }
     }
   }
-  await svc.from("brokerages").update({ trial_ends_at: ext.iso, updated_at: now.toISOString() }).eq("id", params.brokerageId)
+  // The subscription's trial moved; the brokerage row is what the paywall banner
+  // reads. A refused stamp would report an extension the tenant never sees.
+  const { error: brkTrialErr } = await svc.from("brokerages").update({ trial_ends_at: ext.iso, updated_at: now.toISOString() }).eq("id", params.brokerageId)
+  if (brkTrialErr) return { ok: false, error: `Subscription trial extended, but the brokerage trial date was not: ${brkTrialErr.message}` }
   const stripeApplied = (await stripeExtendTrial((sub as any)?.stripe_subscription_id, ext.unix)).applied
 
   await writeAuditLog({ actorUserId: auth.userId, actorEmail: auth.email, action: "subscription.trial_extended", targetType: "brokerage", targetId: params.brokerageId, details: { days, new_trial_end: ext.iso, reason: params.reason ?? null, stripe_applied: stripeApplied } })

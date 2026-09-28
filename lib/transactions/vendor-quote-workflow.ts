@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
@@ -61,7 +62,7 @@ export async function requestQuoteApproval(params: {
   })
   
   // Create transparency update
-  await supabase.from("transparency_updates").insert({
+  await sentinelWrite(supabase, supabase.from("transparency_updates").insert({
     transaction_id: params.transactionId,
     brokerage_id: params.brokerageId,
     update_type: "action_required",
@@ -69,7 +70,7 @@ export async function requestQuoteApproval(params: {
     message: `Please review and approve the ${params.quoteType} quote from ${params.vendorName}.`,
     is_visible_to_client: true,
     created_at: new Date().toISOString()
-  })
+  }), { table: "transparency_updates", flow: "transparency_updates_write", reason: "client transparency card; the approval task is created above" })
   
   return { success: true, activityId: activity?.id }
 }
@@ -208,7 +209,7 @@ export async function approveQuote(params: {
     ? "inspector_approved" 
     : "insurance_quote_approved"
   
-  await supabase
+  const { error: quoteMilestoneErr } = await supabase
     .from("transaction_milestones")
     .update({
       status: "completed",
@@ -216,6 +217,7 @@ export async function approveQuote(params: {
     })
     .eq("transaction_id", params.transactionId)
     .eq("milestone_name", milestoneName)
+  if (quoteMilestoneErr) console.error(`[vendor-quote] approval milestone NOT completed: ${quoteMilestoneErr.message}`)
   
   // Log event via kernel
   await transitionLifecycle({
@@ -252,7 +254,7 @@ export async function approveQuote(params: {
   }
 
   // Update transparency
-  await supabase.from("transparency_updates").insert({
+  await sentinelWrite(supabase, supabase.from("transparency_updates").insert({
     transaction_id: params.transactionId,
     brokerage_id: params.brokerageId,
     update_type: "milestone_completed",
@@ -260,7 +262,7 @@ export async function approveQuote(params: {
     message: `${params.vendorName} has been approved. Scheduling will be coordinated next.`,
     is_visible_to_client: true,
     created_at: new Date().toISOString()
-  })
+  }), { table: "transparency_updates", flow: "transparency_updates_write", reason: "client transparency card after the approval landed" })
   
   return { success: true }
 }

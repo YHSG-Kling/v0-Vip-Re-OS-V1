@@ -109,13 +109,14 @@ export async function triggerInitialScoring(leadId: string): Promise<void> {
     score = Math.min(score, 100)
 
     // Update lead with calculated score
-    await supabase
+    const { error: initialScoreErr } = await supabase
       .from('leads')
       .update({ 
         lead_score: score,
         updated_at: new Date().toISOString()
       })
       .eq('id', leadId)
+    if (initialScoreErr) console.error(`[initial-scorer] lead score NOT saved: ${initialScoreErr.message}`)
 
     console.log(`[v0] Initial scoring complete for lead ${leadId}: score=${score}`)
   } catch (error: any) {

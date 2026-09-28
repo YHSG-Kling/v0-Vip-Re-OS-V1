@@ -11,6 +11,7 @@
 // coordination/page.tsx (via the gated actions). `server-only` fails a future
 // client import at build time.
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
@@ -250,7 +251,7 @@ async function initiateHandoff(request: HandoffRequest): Promise<RouteResult> {
   })
   
   // End the current session
-  await supabase
+  const { error: handoffStateErr } = await supabase
     .from('agent_state_machine')
     .update({
       status: 'handed_off',
@@ -259,6 +260,7 @@ async function initiateHandoff(request: HandoffRequest): Promise<RouteResult> {
       handoff_reason: request.reason,
     })
     .eq('id', request.fromSessionId)
+  if (handoffStateErr) console.error(`[multi-agent-router] session NOT marked handed_off: ${handoffStateErr.message}`)
   
   // Create new session for the receiving agent
   if (request.toAgentType === 'none' || request.toAgentType === 'human') {
@@ -343,7 +345,7 @@ export async function escalateToHuman(params: {
   }
   
   // Set human override flag
-  await supabase
+  const { error: escalateStateErr } = await supabase
     .from('agent_state_machine')
     .update({
       status: 'escalated',
@@ -353,9 +355,10 @@ export async function escalateToHuman(params: {
       escalation_urgency: params.urgency,
     })
     .eq('id', params.sessionId)
+  if (escalateStateErr) console.error(`[multi-agent-router] human override NOT recorded: ${escalateStateErr.message}`)
   
   // Create smart assistant suggestion for human agent
-  await supabase.from('smart_assistant_suggestions').insert({
+  await sentinelWrite(supabase, supabase.from('smart_assistant_suggestions').insert({
     brokerage_id: session.brokerage_id,
     agent_id: session.assigned_agent_id,
     suggestion_type: 'agent_escalation',
@@ -371,7 +374,7 @@ export async function escalateToHuman(params: {
       entity_id: session.entity_id,
       suggested_action: params.suggestedAction,
     },
-  })
+  }), { table: "smart_assistant_suggestions", flow: "smart_assistant_suggestions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   
   // Kernel event — audit row + reactor. `agentId` stamps lifecycle_events.agent_id (the
   // audit column) but DispatchKernelEventParams carries no agentId field, so the
@@ -421,7 +424,7 @@ export async function endAgentSession(params: {
     return { success: false, message: 'Session not found' }
   }
   
-  await supabase
+  const { error: endStateErr } = await supabase
     .from('agent_state_machine')
     .update({
       status: params.outcome,
@@ -429,6 +432,7 @@ export async function endAgentSession(params: {
       outcome_summary: params.summary,
     })
     .eq('id', params.sessionId)
+  if (endStateErr) console.error(`[multi-agent-router] session outcome NOT recorded: ${endStateErr.message}`)
   
   const { emitKernelEvent } = await import('@/lib/kernel/emit')
   await emitKernelEvent({

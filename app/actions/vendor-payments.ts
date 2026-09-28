@@ -1,5 +1,6 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient } from "@/lib/supabase/server"
 import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
@@ -560,7 +561,7 @@ export async function initiateVendorPayout(params: {
   method?: "stripe" | "cash_app" | "check" | "manual"
   cashAppReference?: string
   note?: string
-}): Promise<{ success: boolean; payoutId?: string; error?: string; w9Warning?: string }> {
+}): Promise<{ success: boolean; payoutId?: string; error?: string; w9Warning?: string; earningsWarning?: string }> {
   const ctx = await resolveWriteContextForTenant()
   if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
@@ -683,13 +684,24 @@ export async function initiateVendorPayout(params: {
   if (error || !payout) return { success: false, error: error?.message ?? "Failed" }
 
   // Mark covered earnings as paid_out — scoped
+  // A refused (or partially matched) stamp leaves earnings the payout just covered
+  // still reading 'pending' — the next payout run offers them again (a double pay).
+  // The payout row exists, so report it, but never as a clean success.
+  let earningsWarning: string | undefined
   if (params.earningIds?.length) {
-    await svc
+    const { data: stamped, error: stampErr } = await svc
       .from("vendor_earnings")
       .update({ status: "paid_out" })
       .in("id", params.earningIds)
       .eq("brokerage_id", ctx.brokerageId)
       .eq("vendor_id", params.vendorId)
+      .select("id")
+    if (stampErr) {
+      earningsWarning = `Payout ${payout.id} recorded, but its earnings were NOT marked paid out (${stampErr.message}) — they may be offered for payout again.`
+    } else if ((stamped ?? []).length !== params.earningIds.length) {
+      earningsWarning = `Payout ${payout.id} recorded, but only ${(stamped ?? []).length} of ${params.earningIds.length} earnings were marked paid out — the rest are not this vendor's in this brokerage, or were already gone.`
+    }
+    if (earningsWarning) console.error(`[initiateVendorPayout] ${earningsWarning}`)
   }
 
   // THE CHASE: payout activity with no W-9 on file → governed b2b transactional
@@ -709,7 +721,9 @@ export async function initiateVendorPayout(params: {
     }
   }
 
-  return { success: true, payoutId: payout.id, w9Warning }
+  // success stays true — the payout row EXISTS, and a caller retrying on
+  // success:false would record a second payout. The stamp failure rides beside it.
+  return { success: true, payoutId: payout.id, w9Warning, earningsWarning }
 }
 
 // ---------------------------------------------------------------------------
@@ -909,7 +923,7 @@ async function recordDirectCollectionEarnings(args: {
   gross: number
 }): Promise<void> {
   const svc = createServiceClient()
-  await svc.from("vendor_earnings").insert({
+  await sentinelWrite(svc, svc.from("vendor_earnings").insert({
     vendor_id: args.vendorId,
     brokerage_id: args.brokerageId,
     invoice_id: args.invoiceId,
@@ -917,7 +931,7 @@ async function recordDirectCollectionEarnings(args: {
     platform_fee: 0,
     net_amount: args.gross,
     status: "paid_out",
-  })
+  }), { table: "vendor_earnings", flow: "vendor_direct_collection_earnings", brokerageId: args.brokerageId, reason: "earnings history for a collection that already happened off-platform (never offered for payout); a lost row is ledgered, never fails the paid invoice" })
 }
 
 /** Best-effort push of a paid/issued invoice into the VENDOR's QuickBooks. Never

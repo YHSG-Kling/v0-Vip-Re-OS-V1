@@ -190,7 +190,7 @@ async function processBrokerage(
       .slice(0, 3)
 
     // 5. Upsert rollup
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("predictive_listing_scores")
       .upsert(
         {
@@ -207,7 +207,7 @@ async function processBrokerage(
           scored_at: new Date().toISOString(),
         },
         { onConflict: "contact_id,brokerage_id" }
-      )
+      ), { table: "predictive_listing_scores", flow: "predictive_listing_scores_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
     // 6. Update last_pls_scored_at for round-robin
     await sentinelWrite(

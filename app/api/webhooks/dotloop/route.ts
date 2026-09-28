@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -130,12 +131,11 @@ export async function POST(request: NextRequest) {
       if (!error && doc) {
         // Complete the signature packet keyed to THIS client_documents row —
         // the portal Sign button gates on it (owner rule: gone the moment ink lands).
-        await supabase
+        await sentinelWrite(supabase, supabase
           .from("signature_requests")
           .update({ request_status: "completed", completed_at: now })
           .eq("document_id", doc.id)
-          .is("completed_at", null)
-          .then(() => {}, () => {})
+          .is("completed_at", null), { table: "signature_requests", flow: "dotloop_signature_packet_complete", reason: "a webhook must ack; the signed document row already landed and a lost packet completion is ledgered" })
 
         // THE TENANT IS THE VERIFIED ROW'S (lane 86F). These two emits passed NO
         // brokerage_id (the `as any` hid it) through the cookie-client helper, so
@@ -195,10 +195,11 @@ export async function POST(request: NextRequest) {
     }
 
     if (loopEvent === "loop.status.updated" && canonLoopId && canonStatus) {
-      await supabase
+      const { error: loopStatusErr } = await supabase
         .from("transactions")
         .update({ status: mapDotloopStatus(canonStatus) })
         .eq("external_provider_transaction_id", canonLoopId)
+      if (loopStatusErr) console.error(`[dotloop-webhook] loop status update refused for the linked transaction: ${loopStatusErr.message}`)
     }
 
     return NextResponse.json({ received: true })

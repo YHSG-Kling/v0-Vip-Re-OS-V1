@@ -20,6 +20,7 @@
 // The status vocabulary this writes is the column's CHECK constraint:
 // pending | processing | ready | failed. Nothing else is writable.
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { classifyDidError } from "./contract"
 import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
@@ -226,9 +227,9 @@ export async function applyAvatarOutcome(
     // chat-widget lookups get it on a single join. The PROFILE stores the bucket
     // URL; did_avatar_id is kept only because clip generation still needs the id.
     if (asset.is_default && asset.agent_id) {
-      await supabase.from("agent_voice_profiles")
+      await bestEffort(supabase.from("agent_voice_profiles")
         .update({ did_avatar_id: asset.did_avatar_id, avatar_url: avatarUrl })
-        .eq("agent_id", asset.agent_id)
+        .eq("agent_id", asset.agent_id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     }
 
     if (notifyUserId) {

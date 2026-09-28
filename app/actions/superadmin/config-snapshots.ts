@@ -136,9 +136,10 @@ export async function applySnapshotAction(params: { snapshotId: string; targetBr
   const { data: brk } = await svc.from("brokerages").select("id").eq("id", params.targetBrokerageId).maybeSingle()
   if (!brk) return { ok: false, error: "Target brokerage not found" }
 
-  const { applied } = await applySnapshotPayload((snap as any).payload as SnapshotPayload, params.targetBrokerageId, auth.userId, svc)
-  await audit(auth.userId, auth.email, "snapshot.apply", params.targetBrokerageId, { snapshot_id: params.snapshotId, name: (snap as any).name, applied })
+  const { applied, refused } = await applySnapshotPayload((snap as any).payload as SnapshotPayload, params.targetBrokerageId, auth.userId, svc)
+  await audit(auth.userId, auth.email, "snapshot.apply", params.targetBrokerageId, { snapshot_id: params.snapshotId, name: (snap as any).name, applied, refused })
   revalidatePath(`/dashboard/superadmin/brokerages/${params.targetBrokerageId}`)
+  if (refused.length > 0) return { ok: false, applied, error: `Snapshot partly applied — refused: ${refused.join("; ")}` }
   return { ok: true, applied }
 }
 

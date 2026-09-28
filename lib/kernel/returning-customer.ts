@@ -275,8 +275,12 @@ export async function runReturningCustomerReengagement(
     signal_data: Record<string, unknown> | null
   }>) {
     res.scanned += 1
-    const markProcessed = async () =>
-      supabase.from("signal_reactivations").update({ isa_reactivated: true, isa_reactivated_at: now.toISOString() }).eq("id", sig.id)
+    // A refused consume leaves the signal unprocessed, so the next scan re-reads it
+    // (harmless), but it is logged instead of vanishing.
+    const markProcessed = async () => {
+      const { error: markErr } = await supabase.from("signal_reactivations").update({ isa_reactivated: true, isa_reactivated_at: now.toISOString() }).eq("id", sig.id)
+      if (markErr) console.error(`[returning-customer] signal ${sig.id} NOT marked processed: ${markErr.message}`)
+    }
 
     const { data: contact } = await supabase
       .from("contacts")

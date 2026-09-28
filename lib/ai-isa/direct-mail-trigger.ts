@@ -14,6 +14,7 @@
 // caller that supplies it is the gate (dispatchDirectMail's own hard gate still
 // runs beneath it — see the wave-36 note below).
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { dispatchDirectMail, type DirectMailPieceType } from '@/lib/providers/dispatch'
@@ -250,7 +251,7 @@ export async function triggerDirectMailCampaign(context: DirectMailContext) {
       contactId:    who.cls === 'contact' ? who.id : undefined,
     })
 
-    supabase.from('message_provider_logs').insert({
+    void sentinelWrite(supabase, supabase.from('message_provider_logs').insert({
       brokerage_id:        context.brokerageId,
       provider_key:        'lob',
       channel:             'direct_mail',
@@ -258,12 +259,12 @@ export async function triggerDirectMailCampaign(context: DirectMailContext) {
       provider_message_id: result.messageId ?? null,
       provider_status:     result.success ? 'sent' : 'failed',
       error_message:       result.error ?? null,
-    })
+    }), { table: "message_provider_logs", flow: "isa_direct_mail_provider_log", reason: "provider log of a mailing already dispatched" })
 
     // Patch the campaign row with the actual dispatch outcome so the row
     // doesn't sit in `pending` forever.
     if (campaign?.id) {
-      await supabase
+      const { error: isaMailStampErr } = await supabase
         .from('direct_mail_campaigns')
         .update({
           status:        result.success ? 'sent' : 'failed',
@@ -272,6 +273,7 @@ export async function triggerDirectMailCampaign(context: DirectMailContext) {
           pieces_mailed: result.success ? 1 : 0,
         })
         .eq('id', campaign.id)
+      if (isaMailStampErr) console.error(`[isa-direct-mail] mailing outcome NOT recorded on the campaign: ${isaMailStampErr.message}`)
     }
 
     // The record that a physical mail piece was sent to this person.

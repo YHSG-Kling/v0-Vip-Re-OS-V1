@@ -92,16 +92,20 @@ export async function createPlatformStaffAction(input: { email: string; firstNam
 
   // Upsert the users row — platform employee, NO brokerage.
   if (userId) {
-    await svc.from("users").upsert({
+    // The users row IS the staff grant (platform_role lives on it) — a refused
+    // write used to report the staff member created with no role at all.
+    const { error: staffUpsertErr } = await svc.from("users").upsert({
       id: userId, email: v.value.email, first_name: v.value.firstName, last_name: v.value.lastName,
       ...cols, brokerage_id: null, is_contact: false, status: "active", updated_at: new Date().toISOString(),
     }, { onConflict: "id" })
+    if (staffUpsertErr) return { ok: false, error: `Invite sent, but the staff role was not recorded: ${staffUpsertErr.message}` }
   } else {
     // No auth user (invite unavailable) — promote an existing account by email.
     const { data: existing } = await svc.from("users").select("id").eq("email", v.value.email).maybeSingle()
     if (existing?.id) {
       userId = existing.id
-      await svc.from("users").update({ ...cols, brokerage_id: null, status: "active", updated_at: new Date().toISOString() }).eq("id", userId)
+      const { error: promoteErr } = await svc.from("users").update({ ...cols, brokerage_id: null, status: "active", updated_at: new Date().toISOString() }).eq("id", userId)
+      if (promoteErr) return { ok: false, error: `Could not promote the existing account to platform staff: ${promoteErr.message}` }
     } else {
       return { ok: false, error: "Could not invite the staff member (email delivery not configured) and no existing account to promote." }
     }

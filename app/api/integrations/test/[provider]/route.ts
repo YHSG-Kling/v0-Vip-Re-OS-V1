@@ -123,7 +123,7 @@ export async function POST(
       .eq("platform", provider)
 
     // Update brokerage_integrations status
-    await supabase
+    const { error: testStatusErr } = await supabase
       .from("brokerage_integrations")
       .upsert({
         brokerage_id: targetBrokerageId,
@@ -136,6 +136,7 @@ export async function POST(
       }, {
         onConflict: "brokerage_id,provider_name",
       })
+    if (testStatusErr) console.error(`[integration-test] test result NOT saved on brokerage_integrations: ${testStatusErr.message}`)
 
     // Fire kernel event based on result
     const kernelEvent = result.pass 

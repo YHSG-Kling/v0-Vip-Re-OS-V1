@@ -176,10 +176,17 @@ export async function runDunningSweep(svc: any, now: Date = new Date()): Promise
         } catch { /* best-effort — the in-app notification already landed */ }
       }
 
-      await svc.from("platform_dunning_events").insert({
+      // The dunning event row is what marks this step SENT; a refused insert means
+      // the next run re-sends the same step. Count it as an error, never as sent.
+      const { error: dunningErr } = await svc.from("platform_dunning_events").insert({
         brokerage_id: sub.brokerage_id, subscription_id: sub.id,
         step: step.step, channel, detail: msg.subject.slice(0, 300),
       })
+      if (dunningErr) {
+        console.error(`[dunning] platform_dunning_events insert refused for subscription ${sub.id} step ${step.step}: ${dunningErr.message}`)
+        result.errors += 1
+        continue
+      }
       result.stepsSent += 1
     } catch {
       result.errors += 1

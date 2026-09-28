@@ -26,6 +26,7 @@
  * Auth: CRON_SECRET (internal endpoint).
  */
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
 // Was `import { put } from "@vercel/blob"`. Survivor:
 // lib/remotion/media-host.ts#hostRenderedMedia — Supabase `video-assets`, the
@@ -539,13 +540,14 @@ Return ONLY the spoken text.`) + fix
       },
     }).select("id").single()
 
-    await svc.from("newsletter_video_renders").update({
+    const { error: renderDoneErr } = await svc.from("newsletter_video_renders").update({
       status:          "completed",
       voiceover_url:   voiceoverUrlStored,
       video_url:       reelUrlStored,
       video_project_id: project!.id,
       completed_at:    new Date().toISOString(),
     }).eq("id", ledger.id)
+    if (renderDoneErr) console.error(`[render-newsletter-video] render finished but the ledger row was NOT marked completed: ${renderDoneErr.message}`)
 
     // Wave 19 — close the performance loop. Log topics → newsletter_video
     // so the aggregator can score them by the campaign's downstream
@@ -597,10 +599,10 @@ Return ONLY the spoken text.`) + fix
     })
   } catch (err) {
     const msg = (err as Error).message
-    await svc.from("newsletter_video_renders").update({
+    await sentinelWrite(svc, svc.from("newsletter_video_renders").update({
       status: "failed",
       error_message: msg.slice(0, 800),
-    }).eq("id", ledger.id)
+    }).eq("id", ledger.id), { table: "newsletter_video_renders", flow: "newsletter_render_failed_stamp", reason: "failure stamp; the failure is returned in the same response" })
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   }
 }

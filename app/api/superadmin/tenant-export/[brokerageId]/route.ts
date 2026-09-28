@@ -44,7 +44,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   }
 
   // Audit the export — data leaving the platform is always on the record.
-  await svc.from("superadmin_audit_log").insert({
+  // "ALWAYS" is enforced, not hoped: a refused audit row refuses the export
+  // (fail closed, §4) instead of shipping the tenant's data off the record.
+  const { error: exportAuditErr } = await svc.from("superadmin_audit_log").insert({
     actor_user_id: auth.userId,
     actor_email: auth.email,
     action: "tenant_data_export",
@@ -53,7 +55,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     details: { counts: bundle.counts, truncated: bundle.truncated },
     ip_address: request.headers.get("x-forwarded-for") ?? request.headers.get("x-real-ip"),
     user_agent: request.headers.get("user-agent"),
-  }).then(undefined, () => {})
+  })
+  if (exportAuditErr) {
+    console.error(`[tenant-export] audit row refused for ${brokerageId} — export NOT served: ${exportAuditErr.message}`)
+    return NextResponse.json({ error: "The export could not be recorded in the audit log, so it was not served. Retry shortly." }, { status: 503 })
+  }
 
   const name = (bundle.brokerageName ?? "tenant").replace(/[^a-z0-9-_]+/gi, "-").toLowerCase()
   return new NextResponse(JSON.stringify(bundle, null, 2), {

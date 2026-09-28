@@ -1,3 +1,4 @@
+import { bestEffort } from "@/lib/db/best-effort"
 import { generateText, streamText, Output, stepCountIs } from "ai"
 import type { z } from "zod"
 import { createGateway } from "@ai-sdk/gateway"
@@ -446,7 +447,7 @@ async function checkCompliance(
         violations.push(violation)
         
         // Log blocking TCPA violation
-        await supabase.from("compliance_flags").insert({
+        await bestEffort(supabase.from("compliance_flags").insert({
           user_id: context.userId,
           brokerage_id: context.brokerageId,
           violation_type: "tcpa_violation", // real column (was phantom flag_type)
@@ -454,7 +455,7 @@ async function checkCompliance(
           flagged_content: `${violation.message} :: ${content.slice(0, 400)}`, // was phantom content_snippet/description
           detected_at: new Date().toISOString(),
           status: "flagged"
-        })
+        }), "the TCPA violation already blocks the send (returned in violations); the flag row is its record")
       }
     }
     
@@ -479,7 +480,7 @@ async function checkCompliance(
             
             // Log high severity violations
             if (violation.blockSending) {
-              await supabase.from("compliance_flags").insert({
+              await bestEffort(supabase.from("compliance_flags").insert({
                 user_id: context.userId,
                 brokerage_id: context.brokerageId,
                 violation_type: "fair_housing_violation", // real column (was phantom flag_type)
@@ -487,7 +488,7 @@ async function checkCompliance(
                 flagged_content: `${violation.message} :: ${content.slice(0, 400)}`, // was phantom content_snippet/description
                 detected_at: new Date().toISOString(),
                 status: "flagged"
-              })
+              }), "the fair-housing violation already blocks the send (returned in violations); the flag row is its record")
             }
           }
         }

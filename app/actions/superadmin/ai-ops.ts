@@ -91,7 +91,8 @@ export async function replaySignalAction(signalId: string): Promise<{ ok: boolea
   if ((sig as any).status !== "open") return { ok: false, error: "Only an open (stuck) signal can be replayed" }
 
   // Expire the stuck one so the re-publish isn't deduped, then re-publish → the handler runs again.
-  await svc.from("manager_signals").update({ status: "expired" }).eq("id", signalId)
+  const { error: expireErr } = await svc.from("manager_signals").update({ status: "expired" }).eq("id", signalId)
+  if (expireErr) return { ok: false, error: `Could not expire the stuck signal (replay would be deduped): ${expireErr.message}` }
   const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
   const s = sig as any
   const r = await publishManagerSignal({

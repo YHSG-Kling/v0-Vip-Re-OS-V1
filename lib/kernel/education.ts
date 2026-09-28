@@ -10,6 +10,7 @@
 // app/api/education/resources/route.ts POST (createEducationalResource) → app/actions/education-kernel.ts
 //   createResourceAction. Both routes keep their GET; the un-gated POSTs were the duplicates.
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import type { EducationFormat, JourneyPhase, Persona } from "./types"
 import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
@@ -1050,7 +1051,7 @@ export async function recordCompletion(
     throw new Error(`Failed to record completion: ${error?.message}`)
   }
 
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     brokerage_id: input.brokerageId,
     entity_type: "contact",
     entity_id: input.contactId,
@@ -1059,7 +1060,7 @@ export async function recordCompletion(
       module_id: input.resourceId,
     },
     created_at: new Date().toISOString(),
-  })
+  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   return {
     progressId: data.id,

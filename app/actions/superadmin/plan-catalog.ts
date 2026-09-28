@@ -135,7 +135,10 @@ export async function syncPlanTierFromStripeAction(tierId: string): Promise<{ ok
     const price = await stripe.prices.retrieve(priceId)
     const cents = price.unit_amount ?? 0
     const patch = price.recurring?.interval === "year" ? { annual_price_cents: cents } : { monthly_price_cents: cents }
-    await svc.from("subscription_tiers").update(patch).eq("id", tierId)
+    // The Stripe price was read; a refused catalog write means the tier still shows
+    // the OLD price on /signup while this reported the sync done.
+    const { error: syncErr } = await svc.from("subscription_tiers").update(patch).eq("id", tierId)
+    if (syncErr) return { ok: false, error: `Stripe price read, but the plan tier was not updated: ${syncErr.message}` }
     await audit(auth.userId, "plan_tier.synced_from_stripe", tierId, { priceId, cents, interval: price.recurring?.interval ?? "month" })
     revalidatePath("/dashboard/superadmin/plans"); revalidatePath("/signup")
     return { ok: true, monthlyPriceCents: cents }
@@ -223,7 +226,10 @@ export async function publishTierToStripeAction(tierId: string): Promise<{ ok: t
       lookup_key: `${t.tier_name}_monthly_${Date.now()}`,
       metadata: { tier_name: t.tier_name },
     })
-    await svc.from("subscription_tiers").update({ stripe_price_id: price.id }).eq("id", tierId)
+    // The Stripe price now EXISTS; a refused write here leaves the tier pointing at
+    // the old price, so signups keep being charged it. Name the orphan price.
+    const { error: pubErr } = await svc.from("subscription_tiers").update({ stripe_price_id: price.id }).eq("id", tierId)
+    if (pubErr) return { ok: false, error: `Stripe price ${price.id} was created, but the plan tier was not repointed to it: ${pubErr.message}` }
     await audit(auth.userId, "plan_tier.published_to_stripe", tierId, {
       tierName: t.tier_name, monthlyPriceCents: t.monthly_price_cents,
       newPriceId: price.id, previousPriceId: t.stripe_price_id ?? null,

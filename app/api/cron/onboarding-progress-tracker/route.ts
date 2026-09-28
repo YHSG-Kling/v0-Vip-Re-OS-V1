@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import {
 NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -65,7 +66,7 @@ export async function GET(request: NextRequest) {
       agent_id: string; current_day: number; completion_percentage: number;
     }>) {
       // Emit a lifecycle_event for each stalled actor
-      await svc.from("lifecycle_events").insert({
+      await sentinelWrite(svc, svc.from("lifecycle_events").insert({
         event_type:   "onboarding.stalled",
         entity_type:  "agent_onboarding",
         entity_id:    r.id,
@@ -77,12 +78,12 @@ export async function GET(request: NextRequest) {
           current_day:       r.current_day,
         },
         created_at: new Date().toISOString(),
-      })
+      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
       // No nudge_sent_at column on agent_onboarding — use additional_data jsonb
-      await svc
+      await sentinelWrite(svc, svc
         .from("agent_onboarding")
         .update({ additional_data: { last_nudge_sent_at: new Date().toISOString() }, updated_at: new Date().toISOString() })
-        .eq("id", r.id)
+        .eq("id", r.id), { table: "agent_onboarding", flow: "onboarding_nudge_stamp", reason: "nudge timestamp; a loss only allows a repeat nudge" })
       agentNudged++
     }
 

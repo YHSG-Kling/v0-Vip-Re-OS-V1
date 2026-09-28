@@ -66,7 +66,7 @@ async function runTridClockForTimeline(
   if (!transitioned) return { result, escalated: false, transitioned: false }
 
   // Flip the long-unused forward status so the dashboard + post-hoc monitor agree.
-  await svc.from("trid_timeline").update({ compliance_status: nextStatus }).eq("id", tl.id).then(() => {}, () => {})
+  await sentinelWrite(svc, svc.from("trid_timeline").update({ compliance_status: nextStatus }).eq("id", tl.id), { table: "trid_timeline", flow: "trid_forward_status", reason: "forward status flip for the dashboard; the escalation below runs regardless and a lost flip is ledgered" })
 
   const urgent = mostUrgentDeadline(result)
   const fallback = urgent

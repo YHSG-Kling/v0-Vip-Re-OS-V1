@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import {
 NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -96,15 +97,15 @@ async function runMiningForBrokerage(brokerageId: string): Promise<{ written: nu
 
   // Supersede previous open insights for the patterns we're about to write.
   const patternKeys = Array.from(new Set(insights.map((i) => i.patternKey)))
-  await svc
+  await sentinelWrite(svc, svc
     .from("brokerage_intelligence_insights")
     .update({ status: "superseded" })
     .eq("brokerage_id", brokerageId)
     .eq("status", "open")
-    .in("pattern_key", patternKeys)
+    .in("pattern_key", patternKeys), { table: "brokerage_intelligence_insights", flow: "brokerage_intelligence_insights_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   // Insert new
-  await svc.from("brokerage_intelligence_insights").insert(insights.map((i) => ({
+  await sentinelWrite(svc, svc.from("brokerage_intelligence_insights").insert(insights.map((i) => ({
     brokerage_id:            i.brokerageId,
     mining_run_id:           miningRunId,
     pattern_key:             i.patternKey,
@@ -124,7 +125,7 @@ async function runMiningForBrokerage(brokerageId: string): Promise<{ written: nu
     playbook_actions:        i.playbookActions,
     supporting_agents:       i.supportingAgents,
     severity:                i.severity,
-  })))
+  }))), { table: "brokerage_intelligence_insights", flow: "brokerage_intelligence_insights_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   const followupsRecorded = await recordAdoptionFollowups(svc, brokerageId, insights)
   return { written: insights.length, followupsRecorded }

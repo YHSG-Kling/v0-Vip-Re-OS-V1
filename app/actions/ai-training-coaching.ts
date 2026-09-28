@@ -1,5 +1,6 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { generateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
@@ -181,7 +182,7 @@ Generate a detailed role-play scenario including:
     })
 
     // Log scenario generation for audit trail
-    await supabase
+    await bestEffort(supabase
       .from("audit_log")
       .insert({
         action: "coaching_scenario_generated",
@@ -192,10 +193,7 @@ Generate a detailed role-play scenario including:
           scenario_type: params.scenarioType,
           difficulty: params.difficulty || "medium"
         }
-      })
-      .then(() => {}, (err) => {
-        console.error("[v0] Failed to log scenario generation:", err)
-      })
+      }), "audit of a generated coaching scenario already returned")
 
     return {
       success: true,
@@ -351,7 +349,7 @@ Provide evaluation including:
     })
 
     // Log evaluation for audit trail
-    await supabase
+    await bestEffort(supabase
       .from("audit_log")
       .insert({
         action: "practice_session_evaluated",
@@ -361,10 +359,7 @@ Provide evaluation including:
         after: {
           score: evaluation.score
         }
-      })
-      .then(() => {}, (err) => {
-        console.error("[v0] Failed to log evaluation:", err)
-      })
+      }), "audit of a practice evaluation already returned")
 
     return {
       success: true,

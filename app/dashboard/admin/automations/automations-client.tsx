@@ -177,7 +177,9 @@ export function AutomationsClient({ automations: initial, recentErrors: initialE
   async function handleDelete(id: string) {
     if (!confirm("Delete this automation? This cannot be undone.")) return
     const supabase = createClient()
-    await supabase.from("workflow_automations").delete().eq("id", id)
+    const { data: deleteRows, error: deleteErr } = await supabase.from("workflow_automations").delete().eq("id", id).select("id")
+    if (deleteErr) return void show(`Automation not deleted: ${deleteErr.message}`)
+    if ((deleteRows ?? []).length === 0) return void show(`Automation not deleted: no row matched (not permitted from your account)`)
     setAutomations((prev) => prev.filter((a) => a.id !== id))
     show("Automation deleted")
   }
@@ -186,7 +188,9 @@ export function AutomationsClient({ automations: initial, recentErrors: initialE
 
   async function handleToggle(id: string, current: boolean) {
     const supabase = createClient()
-    await supabase.from("workflow_automations").update({ is_active: !current }).eq("id", id)
+    const { data: toggleRows, error: toggleErr } = await supabase.from("workflow_automations").update({ is_active: !current }).eq("id", id).select("id")
+    if (toggleErr) return void show(`Automation not updated: ${toggleErr.message}`)
+    if ((toggleRows ?? []).length === 0) return void show(`Automation not updated: no row matched (not permitted from your account)`)
     setAutomations((prev) => prev.map((a) => a.id === id ? { ...a, is_active: !current } : a))
     show(`Automation ${!current ? "enabled" : "disabled"}`)
   }
@@ -237,10 +241,12 @@ export function AutomationsClient({ automations: initial, recentErrors: initialE
 
   async function handleMarkResolved(id: string) {
     const supabase = createClient()
-    await supabase
+    const { data: resolveRows, error: resolveErr } = await supabase
       .from("automation_errors")
       .update({ status: "resolved", resolved_at: new Date().toISOString() })
-      .eq("id", id)
+      .eq("id", id).select("id")
+    if (resolveErr) return void show(`Error not marked resolved: ${resolveErr.message}`)
+    if ((resolveRows ?? []).length === 0) return void show(`Error not marked resolved: no row matched (not permitted from your account)`)
     setErrors((prev) => prev.map((e) => e.id === id ? { ...e, status: "resolved" } : e))
     show("Marked as resolved")
   }

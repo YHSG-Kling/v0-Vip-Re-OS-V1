@@ -134,7 +134,7 @@ export async function POST(request: Request) {
         sessionId = existing.id
       } else {
         // Create new portal session
-        const { data: newSession } = await serviceClient
+        const { data: newSession, error: portalSessionErr } = await serviceClient
           .from('chat_sessions')
           .insert({
             contact_id:   contactId,
@@ -147,6 +147,7 @@ export async function POST(request: Request) {
           })
           .select('id')
           .maybeSingle()
+        if (portalSessionErr) console.error(`[portal-ai-chat] portal chat session NOT created (turns will not persist): ${portalSessionErr.message}`)
         sessionId = newSession?.id ?? null
       }
     }
@@ -441,12 +442,12 @@ export async function POST(request: Request) {
 
     // ── Persist incoming user message ──────────────────────────────────────────
     if (sessionId && latestText) {
-      serviceClient.from('chat_messages').insert({
+      void sentinelWrite(serviceClient, serviceClient.from('chat_messages').insert({
         session_id: sessionId,
         role:       'user',
         content:    latestText,
         metadata:   { source: 'portal', contact_id: contactId },
-      }).then(() => {}, () => {})
+      }), { table: "chat_messages", flow: "portal_chat_turn", reason: "chat history persistence; never blocks the streamed answer" })
     }
 
     // ── BatchData/RentCast property-intelligence tools (lane 72B, widened 73B) ──
@@ -497,12 +498,12 @@ export async function POST(request: Request) {
       onFinish: async ({ text }) => {
         // Persist AI reply for CRM history
         if (sessionId && text) {
-          await serviceClient.from('chat_messages').insert({
+          await sentinelWrite(serviceClient, serviceClient.from('chat_messages').insert({
             session_id: sessionId,
             role:       'assistant',
             content:    text,
             metadata:   { source: 'portal', contact_id: contactId },
-          }).then(() => {}, () => {})
+          }), { table: "chat_messages", flow: "portal_chat_turn", reason: "chat history persistence; never blocks the streamed answer" })
         }
       },
     })

@@ -142,11 +142,12 @@ export async function markAppraisalCompleteAction(
     appraisal_completed_date: new Date().toISOString().slice(0, 10),
   }
   if (params.appraisalValue != null) updatePayload.appraisal_value = params.appraisalValue
-  await supabase
+  const { error: appraisalErr } = await supabase
     .from("transactions")
     .update(updatePayload)
     .eq("id", params.transactionId)
     .eq("brokerage_id", params.brokerageId)
+  if (appraisalErr) return { success: false, error: `Could not record the appraisal on the transaction: ${appraisalErr.message}` }
 
   // Complete the appraisal_completed milestone — fan-out fires here.
   try {

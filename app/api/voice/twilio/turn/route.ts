@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveInboundContext, validateTwilioSignature, planReceptionTurn } from "@/lib/voice/twilio-voice"
@@ -50,7 +51,7 @@ export async function POST(request: NextRequest) {
     const plan = await planReceptionTurn({ deployment: "platform", ctx: pctx, transcript, utterance: speech,
       prospect: { phone: params.From ?? null, prospectId: (call as any)?.prospect_id ?? null, callId: (call as any)?.id ?? null } })
     const newTranscript = appendTranscript(transcript, speech, plan.say)
-    if (call) await svc.from("platform_reception_calls").update({ transcript: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
+    if (call) await sentinelWrite(svc, svc.from("platform_reception_calls").update({ transcript: newTranscript }).eq("id", (call as any).id), { table: "platform_reception_calls", flow: "reception_transcript", reason: "a live call must keep answering; a lost transcript write is ledgered" })
 
     if (plan.action.kind === "prospect") {
       const prospect = await capturePhoneProspect(svc, {
@@ -59,8 +60,8 @@ export async function POST(request: NextRequest) {
         company: plan.action.company, roleInterest: plan.action.roleInterest, note: plan.action.note,
       })
       if (call && prospect) {
-        await svc.from("platform_reception_calls").update({ prospect_id: prospect.id, outcome: "prospect_captured" })
-          .eq("id", (call as any).id).then(undefined, () => {})
+        await sentinelWrite(svc, svc.from("platform_reception_calls").update({ prospect_id: prospect.id, outcome: "prospect_captured" })
+          .eq("id", (call as any).id), { table: "platform_reception_calls", flow: "reception_prospect_link", reason: "the prospect row already landed; a lost call link is ledgered" })
       }
       return xml(twimlGatherTurn(plan.say, url))
     }
@@ -149,7 +150,7 @@ export async function POST(request: NextRequest) {
       })
   const newTranscript = appendTranscript(transcript, speech, plan.say)
   if (call) {
-    await svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
+    await sentinelWrite(svc, svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id), { table: "voice_calls", flow: "voice_transcript", reason: "a live call must keep answering; a lost transcript write is ledgered" })
   }
 
   // ── Actions on the SAME rails as every other engine ────────────────────────
@@ -182,7 +183,7 @@ export async function POST(request: NextRequest) {
         topic: speech.slice(0, 90) || null, voiceCallId: (call as any).id,
       })
       if (bridged) {
-        await svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
+        await sentinelWrite(svc, svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id), { table: "voice_calls", flow: "voice_transcript", reason: "a live call must keep answering; a lost transcript write is ledgered" })
         return xml(twimlHoldInConference(`${plan.say} One moment while I bring them in.`, conferenceNameFor(callSid)))
       }
     }
@@ -285,7 +286,7 @@ async function finishCall(svc: any, callId: string, transcript: string, outcome 
 }
 
 async function finishPlatformCall(svc: any, callId: string, transcript: string, status: string, outcome: string): Promise<void> {
-  await svc.from("platform_reception_calls").update({
+  await sentinelWrite(svc, svc.from("platform_reception_calls").update({
     status, outcome, ended_at: new Date().toISOString(), transcript,
-  }).eq("id", callId).then(undefined, () => {})
+  }).eq("id", callId), { table: "platform_reception_calls", flow: "reception_call_close", reason: "a live call must keep answering; a lost close is ledgered" })
 }

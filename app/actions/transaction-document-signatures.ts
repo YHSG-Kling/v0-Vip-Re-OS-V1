@@ -127,10 +127,11 @@ export async function sendDocumentForSignature(params: {
   }
 
   // ── Mark the transaction document as pending_signature ────────────────────
-  await supabase
+  const { error: pendingSigErr } = await supabase
     .from("transaction_documents")
     .update({ status: "pending_signature", updated_at: new Date().toISOString() })
     .eq("id", documentId)
+  if (pendingSigErr) return { success: false, error: `Could not mark the document pending signature: ${pendingSigErr.message}` }
 
   // ── Emit kernel event — audit row + reactor ───────────────────────────────
   // (was a bare insert with a `?? "document.signature.requested"` fallback that
@@ -190,11 +191,13 @@ export async function resendDocumentForSignature(params: {
   if (!sig) return { success: false, error: "Signature not found" }
   if (sig.brokerage_id !== callerRow.brokerage_id) return { success: false, error: "Forbidden" }
 
-  await supabase
+  const { data: sigSentRows, error: sigSentErr } = await supabase
     .from("contract_signatures")
     .update({ sent_at: new Date().toISOString(), esign_status: "sent", updated_at: new Date().toISOString() })
     .eq("id", signatureId)
-    .eq("brokerage_id", callerRow.brokerage_id)
+    .eq("brokerage_id", callerRow.brokerage_id).select("id")
+  if (sigSentErr) return { success: false, error: `Could not mark the signature request sent: ${sigSentErr.message}` }
+  if ((sigSentRows ?? []).length === 0) return { success: false, error: `Could not mark the signature request sent: no row matched (not permitted from your account)` }
 
   revalidatePath(`/dashboard/transactions/${transactionId}`)
   return { success: true }

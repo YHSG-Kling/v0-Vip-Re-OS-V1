@@ -1,5 +1,6 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { generateObject } from "@/lib/ai/generate"
@@ -158,7 +159,7 @@ Generate a comprehensive, ordered closing checklist covering:
     if (insertError) throw insertError
 
     // Upsert closing prep score
-    await supabase
+    await bestEffort(supabase
       .from("transaction_closing_prep")
       .upsert(
         {
@@ -169,7 +170,7 @@ Generate a comprehensive, ordered closing checklist covering:
           checklist:        { critical_path: checklist.critical_path, ai_summary: checklist.ai_summary },
         },
         { onConflict: "transaction_id" }
-      )
+      ), "closing-readiness score cache; the checklist itself was written (and checked) above")
 
     revalidatePath(`/dashboard/transactions/${params.transactionId}`)
     return {

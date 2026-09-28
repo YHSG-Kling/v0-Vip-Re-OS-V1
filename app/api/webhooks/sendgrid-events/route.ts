@@ -13,6 +13,7 @@
  * SendGrid doesn't retry-storm.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveUnambiguousTenant } from "@/lib/kernel/unambiguous-tenant"
@@ -101,7 +102,7 @@ export async function POST(request: NextRequest) {
           .limit(1).maybeSingle()
         if (exact) {
           eventBrokerageId = ((exact as any).brokerage_id as string | null) ?? null
-          await svc.from("messages").update({ status, updated_at: new Date().toISOString() }).eq("id", (exact as any).id)
+          await sentinelWrite(svc, svc.from("messages").update({ status, updated_at: new Date().toISOString() }).eq("id", (exact as any).id), { table: "messages", flow: "sendgrid_message_status", reason: "delivery-status mirror; the webhook must ack" })
           matched = true
         }
       }
@@ -168,7 +169,7 @@ export async function POST(request: NextRequest) {
       }
 
       if (trackingType && trackContact) {
-        await svc.from("email_tracking").insert({
+        await sentinelWrite(svc, svc.from("email_tracking").insert({
           contact_id: trackContact.id,
           brokerage_id: trackContact.brokerage_id ?? null,
           event_type: trackingType,
@@ -183,7 +184,7 @@ export async function POST(request: NextRequest) {
           user_agent: String(ev?.useragent ?? "") || null,
           metadata: { sg_message_id: sgId || null, sg_event_id: String(ev?.sg_event_id ?? "") || null },
           event_at: eventAt,
-        })
+        }), { table: "email_tracking", flow: "sendgrid_engagement", reason: "engagement row; the webhook must ack and a loss is ledgered" })
 
         // BEHAVIOURAL EVENT LOG — email_open (3 pts) / email_click (10 pts) in the
         // scored vocabulary (lib/lead-scoring/behavioral-events). This is the lane
@@ -234,7 +235,7 @@ export async function POST(request: NextRequest) {
             .order("created_at", { ascending: false })
             .limit(1).maybeSingle()
           if (msg && !((msg as any).status === "read" && status === "delivered")) {
-            await svc.from("messages").update({ status, updated_at: new Date().toISOString() }).eq("id", (msg as any).id)
+            await sentinelWrite(svc, svc.from("messages").update({ status, updated_at: new Date().toISOString() }).eq("id", (msg as any).id), { table: "messages", flow: "sendgrid_message_status", reason: "delivery-status mirror; the webhook must ack" })
             matched = true
           }
         }

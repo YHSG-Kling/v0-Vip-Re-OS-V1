@@ -20,6 +20,7 @@
  *       Co-Pilot drafting can pick up the work.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireCaller } from "@/lib/auth/require-caller"
@@ -403,7 +404,7 @@ export async function dispositionPortalEventAction(params: {
   // event_type — downstream handlers can check metadata.source_event_type
   // to know what to do.
   if (params.mode === "ai_delegate") {
-    await svc.from("lifecycle_events").insert({
+    await sentinelWrite(svc, svc.from("lifecycle_events").insert({
       event_type:    "agent.delegated_to_ai",
       entity_type:   row.transaction_id ? "transaction" : "contact",
       entity_id:     row.transaction_id ?? row.contact_id,
@@ -414,7 +415,7 @@ export async function dispositionPortalEventAction(params: {
         source_event_type:      row.event_type,
         agent_action_label:     row.agent_action_label,
       },
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
   }
 
   // Revalidate the surfaces the disposition affects

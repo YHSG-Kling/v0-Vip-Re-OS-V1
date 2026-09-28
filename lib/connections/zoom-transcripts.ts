@@ -22,6 +22,7 @@
 // Idempotent per meeting uuid on both lanes (a webhook redelivery never
 // double-attaches or double-analyzes).
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { parseZoomVtt, resolveZoomAttachTarget } from "./zoom"
@@ -331,7 +332,7 @@ async function stampTranscriptAttached(
   attachedTo: "contact" | "tenant",
 ): Promise<void> {
   try {
-    await svc
+    await sentinelWrite(svc, svc
       .from("calendar_events")
       .update({
         metadata: {
@@ -344,7 +345,7 @@ async function stampTranscriptAttached(
           },
         },
       })
-      .eq("id", eventId)
+      .eq("id", eventId), { table: "calendar_events", flow: "zoom_transcript_link", reason: "transcript link on the event metadata" })
   } catch {
     /* best-effort */
   }

@@ -186,7 +186,7 @@ export async function runReferralAppreciation(brokerageId: string, svc: any): Pr
       out.skippedDuplicate++
     } else {
       const msg = composeReferrerUpdate({ referrerFirstName: (referrer as any).first_name, referredFirstName: (referred as any)?.first_name, stage })
-      await svc.from("agent_client_messages").insert({
+      const { error: referrerUpdateErr } = await svc.from("agent_client_messages").insert({
         brokerage_id: brokerageId,
         recipient_contact_id: r.referrer_contact_id,
         entity_type: "referral",
@@ -198,6 +198,7 @@ export async function runReferralAppreciation(brokerageId: string, svc: any): Pr
         body: msg.body,
         rationale: `${tag} Referrer kept in the loop — privacy-tasteful milestone update (no deal details).`,
       })
+      if (referrerUpdateErr) console.error(`[referral-appreciation] referrer update proposal NOT saved: ${referrerUpdateErr.message}`)
       out.updatesProposed++
     }
 
@@ -212,7 +213,7 @@ export async function runReferralAppreciation(brokerageId: string, svc: any): Pr
           out.skippedDuplicate++
         } else {
           const prop = composeAppreciationProposal({ referrerFirstName: (referrer as any).first_name, referredFirstName: (referred as any)?.first_name, setting })
-          await svc.from("agent_client_messages").insert({
+          const { error: appreciationErr } = await svc.from("agent_client_messages").insert({
             brokerage_id: brokerageId,
             recipient_contact_id: r.referrer_contact_id,
             entity_type: "referral",
@@ -224,6 +225,7 @@ export async function runReferralAppreciation(brokerageId: string, svc: any): Pr
             body: prop.body,
             rationale: `${aTag} Configured appreciation (${setting.kind}, cap $${(setting.maxValueCents / 100).toFixed(0)}) — human approves; gift_sent flips only when recorded.`,
           })
+          if (appreciationErr) console.error(`[referral-appreciation] appreciation proposal NOT saved: ${appreciationErr.message}`)
           out.appreciationsProposed++
         }
       }

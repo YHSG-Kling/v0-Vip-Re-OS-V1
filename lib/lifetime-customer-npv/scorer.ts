@@ -31,6 +31,7 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { latestByContact } from "./current"
 import { createServiceClient } from "@/lib/supabase/service"
 import { WEALTH_ACTIVE_STATUSES } from "@/lib/wealth-advisor/recommendation-status"
@@ -321,7 +322,7 @@ export async function scoreContactNpv(input: {
   }
 
   // Persist
-  await supabase.from("lifetime_customer_npv_scores").insert({
+  await sentinelWrite(supabase, supabase.from("lifetime_customer_npv_scores").insert({
     contact_id:                 result.contactId,
     brokerage_id:               result.brokerageId,
     agent_id:                   result.agentId,
@@ -339,7 +340,7 @@ export async function scoreContactNpv(input: {
     next_touchpoint_due:        result.nextTouchpointDue,
     previous_score:             result.previousScore,
     score_delta:                result.scoreDelta,
-  })
+  }), { table: "lifetime_customer_npv_scores", flow: "lifetime_customer_npv_scores_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   return result
 }

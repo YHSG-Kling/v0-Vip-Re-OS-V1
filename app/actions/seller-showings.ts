@@ -1,5 +1,6 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { revalidatePath } from "next/cache"
@@ -216,10 +217,11 @@ export async function showingTimeConfirm(params: { showingId: string; credential
 
   if (!resp.ok) return { success: false, error: `ShowingTime confirm failed: ${resp.status}` }
 
-  await supabase
+  const { error: confirmStampErr } = await supabase
     .from("showings")
     .update({ status: "confirmed", updated_at: new Date().toISOString() })
     .eq("id", params.showingId)
+  if (confirmStampErr) return { success: false, error: `ShowingTime confirmed, but the showing was not marked confirmed here: ${confirmStampErr.message}` }
 
   return { success: true }
 }
@@ -266,10 +268,11 @@ export async function showingTimeReschedule(params: {
 
   if (!resp.ok) return { success: false, error: `ShowingTime reschedule failed: ${resp.status}` }
 
-  await supabase
+  const { error: rescheduleStampErr } = await supabase
     .from("showings")
     .update({ status: "rescheduled", updated_at: new Date().toISOString() })
     .eq("id", params.showingId)
+  if (rescheduleStampErr) return { success: false, error: `ShowingTime rescheduled, but the showing was not updated here: ${rescheduleStampErr.message}` }
 
   return { success: true }
 }
@@ -316,10 +319,11 @@ export async function showingTimeDecline(params: {
 
   if (!resp.ok) return { success: false, error: `ShowingTime decline failed: ${resp.status}` }
 
-  await supabase
+  const { error: declineStampErr } = await supabase
     .from("showings")
     .update({ status: "cancelled", notes: params.reason, updated_at: new Date().toISOString() })
     .eq("id", params.showingId)
+  if (declineStampErr) return { success: false, error: `ShowingTime declined, but the showing was not cancelled here: ${declineStampErr.message}` }
 
   return { success: true }
 }
@@ -472,10 +476,11 @@ export async function approveShowingRequest(params: {
   if (showErr) return { success: false, error: showErr.message }
 
   // UPDATE converted_showing_id on request
-  await supabase
+  const { error: requestConvertErr } = await supabase
     .from("showing_requests")
     .update({ converted_showing_id: showing.id })
     .eq("id", params.requestId)
+  if (requestConvertErr) console.error(`[seller-showings] showing request NOT linked to the created showing: ${requestConvertErr.message}`)
 
   // Agent calendar event — MERGED from the deleted
   // app/actions/showings.ts:confirmShowing (§1 keep-one, lane E2 2026-08-28):
@@ -497,14 +502,14 @@ export async function approveShowingRequest(params: {
   }
 
   // Kernel sub-event — brokerage_id / actor from session, not params
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     brokerage_id:   auth.brokerageId,
     entity_type:    "listing_stage_machine",
     entity_id:      params.listingId,
     event_type:     "listing.showing.confirmed",
     actor_user_id:  auth.userId,
     metadata: { showing_id: showing.id, request_id: params.requestId },
-  })
+  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   await processKernelEvent({
     event:      KernelEvent.SHOWING_SCHEDULED,
@@ -640,13 +645,14 @@ export async function markShowingCompleted(params: {
   }
 
   // UPDATE showings.status
-  await supabase
+  const { error: completeErr } = await supabase
     .from("showings")
     .update({ status: "completed", completed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("id", params.showingId)
+  if (completeErr) return { success: false, error: `Could not mark the showing completed: ${completeErr.message}` }
 
   // INSERT showing_feedback_requests — brokerage from session
-  const { data: feedbackReq } = await supabase
+  const { data: feedbackReq, error: feedbackReqErr } = await supabase
     .from("showing_feedback_requests")
     .insert({
       brokerage_id: auth.brokerageId,
@@ -657,10 +663,11 @@ export async function markShowingCompleted(params: {
     .select("id, feedback_token")
     .single()
 
+  if (feedbackReqErr) return { success: false, error: `Showing completed, but the feedback request was not created: ${feedbackReqErr.message}` }
   if (!feedbackReq) return { success: false, error: "Failed to create feedback request" }
 
   // INSERT showing_feedback stub with same token
-  await supabase
+  const { error: feedbackStubErr } = await supabase
     .from("showing_feedback")
     .insert({
       brokerage_id:   auth.brokerageId,
@@ -668,16 +675,17 @@ export async function markShowingCompleted(params: {
       feedback_token: feedbackReq.feedback_token,
       request_id:     feedbackReq.id,
     })
+  if (feedbackStubErr) console.error(`[seller-showings] feedback stub NOT created (the token link will find no row): ${feedbackStubErr.message}`)
 
   // Direct lifecycle_events insert — session-derived identity
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     brokerage_id:   auth.brokerageId,
     entity_type:    "listing_stage_machine",
     entity_id:      params.listingId,
     event_type:     "listing.showing.completed",
     actor_user_id:  auth.userId,
     metadata: { showing_id: params.showingId, feedback_token: feedbackReq.feedback_token },
-  })
+  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   // Kernel notification (non-blocking)
   await processKernelEvent({

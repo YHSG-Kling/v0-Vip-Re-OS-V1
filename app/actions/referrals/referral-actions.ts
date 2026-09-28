@@ -1,5 +1,6 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
@@ -244,10 +245,10 @@ export async function createReferral(params: CreateReferralParams): Promise<{ id
         .select("total_referrals_received")
         .eq("id", partnerId)
         .maybeSingle()
-      await db
+      await sentinelWrite(db, db
         .from("referral_partners")
         .update({ total_referrals_received: (partner?.total_referrals_received ?? 0) + 1 })
-        .eq("id", partnerId)
+        .eq("id", partnerId), { table: "referral_partners", flow: "referral_partners_write", reason: "partner referral counter (reporting)" })
     }
   }
 
@@ -388,13 +389,13 @@ export async function updateReferralStatus(
         .single()
 
       if (partner) {
-        await db
+        await sentinelWrite(db, db
           .from("referral_partners")
           .update({
             total_value_generated:
               (partner.total_value_generated ?? 0) + (closedData.commissionAmount ?? 0),
           })
-          .eq("id", ref.partner_id)
+          .eq("id", ref.partner_id), { table: "referral_partners", flow: "referral_partners_write", reason: "partner value counter (reporting)" })
       }
     }
   }

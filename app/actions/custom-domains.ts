@@ -27,6 +27,7 @@
 // Audited via the tenant audit idiom (audit_log insert, entity_type
 // 'tenant_custom_domain').
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
@@ -109,14 +110,14 @@ async function requireBrokerageAdmin(): Promise<AdminGate | { ok: false; error: 
 
 async function audit(svc: any, userId: string, action: string, entityId: string, after: Record<string, unknown>) {
   try {
-    await svc.from("audit_log").insert({
+    await sentinelWrite(svc, svc.from("audit_log").insert({
       user_id: userId,
       action,
       entity_type: "tenant_custom_domain",
       entity_id: entityId,
       before: null,
       after,
-    })
+    }), { table: "audit_log", flow: "custom_domain_audit", reason: "audit echo of a custom-domain action that already completed" })
   } catch {
     /* audit is best-effort — never fail the user action on a log write */
   }
@@ -305,8 +306,9 @@ export async function addCustomDomainAction(rawDomain: string): Promise<
         patch.status = "active"
         patch.verified_at = nowIso
       }
-      const { data } = await svc.from("tenant_custom_domains")
+      const { data, error: domainStatusErr } = await svc.from("tenant_custom_domains")
         .update(patch).eq("id", row.id).select(ROW_COLUMNS).single()
+      if (domainStatusErr) console.error(`[custom-domains] domain verification status NOT saved: ${domainStatusErr.message}`)
       row = data ?? row
       if (vercel.verified) {
         // status→active on first registration — announce it on the governed bus.

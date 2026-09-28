@@ -219,7 +219,7 @@ export async function distributeVideo(
       }
 
       // Also write a client_portal_messages entry
-      await supabase.from("client_portal_messages").insert({
+      const { error: portalVideoMsgErr } = await supabase.from("client_portal_messages").insert({
         brokerage_id: params.brokerageId,
         agent_id: actingAgentId,
         contact_id: params.contactId,
@@ -227,6 +227,7 @@ export async function distributeVideo(
         body: `${subject}\n\n${body}`,
         created_at: new Date().toISOString(),
       })
+      if (portalVideoMsgErr) console.error(`[distribute-video] portal copy of the video message NOT recorded: ${portalVideoMsgErr.message}`)
 
       return { success: true }
     }

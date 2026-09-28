@@ -11,6 +11,7 @@
  * Idempotent on (brokerage_id, email|phone). Not server-only — never import from
  * a client component.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
@@ -105,7 +106,7 @@ export async function ingestConsentedAdLead(
   }
 
   // Consent audit trail (best-effort — the contact is already stamped).
-  await supabase.from("contact_consent_events").insert({
+  await sentinelWrite(supabase, supabase.from("contact_consent_events").insert({
     contact_id:     contactId,
     brokerage_id:   input.brokerageId,
     agent_id:       input.agentId ?? null,
@@ -115,7 +116,7 @@ export async function ingestConsentedAdLead(
     consented:      true,
     ip_address:     input.ip ?? null,
     user_agent:     input.userAgent ?? null,
-  })
+  }), { table: "contact_consent_events", flow: "contact_consent_events_write", reason: "consent audit trail (the contact is already stamped with the consent)" })
 
   // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). Only for a NEW
   // contact — the `existingId` branch above is a consent upgrade on someone

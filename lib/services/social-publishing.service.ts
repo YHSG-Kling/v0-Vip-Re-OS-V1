@@ -1,5 +1,6 @@
 
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
@@ -79,13 +80,14 @@ export async function publishToSocialMedia(params: PublishPostParams): Promise<{
 
     // Update post status
     const allSucceeded = results.every(r => r.success)
-    await supabase
+    const { error: postStatusErr } = await supabase
       .from("social_posts")
       .update({
         status: allSucceeded ? "published" : "failed",
         published_at: allSucceeded ? new Date().toISOString() : null
       })
       .eq("id", params.postId)
+    if (postStatusErr) console.error(`[social-publishing] publish outcome NOT saved on the post: ${postStatusErr.message}`)
 
     return {
       success: allSucceeded,
@@ -342,11 +344,11 @@ export async function cancelScheduledPost(postId: string): Promise<{ success: bo
       .eq("id", postId)
 
     // Cancel orchestrator task
-    await supabase
+    await bestEffort(supabase
       .from("orchestrator_tasks")
       .update({ status: "cancelled" })
       .eq("task_type", "publish_scheduled_post")
-      .eq("payload->post_id", postId)
+      .eq("payload->post_id", postId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     return { success: true }
   } catch (error) {

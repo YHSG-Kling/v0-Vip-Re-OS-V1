@@ -25,6 +25,7 @@
  * already hand-builds.
  */
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 // intakeToListingDraftParams is the ONE intake → generateListingAgreement mapping. It
 // was written for the retired /api/workflow/intake/listing route while this action
@@ -119,14 +120,14 @@ export async function voiceDraftListing(req: VoiceDraftListingRequest): Promise<
   // Persist / upsert session
   let sessionId = req.sessionId
   if (sessionId) {
-    await supabase.from("workflow_intake_sessions").update({
+    await bestEffort(supabase.from("workflow_intake_sessions").update({
       current_intake: extracted.intake,
       conversation:   newConversation,
       status:         extracted.readyToDraft ? "ready_to_draft" : "in_progress",
       updated_at:     new Date().toISOString(),
-    }).eq("id", sessionId)
+    }).eq("id", sessionId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
   } else {
-    const { data: newSession } = await supabase.from("workflow_intake_sessions").insert({
+    const { data: newSession, error: sessionInsErr } = await supabase.from("workflow_intake_sessions").insert({
       brokerage_id:   brokerageId,
       agent_user_id:  user.id,
       contact_id:     req.contactId ?? null,
@@ -135,6 +136,9 @@ export async function voiceDraftListing(req: VoiceDraftListingRequest): Promise<
       current_intake: extracted.intake,
       status:         extracted.readyToDraft ? "ready_to_draft" : "in_progress",
     }).select("id").single()
+    // The intake still proceeds this turn, but without a session row the next
+    // turn cannot resume it — never silent.
+    if (sessionInsErr) console.error(`[voice-intake] intake session NOT created: ${sessionInsErr.message}`)
     sessionId = newSession?.id
   }
   if (!sessionId) return { kind: "error", error: "Could not persist intake session" }
@@ -144,12 +148,12 @@ export async function voiceDraftListing(req: VoiceDraftListingRequest): Promise<
     const spoken = top.length > 0
       ? `Got it. ${top.map(q => q.question).join(" ")}`
       : "Got it. What else?"
-    await supabase.from("workflow_intake_sessions").update({
+    await bestEffort(supabase.from("workflow_intake_sessions").update({
       conversation: [
         ...newConversation,
         { role: "assistant", content: spoken, ts: new Date().toISOString() },
       ],
-    }).eq("id", sessionId)
+    }).eq("id", sessionId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     return {
       kind:           "needs_more_info",
@@ -180,7 +184,7 @@ export async function voiceDraftListing(req: VoiceDraftListingRequest): Promise<
     return { kind: "error", error: (err as Error).message ?? "Fill engine failed" }
   }
 
-  const { data: doc } = await supabase.from("documents").insert({
+  const { data: doc, error: docInsErr } = await supabase.from("documents").insert({
     brokerage_id:  brokerageId,
     contact_id:    req.contactId ?? null,
     document_type: "listing_agreement",
@@ -198,6 +202,7 @@ export async function voiceDraftListing(req: VoiceDraftListingRequest): Promise<
     content: JSON.stringify({ filledPacket, intake: extracted.intake }, null, 2),
     created_at: new Date().toISOString(),
   }).select("id").single()
+  if (docInsErr) return { kind: "error", error: `Could not create document: ${docInsErr.message}` }
   if (!doc) return { kind: "error", error: "Could not create document" }
 
   // Audit trail
@@ -220,11 +225,11 @@ export async function voiceDraftListing(req: VoiceDraftListingRequest): Promise<
     }
   } catch { /* generator optional */ }
 
-  await supabase.from("workflow_intake_sessions").update({
+  await bestEffort(supabase.from("workflow_intake_sessions").update({
     status: "drafted",
     document_id: doc.id,
     updated_at: new Date().toISOString(),
-  }).eq("id", sessionId)
+  }).eq("id", sessionId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
   return {
     kind:           "finalized",

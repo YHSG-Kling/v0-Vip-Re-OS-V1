@@ -252,7 +252,9 @@ export async function reviewLicenseManually(input: {
   const passed = outcome.verified
   const now = new Date().toISOString()
 
-  await service
+  // THE DECISION. A refused write used to fall through to the audit row and the
+  // agent's "License verified" notice while the license kept its old status.
+  const { error: decisionErr } = await service
     .from("agent_licenses")
     .update({
       verification_status: outcome.verificationStatus,
@@ -260,16 +262,17 @@ export async function reviewLicenseManually(input: {
       updated_at: now,
     })
     .eq("id", lic.id)
+  if (decisionErr) return { success: false, error: `Could not record the review decision: ${decisionErr.message}` }
 
   // Audit row — manual method, captures the reviewer + their notes.
-  await service.from("license_verifications").insert({
+  await sentinelWrite(service, service.from("license_verifications").insert({
     brokerage_id: lic.brokerage_id,
     license_id: lic.id,
     verification_method: "manual",
     verification_result: outcome.verificationResult,
     failure_reasons: passed ? null : [input.notes?.trim() || "Rejected on manual review"],
     raw_response: { detail: input.notes?.trim() || `Manually ${input.decision}d`, reviewer_user_id: auth.userId },
-  })
+  }), { table: "license_verifications", flow: "license_manual_review_audit", brokerageId: lic.brokerage_id, reason: "audit row of a manual review whose decision is written (and checked) on agent_licenses above" })
 
   // Tell the agent the outcome.
   const { data: agentRow } = await service.from("agents").select("user_id").eq("id", lic.agent_id).maybeSingle()
@@ -371,7 +374,7 @@ export async function logCeCompletion(input: CECompletionInput): Promise<{
     updates.ethics_due_date = due.toISOString().slice(0, 10)
   }
 
-  await service.from("agents").update(updates).eq("id", input.agentId)
+  await sentinelWrite(service, service.from("agents").update(updates).eq("id", input.agentId), { table: "agents", flow: "agent_ce_rollup_cache", reason: "agents.ce/ethics dates are a derived cache of the CE ledger row that already landed; recomputed on the next completion" })
 
   return { success: true, completionId: completion.id }
 }

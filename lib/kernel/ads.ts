@@ -24,6 +24,7 @@
 //       signals, scoring, sourcing and buyer property search are EXEMPT by owner
 //       ruling and nothing here reaches them.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 // THE canonical ad-audience fair-housing refusal (CLAUDE.md §6 — one vocabulary
 // per function). NOT a second classifier: lib/lead-governance/protected-class-signals.ts
@@ -1356,7 +1357,7 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
     if (syncError) throw syncError
 
     // Persist the provider audience id + status so retargeting/lookalike can reference it.
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("facebook_custom_audiences")
       .update({
         last_synced_at: new Date().toISOString(),
@@ -1367,7 +1368,7 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
         status: syncStatus === "completed" ? "synced" : "failed",
         ...(externalAudienceId ? { external_audience_id: externalAudienceId } : {}),
       })
-      .eq("id", audienceId)
+      .eq("id", audienceId), { table: "facebook_custom_audiences", flow: "facebook_custom_audiences_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
     return { success: true, syncRunId: syncRun!.id, syncRun }
   } catch (err) {

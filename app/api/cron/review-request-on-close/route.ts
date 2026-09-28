@@ -143,9 +143,10 @@ export async function GET(req: NextRequest) {
           metadata: { transactionId: txn.id, platform: "google" },
         })
         if (sent.success && gen.reviewRequestId) {
-          await supabase.from("review_requests")
+          const { error: reviewSentErr } = await supabase.from("review_requests")
             .update({ status: "sent", sent_at: new Date().toISOString() })
             .eq("id", gen.reviewRequestId)
+          if (reviewSentErr) console.error(`[review-request-on-close] review request sent but NOT marked sent (may be re-sent): ${reviewSentErr.message}`)
           processed++
         } else {
           // Refused by the compliance gate (or no row id) — row stays 'pending'

@@ -1,5 +1,6 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { revalidatePath } from "next/cache"
 import { getListingsService, createListingService } from "@/lib/application/listings"
 import { getListingTimelineService } from "@/lib/application/listing-lifecycle"
@@ -355,7 +356,7 @@ export async function updateListing(listingId: string, updates: Record<string, u
         : newPrice < currentPrice ? "price_reduction"
         : newPrice > currentPrice ? "price_increase"
         : "manual_update"
-      await supabase.from("listing_price_changes").insert({
+      await sentinelWrite(supabase, supabase.from("listing_price_changes").insert({
         brokerage_id: brokerageId,
         listing_id: listingId,
         agent_id: (currentListing as any).agent_id ?? null,
@@ -363,7 +364,7 @@ export async function updateListing(listingId: string, updates: Record<string, u
         new_price: newPrice,
         change_reason: priceChangeReason,
         effective_date: new Date().toISOString().split("T")[0],
-      }).then(() => undefined, (e: unknown) => console.error("[updateListing] price-change ledger:", e))
+      }), { table: "listing_price_changes", flow: "listing_price_changes_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       // LISTING_PRICE_REDUCED had a reader (the kernel event reactor's saved-home
       // nudge, and the portal stream's price line) and NO writer until 2026-09-07.
       // Emitted beside the ledger row, with the same two numbers. Not marketing

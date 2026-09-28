@@ -7,6 +7,7 @@
 //
 // The auth-header builder is pure + exported so it is unit-tested without a network.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { adaptResponse, type ConnectorShapeSpec, type ShapeDrift } from "./connector-shape"
 import { retryAsync } from "@/lib/errors"
 
@@ -189,7 +190,7 @@ async function logApiResponse(req: GatewayRequest, result: GatewayResponse<any>,
     const { createServiceClient } = await import("@/lib/supabase/service")
     const svc = createServiceClient()
     const endpoint = (req.path ?? "").split("?")[0].slice(0, 300) // never log query strings (keys/PII)
-    await svc.from("api_response_logs").insert({
+    await sentinelWrite(svc, svc.from("api_response_logs").insert({
       brokerage_id: null, // gateway calls are provider-scoped; tenant attribution lives in vendor_usage metering
       service_key: req.connector,
       endpoint,
@@ -199,7 +200,7 @@ async function logApiResponse(req: GatewayRequest, result: GatewayResponse<any>,
       is_error: !result.ok,
       error_type: result.ok ? null : (result.status == null ? "network_or_timeout" : result.status === 429 ? "rate_limited" : result.status >= 500 ? "provider_error" : "request_rejected"),
       recorded_at: new Date().toISOString(),
-    })
+    }), { table: "api_response_logs", flow: "api_response_logs_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   } catch { /* telemetry is best-effort by contract */ }
 }
 

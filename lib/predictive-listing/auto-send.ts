@@ -25,6 +25,7 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 // THE RESOLVER, not the server action. This is a background eligibility path with
 // no session, so `getAgentContext()` inside the action would answer
@@ -317,10 +318,10 @@ export async function runDuePredictiveTouches(): Promise<{
       containsSensitive: false,
     })
     if (!elig.eligible) {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("predictive_listing_actions")
         .update({ status: "cancelled", cancelled_at: now, cancel_reason: elig.reason })
-        .eq("id", action.id)
+        .eq("id", action.id), { table: "predictive_listing_actions", flow: "predictive_listing_actions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       cancelled++
       continue
     }
@@ -357,14 +358,14 @@ export async function runDuePredictiveTouches(): Promise<{
     }
 
     if (!allowed) {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("predictive_listing_actions")
         .update({
           status: "blocked",
           compliance_check_passed: false,
           compliance_violations: violations as Record<string, unknown>,
         })
-        .eq("id", action.id)
+        .eq("id", action.id), { table: "predictive_listing_actions", flow: "predictive_listing_actions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       blocked++
       continue
     }
@@ -372,7 +373,7 @@ export async function runDuePredictiveTouches(): Promise<{
     // Send via the existing email/SMS spine. STUB: a real wiring would call
     // `lib/communications/send-email` or `lib/communications/send-sms`. We
     // record the queued state — the agent-facing dashboard surfaces it.
-    await supabase
+    const { error: sentStampErr } = await supabase
       .from("predictive_listing_actions")
       .update({
         status: "sent",
@@ -382,13 +383,14 @@ export async function runDuePredictiveTouches(): Promise<{
         compliance_check_passed: true,
       })
       .eq("id", action.id)
+    if (sentStampErr) console.error(`[predictive-listing] action sent but NOT marked sent (may re-send): ${sentStampErr.message}`)
 
     // Update rollup
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("predictive_listing_scores")
       .update({ last_action_at: now, last_action_type: "auto_touched" })
       .eq("contact_id", action.contact_id)
-      .eq("brokerage_id", action.brokerage_id)
+      .eq("brokerage_id", action.brokerage_id), { table: "predictive_listing_scores", flow: "predictive_listing_scores_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
     sent++
   }

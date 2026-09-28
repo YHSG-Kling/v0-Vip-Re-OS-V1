@@ -265,7 +265,7 @@ export async function deleteCredentials(
     }
 
     // Update brokerage_integrations status to not_configured
-    await supabase
+    const { error: integrationResetErr } = await supabase
       .from("brokerage_integrations")
       .update({
         status: "not_configured",
@@ -274,6 +274,7 @@ export async function deleteCredentials(
       })
       .eq("brokerage_id", brokerageId)
       .eq("provider_name", provider)
+    if (integrationResetErr) console.error(`[onboarding/tech-stack] integration NOT reset to not_configured: ${integrationResetErr.message}`)
 
     console.log(`[L11-TechStack] Credentials deleted for ${provider}`)
     return { success: true }
@@ -359,13 +360,14 @@ export async function markTechStackComplete(
       })
 
       // Update onboarding step
-      await supabase
+      const { error: onboardingStepErr } = await supabase
         .from("agent_onboarding")
         .update({
           status: "in_progress",
           updated_at: new Date().toISOString(),
         })
         .eq("id", onboarding.id)
+      if (onboardingStepErr) console.error(`[onboarding/tech-stack] onboarding status NOT advanced: ${onboardingStepErr.message}`)
     }
 
     console.log("[L11-TechStack] Tech stack marked complete")

@@ -24,6 +24,7 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { CONTACT_STATUSES } from "@/lib/contact-promotion/qualification"
@@ -114,10 +115,10 @@ export async function ensureAssistantAgent(
   }
 
   // Persist the cache
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("agents")
     .update({ conv_ai_agent_id: data.agent_id })
-    .eq("id", params.agentId)
+    .eq("id", params.agentId), { table: "agents", flow: "conv_ai_agent_cache", reason: "cache of the provider agent id just created and returned; a lost cache means the next call re-resolves it" })
 
   return { ok: true, convAiAgentId: data.agent_id, created: true }
 }
@@ -192,10 +193,10 @@ export async function ensureStaffAssistantAgent(
     .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
   const existing = (gs?.additional_settings as Record<string, unknown> | null) ?? {}
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("global_settings")
     .update({ additional_settings: { ...existing, staff_assistant_conv_ai_agent_id: data.agent_id } })
-    .eq("brokerage_id", params.brokerageId)
+    .eq("brokerage_id", params.brokerageId), { table: "global_settings", flow: "staff_assistant_conv_ai_cache", reason: "cache of the provider agent id just created and returned" })
 
   return { ok: true, convAiAgentId: data.agent_id, created: true }
 }
@@ -307,7 +308,7 @@ You are role-playing a real estate prospect for training purposes. STAY IN CHARA
     return { ok: false, error: "Could not resolve brokerage for agent — practice unavailable." }
   }
 
-  await supabase
+  await sentinelWrite(supabase, supabase
     .from("objection_scenario_agents")
     .upsert({
       brokerage_id: agentRow.brokerage_id,
@@ -316,7 +317,7 @@ You are role-playing a real estate prospect for training purposes. STAY IN CHARA
       conv_ai_agent_id: data.agent_id,
       prospect_voice_id: params.voiceId,
       updated_at: new Date().toISOString(),
-    })
+    }), { table: "objection_scenario_agents", flow: "objection_scenario_agents_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   return { ok: true, convAiAgentId: data.agent_id, created: true }
 }

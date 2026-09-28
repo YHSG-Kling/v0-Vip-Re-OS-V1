@@ -1,5 +1,6 @@
 
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID, validateTransaction } from "@/lib/validations"
 import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
@@ -106,11 +107,11 @@ export async function updateTransaction(params: UpdateTransactionParams) {
     // violates the NOT NULL constraint and threw on every status change, AND it
     // polluted the client milestone timeline with an internal audit event.
     if (params.updates.status) {
-      await supabase.from("transaction_timeline").insert({
+      await bestEffort(supabase.from("transaction_timeline").insert({
         transaction_id: params.transactionId,
         activity_type: "status_change",
         description: `Status changed to ${params.updates.status}`,
-      })
+      }), "timeline echo of a status change already written above")
     }
 
     revalidatePath("/dashboard/transactions")

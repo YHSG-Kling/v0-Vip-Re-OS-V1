@@ -1,5 +1,6 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -170,7 +171,7 @@ export async function acceptCancellationSaveOfferAction(): Promise<
     if (stripeRes.error) console.error("[save-offer] Stripe discount apply failed (ledger row kept):", stripeRes.error)
 
     // 4) Audit — a retention acceptance is a billing event.
-    await svc.from("audit_log").insert({
+    await sentinelWrite(svc, svc.from("audit_log").insert({
       user_id: gate.userId,
       action: "retention_offer_accepted",
       entity_type: "subscription",
@@ -182,7 +183,7 @@ export async function acceptCancellationSaveOfferAction(): Promise<
         stripe_applied: stripeRes.applied,
         stripe_skipped: stripeRes.skipped,
       },
-    })
+    }), { table: "audit_log", flow: "retention_offer_audit", brokerageId: gate.brokerageId, reason: "audit of a retention acceptance whose ledger row already landed" })
 
     const { revalidatePath } = await import("next/cache")
     revalidatePath("/settings/billing")

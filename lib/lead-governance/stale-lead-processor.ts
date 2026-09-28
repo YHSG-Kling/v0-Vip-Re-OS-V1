@@ -148,10 +148,11 @@ export async function processStaleLeadsAndSLA(
         }
 
         // c) Mark breach_notified
-        await supabase
+        const { error: breachStampErr } = await supabase
           .from("lead_sla_tracking")
           .update({ breach_notified: true })
           .eq("id", row.id)
+        if (breachStampErr) console.error(`[stale-lead] breach NOT marked notified (the breach may be re-notified): ${breachStampErr.message}`)
 
         breachedCount++
       } catch (err) {

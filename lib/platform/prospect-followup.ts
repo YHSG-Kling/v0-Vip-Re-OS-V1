@@ -78,9 +78,10 @@ export async function runProspectFollowupSweep(svc: any): Promise<ProspectFollow
     const draft = composeProspectOutreach({ name: p.name, roleInterest: p.role_interest, company: p.company, brandName: brand.name })
     const sent = await sendEmail({ to: p.email, subject: draft.subject, html: `<p>${draft.body.replace(/\n/g, "<br>")}</p>`, text: draft.body })
     if (!sent.success) { out.sendFailures++; continue } // stays 'new' — retried next run, never a fake stamp
-    await svc.from("platform_prospects")
+    const { error: contactedStampErr } = await svc.from("platform_prospects")
       .update({ status: "contacted", contacted_at: nowIso, followup_count: 1, last_followup_at: nowIso, updated_at: nowIso })
       .eq("id", p.id)
+    if (contactedStampErr) console.error(`[prospect-followup] intro sent but prospect NOT marked contacted (may be re-sent): ${contactedStampErr.message}`)
     await audit("platform_prospect.intro_sent", p.id, { subject: draft.subject, provider: sent.provider ?? null })
     out.introsSent++
   }
@@ -103,9 +104,10 @@ export async function runProspectFollowupSweep(svc: any): Promise<ProspectFollow
     const draft = composeProspectNudge({ name: p.name, roleInterest: p.role_interest, brandName: brand.name })
     const sent = await sendEmail({ to: p.email, subject: draft.subject, html: `<p>${draft.body.replace(/\n/g, "<br>")}</p>`, text: draft.body })
     if (!sent.success) { out.sendFailures++; continue }
-    await svc.from("platform_prospects")
+    const { error: nudgeStampErr } = await svc.from("platform_prospects")
       .update({ followup_count: 2, last_followup_at: nowIso, updated_at: nowIso })
       .eq("id", p.id)
+    if (nudgeStampErr) console.error(`[prospect-followup] nudge sent but NOT recorded (may be re-sent): ${nudgeStampErr.message}`)
     await audit("platform_prospect.nudge_sent", p.id, { subject: draft.subject, provider: sent.provider ?? null })
     out.nudgesSent++
   }

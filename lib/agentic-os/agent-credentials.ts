@@ -6,6 +6,7 @@
 // Pure helpers (hash, generate, bearer extraction) are unit-tested; resolveAgentToken
 // is the server lookup.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createHash, randomBytes } from "node:crypto"
 
 const TOKEN_PREFIX = "vos_" // VIP-RE-OS agent token
@@ -52,7 +53,7 @@ async function resolveAgentToken(rawToken: string): Promise<ResolvedAgentToken |
     if (error || !data || !data.is_active) return null
     if (data.expires_at && new Date(data.expires_at) < new Date()) return null
 
-    void svc.from("agent_credentials").update({ last_used_at: new Date().toISOString() }).eq("id", data.id).then(() => {}, () => {})
+    void sentinelWrite(svc, svc.from("agent_credentials").update({ last_used_at: new Date().toISOString() }).eq("id", data.id), { table: "agent_credentials", flow: "agent_credential_last_used", reason: "last-used stamp on a token lookup; never blocks authentication" })
     return { credentialId: data.id, brokerageId: data.brokerage_id ?? null, scopes: data.scopes ?? [] }
   } catch {
     return null

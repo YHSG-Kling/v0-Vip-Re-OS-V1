@@ -36,6 +36,7 @@
  * deconflict_suppression_log (m113), which the broker cockpit reads.
  */
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   leadLogChannel,
@@ -273,7 +274,7 @@ export async function evaluateBroadcastDeconflict(
 
   if (!input.skipLog) {
     try {
-      await svc.from("deconflict_suppression_log").insert({
+      await sentinelWrite(svc, svc.from("deconflict_suppression_log").insert({
         brokerage_id:      input.brokerageId,
         contact_id:        null,
         channel:           input.channel, // m116 widened the check constraint
@@ -284,7 +285,7 @@ export async function evaluateBroadcastDeconflict(
         window_days:       policy.windowDays,
         policy_max:        policy.maxSends,
         metadata:          { broadcast_channel: input.channel, segment: input.segment ?? null },
-      })
+      }), { table: "deconflict_suppression_log", flow: "deconflict_log", reason: "decision log; the allow/suppress decision is returned regardless" })
     } catch { /* never fail a send because audit hiccuped */ }
   }
 
@@ -359,7 +360,7 @@ export async function evaluateDeconflict(input: DeconflictInput): Promise<Deconf
 
   if (!input.skipLog) {
     try {
-      await svc.from("deconflict_suppression_log").insert({
+      await sentinelWrite(svc, svc.from("deconflict_suppression_log").insert({
         brokerage_id:      input.brokerageId,
         contact_id:        input.contactId ?? null,
         recipient_email:   input.recipientEmail ?? null,
@@ -371,7 +372,7 @@ export async function evaluateDeconflict(input: DeconflictInput): Promise<Deconf
         touches_in_window: touches,
         window_days:       policy.windowDays,
         policy_max:        policy.maxTouches,
-      })
+      }), { table: "deconflict_suppression_log", flow: "deconflict_log", reason: "decision log; the allow/suppress decision is returned regardless" })
     } catch { /* never fail a send because the audit write hiccuped */ }
   }
 

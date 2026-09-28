@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 // ROUTED, was raw — see lib/ai/models.ts:prompt_calibration. The key is pinned
 // to claude-sonnet, the model this call site already passed, so only the ledger
@@ -121,7 +122,7 @@ export async function calibrateSystemPrompts(
       })
 
       // Create smart_assistant_suggestion for admins
-      await supabase.from("smart_assistant_suggestions").insert({
+      await sentinelWrite(supabase, supabase.from("smart_assistant_suggestions").insert({
         brokerage_id: brokerageId,
         agent_id: null, // Admin-level suggestion
         title: `AI Quality Alert: ${formatSystemName(sourceSystem)} needs attention`,
@@ -134,7 +135,7 @@ export async function calibrateSystemPrompts(
           calibration_log_id: insertedLog?.id,
         },
         status: "pending",
-      })
+      }), { table: "smart_assistant_suggestions", flow: "smart_assistant_suggestions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     } catch (error) {
       console.error(`[PromptCalibrator] Error calibrating ${sourceSystem}:`, error)
     }

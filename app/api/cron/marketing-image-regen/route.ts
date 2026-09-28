@@ -13,6 +13,7 @@
  * lands regen_status='failed' (NOT retried automatically — the manager
  * decides). Auth: CRON_SECRET.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateImage, type ImagePurpose, type ImageSize } from "@/lib/ai/image-generation"
@@ -88,7 +89,7 @@ export async function GET(req: NextRequest) {
       // reads the owner off the row.
       .select("id, brokerage_id, created_by, tags, asset_name, asset_url, thumbnail_url, approval_status, updated_at, metadata").eq("id", asset.id).maybeSingle()
     if (fullErr || !full) {
-      await svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id)
+      await sentinelWrite(svc, svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id), { table: "marketing_assets", flow: "marketing_assets_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       return NextResponse.json({ processed: 1, asset_id: asset.id, ok: false, error: `screenshot row read refused: ${fullErr?.message ?? "no row"}` }, { status: 200 })
     }
     const shot = await recaptureScreenshotAsset(svc, full as ScreenshotAssetRow)
@@ -101,7 +102,7 @@ export async function GET(req: NextRequest) {
 
   const prompt = String(meta.original_prompt ?? "")
   if (!prompt) {
-    await svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id)
+    await sentinelWrite(svc, svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id), { table: "marketing_assets", flow: "marketing_assets_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     return NextResponse.json({ processed: 1, asset_id: asset.id, ok: false, error: "no original_prompt in metadata" }, { status: 200 })
   }
 
@@ -134,11 +135,11 @@ export async function GET(req: NextRequest) {
     })
 
     if (!result.success || !result.imageUrl) {
-      await svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id)
+      await sentinelWrite(svc, svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id), { table: "marketing_assets", flow: "marketing_assets_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       return NextResponse.json({ processed: 1, asset_id: asset.id, ok: false, error: result.error ?? "generateImage failed" }, { status: 200 })
     }
 
-    await svc.from("marketing_assets").update({
+    await sentinelWrite(svc, svc.from("marketing_assets").update({
       asset_url:     result.imageUrl,
       thumbnail_url: result.thumbnailUrl ?? result.imageUrl,
       regen_status:  null,
@@ -149,11 +150,11 @@ export async function GET(req: NextRequest) {
         regen_count:    (typeof meta.regen_count === "number" ? meta.regen_count : 0) + 1,
         last_regen_at:  new Date().toISOString(),
       },
-    }).eq("id", asset.id)
+    }).eq("id", asset.id), { table: "marketing_assets", flow: "marketing_assets_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
     return NextResponse.json({ ran_at: new Date().toISOString(), processed: 1, asset_id: asset.id, ok: true, image_url: result.imageUrl })
   } catch (e) {
-    await svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id)
+    await sentinelWrite(svc, svc.from("marketing_assets").update({ regen_status: "failed" }).eq("id", asset.id), { table: "marketing_assets", flow: "marketing_assets_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     return NextResponse.json({ processed: 1, asset_id: asset.id, ok: false, error: (e as Error).message }, { status: 500 })
   }
 }

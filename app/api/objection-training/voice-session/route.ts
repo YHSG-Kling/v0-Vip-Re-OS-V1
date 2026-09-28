@@ -16,6 +16,7 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { type NextRequest, NextResponse } from "next/server"
 import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -112,12 +113,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: insertErr?.message ?? "Failed to start session" }, { status: 500 })
   }
 
-  await supabase.from("objection_training_turns").insert({
+  await sentinelWrite(supabase, supabase.from("objection_training_turns").insert({
     session_id: sessionRow.id,
     turn_index: 0,
     speaker: "prospect",
     text: scenario.openingLine,
-  })
+  }), { table: "objection_training_turns", flow: "objection_training_turns_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   // Usage attribution — practice sessions burn the same allowance as on-the-go
   // assistant sessions. Same metric vocabulary + same cap.

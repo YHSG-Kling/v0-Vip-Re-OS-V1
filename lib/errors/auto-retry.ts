@@ -15,6 +15,7 @@
 // and has NO session at all, so an RLS-scoped client there was anon and every
 // read/write was refused silently). The retry ledger must not depend on the
 // caller's RLS seat.
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { classifyError, getRetryDelay } from "./error-classifier"
 import { collectError } from "./collect-error"
@@ -64,7 +65,7 @@ export async function scheduleRetry(
 
     // Check if max retries exceeded
     if (currentRetryCount >= MAX_RETRY_ATTEMPTS) {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("error_resolution_log")
         .insert({
           error_id: errorId,
@@ -73,7 +74,7 @@ export async function scheduleRetry(
           action_by: "system",
           retry_attempt: currentRetryCount,
           notes: "Maximum retry attempts exceeded",
-        })
+        }), { table: "error_resolution_log", flow: "error_resolution_log_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       
       return { success: false, error: "Max retries exceeded - escalated" }
     }
@@ -85,7 +86,7 @@ export async function scheduleRetry(
     )
 
     if (!classification.isRetryable) {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("error_resolution_log")
         .insert({
           error_id: errorId,
@@ -94,7 +95,7 @@ export async function scheduleRetry(
           action_by: "system",
           retry_attempt: currentRetryCount,
           notes: "Error is not retryable",
-        })
+        }), { table: "error_resolution_log", flow: "error_resolution_log_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       
       return { success: false, error: "Error is not retryable - escalated" }
     }
@@ -109,15 +110,15 @@ export async function scheduleRetry(
         await retryCallback()
         
         // Retry succeeded
-        await supabase
+        await sentinelWrite(supabase, supabase
           .from("automation_errors")
           .update({
             status: "resolved",
             resolved_at: new Date().toISOString(),
           })
-          .eq("id", errorId)
+          .eq("id", errorId), { table: "automation_errors", flow: "automation_errors_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
-        await supabase
+        await sentinelWrite(supabase, supabase
           .from("error_resolution_log")
           .insert({
             error_id: errorId,
@@ -126,12 +127,12 @@ export async function scheduleRetry(
             action_by: "system",
             retry_attempt: currentRetryCount + 1,
             retry_result: RETRY_RESULT_SUCCESS,
-          })
+          }), { table: "error_resolution_log", flow: "error_resolution_log_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
         return { success: true, attemptNumber: currentRetryCount + 1 }
       } catch (retryError) {
         // Retry failed
-        await supabase
+        await sentinelWrite(supabase, supabase
           .from("error_resolution_log")
           .insert({
             error_id: errorId,
@@ -144,7 +145,7 @@ export async function scheduleRetry(
             resolution_metadata: {
               next_retry_at: nextRetryAt.toISOString(),
             },
-          })
+          }), { table: "error_resolution_log", flow: "error_resolution_log_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
         // Create new error record for the retry failure
         await collectError({
@@ -157,7 +158,7 @@ export async function scheduleRetry(
 
         // Check if we should escalate
         if (currentRetryCount + 1 >= MAX_RETRY_ATTEMPTS) {
-          await supabase
+          await sentinelWrite(supabase, supabase
             .from("error_resolution_log")
             .insert({
               error_id: errorId,
@@ -166,7 +167,7 @@ export async function scheduleRetry(
               action_by: "system",
               retry_attempt: currentRetryCount + 1,
               notes: "Maximum retry attempts reached after failure",
-            })
+            }), { table: "error_resolution_log", flow: "error_resolution_log_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
         }
 
         return { 

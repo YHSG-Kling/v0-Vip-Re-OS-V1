@@ -429,13 +429,16 @@ export async function grantFeatureTrial(
     return { success: false, error: `Could not resolve the grantee's brokerage: ${granteeError.message}` }
   }
 
-  // Remove any existing disabled override so the trial takes effect
-  await supabase
+  // Remove any existing disabled override so the trial takes effect. A refused
+  // delete leaves the 'disable' in force over the new trial — the grant would
+  // report success while access stayed off.
+  const { error: clearDisableErr } = await supabase
     .from("feature_access_overrides")
     .delete()
     .eq("feature_key", featureKey)
     .eq("user_id", userId)
     .eq("override_type", "disable")
+  if (clearDisableErr) return { success: false, error: `Could not clear the existing disable override: ${clearDisableErr.message}` }
 
   const { error } = await supabase.from("feature_access_overrides").insert({
     user_id: userId,

@@ -203,10 +203,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // Attach the lead origin to the ledger row placeOutboundAiCall wrote (it does
   // not know about lead_id / agent_id — set them here for lead-based routing).
   if (placed.voiceCallId) {
-    await supabase
+    const { error: callOwnerErr } = await supabase
       .from("voice_calls")
       .update({ agent_id: agentId, lead_id: resolvedLeadId ?? null })
       .eq("id", placed.voiceCallId)
+    if (callOwnerErr) console.error(`[initiate-call] call placed but agent/lead NOT stamped on voice_calls (lead-based routing will miss it): ${callOwnerErr.message}`)
   }
 
   // ── 4. INSERT ai_isa_calls row (placeOutboundAiCall already wrote voice_calls) ─

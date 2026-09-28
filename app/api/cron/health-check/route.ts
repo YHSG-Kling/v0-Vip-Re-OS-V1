@@ -1,3 +1,4 @@
+import { bestEffort } from "@/lib/db/best-effort"
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { verifyCronAuth } from "@/lib/cron-auth"
@@ -336,10 +337,10 @@ export async function POST(request: NextRequest) {
 
         if (integration) {
           // Update last_health_check_at
-          await supabase
+          await bestEffort(supabase
             .from("brokerage_integrations")
             .update({ last_health_check_at: new Date().toISOString() })
-            .eq("id", integration.id)
+            .eq("id", integration.id), "health-check timestamp")
 
           checkResult = {
             status: isIntegrationConnected(integration.status) ? "healthy" : "degraded",

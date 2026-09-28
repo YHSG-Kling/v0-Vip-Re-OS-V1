@@ -1,5 +1,7 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireBrokerageAdmin, type BrokerageAdminContext } from "@/lib/auth/require-brokerage-admin"
@@ -397,19 +399,19 @@ export async function submitLoanConditions(data: {
         .eq("id", loanRow.transaction_id).maybeSingle()
       const docList = fresh.map((c) => c.condition).join("; ")
 
-      await svc.from("lifecycle_events").insert({
+      await sentinelWrite(svc, svc.from("lifecycle_events").insert({
         brokerage_id: actor.brokerageId,
         entity_type: "transaction",
         entity_id: loanRow.transaction_id,
         event_type: "lender_document_request",
         actor_user_id: actor.userId,
         metadata: { lender: loanRow.lender_name ?? "lender", conditions: fresh.map((c) => c.condition) },
-      }).then(() => {}, () => {})
+      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
       // The agent's collection task (assignee NOT-NULL contract honored).
       const assignee = (tx as any)?.agent_id ?? null
       if (assignee) {
-        await svc.from("tasks").insert({
+        const { error: lenderTaskErr } = await svc.from("tasks").insert({
           brokerage_id: actor.brokerageId,
           transaction_id: loanRow.transaction_id,
           contact_id: (tx as any)?.buyer_contact_id ?? (tx as any)?.contact_id ?? null,
@@ -421,7 +423,8 @@ export async function submitLoanConditions(data: {
           source: "lender_condition",
           status: "pending",
           created_at: new Date().toISOString(),
-        }).then(() => {}, () => {})
+        })
+        if (lenderTaskErr) console.error(`[multi-persona] lender document-collection task NOT created: ${lenderTaskErr.message}`)
       }
 
       // The buyer's GATED portal draft — governed like every client touch.
@@ -611,7 +614,7 @@ export async function executeWorkflow(workflowId: string, contextData: any) {
         outcomes.push({ type: "send_email", status: "skipped", detail: "no egress wired in this executor" })
         break
       case "create_task":
-        await supabase.from("tasks").insert({
+        const taskWrite = await bestEffort(supabase.from("tasks").insert({
           title: action.taskTitle,
           description: action.taskDescription,
           brokerage_id: contextData.brokerageId,
@@ -625,8 +628,11 @@ export async function executeWorkflow(workflowId: string, contextData: any) {
                 .split("T")[0]
             : null,
           status: "pending",
-        })
-        outcomes.push({ type: "create_task", status: "done", detail: String(action.taskTitle ?? "") })
+        }), "automation task; a refusal is reported on this run's outcomes (never counted as done)")
+        // "done" used to be pushed whether or not the task row landed.
+        outcomes.push(taskWrite.ok
+          ? { type: "create_task", status: "done", detail: String(action.taskTitle ?? "") }
+          : { type: "create_task", status: "refused", detail: taskWrite.error ?? "task insert refused" })
         break
       case "update_milestone":
         // action.newStatus is operator-authored JSON from the automations UI —
@@ -645,11 +651,21 @@ export async function executeWorkflow(workflowId: string, contextData: any) {
           })
           break
         }
-        await supabase
+        const { data: msRows, error: msErr } = await supabase
           .from("transaction_milestones")
           .update({ status: action.newStatus })
           .eq("transaction_id", contextData.transactionId)
           .eq("milestone_name", action.milestoneName)
+          .select("id")
+        // "done" used to be reported over a refusal or an update that matched no milestone.
+        if (msErr || (msRows ?? []).length === 0) {
+          outcomes.push({
+            type: "update_milestone",
+            status: "refused",
+            detail: msErr ? msErr.message : `no milestone named ${String(action.milestoneName ?? "")} on this transaction`,
+          })
+          break
+        }
         outcomes.push({
           type: "update_milestone",
           status: "done",
@@ -665,10 +681,10 @@ export async function executeWorkflow(workflowId: string, contextData: any) {
     }
   }
 
-  await supabase
+  await bestEffort(supabase
     .from("workflow_automations")
     .update({ execution_count: (workflow.execution_count ?? 0) + 1, last_executed_at: new Date().toISOString() })
-    .eq("id", workflowId)
+    .eq("id", workflowId), "execution counter; the per-run ledger below is the record")
 
   // ── THE PER-RUN LEDGER ───────────────────────────────────────────────────
   // `execution_count` counts attempts; it cannot tell a run that moved a
@@ -2022,10 +2038,10 @@ export async function submitVendorInvoice(params: {
     if (error) throw error
 
     // Also update the booking cost for backwards-compatible UIs
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("vendor_bookings")
       .update({ cost: params.amount })
-      .eq("id", params.bookingId)
+      .eq("id", params.bookingId), { table: "vendor_bookings", flow: "vendor_booking_cost_mirror", brokerageId: booking.brokerage_id, reason: "booking.cost mirrors the landed vendor_invoices row for older UIs; the invoice is the record" })
 
     return { success: true, invoiceId: invoice.id }
   } catch (error) {

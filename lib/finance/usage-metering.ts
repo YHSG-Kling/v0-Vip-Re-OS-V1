@@ -53,7 +53,15 @@ export async function runUsageMeteringRollup(svc: Svc, now: Date = new Date()): 
       for (const l of lg) addMeter(l.usage_type || "other", Number(l.units_used) || 0, Number(l.cost_cents) || 0)
       for (const a of at) addMeter("ai_tokens", Number(a.tokens_used) || 0, Number(a.cost_cents) || 0)
 
-      await svc.from("meter_readings").delete().eq("brokerage_id", b.id).gte("period_start", periodStart)
+      // Delete-then-insert. A REFUSED delete followed by the insert would leave two
+      // readings for one period — a doubled meter is a doubled invoice line (§5:
+      // "a wrong number there is a wrong invoice"). Refused → skip this tenant's
+      // meters this run, loudly; the next run recomputes from the raw streams.
+      const { error: meterClearErr } = await svc.from("meter_readings").delete().eq("brokerage_id", b.id).gte("period_start", periodStart)
+      if (meterClearErr) {
+        console.error(`[usage-metering] meter_readings clear refused for ${b.id} — readings NOT rewritten this run: ${meterClearErr.message}`)
+        continue
+      }
       const meterRows = [...meters.entries()].map(([meter_type, m]) => ({
         brokerage_id: b.id,
         meter_type,
@@ -66,6 +74,7 @@ export async function runUsageMeteringRollup(svc: Svc, now: Date = new Date()): 
       if (meterRows.length > 0) {
         const { error } = await svc.from("meter_readings").insert(meterRows)
         if (!error) out.meterRows += meterRows.length
+        else console.error(`[usage-metering] meter_readings insert refused for ${b.id}: ${error.message}`)
       }
 
       // ── COST ALLOCATION: (agent|team, cost_type) → allocated cents ───────
@@ -88,7 +97,12 @@ export async function runUsageMeteringRollup(svc: Svc, now: Date = new Date()): 
         if (a.team_id) addAlloc(null, a.team_id, "ai", Number(a.cost_cents) || 0)
       }
 
-      await svc.from("cost_allocation").delete().eq("brokerage_id", b.id).eq("period_label", periodLabel)
+      // Same delete-then-insert hazard as the meters: refused clear → no re-insert.
+      const { error: allocClearErr } = await svc.from("cost_allocation").delete().eq("brokerage_id", b.id).eq("period_label", periodLabel)
+      if (allocClearErr) {
+        console.error(`[usage-metering] cost_allocation clear refused for ${b.id} — allocation NOT rewritten this run: ${allocClearErr.message}`)
+        continue
+      }
       const allocRows = [...alloc.values()].map((a) => ({
         brokerage_id: b.id,
         agent_id: a.agent_id,
@@ -101,6 +115,7 @@ export async function runUsageMeteringRollup(svc: Svc, now: Date = new Date()): 
       if (allocRows.length > 0) {
         const { error } = await svc.from("cost_allocation").insert(allocRows)
         if (!error) out.allocationRows += allocRows.length
+        else console.error(`[usage-metering] cost_allocation insert refused for ${b.id}: ${error.message}`)
       }
     } catch { /* per-brokerage isolation */ }
   }

@@ -36,9 +36,10 @@ export async function reapStaleWorkflowRuns(
     const ageHours = (now.getTime() - new Date(anchor).getTime()) / 3_600_000
     if (classifyStaleWorkflowRun({ status: r.status, ageHours }) !== "escalate") continue
     try {
-      await svc.from("workflow_runs")
+      const { error: reapErr } = await svc.from("workflow_runs")
         .update({ status: "failed", failed_at: now.toISOString(), error_message: `stalled in '${r.status}' for ${Math.round(ageHours)}h — reaped by the Campaign Orchestrator`, updated_at: now.toISOString() })
         .eq("id", r.id)
+      if (reapErr) console.error(`[stale-run-reaper] stalled run NOT marked failed: ${reapErr.message}`)
       if (r.agent_user_id) {
         await sentinelWrite(svc, svc.from("notifications").insert({
           user_id: r.agent_user_id, brokerage_id: brokerageId, type: "workflow_stalled",

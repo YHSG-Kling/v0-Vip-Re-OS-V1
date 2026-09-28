@@ -316,7 +316,8 @@ export async function seedDefaultSequences(
       body:        s.body ?? null,
       is_active:   true,
     }))
-    await supabase.from("campaign_sequence_steps").insert(stepRows)
+    const { error: stepsInsErr } = await supabase.from("campaign_sequence_steps").insert(stepRows)
+    if (stepsInsErr) console.error(`[seed-default-sequences] sequence created WITHOUT its steps: ${stepsInsErr.message}`)
 
     created++
   }

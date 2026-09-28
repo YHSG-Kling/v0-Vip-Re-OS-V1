@@ -96,11 +96,12 @@ export async function POST(request: NextRequest) {
   if (status && campaignIds.length > 0) {
     try {
       const svc = createServiceClient()
-      const { data } = await svc
+      const { data, error: lobStatusErr } = await svc
         .from("direct_mail_campaigns")
         .update({ status })
         .in("id", campaignIds)
         .select("id")
+      if (lobStatusErr) console.error(`[lob-events] campaign status update refused: ${lobStatusErr.message}`)
       campaignUpdated = ((data ?? []) as unknown[]).length > 0
     } catch {
       // Reconciliation already landed; a mirror failure must not un-ACK.

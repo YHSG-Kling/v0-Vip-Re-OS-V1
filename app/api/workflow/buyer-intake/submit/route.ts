@@ -54,7 +54,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (!tokenRow) return NextResponse.json({ error: "Invalid token" }, { status: 404 })
   if (tokenRow.status !== "pending") return NextResponse.json({ error: "Token already used or cancelled" }, { status: 410 })
   if (new Date(tokenRow.expires_at) < new Date()) {
-    await svc.from("buyer_intake_tokens").update({ status: "expired" }).eq("id", tokenRow.id)
+    await sentinelWrite(svc, svc.from("buyer_intake_tokens").update({ status: "expired" }).eq("id", tokenRow.id), { table: "buyer_intake_tokens", flow: "intake_token_expired", reason: "expiry stamp; the expired response is returned regardless" })
     return NextResponse.json({ error: "Token expired" }, { status: 410 })
   }
 
@@ -82,7 +82,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // Persist pre-approval / POF docs if provided
   for (const [type, url] of [["pre_approval", body.preApprovalDocUrl], ["pof", body.pofDocUrl]] as const) {
     if (url) {
-      await svc.from("documents").insert({
+      const { error: intakeDocErr } = await svc.from("documents").insert({
         brokerage_id:   tokenRow.brokerage_id,
         contact_id:     tokenRow.contact_id,
         document_type:  type,
@@ -91,11 +91,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         metadata:       { uploaded_via: "buyer_intake", token_id: tokenRow.id },
         created_at:     new Date().toISOString(),
       })
+      if (intakeDocErr) console.error(`[buyer-intake] buyer's uploaded pre-approval/POF document NOT recorded: ${intakeDocErr.message}`)
     }
   }
 
   // Mark token submitted
-  await svc.from("buyer_intake_tokens").update({
+  const { error: tokenSubmitErr } = await svc.from("buyer_intake_tokens").update({
     status:         "submitted",
     submitted_at:   new Date().toISOString(),
     submitted_data: {
@@ -106,6 +107,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       fundsMaxPurchase: body.fundsMaxPurchase,
     },
   }).eq("id", tokenRow.id)
+  if (tokenSubmitErr) console.error(`[buyer-intake] token NOT marked submitted (the link stays usable): ${tokenSubmitErr.message}`)
 
   // Notify the agent that intake is complete
   if (tokenRow.agent_user_id) {

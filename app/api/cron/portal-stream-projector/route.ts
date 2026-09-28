@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import {
 NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -121,7 +122,7 @@ export async function GET(request: NextRequest) {
         if (educationLessonKey) enrichedMetadata.education_lesson_key = educationLessonKey
         if (learningModuleId)   enrichedMetadata.learning_module_id   = learningModuleId
 
-        await svc.from("portal_event_stream").insert({
+        await sentinelWrite(svc, svc.from("portal_event_stream").insert({
           brokerage_id:          ev.brokerage_id,
           contact_id:            resolved.contactId,
           agent_user_id:         resolved.agentUserId,
@@ -137,7 +138,7 @@ export async function GET(request: NextRequest) {
           severity:              translation.severity,
           metadata:              enrichedMetadata,
           occurred_at:           ev.created_at,
-        })
+        }), { table: "portal_event_stream", flow: "portal_event_stream_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
         summary.inserted++
       } catch (e) {
         console.error(`[portal-stream-projector] event ${ev.id}:`, e)

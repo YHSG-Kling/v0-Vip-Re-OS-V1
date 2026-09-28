@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import {
 NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -59,7 +60,7 @@ export async function GET(req: NextRequest) {
 
         const activityCount = activities?.length ?? 0
 
-        await supabase
+        await sentinelWrite(supabase, supabase
           .from("team_activity_snapshots")
           .upsert(
             {
@@ -71,7 +72,7 @@ export async function GET(req: NextRequest) {
               created_at: ranAt,
             },
             { onConflict: "brokerage_id,snapshot_date" }
-          )
+          ), { table: "team_activity_snapshots", flow: "team_activity_snapshots_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
         processed++
       } catch (err: any) {

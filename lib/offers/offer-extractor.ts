@@ -1,3 +1,4 @@
+import { bestEffort } from "@/lib/db/best-effort"
 import { generateAIResponse } from "@/lib/ai"
 import { createClient } from "@/lib/supabase/server"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -41,11 +42,12 @@ export async function extractOfferFromPdf(params: {
   const supabase = params.client ?? await createClient()
 
   // Mark extraction in progress
-  await supabase
+  const { error: extractingErr } = await supabase
     .from("offers")
     .update({ ai_extraction_status: "extracting" })
     .eq("id", offerId)
-    .eq("brokerage_id", brokerageId) // tenant-pinned: the service client (seam above) bypasses RLS
+    .eq("brokerage_id", brokerageId)
+  if (extractingErr) console.error(`[offer-extractor] extraction-in-progress flag NOT set: ${extractingErr.message}`) // tenant-pinned: the service client (seam above) bypasses RLS
 
   try {
     // Fetch the PDF as base64 for vision-capable model (gateway url-override download)
@@ -142,7 +144,7 @@ Required JSON schema:
     if (updateError) throw new Error(updateError.message)
 
     // lifecycle_events insert + kernel event
-    await supabase.from("lifecycle_events").insert({
+    await bestEffort(supabase.from("lifecycle_events").insert({
       brokerage_id: brokerageId,
       entity_type: "offer",
       entity_id: offerId,
@@ -156,7 +158,7 @@ Required JSON schema:
           (k) => extracted[k as keyof ExtractedOfferData] !== null
         ).length,
       },
-    })
+    }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
     await processKernelEvent({
       event: KernelEvent.OFFER_AI_EXTRACTED,
@@ -189,11 +191,12 @@ Required JSON schema:
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
 
-    await supabase
+    const { error: extractFailedErr } = await supabase
       .from("offers")
       .update({ ai_extraction_status: "failed" })
       .eq("id", offerId)
       .eq("brokerage_id", brokerageId)
+    if (extractFailedErr) console.error(`[offer-extractor] extraction failure NOT recorded on the offer (it will read as extracting): ${extractFailedErr.message}`)
 
     return { success: false, error: message }
   }

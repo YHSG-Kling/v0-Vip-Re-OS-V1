@@ -15,6 +15,7 @@
  * Database: Supabase — uses maybeSingle(), never single().
  */
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { generateObject, type GeneratedUsage } from "@/lib/ai/generate"
 import { friendlyAiError } from "@/lib/ai/ai-error"
 import { z } from "zod"
@@ -492,7 +493,7 @@ export async function generateWeeklyContentPlan(params: {
           status: "scheduled",
         }
       })
-      await supabase.from("campaign_calendar").insert(calendarRows)
+      await bestEffort(supabase.from("campaign_calendar").insert(calendarRows), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     } catch (calErr) {
       // Non-fatal: plan is still returned even if calendar insert fails
       console.warn("[v0] Failed to persist weekly plan to campaign_calendar:", calErr)

@@ -27,6 +27,7 @@
  */
 
 import "server-only"
+import { bestEffort } from "@/lib/db/best-effort"
 import type { SupabaseClient } from "@supabase/supabase-js"
 // The server-only core, not the cookie-client helper (lane 86F): this module runs
 // from the e-sign webhooks with no session, where logEventAndTrigger was refused by
@@ -70,19 +71,17 @@ export async function finalizeVoiceCockpitPacket(
   // record COMPLETES, so the Sign button disappears the moment ink lands
   // (l54-s02 provider_envelope_id is the linkage; before it, a signed doc kept
   // an "active" packet until expiry). Both packet tables, idempotent.
-  await supabase
+  await bestEffort(supabase
     .from("signature_requests")
     .update({ request_status: "completed", completed_at: now })
     .eq("provider_envelope_id", envelopeId)
-    .is("completed_at", null)
-    .then(() => {}, () => {})
-  await supabase
+    .is("completed_at", null), "a webhook must ack; the Sign-button packet completion is idempotent and a loss is ledgered")
+  await bestEffort(supabase
     .from("contract_signatures")
     // LIVE CHECK vocabulary: the terminal state is 'fully_signed' (not 'signed').
     .update({ esign_status: "fully_signed", fully_signed_at: now })
     .eq("provider_envelope_id", envelopeId)
-    .is("fully_signed_at", null)
-    .then(() => {}, () => {})
+    .is("fully_signed_at", null), "a webhook must ack; the terminal stamp is idempotent and a loss is ledgered")
 
   // ── Documents (offer / listing-agreement) ─────────────────────────────────
   const { data: matchedDocs } = await supabase
@@ -92,7 +91,7 @@ export async function finalizeVoiceCockpitPacket(
 
   for (const docRow of (matchedDocs ?? [])) {
     const existingMeta = (docRow.metadata as Record<string, unknown>) ?? {}
-    await supabase
+    const { error: docSignedErr } = await supabase
       .from("documents")
       .update({
         status: "signed",
@@ -104,6 +103,7 @@ export async function finalizeVoiceCockpitPacket(
         },
       })
       .eq("id", docRow.id)
+    if (docSignedErr) console.error(`[finalize-packet] signed envelope: document NOT marked signed: ${docSignedErr.message}`)
 
     // ESIGN_PACKET_SIGNED IS already fanned out (logEventAndTrigger's own 2026-09-03
     // fix routes any KernelEvent-valued event_type through emitKernelEvent with
@@ -143,7 +143,7 @@ export async function finalizeVoiceCockpitPacket(
     .maybeSingle()
 
   if (matchedBBA) {
-    await supabase
+    const { error: bbaActiveErr } = await supabase
       .from("buyer_broker_agreements")
       .update({
         status:        "active",
@@ -151,6 +151,7 @@ export async function finalizeVoiceCockpitPacket(
         signed_method: provider,
       })
       .eq("id", matchedBBA.id)
+    if (bbaActiveErr) console.error(`[finalize-packet] signed envelope: buyer-broker agreement NOT activated: ${bbaActiveErr.message}`)
 
     // buyer_contact_id is a CONTACTS id — it rides payload.contact_id (the reactor's
     // contact forward reads exactly that key), never actor_user_id (users FK, §3).
@@ -281,7 +282,7 @@ async function finalizeMatchingOffer(
   const isCounterFullyExecuted = !!matchedOffer.seller_signed_at
 
   if (isCounterFullyExecuted) {
-    await supabase
+    const { error: counterExecutedErr } = await supabase
       .from("offers")
       .update({
         esign_status:                     "fully_signed",
@@ -292,6 +293,7 @@ async function finalizeMatchingOffer(
         status:                           "accepted",
       })
       .eq("id", matchedOffer.id)
+    if (counterExecutedErr) console.error(`[finalize-packet] fully-executed counter: offer NOT marked accepted/fully_signed: ${counterExecutedErr.message}`)
 
     // OFFER_OS_ESIGN_COMPLETED — read by event-fanout.ts ("Your offer is signed
     // / all parties have e-signed... fully executed and on file") but nothing
@@ -341,7 +343,7 @@ async function finalizeMatchingOffer(
     // Standard buyer-first path (original offer, not yet seller-countered):
     // mark buyer side as signed; seller side still pending the agent's
     // forward-and-await workflow.
-    await supabase
+    const { error: buyerSignedErr } = await supabase
       .from("offers")
       .update({
         esign_status:    "partially_signed",
@@ -349,6 +351,7 @@ async function finalizeMatchingOffer(
         esign_provider:  provider,
       })
       .eq("id", matchedOffer.id)
+    if (buyerSignedErr) console.error(`[finalize-packet] buyer signature: offer NOT marked partially_signed: ${buyerSignedErr.message}`)
   }
 
   // Activity for the agent's queue (left feed) + notification for the bell.
@@ -513,10 +516,11 @@ export async function finalizeLegacyEsignArtifacts(
     // convergence (compliance.passed → ACCEPTED → convertOfferToTransaction)
     // is handled by finalizeMatchingOffer in finalizeVoiceCockpitPacket and
     // would have already run by the time we get here (same call site).
-    await supabase
+    const { error: offerFullySignedErr } = await supabase
       .from("offers")
       .update({ esign_status: "fully_signed", esign_completed_at: now })
       .eq("id", matchedOffer.id)
+    if (offerFullySignedErr) console.error(`[finalize-packet] offer NOT marked fully_signed: ${offerFullySignedErr.message}`)
   }
 
   const { data: matchedAgreement } = await supabase
@@ -525,10 +529,11 @@ export async function finalizeLegacyEsignArtifacts(
     .eq("provider_ref", envelopeId)
     .maybeSingle()
   if (matchedAgreement) {
-    await supabase
+    const { error: agreementExecutedErr } = await supabase
       .from("listing_agreements")
       .update({ esign_status: "fully_signed", fully_executed_at: now })
       .eq("id", matchedAgreement.id)
+    if (agreementExecutedErr) console.error(`[finalize-packet] listing agreement NOT marked fully executed: ${agreementExecutedErr.message}`)
     // Listing agreement signed → "coming soon" (pre-listing), NOT live-on-MLS.
     // Run through the KERNEL (service client — webhooks have no session) so the
     // LISTING_AGREEMENT_SIGNED event + automation fire. MLS_ACTIVE is set later
@@ -551,10 +556,10 @@ export async function finalizeLegacyEsignArtifacts(
       }, supabase)
       // stage_entered_at is the stage machine's clock; listings.status is NOT written here —
       // transitionLifecycle synced it (listing_signed) from the shared map one call above.
-      await supabase
+      await bestEffort(supabase
         .from("listings")
         .update({ stage_entered_at: now })
-        .eq("id", matchedAgreement.listing_id)
+        .eq("id", matchedAgreement.listing_id), "stage clock stamp; the stage itself was set by the kernel transition above")
       // ── THE COMPLIANCE LOOP'S FIRST RUN (owner ruling 2026-09-05) ─────────
       // The executed agreement is where compliance STARTS. The kernel transition above
       // already stamped `listing_signed` through the shared map; the explicit

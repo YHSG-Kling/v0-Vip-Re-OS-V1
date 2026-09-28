@@ -402,7 +402,8 @@ export async function upsertCampaignBundle(input: UpsertBundleInput): Promise<{
     if (error) return { success: false, error: error.message }
     bundleId = input.id
     // Replace items: simpler than diffing, and items are small.
-    await svc.from("campaign_bundle_items").delete().eq("bundle_id", bundleId)
+    const { error: itemsClearErr } = await svc.from("campaign_bundle_items").delete().eq("bundle_id", bundleId)
+    if (itemsClearErr) return { success: false, error: `Could not replace the bundle's items: ${itemsClearErr.message}` }
   } else {
     const { data, error } = await svc.from("campaign_bundles").insert(row).select("id").single()
     if (error) {

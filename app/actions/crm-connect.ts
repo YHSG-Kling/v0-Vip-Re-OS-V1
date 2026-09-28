@@ -178,11 +178,16 @@ export async function disconnectCrmAction(provider: CrmProvider): Promise<{ ok: 
   const { member } = gate
   const supabase = await createClient()
 
+  // A DISCONNECT that did not land leaves the credential ACTIVE — the sync keeps
+  // pushing contacts to a CRM the user just disconnected. Read every refusal.
   if (member.agentScoped) {
-    await supabase.from("agent_api_credentials").update({ is_active: false }).eq("agent_id", member.agentId).eq("service_name", provider)
+    const { error: agentCredErr } = await supabase.from("agent_api_credentials").update({ is_active: false }).eq("agent_id", member.agentId).eq("service_name", provider)
+    if (agentCredErr) return { ok: false, error: `Could not disconnect ${provider}: ${agentCredErr.message}` }
   } else {
-    await supabase.from("integration_credentials").update({ is_active: false }).eq("brokerage_id", member.brokerageId).eq("provider_name", provider)
-    await supabase.from("brokerage_integrations").update({ status: INTEGRATION_STATUS_NOT_CONFIGURED }).eq("brokerage_id", member.brokerageId).eq("provider_name", provider)
+    const { error: credErr } = await supabase.from("integration_credentials").update({ is_active: false }).eq("brokerage_id", member.brokerageId).eq("provider_name", provider)
+    if (credErr) return { ok: false, error: `Could not disconnect ${provider}: ${credErr.message}` }
+    const { error: statusErr } = await supabase.from("brokerage_integrations").update({ status: INTEGRATION_STATUS_NOT_CONFIGURED }).eq("brokerage_id", member.brokerageId).eq("provider_name", provider)
+    if (statusErr) return { ok: false, error: `${provider} credential deactivated, but the integration status was not updated: ${statusErr.message}` }
   }
   revalidatePath("/settings/crm")
   return { ok: true }

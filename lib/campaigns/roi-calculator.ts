@@ -6,6 +6,7 @@
 // CRITICAL: This module does NOT create a second analytics stack.
 // It aggregates from existing performance tables only.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -958,7 +959,7 @@ export async function recalculateChannelPerformance(
       // UPSERT to channel_performance
       // (ON CONFLICT brokerage_id, channel_type, window_start, window_end)
       // ════════════════════════════════════════════════════════════════════════
-      await supabase.from("channel_performance").upsert(
+      await sentinelWrite(supabase, supabase.from("channel_performance").upsert(
         {
           brokerage_id: brokerageId,
           channel_type: channelType,
@@ -974,7 +975,7 @@ export async function recalculateChannelPerformance(
         {
           onConflict: "brokerage_id,channel_type,window_start,window_end",
         }
-      )
+      ), { table: "channel_performance", flow: "channel_performance_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
 
     return { success: true, channels: results }

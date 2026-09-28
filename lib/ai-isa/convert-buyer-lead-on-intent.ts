@@ -48,6 +48,7 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { acceptAIISAHandoff } from "@/app/actions/ai-isa/accept-handoff"
 import { requireActiveBBA } from "@/lib/buyer-broker/gate"
@@ -463,7 +464,7 @@ export async function convertBuyerLeadOnIntent(
     if (!stageErr) {
       buyerStage = plan.targetStage
       // Audit row on the buyer_lifecycle machine (same entity_type transitionLifecycle uses).
-      await svc.from("lifecycle_events").insert({
+      await sentinelWrite(svc, svc.from("lifecycle_events").insert({
         brokerage_id: params.brokerageId,
         entity_type: "buyer_lifecycle",
         entity_id: contactId,
@@ -475,7 +476,7 @@ export async function convertBuyerLeadOnIntent(
           reason: params.reason,
         },
         created_at: new Date().toISOString(),
-      }).then(() => null, () => null)
+      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
       // Fire the kernel milestone event (service-client safe; non-blocking).
       try {
         await processKernelEvent({

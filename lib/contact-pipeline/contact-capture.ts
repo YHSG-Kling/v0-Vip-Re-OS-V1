@@ -266,13 +266,13 @@ export async function captureContact(
       throw new Error(`Failed to create contact from lead: ${createError?.message ?? 'no data'}`)
     }
 
-    await supabase.from('lifecycle_events').insert({
+    await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
       brokerage_id: params.brokerageId,
       entity_type: 'contact',
       entity_id: created.id,
       event_type: KernelEvent.CONTACT_CAPTURED,
       metadata: { source: params.source, from_lead_id: params.fromLeadId ?? null },
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     // CLIENT WELCOME (concierge #1–2) — a new buyer/seller client gets the
     // gated warm-welcome + journey-map draft. Best-effort, never blocks capture.
@@ -439,13 +439,13 @@ export async function captureContact(
       throw new Error(`Failed to merge contact ${bestId}: ${mergeError.message}`)
     }
 
-    await supabase.from('lifecycle_events').insert({
+    await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
       brokerage_id: params.brokerageId,
       entity_type: 'contact',
       entity_id: bestId,
       event_type: KernelEvent.CONTACT_DEDUP_MERGED,
       metadata: { score: bestScore, source: params.source },
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     await processKernelEvent({
       event: KernelEvent.CONTACT_DEDUP_MERGED,
@@ -538,7 +538,7 @@ export async function captureContact(
 
   const contactId = created.id
 
-  await supabase.from('lifecycle_events').insert({
+  await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
     brokerage_id: params.brokerageId,
     entity_type: 'contact',
     entity_id: contactId,
@@ -547,7 +547,7 @@ export async function captureContact(
       source: params.source,
       ...(createAttribution ? { assignment: createAttribution } : {}),
     },
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   await processKernelEvent({
     event: KernelEvent.CONTACT_CAPTURED,
@@ -648,7 +648,7 @@ export async function queueContactEnrichmentAndScore(params: {
 
   const scoreResult = calculateLeadScore(contact)
 
-  await supabase.from('lead_score_history').insert({
+  await sentinelWrite(supabase, supabase.from('lead_score_history').insert({
     contact_id: params.contactId,   // contact_id NOT lead_id
     lead_id: null,
     brokerage_id: params.brokerageId,
@@ -656,7 +656,7 @@ export async function queueContactEnrichmentAndScore(params: {
     scoring_factors: scoreResult.factors,
     explanation: scoreResult.explanation,
     scored_at: new Date().toISOString(),
-  })
+  }), { table: "lead_score_history", flow: "lead_score_history_write", reason: "score history row; the score itself is returned" })
 
   await sentinelWrite(
     supabase,
@@ -673,13 +673,13 @@ export async function queueContactEnrichmentAndScore(params: {
     },
   )
 
-  await supabase.from('lifecycle_events').insert({
+  await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
     brokerage_id: params.brokerageId,
     entity_type: 'contact',
     entity_id: params.contactId,
     event_type: KernelEvent.CONTACT_SCORED,
     metadata: { score: scoreResult.finalScore },
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   await processKernelEvent({
     event: KernelEvent.CONTACT_SCORED,

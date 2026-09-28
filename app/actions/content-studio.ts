@@ -62,7 +62,7 @@ export async function generateContentIdeas(persona?: string, _userId?: string, _
     const ideas = parseAIJsonResponse(text)
 
     // Save to database — stamp brokerage_id + created_by from session
-    const { data } = await supabase
+    const { data, error: ideasSaveErr } = await supabase
       .from("content_ideas")
       .insert(
         ideas.map((idea: any) => ({
@@ -75,6 +75,7 @@ export async function generateContentIdeas(persona?: string, _userId?: string, _
         })),
       )
       .select()
+    if (ideasSaveErr) console.error(`[content-studio] content ideas NOT saved: ${ideasSaveErr.message}`)
 
     revalidatePath("/content-studio")
     return { success: true, ideas: data }

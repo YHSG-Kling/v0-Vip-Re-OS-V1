@@ -976,7 +976,8 @@ export async function dispatchDirectMail(
       })
       const decision = interpretLobForGate(lob)
       if (decision.action !== "defer") {
-        await svc.from("leads").update({ ...decision.patch, updated_at: new Date().toISOString() }).eq("id", params.leadId)
+        const { error: lobGateErr } = await svc.from("leads").update({ ...decision.patch, updated_at: new Date().toISOString() }).eq("id", params.leadId)
+        if (lobGateErr) console.error(`[dispatch] Lob address-verify verdict NOT saved on the lead: ${lobGateErr.message}`)
         if (cost > 0) {
           try {
             const { meterVendorSpend } = await import("@/lib/vendor-governance/meter-vendor")

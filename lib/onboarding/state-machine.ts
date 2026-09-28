@@ -69,7 +69,7 @@ export async function acceptUserInvitationOnFirstLogin(params: {
   if (!invite) return { accepted: false }
 
   // Mark accepted
-  await svc
+  const { error: inviteAcceptErr } = await svc
     .from("user_invitations")
     .update({
       status:           "accepted",
@@ -77,6 +77,7 @@ export async function acceptUserInvitationOnFirstLogin(params: {
       accepted_at:      new Date().toISOString(),
     })
     .eq("id", invite.id)
+  if (inviteAcceptErr) console.error(`[onboarding/state-machine] invitation NOT marked accepted: ${inviteAcceptErr.message}`)
 
   // If this is a NON-ADMIN role accepting, the brokerage has moved beyond
   // the initial setup phase — advance to in_progress (idempotent).

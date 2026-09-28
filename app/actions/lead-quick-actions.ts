@@ -110,7 +110,8 @@ export async function verifyLeadEmailAction(params: {
   try {
     const mod = await import("@/lib/external/email-verifier")
     const r = params.deep ? await mod.verifyEmailDeep(gate.lead.email) : await mod.checkEmailMx(gate.lead.email)
-    await createServiceClient().from("leads").update({ email_verified: r.verified }).eq("id", params.leadId)
+    const { error: verifiedStampErr } = await createServiceClient().from("leads").update({ email_verified: r.verified }).eq("id", params.leadId)
+    if (verifiedStampErr) console.error(`[lead-quick-actions] email verification result NOT saved on lead ${params.leadId}: ${verifiedStampErr.message}`)
     revalidatePath(`/leads/${params.leadId}`)
     return { success: true, verified: r.verified, reason: r.reason, tier: r.tier, cost: r.cost }
   } catch (e: any) { return { success: false, error: e?.message ?? "email verify failed" } }

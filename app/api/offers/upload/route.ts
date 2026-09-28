@@ -1,3 +1,4 @@
+import { bestEffort } from "@/lib/db/best-effort"
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -246,7 +247,7 @@ export async function POST(req: NextRequest) {
   }
 
   // lifecycle_events + OFFER_UPLOADED kernel event (non-blocking)
-  await supabase.from("lifecycle_events").insert({
+  await bestEffort(supabase.from("lifecycle_events").insert({
     brokerage_id:  brokerageId,
     entity_type:   "offer",
     entity_id:     offer.id,
@@ -256,7 +257,7 @@ export async function POST(req: NextRequest) {
       listing_id:        listingId,
       offer_document_url: publicUrl,
     },
-  })
+  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   await processKernelEvent({
     event:      KernelEvent.OFFER_UPLOADED,

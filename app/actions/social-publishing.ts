@@ -303,7 +303,7 @@ export async function createSocialPost(params: {
   })
 
   if (!gate.passed) {
-    const { data: draftPost } = await supabase
+    const { data: draftPost, error: draftPostErr } = await supabase
       .from("social_posts")
       .insert({
         user_id: caller.userId,
@@ -325,6 +325,7 @@ export async function createSocialPost(params: {
       })
       .select("id")
       .maybeSingle()
+    if (draftPostErr) console.error(`[social-publishing] held draft post NOT saved: ${draftPostErr.message}`)
 
     revalidatePath("/content-studio")
     return {

@@ -1,5 +1,6 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { generateObject } from "@/lib/ai/generate"
 import { z } from "zod"
@@ -400,11 +401,11 @@ Generate:
         })
         if (!published.success) {
           console.error("[ai-review-automation] auto-respond publish failed, left as draft:", published.error)
-          await supabase
+          await bestEffort(supabase
             .from("agent_reviews")
             .update({ response_text: response.publicResponse, updated_at: new Date().toISOString() })
             .eq("id",       params.reviewId)
-            .eq("agent_id", params.agentId)
+            .eq("agent_id", params.agentId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
         }
       } else if (prefs.autoRespondMode === "review" && brokerageId) {
         const draftedAt = new Date()
@@ -426,21 +427,21 @@ Generate:
           // schema yet. Fall back to the plain draft so the response is not lost; the
           // approval-hours window simply cannot start until the column is live.
           console.error("[ai-review-automation] review-mode draft window not stamped (m625 applied?):", draftErr.message)
-          await supabase
+          await bestEffort(supabase
             .from("agent_reviews")
             .update({ response_text: response.publicResponse, updated_at: draftedAt.toISOString() })
             .eq("id",       params.reviewId)
-            .eq("agent_id", params.agentId)
+            .eq("agent_id", params.agentId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
         }
       } else {
-        await supabase
+        await bestEffort(supabase
           .from("agent_reviews")
           .update({
             response_text: response.publicResponse,
             updated_at:    new Date().toISOString(),
           })
           .eq("id",       params.reviewId)
-          .eq("agent_id", params.agentId)
+          .eq("agent_id", params.agentId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
       }
     }
 

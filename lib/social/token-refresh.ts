@@ -74,11 +74,12 @@ export async function runSocialTokenSweep(svc: any, now: Date = new Date()): Pro
           },
         })
         if (res.ok && res.data?.access_token) {
-          await svc.from("social_media_accounts").update({
+          const { error: tokenSaveErr } = await svc.from("social_media_accounts").update({
             access_token: res.data.access_token,
             token_expires_at: new Date(now.getTime() + (res.data.expires_in ?? 60 * 86_400) * 1000).toISOString(),
             updated_at: now.toISOString(),
           }).eq("id", row.id)
+          if (tokenSaveErr) console.error(`[token-refresh] refreshed token NOT saved (the next call uses the expired one): ${tokenSaveErr.message}`)
           r.exchanged += 1
         } else {
           await notifyReconnect(svc, row, now); r.notified += 1
@@ -93,12 +94,13 @@ export async function runSocialTokenSweep(svc: any, now: Date = new Date()): Pro
           body: { grant_type: "refresh_token", refresh_token: row.refresh_token!, client_id: cid, client_secret: csec },
         })
         if (res.ok && res.data?.access_token) {
-          await svc.from("social_media_accounts").update({
+          const { error: tokenSaveErr } = await svc.from("social_media_accounts").update({
             access_token: res.data.access_token,
             refresh_token: res.data.refresh_token ?? row.refresh_token,
             token_expires_at: new Date(now.getTime() + (res.data.expires_in ?? 60 * 86_400) * 1000).toISOString(),
             updated_at: now.toISOString(),
           }).eq("id", row.id)
+          if (tokenSaveErr) console.error(`[token-refresh] refreshed token NOT saved (the next call uses the expired one): ${tokenSaveErr.message}`)
           r.refreshed += 1
         } else {
           await notifyReconnect(svc, row, now); r.notified += 1

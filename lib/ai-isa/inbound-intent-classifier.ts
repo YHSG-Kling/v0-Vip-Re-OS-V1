@@ -443,15 +443,15 @@ export async function classifyAndRouteInbound(
   //    (shouldResurrectReengagement excludes opted_out / completed).
   if (shouldResurrectReengagement((lead as any).reengagement_status)) {
     const fromStatus = (lead as any).reengagement_status as string
-    await svc.from("leads")
+    await sentinelWrite(svc, svc.from("leads")
       .update({ reengagement_status: "active", reengagement_attempt_count: 0, updated_at: new Date().toISOString() })
-      .eq("id", params.leadId).then(() => null, () => null)
-    await svc.from("lifecycle_events").insert({
+      .eq("id", params.leadId), { table: "leads", flow: "isa_reclaim_on_reply", reason: "re-engagement resurrection; the reply routing proceeds regardless and a loss is ledgered" })
+    await sentinelWrite(svc, svc.from("lifecycle_events").insert({
       brokerage_id: params.brokerageId, entity_type: "lead", entity_id: params.leadId,
       event_type: "ISA_RECLAIMED_ON_REPLY",
       metadata: { from_status: fromStatus, note: "reply re-armed the active cadence" },
       created_at: new Date().toISOString(),
-    }).then(() => null, () => null)
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
   }
 
   const knownSide = deriveSide((lead as any).motivation_type, (lead as any).lead_type)

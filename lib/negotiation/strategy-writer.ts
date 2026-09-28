@@ -41,12 +41,13 @@ export async function writeNegotiationStrategy(
   if (sideOverride) (ctx as { side: "buyer" | "seller" }).side = sideOverride
 
   // Supersede pre-existing open strategy for (offer_id, side)
-  await svc
+  const { error: supersedeErr } = await svc
     .from("negotiation_strategies")
     .update({ status: "superseded", updated_at: new Date().toISOString() })
     .eq("offer_id", offerId)
     .eq("side", ctx.side)
     .eq("status", "open")
+  if (supersedeErr) console.error(`[strategy-writer] prior open strategy NOT superseded (two open strategies possible): ${supersedeErr.message}`)
 
   let draft
   try {

@@ -20,6 +20,7 @@
  *   - Search-portal activity resumed
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { excludeConvertedLeads } from "@/lib/contact-promotion/conversion-finality"
 
@@ -69,7 +70,7 @@ export async function runMonthlyNurtureCadence(params?: {
   for (const lead of leads) {
     // 2. Expire window — push them out of nurture if window passed
     if (lead.long_term_nurture_until && new Date(lead.long_term_nurture_until) < new Date()) {
-      await supabase
+      const { error: expireErr } = await supabase
         .from("leads")
         .update({
           lifecycle_state: "unconsented",
@@ -78,6 +79,7 @@ export async function runMonthlyNurtureCadence(params?: {
           updated_at: nowIso,
         })
         .eq("id", lead.id)
+      if (expireErr) console.error(`[long-term-nurture] expired nurture window NOT cleared on the lead: ${expireErr.message}`)
       expired++
       continue
     }
@@ -93,7 +95,7 @@ export async function runMonthlyNurtureCadence(params?: {
     const score = lead.lead_score ?? 0
 
     if ((recentSignals ?? 0) > 0 && score >= REACTIVATION_SCORE_THRESHOLD) {
-      await supabase
+      const { error: reactivateErr } = await supabase
         .from("leads")
         .update({
           lifecycle_state: "unconsented",
@@ -103,13 +105,14 @@ export async function runMonthlyNurtureCadence(params?: {
           updated_at: nowIso,
         })
         .eq("id", lead.id)
+      if (reactivateErr) console.error(`[long-term-nurture] lead NOT reactivated to the ISA: ${reactivateErr.message}`)
 
       // Mark all unprocessed signals as reactivated
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("signal_reactivations")
         .update({ isa_reactivated: true, isa_reactivated_at: nowIso })
         .eq("lead_id", lead.id)
-        .eq("isa_reactivated", false)
+        .eq("isa_reactivated", false), { table: "signal_reactivations", flow: "signal_reactivations_write", reason: "marks signals consumed; a lost stamp only re-evaluates them next run" })
 
       reactivated++
       continue
@@ -143,7 +146,7 @@ export async function runMonthlyNurtureCadence(params?: {
         .maybeSingle()
 
       if (sequenceRow?.id) {
-        await supabase.from("sequence_enrollments").insert({
+        const { error: nurtureEnrollErr } = await supabase.from("sequence_enrollments").insert({
           sequence_id: sequenceRow.id,
           lead_id: lead.id,
           contact_id: lead.contact_id,
@@ -152,6 +155,7 @@ export async function runMonthlyNurtureCadence(params?: {
           status: "active",
           current_step: 0,
         })
+        if (nurtureEnrollErr) console.error(`[long-term-nurture] lead NOT enrolled in the nurture sequence: ${nurtureEnrollErr.message}`)
         enrolledMonthly++
       }
     }

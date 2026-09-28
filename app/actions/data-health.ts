@@ -1,5 +1,6 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 
@@ -164,10 +165,10 @@ export async function runDataHygieneScan() {
     // A refused read is NOT "no contacts". Completing the scan on a read that
     // failed would file a clean bill of health nobody measured.
     if (contactsError) {
-      await supabase
+      await bestEffort(supabase
         .from("data_health_scans")
         .update({ status: "failed", completed_at: new Date().toISOString() })
-        .eq("id", scan.id)
+        .eq("id", scan.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
       return {
         success: false,
         error: `Could not read contacts, so nothing was scanned: ${contactsError.message}`,
@@ -176,7 +177,7 @@ export async function runDataHygieneScan() {
     }
 
     if (!contacts || contacts.length === 0) {
-      await supabase
+      await bestEffort(supabase
         .from("data_health_scans")
         .update({
           status: "completed",
@@ -184,7 +185,7 @@ export async function runDataHygieneScan() {
           total_records_scanned: 0,
           issues_found: 0,
         })
-        .eq("id", scan.id)
+        .eq("id", scan.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
       
       return { success: true, invalidCount: 0, message: "No contacts to validate" }
     }
@@ -233,7 +234,7 @@ export async function runDataHygieneScan() {
 
     // Update scan with results — issues_found is what the log ACTUALLY holds,
     // so the scan row and the log rows agree.
-    await supabase
+    await bestEffort(supabase
       .from("data_health_scans")
       .update({
         status: "completed",
@@ -241,7 +242,7 @@ export async function runDataHygieneScan() {
         total_records_scanned: contacts.length,
         issues_found: issuesRecorded,
       })
-      .eq("id", scan.id)
+      .eq("id", scan.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     return {
       success: true,

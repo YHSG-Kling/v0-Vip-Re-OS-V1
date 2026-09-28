@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -58,7 +59,7 @@ export async function POST(req: Request) {
     // after RLS scopes the recruit lookup, double-check here so the audit
     // log captures attempted boundary crossings.
     if (!isPlatformAdmin && recruit.brokerage_id !== profile!.brokerage_id) {
-      await service.from("tenant_transition_log").insert({
+      await sentinelWrite(service, service.from("tenant_transition_log").insert({
         actor_user_id: user.id,
         action: "provision_recruit_denied_cross_brokerage",
         entity_type: "recruit",
@@ -66,7 +67,7 @@ export async function POST(req: Request) {
         from_brokerage_id: recruit.brokerage_id,
         to_brokerage_id: profile!.brokerage_id,
         metadata: { reason: "caller_not_platform_admin" },
-      }).then(() => {}, () => {})
+      }), { table: "tenant_transition_log", flow: "provision_cross_brokerage_denied_audit", reason: "audit of a denial that is returned 403 regardless" })
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }
     if (recruit.provisioned) return NextResponse.json({ error: "Already provisioned" }, { status: 409 })
@@ -92,7 +93,7 @@ export async function POST(req: Request) {
 
     const holderBrokerageId = (existingUser as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
     if (holderBrokerageId && holderBrokerageId !== recruit.brokerage_id && !isPlatformAdmin) {
-      await service.from("tenant_transition_log").insert({
+      await sentinelWrite(service, service.from("tenant_transition_log").insert({
         actor_user_id: user.id,
         action: "provision_recruit_denied_email_belongs_to_other_brokerage",
         entity_type: "recruit",
@@ -100,7 +101,7 @@ export async function POST(req: Request) {
         from_brokerage_id: holderBrokerageId,
         to_brokerage_id: recruit.brokerage_id,
         metadata: { reason: "email_holder_at_other_brokerage" },
-      }).then(() => {}, () => {})
+      }), { table: "tenant_transition_log", flow: "provision_email_other_brokerage_denied_audit", reason: "audit of a denial that is returned regardless" })
       return NextResponse.json({
         error: "That email already belongs to a user at another brokerage. They must leave it before they can be provisioned here.",
       }, { status: 409 })
@@ -157,7 +158,7 @@ export async function POST(req: Request) {
 
     // Upsert users row (user_type is the canonical role column; the
     // legacy `role` column is no longer written — migration 036+).
-    const { data: upsertedUser } = await service
+    const { data: upsertedUser, error: userUpsertErr } = await service
       .from("users")
       .upsert(
         {
@@ -175,13 +176,16 @@ export async function POST(req: Request) {
       )
       .select("id")
       .maybeSingle()
+    // A refused seat used to fall through to "provisioned" with no users row
+    // (the invite's trigger row, if any, keeps the wrong tenant/type).
+    if (userUpsertErr) throw new Error(`users upsert refused: ${userUpsertErr.message}`)
 
     const resolvedUserId = upsertedUser?.id ?? newUserId
 
     // Create agents row
     let agentId: string | null = null
     if (resolvedUserId) {
-      const { data: agentRow } = await service
+      const { data: agentRow, error: agentUpsertErr } = await service
         .from("agents")
         .upsert(
           {
@@ -200,11 +204,12 @@ export async function POST(req: Request) {
         )
         .select("id")
         .maybeSingle()
+      if (agentUpsertErr) throw new Error(`agents upsert refused: ${agentUpsertErr.message}`)
       agentId = agentRow?.id ?? null
 
       // Default commission profile
       if (agentId) {
-        await service.from("agent_commission_profiles").upsert(
+        await sentinelWrite(service, service.from("agent_commission_profiles").upsert(
           {
             agent_id: agentId,
             brokerage_id: recruit.brokerage_id,
@@ -214,10 +219,10 @@ export async function POST(req: Request) {
             created_at: new Date().toISOString(),
           },
           { onConflict: "agent_id" }
-        ).then(() => {}, () => {})
+        ), { table: "agent_commission_profiles", flow: "recruit_default_commission_profile", brokerageId: recruit.brokerage_id, reason: "default split profile for a provisioned agent; a loss is ledgered so the broker sets it before the first commission" })
 
         // Onboarding state — agent_onboarding is keyed on agent_id (NOT NULL).
-        await service.from("agent_onboarding").upsert(
+        const { error: onboardingSeedErr } = await service.from("agent_onboarding").upsert(
           {
             agent_id: agentId,
             user_id: resolvedUserId,
@@ -229,7 +234,8 @@ export async function POST(req: Request) {
             updated_at: new Date().toISOString(),
           },
           { onConflict: "agent_id" }
-        ).then(() => {}, () => {})
+        )
+        if (onboardingSeedErr) console.error(`[provision-agent] onboarding state NOT seeded for the provisioned agent: ${onboardingSeedErr.message}`)
 
         // REVENUE-SHARE TREE (burn-down round 5, owner spec): when the recruit
         // was referred by a sponsoring agent, plant the downline edge — the
@@ -272,7 +278,7 @@ export async function POST(req: Request) {
             // (an m575-only configuration), so a percent-model write stays
             // valid pre-apply — naming an absent column would refuse the whole
             // upsert (PGRST204, §3).
-            await service.from("agent_relationships").upsert(
+            await sentinelWrite(service, service.from("agent_relationships").upsert(
               {
                 brokerage_id: recruit.brokerage_id,
                 agent_id: agentId,
@@ -283,19 +289,20 @@ export async function POST(req: Request) {
                 is_active: true,
               },
               { onConflict: "agent_id,brokerage_id,relationship_type" }
-            )
+            ), { table: "agent_relationships", flow: "agent_relationships_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
           }
         }
       }
     }
 
     // Mark recruit as provisioned
-    await service.from("recruits").update({
+    const { error: provisionedStampErr } = await service.from("recruits").update({
       provisioned: true,
       provisioned_at: new Date().toISOString(),
       provisioned_user_id: resolvedUserId,
       updated_at: new Date().toISOString(),
     }).eq("id", recruitId)
+    if (provisionedStampErr) console.error(`[provision-agent] agent provisioned but the recruit was NOT marked provisioned: ${provisionedStampErr.message}`)
 
     // Activity log
     await bestEffort(

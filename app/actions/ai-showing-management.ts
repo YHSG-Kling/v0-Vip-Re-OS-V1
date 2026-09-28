@@ -734,17 +734,18 @@ Create JSON with both email and SMS versions:
     }
 
     // Log the confirmation
-    await supabase.from("showing_communications").insert({
+    await bestEffort(supabase.from("showing_communications").insert({
       showing_id: showingId,
       communication_type: "confirmation",
       email_content: confirmationMessages,
       sms_content: confirmationMessages.smsMessage,
       sent_at: new Date().toISOString(),
       status: "sent",
-    })
+    }), "log of a confirmation already sent")
 
     // Update showing status
-    await supabase.from("showings").update({ status: "confirmed", confirmed_at: new Date().toISOString() }).eq("id", showingId)
+    const { error: confirmErr } = await supabase.from("showings").update({ status: "confirmed", confirmed_at: new Date().toISOString() }).eq("id", showingId)
+    if (confirmErr) return { success: false, error: `Confirmation sent, but the showing was not marked confirmed: ${confirmErr.message}` }
 
     revalidatePath("/showings")
 
@@ -956,13 +957,13 @@ Analyze and provide:
     }
 
     // Update feedback with analysis
-    await supabase
+    await bestEffort(supabase
       .from("showing_feedback_requests")
       .update({
         ai_analysis: { ...analysisResult, analyzed_at: new Date().toISOString() },
         interest_score: analysisResult.interestScore,
       })
-      .eq("id", feedbackId)
+      .eq("id", feedbackId), "AI analysis annotation; the analysis is returned to the caller")
 
     // Update contact's lead score based on showing feedback
     const feedbackContactId = (feedback as any).showings?.contacts?.id ?? (feedback as any).showings?.contact_id

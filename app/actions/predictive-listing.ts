@@ -10,6 +10,7 @@
  *   - listQueuedAutoTouches(agentId) — review queue for the agent
  */
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 
@@ -127,7 +128,7 @@ export async function dismissPredictiveSeller(params: {
   if (error) return { success: false, error: error.message }
 
   // Also write a manual_dismiss action row for audit
-  await supabase.from("predictive_listing_actions").insert({
+  await bestEffort(supabase.from("predictive_listing_actions").insert({
     contact_id: params.contactId,
     brokerage_id: params.brokerageId,
     action_type: "manual_dismiss",
@@ -135,7 +136,7 @@ export async function dismissPredictiveSeller(params: {
     cancel_reason: params.reason ?? "agent_dismissed",
     cancelled_by_user_id: params.userId,
     cancelled_at: new Date().toISOString(),
-  })
+  }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
   revalidatePath("/dashboard/agent")
   return { success: true }
@@ -252,13 +253,13 @@ export async function markPredictiveAction(params: {
       : params.actionType === "consulted"
       ? "manual_consult"
       : "manual_nurture"
-  await supabase.from("predictive_listing_actions").insert({
+  await bestEffort(supabase.from("predictive_listing_actions").insert({
     contact_id: params.contactId,
     brokerage_id: params.brokerageId,
     action_type: actionType,
     status: "sent",
     sent_at: new Date().toISOString(),
-  })
+  }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
   revalidatePath("/dashboard/agent")
   return { success: true }

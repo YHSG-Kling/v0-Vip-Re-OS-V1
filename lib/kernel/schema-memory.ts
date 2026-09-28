@@ -9,6 +9,7 @@
 // digest BEFORE anything quarantines, so drift is detected ahead of drift
 // damage. Known fingerprints just bump last_seen/hits (cheap upsert).
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 type Svc = SupabaseClient<any, any, any>
@@ -60,15 +61,15 @@ export async function rememberShape(svc: Svc, input: {
       .select("id, hits").eq("connector", input.connector).eq("entity", input.entity)
       .eq("fingerprint", fingerprint).maybeSingle()
     if (existing) {
-      await svc.from("connector_shape_memory")
+      await sentinelWrite(svc, svc.from("connector_shape_memory")
         .update({ last_seen_at: nowIso, hits: ((existing as any).hits ?? 0) + 1 })
-        .eq("id", (existing as any).id)
+        .eq("id", (existing as any).id), { table: "connector_shape_memory", flow: "connector_shape_memory_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       return { fingerprint, isShapeChange: false }
     }
     const { count } = await svc.from("connector_shape_memory")
       .select("id", { count: "exact", head: true })
       .eq("connector", input.connector).eq("entity", input.entity)
-    await svc.from("connector_shape_memory").insert({
+    await sentinelWrite(svc, svc.from("connector_shape_memory").insert({
       connector: input.connector,
       entity: input.entity,
       fingerprint,
@@ -76,7 +77,7 @@ export async function rememberShape(svc: Svc, input: {
       first_seen_at: nowIso,
       last_seen_at: nowIso,
       hits: 1,
-    }).then(() => {}, () => {}) // unique race with a concurrent webhook is fine
+    }), { table: "connector_shape_memory", flow: "connector_shape_memory_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" }) // unique race with a concurrent webhook is fine
     return { fingerprint, isShapeChange: (count ?? 0) > 0 }
   } catch {
     return { fingerprint, isShapeChange: false }

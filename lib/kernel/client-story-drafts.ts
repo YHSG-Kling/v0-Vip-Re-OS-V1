@@ -439,7 +439,7 @@ async function runTourRecaps(svc: Svc, brokerageId: string, now: Date = new Date
       if (!priorTask) {
         // LIVE-FK verified: tours.agent_id → agents(id), which is exactly what
         // tasks.assigned_to_agent_id requires — use it directly.
-        await svc.from("tasks").insert({
+        const { error: offerReadyTaskErr } = await svc.from("tasks").insert({
           brokerage_id: brokerageId,
           contact_id: t.contact_id,
           assigned_to_agent_id: t.agent_id,
@@ -449,7 +449,8 @@ async function runTourRecaps(svc: Svc, brokerageId: string, now: Date = new Date
           assignee_type: "agent",
           source: "tour_standout",
           status: "pending",
-        }).then(() => {}, () => {})
+        })
+        if (offerReadyTaskErr) console.error(`[client-story-drafts] offer-readiness task NOT created: ${offerReadyTaskErr.message}`)
       }
     }
   }

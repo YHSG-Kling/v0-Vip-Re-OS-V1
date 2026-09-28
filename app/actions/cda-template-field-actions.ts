@@ -101,10 +101,11 @@ export async function saveCdaFieldInputsAction(input: { cdaId: string; agentInpu
   // Persist: the resolved values (for rendering/audit) + the raw agent inputs (re-editable).
   const valuesByKey: Record<string, string> = {}
   for (const f of resolution.fields) valuesByKey[f.field_key] = f.formatted
-  await supabase
+  const { error: fieldSaveErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({ field_values: { resolved: valuesByKey, agent_inputs: ctx.agentInputs }, updated_at: new Date().toISOString() })
     .eq("id", cda.id)
+  if (fieldSaveErr) return { success: false, error: `Could not save the CDA field values: ${fieldSaveErr.message}` }
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   return { success: true, resolution }
@@ -190,7 +191,8 @@ export async function saveCdaTemplateFieldDefsAction(input: {
   if (!template || template.brokerage_id !== auth.brokerageId) return { success: false, error: "not_found" }
 
   // Replace the template's field set atomically-ish (delete + insert).
-  await supabase.from("brokerage_cda_template_fields").delete().eq("template_id", input.templateId)
+  const { error: fieldsClearErr } = await supabase.from("brokerage_cda_template_fields").delete().eq("template_id", input.templateId)
+  if (fieldsClearErr) return { success: false, error: `Could not replace the template fields: ${fieldsClearErr.message}` }
   const rows = input.fields.map((f, i) => ({
     brokerage_id: auth.brokerageId,
     template_id: input.templateId,
@@ -290,10 +292,11 @@ export async function generateFilledCdaPdfAction(input: { cdaId: string }): Prom
   if (!stored.ok) return { success: false, error: `pdf_store_failed: ${stored.error}` }
   const url: string = stored.url
 
-  await supabase
+  const { error: pdfStampErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({ generated_pdf_url: url, generated_pdf_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("id", cda.id)
+  if (pdfStampErr) return { success: false, error: `PDF generated but not attached to the CDA: ${pdfStampErr.message}` }
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   return { success: true, url, filled, skipped, unmapped: plan.unmapped }

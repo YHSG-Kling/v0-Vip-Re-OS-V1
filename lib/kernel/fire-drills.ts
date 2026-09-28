@@ -19,6 +19,7 @@
 //
 // NOT server-only (simulator-driven, like the rest of the kernel loaders).
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { VENDOR_CATEGORY_INSPECTOR } from "@/lib/kernel/vendor-categories"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
@@ -287,9 +288,9 @@ export async function runFireDrills(
       entityType: "transaction", entityId: txn.id,
     }, supabase)
     if (pub.ok && pub.signalId && !pub.reason) {
-      await supabase.from("manager_signals")
+      await sentinelWrite(supabase, supabase.from("manager_signals")
         .update({ status: "consumed", consumed_at: now.toISOString(), consumed_action: "fire drill executed: agent briefed (critical) + client-calming draft proposed into the gate" })
-        .eq("id", pub.signalId)
+        .eq("id", pub.signalId), { table: "manager_signals", flow: "fire_drill_consume", reason: "consumes the signal for a drill already executed" })
     }
   }
 

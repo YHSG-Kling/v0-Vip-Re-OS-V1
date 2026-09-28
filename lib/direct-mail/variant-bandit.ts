@@ -35,6 +35,7 @@
  * different picks across requests (the whole point of Thompson).
  */
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { randomBytes } from "node:crypto"
 import type { Persona } from "@/lib/kernel/types"
@@ -382,22 +383,22 @@ export async function recordVariantSend(args: {
     .eq("brokerage_id", args.brokerageId)
     .maybeSingle()
   if (existing) {
-    await svc.from("direct_mail_variant_outcomes")
+    await sentinelWrite(svc, svc.from("direct_mail_variant_outcomes")
       .update({
         sends_count:      (existing.sends_count as number) + 1,
         cost_spent_cents: (existing.cost_spent_cents as number) + args.costCents,
         last_send_at:     new Date().toISOString(),
         updated_at:       new Date().toISOString(),
       })
-      .eq("id", existing.id)
+      .eq("id", existing.id), { table: "direct_mail_variant_outcomes", flow: "variant_send_count", reason: "bandit statistics; a lost increment only weakens the next pick" })
   } else {
-    await svc.from("direct_mail_variant_outcomes").insert({
+    await sentinelWrite(svc, svc.from("direct_mail_variant_outcomes").insert({
       variant_id:       args.variantId,
       brokerage_id:     args.brokerageId,
       sends_count:      1,
       scans_count:      0,
       cost_spent_cents: args.costCents,
       last_send_at:     new Date().toISOString(),
-    })
+    }), { table: "direct_mail_variant_outcomes", flow: "variant_send_count", reason: "bandit statistics; a lost increment only weakens the next pick" })
   }
 }

@@ -158,7 +158,7 @@ export async function submitNextMoveIntent(params: {
   // re-transaction signal is never lost. agent_id can legitimately be null.
   try {
     if (contact.agent_id) {
-      await svc.from("client_portal_messages").insert({
+      const { error: agentMsgErr } = await svc.from("client_portal_messages").insert({
         contact_id: params.contactId,
         agent_id: contact.agent_id,
         brokerage_id: access.brokerageId,
@@ -166,7 +166,8 @@ export async function submitNextMoveIntent(params: {
         channel: "portal",
         read: false,
         body: `Next-move intent: ${params.intent.replace(/_/g, " ")}${note ? ` — "${note}"` : ""}`,
-      }).then(() => {}, () => {})
+      })
+      if (agentMsgErr) console.error(`[portal-lifetime] client's message to their agent NOT recorded: ${agentMsgErr.message}`)
 
       const agent = await resolveContactOwnerAgent(svc, contact.agent_id)
       const agentUserId = (agent as { user_id?: string | null; id?: string | null } | null)?.user_id
@@ -307,11 +308,11 @@ export async function requestVendorIntro(params: {
   const label = category.replace(/_/g, " ")
 
   try {
-    await svc.from("client_portal_messages").insert({
+    await sentinelWrite(svc, svc.from("client_portal_messages").insert({
       contact_id: params.contactId, agent_id: contact.agent_id, brokerage_id: access.brokerageId,
       direction: "client_to_agent", channel: "portal", read: false,
       body: `Vendor intro request: ${label}${reason ? ` — ${reason}` : ""}`,
-    }).then(() => {}, () => {})
+    }), { table: "client_portal_messages", flow: "portal_vendor_intro_request", brokerageId: access.brokerageId, reason: "the request is also recorded on its own rows; a lost agent-inbox copy is ledgered" })
 
     const agent = await resolveContactOwnerAgent(svc, contact.agent_id)
     const agentUserId = (agent as { user_id?: string | null; id?: string | null } | null)?.user_id
@@ -414,11 +415,11 @@ export async function requestRelocationReferral(params: {
 
   try {
     if (contact.agent_id) {
-      await svc.from("client_portal_messages").insert({
+      await sentinelWrite(svc, svc.from("client_portal_messages").insert({
         contact_id: params.contactId, agent_id: contact.agent_id, brokerage_id: access.brokerageId,
         direction: "client_to_agent", channel: "portal", read: false,
         body: `Relocation referral request${newArea ? ` — moving to ${newArea}` : ""}.`,
-      }).then(() => {}, () => {})
+      }), { table: "client_portal_messages", flow: "portal_relocation_request", brokerageId: access.brokerageId, reason: "the referral request is also recorded on its own rows; a lost agent-inbox copy is ledgered" })
 
       const agent = await resolveContactOwnerAgent(svc, contact.agent_id)
       const agentUserId = (agent as { user_id?: string | null; id?: string | null } | null)?.user_id
@@ -675,7 +676,7 @@ export async function submitReferral(data: {
   // route from its referrals queue; the portal message to a specific agent would have
   // no valid recipient.
   if (contact.agent_id) {
-    await supabase.from("client_portal_messages").insert({
+    const { error: referralMsgErr } = await supabase.from("client_portal_messages").insert({
       contact_id: data.contactId,
       agent_id: contact.agent_id,
       brokerage_id: contact.brokerage_id,
@@ -686,6 +687,7 @@ export async function submitReferral(data: {
         `New referral: ${data.referredName} (${data.referredContact})${data.relationship ? ` - ${data.relationship}` : ""}` +
         (clientNote ? `\nTheir note: ${clientNote}` : ""),
     })
+    if (referralMsgErr) console.error(`[portal-lifetime] client's referral message to their agent NOT recorded: ${referralMsgErr.message}`)
 
     // Emit kernel event - resolve agent via kernel identity function. Audit row +
     // reactor; contact.agent_id is agents-class → agent_id, never actor_user_id
@@ -842,7 +844,7 @@ export async function requestValueUpdate(contactId: string) {
   }
 
   // Send message to agent
-  await supabase.from("client_portal_messages").insert({
+  const { error: valueReqMsgErr } = await supabase.from("client_portal_messages").insert({
     contact_id: contactId,
     brokerage_id: access.brokerageId,
     agent_id: contact.agent_id,
@@ -852,6 +854,7 @@ export async function requestValueUpdate(contactId: string) {
     read: false,
     created_at: new Date().toISOString(),
   })
+  if (valueReqMsgErr) console.error(`[portal-lifetime] client's home-value request NOT delivered to their agent: ${valueReqMsgErr.message}`)
 
   return { success: true }
 }

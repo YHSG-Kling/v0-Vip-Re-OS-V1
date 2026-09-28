@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { generateAIResponse } from "@/lib/ai"
 import { createServiceClient } from "@/lib/supabase/service"
 import { processKernelEvent } from "@/lib/kernel"
@@ -142,7 +143,7 @@ Respond ONLY with valid JSON (no markdown):
       const riskFlags = Array.isArray(parsed.risk_flags) ? parsed.risk_flags : []
 
       // INSERT ai_comp_scores
-      await supabase.from("ai_comp_scores").insert({
+      await sentinelWrite(supabase, supabase.from("ai_comp_scores").insert({
         cma_id: cmaId,
         comparable_id: comp.id,
         listing_id: listingId,
@@ -152,10 +153,10 @@ Respond ONLY with valid JSON (no markdown):
         score_rationale: parsed.rationale ?? null,
         risk_flags: riskFlags,
         coaching_insight: parsed.coaching_insight ?? null,
-      })
+      }), { table: "ai_comp_scores", flow: "ai_comp_scores_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
       // UPDATE cma_comparables with score summary
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("cma_comparables")
         .update({
           ai_score: score,
@@ -163,7 +164,7 @@ Respond ONLY with valid JSON (no markdown):
           risk_flags: riskFlags,
           coaching_insight: parsed.coaching_insight ?? null,
         })
-        .eq("id", comp.id)
+        .eq("id", comp.id), { table: "cma_comparables", flow: "cma_comparables_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
       // Collect risk flags for bulk insert into comp_risk_flags
       for (const flag of riskFlags) {
@@ -219,22 +220,22 @@ Respond ONLY with valid JSON (no markdown):
       const avgScore = Math.round(
         scores.reduce((sum, s) => sum + s.score, 0) / scores.length
       )
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("cma_reports")
         .update({ quality_score: avgScore })
-        .eq("id", cmaId)
+        .eq("id", cmaId), { table: "cma_reports", flow: "cma_reports_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
   }
 
   // Fire kernel event — non-blocking
-  await supabase.from("lifecycle_events").insert({
+  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
     entity_type: "listing",
     entity_id: listingId,
     event_type: KernelEvent.CMA_GENERATED,
     actor_user_id: actorUserId,
     metadata: { cma_id: cmaId, comps_scored: scored },
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
   await processKernelEvent({
     event: KernelEvent.CMA_GENERATED,
     brokerageId,

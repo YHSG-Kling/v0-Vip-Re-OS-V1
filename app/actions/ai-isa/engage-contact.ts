@@ -199,11 +199,12 @@ export async function engageContact(
             )
             if (drafted.body?.trim()) portalBody = drafted.body.trim()
           } catch { /* gateway down → the deterministic them-first fallback stands */ }
-          await supabase.from('client_portal_messages').insert({
+          const { error: portalMsgErr } = await supabase.from('client_portal_messages').insert({
             brokerage_id: brokerageId, contact_id: contact.id, agent_id: contact.agent_id,
             direction: "agent_to_client", channel: 'portal', body: portalBody,
             metadata: { source: 'ai_isa_situational', persona: portalPersona, reason },
           })
+          if (portalMsgErr) console.error(`[engage-contact] AI ISA portal message NOT delivered to the client portal: ${portalMsgErr.message}`)
         }
       } catch (e) { console.error('[engageContact] portal touch failed:', e) }
     }
@@ -484,7 +485,7 @@ async function dispatchContactChannel(
         contactId: contact.id, brokerageId, agentId: contact.agent_id ?? null,
       })
       if (conversationId) {
-        await supabase.from('messages').insert({
+        await sentinelWrite(supabase, supabase.from('messages').insert({
           conversation_id: conversationId,
           contact_id: contact.id,
           agent_id: contact.agent_id ?? null,
@@ -495,7 +496,7 @@ async function dispatchContactChannel(
           body: finalBody.replace(/<[^>]+>/g, '').substring(0, 1000),
           status: 'sent',
           created_at: new Date().toISOString(),
-        })
+        }), { table: "messages", flow: "messages_write", reason: "inbox copy of an email the dispatcher already sent (outreach logged separately)" })
         await touchConversation(supabase, conversationId, { inbound: false })
       }
     } catch { /* inbox mirror is best-effort; isa_outreach_log + activities are the record */ }
@@ -529,14 +530,14 @@ async function dispatchContactChannel(
     })
 
     // Also write to ai_isa_activities
-    await supabase.from('ai_isa_activities').insert({
+    await sentinelWrite(supabase, supabase.from('ai_isa_activities').insert({
       contact_id: contact.id,
       brokerage_id: brokerageId,
       channel: 'email',
       activity_type: 'email', // CHECK vocabulary (drifted synonym was silently rejected)
       outcome: 'sent',
       summary: `AI ISA email: ${subject} (trigger: ${reason})`,
-    })
+    }), { table: "ai_isa_activities", flow: "ai_isa_activities_write", reason: "ISA activity echo of a send already logged through logISAOutreach" })
 
     // Update contact last_contacted_at
     await sentinelWrite(
@@ -663,14 +664,14 @@ async function dispatchContactChannel(
       bodySnippet: smsBody.substring(0, 160),
     })
 
-    await supabase.from('ai_isa_activities').insert({
+    await sentinelWrite(supabase, supabase.from('ai_isa_activities').insert({
       contact_id: contact.id,
       brokerage_id: brokerageId,
       channel: 'sms',
       activity_type: 'text', // CHECK vocabulary (drifted synonym was silently rejected)
       outcome: 'sent',
       summary: `AI ISA SMS (trigger: ${reason})`,
-    })
+    }), { table: "ai_isa_activities", flow: "ai_isa_activities_write", reason: "ISA activity echo of a send already logged through logISAOutreach" })
 
     await sentinelWrite(
       supabase,
@@ -740,14 +741,14 @@ async function dispatchContactChannel(
       bodySnippet: 'Direct mail dispatched',
     })
 
-    await supabase.from('ai_isa_activities').insert({
+    await sentinelWrite(supabase, supabase.from('ai_isa_activities').insert({
       contact_id: contact.id,
       brokerage_id: brokerageId,
       channel: 'direct_mail',
       activity_type: 'direct_mail', // CHECK vocabulary (drifted synonym was silently rejected)
       outcome: 'sent',
       summary: `AI ISA direct mail (trigger: ${reason})`,
-    })
+    }), { table: "ai_isa_activities", flow: "ai_isa_activities_write", reason: "ISA activity echo of a send already logged through logISAOutreach" })
 
     await emitLifecycleEvent({
       eventType: 'AI_ISA_CONTACT_MAIL_SENT',
@@ -814,18 +815,18 @@ async function dispatchContactChannel(
         ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
     }
 
-    await supabase.from('ai_isa_calls').insert({
+    await sentinelWrite(supabase, supabase.from('ai_isa_calls').insert({
       voice_call_id: placed.voiceCallId, brokerage_id: brokerageId, contact_id: contact.id,
       lead_id: null, isa_campaign_id: null, script_used: 'isa_reengagement', appointment_set: false,
-    }).then(() => {}, () => {})
+    }), { table: "ai_isa_calls", flow: "ai_isa_calls_write", reason: "ISA call row for a call already placed (voice_calls holds the call)" })
     await logISAOutreach({
       brokerageId, entity: { entityType: 'contact', contactId: contact.id },
       channel: 'phone', subject: 'AI ISA call', bodySnippet: `AI-ISA outbound call initiated (Twilio). Call SID: ${placed.callSid}`,
     })
-    await supabase.from('ai_isa_activities').insert({
+    await sentinelWrite(supabase, supabase.from('ai_isa_activities').insert({
       contact_id: contact.id, brokerage_id: brokerageId, channel: 'phone',
       activity_type: 'call', outcome: 'initiated', summary: `AI ISA call (trigger: ${reason})`,
-    }).then(() => {}, () => {})
+    }), { table: "ai_isa_activities", flow: "ai_isa_activities_write", reason: "ISA activity echo of a call already placed" })
     await sentinelWrite(
       supabase,
       supabase.from('contacts').update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', contact.id),
@@ -920,10 +921,10 @@ async function tryVoiceDrop(
       brokerageId, entity: { entityType: 'contact', contactId: contact.id },
       channel: 'phone', subject: 'AI ISA voicemail', bodySnippet: 'AI ISA ringless voicemail dropped (voicedrop)',
     })
-    await supabase.from('ai_isa_activities').insert({
+    await sentinelWrite(supabase, supabase.from('ai_isa_activities').insert({
       contact_id: contact.id, brokerage_id: brokerageId, channel: 'voicedrop',
       activity_type: 'voicedrop', outcome: 'sent', summary: `AI ISA voice drop (trigger: ${reason})`,
-    }).then(() => {}, () => {})
+    }), { table: "ai_isa_activities", flow: "ai_isa_activities_write", reason: "ISA activity echo of a voice drop already sent" })
     await sentinelWrite(
       supabase,
       supabase.from('contacts').update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', contact.id),

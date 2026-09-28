@@ -16,6 +16,7 @@
 // browser's stale list). Double-book protection = calendar busy ∪ already-
 // scheduled showings.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { type FreeSlot } from "@/lib/providers/calendar/free-slots"
 
 export const SELF_BOOK_DEFAULTS = {
@@ -193,7 +194,7 @@ export async function bookShowingSlot(
   }
 
   const when = new Date(slot.startTime)
-  const { data: request } = await svc.from("showing_requests").insert({
+  const { data: request, error: selfBookReqErr } = await svc.from("showing_requests").insert({
     listing_id: l.id, contact_id: params.contactId, brokerage_id: l.brokerage_id,
     property_address: l.address, status: "approved",
     requested_date: slot.startTime.slice(0, 10),
@@ -202,6 +203,7 @@ export async function bookShowingSlot(
     message: copy.requestMessage,
     source: copy.requestSource,
   }).select("id").maybeSingle()
+  if (selfBookReqErr) console.error(`[self-book] showing request row NOT recorded: ${selfBookReqErr.message}`)
 
   const { data: showing, error: sErr } = await svc.from("showings").insert({
     listing_id: l.id, contact_id: params.contactId, brokerage_id: l.brokerage_id,
@@ -215,7 +217,7 @@ export async function bookShowingSlot(
   if (sErr || !showing) return { ok: false, error: sErr?.message ?? "Booking failed" }
   const showingId = (showing as any).id as string
   if (request) {
-    await svc.from("showing_requests").update({ converted_showing_id: showingId }).eq("id", (request as any).id).then(undefined, () => {})
+    await sentinelWrite(svc, svc.from("showing_requests").update({ converted_showing_id: showingId }).eq("id", (request as any).id), { table: "showing_requests", flow: "self_book_request_link", reason: "back-link from request to the booked showing; the booking stands" })
   }
 
   // The agent's own calendar gets the event (best-effort — booking stands regardless).
@@ -232,11 +234,11 @@ export async function bookShowingSlot(
   // Confirmation the buyer actually SEES + the agent's heads-up.
   // direction CHECK is agent_to_client; agent_id is a NOT NULL FK to agents.id
   // (the listing agent — guaranteed non-null by loadBookableSlots).
-  await svc.from("client_portal_messages").insert({
+  await sentinelWrite(svc, svc.from("client_portal_messages").insert({
     contact_id: params.contactId, brokerage_id: l.brokerage_id, agent_id: l.agent_id,
     direction: "agent_to_client", channel: "portal",
     body: `Your showing is booked ✓ You're confirmed for ${l.address} on ${when.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })} at ${when.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}. Your agent's calendar is updated — reply here if anything changes.`,
-  }).then(undefined, () => {})
+  }), { table: "client_portal_messages", flow: "self_book_confirmation", reason: "portal confirmation of a booking already on the calendar; a loss is ledgered" })
   if (avail.agentUserId) {
     const { error: notifyError } = await svc.from("notifications").insert({
       user_id: avail.agentUserId, brokerage_id: l.brokerage_id, type: "showing_self_booked",

@@ -1,5 +1,6 @@
 "use client"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
@@ -410,14 +411,14 @@ export function CoachingDashboardClient({
     setResolvingId(id)
     try {
       const supabase = createClient()
-      await supabase
+      await bestEffort(supabase
         .from("proactive_interventions")
         .update({
           resolved: true,
           resolved_at: new Date().toISOString(),
           resolved_by: userId,
         })
-        .eq("id", id)
+        .eq("id", id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
       setLocalInterventions((prev) => prev.filter((i) => i.id !== id))
       toast.success("Intervention resolved")

@@ -232,10 +232,11 @@ export async function deliverAlertResults(
   }
 
   // Update delivered_at on results
-  await supabase
+  const { error: deliveredStampErr } = await supabase
     .from("property_alert_results")
     .update({ delivered_at: new Date().toISOString(), delivery_channel: channelsUsed[0] ?? "in_app", delivery_batch_id: batchId })
     .eq("delivery_batch_id", batchId)
+  if (deliveredStampErr) console.error(`[alert-notifier] delivered_at NOT stamped — these matches may be re-sent: ${deliveredStampErr.message}`)
 
   return { sent, channelsUsed, errors }
 }

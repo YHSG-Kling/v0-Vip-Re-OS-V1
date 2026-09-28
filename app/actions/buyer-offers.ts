@@ -879,10 +879,11 @@ export async function createOffer(
 
   // Accept the recommendation
   if (form.strategy_recommendation_id) {
-    await supabase
+    const { error: strategyAcceptErr } = await supabase
       .from("strategy_recommendations")
       .update({ status: "accepted", offer_id: offer.id })
       .eq("id", form.strategy_recommendation_id)
+    if (strategyAcceptErr) console.error(`[buyer-offers] strategy recommendation NOT marked accepted: ${strategyAcceptErr.message}`)
   }
 
   // Emit lifecycle event if stage < BUYER_OFFER_SUBMITTED
@@ -912,14 +913,14 @@ export async function createOffer(
   }
 
   // lifecycle_events insert
-  await supabase.from("lifecycle_events").insert({
+  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
     brokerage_id:  brokerageId,
     entity_type:   "buyer_lifecycle",
     entity_id:     contactId,
     event_type:    "offer.created",
     actor_user_id: agentUserId,
     metadata:      { offer_id: offer.id, property_address: form.property_address },
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return { success: true, offerId: offer.id }
 }

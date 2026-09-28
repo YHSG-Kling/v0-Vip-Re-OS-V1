@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateText } from "ai"
@@ -839,7 +840,7 @@ Respond with ONLY the intent string, nothing else.`,
   }
 
   // ── Log to voice_commands ────────────────────────────────────────────────
-  await service
+  await sentinelWrite(service, service
     .from("voice_commands")
     .insert({
       user_id: user.id,
@@ -855,8 +856,7 @@ Respond with ONLY the intent string, nothing else.`,
       // and is nullable. This internal route cannot know which one, and
       // "voice_assistant" is the feature, not the surface — so it says nothing
       // rather than guessing.
-    })
-    .then(() => {}, () => {}) // non-fatal
+    }), { table: "voice_commands", flow: "voice_commands_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" }) // non-fatal
 
   const response: VoiceCommandResponse = {
     spokenResponse,

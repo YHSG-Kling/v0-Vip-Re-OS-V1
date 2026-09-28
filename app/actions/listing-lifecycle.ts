@@ -1,5 +1,6 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import {
   scheduleListingAppointmentService,
@@ -143,7 +144,7 @@ export async function advanceListingStage(
     if (updateErr) throw updateErr
 
     // Audit trail
-    await svc.from("lifecycle_events").insert({
+    await sentinelWrite(svc, svc.from("lifecycle_events").insert({
       brokerage_id:  overrideCtx.brokerageId,
       entity_type:   "listing",
       entity_id:     listingId,
@@ -158,7 +159,7 @@ export async function advanceListingStage(
         notes:                notes ?? null,
       },
       created_at: new Date().toISOString(),
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     // A manual override still RUNS the stage's automations — the listing IS now at this stage, so its
     // managers must act (prep chain, packet, …). The override only bypassed the PREREQUISITE gates.

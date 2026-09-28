@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import {
   CONTRACT_TERM_COLUMNS,
   copyContractTerms,
@@ -496,10 +497,11 @@ export async function createTransactionFromOffer(params: {
   )
   
   // Back-link the offer to the created transaction
-  await supabase
+  const { error: offerBackLinkErr } = await supabase
     .from("offers")
     .update({ transaction_id: transaction.id, updated_at: new Date().toISOString() })
     .eq("id", params.offerId)
+  if (offerBackLinkErr) console.error(`[offer-bridge] transaction created but the offer was NOT back-linked to it: ${offerBackLinkErr.message}`)
 
   // TRANSACTION COST BREAKDOWN (burn-down round 4): the client portal's
   // transaction detail reads transaction_cost_breakdown — writer-less until
@@ -518,7 +520,7 @@ export async function createTransactionFromOffer(params: {
     // seller's net on every offer that negotiated one.
     const buyerCredit = Number((offer as any).closing_cost_contribution) || 0
     const costs = defaultSellerCosts({ listPrice: offerPrice, commissionRateDecimal: 0.06, hoaDuesMonthly: null })
-    await supabase.from("transaction_cost_breakdown").upsert({
+    await sentinelWrite(supabase, supabase.from("transaction_cost_breakdown").upsert({
       transaction_id: transaction.id,
       brokerage_id: params.brokerageId,
       buyer_costs: {
@@ -538,7 +540,7 @@ export async function createTransactionFromOffer(params: {
       },
       net_proceeds: computeNetProceeds({ offerPrice, buyerClosingCredit: buyerCredit }, costs),
       updated_at: new Date().toISOString(),
-    }, { onConflict: "transaction_id" })
+    }, { onConflict: "transaction_id" }), { table: "transaction_cost_breakdown", flow: "offer_bridge_cost_breakdown", brokerageId: params.brokerageId, reason: "estimate seeded at offer→deal bridge; never blocks the bridge (by ruling) — ledgered instead of silent" })
   } catch { /* best-effort — never blocks the offer→deal bridge */ }
 
   // CONTINGENCY DEADLINES — the offer's NON-STANDARD contingencies (home-sale, HOA, title, insurance,

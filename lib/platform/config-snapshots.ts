@@ -80,25 +80,36 @@ export async function applySnapshotPayload(
   targetBrokerageId: string,
   appliedByUserId: string,
   client?: Svc,
-): Promise<{ applied: string[] }> {
+): Promise<{ applied: string[]; refused: string[] }> {
   const svc = client ?? createServiceClient()
   const applied: string[] = []
+  // `applied` used to list every section whether or not its write landed — a
+  // refused section read as applied to the operator. Each write is now READ and a
+  // refusal is reported here instead of in `applied`.
+  const refused: string[] = []
   const now = new Date().toISOString()
 
   if (payload.global && Object.keys(payload.global).length) {
-    await svc.from("global_settings").upsert({ brokerage_id: targetBrokerageId, ...payload.global, updated_at: now }, { onConflict: "brokerage_id" })
-    applied.push("global_settings")
+    const { error } = await svc.from("global_settings").upsert({ brokerage_id: targetBrokerageId, ...payload.global, updated_at: now }, { onConflict: "brokerage_id" })
+    if (error) refused.push(`global_settings: ${error.message}`)
+    else applied.push("global_settings")
   }
   if (payload.brand && Object.keys(payload.brand).length) {
-    await svc.from("brokerage_brand_settings").upsert({ brokerage_id: targetBrokerageId, ...payload.brand, updated_at: now }, { onConflict: "brokerage_id" })
-    applied.push("brokerage_brand_settings")
+    const { error } = await svc.from("brokerage_brand_settings").upsert({ brokerage_id: targetBrokerageId, ...payload.brand, updated_at: now }, { onConflict: "brokerage_id" })
+    if (error) refused.push(`brokerage_brand_settings: ${error.message}`)
+    else applied.push("brokerage_brand_settings")
   }
   if (payload.voice && Object.keys(payload.voice).length) {
     // brand_voice_profile has no single-column unique on brokerage_id (agent/team scoped too),
-    // so replace the brokerage-level row explicitly.
-    await svc.from("brand_voice_profile").delete().eq("brokerage_id", targetBrokerageId).is("agent_id", null).is("team_id", null)
-    await svc.from("brand_voice_profile").insert({ brokerage_id: targetBrokerageId, ...payload.voice, is_active: true, created_at: now, updated_at: now })
-    applied.push("brand_voice_profile")
+    // so replace the brokerage-level row explicitly. A refused clear skips the insert
+    // (it would leave two brokerage-level voice rows).
+    const { error: voiceClearErr } = await svc.from("brand_voice_profile").delete().eq("brokerage_id", targetBrokerageId).is("agent_id", null).is("team_id", null)
+    if (voiceClearErr) refused.push(`brand_voice_profile (clear): ${voiceClearErr.message}`)
+    else {
+      const { error: voiceErr } = await svc.from("brand_voice_profile").insert({ brokerage_id: targetBrokerageId, ...payload.voice, is_active: true, created_at: now, updated_at: now })
+      if (voiceErr) refused.push(`brand_voice_profile: ${voiceErr.message}`)
+      else applied.push("brand_voice_profile")
+    }
   }
   if (payload.site && Object.keys(payload.site).length) {
     // Defence-in-depth: re-sanitize on apply so a tampered payload can NEVER touch
@@ -106,19 +117,26 @@ export async function applySnapshotPayload(
     // site-shaping fields are ever written to the brokerages row.
     const site = pickFields(payload.site as Record<string, any>, SNAPSHOT_SITE_FIELDS)
     if (Object.keys(site).length) {
-      await svc.from("brokerages").update({ ...site, updated_at: now }).eq("id", targetBrokerageId)
-      applied.push("brokerage_site")
+      const { data: siteRows, error: siteErr } = await svc.from("brokerages").update({ ...site, updated_at: now }).eq("id", targetBrokerageId).select("id")
+      if (siteErr) refused.push(`brokerage_site: ${siteErr.message}`)
+      else if ((siteRows ?? []).length === 0) refused.push(`brokerage_site: no brokerage ${targetBrokerageId}`)
+      else applied.push("brokerage_site")
     }
   }
   if (payload.features?.length) {
+    let featuresApplied = 0
     for (const f of payload.features) {
-      await svc.from("feature_access_overrides").delete().eq("brokerage_id", targetBrokerageId).eq("feature_key", f.feature_key).is("user_id", null).is("team_id", null)
-      await svc.from("feature_access_overrides").insert({
+      const { error: clearErr } = await svc.from("feature_access_overrides").delete().eq("brokerage_id", targetBrokerageId).eq("feature_key", f.feature_key).is("user_id", null).is("team_id", null)
+      if (clearErr) { refused.push(`feature_override ${f.feature_key} (clear): ${clearErr.message}`); continue }
+      const { error: insErr } = await svc.from("feature_access_overrides").insert({
         brokerage_id: targetBrokerageId, feature_key: f.feature_key, override_type: f.override_type,
         trial_ends_at: f.override_type === "grant_trial" ? f.trial_ends_at : null, created_by: appliedByUserId,
       })
+      if (insErr) { refused.push(`feature_override ${f.feature_key}: ${insErr.message}`); continue }
+      featuresApplied++
     }
-    applied.push(`feature_overrides(${payload.features.length})`)
+    if (featuresApplied > 0) applied.push(`feature_overrides(${featuresApplied}/${payload.features.length})`)
   }
-  return { applied }
+  if (refused.length > 0) console.error(`[config-snapshots] apply to ${targetBrokerageId}: ${refused.length} section(s) refused — ${refused.join(" | ")}`)
+  return { applied, refused }
 }

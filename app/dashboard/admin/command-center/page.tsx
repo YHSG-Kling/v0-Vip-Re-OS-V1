@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { loadCommandCenter } from "@/lib/kernel/command-center"
@@ -131,14 +132,15 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
       // subordinate's view is legitimate (troubleshooting, coaching) but
       // NEVER silent: every assumed view lands on the ledger. Best-effort.
       if (kind === "agent" || kind === "team") {
-        await createServiceClient().from("lifecycle_events").insert({
+        const actingAsSvc = createServiceClient()
+        await sentinelWrite(actingAsSvc, actingAsSvc.from("lifecycle_events").insert({
           brokerage_id: brokerageId,
           entity_type: kind,
           entity_id: id,
           event_type: "acting_as_view",
           actor_user_id: user.id,
           metadata: { surface: "command_center", viewer_role: userType },
-        }).then(() => {}, () => {})
+        }), { table: "lifecycle_events", flow: "acting_as_view_audit", brokerageId, reason: "acting-as audit is best-effort by design (never blocks the view); a loss is ledgered, never silent" })
       }
     }
   }

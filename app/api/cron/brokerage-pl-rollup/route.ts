@@ -123,7 +123,7 @@ export async function GET(req: NextRequest) {
         const totalSpend = (aiCostCents + 0) / 100  // marketing_spend_cents future
         const roiMultiple = totalSpend > 0 ? gciGross / totalSpend : null
 
-        await supabase
+        const { error: snapErr } = await supabase
           .from("agent_pl_snapshot")
           .upsert({
             brokerage_id:          agent.brokerage_id,
@@ -140,6 +140,8 @@ export async function GET(req: NextRequest) {
             transaction_count:     txCount,
             computed_at:           now.toISOString(),
           }, { onConflict: "agent_id,month_year" })
+        // A refused snapshot used to count as processed (§3 — supabase-js resolves it).
+        if (snapErr) throw new Error(`agent_pl_snapshot upsert refused: ${snapErr.message}`)
 
         processed++
       } catch (err: any) {

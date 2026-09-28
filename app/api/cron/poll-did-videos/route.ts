@@ -13,6 +13,7 @@
  *   { id, status: "created"|"started"|"done"|"error"|"rejected", result_url, audio_url, error?, ... }
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { type NextRequest, NextResponse } from "next/server"
 import { classifyDidError } from "@/lib/did/contract"
 import { didRequest } from "@/lib/did/gateway"
@@ -592,13 +593,13 @@ export async function GET(request: NextRequest) {
               const { data: magnet } = await supabase
                 .from("lead_capture_forms").select("id, landing_content").eq("id", magnetId).maybeSingle()
               if (magnet) {
-                await supabase.from("lead_capture_forms").update({
+                await sentinelWrite(supabase, supabase.from("lead_capture_forms").update({
                   landing_content: {
                     ...((magnet as any).landing_content ?? {}),
                     videoUrl: finalVideoUrl,
                     videoProjectId: video.id,
                   },
-                }).eq("id", magnetId)
+                }).eq("id", magnetId), { table: "lead_capture_forms", flow: "magnet_video_embed", reason: "embeds a finished video into the magnet's landing content" })
                 console.log(`[poll-did-videos] playbook video attached to magnet ${magnetId}`)
               }
             }

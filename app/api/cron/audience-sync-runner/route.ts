@@ -19,6 +19,7 @@
  * PII (raw contact PII stays in contacts/leads as the canonical
  * source).
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { graphPost } from "@/lib/providers/meta/client"
@@ -170,9 +171,9 @@ export async function GET(req: NextRequest) {
     if (!audMeta?.external_audience_id) {
       // Audience not yet provisioned on FB — mark these rows failed
       // with a clear error so the admin sees what's missing.
-      await svc.from("audience_members")
+      await sentinelWrite(svc, svc.from("audience_members")
         .update({ sync_status: "failed" })
-        .in("id", rows.map((r) => r.id))
+        .in("id", rows.map((r) => r.id)), { table: "audience_members", flow: "audience_sync_status", reason: "sync status mirror; counted in the run summary" })
       totalFailed += rows.length
       audienceRuns.push({ audience_id: audienceId, attempted: rows.length, synced: 0, rejected: rows.length, removed: 0, error: "external_audience_id missing" })
       continue
@@ -265,7 +266,7 @@ export async function GET(req: NextRequest) {
       // rows that were neither uploaded nor removed are failed.
       const remaining = rows.map((r) => r.id).filter((id) => !suppressedRowIds.includes(id))
       if (remaining.length > 0) {
-        await svc.from("audience_members").update({ sync_status: "failed" }).in("id", remaining)
+        await sentinelWrite(svc, svc.from("audience_members").update({ sync_status: "failed" }).in("id", remaining), { table: "audience_members", flow: "audience_sync_status", reason: "sync status mirror; counted in the run summary" })
         totalFailed += remaining.length
       }
       audienceRuns.push({
@@ -295,19 +296,19 @@ export async function GET(req: NextRequest) {
     // index-level so v1 is binary: all-synced on success, all-failed
     // on call-level failure.
     if (res.ok && err == null) {
-      await svc.from("audience_members")
+      await sentinelWrite(svc, svc.from("audience_members")
         .update({ sync_status: "synced", synced_at: new Date().toISOString() })
-        .in("id", rowIdByIndex)
+        .in("id", rowIdByIndex), { table: "audience_members", flow: "audience_sync_status", reason: "sync status mirror; counted in the run summary" })
       totalSynced += synced
     } else {
-      await svc.from("audience_members")
+      await sentinelWrite(svc, svc.from("audience_members")
         .update({ sync_status: "failed" })
-        .in("id", rowIdByIndex)
+        .in("id", rowIdByIndex), { table: "audience_members", flow: "audience_sync_status", reason: "sync status mirror; counted in the run summary" })
       totalFailed += rowIdByIndex.length
     }
 
     // Audit row for the existing audience_sync_runs ledger.
-    await svc.from("audience_sync_runs").insert({
+    await sentinelWrite(svc, svc.from("audience_sync_runs").insert({
       brokerage_id:       audMeta.brokerage_id,
       audience_id:        audienceId,
       run_status:         err ? "failed" : "completed",
@@ -317,7 +318,7 @@ export async function GET(req: NextRequest) {
       error_message:      err,
       provider_response:  res.data ?? null,
       completed_at:       new Date().toISOString(),
-    })
+    }), { table: "audience_sync_runs", flow: "audience_sync_runs_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
     audienceRuns.push({ audience_id: audienceId, attempted: data.length, synced, rejected, removed: suppressedRowIds.length, error: err ?? undefined })
   }

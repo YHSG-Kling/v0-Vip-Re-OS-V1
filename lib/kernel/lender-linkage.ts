@@ -221,9 +221,10 @@ export async function linkLenderVendorToTransaction(
   let assignmentId: string
   if (existing?.id) {
     assignmentId = existing.id as string
-    await svc.from("vendor_assignments")
+    const { error: confirmErr } = await svc.from("vendor_assignments")
       .update({ assignment_type: "lender", status: "confirmed", brokerage_id: brokerageId })
       .eq("id", assignmentId)
+    if (confirmErr) return { ok: false, error: `Could not confirm the lender assignment: ${confirmErr.message}` }
   } else {
     const { data: inserted, error } = await svc
       .from("vendor_assignments")
@@ -244,12 +245,14 @@ export async function linkLenderVendorToTransaction(
     .eq("transaction_id", transactionId)
     .maybeSingle()
   if (!tl?.id) {
-    await svc.from("transaction_lenders").insert({
+    const { error: financingInsErr } = await svc.from("transaction_lenders").insert({
       transaction_id: transactionId, brokerage_id: brokerageId,
       lender_name: params.lenderName ?? null,
     })
+    if (financingInsErr) return { ok: false, error: `Lender assigned, but the financing record was not created: ${financingInsErr.message}` }
   } else if (params.lenderName) {
-    await svc.from("transaction_lenders").update({ lender_name: params.lenderName }).eq("id", tl.id)
+    const { error: financingUpdErr } = await svc.from("transaction_lenders").update({ lender_name: params.lenderName }).eq("id", tl.id)
+    if (financingUpdErr) return { ok: false, error: `Lender assigned, but the lender name was not recorded: ${financingUpdErr.message}` }
   }
 
   return { ok: true, assignmentId }

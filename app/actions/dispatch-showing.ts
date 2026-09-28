@@ -18,6 +18,7 @@
  * show "Sent at HH:MM via SMS to (555) 555-5555" history per stop.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
@@ -186,7 +187,7 @@ export async function dispatchStopScheduling(
   }
 
   // Record the dispatch attempt — agent UI reads this to show history.
-  await supabase.from("lifecycle_events").insert({
+  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
     brokerage_id:  ctx.brokerageId,
     entity_type:   "tour_stop",
     entity_id:     input.tourStopId,
@@ -198,7 +199,7 @@ export async function dispatchStopScheduling(
       to:            result.draft.to,
       sent:          result.sent,
     },
-  }).then(() => null, () => null)
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return { ...result, success: true, channel: input.channel }
 }

@@ -21,6 +21,7 @@
  *   - POF letter (application/pdf) — max 5 MB
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
@@ -78,7 +79,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (!tokenRow) return NextResponse.json({ error: "Invalid token" }, { status: 404 })
   if (tokenRow.status !== "pending") return NextResponse.json({ error: "Token already used" }, { status: 410 })
   if (new Date(tokenRow.expires_at) < new Date()) {
-    await svc.from("buyer_intake_tokens").update({ status: "expired" }).eq("id", tokenRow.id)
+    await sentinelWrite(svc, svc.from("buyer_intake_tokens").update({ status: "expired" }).eq("id", tokenRow.id), { table: "buyer_intake_tokens", flow: "intake_token_expired", reason: "expiry stamp; the expired response is returned regardless" })
     return NextResponse.json({ error: "Token expired" }, { status: 410 })
   }
 

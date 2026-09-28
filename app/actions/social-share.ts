@@ -4,6 +4,7 @@
 // Layer 9.2 Social Media Automation — Agent Social Share Actions
 // Tables: social_posts, agent_social_shares
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
@@ -96,7 +97,7 @@ export async function shareListingPost(params: {
     }
 
     // Fire kernel event
-    await supabase.from("lifecycle_events").insert({
+    await bestEffort(supabase.from("lifecycle_events").insert({
       entity_type: "agent_social_share",
       entity_id: share.id,
       brokerage_id: params.brokerageId,
@@ -108,7 +109,7 @@ export async function shareListingPost(params: {
         original_platform: post.platform,
         listing_id: post.listing_id,
       },
-    })
+    }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
     await processKernelEvent({
       event: KernelEvent.SOCIAL_POST_SHARED_BY_AGENT,

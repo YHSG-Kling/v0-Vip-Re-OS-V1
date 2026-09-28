@@ -195,7 +195,7 @@ async function processBrokerageWealthScan(
         })
         opp.aiNarrative = narrative
 
-        await supabase
+        await sentinelWrite(supabase, supabase
           .from("wealth_advisor_recommendations")
           .insert({
             contact_id: c.id,
@@ -219,7 +219,7 @@ async function processBrokerageWealthScan(
             scenarios: opp.scenarios,
             signals_supporting: opp.signals,
             expires_at: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString(), // 60-day window
-          })
+          }), { table: "wealth_advisor_recommendations", flow: "wealth_advisor_recommendations_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
         opportunitiesCreated++
       }
 

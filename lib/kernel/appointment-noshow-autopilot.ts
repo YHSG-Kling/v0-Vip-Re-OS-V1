@@ -344,7 +344,7 @@ export async function runAppointmentNoShowAutopilot(
       // ── MISSED ─────────────────────────────────────────────────────────────
       // 1) Mark the calendar_event no_show (canonical; column is free-text/nullable).
       //    Claim semantics: only flips a still-open row, so the no-show + re-book fire ONCE.
-      const { data: claimed } = await supabase
+      const { data: claimed, error: noShowClaimErr } = await supabase
         .from("calendar_events")
         .update({
           status: "no_show",
@@ -354,6 +354,7 @@ export async function runAppointmentNoShowAutopilot(
         .or("status.is.null,status.eq.scheduled,status.eq.confirmed,status.eq.pending")
         .select("id")
         .maybeSingle()
+      if (noShowClaimErr) console.error(`[noshow-autopilot] no-show claim refused: ${noShowClaimErr.message}`)
 
       if (!claimed) { result.skipped += 1; continue } // someone else already handled it
       result.noShowsMarked += 1

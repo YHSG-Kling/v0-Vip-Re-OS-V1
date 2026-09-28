@@ -34,6 +34,7 @@
  * `direct_mail_campaigns.lead_id`).
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { refreshNeighborCampaignCounters } from "./neighbor-campaign-rollup"
 
@@ -95,9 +96,9 @@ export async function runDirectMailCampaignDrain(
       // EGRESS LEDGER: the refusal is a recorded fact (Exception Center +
       // digest see it) — mail to a half-address is money burned, and fixing
       // the SOURCE address is a human call.
-      await svc.from("direct_mail_campaigns")
+      await sentinelWrite(svc, svc.from("direct_mail_campaigns")
         .update({ status: "failed" })
-        .eq("id", row.id)
+        .eq("id", row.id), { table: "direct_mail_campaigns", flow: "direct_mail_drain_failed", reason: "failure stamp; the refusal is also ledgered just below" })
       try {
         const { recordSelfHeal } = await import("@/lib/kernel/self-heal-ledger")
         await recordSelfHeal(svc, {
@@ -117,7 +118,7 @@ export async function runDirectMailCampaignDrain(
     const fallbackTpl = ((brk as any)?.lob_fallback_template_id as string | null) ?? ""
     if (!fallbackTpl) {
       out.failed++
-      await svc.from("direct_mail_campaigns").update({ status: "failed" }).eq("id", row.id)
+      await sentinelWrite(svc, svc.from("direct_mail_campaigns").update({ status: "failed" }).eq("id", row.id), { table: "direct_mail_campaigns", flow: "direct_mail_drain_failed", reason: "failure stamp; counted as failed in the drain result" })
       continue
     }
 
@@ -255,12 +256,13 @@ export async function runDirectMailCampaignDrain(
         systemSource: `campaign_drain:${row.target_audience ?? "approved"}`,
       })
 
-      await svc.from("direct_mail_campaigns").update({
+      const { error: drainStampErr } = await svc.from("direct_mail_campaigns").update({
         status: result.success ? "sent" : "failed",
         lob_order_id: result.messageId ?? null,
         mailing_date: result.success ? new Date().toISOString().slice(0, 10) : null,
         pieces_mailed: result.success ? 1 : 0,
       }).eq("id", row.id)
+      if (drainStampErr) console.error(`[campaign-drain] mailing outcome NOT recorded — the campaign may be drained (and mailed) again: ${drainStampErr.message}`)
 
       // m491 — the mailing-list row tells the same truth as the campaign row.
       // `mailed_at` matters beyond reporting: it is what the mail over-touch cap
@@ -295,9 +297,9 @@ export async function runDirectMailCampaignDrain(
       if (result.success) out.sent++
       else out.failed++
     } catch {
-      await svc.from("direct_mail_campaigns").update({ status: "failed" }).eq("id", row.id)
+      await sentinelWrite(svc, svc.from("direct_mail_campaigns").update({ status: "failed" }).eq("id", row.id), { table: "direct_mail_campaigns", flow: "direct_mail_drain_failed", reason: "failure stamp; counted as failed in the drain result" })
       if (recipientRowId) {
-        await svc.from("direct_mail_recipients").update({ delivery_status: "failed" }).eq("id", recipientRowId)
+        await sentinelWrite(svc, svc.from("direct_mail_recipients").update({ delivery_status: "failed" }).eq("id", recipientRowId), { table: "direct_mail_recipients", flow: "direct_mail_drain_failed", reason: "failure stamp; counted as failed in the drain result" })
       }
       out.failed++
     }

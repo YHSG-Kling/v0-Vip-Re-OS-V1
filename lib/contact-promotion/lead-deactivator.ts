@@ -58,11 +58,12 @@ export async function deactivateLead(
     // 'paused' enrollments must stop on conversion (paused ones would otherwise resume firing later
     // and bypass the new contact's preferences/consent). Best-effort — never block deactivation.
     try {
-      await supabase
+      const { error: endEnrollErr } = await supabase
         .from("sequence_enrollments")
         .update({ status: "completed", completed_at: new Date().toISOString() })
         .eq("lead_id", leadId)
         .in("status", ["active", "paused"])
+      if (endEnrollErr) console.error(`[deactivateLead] lead sequences NOT terminated: ${endEnrollErr.message}`)
     } catch (e) {
       console.warn(`[deactivateLead] sequence_enrollments termination skipped:`, e)
     }

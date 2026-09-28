@@ -17,6 +17,7 @@
  * scoreCriteriaFit is pure (unit-tested). The actual touches (reel + buyer message) stay
  * deliverable-gated downstream — this only produces the matches.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 
 // Criteria reading consolidated into the single normalized reader (no per-consumer drift).
@@ -145,7 +146,7 @@ export async function runMarketWatchForBuyer(
     })
   }
   if (upserts.length > 0) {
-    await supabase.from("property_matches").upsert(upserts, { onConflict: "contact_id,property_id" })
+    await sentinelWrite(supabase, supabase.from("property_matches").upsert(upserts, { onConflict: "contact_id,property_id" }), { table: "property_matches", flow: "property_matches_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
   return { matched, newMatches }
 }

@@ -7,6 +7,7 @@
 // then delegates every mutation to the kernel — NO DB logic here.
 // UI components import from this file; they never call the kernel directly.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient } from "@supabase/supabase-js"
 import { cookies } from "next/headers"
@@ -241,11 +242,12 @@ export async function sendThankYouNoteAction(input: {
 
     if (!eqErr && eqRow?.id && noteRow?.id) {
       // Link email_queue row to the note row
-      await service.from("thank_you_notes").update({
+      const { error: noteLinkErr } = await service.from("thank_you_notes").update({
         email_queue_id: eqRow.id,
         status:         "sent",
         sent_at:        new Date().toISOString(),
       }).eq("id", noteRow.id)
+      if (noteLinkErr) console.error(`[reputation-kernel] note queued but NOT marked sent / linked to its email: ${noteLinkErr.message}`)
     }
   } else if (channel === "sms") {
     // ── SMS RUNS THE SMS LANE ─────────────────────────────────────────────
@@ -258,8 +260,8 @@ export async function sendThankYouNoteAction(input: {
       .from("contacts").select("phone").eq("id", input.contactId).maybeSingle()
     const phone = ((c as any)?.phone as string | null) ?? null
     if (!phone) {
-      await service.from("thank_you_notes")
-        .update({ status: "failed" }).eq("id", noteRow?.id)
+      await sentinelWrite(service, service.from("thank_you_notes")
+        .update({ status: "failed" }).eq("id", noteRow?.id), { table: "thank_you_notes", flow: "thank_you_note_failed_stamp", reason: "failure stamp; the failure is returned to the caller in the same step" })
       return { success: false, error: "Contact has no phone number for an SMS note." }
     }
     const { dispatchSms } = await import("@/lib/providers/dispatch")
@@ -273,10 +275,11 @@ export async function sendThankYouNoteAction(input: {
       systemSource: "thank_you_note",
       metadata:    { note_id: noteRow?.id, occasion },
     })
-    await service.from("thank_you_notes").update({
+    const { error: smsNoteStampErr } = await service.from("thank_you_notes").update({
       status:  sms.success ? "sent" : "failed",
       sent_at: sms.success ? new Date().toISOString() : null,
     }).eq("id", noteRow?.id)
+    if (smsNoteStampErr) console.error(`[reputation-kernel] SMS note outcome NOT recorded on the note: ${smsNoteStampErr.message}`)
     if (!sms.success) {
       return { success: false, noteId: noteRow?.id, error: sms.error ?? "SMS note could not be sent." }
     }
@@ -302,8 +305,8 @@ export async function sendThankYouNoteAction(input: {
     if (!street || !city || !state || !zip) {
       // No mailing address = no card. Held honestly so the agent can add one,
       // rather than a note that claims to have been posted.
-      await service.from("thank_you_notes")
-        .update({ status: "failed" }).eq("id", noteRow?.id)
+      await sentinelWrite(service, service.from("thank_you_notes")
+        .update({ status: "failed" }).eq("id", noteRow?.id), { table: "thank_you_notes", flow: "thank_you_note_failed_stamp", reason: "failure stamp; the failure is returned to the caller in the same step" })
       return {
         success: false,
         noteId: noteRow?.id,
@@ -312,8 +315,8 @@ export async function sendThankYouNoteAction(input: {
     }
     const templateId = process.env.LOB_NOTECARD_ID || process.env.LOB_POSTCARD_FRONT_ID || ""
     if (!templateId) {
-      await service.from("thank_you_notes")
-        .update({ status: "failed" }).eq("id", noteRow?.id)
+      await sentinelWrite(service, service.from("thank_you_notes")
+        .update({ status: "failed" }).eq("id", noteRow?.id), { table: "thank_you_notes", flow: "thank_you_note_failed_stamp", reason: "failure stamp; the failure is returned to the caller in the same step" })
       return {
         success: false,
         noteId: noteRow?.id,
@@ -336,10 +339,11 @@ export async function sendThankYouNoteAction(input: {
       systemSource:  "thank_you_note",
       metadata:      { note_id: noteRow?.id, occasion },
     })
-    await service.from("thank_you_notes").update({
+    const { error: cardNoteStampErr } = await service.from("thank_you_notes").update({
       status:  mail.success ? "sent" : "failed",
       sent_at: mail.success ? new Date().toISOString() : null,
     }).eq("id", noteRow?.id)
+    if (cardNoteStampErr) console.error(`[reputation-kernel] mailed-card outcome NOT recorded on the note: ${cardNoteStampErr.message}`)
     if (!mail.success) {
       return { success: false, noteId: noteRow?.id, error: mail.error ?? "Card could not be mailed." }
     }

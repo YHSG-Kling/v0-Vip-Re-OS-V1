@@ -386,11 +386,12 @@ export async function createOfferDotloop(params: {
     // already verified above)
     if (params.existingLoopId) {
       if (params.transactionId) {
-        await supabase
+        const { error: loopStampErr } = await supabase
           .from("transactions")
           .update({ external_provider_transaction_id: params.existingLoopId, external_provider_source: "dotloop" })
           .eq("id", params.transactionId)
           .eq("brokerage_id", brokerageId)
+        if (loopStampErr) console.error(`[ai-offer-creation] dotloop loop linked but the transaction provider stamp was refused (document sync will not find it): ${loopStampErr.message}`)
       }
 
       return {
@@ -430,13 +431,14 @@ export async function createOfferDotloop(params: {
     // provider-tracking columns so the provider-agnostic sync helper
     // (lib/transactions/sync-from-provider.ts) can pull documents for this transaction.
     if (params.transactionId && loopId) {
-      await supabase.from("transactions")
+      const { error: loopStampErr } = await supabase.from("transactions")
         .update({
           external_provider_source:         "dotloop",
           external_provider_transaction_id: loopId,
         })
         .eq("id", params.transactionId)
         .eq("brokerage_id", brokerageId)
+      if (loopStampErr) console.error(`[ai-offer-creation] dotloop loop created but the transaction provider stamp was refused (document sync will not find it): ${loopStampErr.message}`)
     }
 
     return {

@@ -18,6 +18,7 @@
  * writes a fake "sent" row; the composer shows the honest reason.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchSocialDm, socialDmSupport, type SocialDmPlatform } from "@/lib/social/dm-dispatch"
@@ -142,7 +143,7 @@ export async function sendSocialDmReply(params: {
 
     // ── Persist the sent reply on the thread ─────────────────────────────────
     const nowIso = new Date().toISOString()
-    const { data: message } = await svc
+    const { data: message, error: dmPersistErr } = await svc
       .from("messages")
       .insert({
         conversation_id: convo.id,
@@ -160,20 +161,21 @@ export async function sendSocialDmReply(params: {
       })
       .select()
       .single()
+    if (dmPersistErr) console.error(`[social-dm] reply sent but NOT persisted on the thread: ${dmPersistErr.message}`)
 
-    await svc
+    await sentinelWrite(svc, svc
       .from("conversations")
       .update({
         last_message_at: nowIso,
         updated_at: nowIso,
         message_count: (Number(convo.message_count) || 0) + 1,
       })
-      .eq("id", convo.id)
+      .eq("id", convo.id), { table: "conversations", flow: "conversations_write", reason: "thread counters for a reply already sent" })
 
     // Provider log — same rail every other channel writes (fire-and-forget).
     ;(async () => {
       try {
-        await svc.from("message_provider_logs").insert({
+        await sentinelWrite(svc, svc.from("message_provider_logs").insert({
           brokerage_id: brokerageId,
           message_id: message?.id ?? null,
           provider_key: platform,
@@ -182,7 +184,7 @@ export async function sendSocialDmReply(params: {
           direction: "outbound",
           provider_message_id: result.providerMessageId ?? null,
           provider_status: "sent",
-        })
+        }), { table: "message_provider_logs", flow: "social_dm_provider_log", reason: "fire-and-forget provider log of a reply already sent" })
       } catch { /* logging never blocks the send */ }
     })()
 

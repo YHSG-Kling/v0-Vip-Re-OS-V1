@@ -1,5 +1,6 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireCaller } from "@/lib/auth/require-caller"
 import { revalidatePath } from "next/cache"
@@ -375,7 +376,7 @@ export async function createVideoSnippet(data: {
   }
 
   // Write lifecycle event
-  await supabase.from("lifecycle_events").insert({
+  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
     entity_type: "video_snippet",
     entity_id: snippet.id,
     brokerage_id: brokerageId,
@@ -386,7 +387,7 @@ export async function createVideoSnippet(data: {
       duration: duration,
       source_project_id: data.videoProjectId,
     },
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // Fire kernel event
   await processKernelEvent({
@@ -436,14 +437,14 @@ export async function updateSnippetApprovalStatus(
       ? KernelEvent.SNIPPET_REJECTED
       : KernelEvent.SNIPPET_CREATED
 
-  await supabase.from("lifecycle_events").insert({
+  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
     entity_type: "video_snippet",
     entity_id: snippetId,
     brokerage_id: brokerageId,
     event_type: eventType,
     actor_user_id: actorUserId,
     metadata: { approval_status: approvalStatus },
-  })
+  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   revalidatePath("/dashboard/videos/snippets")
   return snippet

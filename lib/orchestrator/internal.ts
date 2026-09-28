@@ -12,6 +12,7 @@
  * Auth gating happens at the entry points in app/actions/orchestrator.ts.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { registerEventDispatcher, type OrchestratorEvent as WorkflowEvent } from "@/lib/events"
 import type { Event, EventInput } from "@/lib/orchestrator"
 import { EVENT_TYPES } from "@/lib/orchestrator"
@@ -922,20 +923,20 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
             status:          "pending",
           }
           if (contact.email) {
-            await svc.from("ai_message_drafts").insert({
+            await sentinelWrite(svc, svc.from("ai_message_drafts").insert({
               ...sharedRow,
               channel:       "email",
               draft_subject: "I recorded a quick video for you",
               draft_body:    `Hi ${greeting},\n\nI recorded a short personal video for you — watch it here: ${video_url}\n\n— Your agent`,
-            })
+            }), { table: "ai_message_drafts", flow: "ai_message_drafts_write", reason: "agent-review draft; the video itself is ready regardless" })
             summary.push("draft email")
           }
           if (contact.phone) {
-            await svc.from("ai_message_drafts").insert({
+            await sentinelWrite(svc, svc.from("ai_message_drafts").insert({
               ...sharedRow,
               channel:    "sms",
               draft_body: `Hi ${greeting}, I recorded a quick video for you — ${video_url}`,
-            })
+            }), { table: "ai_message_drafts", flow: "ai_message_drafts_write", reason: "agent-review draft; the video itself is ready regardless" })
             summary.push("draft text")
           }
         }
@@ -952,14 +953,14 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
     const listingAttachTypes = ["listing_promo", "neighborhood_tour"]
     if (listingAttachTypes.includes(video_type) && listing_id) {
       try {
-        await svc.from("listing_media").insert({
+        await sentinelWrite(svc, svc.from("listing_media").insert({
           brokerage_id:  event.brokerage_id,
           listing_id,
           media_type:    "video",
           file_url:      video_url,
           thumbnail_url: thumbnail_url ?? null,
           uploaded_by:   agentId ?? null,
-        })
+        }), { table: "listing_media", flow: "listing_media_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
         summary.push("attached to listing landing page")
       } catch (listingErr) {
         console.error("[handleVideoGenerated] Listing attach failed:", listingErr)
@@ -1023,10 +1024,10 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
           .select("id, content")
           .eq("marketing_campaign_id", marketing_campaign_id)
         for (const c of (emailAssets ?? []) as Array<{ id: string; content: string | null }>) {
-          await svc
+          await sentinelWrite(svc, svc
             .from("email_campaigns")
             .update({ content: (c.content ?? "") + videoBlock })
-            .eq("id", c.id)
+            .eq("id", c.id), { table: "email_campaigns", flow: "email_campaigns_write", reason: "embed of a finished video into campaign assets; the video is ready regardless" })
         }
         const emailCount = emailAssets?.length ?? 0
 
@@ -1035,10 +1036,10 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
           .select("id, content")
           .eq("marketing_campaign_id", marketing_campaign_id)
         for (const c of (newsletterAssets ?? []) as Array<{ id: string; content: string | null }>) {
-          await svc
+          await sentinelWrite(svc, svc
             .from("newsletter_campaigns")
             .update({ content: (c.content ?? "") + videoBlock })
-            .eq("id", c.id)
+            .eq("id", c.id), { table: "newsletter_campaigns", flow: "newsletter_campaigns_write", reason: "embed of a finished video into campaign assets; the video is ready regardless" })
         }
         const newsletterCount = newsletterAssets?.length ?? 0
 
@@ -1164,20 +1165,20 @@ async function handleImageGenerated(event: Event): Promise<ProcessingResult> {
             status:          "pending",
           }
           if (contact.email) {
-            await svc.from("ai_message_drafts").insert({
+            await sentinelWrite(svc, svc.from("ai_message_drafts").insert({
               ...sharedRow,
               channel:       "email",
               draft_subject: "Just for you",
               draft_body:    `Hi ${greeting},\n\n${baseCaption}\n\n${image_url}\n\n— Your agent`,
-            })
+            }), { table: "ai_message_drafts", flow: "ai_message_drafts_write", reason: "agent-review draft; the image itself is ready regardless" })
             summary.push("draft email")
           }
           if (contact.phone) {
-            await svc.from("ai_message_drafts").insert({
+            await sentinelWrite(svc, svc.from("ai_message_drafts").insert({
               ...sharedRow,
               channel:    "sms",
               draft_body: `Hi ${greeting}, ${baseCaption} — ${image_url}`,
-            })
+            }), { table: "ai_message_drafts", flow: "ai_message_drafts_write", reason: "agent-review draft; the image itself is ready regardless" })
             summary.push("draft text")
           }
         }
@@ -1195,13 +1196,13 @@ async function handleImageGenerated(event: Event): Promise<ProcessingResult> {
       (image_type === "listing_photo" || image_type === "listing_marketing")
     ) {
       try {
-        await svc.from("listing_media").insert({
+        await sentinelWrite(svc, svc.from("listing_media").insert({
           brokerage_id: event.brokerage_id,
           listing_id,
           media_type:   "photo",
           file_url:     image_url,
           uploaded_by:  agentId ?? null,
-        })
+        }), { table: "listing_media", flow: "listing_media_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
         summary.push("attached to listing landing page")
       } catch (err) {
         console.error("[handleImageGenerated] Listing attach failed:", err)
@@ -1248,14 +1249,14 @@ async function handleImageGenerated(event: Event): Promise<ProcessingResult> {
           .select("id, content")
           .eq("marketing_campaign_id", marketing_campaign_id)
         for (const c of (emailAssets ?? []) as Array<{ id: string; content: string | null }>) {
-          await svc.from("email_campaigns").update({ content: (c.content ?? "") + imageBlock }).eq("id", c.id)
+          await sentinelWrite(svc, svc.from("email_campaigns").update({ content: (c.content ?? "") + imageBlock }).eq("id", c.id), { table: "email_campaigns", flow: "email_campaigns_write", reason: "embed of a finished image into campaign assets" })
         }
         const { data: newsletterAssets } = await svc
           .from("newsletter_campaigns")
           .select("id, content")
           .eq("marketing_campaign_id", marketing_campaign_id)
         for (const c of (newsletterAssets ?? []) as Array<{ id: string; content: string | null }>) {
-          await svc.from("newsletter_campaigns").update({ content: (c.content ?? "") + imageBlock }).eq("id", c.id)
+          await sentinelWrite(svc, svc.from("newsletter_campaigns").update({ content: (c.content ?? "") + imageBlock }).eq("id", c.id), { table: "newsletter_campaigns", flow: "newsletter_campaigns_write", reason: "embed of a finished image into campaign assets" })
         }
         const total = (emailAssets?.length ?? 0) + (newsletterAssets?.length ?? 0)
         if (total > 0) summary.push(`embedded in ${total} campaign asset${total === 1 ? "" : "s"}`)

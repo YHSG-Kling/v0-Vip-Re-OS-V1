@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -44,7 +45,7 @@ export async function POST(request: NextRequest) {
     const plan = await planReceptionTurn({ deployment: "platform", ctx: pctx, transcript, utterance: req.utterance, extraRules: composePacingRule(req.interrupts),
       prospect: { phone: req.from ?? null, prospectId: (call as any)?.prospect_id ?? null, callId: (call as any)?.id ?? null } })
     const newTranscript = appendTranscript(transcript, req.utterance, plan.say)
-    if (call) await svc.from("platform_reception_calls").update({ transcript: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
+    if (call) await sentinelWrite(svc, svc.from("platform_reception_calls").update({ transcript: newTranscript }).eq("id", (call as any).id), { table: "platform_reception_calls", flow: "reception_transcript", reason: "a live call must keep answering; a lost transcript write is ledgered" })
 
     if (plan.action.kind === "prospect") {
       const prospect = await capturePhoneProspect(svc, {
@@ -52,8 +53,8 @@ export async function POST(request: NextRequest) {
         company: plan.action.company, roleInterest: plan.action.roleInterest, note: plan.action.note,
       })
       if (call && prospect) {
-        await svc.from("platform_reception_calls").update({ prospect_id: prospect.id, outcome: "prospect_captured" })
-          .eq("id", (call as any).id).then(undefined, () => {})
+        await sentinelWrite(svc, svc.from("platform_reception_calls").update({ prospect_id: prospect.id, outcome: "prospect_captured" })
+          .eq("id", (call as any).id), { table: "platform_reception_calls", flow: "reception_prospect_link", reason: "the prospect row already landed; a lost call link is ledgered" })
       }
       return json({ say: plan.say, endSession: false })
     }
@@ -61,7 +62,7 @@ export async function POST(request: NextRequest) {
       const transferred = await redirectLiveCallToDial(req.callSid, plan.say, pctx.forwardNumber, {
         accountSid: process.env.TWILIO_ACCOUNT_SID ?? "", authToken: pctx.authToken,
       })
-      if (call) await svc.from("platform_reception_calls").update({ status: "transferred", outcome: "support_transfer", ended_at: new Date().toISOString() }).eq("id", (call as any).id).then(undefined, () => {})
+      if (call) await sentinelWrite(svc, svc.from("platform_reception_calls").update({ status: "transferred", outcome: "support_transfer", ended_at: new Date().toISOString() }).eq("id", (call as any).id), { table: "platform_reception_calls", flow: "reception_transfer_stamp", reason: "a live call must keep answering; a lost status stamp is ledgered" })
       return json({ say: transferred ? "" : plan.say, endSession: true, transferred })
     }
     return json({ say: plan.say, endSession: plan.action.kind === "hangup" })
@@ -96,7 +97,7 @@ export async function POST(request: NextRequest) {
           source: "inbound_call", rawMessage: req.utterance.slice(0, 300), brokerageId: ctx.brokerageId,
         })
       } catch { /* the hangup still honors the request */ }
-      await svc.from("voice_calls").update({ status: "completed", outcome: "opt_out", ended_at: new Date().toISOString(), transcription: appendTranscript(transcript, req.utterance, ack) }).eq("id", (call as any).id).then(undefined, () => {})
+      await sentinelWrite(svc, svc.from("voice_calls").update({ status: "completed", outcome: "opt_out", ended_at: new Date().toISOString(), transcription: appendTranscript(transcript, req.utterance, ack) }).eq("id", (call as any).id), { table: "voice_calls", flow: "voice_opt_out_close", reason: "the opt-out is recorded on the suppression rails above; the call-row close is ledgered if lost" })
       return json({ say: ack, endSession: true })
     }
   }
@@ -114,7 +115,7 @@ export async function POST(request: NextRequest) {
         voiceToolCtx: call ? { callId: (call as any).id, contactId: (call as any).contact_id ?? null, leadId: (call as any).lead_id ?? null, agentId: (call as any).agent_id ?? null } : undefined,
       })
   const newTranscript = appendTranscript(transcript, req.utterance, plan.say)
-  if (call) await svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
+  if (call) await sentinelWrite(svc, svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id), { table: "voice_calls", flow: "voice_transcript", reason: "a live call must keep answering; a lost transcript write is ledgered" })
 
   if (plan.action.kind === "transfer" && ctx.forwardNumber) {
     // WARM BRIDGE first — same brief-then-bridge as the Gather lane: redirect
@@ -140,7 +141,7 @@ export async function POST(request: NextRequest) {
       }
     }
     const transferred = creds ? await redirectLiveCallToDial(req.callSid, plan.say, ctx.forwardNumber, creds) : false
-    if (call) await svc.from("voice_calls").update({ status: "completed", outcome: "transferred", ended_at: new Date().toISOString(), transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
+    if (call) await sentinelWrite(svc, svc.from("voice_calls").update({ status: "completed", outcome: "transferred", ended_at: new Date().toISOString(), transcription: newTranscript }).eq("id", (call as any).id), { table: "voice_calls", flow: "voice_transfer_close", reason: "a live call must keep answering; a lost status stamp is ledgered" })
     return json({ say: transferred ? "" : plan.say, endSession: true, transferred })
   }
   if (plan.action.kind === "book" && call && (call as any).contact_id && (call as any).agent_id) {
@@ -156,7 +157,7 @@ export async function POST(request: NextRequest) {
     await createCallbackTaskFromCall(svc, ctx, call as any, plan.action.phone, plan.action.whenPhrase, plan.action.reason)
   }
   if (plan.action.kind === "hangup" && call) {
-    await svc.from("voice_calls").update({ status: "completed", outcome: "completed", ended_at: new Date().toISOString(), transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
+    await sentinelWrite(svc, svc.from("voice_calls").update({ status: "completed", outcome: "completed", ended_at: new Date().toISOString(), transcription: newTranscript }).eq("id", (call as any).id), { table: "voice_calls", flow: "voice_hangup_close", reason: "a live call must keep answering; a lost status stamp is ledgered" })
   }
   return json({ say: plan.say, endSession: plan.action.kind === "hangup" })
 }

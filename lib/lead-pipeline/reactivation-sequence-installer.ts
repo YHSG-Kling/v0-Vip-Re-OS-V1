@@ -9,6 +9,7 @@
 // automatically, so ONE sequence serves both contacts (full palette) and leads (email-only rungs).
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -92,9 +93,9 @@ export async function ensureReactivationSequence(brokerageId: string, client?: S
       const have = new Set(((haveSteps ?? []) as Array<{ step_number: number }>).map((s) => s.step_number))
       const missing = STEPS.filter((s) => !have.has(s.step_number))
       if (missing.length > 0) {
-        await svc.from("campaign_sequence_steps").insert(
+        await sentinelWrite(svc, svc.from("campaign_sequence_steps").insert(
           missing.map((s) => ({ sequence_id: existingId, is_active: true, delay_hours: 0, ...s })),
-        )
+        ), { table: "campaign_sequence_steps", flow: "reactivation_steps_upgrade", reason: "upgrade is best-effort — the sequence keeps running as-is" })
       }
     } catch { /* upgrade is best-effort — the sequence keeps running as-is */ }
     return { sequenceId: existingId, created: false }

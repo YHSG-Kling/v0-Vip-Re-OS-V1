@@ -1,5 +1,6 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 // `bestEffort` import REMOVED with the dead try/catch fallback in
 // analyzeConversation (see the tombstone at the leads/contacts recency stamp
@@ -2599,14 +2600,14 @@ Predict for next 90 days:
     // consolidated onto the real trend_alerts ledger (brokerage-scoped).
     if (shiftBrokerageId) {
       const conf = prediction.data.prediction?.confidence || 0.5
-      await supabase.from("trend_alerts").insert({
+      await bestEffort(supabase.from("trend_alerts").insert({
         brokerage_id: shiftBrokerageId,
         alert_type: "market_shift_prediction",
         alert_message: `${data.city}, ${data.state}: ${prediction.data.prediction?.direction ?? "shift"} predicted (${prediction.data.prediction?.timeframe ?? "near term"}, confidence ${(conf * 100).toFixed(0)}%)`,
         severity: conf >= 0.7 ? "high" : "medium",
         source_table: "ai_market_prediction",
         is_resolved: false,
-      })
+      }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     }
 
     // Create insights for affected leads — tenant anchor (scope burn-down):

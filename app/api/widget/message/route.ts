@@ -4,6 +4,7 @@
 // persists both user and assistant turns to chat_messages.
 // No auth required — rate-limited by session token.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest } from 'next/server'
 import { convertToModelMessages, UIMessage } from 'ai'
 import { streamTextRouted, AIFairUseError } from '@/lib/ai/models'
@@ -154,12 +155,12 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.`
       .map((p: any) => p.text)
       .join('') ?? ''
 
-    await supabase.from('chat_messages').insert({
+    await sentinelWrite(supabase, supabase.from('chat_messages').insert({
       session_id: session.id,
       role: 'user',
       content: userText,
       metadata: { widget: true },
-    })
+    }), { table: "chat_messages", flow: "chat_messages_write", reason: "chat history persistence; never blocks the streamed answer" })
 
     // ── Stream response ───────────────────────────────────────────────────
     const recentMessages = messages.slice(-MAX_HISTORY)
@@ -233,20 +234,20 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.`
         manager: 'ai_isa',
         onFinish: async ({ text }) => {
           // Persist assistant turn
-          await supabase.from('chat_messages').insert({
+          await sentinelWrite(supabase, supabase.from('chat_messages').insert({
             session_id: session.id,
             role: 'assistant',
             content: text,
             metadata: { widget: true, assistant_name: brand.assistantName },
-          })
+          }), { table: "chat_messages", flow: "chat_messages_write", reason: "chat history persistence; never blocks the streamed answer" })
 
           // Detect lead capture keywords in assistant reply
           const captureHit = /your info|follow up|reach out|team will contact/i.test(text)
           if (captureHit && session.capture_state !== 'captured') {
-            await supabase
+            await sentinelWrite(supabase, supabase
               .from('chat_sessions')
               .update({ capture_state: 'signals_captured', updated_at: new Date().toISOString() })
-              .eq('id', session.id)
+              .eq('id', session.id), { table: "chat_sessions", flow: "chat_sessions_write", reason: "capture-signal stamp on the session" })
           }
         },
       })

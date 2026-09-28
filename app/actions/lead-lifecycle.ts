@@ -201,7 +201,8 @@ export async function convertLeadToContact(params: {
   const contact = { id: result.contactId }
 
   // Also flip is_active off (the kernel sets lifecycle_state='assigned'/contact_id).
-  await supabase.from('leads').update({ is_active: false, updated_at: new Date().toISOString() }).eq('id', leadId)
+  const { error: deactivateErr } = await supabase.from('leads').update({ is_active: false, updated_at: new Date().toISOString() }).eq('id', leadId)
+  if (deactivateErr) console.error(`[lead-lifecycle] converted lead NOT flipped inactive: ${deactivateErr.message}`)
 
   // Non-blocking CRM sync — do not fail the conversion if CRM is not configured
   void syncContactToCRM({

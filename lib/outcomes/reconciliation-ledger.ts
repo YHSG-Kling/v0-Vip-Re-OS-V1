@@ -21,6 +21,7 @@
 // truth is lost forever). Both callers get a result they can log.
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { publishManagerSignal } from "@/lib/kernel/manager-signals"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
@@ -199,7 +200,7 @@ export async function ingestProviderTruth(input: {
       }
     }
 
-    await svc.from("outcome_reconciliations").update({
+    const { error: verdictErr } = await svc.from("outcome_reconciliations").update({
       provider_status: input.truth.status,
       provider_reported_at: input.truth.at,
       provider_detail: input.truth.detail ?? null,
@@ -208,6 +209,7 @@ export async function ingestProviderTruth(input: {
       truth_source: result.truthSource,
       updated_at: new Date().toISOString(),
     }).eq("id", row.id)
+    if (verdictErr) console.error(`[reconciliation-ledger] reconciliation verdict NOT saved: ${verdictErr.message}`)
 
     // ── THE LOOP: a false claim reaches the manager that made it ─────────────
     // Once. escalated_at is the guard, so a provider that re-sends a failure event
@@ -241,8 +243,8 @@ export async function ingestProviderTruth(input: {
       }, svc)
       if (published.ok) {
         escalated = true
-        await svc.from("outcome_reconciliations")
-          .update({ escalated_at: new Date().toISOString() }).eq("id", row.id)
+        await sentinelWrite(svc, svc.from("outcome_reconciliations")
+          .update({ escalated_at: new Date().toISOString() }).eq("id", row.id), { table: "outcome_reconciliations", flow: "outcome_reconciliations_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       }
     }
 

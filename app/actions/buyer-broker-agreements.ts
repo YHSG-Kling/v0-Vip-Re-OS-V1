@@ -304,7 +304,7 @@ export async function dispatchBBAToSigningProviderAction(
                     : resolved.providerName === "dotloop"  ? "dotloop"
                     : "docusign" // Authentisign + SkySlope use DocuSign-style flow
 
-  await svc
+  const { error: bbaPendingErr } = await svc
     .from("buyer_broker_agreements")
     .update({
       status:               "pending_signature",
@@ -312,6 +312,7 @@ export async function dispatchBBAToSigningProviderAction(
       signature_request_id: txReq.externalTransactionId,
     })
     .eq("id", agreementId)
+  if (bbaPendingErr) console.error(`[buyer-broker-agreements] envelope dispatched but the agreement was not marked pending_signature: ${bbaPendingErr.message}`)
 
   revalidatePath(`/crm/contacts/${bba.buyer_contact_id}`)
   return {

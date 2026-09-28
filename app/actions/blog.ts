@@ -210,11 +210,12 @@ export async function updateBlogPost(
 
   // ── 4. If published, fire kernel event ──────────────────────────────────────
   if (updates.publishStatus === "published") {
-    await supabase
+    const { error: publishedAtErr } = await supabase
       .from("blog_posts")
       .update({ published_at: new Date().toISOString() })
       .eq("id", postId)
       .eq("brokerage_id", actor.brokerageId)
+    if (publishedAtErr) console.error(`[blog] published_at NOT stamped: ${publishedAtErr.message}`)
 
     await processKernelEvent({
       event: KernelEvent.BLOG_POST_PUBLISHED,
@@ -272,10 +273,11 @@ export async function publishBlogPost(
   const hostedUrl = `${baseUrl}/blog/${p.slug}`
 
   if (p.publish_target === "hosted") {
-    await supabase.from("blog_posts").update({
+    const { error: hostedPublishErr } = await supabase.from("blog_posts").update({
       publish_status: "published",
       published_at:   new Date().toISOString(),
     }).eq("id", postId).eq("brokerage_id", actor.brokerageId)
+    if (hostedPublishErr) return { success: false, error: `Could not mark the post published: ${hostedPublishErr.message}` }
     return { success: true, hostedUrl }
   }
 
@@ -284,10 +286,11 @@ export async function publishBlogPost(
     // the URL the brokerage embeds is the chrome-stripped /embed route.
     // Both /blog/[slug] and /embed/blog/[slug] return the post on hit so
     // a brokerage can A/B test landing vs embed without re-publishing.
-    await supabase.from("blog_posts").update({
+    const { error: embedPublishErr } = await supabase.from("blog_posts").update({
       publish_status: "published",
       published_at:   new Date().toISOString(),
     }).eq("id", postId).eq("brokerage_id", actor.brokerageId)
+    if (embedPublishErr) return { success: false, error: `Could not mark the post published: ${embedPublishErr.message}` }
     return { success: true, hostedUrl: `${baseUrl}/embed/blog/${p.slug}` }
   }
 
@@ -379,7 +382,7 @@ export async function publishToWordPress(
     const wpPost = response.data ?? {}
 
     // ── 4. Update blog_posts with wordpress_post_id ───────────────────────────
-    await supabase
+    const { error: wpStampErr } = await supabase
       .from("blog_posts")
       .update({
         wordpress_post_id: String(wpPost.id),
@@ -388,6 +391,7 @@ export async function publishToWordPress(
       })
       .eq("id", postId)
       .eq("brokerage_id", actor.brokerageId)
+    if (wpStampErr) console.error(`[blog] WordPress post created but NOT linked on blog_posts: ${wpStampErr.message}`)
 
     return { success: true, wordpressPostId: String(wpPost.id) }
   } catch (err) {

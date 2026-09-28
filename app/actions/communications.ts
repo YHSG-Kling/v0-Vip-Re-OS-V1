@@ -8,6 +8,7 @@
 // GHL-specific functions (logCall, notes, workflows, social, calendar) remain
 // wired directly since they are GHL-only features with no provider alternative.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import {
   logGHLCall,
   syncContactToGHL,
@@ -704,7 +705,7 @@ caller?: { client: { from: (t: string) => any }; actorUserId: string },
   }
 
   // ── Ledger the act (audit + dedupe marker) — best-effort, never blocks ──
-  await svc
+  await sentinelWrite(svc, svc
     .from("lifecycle_events")
     .insert({
       brokerage_id: ctx.brokerageId,
@@ -713,8 +714,7 @@ caller?: { client: { from: (t: string) => any }; actorUserId: string },
       event_type: "team_announcement_posted",
       actor_user_id: ctx.userId,
       metadata: { subject, priority, scope, team_id: teamId, notified: recipientIds.length },
-    })
-    .then(() => {}, (e: unknown) => console.error("[notifyBrokerageAgents] ledger failed:", e))
+    }), { table: "lifecycle_events", flow: "team_announcement_ledger", reason: "audit + dedupe marker — best-effort by design, never blocks" })
 
   return { ok: true, notified: recipientIds.length, scope }
 }

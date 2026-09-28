@@ -1,5 +1,7 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -125,10 +127,10 @@ export async function getLandingPageBySlug(slug: string): Promise<GeneratedLandi
 export async function incrementLandingPageViews(pageId: string, currentViewCount: number) {
   try {
     const supabase = createServiceClient()
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("listing_landing_pages")
       .update({ view_count: currentViewCount + 1, updated_at: new Date().toISOString() })
-      .eq("id", pageId)
+      .eq("id", pageId), { table: "listing_landing_pages", flow: "listing_landing_pages_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   } catch (err) {
     // Fail silently - analytics should not block page load
     console.error("[v0] incrementLandingPageViews error:", err)
@@ -315,7 +317,7 @@ Return this exact JSON structure:
     const parsed = result.data
 
     // Cache the AI result so subsequent loads are instant
-    await supabase.from("neighborhood_reports").upsert(
+    await bestEffort(supabase.from("neighborhood_reports").upsert(
       {
         listing_id: listingId,
         neighborhood_name: parsed.neighborhood_name,
@@ -332,7 +334,7 @@ Return this exact JSON structure:
         expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
       },
       { onConflict: "listing_id" }
-    )
+    ), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     return {
       neighborhood_name: parsed.neighborhood_name,
@@ -467,7 +469,7 @@ export async function logLandingSession(params: {
     // Insert session row — the utm params already carry the attribution source
     // (SellerSharePostsRail appends utm_source=seller-share), now stamped with the
     // owning brokerage so the report can read seller-driven reach per tenant.
-    await supabase.from("smart_landing_sessions").insert({
+    await bestEffort(supabase.from("smart_landing_sessions").insert({
       listing_id: params.listingId,
       brokerage_id: listingRow?.brokerage_id ?? null,
       session_token: params.sessionToken,
@@ -479,7 +481,7 @@ export async function logLandingSession(params: {
       time_on_page_seconds: 0,
       cta_clicked: false,
       showing_requested: false,
-    })
+    }), "landing analytics session")
 
     // unique_visitors is DERIVED, not incremented. It used to be written as the
     // literal 1 on the day's first view and never touched again, so it read 1
@@ -513,15 +515,15 @@ export async function logLandingSession(params: {
       .maybeSingle()
 
     if (existing) {
-      await supabase
+      await bestEffort(supabase
         .from("listing_page_analytics")
         .update({
           total_views: existing.total_views + 1,
           ...(uniqueVisitors !== null ? { unique_visitors: uniqueVisitors } : {}),
         })
-        .eq("id", existing.id)
+        .eq("id", existing.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     } else {
-      await supabase.from("listing_page_analytics").insert({
+      await bestEffort(supabase.from("listing_page_analytics").insert({
         listing_id: params.listingId,
         // The tenant column exists on this table and was being left null, exactly
         // as smart_landing_sessions.brokerage_id was until the comment above fixed
@@ -534,7 +536,7 @@ export async function logLandingSession(params: {
         cta_clicks: 0,
         showing_requests: 0,
         lead_captures: 0,
-      })
+      }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     }
   } catch (err) {
     // Fail silently - analytics should not block page load
@@ -708,10 +710,10 @@ export async function trackCtaClick(listingId: string, sessionToken: string) {
       .single()
 
     if (existing) {
-      await supabase
+      await bestEffort(supabase
         .from("listing_page_analytics")
         .update({ cta_clicks: existing.cta_clicks + 1 })
-        .eq("id", existing.id)
+        .eq("id", existing.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     }
   } catch (err) {
     console.error("[v0] trackCtaClick error:", err)
@@ -809,10 +811,10 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
 
   // 3. Update session if token provided
   if (input.sessionToken) {
-    await supabase
+    await bestEffort(supabase
       .from("smart_landing_sessions")
       .update({ showing_requested: true })
-      .eq("session_token", input.sessionToken)
+      .eq("session_token", input.sessionToken), "landing analytics flag; the showing request itself is recorded above")
   }
 
   // 4. Update analytics
@@ -825,13 +827,13 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
     .single()
 
   if (analytics) {
-    await supabase
+    await bestEffort(supabase
       .from("listing_page_analytics")
       .update({
         showing_requests: analytics.showing_requests + 1,
         lead_captures: analytics.lead_captures + 1,
       })
-      .eq("id", analytics.id)
+      .eq("id", analytics.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
   }
 
   // 5. Record lifecycle event with kernel event (listing resolved at step 1) —

@@ -141,10 +141,12 @@ export function SlaMonitorPanel({ brokerageId }: SlaMonitorPanelProps) {
     // checkId/transactionId/brokerageId; for overdue tasks without a compliance check
     // we directly update the task status.
     const supabase = createClient()
-    await supabase
+    const { data: resolveRows, error: resolveErr } = await supabase
       .from("tasks")
       .update({ status: "completed", updated_at: new Date().toISOString() })
-      .eq("id", task.id)
+      .eq("id", task.id).select("id")
+    if (resolveErr) return void showToast(`Could not resolve: ${resolveErr.message}`)
+    if ((resolveRows ?? []).length === 0) return void showToast(`Could not resolve: no row matched (not permitted from your account)`)
     setOverdueTasks((prev) => prev.filter((t) => t.id !== task.id))
     setMetrics((prev) => prev ? { ...prev, overdueTasks: Math.max(0, prev.overdueTasks - 1) } : prev)
     showToast(`Resolved: ${task.title}`)

@@ -285,7 +285,7 @@ export async function generateAndStoreHandoffBrief(params: {
   }
 
   // 8. Persist to lead
-  await supabase
+  const { error: briefSaveErr } = await supabase
     .from("leads")
     .update({
       isa_handoff_brief: brief as unknown as Record<string, unknown>,
@@ -293,6 +293,7 @@ export async function generateAndStoreHandoffBrief(params: {
       updated_at: new Date().toISOString(),
     })
     .eq("id", leadId)
+  if (briefSaveErr) console.error(`[handoff-brief] brief NOT persisted on the lead: ${briefSaveErr.message}`)
 
   return brief
 }

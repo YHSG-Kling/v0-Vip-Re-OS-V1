@@ -34,6 +34,7 @@
  * Auth: requires authenticated user. All work scoped to user's brokerage.
  */
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 // intakeToOfferDraftParams is the ONE intake → generateOfferDraft mapping. It was
 // written for the retired /api/workflow/intake/offer route while this action hand-built
@@ -165,14 +166,14 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
   // ── Persist / upsert session ─────────────────────────────────────────────
   let sessionId = req.sessionId
   if (sessionId) {
-    await supabase.from("workflow_intake_sessions").update({
+    await bestEffort(supabase.from("workflow_intake_sessions").update({
       current_intake: extracted.intake,
       conversation:   newConversation,
       status:         extracted.readyToDraft ? "ready_to_draft" : "in_progress",
       updated_at:     new Date().toISOString(),
-    }).eq("id", sessionId)
+    }).eq("id", sessionId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
   } else {
-    const { data: newSession } = await supabase.from("workflow_intake_sessions").insert({
+    const { data: newSession, error: sessionInsErr } = await supabase.from("workflow_intake_sessions").insert({
       brokerage_id:   brokerageId,
       agent_user_id:  user.id,
       contact_id:     req.contactId ?? null,
@@ -181,6 +182,9 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
       current_intake: extracted.intake,
       status:         extracted.readyToDraft ? "ready_to_draft" : "in_progress",
     }).select("id").single()
+    // The intake still proceeds this turn, but without a session row the next
+    // turn cannot resume it — never silent.
+    if (sessionInsErr) console.error(`[voice-intake] intake session NOT created: ${sessionInsErr.message}`)
     sessionId = newSession?.id
   }
   if (!sessionId) return { kind: "error", error: "Could not persist intake session" }
@@ -192,12 +196,12 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
       ? `Got it. ${top.map(q => q.question).join(" ")}`
       : "Got it. What else?"
     // Append assistant turn
-    await supabase.from("workflow_intake_sessions").update({
+    await bestEffort(supabase.from("workflow_intake_sessions").update({
       conversation: [
         ...newConversation,
         { role: "assistant", content: spoken, ts: new Date().toISOString() },
       ],
-    }).eq("id", sessionId)
+    }).eq("id", sessionId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     return {
       kind:           "needs_more_info",
@@ -256,10 +260,10 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
 
   if (proactive && !proactive.passed) {
     const top = proactive.blockers[0]
-    await supabase.from("workflow_intake_sessions").update({
+    await bestEffort(supabase.from("workflow_intake_sessions").update({
       status:     "ready_to_draft",
       updated_at: new Date().toISOString(),
-    }).eq("id", sessionId)
+    }).eq("id", sessionId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     return {
       kind:     "blocked",
       sessionId,
@@ -279,7 +283,7 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
     return { kind: "error", error: (err as Error).message ?? "Fill engine failed" }
   }
 
-  const { data: doc } = await supabase.from("documents").insert({
+  const { data: doc, error: docInsErr } = await supabase.from("documents").insert({
     brokerage_id:  brokerageId,
     contact_id:    req.contactId ?? null,
     document_type: "offer",
@@ -297,6 +301,7 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
     content: JSON.stringify({ filledPacket, intake: extracted.intake }, null, 2),
     created_at: new Date().toISOString(),
   }).select("id").single()
+  if (docInsErr) return { kind: "error", error: `Could not create document: ${docInsErr.message}` }
   if (!doc) return { kind: "error", error: "Could not create document" }
 
   // Record AI-fill audit trail
@@ -320,11 +325,11 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
   } catch { /* generator optional */ }
 
   // Update session
-  await supabase.from("workflow_intake_sessions").update({
+  await bestEffort(supabase.from("workflow_intake_sessions").update({
     status: "drafted",
     document_id: doc.id,
     updated_at: new Date().toISOString(),
-  }).eq("id", sessionId)
+  }).eq("id", sessionId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
   const formwizardUrl = req.contactId
     ? `/crm?contact=${req.contactId}&action=new_offer&documentId=${doc.id}`

@@ -75,11 +75,12 @@ async function handleOverdue(
   const supabase = createServiceClient()
   
   // Mark overdue
-  await supabase
+  const { error: overdueErr } = await supabase
     .from("transaction_milestones")
     .update({ status: "overdue" })
     .eq("id", milestone.id)
     .eq("brokerage_id", txn.brokerage_id)
+  if (overdueErr) console.error(`[deadline-monitor] milestone NOT marked overdue: ${overdueErr.message}`)
   
   // Log event via kernel
   await transitionLifecycle({

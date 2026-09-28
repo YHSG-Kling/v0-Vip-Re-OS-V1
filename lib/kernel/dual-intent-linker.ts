@@ -410,17 +410,19 @@ export async function linkDualJourneys(
     updated_at: nowIso,
   }
 
-  const { data: buyerJourney } = await supabase
+  const { data: buyerJourney, error: buyerJourneyErr } = await supabase
     .from("journey_states")
     .upsert(buyerRow, { onConflict: "user_id" })
     .select("id")
     .maybeSingle()
+  if (buyerJourneyErr) console.error(`[dual-intent] buyer journey NOT upserted: ${buyerJourneyErr.message}`)
 
-  const { data: sellerJourney } = await supabase
+  const { data: sellerJourney, error: sellerJourneyErr } = await supabase
     .from("journey_states")
     .upsert(sellerRow, { onConflict: "user_id" })
     .select("id")
     .maybeSingle()
+  if (sellerJourneyErr) console.error(`[dual-intent] seller journey NOT upserted: ${sellerJourneyErr.message}`)
 
   // ── 3. Surface the dependency (only when it actually gates) ──────────────────
   let dependencyCardPushed = false

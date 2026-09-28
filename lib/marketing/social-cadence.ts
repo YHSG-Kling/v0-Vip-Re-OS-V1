@@ -135,7 +135,7 @@ export async function stageSocialFromCadence(
       })
       if (paired) mediaUrls = paired.mediaUrls
     } catch { /* bare draft fallback */ }
-    const { data: post } = await svc
+    const { data: post, error: cadencePostErr } = await svc
       .from("social_posts")
       .insert({
         brokerage_id: input.brokerageId,
@@ -154,6 +154,7 @@ export async function stageSocialFromCadence(
       })
       .select("id")
       .maybeSingle()
+    if (cadencePostErr) console.error(`[social-cadence] cadence post NOT created: ${cadencePostErr.message}`)
     if (post?.id) {
       count++
       if (autoApprove && grantedShape) {

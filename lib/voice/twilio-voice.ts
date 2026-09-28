@@ -12,6 +12,7 @@
 // command center see one world. Security: every webhook validates
 // X-Twilio-Signature against the TENANT's own auth token (subaccount creds).
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createHmac, timingSafeEqual } from "node:crypto"
 import {
   buildReceptionPrompt, parseTurnPlan, transcriptToMessages, TURN_INSTRUCTIONS, TOOL_TURN_GUIDANCE,
@@ -169,11 +170,11 @@ export async function bindNumberToTwilioLane(
   })
   if (!res.ok) return { ok: false, error: `Twilio VoiceUrl update failed (${res.status ?? "—"}): ${res.error ?? "unknown"}` }
 
-  await svc.from("phone_number_events").insert({
+  await sentinelWrite(svc, svc.from("phone_number_events").insert({
     brokerage_id: n.brokerage_id, phone_number: n.phone_number,
     event_type: "webhooks_bound", source: "inbound_binding",
     notes: "Number bound to the Twilio-native AI lane (VoiceUrl → /api/voice/twilio/inbound; SmsUrl → /api/providers/inbound; StatusCallback → /api/voice/twilio/status)",
-  }).then(undefined, () => {})
+  }), { table: "phone_number_events", flow: "phone_number_events_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   return { ok: true }
 }
 
@@ -204,8 +205,8 @@ export async function rsvpOpenHouseFromCall(
     const { data: existing } = await svc.from("open_house_rsvp_tracking").select("id")
       .eq("event_id", (event as any).id).eq("contact_id", call.contact_id).maybeSingle()
     if (existing) {
-      await svc.from("open_house_rsvp_tracking").update({ rsvp_status: "yes", rsvp_updated_at: new Date().toISOString() })
-        .eq("id", (existing as any).id).then(undefined, () => {})
+      await sentinelWrite(svc, svc.from("open_house_rsvp_tracking").update({ rsvp_status: "yes", rsvp_updated_at: new Date().toISOString() })
+        .eq("id", (existing as any).id), { table: "open_house_rsvp_tracking", flow: "open_house_rsvp_update", reason: "RSVP update from a live call; a loss is ledgered" })
     } else {
       const { error } = await svc.from("open_house_rsvp_tracking").insert({
         brokerage_id: ctx.brokerageId, contact_id: call.contact_id,

@@ -221,7 +221,7 @@ export async function POST(request: NextRequest) {
         // anonymous visitor's `[[CTX:embedSessionId=...]]` context handle
         // (app/api/live-agent/simli-turn reads it the same way custom-llm
         // reads the D-ID widget's marker) and the lead-capture link target.
-        const { data: simliSessionRow } = await supabase
+        const { data: simliSessionRow, error: simliSessionErr } = await supabase
           .from("embed_sessions")
           .insert({
             embed_widget_id: widget.id,
@@ -235,6 +235,7 @@ export async function POST(request: NextRequest) {
           })
           .select("id")
           .single()
+        if (simliSessionErr) console.error(`[embed-session] live-agent session row NOT created: ${simliSessionErr.message}`)
 
         return NextResponse.json({
           provider: "simli" as const,
@@ -279,7 +280,7 @@ export async function POST(request: NextRequest) {
   // ── Create / refresh the visitor session row ────────────────────────────
   // Upsert by (embed_widget_id, visitor_id) — same visitor returning to the
   // bubble shouldn't create a new session row each time.
-  const { data: session } = await supabase
+  const { data: session, error: sessionInsErr } = await supabase
     .from("embed_sessions")
     .insert({
       embed_widget_id: widget.id,
@@ -294,6 +295,7 @@ export async function POST(request: NextRequest) {
     })
     .select("id")
     .single()
+  if (sessionInsErr) console.error(`[embed-session] widget session row NOT created: ${sessionInsErr.message}`)
 
   // ── Log usage ───────────────────────────────────────────────────────────
   logMediaUsage({

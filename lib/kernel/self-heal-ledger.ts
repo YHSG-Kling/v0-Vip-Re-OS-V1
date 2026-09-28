@@ -227,14 +227,15 @@ export async function recordSelfHeal(svc: any, evt: {
   outcome: SelfHealOutcome
   detail?: Record<string, unknown>
 }): Promise<void> {
-  await svc.from("self_heal_events").insert({
+  const { error: ledgerErr } = await svc.from("self_heal_events").insert({
     brokerage_id: evt.brokerageId,
     domain: evt.domain,
     subject: evt.subject,
     action: evt.action,
     outcome: evt.outcome,
     detail: (evt.detail ?? {}) as any,
-  }).then(() => {}, () => {})
+  })
+  if (ledgerErr) console.error(`[self-heal-ledger] self_heal_events row refused: ${ledgerErr.message}`)
 }
 
 export interface SelfHealRollup {

@@ -34,6 +34,7 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted }   from "@/lib/ai/models"
 import {
@@ -233,10 +234,10 @@ export async function scanUploadedDocument(params: {
     const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim()
     result = JSON.parse(cleaned)
   } catch (err: any) {
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("documents")
       .update({ scan_error: err?.message ?? "scan failed", scanned_at: new Date().toISOString() })
-      .eq("id", documentId)
+      .eq("id", documentId), { table: "documents", flow: "documents_write", reason: "records the scan error on the document; the error is returned to the caller in the same step" })
     return { success: false, documentId, error: err?.message ?? "scan failed" }
   }
 
@@ -260,7 +261,7 @@ export async function scanUploadedDocument(params: {
       ? result.signature_completeness
       : null
 
-  await supabase
+  const { error: scanSaveErr } = await supabase
     .from("documents")
     .update({
       classification,
@@ -273,6 +274,7 @@ export async function scanUploadedDocument(params: {
       scan_error:                null,
     })
     .eq("id", documentId)
+  if (scanSaveErr) return { success: false, documentId, error: `Scan ran but its classification was not saved: ${scanSaveErr.message}` }
 
   // Post-scan hook 0 — THE LISTING GATE. A fully-executed listing agreement
   // whose file has every required document is what takes a listing on. The gate
@@ -295,10 +297,10 @@ export async function scanUploadedDocument(params: {
       // NOT an error — this is the normal state of a listing agreement that is
       // still missing a signature or a required form. It is recorded on the doc
       // so the agent can see exactly what is holding the listing back.
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("documents")
         .update({ metadata: { ...(doc.metadata as object ?? {}), listing_gate_blockers: verdict.blockers } })
-        .eq("id", documentId)
+        .eq("id", documentId), { table: "documents", flow: "documents_write", reason: "listing-gate blocker annotation for display; the gate verdict is recomputed on every scan" })
     }
   } catch (err: any) {
     console.error("[scan] listing-agreement gate failed (non-fatal):", err?.message ?? err)

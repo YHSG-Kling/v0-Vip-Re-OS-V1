@@ -197,7 +197,7 @@ export async function issueClearToClose(data: {
     .or("milestone_type.eq.clear_to_close_received,milestone_name.eq.clear_to_close_received,milestone_name.eq.clear_to_close")
 
   if (milestoneError) {
-    await supabase.from("transaction_milestones").insert({
+    const { error: ctcMilestoneInsErr } = await supabase.from("transaction_milestones").insert({
       transaction_id: data.transactionId,
       brokerage_id: actor.brokerageId,
       milestone_name: "clear_to_close_received",
@@ -205,14 +205,16 @@ export async function issueClearToClose(data: {
       status: "completed",
       completed_at: new Date().toISOString(),
     })
+    if (ctcMilestoneInsErr) console.error(`[lender-portal] clear-to-close milestone could not be created: ${ctcMilestoneInsErr.message}`)
   }
 
   // Update transaction_lenders by transaction_id — scoped by brokerage
-  await supabase
+  const { error: ctcLenderErr } = await supabase
     .from("transaction_lenders")
     .update({ underwriting_status: "approved", clear_to_close_date: new Date().toISOString().split("T")[0] })
     .eq("transaction_id", data.transactionId)
     .eq("brokerage_id", actor.brokerageId)
+  if (ctcLenderErr) return { success: false, error: `Could not record clear-to-close on the lender record: ${ctcLenderErr.message}` }
 
   // Buyer-facing CTC message. Measured live (client_portal_messages,
   // 2026-08-18): agent_id is NOT NULL (FK agents.id) and transaction_id exists

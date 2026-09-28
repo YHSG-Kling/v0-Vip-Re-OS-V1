@@ -93,7 +93,7 @@ export async function persistQualificationSignals(
   const qualificationScore = qualificationScoreFor(signals)
 
   // Insert qualification record
-  const { data: qualRecord } = await supabase
+  const { data: qualRecord, error: qualInsErr } = await supabase
     .from('ai_isa_qualifications')
     .insert({
       lead_id: leadId,
@@ -115,6 +115,7 @@ export async function persistQualificationSignals(
     })
     .select('id')
     .single()
+  if (qualInsErr) console.error(`[qualification-evaluator] qualification record NOT saved: ${qualInsErr.message}`)
 
   // If NOT ready for agent, stop here — AI-ISA continues working this lead
   if (!signals.readinessForAgent) {
@@ -138,7 +139,7 @@ export async function persistQualificationSignals(
   //         (lead_stage = 'qualified' AND lifecycle_state = 'consented').
   //         Engine 2 (assignment-engine.evaluateAndAssignLead) is the SOLE
   //         agent-assignment path going forward — governLead is now scoring-only.
-  await supabase
+  const { error: qualifiedStampErr } = await supabase
     .from('leads')
     .update({
       lead_stage: 'qualified',
@@ -146,6 +147,7 @@ export async function persistQualificationSignals(
       updated_at: new Date().toISOString(),
     })
     .eq('id', leadId)
+  if (qualifiedStampErr) console.error(`[qualification-evaluator] lead NOT stamped qualified (assignment will not pick it up): ${qualifiedStampErr.message}`)
 
   // ISA_QUALIFIED_LEAD — a live notification_rules/campaign_sequences
   // trigger_event with no emitter: LEAD_READY_FOR_ASSIGNMENT below only fires

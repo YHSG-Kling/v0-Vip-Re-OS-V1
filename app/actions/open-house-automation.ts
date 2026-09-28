@@ -1,5 +1,7 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
@@ -604,7 +606,7 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
             ? "both"
             : "email"
 
-      const { data: invitation } = await supabase
+      const { data: invitation, error: inviteRowErr } = await supabase
         .from("open_house_invitations")
         .insert({
           event_id: params.eventId,
@@ -619,6 +621,7 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
         })
         .select()
         .maybeSingle()
+      if (inviteRowErr) console.error(`[open-house] invitation row NOT created: ${inviteRowErr.message}`)
 
       if (!invitation?.id) {
         results.push({ contactId, status: "failed", error: "Could not stage the invitation" })
@@ -666,10 +669,11 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
         // Email wins over SMS on a "both" send: SendGrid is the channel whose
         // opens and clicks this OS actually receives.
         const providerMessageId = sendRes.email?.messageId ?? sendRes.sms?.messageId ?? null
-        await supabase
+        const { error: inviteSentErr } = await supabase
           .from("open_house_invitations")
           .update({ status: "sent", sent_at: new Date().toISOString(), message_id: providerMessageId })
           .eq("id", invitation.id)
+        if (inviteSentErr) console.error(`[open-house] invitation sent but NOT marked sent (reach under-reports): ${inviteSentErr.message}`)
       }
 
       results.push({
@@ -687,10 +691,10 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
   // params.contactIds.length — the size of the input list — so a run in which
   // every single send was refused still reported full reach.
   const delivered = results.filter((r) => r.status === "sent").length
-  await supabase
+  await bestEffort(supabase
     .from("open_house_events")
     .update({ marketing_reach: delivered })
-    .eq("id", params.eventId)
+    .eq("id", params.eventId), "reach counter; the per-invitation results are returned")
 
   revalidatePath("/dashboard/open-house")
   // success means at least one invitation actually left the building. A run
@@ -911,12 +915,12 @@ OUTPUT FORMAT (JSON):
     const prediction = parseAIJsonResponse(text)
 
     // Store prediction
-    await supabase
+    await bestEffort(supabase
       .from("open_house_events")
       .update({
         attendance_prediction: prediction.predicted_attendance_mid,
       })
-      .eq("id", eventId)
+      .eq("id", eventId), "prediction cache; the prediction is returned")
 
     return prediction
   } catch (error) {
@@ -940,7 +944,8 @@ export async function processEventFollowups(eventId: string, client?: any) {
 
   try {
     // Mark event as completed
-    await supabase.from("open_house_events").update({ status: "completed" }).eq("id", eventId)
+    const { error: eventDoneErr } = await supabase.from("open_house_events").update({ status: "completed" }).eq("id", eventId)
+    if (eventDoneErr) console.error(`[open-house] event NOT marked completed: ${eventDoneErr.message}`)
 
     // Get all attendees
     const { data: attendees } = await supabase.from("open_house_attendees").select("*").eq("event_id", eventId)
@@ -953,7 +958,7 @@ export async function processEventFollowups(eventId: string, client?: any) {
     for (const attendee of attendees) {
       const leadScore = calculateAttendeeLeadScore(attendee)
       attendee.ai_lead_score = leadScore // keep the in-memory copy fresh for the handoff below
-      await supabase.from("open_house_attendees").update({ ai_lead_score: leadScore }).eq("id", attendee.id)
+      await bestEffort(supabase.from("open_house_attendees").update({ ai_lead_score: leadScore }).eq("id", attendee.id), "attendee score cache; the in-memory score drives the follow-ups below")
     }
 
     // Segment and trigger follow-ups
@@ -1071,7 +1076,7 @@ async function generateEventAnalytics(eventId: string, client?: any) {
         : 0,
   }
 
-  await supabase.from("open_house_analytics").insert(analytics)
+  await bestEffort(supabase.from("open_house_analytics").insert(analytics), "analytics snapshot; returned to the caller")
 
   return analytics
 }
@@ -1356,12 +1361,12 @@ OUTPUT FORMAT (JSON):
     const insights = parseAIJsonResponse(text)
 
     // Store insights
-    await supabase
+    await bestEffort(supabase
       .from("open_house_analytics")
       .update({
         performance_insights: insights,
       })
-      .eq("event_id", eventId)
+      .eq("event_id", eventId), "AI insights annotation; returned to the caller")
 
     return insights
   } catch (error) {
@@ -1524,12 +1529,12 @@ export async function submitFeedback(params: {
     if (params.overallRating >= 4) scoreAdjustment += 10
 
     if (scoreAdjustment > 0) {
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("open_house_attendees")
         .update({
           ai_lead_score: (attendee.ai_lead_score || 0) + scoreAdjustment,
         })
-        .eq("id", params.attendeeId)
+        .eq("id", params.attendeeId), { table: "open_house_attendees", flow: "open_house_attendees_write", reason: "attendee score bump from an engagement signal" })
     }
 
     revalidatePath("/dashboard/open-house")
@@ -1595,12 +1600,12 @@ export async function monitorCompetingEvents(eventId: string) {
     }
 
     // Store competing events data
-    await supabase
+    await bestEffort(supabase
       .from("open_house_events")
       .update({
         competing_events_data: competingData,
       })
-      .eq("id", eventId)
+      .eq("id", eventId), "competing-events cache; returned to the caller")
 
     return competingData
   } catch (error) {

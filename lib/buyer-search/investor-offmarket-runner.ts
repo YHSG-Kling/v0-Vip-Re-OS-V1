@@ -432,10 +432,12 @@ async function upsert(
     .eq("contact_id", m.contactId)
     .maybeSingle()
   if (existing) {
-    await svc.from("investor_deal_matches").update(row).eq("id", (existing as any).id)
+    const { error: matchUpdErr } = await svc.from("investor_deal_matches").update(row).eq("id", (existing as any).id)
+    if (matchUpdErr) console.error(`[investor-offmarket] match NOT updated: ${matchUpdErr.message}`)
     return (existing as any).id
   }
-  const { data: created } = await svc.from("investor_deal_matches").insert(row).select("id").maybeSingle()
+  const { data: created, error: matchInsErr } = await svc.from("investor_deal_matches").insert(row).select("id").maybeSingle()
+  if (matchInsErr) console.error(`[investor-offmarket] match NOT created: ${matchInsErr.message}`)
   return created ? (created as any).id : null
 }
 

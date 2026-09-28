@@ -427,8 +427,9 @@ export async function completeOnboarding(
 
   const previousState = onboarding.status || 'in_progress'
 
-  // 2. Update agent_onboarding
-  await supabase
+  // 2. Update agent_onboarding — THE completion. A refused write must not go on to
+  // announce completion (lifecycle + kernel event) for a record still in progress.
+  const { error: onboardingDoneErr } = await supabase
     .from('agent_onboarding')
     .update({
       certification_achieved: true,
@@ -438,6 +439,10 @@ export async function completeOnboarding(
       updated_at: new Date().toISOString(),
     })
     .eq('id', onboarding.id)
+  if (onboardingDoneErr) {
+    console.error(`[CertificationEngine] agent_onboarding completion REFUSED for agent ${agentId} — completion not announced: ${onboardingDoneErr.message}`)
+    return
+  }
 
   // 3. Update agents.onboarding_status
   // IDENTITY CLASS. agentId is an AGENTS id everywhere else in this file —
@@ -445,13 +450,14 @@ export async function completeOnboarding(
   // all key on it, and line ~289 reads `agents WHERE id = agentId`. This one
   // matched on user_id, so it updated no row: certification completed and the
   // agent's onboarding_status silently stayed where it was.
-  await supabase
+  const { error: agentStatusErr } = await supabase
     .from('agents')
     .update({
       onboarding_status: 'completed',
       updated_at: new Date().toISOString(),
     })
     .eq('id', agentId)
+  if (agentStatusErr) console.error(`[CertificationEngine] agents.onboarding_status NOT set for ${agentId}: ${agentStatusErr.message}`)
 
   // 4. Transition lifecycle (only once, check prevents duplicate)
   await transitionLifecycle({

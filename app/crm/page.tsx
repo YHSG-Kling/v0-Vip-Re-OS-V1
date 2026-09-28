@@ -1,5 +1,6 @@
 "use client"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { useEffect, useState, useCallback, useTransition, useRef } from "react"
 import { PRE_QUALIFICATION_CONTACT_STATUSES, CONTACT_STATUS_LABELS, type ContactStatus } from "@/lib/contact-promotion/qualification"
 // The ONE outbound suppression predicate (CLAUDE.md §6). Imported from the pure
@@ -2470,7 +2471,7 @@ export default function CRMPage() {
                               <Button size="sm" variant="outline" disabled={generatingPlan}
                                 onClick={async () => {
                                   const supabase = createClient()
-                                  await supabase.from("copilot_plans").update({ status: "completed", updated_at: new Date().toISOString() }).eq("id", copilotPlan.id)
+                                  await bestEffort(supabase.from("copilot_plans").update({ status: "completed", updated_at: new Date().toISOString() }).eq("id", copilotPlan.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
                                   toast.success("Action marked done — generating next plan...")
                                   setGeneratingPlan(true)
                                   const result = await generateCopilotPlan(selectedContactId, agentId ?? "")
@@ -2482,7 +2483,7 @@ export default function CRMPage() {
                                   const supabase = createClient()
                                   const newDate = new Date(copilotPlan.next_action_date || new Date())
                                   newDate.setDate(newDate.getDate() + 3)
-                                  await supabase.from("copilot_plans").update({ next_action_date: newDate.toISOString().split("T")[0] }).eq("id", copilotPlan.id)
+                                  await bestEffort(supabase.from("copilot_plans").update({ next_action_date: newDate.toISOString().split("T")[0] }).eq("id", copilotPlan.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
                                   toast.success("Snoozed 3 days")
                                   setCopilotPlan({ ...copilotPlan, next_action_date: newDate.toISOString().split("T")[0] })
                                 }}>Snooze 3d</Button>
@@ -2508,7 +2509,7 @@ export default function CRMPage() {
                                   if (brokerageId) {
                                     const supabase = createClient()
                                     const startDate = new Date(); const endDate = new Date(); endDate.setDate(endDate.getDate() + 7)
-                                    await supabase.from("marketing_campaigns").insert({
+                                    await bestEffort(supabase.from("marketing_campaigns").insert({
                                       campaign_name: result.plan?.plan_name ?? `7-Day Follow-Up — ${selectedContact?.first_name ?? "Contact"}`,
                                       campaign_type: "omni", status: "live", brokerage_id: brokerageId,
                                       agent_user_id: user?.id ?? null, created_by: user?.id ?? null, visibility_scope: "agent",
@@ -2523,7 +2524,7 @@ export default function CRMPage() {
                                       // is inserted `status: "live"` — resolved to EVERY contact in the
                                       // brokerage for touchpoint attribution and launch deliverability.
                                       audience_contact_ids: [selectedContactId],
-                                    }).select().maybeSingle()
+                                    }).select().maybeSingle(), "follow-up campaign card for a plan already generated and shown")
                                   }
                                   toast.success("7-day plan created — check Campaigns tab")
                                 } else { toast.error(result.error ?? "Failed to generate plan") }
@@ -3484,7 +3485,7 @@ export default function CRMPage() {
                             .select("brokerage_id")
                             .eq("id", user.id)
                             .single()
-                          await supabase.from("ai_message_drafts").insert({
+                          await bestEffort(supabase.from("ai_message_drafts").insert({
                             agent_user_id: user.id,
                             brokerage_id: userData?.brokerage_id ?? null,
                             contact_id: insight.contactId,
@@ -3493,7 +3494,7 @@ export default function CRMPage() {
                             draft_subject: `Follow up — ${displayName}`,
                             status: "pending",
                             trigger_event: "ai_priority_insight",
-                          })
+                          }), "draft saved for later review; the body is already shown to the agent")
                           toast.success(`Draft created for ${displayName} ��� review in Communications`)
                         } catch {
                           toast.error("Failed to create draft")

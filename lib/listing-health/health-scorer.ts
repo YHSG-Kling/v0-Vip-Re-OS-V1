@@ -25,6 +25,7 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
@@ -566,7 +567,7 @@ export async function calculateListingHealth(params: {
   // Persist score
   const daysOnMarket =
     (dom.data.dom as number | null | undefined) ?? null
-  await supabase.from("listing_health_scores").insert({
+  await sentinelWrite(supabase, supabase.from("listing_health_scores").insert({
     listing_id:         listingId,
     brokerage_id:       listing.brokerage_id ?? null,
     agent_id:           healthAgentId,
@@ -586,7 +587,7 @@ export async function calculateListingHealth(params: {
     previous_score:     previousScore,
     score_delta:        scoreDelta,
     days_on_market:     daysOnMarket,
-  })
+  }), { table: "listing_health_scores", flow: "listing_health_scores_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   // Create intervention rows for critical issues, if none unresolved already
   if (riskLevel === "at_risk" || riskLevel === "critical") {
@@ -604,7 +605,7 @@ export async function calculateListingHealth(params: {
         .sort((a, b) => a.score - b.score)[0]
       const issue = topComponent?.issues[0]
       if (issue) {
-        await supabase.from("listing_health_interventions").insert({
+        await sentinelWrite(supabase, supabase.from("listing_health_interventions").insert({
           listing_id:        listingId,
           brokerage_id:      listing.brokerage_id ?? null,
           agent_id:          healthAgentId,
@@ -614,7 +615,7 @@ export async function calculateListingHealth(params: {
           category:          topComponent?.category.toLowerCase() ?? null,
           seller_impacted:   true,
           resolved:          false,
-        })
+        }), { table: "listing_health_interventions", flow: "listing_health_interventions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       }
     }
   }

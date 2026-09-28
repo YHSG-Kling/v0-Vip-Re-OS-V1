@@ -1168,7 +1168,7 @@ async function postVideoContent(videoId: string, platforms: string[]) {
   for (const platform of platforms) {
     // social_posts has no video_id/thumbnail_url columns; the video is linked via
     // post_brief (the pattern used by distribute-video.ts / lib/kernel/video.ts).
-    const { data: post } = await supabase.from("social_posts").insert({
+    const { data: post, error: socialDraftErr } = await supabase.from("social_posts").insert({
       brokerage_id: video.brokerage_id,
       agent_id: video.agent_id,
       platform,
@@ -1179,6 +1179,7 @@ async function postVideoContent(videoId: string, platforms: string[]) {
       status: "scheduled",
       scheduled_for: new Date(Date.now() + 30 * 60 * 1000).toISOString(), // 30 mins from now
     }).select().single()
+    if (socialDraftErr) console.error(`[copilot] social post draft NOT created: ${socialDraftErr.message}`)
     
     if (post) posts.push(post)
   }

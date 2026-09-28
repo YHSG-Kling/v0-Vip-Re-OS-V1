@@ -486,10 +486,11 @@ export async function transitionCampaignStatus(
   if (toStatus === "live") updateData.launched_at = new Date().toISOString()
   if (toStatus === "ended") updateData.completed_at = new Date().toISOString()
 
-  await supabase
+  const { error: campaignStatusErr } = await supabase
     .from("marketing_campaigns")
     .update(updateData)
     .eq("id", campaignId)
+  if (campaignStatusErr) return { success: false, error: `Could not update the campaign status: ${campaignStatusErr.message}` }
 
   return { success: true, activityId: result.activityId }
 }

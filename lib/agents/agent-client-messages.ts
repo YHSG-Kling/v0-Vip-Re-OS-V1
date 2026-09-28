@@ -133,9 +133,10 @@ export async function approveClientMessage(
   const supabase = client ?? createServiceClient()
   const patch: Record<string, unknown> = { status: "approved", approved_by: approverUserId ?? null, approved_at: new Date().toISOString() }
   if (editedBody?.trim()) patch.body = editedBody
-  const { data: claimed } = await supabase.from("agent_client_messages")
+  const { data: claimed, error: claimErr } = await supabase.from("agent_client_messages")
     .update(patch).eq("id", messageId).in("status", ["proposed", "approved"])
     .select("brokerage_id, entity_type, entity_id, recipient_contact_id, recipient_lead_id, audience, subject, body, channel").single()
+  if (claimErr) return { status: "failed", result: { error: `Could not claim the message for sending: ${claimErr.message}` } }
   if (!claimed) return { status: "skipped", result: { reason: "not in proposed/approved state" } }
   const m = claimed as { brokerage_id: string; entity_type: string; entity_id: string | null; recipient_contact_id: string | null; recipient_lead_id: string | null; audience: string; subject: string | null; body: string; channel: string }
 
@@ -327,7 +328,7 @@ export async function approveClientMessage(
 }
 
 async function fail(supabase: ReturnType<typeof createServiceClient>, messageId: string, reason: string): Promise<ClientMessageResult> {
-  await supabase.from("agent_client_messages").update({ status: "failed", send_error: reason }).eq("id", messageId)
+  await sentinelWrite(supabase, supabase.from("agent_client_messages").update({ status: "failed", send_error: reason }).eq("id", messageId), { table: "agent_client_messages", flow: "client_message_failed_stamp", reason: "failure stamp; the failure is returned in the same step" })
   return { status: "failed", result: { error: reason } }
 }
 
@@ -340,8 +341,9 @@ export async function rejectClientMessage(
   const supabase = client ?? createServiceClient()
   const patch: Record<string, unknown> = { status: "rejected", approved_by: approverUserId, approved_at: new Date().toISOString() }
   if (reason?.trim()) patch.send_error = `agent feedback: ${reason.trim().slice(0, 300)}`
-  const { data } = await supabase.from("agent_client_messages")
+  const { data, error: rejectErr } = await supabase.from("agent_client_messages")
     .update(patch)
     .eq("id", messageId).eq("status", "proposed").select("id").maybeSingle()
+  if (rejectErr) return { ok: false }
   return { ok: !!data }
 }
