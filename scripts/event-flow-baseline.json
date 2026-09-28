@@ -1,6 +1,5 @@
 [
   "agent.delegated_to_ai",
-  "commission.paid",
   "image.generated",
   "listing.stage_overridden",
   "offer.created",
@@ -8,7 +7,6 @@
   "tour.completed",
   "tour.confirmed",
   "tour.planned",
-  "tour_stop.schedule_dispatched",
   "transaction.documents_complete",
   "transaction.stage_overridden"
 ]

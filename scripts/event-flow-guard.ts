@@ -12,7 +12,7 @@
  * (HANDLERS map) and isn't in the baseline (the known set, which may be chain-handled or
  * intentionally audit-only). New flow drift can't accumulate.
  */
-import { readFileSync, writeFileSync } from "node:fs"
+import { readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join, relative } from "node:path"
 import { walkTs, rootRuntimeFiles } from "./runtime-roots"
@@ -47,6 +47,19 @@ const handled = new Set<string>()
 const handlerRe = /["']([a-z_]+\.[a-z_]+)["']\s*:/g
 let hm: RegExpExecArray | null
 while ((hm = handlerRe.exec(orch))) handled.add(hm[1])
+// …and every workflow chain's triggerEvent: orchestrateEvent starts each chain registered for an
+// event (lib/workflow-orchestrator/chains/*.ts), so a chain IS that event's handler — counting it
+// replaces the "chain-handled" baseline entries with the real rule.
+const chainsDir = join(root, "lib/workflow-orchestrator/chains")
+const chainTriggers = (src: string) => [...src.matchAll(/triggerEvent:\s*"([^"]+)"/g)].map((x) => x[1])
+for (const f of readdirSync(chainsDir)) {
+  if (!f.endsWith(".ts") || f === "index.ts") continue
+  for (const ev of chainTriggers(readFileSync(join(chainsDir, f), "utf8"))) handled.add(ev)
+}
+if (chainTriggers(`triggerEvent: "x.y"`).join() !== "x.y" || chainTriggers(`eventType: "x.y"`).length !== 0) {
+  console.error(" ❌ EVENT_FLOW_FAIL — POSITIVE CONTROL: the chain-trigger finder no longer recognises a chain trigger")
+  process.exit(1)
+}
 
 const unhandled = Array.from(emitted).filter((e) => !handled.has(e)).sort()
 
