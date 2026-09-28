@@ -733,95 +733,22 @@ export async function launchListing(input: {
 
 // ─── 8. (attachMediaToListing removed — see note above MediaAttachmentInput) ──
 
-// ─── 9. generateListingDescription ───────────────────────────────────────────
-
-/**
- * Generate an AI listing description for a property.
- * Input: { listingId, agentId, style? }
- * Output: { description: string }
- * Reads: listings (for context)
- * Does NOT write — returns text for caller to save via saveListingDraft.
- */
-export async function generateListingDescription(input: {
-  listingId: string
-  agentId: string
-  style?: "luxury" | "family" | "investment" | "standard"
-}): Promise<KernelResult<{ description: string }>> {
-  if (!isValidUUID(input.listingId)) return { success: false, error: "Invalid listing ID" }
-
-  try {
-    const supabase = await createClient()
-
-    const { data: listing, error: listingError } = await supabase
-      .from("listings")
-      .select("address, city, state, zip, list_price, bedrooms, bathrooms, sqft, property_type, showing_instructions, brokerage_id")
-      .eq("id", input.listingId)
-      .maybeSingle()
-
-    if (listingError) return { success: false, error: `Could not read the listing: ${listingError.message}` }
-    if (!listing)     return { success: false, error: "Listing not found" }
-
-    const { generateText } = await import("ai")
-    const { resolveModel } = await import("@/lib/ai/resolve-model")
-
-    const styleContext = {
-      luxury:     "Use elevated, aspirational language for a luxury buyer audience.",
-      family:     "Emphasize warmth, family-friendly features, and community.",
-      investment: "Highlight income potential, location advantages, and ROI.",
-      standard:   "Clear, professional real estate copy for a broad audience.",
-    }[input.style ?? "standard"]
-
-    const prompt = `You are a professional real estate copywriter. Write a compelling MLS listing description.
-
-Property:
-- Address: ${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}
-- Price: $${listing.list_price?.toLocaleString() ?? "TBD"}
-- Beds: ${listing.bedrooms ?? "N/A"} | Baths: ${listing.bathrooms ?? "N/A"} | Sqft: ${listing.sqft?.toLocaleString() ?? "N/A"}
-- Type: ${listing.property_type ?? "Residential"}
-${listing.showing_instructions ? `- Notes: ${listing.showing_instructions}` : ""}
-
-Style: ${styleContext}
-
-Write 2-3 paragraphs (150-250 words). No address in the first sentence. Lead with a compelling hook.`
-
-    const { text } = await generateText({
-      model:  resolveModel("openai/gpt-4o-mini"),
-      prompt,
-    })
-
-    const rawDescription = text.trim()
-
-    // Apply brand voice + compliance check (non-blocking)
-    let finalDescription = rawDescription
-    try {
-      const { guardContent } = await import("@/lib/content-guardian")
-      const brokerageId = (listing as any).brokerage_id as string | undefined
-      if (brokerageId) {
-        const guarded = await guardContent({
-          content: rawDescription,
-          agentId: input.agentId,
-          brokerageId,
-          contentType: "listing_description",
-          // The listing this text is FOR already exists — it was loaded above —
-          // so approval_items.item_id is written directly by the insert and the
-          // reviewer's queue entry opens the listing. No second write, and no
-          // window in which the flagged item is unlinked.
-          // `input.listingId` — isValidUUID-checked at the top and the key the
-          // row above was resolved by. The select does not name `id`, and reading
-          // it off `listing` would have been undefined.
-          subjectId: input.listingId,
-        })
-        finalDescription = guarded.content
-      }
-    } catch {
-      // Non-fatal — return raw description if guardian fails
-    }
-
-    return { success: true, description: finalDescription }
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "generateListingDescription failed" }
-  }
-}
+// ─── 9. (generateListingDescription removed) ──────────────────────────────────
+//
+// REMOVED as a DUPLICATE writer (lane 87B, §1.1 + §6 — merge-then-delete). It was the
+// second AI listing-description writer beside the server-only core: a bare
+// generateText on a hard-coded model (off the routing table and the ai_tool_usage
+// cost ledger), no compliance block in the writing prompt (§5 compliance-first), a
+// guardContent grade that fed an agents.id where the brand-voice resolver wants a
+// users.id, and a "family" style that is a familial-status framing. Its one caller
+// was app/actions/listings-kernel.ts generateListingDescriptionAction.
+// What it had that the core lacked — reading the listing by id and composing the
+// property facts from it — was merged FIRST onto
+//   lib/listings/listing-description-tool.ts::draftListingDescriptionForListing
+// (tenant-pinned listing read → lib/listings/listing-description-core.ts
+// ::generateListingDescriptions), which that action now calls. Like this function,
+// the survivor never writes public_remarks: the agent saves the text through
+// saveListingDraft.
 
 // ─── 10. (createTransactionShellFromAcceptedOffer removed) ───────────────────
 //

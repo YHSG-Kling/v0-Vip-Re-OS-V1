@@ -46,8 +46,17 @@ import { generateObjectRouted } from "@/lib/ai/models"
 import { guardContent, attachApprovalSubject } from "@/lib/content-guardian"
 import { buildComplianceSystemBlocks, postcheckScript } from "@/lib/video/script-compliance"
 import { isValidUUID } from "@/lib/validations"
+import {
+  LISTING_DESCRIPTION_STYLE_GUIDE,
+  normalizeListingDescriptionStyle,
+  type ListingDescriptionStyle,
+} from "@/lib/listings/listing-description-styles"
 
-export type ListingDescriptionStyle = "luxury" | "family" | "investor" | "first_time_buyer"
+// THE ONE STYLE VOCABULARY lives in lib/listings/listing-description-styles.ts (client-safe,
+// lane 87B) — re-exported here so server callers keep one import. The retired "family"
+// style (familial status, Fair Housing) and the "investment" spelling normalize there.
+export type { ListingDescriptionStyle } from "@/lib/listings/listing-description-styles"
+export { DEFAULT_LISTING_DESCRIPTION_STYLE } from "@/lib/listings/listing-description-styles"
 
 export const LISTING_DESCRIPTIONS_SCHEMA = z.object({
   mlsDescription: z.string().describe("MLS-compliant description, 500 chars max, no superlatives"),
@@ -73,6 +82,8 @@ export interface ListingDescriptionInput {
   neighborhood?: string
   /** The listing the copy is for — stamped only when it is THIS tenant's. */
   listingId?: string | null
+  /** Who asked: the agent tool, the copilot, the new-listing kit, the presentation deck. */
+  source?: "agent_tool" | "agent_copilot" | "new_listing_kit" | "listing_presentation"
 }
 
 export type ListingDescriptionResult =
@@ -116,6 +127,10 @@ export async function generateListingDescriptions(
   // COMPLIANCE-FIRST — the rules are an INPUT to the writer, not only a grade.
   const complianceBlocks = await buildComplianceSystemBlocks(brokerageId, undefined, svc)
 
+  // The AGENT'S picked style, through the one vocabulary (a legacy/retired spelling
+  // normalizes; nothing outside the vocabulary reaches the prompt).
+  const style = normalizeListingDescriptionStyle(input.style)
+
   const { object: descriptions } = await generateObjectRouted({
     feature: "listing_description",
     brokerageId, agentId, userId: input.userId ?? null,
@@ -129,7 +144,7 @@ export async function generateListingDescriptions(
 Property Details:
 ${JSON.stringify(input.propertyData, null, 2)}
 
-Target Audience: ${input.style}
+Writing style: ${LISTING_DESCRIPTION_STYLE_GUIDE[style]}
 Highlights: ${input.highlights?.join(", ") || "None specified"}
 Neighborhood: ${input.neighborhood || "Not specified"}
 ${brandVoice ? `Brand Voice: ${brandVoice.tone ?? ""}, ${brandVoice.style ?? ""}` : ""}
@@ -137,6 +152,7 @@ ${brandVoice ? `Brand Voice: ${brandVoice.tone ?? ""}, ${brandVoice.style ?? ""}
 IMPORTANT RULES:
 - MLS description must be factual, no "best" or "amazing"
 - Include Fair Housing compliant language — describe the property, never the people
+- Never say who the home is "perfect for" or "ideal for" (families, couples, retirees, any group)
 - Marketing can be more persuasive
 - Social should be engaging with relevant hashtags
 - All content must be original`,
@@ -186,7 +202,7 @@ IMPORTANT RULES:
       brokerage_id: brokerageId,
       listing_id: scopedListingId,
       content_type: "ai_descriptions",
-      content: { ...descriptions, target_audience: input.style },
+      content: { ...descriptions, style, compliance_warnings: complianceWarnings, hard_fair_housing_flag: hardFairHousingFlag, source: input.source ?? "agent_tool" },
     })
     .select("id")
     .maybeSingle()

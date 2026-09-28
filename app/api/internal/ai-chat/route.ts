@@ -17,6 +17,7 @@ import {
 } from "@/lib/ai-isa/user-type-tool-policy"
 import { buildUserTypeSeatTools } from "@/lib/ai-isa/user-type-tools"
 import { z } from "zod"
+import { LISTING_DESCRIPTION_STYLES } from "@/lib/listings/listing-description-styles"
 import { NextRequest, NextResponse } from "next/server"
 
 // TOMBSTONE (lane 77A, CLAUDE.md §6): the hand-typed PERMITTED_ROLES set that
@@ -969,6 +970,50 @@ export async function POST(req: NextRequest) {
             success: false,
             error: err instanceof Error ? err.message : "Stage advance failed",
           }
+        }
+      },
+    }),
+
+    // Lane 87B — THE AGENT'S AI LISTING-DESCRIPTION TOOL (owner wave 87: "listing
+    // description can be an ai tool for agents and can assist with a new listing
+    // marketing"). The SAME server-only seam the listing page and the Marketing Studio
+    // call (lib/listings/listing-description-tool.ts → listing-description-core):
+    // tenant from the SESSION (brokerageId above), the listing re-read pinned to it,
+    // the agent picks the style, Fair Housing in the writing prompt, a hard flag
+    // withholds the copy. Returns a DRAFT — nothing is written to the listing.
+    draft_listing_description: tool({
+      description:
+        "Draft an MLS listing description plus a launch social caption for one of the agent's listings. Use when the agent asks to write, rewrite or restyle a listing description or new-listing marketing copy. The agent picks the style; the copy is Fair-Housing-checked and is a DRAFT the agent reviews and saves on the listing page.",
+      inputSchema: z.object({
+        listing_id: z.string().describe("UUID of the listing"),
+        style: z.enum(LISTING_DESCRIPTION_STYLES).nullable()
+          .describe("Writing style the agent asked for; null = standard"),
+        highlights: z.array(z.string()).nullable().describe("Features the agent wants mentioned"),
+      }),
+      execute: async ({ listing_id, style, highlights }) => {
+        const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+        const { draftListingDescriptionForListing } = await import("@/lib/listings/listing-description-tool")
+        const actorAgentId = await resolveAgentIdInBrokerage(service as any, user.id, brokerageId)
+        const draft = await draftListingDescriptionForListing(service, {
+          brokerageId,
+          listingId: listing_id,
+          style,
+          actorUserId: user.id,
+          actorAgentId,
+          highlights: highlights?.slice(0, 12),
+          source: "agent_copilot",
+        })
+        if (!draft.ok) return { success: false, error: draft.error }
+        if (draft.heldForReview) return { success: false, held_for_review: true, error: draft.heldReason, warnings: draft.warnings }
+        return {
+          success: true,
+          listing_id,
+          style: draft.style,
+          mls_description: draft.mlsDescription,
+          social_caption: draft.socialCaption,
+          warnings: draft.warnings,
+          open_url: `/dashboard/listings/${listing_id}/lifecycle`,
+          note: "Draft only — review it and save it from the listing's description box.",
         }
       },
     }),

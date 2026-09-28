@@ -1219,6 +1219,7 @@ export function InternalAIAssistant({ role, wakeWord, userId, pageContext }: Int
                           stage_email_campaign: "Email Campaign Drafted",
                           stage_open_house: "Open House Scheduled",
                           stage_blog_draft: "Blog Drafted",
+                          draft_listing_description: "Listing Description Drafted",
                           stage_podcast_episode: "Podcast Episode Drafted",
                           stage_video_project: "Video Project Drafted",
                           stage_direct_mail_campaign: "Direct Mail Drafted",

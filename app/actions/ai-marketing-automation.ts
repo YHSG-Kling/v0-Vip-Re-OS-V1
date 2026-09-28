@@ -620,80 +620,21 @@ Return JSON:
 // validation/guard/column fix, and have no survivor home — recorded here as an
 // open product gap, not silently dropped.
 
-/**
- * AI-Powered Listing Description Enhancement
- */
-export async function enhanceListingDescription(
-  listingId: string,
-  agentId: string,
-  style: "luxury" | "family" | "investment" | "first_time_buyer"
-): Promise<{ success: boolean; enhanced?: string; error?: string }> {
-  try {
-    if (!isValidUUID(listingId) || !isValidUUID(agentId)) {
-      return { success: false, error: "Invalid ID" }
-    }
-
-    const auth = await requireAgentInCallerBrokerage(agentId)
-    if (!auth.ok) return { success: false, error: auth.error }
-
-    const supabase = await createClient()
-    // PHANTOM COLUMNS. This read `listing.mls_description || listing
-    // .marketing_description`; neither column exists on `listings`. The public
-    // marketing copy lives in `public_remarks`, so the rewrite prompt used to
-    // read literally "Original: undefined" and the model invented a listing.
-    // Also: `.single()` on an unscoped read — a listing from another brokerage
-    // was fetchable by id, and a refusal was swallowed with the row.
-    const { data: listing, error: listingError } = await supabase
-      .from("listings")
-      .select("id, address, city, state, public_remarks")
-      .eq("id", listingId)
-      .eq("brokerage_id", auth.brokerageId)
-      .maybeSingle()
-
-    if (listingError) throw listingError
-    if (!listing) return { success: false, error: "Listing not found in your brokerage" }
-
-    const original = (listing.public_remarks ?? "").trim()
-    if (!original) {
-      return {
-        success: false,
-        error: "This listing has no public remarks yet — add a description before enhancing it.",
-      }
-    }
-
-    const stylePrompts: Record<string, string> = {
-      luxury: "Emphasize premium finishes, exclusivity, prestige, and sophisticated lifestyle",
-      family: "Focus on space for growing family, schools, safety, and community amenities",
-      investment: "Highlight ROI potential, rental income, appreciation, and cap rate",
-      first_time_buyer: "Emphasize value, starter home benefits, low maintenance, and affordability",
-    }
-
-    const { text } = await generateText({
-      brokerageId: auth.brokerageId,
-      userId: auth.userId,
-      agentId,
-      model: "openai/gpt-4o-mini",
-      prompt: `Rewrite this listing description for a ${style} buyer:
-
-Property: ${listing.address ?? ""}${listing.city ? `, ${listing.city}` : ""}${listing.state ? `, ${listing.state}` : ""}
-
-Original: ${original}
-
-Style focus: ${stylePrompts[style]}
-
-Keep it under 300 words. Make it compelling and specific.
-Do NOT reference protected classes (race, religion, familial status, disability,
-national origin, sex) or characterize the neighbourhood's people.`,
-    })
-
-    // Read-only by design: this returns copy for the agent to review. Writing
-    // it back to listings.public_remarks is the listing surface's job — see
-    // app/actions/listings-kernel.ts, which owns that column.
-    return { success: true, enhanced: text }
-  } catch (error) {
-    return handleError(error, "enhanceListingDescription") as any
-  }
-}
+// TOMBSTONE (§1.1 + §6, lane 87B — wave 87): enhanceListingDescription deleted — a THIRD
+// listing-description writer (the Marketing Studio's "Listing Copy Enhancer") beside the
+// server-only core. Survivor: lib/listings/listing-description-tool.ts
+// ::draftListingDescriptionForListing → lib/listings/listing-description-core.ts, reached
+// from the SAME Studio panel (app/dashboard/marketing/studio/components/ad-os/
+// listing-copy-panel.tsx) through app/actions/listings-kernel.ts
+// generateListingDescriptionAction. MERGED FIRST onto the survivor: the one thing this had
+// that the core lacked — the listing's CURRENT public_remarks as the rewrite's input — now
+// rides the tool's propertyData (currentPublicRemarks), tenant-pinned exactly as this read
+// was. NOT carried over, deliberately: its "family" buyer style ("space for growing family,
+// schools, safety") — familial status is a Fair Housing protected class; the one style
+// vocabulary (lib/listings/listing-description-styles.ts) retires it. Like this action, the
+// survivor never writes listings.public_remarks — the agent saves from the listing surface.
+// (The createAIListing tombstone above names aiGenerateListingDescription as its copy
+// survivor; that door was retired in 86F — the copy survivor is the same tool/core.)
 
 // TOMBSTONE (§1.1, 2026-09-07): createAIOffer deleted — survivor
 // app/actions/buyer-offers.ts:createOffer (the canonical offer writer, per

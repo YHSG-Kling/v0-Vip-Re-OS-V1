@@ -131,63 +131,43 @@ export async function createAppointment(params: {
     revalidatePath("/dashboard")
     revalidatePath("/calendar")
 
-    // Auto-trigger listing appointment prep workflow chain for consultation appointments.
-    // The chain runs CMA → presentation → chapter videos → drip in sequence.
+    // THE BOOKING STARTS THE SELLER'S LISTING-PRESENTATION PREP (lane 87B, owner
+    // wave 87). This used to parse `location` ad hoc and fire triggerChainsForEvent
+    // for ANY consultation contact — a buyer's "consultation" prepped a CMA of the
+    // buyer's typed-in location. The ONE starter now reads the calendar row this
+    // action just wrote, refuses a non-seller contact, resolves the seller's
+    // property (listing → valuation request → the booked address → the seller's
+    // home) and the agent's users.id INSIDE the row's tenant, and keys the prep run
+    // on this booking. The tenant a caller may start prep in is the SESSION's —
+    // params.brokerageId is a body field and is never trusted for it (§4).
+    //
+    // TOMBSTONE (lane 87B, §1.3): app/actions/address-lookup.ts::lookupAddressAction —
+    // whose ONLY caller was the ad-hoc beds/baths/sqft enrichment this block used to run
+    // on the typed location — is deleted. Its function lives in the ONE property rail the
+    // presentation builder already runs for every prep (lib/ai-isa/property-lookup-rail.ts
+    // ::lookupPropertyForConversation, purpose listing_intake), whose public-records rung
+    // IS lib/property/address-lookup.ts::lookupPropertyByAddress — the same Perplexity
+    // reader, on the verified tenant, cache and RentCast first.
     if (params.type === "listing_consultation" && params.contactId && data?.id) {
       try {
-        // Resolve agent user_id from agents.id (chain context expects auth user_id)
-        const { data: agentRow } = await supabase
-          .from("agents")
-          .select("user_id")
-          .eq("id", params.agentId)
-          .maybeSingle()
-
-        // Enrich property data from location string via Perplexity address lookup.
-        // If location is empty or lookup fails, the chain still runs but the CMA
-        // step will fail and surface that to the agent.
-        let propertyData: Record<string, any> = { address: params.location ?? null }
-        if (params.location) {
-          try {
-            const { lookupAddressAction } = await import("@/app/actions/address-lookup")
-            // Best-effort split: "123 Main St, Tampa, FL 33601"
-            const parts = params.location.split(",").map((s) => s.trim())
-            const lookup = await lookupAddressAction({
-              address: parts[0] ?? params.location,
-              city: parts[1] ?? "",
-              state: (parts[2] ?? "").split(/\s+/)[0] ?? "",
-              zip: (parts[2] ?? "").split(/\s+/)[1],
-            })
-            propertyData = {
-              address: parts[0] ?? params.location,
-              city: parts[1] ?? null,
-              state: (parts[2] ?? "").split(/\s+/)[0] ?? null,
-              zip: (parts[2] ?? "").split(/\s+/)[1] ?? null,
-              bedrooms: lookup.beds ?? null,
-              bathrooms: lookup.baths ?? null,
-              sqft: lookup.sqft ?? null,
-              propertyType: lookup.propertyType ?? "single_family",
-            }
-          } catch {
-            // Non-fatal — chain CMA step will report missing data
-          }
+        const session = await getAgentContext()
+        if (!session.isAuthenticated || !session.brokerageId) {
+          console.error("[createAppointment] listing prep not started — no session tenant")
+        } else {
+          const { createServiceClient } = await import("@/lib/supabase/service")
+          const { startListingPresentationPrepFromBooking } = await import("@/lib/listing-presentation/booking-prep")
+          const prep = await startListingPresentationPrepFromBooking(createServiceClient(), {
+            calendarEventId: data.id,
+            expectedBrokerageId: session.brokerageId,
+            listingId: params.listingId ?? null,
+            origin: "agent_calendar",
+          })
+          if (prep.status === "error") console.error("[createAppointment] listing prep did not start:", prep.reason)
         }
-
-        const { triggerChainsForEvent } = await import("@/app/actions/workflow-orchestrator")
-        await triggerChainsForEvent({
-          eventType: "listing.appointment_set",
-          brokerageId: params.brokerageId,
-          contactId: params.contactId,
-          agentUserId: agentRow?.user_id ?? null,
-          metadata: {
-            appointment_id: data.id,
-            appointment_date: params.startTime,
-            property_data: propertyData,
-          },
-        })
       } catch (err) {
-        // Non-critical: appointment is scheduled even if chain trigger fails.
-        // The error is logged for follow-up.
-        console.error("[createAppointment] listing-appt-prep chain trigger failed:", err)
+        // Non-critical: the appointment is scheduled even if the prep cannot
+        // start — the listing-presentation-prep cron is the safety net.
+        console.error("[createAppointment] listing prep start threw:", err)
       }
     }
 

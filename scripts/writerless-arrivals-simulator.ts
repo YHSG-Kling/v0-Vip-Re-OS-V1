@@ -441,9 +441,16 @@ function approvalSubjectLayer() {
   check("a refused stamp is read, not swallowed", /subject stamp failed/.test(guardRaw))
 
   // BOTH callers.
+  // Lane 87B: the caller that ALREADY had the entity — lib/kernel/listings.ts
+  // generateListingDescription — was a duplicate description writer and is retired onto
+  // the core below (tombstone in that file). The RULE still holds for any kernel caller
+  // that scans an entity it already has: a guardContent call there must pass subjectId.
   const kernelListings = blankComments(src("lib/kernel/listings.ts"))
-  check("the caller that ALREADY has the entity passes it, so no second write is needed",
-    /subjectId:\s*input\.listingId/.test(kernelListings))
+  const preEntityRule = (s: string) => !/guardContent\(/.test(s) || /guardContent\(\{[\s\S]{0,600}subjectId:/.test(s)
+  check("a caller that ALREADY has the entity passes it (the kernel's one such caller is retired onto the core)",
+    preEntityRule(kernelListings) && /generateListingDescription removed/.test(src("lib/kernel/listings.ts")))
+  control("a pre-entity guardContent call that omits subjectId",
+    !preEntityRule(`const guarded = await guardContent({ content, agentId, brokerageId, contentType: "listing_description" })`))
   // lane 86F: the persist-afterwards caller is the listing-description CORE
   // (lib/listings/listing-description-core.ts) — the body moved out of
   // app/actions/ai-listing-intake.ts so the presentation builder can run it with

@@ -82,11 +82,24 @@ function isFaceRenderProvider(v: unknown): v is FaceRenderProvider {
   return typeof v === "string" && (FACE_RENDER_PROVIDERS as readonly string[]).includes(v)
 }
 
-/** READ side — also what the settings card displays, so it shows the order the doors use. */
+/**
+ * READ side — also what the settings card displays, so it shows the order the doors use.
+ *
+ * D-ID IS ALWAYS FIRST (owner, wave 87: "d-id is always first and the perferred"). The
+ * doors always start D-ID first, whatever the row says, so the READ side pins it first
+ * too: a stored order that led with a backup (a direct row write, or one that predates
+ * the 86H writer check) used to be returned — and displayed — backup-first, reading as a
+ * setting the live avatar did not follow. Backups keep their stored relative order after
+ * it (each at most once); a backup the row leaves out stays off. m667 adds the database
+ * CHECK (live_agent_face_provider_order[1] = 'did') so no stored row can say otherwise.
+ */
 export function normalizeProviderOrder(raw: unknown): FaceRenderProvider[] {
   if (!Array.isArray(raw)) return [...DEFAULT_FACE_PROVIDER_ORDER]
   const cleaned = raw.filter(isFaceRenderProvider)
-  return cleaned.length > 0 ? cleaned : [...DEFAULT_FACE_PROVIDER_ORDER]
+  if (cleaned.length === 0) return [...DEFAULT_FACE_PROVIDER_ORDER]
+  const primary = DEFAULT_FACE_PROVIDER_ORDER[0]
+  const backups = cleaned.filter((p, i) => p !== primary && cleaned.indexOf(p) === i)
+  return [primary, ...backups]
 }
 
 /**

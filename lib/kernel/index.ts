@@ -79,7 +79,7 @@ export {
   saveListingDraft,
   validateListingLaunchReadiness,
   launchListing,
-  generateListingDescription,
+  // generateListingDescription removed (lane 87B) — survivor lib/listings/listing-description-tool.ts
   prefillListingFormFromRecord,
 } from "./listings"
 export type {

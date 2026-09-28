@@ -851,7 +851,7 @@ export interface ConfirmListingAppointmentParams {
 }
 
 export type ConfirmListingAppointmentResult =
-  | { success: true; alreadyConfirmed: boolean; icsSentToContact: boolean; icsSentToAgent: boolean; portalPushed: boolean }
+  | { success: true; alreadyConfirmed: boolean; icsSentToContact: boolean; icsSentToAgent: boolean; portalPushed: boolean; listingPrep: import("@/lib/listing-presentation/booking-prep").StartBookingPrepResult["status"] }
   | { success: false; error: string }
 
 export async function confirmListingAppointment(
@@ -879,7 +879,22 @@ export async function confirmListingAppointment(
     { table: "portal_event_stream", flow: "listing_appointment_confirm", brokerageId: r.brokerage_id },
   )
 
-  return { success: true, alreadyConfirmed: core.alreadyConfirmed, icsSentToContact: core.icsSentToAttendee, icsSentToAgent: core.icsSentToOwner, portalPushed }
+  // ── THE BOOKING STARTS THE SELLER'S LISTING-PRESENTATION PREP (lane 87B) ──
+  // The AI-ISA / voice booking is a TENTATIVE hold until the agent confirms it here
+  // (the starter DEFERS a pending_agent_confirmation row), so this confirm is the
+  // moment the booking becomes real and the seller's CMA + presentation prep starts
+  // — through the ONE starter, on the confirmed row's own tenant (which this call
+  // already pinned). Before this, an AI-booked seller waited for the daily cron.
+  // Idempotent (the run is keyed on this booking); never undoes the confirm.
+  const { startListingPresentationPrepFromBooking } = await import("@/lib/listing-presentation/booking-prep")
+  const prep = await startListingPresentationPrepFromBooking(svc, {
+    calendarEventId: r.id,
+    expectedBrokerageId: params.brokerageId,
+    origin: "ai_isa_confirmed_booking",
+  })
+  if (prep.status === "error") console.error(`[listing-appointment] listing prep did not start for ${r.id}: ${prep.reason}`)
+
+  return { success: true, alreadyConfirmed: core.alreadyConfirmed, icsSentToContact: core.icsSentToAttendee, icsSentToAgent: core.icsSentToOwner, portalPushed, listingPrep: prep.status }
 }
 
 export interface ConfirmDemoAppointmentParams {

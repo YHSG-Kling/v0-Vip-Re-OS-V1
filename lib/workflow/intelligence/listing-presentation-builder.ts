@@ -25,20 +25,21 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 import { runAiCma } from "@/lib/cma/ai-cma-orchestrator"
 import { getStateForms } from "@/lib/state-forms/registry"
-import { generateListingDescriptions, type ListingDescriptionStyle } from "@/lib/listings/listing-description-core"
+import { generateListingDescriptions, DEFAULT_LISTING_DESCRIPTION_STYLE, type ListingDescriptionStyle } from "@/lib/listings/listing-description-core"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 
 /**
- * The description core REQUIRES a target style and the appointment deck has no
- * buyer audience to name, so one is DERIVED from the comp-supported value alone:
- * "luxury" at or above LUXURY_DECK_VALUE_FLOOR, otherwise "first_time_buyer".
- * "family" is never chosen here — it is a familial-status framing the Fair
- * Housing block forbids the writer to lean on. The $1M floor is a stated
- * assumption (published in the lane notes), not a measured market boundary.
+ * THE DECK'S DESCRIPTION STYLE IS THE AGENT'S PICK (owner, wave 87: "listing
+ * description can be an ai tool for agents" — the agent picks the style; no hard
+ * $1M rule). Lane 86F derived it from the CMA mid-value ("luxury" at ≥ $1M,
+ * otherwise "first_time_buyer") — a stated assumption the owner has now ruled
+ * out. An unattended build has no agent at the keyboard, so it writes the
+ * NEUTRAL house style (DEFAULT_LISTING_DESCRIPTION_STYLE, "standard") unless its
+ * caller hands one; the agent restyles from the listing description tool
+ * (app/actions/listings-kernel.ts generateListingDescriptionAction).
  */
-const LUXURY_DECK_VALUE_FLOOR = 1_000_000
-function deckDescriptionStyle(estimatedValueMid: number | null | undefined): ListingDescriptionStyle {
-  return typeof estimatedValueMid === "number" && estimatedValueMid >= LUXURY_DECK_VALUE_FLOOR ? "luxury" : "first_time_buyer"
+function deckDescriptionStyle(picked: ListingDescriptionStyle | null | undefined): ListingDescriptionStyle {
+  return picked ?? DEFAULT_LISTING_DESCRIPTION_STYLE
 }
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -127,6 +128,8 @@ export interface ListingPresentationInput {
     confidenceScore:    number
     aiNarrative:        string
   }
+  /** The agent's picked description style; the neutral house style when absent. */
+  descriptionStyle?: ListingDescriptionStyle | null
 }
 
 export interface ListingPresentationResult {
@@ -323,13 +326,64 @@ function buildSlideDeck(input: {
   ]
 }
 
+// ─── One presentation per appointment ──────────────────────────────────────
+
+/**
+ * The presentation already built for this appointment, in the builder's own
+ * result shape — or null. ONE PER APPOINTMENT (lane 87B): the booking now starts
+ * the prep chain AND the cron is its safety net, so two producers can reach the
+ * same appointment. Whichever arrives second returns the first one's row instead
+ * of buying a second CMA and materialising a second seller drip. m667 adds the
+ * partial UNIQUE index on listing_presentations(appointment_id) that makes the
+ * race loser's insert refuse (23505) rather than land; the insert below re-reads
+ * on that code. Tenant-pinned — the service client bypasses RLS.
+ */
+async function loadPresentationForAppointment(
+  svc: ReturnType<typeof createServiceClient>,
+  brokerageId: string,
+  appointmentId: string,
+): Promise<{ ok: true; result: ListingPresentationResult | null } | { ok: false; error: string }> {
+  const { data, error } = await svc
+    .from("listing_presentations")
+    .select("id, cma_low_value, cma_mid_value, cma_high_value, cma_confidence, cma_narrative, net_sheet, marketing_plan, slide_deck, packet_document_id")
+    .eq("appointment_id", appointmentId)
+    .eq("brokerage_id", brokerageId)
+    .limit(1)
+    .maybeSingle()
+  if (error) return { ok: false, error: `presentation idempotency read refused: ${error.message}` }
+  if (!data) return { ok: true, result: null }
+  const row = data as Record<string, any>
+  return {
+    ok: true,
+    result: {
+      presentationId: row.id,
+      cmaSnapshot: {
+        low: Number(row.cma_low_value ?? 0), mid: Number(row.cma_mid_value ?? 0), high: Number(row.cma_high_value ?? 0),
+        confidence: Number(row.cma_confidence ?? 0), narrative: row.cma_narrative ?? "",
+      },
+      netSheet: (row.net_sheet as NetSheetRow[] | null) ?? [],
+      marketingPlan: row.marketing_plan as MarketingPlan,
+      slideDeck: (row.slide_deck as SlideDeckSlide[] | null) ?? [],
+      packetDocumentId: row.packet_document_id ?? null,
+    },
+  }
+}
+
 // ─── Main builder ──────────────────────────────────────────────────────────
 
 export async function buildListingPresentation(
   input: ListingPresentationInput
-): Promise<{ success: boolean; result?: ListingPresentationResult; error?: string }> {
+): Promise<{ success: boolean; result?: ListingPresentationResult; error?: string; reused?: boolean }> {
   try {
     const svc = createServiceClient()
+
+    // Idempotent per appointment — BEFORE any paid step (enrichment, CMA, copy).
+    // A refused read is not "absent": building on it could double the seller's drip.
+    if (input.appointmentId) {
+      const prior = await loadPresentationForAppointment(svc, input.brokerageId, input.appointmentId)
+      if (!prior.ok) return { success: false, error: prior.error }
+      if (prior.result) return { success: true, result: prior.result, reused: true }
+    }
 
     // 0a. APPOINTMENT-PREP ADDITION: property facts through THE ONE property
     //     rail (lib/ai-isa/property-lookup-rail.ts) with purpose "listing_intake":
@@ -481,7 +535,8 @@ export async function buildListingPresentation(
           agentId:     agentRecordId,
           userId:      input.agentUserId ?? null,
           listingId:   input.listingId ?? null,
-          style:       deckDescriptionStyle(cma.estimatedValueMid),
+          style:       deckDescriptionStyle(input.descriptionStyle),
+          source:      "listing_presentation",
           propertyData: {
             address:  input.propertyAddress,
             city:     input.city ?? null,
@@ -604,6 +659,12 @@ export async function buildListingPresentation(
     }).select("id").single()
 
     if (presErr || !pres) {
+      // Lost the one-per-appointment race (m667's partial unique index): the
+      // other producer's row IS this appointment's presentation — return it.
+      if ((presErr as { code?: string } | null)?.code === "23505" && input.appointmentId) {
+        const winner = await loadPresentationForAppointment(svc, input.brokerageId, input.appointmentId)
+        if (winner.ok && winner.result) return { success: true, result: winner.result, reused: true }
+      }
       return { success: false, error: presErr?.message ?? "Could not save presentation" }
     }
 

@@ -1,13 +1,20 @@
 "use client"
 
 // ============================================================
-// PANEL — Listing Copy Enhancer
-// Rewrites a listing's public remarks for a target buyer style.
+// PANEL — Listing Copy (the agent's AI listing-description tool in Marketing Studio)
 //
-// READ-ONLY BY DESIGN. enhanceListingDescription returns copy; it does not
-// write listings.public_remarks. The listing rail owns that column
-// (app/actions/listings-kernel.ts), so this surface hands the agent the text
-// to review and paste rather than becoming a second writer for `listings`.
+// Lane 87B (owner wave 87: "listing description can be an ai tool for agents and can
+// assist with a new listing marketing"). This panel was the "Listing Copy Enhancer" on
+// enhanceListingDescription — a third description writer with a "family" buyer style
+// (familial status, Fair Housing). It now reaches the ONE tool
+// (app/actions/listings-kernel.ts generateListingDescriptionAction →
+// lib/listings/listing-description-tool.ts → the server-only core): the agent picks a
+// style from the ONE vocabulary, the copy is written compliance-first from the listing's
+// facts AND its current remarks, compliance notes come back with it, a hard Fair-Housing
+// flag withholds it, and the launch social caption arrives in the same call.
+//
+// READ-ONLY BY DESIGN. Nothing here writes listings.public_remarks — the listing rail
+// owns that column; the agent copies the text or saves it from the listing page.
 // ============================================================
 
 import { useState } from "react"
@@ -27,42 +34,62 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Loader2, PenLine, Copy, AlertCircle } from "lucide-react"
-import { enhanceListingDescription } from "@/app/actions/ai-marketing-automation"
+import { Loader2, PenLine, Copy, AlertCircle, TriangleAlert, Megaphone } from "lucide-react"
+import { generateListingDescriptionAction } from "@/app/actions/listings-kernel"
+import {
+  LISTING_DESCRIPTION_STYLES,
+  LISTING_DESCRIPTION_STYLE_LABELS,
+  DEFAULT_LISTING_DESCRIPTION_STYLE,
+  type ListingDescriptionStyle,
+} from "@/lib/listings/listing-description-styles"
 
-type Style = "luxury" | "family" | "investment" | "first_time_buyer"
+type Style = ListingDescriptionStyle
 
-const STYLES: { value: Style; label: string }[] = [
-  { value: "luxury", label: "Luxury buyer" },
-  { value: "family", label: "Family buyer" },
-  { value: "investment", label: "Investor" },
-  { value: "first_time_buyer", label: "First-time buyer" },
-]
+const STYLES: { value: Style; label: string }[] = LISTING_DESCRIPTION_STYLES.map((value) => ({
+  value,
+  label: LISTING_DESCRIPTION_STYLE_LABELS[value],
+}))
 
 interface Props {
+  /** agents.id — informational only: the action resolves identity from the session,
+   *  and a broker without an agent profile writes in the listing agent's voice. */
   agentId: string
   listings: Array<{ id: string; address: string; city: string }>
 }
 
 export function ListingCopyPanel({ agentId, listings }: Props) {
   const [listingId, setListingId] = useState("")
-  const [style, setStyle] = useState<Style>("family")
+  const [style, setStyle] = useState<Style>(DEFAULT_LISTING_DESCRIPTION_STYLE)
   const [isRunning, setIsRunning] = useState(false)
   const [enhanced, setEnhanced] = useState<string | null>(null)
+  const [socialCaption, setSocialCaption] = useState<string | null>(null)
+  const [warnings, setWarnings] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
   async function handleRun() {
-    if (!listingId || !agentId) return
+    if (!listingId) return
     setIsRunning(true)
     setError(null)
     setEnhanced(null)
+    setSocialCaption(null)
+    setWarnings([])
     setCopied(false)
     try {
-      const res = await enhanceListingDescription(listingId, agentId, style)
-      // Report the SERVER's verdict — a refusal is not an empty result.
-      if (!res.success) setError(res.error ?? "Could not enhance the description")
-      else setEnhanced(res.enhanced ?? "")
+      const res = (await generateListingDescriptionAction({ listingId, style })) as {
+        success: boolean
+        error?: string
+        description?: string
+        socialCaption?: string | null
+        warnings?: string[]
+      }
+      setWarnings(res.warnings ?? [])
+      // Report the SERVER's verdict — a refusal (or a held draft) is not an empty result.
+      if (!res.success) setError(res.error ?? "Could not draft the description")
+      else {
+        setEnhanced(res.description ?? "")
+        setSocialCaption(res.socialCaption ?? null)
+      }
     } catch {
       setError("Unexpected error — please try again")
     } finally {
@@ -75,17 +102,18 @@ export function ListingCopyPanel({ agentId, listings }: Props) {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <PenLine className="h-5 w-5 text-violet-600" />
-          Listing Copy Enhancer
+          Listing Copy
         </CardTitle>
         <CardDescription>
-          Rewrite a listing&apos;s public remarks for a specific buyer type. Review and
-          paste into the listing — nothing is published from here.
+          Draft a listing&apos;s MLS description and launch social caption with AI. You pick the
+          style; Fair Housing rules are written into the draft. Review and copy — nothing is
+          published or saved to the listing from here.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {!agentId && (
-          <p className="text-xs text-yellow-800 bg-yellow-50 rounded p-2">
-            No agent profile resolved for your account — finish Settings → Profile first.
+          <p className="text-xs text-muted-foreground bg-muted/40 rounded p-2">
+            No agent profile on your account — drafts are written in the listing agent&apos;s voice.
           </p>
         )}
 
@@ -107,7 +135,7 @@ export function ListingCopyPanel({ agentId, listings }: Props) {
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label className="text-xs font-medium">Buyer Style</Label>
+            <Label className="text-xs font-medium">Style</Label>
             <Select value={style} onValueChange={(v) => setStyle(v as Style)}>
               <SelectTrigger className="h-8 text-sm">
                 <SelectValue />
@@ -125,18 +153,18 @@ export function ListingCopyPanel({ agentId, listings }: Props) {
 
         <Button
           onClick={handleRun}
-          disabled={isRunning || !listingId || !agentId}
+          disabled={isRunning || !listingId}
           className="w-full bg-violet-600 hover:bg-violet-700"
         >
           {isRunning ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Rewriting...
+              Drafting...
             </>
           ) : (
             <>
               <PenLine className="mr-2 h-4 w-4" />
-              Rewrite for this buyer
+              Draft with AI
             </>
           )}
         </Button>
@@ -148,10 +176,17 @@ export function ListingCopyPanel({ agentId, listings }: Props) {
           </p>
         )}
 
+        {warnings.length > 0 && (
+          <div className="text-xs text-amber-700 space-y-0.5">
+            <p className="font-medium flex items-center gap-1"><TriangleAlert className="h-3.5 w-3.5" />Compliance notes</p>
+            {warnings.slice(0, 6).map((w, i) => <p key={i}>{w}</p>)}
+          </div>
+        )}
+
         {enhanced !== null && (
           <div className="space-y-2 border-t pt-3">
             <div className="flex items-center justify-between">
-              <span className="text-sm font-medium">Suggested copy</span>
+              <span className="text-sm font-medium">Suggested MLS description</span>
               <Button
                 variant="outline"
                 size="sm"
@@ -167,6 +202,18 @@ export function ListingCopyPanel({ agentId, listings }: Props) {
             <p className="text-sm whitespace-pre-wrap rounded-md bg-muted/40 p-3 leading-relaxed">
               {enhanced}
             </p>
+            {socialCaption && (
+              <div className="space-y-1">
+                <span className="text-sm font-medium flex items-center gap-1.5"><Megaphone className="h-3.5 w-3.5" />Launch social caption</span>
+                <p className="text-sm whitespace-pre-wrap rounded-md bg-muted/40 p-3 leading-relaxed">{socialCaption}</p>
+              </div>
+            )}
+            <a
+              className="text-xs text-violet-700 underline"
+              href={`/dashboard/listings/${listingId}/lifecycle`}
+            >
+              Open the listing to edit and save the description
+            </a>
           </div>
         )}
       </CardContent>

@@ -87,6 +87,18 @@ const SYSTEM_ONLY_TYPES = new Set([
   "enrichment",
 ])
 
+/**
+ * The avatar / avatar-video provider types, whose answer is ALWAYS D-ID (owner, wave 87:
+ * "d-id is always first and the perferred"). lib/marketing/video-provider-resolver.ts and
+ * lib/providers/dispatch.ts already coerce a non-D-ID answer at their call sites; the
+ * registry now refuses to GIVE one, so no future caller can read another vendor first.
+ */
+const AVATAR_PROVIDER_TYPES = new Set(["video", "avatar"])
+function avatarProviderKeyAllowed(providerType: string, key: string): boolean {
+  if (key === SYSTEM_DEFAULTS[providerType]) return true
+  return providerType === "video" && key === "upload"
+}
+
 // ─── RESOLVE PROVIDER ─────────────────────────────────────────────────────────
 
 /** The narrow client surface the core reads through (service client, or a test double). */
@@ -153,7 +165,18 @@ export async function resolveProviderCore(
   // the system default. The per-user/team/brokerage cascade does not apply.
   if (SYSTEM_ONLY_TYPES.has(providerType)) {
     const platformOverride = await readOverride("superadmin", null)
-    if (platformOverride) return answer(platformOverride, "superadmin")
+    if (platformOverride) {
+      // D-ID IS ALWAYS FIRST (owner, wave 87: "d-id is always first and the
+      // perferred"). The avatar/video vendor is D-ID; an override row naming any
+      // other vendor for these types (a stale 'heygen', a 'simli' written by hand)
+      // is not honoured by the registry itself — the answer is D-ID, and 'upload'
+      // (agent-provided footage, no avatar render) is the one other video key.
+      if (AVATAR_PROVIDER_TYPES.has(providerType) && !avatarProviderKeyAllowed(providerType, platformOverride.provider_key)) {
+        console.error(`[providers] superadmin override '${platformOverride.provider_key}' for ${providerType} ignored — D-ID is always first`)
+        return { providerKey: systemDefault, config: {}, scope: "system_default" }
+      }
+      return answer(platformOverride, "superadmin")
+    }
     return { providerKey: systemDefault, config: {}, scope: "system_default" }
   }
 

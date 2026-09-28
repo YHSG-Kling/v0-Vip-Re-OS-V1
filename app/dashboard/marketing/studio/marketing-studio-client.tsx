@@ -2068,7 +2068,8 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
               <PerformanceIntelligencePanel brokerageId={brokerageId} />
             </div>
 
-            {/* Row 4: Listing Copy Enhancer (read-only rewrite) */}
+            {/* Row 4: Listing Copy — the agent's AI listing-description tool (lane 87B;
+                read-only: the one tool/core, saved from the listing page) */}
             <div className="grid lg:grid-cols-2 gap-6">
               <ListingCopyPanel agentId={agentId} listings={listings} />
             </div>

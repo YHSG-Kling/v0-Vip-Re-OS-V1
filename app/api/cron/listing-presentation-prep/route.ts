@@ -45,6 +45,13 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { buildListingPresentation } from "@/lib/workflow/intelligence/listing-presentation-builder"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import {
+  LISTING_APPOINTMENT_BOOKING_EVENT_TYPES,
+  decideSafetyNetAction,
+  prepRunStatusesForBooking,
+  resolveBookingPrepContext,
+  startListingPresentationPrepFromBooking,
+} from "@/lib/listing-presentation/booking-prep"
 
 /**
  * How far ahead a listing appointment is picked up for presentation prep.
@@ -85,34 +92,29 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ phase: "deliver", ...delivery })
   }
 
-  // Find every listing consultation inside the drip runway. See the header: the
+  // Find every listing appointment inside the drip runway. See the header: the
   // window has to be wide enough that planPresentationSections still has room to
   // spread the seller's sections between now and the appointment.
   const now = new Date().toISOString()
   const horizon = new Date(Date.now() + PREP_LOOKAHEAD_DAYS * 86_400_000).toISOString()
 
-  // calendar_events replaced appointments — appointments was a writer-less legacy twin (burn-down round 4 repoint).
-  // Mapping: scheduled_at→start_at, appointment_type→event_type.
-  //
-  // TWO WRITERS put 'listing_appointment' here and they do NOT shape the row the same way:
-  //
-  //   lib/application/listing-lifecycle.ts  (agent books a consult on an existing listing)
-  //     entity_type='listing', entity_id=listings.id, metadata.agent_id = a USERS id,
-  //     address on the listings row.
-  //
-  //   app/actions/home-value.ts             (a home-value SELLER books their own appointment)
-  //     entity_type='agent',   entity_id=agents.id,   metadata.agent_id = an AGENTS id,
-  //     and there is NO listings row at all — this seller is a prospect. Their subject
-  //     property lives on valuation_requests, joined by metadata.contact_id.
-  //
-  // agent_user_id is the one column BOTH writers fill with a users.id, so it — not
-  // metadata.agent_id — is what the builder's agentUserId is resolved from below.
+  // THE SAFETY NET (lane 87B). The prep now STARTS FROM THE BOOKING: every
+  // listing-appointment booking path hands its calendar_events row to
+  // lib/listing-presentation/booking-prep.ts::startListingPresentationPrepFromBooking
+  // (the agent calendar, the listing consult, the AI-ISA/voice booking at the
+  // agent's confirm, the seller's own self-booking from the report page or the
+  // portal). This scan catches the bookings that missed that event, and reads
+  // BOTH spellings of a listing appointment ("listing_appointment" and the agent
+  // calendar's "listing_consultation" — LISTING_APPOINTMENT_BOOKING_EVENT_TYPES).
+  // The seller check, the tenant (the booking row's own brokerage_id), the
+  // seller's property and the agent's users.id are resolved by the SAME core the
+  // booking paths use — never a second resolver here.
   const { data: appointments, error: apptErr } = await svc
     .from("calendar_events")
-    .select("id, brokerage_id, entity_type, entity_id, start_at, event_type, metadata, agent_user_id")
+    .select("id, brokerage_id, start_at, event_type")
     .gte("start_at", now)
     .lte("start_at", horizon)
-    .eq("event_type", "listing_appointment")
+    .in("event_type", [...LISTING_APPOINTMENT_BOOKING_EVENT_TYPES])
     .order("start_at", { ascending: true })
   // A refused read is a FAILED tick, not a quiet one. Reporting scanned:0 here
   // would read exactly like "no appointments booked".
@@ -121,98 +123,90 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   }
 
   if (!appointments || appointments.length === 0) {
-    return NextResponse.json({ scanned: 0, built: 0, skipped: 0, deferred: 0 })
+    return NextResponse.json({ scanned: 0, built: 0, started: 0, in_progress: 0, skipped: 0, refused: 0, deferred: 0 })
   }
 
   let built = 0
+  let started = 0
+  let inProgress = 0
   let skipped = 0
+  let refused = 0
   let deferred = 0
   const errors: Array<{ appointmentId: string; error: string }> = []
 
   for (const appt of appointments) {
-    const apptAny = appt as any
+    const apptAny = appt as { id: string; brokerage_id: string | null; start_at: string }
+    if (!apptAny.brokerage_id) { refused++; continue }
 
-    if (built >= MAX_BUILDS_PER_TICK) { deferred++; continue }
+    if (built + started >= MAX_BUILDS_PER_TICK) { deferred++; continue }
 
-    // Idempotency — skip if a presentation already exists for this appointment.
+    // Idempotency — a presentation for this appointment already exists.
     // An unreadable row is NOT treated as absent: building on a failed read
     // would produce a second presentation (and a second drip) for one seller.
     const { data: existing, error: existErr } = await svc
       .from("listing_presentations")
       .select("id")
       .eq("appointment_id", appt.id)
+      .eq("brokerage_id", apptAny.brokerage_id)
       .maybeSingle()
     if (existErr) {
       errors.push({ appointmentId: appt.id, error: `idempotency read failed: ${existErr.message}` })
       continue
     }
-    if (existing) {
-      skipped++
+    const runs = existing
+      ? { ok: true as const, statuses: [] as string[] }
+      : await prepRunStatusesForBooking(svc, { brokerageId: apptAny.brokerage_id, calendarEventId: appt.id })
+    if (!runs.ok) {
+      errors.push({ appointmentId: appt.id, error: `prep run read failed: ${runs.error}` })
+      continue
+    }
+    const action = decideSafetyNetAction({ presentationExists: !!existing, runStatuses: runs.statuses })
+    if (action === "done") { skipped++; continue }
+    if (action === "in_progress") { inProgress++; continue }
+
+    if (action === "start_prep") {
+      // The booking missed its event — start it exactly as the booking would have.
+      const r = await startListingPresentationPrepFromBooking(svc, { calendarEventId: appt.id, origin: "cron_safety_net" })
+      if (r.status === "started" || r.status === "deduped") started++
+      else if (r.status === "refused") refused++
+      else if (r.status === "deferred") deferred++
+      else if (r.status === "skipped") skipped++
+      else errors.push({ appointmentId: appt.id, error: "reason" in r ? r.reason : "prep start failed" })
       continue
     }
 
-    // The subject property. Resolved from whichever table this appointment's
-    // origin actually records it in — see resolveSubjectProperty. A prospect who
-    // came through /home-value has no listings row, and reading only listings is
-    // what used to drop every one of them here.
-    const contactId: string | null = apptAny.metadata?.contact_id ?? null
-    const subject = await resolveSubjectProperty(svc, {
-      brokerageId: apptAny.brokerage_id,
-      entityType:  apptAny.entity_type,
-      entityId:    apptAny.entity_id,
-      contactId,
-      // The address the seller booked ABOUT, when the booking recorded one. Used
-      // to pick the right valuation_requests row for a homeowner who has asked
-      // about more than one property — never as the address itself, because it
-      // carries no state and the CMA cannot run without one.
-      bookedAddress: typeof apptAny.metadata?.property_address === "string"
-        ? apptAny.metadata.property_address
-        : null,
-    })
-    // A refused read is not an absent property. Treating it as "no address" would
-    // silently skip a seller whose row is right there, so it is reported instead.
-    if (subject.error) {
-      errors.push({ appointmentId: appt.id, error: `subject property lookup failed: ${subject.error}` })
+    // action === "build_presentation": the prep run ended without a deck. Build
+    // the presentation directly (the net's net), for the SAME seller and property
+    // the core resolves — a non-seller booking is refused here too.
+    const resolved = await resolveBookingPrepContext(svc, { calendarEventId: appt.id })
+    if (!resolved.ok) {
+      if (resolved.outcome === "error") errors.push({ appointmentId: appt.id, error: resolved.reason })
+      else if (resolved.outcome === "refused") refused++
+      else if (resolved.outcome === "deferred") deferred++
+      else skipped++
       continue
     }
+    const ctx = resolved.context
     // Honest skip: nothing on file names this property, or names it without a
     // state (listing_presentations.state is NOT NULL and the CMA is state-scoped).
     // Nothing is invented to get past this line.
-    if (!subject.propertyAddress || !subject.state) {
-      skipped++
-      continue
-    }
-
-    // The USERS id. agent_user_id is the column both writers fill with one;
-    // metadata.agent_id is a users.id from the listing lane and an AGENTS id from
-    // the home-value lane, so it is RESOLVED, never substituted. Passing an
-    // agents.id through would violate listing_presentations.agent_user_id's FK to
-    // users(id) and fail the whole build.
-    const agentUserId: string | null = await resolveAppointmentAgentUserId(svc, {
-      agentUserIdColumn: apptAny.agent_user_id ?? null,
-      metadataAgentId:   apptAny.metadata?.agent_id ?? null,
-    })
+    if (!ctx.property.propertyAddress || !ctx.property.state) { skipped++; continue }
 
     const result = await buildListingPresentation({
-      brokerageId:     apptAny.brokerage_id,
-      agentUserId,
-      contactId,
+      brokerageId:     ctx.brokerageId,
+      agentUserId:     ctx.agentUserId,
+      contactId:       ctx.contactId,
       appointmentId:   appt.id,
-      appointmentAt:   apptAny.start_at,
-      // The listing this appointment is on — carries the seller's recorded
-      // upgrades into the CMA. Null for a home-value prospect, who has none.
-      listingId:       subject.listingId,
-      propertyAddress: subject.propertyAddress,
-      state:           subject.state,
-      city:            subject.city,
-      zip:             subject.zip,
-      // Real, seller-reported property facts when the home-value form captured
-      // them — they sharpen the CMA. Absent for the listings path, which lets
-      // the builder's enrichment chain fill them in as before.
-      bedrooms:        subject.bedrooms,
-      bathrooms:       subject.bathrooms,
-      sqft:            subject.sqft,
-      yearBuilt:       subject.yearBuilt,
+      appointmentAt:   ctx.startAt,
+      listingId:       ctx.property.listingId,
+      propertyAddress: ctx.property.propertyAddress,
+      state:           ctx.property.state,
+      city:            ctx.property.city,
+      zip:             ctx.property.zip,
+      bedrooms:        ctx.property.bedrooms,
+      bathrooms:       ctx.property.bathrooms,
+      sqft:            ctx.property.sqft,
+      yearBuilt:       ctx.property.yearBuilt,
     })
 
     if (result.success) {
@@ -223,12 +217,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       try {
         const { queueListingPitchReel } = await import("@/lib/video/listing-pitch-reel")
         await queueListingPitchReel(svc, {
-          brokerageId: apptAny.brokerage_id, agentUserId,
-          appointmentId: appt.id, address: subject.propertyAddress,
-          // The seller's contact id (already resolved above for
-          // buildListingPresentation) — resolves the seller's own language
-          // for the pitch narration (owner ruling, wave 51/52).
-          contactId,
+          brokerageId: ctx.brokerageId, agentUserId: ctx.agentUserId,
+          appointmentId: appt.id, address: ctx.property.propertyAddress,
+          // The seller's contact id — resolves the seller's own language for the
+          // pitch narration (owner ruling, wave 51/52).
+          contactId: ctx.contactId,
         })
       } catch { /* pitch reel is additive */ }
     }
@@ -238,8 +231,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   return NextResponse.json({
     scanned: appointments.length,
     lookahead_days: PREP_LOOKAHEAD_DAYS,
+    // Prep runs the net started for bookings that missed their event.
+    started,
+    // Presentations the net built directly (the prep run ended without one).
     built,
+    in_progress: inProgress,
     skipped,
+    // Not a seller / not a listing appointment / not in a tenant — never prepped.
+    refused,
     // Over the per-tick build ceiling — picked up by tomorrow's tick, still
     // inside the runway. Reported so a ceiling that is too low is visible.
     deferred,
@@ -247,151 +246,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   })
 }
 
-// ───────────────────────────────────────────────────────────────────────────
-// SUBJECT PROPERTY RESOLUTION
-//
-// The CMA needs a real address and a real state. Which table holds them depends
-// on where the appointment came from, and there are exactly two origins (see the
-// note on the scan query above):
-//
-//   1. a listing consult   → listings.address/city/state/zip, via entity_id.
-//   2. a home-value seller → they are a PROSPECT. No listings row exists, so
-//      reading only listings meant `!propertyAddress` was true for every one of
-//      them and they were counted as `skipped`. No presentation, no section
-//      drip, no chapter reels — for exactly the sellers this lane exists to
-//      serve. Their property is on valuation_requests, keyed by contact_id.
-//
-// home_value_estimates also carries a property_address, but it has no state
-// column and every estimate hangs off a valuation_request (valuation_request_id
-// is NOT NULL, and valuation_requests.property_address is NOT NULL), so it can
-// never resolve a case valuation_requests cannot. It is deliberately not read.
-// ───────────────────────────────────────────────────────────────────────────
-
-interface SubjectProperty {
-  propertyAddress: string | null
-  state:           string | null
-  city:            string | null
-  zip:             string | null
-  /** Only ever a real listings.id — null for a prospect, who has no listing. */
-  listingId:       string | null
-  bedrooms:        number | null
-  bathrooms:       number | null
-  sqft:            number | null
-  yearBuilt:       number | null
-  /** Set when a read was REFUSED — distinct from "this seller has no property on file". */
-  error?:          string
-}
-
-const NO_SUBJECT: SubjectProperty = {
-  propertyAddress: null, state: null, city: null, zip: null,
-  listingId: null, bedrooms: null, bathrooms: null, sqft: null, yearBuilt: null,
-}
-
-/** Loose address comparison for picking WHICH valuation_request — punctuation and
- *  casing differ between what the seller typed and what the booking recorded. */
-function addressKey(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()
-}
-
-async function resolveSubjectProperty(
-  svc: ReturnType<typeof createServiceClient>,
-  args: {
-    brokerageId: string
-    entityType: string | null
-    entityId: string | null
-    contactId: string | null
-    bookedAddress: string | null
-  },
-): Promise<SubjectProperty> {
-  // ── 1. The listing path, unchanged. ──────────────────────────────────────
-  if (args.entityType === "listing" && args.entityId) {
-    const { data: listing, error } = await svc
-      .from("listings")
-      .select("address, city, state, zip")
-      .eq("id", args.entityId)
-      .maybeSingle()
-    if (error) return { ...NO_SUBJECT, error: `listings read: ${error.message}` }
-    if (listing) {
-      return {
-        ...NO_SUBJECT,
-        propertyAddress: (listing as any).address ?? null,
-        state:           (listing as any).state   ?? null,
-        city:            (listing as any).city    ?? null,
-        zip:             (listing as any).zip     ?? null,
-        listingId:       args.entityId,
-      }
-    }
-    // The event points at a listing that is gone. Fall through to the contact's
-    // valuation request rather than dropping the appointment silently.
-  }
-
-  // ── 2. The home-value path. ──────────────────────────────────────────────
-  if (!args.contactId) return NO_SUBJECT
-
-  const { data: requests, error } = await svc
-    .from("valuation_requests")
-    .select("property_address, city, state, zip_code, bedrooms, bathrooms, square_feet, year_built, submitted_at")
-    .eq("contact_id", args.contactId)
-    // Tenant anchor: the service client bypasses RLS, so the brokerage is explicit.
-    .eq("brokerage_id", args.brokerageId)
-    .order("submitted_at", { ascending: false })
-    .limit(10)
-  if (error) return { ...NO_SUBJECT, error: `valuation_requests read: ${error.message}` }
-  if (!requests || requests.length === 0) return NO_SUBJECT
-
-  // A homeowner may have asked about more than one address. Prefer the request
-  // for the property the appointment was actually booked about; otherwise the
-  // most recent one they submitted.
-  let chosen: any = requests[0]
-  if (args.bookedAddress) {
-    const want = addressKey(args.bookedAddress)
-    const match = requests.find(
-      (r: any) => typeof r.property_address === "string" && addressKey(r.property_address) === want,
-    )
-    if (match) chosen = match
-  }
-
-  return {
-    propertyAddress: chosen.property_address ?? null,
-    state:           chosen.state            ?? null,
-    city:            chosen.city             ?? null,
-    zip:             chosen.zip_code         ?? null,
-    // A prospect has no listing. Never point listingId at the agents.id in
-    // entity_id — different id space, and it would poison the upgrade lookup.
-    listingId:       null,
-    bedrooms:        typeof chosen.bedrooms     === "number" ? chosen.bedrooms     : null,
-    bathrooms:       typeof chosen.bathrooms    === "number" ? chosen.bathrooms    : null,
-    sqft:            typeof chosen.square_feet  === "number" ? chosen.square_feet  : null,
-    yearBuilt:       typeof chosen.year_built   === "number" ? chosen.year_built   : null,
-  }
-}
-
-/**
- * The appointment's agent as a USERS id.
- *
- * `agent_user_id` is the column both writers fill with one, so it is preferred.
- * `metadata.agent_id` is only consulted when that column is empty, and then it is
- * RESOLVED rather than trusted: it holds a users.id on listing-lifecycle events
- * and an agents.id on home-value ones, and handing an agents.id to the builder
- * violates listing_presentations.agent_user_id → users(id) and fails the build.
- */
-async function resolveAppointmentAgentUserId(
-  svc: ReturnType<typeof createServiceClient>,
-  args: { agentUserIdColumn: string | null; metadataAgentId: string | null },
-): Promise<string | null> {
-  if (args.agentUserIdColumn) return args.agentUserIdColumn
-  if (!args.metadataAgentId) return null
-
-  // Is it already a users.id?
-  const { data: user, error: userErr } = await svc
-    .from("users").select("id").eq("id", args.metadataAgentId).maybeSingle()
-  if (userErr) {
-    console.error(`[listing-presentation-prep] users lookup for ${args.metadataAgentId} refused: ${userErr.message}`)
-    return null
-  }
-  if (user) return args.metadataAgentId
-
-  // Then it is an agents.id — map it to the users.id it belongs to.
-  const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
-  return await resolveAgentRecordToUserId(args.metadataAgentId)
-}
+// SUBJECT PROPERTY / AGENT RESOLUTION — moved (lane 87B) to the ONE core every
+// booking path uses: lib/listing-presentation/booking-prep.ts
+// (resolveBookingPrepContext → pickSellerProperty / resolveBookingAgentUserId).
+// The listing → valuation_request order this file carried is preserved there, with
+// the seller check in front of it and the caller's captured property, the booking's
+// own address and the seller's home address added behind it.

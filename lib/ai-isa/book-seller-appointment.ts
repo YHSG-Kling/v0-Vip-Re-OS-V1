@@ -33,7 +33,7 @@ import { promoteLeadToContactService } from "@/lib/contact-promotion"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
-import { startRun } from "@/lib/workflow-orchestrator/engine"
+import { startListingPresentationPrepFromBooking } from "@/lib/listing-presentation/booking-prep"
 
 export interface BookSellerListingAppointmentParams {
   brokerageId: string
@@ -199,26 +199,28 @@ export async function bookSellerListingAppointment(
     params.propertyData ??
     (params.location ? { address: params.location } : {})
 
+  // THROUGH THE ONE BOOKING STARTER (lane 87B). It reads the row just scheduled (its
+  // tenant is params.brokerageId, asserted), proves the contact is a SELLER (this
+  // milestone's converted contact carries contact_type='seller' from the lead's
+  // intent), takes the seller's property from what this call captured, and keys the
+  // run on the booking row — the same key every other booking path and the cron
+  // safety net use. scheduleISAAppointment stamps 'isa_appointment', which is an ISA
+  // meeting of ANY kind, so this caller — which KNOWS it is booking a listing
+  // appointment — says so explicitly (isaListingAppointment).
   let chainRunId: string | undefined
   let chainDeduped: boolean | undefined
-  try {
-    const run = await startRun({
-      chainKey: "listing-appt-prep",
-      brokerageId: params.brokerageId,
-      contactId,
-      agentUserId,
-      triggerEvent: "listing.appointment_set",
-      triggerEventId: calendarEventId, // stable per-appointment key → idempotent rerun
-      metadata: {
-        appointment_id: calendarEventId,
-        appointment_date: params.startAt.toISOString(),
-        property_data: propertyData,
-      },
-    })
-    chainRunId = run.runId
-    chainDeduped = run.deduped
-  } catch (err) {
-    console.error("[book-seller-appointment] listing-appt-prep chain start failed:", err)
+  const prep = await startListingPresentationPrepFromBooking(svc, {
+    calendarEventId,
+    expectedBrokerageId: params.brokerageId,
+    isaListingAppointment: true,
+    propertyHint: propertyData,
+    origin: "ai_isa_seller_milestone",
+  })
+  if ("runId" in prep) {
+    chainRunId = prep.runId
+    chainDeduped = prep.status === "deduped"
+  } else {
+    console.error(`[book-seller-appointment] listing prep not started (${prep.status}): ${prep.reason}`)
   }
 
   return {

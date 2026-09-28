@@ -28,10 +28,10 @@ import {
   saveListingDraft,
   validateListingLaunchReadiness,
   launchListing,
-  generateListingDescription,
   prefillListingFormFromRecord,
   type ListingUpdate,
 } from "@/lib/kernel/listings"
+import { isValidUUID } from "@/lib/validations"
 
 // ─── Auth context helper ──────────────────────────────────────────────────────
 
@@ -818,17 +818,42 @@ export async function launchListingAction(params: {
 // Nothing it did is missing on the survivor. Do not reintroduce a second writer.
 
 // ─── Action: generateListingDescriptionAction ────────────────────────────────
+//
+// THE AGENT'S AI LISTING-DESCRIPTION TOOL (lane 87B; owner wave 87: "listing
+// description can be an ai tool for agents and can assist with a new listing
+// marketing"). Session-gated door onto the ONE server-only writer
+// (lib/listings/listing-description-tool.ts → lib/listings/listing-description-core.ts):
+// the agent PICKS the style (lib/listings/listing-description-styles.ts), the copy
+// is written compliance-first (Fair Housing IN the prompt, postcheckScript +
+// guardContent on the MLS copy), warnings come back to the agent, and a hard
+// Fair-Housing flag withholds the copy for a human. It returns the MLS description
+// AND the marketing/social/email variants, and never writes public_remarks — the
+// agent saves the edited text through saveListingDraftAction.
+//
+// TOMBSTONE (§1.1 + §6): this door used to call lib/kernel/listings.ts
+// generateListingDescription — a SECOND description writer (a bare generateText on
+// a hard-coded model, off the routing table and the AI cost ledger, no compliance
+// block in the prompt, and a "family" style that is a familial-status framing).
+// Everything it had that the core lacked — the tenant-pinned listing read — is in
+// draftListingDescriptionForListing; the kernel writer is deleted (tombstone at
+// lib/kernel/listings.ts section 9).
 
 export async function generateListingDescriptionAction(params: {
   listingId: string
-  style?: "luxury" | "family" | "investment" | "standard"
+  style?: string
+  highlights?: string[]
 }) {
   const ctx = await resolveCallerContext()
-  if ("error" in ctx) return { success: false, error: ctx.error }
+  if ("error" in ctx) return { success: false as const, error: ctx.error }
+  if (!isValidUUID(params.listingId)) return { success: false as const, error: "Invalid listing ID" }
 
-  // TENANT ANCHOR. generateListingDescription reads the listing by id alone; the
-  // brokerage check belongs at this boundary so a foreign id is refused by name
-  // rather than producing marketing copy for someone else's property.
+  // TENANT = the SESSION's (ctx.brokerageId); the listing must be in it (the tool
+  // re-reads it pinned to that tenant). IDENTITY CLASS: ctx.agentId is an agents.id
+  // (null for a broker/admin with no agent profile — the tool then writes in the
+  // listing agent's voice); ctx.userId is the users.id the cost ledger books.
+  //
+  // TENANT ANCHOR at the door (kept from the pre-87B action): a foreign id is
+  // refused by name before any model spend, on the caller's own client.
   const supabase = await createClient()
   const { data: owned, error: ownedError } = await supabase
     .from("listings")
@@ -836,20 +861,52 @@ export async function generateListingDescriptionAction(params: {
     .eq("id", params.listingId)
     .eq("brokerage_id", ctx.brokerageId)
     .maybeSingle()
+  if (ownedError) return { success: false as const, error: `Could not verify the listing: ${ownedError.message}` }
+  if (!owned) return { success: false as const, error: "Listing not found in your brokerage" }
 
-  if (ownedError) return { success: false, error: `Could not verify the listing: ${ownedError.message}` }
-  if (!owned)     return { success: false, error: "Listing not found in your brokerage" }
-
-  // IDENTITY CLASS. ctx.agentId is an agents.id (or null for a broker/admin with no
-  // agent profile). It is fed to guardContent as the brand-voice key — NEVER
-  // substitute ctx.userId here, which is a users.id from a different id space. With
-  // no agent record the guardian falls back to brokerage-level voice, which is the
-  // honest result for a caller who has no agent identity.
-  return generateListingDescription({
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { draftListingDescriptionForListing } = await import("@/lib/listings/listing-description-tool")
+  const draft = await draftListingDescriptionForListing(createServiceClient(), {
+    brokerageId: ctx.brokerageId,
     listingId: params.listingId,
-    agentId:   ctx.agentId ?? "",
-    style:     params.style,
+    style: params.style,
+    actorUserId: ctx.userId,
+    actorAgentId: ctx.agentId,
+    highlights: Array.isArray(params.highlights) ? params.highlights.filter((h) => typeof h === "string").slice(0, 12) : undefined,
+    source: "agent_tool",
   })
+  if (!draft.ok) return { success: false as const, error: draft.error }
+  if (draft.heldForReview) {
+    return { success: false as const, error: draft.heldReason ?? "Held for review.", heldForReview: true, warnings: draft.warnings }
+  }
+  return {
+    success: true as const,
+    // `description` stays the MLS copy — the field the composer already reads.
+    description: draft.mlsDescription ?? "",
+    marketingDescription: draft.marketingDescription,
+    socialCaption: draft.socialCaption,
+    emailTeaser: draft.emailTeaser,
+    style: draft.style,
+    warnings: draft.warnings,
+    contentId: draft.contentId,
+  }
+}
+
+/**
+ * The newest AI description draft already on file for a listing — the one the
+ * new-listing marketing kit (lib/kernel/launch-war-room.ts) drafted for the agent
+ * to approve. The composer offers it to load into the editor; nothing is saved
+ * to the listing until the agent saves.
+ */
+export async function getListingDescriptionDraftAction(listingId: string) {
+  const ctx = await resolveCallerContext()
+  if ("error" in ctx) return { success: false as const, error: ctx.error }
+  if (!isValidUUID(listingId)) return { success: false as const, error: "Invalid listing ID" }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { latestListingDescriptionDraft } = await import("@/lib/listings/listing-description-tool")
+  const r = await latestListingDescriptionDraft(createServiceClient(), { brokerageId: ctx.brokerageId, listingId })
+  if (!r.ok) return { success: false as const, error: r.error }
+  return { success: true as const, draft: r.draft }
 }
 
 // createTransactionFromOfferAction was REMOVED as a duplicate (merge-then-delete,

@@ -58,6 +58,10 @@ const F = {
   adOsActions: "app/dashboard/marketing/studio/components/ad-os/ad-os-actions.ts",
   prelaunchPanel: "app/dashboard/marketing/studio/components/ad-os/prelaunch-prediction-panel.tsx",
   listingCopyPanel: "app/dashboard/marketing/studio/components/ad-os/listing-copy-panel.tsx",
+  // Lane 87B: enhanceListingDescription (aiMarketing) was a third listing-description
+  // writer and is retired onto this ONE tool (tombstone in ai-marketing-automation.ts).
+  // The two enhancer checks below follow the rule to the survivor.
+  descriptionTool: "lib/listings/listing-description-tool.ts",
   studio: "app/dashboard/marketing/studio/marketing-studio-client.tsx",
   // THE CAMPAIGN AUDIENCE WIRE. `marketing_campaigns` carries the audience
   // criteria twice: `target_audience` (jsonb, written, resolved by nothing) and
@@ -375,52 +379,49 @@ const CHECKS: Check[] = [
     mutate: (raw) => replaceOnce(raw, "BRAND VOICE: ${brandVoice?.tone ||", "BRAND VOICE: ${brandVoice?.tone_attributes?.join(\", \") ||"),
   },
   {
+    // Follows the listing read to its survivor (lane 87B: enhanceListingDescription →
+    // lib/listings/listing-description-tool.ts). The rule is the same — the listing
+    // copy never reads the phantom listings.mls_description / marketing_description.
     id: "ai/no-phantom-listing-description-cols",
-    file: "aiMarketing",
-    name: "listings.mls_description / marketing_description (phantom columns) are gone",
+    file: "descriptionTool",
+    name: "listings.mls_description / marketing_description (phantom columns) are never read",
     assert: (s) => !/\bmls_description\b/.test(s) && !/\bmarketing_description\b/.test(s),
-    mutate: (raw) => replaceOnce(raw, "Original: ${original}", "Original: ${listing.mls_description || listing.marketing_description}"),
+    mutate: (raw) => replaceOnce(raw, "status, public_remarks\")", "status, public_remarks, mls_description, marketing_description\")"),
   },
   {
     id: "ai/enhance-reads-public-remarks-scoped",
-    file: "aiMarketing",
-    name: "enhanceListingDescription reads public_remarks and is brokerage-scoped",
+    file: "descriptionTool",
+    name: "the listing-copy tool (survivor of enhanceListingDescription) reads public_remarks and is brokerage-scoped",
     assert: (s) => {
-      const body = fnBody(s, "enhanceListingDescription")
+      const body = fnBody(s, "draftListingDescriptionForListing")
       return /public_remarks/.test(body) && hasEqFilter(body, "brokerage_id")
     },
     mutate: (raw) =>
       replaceOnce(
         raw,
-        `      .eq("id", listingId)
-      .eq("brokerage_id", auth.brokerageId)
-      .maybeSingle()
-
-    if (listingError) throw listingError`,
-        `      .eq("id", listingId)
-      .maybeSingle()
-
-    if (listingError) throw listingError`
+        `    .eq("id", params.listingId)
+    .eq("brokerage_id", params.brokerageId)
+    .maybeSingle()`,
+        `    .eq("id", params.listingId)
+    .maybeSingle()`
       ),
   },
   {
     id: "ai/enhance-is-read-only",
-    file: "aiMarketing",
-    name: "enhanceListingDescription never writes back to listings (no second writer)",
+    file: "descriptionTool",
+    name: "the listing-copy tool never writes back to listings (no second public_remarks writer)",
     assert: (s) => {
-      const body = fnBody(s, "enhanceListingDescription")
-      return !/\.update\(/.test(body) && !/\.insert\(/.test(body)
+      const body = fnBody(s, "draftListingDescriptionForListing")
+      return !/\.update\(/.test(body) && !/from\("listings"\)\.insert\(/.test(body)
     },
     mutate: (raw) =>
       replaceOnce(
         raw,
-        `    return { success: true, enhanced: text }
-  } catch (error) {
-    return handleError(error, "enhanceListingDescription") as any`,
-        `    await supabase.from("listings").update({ public_remarks: text }).eq("id", listingId)
-    return { success: true, enhanced: text }
-  } catch (error) {
-    return handleError(error, "enhanceListingDescription") as any`
+        `  const d = res.descriptions
+  return {`,
+        `  const d = res.descriptions
+  await svc.from("listings").update({ public_remarks: d.mlsDescription }).eq("id", l.id)
+  return {`
       ),
   },
   {
@@ -476,7 +477,9 @@ const CHECKS: Check[] = [
       [
         "generateAINewsletter",
         "generateNewsletterSubjectVariants",
-        "enhanceListingDescription",
+        // enhanceListingDescription retired (lane 87B) onto
+        // lib/listings/listing-description-tool.ts, whose tenant pin is proven by
+        // ai/enhance-reads-public-remarks-scoped against that survivor.
         "generateAIDirectMail", // lane 83E — was the one ungated action
       ].every((fn) => callsFunction(fnBody(s, fn), "requireAgentInCallerBrokerage")),
     mutate: (raw) =>
@@ -763,10 +766,10 @@ const CHECKS: Check[] = [
   {
     id: "panel/listing-copy-wired",
     file: "listingCopyPanel",
-    name: "listing copy panel calls enhanceListingDescription and surfaces its refusal",
+    name: "listing copy panel calls the ONE listing-description tool and surfaces its refusal",
     assert: (s) =>
-      callsFunction(s, "enhanceListingDescription") && /if\s*\(!res\.success\)\s*setError\(/.test(s) && !/\.update\(/.test(s),
-    mutate: (raw) => replaceOnce(raw, "      if (!res.success) setError(res.error ?? \"Could not enhance the description\")", ""),
+      callsFunction(s, "generateListingDescriptionAction") && /if\s*\(!res\.success\)\s*setError\(/.test(s) && !/\.update\(/.test(s),
+    mutate: (raw) => replaceOnce(raw, "      if (!res.success) setError(res.error ?? \"Could not draft the description\")", ""),
   },
 
   // ══ F. THE CAMPAIGN AUDIENCE WIRE ══════════════════════════════════════════

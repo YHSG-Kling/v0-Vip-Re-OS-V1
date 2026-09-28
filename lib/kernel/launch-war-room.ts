@@ -7,6 +7,8 @@
 // it a visible, coordinated play:
 //
 //   · Asset Manager       — the coming-soon reel (canonical Remotion+D-ID rail)
+//   · Listing copy        — the agent's AI description tool drafts the MLS description +
+//                           launch social caption for approval (lane 87B, the new-listing kit)
 //   · Marketing/Campaign  — social + email + newsletter + blog drafts across the channels
 //   · Listing Concierge   — schedules the FIRST open house (open_houses) if none exists
 //   · Data Steward        — a "coming soon" neighbor farm (scrape, seller-permission-gated)
@@ -100,7 +102,21 @@ export interface LaunchResult {
   sellerLaunchCards: number
   /** Gated (audience 'seller') warm launch summaries proposed through the client-message gate. */
   sellerLaunchProposals: number
+  /** Listing description + social caption drafts the new-listing kit wrote for the agent (lane 87B). */
+  listingCopyDrafted: number
 }
+
+/**
+ * The new-listing kit's listing-copy step (lane 87B). Default: the agent's AI description
+ * tool (lib/listings/listing-description-tool.ts, server-only — dynamically imported);
+ * injectable so a simulator never spends a model call.
+ */
+export type ListingCopyDrafter = (args: {
+  brokerageId: string
+  listingId: string
+  actorAgentId: string
+  actorUserId: string | null
+}) => Promise<{ drafted: boolean; held: boolean; socialCaption: string | null }>
 
 /**
  * Convene a Launch War Room for each active/coming-soon listing with no war room yet.
@@ -108,14 +124,14 @@ export interface LaunchResult {
  */
 export async function runLaunchWarRoom(
   brokerageId: string,
-  opts: { now?: Date; scraper?: NeighborScraper; promoDispatcher?: PromoDispatcher; copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator; onlyListingId?: string } = {},
+  opts: { now?: Date; scraper?: NeighborScraper; promoDispatcher?: PromoDispatcher; copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator; onlyListingId?: string; listingCopyDrafter?: ListingCopyDrafter } = {},
   client?: Svc,
 ): Promise<LaunchResult> {
   const supabase = client ?? createServiceClient()
   const now = opts.now ?? new Date()
   const result: LaunchResult = {
     launches: 0, reels: 0, capturePagesStaged: 0, channelsStaged: 0, openHousesProposed: 0, neighborFarms: 0, adsStaged: 0, summariesProposed: 0,
-    sellerLaunchCards: 0, sellerLaunchProposals: 0,
+    sellerLaunchCards: 0, sellerLaunchProposals: 0, listingCopyDrafted: 0,
   }
 
   // onlyListingId → the ON-DEMAND path (the Deal Play convenes the room for ONE
@@ -204,6 +220,34 @@ export async function runLaunchWarRoom(
       }
     }
 
+    // 1.8) LISTING COPY — the NEW-LISTING KIT's description + social caption (lane 87B;
+    // owner wave 87: "listing description can be an ai tool for agents and can assist
+    // with a new listing marketing"). The agent's own AI description tool
+    // (lib/listings/listing-description-tool.ts → the one server-only writer) drafts the
+    // MLS description and the launch social caption, compliance-first, on THIS listing's
+    // tenant. It is a DRAFT for the agent's approval: saved to listing_marketing_content
+    // (the listing's description composer offers it to "Load draft to review"), never to
+    // public_remarks; its social caption becomes the gated launch-social draft below.
+    // Neutral house style — the agent restyles from the tool. A held (hard Fair-Housing)
+    // draft is never used. Best-effort: the rest of the launch never waits on it.
+    let kitSocialCaption: string | null = null
+    if (agentRowId) {
+      try {
+        const drafter: ListingCopyDrafter = opts.listingCopyDrafter ?? (async (a) => {
+          const { draftListingDescriptionForListing } = await import("@/lib/listings/listing-description-tool")
+          const d = await draftListingDescriptionForListing(supabase, { ...a, source: "new_listing_kit" })
+          return d.ok ? { drafted: true, held: d.heldForReview, socialCaption: d.socialCaption } : { drafted: false, held: false, socialCaption: null }
+        })
+        const drafted = await drafter({ brokerageId, listingId: l.id, actorAgentId: agentRowId, actorUserId: agentUserId })
+        if (drafted.drafted) {
+          result.listingCopyDrafted += 1
+          if (!drafted.held && drafted.socialCaption) kitSocialCaption = drafted.socialCaption
+        }
+      } catch (err) {
+        console.error(`[launch-war-room] listing copy draft skipped for ${l.id}:`, (err as Error)?.message)
+      }
+    }
+
     // 2) THE BENCH — social + email + newsletter + blog, copy GENERATED per channel
     // to the buyer audience (composeLaunch is the deterministic fallback).
     if (agentRowId || agentUserId) {
@@ -219,7 +263,8 @@ export async function runLaunchWarRoom(
       ])
       const { stageBenchDrafts } = await import("@/lib/kernel/marketing-bench")
       const b = await stageBenchDrafts({ brokerageId, agentRowId, agentUserId, listingId: l.id }, [
-        { channel: "social", idemName: `Launch Social — ${l.address}`, subject: "", body: soc.body, socialPostType: comingSoon ? "coming_soon" : "new_listing", brief: "LAUNCH WAR ROOM — launch social" },
+        // The kit's compliance-checked social caption when the listing-copy step wrote one.
+        { channel: "social", idemName: `Launch Social — ${l.address}`, subject: "", body: kitSocialCaption ?? soc.body, socialPostType: comingSoon ? "coming_soon" : "new_listing", brief: "LAUNCH WAR ROOM — launch social" },
         { channel: "email", idemName: `Launch Email — ${l.address}`, subject: `${comingSoon ? "Coming soon" : "Just listed"} — ${l.address}`, body: em.body, brief: "LAUNCH WAR ROOM — launch email" },
         { channel: "newsletter", idemName: `Launch Newsletter — ${l.address}`, subject: `New${comingSoon ? " coming-soon" : ""} listing — ${l.address}`, body: nl.body, brief: "LAUNCH WAR ROOM — newsletter feature" },
         { channel: "blog", idemName: `Introducing ${l.address}`, subject: `A closer look at ${l.address}`, body: bl.body, brief: "LAUNCH WAR ROOM — listing blog" },

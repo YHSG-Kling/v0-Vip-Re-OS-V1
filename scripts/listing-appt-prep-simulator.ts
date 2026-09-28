@@ -53,6 +53,9 @@
 // BEFORE importing the chain. This shims an external guard module ONLY; the chain
 // and engine (the system under test) run for real.
 import { createRequire } from "module"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 const _require = createRequire(import.meta.url)
 try {
   const soPath = _require.resolve("server-only")
@@ -67,12 +70,10 @@ import type { WorkflowChain } from "../lib/workflow-orchestrator/types"
 type ChainModule = typeof import("../lib/workflow-orchestrator/chains/listing-appt-prep")
 let listingApptPrepChain: WorkflowChain
 let setListingApptPrepExecutors: ChainModule["setListingApptPrepExecutors"]
-let listingApptPrepDedupeKey: ChainModule["listingApptPrepDedupeKey"]
 async function loadChain() {
   const m = await import("../lib/workflow-orchestrator/chains/listing-appt-prep")
   listingApptPrepChain = m.listingApptPrepChain
   setListingApptPrepExecutors = m.setListingApptPrepExecutors
-  listingApptPrepDedupeKey = m.listingApptPrepDedupeKey
 }
 
 let passed = 0, failed = 0
@@ -91,12 +92,15 @@ function testPure() {
   check("triggerEvent is listing.appointment_set",
     listingApptPrepChain.triggerEvent === "listing.appointment_set", listingApptPrepChain.triggerEvent)
 
-  // Deterministic per-listing dedupe key — every booking path (stage pipeline, calendar, AI-ISA)
-  // passes the SAME key for a listing so the engine collapses them to ONE prep run (no double spend).
-  check("dedupe key is deterministic per listing",
-    listingApptPrepDedupeKey("L-1") === "listing_appt_L-1" && listingApptPrepDedupeKey("L-1") === listingApptPrepDedupeKey("L-1"))
-  check("dedupe key differs across listings",
-    listingApptPrepDedupeKey("L-1") !== listingApptPrepDedupeKey("L-2"))
+  // THE DEDUPE KEY IS THE BOOKING ROW (lane 87B — the per-listing key was retired; tombstone at
+  // lib/workflow-orchestrator/chains/listing-appt-prep.ts). The rule, read from STRIPPED source:
+  // the ONE starter every booking path calls keys the run on calendar_events.id. The behaviour
+  // (seller gate, safety net) is proved by test:listing-prep-from-booking.
+  const starter = stripComments(readFileSync(join(process.cwd(), "lib/listing-presentation/booking-prep.ts"), "utf8"))
+  check("the one booking starter keys the prep run on the BOOKING ROW (triggerEventId: calendar_events.id)",
+    /triggerEventId:\s*ctx\.calendarEventId/.test(starter))
+  check("[control] the key finder rejects the retired per-listing key shape",
+    !/triggerEventId:\s*ctx\.calendarEventId/.test("triggerEventId: listingApptPrepDedupeKey(listingId)"))
 
   const keys = listingApptPrepChain.steps.map((s) => s.key)
   const expected = [

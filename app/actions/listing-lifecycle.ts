@@ -58,46 +58,30 @@ export async function scheduleListingAppointment(params: {
 
   const result = await scheduleListingAppointmentService(params, user.id, profile.brokerage_id)
 
-  // Fire the listing-appt-prep chain so the LISTING-side appointment ALSO runs the full managed
-  // prep (CMA → presentation built from it → per-chapter videos → pre-appointment drip → pre-listing
-  // postcard/letter), exactly like the contact-side bookSellerListingAppointment path. The service
-  // emits 'listing_appointment_scheduled' which matched NO chain/handler, so listing-side
-  // appointments silently skipped the entire prep. Chains trigger via triggerChainsForEvent (an
-  // app/ action — can't be imported from the lib/ service), so it's wired here. Best-effort — the
-  // appointment is already booked even if the chain trigger fails.
+  // THE BOOKING STARTS THE SELLER'S LISTING-PRESENTATION PREP (lane 87B, owner wave 87:
+  // "listing presentation prep which inlcudes the cma needs to be for a seller as this is
+  // started from the listing appointmtent booking"). The service just wrote the consult's
+  // calendar_events row (appointmentEventId); the ONE starter reads THAT row, proves the
+  // contact is the seller (the listing's seller, or a seller-typed contact), takes the
+  // property from the listing row and the agent's users.id from the row, all inside the
+  // row's tenant — which must be this SESSION's — and keys the run on the booking, so the
+  // stage pipeline and the cron safety net collapse onto the same run. Best-effort — the
+  // appointment is already booked even if the prep cannot start.
   try {
-    const { data: listing } = await supabase
-      .from("listings")
-      .select("address, city, state, zip, bedrooms, bathrooms, sqft, lot_size, year_built, property_type")
-      .eq("id", params.listing_id)
-      .maybeSingle()
-    const appointmentAt =
-      (result as { listing?: { appointment_at?: string } } | null)?.listing?.appointment_at ??
-      new Date(`${params.appointment_date}T${params.appointment_time}`).toISOString()
-    const { triggerChainsForEvent } = await import("@/app/actions/workflow-orchestrator")
-    const { listingApptPrepDedupeKey } = await import("@/lib/workflow-orchestrator/chains/listing-appt-prep")
-    await triggerChainsForEvent({
-      eventType: "listing.appointment_set",
-      // Per-listing dedupe key — collapses this with the stage-pipeline + calendar paths into ONE prep.
-      triggerEventId: listingApptPrepDedupeKey(params.listing_id),
-      brokerageId: profile.brokerage_id,
-      contactId: params.contact_id,
-      agentUserId: user.id,
-      listingId: params.listing_id,
-      metadata: {
-        appointment_date: appointmentAt,
-        property_data: listing
-          ? {
-              address: listing.address, city: listing.city, state: listing.state, zip: listing.zip,
-              bedrooms: listing.bedrooms, bathrooms: listing.bathrooms, sqft: listing.sqft,
-              lotSize: listing.lot_size, yearBuilt: listing.year_built,
-              propertyType: listing.property_type ?? "single_family",
-            }
-          : {},
-      },
-    })
+    const appointmentEventId = (result as { appointmentEventId?: string } | null)?.appointmentEventId ?? null
+    if (appointmentEventId) {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const { startListingPresentationPrepFromBooking } = await import("@/lib/listing-presentation/booking-prep")
+      const prep = await startListingPresentationPrepFromBooking(createServiceClient(), {
+        calendarEventId: appointmentEventId,
+        expectedBrokerageId: profile.brokerage_id,
+        listingId: params.listing_id,
+        origin: "listing_consult",
+      })
+      if (prep.status === "error") console.error("[scheduleListingAppointment] listing prep did not start:", prep.reason)
+    }
   } catch (err) {
-    console.error("[scheduleListingAppointment] listing-appt-prep chain trigger failed:", err)
+    console.error("[scheduleListingAppointment] listing prep start threw:", err)
   }
 
   return result
@@ -219,34 +203,34 @@ async function fireStageAutomations(listingId: string, toStage: string, actorUse
     const svc = createServiceClient()
 
     if (automation === "listing_appt_prep") {
-      // Flagship pre-listing prep: CMA → presentation → chapter videos → pre-appointment drip →
-      // pre-listing postcard. Deterministic per-listing key collapses with the calendar + AI-ISA
-      // booking paths into ONE prep run (no double CMA/postcard).
-      const { data: listing } = await svc
+      // Flagship pre-listing prep, STARTED FROM THE BOOKING (lane 87B, owner wave 87).
+      // A stage flip to APPOINTMENT_SET is not itself a booking: the prep starts
+      // from the listing's calendar_events row (listings.appointment_event_id, written
+      // by scheduleListingAppointmentService) through the ONE starter, which proves
+      // the seller, resolves the seller's property and the agent's users.id inside the
+      // row's tenant, and keys the run on that booking — so this path, the consult
+      // booking itself and the cron safety net collapse onto ONE run. With no booking
+      // row there is no appointment date for the drip to count down to (enroll_drip
+      // refused "Missing appointment_date" on every such run), so nothing is started
+      // and the reason is logged — book the consult to start the prep.
+      const { data: listing, error: listingErr } = await svc
         .from("listings")
-        .select("brokerage_id, contact_id, seller_contact_id, appointment_at, address, city, state, zip, bedrooms, bathrooms, sqft, lot_size, year_built, property_type")
+        .select("brokerage_id, appointment_event_id")
         .eq("id", listingId)
         .maybeSingle()
-      if (listing?.brokerage_id) {
-        const { triggerChainsForEvent } = await import("@/app/actions/workflow-orchestrator")
-        const { listingApptPrepDedupeKey } = await import("@/lib/workflow-orchestrator/chains/listing-appt-prep")
-        await triggerChainsForEvent({
-          eventType: "listing.appointment_set",
-          triggerEventId: listingApptPrepDedupeKey(listingId),
-          brokerageId: listing.brokerage_id,
-          contactId: listing.contact_id ?? listing.seller_contact_id ?? null,
-          agentUserId: actorUserId,
+      if (listingErr) {
+        console.error(`[fireStageAutomations] listing ${listingId} read refused — listing prep not started: ${listingErr.message}`)
+      } else if (!listing?.appointment_event_id) {
+        console.warn(`[fireStageAutomations] listing ${listingId} reached APPOINTMENT_SET with no booked appointment — listing prep starts from the booking`)
+      } else {
+        const { startListingPresentationPrepFromBooking } = await import("@/lib/listing-presentation/booking-prep")
+        const prep = await startListingPresentationPrepFromBooking(svc, {
+          calendarEventId: listing.appointment_event_id,
+          expectedBrokerageId: listing.brokerage_id ?? null,
           listingId,
-          metadata: {
-            appointment_date: listing.appointment_at ?? null,
-            property_data: {
-              address: listing.address, city: listing.city, state: listing.state, zip: listing.zip,
-              bedrooms: listing.bedrooms, bathrooms: listing.bathrooms, sqft: listing.sqft,
-              lotSize: listing.lot_size, yearBuilt: listing.year_built,
-              propertyType: listing.property_type ?? "single_family",
-            },
-          },
+          origin: "listing_stage_pipeline",
         })
+        if (prep.status === "error") console.error(`[fireStageAutomations] listing prep did not start: ${prep.reason}`)
       }
     } else if (automation === "mls_packet") {
       // TOMBSTONE — the bare `listing_packet_jobs` INSERT (job_type 'mls_packet',

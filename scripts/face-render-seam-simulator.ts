@@ -134,8 +134,13 @@ function providerOrderSection() {
   const seam = readStripped("lib/live-agent/face-render.ts")
   check("DEFAULT_FACE_PROVIDER_ORDER is exactly [did, simli] in source (not [simli, did] or a 3rd provider)",
     /(?:export )?const DEFAULT_FACE_PROVIDER_ORDER: readonly FaceRenderProvider\[\] = \[["']did["'], ["']simli["']\]/.test(seam))
+  // Re-anchored (lane 87B): normalizeProviderOrder now also PINS D-ID first on read
+  // (owner: "d-id is always first"); the empty-list fallback rule is unchanged. The
+  // pinning behaviour itself is exercised by test:did-first.
   check("normalizeProviderOrder falls back to the SAME default when settings carry no valid provider (never an empty list)",
-    /cleaned\.length > 0 \? cleaned : \[\.\.\.DEFAULT_FACE_PROVIDER_ORDER\]/.test(seam))
+    /if \(cleaned\.length === 0\) return \[\.\.\.DEFAULT_FACE_PROVIDER_ORDER\]/.test(seam))
+  check("normalizeProviderOrder leads with the default primary (D-ID) whatever the stored order says",
+    /return \[primary, \.\.\.backups\]/.test(seam) && /const primary = DEFAULT_FACE_PROVIDER_ORDER\[0\]/.test(seam))
 
   const m627 = readRaw("supabase/migrations/m627-live-agent-face-provider.sql")
   // The rule, not a waypoint (CLAUDE.md §2): an integrated migration's header

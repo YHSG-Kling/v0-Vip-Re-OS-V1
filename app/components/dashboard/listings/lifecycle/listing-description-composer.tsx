@@ -35,21 +35,31 @@
  * write says so and the text stays on screen so nothing is lost.
  */
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, Sparkles, Save, TriangleAlert, CircleCheck, RotateCcw } from "lucide-react"
-import { generateListingDescriptionAction, saveListingDraftAction } from "@/app/actions/listings-kernel"
+import { Loader2, Sparkles, Save, TriangleAlert, CircleCheck, RotateCcw, Megaphone, Inbox } from "lucide-react"
+import {
+  generateListingDescriptionAction,
+  getListingDescriptionDraftAction,
+  saveListingDraftAction,
+} from "@/app/actions/listings-kernel"
+// THE ONE STYLE VOCABULARY (lane 87B) — the agent picks; "family" (familial status,
+// Fair Housing) is retired there and "investment" merged onto "investor".
+import {
+  LISTING_DESCRIPTION_STYLES,
+  LISTING_DESCRIPTION_STYLE_LABELS,
+  DEFAULT_LISTING_DESCRIPTION_STYLE,
+  type ListingDescriptionStyle,
+} from "@/lib/listings/listing-description-styles"
 
-type Style = "standard" | "luxury" | "family" | "investment"
+type Style = ListingDescriptionStyle
 
-const STYLES: Array<{ value: Style; label: string }> = [
-  { value: "standard", label: "Standard" },
-  { value: "luxury", label: "Luxury" },
-  { value: "family", label: "Family" },
-  { value: "investment", label: "Investment" },
-]
+const STYLES: Array<{ value: Style; label: string }> = LISTING_DESCRIPTION_STYLES.map((value) => ({
+  value,
+  label: LISTING_DESCRIPTION_STYLE_LABELS[value],
+}))
 
 interface Props {
   listingId: string
@@ -63,7 +73,25 @@ export function ListingDescriptionComposer({ listingId, initialRemarks }: Props)
 
   const stored = (initialRemarks ?? "").trim()
   const [draft, setDraft] = useState(stored)
-  const [style, setStyle] = useState<Style>("standard")
+  const [style, setStyle] = useState<Style>(DEFAULT_LISTING_DESCRIPTION_STYLE)
+  // The compliance findings on the last draft — shown, never swallowed (§5: warnings
+  // pass through; a hard Fair-Housing flag withholds the copy server-side).
+  const [warnings, setWarnings] = useState<string[]>([])
+  // The social caption the SAME call wrote — for the new-listing marketing push.
+  const [socialCaption, setSocialCaption] = useState<string | null>(null)
+  // A draft the new-listing marketing kit already wrote for this listing.
+  const [kitDraft, setKitDraft] = useState<{ mlsDescription: string | null; socialCaption: string | null; source: string | null } | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    getListingDescriptionDraftAction(listingId)
+      .then((r) => {
+        if (!alive || !r.success || !r.draft?.mlsDescription) return
+        setKitDraft({ mlsDescription: r.draft.mlsDescription, socialCaption: r.draft.socialCaption, source: r.draft.source })
+      })
+      .catch(() => { /* the offer is optional — the composer works without it */ })
+    return () => { alive = false }
+  }, [listingId])
   const [busy, setBusy] = useState<"generate" | "save" | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
@@ -81,7 +109,10 @@ export function ListingDescriptionComposer({ listingId, initialRemarks }: Props)
           success: boolean
           error?: string
           description?: string
+          socialCaption?: string | null
+          warnings?: string[]
         }
+        setWarnings(res.warnings ?? [])
         // READ THE SERVER'S VERDICT. A kernel result that reports failure by
         // returning { success:false } rather than throwing must not look like a
         // successful generation that happened to produce nothing.
@@ -90,6 +121,7 @@ export function ListingDescriptionComposer({ listingId, initialRemarks }: Props)
           return
         }
         setDraft(res.description)
+        setSocialCaption(res.socialCaption ?? null)
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : "The description could not be generated.")
       } finally {
@@ -171,6 +203,29 @@ export function ListingDescriptionComposer({ listingId, initialRemarks }: Props)
         </div>
       </div>
 
+      {kitDraft && kitDraft.mlsDescription !== draft.trim() && (
+        <div className="rounded-md border border-dashed px-3 py-2 text-xs flex items-center justify-between gap-2 flex-wrap">
+          <span className="flex items-center gap-1.5 text-muted-foreground">
+            <Inbox className="h-3.5 w-3.5" />
+            {kitDraft.source === "new_listing_kit"
+              ? "Your new-listing marketing kit drafted a description for this listing."
+              : "An AI description draft is on file for this listing."}
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={pending}
+            onClick={() => {
+              setDraft(kitDraft.mlsDescription ?? "")
+              setSocialCaption(kitDraft.socialCaption)
+              setSaved(false)
+            }}
+          >
+            Load draft to review
+          </Button>
+        </div>
+      )}
+
       <textarea
         value={draft}
         onChange={(e) => {
@@ -223,6 +278,21 @@ export function ListingDescriptionComposer({ listingId, initialRemarks }: Props)
           </Button>
         </div>
       </div>
+
+      {warnings.length > 0 && (
+        <div className="text-[11px] text-amber-700 space-y-0.5">
+          <p className="font-medium flex items-center gap-1"><TriangleAlert className="h-3.5 w-3.5" />Compliance notes on this draft</p>
+          {warnings.slice(0, 6).map((w, i) => <p key={i}>{w}</p>)}
+        </div>
+      )}
+
+      {socialCaption && (
+        <div className="rounded-md border px-3 py-2 space-y-1">
+          <p className="text-[11px] font-medium flex items-center gap-1.5"><Megaphone className="h-3.5 w-3.5" />Social caption for the listing launch</p>
+          <p className="text-xs whitespace-pre-wrap">{socialCaption}</p>
+          <p className="text-[11px] text-muted-foreground">Copy it into your launch post — the new-listing kit stages the gated social draft.</p>
+        </div>
+      )}
 
       {error && (
         <p className="text-xs text-red-600 flex items-start gap-1.5">

@@ -1,9 +1,20 @@
 /**
  * Chain: listing-appt-prep
  *
- * Triggered when an agent schedules a listing appointment on a contact.
- * No listing record exists yet — everything runs against the contact +
- * property data captured at appointment scheduling.
+ * STARTED FROM THE LISTING-APPOINTMENT BOOKING, FOR THE SELLER (owner, wave 87:
+ * "listing presentation prep which inlcudes the cma needs to be for a seller as
+ * this is started from the listing appointmtent booking"). Every booking path —
+ * the agent calendar, the listing consult, the AI-ISA seller milestone, the AI-ISA
+ * / voice booking at the agent's confirm, and the seller's own self-booking from
+ * the report page or the portal — hands its calendar_events row to
+ * lib/listing-presentation/booking-prep.ts::startListingPresentationPrepFromBooking,
+ * which refuses a non-seller context, resolves the seller's property and the
+ * agent's users.id inside the booking row's tenant, and starts THIS chain keyed on
+ * the booking row (one run per appointment). The listing-presentation-prep cron is
+ * the safety net for bookings that missed that start.
+ *
+ * Often no listing record exists yet — everything runs against the SELLER
+ * contact + the seller's property data resolved from the booking.
  *
  * Steps:
  *   1. generate_cma         — runs canonical CMA pipeline against property data
@@ -156,17 +167,14 @@ const realExecutors: ListingApptPrepExecutors = {
 
 let activeExecutors: ListingApptPrepExecutors = realExecutors
 
-/**
- * Deterministic dedupe key for the listing-appt-prep chain, keyed on the LISTING. Every booking
- * path — the stage pipeline (advanceListingStage → appointment_scheduled), the calendar
- * (ai-calendar-management.createAppointment), and the AI-ISA (bookSellerListingAppointment) — passes
- * this as triggerEventId so they all collapse to ONE prep run per listing (the engine's
- * findReusableRun matches on trigger_event_id first). Prevents double CMA / chapter-video renders /
- * postcards when more than one path fires for the same appointment.
- */
-export function listingApptPrepDedupeKey(listingId: string): string {
-  return `listing_appt_${listingId}`
-}
+// TOMBSTONE (lane 87B): listingApptPrepDedupeKey (`listing_appt_${listingId}`) is RETIRED.
+// It keyed a prep run on the LISTING, which a home-value or AI-ISA seller does not have, so
+// only two of the five booking paths could use it and the other three keyed on their own
+// calendar row — two keys for one appointment. SURVIVOR:
+// lib/listing-presentation/booking-prep.ts::startListingPresentationPrepFromBooking, which
+// every booking path now calls and which passes the BOOKING ROW id (calendar_events.id) as
+// triggerEventId — one run per appointment, on every path, and the cron safety net reads
+// the same key (prepRunStatusesForBooking).
 
 
 /** Override the money-spending leaf executors (tests only). Pass null to reset to real.
@@ -313,11 +321,15 @@ export const listingApptPrepChain: WorkflowChain = {
         const propertyData = ctx.metadata.property_data
         if (!ctx.agentUserId) return { success: false, error: "Missing agent context" }
 
-        const { data: agent } = await svc
+        // Inside the RUN's tenant (lane 87B) — the same pin step 1 carries; a user
+        // with agents rows in two brokerages must not be filed under the other.
+        const { data: agent, error: agentErr } = await svc
           .from("agents")
           .select("id")
           .eq("user_id", ctx.agentUserId)
+          .eq("brokerage_id", ctx.brokerageId)
           .maybeSingle()
+        if (agentErr) return { success: false, error: `Agent lookup refused: ${agentErr.message}` }
         if (!agent) return { success: false, error: "Agent profile not found" }
 
         // Pull seller name from contact
