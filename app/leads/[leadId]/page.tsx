@@ -185,6 +185,21 @@ export default async function LeadDetailPage({ params }: PageProps) {
             First touch through {timeline.convertedAt ? "conversion and after" : "today"} — every source in one
             order.{timeline.acquisitionCost != null ? ` Acquisition cost: $${timeline.acquisitionCost.toFixed(2)}.` : ""}
           </p>
+          {timeline.spend && (
+            // Lane 87F — what this person has cost on the platform vendor ledger, raw row → lead →
+            // contact (lib/lead-intelligence/person-spend.ts). LEAD-DESK ONLY; "a floor" when a
+            // ledger read was refused — never shown as a clean $0.
+            <p className="text-xs text-muted-foreground">
+              Vendor spend to date: ${timeline.spend.totalUsd.toFixed(2)}
+              {timeline.convertedAt
+                ? ` ($${timeline.spend.beforeConversionUsd.toFixed(2)} before conversion, $${timeline.spend.afterConversionUsd.toFixed(2)} after)`
+                : ""}
+              {timeline.spend.byVendor.length > 0
+                ? ` — ${timeline.spend.byVendor.map((v) => `${v.vendor} $${v.usd.toFixed(2)} × ${v.calls}`).join(", ")}`
+                : ""}
+              {!timeline.spend.measured ? " — partial: part of the ledger could not be read, so this is a floor." : ""}
+            </p>
+          )}
         </CardHeader>
         <CardContent className="text-sm space-y-3">
           {timeline.warnings.length > 0 && (

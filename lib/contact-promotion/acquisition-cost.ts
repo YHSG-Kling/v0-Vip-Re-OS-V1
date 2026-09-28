@@ -14,11 +14,13 @@
  *
  *   1. costPerRecord    — already on the lead row (leads.cost_per_record),
  *                          passed in, not re-fetched.
- *   2. enrichmentSpend   — SUM(vendor_usage_tracking.total_cost) WHERE lead_id
- *                          = this lead. trackVendorUsageService
- *                          (lib/vendor-governance/track-vendor-usage.ts) is the
- *                          one writer that stamps lead_id — see
- *                          lib/lead-pipeline/enrichment-orchestrator.ts:690-696.
+ *   2. enrichmentSpend   — SUM(vendor_usage_tracking.total_cost) booked for this
+ *                          person before conversion: the lead_id column plus
+ *                          the raw rows the lead came from
+ *                          (request_metadata.rawRecordId). Writers name the
+ *                          person through meterVendorSpend's `attribution`
+ *                          (lane 87F); the one reader is
+ *                          lib/lead-intelligence/person-spend.ts.
  *   3. campaignCostShare — ad_campaigns.lifetime_budget for this lead's
  *                          campaign_attribution_id, split evenly across every
  *                          OTHER lead in the same brokerage sharing that same
@@ -54,19 +56,22 @@ export async function resolveLeadAcquisitionCost(
   let enrichmentSpend: number | null = null
   let campaignCostShare: number | null = null
 
-  // ── 1. Enrichment spend — vendor_usage_tracking keyed on THIS lead_id ─────
+  // ── 1. Enrichment spend — every vendor_usage_tracking row booked for THIS person ─────
+  // Lane 87F: was `.eq("lead_id", leadId)` alone, which saw only the $0 osint_free rows — no
+  // meterVendorSpend booking ever set lead_id, and raw-stage spend (the PeopleData match bought before
+  // the lead existed) was keyed on nothing. Now ONE reader (lib/lead-intelligence/person-spend.ts)
+  // folds the lead_id column AND the raw rows this lead came from (request_metadata.rawRecordId).
+  // Contact-keyed spend is AFTER conversion by definition and is not part of acquisition.
   try {
-    const { data, error } = await supabase
-      .from("vendor_usage_tracking")
-      .select("total_cost")
-      .eq("lead_id", input.leadId)
-    if (error) {
-      warnings.push(`enrichment spend not read (vendor_usage_tracking): ${error.message}`)
-    } else {
-      const rows = (data ?? []) as Array<{ total_cost: number | null }>
-      if (rows.length > 0) {
-        enrichmentSpend = rows.reduce((sum, r) => sum + (r.total_cost ?? 0), 0)
-      }
+    const { resolvePersonRawRecordIds, readPersonVendorSpend } = await import("@/lib/lead-intelligence/person-spend")
+    const lineage = await resolvePersonRawRecordIds(supabase, { leadIds: [input.leadId], brokerageId: input.brokerageId })
+    warnings.push(...lineage.warnings.map((w) => `enrichment spend: ${w}`))
+    const spend = await readPersonVendorSpend(supabase, {
+      brokerageId: input.brokerageId, leadIds: [input.leadId], rawRecordIds: lineage.rawRecordIds, contactId: null,
+    })
+    warnings.push(...spend.warnings.map((w) => `enrichment spend not fully read: ${w}`))
+    if (spend.rows.length > 0) {
+      enrichmentSpend = Math.round(spend.rows.reduce((sum, r) => sum + r.costUsd, 0) * 100) / 100
     }
   } catch (e: any) {
     warnings.push(`enrichment spend read threw: ${e?.message ?? "unknown error"}`)

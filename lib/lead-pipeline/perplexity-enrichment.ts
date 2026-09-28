@@ -30,6 +30,8 @@ export async function enrichViaPerplexity(params: {
   city?: string | null
   state?: string | null
   brokerageId?: string
+  /** Lane 87F — the raw row this research is bought for (MeterVendorInput.attribution). */
+  rawRecordId?: string | null
 }): Promise<PerplexityFindings | null> {
   const where = [params.city, params.state].filter(Boolean).join(", ")
   try {
@@ -54,6 +56,7 @@ export async function enrichViaPerplexity(params: {
         brokerageId: params.brokerageId ?? null,
         systemSource: "lead_enrichment",
         metadata: { hits: grounding.hits.length, mode: "research" },
+        attribution: { rawRecordId: params.rawRecordId ?? null },
       }).catch(() => false)
     }
 

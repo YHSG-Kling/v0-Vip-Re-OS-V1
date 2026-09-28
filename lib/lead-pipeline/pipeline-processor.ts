@@ -894,6 +894,9 @@ async function enrichWithPeopleData(fields: {
       brokerageId: fields.brokerageId,
       systemSource: 'lead_scraping',
       metadata: { profileUrl, source: fields.source ?? null, matched, path: 'raw_record_promotion' },
+      // Lane 87F — raw-stage spend names the raw row, so it follows the person onto the lead it becomes
+      // (leads.raw_record_id / source_raw_ids) and into acquisition_cost at conversion.
+      attribution: { rawRecordId: fields.rawRecordId ?? null },
     }).catch(() => null)
   }
 
@@ -969,6 +972,7 @@ async function enrichWithPeopleData(fields: {
       city:      fields.city,
       state:     fields.state,
       brokerageId: fields.brokerageId ?? undefined,
+      rawRecordId: fields.rawRecordId ?? null,
     })
     base = { ...base, ...mergeEnrichment(base, findings) }
   }

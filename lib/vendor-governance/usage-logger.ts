@@ -12,6 +12,7 @@
  * This system is GOVERNANCE-ONLY: no UI, no blocking, no enforcement.
  */
 
+import { createHash } from 'node:crypto'
 import { createServiceClient } from '@/lib/supabase/service'
 
 export interface VendorUsageEvent {
@@ -202,8 +203,25 @@ function generateEventFingerprint(event: VendorUsageEvent): string {
     event.agentId || 'none',
     event.leadId || 'none',
     event.unitCount,
+    // Lane 87F — WHAT ELSE THE EVENT SAYS ABOUT ITSELF. The seven parts above name no contact, no raw
+    // record, no market and no queue entry, so two DIFFERENT people's identical PeopleData matches (or
+    // two markets' identical scrape bookings) inside the five-minute window fingerprinted as one event
+    // and the second real charge was skipped as a "replay" — an undercount on the platform ledger and a
+    // missing line on the person's cost. A true replay re-sends the SAME metadata, so it still matches.
+    metadataDigest(event.metadata),
   ]
   return parts.join('|')
+}
+
+/** Order-independent digest of the event's own metadata (key order never makes two events differ). */
+function metadataDigest(metadata: Record<string, any> | undefined): string {
+  if (!metadata || Object.keys(metadata).length === 0) return 'none'
+  const stable = (v: unknown): unknown =>
+    Array.isArray(v) ? v.map(stable)
+      : v && typeof v === 'object' && !(v instanceof Date)
+        ? Object.fromEntries(Object.keys(v as Record<string, unknown>).sort().map((k) => [k, stable((v as Record<string, unknown>)[k])]))
+        : v
+  return createHash('sha256').update(JSON.stringify(stable(metadata))).digest('hex').slice(0, 16)
 }
 
 /** How close two identically-fingerprinted events must be to count as one. */

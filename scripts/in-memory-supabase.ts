@@ -33,6 +33,16 @@ export interface MemOptions {
 
 type Filter = (row: Row) => boolean
 
+/** A column value, honouring PostgREST's JSON text path `col->>key` (lane 87F; plain columns unchanged). */
+function val(row: Row, col: string): any {
+  const i = col.indexOf("->>")
+  if (i < 0) return row[col]
+  const obj = row[col.slice(0, i)]
+  if (!obj || typeof obj !== "object") return undefined
+  const v = (obj as Row)[col.slice(i + 3)]
+  return v === undefined || v === null ? v : typeof v === "string" ? v : String(v)
+}
+
 let seq = 0
 
 export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}): MemClient {
@@ -68,7 +78,12 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
     const project = (row: Row): Row => {
       if (!cols || cols.includes("*")) return { ...row }
       const out: Row = {}
-      for (const c of cols) out[c] = row[c]
+      for (const c of cols) {
+        // Lane 87F — `alias:path` and JSON paths (`raw_data->>subject`) project like PostgREST does.
+        const m = /^([A-Za-z_][\w]*):(.+)$/.exec(c)
+        if (m) out[m[1]] = val(row, m[2])
+        else out[c] = val(row, c)
+      }
       return out
     }
 
@@ -112,22 +127,22 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
       insert(rowOrRows: Row | Row[]) { op = "insert"; inserted = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows]; return b },
       update(p: Row) { op = "update"; patch = p; return b },
       delete() { op = "delete"; return b },
-      eq(col: string, v: unknown) { filterCols.push(col); filters.push((r) => r[col] === v); return b },
-      neq(col: string, v: unknown) { filterCols.push(col); filters.push((r) => r[col] !== v); return b },
-      in(col: string, vs: string[] | string) { filterCols.push(col); const set = new Set(parseList(vs)); filters.push((r) => set.has(String(r[col]))); return b },
-      is(col: string, v: unknown) { filterCols.push(col); filters.push((r) => (v === null ? r[col] === null || r[col] === undefined : r[col] === v)); return b },
+      eq(col: string, v: unknown) { filterCols.push(col); filters.push((r) => val(r, col) === v); return b },
+      neq(col: string, v: unknown) { filterCols.push(col); filters.push((r) => val(r, col) !== v); return b },
+      in(col: string, vs: string[] | string) { filterCols.push(col); const set = new Set(parseList(vs)); filters.push((r) => set.has(String(val(r, col)))); return b },
+      is(col: string, v: unknown) { filterCols.push(col); filters.push((r) => (v === null ? val(r, col) === null || val(r, col) === undefined : val(r, col) === v)); return b },
       not(col: string, operator: string, v: unknown) {
         filterCols.push(col)
-        if (operator === "in") { const set = new Set(parseList(v as string)); filters.push((r) => !set.has(String(r[col]))) }
-        else if (operator === "is") filters.push((r) => (v === null ? !(r[col] === null || r[col] === undefined) : r[col] !== v))
-        else if (operator === "eq") filters.push((r) => r[col] !== v)
+        if (operator === "in") { const set = new Set(parseList(v as string)); filters.push((r) => !set.has(String(val(r, col)))) }
+        else if (operator === "is") filters.push((r) => (v === null ? !(val(r, col) === null || val(r, col) === undefined) : val(r, col) !== v))
+        else if (operator === "eq") filters.push((r) => val(r, col) !== v)
         else throw new Error(`memSupabase: unsupported not(${operator})`)
         return b
       },
-      gte(col: string, v: any) { filterCols.push(col); filters.push((r) => r[col] !== null && r[col] !== undefined && r[col] >= v); return b },
-      lte(col: string, v: any) { filterCols.push(col); filters.push((r) => r[col] !== null && r[col] !== undefined && r[col] <= v); return b },
-      gt(col: string, v: any) { filters.push((r) => r[col] > v); return b },
-      lt(col: string, v: any) { filters.push((r) => r[col] < v); return b },
+      gte(col: string, v: any) { filterCols.push(col); filters.push((r) => val(r, col) !== null && val(r, col) !== undefined && val(r, col) >= v); return b },
+      lte(col: string, v: any) { filterCols.push(col); filters.push((r) => val(r, col) !== null && val(r, col) !== undefined && val(r, col) <= v); return b },
+      gt(col: string, v: any) { filters.push((r) => val(r, col) > v); return b },
+      lt(col: string, v: any) { filters.push((r) => val(r, col) < v); return b },
       order(col: string, o?: { ascending?: boolean }) { orderBy = { col, asc: o?.ascending !== false }; return b },
       limit(n: number) { limitN = n; return b },
       maybeSingle: async () => { const r = run(); if (r.error) return r; return { data: Array.isArray(r.data) ? (r.data[0] ?? null) : r.data, error: null } },

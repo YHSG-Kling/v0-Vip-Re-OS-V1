@@ -144,7 +144,7 @@ export interface DemoStillSurface {
  */
 export const DEMO_STILL_SURFACES: readonly DemoStillSurface[] = [
   { id: "command_center", route: "/dashboard",              label: "Command center",         demoTopics: ["overview", "recruiting_ops"], educationTopics: ["platform_tour", "working_with_managers"], videoAngles: ["ai_team"] },
-  { id: "lead_desk",      route: "/dashboard/acquisition",  label: "Lead acquisition desk",  demoTopics: ["reception_isa"],               educationTopics: ["solo_pipeline"],                        videoAngles: [] },
+  { id: "lead_desk",      route: "/dashboard/acquisition",  label: "Lead acquisition desk",  demoTopics: ["reception_isa", "lead_engine"], educationTopics: ["solo_pipeline"],                        videoAngles: [] },
   { id: "sphere",         route: "/dashboard/sphere",       label: "Sphere / contacts",      demoTopics: ["reception_isa"],               educationTopics: ["solo_pipeline", "persona_playbook"],    videoAngles: [] },
   { id: "deals",          route: "/dashboard/transactions", label: "Deals board",            demoTopics: ["deals_portal"],                educationTopics: ["contract_walkthrough"],                 videoAngles: [] },
   { id: "video_studio",   route: "/dashboard/videos",       label: "Video studio",           demoTopics: ["video_marketing"],             educationTopics: ["self_marketing"],                       videoAngles: [] },

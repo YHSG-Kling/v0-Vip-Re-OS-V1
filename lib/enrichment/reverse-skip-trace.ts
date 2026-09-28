@@ -64,6 +64,7 @@ export interface ReverseSkipTraceOutcome {
 type MeterFn = (input: {
   vendorName: string; usageType: string; cost: number; brokerageId: string | null
   systemSource?: string; metadata?: Record<string, unknown>
+  attribution?: { leadId?: string | null; contactId?: string | null; rawRecordId?: string | null }
 }) => Promise<boolean>
 
 export interface ReverseSkipTraceDeps {
@@ -75,6 +76,8 @@ export interface ReverseSkipTraceDeps {
   meter?: MeterFn
   systemSource?: string
   metadata?: Record<string, unknown>
+  /** Lane 87F — the person this billed trace is for (MeterVendorInput.attribution); `ref` alone does not say which kind of id it is. */
+  attribution?: { leadId?: string | null; contactId?: string | null; rawRecordId?: string | null }
 }
 
 const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase().replace(/[^a-z]/g, "")
@@ -151,6 +154,7 @@ export async function reverseSkipTracePerson(
         await meter({
           vendorName: "batchdata", usageType: "reverse_skip_trace", cost, brokerageId: input.brokerageId, systemSource,
           metadata: { ref: input.ref, matched: !!matches[0]?.matched, route: route.providers.join(">"), ...(deps.metadata ?? {}) },
+          attribution: deps.attribution,
         }).catch(() => false)
       }
       const pick = selectReversePerson(matches[0]?.persons ?? [], input)
@@ -181,6 +185,7 @@ export async function reverseSkipTracePerson(
       await meter({
         vendorName: "peopledata", usageType: "reverse_skip_trace_fallback", cost, brokerageId: input.brokerageId, systemSource,
         metadata: { ref: input.ref, matched: !!data, ...(deps.metadata ?? {}) },
+        attribution: deps.attribution,
       }).catch(() => false)
     }
     if (data && ((data.phones?.length ?? 0) > 0 || (data.emails?.length ?? 0) > 0)) {

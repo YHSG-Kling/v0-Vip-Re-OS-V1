@@ -51,6 +51,7 @@
 import { PLATFORM_EXIT_MENU } from "@/lib/ai-isa/qualification-playbook"
 import { PROSPECT_ROLES } from "@/lib/platform/growth-funnel"
 import { brandCta, type ProductBrand } from "@/lib/platform/product-brand"
+import { PRODUCT_DEMO_TOPICS } from "@/lib/platform/product-demo"
 import {
   upsertPlatformProspect, markProspectHandoff, markProspectSignupLinkSent, markProspectCallback,
   PROSPECT_TIMELINE_BUCKETS, PROSPECT_PREFERRED_PATHS, type ProspectQualification,
@@ -109,7 +110,7 @@ export const PLATFORM_PROSPECT_TOOL_GUIDANCE = [
   "You have free tools for the prospect funnel: save_prospect (call it as SOON as you learn a name, email, company, size, role, tools, pain, timeline, or territory — safe to call more than once), find_demo_slots + book_demo_appointment (a live demo on a sales rep's real calendar — always find slots first, offer 2-3, then book the one they pick; the rep confirms and calendar invites go out), send_signup_link (texts or emails the online signup link), and request_human_handoff (a real person follows up).",
   "Never invent a demo time — only offer times find_demo_slots returned. If it reports no calendar is connected, offer the human handoff instead.",
   "book_demo_appointment needs their email for the calendar invite — ask for it if you don't have it yet.",
-  "When they say YES and want to start now, call start_subscription (their work email, name and business name are required; pick the plan that fits their size unless they chose one). Ask which way they want to start and pass it as activation: 'trial' (14 days free, no card, billing set up inside the app later) or 'paid' (activate now — they complete a secure checkout for the plan plus the plan's one-time setup fee, emailed to them; access opens when it clears). Quote the setup fee only as the plan pricing lists it — never invent an amount, never offer to waive it. Either way the account is created on the spot and the sign-in link goes to their email. If it answers needsHuman, do NOT retry — say a person will take it from here and call request_human_handoff.",
+  "When they say YES and want to start now, call start_subscription (their work email, name and business name are required; pick the plan that fits their size unless they chose one). Ask which way they want to start and pass it as activation: 'trial' (14 days free, no card, billing set up inside the app later) or 'paid' (activate now — they complete a secure checkout for the plan plus the plan's one-time setup fee, emailed to them; access opens when it clears). Quote the setup fee only as the plan pricing lists it — never invent an amount, never offer to waive it. Either way the account is created on the spot and the sign-in link goes to their email. If it answers needsHuman, do NOT retry — the handoff to a person is already made (handoffCreated); say a person will take it from here.",
   "When they are interested but not ready to decide today, ask when a good time to call back is and call schedule_prospect_callback with their words — never chase them meanwhile; a person calls when they said.",
   "When they ask what the product does or want to SEE it, call show_product_demo with the closest topic and walk them through it in your own words, one beat at a time. If it returns a clipToken, put that token verbatim at the END of your reply so the sample plays; never claim a video is playing when there is no token.",
 ].join("\n")
@@ -153,6 +154,30 @@ export async function buildPlatformProspectTools(ctx: PlatformProspectToolContex
       }
     }
     return { id: saved.id, email: saved.email }
+  }
+
+  /**
+   * THE ONE HUMAN-HANDOFF STEP (lane 87F). Both request_human_handoff and start_subscription's
+   * needsHuman branch land here. Before 87F a needsHuman answer only TOLD the model to call
+   * request_human_handoff — a YES from an enterprise / custom-pricing / CRM-migration prospect that
+   * the model then failed to hand off was lost with no bell and no stamp ("humans when warranted"
+   * must not depend on the model remembering). An OPEN handoff already on the row is not rung twice.
+   */
+  async function escalateToHuman(prospect: { id: string; email: string | null }, input: { reason: string; bestTime: string | null; name: string | null }): Promise<{ staffNotified: number; alreadyOpen: boolean }> {
+    const { data: row, error } = await svc.from("platform_prospects").select("details").eq("id", prospect.id).maybeSingle()
+    if (error) console.error("[prospect-agent-tools] handoff read refused:", error.message)
+    const open = (row as { details?: { human_handoff?: { status?: string | null } | null } | null } | null)?.details?.human_handoff
+    if (open?.status === "open") return { staffNotified: 0, alreadyOpen: true }
+    const { notifyPlatformStaff } = await import("@/lib/notifications/platform-staff")
+    const who = [input.name, prospect.email ?? ctx.phone].filter(Boolean).join(" — ") || "a prospect"
+    const staffNotified = await notifyPlatformStaff(svc as never, {
+      type: "platform_prospect_handoff",
+      title: "A prospect asked for a person",
+      body: `${who}: ${input.reason}${input.bestTime ? ` (best time: ${input.bestTime})` : ""}. See the growth board.`,
+      entityType: "platform_prospect", entityId: prospect.id, priority: "high",
+    })
+    await markProspectHandoff(svc, { prospectId: prospect.id, reason: input.reason, bestTime: input.bestTime, channel: ctx.source, staffNotified })
+    return { staffNotified, alreadyOpen: false }
   }
 
   return {
@@ -299,22 +324,14 @@ export async function buildPlatformProspectTools(ctx: PlatformProspectToolContex
       execute: async (a: { reason: string; best_time: string | null; email: string | null; name: string | null }) => {
         const prospect = await resolveProspect({ email: a.email, name: a.name, note: a.reason })
         if (!prospect) return { success: false, error: "Need a name with an email (or the caller's number) first." }
-        const { notifyPlatformStaff } = await import("@/lib/notifications/platform-staff")
-        const who = [a.name, prospect.email ?? ctx.phone].filter(Boolean).join(" — ") || "a prospect"
-        const staffNotified = await notifyPlatformStaff(svc as never, {
-          type: "platform_prospect_handoff",
-          title: "A prospect asked for a person",
-          body: `${who}: ${a.reason}${a.best_time ? ` (best time: ${a.best_time})` : ""}. See the growth board.`,
-          entityType: "platform_prospect", entityId: prospect.id, priority: "high",
-        })
-        await markProspectHandoff(svc, { prospectId: prospect.id, reason: a.reason, bestTime: a.best_time, channel: ctx.source, staffNotified })
-        return { success: true, staffNotified, liveTransferAvailable: ctx.hasLiveTransfer }
+        const handoff = await escalateToHuman(prospect, { reason: a.reason, bestTime: a.best_time, name: a.name })
+        return { success: true, staffNotified: handoff.staffNotified, alreadyRequested: handoff.alreadyOpen, liveTransferAvailable: ctx.hasLiveTransfer }
       },
     }),
 
     // ── Lane 77B — the prospect says YES: subscriber before the conversation ends ──
     start_subscription: tool({
-      description: "Create the prospect's account RIGHT NOW because they said yes. activation 'trial' = a 14-day free trial (no card; billing is set up inside the app after sign-in). activation 'paid' = ACTIVATE NOW: a secure checkout for the plan plus the plan's one-time setup fee is emailed to them and their access opens when it clears (wave 78A — not everyone wants the trial). Requires their work email, name and business name. Pick the plan that fits their size unless they chose one. Never invent or waive the setup fee — the result tells you the exact amount to state. Answers needsHuman:true when a person must take it (enterprise size, custom pricing, CRM migration) — then hand off instead of retrying.",
+      description: "Create the prospect's account RIGHT NOW because they said yes. activation 'trial' = a 14-day free trial (no card; billing is set up inside the app after sign-in). activation 'paid' = ACTIVATE NOW: a secure checkout for the plan plus the plan's one-time setup fee is emailed to them and their access opens when it clears (wave 78A — not everyone wants the trial). Requires their work email, name and business name. Pick the plan that fits their size unless they chose one. Never invent or waive the setup fee — the result tells you the exact amount to state. Answers needsHuman:true when a person must take it (enterprise size, custom pricing, CRM migration) — the handoff is then already made for you; tell them a person will follow up, never retry.",
       inputSchema: z.object({
         email: z.string().describe("Their work email — the sign-in link (and the checkout, when activating) goes here"),
         name: z.string().describe("Their full name"),
@@ -342,7 +359,17 @@ export async function buildPlatformProspectTools(ctx: PlatformProspectToolContex
           customPricingRequested: a.wants_custom_pricing,
         })
         if (!r.ok) {
-          if (r.needsHuman?.length) return { success: false, needsHuman: true, reasons: r.needsHuman, error: r.error }
+          if (r.needsHuman?.length) {
+            // Lane 87F — the handoff is MADE here, deterministically, not left to the model.
+            const { HUMAN_REASON_LABEL } = await import("@/lib/platform/prospect-conversion")
+            const reason = `Said yes to ${a.plan ?? "a plan"} (${a.activation}) — needs a person: ${r.needsHuman.map((x) => HUMAN_REASON_LABEL[x]).join("; ")}`
+            const handoff = await escalateToHuman(prospect, { reason, bestTime: null, name: a.name })
+            return {
+              success: false, needsHuman: true, reasons: r.needsHuman, handoffCreated: true,
+              staffNotified: handoff.staffNotified, liveTransferAvailable: ctx.hasLiveTransfer,
+              nextStep: "A person on the team has already been asked to take it from here — tell them warmly that someone will reach out (offer the live transfer if one is available). Do not call request_human_handoff again.",
+            }
+          }
           return { success: false, error: r.error }
         }
         if (r.alreadyConverted) return { success: true, alreadyConverted: true, message: "They already have an account — tell them to check their email for the sign-in link or use request_human_handoff if they can't find it." }
@@ -388,9 +415,10 @@ export async function buildPlatformProspectTools(ctx: PlatformProspectToolContex
 
     // ── Lane 77B — the demo the live agent IS ──────────────────────────────────
     show_product_demo: tool({
-      description: "Walk the prospect through what the product does for one topic (overview, reception_isa, live_agent, video_marketing, deals_portal, recruiting_ops), grounded in the real capability catalogue and the live plans. Returns the beats to say in your own words and, on a visual surface, a clipToken (sample clip) and/or a stillToken (a screenshot of that part of the OS on the demo tenant) to append verbatim so the widget shows them. Free — never renders anything.",
+      description: `Walk the prospect through what the product does for one topic (${PRODUCT_DEMO_TOPICS.join(", ")} — lead_engine is where leads come from and what each costs), grounded in the real capability catalogue and the live plans. Returns the beats to say in your own words and, on a visual surface, a clipToken (sample clip) and/or a stillToken (a screenshot of that part of the OS on the demo tenant) to append verbatim so the widget shows them. Free — never renders anything.`,
       inputSchema: z.object({
-        topic: z.enum(["overview", "reception_isa", "live_agent", "video_marketing", "deals_portal", "recruiting_ops"]).describe("The closest topic to what they asked about"),
+        // Lane 87F — derived from the ONE topic list (§6); a hand-copied enum could not offer lead_engine.
+        topic: z.enum(PRODUCT_DEMO_TOPICS).describe("The closest topic to what they asked about"),
       }),
       execute: async ({ topic }: { topic: string }) => {
         const { describeProductDemo, isProductDemoTopic } = await import("@/lib/platform/product-demo")

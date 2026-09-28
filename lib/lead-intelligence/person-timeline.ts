@@ -27,6 +27,18 @@
  *   post_conversion    activities (contact_id)      (agent/ISA activity after
  *                                                     the person became a contact)
  *
+ * LANE 87F (wave 87) — the owner's LINEAR pipeline is "scrape → dedup → enrich → dedup →
+ * territory/identity gate → lead → ISA/positive intent → contact → assignment", and the timeline
+ * showed only the first and last few steps. Added, each read BY NAME from the table that records it:
+ *   dedup_decision     lead_deduplication_log      (pre/post-enrichment dedup + gate skips, by
+ *                                                    lead_id AND by the raw rows it came from)
+ *   enrichment         vendor_usage_tracking       (every paid enrichment call booked for this
+ *                        via lib/lead-intelligence/person-spend.ts — lead_id, raw record, contact)
+ *   qualification      ai_isa_qualifications       (the ISA's qualification record: stage/result)
+ *   consent            contact_consent_events      (TCPA / channel consent given or withdrawn)
+ * and `spend` — what this person has cost before and after conversion (lead-desk only). Cost never
+ * reaches the contact-facing view: redactForContactView strips every cost key from event detail.
+ *
  * ROLE GATING IS THE CALLER'S JOB, NOT A SECOND COPY OF IT. Every event below
  * carries `sensitivity: "lead_desk_only" | "summary_safe"` so ONE build serves
  * both surfaces (owner ruling / CLAUDE.md §5): the lead-desk lead detail page
@@ -42,6 +54,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { buildBehavioralIntentSummary } from "./behavioral-summary"
+import { readPersonVendorSpend, summarizePersonSpend, type PersonSpendSummary } from "./person-spend"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -56,6 +69,10 @@ export type TimelineEventType =
   | "assignment"
   | "conversion"
   | "post_conversion_activity"
+  | "dedup_decision"
+  | "enrichment"
+  | "qualification"
+  | "consent"
 
 export interface TimelineEvent {
   id: string
@@ -78,6 +95,9 @@ export interface PersonTimelineResult {
    *  "post-conversion" for the summarized contact-facing view. */
   convertedAt: string | null
   acquisitionCost: number | null
+  /** Lane 87F — every vendor dollar booked for this person, split at conversion. LEAD-DESK ONLY
+   *  (the contact-facing route never forwards it). null when nothing could be keyed (no ids). */
+  spend: PersonSpendSummary | null
   behavioralIntentScore: number
   warnings: string[]
 }
@@ -91,7 +111,7 @@ interface Params {
 
 const EMPTY = (leadId: string | null, contactId: string | null, brokerageId: string | null): PersonTimelineResult => ({
   leadId, contactId, brokerageId, events: [], convertedAt: null, acquisitionCost: null,
-  behavioralIntentScore: 0, warnings: [],
+  spend: null, behavioralIntentScore: 0, warnings: [],
 })
 
 /** Whose mailbox an unknown sender wrote to (raw_data.mailbox_owner_kind, stamped by
@@ -121,6 +141,8 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
   let convertedAt: string | null = null
   let acquisitionCost: number | null = null
   let leadRow: Record<string, any> | null = null
+  /** Every raw_scraped_leads.id this person came from — raw-stage dedup + spend are keyed on it. */
+  const rawRecordIds = new Set<string>()
 
   if (leadId) {
     const { data, error } = await svc.from("leads")
@@ -129,6 +151,7 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
     if (error) warnings.push(`leads read refused: ${error.message}`)
     else if (data) {
       leadRow = data
+      if (data.raw_record_id) rawRecordIds.add(data.raw_record_id as string)
       contactId = contactId ?? (data.contact_id as string | null)
       brokerageId = brokerageId ?? (data.brokerage_id as string | null)
       convertedAt = (data.converted_at as string | null) ?? null
@@ -185,6 +208,7 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
     if (error) warnings.push(`raw_scraped_leads read refused: ${error.message}`)
     else {
       for (const r of (data ?? []) as Array<Record<string, any>>) {
+        if (r.id) rawRecordIds.add(String(r.id))
         events.push({
           id: `raw:${r.id}`,
           type: "scrape_source",
@@ -417,9 +441,119 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
       type: "conversion",
       occurredAt: convertedAt,
       summary: "Converted from lead to contact (ISA qualification / positive intent)",
+      // Lane 87F: `detail: { acquisitionCost }` removed — this event is summary_safe, so the cost rode
+      // straight into the agent-facing contact view (CLAUDE.md §5: no financials there). The lead desk
+      // reads the figure from result.acquisitionCost / result.spend instead.
       sensitivity: "summary_safe",
-      detail: { acquisitionCost },
     })
+  }
+
+  // ── 8. DEDUP DECISIONS — lead_deduplication_log (the pipeline's two dedup passes + gate skips) ──
+  // By lead_id AND by the raw rows the person came from: most decisions are written while the row is
+  // still raw (pipeline-processor.ts / kernel/scraping.ts stamp raw_record_id). Tenant-pinned.
+  if (brokerageId && (allLeadIds.length > 0 || rawRecordIds.size > 0)) {
+    const dedupCols = "id, stage, action_taken, match_score, skip_reason, duplicate_of_lead_id, duplicate_of_contact_id, created_at"
+    const [byLead, byRaw] = await Promise.all([
+      allLeadIds.length > 0
+        ? svc.from("lead_deduplication_log").select(dedupCols).eq("brokerage_id", brokerageId).in("lead_id", allLeadIds)
+        : Promise.resolve({ data: [], error: null }),
+      rawRecordIds.size > 0
+        ? svc.from("lead_deduplication_log").select(dedupCols).eq("brokerage_id", brokerageId).in("raw_record_id", [...rawRecordIds])
+        : Promise.resolve({ data: [], error: null }),
+    ])
+    const seen = new Set<string>()
+    for (const res of [byLead, byRaw]) {
+      if (res.error) { warnings.push(`lead_deduplication_log read refused: ${res.error.message}`); continue }
+      for (const r of (res.data ?? []) as Array<Record<string, any>>) {
+        if (seen.has(r.id)) continue
+        seen.add(r.id)
+        events.push({
+          id: `dedup:${r.id}`,
+          type: "dedup_decision",
+          occurredAt: r.created_at ?? null,
+          summary: `Dedup ${String(r.stage ?? "check").replace(/_/g, " ")}: ${r.action_taken ?? "recorded"}${typeof r.match_score === "number" ? ` (match ${r.match_score})` : ""}${r.skip_reason ? ` — ${r.skip_reason}` : ""}`,
+          sensitivity: "lead_desk_only",
+          detail: { stage: r.stage, action: r.action_taken, duplicateOfLeadId: r.duplicate_of_lead_id, duplicateOfContactId: r.duplicate_of_contact_id },
+        })
+      }
+    }
+  }
+
+  // ── 9. QUALIFICATION — ai_isa_qualifications (the ISA's record: stage / result / score) ──
+  if (brokerageId && (allLeadIds.length > 0 || contactId)) {
+    const qualCols = "id, stage, qualification_result, qualification_score, qualified_at, assigned_at, last_outreach_at"
+    const [byLead, byContact] = await Promise.all([
+      allLeadIds.length > 0
+        ? svc.from("ai_isa_qualifications").select(qualCols).eq("brokerage_id", brokerageId).in("lead_id", allLeadIds)
+        : Promise.resolve({ data: [], error: null }),
+      contactId
+        ? svc.from("ai_isa_qualifications").select(qualCols).eq("brokerage_id", brokerageId).eq("contact_id", contactId)
+        : Promise.resolve({ data: [], error: null }),
+    ])
+    const seen = new Set<string>()
+    for (const res of [byLead, byContact]) {
+      if (res.error) { warnings.push(`ai_isa_qualifications read refused: ${res.error.message}`); continue }
+      for (const r of (res.data ?? []) as Array<Record<string, any>>) {
+        if (seen.has(r.id)) continue
+        seen.add(r.id)
+        events.push({
+          id: `qualification:${r.id}`,
+          type: "qualification",
+          occurredAt: r.qualified_at ?? r.assigned_at ?? r.last_outreach_at ?? null,
+          summary: `ISA qualification${r.stage ? ` (${String(r.stage).replace(/_/g, " ")})` : ""}${r.qualification_result ? `: ${r.qualification_result}` : ""}${typeof r.qualification_score === "number" ? ` — score ${r.qualification_score}` : ""}`,
+          sensitivity: "summary_safe",
+          detail: { stage: r.stage, result: r.qualification_result },
+        })
+      }
+    }
+  }
+
+  // ── 10. CONSENT — contact_consent_events (given / withdrawn, per channel) ──
+  if (brokerageId && (allLeadIds.length > 0 || contactId)) {
+    const consentCols = "id, consent_type, consent_source, consented, created_at"
+    const [byLead, byContact] = await Promise.all([
+      allLeadIds.length > 0
+        ? svc.from("contact_consent_events").select(consentCols).eq("brokerage_id", brokerageId).in("lead_id", allLeadIds)
+        : Promise.resolve({ data: [], error: null }),
+      contactId
+        ? svc.from("contact_consent_events").select(consentCols).eq("brokerage_id", brokerageId).eq("contact_id", contactId)
+        : Promise.resolve({ data: [], error: null }),
+    ])
+    const seen = new Set<string>()
+    for (const res of [byLead, byContact]) {
+      if (res.error) { warnings.push(`contact_consent_events read refused: ${res.error.message}`); continue }
+      for (const r of (res.data ?? []) as Array<Record<string, any>>) {
+        if (seen.has(r.id)) continue
+        seen.add(r.id)
+        events.push({
+          id: `consent:${r.id}`,
+          type: "consent",
+          occurredAt: r.created_at ?? null,
+          summary: `Consent ${r.consented === false ? "withdrawn" : "given"}: ${r.consent_type ?? "contact"}${r.consent_source ? ` via ${r.consent_source}` : ""}`,
+          sensitivity: "summary_safe",
+        })
+      }
+    }
+  }
+
+  // ── 11. ENRICHMENT + SPEND — vendor_usage_tracking through the ONE person-spend reader ──
+  let spend: PersonSpendSummary | null = null
+  if (allLeadIds.length > 0 || rawRecordIds.size > 0 || contactId) {
+    const ledger = await readPersonVendorSpend(svc, {
+      brokerageId, leadIds: allLeadIds, rawRecordIds: [...rawRecordIds], contactId,
+    })
+    warnings.push(...ledger.warnings)
+    spend = summarizePersonSpend(ledger.rows, convertedAt, ledger.measured)
+    for (const r of ledger.rows) {
+      events.push({
+        id: `enrichment:${r.id}`,
+        type: "enrichment",
+        occurredAt: r.occurredAt,
+        summary: `Enriched via ${r.vendor}${r.usageType ? ` (${r.usageType.replace(/_/g, " ")})` : ""}${r.subject === "raw_record" ? " — while still a raw record" : ""}`,
+        sensitivity: "lead_desk_only",
+        detail: { vendor: r.vendor, usageType: r.usageType, systemSource: r.systemSource, subject: r.subject, costUsd: r.costUsd },
+      })
+    }
   }
 
   // ── 7. POST-CONVERSION CONTACT ACTIVITY — activities (contact_id) ─────────
@@ -456,6 +590,7 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
     events,
     convertedAt,
     acquisitionCost,
+    spend,
     behavioralIntentScore,
     warnings,
   }
@@ -475,5 +610,15 @@ export function redactForContactView(result: PersonTimelineResult): TimelineEven
     // — post-conversion is contact territory regardless of source table.
     if (result.convertedAt && e.occurredAt && e.occurredAt >= result.convertedAt) return true
     return false
-  })
+  }).map(withoutCost)
+}
+
+/** Lane 87F — a cost / spend / price key never rides event detail into an agent-facing view
+ *  (CLAUDE.md §5: no financials there). Applied to EVERY event the contact view returns, so a
+ *  future event type that carries a cost is stripped without anyone remembering to. */
+const COST_KEY = /cost|spend|usd|price|budget/i
+function withoutCost(e: TimelineEvent): TimelineEvent {
+  if (!e.detail) return e
+  const kept = Object.fromEntries(Object.entries(e.detail).filter(([k]) => !COST_KEY.test(k)))
+  return { ...e, detail: kept }
 }

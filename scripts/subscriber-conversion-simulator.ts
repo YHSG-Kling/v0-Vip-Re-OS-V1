@@ -316,8 +316,11 @@ check("convertProspectToSubscriberAction is marketing/sales platform_role-gated,
 check("the action's request carries the prospect id only — never a brokerage id (the tenant comes back from the core)", /prospectId: input\.prospectId/.test(growthSrc) && !/input\.brokerageId/.test(growthSrc))
 check("the board mounts the Convert to subscriber dialog on convertProspectToSubscriberAction", stripped(BOARD).includes("convertProspectToSubscriberAction(") && stripped(BOARD).includes("Convert to subscriber"))
 const toolsSrc = stripped(TOOLS)
+// RE-ANCHORED (lane 87F): on needsHuman the tool now MAKES the handoff itself (escalateToHuman — the
+// same bell + stamp request_human_handoff uses) before answering needsHuman, so the window between
+// the conversion call and `needsHuman: true` grew; the rule asserted is the same, plus the handoff.
 check("start_subscription: prospect_self actor, the prospect's choice (trial | paid — wave 78A), resolves the prospect through the ONE writer first, hands off on needsHuman",
-  /start_subscription:\s*tool\(\{[\s\S]{0,3000}resolveProspect\(\{ email: a\.email[\s\S]{0,2000}actor: \{ kind: "prospect_self", channel: ctx\.source \}[\s\S]{0,200}tier: a\.plan, billing,[\s\S]{0,600}needsHuman: true/.test(toolsSrc)
+  /start_subscription:\s*tool\(\{[\s\S]{0,3000}resolveProspect\(\{ email: a\.email[\s\S]{0,2000}actor: \{ kind: "prospect_self", channel: ctx\.source \}[\s\S]{0,200}tier: a\.plan, billing,[\s\S]{0,600}r\.needsHuman\?\.length[\s\S]{0,600}escalateToHuman\(prospect[\s\S]{0,300}needsHuman: true/.test(toolsSrc)
   && /a\.activation === "paid"\s*\?\s*\{ mode: "paid" as const/.test(toolsSrc) && /: \{ mode: "trial" as const \}/.test(toolsSrc))
 const { PLATFORM_EXIT_MENU } = await import("../lib/ai-isa/qualification-playbook")
 const { PLATFORM_PROSPECT_TOOL_NAMES, platformExitMenuMatchesTools } = await import("../lib/platform/prospect-agent-tools")

@@ -609,7 +609,8 @@ export async function enrichContactRecord(params: {
         cost: personData ? PEOPLEDATA_MATCH_COST_USD : PEOPLEDATA_NO_MATCH_COST_USD,
         brokerageId,
         systemSource: "skip_trace",
-        metadata: { lane: "contact_enrichment", trigger: params.trigger ?? "auto", matched: Boolean(personData), contactId },
+        metadata: { lane: "contact_enrichment", trigger: params.trigger ?? "auto", matched: Boolean(personData) },
+        attribution: { contactId },
       })
     }
 
@@ -658,6 +659,7 @@ export async function enrichContactRecord(params: {
         },
         brokerageId,
         lane: "contact_enrichment",
+        attribution: { contactId },
       })
       if (credit.filled.length > 0 || profile) profile = credit.profile
       if (credit.filled.length > 0) paidRungProvider = "versium"

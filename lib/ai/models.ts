@@ -207,6 +207,7 @@ export const AI_TASK_ROUTING: Record<string, {
   // ── FAST INTERNAL TASKS (classification, scoring, routing) ────────────────
   lead_analysis:             { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Lead scoring + persona classification — high volume, fast" },
   lead_routing:              { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Assign lead to agent/ISA — decision only, no content" },
+  enrichment_persona_summary: { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Lane 87F — the 180-token INTERNAL persona summary lib/lead-pipeline/enrichment-orchestrator.ts writes after an enrichment pass (runs once per enriched person; never client-facing). Was borrowing client_message (Sonnet) — flagged by lane 86D" },
   behavioral_pattern_detect: { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Classify contact behavior signals — runs frequently" },
   compliance_check:          { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Quick fair housing / Them-First flag detection" },
   sentiment_analysis:        { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Score inbound message sentiment — runs on every reply" },
@@ -252,7 +253,7 @@ export const AI_TASK_ROUTING: Record<string, {
   platform_prospect_chat:    { model: "claude-haiku",  fallback: "gpt-5-mini",   reason: "Platform website prospect chat (app/api/platform/prospect-chat) — the SAME brain as the platform phone line, tool turns (save_prospect / demo slots / signup link / human handoff); mirrors portal_chat_stream's pick" },
 
   // Client-facing / public / decision-critical — PINNED to the model they already ran on
-  client_message:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Client-facing message drafts (lib/agents/generate-client-message.ts, creative playbooks, platform growth) — relationship-critical, brand voice. NOTE: lib/lead-pipeline/enrichment-orchestrator.ts also borrows this key for a 180-token internal persona summary; that caller is 86A's lane, flagged in lane86D notes rather than re-keyed here" },
+  client_message:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Client-facing message drafts (lib/agents/generate-client-message.ts, creative playbooks, platform growth) — relationship-critical, brand voice. The enrichment persona summary that used to borrow this key rides enrichment_persona_summary (lane 87F)" },
   client_education_tutor:    { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Client-facing education tutor answers (lib/education/client-tutor.ts) — same posture as home_assistant_qa" },
   curriculum_authoring:      { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Long-form education / onboarding / regulatory curriculum authoring (lib/education/*) — quality over cost, reviewed content" },
   seo_blog_engine:           { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Public long-form SEO blog (lib/kernel/marketing.ts) — same posture as blog_post_generation" },

@@ -28,6 +28,9 @@ import type { CapabilityId } from "@/lib/ai-isa/capability-catalogue"
 
 export const PRODUCT_DEMO_TOPICS = [
   "overview", "reception_isa", "live_agent", "video_marketing", "deals_portal", "recruiting_ops",
+  // Lane 87F — the question a broker-owner asks first ("where do the leads come from, and what does
+  // each one cost me?") had no demo: the agent could only answer from the overview line.
+  "lead_engine",
 ] as const
 export type ProductDemoTopic = (typeof PRODUCT_DEMO_TOPICS)[number]
 
@@ -121,6 +124,18 @@ export const PRODUCT_DEMO_SCRIPTS: Record<ProductDemoTopic, ProductDemoScript> =
       "Referrals in and out are captured and tracked, vendors are managed with a bench, and reporting rolls up to the command center where the owner sees the whole business.",
     ],
     capabilityIds: ["capture_referral", "request_vendor_referral"],
+  },
+  lead_engine: {
+    topic: "lead_engine",
+    label: "Lead acquisition + lead intelligence",
+    whatItRuns: "territory-centric lead acquisition and the full history and cost of every person it finds, from first record to closed deal",
+    walkthrough: [
+      "You draw your territory once. Inside it the OS watches the sources that actually produce sellers and buyers — for-sale-by-owners, expired listings, pre-foreclosure and other public-record signals, permits, relocation and buyer-intent chatter — and the acquisition spend is covered by the platform, not billed per lead.",
+      "Every record runs one straight line: de-duplicated against what you already have, enriched with the cheapest source that can answer, de-duplicated again, and only a real, reachable person inside your territory becomes a lead.",
+      "Leads belong to the brokerage. The AI ISA qualifies them — what they want, the property, a 1-3, 3-6 or 6-12 month timeline — and only a qualified, interested person becomes a contact your agent works.",
+      "Each person carries one timeline from the first record through conversion and after, plus what they cost to find and enrich — so the lead desk can see which sources earn their keep and which ones to switch off.",
+    ],
+    capabilityIds: ["record_qualification", "schedule_callback"],
   },
 }
 

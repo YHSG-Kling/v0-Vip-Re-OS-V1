@@ -64,6 +64,13 @@ const PEOPLEDATA_UNIT_COST = PEOPLEDATA_MATCH_COST_USD
 
 type EntityType = 'lead' | 'contact'
 
+/** Lane 87F — every paid enrichment booking names the person it was for (lead → vendor_usage_tracking.lead_id,
+ *  contact → request_metadata.contactId), so lib/lead-intelligence/person-spend.ts can put it on that
+ *  person's cost and lib/contact-promotion/acquisition-cost.ts can carry it through conversion. */
+function personAttribution(entityType: EntityType, entityId: string): { leadId?: string; contactId?: string } {
+  return entityType === 'lead' ? { leadId: entityId } : { contactId: entityId }
+}
+
 /**
  * Columns the entity read needs, per table. Two lists because leads and contacts
  * are different tables with different columns — verified live: `leads` carries
@@ -556,7 +563,7 @@ export async function processEnrichmentQueue(
           email: (entity.email as string | null) ?? null,
           city: (entity.city as string | null) ?? (entity.mailing_city as string | null) ?? null,
           state: (entity.state as string | null) ?? (entity.mailing_state as string | null) ?? null,
-        }, { access: skipTraceAccess, peopleData: null, metadata: { entityType, entityId, queueEntryId: entry.id } })
+        }, { access: skipTraceAccess, peopleData: null, metadata: { entityType, entityId, queueEntryId: entry.id }, attribution: personAttribution(entityType, entityId) })
         batchDataFallbackCost = rev.costUsd
         if (rev.status === 'matched' && rev.provider === 'batchdata') {
           batchDataFallback = { phones: rev.phones, emails: rev.emails, person: rev.person, via: 'reverse' }
@@ -593,6 +600,7 @@ export async function processEnrichmentQueue(
             brokerageId,
             systemSource: 'skip_trace',
             metadata: { entityType, entityId, queueEntryId: entry.id, result: batchDataFallback ? 'matched' : 'no_match', route: route.providers.join('>') },
+            attribution: personAttribution(entityType, entityId),
           })
         }
       }
@@ -904,7 +912,8 @@ export async function processEnrichmentQueue(
           cost,
           brokerageId,
           systemSource: 'skip_trace',
-          metadata: { entityType, entityId, queueEntryId: entry.id, cost, lane: plan.label, ...(entityType === 'lead' ? { leadId: entityId } : { contactId: entityId }) },
+          metadata: { entityType, entityId, queueEntryId: entry.id, cost, lane: plan.label },
+          attribution: personAttribution(entityType, entityId),
         })
 
         // Step 6d: Lead-specific post-enrichment
@@ -1026,7 +1035,7 @@ export async function processEnrichmentQueue(
                 },
                 summarize: async (prompt) => {
                   const { text } = await generateTextRouted({
-                    feature: 'client_message', brokerageId, prompt, temperature: 0.3, maxTokens: 180,
+                    feature: 'enrichment_persona_summary', brokerageId, prompt, temperature: 0.3, maxTokens: 180,
                   })
                   return text
                 },
@@ -1079,6 +1088,7 @@ export async function processEnrichmentQueue(
                       brokerageId,
                       systemSource: 'property_enrichment',
                       metadata: { entityType, entityId, queueEntryId: entry.id, cost: propEnrichment.cost },
+                      attribution: personAttribution(entityType, entityId),
                     })
                   }
                 }
@@ -1214,6 +1224,7 @@ export async function processEnrichmentQueue(
             brokerageId,
             systemSource: 'skip_trace',
             metadata: { entityType, entityId, queueEntryId: entry.id, cost, result: 'no_match', lane: plan.label },
+            attribution: personAttribution(entityType, entityId),
           })
         }
 

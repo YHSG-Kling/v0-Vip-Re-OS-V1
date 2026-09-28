@@ -20,6 +20,21 @@ export interface MeterVendorInput {
   brokerageId?: string | null
   systemSource?: string
   metadata?: Record<string, any>
+  /**
+   * THE PERSON THIS SPEND WAS FOR (lane 87F, wave 87 — "lead intelligence = history + source cost").
+   * Before this field existed NO meterVendorSpend booking carried a person: lead_id was never set, so
+   * lib/contact-promotion/acquisition-cost.ts (which sums vendor_usage_tracking BY lead_id) found only
+   * the $0 osint_free rows and every paid skip-trace / PeopleData / Versium / property-enrichment call
+   * vanished from cost-per-lead. And because usage-logger's replay fingerprint named no person, two
+   * different people's identical $0.25 matches inside five minutes fingerprinted as ONE event and the
+   * second was dropped from the ledger outright.
+   *   leadId      → vendor_usage_tracking.lead_id (FK → leads.id — pass ONLY a real leads.id)
+   *   contactId   → request_metadata.contactId   (the key trackVendorUsageService already writes)
+   *   rawRecordId → request_metadata.rawRecordId (raw_scraped_leads.id — spend BEFORE a lead exists;
+   *                 read back through leads.raw_record_id / source_raw_ids once the row becomes a lead)
+   * Reader: lib/lead-intelligence/person-spend.ts.
+   */
+  attribution?: { leadId?: string | null; contactId?: string | null; rawRecordId?: string | null }
 }
 
 /**
@@ -34,6 +49,7 @@ export async function meterVendorSpend(
   if (!input.cost || input.cost <= 0) return false
   if (!input.brokerageId) return false
   const logger = deps.logger ?? logVendorUsage
+  const who = input.attribution ?? {}
   try {
     const res = await logger({
       vendorName: input.vendorName,
@@ -42,7 +58,12 @@ export async function meterVendorSpend(
       estimatedCost: input.cost,
       systemSource: input.systemSource ?? "lead_scraping",
       brokerageId: input.brokerageId,
-      metadata: input.metadata,
+      ...(who.leadId ? { leadId: who.leadId } : {}),
+      metadata: {
+        ...(input.metadata ?? {}),
+        ...(who.contactId ? { contactId: who.contactId } : {}),
+        ...(who.rawRecordId ? { rawRecordId: who.rawRecordId } : {}),
+      },
     })
     return !!res.success
   } catch {

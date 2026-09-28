@@ -76,7 +76,7 @@ export function needsPaidHouseholdRung(profile: Record<string, unknown> | null |
 export interface AppendModeledCreditDeps {
   append?: (id: VersiumIdentity) => Promise<VersiumFinancialResult>
   checkBudget?: (p: { brokerageId: string; addCost: number }) => Promise<{ allowed: boolean }>
-  meter?: (p: { vendorName: string; usageType: string; cost: number; brokerageId: string; systemSource: string; metadata?: Record<string, unknown> }) => Promise<unknown>
+  meter?: (p: { vendorName: string; usageType: string; cost: number; brokerageId: string; systemSource: string; metadata?: Record<string, unknown>; attribution?: { leadId?: string | null; contactId?: string | null; rawRecordId?: string | null } }) => Promise<unknown>
 }
 
 export interface AppendModeledCreditResult {
@@ -98,6 +98,8 @@ export async function appendModeledCredit(params: {
   identity: VersiumIdentity
   brokerageId: string | null | undefined
   lane: string
+  /** Lane 87F — the person the paid rung is bought for (see MeterVendorInput.attribution). */
+  attribution?: { leadId?: string | null; contactId?: string | null; rawRecordId?: string | null }
   deps?: AppendModeledCreditDeps
 }): Promise<AppendModeledCreditResult> {
   const profile = { ...(params.profile ?? {}) }
@@ -126,6 +128,7 @@ export async function appendModeledCredit(params: {
         brokerageId: params.brokerageId,
         systemSource: "skip_trace",
         metadata: { lane: params.lane, matched: res.credits != null ? res.credits > 0 : !!res.data, credits: res.credits ?? null, match_level: res.matchLevel ?? null },
+        attribution: params.attribution,
       })
     }
     if (res.error) return { profile, asked: true, cost: res.cost, filled: [], skipped: "error", error: res.error }
