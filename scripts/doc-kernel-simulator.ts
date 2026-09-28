@@ -2269,7 +2269,14 @@ async function main() {
         // true), user_brokerage_roles→user_role_assignments + permission-matrix
         // capabilities + the agents roster (also fixed an id-class mismatch).
         && src("app/api/cron/listing-presentation-prep/route.ts").includes('from("calendar_events")')
-        && src("app/api/cron/listing-presentation-prep/route.ts").includes('"listing_appointment"')
+        // RE-ANCHORED (lane 88D): the cron filters on the ONE enum spelling
+        // (CalendarEventType.LISTING_APPOINTMENT) rather than a bare literal — since 87B
+        // this conjunct was satisfied only by the literal inside a COMMENT. The rule is
+        // "the cron reads event_type 'listing_appointment'", so it is asserted as the
+        // enum filter AND the enum's value.
+        && (src("app/api/cron/listing-presentation-prep/route.ts").includes('.eq("event_type", CalendarEventType.LISTING_APPOINTMENT)')
+            || src("app/api/cron/listing-presentation-prep/route.ts").includes('.eq("event_type", "listing_appointment")'))
+        && /LISTING_APPOINTMENT\s*=\s*['"]listing_appointment['"]/.test(src("lib/kernel/calendar-types.ts"))
         && src("app/dashboard/vendors/page.tsx").includes('from("vendors")')
         // The marketing-package embed now NAMES its vendor columns. A starred
         // embed resolves against the right table but hides WHICH columns the

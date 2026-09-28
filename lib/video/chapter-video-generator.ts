@@ -156,6 +156,29 @@ export async function generatePropertyChapterVideos(
   }
   const didMode = voiceProfile.did_video_url ? "clip" : "talk"
 
+  // THE VIDEO METER (lane 88D). Every chapter reel is a paid D-ID render, and this
+  // generator wrote ai_video_projects without ever touching the tier meter — the
+  // seller's pre-appointment reels were invisible to the video_minutes allowance and
+  // to the overage invoice. The SAME meter lib/kernel/content-creators.ts
+  // createVideoProject counts every video on (lib/video/video-metering.ts): gated
+  // once for the batch — the ONE refusal is a tier that excludes video; over the
+  // allowance is served and billed as overage, an unreadable allowance is served and
+  // labelled "unchecked" — and each chapter is COUNTED once its render is really
+  // with D-ID (autonomous: the booking started it, no one clicked).
+  const { gateVideoCreation, meterVideoCreation } = await import("@/lib/video/video-metering")
+  const videoMeter = await gateVideoCreation({
+    brokerageId: input.brokerageId,
+    plannedSeconds: CHAPTER_TARGET_SECONDS_MAX * Math.max(1, input.chapters.length),
+  })
+  if (!videoMeter.allowed) {
+    return {
+      success: false,
+      videoIds: [],
+      chapterTitles: input.chapters.map((c) => c.title),
+      error: `Cannot create chapter videos — ${videoMeter.reason}`,
+    }
+  }
+
   const { dispatchVideo } = await import("@/lib/providers/dispatch")
 
   const videoIds: string[] = []
@@ -340,6 +363,18 @@ export async function generatePropertyChapterVideos(
 
       videoIds.push(project.id)
       succeededTitles.push(chapter.title)
+
+      // COUNTED only now — the render is real and pollable (never throws).
+      await meterVideoCreation({
+        brokerageId:    input.brokerageId,
+        agentId,
+        userId:         agentUserId,
+        plannedSeconds: estimateDurationFromScript(script),
+        feature:        "presentation_chapter",
+        projectId:      project.id,
+        autonomous:     true,
+        decision:       videoMeter,
+      })
 
       // Canonical KernelEvent, emitted only once the provider has the job. The
       // RENDER moves because dispatchVideo submitted it and the stamp above made

@@ -138,11 +138,13 @@ export async function createAppointment(params: {
     // THE BOOKING STARTS THE SELLER'S LISTING-PRESENTATION PREP (lane 87B, owner
     // wave 87). This used to parse `location` ad hoc and fire triggerChainsForEvent
     // for ANY consultation contact — a buyer's "consultation" prepped a CMA of the
-    // buyer's typed-in location. The ONE starter now reads the calendar row this
-    // action just wrote, refuses a non-seller contact, resolves the seller's
-    // property (listing → valuation request → the booked address → the seller's
-    // home) and the agent's users.id INSIDE the row's tenant, and keys the prep run
-    // on this booking. The tenant a caller may start prep in is the SESSION's —
+    // buyer's typed-in location. The listing-appt-prep chain's OWN trigger (lane
+    // 88D: fireListingAppointmentSetForBooking, the original chain is the survivor)
+    // reads the calendar row this action just wrote, refuses a non-seller contact,
+    // resolves the seller's property (listing → valuation request → the booked
+    // address → the seller's home) and the agent's users.id INSIDE the row's tenant,
+    // and records ONE listing.appointment_set event for this booking — the event the
+    // chain is started from. The tenant a caller may start prep in is the SESSION's —
     // params.brokerageId is a body field and is never trusted for it (§4).
     //
     // TOMBSTONE (lane 87B, §1.3): app/actions/address-lookup.ts::lookupAddressAction —
@@ -159,8 +161,8 @@ export async function createAppointment(params: {
           console.error("[createAppointment] listing prep not started — no session tenant")
         } else {
           const { createServiceClient } = await import("@/lib/supabase/service")
-          const { startListingPresentationPrepFromBooking } = await import("@/lib/listing-presentation/booking-prep")
-          const prep = await startListingPresentationPrepFromBooking(createServiceClient(), {
+          const { fireListingAppointmentSetForBooking } = await import("@/lib/workflow-orchestrator/chains/listing-appt-prep")
+          const prep = await fireListingAppointmentSetForBooking(createServiceClient(), {
             calendarEventId: data.id,
             expectedBrokerageId: session.brokerageId,
             listingId: params.listingId ?? null,

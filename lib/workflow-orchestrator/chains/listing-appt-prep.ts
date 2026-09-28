@@ -3,15 +3,21 @@
  *
  * STARTED FROM THE LISTING-APPOINTMENT BOOKING, FOR THE SELLER (owner, wave 87:
  * "listing presentation prep which inlcudes the cma needs to be for a seller as
- * this is started from the listing appointmtent booking"). Every booking path —
- * the agent calendar, the listing consult, the AI-ISA seller milestone, the AI-ISA
- * / voice booking at the agent's confirm, and the seller's own self-booking from
- * the report page or the portal — hands its calendar_events row to
- * lib/listing-presentation/booking-prep.ts::startListingPresentationPrepFromBooking,
- * which refuses a non-seller context, resolves the seller's property and the
- * agent's users.id inside the booking row's tenant, and starts THIS chain keyed on
- * the booking row (one run per appointment). The listing-presentation-prep cron is
- * the safety net for bookings that missed that start.
+ * this is started from the listing appointmtent booking").
+ *
+ * THIS IS THE ORIGINAL AND THE SURVIVOR (lane 88D, owner wave 88: "listing
+ * appointment already coded and built the listing prep … with drip including
+ * video sections … you now just wrote it again in the last wave"). Its trigger is
+ * the one it has always declared — the `listing.appointment_set` event — and the
+ * orchestrator's chain registry (lib/orchestrator/internal.ts orchestrateEvent)
+ * starts it with the EVENT's id as triggerEventId. Lane 87B's second module
+ * (lib/listing-presentation/booking-prep.ts) is retired onto the foot of this file:
+ * what it added that this chain lacked — every booking path fires it, only for a
+ * SELLER, one run per booking, the cron as a safety net — is carried here as
+ * fireListingAppointmentSetForBooking, which records the event every booking path
+ * (agent calendar, listing consult + stage, AI-ISA seller milestone, AI-ISA/voice
+ * at the agent's confirm, the seller's self-booking from the report page or the
+ * portal, and the listing-presentation-prep cron) now fires.
  *
  * Often no listing record exists yet — everything runs against the SELLER
  * contact + the seller's property data resolved from the booking.
@@ -42,6 +48,7 @@ import type { WorkflowChain } from "../types"
 import type { generatePropertyChapterVideos as realGeneratePropertyChapterVideos } from "@/lib/video/chapter-video-generator"
 import type { DirectMailCopyContext } from "@/lib/direct-mail/draft-copy"
 import { pushPortalValueCard } from "@/lib/kernel/portal-value"
+import { CalendarEventType } from "@/lib/kernel/calendar-types"
 
 // ---------------------------------------------------------------------------
 // Injection seam for the three MONEY-SPENDING leaves of this chain.
@@ -170,11 +177,11 @@ let activeExecutors: ListingApptPrepExecutors = realExecutors
 // TOMBSTONE (lane 87B): listingApptPrepDedupeKey (`listing_appt_${listingId}`) is RETIRED.
 // It keyed a prep run on the LISTING, which a home-value or AI-ISA seller does not have, so
 // only two of the five booking paths could use it and the other three keyed on their own
-// calendar row — two keys for one appointment. SURVIVOR:
-// lib/listing-presentation/booking-prep.ts::startListingPresentationPrepFromBooking, which
-// every booking path now calls and which passes the BOOKING ROW id (calendar_events.id) as
-// triggerEventId — one run per appointment, on every path, and the cron safety net reads
-// the same key (prepRunStatusesForBooking).
+// calendar row — two keys for one appointment. It was also not a uuid, and
+// workflow_runs.trigger_event_id is a uuid FK to lifecycle_events(id). SURVIVOR: this
+// chain's own trigger at the foot of this file (fireListingAppointmentSetForBooking, lane
+// 88D): one `listing.appointment_set` lifecycle event per booking, whose id the
+// orchestrator hands the engine as triggerEventId.
 
 
 /** Override the money-spending leaf executors (tests only). Pass null to reset to real.
@@ -425,6 +432,24 @@ export const listingApptPrepChain: WorkflowChain = {
 
         if (!result?.success) {
           return { success: false, error: result?.error ?? "Presentation generation failed" }
+        }
+
+        // THE PITCH REEL rides the chain too (lane 88D). It was queued only by the
+        // listing-presentation-prep cron's direct build, so once every booking path
+        // started THIS chain (lane 87B) and the cron stood down to "in progress",
+        // no booked seller's appointment got one. Same producer, same key (one
+        // render per appointment — queueListingPitchReel is idempotent on it);
+        // additive, never blocks the prep.
+        if (appointmentId && propertyData?.address) {
+          try {
+            const { queueListingPitchReel } = await import("@/lib/video/listing-pitch-reel")
+            await queueListingPitchReel(svc, {
+              brokerageId: ctx.brokerageId, agentUserId: ctx.agentUserId ?? null,
+              appointmentId, address: propertyData.address, contactId: ctx.contactId ?? null,
+            })
+          } catch (err) {
+            console.error(`[listing-appt-prep] pitch reel not queued for appointment ${appointmentId}:`, (err as Error)?.message)
+          }
         }
 
         return {
@@ -924,3 +949,530 @@ const DEFAULT_CHAPTERS = [
   { title: "My Marketing Plan", focus: "marketing" },
   { title: "What to Expect at Our Appointment", focus: "expectations" },
 ]
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE TRIGGER — `listing.appointment_set`, FIRED FROM THE BOOKING, FOR THE SELLER
+//
+// Merged here from lib/listing-presentation/booking-prep.ts (lane 87B, retired by
+// lane 88D — tombstone at the foot of this file). This chain always declared its
+// trigger (triggerEvent above) and the orchestrator always started it from that
+// event (lib/orchestrator/internal.ts orchestrateEvent → getChainsByTrigger →
+// engine startRun with triggerEventId = the lifecycle_events id). What was missing
+// was an EMITTER: nothing recorded the event, so each booking path called the
+// engine its own way, and lane 87B then wrote a second starter beside the chain.
+//
+// WHY THE EVENT, NOT startRun (live read, hrvaqgvukzxfskkcrwbt, 2026-09-28):
+// workflow_runs.trigger_event_id is a uuid FK to lifecycle_events(id)
+// (workflow_runs_trigger_event_id_fkey). Lane 87B keyed the run on the BOOKING ROW
+// id (calendar_events.id), and book-seller-appointment had done the same since it
+// was written — every such INSERT is a 23503, so the run was never created, the
+// cron safety net saw "no run" and tried again with the same refused key, and no
+// seller got a presentation, a section drip or a chapter reel from ANY booking
+// path. Keying on the event the chain was built for is both what the FK demands
+// and what the original design said.
+//
+// ONE RUN PER BOOKING: one `listing.appointment_set` event per booking row
+// (dedupe_key below, read with no time window; m673's partial unique index makes a
+// racing second insert refuse), and the engine reuses the run whose
+// trigger_event_id is that event (run-dedupe findReusableRun). The builder is
+// one-presentation-per-appointment besides (m667).
+// ═════════════════════════════════════════════════════════════════════════════
+
+type Svc = ReturnType<typeof createServiceClient>
+
+/** contact_type values that ARE the seller side (CHECK vocabulary: scripts/check-vocabularies.ts). */
+const SELLER_SIDE_CONTACT_TYPES = new Set(["seller", "both"])
+/** Statuses a booking can carry that mean "do not prep". */
+const CANCELLED_BOOKING_STATUSES = new Set(["cancelled", "canceled", "no_show"])
+/** lib/ai-isa/listing-appointment.ts LISTING_APPOINTMENT_STATUS.PENDING_AGENT_CONFIRMATION — a tentative hold. */
+const PENDING_CONFIRMATION_STATUS = "pending_agent_confirmation"
+
+/** ONE event per booking row — the key the dedupe read and m673's index both use. */
+function listingAppointmentSetDedupeKey(calendarEventId: string): string {
+  return `${listingApptPrepChain.triggerEvent}:${calendarEventId}`
+}
+
+type SellerPrepVerdict =
+  | { seller: true; basis: "contact_type" | "listing_seller" | "valuation_request" }
+  | { seller: false; reason: string }
+
+/**
+ * Is this booking FOR A SELLER? Owner: the prep "needs to be for a seller". PURE.
+ *   · contact_type seller/both → yes;
+ *   · otherwise EVIDENCE of a home to sell in the same tenant — the contact is the
+ *     seller on a listing, or asked for a valuation of their home → yes;
+ *   · anything else (a buyer, a vendor, an untyped contact with no home on file,
+ *     or no contact at all) → no, with the reason named.
+ */
+export function classifySellerPrepContext(input: {
+  contactId: string | null
+  contactType: string | null
+  isListingSeller: boolean
+  hasValuationRequest: boolean
+}): SellerPrepVerdict {
+  if (!input.contactId) return { seller: false, reason: "no_seller_contact" }
+  const t = (input.contactType ?? "").trim().toLowerCase()
+  if (SELLER_SIDE_CONTACT_TYPES.has(t)) return { seller: true, basis: "contact_type" }
+  if (input.isListingSeller) return { seller: true, basis: "listing_seller" }
+  if (input.hasValuationRequest) return { seller: true, basis: "valuation_request" }
+  return { seller: false, reason: `not_a_seller:${t || "untyped"}` }
+}
+
+/**
+ * Which booking rows fire the event, which wait, which never do. PURE. The ONE
+ * listing-appointment spelling is CalendarEventType.LISTING_APPOINTMENT (lane 87B2
+ * merged 'listing_consultation' and the ISA milestone's 'isa_appointment' onto it
+ * at their writers).
+ */
+export function bookingPrepGate(input: {
+  eventType: string | null
+  status: string | null
+}): { go: true } | { go: false; outcome: "refused" | "deferred" | "skipped"; reason: string } {
+  const et = (input.eventType ?? "").trim()
+  if (et !== CalendarEventType.LISTING_APPOINTMENT) return { go: false, outcome: "refused", reason: `not_a_listing_appointment:${et || "none"}` }
+  const st = (input.status ?? "").trim().toLowerCase()
+  if (CANCELLED_BOOKING_STATUSES.has(st)) return { go: false, outcome: "skipped", reason: `booking_${st}` }
+  if (st === PENDING_CONFIRMATION_STATUS) return { go: false, outcome: "deferred", reason: "awaiting_agent_confirmation" }
+  return { go: true }
+}
+
+/**
+ * The listing-presentation-prep cron's decision for ONE booking. PURE.
+ *   · a presentation exists            → done (idempotent);
+ *   · a live prep run exists           → in_progress (this chain will build it);
+ *   · no run at all                    → start_prep (the booking missed its event);
+ *   · runs exist, all ended, no deck   → build_presentation (the cron's original
+ *                                        direct build is the net's net).
+ */
+export function decideSafetyNetAction(input: {
+  presentationExists: boolean
+  runStatuses: string[]
+}): "done" | "in_progress" | "start_prep" | "build_presentation" {
+  if (input.presentationExists) return "done"
+  const live = new Set(["running", "paused"])
+  if (input.runStatuses.some((s) => live.has(s))) return "in_progress"
+  if (input.runStatuses.length === 0) return "start_prep"
+  return "build_presentation"
+}
+
+/** Loose address comparison for picking WHICH valuation_request. */
+function addressKey(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()
+}
+
+interface SellerProperty {
+  propertyAddress: string | null
+  state: string | null
+  city: string | null
+  zip: string | null
+  /** Only ever a real listings.id in this tenant. */
+  listingId: string | null
+  bedrooms: number | null
+  bathrooms: number | null
+  sqft: number | null
+  yearBuilt: number | null
+  lotSize: number | null
+  propertyType: string | null
+  source: "listing" | "caller_hint" | "valuation_request" | "booking_address" | "seller_home_address" | "none"
+}
+
+const NO_PROPERTY: SellerProperty = {
+  propertyAddress: null, state: null, city: null, zip: null, listingId: null,
+  bedrooms: null, bathrooms: null, sqft: null, yearBuilt: null, lotSize: null, propertyType: null,
+  source: "none",
+}
+
+const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null)
+const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null)
+
+interface BookingPrepContext {
+  calendarEventId: string
+  brokerageId: string
+  startAt: string | null
+  contactId: string
+  agentUserId: string | null
+  property: SellerProperty
+  sellerBasis: "contact_type" | "listing_seller" | "valuation_request"
+}
+
+type ResolveBookingPrepResult =
+  | { ok: true; context: BookingPrepContext }
+  | { ok: false; outcome: "refused" | "deferred" | "skipped" | "error"; reason: string }
+
+interface ResolveBookingPrepParams {
+  calendarEventId: string
+  /** The tenant a SESSION caller holds. The booking row must be in it. */
+  expectedBrokerageId?: string | null
+  /** A listing the caller KNOWS this booking is for (tenant-verified here). */
+  listingId?: string | null
+  /** Property facts the caller captured at booking (address/city/state/zip…). */
+  propertyHint?: Record<string, unknown> | null
+}
+
+/**
+ * Read the booking row and resolve everything this chain needs — or say exactly
+ * why this booking does not get it. Every read is on the service client and
+ * pinned to the booking row's brokerage (the TENANT is the row's, never a body's;
+ * a session caller's tenant must match). The seller property order is the cron's
+ * original (listing → valuation request matched to the booked address) with the
+ * caller's captured property, the booking's own address and the seller's home
+ * address added behind it; a state is never invented.
+ */
+export async function resolveBookingPrepContext(svc: Svc, params: ResolveBookingPrepParams): Promise<ResolveBookingPrepResult> {
+  const { data: row, error: rowErr } = await svc
+    .from("calendar_events")
+    .select("id, brokerage_id, entity_type, entity_id, event_type, status, start_at, location, metadata, agent_user_id")
+    .eq("id", params.calendarEventId)
+    .maybeSingle()
+  if (rowErr) return { ok: false, outcome: "error", reason: `booking read refused: ${rowErr.message}` }
+  if (!row) return { ok: false, outcome: "refused", reason: "booking_not_found" }
+  const r = row as {
+    id: string; brokerage_id: string | null; entity_type: string | null; entity_id: string | null
+    event_type: string | null; status: string | null; start_at: string | null; location: string | null
+    metadata: Record<string, unknown> | null; agent_user_id: string | null
+  }
+
+  const brokerageId = r.brokerage_id
+  if (!brokerageId) return { ok: false, outcome: "refused", reason: "booking_has_no_tenant" }
+  if (params.expectedBrokerageId && params.expectedBrokerageId !== brokerageId) {
+    return { ok: false, outcome: "refused", reason: "booking_not_in_caller_tenant" }
+  }
+
+  const gate = bookingPrepGate({ eventType: r.event_type, status: r.status })
+  if (!gate.go) return { ok: false, outcome: gate.outcome, reason: gate.reason }
+
+  const meta = r.metadata ?? {}
+
+  const listingCandidate =
+    params.listingId ?? (r.entity_type === "listing" ? r.entity_id : null) ?? str(meta.listing_id)
+  let listing: Record<string, unknown> | null = null
+  if (listingCandidate) {
+    const { data, error } = await svc
+      .from("listings")
+      .select("id, contact_id, seller_contact_id, address, city, state, zip, bedrooms, bathrooms, sqft, year_built, lot_size, property_type")
+      .eq("id", listingCandidate)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (error) return { ok: false, outcome: "error", reason: `listing read refused: ${error.message}` }
+    listing = (data as Record<string, unknown> | null) ?? null
+  }
+
+  const contactCandidate =
+    (r.entity_type === "contact" ? r.entity_id : null) ??
+    str(meta.contact_id) ??
+    (listing ? str(listing.seller_contact_id) ?? str(listing.contact_id) : null)
+  type ContactRow = { id: string; contact_type: string | null; address: string | null; city: string | null; state: string | null; zip_code: string | null }
+  let contact: ContactRow | null = null
+  if (contactCandidate) {
+    const { data, error } = await svc
+      .from("contacts")
+      .select("id, contact_type, address, city, state, zip_code")
+      .eq("id", contactCandidate)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (error) return { ok: false, outcome: "error", reason: `contact read refused: ${error.message}` }
+    contact = (data as ContactRow | null) ?? null
+  }
+
+  const isListingSeller = !!(contact && listing &&
+    (listing.seller_contact_id === contact.id || listing.contact_id === contact.id))
+
+  let valuations: Array<Record<string, unknown>> = []
+  if (contact) {
+    const { data, error } = await svc
+      .from("valuation_requests")
+      .select("property_address, city, state, zip_code, bedrooms, bathrooms, square_feet, year_built, submitted_at")
+      .eq("contact_id", contact.id)
+      .eq("brokerage_id", brokerageId)
+      .order("submitted_at", { ascending: false })
+      .limit(10)
+    if (error) return { ok: false, outcome: "error", reason: `valuation_requests read refused: ${error.message}` }
+    valuations = (data as Array<Record<string, unknown>> | null) ?? []
+  }
+
+  const verdict = classifySellerPrepContext({
+    contactId: contact?.id ?? null,
+    contactType: contact?.contact_type ?? null,
+    isListingSeller,
+    hasValuationRequest: valuations.length > 0,
+  })
+  if (!verdict.seller || !contact) return { ok: false, outcome: "refused", reason: verdict.seller ? "no_seller_contact" : verdict.reason }
+
+  // THE ONE one-line address splitter (§6) — loaded here so the chain module's
+  // static graph (the engine loads it) does not carry the property rail.
+  const { splitOneLineAddress } = await import("@/lib/ai-isa/property-lookup-rail")
+  const property = pickSellerProperty({
+    listing, hint: params.propertyHint ?? null, valuations,
+    bookedAddress: str(meta.property_address) ?? str(meta.location) ?? str(r.location),
+    contact, split: splitOneLineAddress,
+  })
+
+  const agentUserId = await resolveBookingAgentUserId(svc, {
+    brokerageId,
+    agentUserIdColumn: r.agent_user_id,
+    metadataAgentId: str(meta.agent_id) ?? str(meta.agentId),
+  })
+
+  return {
+    ok: true,
+    context: {
+      calendarEventId: r.id, brokerageId, startAt: r.start_at, contactId: contact.id,
+      agentUserId, property, sellerBasis: verdict.basis,
+    },
+  }
+}
+
+function pickSellerProperty(args: {
+  listing: Record<string, unknown> | null
+  hint: Record<string, unknown> | null
+  valuations: Array<Record<string, unknown>>
+  bookedAddress: string | null
+  contact: { address: string | null; city: string | null; state: string | null; zip_code: string | null } | null
+  split: (line: string) => { street: string; city?: string | null; state?: string | null; zip?: string | null }
+}): SellerProperty {
+  // 1. The listing row — the property the appointment is ON.
+  if (args.listing && str(args.listing.address)) {
+    const l = args.listing
+    return {
+      propertyAddress: str(l.address), state: str(l.state), city: str(l.city), zip: str(l.zip),
+      listingId: str(l.id), bedrooms: num(l.bedrooms), bathrooms: num(l.bathrooms), sqft: num(l.sqft),
+      yearBuilt: num(l.year_built), lotSize: num(l.lot_size), propertyType: str(l.property_type), source: "listing",
+    }
+  }
+  const listingId = args.listing ? str(args.listing.id) : null
+
+  // 2. What the booking caller captured (the ISA's property data).
+  const h = args.hint
+  if (h && str(h.address)) {
+    const sp = args.split(str(h.address) as string)
+    const state = str(h.state) ?? sp.state ?? null
+    if (state) {
+      return {
+        propertyAddress: sp.street, state: state.toUpperCase(), city: str(h.city) ?? sp.city ?? null,
+        zip: str(h.zip) ?? str(h.zipCode) ?? sp.zip ?? null, listingId,
+        bedrooms: num(h.bedrooms), bathrooms: num(h.bathrooms), sqft: num(h.sqft), yearBuilt: num(h.yearBuilt),
+        lotSize: num(h.lotSize), propertyType: str(h.propertyType), source: "caller_hint",
+      }
+    }
+  }
+
+  // 3. The home-value request — prefer the one for the address booked about.
+  if (args.valuations.length > 0) {
+    let chosen = args.valuations[0]
+    if (args.bookedAddress) {
+      const want = addressKey(args.bookedAddress)
+      const match = args.valuations.find((v) => typeof v.property_address === "string" && addressKey(v.property_address) === want)
+      if (match) chosen = match
+    }
+    if (str(chosen.property_address) && str(chosen.state)) {
+      return {
+        propertyAddress: str(chosen.property_address), state: str(chosen.state), city: str(chosen.city),
+        zip: str(chosen.zip_code), listingId, bedrooms: num(chosen.bedrooms), bathrooms: num(chosen.bathrooms),
+        sqft: num(chosen.square_feet), yearBuilt: num(chosen.year_built), lotSize: null, propertyType: null,
+        source: "valuation_request",
+      }
+    }
+  }
+
+  // 4. The address the booking itself recorded — only when it carries a state.
+  if (args.bookedAddress) {
+    const sp = args.split(args.bookedAddress)
+    if (sp.state && sp.street) {
+      return { ...NO_PROPERTY, propertyAddress: sp.street, state: sp.state, city: sp.city ?? null, zip: sp.zip ?? null, listingId, source: "booking_address" }
+    }
+  }
+
+  // 5. The seller's own home address on the contact card.
+  const c = args.contact
+  if (c && str(c.address) && str(c.state)) {
+    return { ...NO_PROPERTY, propertyAddress: str(c.address), state: str(c.state), city: str(c.city), zip: str(c.zip_code), listingId, source: "seller_home_address" }
+  }
+
+  return { ...NO_PROPERTY, listingId }
+}
+
+/**
+ * The booking's agent as a USERS id, proven inside the tenant. agent_user_id is
+ * the column most writers fill with one; metadata.agent_id is a users.id on some
+ * paths and an AGENTS id on others (home-value, the calendar scheduler), so it is
+ * tested as each — never substituted (listing_presentations.agent_user_id FKs users).
+ */
+async function resolveBookingAgentUserId(
+  svc: Svc,
+  args: { brokerageId: string; agentUserIdColumn: string | null; metadataAgentId: string | null },
+): Promise<string | null> {
+  for (const candidate of [args.agentUserIdColumn, args.metadataAgentId]) {
+    if (!candidate) continue
+    const { data: user, error: userErr } = await svc
+      .from("users").select("id").eq("id", candidate).eq("brokerage_id", args.brokerageId).maybeSingle()
+    if (userErr) { console.error(`[listing-appt-prep] users check for ${candidate} refused: ${userErr.message}`); continue }
+    if (user) return candidate
+    const { data: agent, error: agentErr } = await svc
+      .from("agents").select("user_id").eq("id", candidate).eq("brokerage_id", args.brokerageId).maybeSingle()
+    if (agentErr) { console.error(`[listing-appt-prep] agents check for ${candidate} refused: ${agentErr.message}`); continue }
+    const uid = (agent as { user_id?: string | null } | null)?.user_id ?? null
+    if (uid) return uid
+  }
+  return null
+}
+
+export type ListingAppointmentSetResult =
+  | { status: "started" | "deduped"; eventId: string; runId: string | null; runStatus: string | null; context: BookingPrepContext }
+  | { status: "refused" | "deferred" | "skipped" | "error"; reason: string }
+
+/** The run this chain started from ONE event (the orchestrator keys it on the event id). */
+async function runForEvent(svc: Svc, brokerageId: string, eventId: string): Promise<{ id: string; status: string } | null> {
+  const { data, error } = await svc
+    .from("workflow_runs")
+    .select("id, status")
+    .eq("chain_key", listingApptPrepChain.key)
+    .eq("brokerage_id", brokerageId)
+    .eq("trigger_event_id", eventId)
+    .order("started_at", { ascending: false })
+    .limit(1)
+  if (error) { console.error(`[listing-appt-prep] run read for event ${eventId} refused: ${error.message}`); return null }
+  return ((data as Array<{ id: string; status: string }> | null) ?? [])[0] ?? null
+}
+
+/**
+ * THE TRIGGER every listing-appointment booking path calls with the calendar_events
+ * row it wrote: records THIS chain's `listing.appointment_set` event for the
+ * booking (the server-only lifecycle-event core, the service client, the booking
+ * row's tenant) and lets the orchestrator start the run from it. Never throws — a
+ * prep that could not start must not undo a booking.
+ *
+ * An event already recorded for this booking is REUSED; if it never produced a run
+ * (a dispatch that failed after the row landed) it is dispatched again, which the
+ * engine turns into the one run keyed on that event.
+ */
+export async function fireListingAppointmentSetForBooking(
+  svc: Svc,
+  params: ResolveBookingPrepParams & { origin: string },
+): Promise<ListingAppointmentSetResult> {
+  try {
+    const resolved = await resolveBookingPrepContext(svc, params)
+    if (!resolved.ok) {
+      if (resolved.outcome === "error") console.error(`[listing-appt-prep] ${params.origin} ${params.calendarEventId}: ${resolved.reason}`)
+      return { status: resolved.outcome, reason: resolved.reason }
+    }
+    const ctx = resolved.context
+    if (!ctx.property.propertyAddress || !ctx.property.state) {
+      // Honest skip: the CMA is state-scoped and listing_presentations.state is NOT NULL.
+      return { status: "skipped", reason: "no_seller_property_with_state" }
+    }
+    const p = ctx.property
+    const dedupeKey = listingAppointmentSetDedupeKey(ctx.calendarEventId)
+    const payload = {
+      contact_id: ctx.contactId,
+      listing_id: p.listingId,
+      agent_user_id: ctx.agentUserId,
+      appointment_id: ctx.calendarEventId,
+      appointment_date: ctx.startAt,
+      seller_prep: { basis: ctx.sellerBasis, property_source: p.source, origin: params.origin },
+      property_data: {
+        address: p.propertyAddress, city: p.city, state: p.state, zip: p.zip,
+        bedrooms: p.bedrooms, bathrooms: p.bathrooms, sqft: p.sqft, yearBuilt: p.yearBuilt,
+        lotSize: p.lotSize, propertyType: p.propertyType ?? "single_family",
+      },
+    }
+
+    // One event per booking — read with NO time window (the core's own dedupe
+    // read looks back 24 h; a tentative hold confirmed days later is the same
+    // booking). A refused read is an error, never "no event yet".
+    const readExisting = async () => svc
+      .from("lifecycle_events")
+      .select("id, brokerage_id, event_type, metadata, actor_user_id, created_at")
+      .eq("brokerage_id", ctx.brokerageId)
+      .eq("event_type", listingApptPrepChain.triggerEvent)
+      .eq("dedupe_key", dedupeKey)
+      .limit(1)
+    const { data: prior, error: priorErr } = await readExisting()
+    if (priorErr) return { status: "error", reason: `listing.appointment_set dedupe read refused: ${priorErr.message}` }
+    let existing = ((prior as Array<Record<string, any>> | null) ?? [])[0] ?? null
+
+    if (!existing) {
+      const { recordLifecycleEvent } = await import("@/lib/events/lifecycle-event-core")
+      const rec = await recordLifecycleEvent(svc, ctx.brokerageId, {
+        event_type: listingApptPrepChain.triggerEvent,
+        user_id: ctx.agentUserId ?? undefined,
+        payload,
+        source: params.origin === "cron_safety_net" ? "cron" : "system",
+        dedupe_key: dedupeKey,
+        entity_type: "calendar_event",
+        entity_id: ctx.calendarEventId,
+      })
+      if (rec.ok && !rec.deduped) {
+        const run = await runForEvent(svc, ctx.brokerageId, rec.event.id)
+        if (!run && !rec.dispatched) {
+          return { status: "error", reason: `listing.appointment_set ${rec.event.id} recorded but not dispatched — the cron safety net re-dispatches it` }
+        }
+        return { status: "started", eventId: rec.event.id, runId: run?.id ?? null, runStatus: run?.status ?? null, context: ctx }
+      }
+      if (!rec.ok && !/23505|duplicate key/i.test(rec.error)) return { status: "error", reason: rec.error }
+      // Lost the race (m673) or the core's own dedupe hit: re-read the winner.
+      const { data: winner, error: winErr } = await readExisting()
+      if (winErr) return { status: "error", reason: `listing.appointment_set re-read refused: ${winErr.message}` }
+      existing = ((winner as Array<Record<string, any>> | null) ?? [])[0] ?? null
+      if (!existing) return { status: "error", reason: rec.ok ? "deduped event not readable" : rec.error }
+    }
+
+    const eventId = String(existing.id)
+    let run = await runForEvent(svc, ctx.brokerageId, eventId)
+    if (!run) {
+      // The event landed but never produced a run — dispatch it again (the engine
+      // keys the run on this event, so a second dispatch cannot double it).
+      const { getRegisteredEventDispatcher } = await import("@/lib/events/dispatcher-registry")
+      const event = {
+        id: eventId, brokerage_id: ctx.brokerageId, event_type: listingApptPrepChain.triggerEvent,
+        payload: (existing.metadata as Record<string, any> | null) ?? payload,
+        user_id: (existing.actor_user_id as string | null) ?? undefined,
+        source: "system" as const, created_at: String(existing.created_at ?? new Date().toISOString()),
+      }
+      const registered = getRegisteredEventDispatcher()
+      if (registered) await registered(event)
+      else {
+        const { orchestrateEvent } = await import("@/lib/orchestrator/internal")
+        await orchestrateEvent(event)
+      }
+      run = await runForEvent(svc, ctx.brokerageId, eventId)
+    }
+    return { status: "deduped", eventId, runId: run?.id ?? null, runStatus: run?.status ?? null, context: ctx }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    console.error(`[listing-appt-prep] ${params.origin} ${params.calendarEventId} threw: ${reason}`)
+    return { status: "error", reason }
+  }
+}
+
+/**
+ * The prep runs already started for this booking — the cron safety net's second
+ * read. Matched on the run's metadata.appointment_id (the event payload carries it
+ * into workflow_runs.metadata), so a run keyed on any event for this booking counts.
+ */
+export async function prepRunStatusesForBooking(
+  svc: Svc,
+  args: { brokerageId: string; calendarEventId: string },
+): Promise<{ ok: true; statuses: string[] } | { ok: false; error: string }> {
+  const { data, error } = await svc
+    .from("workflow_runs")
+    .select("status")
+    .eq("chain_key", listingApptPrepChain.key)
+    .eq("brokerage_id", args.brokerageId)
+    .eq("metadata->>appointment_id", args.calendarEventId)
+    .limit(20)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, statuses: ((data as Array<{ status: string }> | null) ?? []).map((r) => r.status) }
+}
+
+// TOMBSTONE (lane 88D, CLAUDE.md §1.1): lib/listing-presentation/booking-prep.ts (lane 87B)
+// is DELETED. It was a second starter written beside this chain — the original listing-
+// appointment prep (CMA → presentation → chapter reels → section drip → kit) — and its
+// startRun keyed the run on calendar_events.id, which workflow_runs.trigger_event_id's FK
+// to lifecycle_events refuses. Merged here FIRST: the seller gate (classifySellerPrepContext,
+// this file:1007), the booking gate (bookingPrepGate, :1027), the booking-row resolution
+// (resolveBookingPrepContext, :1121), the cron's decision (decideSafetyNetAction, :1047) and
+// run read (prepRunStatusesForBooking, :1452). Its starter startListingPresentationPrepFromBooking
+// → fireListingAppointmentSetForBooking (this file:1348); splitBookedAddress → lib/ai-isa/property-lookup-rail.ts::splitOneLineAddress
+// (called directly); LISTING_APPOINTMENT_BOOKING_EVENT_TYPES →
+// lib/kernel/calendar-types.ts CalendarEventType.LISTING_APPOINTMENT; its chain-key and
+// trigger constants → listingApptPrepChain.key / .triggerEvent.

@@ -136,38 +136,56 @@ export async function runListingAgreementGate(
   }
 
   // ── 4. All three conditions hold — emit ──────────────────────────────────
-  // The engine is called directly rather than through the `use server` action:
-  // this runs in a fire-and-forget scan after the upload has already returned,
-  // where there is no request session left for the action's auth gate to read.
-  // brokerageId comes from the document row, not from a caller.
-  const { startRun } = await import("@/lib/workflow-orchestrator/engine")
-  const { getChainsByTrigger } = await import("@/lib/workflow-orchestrator/chains")
-
+  // THE EVENT IS RECORDED, AND THE ORCHESTRATOR STARTS THE CHAIN FROM IT (lane 88D).
+  // This called engine startRun directly with triggerEventId = the DOCUMENT id.
+  // workflow_runs.trigger_event_id is a uuid FK to lifecycle_events(id)
+  // (workflow_runs_trigger_event_id_fkey, live hrvaqgvukzxfskkcrwbt 2026-09-28), so
+  // every such insert was a 23503: startRun returned { success: false }, the result
+  // was not read, and compliance-listing-auto-create NEVER started — a fully
+  // executed, fully documented agreement was reported `passed` and no listing was
+  // taken on. Same shape as the listing-appointment prep
+  // (lib/workflow-orchestrator/chains/listing-appt-prep.ts::fireListingAppointmentSetForBooking):
+  // ONE compliance.listing_agreement_passed event per agreement through the
+  // server-only lifecycle-event core (service client — the scanner's; tenant = the
+  // document row's brokerageId, never a caller's), and lib/orchestrator/internal.ts
+  // orchestrateEvent starts every chain registered for it with triggerEventId =
+  // event.id. Sessionless: this runs in a fire-and-forget scan after the upload has
+  // returned. A re-scan of the same agreement finds the SAME event (dedupe key on the
+  // document, no time window) and does not promote twice; the chain's draft-state
+  // re-assertion is the second belt.
   const eventType = "compliance.listing_agreement_passed"
-  const chains = getChainsByTrigger(eventType)
-  for (const chain of chains) {
-    await startRun({
-      chainKey:     chain.key,
-      brokerageId:  params.brokerageId,
-      contactId:    sellerContactId,
-      listingId:    params.listingId,
-      agentUserId:  params.agentUserId,
-      triggerEvent: eventType,
-      // The chain's own idempotency key is (chain, brokerage, entity) — a
-      // re-scan of the same agreement therefore reuses the run rather than
-      // promoting twice. The draft-state re-assertion in the chain is the
-      // second belt on the same trousers.
-      triggerEventId: params.documentId,
-      metadata: {
-        document_id:     params.documentId,
-        extracted:       fields,
-        signature_scan:  { signatureCompleteness: params.signatureCompleteness },
-        required_docs_audit: {
-          present:         audit.present,
-          missing_warning: audit.missing_warning,
-        },
+  const { recordLifecycleEvent } = await import("@/lib/events/lifecycle-event-core")
+  const emitted = await recordLifecycleEvent(supabase, params.brokerageId, {
+    event_type: eventType,
+    user_id: params.agentUserId ?? undefined,
+    source: "system",
+    dedupe_key: `${eventType}:${params.documentId}`,
+    entity_type: "document",
+    entity_id: params.documentId,
+    payload: {
+      contact_id:      sellerContactId,
+      listing_id:      params.listingId,
+      agent_user_id:   params.agentUserId,
+      document_id:     params.documentId,
+      extracted:       fields,
+      signature_scan:  { signatureCompleteness: params.signatureCompleteness },
+      required_docs_audit: {
+        present:         audit.present,
+        missing_warning: audit.missing_warning,
       },
-    })
+    },
+  }, { dedupeWindowHours: null })
+  if (!emitted.ok) {
+    // The gate PASSED; the event that starts the listing could not be recorded.
+    // Said, never swallowed — the scanner surfaces the blocker on the document.
+    return {
+      passed: false,
+      blockers: [`The agreement passed compliance, but the listing could not be started: ${emitted.error}`],
+      listingId: params.listingId,
+    }
+  }
+  if (!emitted.deduped && !emitted.dispatched) {
+    console.error(`[listing-agreement-gate] ${eventType} ${emitted.event.id} recorded but NOT dispatched — no listing chain started for document ${params.documentId}`)
   }
 
   return { passed: true, blockers: [], listingId: params.listingId }

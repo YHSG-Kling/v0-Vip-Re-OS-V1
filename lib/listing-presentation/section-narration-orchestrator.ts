@@ -212,6 +212,21 @@ export async function narratePresentationSections(
   // reach back into the sentinel.
   const result: NarrateResult = { ...empty, sections: list.length, hasVoiceClone: !!voiceId, hasAvatarSource: !!avatarSource, refusals: [] }
 
+  // THE VIDEO METER (lane 88D). Each avatar-narrated section is a paid D-ID render
+  // submitted with no one clicking (the listing booking started it), and none was
+  // counted against the tier's video_minutes or the overage invoice. The SAME meter
+  // lib/kernel/content-creators.ts createVideoProject uses (lib/video/video-metering.ts):
+  // gated once per presentation — the ONE refusal is a tier that excludes video, and
+  // then the section ships on its voice/on-screen fallback, never un-rendered — and
+  // each section COUNTED once D-ID has the job (below).
+  let videoMeter: import("@/lib/video/video-metering").VideoMeterDecision | null = null
+  let meterVideoCreation: typeof import("@/lib/video/video-metering").meterVideoCreation | null = null
+  if (avatarSource && agentRecordId && list.length > 0) {
+    const vm = await import("@/lib/video/video-metering")
+    meterVideoCreation = vm.meterVideoCreation
+    videoMeter = await vm.gateVideoCreation({ brokerageId: pres.brokerage_id, plannedSeconds: 60 * list.length })
+  }
+
   for (const r of list) {
     const props = (r.input_props ?? {}) as Record<string, unknown>
     // THE LAST POINT BEFORE THE VOICE IS PAID FOR AND BAKED IN.
@@ -333,7 +348,11 @@ export async function narratePresentationSections(
       }
     }
 
-    if (plan.avatar && avatarSource && agentRecordId) {
+    if (plan.avatar && avatarSource && agentRecordId && videoMeter && !videoMeter.allowed) {
+      // The tier excludes video: no D-ID spend; the staged render ships as the photo PIP.
+      console.warn(`[section-narration-orchestrator] render ${r.id} ships as the photo PIP — ${videoMeter.reason}`)
+      result.avatarSkipped.push({ renderId: r.id, reason: videoMeter.reason })
+    } else if (plan.avatar && avatarSource && agentRecordId) {
       // ── THE LANE WAS DARK, AND THIS IS WHERE IT STOPPED ────────────────────
       // This block used to INSERT the request at status='draft' with no
       // provider_job_id and no D-ID submit anywhere in the tree.
@@ -400,8 +419,17 @@ export async function narratePresentationSections(
         // one-voice-not-two note above), so there is nothing to merge and
         // nothing that could double up on the avatar's own audio.
       })
-      if (sub.submitted) result.avatarSubmitted++
-      else {
+      if (sub.submitted) {
+        result.avatarSubmitted++
+        // COUNTED only now — D-ID has the job (never throws).
+        if (meterVideoCreation) {
+          await meterVideoCreation({
+            brokerageId: pres.brokerage_id, agentId: agentRecordId, userId: pres.agent_user_id ?? null,
+            plannedSeconds: sectionNarrationBudget(r.composition_id).budgetSeconds,
+            feature: "presentation_section", projectId: sub.projectId ?? null, autonomous: true, decision: videoMeter,
+          })
+        }
+      } else {
         console.warn(`[section-narration-orchestrator] render ${r.id} ships as the photo PIP — ${sub.reason}`)
         result.avatarSkipped.push({ renderId: r.id, reason: sub.reason })
       }

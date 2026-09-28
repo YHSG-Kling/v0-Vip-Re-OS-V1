@@ -1532,13 +1532,14 @@ export async function scheduleSellerListingAppointment(args: {
   // wave 87: "listing presentation prep which inlcudes the cma needs to be for a seller
   // as this is started from the listing appointmtent booking"). This is the report
   // page's AND the portal's booking door; until now it started nothing and the seller
-  // waited for the daily cron. The ONE starter reads the row written above (its tenant
-  // was verified against the agent and the contact before the insert), proves the
-  // contact is a seller (their valuation request is the evidence), takes the property
-  // from that valuation request (matched to the address booked about), and keys the
-  // run on this booking. Best-effort: the booking stands if prep cannot start.
-  const { startListingPresentationPrepFromBooking } = await import("@/lib/listing-presentation/booking-prep")
-  const prep = await startListingPresentationPrepFromBooking(supabase, {
+  // waited for the daily cron. The listing-appt-prep chain's own trigger (lane 88D)
+  // reads the row written above (its tenant was verified against the agent and the
+  // contact before the insert), proves the contact is a seller (their valuation request
+  // is the evidence), takes the property from that valuation request (matched to the
+  // address booked about), and records ONE listing.appointment_set event for this
+  // booking. Best-effort: the booking stands if prep cannot start.
+  const { fireListingAppointmentSetForBooking } = await import("@/lib/workflow-orchestrator/chains/listing-appt-prep")
+  const prep = await fireListingAppointmentSetForBooking(supabase, {
     calendarEventId: calEvent.id,
     expectedBrokerageId: args.brokerageId,
     origin: "seller_self_booking",

@@ -190,11 +190,18 @@ console.log("\n── the gate runs on the path the uploads actually take ──
   check("the gate never promotes a listing itself",
     !/\.from\("listings"\)[\s\S]{0,200}?\.update\(/.test(GATE))
   // A background scan has no request session, so the `use server` action's auth
-  // gate would reject it — the engine is called directly with the doc's own tenant.
-  check("it starts the run directly rather than through the session-gated action",
-    /startRun\(/.test(GATE) && !/triggerChainsForEvent/.test(GATE))
-  check("…keyed on the document, so a re-scan reuses the run",
-    /triggerEventId:\s*params\.documentId/.test(GATE))
+  // gate would reject it. RE-ANCHORED (lane 88D): the gate used to call startRun with
+  // triggerEventId = the DOCUMENT id — refused by workflow_runs.trigger_event_id's FK to
+  // lifecycle_events (23503), so the chain never started. It now records the event
+  // through the sessionless lifecycle-event core and the orchestrator starts the chain
+  // from it (executed below, §gate-event).
+  check("it records the pass event through the sessionless lifecycle-event core (never the session-gated action, never startRun)",
+    /recordLifecycleEvent\(supabase, params\.brokerageId,/.test(GATE) && !/triggerChainsForEvent/.test(GATE) && !/startRun\(/.test(GATE))
+  check("…deduped on the document for good, so a re-scan reuses the event (and its run)",
+    /dedupe_key:\s*`\$\{eventType\}:\$\{params\.documentId\}`/.test(GATE) && /dedupeWindowHours:\s*null/.test(GATE) &&
+    !/triggerEventId:\s*params\.documentId/.test(GATE))
+  check("[control] the key finder catches the retired document-id run key",
+    /triggerEventId:\s*params\.documentId/.test("await startRun({ triggerEventId: params.documentId })"))
   check("a blocked agreement records WHY on the document",
     /listing_gate_blockers/.test(SCANNER))
 }
@@ -228,8 +235,97 @@ console.log("\n── the agent has a door, and it is tenant-gated ──")
     /Scanning…/.test(PANEL))
 }
 
-console.log("\n──────────────────────────────────────────────────")
-if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
-console.log(` RESULT: ${pass} passed, ${fail} failed`)
-if (fail > 0) { console.log(" ❌ LISTING_DOC_UPLOAD_FAIL"); process.exit(1) }
-console.log(" ✅ LISTING_DOC_UPLOAD_PASS — the agent can file completed paperwork, and a fully-executed agreement with a complete file takes the listing on")
+// ── §gate-event (lane 88D): the gate EXECUTED on an in-memory service client ──
+// workflow_runs.trigger_event_id is a uuid FK to lifecycle_events(id) (live,
+// hrvaqgvukzxfskkcrwbt). Modelled here: the registered dispatcher stands in for
+// lib/orchestrator/internal.ts orchestrateEvent → getChainsByTrigger → startRun and
+// writes the run row the engine writes, keyed on the EVENT id. No network.
+async function gateEvent() {
+  console.log("\n── §gate-event: a passed agreement starts the listing chain on a REAL lifecycle event ──")
+  // server-only is a guard module; neutralised for tsx exactly as
+  // scripts/listing-appt-prep-simulator.ts does. The gate itself runs for real.
+  const { createRequire } = await import("module")
+  const req = createRequire(import.meta.url)
+  try { const p = req.resolve("server-only"); req.cache[p] = { id: p, filename: p, loaded: true, exports: {} } as any } catch { /* not resolvable */ }
+  const { runListingAgreementGate } = await import("../lib/documents/listing-agreement-gate")
+  const { registerEventDispatcher } = await import("../lib/events/dispatcher-registry")
+  const { getChainsByTrigger } = await import("../lib/workflow-orchestrator/chains")
+
+  type Row = Record<string, any>
+  const T = "b0000000-0000-4000-8000-0000000000d1"
+  const USER = "u0000000-0000-4000-8000-0000000000d1"
+  const SELLER = "c0000000-0000-4000-8000-0000000000d1"
+  const LISTING = "l0000000-0000-4000-8000-0000000000d1"
+  const DOC = "d0000000-0000-4000-8000-0000000000d1"
+  const tables: Record<string, Row[]> = { users: [{ id: USER, brokerage_id: T }], lifecycle_events: [], workflow_runs: [] }
+  let seq = 0
+  // Any table not seeded reads EMPTY (no required-docs rule, an empty deal file):
+  // the required-document audit is proven by its own checks above; this block
+  // proves what happens AFTER the gate passes.
+  const svc: any = {
+    from(table: string) {
+      const filters: Array<(r: Row) => boolean> = []
+      let ins: Row | null = null
+      const run = () => {
+        if (ins) { const row = { id: `le-${++seq}`, created_at: new Date().toISOString(), ...ins }; (tables[table] ??= []).push(row); return { data: [row], error: null } }
+        return { data: (tables[table] ?? []).filter((r) => filters.every((f) => f(r))), error: null }
+      }
+      const q: any = new Proxy({}, {
+        get(_t, k: string) {
+          if (k === "then") return (res: any, rej: any) => Promise.resolve(run()).then(res, rej)
+          if (k === "insert") return (row: Row) => { ins = row; return q }
+          if (k === "eq") return (c: string, v: unknown) => { filters.push((r) => r[c] === v); return q }
+          if (k === "maybeSingle" || k === "single") return async () => { const r = run(); return { data: (r.data as Row[])[0] ?? null, error: null } }
+          return () => q
+        },
+      })
+      return q
+    },
+  }
+  const dispatched: Row[] = []
+  registerEventDispatcher(async (event) => {
+    dispatched.push(event as Row)
+    for (const chain of getChainsByTrigger(event.event_type)) {
+      tables.workflow_runs.push({ id: `run-${dispatched.length}`, chain_key: chain.key, brokerage_id: event.brokerage_id, trigger_event_id: event.id, metadata: event.payload })
+    }
+  })
+  const fkViolations = (t: Record<string, Row[]>) => {
+    const ids = new Set((t.lifecycle_events ?? []).map((e) => e.id))
+    return (t.workflow_runs ?? []).filter((r) => r.trigger_event_id != null && !ids.has(r.trigger_event_id))
+  }
+  const executed = {
+    signatures: [{ signer_role: "agent", signed: true }, { signer_role: "seller", signed: true }],
+    initials:   [{ signer_role: "agent", all_required_initials_present: true }, { signer_role: "seller", all_required_initials_present: true }],
+  }
+  const args = {
+    documentId: DOC, brokerageId: T, classification: "listing_agreement",
+    extractedFields: { state: "FL", property_address: "12 Cypress Ln" }, signatureCompleteness: executed,
+    contactId: SELLER, listingId: LISTING, agentUserId: USER,
+  }
+  const verdict = await runListingAgreementGate(svc, args)
+  const ev = tables.lifecycle_events
+  check("a fully executed agreement PASSES and records ONE compliance.listing_agreement_passed event in the document's tenant",
+    verdict.passed && ev.length === 1 && ev[0].event_type === "compliance.listing_agreement_passed" && ev[0].brokerage_id === T)
+  check("…about the DOCUMENT, deduped on it, carrying the seller, listing and document for the chain",
+    ev[0]?.entity_type === "document" && ev[0]?.entity_id === DOC && ev[0]?.dedupe_key === `compliance.listing_agreement_passed:${DOC}` &&
+    ev[0]?.metadata?.contact_id === SELLER && ev[0]?.metadata?.listing_id === LISTING && ev[0]?.metadata?.document_id === DOC)
+  const run = tables.workflow_runs[0]
+  check("the event is DISPATCHED and the listing chain's run is keyed on the EVENT id",
+    dispatched.length === 1 && run?.chain_key === "compliance-listing-auto-create" && run?.trigger_event_id === ev[0]?.id)
+  check("workflow_runs.trigger_event_id satisfies its FK to lifecycle_events (modelled)", fkViolations(tables).length === 0)
+  check("[control] the retired key — the DOCUMENT id — is refused by that FK",
+    fkViolations({ lifecycle_events: ev, workflow_runs: [{ trigger_event_id: DOC }] }).length === 1)
+  await runListingAgreementGate(svc, args)
+  check("a re-scan of the same agreement reuses the event: no second event, no second dispatch, no second run",
+    tables.lifecycle_events.length === 1 && dispatched.length === 1 && tables.workflow_runs.length === 1)
+  const unsigned = await runListingAgreementGate(svc, { ...args, documentId: "d-unsigned", signatureCompleteness: { signatures: [], initials: [] } })
+  check("[negative] an unexecuted agreement records NO event", !unsigned.passed && tables.lifecycle_events.length === 1)
+}
+
+gateEvent().catch((e) => { fail++; fails.push(`§gate-event threw: ${(e as Error)?.message}`); console.log(e) }).finally(() => {
+  console.log("\n──────────────────────────────────────────────────")
+  if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
+  console.log(` RESULT: ${pass} passed, ${fail} failed`)
+  if (fail > 0) { console.log(" ❌ LISTING_DOC_UPLOAD_FAIL"); process.exit(1) }
+  console.log(" ✅ LISTING_DOC_UPLOAD_PASS — the agent can file completed paperwork, and a fully-executed agreement with a complete file takes the listing on")
+})

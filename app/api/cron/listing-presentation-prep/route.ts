@@ -8,11 +8,12 @@
  * (buildListingPresentation → materializePresentationSections →
  * planPresentationSections, the one timetable).
  *
- * THIS IS THE AUTONOMOUS TRIGGER. Nothing else has to run for a booked listing
- * appointment to end up with a complete, scheduled presentation: the chain
- * (listing-appt-prep enroll_drip) enriches it with chapter reels when it runs,
- * but it is not required for the presentation to exist or for the drip to be
- * on a timetable.
+ * THE SAFETY NET, NOT THE FIRST TRIGGER (lanes 87B/88D). Every booking path fires
+ * the listing-appt-prep chain's own `listing.appointment_set` event (CMA →
+ * presentation → chapter reels → section drip → kit); this scan starts that same
+ * event for a booking that missed it, and still builds the presentation directly
+ * when a run ended without one — so a booked seller always ends up with a
+ * complete, scheduled presentation.
  *
  * IT SERVES BOTH ORIGINS. An agent booking a consult on a listing, and a
  * home-value SELLER booking their own appointment from the report page or the
@@ -45,13 +46,13 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { buildListingPresentation } from "@/lib/workflow/intelligence/listing-presentation-builder"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { CalendarEventType } from "@/lib/kernel/calendar-types"
 import {
-  LISTING_APPOINTMENT_BOOKING_EVENT_TYPES,
   decideSafetyNetAction,
   prepRunStatusesForBooking,
   resolveBookingPrepContext,
-  startListingPresentationPrepFromBooking,
-} from "@/lib/listing-presentation/booking-prep"
+  fireListingAppointmentSetForBooking,
+} from "@/lib/workflow-orchestrator/chains/listing-appt-prep"
 
 /**
  * How far ahead a listing appointment is picked up for presentation prep.
@@ -98,24 +99,26 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const now = new Date().toISOString()
   const horizon = new Date(Date.now() + PREP_LOOKAHEAD_DAYS * 86_400_000).toISOString()
 
-  // THE SAFETY NET (lane 87B). The prep now STARTS FROM THE BOOKING: every
-  // listing-appointment booking path hands its calendar_events row to
-  // lib/listing-presentation/booking-prep.ts::startListingPresentationPrepFromBooking
-  // (the agent calendar, the listing consult, the AI-ISA/voice booking at the
+  // THE SAFETY NET (lanes 87B/88D). The prep STARTS FROM THE BOOKING: every
+  // listing-appointment booking path hands its calendar_events row to the
+  // listing-appt-prep chain's own trigger
+  // (lib/workflow-orchestrator/chains/listing-appt-prep.ts::fireListingAppointmentSetForBooking
+  // — the agent calendar, the listing consult, the AI-ISA/voice booking at the
   // agent's confirm, the seller's own self-booking from the report page or the
-  // portal). This scan catches the bookings that missed that event, and reads the
-  // ONE spelling of a listing appointment ("listing_appointment" —
-  // LISTING_APPOINTMENT_BOOKING_EVENT_TYPES; lane 87B2 merged the calendar's
-  // "listing_consultation" and the ISA milestone's "isa_appointment" onto it).
-  // The seller check, the tenant (the booking row's own brokerage_id), the
-  // seller's property and the agent's users.id are resolved by the SAME core the
-  // booking paths use — never a second resolver here.
+  // portal), which records ONE listing.appointment_set event per booking. This
+  // scan catches the bookings that missed that event, and reads the ONE spelling
+  // of a listing appointment (CalendarEventType.LISTING_APPOINTMENT; lane 87B2
+  // merged the calendar's "listing_consultation" and the ISA milestone's
+  // "isa_appointment" onto it). The seller check, the tenant (the booking row's
+  // own brokerage_id), the seller's property and the agent's users.id are
+  // resolved by the SAME chain module the booking paths use — never a second
+  // resolver here.
   const { data: appointments, error: apptErr } = await svc
     .from("calendar_events")
     .select("id, brokerage_id, start_at, event_type")
     .gte("start_at", now)
     .lte("start_at", horizon)
-    .in("event_type", [...LISTING_APPOINTMENT_BOOKING_EVENT_TYPES])
+    .eq("event_type", CalendarEventType.LISTING_APPOINTMENT)
     .order("start_at", { ascending: true })
   // A refused read is a FAILED tick, not a quiet one. Reporting scanned:0 here
   // would read exactly like "no appointments booked".
@@ -167,7 +170,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     if (action === "start_prep") {
       // The booking missed its event — start it exactly as the booking would have.
-      const r = await startListingPresentationPrepFromBooking(svc, { calendarEventId: appt.id, origin: "cron_safety_net" })
+      const r = await fireListingAppointmentSetForBooking(svc, { calendarEventId: appt.id, origin: "cron_safety_net" })
       if (r.status === "started" || r.status === "deduped") started++
       else if (r.status === "refused") refused++
       else if (r.status === "deferred") deferred++
@@ -247,9 +250,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   })
 }
 
-// SUBJECT PROPERTY / AGENT RESOLUTION — moved (lane 87B) to the ONE core every
-// booking path uses: lib/listing-presentation/booking-prep.ts
-// (resolveBookingPrepContext → pickSellerProperty / resolveBookingAgentUserId).
+// SUBJECT PROPERTY / AGENT RESOLUTION — moved (lane 87B) out of this file and, since
+// lane 88D, lives with the chain it feeds: lib/workflow-orchestrator/chains/
+// listing-appt-prep.ts (resolveBookingPrepContext → pickSellerProperty /
+// resolveBookingAgentUserId), the module every booking path already calls.
 // The listing → valuation_request order this file carried is preserved there, with
 // the seller check in front of it and the caller's captured property, the booking's
 // own address and the seller's home address added behind it.

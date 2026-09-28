@@ -851,7 +851,7 @@ export interface ConfirmListingAppointmentParams {
 }
 
 export type ConfirmListingAppointmentResult =
-  | { success: true; alreadyConfirmed: boolean; icsSentToContact: boolean; icsSentToAgent: boolean; portalPushed: boolean; listingPrep: import("@/lib/listing-presentation/booking-prep").StartBookingPrepResult["status"] }
+  | { success: true; alreadyConfirmed: boolean; icsSentToContact: boolean; icsSentToAgent: boolean; portalPushed: boolean; listingPrep: import("@/lib/workflow-orchestrator/chains/listing-appt-prep").ListingAppointmentSetResult["status"] }
   | { success: false; error: string }
 
 export async function confirmListingAppointment(
@@ -881,13 +881,14 @@ export async function confirmListingAppointment(
 
   // ── THE BOOKING STARTS THE SELLER'S LISTING-PRESENTATION PREP (lane 87B) ──
   // The AI-ISA / voice booking is a TENTATIVE hold until the agent confirms it here
-  // (the starter DEFERS a pending_agent_confirmation row), so this confirm is the
-  // moment the booking becomes real and the seller's CMA + presentation prep starts
-  // — through the ONE starter, on the confirmed row's own tenant (which this call
-  // already pinned). Before this, an AI-booked seller waited for the daily cron.
-  // Idempotent (the run is keyed on this booking); never undoes the confirm.
-  const { startListingPresentationPrepFromBooking } = await import("@/lib/listing-presentation/booking-prep")
-  const prep = await startListingPresentationPrepFromBooking(svc, {
+  // (the chain's trigger DEFERS a pending_agent_confirmation row), so this confirm is
+  // the moment the booking becomes real and the seller's CMA + presentation prep
+  // starts — through the listing-appt-prep chain's own trigger (lane 88D), on the
+  // confirmed row's own tenant (which this call already pinned). Before this, an
+  // AI-booked seller waited for the daily cron. Idempotent (ONE listing.appointment_set
+  // event per booking); never undoes the confirm.
+  const { fireListingAppointmentSetForBooking } = await import("@/lib/workflow-orchestrator/chains/listing-appt-prep")
+  const prep = await fireListingAppointmentSetForBooking(svc, {
     calendarEventId: r.id,
     expectedBrokerageId: params.brokerageId,
     origin: "ai_isa_confirmed_booking",

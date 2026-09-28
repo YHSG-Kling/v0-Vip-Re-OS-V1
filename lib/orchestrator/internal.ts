@@ -538,15 +538,19 @@ async function handleListingAppointmentSet(event: Event): Promise<ProcessingResu
   try {
     const { listing_id, appointment_date, contact_id } = event.payload
 
-    // Create AI suggestion for prep
+    // Create AI suggestion for prep. A home-value or AI-ISA seller has no listing yet
+    // (lane 88D: every booking path now fires this event for the SELLER), so the card
+    // hangs off the seller contact when there is no listing. The CMA + presentation
+    // are produced by the listing-appt-prep chain this same event starts (below), so
+    // the card asks the agent to REVIEW them, not to build them.
     await writeEventSuggestion({
       brokerage_id: event.brokerage_id,
       user_id: event.user_id!,
-      context_type: "listing",
-      context_id: listing_id,
+      context_type: listing_id ? "listing" : "contact",
+      context_id: listing_id ?? contact_id,
       suggestion_type: "checklist",
       title: "Listing Appointment Prep",
-      description: `Appointment scheduled for ${appointment_date}. Prepare CMA, listing presentation, and contract.`,
+      description: `Appointment scheduled for ${appointment_date}. Your CMA, listing presentation and seller drip are being prepared automatically — review them and print the contract.`,
       action_payload: {
         listing_id,
         contact_id,

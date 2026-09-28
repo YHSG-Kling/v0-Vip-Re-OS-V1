@@ -73,17 +73,26 @@ export async function recordLifecycleEvent(
   svc: any,
   brokerageId: string,
   input: LifecycleEventCoreInput,
+  /**
+   * How far back the dedupe_key read looks (lane 88D). Default 24 h, unchanged for
+   * every existing caller. `null` = no window: the key names ONE occurrence for good
+   * — e.g. a chain-trigger event keyed on the entity that starts the chain (a signed
+   * agreement re-scanned a week later is the same agreement).
+   */
+  opts: { dedupeWindowHours?: number | null } = {},
 ): Promise<LifecycleEventCoreResult> {
   if (!brokerageId) return { ok: false, error: "lifecycle event refused: no brokerageId (the tenant must come from a verified row or the session)" }
   if (!input.event_type) return { ok: false, error: "lifecycle event refused: no event_type" }
 
   if (input.dedupe_key) {
-    const { data: existing, error: dupErr } = await svc
+    const windowHours = opts.dedupeWindowHours === undefined ? 24 : opts.dedupeWindowHours
+    let dupQ = svc
       .from("lifecycle_events")
       .select("id")
       .eq("dedupe_key", input.dedupe_key)
       .eq("brokerage_id", brokerageId)
-      .gte("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+    if (windowHours !== null) dupQ = dupQ.gte("created_at", new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString())
+    const { data: existing, error: dupErr } = await dupQ
       .limit(1)
     // A refused dedupe read is not "no duplicate" — writing on it could double-fire.
     if (dupErr) return { ok: false, error: `lifecycle event dedupe read refused: ${dupErr.message}` }

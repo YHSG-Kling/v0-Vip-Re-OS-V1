@@ -34,7 +34,7 @@ import { promoteLeadToContactService } from "@/lib/contact-promotion"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
-import { startListingPresentationPrepFromBooking } from "@/lib/listing-presentation/booking-prep"
+import { fireListingAppointmentSetForBooking } from "@/lib/workflow-orchestrator/chains/listing-appt-prep"
 import { CalendarEventType } from "@/lib/kernel/calendar-types"
 
 export interface BookSellerListingAppointmentParams {
@@ -196,32 +196,36 @@ export async function bookSellerListingAppointment(
 
   // ── Step 4: CHAIN — fire listing.appointment_set → listing-appt-prep ─────────
   // The contact exists, so the chain's prep_seller_portal + CMA steps have a target.
-  // The engine's run-dedupe keyed on (chain, entity, trigger) makes a rerun reuse the
-  // same run instead of double-rendering the (expensive) D-ID chapter videos.
+  // ONE listing.appointment_set event per booking, and the engine's run-dedupe on that
+  // event's id, make a rerun reuse the same run instead of double-rendering the
+  // (expensive) D-ID chapter videos.
   // (agentUserId resolved above, before the schedule step.)
   const propertyData =
     params.propertyData ??
     (params.location ? { address: params.location } : {})
 
-  // THROUGH THE ONE BOOKING STARTER (lane 87B). It reads the row just scheduled (its
-  // tenant is params.brokerageId, asserted), proves the contact is a SELLER (this
-  // milestone's converted contact carries contact_type='seller' from the lead's
-  // intent), takes the seller's property from what this call captured, and keys the
-  // run on the booking row — the same key every other booking path and the cron
-  // safety net use. The row is stored as 'listing_appointment' (lane 87B2 — the one
-  // spelling; it used to be the generic 'isa_appointment' and needed a caller flag).
+  // THROUGH THE CHAIN'S OWN TRIGGER (lane 88D — the original listing-appt-prep chain is
+  // the survivor; lane 87B's second starter is retired onto it). It reads the row just
+  // scheduled (its tenant is params.brokerageId, asserted), proves the contact is a
+  // SELLER (this milestone's converted contact carries contact_type='seller' from the
+  // lead's intent), takes the seller's property from what this call captured, and
+  // records ONE listing.appointment_set event per booking — the event the orchestrator
+  // starts the chain from. This file used to call startRun with triggerEventId =
+  // calendarEventId; workflow_runs.trigger_event_id FKs lifecycle_events(id), so that
+  // insert was a 23503 and no run was ever created here. The row is stored as
+  // 'listing_appointment' (lane 87B2 — the one spelling).
   let chainRunId: string | undefined
   let chainDeduped: boolean | undefined
-  const prep = await startListingPresentationPrepFromBooking(svc, {
+  const prep = await fireListingAppointmentSetForBooking(svc, {
     calendarEventId,
     expectedBrokerageId: params.brokerageId,
     propertyHint: propertyData,
     origin: "ai_isa_seller_milestone",
   })
-  if ("runId" in prep) {
-    chainRunId = prep.runId
+  if (prep.status === "started" || prep.status === "deduped") {
+    chainRunId = prep.runId ?? undefined
     chainDeduped = prep.status === "deduped"
-  } else {
+  } else if ("reason" in prep) {
     console.error(`[book-seller-appointment] listing prep not started (${prep.status}): ${prep.reason}`)
   }
 

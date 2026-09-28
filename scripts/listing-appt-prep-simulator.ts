@@ -92,15 +92,24 @@ function testPure() {
   check("triggerEvent is listing.appointment_set",
     listingApptPrepChain.triggerEvent === "listing.appointment_set", listingApptPrepChain.triggerEvent)
 
-  // THE DEDUPE KEY IS THE BOOKING ROW (lane 87B — the per-listing key was retired; tombstone at
-  // lib/workflow-orchestrator/chains/listing-appt-prep.ts). The rule, read from STRIPPED source:
-  // the ONE starter every booking path calls keys the run on calendar_events.id. The behaviour
-  // (seller gate, safety net) is proved by test:listing-prep-from-booking.
-  const starter = stripComments(readFileSync(join(process.cwd(), "lib/listing-presentation/booking-prep.ts"), "utf8"))
-  check("the one booking starter keys the prep run on the BOOKING ROW (triggerEventId: calendar_events.id)",
-    /triggerEventId:\s*ctx\.calendarEventId/.test(starter))
-  check("[control] the key finder rejects the retired per-listing key shape",
-    !/triggerEventId:\s*ctx\.calendarEventId/.test("triggerEventId: listingApptPrepDedupeKey(listingId)"))
+  // ONE RUN PER BOOKING, KEYED ON THE EVENT (lane 88D — this chain is the survivor; lane 87B's
+  // starter is retired onto its foot). workflow_runs.trigger_event_id FKs lifecycle_events(id), so
+  // the rule read from STRIPPED source is: the chain's own trigger records ONE listing.appointment_set
+  // event per booking row (dedupe key on the booking id) and never calls startRun with a non-event
+  // id; the orchestrator keys the run on that event. The behaviour (seller gate, safety net, the
+  // recorded event, the FK) is proved by test:listing-prep-from-booking.
+  const chainSrc = stripComments(readFileSync(join(process.cwd(), "lib/workflow-orchestrator/chains/listing-appt-prep.ts"), "utf8"))
+  const keyedOnEvent = (src: string) =>
+    /recordLifecycleEvent\(svc, ctx\.brokerageId, \{[\s\S]{0,200}event_type: listingApptPrepChain\.triggerEvent/.test(src) &&
+    /listingAppointmentSetDedupeKey\(ctx\.calendarEventId\)/.test(src) &&
+    !/triggerEventId:\s*(?:ctx\.)?calendarEventId/.test(src)
+  check("the chain's own trigger records ONE listing.appointment_set event per booking (never a calendar id as the run key)",
+    keyedOnEvent(chainSrc))
+  check("[control] the key finder rejects the retired booking-row key shape",
+    !keyedOnEvent(chainSrc + "\nawait startRun({ triggerEventId: ctx.calendarEventId })"))
+  const orch = stripComments(readFileSync(join(process.cwd(), "lib/orchestrator/internal.ts"), "utf8"))
+  check("the orchestrator starts every chain registered for the event with triggerEventId = the event's id",
+    /getChainsByTrigger\(event\.event_type\)[\s\S]{0,600}triggerEventId:\s*event\.id/.test(orch))
 
   const keys = listingApptPrepChain.steps.map((s) => s.key)
   const expected = [

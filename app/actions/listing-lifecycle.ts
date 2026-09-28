@@ -62,18 +62,20 @@ export async function scheduleListingAppointment(params: {
   // THE BOOKING STARTS THE SELLER'S LISTING-PRESENTATION PREP (lane 87B, owner wave 87:
   // "listing presentation prep which inlcudes the cma needs to be for a seller as this is
   // started from the listing appointmtent booking"). The service just wrote the consult's
-  // calendar_events row (appointmentEventId); the ONE starter reads THAT row, proves the
-  // contact is the seller (the listing's seller, or a seller-typed contact), takes the
-  // property from the listing row and the agent's users.id from the row, all inside the
-  // row's tenant — which must be this SESSION's — and keys the run on the booking, so the
-  // stage pipeline and the cron safety net collapse onto the same run. Best-effort — the
+  // calendar_events row (appointmentEventId); the listing-appt-prep chain's own trigger
+  // (fireListingAppointmentSetForBooking — the original chain is the survivor, lane 88D)
+  // reads THAT row, proves the contact is the seller (the listing's seller, or a
+  // seller-typed contact), takes the property from the listing row and the agent's
+  // users.id from the row, all inside the row's tenant — which must be this SESSION's —
+  // and records ONE listing.appointment_set event per booking, so the stage pipeline and
+  // the cron safety net collapse onto the same event and the same run. Best-effort — the
   // appointment is already booked even if the prep cannot start.
   try {
     const appointmentEventId = (result as { appointmentEventId?: string } | null)?.appointmentEventId ?? null
     if (appointmentEventId) {
       const { createServiceClient } = await import("@/lib/supabase/service")
-      const { startListingPresentationPrepFromBooking } = await import("@/lib/listing-presentation/booking-prep")
-      const prep = await startListingPresentationPrepFromBooking(createServiceClient(), {
+      const { fireListingAppointmentSetForBooking } = await import("@/lib/workflow-orchestrator/chains/listing-appt-prep")
+      const prep = await fireListingAppointmentSetForBooking(createServiceClient(), {
         calendarEventId: appointmentEventId,
         expectedBrokerageId: profile.brokerage_id,
         listingId: params.listing_id,
@@ -207,9 +209,10 @@ async function fireStageAutomations(listingId: string, toStage: string, actorUse
       // Flagship pre-listing prep, STARTED FROM THE BOOKING (lane 87B, owner wave 87).
       // A stage flip to APPOINTMENT_SET is not itself a booking: the prep starts
       // from the listing's calendar_events row (listings.appointment_event_id, written
-      // by scheduleListingAppointmentService) through the ONE starter, which proves
-      // the seller, resolves the seller's property and the agent's users.id inside the
-      // row's tenant, and keys the run on that booking — so this path, the consult
+      // by scheduleListingAppointmentService) through the chain's own trigger
+      // (fireListingAppointmentSetForBooking), which proves the seller, resolves the
+      // seller's property and the agent's users.id inside the row's tenant, and records
+      // ONE listing.appointment_set event per booking — so this path, the consult
       // booking itself and the cron safety net collapse onto ONE run. With no booking
       // row there is no appointment date for the drip to count down to (enroll_drip
       // refused "Missing appointment_date" on every such run), so nothing is started
@@ -224,8 +227,8 @@ async function fireStageAutomations(listingId: string, toStage: string, actorUse
       } else if (!listing?.appointment_event_id) {
         console.warn(`[fireStageAutomations] listing ${listingId} reached APPOINTMENT_SET with no booked appointment — listing prep starts from the booking`)
       } else {
-        const { startListingPresentationPrepFromBooking } = await import("@/lib/listing-presentation/booking-prep")
-        const prep = await startListingPresentationPrepFromBooking(svc, {
+        const { fireListingAppointmentSetForBooking } = await import("@/lib/workflow-orchestrator/chains/listing-appt-prep")
+        const prep = await fireListingAppointmentSetForBooking(svc, {
           calendarEventId: listing.appointment_event_id,
           expectedBrokerageId: listing.brokerage_id ?? null,
           listingId,
