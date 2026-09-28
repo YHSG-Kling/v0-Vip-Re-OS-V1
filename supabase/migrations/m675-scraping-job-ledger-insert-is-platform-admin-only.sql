@@ -1,4 +1,4 @@
--- ── WRITTEN, NOT APPLIED — the integrator applies it (CLAUDE.md §3: files are not the database) ──
+-- ── APPLIED LIVE 2026-09-28 via Supabase MCP apply_migration (project hrvaqgvukzxfskkcrwbt) ──
 --
 -- m675 — lead_scraping_jobs: INSERT is a platform-admin act, like its SELECT/UPDATE/DELETE
 -- (wave 88, lane 88F — census round 33).
