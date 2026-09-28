@@ -17,6 +17,7 @@
     "app/components/command-palette-items.ts": 2,
     "app/components/portal/FitBadge.tsx": 1,
     "app/components/shared/ManagerChip.tsx": 2,
+    "app/constants/auth.ts": 1,
     "lib/ads/ad-creative-engine.ts": 2,
     "lib/ads/ad-lead-intake.ts": 2,
     "lib/ads/ad-manager.ts": 2,
@@ -160,7 +161,7 @@
     "lib/external/versium-client.ts": 3,
     "lib/external/zenrows-client.ts": 1,
     "lib/external/zyte-client.ts": 2,
-    "lib/fatigue/fatigue-calculator.ts": 1,
+    "lib/fatigue/fatigue-calculator.ts": 3,
     "lib/finance/auto-dispute.ts": 1,
     "lib/finance/qb-reconciliation.ts": 3,
     "lib/finance/quarterly-tax-concierge.ts": 1,
@@ -249,6 +250,7 @@
     "lib/kernel/lender-linkage.ts": 1,
     "lib/kernel/listing-inventory-radar.ts": 3,
     "lib/kernel/listing-propensity.ts": 2,
+    "lib/kernel/listings-batchdata-feed.ts": 1,
     "lib/kernel/lookalike-audience.ts": 1,
     "lib/kernel/manager-dissent.ts": 2,
     "lib/kernel/manager-registry.ts": 1,
@@ -304,14 +306,12 @@
     "lib/lead-governance/protected-class-signals.ts": 4,
     "lib/lead-governance/seller-signal-strength.ts": 4,
     "lib/lead-magnets/embed-snippet.ts": 1,
-    "lib/lead-pipeline/acquisition-coverage.ts": 1,
     "lib/lead-pipeline/ai-intent-classifier.ts": 3,
-    "lib/lead-pipeline/canonical-lead-eligibility.ts": 2,
     "lib/lead-pipeline/email-engagement-sourcer.ts": 1,
     "lib/lead-pipeline/email-seek.ts": 1,
     "lib/lead-pipeline/enrichment-column-map.ts": 5,
     "lib/lead-pipeline/exa-sourcer.ts": 1,
-    "lib/lead-pipeline/osint-sourcer.ts": 1,
+    "lib/lead-pipeline/osint-sourcer.ts": 2,
     "lib/lead-pipeline/parked-retention.ts": 4,
     "lib/lead-pipeline/permit-sourcer.ts": 4,
     "lib/lead-pipeline/portal-lead-intake.ts": 1,
@@ -320,6 +320,7 @@
     "lib/lead-pipeline/review-acquisition-sourcer.ts": 2,
     "lib/lead-pipeline/scrape-keywords.ts": 1,
     "lib/lead-pipeline/scraper-health.ts": 2,
+    "lib/lead-pipeline/signal-stacking.ts": 1,
     "lib/lead-pipeline/site-visitor-sourcer.ts": 1,
     "lib/lead-pipeline/social-sourcer.ts": 12,
     "lib/lead-pipeline/source-cost-ledger.ts": 1,
@@ -330,7 +331,6 @@
     "lib/lead-scoring/record-behavioral-event.ts": 1,
     "lib/learning-router/composer.ts": 1,
     "lib/listing-lifecycle/recordable-events.ts": 1,
-    "lib/listing-presentation/booking-prep.ts": 3,
     "lib/listing-presentation/prelisting-delivery.ts": 2,
     "lib/listing-presentation/section-drip.ts": 3,
     "lib/listing-presentation/section-narration-orchestrator.ts": 1,
@@ -379,7 +379,7 @@
     "lib/onboarding/setup-readiness.ts": 1,
     "lib/onboarding/state-license-registry.ts": 1,
     "lib/onboarding/subscriber-stall.ts": 3,
-    "lib/osint-client.ts": 1,
+    "lib/osint-client.ts": 2,
     "lib/platform/acting-context.ts": 1,
     "lib/platform/ai-ops.ts": 1,
     "lib/platform/config-snapshots.ts": 1,
@@ -501,13 +501,13 @@
     "lib/voice-admin/kernel-command-surface.ts": 1,
     "lib/workflow/intelligence/packet-analysis.ts": 1,
     "lib/workflow/step-palette.ts": 1,
-    "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
+    "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 3,
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10314,
+  "census": 10358,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -533,19 +533,20 @@
     "app/actions/admin/agent-profile.ts": 2,
     "app/actions/admin/assignment-rules.ts": 3,
     "app/actions/admin/billing.ts": 2,
+    "app/actions/admin/brokerage-intelligence-doors.ts": 3,
     "app/actions/admin/commission-agreement.ts": 4,
     "app/actions/admin/create-subscriber.ts": 2,
     "app/actions/admin/domain-coherence.ts": 8,
     "app/actions/admin/get-admin-stats.ts": 1,
     "app/actions/admin/invitations.ts": 4,
     "app/actions/admin/invite-user.ts": 1,
-    "app/actions/admin/lead-routing-settings.ts": 2,
+    "app/actions/admin/lead-routing-settings.ts": 4,
     "app/actions/admin/license-tracking.ts": 7,
     "app/actions/admin/locations.ts": 6,
     "app/actions/admin/manager-evals.ts": 11,
     "app/actions/admin/onboarding-steps.ts": 3,
     "app/actions/admin/referral-earnings.ts": 2,
-    "app/actions/admin/run-scrape-test.ts": 2,
+    "app/actions/admin/run-scrape-test.ts": 3,
     "app/actions/admin/staff-360.ts": 2,
     "app/actions/admin/subscription-agreement.ts": 2,
     "app/actions/admin/team-members.ts": 3,
@@ -798,7 +799,7 @@
     "app/actions/lead-promotion/promote-lead.ts": 1,
     "app/actions/lead-quick-actions.ts": 3,
     "app/actions/lead-readiness/evaluate-readiness.ts": 2,
-    "app/actions/lead-scraping-config.ts": 16,
+    "app/actions/lead-scraping-config.ts": 14,
     "app/actions/lead-signal-ingest.ts": 5,
     "app/actions/leads.ts": 11,
     "app/actions/learning-modules-approvals.ts": 4,
@@ -821,7 +822,7 @@
     "app/actions/listing-promo-manual-trigger.ts": 1,
     "app/actions/listing-risk-agent.ts": 1,
     "app/actions/listing-video.ts": 3,
-    "app/actions/listings-kernel.ts": 10,
+    "app/actions/listings-kernel.ts": 11,
     "app/actions/listings.ts": 7,
     "app/actions/managing-broker.ts": 2,
     "app/actions/market-insight-actions.ts": 10,
@@ -1787,6 +1788,7 @@
     "app/components/voice/CoachingInsightCard.tsx": 1,
     "app/components/voice/TranscriptViewer.tsx": 1,
     "app/config/navigation-config.ts": 2,
+    "app/constants/auth.ts": 2,
     "app/crm/actions/ask-relationship-ai.ts": 1,
     "app/crm/components/ai-pilot-control.tsx": 1,
     "app/crm/components/closing-workflow-tab.tsx": 1,
@@ -2861,7 +2863,8 @@
     "lib/analytics/prediction-accuracy.ts": 20,
     "lib/analytics/territory-coverage.ts": 4,
     "lib/analytics/territory-roi.ts": 5,
-    "lib/analytics/vendor-roi.ts": 2,
+    "lib/analytics/vendor-roi-csv.ts": 1,
+    "lib/analytics/vendor-roi.ts": 1,
     "lib/application/ai-isa.ts": 3,
     "lib/application/compliance-monitoring.ts": 18,
     "lib/application/lead-application-service.ts": 5,
@@ -3233,6 +3236,9 @@
     "lib/errors/collect-error.ts": 1,
     "lib/errors/error-classifier.ts": 4,
     "lib/errors/index.ts": 4,
+    "lib/esign/dispatch-packet.ts": 1,
+    "lib/esign/google-drive-upload.ts": 3,
+    "lib/esign/google-esign-handoff.ts": 2,
     "lib/esign-webhooks/download-signed-package.ts": 1,
     "lib/esign-webhooks/finalize-packet.ts": 2,
     "lib/events/dispatcher-registry.ts": 2,
@@ -3243,7 +3249,7 @@
     "lib/external/arcgis-permits.ts": 9,
     "lib/external/batchdata-ai-tools.ts": 1,
     "lib/external/batchdata-batchrank.ts": 1,
-    "lib/external/batchdata-client.ts": 24,
+    "lib/external/batchdata-client.ts": 27,
     "lib/external/batchdata-mcp.ts": 12,
     "lib/external/batchdata-seller-signals.ts": 20,
     "lib/external/batchdata-tokens.ts": 1,
@@ -3274,8 +3280,8 @@
     "lib/external/zenrows-normalizer.ts": 1,
     "lib/external/zyte-client.ts": 4,
     "lib/farm-mail/dispatch-farm-mail.ts": 1,
-    "lib/fatigue/fatigue-calculator.ts": 3,
-    "lib/fatigue/fatigue-display.ts": 2,
+    "lib/fatigue/fatigue-calculator.ts": 5,
+    "lib/fatigue/fatigue-display.ts": 3,
     "lib/fatigue/recovery-generator.ts": 1,
     "lib/finance/accounting-egress.ts": 3,
     "lib/finance/auto-dispute.ts": 2,
@@ -3313,8 +3319,11 @@
     "lib/forms/esign-anchor-plan.ts": 1,
     "lib/forms/esign-anchors.ts": 2,
     "lib/forms/esign-execution-loop.ts": 2,
-    "lib/forms/pdf-form-fill.ts": 2,
+    "lib/forms/form-path-scope.ts": 1,
+    "lib/forms/party-prefill.ts": 1,
+    "lib/forms/pdf-form-fill.ts": 3,
     "lib/forms/prefill-property-into-pdf.ts": 1,
+    "lib/forms/state-package-match.ts": 1,
     "lib/gamification/award-points.ts": 1,
     "lib/gamification/leaderboard-vocabulary.ts": 5,
     "lib/gamification/tiers.ts": 4,
@@ -3347,10 +3356,10 @@
     "lib/integrations/connection-manager.ts": 4,
     "lib/integrations/integration-status.ts": 1,
     "lib/integrations/providers/brokerage-authority.ts": 7,
-    "lib/integrations/providers/catalog.ts": 5,
+    "lib/integrations/providers/catalog.ts": 8,
     "lib/integrations/providers/provider-resolver.ts": 4,
     "lib/integrations/providers/transaction-provider.interface.ts": 1,
-    "lib/integrations/resolve-esign-provider.ts": 1,
+    "lib/integrations/resolve-esign-provider.ts": 2,
     "lib/integrations/transaction-providers/resolve-transaction-provider.ts": 1,
     "lib/integrations/widget/resolve-notification-target.ts": 1,
     "lib/integrations/zapier-direction.ts": 1,
@@ -3542,7 +3551,7 @@
     "lib/kernel/deal-save-huddle.ts": 9,
     "lib/kernel/deconflict/cadence-policy.ts": 2,
     "lib/kernel/deconflict/index.ts": 2,
-    "lib/kernel/deconflict/lead-channel.ts": 2,
+    "lib/kernel/deconflict/lead-channel.ts": 5,
     "lib/kernel/document-autofile.ts": 8,
     "lib/kernel/document-compliance-audit.ts": 6,
     "lib/kernel/document-custody.ts": 5,
@@ -3582,7 +3591,7 @@
     "lib/kernel/listing-marketing-week.ts": 1,
     "lib/kernel/listing-price-advisor.ts": 1,
     "lib/kernel/listing-propensity.ts": 3,
-    "lib/kernel/listings-batchdata-feed.ts": 3,
+    "lib/kernel/listings-batchdata-feed.ts": 4,
     "lib/kernel/listings.ts": 7,
     "lib/kernel/local-lifestyle.ts": 1,
     "lib/kernel/lookalike-audience.ts": 2,
@@ -3712,7 +3721,7 @@
     "lib/lead-assignment/capacity-pick.ts": 2,
     "lib/lead-assignment/contact-assignment.ts": 1,
     "lib/lead-assignment/default-assignment.ts": 1,
-    "lib/lead-assignment/mailbox-owner-preference.ts": 2,
+    "lib/lead-assignment/mailbox-owner-preference.ts": 3,
     "lib/lead-assignment/routing-profiles.ts": 1,
     "lib/lead-assignment/rule-matcher.ts": 10,
     "lib/lead-assignment/solo-agent.ts": 1,
@@ -3730,7 +3739,7 @@
     "lib/lead-intelligence/behavioral-summary.ts": 1,
     "lib/lead-intelligence/interest-level.ts": 1,
     "lib/lead-intelligence/person-spend.ts": 3,
-    "lib/lead-intelligence/person-timeline.ts": 2,
+    "lib/lead-intelligence/person-timeline.ts": 3,
     "lib/lead-intelligence/signal-extensions.ts": 4,
     "lib/lead-intent/inbound-lead-intent.ts": 1,
     "lib/lead-intent/lead-opt-out.ts": 2,
@@ -3752,7 +3761,7 @@
     "lib/lead-pipeline/material-enrichment-change.ts": 1,
     "lib/lead-pipeline/offer-rejection-recovery-runner.ts": 1,
     "lib/lead-pipeline/offer-rejection-recovery.ts": 1,
-    "lib/lead-pipeline/osint-sourcer.ts": 2,
+    "lib/lead-pipeline/osint-sourcer.ts": 4,
     "lib/lead-pipeline/parked-retention.ts": 6,
     "lib/lead-pipeline/permit-sourcer.ts": 6,
     "lib/lead-pipeline/perplexity-enrichment.ts": 1,
@@ -3770,14 +3779,16 @@
     "lib/lead-pipeline/rental-graduation-sourcer.ts": 2,
     "lib/lead-pipeline/review-acquisition-sourcer.ts": 4,
     "lib/lead-pipeline/schedule-followup.ts": 1,
-    "lib/lead-pipeline/scrape-keywords.ts": 7,
+    "lib/lead-pipeline/scrape-keywords.ts": 8,
     "lib/lead-pipeline/scrape-territories.ts": 3,
     "lib/lead-pipeline/scraper-health.ts": 4,
     "lib/lead-pipeline/scraper-parsers.ts": 8,
+    "lib/lead-pipeline/scraping-job-ledger.ts": 2,
+    "lib/lead-pipeline/signal-stacking.ts": 4,
     "lib/lead-pipeline/site-visitor-sourcer.ts": 2,
     "lib/lead-pipeline/social-identity-resolve.ts": 1,
     "lib/lead-pipeline/social-sourcer.ts": 29,
-    "lib/lead-pipeline/source-conversion-learning.ts": 3,
+    "lib/lead-pipeline/source-conversion-learning.ts": 5,
     "lib/lead-pipeline/source-conversion-runner.ts": 2,
     "lib/lead-pipeline/source-cost-ledger.ts": 3,
     "lib/lead-pipeline/source-health.ts": 1,
@@ -3820,7 +3831,6 @@
     "lib/listing-lifecycle/rollback-cascade.ts": 6,
     "lib/listing-lifecycle/stage-automations.ts": 1,
     "lib/listing-lifecycle/transition-validator.ts": 5,
-    "lib/listing-presentation/booking-prep.ts": 7,
     "lib/listing-presentation/generate-ai-presentation.ts": 1,
     "lib/listing-presentation/marketing-system-resolver.ts": 1,
     "lib/listing-presentation/marketing-system.ts": 2,
@@ -3968,7 +3978,7 @@
     "lib/onboarding/subscriber-stall.ts": 4,
     "lib/open-house/instant-greeting.ts": 1,
     "lib/orchestrator/internal.ts": 2,
-    "lib/osint-client.ts": 2,
+    "lib/osint-client.ts": 3,
     "lib/outcomes/provider-event-fanout.ts": 3,
     "lib/outcomes/reconciliation-ledger.ts": 3,
     "lib/outcomes/reconciliation.ts": 4,
@@ -4096,7 +4106,7 @@
     "lib/providers/content-safety.ts": 1,
     "lib/providers/dispatch.ts": 5,
     "lib/providers/elevenlabs/client.ts": 3,
-    "lib/providers/email/personal-email-adapter.ts": 2,
+    "lib/providers/email/personal-email-adapter.ts": 3,
     "lib/providers/esign/index.ts": 6,
     "lib/providers/exa/client.ts": 2,
     "lib/providers/hubspot/client.ts": 2,
@@ -4479,7 +4489,7 @@
     "lib/workflow/triggers.ts": 4,
     "lib/workflow/variables.ts": 2,
     "lib/workflow-orchestrator/chains/index.ts": 2,
-    "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
+    "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 7,
     "lib/workflow-orchestrator/engine.ts": 4,
     "lib/workflow-orchestrator/run-dedupe.ts": 1,
     "lib/workflow-orchestrator/stale-run-policy.ts": 1,
@@ -4646,6 +4656,11 @@
       "calculateOverageExposureAction",
       "loadRevenueSummaryAction"
     ],
+    "app/actions/admin/brokerage-intelligence-doors.ts": [
+      "seedFarmTerritoriesFromServiceAreaAction",
+      "setFarmTerritoryModeAction",
+      "getProviderRoiMetricsAction"
+    ],
     "app/actions/admin/commission-agreement.ts": [
       "uploadCommissionAgreementFormAction",
       "listCommissionAgreementFormsAction",
@@ -4680,7 +4695,9 @@
     ],
     "app/actions/admin/lead-routing-settings.ts": [
       "getDefaultAssignmentMethod",
-      "setDefaultAssignmentMethod"
+      "setDefaultAssignmentMethod",
+      "getMailboxOwnerPreference",
+      "setMailboxOwnerPreference"
     ],
     "app/actions/admin/license-tracking.ts": [
       "getBrokerageAgentLicenseStatuses",
@@ -4723,7 +4740,8 @@
     ],
     "app/actions/admin/run-scrape-test.ts": [
       "runScrapeTestAction",
-      "verifyScrapeTestCronDoorAction"
+      "verifyScrapeTestCronDoorAction",
+      "retryFailedSourceBatchAction"
     ],
     "app/actions/admin/staff-360.ts": [
       "getStaff360Action",
@@ -6397,8 +6415,6 @@
       "createMotivatedParams",
       "updateMotivatedParams",
       "getScrapingJobs",
-      "createScrapingJob",
-      "updateScrapingJob",
       "getBatchDataFeedStatus"
     ],
     "app/actions/lead-signal-ingest.ts": [
@@ -6575,7 +6591,8 @@
       "generateListingDescriptionAction",
       "getListingDescriptionDraftAction",
       "prefillListingFormAction",
-      "updateListingStatus"
+      "updateListingStatus",
+      "sendListingAgreementForSignatureAction"
     ],
     "app/actions/listings.ts": [
       "getListings",
@@ -10542,6 +10559,10 @@
       "resolvePrimaryRole",
       "getNavigationForRole"
     ],
+    "app/constants/auth.ts": [
+      "publicRouteMatches",
+      "classifyProxyPath"
+    ],
     "app/crm/actions/ask-relationship-ai.ts": [
       "askRelationshipAI"
     ],
@@ -14194,9 +14215,11 @@
       "loadTerritoryRoi",
       "publishTerritoryRoiReferrals"
     ],
-    "lib/analytics/vendor-roi.ts": [
-      "getProviderRoiMetrics",
+    "lib/analytics/vendor-roi-csv.ts": [
       "providerMetricsToCsv"
+    ],
+    "lib/analytics/vendor-roi.ts": [
+      "getProviderRoiMetrics"
     ],
     "lib/application/ai-isa.ts": [
       "launchAIISACampaignService",
@@ -16170,6 +16193,18 @@
       "retryAsync",
       "handleError"
     ],
+    "lib/esign/dispatch-packet.ts": [
+      "dispatchEsignPacket"
+    ],
+    "lib/esign/google-drive-upload.ts": [
+      "googleDriveGranted",
+      "buildDriveMultipartBody",
+      "driveFileOpenUrl"
+    ],
+    "lib/esign/google-esign-handoff.ts": [
+      "googleEsignReadiness",
+      "handOffToGoogleEsign"
+    ],
     "lib/esign-webhooks/download-signed-package.ts": [
       "downloadSignedPackage"
     ],
@@ -16226,10 +16261,13 @@
     "lib/external/batchdata-client.ts": [
       "batchDataTriggersFor",
       "quickListSlugsFor",
+      "quickListSlugsFromRow",
+      "triggerForQuickListSlug",
       "normalizeBatchDataProperty",
       "buildPropertySearchBody",
       "fetchMotivatedSellers",
       "searchProperties",
+      "neighborStreetQuery",
       "fetchBatchRankPropensity",
       "enrichPropertyWithBatchData",
       "createSmartSearchSubscription",
@@ -16432,11 +16470,14 @@
       "dispatchFarmMail"
     ],
     "lib/fatigue/fatigue-calculator.ts": [
+      "followUpResponsiveness",
+      "responsivenessPoints",
       "calculateFatigue",
       "loadFatigueSweepPopulation",
       "runFatigueSweep"
     ],
     "lib/fatigue/fatigue-display.ts": [
+      "describeFatigueFactors",
       "deriveRiskLevel",
       "buildReachoutGuard"
     ],
@@ -16612,12 +16653,22 @@
       "resolveEnvelopeBrokerageId",
       "evaluateEnvelopeExecution"
     ],
+    "lib/forms/form-path-scope.ts": [
+      "checkFormPathsInScope"
+    ],
+    "lib/forms/party-prefill.ts": [
+      "buildPartyPrefill"
+    ],
     "lib/forms/pdf-form-fill.ts": [
       "listPdfFields",
+      "readPdfTextFields",
       "fillPdfForm"
     ],
     "lib/forms/prefill-property-into-pdf.ts": [
       "prefillPropertyIntoPdf"
+    ],
+    "lib/forms/state-package-match.ts": [
+      "matchStatePackage"
     ],
     "lib/gamification/award-points.ts": [
       "awardAgentPoints"
@@ -16776,7 +16827,10 @@
       "providerPortalMode",
       "getImplementedProviders",
       "getTransactionFormProviders",
-      "getEsignProviders"
+      "resolveEsignProviderOrDefault",
+      "getSelectableEsignProviders",
+      "getEsignProviders",
+      "supportsEmbeddedSend"
     ],
     "lib/integrations/providers/provider-resolver.ts": [
       "getTransactionProvider",
@@ -16788,7 +16842,8 @@
       "mapProviderFormCategory"
     ],
     "lib/integrations/resolve-esign-provider.ts": [
-      "resolveESignProviderForActor"
+      "resolveESignProviderForActor",
+      "resolveESignChoice"
     ],
     "lib/integrations/transaction-providers/resolve-transaction-provider.ts": [
       "resolveTransactionProvider"
@@ -17697,7 +17752,10 @@
     ],
     "lib/kernel/deconflict/lead-channel.ts": [
       "sourceChannel",
-      "leadLogChannel"
+      "leadLogChannel",
+      "touchTimestampColumn",
+      "touchChannelOf",
+      "saturatedChannels"
     ],
     "lib/kernel/document-autofile.ts": [
       "isDocCategory",
@@ -17969,6 +18027,7 @@
       "runListingPropensity"
     ],
     "lib/kernel/listings-batchdata-feed.ts": [
+      "detectPriceCut",
       "runActiveListingDiscoveryForMarket",
       "runIncrementalPropertySearchForMarket",
       "runBuyBoxMatchingForMarket"
@@ -18755,6 +18814,7 @@
       "assignByDefaultMethod"
     ],
     "lib/lead-assignment/mailbox-owner-preference.ts": [
+      "mailboxOwnerPreferenceFromSettings",
       "decideMailboxOwnerPreference",
       "loadMailboxOwnerFacts"
     ],
@@ -18839,7 +18899,8 @@
     ],
     "lib/lead-intelligence/person-timeline.ts": [
       "buildPersonTimeline",
-      "redactForContactView"
+      "redactForContactView",
+      "redactForTenantLeadDesk"
     ],
     "lib/lead-intelligence/signal-extensions.ts": [
       "buildOfferLostSignal",
@@ -18947,6 +19008,8 @@
     ],
     "lib/lead-pipeline/osint-sourcer.ts": [
       "normalizeCourtFiling",
+      "osintRecordTypesFor",
+      "isFreshFiling",
       "sourceOsintRecords"
     ],
     "lib/lead-pipeline/parked-retention.ts": [
@@ -19023,6 +19086,7 @@
     "lib/lead-pipeline/scrape-keywords.ts": [
       "classifyIntentText",
       "intentSignalsFromText",
+      "distressSignalsFromText",
       "intentTypeFromText",
       "resolveSourceKeywords",
       "renderKeywordQuery",
@@ -19049,6 +19113,16 @@
       "buildRealtySiteChatterUrl",
       "parseContactAgentChatter",
       "parseSellerChatter"
+    ],
+    "lib/lead-pipeline/scraping-job-ledger.ts": [
+      "openScrapingJob",
+      "updateScrapingJobRow"
+    ],
+    "lib/lead-pipeline/signal-stacking.ts": [
+      "stackSignals",
+      "applyStackBoost",
+      "readRawSignalStack",
+      "stackDuplicateOntoLead"
     ],
     "lib/lead-pipeline/site-visitor-sourcer.ts": [
       "normalizeSiteVisitorRow",
@@ -19090,6 +19164,8 @@
     ],
     "lib/lead-pipeline/source-conversion-learning.ts": [
       "computeLeadAcquisitionCost",
+      "computePlatformPaidLeadCost",
+      "tenantPaidLeadSpend",
       "scoreSourceConversions",
       "recommendSourceAllocation"
     ],
@@ -19302,15 +19378,6 @@
       "getNextAllowedStages",
       "canSkipStages",
       "validateSkipStageTransition"
-    ],
-    "lib/listing-presentation/booking-prep.ts": [
-      "classifySellerPrepContext",
-      "bookingPrepGate",
-      "decideSafetyNetAction",
-      "splitBookedAddress",
-      "resolveBookingPrepContext",
-      "startListingPresentationPrepFromBooking",
-      "prepRunStatusesForBooking"
     ],
     "lib/listing-presentation/generate-ai-presentation.ts": [
       "generateAiListingPresentation"
@@ -20035,6 +20102,7 @@
     ],
     "lib/osint-client.ts": [
       "recordTypeIntent",
+      "partyForRecordType",
       "parseTerritoryCourtRecords"
     ],
     "lib/outcomes/provider-event-fanout.ts": [
@@ -20736,7 +20804,8 @@
     ],
     "lib/providers/email/personal-email-adapter.ts": [
       "sendPersonalEmail",
-      "getFreshPersonalToken"
+      "getFreshPersonalToken",
+      "getPersonalConnectionInfo"
     ],
     "lib/providers/esign/index.ts": [
       "createLoop",
@@ -22719,7 +22788,13 @@
       "getChainsByTrigger"
     ],
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": [
-      "setListingApptPrepExecutors"
+      "setListingApptPrepExecutors",
+      "classifySellerPrepContext",
+      "bookingPrepGate",
+      "decideSafetyNetAction",
+      "resolveBookingPrepContext",
+      "fireListingAppointmentSetForBooking",
+      "prepRunStatusesForBooking"
     ],
     "lib/workflow-orchestrator/engine.ts": [
       "startRun",
