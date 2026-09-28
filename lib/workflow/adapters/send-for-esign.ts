@@ -99,6 +99,14 @@ export const sendForEsignAdapter: ChannelAdapter = {
             access_token: result.data.access_token,
             account_id:   result.data.account_id,
           }
+        } else if (result.success) {
+          // Lane 88B (owner, wave 88: "google esign is default not dotloop."): a brokerage with no
+          // connected e-sign provider uses the DEFAULT — Google eSignature — which sends from the
+          // agent's own Google Drive (portal-send, no API). It reaches the manual-send path below
+          // with the Drive link, instead of erroring "no eSign provider configured". A REFUSED
+          // resolution (result.success false) still stops here: fail closed, never guess.
+          const { DEFAULT_ESIGN_PROVIDER } = await import("@/lib/integrations/providers/catalog")
+          provider = DEFAULT_ESIGN_PROVIDER
         }
       } catch { /* fall through */ }
     }
@@ -113,7 +121,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
           brokerage_id: brokerageId,
           type: "esign_provider_not_configured",
           title: "Connect an eSign provider",
-          body: "A workflow tried to send a document for signature but no eSign provider is connected. Configure Dotloop, DocuSign, or another supported provider in Settings → Integrations.",
+          body: "A workflow tried to send a document for signature but the eSign provider could not be resolved. E-sign defaults to Google eSignature; to auto-send, connect DocuSign, Dotloop or another supported provider in Settings → Integrations.",
           priority: "high",
         }), { table: "notifications", flow: "esign_provider_not_configured_notify", brokerageId, reason: "the step already reports status:error; this is only the agent heads-up" })
       }
@@ -400,17 +408,26 @@ export const sendForEsignAdapter: ChannelAdapter = {
       }
     }
 
-    // ── Manual-send path — Brokermint (no native e-sign) / unresolvable ──
+    // ── Manual-send path — Google eSignature (the DEFAULT, portal-send) / Brokermint (no native
+    // e-sign) / unresolvable ──
     // Explicit degraded path: task the agent to send from their provider's
     // UI, and report the step honestly as SKIPPED (nothing was sent) so the
     // workflow ledger never claims a signature request that didn't happen.
+    // Lane 88B: the provider's own window (catalog PROVIDER_PORTAL_URLS) is named in the bell, so
+    // the Google default lands the agent in their Drive with the steps, not on a bare vendor name.
+    const { getCatalogEntry, providerPortalMode } = await import("@/lib/integrations/providers/catalog")
+    const manualEntry = getCatalogEntry(provider)
+    const manualPortal = providerPortalMode(provider)
+    const providerLabel = manualEntry?.label ?? provider
     if (agentUserId) {
       await sentinelWrite(supabase, supabase.from("notifications").insert({
         user_id: agentUserId,
         brokerage_id: brokerageId,
         type: "esign_provider_manual_send",
-        title: `Send for signature via ${provider}`,
-        body: `Workflow staged a ${document.document_type} for ${contact?.first_name ?? "the contact"}. Open ${provider} and send manually — ${provider === "brokermint" ? "Brokermint has no native e-signature API" : `auto-send is not available for ${provider}`}.`,
+        title: `Send for signature via ${providerLabel}`,
+        body: manualEntry?.portalSend
+          ? `Workflow staged a ${document.document_type} for ${contact?.first_name ?? "the contact"}. Open ${manualPortal?.url ?? providerLabel}, open the filled document, then Tools → eSignature → Request signature (${providerLabel} is your default e-sign — it sends from your own Google account).`
+          : `Workflow staged a ${document.document_type} for ${contact?.first_name ?? "the contact"}. Open ${providerLabel}${manualPortal ? ` (${manualPortal.url})` : ""} and send manually — ${provider === "brokermint" ? "Brokermint has no native e-signature API" : `auto-send is not available for ${providerLabel}`}.`,
         priority: "high",
         entity_type: "document",
         entity_id: documentId,

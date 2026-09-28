@@ -113,10 +113,10 @@ export async function createContactFromLead(
 
   try {
     // LEAD-COST TRACKING (owner ruling, wave 65: "...where they came from for
-    // lead cost tracking"). Resolved BEFORE the insert so the full figure —
-    // raw cost_per_record + enrichment spend + campaign cost share — rides in
-    // contactData below, same lossless-carry contract as every other field on
-    // this record. Best-effort: a resolution failure leaves acquisition_cost
+    // lead cost tracking"). Resolved BEFORE the insert so the TENANT-paid figure
+    // (lane 88B: the tenant's own campaign cost share — raw cost_per_record and
+    // enrichment are platform-paid and stay off it) rides in contactData below,
+    // same lossless-carry contract as every other field on this record. Best-effort: a resolution failure leaves acquisition_cost
     // null on the contact, never blocks the conversion.
     const acquisition = await resolveLeadAcquisitionCost(supabase, {
       leadId: data.leadId,
@@ -189,8 +189,13 @@ export async function createContactFromLead(
     //                    left NULL, the contact was invisible to AI lead scoring.
     const contactData = {
       // Lead cost carried at conversion (m634, applied live 2026-09-15): the
-      // full acquisition figure when computed, else the raw cost_per_record.
-      acquisition_cost: acquisition.acquisitionCost ?? data.lead.cost_per_record ?? null,
+      // TENANT-paid acquisition figure only. Lane 88B removed the
+      // `?? data.lead.cost_per_record` fallback — cost_per_record is the
+      // platform's scrape cost (owner: "not what was included in their
+      // subscription like raw lead acquisition, enrichment which are platform
+      // paid"); it still rides UNCHANGED below as cost_per_record, the platform
+      // view's own column, so nothing is lost.
+      acquisition_cost: acquisition.acquisitionCost ?? null,
       // Basic identity
       first_name: data.lead.first_name,
       last_name: data.lead.last_name,
@@ -409,7 +414,8 @@ export async function createContactFromLead(
     // EVERY lead promotion the moment this lane's code shipped. Isolating it
     // here means a pre-migration refusal costs exactly one field, logged, and
     // never the contact itself. Once m632 lands this starts succeeding with no
-    // code change. Falls back to cost_per_record when the richer figure is
+    // code change. [Lane 88B: the cost_per_record fallback described next is
+    // RETIRED — see acquisition_cost in contactData above.] Falls back to cost_per_record when the richer figure is
     // unknown, so the contact never carries LESS cost information than the
     // lead already had.
     // TOMBSTONE (wave 65 integration): the isolated post-insert

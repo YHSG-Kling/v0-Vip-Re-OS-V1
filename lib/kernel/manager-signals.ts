@@ -2458,10 +2458,14 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       .eq("brokerage_id", ctx.brokerageId).eq("type", "ai_isa_handoff_needs_classification")
       .eq("entity_id", contactId).eq("is_read", false).limit(1).maybeSingle()
     if (existing) return "AI ISA is already holding this handoff pending contact-type classification (deduped)"
-    const { data: isaSeats } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).eq("user_type", "isa").limit(25)
-    const ids = ((isaSeats ?? []) as { id: string }[]).map((s) => s.id)
-    if (ids.length === 0) return "handoff has no resolvable buyer/seller type and no ISA seat to hold it"
+    // LANE 88B (owner, wave 88: "Isa is a system ai ai isa."): this asked `user_type = 'isa'` seats
+    // to classify the contact — but the ISA is the AI (system identity), not a person, and 0 live
+    // rows hold that type, so the question reached nobody and the handoff stalled silently. A HUMAN
+    // must set contact_type, so the ask goes to the ONE human lead-desk recipient rule
+    // (lib/auth/lead-visibility.ts::leadDeskRecipientUserIds — broker / broker_owner / admin).
+    const { leadDeskRecipientUserIds } = await import("@/lib/auth/lead-visibility")
+    const ids = await leadDeskRecipientUserIds(ctx.supabase as any, ctx.brokerageId, { limit: 25 })
+    if (ids.length === 0) return "handoff has no resolvable buyer/seller type and no human lead-desk seat to classify it"
     const rows = ids.map((id) => ({
       user_id: id, brokerage_id: ctx.brokerageId, type: "ai_isa_handoff_needs_classification",
       title: "A handed-off contact needs a buyer/seller type",
@@ -2469,7 +2473,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       entity_type: "contact", entity_id: contactId, priority: "medium", is_read: false,
     }))
     const { error } = await ctx.supabase.from("notifications").insert(rows)
-    return error ? null : `AI ISA held the handoff and asked ${ids.length} ISA seat(s) to classify the contact`
+    return error ? null : `AI ISA held the handoff and asked ${ids.length} lead-desk staff to classify the contact`
   },
 
   // AI ISA (the escalating manager) → Recruiting Manager: an AI concierge session escalated

@@ -50,6 +50,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { resolveReportScope } from "./reporting-scope"
 import { TRANSACTION_STATUSES, isOpenDeal } from "@/lib/transactions/transaction-status"
+import { tenantPaidLeadSpend } from "@/lib/lead-pipeline/source-conversion-learning"
 
 /** The live "still working this deal" status set, derived through the canonical predicate
  *  rather than a second hand-copy of the array — isOpenDeal stays the one place that
@@ -527,7 +528,7 @@ export async function generateSourcePerformanceReport(
     ] = await Promise.all([
       supabase
         .from("contacts")
-        .select("source, source_family, agent_id, cost_per_record, created_at")
+        .select("source, source_family, agent_id, acquisition_cost, created_at")
         .eq("brokerage_id", ctx.brokerageId)
         .gte("created_at", from)
         .lte("created_at", to)
@@ -572,7 +573,10 @@ export async function generateSourcePerformanceReport(
     for (const c of contacts ?? []) {
       const b = get(c.source ?? "unknown", c.source_family ?? "contact_direct")
       b.contact_count++
-      b.total_spend += c.cost_per_record ?? 0
+      // Lane 88B — TENANT-paid spend (acquisition_cost) only. This summed cost_per_record — the
+      // platform's scrape cost — into the tenant's own source report (owner: "spend should be what
+      // the tenant spent for that lead, not … raw lead acquisition, enrichment which are platform paid").
+      b.total_spend += tenantPaidLeadSpend(c)
     }
     for (const t of txs ?? []) {
       const b = get(t.source ?? "unknown", t.source_family ?? "lead")

@@ -17,6 +17,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveCallerIdentity } from "@/lib/auth/require-caller"
 import { isPlatformStaffRole } from "@/lib/platform/platform-staff-roster"
+import { DEFAULT_ESIGN_PROVIDER } from "@/lib/integrations/providers/catalog"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -52,7 +53,9 @@ const SYSTEM_DEFAULTS: Record<string, string> = {
   social:       "buffer",
   calendar:     "google",
   payment:      "stripe",
-  esign:        "dotloop",
+  // Lane 88B (owner, wave 88: "google esign is default not dotloop."). The ONE default lives in
+  // lib/integrations/providers/catalog.ts; Dotloop stays selectable through provider_overrides.
+  esign:        DEFAULT_ESIGN_PROVIDER,
   transaction:  "dotloop",
   crm:          "follow_up_boss",
   accounting:   "quickbooks",

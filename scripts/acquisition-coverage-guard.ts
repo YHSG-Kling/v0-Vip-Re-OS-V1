@@ -176,8 +176,11 @@ check("non-cron doors stamp cost too: batchdata_smart_search / batchdata_buybox 
   )
   const fbm = l.bySource.find((r) => r.sourceKey === "facebook_marketplace")
   const apify = l.byVendor.find((v) => v.vendor === "apify")
-  check("leadCostBySource: per-source records + cost/record, channel fallback, acquisition_cost preferred",
-    fbm?.records === 2 && fbm.costPerRecordUsd === 0.01 && l.bySource.some((r) => r.sourceKey === "craigslist_wanted") && l.bySource.find((r) => r.sourceKey === "batchdata_motivated")?.recordedCostUsd === 0.3)
+  // Lane 88B (owner: "…raw lead acquisition, enrichment which are platform paid"): the reconcile is
+  // the PLATFORM's ledger, so it reads the platform-paid cost_per_record ($0.05) — NOT the tenant-paid
+  // acquisition_cost ($0.30, the tenant's ad-spend share), which the old rule preferred.
+  check("leadCostBySource: per-source records + cost/record, channel fallback, PLATFORM-paid cost_per_record only (never the tenant's acquisition_cost)",
+    fbm?.records === 2 && fbm.costPerRecordUsd === 0.01 && l.bySource.some((r) => r.sourceKey === "craigslist_wanted") && l.bySource.find((r) => r.sourceKey === "batchdata_motivated")?.recordedCostUsd === 0.05)
   check("leadCostBySource: ledger spend no lead carries is surfaced as unattributed (apify $1 vs $0.01 recorded)", !!apify && apify.unattributedUsd === 0.99)
   check("source analytics reads the reconcile (SOURCE_VENDOR ledger reader) and shows the vendor",
     /leadCostBySource\(/.test(code("app/actions/source-analytics.ts")) && /vendorForSource\(/.test(code("app/actions/source-analytics.ts")) && /s\.vendor/.test(code("app/dashboard/analytics/source/source-analytics-client.tsx")))

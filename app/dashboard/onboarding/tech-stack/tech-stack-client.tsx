@@ -158,7 +158,11 @@ export function TechStackClient({
         .map(p => p.providerType)
     )
     const requiredTypes = ["sms", "email", "esign"]
-    const met = requiredTypes.filter(t => typeConnected.has(t)).length
+    // Lane 88B (owner, wave 88: "google esign is default not dotloop."): e-sign is MET by default —
+    // Google eSignature (the catalog DEFAULT_ESIGN_PROVIDER) needs no connection, it sends from the
+    // agent's own Google Drive. Connecting DocuSign / Dotloop / SkySlope is an upgrade to auto-send,
+    // not a prerequisite for onboarding.
+    const met = requiredTypes.filter(t => typeConnected.has(t) || t === "esign").length
     return Math.min((met / requiredTypes.length) * 100, 100)
   }, [status])
 

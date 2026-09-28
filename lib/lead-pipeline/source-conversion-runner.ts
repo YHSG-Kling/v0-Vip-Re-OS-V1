@@ -2,12 +2,13 @@
 //
 // Makes the Source-Conversion Learner LIVE: aggregates real per-source outcomes from the existing
 // source path (leads.source → leads.contact_id = converted; transactions via contact_id = closed)
-// + cost_per_record, and folds them through the pure scorer. Read-only, tenant-scoped. The
+// + TENANT-paid acquisition_cost (lane 88B — never the platform-paid cost_per_record), and folds
+// them through the pure scorer. Read-only, tenant-scoped. The
 // recommendation (advisory) is produced by recommendSourceAllocation against enabled_sources.
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { scoreSourceConversions, type SourceConversionRow, type ScoredSources } from "./source-conversion-learning"
+import { scoreSourceConversions, tenantPaidLeadSpend, type SourceConversionRow, type ScoredSources } from "./source-conversion-learning"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -20,9 +21,9 @@ export async function loadSourceConversions(
   const svc = client ?? createServiceClient()
   const since = new Date(Date.now() - (opts.sinceDays ?? 180) * 86_400_000).toISOString()
 
-  // acquisition_cost (m634, applied live 2026-09-15) is the FULLER lead-cost figure
-  // (cost_per_record + enrichment spend + campaign cost share — see
-  // lib/contact-promotion/acquisition-cost.ts). Selected alongside
+  // acquisition_cost (m634, applied live 2026-09-15) is the TENANT-paid lead cost
+  // (lane 88B: the tenant's campaign cost share — raw cost_per_record and enrichment are
+  // platform-paid; see lib/contact-promotion/acquisition-cost.ts). Selected alongside
   // cost_per_record, never in place of it: until the integrator applies m632
   // the column does not exist, and PostgREST refuses a SELECT naming an absent
   // column just as it refuses a write to one — so this read is wrapped and
@@ -63,10 +64,14 @@ export async function loadSourceConversions(
     const source = l.source ?? "unknown"
     const row = agg.get(source) ?? { source, leadCount: 0, contactCount: 0, closedCount: 0, revenue: 0, spend: 0 }
     row.leadCount++
-    // Prefer the fuller acquisition_cost; fall back to the narrower
-    // cost_per_record for pre-migration / pre-conversion rows that never got
-    // the richer figure computed.
-    row.spend += l.acquisition_cost ?? l.cost_per_record ?? 0
+    // TENANT-paid spend only (lane 88B, owner: "spend should be what the tenant spent for that
+    // lead, not what was included in their subscription like raw lead acquisition, enrichment
+    // which are platform paid."). The old `acquisition_cost ?? cost_per_record` fallback billed
+    // the platform's scrape cost to the tenant — every scraped source then read as a money pit
+    // and runSourceReallocationScan below advised the TENANT to disable a source that cost the
+    // tenant nothing. A platform-sourced lead now carries $0 tenant spend → ROI null → HELD /
+    // judged on conversion, never "costing more than it returns".
+    row.spend += tenantPaidLeadSpend(l)
     if (l.contact_id) {
       row.contactCount++
       const rev = closedByContact.get(l.contact_id)

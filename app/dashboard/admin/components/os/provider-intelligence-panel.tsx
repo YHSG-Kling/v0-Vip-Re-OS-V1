@@ -15,6 +15,7 @@ import {
 } from "lucide-react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
+import { DEFAULT_ESIGN_PROVIDER } from "@/lib/integrations/providers/catalog"
 
 interface ProviderIntelligencePanelProps {
   brokerageId: string
@@ -76,7 +77,8 @@ export function ProviderIntelligencePanel({ brokerageId }: ProviderIntelligenceP
     { type: "email", label: "Email", default: "sendgrid" },
     { type: "sms", label: "SMS", default: "twilio" },
     { type: "calendar", label: "Calendar", default: "google" },
-    { type: "esign", label: "E-Sign", default: "dotloop" },
+    // Lane 88B (owner, wave 88: "google esign is default not dotloop.") — the catalog's ONE default.
+    { type: "esign", label: "E-Sign", default: DEFAULT_ESIGN_PROVIDER },
     { type: "ai", label: "AI", default: "anthropic" },
     { type: "social", label: "Social", default: "buffer" },
   ]

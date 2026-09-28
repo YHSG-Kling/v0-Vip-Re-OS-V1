@@ -344,8 +344,18 @@ async function main(): Promise<void> {
         const body = creator.slice(start, end)
         return /^\s*acquisition_cost:/m.test(body)
       })())
-    check("...falling back to the raw cost_per_record so the contact never carries LESS cost than the lead",
-      /acquisition_cost:\s*acquisition\.acquisitionCost\s*\?\?\s*data\.lead\.cost_per_record/.test(creator))
+    // Lane 88B (owner, wave 88: "spend should be what the tenant spent for that lead, not what was
+    // included in their subscription like raw lead acquisition, enrichment which are platform paid.")
+    // RE-ANCHORED to the rule: the carried acquisition_cost is the TENANT-paid figure, so the old
+    // `?? data.lead.cost_per_record` fallback (the platform's scrape cost) must NOT feed it — while
+    // cost_per_record itself still rides the bundle as its own column (nothing is lost).
+    check("acquisition_cost carries the TENANT-paid figure with NO fallback to the platform-paid cost_per_record",
+      /acquisition_cost:\s*acquisition\.acquisitionCost\s*\?\?\s*null/.test(creator) &&
+        !/acquisition_cost:\s*acquisition\.acquisitionCost\s*\?\?\s*data\.lead\.cost_per_record/.test(creator))
+    check("POSITIVE CONTROL: the fallback finder still recognises the retired shape",
+      /acquisition_cost:\s*acquisition\.acquisitionCost\s*\?\?\s*data\.lead\.cost_per_record/.test("acquisition_cost: acquisition.acquisitionCost ?? data.lead.cost_per_record ?? null,"))
+    check("…and cost_per_record still rides the bundle as its own (platform-view) column",
+      /^\s*cost_per_record:\s*data\.lead\.cost_per_record/m.test(creator))
     check("no second, isolated contacts.acquisition_cost .update() survives beside the bundle (one write path)",
       !/\.from\("contacts"\)\s*\.update\(\{\s*acquisition_cost:/.test(creator))
     check("leads.acquisition_cost is stamped at promotion by its own statement with its own error handling",
@@ -355,8 +365,11 @@ async function main(): Promise<void> {
     check("the pure formula lives in the ONE owned learning module, not re-derived in the live resolver",
       acqCostModule.includes("computeLeadAcquisitionCost") &&
         !/costPerRecord\s*\+\s*enrichmentSpend/.test(acqCostModule))
-    check("source-conversion-runner prefers acquisition_cost but falls back to cost_per_record (pre-migration rows)",
-      code("lib/lead-pipeline/source-conversion-runner.ts").includes("l.acquisition_cost ?? l.cost_per_record ?? 0"))
+    // Lane 88B re-anchor: the runner's spend is the TENANT-paid rule (tenantPaidLeadSpend), never the
+    // platform-paid cost_per_record fallback.
+    check("source-conversion-runner sums TENANT-paid spend (tenantPaidLeadSpend), with no cost_per_record fallback",
+      /row\.spend \+= tenantPaidLeadSpend\(l\)/.test(code("lib/lead-pipeline/source-conversion-runner.ts")) &&
+        !code("lib/lead-pipeline/source-conversion-runner.ts").includes("l.acquisition_cost ?? l.cost_per_record"))
   }
 
   console.log(`\n${"═".repeat(70)}`)

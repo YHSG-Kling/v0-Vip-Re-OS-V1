@@ -152,7 +152,7 @@ async function main() {
     check("assignment event SURVIVES (summary_safe — the routing outcome, not raw scrape data)",
       redactedTypes.has("assignment"))
     check("redaction never THROWS on a result with zero events", (() => {
-      try { redactForContactView({ leadId: null, contactId: null, brokerageId: null, events: [], convertedAt: null, acquisitionCost: null, spend: null, behavioralIntentScore: 0, warnings: [] }); return true }
+      try { redactForContactView({ leadId: null, contactId: null, brokerageId: null, events: [], convertedAt: null, acquisitionCost: null, platformPaidSpend: null, platformPaidAcquisitionCost: null, behavioralIntentScore: 0, warnings: [] }); return true }
       catch { return false }
     })())
   }

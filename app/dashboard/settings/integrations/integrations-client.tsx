@@ -27,7 +27,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog"
-import { getEsignProviders, getTransactionFormProviders } from "@/lib/integrations/providers/catalog"
+import { getSelectableEsignProviders, getTransactionFormProviders, DEFAULT_ESIGN_PROVIDER, PROVIDER_CATALOG } from "@/lib/integrations/providers/catalog"
 
 // ── Provider catalogue ─────────────────────────────────────────────────────
 const PROVIDER_TYPES = ["esign", "transaction", "sms", "email", "voice", "calendar", "mls", "accounting", "crm"] as const
@@ -37,7 +37,10 @@ const PROVIDER_TYPES = ["esign", "transaction", "sms", "email", "voice", "calend
 // and never the unimplemented ones (which crash the factory). Adding a provider
 // class + flipping catalog.implemented makes it appear here automatically.
 const PROVIDER_KEYS_BY_TYPE: Record<string, string[]> = {
-  esign:       [...getEsignProviders(), "none"],
+  // Lane 88B (owner, wave 88: "google esign is default not dotloop."): Google eSignature (the
+  // catalog DEFAULT, portal-send — no credential) is offered FIRST; Dotloop and every connectable
+  // API provider remain selectable after it.
+  esign:       [...getSelectableEsignProviders(), "none"],
   transaction: [...getTransactionFormProviders(), "none"],
   sms:         ["twilio", "bandwidth", "vonage"],
   email:       ["sendgrid", "mailgun", "resend"],
@@ -60,6 +63,7 @@ const PROVIDER_KEYS_BY_TYPE: Record<string, string[]> = {
 }
 
 const PLATFORM_LABELS: Record<string, string> = {
+  google_esign: PROVIDER_CATALOG.google_esign.label,
   dotloop:      "Dotloop",
   docusign:     "DocuSign",
   skyslope:     "SkySlope",
@@ -86,6 +90,7 @@ const PLATFORM_LABELS: Record<string, string> = {
 }
 
 const PLATFORM_ICONS: Record<string, string> = {
+  google_esign: "G",
   dotloop:    "D",
   docusign:   "DS",
   skyslope:   "SS",
@@ -116,7 +121,8 @@ type OverrideForm = {
 }
 
 const EMPTY_CRED: CredForm = { platform: "", api_key: "", api_url: "", account_id: "", account_name: "" }
-const EMPTY_OVERRIDE: OverrideForm = { provider_type: "esign", provider_key: "dotloop" }
+// Lane 88B — the override form opens on the e-sign DEFAULT (Google eSignature), not Dotloop.
+const EMPTY_OVERRIDE: OverrideForm = { provider_type: "esign", provider_key: DEFAULT_ESIGN_PROVIDER }
 
 // ── Component ──────────────────────────────────────────────────────────────
 export function IntegrationsClient({
@@ -257,7 +263,7 @@ export function IntegrationsClient({
                     <td className="px-4 py-3 text-gray-700">
                       {override
                         ? PLATFORM_LABELS[override.provider_key] ?? override.provider_key
-                        : <span className="text-gray-400 italic">Kernel default</span>}
+                        : <span className="text-gray-400 italic">{type === "esign" ? `Default — ${PROVIDER_CATALOG[DEFAULT_ESIGN_PROVIDER].label}` : "Kernel default"}</span>}
                     </td>
                     <td className="px-4 py-3">
                       {override ? statusBadge(override.enabled) : (

@@ -8,7 +8,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { useState, useEffect } from "react"
-import { providerPortalMode } from "@/lib/integrations/providers/catalog"
+import { providerPortalMode, DEFAULT_ESIGN_PROVIDER } from "@/lib/integrations/providers/catalog"
 import {
   Card, CardContent, } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -431,8 +431,25 @@ export function FormsLibraryClient({
                 happens in their window; FILLING stays native below (where the
                 AI prefill lives); sending stays launchEsignEnvelope. */}
             {(() => {
+              // Lane 88B (owner, wave 88: "google esign is default not dotloop."): with no provider
+              // connected, the window offered is the e-sign DEFAULT — Google eSignature, opened in a
+              // new tab (Google allows no framing) on the agent's own Google account.
+              if (!resolvedProvider?.is_configured) {
+                const def = providerPortalMode(DEFAULT_ESIGN_PROVIDER)
+                if (!def) return null
+                return (
+                  <Card>
+                    <CardContent className="flex items-center justify-between py-3 px-4">
+                      <p className="text-xs text-muted-foreground">E-sign default: {def.label}. Fill the form here, then open it in your Google Drive and choose Tools → eSignature → Request signature. Connect DocuSign, Dotloop or another provider in Settings → Integrations to auto-send instead.</p>
+                      <Button size="sm" variant="outline" asChild>
+                        <a href={def.url} target="_blank" rel="noopener noreferrer">Open {def.label}</a>
+                      </Button>
+                    </CardContent>
+                  </Card>
+                )
+              }
               const portal = providerPortalMode(resolvedProvider?.provider_name)
-              if (!portal || !resolvedProvider?.is_configured) return null
+              if (!portal) return null
               return portal.mode === "iframe" ? (
                 <Card>
                   <CardContent className="p-2">

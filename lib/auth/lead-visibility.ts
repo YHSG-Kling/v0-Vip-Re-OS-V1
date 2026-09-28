@@ -82,6 +82,16 @@ type AnySupabase = SupabaseClient<any, any, any>
  *     they ever reach an agent (CLAUDE.md §5), and the database has always known
  *     that — `is_lead_visible_role()` carries `is_ai_isa_system()` as its own
  *     arm. Dropping it in the merge would have retired a live seat.
+ *     WAVE 88 RULING (owner, verbatim: "Isa is a system ai ai isa."): the ISA is
+ *     the platform's AI ISA, acting through the per-brokerage SYSTEM identity
+ *     (brokerages.ai_isa_system_user_id → users.platform_role 'ai_isa_system',
+ *     lib/auth/isa-actor.ts), which is what `is_ai_isa_system()` admits — NOT a
+ *     human `user_type='isa'` seat (live: 0 such rows; is_lead_visible_role()'s
+ *     user_type arm never listed 'isa'). `isa` stays in THIS read roster only
+ *     because CLAUDE.md §4 names it and the CHECK still stores it (a read
+ *     admission for 0 rows is inert); it is subtracted from every HUMAN
+ *     escalation below (AI_ISA_SEAT_USER_TYPES), so a bell never goes to "the
+ *     ISA" expecting a person to answer it.
  *   · `team_lead` — rides along from TENANT_ADMIN_USER_TYPES, which has always
  *     contained it. That is the whole of this lane's widening, and it is the
  *     reason the SCOPE half below exists.
@@ -156,6 +166,21 @@ export const LEAD_DESK_USER_TYPES: ReadonlySet<string> = new Set([
  */
 export const BROKERAGE_WIDE_LEAD_USER_TYPES: ReadonlySet<string> = new Set(
   [...LEAD_DESK_USER_TYPES].filter((t) => t !== "team_lead"),
+)
+
+/**
+ * WAVE 88 (lane 88B, owner verbatim: "Isa is a system ai ai isa."). The `isa` user_type is the AI
+ * ISA's NAME, not a person: the AI works leads through the system identity (lib/auth/isa-actor.ts),
+ * and a HUMAN escalation — "this lead needs a person" — must reach a person. Subtracted by name from
+ * the lead-desk rosters (never a restated list), so the human escalation desk is broker / broker_owner
+ * / admin brokerage-wide, plus the TEAM LEAD of the team working the lead.
+ */
+const AI_ISA_SEAT_USER_TYPES: ReadonlySet<string> = new Set(["isa"])
+const HUMAN_LEAD_DESK_USER_TYPES: ReadonlySet<string> = new Set(
+  [...LEAD_DESK_USER_TYPES].filter((t) => !AI_ISA_SEAT_USER_TYPES.has(t)),
+)
+const HUMAN_BROKERAGE_WIDE_LEAD_USER_TYPES: ReadonlySet<string> = new Set(
+  [...BROKERAGE_WIDE_LEAD_USER_TYPES].filter((t) => !AI_ISA_SEAT_USER_TYPES.has(t)),
 )
 
 /** All-zero uuid — a syntactically valid uuid that no row can carry. */
@@ -539,19 +564,29 @@ export async function resolveScopedLeadIds(
  * opt-out) were addressed to `leads.agent_id`'s user — a producing agent seeing
  * a lead — or to NO user at all (a user_id-less bell nobody's inbox reads).
  * This is the ONE recipient rule, derived from the lead-desk roster above
- * rather than restated:
+ * rather than restated.
+ *
+ * LANE 88B (wave 88, owner: "Isa is a system ai ai isa."): these are HUMAN
+ * escalations — the AI ISA is the one escalating, so a bell addressed to an
+ * `isa` seat was the AI paging itself (and, with 0 live `isa` rows, paging
+ * nobody). The rule now:
  *   · the lead's own `agent_id` is honoured ONLY when that seat is itself a
- *     lead-desk seat (an ISA or admin working the desk) — never a producer;
- *   · otherwise the brokerage-wide lead desk (BROKERAGE_WIDE_LEAD_USER_TYPES:
- *     the admin class minus team_lead, plus isa), capped.
- * A refused read returns [] — the caller's bell does not ring, it never
- * silently falls back to an agent.
+ *     HUMAN lead-desk seat (a broker / admin / team lead working the desk) —
+ *     never a producer, never the AI ISA;
+ *   · a lead worked by a PRODUCING agent also reaches that agent's TEAM LEAD
+ *     (teams.team_lead_id of the agent's active team — the team lead's lead
+ *     scope already covers it, see resolveLeadVisibility's team scope);
+ *   · plus the brokerage-wide HUMAN lead desk (BROKERAGE_WIDE_LEAD_USER_TYPES
+ *     minus the AI ISA seat: broker / broker_owner / admin), capped.
+ * A refused desk read returns what was resolved so far (possibly []) — the
+ * bell never silently falls back to a producing agent.
  */
 export async function leadDeskRecipientUserIds(
   svc: AnySupabase,
   brokerageId: string,
   opts: { preferAgentId?: string | null; limit?: number } = {},
 ): Promise<string[]> {
+  const out = new Set<string>()
   if (opts.preferAgentId) {
     const { data: agent } = await svc.from("agents").select("user_id").eq("id", opts.preferAgentId).maybeSingle()
     const uid = (agent as { user_id?: string | null } | null)?.user_id ?? null
@@ -559,16 +594,28 @@ export async function leadDeskRecipientUserIds(
       const { data: seat } = await svc.from("users").select("id, user_type")
         .eq("id", uid).eq("brokerage_id", brokerageId).maybeSingle()
       const s = seat as { id: string; user_type: string | null } | null
-      if (s && LEAD_DESK_USER_TYPES.has(String(s.user_type))) return [s.id]
+      if (s && HUMAN_LEAD_DESK_USER_TYPES.has(String(s.user_type))) return [s.id]
+    }
+    // A producer (or the AI ISA seat) is working it: its team's lead hears about it too.
+    const { data: memberships, error: memErr } = await svc.from("team_members").select("team_id")
+      .eq("brokerage_id", brokerageId).eq("agent_id", opts.preferAgentId).eq("is_active", true)
+    if (memErr) console.warn("[lead-visibility] team membership unreadable — team lead not paged:", memErr.message)
+    const teamIds = [...new Set(((memberships ?? []) as Array<{ team_id: string | null }>).map((m) => m.team_id).filter((t): t is string => !!t))]
+    if (teamIds.length > 0) {
+      const { data: teams, error: teamErr } = await svc.from("teams").select("team_lead_id")
+        .eq("brokerage_id", brokerageId).in("id", teamIds)
+      if (teamErr) console.warn("[lead-visibility] teams unreadable — team lead not paged:", teamErr.message)
+      for (const t of (teams ?? []) as Array<{ team_lead_id: string | null }>) if (t.team_lead_id) out.add(t.team_lead_id)
     }
   }
   const { data, error } = await svc.from("users").select("id")
     .eq("brokerage_id", brokerageId)
-    .in("user_type", [...BROKERAGE_WIDE_LEAD_USER_TYPES])
+    .in("user_type", [...HUMAN_BROKERAGE_WIDE_LEAD_USER_TYPES])
     .limit(opts.limit ?? 10)
   if (error) {
     console.warn("[lead-visibility] lead-desk recipients unreadable:", error.message)
-    return []
+    return [...out]
   }
-  return ((data ?? []) as Array<{ id: string }>).map((r) => r.id)
+  for (const r of (data ?? []) as Array<{ id: string }>) out.add(r.id)
+  return [...out]
 }

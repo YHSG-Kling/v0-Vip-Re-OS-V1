@@ -21,6 +21,11 @@ import { getCatalogEntry, getImplementedProviders, type ProviderName } from "./c
 /** Clear, catalog-aware error for a name that has no instantiable provider class. */
 function unresolvableProviderError(providerName: string): Error {
   const entry = getCatalogEntry(providerName)
+  // Lane 88B — a portal-send provider (Google eSignature, the default) has no API to dispatch
+  // through: say so, and where the agent sends from, instead of "not yet available".
+  if (entry?.portalSend) {
+    return new Error(`${entry.label} sends from ${entry.label}'s own window (no send API) — open it, request signatures on the filled document, and the signed copy syncs back when uploaded.`)
+  }
   if (entry && !entry.implemented) {
     const available = getImplementedProviders().map((p) => p.label).join(", ")
     return new Error(`${entry.label} is not yet available. Choose one of: ${available}.`)

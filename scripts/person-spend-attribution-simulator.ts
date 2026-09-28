@@ -17,7 +17,10 @@
  *   D · ONE reader, lib/lead-intelligence/person-spend.ts — lead_id ∪ raw rows ∪ contact, tenant-
  *       pinned, fail-closed (no brokerage → "not measured", never $0).
  *   E · acquisition-cost carries raw-stage + lead-stage enrichment spend through conversion (and
- *       never counts post-conversion contact spend as acquisition).
+ *       never counts post-conversion contact spend as acquisition). RE-ANCHORED by lane 88B (owner:
+ *       "spend should be what the tenant spent for that lead, not … raw lead acquisition, enrichment
+ *       which are platform paid"): that spend is the PLATFORM-paid figure (platformPaidCost); the
+ *       tenant's acquisitionCost excludes it. Full tenant/platform split: test:tenant-paid-lead-spend.
  *   F · person timeline completeness: dedup decisions, enrichment, ISA qualification and consent
  *       join the scrape → … → conversion history; `spend` splits at conversion; the agent-facing view
  *       carries NO cost key (the conversion event used to ship acquisitionCost as summary_safe).
@@ -180,7 +183,7 @@ async function main() {
   ok("not yet converted → everything is acquisition-phase", spendMod.summarizePersonSpend(got.rows, null).afterConversionUsd === 0)
 
   // ── E · acquisition cost through conversion ─────────────────────────────────────
-  console.log("\n[E · resolveLeadAcquisitionCost carries raw + lead enrichment spend into acquisition_cost]")
+  console.log("\n[E · resolveLeadAcquisitionCost carries raw + lead enrichment spend into the PLATFORM-paid cost (lane 88B)]")
   const { resolveLeadAcquisitionCost } = await import("../lib/contact-promotion/acquisition-cost")
   const svcE = memSupabase({
     leads: [{ id: LEAD, brokerage_id: BRK, raw_record_id: null, source_raw_ids: [RAW] }],
@@ -190,13 +193,14 @@ async function main() {
   })
   const acq = await resolveLeadAcquisitionCost(svcE, { leadId: LEAD, brokerageId: BRK, costPerRecord: 0.5, campaignAttributionId: null })
   ok("enrichment spend = raw-stage PeopleData + lead-stage skip trace ($0.32)", acq.enrichmentSpend === 0.32, `got ${acq.enrichmentSpend}`)
-  ok("acquisition cost = record $0.50 + enrichment $0.32 = $0.82 (post-conversion contact spend excluded)", acq.acquisitionCost === 0.82, `got ${acq.acquisitionCost}`)
+  ok("platform-paid cost = record $0.50 + enrichment $0.32 = $0.82 (post-conversion contact spend excluded)", acq.platformPaidCost === 0.82, `got ${acq.platformPaidCost}`)
+  ok("…and none of it is the TENANT's acquisition cost (no campaign → null, never $0.82)", acq.acquisitionCost === null, `got ${acq.acquisitionCost}`)
   const svcBase = memSupabase({ leads: [{ id: LEAD, brokerage_id: BRK }], raw_scraped_leads: [], vendor_usage_tracking: [
     { id: "v-unattributed", vendor_name: "peopledata", total_cost: 0.25, brokerage_id: BRK, lead_id: null, request_metadata: { entityType: "lead", entityId: LEAD } },
   ], ad_campaigns: [] })
   const base = await resolveLeadAcquisitionCost(svcBase, { leadId: LEAD, brokerageId: BRK, costPerRecord: 0.5, campaignAttributionId: null })
   ok("POSITIVE CONTROL: a booking that names no person (the base-tree meterVendorSpend shape) is invisible to acquisition cost — which is why the writers now attribute",
-    base.enrichmentSpend === null && base.acquisitionCost === 0.5)
+    base.enrichmentSpend === null && base.platformPaidCost === 0.5 && base.acquisitionCost === null)
 
   // ── F · person timeline completeness + contact-view redaction ────────────────────
   console.log("\n[F · buildPersonTimeline — dedup / enrichment / qualification / consent / spend; no cost in the agent view]")
@@ -223,7 +227,7 @@ async function main() {
     built.events.filter((e) => e.type === "dedup_decision").length === 2)
   ok("the pipeline reads in order: scrape → dedup → enrichment(raw) → … → qualification → conversion",
     (() => { const o = built.events.map((e) => e.id); return o.indexOf(`raw:${RAW}`) < o.indexOf("dedup:d1") && o.indexOf("dedup:d1") < o.indexOf("enrichment:v-raw") && o.indexOf("qualification:q1") < o.indexOf(`conversion:${CONTACT}`) })())
-  ok("spend on the result: $0.32 before conversion, $0.10 after, measured", built.spend?.beforeConversionUsd === 0.32 && built.spend?.afterConversionUsd === 0.1 && built.spend?.measured === true, JSON.stringify(built.spend))
+  ok("platform-paid spend on the result: $0.32 before conversion, $0.10 after, measured", built.platformPaidSpend?.beforeConversionUsd === 0.32 && built.platformPaidSpend?.afterConversionUsd === 0.1 && built.platformPaidSpend?.measured === true, JSON.stringify(built.platformPaidSpend))
   const conv = built.events.find((e) => e.type === "conversion")
   ok("the summary_safe conversion event no longer carries acquisitionCost", !conv?.detail || !("acquisitionCost" in conv.detail))
   const agentView = tl.redactForContactView(built)
@@ -237,7 +241,7 @@ async function main() {
     specimenView.length === 1 && specimenView[0].detail?.keep === true && !("acquisitionCost" in (specimenView[0].detail ?? {})))
   const routeSrc = blankComments(read("app/api/contacts/[contactId]/lead-history/route.ts"))
   ok("the contact-facing route forwards the REDACTED events only — never spend / acquisitionCost",
-    /redactForContactView\(built\)/.test(routeSrc) && !/built\.spend|built\.acquisitionCost/.test(routeSrc))
+    /redactForContactView\(built\)/.test(routeSrc) && !/built\.spend|built\.platformPaid|built\.acquisitionCost/.test(routeSrc))
 
   // ── G · routing ──────────────────────────────────────────────────────────────────
   console.log("\n[G · enrichment persona summary on its own cheap row]")

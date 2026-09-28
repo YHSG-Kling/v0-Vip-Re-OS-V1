@@ -23,7 +23,8 @@ export interface SourceConversionRow {
   closedCount: number
   /** GCI/revenue attributed to closes from this source. */
   revenue: number
-  /** Spend attributed to this source (sum of cost_per_record). */
+  /** TENANT-paid spend attributed to this source (sum of acquisition_cost — lane 88B: never the
+   *  platform-paid cost_per_record / enrichment; see LEAD_COST_PAYER). */
   spend: number
 }
 
@@ -50,8 +51,9 @@ const safeRate = (num: number, den: number) => (den > 0 ? num / den : 0)
 
 /**
  * PURE — the per-lead acquisition-cost formula (owner ruling, wave 65: "...where
- * they came from for lead cost tracking"). Three additive parts, each honest
- * about absence rather than fabricated as zero:
+ * they came from for lead cost tracking"). Three parts, each honest about
+ * absence rather than fabricated as zero — and since lane 88B each has ONE
+ * payer (LEAD_COST_PAYER below), so they are summed per payer, never together:
  *
  *   costPerRecord      — the raw scraped/purchased record's own cost
  *                         (raw_scraped_leads.cost_per_record → leads.cost_per_record).
@@ -60,10 +62,12 @@ const safeRate = (num: number, den: number) => (den > 0 ? num / den : 0)
  *   campaignCostShare   — this lead's slice of a paid campaign's budget
  *                         (ad_campaigns.lifetime_budget ÷ leads sharing campaign_attribution_id).
  *
- * Returns null (not 0) when EVERY part is null/undefined — "unknown" and "free"
- * are different facts, and a null total tells lib/lead-pipeline/source-conversion-runner.ts
- * to fall back to the narrower cost_per_record rather than reporting a
- * zero-cost lead that was never actually free.
+ * Each payer's sum is null (not 0) when every one of ITS parts is null —
+ * "unknown" and "free" are different facts. The old rule ("a null total tells
+ * source-conversion-runner to fall back to cost_per_record") is RETIRED by lane
+ * 88B: that fallback billed the platform's scrape cost to the tenant. A tenant
+ * report now reads tenantPaidLeadSpend (below) and a null tenant figure is $0
+ * TENANT spend, which is exactly true for a platform-sourced lead.
  */
 export interface LeadAcquisitionCostParts {
   costPerRecord?: number | null
@@ -71,14 +75,65 @@ export interface LeadAcquisitionCostParts {
   campaignCostShare?: number | null
 }
 
-export function computeLeadAcquisitionCost(parts: LeadAcquisitionCostParts): number | null {
-  const values = [parts.costPerRecord, parts.enrichmentSpend, parts.campaignCostShare]
+/**
+ * WHO PAYS FOR EACH PART — lane 88B, wave 88 (owner, verbatim): "spend should be what the tenant
+ * spent for that lead, not what was included in their subscription like raw lead acquisition,
+ * enrichment which are platform paid."
+ *
+ * THE ONE PAYER VOCABULARY for a lead's cost. Until this lane the three parts above were summed into
+ * ONE figure (leads/contacts.acquisition_cost) and shown to the tenant as "their" lead cost — so a
+ * scraped + enriched lead the tenant never paid a cent for read as a $0.82 lead on the tenant's own
+ * lead page, source report and ROI, and every scraped source looked like a money pit to the tenant
+ * (lib/lead-pipeline/source-conversion-runner.ts advised DISABLING it) while the platform carried
+ * the cost. Ownership is decided once, in lib/providers/tenancy-matrix.ts: the scraper fleet and
+ * every enrichment vendor are `platform_metered` (the platform's keys, the platform's bill).
+ *
+ *   costPerRecord      → PLATFORM — raw_scraped_leads/leads.cost_per_record: the metered scrape /
+ *                         data-vendor pull the raw pipeline stamps (lib/kernel/scraping.ts).
+ *   enrichmentSpend    → PLATFORM — vendor_usage_tracking rows booked for the person
+ *                         (lib/lead-intelligence/person-spend.ts; PeopleData, BatchData, Versium…).
+ *   campaignCostShare  → TENANT   — the tenant's OWN ad budget (ad_campaigns.lifetime_budget).
+ *
+ * TENANT-facing surfaces read computeLeadAcquisitionCost (→ acquisition_cost) and nothing else; the
+ * PLATFORM view (superadmin — lead page when the viewer's scope is platform) reads
+ * computePlatformPaidLeadCost. A new part lands here with its payer or it does not compile.
+ */
+const LEAD_COST_PAYER: Record<keyof Required<LeadAcquisitionCostParts>, "tenant" | "platform"> = {
+  costPerRecord: "platform",
+  enrichmentSpend: "platform",
+  campaignCostShare: "tenant",
+}
+
+function sumParts(parts: LeadAcquisitionCostParts, payer: "tenant" | "platform"): number | null {
+  const values = (Object.keys(LEAD_COST_PAYER) as Array<keyof LeadAcquisitionCostParts>)
+    .filter((k) => LEAD_COST_PAYER[k] === payer)
+    .map((k) => parts[k])
     .filter((v): v is number => typeof v === "number" && Number.isFinite(v))
   if (values.length === 0) return null
   const total = values.reduce((sum, v) => sum + v, 0)
   // Clamp at 0 — a negative input (a data error, never a real cost) must not
   // produce a "this lead paid us" figure.
   return Math.max(0, Math.round(total * 100) / 100)
+}
+
+/** PURE — what the TENANT spent to acquire this lead (its own ad spend). The figure carried as
+ *  leads/contacts.acquisition_cost and shown on every tenant surface. null = no tenant-paid part known. */
+export function computeLeadAcquisitionCost(parts: LeadAcquisitionCostParts): number | null {
+  return sumParts(parts, "tenant")
+}
+
+/** PURE — what the PLATFORM paid for this lead (raw acquisition + enrichment) — platform view only,
+ *  never a tenant's lead cost. */
+export function computePlatformPaidLeadCost(parts: LeadAcquisitionCostParts): number | null {
+  return sumParts(parts, "platform")
+}
+
+/** The tenant-paid spend a TENANT report adds for one lead/contact row: acquisition_cost only — never
+ *  cost_per_record (platform-paid; the old `acquisition_cost ?? cost_per_record` fallback put the
+ *  platform's scrape cost on the tenant's books whenever acquisition_cost was still null). */
+export function tenantPaidLeadSpend(row: { acquisition_cost?: number | null }): number {
+  const v = row.acquisition_cost
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0
 }
 
 /** Pure: fold per-source outcome rows into scored, trust-gated, max-scaled performance. */

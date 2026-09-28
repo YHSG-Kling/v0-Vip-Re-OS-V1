@@ -15,7 +15,8 @@
 // metadata — never under a guessed vendor.
 //
 // READER — leadCostBySource (pure): folds the per-record cost the raw pipeline stamped
-// (raw_scraped_leads/leads/contacts.cost_per_record, acquisition_cost preferred) by SourceKey and
+// (raw_scraped_leads/leads/contacts.cost_per_record — PLATFORM-paid, lane 88B; acquisition_cost is
+// the TENANT's figure and never enters this platform reconcile) by SourceKey and
 // reconciles it against the ledger rows by vendor, so spend that never reached a per-lead cost
 // (a ledger booking whose records were dropped, or a vendor call that returned nothing) shows up as
 // `unattributedUsd` instead of silently vanishing from cost-per-lead.
@@ -95,7 +96,7 @@ export interface LeadCostBySourceRow {
   sourceKey: string
   vendor: ScrapeVendor | null
   records: number
-  /** Sum of the per-record cost the pipeline stamped (acquisition_cost preferred). */
+  /** Sum of the PLATFORM-paid per-record cost the pipeline stamped (cost_per_record — lane 88B). */
   recordedCostUsd: number
   /** recordedCostUsd / records — 0 when no record carries a cost (never fabricated). */
   costPerRecordUsd: number
@@ -122,7 +123,11 @@ export function leadCostBySource(rows: readonly SourceCostRow[], ledger: readonl
     const key = resolveSourceKey(raw || "unknown")
     const row = by.get(key) ?? { sourceKey: key, vendor: vendorForSource(key), records: 0, recordedCostUsd: 0, costPerRecordUsd: 0 }
     row.records += 1
-    row.recordedCostUsd += Number(r.acquisition_cost ?? r.cost_per_record ?? 0) || 0
+    // Lane 88B — PLATFORM-paid only: this reconciles the platform's own ledger, so it reads the
+    // platform's recorded cost. acquisition_cost is now the TENANT-paid figure (its ad-spend share,
+    // lib/lead-pipeline/source-conversion-learning.ts::computeLeadAcquisitionCost); preferring it
+    // here would have reconciled a tenant's ad budget against the platform's vendor bill.
+    row.recordedCostUsd += Number(r.cost_per_record ?? 0) || 0
     by.set(key, row)
   }
   const bySource = [...by.values()].map((r) => ({

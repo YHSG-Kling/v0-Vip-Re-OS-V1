@@ -14,6 +14,9 @@ import { diagnoseSource } from "@/lib/lead-pipeline/source-wording-diagnostic"
 // Lane 82B — lead cost by source: SOURCE_VENDOR's runtime reader + the ledger reconcile.
 import { ALL_SOURCE_KEYS, vendorForSource, type ScrapeVendor } from "@/lib/lead-pipeline/source-intent-map"
 import { leadCostBySource, type LeadCostLedger } from "@/lib/lead-pipeline/source-cost-ledger"
+// Lane 88B — the ONE tenant-paid spend rule (never the platform-paid cost_per_record).
+import { tenantPaidLeadSpend } from "@/lib/lead-pipeline/source-conversion-learning"
+import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 
 export interface SourceMetrics {
   source: string
@@ -83,7 +86,10 @@ export interface SourcePerformanceResult {
     top_direct_source: string | null
   }
   /** Lane 82B — per-source recorded lead cost reconciled to the platform vendor ledger
-   *  (vendor_usage_tracking rows booked per SourceKey by source-cost-ledger.ts::bookSourceSpend). */
+   *  (vendor_usage_tracking rows booked per SourceKey by source-cost-ledger.ts::bookSourceSpend).
+   *  Lane 88B: PLATFORM-paid economics — returned ONLY to a platform-staff session (superadmin
+   *  view); a tenant caller never receives it (owner: raw lead acquisition + enrichment "are
+   *  platform paid", so they are not the tenant's lead cost). */
   lead_cost_ledger?: LeadCostLedger
   error?: string
 }
@@ -184,11 +190,9 @@ export async function getSourcePerformance(
     if (cErr) throw cErr
 
     // ── 2. Leads grouped by source ─────────────────────────────────────────────
-    // acquisition_cost (m634, applied live 2026-09-15) is the FULLER lead-cost figure
-    // (cost_per_record + enrichment spend + campaign cost share — lib/contact-promotion/
-    // acquisition-cost.ts). Same fallback rule as lib/lead-pipeline/source-conversion-runner.ts
-    // (loadSourceConversions): prefer acquisition_cost, fall back to the narrower
-    // cost_per_record for rows that never got the richer figure computed.
+    // acquisition_cost (m634, applied live 2026-09-15) is the TENANT-paid lead cost (lane 88B: the
+    // tenant's campaign cost share — lib/contact-promotion/acquisition-cost.ts). cost_per_record is
+    // still selected: it is the PLATFORM-paid raw cost the platform-only ledger reconcile reads.
     let leadsQuery = supabase
       .from("leads")
       .select("id, source, source_family, source_channel, agent_id, cost_per_record, acquisition_cost, campaign_attribution_id, lifecycle_state, created_at, contact_id")
@@ -333,9 +337,10 @@ export async function getSourcePerformance(
       const family = (l.source_family as SourceFamily) ?? "lead"
       const m = getOrCreate(l.source ?? "manual_entry", family, l.source_channel)
       m.lead_count++
-      // acquisition_cost preferred, cost_per_record fallback — same rule as
-      // source-conversion-runner.ts::loadSourceConversions.
-      m.total_spend += (l as any).acquisition_cost ?? l.cost_per_record ?? 0
+      // Lane 88B — TENANT-paid spend only (acquisition_cost); the old cost_per_record fallback put
+      // the platform's scrape cost on the tenant's source report. Same rule as
+      // source-conversion-runner.ts::loadSourceConversions (tenantPaidLeadSpend).
+      m.total_spend += tenantPaidLeadSpend(l as { acquisition_cost?: number | null })
       if (l.contact_id) m.contact_count++
       if (l.campaign_attribution_id && !m.campaign_id) {
         m.campaign_id = l.campaign_attribution_id
@@ -361,9 +366,8 @@ export async function getSourcePerformance(
       const m = getOrCreate(c.source ?? "website", family, c.source_channel, c.source_subtype)
       contactSourceKey.set(c.id, `${m.source}::${m.source_family}`)
       m.contact_count++
-      // acquisition_cost preferred, cost_per_record fallback — same rule as
-      // source-conversion-runner.ts::loadSourceConversions.
-      m.total_spend += (c as any).acquisition_cost ?? c.cost_per_record ?? 0
+      // Lane 88B — TENANT-paid spend only (acquisition_cost), same rule as the lead rows above.
+      m.total_spend += tenantPaidLeadSpend(c as { acquisition_cost?: number | null })
       if (c.campaign_attribution_id && !m.campaign_id) {
         m.campaign_id = c.campaign_attribution_id
         m.campaign_name = campaignNames[c.campaign_attribution_id] ?? null
@@ -536,22 +540,39 @@ export async function getSourcePerformance(
     }
 
     // ── Lead cost by source, reconciled to the platform vendor ledger (lane 82B) ──
-    // Rows booked by bookSourceSpend carry usage_type = the SourceKey, so the ledger read is
-    // scoped to scraping spend only (skip-trace/AI/etc. never enter this reconcile).
-    const { data: ledgerRows, error: ledgerErr } = await supabase
-      .from("vendor_usage_tracking")
-      .select("vendor_name, total_cost")
-      .eq("brokerage_id", brokerageId)
-      .in("usage_type", ALL_SOURCE_KEYS as string[])
-      .gte("created_at", fromDate)
-      .lte("created_at", toDate)
-    if (ledgerErr) console.warn("[source-analytics] vendor ledger read refused — lead cost shows recorded cost only:", ledgerErr.message)
-    const lead_cost_ledger = leadCostBySource(
-      [
-        ...((leads ?? []) as Array<{ source: string | null; source_channel: string | null; cost_per_record: number | null; acquisition_cost?: number | null }>),
-      ],
-      (ledgerRows ?? []) as Array<{ vendor_name: string | null; total_cost: number | null }>,
-    )
+    // Lane 88B: this is the PLATFORM's economics (raw acquisition is platform-paid — owner: "not what
+    // was included in their subscription like raw lead acquisition, enrichment which are platform
+    // paid"), so it is computed and returned ONLY for a platform-staff session. Identity from the
+    // SESSION (CLAUDE.md §4), platform staff from platform_role (isPlatformStaffIdentity); a refused
+    // profile read is NOT platform (fail closed — the tenant simply gets no ledger).
+    let lead_cost_ledger: LeadCostLedger | undefined
+    const { data: { user: viewer } } = await supabase.auth.getUser()
+    let platformViewer = false
+    if (viewer) {
+      const { data: viewerRow, error: viewerErr } = await supabase.from("users")
+        .select("user_type, platform_role").eq("id", viewer.id).maybeSingle()
+      if (viewerErr) console.warn("[source-analytics] viewer profile read refused — platform ledger withheld:", viewerErr.message)
+      const v = (viewerRow ?? null) as { user_type?: string | null; platform_role?: string | null } | null
+      platformViewer = !viewerErr && isPlatformStaffIdentity(v?.user_type ?? null, v?.platform_role ?? null)
+    }
+    if (platformViewer) {
+      // Rows booked by bookSourceSpend carry usage_type = the SourceKey, so the ledger read is
+      // scoped to scraping spend only (skip-trace/AI/etc. never enter this reconcile).
+      const { data: ledgerRows, error: ledgerErr } = await supabase
+        .from("vendor_usage_tracking")
+        .select("vendor_name, total_cost")
+        .eq("brokerage_id", brokerageId)
+        .in("usage_type", ALL_SOURCE_KEYS as string[])
+        .gte("created_at", fromDate)
+        .lte("created_at", toDate)
+      if (ledgerErr) console.warn("[source-analytics] vendor ledger read refused — lead cost shows recorded cost only:", ledgerErr.message)
+      lead_cost_ledger = leadCostBySource(
+        [
+          ...((leads ?? []) as Array<{ source: string | null; source_channel: string | null; cost_per_record: number | null; acquisition_cost?: number | null }>),
+        ],
+        (ledgerRows ?? []) as Array<{ vendor_name: string | null; total_cost: number | null }>,
+      )
+    }
 
     return { success: true, sources, summary, lead_cost_ledger }
   } catch (err) {

@@ -4,8 +4,8 @@
  * THE LIVE half of the lead-cost formula whose PURE half is
  * lib/lead-pipeline/source-conversion-learning.ts::computeLeadAcquisitionCost.
  * Called once, at conversion (lib/contact-promotion/contact-creator.ts), to
- * resolve and WRITE `leads.acquisition_cost` before it is carried onto the new
- * contact — "...and where they came from for lead cost tracking" (owner
+ * resolve and WRITE `leads.acquisition_cost` (TENANT-paid only — lane 88B, below) before it is
+ * carried onto the new contact — "...and where they came from for lead cost tracking" (owner
  * ruling, wave 65).
  *
  * THREE SOURCES, each read tenant-scoped and best-effort (a refused/absent
@@ -30,6 +30,17 @@
  *                          ad_campaigns to do better, and an approximate share
  *                          beats an omitted one for a campaign-sourced lead.
  *
+ * WHO PAID (lane 88B, wave 88 — owner verbatim: "spend should be what the tenant spent for that
+ * lead, not what was included in their subscription like raw lead acquisition, enrichment which are
+ * platform paid."). Parts 1 and 2 are PLATFORM-paid (lib/providers/tenancy-matrix.ts: scrapers and
+ * enrichment vendors are platform_metered); part 3 is the TENANT's own ad spend. So:
+ *   acquisitionCost  = TENANT-paid only (computeLeadAcquisitionCost) — the figure written to
+ *                      leads/contacts.acquisition_cost and shown on every tenant surface;
+ *   platformPaidCost = raw acquisition + enrichment (computePlatformPaidLeadCost) — returned for the
+ *                      caller's log / platform view, NEVER written onto the tenant's lead cost.
+ * Until this lane the three were summed into acquisition_cost, and contact-creator fell back to
+ * cost_per_record when it was null — both put the platform's bill on the tenant's lead.
+ *
  * NEVER THROWS. A cost that cannot be resolved is a null part, not a broken
  * conversion — this runs inside createContactFromLead's critical path.
  */
@@ -42,7 +53,10 @@ export interface AcquisitionCostInput {
 }
 
 export interface AcquisitionCostResult {
+  /** TENANT-paid acquisition cost (lane 88B) — the only figure a tenant surface may show. */
   acquisitionCost: number | null
+  /** PLATFORM-paid raw acquisition + enrichment — platform view only, never the tenant's lead cost. */
+  platformPaidCost: number | null
   enrichmentSpend: number | null
   campaignCostShare: number | null
   warnings: string[]
@@ -112,12 +126,10 @@ export async function resolveLeadAcquisitionCost(
     }
   }
 
-  const { computeLeadAcquisitionCost } = await import("@/lib/lead-pipeline/source-conversion-learning")
-  const acquisitionCost = computeLeadAcquisitionCost({
-    costPerRecord: input.costPerRecord,
-    enrichmentSpend,
-    campaignCostShare,
-  })
+  const { computeLeadAcquisitionCost, computePlatformPaidLeadCost } = await import("@/lib/lead-pipeline/source-conversion-learning")
+  const parts = { costPerRecord: input.costPerRecord, enrichmentSpend, campaignCostShare }
+  const acquisitionCost = computeLeadAcquisitionCost(parts)
+  const platformPaidCost = computePlatformPaidLeadCost(parts)
 
-  return { acquisitionCost, enrichmentSpend, campaignCostShare, warnings }
+  return { acquisitionCost, platformPaidCost, enrichmentSpend, campaignCostShare, warnings }
 }

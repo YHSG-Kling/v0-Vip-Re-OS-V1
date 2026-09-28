@@ -348,9 +348,12 @@ async function main() {
   })
   const viaProducer = await leadDeskRecipientUserIds(deskWorld() as any, BRK, { preferAgentId: PRODUCER_AGENT })
   ok("CONTROL: a lead owned by a PRODUCING agent → that agent is NOT notified", !viaProducer.includes("u-prod"), viaProducer.join())
-  ok("…the brokerage-wide lead desk is (broker + isa; not team_lead, compliance_officer, or another tenant)",
-    viaProducer.includes("u-broker") && viaProducer.includes("u-isa") && !viaProducer.includes("u-tl") && !viaProducer.includes("u-co") && !viaProducer.includes("u-other"))
-  ok("a lead worked by an ISA seat → exactly that ISA", JSON.stringify(await leadDeskRecipientUserIds(deskWorld() as any, BRK, { preferAgentId: ISA_AGENT })) === JSON.stringify(["u-isa"]))
+  // RE-ANCHORED lane 88B (owner, wave 88: "Isa is a system ai ai isa."): these are HUMAN escalations,
+  // so the AI ISA seat is no longer a recipient — the rule is "a person on the lead desk", not "isa".
+  ok("…the brokerage-wide HUMAN lead desk is (broker; not the AI ISA seat, team_lead of no team, compliance_officer, or another tenant)",
+    viaProducer.includes("u-broker") && !viaProducer.includes("u-isa") && !viaProducer.includes("u-tl") && !viaProducer.includes("u-co") && !viaProducer.includes("u-other"))
+  const viaIsa = await leadDeskRecipientUserIds(deskWorld() as any, BRK, { preferAgentId: ISA_AGENT })
+  ok("a lead the AI ISA seat is working → the human desk, never the ISA itself", !viaIsa.includes("u-isa") && viaIsa.includes("u-broker"), viaIsa.join())
   ok("a refused users read → [] (the bell does not ring; it never falls back to an agent)",
     (await leadDeskRecipientUserIds(memSupabase({ users: [] }, { refuse: { users: "denied" } }) as any, BRK)).length === 0)
   ok("rule: the desk is derived from LEAD_DESK_USER_TYPES (no producer type in it)", !LEAD_DESK_USER_TYPES.has("agent"))

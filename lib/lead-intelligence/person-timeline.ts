@@ -39,6 +39,15 @@
  * and `spend` — what this person has cost before and after conversion (lead-desk only). Cost never
  * reaches the contact-facing view: redactForContactView strips every cost key from event detail.
  *
+ * LANE 88B (wave 88, owner verbatim: "spend should be what the tenant spent for that lead, not what
+ * was included in their subscription like raw lead acquisition, enrichment which are platform
+ * paid."). The vendor-ledger `spend` and the raw scrape's cost_per_record are PLATFORM-paid, so they
+ * moved onto `platformPaidSpend` / `platformPaidAcquisitionCost` (the platform view), and
+ * `acquisitionCost` is now leads.acquisition_cost ALONE — the tenant-paid figure (its old
+ * `?? cost_per_record` fallback put the platform's scrape cost on the tenant's lead). A tenant's
+ * lead desk reads the result through redactForTenantLeadDesk, which drops both platform fields and
+ * every platform-paid cost key from event detail; only a platform-scope viewer gets the raw result.
+ *
  * ROLE GATING IS THE CALLER'S JOB, NOT A SECOND COPY OF IT. Every event below
  * carries `sensitivity: "lead_desk_only" | "summary_safe"` so ONE build serves
  * both surfaces (owner ruling / CLAUDE.md §5): the lead-desk lead detail page
@@ -55,6 +64,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { buildBehavioralIntentSummary } from "./behavioral-summary"
 import { readPersonVendorSpend, summarizePersonSpend, type PersonSpendSummary } from "./person-spend"
+import { computePlatformPaidLeadCost } from "@/lib/lead-pipeline/source-conversion-learning"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -94,10 +104,16 @@ export interface PersonTimelineResult {
   /** = leads.converted_at once the person converted; events at/after this are
    *  "post-conversion" for the summarized contact-facing view. */
   convertedAt: string | null
+  /** TENANT-paid acquisition cost (leads.acquisition_cost — the tenant's own ad spend share). Lane
+   *  88B: never falls back to cost_per_record, which is platform-paid. */
   acquisitionCost: number | null
-  /** Lane 87F — every vendor dollar booked for this person, split at conversion. LEAD-DESK ONLY
-   *  (the contact-facing route never forwards it). null when nothing could be keyed (no ids). */
-  spend: PersonSpendSummary | null
+  /** Lane 87F — every vendor dollar booked for this person, split at conversion. Lane 88B: this is
+   *  PLATFORM-paid (enrichment vendors are platform_metered) — PLATFORM VIEW ONLY; a tenant lead desk
+   *  gets it stripped by redactForTenantLeadDesk. null when nothing could be keyed (no ids). */
+  platformPaidSpend: PersonSpendSummary | null
+  /** Lane 88B — what the PLATFORM paid to acquire this person before conversion: the raw record's
+   *  cost_per_record + pre-conversion enrichment (computePlatformPaidLeadCost). PLATFORM VIEW ONLY. */
+  platformPaidAcquisitionCost: number | null
   behavioralIntentScore: number
   warnings: string[]
 }
@@ -111,7 +127,7 @@ interface Params {
 
 const EMPTY = (leadId: string | null, contactId: string | null, brokerageId: string | null): PersonTimelineResult => ({
   leadId, contactId, brokerageId, events: [], convertedAt: null, acquisitionCost: null,
-  spend: null, behavioralIntentScore: 0, warnings: [],
+  platformPaidSpend: null, platformPaidAcquisitionCost: null, behavioralIntentScore: 0, warnings: [],
 })
 
 /** Whose mailbox an unknown sender wrote to (raw_data.mailbox_owner_kind, stamped by
@@ -140,6 +156,8 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
   // ── Resolve the missing half of the pair, and the anchor row ─────────────
   let convertedAt: string | null = null
   let acquisitionCost: number | null = null
+  /** Lane 88B — the lead row's platform-paid raw cost, kept apart from the tenant's figure. */
+  let platformCostPerRecord: number | null = null
   let leadRow: Record<string, any> | null = null
   /** Every raw_scraped_leads.id this person came from — raw-stage dedup + spend are keyed on it. */
   const rawRecordIds = new Set<string>()
@@ -155,7 +173,10 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
       contactId = contactId ?? (data.contact_id as string | null)
       brokerageId = brokerageId ?? (data.brokerage_id as string | null)
       convertedAt = (data.converted_at as string | null) ?? null
-      acquisitionCost = (data.acquisition_cost as number | null) ?? (data.cost_per_record as number | null) ?? null
+      // Lane 88B: TENANT-paid only. The `?? cost_per_record` fallback is retired — cost_per_record is
+      // the platform's scrape cost and is reported on the platform view (platformPaidAcquisitionCost).
+      acquisitionCost = (data.acquisition_cost as number | null) ?? null
+      platformCostPerRecord = (data.cost_per_record as number | null) ?? null
     }
   }
   // A contact may trace to MULTIPLE leads (re-scraped, re-imported). Every
@@ -443,7 +464,7 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
       summary: "Converted from lead to contact (ISA qualification / positive intent)",
       // Lane 87F: `detail: { acquisitionCost }` removed — this event is summary_safe, so the cost rode
       // straight into the agent-facing contact view (CLAUDE.md §5: no financials there). The lead desk
-      // reads the figure from result.acquisitionCost / result.spend instead.
+      // reads the figure from result.acquisitionCost (tenant-paid) / result.platformPaidSpend (platform view) instead.
       sensitivity: "summary_safe",
     })
   }
@@ -538,12 +559,17 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
 
   // ── 11. ENRICHMENT + SPEND — vendor_usage_tracking through the ONE person-spend reader ──
   let spend: PersonSpendSummary | null = null
+  let platformPaidAcquisitionCost: number | null = null
   if (allLeadIds.length > 0 || rawRecordIds.size > 0 || contactId) {
     const ledger = await readPersonVendorSpend(svc, {
       brokerageId, leadIds: allLeadIds, rawRecordIds: [...rawRecordIds], contactId,
     })
     warnings.push(...ledger.warnings)
     spend = summarizePersonSpend(ledger.rows, convertedAt, ledger.measured)
+    platformPaidAcquisitionCost = computePlatformPaidLeadCost({
+      costPerRecord: platformCostPerRecord,
+      enrichmentSpend: ledger.rows.length > 0 ? spend.beforeConversionUsd : null,
+    })
     for (const r of ledger.rows) {
       events.push({
         id: `enrichment:${r.id}`,
@@ -590,7 +616,8 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
     events,
     convertedAt,
     acquisitionCost,
-    spend,
+    platformPaidSpend: spend,
+    platformPaidAcquisitionCost,
     behavioralIntentScore,
     warnings,
   }
@@ -611,6 +638,29 @@ export function redactForContactView(result: PersonTimelineResult): TimelineEven
     if (result.convertedAt && e.occurredAt && e.occurredAt >= result.convertedAt) return true
     return false
   }).map(withoutCost)
+}
+
+/** Lane 88B — the PLATFORM-paid cost keys events carry (the raw scrape's costPerRecord, an
+ *  enrichment call's costUsd). Stripped for a tenant lead desk by redactForTenantLeadDesk. */
+const PLATFORM_PAID_COST_KEY = /^(costPerRecord|costUsd)$/
+
+/**
+ * TENANT lead-desk view (lane 88B): the full lead-desk timeline — every event, all provenance — MINUS
+ * what the platform paid. Owner: "spend should be what the tenant spent for that lead, not what was
+ * included in their subscription like raw lead acquisition, enrichment which are platform paid."
+ * Drops platformPaidSpend / platformPaidAcquisitionCost and every platform-paid cost key from event
+ * detail; acquisitionCost (tenant-paid) is kept. The lead page renders the raw result ONLY for a
+ * platform-scope viewer (superadmin economics); every tenant scope gets this.
+ */
+export function redactForTenantLeadDesk(result: PersonTimelineResult): PersonTimelineResult {
+  return {
+    ...result,
+    platformPaidSpend: null,
+    platformPaidAcquisitionCost: null,
+    events: result.events.map((e) => (e.detail
+      ? { ...e, detail: Object.fromEntries(Object.entries(e.detail).filter(([k]) => !PLATFORM_PAID_COST_KEY.test(k))) }
+      : e)),
+  }
 }
 
 /** Lane 87F — a cost / spend / price key never rides event detail into an agent-facing view

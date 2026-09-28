@@ -15,7 +15,7 @@ import { LeadQuickActions } from "@/components/lead/LeadQuickActions"
 import { LeadReadinessPanel } from "@/components/lead/LeadReadinessPanel"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { getLeadIntelligenceSignals } from "@/lib/lead-pipeline/lead-intelligence-signals"
-import { buildPersonTimeline } from "@/lib/lead-intelligence/person-timeline"
+import { buildPersonTimeline, redactForTenantLeadDesk } from "@/lib/lead-intelligence/person-timeline"
 
 export const dynamic = "force-dynamic"
 
@@ -109,12 +109,20 @@ export default async function LeadDetailPage({ params }: PageProps) {
   // page already gated on resolveLeadVisibility + leadRowInScope above, so the
   // full (un-redacted) timeline — including raw scrape provenance and
   // behavioral signals — is safe to render here and nowhere agent-facing.
-  const timeline = await buildPersonTimeline({
+  const fullTimeline = await buildPersonTimeline({
     leadId: lead.id,
     contactId: lead.contact_id ?? null,
     brokerageId: lead.brokerage_id ?? null,
     client: svc,
   })
+  // LANE 88B (owner, wave 88: "spend should be what the tenant spent for that lead, not what was
+  // included in their subscription like raw lead acquisition, enrichment which are platform paid.")
+  // Raw acquisition + enrichment are PLATFORM-paid, so only a PLATFORM-scope viewer (superadmin
+  // economics, resolved above by resolveLeadVisibility from platform_role) sees them. Every tenant
+  // scope — broker / admin / team lead — gets the timeline with the platform's costs removed and
+  // sees its OWN spend on this lead (acquisitionCost = the tenant's ad-spend share) instead.
+  const platformView = vis.scope.kind === "platform"
+  const timeline = platformView ? fullTimeline : redactForTenantLeadDesk(fullTimeline)
 
   const fullName = [lead.first_name, lead.last_name].filter(Boolean).join(" ") || "(unnamed lead)"
   const addr = [lead.mailing_address, lead.mailing_city, lead.mailing_state, lead.mailing_zip].filter(Boolean).join(", ")
@@ -183,21 +191,31 @@ export default async function LeadDetailPage({ params }: PageProps) {
           <CardTitle className="text-sm">Person Timeline</CardTitle>
           <p className="text-xs text-muted-foreground">
             First touch through {timeline.convertedAt ? "conversion and after" : "today"} — every source in one
-            order.{timeline.acquisitionCost != null ? ` Acquisition cost: $${timeline.acquisitionCost.toFixed(2)}.` : ""}
+            order.
           </p>
-          {timeline.spend && (
-            // Lane 87F — what this person has cost on the platform vendor ledger, raw row → lead →
-            // contact (lib/lead-intelligence/person-spend.ts). LEAD-DESK ONLY; "a floor" when a
-            // ledger read was refused — never shown as a clean $0.
+          {/* Lane 88B — the TENANT's spend on this person: its own ad-campaign share
+              (leads.acquisition_cost). Raw acquisition + enrichment are platform-covered
+              and are never shown as the tenant's lead cost. */}
+          <p className="text-xs text-muted-foreground">
+            {timeline.acquisitionCost != null && timeline.acquisitionCost > 0
+              ? `Your spend on this lead: $${timeline.acquisitionCost.toFixed(2)} (your ad campaign share).`
+              : "Your spend on this lead: none recorded — raw sourcing and enrichment are platform-covered (included in your subscription), not your cost."}
+          </p>
+          {platformView && (timeline.platformPaidSpend || timeline.platformPaidAcquisitionCost != null) && (
+            // PLATFORM VIEW ONLY (vis.scope.kind === "platform"). Lane 87F's vendor-ledger line,
+            // relabelled for what it is: the platform's cost for this person, raw row → lead →
+            // contact (lib/lead-intelligence/person-spend.ts). "a floor" when a read was refused.
             <p className="text-xs text-muted-foreground">
-              Vendor spend to date: ${timeline.spend.totalUsd.toFixed(2)}
-              {timeline.convertedAt
-                ? ` ($${timeline.spend.beforeConversionUsd.toFixed(2)} before conversion, $${timeline.spend.afterConversionUsd.toFixed(2)} after)`
+              Platform-paid (not the tenant's cost):
+              {timeline.platformPaidAcquisitionCost != null ? ` acquisition $${timeline.platformPaidAcquisitionCost.toFixed(2)};` : ""}
+              {timeline.platformPaidSpend ? ` vendor spend to date $${timeline.platformPaidSpend.totalUsd.toFixed(2)}` : ""}
+              {timeline.platformPaidSpend && timeline.convertedAt
+                ? ` ($${timeline.platformPaidSpend.beforeConversionUsd.toFixed(2)} before conversion, $${timeline.platformPaidSpend.afterConversionUsd.toFixed(2)} after)`
                 : ""}
-              {timeline.spend.byVendor.length > 0
-                ? ` — ${timeline.spend.byVendor.map((v) => `${v.vendor} $${v.usd.toFixed(2)} × ${v.calls}`).join(", ")}`
+              {timeline.platformPaidSpend && timeline.platformPaidSpend.byVendor.length > 0
+                ? ` — ${timeline.platformPaidSpend.byVendor.map((v) => `${v.vendor} $${v.usd.toFixed(2)} × ${v.calls}`).join(", ")}`
                 : ""}
-              {!timeline.spend.measured ? " — partial: part of the ledger could not be read, so this is a floor." : ""}
+              {timeline.platformPaidSpend && !timeline.platformPaidSpend.measured ? " — partial: part of the ledger could not be read, so this is a floor." : ""}
             </p>
           )}
         </CardHeader>
