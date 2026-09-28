@@ -146,7 +146,7 @@ export function ApiTokensClient(
                 <div className="space-y-3">
                   <div className="space-y-1">
                     <Label htmlFor="tok-name">Name</Label>
-                    <Input id="tok-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Zapier lead sync" />
+                    <Input id="tok-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Partner analytics sync" />
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">

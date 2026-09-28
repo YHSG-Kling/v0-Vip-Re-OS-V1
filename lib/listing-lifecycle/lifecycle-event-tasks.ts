@@ -12,7 +12,7 @@
  * server" wrappers, which delegated to lib/application/listing-lifecycle.ts's
  * handle*Service functions — each of which built the COOKIE client as its first
  * line. The orchestrator is dispatched from emitEventFromCron and from
- * logEventAndTrigger's registered dispatcher (webhooks: zapier, dotloop) with no
+ * logEventAndTrigger's registered dispatcher (webhooks: dotloop; zapier until wave 87) with no
  * cookie, so the listings read came back empty under RLS and every reaction
  * answered "Listing has no agent/brokerage — tasks not created" — a correct
  * listing reported as a broken one. scheduleClosingGift went further: its

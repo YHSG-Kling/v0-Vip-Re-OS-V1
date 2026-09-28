@@ -73,6 +73,11 @@ export interface AgenticCaller {
 export async function resolveAgenticCaller(req: Request): Promise<AgenticCaller> {
   const raw = extractBearerToken(req.headers.get("authorization"))
   if (raw) {
+    // Zapier is OUTBOUND-ONLY (wave 87, lane 87A — owner: "zapier zaps are only
+    // allowed out from this platform, never to the platform."). A token call that
+    // identifies itself as a Zap authenticates as nobody, before the token lookup.
+    const { isZapierInbound } = await import("@/lib/integrations/zapier-direction")
+    if (isZapierInbound({ userAgent: req.headers.get("user-agent") })) return { brokerageId: null, scopes: [], via: "none" }
     const resolved = await resolveAgentToken(raw)
     if (resolved) return { brokerageId: resolved.brokerageId, scopes: resolved.scopes, via: "token" }
     return { brokerageId: null, scopes: [], via: "none" } // token present but invalid

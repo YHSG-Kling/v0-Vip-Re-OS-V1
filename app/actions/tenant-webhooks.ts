@@ -275,7 +275,7 @@ export async function listWebhookDeliveries(limit = 50): Promise<
 // READER (orphan doctrine §1.2). app/api/workflow/trigger/route.ts logs every
 // inbound trigger POST here (source, event_type, contact_id, payload,
 // received_at — schema-snapshot.ts:733) for audit, and nothing ever read the
-// 5 columns back — a tenant who wired GHL/IDX/Zapier/a QR scan into their own
+// 5 columns back — a tenant who wired GHL/IDX/a QR scan into their own
 // signing secret had no way to see whether an inbound trigger actually
 // arrived, only whether the RESULTING sequence enrollment (a downstream
 // effect) happened to exist. This is the same "developers" surface as the

@@ -19,7 +19,7 @@ export { registerEventDispatcher } from "./dispatcher-registry"
  * (lane 86F). The body — dedupe, entity derivation, the insert, the dispatch and
  * the kernel fan-out — moved to that server-only core, which runs on the SERVICE
  * client with a verified tenant. It used to run HERE on the cookie client, so
- * every sessionless caller (the zapier + dotloop webhooks, the e-sign finalize
+ * every sessionless caller (the dotloop webhook — and the zapier one, deleted in wave 87 — the e-sign finalize
  * and execution loops) was refused by RLS and threw before dispatching; those
  * callers now call the core with the brokerage of the row they verified.
  *

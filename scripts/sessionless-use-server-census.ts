@@ -686,14 +686,19 @@ console.log("\n═══ 5. THE EMITTER (lane 86F) — no sessionless path inser
     !SESSION_TOKENS.some((t) => t.on === "identifiers" && t.re.test(blankStrings(coreRaw))))
   ok("…its dedupe read and actor proof are pinned to the brokerageId it is handed, and the insert is counted",
     (coreSt.match(/\.eq\("brokerage_id", brokerageId\)/g) ?? []).length >= 2 && /from\("lifecycle_events"\)\s*\.insert\([\s\S]{0,700}\.select\(/.test(coreSt))
-  for (const caller of ["app/api/webhooks/zapier/route.ts", "app/api/webhooks/dotloop/route.ts", "lib/esign-webhooks/finalize-packet.ts", "lib/forms/esign-execution-loop.ts"]) {
+  // Wave 87 (lane 87A): the zapier caller is RETIRED — Zapier is outbound-only
+  // (owner: "zapier zaps are only allowed out from this platform, never to the
+  // platform."); the three remaining sessionless callers still write through the core.
+  for (const caller of ["app/api/webhooks/dotloop/route.ts", "lib/esign-webhooks/finalize-packet.ts", "lib/forms/esign-execution-loop.ts"]) {
     const st = existsSync(caller) ? stripComments(readFileSync(caller, "utf8")) : ""
     ok(`${caller} writes events through the core, not the cookie-client helper`,
       st.includes("@/lib/events/lifecycle-event-core") && !/\blogEventAndTrigger\s*\(/.test(st))
   }
-  const zap = existsSync("app/api/webhooks/zapier/route.ts") ? blankComments(stripComments(readFileSync("app/api/webhooks/zapier/route.ts", "utf8"))) : ""
-  ok("the zapier webhook takes its tenant from the connection record (global_settings.zapier_api_key), never the body",
-    /from\("global_settings"\)[\s\S]{0,120}\.eq\("zapier_api_key"/.test(zap) && /recordLifecycleEvent\(svc, tenant\.brokerageId/.test(zap) && !/brokerage_id:\s*payload\.brokerage_id/.test(zap))
+  // Re-anchored to the RULE (lane 87A): the inbound Zapier door is gone, and so is its
+  // tenant lookup — no route resolves a tenant from global_settings.zapier_api_key.
+  ok("the inbound zapier webhook is retired (Zapier is outbound-only) and nothing resolves a tenant from zapier_api_key",
+    !existsSync("app/api/webhooks/zapier/route.ts")
+      && !["app/api/webhooks/dotloop/route.ts", "lib/events/lifecycle-event-core.ts"].some((f) => existsSync(f) && /\.eq\("zapier_api_key"/.test(stripComments(readFileSync(f, "utf8")))))
 }
 
 console.log("\n═══ 6. THE JOURNEY EMITTERS (lane 86F2) — every routed journey type has an emitter that dispatches ═══")

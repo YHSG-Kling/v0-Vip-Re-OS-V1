@@ -65,7 +65,7 @@ import {
   type DeconflictChannel, type TouchSourceTable,
 } from "../lib/kernel/deconflict/lead-channel"
 import {
-  BUYER_STAGES, BUYER_ACTIVE_STAGES, BUYER_INACTIVE_STAGES,
+  BUYER_STAGES, BUYER_ACTIVE_STAGES, BUYER_INACTIVE_STAGES, BUYER_CONCLUDED_STAGES,
   BUYER_SHOWING_FEEDBACK_STAGE, isBuyerStage,
 } from "../lib/contacts/buyer-stage"
 import { AD_CAMPAIGN_STATUSES, AD_CAMPAIGN_RUNNING_STATUSES, AD_CAMPAIGN_PLATFORMS } from "../lib/integrations/ad-campaign-vocabulary"
@@ -192,9 +192,18 @@ console.log("\n── contacts.buyer_stage: two consumers off the ladder entirel
   const isa = src("lib/application/ai-isa.ts")
   check("the ISA campaign uses the shared stage",
     /BUYER_SHOWING_FEEDBACK_STAGE/.test(isa) && !/"toured"/.test(isa))
+  // Wave 87 (lane 87A): the owner ruled the fatigue population is derived from the
+  // calculation's INPUTS, not a stage list — so the rule this asserts is now "no
+  // private stage spelling in the sweep; its only stage exclusion is the shared
+  // concluded set". Stripped source (§2): the tombstone naming the old active set
+  // is not a call site.
   const fat = src("lib/fatigue/fatigue-calculator.ts")
-  check("the fatigue sweep uses the shared active set",
-    /BUYER_ACTIVE_STAGES/.test(fat) && !/"tour_completed"/.test(fat))
+  check("the fatigue sweep carries no private stage spelling and uses only the shared concluded set",
+    /BUYER_CONCLUDED_STAGES/.test(fat) && !/"tour_completed"/.test(fat)
+      && !/\.in\(\s*"buyer_stage"/.test(fat)
+      && BUYER_CONCLUDED_STAGES.every((s) => (BUYER_INACTIVE_STAGES as readonly string[]).includes(s) && live.includes(s)))
+  check("POSITIVE CONTROL: the stage-list finder still sees an .in(\"buyer_stage\", …) population",
+    /\.in\(\s*"buyer_stage"/.test(`q.in("buyer_stage", ACTIVE_BUYER_STAGES)`))
 }
 
 console.log("\n── ad_campaigns.status: the dead 'active' rider ──")

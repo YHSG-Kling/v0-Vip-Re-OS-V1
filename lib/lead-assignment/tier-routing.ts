@@ -67,15 +67,17 @@
 // normalizeAssignmentMethod below is the one place the split happens: method into
 // `assignment_method`, attribution into `routing_reason`.
 //
-// ── THE MAILBOX-OWNER PREFERENCE (wave 86, lane 86A2) ────────────────────────
+// ── THE MAILBOX-OWNER RULE (wave 86 lane 86A2; the RULE since wave 87 lane 87A) ─────────────────
 //
 // A lead that landed RAW from an AGENT's or TEAM LEAD's mailbox (wave 86: "yes all mailboxes should be
-// configured the same.") prefers that mailbox's owner at assignment — a rung of THIS resolver, ahead of
-// the rule pass on the team and brokerage tiers, DEFAULT ON and switchable off in the brokerage's
-// lead-routing settings. Any reason not to (setting off, owner inactive / out of capacity / on a book
-// transfer / off the team's board, a refused read) FALLS THROUGH to the rules below, unchanged. The
-// decision and its facts live in ./mailbox-owner-preference.ts; the ledger method is 'rule_match'
-// (CHECK-legal — no migration) with the attribution in routing_reason.
+// configured the same.") goes back to that mailbox's owner at assignment (wave 87: "since the email was
+// from the agents' mailbox, it should lead back to the agent.") — a rung of THIS resolver, ahead of the
+// rule pass on the team and brokerage tiers. It FALLS THROUGH to the rules below only when the owner is
+// inactive / no longer in this brokerage, off the team's board, or on an open book transfer whose
+// covering agent cannot take it (an open transfer with an able covering agent routes to THAT agent), or
+// a read is refused. No capacity fall-through and no on/off setting (both retired in 87A). The decision
+// and its facts live in ./mailbox-owner-preference.ts; the ledger method is 'rule_match' (CHECK-legal —
+// no migration) with the attribution in routing_reason.
 
 import type { createServiceClient } from "@/lib/supabase/service"
 import { resolvePlanTier, FALLBACK_TIER, type PlanTier } from "@/lib/billing/plan-tier"
@@ -282,7 +284,8 @@ async function resolveTierRouting(
         ? ` (tenant carries more than one team; the oldest, ${team.id}, is the routing team)`
         : ""
 
-      // MAILBOX-OWNER PREFERENCE (wave 86) — ahead of the rules, within the team's board only.
+      // MAILBOX-OWNER RULE (wave 86 rung; wave 87 made it the rule — the owner, or the agent covering
+      // their book on an open transfer) — ahead of the rules, within the team's board only.
       const teamLeadAgentId = await resolveTeamLeadAgentId(supabase, brokerageId, team.teamLeadUserId)
       const mailboxPref = decideMailboxOwnerPreference(
         await loadMailboxOwnerFacts(supabase, brokerageId, lead.id, { memberIds: pool, teamLeadAgentId }),
@@ -365,7 +368,8 @@ async function resolveTierRouting(
     ? "team tier with NO teams row — fell through to the brokerage-wide pool (provisioning gap)"
     : `${tier} tier — the brokerage admin's assignment settings`
 
-  // MAILBOX-OWNER PREFERENCE (wave 86) — ahead of the rules, across the brokerage's roster.
+  // MAILBOX-OWNER RULE (wave 86 rung; wave 87 made it the rule — the owner, or the agent covering
+  // their book on an open transfer) — ahead of the rules, across the brokerage's roster.
   const mailboxPref = decideMailboxOwnerPreference(await loadMailboxOwnerFacts(supabase, brokerageId, lead.id, null))
   if (mailboxPref.prefer) {
     return {

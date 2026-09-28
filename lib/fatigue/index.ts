@@ -1,8 +1,11 @@
 export {
   calculateFatigue,
-  calculateAllBuyerFatigue,
+  runFatigueSweep,
 } from "./fatigue-calculator"
-export type { FatigueResult, FatigueFactors, RiskLevel } from "./fatigue-calculator"
+// TOMBSTONE (lane 87A): calculateAllBuyerFatigue — survivor runFatigueSweep
+// (lib/fatigue/fatigue-calculator.ts), whose population is derived from the
+// calculation's inputs rather than the active-buyer stage list.
+export type { FatigueResult, FatigueFactors, RiskLevel, FatigueSweepResult } from "./fatigue-calculator"
 
 // fatigue-scorer.ts was REMOVED. It was a second implementation of exactly this,
 // writing the same two tables with a DIFFERENT risk vocabulary (watch/warning at

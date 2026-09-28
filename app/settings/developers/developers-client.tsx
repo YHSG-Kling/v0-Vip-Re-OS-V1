@@ -173,6 +173,10 @@ export function DevelopersClient(props: Props) {
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Webhook endpoints</h2>
             <p className="text-sm text-gray-500">POST notifications to your systems when events happen in the OS</p>
+            <p className="text-xs text-gray-500 mt-1">
+              Zapier: create a Zap with the <strong>Webhooks by Zapier → Catch Hook</strong> trigger and add its URL here.
+              Zapier connects outbound only — Zaps cannot send data into the OS.
+            </p>
           </div>
           <button
             onClick={() => setShowCreate((v) => !v)}
@@ -329,7 +333,7 @@ export function DevelopersClient(props: Props) {
         <div className="px-6 py-4 border-b border-gray-200">
           <h2 className="text-lg font-semibold text-gray-900">Inbound events</h2>
           <p className="text-sm text-gray-500">
-            The last 50 trigger POSTs your automation secret received (GHL, IDX, Zapier, QR scans,
+            The last 50 trigger POSTs your automation secret received (GHL, IDX, QR scans,
             email provider webhooks) — the audit half of the workflow trigger endpoint
           </p>
         </div>
@@ -408,7 +412,7 @@ export function DevelopersClient(props: Props) {
               <div className="flex gap-3">
                 <input
                   value={tokenName} onChange={(e) => setTokenName(e.target.value)}
-                  placeholder="Token name (e.g. Zapier bridge)"
+                  placeholder="Token name (e.g. Reporting export)"
                   className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm"
                 />
                 <button

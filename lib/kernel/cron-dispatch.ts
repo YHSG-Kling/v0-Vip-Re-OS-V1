@@ -260,7 +260,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/wealth-opportunity-scan"             , schedule: "0 7 * * *" },
   // TOMBSTONE (lane 86G2): "/api/fatigue/calculate" (0 7 * * *) — a duplicate
   // fatigue sweep that exported only POST, so this dispatcher's GET got 405 on
-  // every run. Merged onto lib/fatigue/fatigue-calculator.ts calculateAllBuyerFatigue;
+  // every run. Merged onto lib/fatigue/fatigue-calculator.ts runFatigueSweep (86G2 named it calculateAllBuyerFatigue; renamed in 87A);
   // the one scheduled sweep is "/api/fatigue/cron" above.
   { path: "/api/cron/asset-manager-weekly"                , schedule: "32 7 * * 1" }, // (staggered r43)
   { path: "/api/cron/campaign-orchestrator-weekly"        , schedule: "42 7 * * 1" }, // (staggered r43)

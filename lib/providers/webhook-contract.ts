@@ -432,19 +432,15 @@ export const WEBHOOK_CONTRACT: WebhookContractEntry[] = [
     consoleField: "Zoom App Marketplace → app → Event Subscriptions URL",
     failureVisibility: null,
   },
-  {
-    provider: "zapier",
-    eventKind: "automation-events",
-    path: "/api/webhooks/zapier",
-    routeFile: "app/api/webhooks/zapier/route.ts",
-    scheme: "hmac-sha256",
-    // x-zapier-api-key (lane 86F): the brokerage's own global_settings.zapier_api_key —
-    // the TENANT; the HMAC over the platform secret proves only authenticity.
-    verificationHeaders: ["x-zapier-signature", "x-zapier-api-key"],
-    secretEnv: ["ZAPIER_WEBHOOK_SECRET"],
-    consoleField: "Zap webhook action URL (+ header x-zapier-api-key = the brokerage's Zapier key from Settings)",
-    failureVisibility: null,
-  },
+  // TOMBSTONE (wave 87, lane 87A — owner: "zapier zaps are only allowed out from this
+  // platform, never to the platform."): the inbound "zapier" / "automation-events" row
+  // and its route app/api/webhooks/zapier/route.ts (POST: HMAC over ZAPIER_WEBHOOK_SECRET
+  // + lane 86F's x-zapier-api-key → global_settings.zapier_api_key tenant lookup →
+  // recordLifecycleEvent) are DELETED. There is no inbound Zapier door any more. The
+  // capability survives OUTBOUND only: a Zap's Catch Hook URL is a tenant outbound
+  // webhook subscription, delivered by lib/platform/tenant-webhooks.ts
+  // drainTenantWebhookDeliveries → postSignedWebhook. Ingress doors that a Zap could
+  // still be aimed at refuse it: lib/integrations/zapier-direction.ts isZapierInbound.
   {
     provider: "ce_provider",
     eventKind: "course-completions",

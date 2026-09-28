@@ -2,8 +2,14 @@
  * POST /api/workflow/trigger
  *
  * Universal webhook entry point for the Workflow OS trigger fabric.
- * Accepts trigger events from external systems (GHL, IDX, Zapier, QR scans,
- * email provider open/click webhooks) and fires sequence auto-enrollment.
+ * Accepts trigger events from external systems (GHL, IDX, QR scans, email
+ * provider open/click webhooks) and fires sequence auto-enrollment.
+ *
+ * NOT ZAPIER (wave 87, lane 87A — owner: "zapier zaps are only allowed out from
+ * this platform, never to the platform."). A request that identifies itself as a
+ * Zap (User-Agent or `source`) is refused 403 before any auth or write —
+ * lib/integrations/zapier-direction.ts isZapierInbound. Zaps are reached OUTBOUND
+ * through the tenant's webhook subscriptions (lib/platform/tenant-webhooks.ts).
  *
  * ── AUTH: which secret authorises which tenant reach ────────────────────────
  * `Authorization: Bearer <secret>`, compared timing-safe. Two secrets, two reaches:
@@ -48,6 +54,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
+import { isZapierInbound, ZAPIER_INBOUND_REFUSAL } from "@/lib/integrations/zapier-direction"
 
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -88,6 +95,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   if (!event || !brokerageId) {
     return NextResponse.json({ error: "event and brokerageId are required" }, { status: 400 })
+  }
+
+  // Zapier is outbound-only (wave 87) — refused before auth, lookup or write.
+  if (isZapierInbound({ userAgent: req.headers.get("user-agent"), source })) {
+    return NextResponse.json({ error: ZAPIER_INBOUND_REFUSAL }, { status: 403 })
   }
 
   const supabase = createServiceClient()

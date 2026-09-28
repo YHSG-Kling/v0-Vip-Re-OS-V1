@@ -1,16 +1,19 @@
 /**
  * System 5.8: Buyer Fatigue Predictor — Recovery Plan Generator
  *
- * Generates a personalized recovery plan for a fatigued buyer using
- * claude-sonnet-4-20250514. Plans are stored in fatigue_alerts.message
- * as a JSON payload when the alert is upserted.
+ * Generates a personalized recovery plan for a fatigued buyer. Plans are stored
+ * in fatigue_alerts.message as a JSON payload on the buyer's open alert.
+ *
+ * Wave 87 (lane 87A): routed + booked through generateTextRouted under
+ * `buyer_fatigue_coaching` with the alert's brokerage (§5 — ai_tool_usage is the
+ * cost ledger); it was a raw generateText pinned to claude-sonnet with no ledger
+ * row. The sweep calls it once per NEW alert, never per run.
  *
  * Recovery plan shape:
  *   { pause_days, re_engagement_message, search_reset_suggestion, morale_boost }
  */
 
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateTextRouted } from "@/lib/ai/models"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { FatigueResult } from "./fatigue-calculator"
 
@@ -31,8 +34,10 @@ export async function generateRecoveryPlan(
   const supabase = createServiceClient()
 
   try {
-    const { text } = await generateText({
-      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
+    const { text } = await generateTextRouted({
+      feature: "buyer_fatigue_coaching",
+      brokerageId: score.brokerage_id,
+      maxTokens: 300,
       system:
         "You are a real estate agent coach specializing in buyer fatigue recovery. " +
         "Generate a short, empathetic recovery plan for a fatigued buyer. " +
@@ -54,8 +59,9 @@ export async function generateRecoveryPlan(
     const clean = text.trim().replace(/^```json?\s*/i, "").replace(/\s*```$/i, "")
     const plan  = JSON.parse(clean) as RecoveryPlan
 
-    // Store recovery plan in fatigue_alerts for this contact
-    await supabase
+    // Store recovery plan in fatigue_alerts for this contact (tenant-pinned; the
+    // refusal is READ — a plan that did not land is not reported as attached).
+    const { error: storeErr } = await supabase
       .from("fatigue_alerts")
       .update({
         message: JSON.stringify({
@@ -67,6 +73,7 @@ export async function generateRecoveryPlan(
       .eq("contact_id", score.contact_id)
       .eq("brokerage_id", score.brokerage_id)
       .eq("dismissed", false)
+    if (storeErr) return { success: false, plan, error: `recovery plan not stored: ${storeErr.message}` }
 
     return { success: true, plan }
   } catch (err: unknown) {
@@ -83,6 +90,9 @@ export async function generateRecoveryPlan(
         "Finding the right home takes time — your patience is actually protecting you from a bad decision.",
     }
 
-    return { success: true, plan: fallback }
+    // Lane 87A: the fallback is RETURNED but was never stored, yet this reported
+    // success — so the sweep counted a plan as attached that no alert carries.
+    // Honest now: success=false with the fallback in hand for the caller.
+    return { success: false, plan: fallback, error: `recovery plan not generated (${message}) — fallback returned, not stored` }
   }
 }

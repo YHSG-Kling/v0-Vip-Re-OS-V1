@@ -6,7 +6,8 @@
  * createServerClient() — the COOKIE client — to insert the lifecycle_events row
  * and then handed it to the registered orchestrator dispatcher. Its sessionless
  * callers have no cookie:
- *   · app/api/webhooks/zapier/route.ts
+ *   · app/api/webhooks/zapier/route.ts (DELETED wave 87, lane 87A — Zapier is outbound-only;
+ *     tombstone in lib/providers/webhook-contract.ts)
  *   · app/api/webhooks/dotloop/route.ts (which also passed NO brokerage_id)
  *   · lib/esign-webhooks/finalize-packet.ts
  *   · lib/forms/esign-execution-loop.ts
@@ -20,8 +21,8 @@
  * THE SHAPE (template lib/transactions/dotloop-document-sync.ts): server-only,
  * the SERVICE client, a VERIFIED brokerageId handed in by the caller — the
  * webhook's signature-bound row (client_documents / buyer_broker_agreements /
- * offers / documents), the Zapier connection record the presented key resolves
- * to, or the SESSION's brokerage (logEventAndTrigger, the session door). Never a
+ * offers / documents) — the Zapier connection record was the fourth, retired with
+ * the inbound Zapier route in wave 87 — or the SESSION's brokerage (logEventAndTrigger, the session door). Never a
  * request body. Then:
  *   · the dedupe read is pinned `.eq("brokerage_id", brokerageId)`;
  *   · the actor is PROVEN — a users row in this tenant — or written as NULL (a

@@ -99,12 +99,6 @@
     "lib/ads/ad-monitor.ts": [
       "raw:generateText"
     ],
-    "lib/fatigue/fatigue-calculator.ts": [
-      "raw:generateText"
-    ],
-    "lib/fatigue/recovery-generator.ts": [
-      "raw:generateText"
-    ],
     "lib/intelligence/pattern-detector.ts": [
       "raw:generateText"
     ],

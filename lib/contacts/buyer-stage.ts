@@ -56,8 +56,19 @@ export function isBuyerStage(v: unknown): v is BuyerStage {
  * the transaction; BUYER_ON_HOLD and BUYER_DISENGAGED are paused by the buyer.
  * None of them should be counted in an active-buyer sweep.
  */
+/**
+ * The search is OVER — past the transaction. A subset of the inactive states:
+ * ON_HOLD / DISENGAGED are paused by the buyer (and are exactly what a fatigue
+ * score exists to catch), CLOSED / LIFETIME have concluded. The fatigue sweep
+ * (lib/fatigue/fatigue-calculator.ts loadFatigueSweepPopulation, wave 87 lane 87A)
+ * excludes only these — "days searching" means nothing after the close.
+ */
+export const BUYER_CONCLUDED_STAGES = [
+  "BUYER_CLOSED", "BUYER_LIFETIME",
+] as const satisfies readonly BuyerStage[]
+
 export const BUYER_INACTIVE_STAGES = [
-  "BUYER_ON_HOLD", "BUYER_DISENGAGED", "BUYER_CLOSED", "BUYER_LIFETIME",
+  "BUYER_ON_HOLD", "BUYER_DISENGAGED", ...BUYER_CONCLUDED_STAGES,
 ] as const satisfies readonly BuyerStage[]
 
 /** Actively working a purchase — the complement of inactive. */

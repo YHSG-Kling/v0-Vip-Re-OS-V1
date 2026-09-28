@@ -399,19 +399,30 @@ console.log("\n[G6 · the fatigue doors — every dispatched path answers GET; n
   check("...and is not in CRON_REGISTRY", !CRON_REGISTRY.some((e) => e.path.startsWith("/api/fatigue/calculate")))
   check("the one scheduled sweep /api/fatigue/cron is still registered", CRON_REGISTRY.some((e) => e.path === "/api/fatigue/cron"))
 
+  // Lane 87A re-anchor (the RULE, not 86G2's spelling): the one core was renamed
+  // runFatigueSweep when the owner ruled its population is derived from the
+  // calculation's INPUTS rather than the active-buyer ladder; the population rule
+  // itself is proven by test:fatigue-population. What G6 holds here is unchanged:
+  // a declared TenantScope applied, refusals thrown, soft-deleted / tenantless
+  // rows excluded, and the recovery plan carried (now once per NEW alert).
   const core = blankStrings(read("lib/fatigue/fatigue-calculator.ts"))
-  const sweepAt = core.indexOf("export async function calculateAllBuyerFatigue(")
+  const popAt = core.indexOf("export async function loadFatigueSweepPopulation(")
+  const sweepAt = core.indexOf("export async function runFatigueSweep(")
+  const pop = popAt >= 0 && sweepAt > popAt ? core.slice(popAt, sweepAt) : ""
   const sweep = sweepAt >= 0 ? core.slice(sweepAt) : ""
-  check("the core takes a declared TenantScope and applies it", /calculateAllBuyerFatigue\(\s*scope:\s*TenantScope\s*\)/.test(sweep) && /applyTenantScope\(/.test(sweep))
-  check("the core reads its refusal (§3) and throws rather than reading as 'no buyers'", /\{\s*data:\s*contacts\s*,\s*error\s*\}/.test(sweep) && /if\s*\(\s*error\s*\)\s*\{\s*throw/.test(sweep))
-  check("the core carries the cron loop's recovery plan for high/critical", /generateRecoveryPlan\(\s*scored\s*\)/.test(sweep))
-  check("the core uses the ONE active-buyer ladder, excludes soft-deleted and tenantless rows",
-    /\.in\(\s*"\s*"\s*,\s*ACTIVE_BUYER_STAGES\s*\)/.test(sweep) && /\.is\(\s*"\s*"\s*,\s*null\s*\)/.test(sweep) && /\.not\(/.test(sweep))
+  check("the core takes a declared TenantScope and applies it to every population read",
+    /runFatigueSweep\(\s*scope:\s*TenantScope/.test(sweep) && /loadFatigueSweepPopulation\(\s*scope\s*\)/.test(sweep)
+      && (pop.match(/applyTenantScope\(/g) ?? []).length >= 4)
+  check("the core reads its refusals (§3) and throws rather than reading as 'nobody to score'",
+    (pop.match(/if\s*\(\s*error\s*\)\s*throw/g) ?? []).length >= 4)
+  check("the core carries the recovery plan — once per NEW alert", /if\s*\(\s*scored\.alert_raised\s*\)/.test(sweep) && /generateRecoveryPlan\(\s*scored\s*\)/.test(sweep))
+  check("the core excludes soft-deleted and tenantless contacts",
+    /\.is\(\s*"\s*"\s*,\s*null\s*\)/.test(pop) && /\.not\(\s*"\s*"\s*,\s*"\s*"\s*,\s*null\s*\)/.test(pop))
 
   const cronSrc = blankStrings(read("app/api/fatigue/cron/route.ts"))
   check("fatigue/cron runs the core with a platformScope(reason) after the gate",
-    /verifyCronAuth\(/.test(cronSrc) && /calculateAllBuyerFatigue\(\s*platformScope\(/.test(cronSrc)
-      && cronSrc.indexOf("verifyCronAuth(") < cronSrc.indexOf("calculateAllBuyerFatigue("))
+    /verifyCronAuth\(/.test(cronSrc) && /runFatigueSweep\(\s*platformScope\(/.test(cronSrc)
+      && cronSrc.indexOf("verifyCronAuth(") < cronSrc.indexOf("runFatigueSweep("))
   check("fatigue/cron no longer inlines a second loop or a second 'terminal stages' spelling",
     !/calculateFatigue\(/.test(cronSrc) && !/TERMINAL_STAGES/.test(cronSrc))
 
@@ -422,8 +433,8 @@ console.log("\n[G6 · the fatigue doors — every dispatched path answers GET; n
     /export async function recalculateBrokerageFatigue\(\s*\)/.test(action))
   check("the door gates FIRST (requireTenantAdminOrSoloOwner) and refuses on !ok",
     /requireTenantAdminOrSoloOwner\(\)/.test(doorBody) && /if\s*\(\s*!auth\.ok\s*\)\s*return/.test(doorBody)
-      && doorBody.indexOf("requireTenantAdminOrSoloOwner(") < doorBody.indexOf("calculateAllBuyerFatigue("))
-  check("the door scopes the core to the SESSION brokerage", /calculateAllBuyerFatigue\(\s*tenantScope\(\s*auth\.brokerageId/.test(doorBody))
+      && doorBody.indexOf("requireTenantAdminOrSoloOwner(") < doorBody.indexOf("runFatigueSweep("))
+  check("the door scopes the core to the SESSION brokerage", /runFatigueSweep\(\s*tenantScope\(\s*auth\.brokerageId/.test(doorBody))
   check("the door returns the counted result", /return\s*\{\s*success:\s*true\s*,\s*data\s*\}/.test(doorBody))
 
   const page = read("app/dashboard/buyers/fatigue/page.tsx")

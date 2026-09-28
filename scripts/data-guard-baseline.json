@@ -10,7 +10,5 @@
   "lib/ads/ad-creator.ts",
   "lib/ads/ad-monitor.ts",
   "lib/application/compliance-monitoring.ts",
-  "lib/fatigue/fatigue-calculator.ts",
-  "lib/fatigue/recovery-generator.ts",
   "lib/intelligence/pattern-detector.ts"
 ]

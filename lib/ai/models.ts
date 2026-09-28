@@ -216,6 +216,7 @@ export const AI_TASK_ROUTING: Record<string, {
   onboarding_step_suggest:   { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Next onboarding action recommendation — internal only" },
   video_brief_guide:         { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Describe-a-video guide — plain-language needs + debounced wording suggestions per text box (app/actions/custom-video.ts); high volume, short output" },
   coaching_insight:          { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Agent performance nudge — internal, runs nightly" },
+  buyer_fatigue_coaching:    { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Fatigue alert note + recovery plan for the agent (lib/fatigue/fatigue-calculator.ts, recovery-generator.ts) — internal, 2-4 sentences, runs only when a NEW high/critical alert is raised by the 12h platform sweep or a brokerage recalculate. Was a raw generateText pinned to claude-opus-4-5 / sonnet with no ledger row (wave 87 lane 87A)." },
 
   // ── SIMPLE DECISIONS + ROUTING (cheapest path) ────────────────────────────
   intent_classification:     { model: "gpt-4o-mini", fallback: "claude-haiku", reason: "Classify user intent — voice/command bar routing" },

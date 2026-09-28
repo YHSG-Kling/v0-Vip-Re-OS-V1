@@ -63,6 +63,9 @@ export default function BrokerageFatiguePage() {
   const [sortKey,    setSortKey]    = useState<SortKey>("fatigue_score")
   const [sortDir,    setSortDir]    = useState<SortDir>("desc")
   const [isPending,  startTransition] = useTransition()
+  // The brokerage run's COUNTED result (lane 87A) — "scored nobody" must read
+  // differently from "refused", and leads with nothing to score are named.
+  const [lastRun,    setLastRun]    = useState<string | null>(null)
 
   const load = useCallback(() => {
     startTransition(async () => {
@@ -116,6 +119,17 @@ export default function BrokerageFatiguePage() {
     startTransition(async () => {
       const res = await recalculateBrokerageFatigue()
       if (!res.success) setError(res.error)
+      else {
+        const d = res.data
+        setLastRun(
+          `Scored ${d.scored} of ${d.total} people with fatigue inputs` +
+          (d.fromLeads ? ` (${d.fromLeads} converted from leads)` : "") +
+          (d.deferred ? ` · ${d.deferred} deferred to the next run` : "") +
+          (d.errors ? ` · ${d.errors} could not be scored` : "") +
+          (d.alertsRaised ? ` · ${d.alertsRaised} new alert${d.alertsRaised === 1 ? "" : "s"}` : "") +
+          (d.leadsWithoutInputs ? ` · ${d.leadsWithoutInputs} unconverted lead${d.leadsWithoutInputs === 1 ? " has" : "s have"} no showings, tours, offers or engagement to score yet` : ""),
+        )
+      }
       load()
     })
   }
@@ -127,7 +141,7 @@ export default function BrokerageFatiguePage() {
         <div>
           <h1 className="text-xl font-semibold">Buyer Fatigue Dashboard</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            All active buyers ranked by fatigue risk
+            Everyone with showings, tours, offers or engagement signals, ranked by fatigue risk
           </p>
         </div>
         <button
@@ -157,6 +171,12 @@ export default function BrokerageFatiguePage() {
           })}
         </div>
 
+        {lastRun && (
+          <p className="text-xs text-muted-foreground rounded-md border border-border bg-muted/30 px-3 py-2">
+            {lastRun}
+          </p>
+        )}
+
         {/* Error */}
         {error && (
           <p className="text-sm text-red-600 rounded-md border border-red-200 bg-red-50 px-3 py-2">
@@ -179,7 +199,7 @@ export default function BrokerageFatiguePage() {
           <div className="rounded-lg border border-border bg-card px-6 py-12 text-center">
             <p className="text-sm text-muted-foreground">No fatigue scores available yet.</p>
             <p className="text-xs text-muted-foreground mt-1">
-              Run a calculation or wait for the daily cron (7 AM).
+              Run a calculation, or wait for the platform sweep (every 12 hours).
             </p>
           </div>
         ) : (

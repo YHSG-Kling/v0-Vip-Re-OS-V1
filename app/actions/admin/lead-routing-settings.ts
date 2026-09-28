@@ -20,17 +20,11 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
 import { createClient } from "@/lib/supabase/server"
 import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
 import { getAgentContext } from "@/lib/identity"
 import { revalidatePath } from "next/cache"
 import { isRuleType, RULE_TYPE_LABELS, type RuleType } from "@/lib/lead-assignment/rule-matcher"
-import {
-  MAILBOX_OWNER_PREFERENCE_DEFAULT,
-  MAILBOX_OWNER_PREFERENCE_KEY,
-  mailboxOwnerPreferenceFromSettings,
-} from "@/lib/lead-assignment/mailbox-owner-preference"
 
 /**
  * May this caller change how the brokerage's leads are assigned?
@@ -113,43 +107,12 @@ export async function setDefaultAssignmentMethod(
   return { success: true }
 }
 
-// ─── MAILBOX-OWNER PREFERENCE (wave 86, lane 86A2) ─────────────────────────────
-// A lead that landed from an agent's or team lead's own mailbox prefers that owner at assignment
-// (lib/lead-assignment/mailbox-owner-preference.ts — a rung of tier-routing.ts, the one router).
-// DEFAULT ON; the same admins who set the default method (broker / admin / team lead —
-// requireRoutingAdmin above) may turn it off. Stored in the EXISTING jsonb
-// brokerage_settings.settings.lead_routing.prefer_mailbox_owner (UNIQUE brokerage_id; no migration).
-
-export async function getMailboxOwnerPreference(): Promise<{ enabled: boolean; error?: string }> {
-  const gate = await requireRoutingAdmin()
-  if (!gate.ok) return { enabled: MAILBOX_OWNER_PREFERENCE_DEFAULT, error: gate.error }
-  const service = createServiceClient()
-  const { data, error } = await service
-    .from("brokerage_settings")
-    .select("settings")
-    .eq("brokerage_id", gate.brokerageId)
-    .maybeSingle()
-  if (error) return { enabled: MAILBOX_OWNER_PREFERENCE_DEFAULT, error: error.message }
-  return { enabled: mailboxOwnerPreferenceFromSettings((data as { settings?: unknown } | null)?.settings) }
-}
-
-export async function setMailboxOwnerPreference(
-  enabled: boolean,
-): Promise<{ success: boolean; error?: string }> {
-  const gate = await requireRoutingAdmin()
-  if (!gate.ok) return { success: false, error: gate.error }
-  if (typeof enabled !== "boolean") return { success: false, error: "The mailbox-owner preference is either on or off." }
-
-  // Merged BY KEY through the one settings writer (lib/settings/brokerage-settings-merge.ts,
-  // version-checked): every other key on settings (ce_provider, phone_port_ins,
-  // business_registration…) survives a concurrent save; the row is created if absent.
-  const write = await mergeBrokerageSettings(createServiceClient(), gate.brokerageId, (settings) => {
-    const prior = ((settings as Record<string, any>)?.lead_routing ?? {}) as Record<string, unknown>
-    return { lead_routing: { ...prior, [MAILBOX_OWNER_PREFERENCE_KEY]: enabled } }
-  })
-  if (!write.ok) return { success: false, error: write.error }
-
-  revalidatePath("/dashboard/settings")
-  revalidatePath("/dashboard/admin/assignment-rules")
-  return { success: true }
-}
+// ─── MAILBOX-OWNER PREFERENCE — RETIRED (wave 87, lane 87A) ─────────────────────
+// TOMBSTONE: getMailboxOwnerPreference / setMailboxOwnerPreference (lane 86A2) are DELETED, with the
+// jsonb key brokerage_settings.settings.lead_routing.prefer_mailbox_owner they read and wrote and the
+// Settings → Lead Routing switch that called them. Owner, verbatim: "since the email was from the
+// agents' mailbox, it should lead back to the agent." — the direction is a ruling, not a per-brokerage
+// option, so there is nothing left to switch. Survivor: the always-on rung
+// lib/lead-assignment/mailbox-owner-preference.ts decideMailboxOwnerPreference (via tier-routing.ts
+// resolveTierRouting). A stored `prefer_mailbox_owner` key (live: brokerage_settings had 0 rows when
+// lane 86A2 shipped it) is now inert and read by nothing.
