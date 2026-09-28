@@ -44,7 +44,11 @@ import { createClient } from "@/lib/supabase/client"
 // respelled so the wizard and the signer cannot drift.
 import { DOC_URL_TTL_SECONDS as FORM_URL_TTL_SECONDS } from "@/lib/storage/signed-doc-url"
 import { createOffer } from "@/app/actions/buyer-offers"
-import { createListingWithSellerContact, resolveListingIdByMlsAction } from "@/app/actions/listings-kernel"
+import { createListingWithSellerContact, resolveListingIdByMlsAction, sendListingAgreementForSignatureAction } from "@/app/actions/listings-kernel"
+import { CommissionDisclosureDialog } from "@/app/components/offer/commission-disclosure-dialog"
+import { getStateForms } from "@/lib/state-forms/registry"
+import { matchStatePackage } from "@/lib/forms/state-package-match"
+import { getCatalogEntry } from "@/lib/integrations/providers/catalog"
 import { submitForSignature } from "@/app/actions/buyer-offer/submit-for-signature"
 import { prefillStorageFormAction } from "@/app/actions/buyer-offer/prefill-storage-form"
 import { buildEsignAnchorPlanAction } from "@/app/actions/buyer-offer/esign-anchor-plan"
@@ -52,7 +56,26 @@ import { resolveOfferPropertyPrefillAction } from "@/app/actions/buyer-offer/pre
 import Link from "next/link"
 import { PROPERTY_TYPE_OPTIONS } from "@/lib/constants"
 
-type TransactionProvider = "dotloop" | "docusign" | "skyslope" | "authentisign"
+type TransactionProvider = "dotloop" | "docusign" | "skyslope" | "authentisign" | "brokermint" | "formsimplicity"
+
+/** The connected transaction provider's own window (lane 88C). `embedMode` comes from the
+ *  catalog's evidence-backed frameability: "iframe" only where the vendor documents framing
+ *  (SkySlope Forms); everything else opens as a POPUP beside the platform — an iframe of a
+ *  vendor that forbids framing renders blank, which is what the old dotloop "?embed=1" did. */
+interface ProviderWindow { provider: TransactionProvider; embedUrl: string | null; embedMode: "iframe" | "popup"; label: string }
+
+/** The in-window e-sign step (lane 88C): DocuSign's embedded sender view (iframe) or the
+ *  Google Drive eSignature window (popup — Google has no API and does not frame). */
+interface EsignHandoff { mode: "iframe" | "popup"; urls: Array<{ label: string; url: string }>; instructions: string }
+
+/** Open a provider window as a sized popup beside the platform (falls back to a tab). */
+function openProviderPopup(url: string) {
+  const w = Math.min(1200, window.screen.availWidth - 80)
+  const h = Math.min(900, window.screen.availHeight - 80)
+  const win = window.open(url, "vipreos_provider", `popup=yes,width=${w},height=${h},left=40,top=40`)
+  if (win) { try { win.opener = null } catch { /* cross-origin — already detached */ } }
+  else window.open(url, "_blank", "noopener")
+}
 
 interface FormRef {
   source: "my_forms" | "transaction_provider"
@@ -108,6 +131,9 @@ interface WizardState {
   filledFormRefs: string[]
   // Step 3 — in-app filled storage PDFs (filled path + preview URL), keyed by formRef
   filledForms?: Record<string, { filledPath?: string; previewUrl?: string }>
+  // Step 3 — the values the agent TYPED into each form's field panel, keyed by formRef then
+  // AcroForm field name (lane 88C). Re-applied server-side into the PDF on every edit.
+  fieldValues?: Record<string, Record<string, string>>
   // Step 4 — Signers
   signers: Signer[]
   // Step 5/6
@@ -170,7 +196,17 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
   const [error, setError] = useState<string | null>(null)
   const [myForms, setMyForms] = useState<{ name: string; url: string; scope: "brokerage" | "team" | "agent"; path: string }[]>([])
   const [formsLoaded, setFormsLoaded] = useState(false)
-  const [providerInfo, setProviderInfo] = useState<{ provider: TransactionProvider; embedUrl: string | null } | null | "loading">("loading")
+  const [providerInfo, setProviderInfo] = useState<ProviderWindow | null | "loading">("loading")
+  // How the e-sign step runs (lane 88C): "google_drive_handoff" (the default — popup),
+  // "embedded_send" (DocuSign sender view in an iframe) or "api_send" (the provider emails).
+  const [esignMode, setEsignMode] = useState<string | null>(null)
+  const [esignSetupError, setEsignSetupError] = useState<string | null>(null)
+  // The in-window send step returned by the dispatch (iframe or popup), shown on step 6.
+  const [handoff, setHandoff] = useState<EsignHandoff | null>(null)
+  const [sendNotice, setSendNotice] = useState<string | null>(null)
+  // The named refusal from the send (e.g. the NAR-2024 commission disclosure gate) — the
+  // wizard offers the step that clears it instead of a dead end.
+  const [blocker, setBlocker] = useState<string | null>(null)
   // Provider form library — fetched lazily when Step 2 mounts. null = not loaded
   // yet, [] = loaded but empty.
   const [providerForms, setProviderForms] = useState<ProviderFormItem[] | null>(null)
@@ -351,6 +387,9 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
       { prefix: `brokerage/${brokerageId}/`, scope: "brokerage" },
       ...(teamId ? [{ prefix: `teams/${teamId}/`, scope: "team" as const }] : []),
       { prefix: `agents/${agentUserId}/`, scope: "agent" },
+      // The Upload tab writes to agents/{id}/uploads/ — list is NOT recursive, so without
+      // this prefix an uploaded form vanished from "My Forms" the next time the wizard opened.
+      { prefix: `agents/${agentUserId}/uploads/`, scope: "agent" },
     ]
 
     const collected: typeof myForms = []
@@ -378,19 +417,27 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
     )
     setMyForms(collected)
 
-    // Load provider info via API
+    // Load provider info via API. The route reads the tenant from the SESSION (lane 88C) —
+    // it no longer takes ids on the query string.
     try {
-      const res = await fetch(`/api/form-wizard/resolve-provider?agentUserId=${agentUserId}&teamId=${teamId ?? ""}&brokerageId=${brokerageId}`)
+      const res = await fetch(`/api/form-wizard/resolve-provider`)
       if (res.ok) {
         const data = await res.json()
-        setProviderInfo(data.provider ? { provider: data.provider, embedUrl: data.embedUrl } : null)
+        setProviderInfo(data.provider
+          ? { provider: data.provider, embedUrl: data.embedUrl ?? null, embedMode: data.embedMode === "iframe" ? "iframe" : "popup", label: data.providerLabel ?? data.provider }
+          : null)
         setEsignProvider(data.esignProvider ?? null)
+        setEsignMode(data.esignMode ?? null)
+        setEsignSetupError(data.esignError ?? null)
         setState(prev => ({ ...prev, transactionProvider: data.provider ?? null, transactionProviderEmbedUrl: data.embedUrl ?? null }))
       } else {
+        const err = await res.json().catch(() => ({}))
         setProviderInfo(null)
+        setEsignSetupError((err as { error?: string }).error ?? "Could not load your provider settings.")
       }
-    } catch {
+    } catch (e) {
       setProviderInfo(null)
+      setEsignSetupError(e instanceof Error ? e.message : "Could not load your provider settings.")
     }
   }, [brokerageId, teamId, agentUserId, formsLoaded])
 
@@ -407,7 +454,12 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
     if (!contact) { setError("No contact selected"); return }
     setBusy(true)
     setError(null)
+    setSendNotice(null)
     try {
+      // A retry after a refused send re-uses the offer the first attempt created — the
+      // button used to mint a second offer row on every click.
+      let offerId = state.offerId ?? null
+      if (!offerId) {
       // offers.listing_id is a uuid FK. Translate the MLS number the agent typed
       // into one of this brokerage's listing ids; no match is normal (the offer is
       // on someone else's listing) and must not block the offer.
@@ -437,10 +489,13 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
         escalation_clause: false,
         form_source: state.selectedForms.map(f => f.source).join(","),
         form_provider_ref: state.selectedForms.map(f => f.formRef).join(","),
-        esign_provider: esignProvider ?? undefined,
+        // esign_provider is stamped by the SEND (submitForSignature → dispatch core) with the
+        // method that actually carried the packet — not guessed here before anything is sent.
       })
       if (!result.success || !result.offerId) { setError(result.error ?? "Failed to create offer"); return }
+      offerId = result.offerId
       setState(prev => ({ ...prev, offerId: result.offerId, esignProvider: esignProvider }))
+      }
 
       // THE ROLE TRAVELS. This used to collapse `listing_agent` and `seller`
       // into a flat "agent" here, at the caller, because the action's parameter
@@ -457,20 +512,38 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
       // The action now takes the real role and narrows it itself for the e-sign
       // provider (which understands parties, not our deal roles) while keeping
       // the counterparty for the reply watch.
-      await submitForSignature({
-        offerId: result.offerId,
+      //
+      // THE RESULT IS READ (lane 88C). This call's return was discarded, so every refusal —
+      // the NAR commission-disclosure gate, a license block, a provider rejection, no e-sign
+      // method connected — still advanced to step 6 and said "Offer submitted". The filled
+      // packet also never travelled: nothing here named a document, so the provider got an
+      // empty envelope. Now the filled forms go with it and a refusal stays on this step.
+      const sent = await submitForSignature({
+        offerId,
         userId: agentUserId,
         signers: state.signers
           .filter(s => s.email)
           .map(s => ({ name: s.name, email: s.email, role: s.role })),
+        documents: packetDocuments(state),
+        embeddedSend: esignMode === "embedded_send",
+        returnUrl: typeof window !== "undefined" ? `${window.location.origin}/crm/contacts/${contact.id}/offers/${offerId}` : undefined,
       })
+      if (!sent.success) {
+        setError(sent.error ?? "The offer was saved but could not be sent for signature.")
+        setBlocker(("blockerType" in sent ? sent.blockerType : null) ?? null)
+        return
+      }
+      setBlocker(null)
+      setHandoff(("handoff" in sent ? sent.handoff : null) ?? null)
+      setSendNotice(("message" in sent ? sent.message : null) ?? null)
+      if ("handoff" in sent && sent.handoff?.mode === "popup" && sent.handoff.urls[0]) openProviderPopup(sent.handoff.urls[0].url)
       setStep(6)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Unknown error")
     } finally {
       setBusy(false)
     }
-  }, [contact, brokerageId, agentUserId, state, esignProvider])
+  }, [contact, brokerageId, agentUserId, state, esignMode, esignProvider])
 
   /**
    * THE LISTING LANE.
@@ -508,6 +581,9 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
       }
       const [firstName, ...restName] = sellerName.split(/\s+/)
 
+      // A retry after a refused send re-uses the draft the first attempt created.
+      let listingId = state.listingId ?? null
+      if (!listingId) {
       const result = await createListingWithSellerContact({
         sellerFirstName: firstName,
         sellerLastName:  restName.join(" "),
@@ -527,14 +603,45 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
         setError(result.error ?? "Failed to create listing")
         return
       }
+      listingId = result.listingId
       setState(prev => ({ ...prev, listingId: result.listingId }))
+      }
+
+      // THE LISTING AGREEMENT GOES OUT FOR SIGNATURE (lane 88C). The listing lane used to
+      // stop at the draft ("upload the signed agreement to the listing") — the agent had
+      // to leave the platform to get it signed. The filled packet now goes to the seller
+      // through the same dispatch core as the offer; the signed copy returns to this
+      // listing through the provider webhooks / esign-doc-sync sweep (or, for Google
+      // eSignature, the listing's upload door), where the compliance gate promotes it.
+      const docs = packetDocuments(state)
+      if (docs.length === 0) {
+        setSendNotice("Draft listing created. No filled form from your library was selected, so nothing was sent — add the listing agreement from My Forms (or send it from your provider) to get it signed.")
+        setStep(6)
+        return
+      }
+      const sent = await sendListingAgreementForSignatureAction({
+        listingId: listingId as string,
+        signers: state.signers.filter(s => s.email).map(s => ({ name: s.name, email: s.email, role: s.role })),
+        documents: docs,
+        embeddedSend: esignMode === "embedded_send",
+        returnUrl: typeof window !== "undefined" ? `${window.location.origin}/dashboard/listings/${listingId}` : undefined,
+      })
+      if (!sent.success) {
+        setError(`Draft listing created, but the listing agreement was not sent: ${sent.error ?? "unknown error"}`)
+        return
+      }
+      setHandoff(sent.handoff ?? null)
+      setSendNotice(sent.recordWarning ?? (sent.dispatchStatus === "sent"
+        ? `Listing agreement sent to the seller via ${sent.esignProvider}.`
+        : `Listing agreement staged in ${sent.esignProvider} — send it from the window that just opened.`))
+      if (sent.handoff?.mode === "popup" && sent.handoff.urls[0]) openProviderPopup(sent.handoff.urls[0].url)
       setStep(6)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Unknown error")
     } finally {
       setBusy(false)
     }
-  }, [contact, state])
+  }, [contact, state, esignMode])
 
   const labels = stepLabels(mode)
 
@@ -552,6 +659,33 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
               <AlertCircle className="h-4 w-4" />
               <AlertDescription>{error}</AlertDescription>
             </Alert>
+          )}
+          {/* NAR 2024: submitForSignature refuses until the buyer's commission disclosure is
+              recorded, and a brand-new offer never has one — so the wizard's own send could
+              never succeed. The existing disclosure dialog clears it in place; then Send again. */}
+          {step === 5 && mode === "offer" && blocker === "commission_disclosure_required" && state.offerId && (
+            <div className="mb-4 rounded-lg border p-3 flex items-center justify-between gap-3">
+              <p className="text-xs text-muted-foreground">Record the buyer&apos;s commission disclosure, then press Send for E-Sign again.</p>
+              <CommissionDisclosureDialog
+                offerId={state.offerId}
+                onDone={(r) => {
+                  if (r.ok) { setBlocker(null); setError(null); setSendNotice(r.message) }
+                  else setError(r.message)
+                }}
+              />
+            </div>
+          )}
+          {step === 5 && esignSetupError && (
+            <Alert className="mb-4">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription className="text-xs">
+                {esignSetupError}{" "}
+                <a href="/dashboard/settings/integrations" className="underline">Open Integrations</a>
+              </AlertDescription>
+            </Alert>
+          )}
+          {step === 5 && sendNotice && !error && (
+            <p className="mb-4 text-xs text-emerald-700">{sendNotice}</p>
           )}
 
           {/* AI-staged packet banner — only renders when documentId prop is set */}
@@ -602,19 +736,22 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
               }}
             />
           )}
-          {step === 3 && <Step3Fill state={state} providerInfo={providerInfo} update={update} />}
+          {step === 3 && <Step3Fill state={state} mode={mode} agentName={agentName} providerInfo={providerInfo} update={update} />}
           {step === 4 && <Step4Signers state={state} update={update} mode={mode} />}
           {step === 5 && <Step5ESign state={state} mode={mode} esignProvider={esignProvider} busy={busy} onSubmit={mode === "offer" ? handleSubmitOffer : handleSubmitListing} />}
           {step === 6 && mode === "listing" && state.listingId && (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
               <Check className="h-10 w-10 text-emerald-600" />
               <h3 className="text-lg font-semibold">Draft listing created</h3>
+              {sendNotice && <p className="text-sm font-medium max-w-md">{sendNotice}</p>}
               <p className="text-sm text-muted-foreground max-w-sm">
                 This listing is a <span className="font-medium">draft</span> — it is not live, not
                 searchable and not on the MLS. It becomes a real listing once the listing agreement
                 is signed and the compliance check clears every required document, initial and
-                signature. Upload the signed agreement to the listing and that happens automatically.
+                signature. A signed copy returned by your e-sign provider files itself on the
+                listing; a copy signed in Google eSignature is uploaded to the listing from your Drive.
               </p>
+              {handoff && <HandoffPanel handoff={handoff} />}
               <Button asChild className="mt-2">
                 <Link href={`/dashboard/listings/${state.listingId}`}>
                   Open Listing
@@ -626,10 +763,12 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
           {step === 6 && mode === "offer" && state.offerId && (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
               <Check className="h-10 w-10 text-emerald-600" />
-              <h3 className="text-lg font-semibold">Offer submitted</h3>
+              <h3 className="text-lg font-semibold">{handoff ? "Offer ready to send" : "Offer sent for signature"}</h3>
+              {sendNotice && <p className="text-sm font-medium max-w-md">{sendNotice}</p>}
               <p className="text-sm text-muted-foreground max-w-sm">
                 Your offer is recorded. Open the offer workspace to view details, history, and next steps.
               </p>
+              {handoff && <HandoffPanel handoff={handoff} />}
               <Button asChild className="mt-2">
                 <Link href={`/crm/contacts/${contact?.id ?? ""}/offers/${state.offerId}`}>
                   Open Offer Workspace
@@ -666,9 +805,10 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
           {step === 5 && (
             <Button onClick={mode === "offer" ? handleSubmitOffer : handleSubmitListing} disabled={busy}>
               {busy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              {/* The listing lane does not dispatch an envelope, so it must not say
-                  it does. It creates the draft the signed agreement attaches to. */}
-              {mode === "offer" ? "Send for E-Sign" : "Create Draft Listing"}
+              {/* The listing lane now creates the draft AND sends the filled agreement
+                  (lane 88C); with no filled form selected it creates the draft only and
+                  says so on step 6. */}
+              {mode === "offer" ? "Send for E-Sign" : "Create Draft & Send Agreement"}
             </Button>
           )}
           {step === 6 && (
@@ -712,6 +852,41 @@ function canAdvance(step: number, state: WizardState, mode: "offer" | "listing")
     return hasCounterpartyRow ? hasCounterparty : state.signers.some((s) => s.email.trim().length > 0)
   }
   return true
+}
+
+/**
+ * THE PACKET THAT GOES TO E-SIGN (lane 88C): every library form the agent selected, as the
+ * FILLED copy when step 3 produced one (property + parties + the agent's typed values),
+ * else the source form. Provider-library forms are not files we hold — they are filled and
+ * sent inside the provider's own window.
+ */
+function packetDocuments(state: WizardState): Array<{ name: string; storagePath: string }> {
+  return state.selectedForms
+    .filter(f => f.source === "my_forms")
+    .map(f => ({ name: f.name.replace(/\.[^.]+$/, ""), storagePath: state.filledForms?.[f.formRef]?.filledPath ?? f.formRef }))
+    .filter(d => !!d.storagePath && !/^https?:\/\//i.test(d.storagePath))
+}
+
+/** The in-window e-sign step: DocuSign's sender view framed here, or the popup launcher. */
+function HandoffPanel({ handoff }: { handoff: EsignHandoff }) {
+  return (
+    <div className="w-full text-left rounded-lg border p-3 space-y-2">
+      <p className="text-xs text-muted-foreground">{handoff.instructions}</p>
+      {handoff.mode === "iframe" && handoff.urls[0] ? (
+        <div className="border rounded-lg overflow-hidden" style={{ height: 560 }}>
+          <iframe src={handoff.urls[0].url} className="w-full h-full" title={handoff.urls[0].label} />
+        </div>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        {handoff.urls.map(u => (
+          <Button key={u.url} size="sm" variant="outline" onClick={() => openProviderPopup(u.url)}>
+            <ExternalLink className="h-3.5 w-3.5 mr-1" />
+            {handoff.mode === "iframe" ? "Open full window" : `Open ${u.label}`}
+          </Button>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 function buildInitialSigners(
@@ -830,7 +1005,7 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
   myForms: { name: string; url: string; scope: "brokerage" | "team" | "agent"; path: string }[]
   agentUserId: string
   onUploaded: (f: { name: string; url: string; scope: "brokerage" | "team" | "agent"; path: string }) => void
-  providerInfo: { provider: TransactionProvider; embedUrl: string | null } | null | "loading"
+  providerInfo: ProviderWindow | null | "loading"
   providerForms: ProviderFormItem[] | null
   providerFormsLoading: boolean
   providerFormsError: string | null
@@ -869,11 +1044,12 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
         return
       }
       const url = signed.signedUrl
-      // Use that URL as the form ref so it opens for review and dispatches to
-      // the e-sign provider exactly like a library form.
-      const entry = { name: file.name, url, scope: "agent" as const, path: url }
+      // The STORAGE PATH is the form ref, exactly like a library form (lane 88C). It used to
+      // be the signed URL — which ends "?token=…", so the Fill step's ".pdf" test failed, the
+      // upload was never prefilled or editable, and the send had no path to attach.
+      const entry = { name: file.name, url, scope: "agent" as const, path: storagePath }
       onUploaded(entry)
-      update("selectedForms", [...state.selectedForms, { source: "my_forms" as const, formRef: url, name: file.name, scope: "agent" as const }])
+      update("selectedForms", [...state.selectedForms, { source: "my_forms" as const, formRef: storagePath, name: file.name, scope: "agent" as const }])
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "Upload failed")
     } finally {
@@ -917,7 +1093,11 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
           <TabsTrigger value="upload" className="flex-1">Upload</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="my-forms" className="mt-3">
+        <TabsContent value="my-forms" className="mt-3 space-y-3">
+          <StatePackagePanel mode={mode} stateCode={state.propertyState} myForms={myForms} selected={selected} onSelect={(forms) => {
+            const add = forms.filter(f => !selected.find(s => s.source === "my_forms" && s.formRef === f.path))
+            if (add.length) update("selectedForms", [...selected, ...add.map(f => ({ source: "my_forms" as const, formRef: f.path, name: f.name, scope: f.scope }))])
+          }} />
           {myForms.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground text-sm">
               No forms found in your brokerage, team, or agent library.
@@ -969,10 +1149,10 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
                   {mode === "listing" ? " (listing)" : " (offer)"}.
                 </p>
                 {providerInfo.embedUrl && (
-                  <a href={providerInfo.embedUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+                  <button type="button" onClick={() => openProviderPopup(providerInfo.embedUrl as string)} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
                     <ExternalLink className="h-3 w-3" />
-                    Open {providerInfo.provider}
-                  </a>
+                    Open {providerInfo.label}
+                  </button>
                 )}
               </div>
 
@@ -1071,13 +1251,103 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
   )
 }
 
+// ─── Step 2 — the state's local form PACKAGE (lane 88C) ──────────────────────
+// The package definition is lib/state-forms/registry.ts (the property's state decides —
+// there is no default state); the files are the agent's library. matchStatePackage joins
+// them so "pull the listing-agreement package" is one click, and anything the library is
+// missing is NAMED instead of silently absent.
+
+type LibraryForm = { name: string; url: string; scope: "brokerage" | "team" | "agent"; path: string }
+
+function StatePackagePanel({ mode, stateCode, myForms, selected, onSelect }: {
+  mode: "offer" | "listing"
+  stateCode: string
+  myForms: LibraryForm[]
+  selected: FormRef[]
+  onSelect: (forms: LibraryForm[]) => void
+}) {
+  const code = stateCode.trim().toUpperCase()
+  if (code.length !== 2) {
+    return <p className="text-xs text-muted-foreground">Enter the property&apos;s state in step 1 to see its {mode === "offer" ? "offer" : "listing agreement"} package.</p>
+  }
+  let pkg: ReturnType<typeof getStateForms>
+  try { pkg = getStateForms(code, mode) } catch (e) {
+    return <p className="text-xs text-destructive">{e instanceof Error ? e.message : "Unknown state"}</p>
+  }
+  const matches = matchStatePackage(pkg, myForms, code)
+  const found = matches.filter(m => m.file).map(m => m.file as LibraryForm)
+  const allSelected = found.every(f => selected.some(s => s.source === "my_forms" && s.formRef === f.path))
+  return (
+    <div className="rounded-lg border p-3 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-medium">{code} {mode === "offer" ? "offer" : "listing agreement"} package</p>
+        <Button size="sm" variant="outline" disabled={found.length === 0 || allSelected} onClick={() => onSelect(found)}>
+          {allSelected && found.length > 0 ? "Package selected" : `Select package (${found.length})`}
+        </Button>
+      </div>
+      <ul className="space-y-0.5">
+        {matches.map(m => (
+          <li key={`${m.kind}-${m.required}`} className="text-xs flex items-start gap-1.5">
+            {m.file ? <Check className="h-3 w-3 text-emerald-600 mt-0.5 shrink-0" /> : <AlertCircle className="h-3 w-3 text-amber-600 mt-0.5 shrink-0" />}
+            <span>
+              {m.required}
+              <span className="text-muted-foreground"> · {m.kind}{m.file ? ` → ${m.file.name}` : " — not in your library (add it, or pick it from your transaction provider)"}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 // ─── Step 3 — Fill Forms ─────────────────────────────────────────────────────
 
-interface FilledFormState { loading: boolean; filledPath?: string; previewUrl?: string; filledFields?: string[]; unresolvedFields?: string[]; error?: string }
+interface FilledFormState { loading: boolean; filledPath?: string; previewUrl?: string; filledFields?: string[]; unresolvedFields?: string[]; fields?: Array<{ name: string; value: string }>; error?: string }
 
-function Step3Fill({ state, providerInfo, update }: { state: WizardState; providerInfo: { provider: TransactionProvider; embedUrl: string | null } | null | "loading"; update: <K extends keyof WizardState>(k: K, v: WizardState[K]) => void }) {
+function Step3Fill({ state, mode, agentName, providerInfo, update }: {
+  state: WizardState
+  mode: "offer" | "listing"
+  agentName?: string
+  providerInfo: ProviderWindow | null | "loading"
+  update: <K extends keyof WizardState>(k: K, v: WizardState[K]) => void
+}) {
   const myFormsList = state.selectedForms.filter(f => f.source === "my_forms")
   const hasProvider = state.selectedForms.some(f => f.source === "transaction_provider")
+  // The deal's parties as the wizard already knows them (the contact it was opened from,
+  // the agent's own profile) — prefilled ONLY into name fields that name that party.
+  const parties = {
+    mode,
+    buyers:  state.signers.filter(s => s.role === "buyer" || s.role === "co_buyer").map(s => s.name).filter(Boolean),
+    sellers: state.signers.filter(s => s.role === "seller").map(s => s.name).filter(Boolean),
+    agentName: agentName ?? state.signers.find(s => s.role === "agent")?.name ?? null,
+  }
+  // The agent's in-progress edits per form (not yet applied into the PDF).
+  const [drafts, setDrafts] = useState<Record<string, Record<string, string>>>({})
+  const [openPanel, setOpenPanel] = useState<string | null>(null)
+
+  // Re-fill ONE form with the agent's typed values — the preview reloads with exactly what
+  // they typed, and the filled path the send will attach moves with it.
+  const applyEdits = useCallback((ref: string) => {
+    const typed = { ...(state.fieldValues?.[ref] ?? {}), ...(drafts[ref] ?? {}) }
+    update("fieldValues", { ...(state.fieldValues ?? {}), [ref]: typed })
+    setFilled(prev => ({ ...prev, [ref]: { ...(prev[ref] ?? {}), loading: true, error: undefined } }))
+    prefillStorageFormAction({
+      formPath: ref,
+      listingId: state.listingId || null,
+      offerId: state.offerId || null,
+      propertyAddress: state.propertyAddress || null,
+      propertyCity: state.propertyCity || null,
+      propertyState: state.propertyState || null,
+      parties,
+      fieldValues: typed,
+    }).then(res => {
+      setFilled(prev => ({ ...prev, [ref]: res.success
+        ? { loading: false, filledPath: res.filledPath, previewUrl: res.previewUrl, filledFields: res.filledFields, unresolvedFields: res.unresolvedFields, fields: res.fields }
+        : { ...(prev[ref] ?? {}), loading: false, error: res.error } }))
+      if (res.success) setDrafts(prev => { const n = { ...prev }; delete n[ref]; return n })
+    }).catch((e: unknown) => setFilled(prev => ({ ...prev, [ref]: { ...(prev[ref] ?? {}), loading: false, error: e instanceof Error ? e.message : "fill failed" } })))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, drafts])
 
   // PROPERTY-ONLY PREFILL — fill the known property identification into each storage PDF in-app, so
   // the agent works in a preview (not another tab). Offer terms stay blank for the agent.
@@ -1090,13 +1360,17 @@ function Step3Fill({ state, providerInfo, update }: { state: WizardState; provid
       setFilled(prev => ({ ...prev, [f.formRef]: { loading: true } }))
       prefillStorageFormAction({
         formPath: f.formRef,
+        listingId: state.listingId || null,
+        offerId: state.offerId || null,
         propertyAddress: state.propertyAddress || null,
         propertyCity: state.propertyCity || null,
         propertyState: state.propertyState || null,
+        parties,
+        fieldValues: state.fieldValues?.[f.formRef] ?? null,
       }).then(res => {
         if (cancelled) return
         setFilled(prev => ({ ...prev, [f.formRef]: res.success
-          ? { loading: false, filledPath: res.filledPath, previewUrl: res.previewUrl, filledFields: res.filledFields, unresolvedFields: res.unresolvedFields }
+          ? { loading: false, filledPath: res.filledPath, previewUrl: res.previewUrl, filledFields: res.filledFields, unresolvedFields: res.unresolvedFields, fields: res.fields }
           : { loading: false, error: res.error } }))
       }).catch(() => {
         if (!cancelled) setFilled(prev => ({ ...prev, [f.formRef]: { loading: false, error: "prefill failed" } }))
@@ -1163,13 +1437,51 @@ function Step3Fill({ state, providerInfo, update }: { state: WizardState; provid
                 {fs?.filledFields && fs.filledFields.length > 0 && <span className="text-xs text-emerald-600 ml-auto">{fs.filledFields.length} property field(s) pre-filled</span>}
               </div>
               <div className="p-4 space-y-2">
+                {fs?.error && <p className="text-xs text-destructive">{fs.error}</p>}
                 {isPdf && fs?.previewUrl ? (
                   <>
                     <div className="border rounded-lg overflow-hidden" style={{ height: 480 }}>
-                      <iframe src={fs.previewUrl} className="w-full h-full" title={`${f.name} preview`} />
+                      <iframe key={fs.previewUrl} src={fs.previewUrl} className="w-full h-full" title={`${f.name} preview`} />
                     </div>
                     {fs.unresolvedFields && fs.unresolvedFields.length > 0 && (
-                      <p className="text-xs text-muted-foreground">Complete in the form: {fs.unresolvedFields.join(", ")}, plus the offer terms.</p>
+                      <p className="text-xs text-muted-foreground">Still blank: {fs.unresolvedFields.join(", ")}{mode === "offer" ? ", plus the offer terms" : ", plus the listing terms"}.</p>
+                    )}
+                    {/* THE FIELDS, IN OUR WINDOW (lane 88C). Typing into the browser's PDF viewer
+                        above changed nothing the send could carry. These inputs are the form's own
+                        AcroForm text fields; Apply re-fills the PDF server-side and the preview
+                        reloads with exactly what the agent typed — that filled copy is what goes to e-sign. */}
+                    {fs.fields && fs.fields.length > 0 && (
+                      <div className="rounded-lg border">
+                        <button type="button" className="w-full px-3 py-2 text-left text-xs font-medium flex items-center justify-between" onClick={() => setOpenPanel(openPanel === f.formRef ? null : f.formRef)}>
+                          <span>Fill fields ({fs.fields.filter(x => x.value).length}/{fs.fields.length} filled)</span>
+                          <ChevronRight className={`h-3.5 w-3.5 transition-transform ${openPanel === f.formRef ? "rotate-90" : ""}`} />
+                        </button>
+                        {openPanel === f.formRef && (
+                          <div className="border-t p-3 space-y-2">
+                            <div className="grid grid-cols-2 gap-2 max-h-72 overflow-y-auto pr-1">
+                              {fs.fields.map(field => (
+                                <div key={field.name} className="space-y-0.5">
+                                  <Label className="text-[11px] text-muted-foreground truncate block" title={field.name}>{field.name}</Label>
+                                  <Input
+                                    className="h-7 text-xs"
+                                    value={drafts[f.formRef]?.[field.name] ?? state.fieldValues?.[f.formRef]?.[field.name] ?? field.value}
+                                    onChange={e => setDrafts(prev => ({ ...prev, [f.formRef]: { ...(prev[f.formRef] ?? {}), [field.name]: e.target.value } }))}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                            <div className="flex items-center justify-end gap-2">
+                              {drafts[f.formRef] && Object.keys(drafts[f.formRef]).length > 0 && (
+                                <span className="text-[11px] text-amber-700">{Object.keys(drafts[f.formRef]).length} unapplied change(s)</span>
+                              )}
+                              <Button size="sm" onClick={() => applyEdits(f.formRef)} disabled={fs.loading || !drafts[f.formRef]}>
+                                {fs.loading ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Check className="h-3.5 w-3.5 mr-1" />}
+                                Apply to form
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     )}
                   </>
                 ) : (
@@ -1191,17 +1503,35 @@ function Step3Fill({ state, providerInfo, update }: { state: WizardState; provid
         </div>
       )}
 
+      {/* THE PROVIDER'S OWN WINDOW. Framed only where the vendor documents framing (catalog
+          embed:true — SkySlope Forms); every other provider opens as a sized popup beside the
+          platform, because an iframe of a vendor that forbids framing renders BLANK (the old
+          dotloop "?embed=1" URL did exactly that). The agent's own provider session signs in. */}
       {hasProvider && providerInfo && providerInfo !== "loading" && providerInfo.embedUrl && (
         <div className="space-y-2">
-          <p className="text-sm font-medium capitalize">{providerInfo.provider} — fill forms in provider interface</p>
-          <div className="border rounded-lg overflow-hidden" style={{ height: 480 }}>
-            <iframe
-              src={providerInfo.embedUrl}
-              className="w-full h-full"
-              title={`${providerInfo.provider} form fill`}
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-            />
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-medium">{providerInfo.label} — fill the provider&apos;s forms</p>
+            <Button size="sm" variant="outline" onClick={() => openProviderPopup(providerInfo.embedUrl as string)}>
+              <ExternalLink className="h-3.5 w-3.5 mr-1" />
+              {providerInfo.embedMode === "iframe" ? "Open full window" : `Open ${providerInfo.label}`}
+            </Button>
           </div>
+          {providerInfo.embedMode === "iframe" ? (
+            <div className="border rounded-lg overflow-hidden" style={{ height: 480 }}>
+              <iframe
+                src={providerInfo.embedUrl}
+                className="w-full h-full"
+                title={`${providerInfo.label} form fill`}
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
+              />
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {providerInfo.label} does not allow its window inside another site (their security policy), so it opens
+              beside this one. Fill the selected forms there; they stay in your {providerInfo.label} file and
+              signed copies sync back to this deal through the provider connection.
+            </p>
+          )}
         </div>
       )}
 
@@ -1306,12 +1636,20 @@ function Step5ESign({ state, mode, esignProvider, busy, onSubmit }: {
   return (
     <div className="space-y-4">
       <h3 className="font-semibold">
-        {mode === "offer" ? "Review & Send for E-Sign" : "Review & Create Draft Listing"}
+        {mode === "offer" ? "Review & Send for E-Sign" : "Review & Send the Listing Agreement"}
       </h3>
       {mode === "listing" && (
         <p className="text-xs text-muted-foreground">
-          Creates the draft this listing agreement attaches to. The listing goes live only after the
-          signed agreement clears the compliance review of required documents, initials and signatures.
+          Creates the draft this listing agreement attaches to and sends the filled agreement to the
+          seller for signature. The listing goes live only after the signed agreement clears the
+          compliance review of required documents, initials and signatures.
+        </p>
+      )}
+      {getCatalogEntry(esignProvider)?.portalSend && (
+        <p className="text-xs text-muted-foreground">
+          Google eSignature (your default): the filled forms are placed in your Google Drive and open in a
+          window beside this one — choose eSignature → Request signature there. Google has no API and does
+          not allow its window inside another site, so that one step happens in Drive.
         </p>
       )}
 
@@ -1372,14 +1710,14 @@ function Step5ESign({ state, mode, esignProvider, busy, onSubmit }: {
         {esignProvider ? (
           <div className="flex items-center gap-2">
             <Badge variant="outline" className="text-xs">Signatures via:</Badge>
-            <span className="text-sm capitalize">{esignProvider}</span>
+            <span className="text-sm capitalize">{getCatalogEntry(esignProvider)?.label ?? esignProvider}</span>
           </div>
         ) : (
           <Alert className="py-2">
             <AlertCircle className="h-3 w-3" />
             <AlertDescription className="text-xs">
-              No e-sign provider configured.{" "}
-              <a href="/settings/integrations" className="underline">Set one up in Integrations.</a>
+              No e-sign method connected. Connect Google (Google eSignature is the default) or an e-sign provider in{" "}
+              <a href="/dashboard/settings/integrations" className="underline">Integrations</a>.
             </AlertDescription>
           </Alert>
         )}

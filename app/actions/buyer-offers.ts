@@ -1085,7 +1085,7 @@ export async function getBuyerOffers(
       id, property_address, offer_price, status, esign_status,
       esign_sent_at, form_source, esign_provider, strategy_recommendation_id,
       created_at, submitted_at, closing_date, financing_type,
-      earnest_money, contingencies, buyer_notes, listing_id
+      earnest_money, contingencies, buyer_notes, listing_id, metadata
     `)
     .eq("contact_id", contactId)
     // Tenant anchor comes from the contact row via the gate, never the caller.

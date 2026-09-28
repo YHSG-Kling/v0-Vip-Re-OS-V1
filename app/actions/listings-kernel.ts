@@ -32,6 +32,7 @@ import {
   type ListingUpdate,
 } from "@/lib/kernel/listings"
 import { isValidUUID } from "@/lib/validations"
+import { getCatalogEntry } from "@/lib/integrations/providers/catalog"
 
 // ─── Auth context helper ──────────────────────────────────────────────────────
 
@@ -1062,5 +1063,138 @@ export async function updateListingStatus(listingId: string, status: string) {
   } catch (error) {
     console.error("updateListingStatus error:", error)
     return { success: false, error: "Failed to update listing status" }
+  }
+}
+
+// ─── Action: sendListingAgreementForSignature (lane 88C) ─────────────────────
+//
+// THE LISTING LANE'S MISSING SEND. The FormWizard's listing mode created the draft
+// listing and stopped — "Upload the signed agreement to the listing" — so the agent
+// had to leave the platform, get the agreement signed elsewhere, and come back. The
+// owner's flow is pull package → fill → send for e-sign → signed back → stored.
+//
+// This is the send: session tenant (never a body id), the same readiness gate the
+// offer send runs, the packet's paths checked against the session's scope, then the
+// ONE dispatch core (lib/esign/dispatch-packet.ts — Google eSignature by default,
+// DocuSign embedded sender view, or a direct API send). The signed-back half is the
+// EXISTING listing lane, not a new one:
+//   · API providers — listings.external_provider_source / external_provider_transaction_id
+//     (m614) are stamped, so every provider webhook's evaluateEnvelopeExecution
+//     (lib/forms/esign-execution-loop.ts) resolves THIS listing from the envelope and the
+//     esign-doc-sync sweep pulls the signed documents onto it;
+//   · every provider — a `documents` row (listing_agreement, metadata.signature_request_id
+//     = envelope) that finalizeVoiceCockpitPacket flips to 'signed';
+//   · Google eSignature (no API, no webhook) — the Drive hand-off; the agent files the
+//     executed PDF through the listing's existing upload door, which runs the classifier
+//     and the listing compliance gate.
+export async function sendListingAgreementForSignatureAction(params: {
+  listingId: string
+  signers: Array<{ name: string; email: string; role: string }>
+  documents: Array<{ name: string; storagePath: string }>
+  embeddedSend?: boolean
+  returnUrl?: string
+}): Promise<{
+  success: boolean
+  error?: string
+  blockerType?: string
+  dispatchStatus?: "sent" | "awaiting_agent_send"
+  esignProvider?: string
+  handoff?: { mode: "iframe" | "popup"; urls: Array<{ label: string; url: string }>; instructions: string } | null
+  documentId?: string | null
+  recordWarning?: string | null
+}> {
+  const ctx = await resolveCallerContext()
+  if ("error" in ctx) return { success: false, error: ctx.error }
+  if (!isValidUUID(params.listingId)) return { success: false, error: "Invalid listing id" }
+  const signers = (params.signers ?? []).filter((s) => s?.email?.trim())
+  if (!signers.some((s) => s.role === "seller")) {
+    return { success: false, error: "Add the seller's email in the Signers step before sending the listing agreement.", blockerType: "missing_signer_email" }
+  }
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+
+  const { data: listing, error: listingErr } = await svc
+    .from("listings")
+    .select("id, brokerage_id, address, city, state, seller_contact_id, external_provider_source, external_provider_transaction_id")
+    .eq("id", params.listingId)
+    .maybeSingle()
+  if (listingErr) return { success: false, error: `Could not read the listing: ${listingErr.message}` }
+  if (!listing || listing.brokerage_id !== ctx.brokerageId) return { success: false, error: "Listing not found" }
+
+  const { checkAgentTransactable } = await import("@/lib/compliance/agent-readiness-gate")
+  const readiness = await checkAgentTransactable(svc, ctx.userId)
+  if (!readiness.transactable) return { success: false, error: readiness.message ?? "Agent not clear to transact", blockerType: "agent_readiness" }
+
+  const docs = (params.documents ?? []).filter((d) => d?.storagePath?.trim())
+  if (docs.length === 0) return { success: false, error: "Select and fill the listing agreement before sending it for signature.", blockerType: "no_documents" }
+  const { checkFormPathsInScope } = await import("@/lib/forms/form-path-scope")
+  const scope = await checkFormPathsInScope(svc, docs.map((d) => d.storagePath), { brokerageId: ctx.brokerageId, teamId: ctx.teamId, userId: ctx.userId })
+  if (!scope.ok) return { success: false, error: scope.error ?? `These forms are not in your library: ${scope.refused.join(", ")}` }
+
+  const address = [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
+  const { dispatchEsignPacket } = await import("@/lib/esign/dispatch-packet")
+  const dispatch = await dispatchEsignPacket(svc as any, {
+    brokerageId:        ctx.brokerageId,
+    userId:             ctx.userId,
+    teamId:             ctx.teamId,
+    transactionType:    "listing",
+    propertyAddress:    address || "Listing agreement",
+    contactId:          (listing.seller_contact_id as string | null) ?? null,
+    listingId:          listing.id as string,
+    existingEnvelopeId: listing.external_provider_source && !getCatalogEntry(listing.external_provider_source as string)?.portalSend
+      ? ((listing.external_provider_transaction_id as string | null) ?? null) : null,
+    signers,
+    documents:          docs,
+    embeddedSend:       params.embeddedSend === true,
+    returnUrl:          params.returnUrl,
+    recordId:           listing.id as string,
+  })
+  if (!dispatch.ok) {
+    return { success: false, error: dispatch.error ?? "The listing agreement could not be sent.", blockerType: dispatch.needsReconnect ? "esign_reconnect_required" : "esign_dispatch_failed" }
+  }
+
+  // The envelope is out (or staged in the agent's window). The records below are what
+  // lets the signature come BACK to this listing — a failure is reported, never hidden,
+  // and never turns the send into a failure (a retry would cut a second envelope).
+  const warnings: string[] = []
+  if (dispatch.kind === "api" && dispatch.envelopeId) {
+    const { data: stamped, error: stampErr } = await svc
+      .from("listings")
+      .update({ external_provider_source: dispatch.providerName, external_provider_transaction_id: dispatch.envelopeId })
+      .eq("id", listing.id as string)
+      .eq("brokerage_id", ctx.brokerageId)
+      .select("id")
+    if (stampErr) warnings.push(`the envelope reference was not saved on the listing (${stampErr.message})`)
+    else if ((stamped ?? []).length === 0) warnings.push("the envelope reference matched no listing row")
+  }
+  const { data: docRow, error: docErr } = await svc
+    .from("documents")
+    .insert({
+      brokerage_id:  ctx.brokerageId,
+      listing_id:    listing.id,
+      contact_id:    listing.seller_contact_id ?? null,
+      document_type: "listing_agreement",
+      status:        "pending_signature",
+      metadata: {
+        signature_request_id: dispatch.envelopeId ?? null,
+        esign_provider:       dispatch.providerName,
+        esign_status:         dispatch.status,
+        source_forms:         docs.map((d) => ({ name: d.name, path: d.storagePath })),
+        sent_by_user_id:      ctx.userId,
+      },
+    })
+    .select("id")
+    .maybeSingle()
+  if (docErr) warnings.push(`the listing-agreement record was not written (${docErr.message})`)
+
+  revalidatePath(`/dashboard/listings/${listing.id}`)
+  return {
+    success: true,
+    dispatchStatus: dispatch.status,
+    esignProvider:  dispatch.providerName,
+    handoff:        dispatch.handoff ?? null,
+    documentId:     (docRow?.id as string | undefined) ?? null,
+    recordWarning:  warnings.length ? `Sent, but ${warnings.join("; ")} — the signed copy may need to be uploaded to the listing by hand.` : null,
   }
 }

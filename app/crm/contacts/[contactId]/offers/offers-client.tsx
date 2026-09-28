@@ -43,6 +43,9 @@ interface Offer {
   earnest_money: number | null
   contingencies: string[] | null
   listing_id?: string | null
+  /** offers.metadata — read here for `esign_dispatch` (lane 88C): the Google Drive
+   *  eSignature window the send placed the packet in, reopened from the panel. */
+  metadata?: { esign_dispatch?: { handoff_urls?: Array<{ label: string; url: string }> } } | null
 }
 
 interface OutcomeForm {
@@ -392,6 +395,7 @@ export function OffersClient({
                         esignSentAt={offer.esign_sent_at}
                         esignCompletedAt={offer.esign_completed_at}
                         buyerSignedAt={offer.buyer_signed_at}
+                        providerSigningUrl={offer.metadata?.esign_dispatch?.handoff_urls?.[0]?.url ?? null}
                         onSent={() => setOffers(prev => prev.map(o => o.id === offer.id
                           ? { ...o, esign_status: "sent", esign_sent_at: new Date().toISOString() }
                           : o

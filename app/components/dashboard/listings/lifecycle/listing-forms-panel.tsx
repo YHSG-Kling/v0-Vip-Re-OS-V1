@@ -26,6 +26,7 @@ import {
   CircleCheck,
 } from "lucide-react"
 import { loadAvailableFormsAction } from "@/app/actions/forms-kernel"
+import { PROVIDER_PORTAL_URLS } from "@/lib/integrations/providers/catalog"
 import { prefillListingFormAction } from "@/app/actions/listings-kernel"
 import {
   TransactionFormEsignFlow,
@@ -120,14 +121,10 @@ export function ListingFormsPanel({
   const requiredForms = forms.filter(f => f.is_required)
   const optionalForms = forms.filter(f => !f.is_required)
 
-  const providerUrls: Record<string, string> = {
-    dotloop:        "https://www.dotloop.com/",
-    skyslope:       "https://app.skyslope.com/",
-    formsimplicity: "https://www.formsimplicity.com/",
-    brokermint:     "https://brokermint.com/",
-    authentisign:   "https://authentisign.com/",
-    docusign:       "https://www.docusign.com/",
-  }
+  // One spelling of each provider's portal URL (§6): the catalog's PROVIDER_PORTAL_URLS
+  // (lib/integrations/providers/catalog.ts). This file held a second map that pointed
+  // DocuSign and Brokermint at their MARKETING sites, not the agent's workspace.
+  const providerUrls: Record<string, string> = PROVIDER_PORTAL_URLS
 
   return (
     <>

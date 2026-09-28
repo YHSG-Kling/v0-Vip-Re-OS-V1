@@ -1,6 +1,7 @@
 'use server'
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { DEFAULT_ESIGN_PROVIDER } from "@/lib/integrations/providers/catalog"
 import { requireBrokerageAdmin } from "@/lib/auth/require-brokerage-admin"
 // ★ ACT-AS WRITE SEAM ★ — every export resolves the EFFECTIVE identity through
 // the seam (the impersonated seat when platform staff act as the tenant), so
@@ -84,7 +85,7 @@ const SYSTEM_DEFAULTS: Record<string, string> = {
   social:      "buffer",
   calendar:    "google",
   payment:     "stripe",
-  esign:       "dotloop",
+  esign:       DEFAULT_ESIGN_PROVIDER,   // owner wave 88 — the catalog's ONE default (mirrors lib/kernel/providers.ts)
   transaction: "dotloop",
   ai:          "anthropic",
   direct_mail: "lob",

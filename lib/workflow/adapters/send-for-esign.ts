@@ -459,13 +459,35 @@ export const sendForEsignAdapter: ChannelAdapter = {
     const manualEntry = getCatalogEntry(provider)
     const manualPortal = providerPortalMode(provider)
     const providerLabel = manualEntry?.label ?? provider
+    // Lane 88C — the Google default's missing half: when the agent's Google connection holds
+    // the drive.file grant, the staged PDF is PLACED in their Drive (lib/esign/google-esign-handoff.ts,
+    // sessionless-safe: the agent's own token via the service client) and the bell links that
+    // file, so "open the filled document" needs no re-upload. Best-effort — any refusal keeps
+    // 88B's manual steps below, and the step still reports SKIPPED (nothing was sent).
+    let driveFileUrl: string | null = null
+    if (manualEntry?.portalSend && agentUserId && document.storage_url && /\.pdf(\?|#|$)/i.test(document.storage_url)) {
+      try {
+        const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+        const got = await callConnector<Buffer>({ connector: "asset-download", url: document.storage_url, method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000 })
+        if (got.ok && got.data) {
+          const { handOffToGoogleEsign } = await import("@/lib/esign/google-esign-handoff")
+          const placed = await handOffToGoogleEsign({ agentUserId, documents: [{ name: `${document.document_type}`, bytes: new Uint8Array(got.data) }] })
+          if (placed.ok) driveFileUrl = placed.files[0]?.openUrl ?? null
+          else console.warn(`[send-for-esign] Drive placement skipped (${placed.error}) — the agent gets the manual steps`)
+        }
+      } catch (err) {
+        console.warn("[send-for-esign] Drive placement failed (non-fatal):", err instanceof Error ? err.message : err)
+      }
+    }
     if (agentUserId) {
       await sentinelWrite(supabase, supabase.from("notifications").insert({
         user_id: agentUserId,
         brokerage_id: brokerageId,
         type: "esign_provider_manual_send",
         title: `Send for signature via ${providerLabel}`,
-        body: manualEntry?.portalSend
+        body: manualEntry?.portalSend && driveFileUrl
+          ? `Workflow staged a ${document.document_type} for ${contact?.first_name ?? "the contact"} and placed it in your Google Drive: ${driveFileUrl} — open it, then Menu → eSignature → Request signature.`
+          : manualEntry?.portalSend
           ? `Workflow staged a ${document.document_type} for ${contact?.first_name ?? "the contact"}. Open ${manualPortal?.url ?? providerLabel}, open the filled document, then Tools → eSignature → Request signature (${providerLabel} is your default e-sign — it sends from your own Google account).`
           : `Workflow staged a ${document.document_type} for ${contact?.first_name ?? "the contact"}. Open ${providerLabel}${manualPortal ? ` (${manualPortal.url})` : ""} and send manually — ${provider === "brokermint" ? "Brokermint has no native e-signature API" : `auto-send is not available for ${providerLabel}`}.`,
         priority: "high",

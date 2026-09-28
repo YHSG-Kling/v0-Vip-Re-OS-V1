@@ -43,7 +43,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
   // identity layer never reads .role outside the kernel).
   const { data: profile } = await supabase
     .from("users")
-    .select("id, user_type, brokerage_id")
+    .select("id, user_type, brokerage_id, team_id")
     .eq("id", user.id)
     .maybeSingle()
 
@@ -116,21 +116,18 @@ export default async function TransactionDetailPage({ params }: PageProps) {
   }
 
   // Fetch contact + esign provider + linked offer in parallel with main data
-  const [{ data: contactRow }, { data: providerCred }, { data: linkedOfferRow }] = await Promise.all([
+  const [{ data: contactRow }, esignChoice, { data: linkedOfferRow }] = await Promise.all([
     supabase
       .from("contacts")
       .select("id, first_name, last_name, email")
       .eq("id", transaction.contact_id)
       .maybeSingle(),
-    supabase
-      .from("platform_credentials")
-      .select("platform, account_name")
-      .eq("brokerage_id", brokerageId)
-      .in("platform", ["dotloop", "docusign", "skyslope", "authentisign"])
-      .eq("is_active", true)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
+    // The ONE e-sign choice (lane 88C) — the same cascade the send uses (explicit
+    // override → Google eSignature default → a connected API provider). This read
+    // was "the brokerage's newest API credential", so an agent on Google eSignature
+    // (the default) saw "No e-sign provider connected" and could not send at all.
+    import("@/lib/integrations/resolve-esign-provider").then((m) =>
+      m.resolveESignChoice({ brokerageId, userId: user.id, teamId: (profile.team_id as string | null) ?? null })),
     supabase
       .from("offers")
       .select("id, esign_status, esign_provider, esign_sent_at, esign_completed_at, buyer_signed_at")
@@ -144,8 +141,8 @@ export default async function TransactionDetailPage({ params }: PageProps) {
   const contactName = contactRow
     ? ([contactRow.first_name, contactRow.last_name].filter(Boolean).join(" ") || null)
     : null
-  const connectedEsignProvider = providerCred
-    ? { platform: providerCred.platform, accountName: providerCred.account_name ?? null }
+  const connectedEsignProvider = esignChoice.ok
+    ? { platform: esignChoice.providerName, accountName: esignChoice.kind === "google" ? "Google eSignature" : null }
     : null
 
   // Fetch transaction coordinator, available TCs, lender info, and available lenders

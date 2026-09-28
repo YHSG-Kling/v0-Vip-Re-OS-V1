@@ -38,7 +38,15 @@ export async function sendDocumentForSignature(params: {
   signers: Array<{ name: string; email: string; role: string }>
   userId?: string  // ignored — derived from session
   brokerageId?: string  // ignored — derived from session
-}): Promise<{ success: boolean; signatureId?: string; error?: string; blockedReason?: string }> {
+}): Promise<{
+  success: boolean
+  signatureId?: string
+  error?: string
+  blockedReason?: string
+  /** Lane 88C — the in-window step (DocuSign sender view / Google Drive eSignature), when any. */
+  handoff?: { mode: "iframe" | "popup"; urls: Array<{ label: string; url: string }>; instructions: string } | null
+  dispatchStatus?: "sent" | "awaiting_agent_send"
+}> {
   const { transactionId, documentId, docType, docLabel, signers } = params
 
   if (!isValidUUID(transactionId)) {
@@ -55,7 +63,7 @@ export async function sendDocumentForSignature(params: {
   if (!authUser) return { success: false, error: "Unauthorized" }
   const { data: callerRow } = await authClient
     .from("users")
-    .select("brokerage_id")
+    .select("brokerage_id, team_id")
     .eq("id", authUser.id)
     .maybeSingle()
   if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
@@ -63,6 +71,13 @@ export async function sendDocumentForSignature(params: {
   const brokerageId = callerRow.brokerage_id
 
   const supabase = createServiceClient()
+
+  // Signers must carry an email — the panel's fallback row ("Primary Signer", no email)
+  // used to be recorded as a sent request to nobody.
+  const addressed = signers.filter((s) => s.email?.trim())
+  if (addressed.length === 0) {
+    return { success: false, blockedReason: "missing_signer_email", error: "Add the signer's email on the transaction's contact before sending for signature." }
+  }
 
   // ── AGENT READINESS HARD GATE ───────────────────────────────────────────────
   // A license/CE/ethics-blocked agent cannot put a legal document out for signature (regulatory
@@ -74,56 +89,86 @@ export async function sendDocumentForSignature(params: {
   }
 
   // ── Verify the transaction document exists and belongs to this transaction ─
+  // TENANT (lane 88C): the document read now carries the SESSION's brokerage. It matched
+  // on (id, transaction_id) alone, so a caller naming another tenant's transaction +
+  // document could flip that document to pending_signature from their own account.
   const { data: doc, error: docErr } = await supabase
     .from("transaction_documents")
     .select("id, doc_type, doc_label, status, storage_url")
     .eq("id", documentId)
     .eq("transaction_id", transactionId)
-    .single()
-
-  if (docErr || !doc) {
-    return { success: false, error: "Document not found" }
-  }
-
-  // ── Resolve the brokerage's esign provider from platform_credentials ────
-  // Providers are owned by the brokerage/team/agent — NOT by the contact.
-  const { data: credential } = await supabase
-    .from("platform_credentials")
-    .select("platform")
     .eq("brokerage_id", brokerageId)
-    .in("platform", ["dotloop", "docusign", "skyslope", "authentisign"])
-    .eq("is_active", true)
-    .order("created_at", { ascending: false })
-    .limit(1)
     .maybeSingle()
 
-  if (!credential) {
-    return {
-      success: false,
-      blockedReason: "no_provider",
-      error: "No e-sign provider configured. Connect one in Settings > Integrations.",
-    }
+  if (docErr) return { success: false, error: `Could not read the document: ${docErr.message}` }
+  if (!doc) return { success: false, error: "Document not found" }
+  if (!doc.storage_url) {
+    return { success: false, blockedReason: "no_file", error: "This document has no uploaded file yet — upload it before sending for signature." }
   }
 
-  const providerKey = credential.platform
+  const { data: txn, error: txnErr } = await supabase
+    .from("transactions")
+    .select("property_address, contact_id")
+    .eq("id", transactionId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (txnErr) return { success: false, error: `Could not read the transaction: ${txnErr.message}` }
+
+  // ── ACTUALLY SEND IT (lane 88C) ─────────────────────────────────────────────
+  // This action used to pick "the brokerage's newest e-sign credential", write a
+  // contract_signatures row saying 'sent' and flip the document to
+  // pending_signature — and never call the provider. Nothing left the building; the
+  // panel said "Sent". It now goes through the ONE dispatch core (Google eSignature
+  // by default, else the agent's/team's/brokerage's API provider) with the
+  // document's own file attached, and records the envelope id that the provider
+  // webhooks' finalizeVoiceCockpitPacket matches contract_signatures on.
+  const { dispatchEsignPacket } = await import("@/lib/esign/dispatch-packet")
+  const dispatch = await dispatchEsignPacket(supabase as any, {
+    brokerageId,
+    userId,
+    teamId:          (callerRow.team_id as string | null) ?? null,
+    transactionType: "purchase",
+    propertyAddress: (txn?.property_address as string | null) ?? docLabel ?? "Transaction document",
+    contactId:       (txn?.contact_id as string | null) ?? null,
+    signers:         addressed,
+    documents:       [{ name: docLabel ?? doc.doc_label ?? docType, url: doc.storage_url as string }],
+    recordId:        documentId,
+  })
+  if (!dispatch.ok) {
+    return {
+      success: false,
+      blockedReason: dispatch.needsReconnect ? "esign_reconnect_required" : "esign_dispatch_failed",
+      error: dispatch.error ?? "The signature request could not be sent.",
+    }
+  }
+  const providerKey = dispatch.providerName ?? "unknown"
 
   // ── Insert contract_signatures record ─────────────────────────────────────
   const { data: sig, error: sigErr } = await supabase
     .from("contract_signatures")
     .insert({
-      brokerage_id:       brokerageId,
-      agent_id:           await resolveAgentId(supabase as any, userId),
-      contract_type:      docType,
-      provider_name:      providerKey,
-      esign_status:       "sent",
-      sent_at:            new Date().toISOString(),
-      document_url:       doc.storage_url ?? null,
+      brokerage_id:         brokerageId,
+      agent_id:             await resolveAgentId(supabase as any, userId),
+      contract_type:        docType,
+      provider_name:        providerKey,
+      // A packet staged for the agent to send in the provider window is pending, not sent.
+      esign_status:         dispatch.status === "sent" ? "sent" : "pending",
+      sent_at:              new Date().toISOString(),
+      document_url:         doc.storage_url ?? null,
+      provider_envelope_id: dispatch.envelopeId ?? null,
+      signing_url:          dispatch.kind === "google" ? (dispatch.handoff?.urls[0]?.url ?? null) : null,
     })
     .select("id")
     .single()
 
   if (sigErr || !sig) {
-    return { success: false, error: "Failed to create signature record" }
+    // The request DID go out (dispatch succeeded above) — say so, with the envelope, so
+    // the agent does not resend and cut a second envelope.
+    return {
+      success: false,
+      error: `Sent via ${providerKey}${dispatch.envelopeId ? ` (envelope ${dispatch.envelopeId})` : ""}, but the signature record could not be saved${sigErr ? `: ${sigErr.message}` : ""} — do not resend; the signed copy may need to be filed by hand.`,
+      handoff: dispatch.handoff ?? null,
+    }
   }
 
   // ── Mark the transaction document as pending_signature ────────────────────
@@ -154,7 +199,7 @@ export async function sendDocumentForSignature(params: {
   .then(() => {}, () => {}) // fire-and-forget: the send already succeeded
 
   revalidatePath(`/dashboard/transactions/${transactionId}`)
-  return { success: true, signatureId: sig.id }
+  return { success: true, signatureId: sig.id, handoff: dispatch.handoff ?? null, dispatchStatus: dispatch.status }
 }
 
 // ─── RESEND DOCUMENT FOR SIGNATURE ───────────────────────────────────────────

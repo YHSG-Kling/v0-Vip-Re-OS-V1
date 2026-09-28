@@ -54,6 +54,7 @@ import {
   getFormFieldsAction,
 } from "@/app/actions/forms-kernel"
 import type { FormContextType } from "@/lib/kernel/forms"
+import { PROVIDER_PORTAL_URLS } from "@/lib/integrations/providers/catalog"
 import type { FormFieldDef } from "@/app/actions/forms-kernel"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -275,14 +276,10 @@ export function TransactionFormEsignFlow({
     setSigners(prev => prev.map((s, i) => i === idx ? { ...s, [field]: value } : s))
   }
 
-  const providerUrls: Record<string, string> = {
-    dotloop:        "https://www.dotloop.com/",
-    skyslope:       "https://app.skyslope.com/",
-    formsimplicity: "https://www.formsimplicity.com/",
-    brokermint:     "https://brokermint.com/",
-    authentisign:   "https://authentisign.com/",
-    docusign:       "https://www.docusign.com/",
-  }
+  // One spelling of each provider's portal URL (§6): the catalog's PROVIDER_PORTAL_URLS
+  // (lib/integrations/providers/catalog.ts). The local map pointed DocuSign and
+  // Brokermint at their MARKETING sites instead of the agent's workspace.
+  const providerUrls: Record<string, string> = PROVIDER_PORTAL_URLS
 
   // ─── Step: prefill ────────────────────────────────────────────────────────
 

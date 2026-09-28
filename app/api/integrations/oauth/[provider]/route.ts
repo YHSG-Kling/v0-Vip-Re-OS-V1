@@ -48,6 +48,12 @@ const OAUTH_CONFIGS: Record<OAuthProvider, OAuthConfig> = {
       "https://www.googleapis.com/auth/calendar.events",
       "https://www.googleapis.com/auth/gmail.send",
       "https://www.googleapis.com/auth/gmail.readonly",
+      // Google eSignature is the platform's DEFAULT e-sign method (owner, wave 88). It has
+      // no API, so the FormWizard places the FILLED form in the agent's own Drive and opens
+      // it for "Request eSignature" (lib/esign/google-esign-handoff.ts). drive.file is the
+      // narrowest Drive grant: it reaches ONLY files this app created, never the agent's
+      // other Drive content. Accounts connected before this line must reconnect once.
+      "https://www.googleapis.com/auth/drive.file",
     ],
     additionalParams: {
       access_type: "offline",

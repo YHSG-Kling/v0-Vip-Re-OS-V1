@@ -107,6 +107,22 @@ export async function getFreshPersonalToken(
   return { provider: cred.service_name, accessToken, email: cred.email }
 }
 
+/**
+ * Which personal account is connected, and what it was GRANTED — without minting a token.
+ * The Google-eSignature hand-off (lib/esign/google-esign-handoff.ts) asks this so it can
+ * say "reconnect Google to grant Drive access" BEFORE a send fails, and the FormWizard's
+ * provider lookup can show Google as the e-sign method only when it can actually run.
+ * `scope` is the space-separated grant the OAuth callback recorded on config.scope
+ * (null when the row predates that write — callers then attempt and read the refusal).
+ */
+export async function getPersonalConnectionInfo(
+  agentUserId: string,
+): Promise<{ provider: PersonalProvider; email: string | null; scope: string | null } | null> {
+  const cred = await loadActivePersonalCred(agentUserId)
+  if (!cred) return null
+  return { provider: cred.service_name, email: cred.email, scope: cred.scope }
+}
+
 interface PersonalCred {
   id: string
   service_name: "gmail" | "outlook"
@@ -114,6 +130,8 @@ interface PersonalCred {
   refresh_token: string | null
   token_expires_at: string | null
   email: string | null
+  /** The OAuth grant recorded at connect time (config.scope), when known. */
+  scope: string | null
   /** Which table the cred came from — token refresh writes back to the same place. */
   source: "agent_api_credentials" | "platform_credentials"
 }
@@ -139,7 +157,7 @@ async function loadActivePersonalCred(agentUserId: string): Promise<PersonalCred
       // decryptSecret is backward-compatible: a plaintext token passes through unchanged, an
       // at-rest-encrypted token is transparently decrypted — so this read is safe before/after
       // the credential-encryption rollout (lib/security/secret-crypto.ts).
-      return { id: c.id, service_name: c.service_name, access_token: decryptSecret(c.access_token), refresh_token: decryptSecret(c.refresh_token), token_expires_at: c.token_expires_at, email: c.config?.email ?? null, source: "agent_api_credentials" }
+      return { id: c.id, service_name: c.service_name, access_token: decryptSecret(c.access_token), refresh_token: decryptSecret(c.refresh_token), token_expires_at: c.token_expires_at, email: c.config?.email ?? null, scope: (c.config?.scope as string | undefined) ?? null, source: "agent_api_credentials" }
     }
   }
 
@@ -172,6 +190,7 @@ async function loadOwnerEmailCred(owner: EmailOwner): Promise<PersonalCred | nul
     refresh_token: c.refresh_token,
     token_expires_at: c.token_expires_at,
     email: (c.config?.email as string) ?? null,
+    scope: (c.config?.scope as string | undefined) ?? null,
     source: "platform_credentials",
   }
 }

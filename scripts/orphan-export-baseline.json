@@ -3351,7 +3351,6 @@
     "lib/integrations/providers/provider-resolver.ts": 4,
     "lib/integrations/providers/transaction-provider.interface.ts": 1,
     "lib/integrations/resolve-esign-provider.ts": 1,
-    "lib/integrations/transaction-providers/embed-url.ts": 1,
     "lib/integrations/transaction-providers/resolve-transaction-provider.ts": 1,
     "lib/integrations/widget/resolve-notification-target.ts": 1,
     "lib/integrations/zapier-direction.ts": 1,
@@ -16790,9 +16789,6 @@
     ],
     "lib/integrations/resolve-esign-provider.ts": [
       "resolveESignProviderForActor"
-    ],
-    "lib/integrations/transaction-providers/embed-url.ts": [
-      "getTransactionProviderEmbedUrl"
     ],
     "lib/integrations/transaction-providers/resolve-transaction-provider.ts": [
       "resolveTransactionProvider"

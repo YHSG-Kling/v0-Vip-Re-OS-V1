@@ -47,7 +47,7 @@ async function readOverride(
   scopeId: string,
 ): Promise<string | null> {
   const svc = createServiceClient()
-  const { data } = await svc
+  const { data, error } = await svc
     .from("provider_overrides")
     .select("provider_key")
     .eq("provider_type", "esign")
@@ -55,6 +55,9 @@ async function readOverride(
     .eq("scope_id", scopeId)
     .eq("enabled", true)
     .maybeSingle()
+  // A refused read is NOT "no override" — say so (the cascade then continues, but the
+  // loss of the agent's explicit pick is visible rather than silent).
+  if (error) console.error(`[resolve-esign-provider] ${scope} e-sign override read refused: ${error.message}`)
   return (data?.provider_key as string | null) ?? null
 }
 
@@ -112,6 +115,58 @@ function portalSendMessage(providerName: string): string {
   const portal = providerPortalMode(providerName)
   const label = portal?.label ?? providerName
   return `E-sign is set to ${label} (the default), which sends from your own ${label} window — open ${portal?.url ?? label}, open the filled document, then Tools → eSignature → Request signature. To auto-send from here instead, connect DocuSign, Dotloop or another provider in Settings → Integrations.`
+}
+
+// ─── THE E-SIGN CHOICE FOR A SEND (lane 88C, merged onto 88B's Google default) ──
+//
+// resolveESignProviderForActor above answers "which CONNECTED API provider, with what
+// credential" and REFUSES the portal-send default with where to send from (88B). A SEND
+// (FormWizard offer + listing, the transaction page's per-document send — all through
+// lib/esign/dispatch-packet.ts) needs one more answer: when the choice IS the Google
+// default, do the filled forms go into the agent's Drive for them (lane 88C's hand-off,
+// lib/esign/google-esign-handoff.ts), or does the agent upload them by hand (88B's
+// portalSendMessage)? Same order as 88B's resolver and workflow step (§6 — one order):
+//   1. an explicit provider_overrides pick (user → team → brokerage) — a portal-send pick
+//      (google_esign) is the Google choice; any other pick resolves through the resolver;
+//   2. a connected API provider;
+//   3. the DEFAULT — Google eSignature (DEFAULT_ESIGN_PROVIDER), with whether the agent's
+//      Google connection can place the packet in Drive (connected + drive.file grant).
+
+export type ESignChoice =
+  | { ok: true; kind: "google"; providerName: typeof DEFAULT_ESIGN_PROVIDER; resolvedScope: "user" | "team" | "brokerage" | "default"; connected: boolean; driveGranted: boolean | null; manualSteps: string }
+  | { ok: true; kind: "api"; providerName: ResolvedESignProvider["providerName"]; resolved: ResolvedESignProvider }
+  | { ok: false; error: string }
+
+export async function resolveESignChoice(ctx: ResolveESignContext): Promise<ESignChoice> {
+  if (!ctx.brokerageId) return { ok: false, error: "brokerageId required to resolve e-sign provider" }
+  const userPick      = ctx.userId ? await readOverride("user", ctx.userId) : null
+  const teamPick      = ctx.teamId ? await readOverride("team", ctx.teamId) : null
+  const brokeragePick = await readOverride("brokerage", ctx.brokerageId)
+  const pick = userPick ?? teamPick ?? brokeragePick ?? null
+  const pickScope: "user" | "team" | "brokerage" = userPick ? "user" : teamPick ? "team" : "brokerage"
+
+  const google = async (scope: "user" | "team" | "brokerage" | "default"): Promise<ESignChoice> => {
+    const { googleEsignReadiness } = await import("@/lib/esign/google-esign-handoff")
+    const g = ctx.userId ? await googleEsignReadiness(ctx.userId) : { connected: false, driveGranted: null }
+    return { ok: true, kind: "google", providerName: DEFAULT_ESIGN_PROVIDER, resolvedScope: scope, connected: g.connected, driveGranted: g.driveGranted, manualSteps: portalSendMessage(DEFAULT_ESIGN_PROVIDER) }
+  }
+
+  if (pick && getCatalogEntry(pick)?.portalSend) return google(pickScope)
+  if (pick) {
+    try {
+      const resolved = await resolveESignProviderForActor(ctx)
+      return { ok: true, kind: "api", providerName: resolved.providerName, resolved }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+  try {
+    const resolved = await resolveESignProviderForActor(ctx)
+    return { ok: true, kind: "api", providerName: resolved.providerName, resolved }
+  } catch {
+    // Nothing selected, nothing connected → the default. Never a silent Dotloop.
+    return google("default")
+  }
 }
 
 function buildResolved(

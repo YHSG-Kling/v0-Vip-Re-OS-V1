@@ -43,6 +43,16 @@ export async function buildEsignAnchorPlanAction(input: EsignAnchorPlanInput): P
     ? (input.provider as EsignProvider) : "generic"
 
   const svc = createServiceClient()
+  // Same service-client read as prefillStorageFormAction, same tenant check (lane 88C):
+  // the caller-named path must be in the SESSION's own scope before a byte is read.
+  const { data: me, error: meErr } = await authClient.from("users").select("brokerage_id, team_id").eq("id", user.id).maybeSingle()
+  if (meErr) return { success: false, error: `could not read your account: ${meErr.message}` }
+  if (!me?.brokerage_id) return { success: false, error: "unauthorized" }
+  const { checkFormPathsInScope } = await import("@/lib/forms/form-path-scope")
+  const scope = await checkFormPathsInScope(svc, [input.filledPath], {
+    brokerageId: me.brokerage_id as string, teamId: (me.team_id as string | null) ?? null, userId: user.id,
+  })
+  if (!scope.ok) return { success: false, error: scope.error ?? "that form is not in your library" }
   try {
     const { data: file, error } = await svc.storage.from(FORMS_BUCKET).download(input.filledPath)
     if (error || !file) return { success: false, error: `could not load the form: ${error?.message ?? "not found"}` }

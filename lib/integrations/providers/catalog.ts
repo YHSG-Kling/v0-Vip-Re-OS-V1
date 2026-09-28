@@ -28,6 +28,11 @@ export interface ProviderCapabilities {
   transactionForms: boolean
   /** Supports rendering its UI inside an app iframe (most do NOT — CSP/X-Frame). */
   embed: boolean
+  /** The provider's API issues a one-time SENDER VIEW url for a draft envelope that is
+   *  documented as frameable — the agent reviews tabs/recipients and presses Send inside
+   *  OUR window. Only DocuSign documents this (EnvelopeViews:createSender with
+   *  viewAccess "envelope" — "iFrames are supported", DocuSign developer blog 2024-05). */
+  embeddedSend?: boolean
 }
 
 export interface ProviderCatalogEntry {
@@ -42,6 +47,23 @@ export interface ProviderCatalogEntry {
   capabilities: ProviderCapabilities
 }
 
+// EMBED EVIDENCE (lane 88C, 2026-09-28 — Exa research; direct header probes were refused
+// by this sandbox's egress policy, so a provider with NO published embed surface is
+// treated as NOT frameable: fail closed to a popup, never a blank iframe).
+//   · SkySlope   — the SkySlope Forms Widget "injects an iframe into the DOM of the host
+//                  application, which loads the SkySlope Forms application"
+//                  (github.com/skyslope-2/skyslope-forms-widget) → forms.skyslope.com frames.
+//   · DocuSign   — the web app does not frame; the API's SENDER VIEW and RECIPIENT VIEW do
+//                  (embeddedSend below).
+//   · Dotloop    — Public API v2 Loop-It returns a `loopUrl` "used to redirect the user to
+//                  the loop on dotloop.com" (dotloop.github.io/public-api) — no embed surface.
+//                  The previous `embed: true` + a dotloop loops URL with an embed flag was not
+//                  a real endpoint, so the wizard's iframe rendered blank.
+//   · Brokermint, Form Simplicity, Authentisign — no published embed surface → popup.
+//   · Google eSignature — no API, drive.google.com does not frame → popup; lane 88C places
+//     the FILLED packet in the agent's Drive first (lib/esign/google-esign-handoff.ts).
+//   · Lone Wolf TransactionDesk / zipForm — not integrated (no provider class); TD's API
+//     issues a one-time SSO `view-url` (apidocs.lwolf.com) — a popup, if/when integrated.
 export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
   // THE DEFAULT E-SIGN PROVIDER (owner, wave 88 verbatim: "google esign is default not dotloop.").
   // Google Workspace eSignature (Docs/Drive → Tools → eSignature → Request signature) is UI-only —
@@ -50,15 +72,15 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
   // agent's own Google account (the same account their Gmail/Calendar connection already uses).
   // Dotloop and every API provider below stay selectable; they simply are not the default.
   google_esign:   { name: "google_esign",   label: "Google eSignature", implemented: false, portalSend: true, capabilities: { esign: true,  transactionForms: false, embed: false } },
-  dotloop:        { name: "dotloop",        label: "Dotloop",         implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: true  } },
-  docusign:       { name: "docusign",       label: "DocuSign",        implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: false } },
+  dotloop:        { name: "dotloop",        label: "Dotloop",         implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: false } },
+  docusign:       { name: "docusign",       label: "DocuSign",        implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: false, embeddedSend: true } },
   skyslope:       { name: "skyslope",       label: "SkySlope",        implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: true  } },
   authentisign:   { name: "authentisign",   label: "Authentisign",    implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: false } },
   // Brokermint = transaction/back-office management, no native e-sign (pair an
   // eSign provider for signing). Form Simplicity = state-association form library
   // plus e-sign via its Authentisign integration.
-  brokermint:     { name: "brokermint",     label: "Brokermint",      implemented: true,  capabilities: { esign: false, transactionForms: true,  embed: true  } },
-  formsimplicity: { name: "formsimplicity", label: "Form Simplicity", implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: true  } },
+  brokermint:     { name: "brokermint",     label: "Brokermint",      implemented: true,  capabilities: { esign: false, transactionForms: true,  embed: false } },
+  formsimplicity: { name: "formsimplicity", label: "Form Simplicity", implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: false } },
 }
 
 // Module-private since 2026-09-08 — no importer outside this file (category B tranche).
@@ -81,13 +103,17 @@ export const PROVIDER_PORTAL_URLS: Record<ProviderName, string> = {
   google_esign:   "https://drive.google.com/drive/my-drive",
   dotloop:        "https://www.dotloop.com/my/loops",
   docusign:       "https://app.docusign.com",
-  skyslope:       "https://app.skyslope.com",
+  // forms.skyslope.com is the documented frameable Forms app (the widget's iframe src).
+  skyslope:       "https://forms.skyslope.com",
   authentisign:   "https://www.authentisign.com",
   brokermint:     "https://my.brokermint.com",
   formsimplicity: "https://www.formsimplicity.com",
 }
 
-/** PURE: how the Forms Library surfaces a provider's portal window. */
+/** PURE: how the Forms Library AND the FormWizard's Fill step surface a provider's portal
+ *  window. The ONE embed resolver — lib/integrations/transaction-providers/embed-url.ts was
+ *  a second spelling of the same idea (different URLs, frameability ignored) and is deleted
+ *  onto this function (tombstone in app/api/form-wizard/resolve-provider/route.ts). */
 export function providerPortalMode(name?: string | null): { url: string; label: string; mode: "iframe" | "new_tab" } | null {
   if (!isKnownProvider(name)) return null
   const key = name.toLowerCase() as ProviderName
@@ -147,4 +173,10 @@ export function getEsignProviders(): ProviderName[] {
   return getImplementedProviders()
     .filter((p) => p.capabilities.esign)
     .map((p) => p.name)
+}
+
+/** PURE: does this provider's API issue a frameable SENDER view for a draft envelope?
+ *  (Only DocuSign today — see the embed evidence above PROVIDER_CATALOG.) */
+export function supportsEmbeddedSend(name?: string | null): boolean {
+  return getCatalogEntry(name)?.capabilities.embeddedSend === true
 }

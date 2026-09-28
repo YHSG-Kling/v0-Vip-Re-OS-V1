@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-09-28
  * source: public.live_check_constraints_json()
- * body-sha256: ef59aad0b26249922623f508c72b877026bd9b1465264281eb862e9c769ccaee
+ * body-sha256: 91b427611ed73acd6c75689d12721296d4f0f9bf436a037d7c2912a8e00422bb
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1069,7 +1069,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     ai_extraction_status: ["completed", "extracting", "failed", "manual", "pending"],
     commission_disclosure_method: ["click_through", "docusign", "dotloop", "wet_signature"],
     disclosed_commission_payer: ["buyer", "either", "seller", "split"],
-    esign_provider: ["authentisign", "docusign", "dotloop", "in_app", "skyslope"],
+    esign_provider: ["authentisign", "docusign", "dotloop", "google_esign", "in_app", "skyslope"],
     esign_status: ["declined", "fully_signed", "partially_signed", "pending", "sent", "voided"],
     form_source: ["authentisign", "docusign", "dotloop", "in_app", "manual", "portal_upload", "skyslope"],
     offer_type: ["backup", "counter", "multiple_counter", "standard"],

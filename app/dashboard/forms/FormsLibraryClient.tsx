@@ -8,7 +8,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { useState, useEffect } from "react"
-import { providerPortalMode, DEFAULT_ESIGN_PROVIDER } from "@/lib/integrations/providers/catalog"
+import { providerPortalMode, DEFAULT_ESIGN_PROVIDER, PROVIDER_PORTAL_URLS } from "@/lib/integrations/providers/catalog"
 import {
   Card, CardContent, } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -121,14 +121,10 @@ interface FormsLibraryClientProps {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const PROVIDER_URLS: Record<string, string> = {
-  dotloop:        "https://www.dotloop.com/",
-  skyslope:       "https://app.skyslope.com/",
-  formsimplicity: "https://www.formsimplicity.com/",
-  brokermint:     "https://brokermint.com/",
-  authentisign:   "https://authentisign.com/",
-  docusign:       "https://www.docusign.com/",
-}
+// One spelling of each provider's portal URL (§6, lane 88C): the catalog's PROVIDER_PORTAL_URLS —
+// the same map this file's own providerPortalMode window already reads. The local copy pointed
+// DocuSign and Brokermint at their marketing sites and SkySlope at a non-frameable host.
+const PROVIDER_URLS: Record<string, string> = PROVIDER_PORTAL_URLS
 
 function capitalize(s: string) {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : s

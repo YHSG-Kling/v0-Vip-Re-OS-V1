@@ -4,9 +4,9 @@ import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
+import { getCatalogEntry } from "@/lib/integrations/providers/catalog"
 import { checkCompliancePassed, syncOfferStatus } from "@/lib/buyer-offer"
 import { OFFER_EVENT, OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
-import { getTransactionProviderByName } from "@/lib/integrations/providers/provider-resolver"
 import { logEventAndTrigger } from "@/lib/events/event-helpers"
 import {
   planOutboundWatch,
@@ -61,6 +61,15 @@ interface SubmitForSignatureParams {
    *  present they're forwarded to the provider so the marks place automatically. Absent → the agent
    *  places tabs in the provider UI (current behavior). */
   tags?: import("@/lib/integrations/providers/transaction-provider.interface").SignatureTag[]
+  /** THE FILLED PACKET (lane 88C). Storage paths in `brokerage-forms` — the wizard's filled
+   *  copies (filled/…) or the library forms the agent selected. Every path is checked
+   *  against the SESSION's tenant before a byte is read (lib/forms/form-path-scope.ts).
+   *  Absent → nothing is attached (the pre-88 behaviour, for callers with no packet). */
+  documents?: Array<{ name: string; storagePath: string }>
+  /** Ask for the in-window send (DocuSign sender view) when the provider supports it. */
+  embeddedSend?: boolean
+  /** App URL DocuSign's sender view returns to after Send. */
+  returnUrl?: string
 }
 
 export async function submitForSignature(params: SubmitForSignatureParams) {
@@ -81,9 +90,20 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   const { data: { user } } = await authClient.auth.getUser()
   if (!user) return { success: false, error: "Unauthorized" }
   const { data: callerRow } = await authClient
-    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+    .from("users").select("brokerage_id, team_id").eq("id", user.id).maybeSingle()
   if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
   const userId = user.id
+
+  // The packet's paths are checked against the SESSION tenant before anything else runs
+  // (the dispatch core reads them on the service client).
+  const packetDocs = (params.documents ?? []).filter((d) => d && typeof d.storagePath === "string" && d.storagePath.trim())
+  if (packetDocs.length > 0) {
+    const { checkFormPathsInScope } = await import("@/lib/forms/form-path-scope")
+    const scope = await checkFormPathsInScope(createServiceClient(), packetDocs.map((d) => d.storagePath), {
+      brokerageId: callerRow.brokerage_id as string, teamId: (callerRow.team_id as string | null) ?? null, userId,
+    })
+    if (!scope.ok) return { success: false, error: scope.error ?? `These forms are not in your library: ${scope.refused.join(", ")}` }
+  }
 
   const supabase = createServiceClient()
 
@@ -253,6 +273,64 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
     }
   }
 
+  // ── DISPATCH FIRST, THEN RECORD (lane 88C) ────────────────────────────────
+  // The provider leg used to (1) read the brokerage's NEWEST platform_credentials
+  // row instead of the user → team → brokerage cascade, (2) create the envelope and
+  // send it WITHOUT ATTACHING THE FILLED FORMS, and (3) ignore sendForSignature's
+  // { success } — then stamp esign_status 'sent' whatever happened. The one core
+  // (lib/esign/dispatch-packet.ts) resolves the choice (Google eSignature by
+  // default; an explicit override or a connected API provider otherwise), attaches
+  // the packet, and either sends, opens DocuSign's embedded sender view, or places
+  // the packet in the agent's Drive for Google eSignature. A refusal now RETURNS a
+  // refusal — the offer is not marked sent and no "signature requested" event is
+  // filed for a packet that never left.
+  const { dispatchEsignPacket } = await import("@/lib/esign/dispatch-packet")
+  const dispatch = await dispatchEsignPacket(supabase as any, {
+    brokerageId,
+    userId,
+    teamId:            (callerRow.team_id as string | null) ?? null,
+    transactionType:   "purchase",
+    propertyAddress:   (offer.property_address as string | null) ?? "Real estate transaction",
+    contactId:         (offer.contact_id as string | null) ?? null,
+    listingId:         (offer.listing_id as string | null) ?? null,
+    // Google's "envelope" is a Drive file — never re-used as a provider envelope.
+    existingEnvelopeId: offer.esign_provider && !getCatalogEntry(offer.esign_provider as string)?.portalSend ? (offer.provider_envelope_id as string | null) ?? null : null,
+    signers:           signers.map((s) => ({ email: s.email, name: s.name, role: providerRole(s.role) })),
+    documents:         packetDocs,
+    tags:              params.tags,
+    embeddedSend:      params.embeddedSend === true,
+    returnUrl:         params.returnUrl,
+    recordId:          offerId,
+  })
+
+  if (!dispatch.ok) {
+    const providerLabel = dispatch.providerName ?? "the e-sign provider"
+    // Human-visible record of the fault (sentinel-ledgered, never swallowed).
+    const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+    const faultRowLanded = await sentinelWrite(supabase, supabase.from("activities").insert({
+      activity_type: OFFER_AUDIT_EVENT.PROVIDER_SIGNATURE_FAILED,
+      agent_id:      actorAgentId,
+      entity_type:   "offer",
+      entity_id:     offerId,
+      brokerage_id:  brokerageId,
+      title:         `Signature request FAILED via ${providerLabel}`,
+      description:   `Offer ${offerId} could not be dispatched to ${providerLabel}: ${dispatch.error ?? "unknown error"}`,
+      priority:      "high",
+    }), { table: "activities", flow: "buyer_offer_submit_for_signature", brokerageId })
+    if (!faultRowLanded) {
+      console.error(`[submit-for-signature] the provider-failure activity for offer ${offerId} was NOT written`)
+    }
+    return {
+      success: false,
+      error: dispatch.error ?? "The signature request could not be sent.",
+      blockerType: dispatch.needsReconnect ? "esign_reconnect_required" : "esign_dispatch_failed",
+      providerError: dispatch.error ?? null,
+    }
+  }
+
+  const envelopeId: string | null = dispatch.envelopeId ?? null
+  const providerError: string | null = null
+
   // Emit signature request event. THE line that made this whole action dead:
   // it omitted NOT NULL brokerage_id, so the insert wrote zero rows and errored,
   // and the check immediately below turned that into a hard return. Canonical
@@ -276,104 +354,25 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
     return { success: false, error: `Failed to log signature request event: ${eventError.message}` }
   }
 
-  // Resolve the brokerage's connected e-sign platform from platform_credentials.
-  // The contact (buyer/seller) has no provider — only the brokerage/team/agent does.
-  const { data: credential } = await supabase
-    .from("platform_credentials")
-    .select("platform, account_id, access_token")
-    .eq("brokerage_id", offer.brokerage_id)
-    .in("platform", ["dotloop", "docusign", "skyslope", "authentisign"])
-    .eq("is_active", true)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  // Track the envelope id we end up with so we can stamp it on the offer.
-  let envelopeId: string | null = offer.provider_envelope_id ?? null
-  // Provider faults were console-only; carry the reason out to the caller too.
-  let providerError: string | null = null
-
-  if (credential) {
-    try {
-      const provider = getTransactionProviderByName(credential.platform, {
-        apiKey:    credential.access_token ?? "",
-        profileId: credential.account_id ?? "",
-      })
-
-      // First-time submit: create the provider envelope/loop so we have an
-      // externalTransactionId to send. Previously this was skipped when the
-      // offer had no envelope, which silently turned sendForSignature into
-      // a no-op + stamped the platform name as the "envelope id". The
-      // webhook could then never match.
-      if (!envelopeId) {
-        const createRes = await provider.createTransaction({
-          propertyAddress: offer.property_address ?? "Real estate transaction",
-          transactionType: "purchase",
-          contactId:       offer.contact_id ?? undefined,
-          listingId:       offer.listing_id ?? undefined,
-        })
-        if (!createRes.success || !createRes.externalTransactionId) {
-          throw new Error(createRes.error ?? "Provider createTransaction failed")
-        }
-        envelopeId = createRes.externalTransactionId
-      }
-
-      await provider.sendForSignature({
-        externalTransactionId: envelopeId,
-        documentId:            offerId,
-        signers:               signers.map((s) => ({ email: s.email, name: s.name, role: providerRole(s.role) })),
-        // Forward the provider-shaped placement tags when the caller supplied them (the wizard's
-        // anchor plan) so the provider places the marks automatically instead of manual tabbing.
-        ...(params.tags && params.tags.length > 0 ? { tags: params.tags } : {}),
-      })
-
-      const { error: providerEventError } = await supabase.from("activities").insert({
-        brokerage_id:  brokerageId,
-        activity_type: OFFER_AUDIT_EVENT.PROVIDER_SIGNATURE_REQUESTED,
-        agent_id:      actorAgentId,
-        contact_id:    offer.contact_id,
-        entity_type:   "offer",
-        entity_id:     offerId,
-        title:         `Provider signature requested via ${credential.platform}`,
-        description:   `Offer ${offerId} sent to ${credential.platform} for signature`,
-        notes:         JSON.stringify({ offer_id: offerId, provider: credential.platform, envelope_id: envelopeId }),
-        metadata:      { offer_id: offerId, provider: credential.platform, envelope_id: envelopeId },
-        status:        "completed",
-      })
-      if (providerEventError) {
-        // The envelope IS out at the provider — the offer update below is the
-        // load-bearing write. Loud, not swallowed.
-        console.error("[submit-for-signature] provider-requested audit row failed to write:", providerEventError.message)
-      }
-    } catch (error: any) {
-      // Provider call failed — the offer still records the agent's intent, but the
-      // agent must be TOLD, not just console.error'd: without an envelope nothing
-      // was actually sent and the webhook has nothing to finalize against.
-      providerError = String(error?.message ?? error)
-      console.error("[submit-for-signature] Provider call failed:", providerError)
-
-      // Put the fault on the agent's activity feed — a human-visible record, the
-      // same lane the compliance/commission blocks above already use. Best-effort
-      // (the offer update below is the load-bearing write) but sentinel-ledgered
-      // rather than swallowed, so a feed that never records faults is detectable.
-      const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
-      const faultRowLanded = await sentinelWrite(supabase, supabase.from("activities").insert({
-        activity_type: OFFER_AUDIT_EVENT.PROVIDER_SIGNATURE_FAILED,
-        agent_id:      actorAgentId,
-        entity_type:   "offer",
-        entity_id:     offerId,
-        brokerage_id:  brokerageId,
-        title:         `Provider signature request FAILED via ${credential.platform}`,
-        description:   `Offer ${offerId} could not be dispatched to ${credential.platform}: ${providerError}`,
-        priority:      "high",
-      }), { table: "activities", flow: "buyer_offer_submit_for_signature", brokerageId })
-      // The comment above says this must be human-visible, not console-only.
-      // sentinelWrite returns false when the row was lost — if that happens the
-      // agent is NOT being told, and that has to be visible too.
-      if (!faultRowLanded) {
-        console.error(`[submit-for-signature] the provider-failure activity for offer ${offerId} was NOT written — the agent has no feed entry telling them nothing was sent`)
-      }
-    }
+  const { error: providerEventError } = await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    activity_type: OFFER_AUDIT_EVENT.PROVIDER_SIGNATURE_REQUESTED,
+    agent_id:      actorAgentId,
+    contact_id:    offer.contact_id,
+    entity_type:   "offer",
+    entity_id:     offerId,
+    title:         `Provider signature requested via ${dispatch.providerName}`,
+    description:   dispatch.status === "sent"
+      ? `Offer ${offerId} sent to ${dispatch.providerName} for signature (${dispatch.attachedCount ?? 0} document(s))`
+      : `Offer ${offerId} staged in ${dispatch.providerName} — the agent sends it from the ${dispatch.handoff?.mode ?? "provider"} window`,
+    notes:         JSON.stringify({ offer_id: offerId, provider: dispatch.providerName, envelope_id: envelopeId, status: dispatch.status }),
+    metadata:      { offer_id: offerId, provider: dispatch.providerName, envelope_id: envelopeId, status: dispatch.status },
+    status:        "completed",
+  })
+  if (providerEventError) {
+    // The envelope IS out at the provider — the offer update below is the
+    // load-bearing write. Loud, not swallowed.
+    console.error("[submit-for-signature] provider-requested audit row failed to write:", providerEventError.message)
   }
 
   // Mark offer esign_status as sent + stamp the canonical envelope reference
@@ -389,11 +388,25 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   // packet that went out and a record of who it went to can never disagree. The
   // blob is MERGED on top of what the offer already carries — never assigned.
   const sentAt = new Date().toISOString()
-  const priorMetadata = ((offer.metadata ?? {}) as Record<string, unknown>)
+  // A packet staged for the agent to send from the provider window (DocuSign sender
+  // view, Google Drive eSignature) is PENDING, not sent — the status says what happened.
+  // The hand-off rides on metadata so the offer workspace can reopen the window.
+  const priorMetadata = {
+    ...((offer.metadata ?? {}) as Record<string, unknown>),
+    esign_dispatch: {
+      provider:     dispatch.providerName,
+      status:       dispatch.status,
+      attached:     dispatch.attachedCount ?? 0,
+      handoff_mode: dispatch.handoff?.mode ?? null,
+      // Drive links are the agent's own files; a DocuSign sender-view URL is one-time and is NOT stored.
+      handoff_urls: dispatch.kind === "google" ? (dispatch.handoff?.urls ?? []) : [],
+      at:           sentAt,
+    },
+  }
   const dispatchPayload = {
-    esign_status:         "sent",
+    esign_status:         dispatch.status === "sent" ? "sent" : "pending",
     esign_sent_at:        sentAt,
-    esign_provider:       credential?.platform ?? offer.esign_provider ?? null,
+    esign_provider:       dispatch.providerName ?? offer.esign_provider ?? null,
     provider_envelope_id: envelopeId ?? offer.provider_envelope_id ?? null,
     metadata: outboundWatch.armed
       ? {
@@ -434,7 +447,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   }
 
   // Fire notification to the buyer contact so they know to expect the signature request
-  if (offer.contact_id) {
+  if (offer.contact_id && dispatch.status === "sent") {
     await logEventAndTrigger({
       brokerage_id: offer.brokerage_id,
       event_type: OFFER_AUDIT_EVENT.SIGNATURE_SENT_TO_CONTACT,
@@ -443,7 +456,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
         offerId,
         contact_id:  offer.contact_id,
         signerCount: signers.length,
-        provider:    credential?.platform ?? null,
+        provider:    dispatch.providerName ?? null,
       },
       source:     "ui",
       dedupe_key: `offer-sig-sent-${offerId}-${Date.now()}`,
@@ -452,9 +465,14 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
 
   return {
     success: true,
-    message: providerError
-      ? "Offer marked as sent, but the e-sign provider rejected the request — see providerError"
-      : "Offer submitted for signature",
+    message: dispatch.status === "sent"
+      ? "Offer sent for signature"
+      : `Offer packet staged in ${dispatch.providerName} — send it from the window that just opened`,
+    /** How the packet left: "sent" (provider emailed signers) or "awaiting_agent_send". */
+    dispatchStatus: dispatch.status,
+    esignProvider:  dispatch.providerName,
+    /** The in-window step: DocuSign sender view (iframe) or Google Drive (popup). */
+    handoff:        dispatch.handoff ?? null,
     // Non-null ⇒ nothing actually reached the provider. Surfaced instead of being
     // buried in server logs so the UI can tell the agent to retry.
     providerError,
