@@ -153,13 +153,14 @@ export async function runListingAgreementGate(
   // returned. A re-scan of the same agreement finds the SAME event (dedupe key on the
   // document, no time window) and does not promote twice; the chain's draft-state
   // re-assertion is the second belt.
-  const eventType = "compliance.listing_agreement_passed"
   const { recordLifecycleEvent } = await import("@/lib/events/lifecycle-event-core")
   const emitted = await recordLifecycleEvent(supabase, params.brokerageId, {
-    event_type: eventType,
+    // Literal, not a variable: test:vocabulary-drift proves every chain trigger has an emitter
+    // by reading the event_type literal at the emit site.
+    event_type: "compliance.listing_agreement_passed",
     user_id: params.agentUserId ?? undefined,
     source: "system",
-    dedupe_key: `${eventType}:${params.documentId}`,
+    dedupe_key: `compliance.listing_agreement_passed:${params.documentId}`,
     entity_type: "document",
     entity_id: params.documentId,
     payload: {
@@ -185,7 +186,7 @@ export async function runListingAgreementGate(
     }
   }
   if (!emitted.deduped && !emitted.dispatched) {
-    console.error(`[listing-agreement-gate] ${eventType} ${emitted.event.id} recorded but NOT dispatched — no listing chain started for document ${params.documentId}`)
+    console.error(`[listing-agreement-gate] compliance.listing_agreement_passed ${emitted.event.id} recorded but NOT dispatched — no listing chain started for document ${params.documentId}`)
   }
 
   return { passed: true, blockers: [], listingId: params.listingId }

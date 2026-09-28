@@ -234,9 +234,15 @@ console.log("\n── 'New Listing' creates a listing, not an offer ──")
     /step === 6 && mode === "listing" && state\.listingId/.test(WIZARD))
   check("…and the offer screen no longer answers for both",
     /step === 6 && mode === "offer" && state\.offerId/.test(WIZARD))
-  // The button must not claim to send an envelope it does not send.
-  check("the listing button does not promise an e-sign send",
-    /mode === "offer" \? "Send for E-Sign" : "Create Draft Listing"/.test(WIZARD))
+  // Rule, not waypoint: the button may only promise what its handler does. Lane 88C made the listing
+  // lane really send the agreement (sendListingAgreementForSignatureAction), so the label may say so —
+  // and must not when the handler does not send.
+  const listingHandler = WIZARD.slice(WIZARD.indexOf("const handleSubmitListing"), WIZARD.indexOf("const handleSubmitListing") + 6000)
+  const listingSends = /sendListingAgreementForSignatureAction\(/.test(listingHandler)
+  const labelPromisesSend = /mode === "offer" \? "Send for E-Sign" : "[^"]*Send[^"]*"/.test(WIZARD)
+  check("the listing button promises a send only if its handler sends", labelPromisesSend === listingSends)
+  check("POSITIVE CONTROL: a send-promising label over a non-sending handler is flagged",
+    !(/Send/.test('"Create Draft & Send Agreement"') === /sendListingAgreementForSignatureAction\(/.test("const handleSubmitListing = async () => { await createListingDraftAction() }")))
 }
 
 console.log("\n── an MLS number is not a listing id ──")

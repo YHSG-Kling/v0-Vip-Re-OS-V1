@@ -185,7 +185,9 @@ function emittedEventStrings(): Set<string> {
   for (const f of walkTs(["app", "lib"])) {
     if (f.replace(/\\/g, "/").includes(CHAINS_DIR_FRAG)) continue
     const src = readFileSync(f, "utf8")
-    const re = /(?:eventType|triggerEvent):\s*"([^"]+)"/g
+    // event_type: is the key the one lifecycle-event recorder takes (lib/events/lifecycle-event-core.ts
+    // recordLifecycleEvent — lane 88D moved chain emitters onto it); it emits exactly as much.
+    const re = /(?:eventType|triggerEvent|event_type):\s*"([^"]+)"/g
     while ((m = re.exec(src))) set.add(m[1])
 
     // …and the SAME emission written through a local const. An emitter that does
@@ -196,7 +198,7 @@ function emittedEventStrings(): Set<string> {
     // it pushes you to duplicate the string at the call site purely to satisfy the
     // guard. Resolve the identifier against a const in the same file instead — the
     // construct is what matters, not the spelling.
-    const viaVar = /(?:eventType|triggerEvent):\s*([A-Za-z_$][\w$]*)/g
+    const viaVar = /(?:eventType|triggerEvent|event_type):\s*([A-Za-z_$][\w$]*)/g
     while ((m = viaVar.exec(src))) {
       const ident = m[1]
       const decl = new RegExp(`(?:const|let|var)\\s+${ident}\\s*(?::[^=]+)?=\\s*"([^"]+)"`).exec(src)
