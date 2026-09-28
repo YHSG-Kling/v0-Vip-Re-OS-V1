@@ -28,6 +28,7 @@
  * Auth: CRON_SECRET dual scheme. No-op when EXA_API_KEY is missing.
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 import { fetchExaCompetitorAds } from "@/lib/competitive-intel/exa-competitor-ads"
 import { promoteCompetitorAdsToTopicBank } from "@/lib/competitive-intel/promote-to-topic-bank"
@@ -35,17 +36,10 @@ import { promoteCompetitorAdsToTopicBank } from "@/lib/competitive-intel/promote
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
-
 export async function GET(req: NextRequest) {
-  const auth     = req.headers.get("authorization")?.replace("Bearer ", "")
   const url      = new URL(req.url)
-  const qs       = url.searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   if (!process.env.EXA_API_KEY) {
     return NextResponse.json({

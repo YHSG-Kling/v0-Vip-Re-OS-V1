@@ -26,13 +26,70 @@ export const AUTH_MESSAGES = {
 // ROUTE CONFIGURATIONS (enforced by the edge middleware in proxy.ts)
 // ============================================
 //
-// Matching is `pathname.startsWith(route)` and PUBLIC is evaluated BEFORE
-// PROTECTED, so a public prefix wins. Two consequences worth remembering:
+// PUBLIC is evaluated BEFORE PROTECTED, so a public entry wins. Two
+// consequences worth remembering:
 //   - `/api/auth` makes every handler under it internet-reachable with no
 //     session. Anything added there authorises itself or it is open.
 //   - an entry for a path that does not exist is worse than no entry: it reads
 //     as a deliberate exemption for a page nobody can find.
+//
+// MATCHING (lane 88E, production-readiness audit). A PUBLIC entry now matches
+// on a PATH-SEGMENT boundary (`/v` serves `/v` and `/v/<slug>`, never
+// `/vendor/dashboard`); a PROTECTED entry keeps the loose `startsWith` (an
+// over-match there fails CLOSED — a redirect to /login — which is the safe
+// direction). Measured before the change: the loose public match made 17 page
+// routes public by accident — /listings/** through '/listing', and /vendor/**
+// and /video-assistant through '/v' — every one of them also under a PROTECTED
+// prefix, so the proxy's redirect convenience silently stopped applying to the
+// agent listings board and the whole vendor portal. The one page that NEEDED
+// the accident (/vendor-invite/[token], token-gated in its own page) is now
+// listed by name. classifyProxyPath below is the ONE decision proxy.ts runs.
+
+/**
+ * SESSIONLESS DOORS UNDER A PROTECTED PREFIX (lane 88E). Each of these is
+ * called by something that can NEVER carry a Supabase session cookie — a
+ * provider's servers, an out-of-process companion, an anonymous visitor, or a
+ * server-side self-call — and each authorises ITSELF in its own route file.
+ * Before this list, every one sat under '/api/voice', '/api/did', '/api/forms',
+ * '/api/intelligence' or '/api/admin' in PROTECTED_ROUTES, so proxy.ts
+ * answered the provider with a 307 to /login and the route never ran:
+ *   · every inbound call, status callback, turn, recording and warm-transfer
+ *     whisper Twilio posts (inbound voice was dead on a real deploy);
+ *   · the D-ID Agents custom-LLM callback (the live avatar had no brain);
+ *   · the public lead-capture form's submit (app/forms/[slug]/FormRenderer.tsx
+ *     posts it anonymously — every form fill was lost);
+ *   · the ConversationRelay companion's plan call, the service-to-service
+ *     intelligence doors, and the scrape-diagnostics self-call.
+ * scripts/proxy-sessionless-doors-guard.ts derives the population (every
+ * app/api route under a PROTECTED prefix with no session gate, every contracted
+ * webhook path, every cron-registry target) and fails when one of them would
+ * be redirected, and when an entry here names a route that does not verify
+ * its caller.
+ */
+export const SESSIONLESS_API_DOORS = [
+  // Twilio: X-Twilio-Signature (inbound/status/turn/outbound/recording) or the
+  // timing-safe token our own dial authored (whisper, intelligence).
+  '/api/voice/twilio',
+  // ConversationRelay companion (tools/relay-companion): x-relay-secret = RELAY_SHARED_SECRET.
+  '/api/voice/relay',
+  // D-ID Agents LLM provider callback: Basic/Bearer DID_CUSTOM_LLM_KEY.
+  '/api/did/custom-llm',
+  // Anonymous public form POST; the form row (slug, is_active) names the tenant.
+  '/api/forms/submit',
+  // Service-to-service doors: INTERNAL_API_SECRET (x-internal-secret / Bearer).
+  '/api/intelligence/classify',
+  '/api/intelligence/coordinate',
+  '/api/intelligence/kb/embed',
+  '/api/intelligence/memory/update',
+  // Server-side self-call from app/actions/admin/run-scrape-test.ts: verifyCronAuth.
+  '/api/admin/scrape-test',
+];
+
 export const PUBLIC_ROUTES = [
+  ...SESSIONLESS_API_DOORS,
+  // Token-gated vendor invitation landing (the invitee has no account yet).
+  // Public only by ACCIDENT before lane 88E ('/v' loose-prefix match).
+  '/vendor-invite',
   '/login',
   '/signup',
   '/auth/callback',
@@ -171,6 +228,27 @@ export const PROTECTED_ROUTES = [
   // /api/showings/feedback  — token-gated inside
   // /api/providers/inbound  — webhook signature inside
 ];
+
+/** A PUBLIC entry matches its own path and its children — never a sibling
+ *  that merely shares the spelling ('/v' ≠ '/vendor'). A trailing-slash or
+ *  file-like entry ('/llms.txt') is matched the same way. */
+export function publicRouteMatches(pathname: string, route: string): boolean {
+  if (pathname === route) return true
+  return pathname.startsWith(route.endsWith('/') ? route : `${route}/`)
+}
+
+/**
+ * THE ONE PROXY ROUTE DECISION (proxy.ts §2 + §4 run exactly this):
+ *   'public'    — pass through, no session read;
+ *   'protected' — a missing session redirects to /login;
+ *   'open'      — neither list names it (the route authorises itself).
+ * PUBLIC wins over PROTECTED. Pure — safe for guards.
+ */
+export function classifyProxyPath(pathname: string): 'public' | 'protected' | 'open' {
+  if (PUBLIC_ROUTES.some((route) => publicRouteMatches(pathname, route))) return 'public'
+  if (PROTECTED_ROUTES.some((route) => pathname.startsWith(route))) return 'protected'
+  return 'open'
+}
 
 // ============================================
 // DEMO MODE CONFIGURATION

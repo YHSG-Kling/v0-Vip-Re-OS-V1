@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 import { scanEntityForPatterns } from "@/lib/intelligence/pattern-detector"
 import {
@@ -13,13 +14,9 @@ import { TERMINAL_CONTACT_STATUSES } from "@/lib/contact-promotion/qualification
 // Batch limit: 50 contacts + 50 listings per run to control AI costs
 
 export async function GET(request: Request) {
-  // Verify cron secret
-  const authHeader = request.headers.get("authorization")
-  const cronSecret = process.env.CRON_SECRET
-
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // The ONE cron gate (lib/cron-auth.ts) — unset secret → 500, bad credential → 401.
+  const denied = verifyCronAuth(request)
+  if (denied) return denied
 
   const contextResult = await createCronRunContextAction({
     cron_name: "pattern-scan",

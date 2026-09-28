@@ -48,14 +48,28 @@
  *     that exact top-level key; `vercel.json` here currently has none, which
  *     is a real, reportable "0 vars", not a parse failure.
  *
- * SCRAPING IS FROZEN (wave 55 lane rules): findings under any path this
- * repo's scraping freeze names are reported separately as excluded debt,
- * never counted against PASS/FAIL, never auto-fixed by this file.
+ * SCRAPING IS NO LONGER FROZEN (wave 82 owner ruling: "scrapping is not
+ * frozen"). Lane 88E removed the exemption: a name read only under a former
+ * scraping path now needs a documented source like any other (4 did not —
+ * GEOAPIFY_API_KEY, SOCRATA_APP_TOKEN, VISION_PROPERTY_MODEL,
+ * HTML_EXTRACTOR_MODEL). The path list stays, for REPORTING only.
+ *
+ * REACH + FORMS (lane 88E, production-readiness audit). The census read only
+ * app/ + lib/ — blind to services/ (GHL_API_KEY / GHL_LOCATION_ID, read by the
+ * one GHL egress module, had no documented source), proxy.ts, remotion/ and
+ * every other runtime root. It now walks scripts/runtime-roots.ts
+ * runtimeFiles() (the ONE answer to "what ships"). It also reads two forms the
+ * regexes could not see: a destructure `const { FOO } = process.env`, and a
+ * PARAMETER read `env.FOO` in a file that binds an env parameter to
+ * process.env / NodeJS.ProcessEnv (lib/remotion/chromium-executable.ts,
+ * lib/assets/screenshot-capture.ts) — which is why CHROMIUM_PACK_URL,
+ * SCREENSHOT_API_KEY, VERCEL and friends used to list as "documented, never
+ * read" while being read on every render.
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs"
 import { join, relative, sep } from "node:path"
-import { walkTs } from "./runtime-roots"
-import { stripComments } from "./strip-comments"
+import { runtimeFiles } from "./runtime-roots"
+import { stripComments, blankComments, blankStrings } from "./strip-comments"
 
 const root = process.cwd()
 
@@ -98,18 +112,49 @@ export function envReadsInSource(src: string): Array<{ name: string; line: numbe
   const bracketRe = /\bprocess\.env\[\s*["']([A-Za-z_][A-Za-z0-9_]*)["']\s*\]/g
   while ((m = bracketRe.exec(stripped))) out.push({ name: m[1], line: lineOf(stripped, m.index) })
 
+  // The two lane-88E forms are CODE shapes, so they are read off source with
+  // comments AND strings blanked (position-preserving, §2): prose that quotes
+  // a destructure inside a string literal — the manager registry does — is not
+  // a read. `withStrings` (comments blanked, strings intact, same positions)
+  // supplies the literal a bracket read names.
+  const code = blankStrings(src)
+  const withStrings = blankComments(src)
+
+  // `const { FOO, BAR: bar = "x" } = process.env` — the destructure form.
+  const destructureRe = /\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*process\.env\b/g
+  while ((m = destructureRe.exec(code))) {
+    for (const part of m[1].split(",")) {
+      const name = part.split(":")[0].split("=")[0].trim()
+      if (name) out.push({ name, line: lineOf(code, m.index) })
+    }
+  }
+
+  // `env.FOO` / `env?.FOO` / `env["FOO"]` — a PARAMETER read, counted only in
+  // a file that binds such a parameter to the real environment (`= process.env`
+  // or a `NodeJS.ProcessEnv` / `ProcessEnv` annotation), so an unrelated
+  // `config.env.X` elsewhere is never mistaken for an environment read.
+  if (/\benv\b\s*(?::[^=,)]*ProcessEnv[^=,)]*)?=\s*process\.env\b|\benv\s*:\s*(?:NodeJS\.)?ProcessEnv\b/.test(code)) {
+    const paramDot = /(?<![.\w])env\??\.([A-Z_][A-Z0-9_]*)\b/g
+    while ((m = paramDot.exec(code))) out.push({ name: m[1], line: lineOf(code, m.index) })
+    const paramBracket = /(?<![.\w])env\[\s*/g
+    while ((m = paramBracket.exec(code))) {
+      const lit = /^["']([A-Z_][A-Z0-9_]*)["']\s*\]/.exec(withStrings.slice(m.index + m[0].length))
+      if (lit) out.push({ name: lit[1], line: lineOf(code, m.index) })
+    }
+  }
+
   return out.filter((r) => ENV_NAME_RE.test(r.name))
 }
 
-function scanCode(dirs: string[]): EnvRead[] {
+/** Every RUNTIME file (scripts/runtime-roots.ts runtimeFiles — app/, lib/,
+ *  services/, remotion/, proxy.ts, …), never a hand-listed pair of roots. */
+function scanCode(): EnvRead[] {
   const found: EnvRead[] = []
-  for (const dir of dirs) {
-    for (const abs of walkTs(join(root, dir))) {
-      const rel = relative(root, abs).split(sep).join("/")
-      let src: string
-      try { src = readFileSync(abs, "utf8") } catch { continue }
-      for (const r of envReadsInSource(src)) found.push({ ...r, file: rel })
-    }
+  for (const abs of runtimeFiles(root)) {
+    const rel = relative(root, abs).split(sep).join("/")
+    let src: string
+    try { src = readFileSync(abs, "utf8") } catch { continue }
+    for (const r of envReadsInSource(src)) found.push({ ...r, file: rel })
   }
   return found
 }
@@ -249,6 +294,32 @@ function positiveControls(): string[] {
     "workflow YAML does NOT treat a lowercase YAML key as an env name",
     !namesFromWorkflowYaml("    runs-on: ubuntu-latest\n").has("RUNS-ON"),
   )
+  // Lane 88E — the two forms the census used to be blind to.
+  expect(
+    "a destructure `const { GHOST_VAR } = process.env` is found",
+    envReadsInSource("const { GHOST_VAR, OTHER: o = 'x' } = process.env\n").some((r) => r.name === "GHOST_VAR")
+      && envReadsInSource("const { GHOST_VAR, OTHER: o = 'x' } = process.env\n").some((r) => r.name === "OTHER"),
+  )
+  expect(
+    "an `env.GHOST_VAR` read is found where env is bound to process.env",
+    envReadsInSource("export function f(env: NodeJS.ProcessEnv = process.env) { return env.GHOST_VAR }\n").some((r) => r.name === "GHOST_VAR"),
+  )
+  expect(
+    "an `env.GHOST_VAR` read is NOT counted where no env parameter is bound to the environment",
+    !envReadsInSource("const cfg = { env: { GHOST_VAR: 1 } }\nconst x = cfg.env.GHOST_VAR\n").some((r) => r.name === "GHOST_VAR"),
+  )
+  expect(
+    "a destructure QUOTED inside a string literal (registry prose) is not a read",
+    !envReadsInSource('const prose = "reads const { GHOST_VAR } = process.env here"\n').some((r) => r.name === "GHOST_VAR"),
+  )
+  expect(
+    "a bracket parameter read `env[\"GHOST_VAR\"]` is found in a bound file",
+    envReadsInSource('function f(env = process.env) { return env["GHOST_VAR"] }\n').some((r) => r.name === "GHOST_VAR"),
+  )
+  expect(
+    "a property access `x.env.GHOST_VAR` is not a parameter read even in a bound file",
+    !envReadsInSource("function f(env = process.env) { return ctx.env.GHOST_VAR }\n").some((r) => r.name === "GHOST_VAR"),
+  )
   return problems
 }
 
@@ -262,7 +333,7 @@ if (typeof process !== "undefined" && /env-var-parity\.ts$/.test(process.argv[1]
     process.exit(1)
   }
 
-  const reads = scanCode(["app", "lib"])
+  const reads = scanCode()
   const scrapingReads = reads.filter((r) => isScrapingPath(r.file))
   const liveReads = reads.filter((r) => !isScrapingPath(r.file))
 
@@ -271,10 +342,10 @@ if (typeof process !== "undefined" && /env-var-parity\.ts$/.test(process.argv[1]
   const readNamesLive = new Set(liveReads.map((r) => r.name))
   const readNamesScraping = new Set(scrapingReads.map((r) => r.name))
 
-  // "No documented source" — live reads only; a name that appears ONLY under
-  // a frozen scraping path is reported separately and never proposed for
-  // .env.example (scraping is frozen, not this lane's to touch).
-  const undocumented = Array.from(readNamesLive)
+  // "No documented source" — EVERY read (lane 88E: scraping reopened in wave
+  // 82, so the frozen-path exemption was stale; the split survives only as a
+  // reported count).
+  const undocumented = Array.from(new Set([...readNamesLive, ...readNamesScraping]))
     .filter((n) => !docNames.has(n))
     .sort()
 
@@ -288,12 +359,13 @@ if (typeof process !== "undefined" && /env-var-parity\.ts$/.test(process.argv[1]
   console.log("═".repeat(70))
   console.log(" ENV-VAR PARITY CENSUS — process.env.X read vs. X documented")
   console.log("═".repeat(70))
-  console.log(`  ${reads.length} total read site(s) · ${readNamesLive.size + readNamesScraping.size} distinct name(s) read across app/ + lib/`)
-  console.log(`  ${readNamesScraping.size} distinct name(s) read only under the wave-55 scraping freeze — excluded`)
+  console.log(`  ${reads.length} total read site(s) · ${new Set(reads.map((r) => r.name)).size} distinct name(s) read across ${new Set(reads.map((r) => r.file.split("/")[0])).size} runtime root(s)`)
+  console.log(`  ${readNamesScraping.size} distinct name(s) read under former scraping-freeze paths — COUNTED since lane 88E (scraping reopened wave 82)`)
   console.log(`  ${docNames.size} distinct name(s) documented across .env.example / vercel.json / .github/workflows/*.yml`)
-  console.log(`  ${undocumented.length} read with NO documented source (live, non-scraping)`)
+  console.log(`  ${undocumented.length} read with NO documented source`)
   console.log(`  ${unreadDocumented.length} documented but never read`)
   console.log("")
+  console.log("  FORMS READ: process.env.X · process.env[\"X\"] · const { X } = process.env · env.X where env binds process.env")
   console.log("  BLIND SPOTS: a computed process.env[key] is invisible to either regex")
   console.log("  (under-accusing); the workflow scan is regex-based, over-inclusive on")
   console.log("  purpose (can only shrink the undocumented list); vercel.json here truly")
@@ -303,8 +375,8 @@ if (typeof process !== "undefined" && /env-var-parity\.ts$/.test(process.argv[1]
     console.log("")
     console.log("── read, no documented source ──")
     for (const n of undocumented) {
-      const first = liveReads.find((r) => r.name === n)!
-      const count = liveReads.filter((r) => r.name === n).length
+      const first = reads.find((r) => r.name === n)!
+      const count = reads.filter((r) => r.name === n).length
       console.log(`  ✗ ${n}  (${count} site(s), first at ${first.file}:${first.line})`)
     }
   }
@@ -322,5 +394,5 @@ if (typeof process !== "undefined" && /env-var-parity\.ts$/.test(process.argv[1]
     console.log(`✗ ENV_VAR_PARITY_FAIL — ${undocumented.length} name(s) read with no documented source`)
     process.exit(listMode ? 0 : 1)
   }
-  console.log("✅ ENV_VAR_PARITY_PASS — every live process.env read has a documented source")
+  console.log("✅ ENV_VAR_PARITY_PASS — every environment read in every runtime root has a documented source")
 }

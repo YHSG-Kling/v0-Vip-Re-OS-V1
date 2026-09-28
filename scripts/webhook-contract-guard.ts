@@ -12,7 +12,11 @@
  * impossible for that page to lie:
  *
  *   1. COVERAGE — every app/api/webhooks/**​/route.ts on disk, plus the named
- *      provider-inbound routes, appears in the contract EXACTLY once, and
+ *      provider-inbound routes, plus (lane 88E) the DERIVED population — every
+ *      app/api/voice/twilio/** route and every app/api route with a path
+ *      segment naming a webhook outside the cron tree (this is how
+ *      /api/billing/webhook, the platform's own Stripe ledger, was found
+ *      uncontracted: 25 → 32 rows) — appears in the contract EXACTLY once, and
  *      every contracted routeFile exists on disk. A new webhook route without
  *      a contract row fails the build with its path.
  *   2. SCHEME TRUTH — each entry's declared verification is derived from the
@@ -95,6 +99,20 @@ const EXTRA_INBOUND_ROUTES = [
   "app/api/voice/twilio/status/route.ts",
 ]
 
+/** DERIVED inbound population (lane 88E). The hand list above covered four
+ *  routes; the platform's OWN Stripe billing webhook (/api/billing/webhook),
+ *  the ShowingTime webhook and five Twilio voice callbacks sat outside it, so
+ *  COVERAGE could not see them and the connectors page never showed them. Now
+ *  derived, never listed: every route under app/api/voice/twilio/** (Twilio is
+ *  the only caller of that tree) plus every app/api route with a path segment
+ *  naming a webhook — except the cron tree (app/api/cron/webhook-deliveries is
+ *  OUR outbound retry loop, not an inbound webhook). */
+function derivedInboundRoutes(allApiRoutes: string[]): string[] {
+  return allApiRoutes.filter((r) =>
+    !r.startsWith("app/api/cron/") && !r.startsWith("app/api/webhooks/") &&
+    (r.startsWith("app/api/voice/twilio/") || r.split("/").slice(2, -1).some((seg) => /webhook/i.test(seg))))
+}
+
 // ── Brace-matched POST reachability ──────────────────────────────────────────
 
 /** Brace-match the body starting at the first `{` at/after `from`. */
@@ -171,6 +189,7 @@ const SCHEME_CONSTRUCTS: Record<WebhookContractEntry["scheme"], RegExp[]> = {
   "shared-secret": [/x-webhook-secret|x-postmark-token/],
   "stripe-signature": [/stripe-signature/],
   "zoom-hmac-sha256": [/verifyZoomWebhook\(|createHmac\(\s*["']sha256["']/],
+  "query-token": [/searchParams\.get\(\s*["']token["']\s*\)/, /timingSafeEqual\(/],
   "multi-provider": [/createHmac\(/, /timingSafeEqual\(/],
   none: [],
 }
@@ -178,6 +197,9 @@ const SCHEME_CONSTRUCTS: Record<WebhookContractEntry["scheme"], RegExp[]> = {
 /** Refusal statuses a verifying route must be able to answer with (400 covers
  *  Stripe's and the CE route's signature refusals). */
 const REFUSAL = /\b40[013]\b/
+/** query-token routes refuse 404-SILENT by design (the URL is ours; a stranger
+ *  learns nothing, not even that the path exists) — lane 88E. */
+const REFUSAL_404_SILENT = /\b404\b/
 
 // ── The checker itself (pure over a contract + a file set) ───────────────────
 
@@ -301,10 +323,27 @@ console.log("\n── POSITIVE CONTROLS — the finders still bite ──")
 }
 
 console.log("\n── 1+3. COVERAGE + UNIQUE CLAIMS on the real tree ──")
-const routesOnDisk = [
+{
+  // POSITIVE CONTROL for the derived population: it sees the shapes the hand
+  // list missed, and it does not swallow the outbound retry cron.
+  const specimen = [
+    "app/api/billing/webhook/route.ts", "app/api/showings/showingtime-webhook/route.ts",
+    "app/api/voice/twilio/turn/route.ts", "app/api/cron/webhook-deliveries/route.ts",
+    "app/api/contacts/route.ts",
+  ]
+  const got = derivedInboundRoutes(specimen)
+  check("control: derived discovery finds billing/webhook, showingtime-webhook and a Twilio voice callback",
+    ["app/api/billing/webhook/route.ts", "app/api/showings/showingtime-webhook/route.ts", "app/api/voice/twilio/turn/route.ts"].every((r) => got.includes(r)))
+  check("control: derived discovery excludes the outbound webhook-deliveries CRON and ordinary routes",
+    !got.includes("app/api/cron/webhook-deliveries/route.ts") && !got.includes("app/api/contacts/route.ts"))
+}
+const derived = derivedInboundRoutes(findRouteFiles("app/api"))
+const routesOnDisk = Array.from(new Set([
   ...findRouteFiles("app/api/webhooks"),
   ...EXTRA_INBOUND_ROUTES.filter((r) => existsSync(join(root, r))),
-].sort()
+  ...derived,
+])).sort()
+console.log(`  derived inbound routes outside app/api/webhooks: ${derived.length}`)
 {
   for (const r of EXTRA_INBOUND_ROUTES) {
     check(`named inbound route exists on disk: ${r}`, existsSync(join(root, r)))
@@ -360,7 +399,8 @@ for (const e of WEBHOOK_CONTRACT) {
         check(`${label}: scheme ${e.scheme} construct ${re.source.slice(0, 40)} reachable from POST`, re.test(searchable))
       }
       // A verifying scheme must be able to REFUSE (fail closed, §4).
-      check(`${label}: refusal status present (fail closed)`, REFUSAL.test(reach.reachable) || implSrcs.some((s) => REFUSAL.test(s)))
+      const refusal = e.scheme === "query-token" ? REFUSAL_404_SILENT : REFUSAL
+      check(`${label}: refusal status present (fail closed)`, refusal.test(reach.reachable) || implSrcs.some((s) => refusal.test(s)))
     }
   }
 }

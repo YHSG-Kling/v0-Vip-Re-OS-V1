@@ -47,6 +47,9 @@ export type WebhookVerificationScheme =
   | "stripe-signature"
   /** Zoom: HMAC-SHA256 over v0:timestamp:body, plus URL-validation challenge. */
   | "zoom-hmac-sha256"
+  /** A token THIS OS authored into the callback URL (?token=…), compared
+   *  timing-safe; a missing/wrong token answers 404-silent (lane 88E). */
+  | "query-token"
   /** Multi-provider ingress — per-provider schemes inside one route. */
   | "multi-provider"
   /** No caller verification at all — recorded, never hidden. */
@@ -232,6 +235,75 @@ export const WEBHOOK_CONTRACT: WebhookContractEntry[] = [
     consoleField: "Twilio Console → each number's StatusCallback — bound automatically by bindNumberToTwilioLane",
     failureVisibility: "voice ledger rows closed by the status callback; stalls surface on the voice billing rail",
   },
+  // ── Twilio voice callbacks OUR OWN DIAL authors (lane 88E) ─────────────────
+  // Not pasted into a console — the URL rides the TwiML / REST call that
+  // starts the leg — but Twilio's servers are still the caller, with no
+  // session. Uncontracted before 88E, and every one of them sat under the
+  // '/api/voice' PROTECTED prefix, so proxy.ts answered Twilio with a 307 to
+  // /login (app/constants/auth.ts SESSIONLESS_API_DOORS; proof
+  // test:proxy-sessionless-doors).
+  {
+    provider: "twilio",
+    eventKind: "voice-gather-turn",
+    path: "/api/voice/twilio/turn",
+    routeFile: "app/api/voice/twilio/turn/route.ts",
+    scheme: "twilio-url-hmac-sha1",
+    verificationHeaders: ["x-twilio-signature"],
+    secretEnv: [],
+    implementedIn: ["lib/voice/twilio-voice.ts"],
+    consoleField: "Not console-pasted — the <Gather action> URL emitted by the inbound/outbound answer TwiML",
+    failureVisibility: "voice_calls transcript rows stop growing mid-call; the post-call outcome pass reads them",
+    notes: "Per-tenant/platform auth token resolved from the DB (resolveInboundContext / platform context) — no env-held secret.",
+  },
+  {
+    provider: "twilio",
+    eventKind: "voice-outbound-answer",
+    path: "/api/voice/twilio/outbound",
+    routeFile: "app/api/voice/twilio/outbound/route.ts",
+    scheme: "twilio-url-hmac-sha1",
+    verificationHeaders: ["x-twilio-signature"],
+    secretEnv: [],
+    implementedIn: ["lib/voice/twilio-voice.ts"],
+    consoleField: "Not console-pasted — the Url placeOutboundAiCall (lib/voice/twilio-outbound.ts) passes when it dials",
+    failureVisibility: "voice_calls rows stay in their dial-time state; the status callback closes the ledger",
+  },
+  {
+    provider: "twilio",
+    eventKind: "voice-recording-callback",
+    path: "/api/voice/twilio/recording",
+    routeFile: "app/api/voice/twilio/recording/route.ts",
+    scheme: "twilio-url-hmac-sha1",
+    verificationHeaders: ["x-twilio-signature"],
+    secretEnv: [],
+    implementedIn: ["lib/voice/twilio-voice.ts"],
+    consoleField: "Not console-pasted — the recordingStatusCallback on the dial / <Record> this OS emits",
+    failureVisibility: "voice_calls.recording_url stays null; an unmatched tenant is logged and DROPPED by the route",
+  },
+  {
+    provider: "twilio",
+    eventKind: "warm-transfer-whisper",
+    path: "/api/voice/twilio/whisper",
+    routeFile: "app/api/voice/twilio/whisper/route.ts",
+    scheme: "query-token",
+    verificationHeaders: ["token"],
+    secretEnv: ["RELAY_SHARED_SECRET", "CRON_SECRET"],
+    implementedIn: ["lib/voice/warm-transfer.ts"],
+    consoleField: "Not console-pasted — the whisper/join/fallback URLs lib/voice/warm-transfer.ts authors at bridge start (?token=…)",
+    failureVisibility: "the caller hears the honest call-back fallback and the agent a missed-bridge notification",
+    notes: "404-silent on a missing/wrong token by design (the URL is ours; nothing else may drive it).",
+  },
+  {
+    provider: "twilio",
+    eventKind: "conversational-intelligence",
+    path: "/api/voice/twilio/intelligence",
+    routeFile: "app/api/voice/twilio/intelligence/route.ts",
+    scheme: "query-token",
+    verificationHeaders: ["token"],
+    secretEnv: ["RELAY_SHARED_SECRET"],
+    consoleField: "Twilio Console → Conversational Intelligence → Service → webhook URL (append ?token=<RELAY_SHARED_SECRET>)",
+    failureVisibility: null,
+    notes: "404-silent on a missing/wrong token by design.",
+  },
   {
     provider: "twilio",
     eventKind: "sms-delivery-status",
@@ -361,6 +433,27 @@ export const WEBHOOK_CONTRACT: WebhookContractEntry[] = [
 
   // ── Billing / vendor marketplace ───────────────────────────────────────────
   {
+    // THE PLATFORM's own subscription ledger — the most load-bearing webhook
+    // in the OS, and uncontracted until lane 88E (the contract covered only
+    // /api/webhooks/** plus four named Twilio routes, so the connectors page
+    // staff read when re-pointing Stripe never showed it).
+    provider: "stripe",
+    eventKind: "platform-billing-events",
+    path: "/api/billing/webhook",
+    routeFile: "app/api/billing/webhook/route.ts",
+    scheme: "stripe-signature",
+    verificationHeaders: ["stripe-signature"],
+    secretEnv: [],
+    implementedIn: ["lib/billing/stripe-webhook-secrets.ts"],
+    protocolVersion: "Stripe webhook signature v1 (t=…,v1=… HMAC-SHA256)",
+    consoleField: "Stripe Dashboard → Developers → Webhooks → endpoint URL (tenant_billing endpoint — the PLATFORM account)",
+    failureVisibility: "Stripe dashboard retries + the stripe-drift cron cross-checks",
+    notes:
+      "Per-endpoint signing secret resolved by verifyStripeWebhook({ endpoint: 'tenant_billing' }). Platform-signed events only: " +
+      "a delivery signed by a TENANT's own Stripe account answers 200 applied:false (never attributed to the platform's books). " +
+      "no_candidates → 500, unreadable → 503 (Stripe retries), unverified → 400.",
+  },
+  {
     provider: "stripe",
     eventKind: "vendor-marketplace-events",
     path: "/api/webhooks/stripe/vendor",
@@ -384,6 +477,20 @@ export const WEBHOOK_CONTRACT: WebhookContractEntry[] = [
       "REGISTRATION (lane 81E): the endpoint's enabled_events are derived in lib/vendors/vendor-webhook-events.ts " +
       "(payout map ∪ subscription lane, incl. checkout.session.completed) and written through the Stripe SDK from the " +
       "superadmin connectors page (launch checklist drift item stripe_vendor_webhook_events; proof test:stripe-webhook-events).",
+  },
+
+  // ── Showings (lane 88E: uncontracted before — it lives outside /api/webhooks) ─
+  {
+    provider: "showingtime",
+    eventKind: "showing-appointment-events",
+    path: "/api/showings/showingtime-webhook",
+    routeFile: "app/api/showings/showingtime-webhook/route.ts",
+    scheme: "hmac-sha256",
+    verificationHeaders: ["x-showingtime-signature"],
+    secretEnv: ["SHOWINGTIME_WEBHOOK_SECRET"],
+    consoleField: "ShowingTime partner console → webhook URL (HMAC secret = SHOWINGTIME_WEBHOOK_SECRET)",
+    failureVisibility: null,
+    notes: "Unset secret → 503 (fail closed); bad signature → 401.",
   },
 
   // ── Ops / content providers ────────────────────────────────────────────────

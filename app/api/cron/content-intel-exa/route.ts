@@ -14,6 +14,7 @@
  */
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 import { exaSearch } from "@/lib/content-intel/exa-scraper"
 
@@ -29,11 +30,8 @@ interface SourceRow {
 }
 
 export async function GET(req: NextRequest) {
-  const auth = req.headers.get("authorization")?.replace("Bearer ", "")
-  const qs   = new URL(req.url).searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
   if (!process.env.EXA_API_KEY) return NextResponse.json({ skipped: "EXA_API_KEY not configured" })
 
   const svc = createServiceClient()

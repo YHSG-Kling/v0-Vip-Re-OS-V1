@@ -27,11 +27,12 @@
  * would be ideal — for now we check newsletter_sends presence per recipient
  * before dispatching (so a mid-loop crash + replay is safe).
  *
- * Auth: CRON_SECRET via Authorization: Bearer or ?secret= (matches the rest
- * of the cron fleet).
+ * Auth: verifyCronAuth (lib/cron-auth.ts) — Bearer CRON_SECRET, fail closed
+ * when unset; the old ?secret= query credential is retired (lane 88E).
  */
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchEmail } from "@/lib/providers/dispatch"
 import { evaluateBroadcastDeconflict } from "@/lib/kernel/deconflict"
@@ -48,9 +49,6 @@ import { checkAssetReadiness, ASSET_READINESS_CONFIGS } from "@/lib/kernel/compo
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
 
 interface CampaignRow {
   id:                   string
@@ -104,11 +102,8 @@ interface CampaignResult {
 }
 
 export async function GET(req: NextRequest) {
-  const headerSecret = req.headers.get("authorization")?.replace("Bearer ", "")
-  const querySecret  = new URL(req.url).searchParams.get("secret")
-  const expected     = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (headerSecret !== expected && querySecret !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   const svc = createServiceClient()
 

@@ -31,6 +31,7 @@
  * Auth: CRON_SECRET.
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 // Was `import { put } from "@vercel/blob"`. Survivor:
 // lib/remotion/media-host.ts#hostRenderedMedia — Supabase `video-assets`.
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
@@ -43,9 +44,6 @@ export const dynamic = "force-dynamic"
 export const maxDuration = 300
 export const runtime = "nodejs"
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
 
 interface ProjectRow {
   id:              string
@@ -57,11 +55,8 @@ interface ProjectRow {
 }
 
 export async function GET(req: NextRequest) {
-  const headerSecret = req.headers.get("authorization")?.replace("Bearer ", "")
-  const querySecret  = new URL(req.url).searchParams.get("secret")
-  const expected     = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (headerSecret !== expected && querySecret !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   const svc = createServiceClient()
 

@@ -62,7 +62,7 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { createServerClient } from "@supabase/ssr"
 import { createServiceClient } from "@/lib/supabase/service"
-import { PROTECTED_ROUTES, PUBLIC_ROUTES } from "@/app/constants/auth"
+import { PROTECTED_ROUTES, classifyProxyPath } from "@/app/constants/auth"
 import { siteUrl } from "@/lib/platform/site-url"
 
 export default async function proxy(request: NextRequest) {
@@ -141,7 +141,12 @@ export default async function proxy(request: NextRequest) {
   }
 
   // ── 2) Public route pass-through ───────────────────────────────────────
-  if (PUBLIC_ROUTES.some((route) => pathname.startsWith(route))) {
+  // classifyProxyPath (app/constants/auth.ts) is the ONE decision: public
+  // entries match on a path-segment boundary (lane 88E — '/v' used to make
+  // /vendor/** and /video-assistant public by accident), and the sessionless
+  // provider doors (Twilio, D-ID custom-LLM, the public form submit…) are
+  // public by name so a provider is never answered with a 307 to /login.
+  if (classifyProxyPath(pathname) === "public") {
     return NextResponse.next()
   }
 
@@ -155,7 +160,7 @@ export default async function proxy(request: NextRequest) {
   }
 
   // ── 4) Auth gate on protected routes ───────────────────────────────────
-  const isProtected = PROTECTED_ROUTES.some((route) => pathname.startsWith(route))
+  const isProtected = classifyProxyPath(pathname) === "protected"
   if (!isProtected) return NextResponse.next()
 
   let response = NextResponse.next({ request: { headers: request.headers } })

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { runAllActiveAlerts } from "@/lib/property-alerts/alert-engine"
 import { platformScope, tenantScope, isTenantScopeRefusal } from "@/lib/kernel/tenant-scope"
 
@@ -15,14 +16,14 @@ export async function POST(req: NextRequest) {
   // rule is the one already in force at app/api/webhooks/sendgrid-events/route.ts
   // ("Unset secret = 404 — never a silently-open writer"); app/api/fatigue/
   // calculate/route.ts refuses on unset too. One vocabulary (§6).
-  const authHeader = req.headers.get("authorization") ?? ""
-  const cronSecret = process.env.CRON_SECRET
-  if (!cronSecret) {
-    return NextResponse.json({ error: "not found" }, { status: 404 })
-  }
-  if (authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 })
-  }
+  //
+  // Lane 88E: this route is a CRON_REGISTRY target (four frequencies), so it
+  // now gates through THE ONE cron gate every other registry target uses —
+  // lib/cron-auth.ts verifyCronAuth (unset → 500, missing/wrong Bearer → 401).
+  // Still refuses on an unset secret; the status is the cron fleet's, not a
+  // second spelling (scripts/cron-dispatch-simulator.ts holds the rule).
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   let frequency = "daily"
   let brokerageId: string | undefined

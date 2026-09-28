@@ -25,6 +25,7 @@
  * Auth: CRON_SECRET. Registered in lib/kernel/cron-dispatch.ts (one heartbeat).
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 import { publishVideoProjectLanding } from "@/lib/geo/publish-video-landing"
 import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-status"
@@ -33,16 +34,9 @@ export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 export const maxDuration = 120
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
-
 export async function GET(req: NextRequest) {
-  const auth     = req.headers.get("authorization")?.replace("Bearer ", "")
-  const qs       = new URL(req.url).searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   const svc = createServiceClient()
 

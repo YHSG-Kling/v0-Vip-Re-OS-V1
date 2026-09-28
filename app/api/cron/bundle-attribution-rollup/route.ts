@@ -86,14 +86,12 @@
  * Auth: CRON_SECRET. No external API calls; pure JOIN + UPDATE work.
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
 
 interface DispatchRow {
   id:                string
@@ -106,12 +104,9 @@ interface DispatchRow {
 }
 
 export async function GET(req: NextRequest) {
-  const auth     = req.headers.get("authorization")?.replace("Bearer ", "")
   const url      = new URL(req.url)
-  const qs       = url.searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   const svc = createServiceClient()
   const since28d = new Date(Date.now() - 28 * 86_400_000).toISOString()

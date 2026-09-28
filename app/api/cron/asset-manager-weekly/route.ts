@@ -16,23 +16,17 @@
  * Auth: CRON_SECRET. No-op when ANTHROPIC_API_KEY is absent.
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 import { spawnAssetManager } from "@/lib/agents/asset-manager"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
-
 export async function GET(req: NextRequest) {
-  const auth     = req.headers.get("authorization")?.replace("Bearer ", "")
   const url      = new URL(req.url)
-  const qs       = url.searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   const svc = createServiceClient()
   const { data: brokerages } = await svc

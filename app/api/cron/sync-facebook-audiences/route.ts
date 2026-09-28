@@ -3,6 +3,7 @@
 // Runs every 24 hours to keep audiences up to date
 
 import { type NextRequest, NextResponse } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 // THE UNATTENDED DOOR. This used to import the `"use server"` action
 // `lib/ads/facebook-audience-sync.ts:syncAudience` and call it as
@@ -35,18 +36,9 @@ export const maxDuration = 300 // 5 minutes
 
 export async function GET(request: NextRequest) {
   // ── 1. Verify CRON_SECRET ───────────────────────────────────────────────────
-  const authHeader = request.headers.get("authorization")
-  const cronSecret = process.env.CRON_SECRET
-
-  if (!cronSecret) {
-    console.error("[sync-facebook-audiences] CRON_SECRET not configured")
-    return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 500 })
-  }
-
-  if (authHeader !== `Bearer ${cronSecret}`) {
-    console.error("[sync-facebook-audiences] Unauthorized request")
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // The ONE cron gate (lib/cron-auth.ts) — unset secret → 500, bad credential → 401.
+  const denied = verifyCronAuth(request)
+  if (denied) return denied
 
   const contextResult = await createCronRunContextAction({
     cron_name: "sync-facebook-audiences",
