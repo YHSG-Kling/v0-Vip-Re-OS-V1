@@ -30,7 +30,13 @@ export async function buildEsignAnchorPlanAction(input: EsignAnchorPlanInput): P
   provider?: EsignProvider
   anchorCount?: number
   recipientRoles?: string[]
-  ambiguous?: Array<{ fieldName: string; reason: string }>
+  /** THE PLACEMENT (lane 89A) — every auto-derived signature/initial/date field with the party it
+   *  is set for, so the wizard's e-sign window can show "where they need to sign" per saved form
+   *  and let the agent re-assign a field to another party before it goes out. */
+  anchors?: Array<{ key: string; fieldName: string; role: string; type: "signature" | "initial" | "date" }>
+  /** Fields naming no party / two parties — the agent assigns the party in the wizard; the
+   *  assignment becomes a tag the provider places (never auto-guessed). */
+  ambiguous?: Array<{ fieldName: string; reason: string; type: "signature" | "initial" | "date" }>
   needsManualPlacement?: boolean
   safe?: boolean
   safetyViolations?: string[]
@@ -65,7 +71,8 @@ export async function buildEsignAnchorPlanAction(input: EsignAnchorPlanInput): P
       provider,
       anchorCount: plan.anchors.length,
       recipientRoles: plan.recipientRoles,
-      ambiguous: plan.ambiguous.map((a) => ({ fieldName: a.fieldName, reason: a.reason })),
+      anchors: plan.anchors.map((a) => ({ key: a.key, fieldName: a.fieldName, role: a.role, type: a.type })),
+      ambiguous: plan.ambiguous.map((a) => ({ fieldName: a.fieldName, reason: a.reason, type: a.type })),
       needsManualPlacement: plan.needsManualPlacement,
       safe: plan.safety.ok,
       safetyViolations: plan.safety.violations,

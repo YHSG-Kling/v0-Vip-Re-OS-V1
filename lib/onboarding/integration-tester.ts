@@ -635,10 +635,10 @@ export const PROVIDER_METADATA: Record<ProviderName, {
 
 export const PROVIDER_GROUPS = {
   // Required = the minimum tech a brokerage needs to operate on the platform.
-  // Lane 88B (owner, wave 88: "google esign is default not dotloop."): the e-sign requirement is
-  // met by DEFAULT — Google eSignature (lib/integrations/providers/catalog.ts DEFAULT_ESIGN_PROVIDER)
-  // needs no credential; the tech-stack progress counts esign as met. The providers listed here are
-  // the optional AUTO-SEND upgrades.
+  // The e-sign requirement is met by DEFAULT — lib/integrations/providers/catalog.ts
+  // DEFAULT_ESIGN_PROVIDER (lane 89A: DocuSign on the platform's own account, embedded in the
+  // platform window) needs no tenant credential; the tech-stack progress counts esign as met. The
+  // providers listed here are the optional "send through your own account" upgrades.
   // E-sign covers DocuSign, Dotloop, and SkySlope (the latter two also serve
   // as transaction-form platforms, so connecting one of them satisfies both
   // the required e-sign category and the recommended transaction category).

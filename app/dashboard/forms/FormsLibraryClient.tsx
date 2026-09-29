@@ -8,7 +8,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { useState, useEffect } from "react"
-import { providerPortalMode, DEFAULT_ESIGN_PROVIDER, PROVIDER_PORTAL_URLS } from "@/lib/integrations/providers/catalog"
+import { providerPortalMode, DEFAULT_ESIGN_PROVIDER, PROVIDER_PORTAL_URLS, getCatalogEntry } from "@/lib/integrations/providers/catalog"
 import {
   Card, CardContent, } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -427,16 +427,23 @@ export function FormsLibraryClient({
                 happens in their window; FILLING stays native below (where the
                 AI prefill lives); sending stays launchEsignEnvelope. */}
             {(() => {
-              // Lane 88B (owner, wave 88: "google esign is default not dotloop."): with no provider
-              // connected, the window offered is the e-sign DEFAULT — Google eSignature, opened in a
-              // new tab (Google allows no framing) on the agent's own Google account.
+              // With no transaction provider connected, the window offered is the e-sign DEFAULT
+              // (catalog DEFAULT_ESIGN_PROVIDER). Lane 89A: DocuSign — sending happens INSIDE the
+              // platform (embedded sender view, the platform's DocuSign account when the brokerage
+              // has not connected its own); a portal-send default (Google) would name its Drive steps.
               if (!resolvedProvider?.is_configured) {
                 const def = providerPortalMode(DEFAULT_ESIGN_PROVIDER)
                 if (!def) return null
+                const portalSend = !!getCatalogEntry(DEFAULT_ESIGN_PROVIDER)?.portalSend
                 return (
                   <Card>
                     <CardContent className="flex items-center justify-between py-3 px-4">
-                      <p className="text-xs text-muted-foreground">E-sign default: {def.label}. Fill the form here, then open it in your Google Drive and choose Tools → eSignature → Request signature. Connect DocuSign, Dotloop or another provider in Settings → Integrations to auto-send instead.</p>
+                      <p className="text-xs text-muted-foreground">
+                        {portalSend
+                          ? `E-sign default: ${def.label}. Fill the form here, then open it in your Google Drive and choose Tools → eSignature → Request signature.`
+                          : `E-sign default: ${def.label} — fill the form here and send it for signature inside this window (recipients, field placement and Send all happen in ${def.label}'s embedded view).`}
+                        {" "}Connect your brokerage&apos;s own DocuSign, Dotloop, SkySlope or Authentisign in Settings → Integrations to send through your account instead.
+                      </p>
                       <Button size="sm" variant="outline" asChild>
                         <a href={def.url} target="_blank" rel="noopener noreferrer">Open {def.label}</a>
                       </Button>

@@ -85,7 +85,7 @@ const SYSTEM_DEFAULTS: Record<string, string> = {
   social:      "buffer",
   calendar:    "google",
   payment:     "stripe",
-  esign:       DEFAULT_ESIGN_PROVIDER,   // owner wave 88 — the catalog's ONE default (mirrors lib/kernel/providers.ts)
+  esign:       DEFAULT_ESIGN_PROVIDER,   // the catalog's ONE default (mirrors lib/kernel/providers.ts; DocuSign since wave 89)
   transaction: "dotloop",
   ai:          "anthropic",
   direct_mail: "lob",

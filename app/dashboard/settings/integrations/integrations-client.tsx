@@ -37,9 +37,9 @@ const PROVIDER_TYPES = ["esign", "transaction", "sms", "email", "voice", "calend
 // and never the unimplemented ones (which crash the factory). Adding a provider
 // class + flipping catalog.implemented makes it appear here automatically.
 const PROVIDER_KEYS_BY_TYPE: Record<string, string[]> = {
-  // Lane 88B (owner, wave 88: "google esign is default not dotloop."): Google eSignature (the
-  // catalog DEFAULT, portal-send — no credential) is offered FIRST; Dotloop and every connectable
-  // API provider remain selectable after it.
+  // The catalog DEFAULT (lane 89A: DocuSign — embedded in the platform window) is offered FIRST;
+  // Google eSignature (portal-send, no credential), Dotloop and every connectable API provider
+  // remain selectable after it. A selection here always wins over the default.
   esign:       [...getSelectableEsignProviders(), "none"],
   transaction: [...getTransactionFormProviders(), "none"],
   sms:         ["twilio", "bandwidth", "vonage"],
@@ -121,7 +121,7 @@ type OverrideForm = {
 }
 
 const EMPTY_CRED: CredForm = { platform: "", api_key: "", api_url: "", account_id: "", account_name: "" }
-// Lane 88B — the override form opens on the e-sign DEFAULT (Google eSignature), not Dotloop.
+// The override form opens on the e-sign DEFAULT (the catalog's ONE constant), never a hard-coded vendor.
 const EMPTY_OVERRIDE: OverrideForm = { provider_type: "esign", provider_key: DEFAULT_ESIGN_PROVIDER }
 
 // ── Component ──────────────────────────────────────────────────────────────

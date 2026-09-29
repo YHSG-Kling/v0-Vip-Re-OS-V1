@@ -3,11 +3,12 @@
  * eSignature provider.
  *
  * IMPORTANT: The eSign provider is per-AGENT/BROKERAGE — not hardcoded.
- * Lane 88B2: WHICH provider is the tenant's e-sign SELECTION (provider_overrides `esign`,
- * default Google eSignature — lib/kernel/providers.ts SYSTEM_DEFAULTS), independent of the
- * transaction-management connection; resolveTransactionFormsProvider() (platform_credentials)
- * supplies only the CREDENTIAL of a selected API provider (dotloop, docusign, skyslope,
- * formsimplicity, authentisign).
+ * Lane 88B2: WHICH provider is the tenant's e-sign SELECTION (provider_overrides `esign`),
+ * independent of the transaction-management connection. Lane 89A: the default is DocuSign
+ * (lib/integrations/providers/catalog.ts DEFAULT_ESIGN_PROVIDER) and the CREDENTIAL of the
+ * selected/default API provider comes from the ONE resolver
+ * (lib/integrations/resolve-esign-provider.ts: agent → team → brokerage → platform connection,
+ * then the platform's own DocuSign account for the default) — a different TM vendor never stands in.
  *
  * Pre-condition: the document must already have status='draft_ready' or
  * 'review' (i.e. the agent has approved the packet in the FormWizard).
@@ -98,13 +99,15 @@ export const sendForEsignAdapter: ChannelAdapter = {
     // CREDENTIAL of an API provider the tenant actually SELECTED for e-sign. TM stays the tenant's
     // choice for loops and forms; it no longer picks the signer.
     let provider: string = (step as any).esign_provider ?? ""
-    let providerCredentials: { access_token: string | null; account_id: string | null } | null = null
+    // Lane 89A: the SELECTED (or default) API provider arrives already instantiated with ITS
+    // credential — the tenant's own connection, or the platform's DocuSign account for the default.
+    let resolvedEsignProvider: import("@/lib/integrations/providers/transaction-provider.interface").ITransactionProvider | null = null
     let selectionRefusal: string | null = null
 
     if (!provider) {
       try {
         const { resolveTenantProvider } = await import("@/lib/kernel/tenant-config-reads")
-        const { getCatalogEntry } = await import("@/lib/integrations/providers/catalog")
+        const { getCatalogEntry, DEFAULT_ESIGN_PROVIDER } = await import("@/lib/integrations/providers/catalog")
         // Sessionless door (workflow run): the tenant is the run's verified brokerageId.
         const selection = await resolveTenantProvider({
           providerType: "esign",
@@ -113,26 +116,26 @@ export const sendForEsignAdapter: ChannelAdapter = {
         const selected = selection.providerKey
         const entry = getCatalogEntry(selected)
         if (entry?.portalSend) {
-          // Google eSignature (the default) — portal-send: the manual-send rail below hands the agent
-          // their Drive with the steps. No credential exists or is needed.
+          // Google eSignature (a selection, no longer the default) — portal-send: the manual-send
+          // rail below hands the agent their Drive with the steps. No credential exists or is needed.
           provider = entry.name
         } else if (entry && entry.capabilities.esign) {
-          // An API provider the tenant SELECTED for e-sign: its credential, from the connection.
-          const { resolveTransactionFormsProvider } = await import("@/lib/kernel/forms")
-          const result = await resolveTransactionFormsProvider({ brokerage_id: brokerageId })
-          if (result.success && result.data?.is_configured && result.data.provider_name === entry.name) {
-            provider            = entry.name
-            providerCredentials = {
-              access_token: result.data.access_token,
-              account_id:   result.data.account_id,
-            }
-          } else {
-            // Selected but not connected (or the connection is a different vendor, or the read was
-            // refused): fail closed and say which — never fall back to whatever TM is connected.
-            selectionRefusal = `E-sign is set to ${entry.label}, but no active ${entry.label} connection was found${result.success ? "" : ` (${result.error ?? "credential read refused"})`}. Connect it in Settings → Integrations, or switch e-sign back to the Google eSignature default.`
+          // The selected API provider — or the DocuSign DEFAULT (lane 89A) — with ITS credential,
+          // through the ONE resolver (selection → default; agent → team → brokerage → platform
+          // credential; the platform's own DocuSign account as the default's last rung). A
+          // different vendor's connection never stands in; a refusal is returned by name.
+          const { resolveESignProviderForActor } = await import("@/lib/integrations/resolve-esign-provider")
+          try {
+            const resolved = await resolveESignProviderForActor({ brokerageId, userId: agentUserId ?? null })
+            provider              = resolved.providerName
+            resolvedEsignProvider = resolved.provider
+          } catch (err) {
+            // Selected but not connected (or the credential read was refused): fail closed and say
+            // which — never fall back to whatever TM is connected.
+            selectionRefusal = err instanceof Error ? err.message : `E-sign is set to ${entry.label}, but no active ${entry.label} connection was found.`
           }
         } else {
-          selectionRefusal = `The e-sign selection '${selected}' is not an e-sign provider. Choose one in Settings → Integrations (the default is Google eSignature).`
+          selectionRefusal = `The e-sign selection '${selected}' is not an e-sign provider. Choose one in Settings → Integrations (the default is ${getCatalogEntry(DEFAULT_ESIGN_PROVIDER)?.label ?? DEFAULT_ESIGN_PROVIDER}).`
         }
       } catch { /* fall through */ }
     }
@@ -161,7 +164,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
           brokerage_id: brokerageId,
           type: "esign_provider_not_configured",
           title: "Connect an eSign provider",
-          body: "A workflow tried to send a document for signature but the eSign provider could not be resolved. E-sign defaults to Google eSignature; to auto-send, connect DocuSign, Dotloop or another supported provider in Settings → Integrations.",
+          body: "A workflow tried to send a document for signature but the eSign provider could not be resolved. E-sign defaults to DocuSign (embedded in the platform); connect your own DocuSign, Dotloop, SkySlope or Authentisign — or select Google eSignature — in Settings → Integrations.",
           priority: "high",
         }), { table: "notifications", flow: "esign_provider_not_configured_notify", brokerageId, reason: "the step already reports status:error; this is only the agent heads-up" })
       }
@@ -329,16 +332,13 @@ export const sendForEsignAdapter: ChannelAdapter = {
     // the same registry the FormWizard's submitForSignature uses. Brokermint
     // is the one provider with NO native e-sign (its class honestly returns
     // ESIGN_UNSUPPORTED) — it goes straight to the manual-send path below.
-    let esignProv: import("@/lib/integrations/providers/transaction-provider.interface").ITransactionProvider | null = null
-    if (provider !== "brokermint") {
+    let esignProv: import("@/lib/integrations/providers/transaction-provider.interface").ITransactionProvider | null = resolvedEsignProvider
+    if (!esignProv && provider !== "brokermint") {
       try {
+        // A step-level `esign_provider` override names a vendor without a resolved credential —
+        // the class instantiates from env where it can (Dotloop) and refuses otherwise.
         const { getTransactionProviderByName } = await import("@/lib/integrations/providers/provider-resolver")
-        esignProv = getTransactionProviderByName(
-          provider,
-          providerCredentials?.access_token && providerCredentials?.account_id
-            ? { apiKey: providerCredentials.access_token, profileId: providerCredentials.account_id }
-            : undefined
-        )
+        esignProv = getTransactionProviderByName(provider)
       } catch {
         // Unknown / not-yet-implemented provider name — fall to the manual path.
         esignProv = null

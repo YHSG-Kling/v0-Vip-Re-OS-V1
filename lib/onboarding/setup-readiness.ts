@@ -219,9 +219,10 @@ export const SETUP_ITEMS: SetupItem[] = [
     why: "Two-way sync with your existing CRM so contacts and activity stay in one place.",
     href: "/settings/connections", detect: (s) => s.hasCrm },
   { key: "transaction_esign", label: "Connect transaction & e-sign", roles: AGENTISH, required: false, category: "integrations",
-    // Lane 88B (owner, wave 88: "google esign is default not dotloop.") — e-sign works on day one
-    // through the Google eSignature default; this step is the optional auto-send / transaction upgrade.
-    why: "E-sign already works through your default, Google eSignature (send from your Google Drive). Connect DocuSign, Dotloop or SkySlope to auto-send and track documents to close.",
+    // E-sign works on day one through the platform DEFAULT (lane 89A: DocuSign, embedded in the
+    // platform window on the platform's account); this step is the optional "use your own account /
+    // transaction management" upgrade. Google eSignature remains selectable.
+    why: "E-sign already works through the default, DocuSign — you pick the contact, place the signature fields and send inside the platform. Connect your brokerage's own DocuSign, Dotloop or SkySlope to send through your account and track documents to close.",
     href: "/settings/connections", detect: (s) => s.hasTransactionEsign },
   { key: "ad_manager", label: "Connect your ad manager", roles: AGENTISH, required: false, category: "growth",
     why: "Lets the Ads Manager run + optimize paid campaigns on your accounts.",

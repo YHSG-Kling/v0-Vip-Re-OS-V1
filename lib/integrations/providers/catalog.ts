@@ -65,14 +65,20 @@ export interface ProviderCatalogEntry {
 //   · Lone Wolf TransactionDesk / zipForm — not integrated (no provider class); TD's API
 //     issues a one-time SSO `view-url` (apidocs.lwolf.com) — a popup, if/when integrated.
 export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
-  // THE DEFAULT E-SIGN PROVIDER (owner, wave 88 verbatim: "google esign is default not dotloop.").
-  // Google Workspace eSignature (Docs/Drive → Tools → eSignature → Request signature) is UI-only —
+  // Google Workspace eSignature — SELECTABLE, no longer the default (owner, wave 89 verbatim: "the
+  // platforms defualt esign is no longer google but we decided on docusign instead since it will
+  // embed in our platform window."). Docs/Drive → Tools → eSignature → Request signature is UI-only —
   // Google publishes no API to create a signature request (support.google.com/docs/answer/12315692)
-  // and Google frames nothing (X-Frame) — so it is a portalSend provider opened in a new tab, on the
-  // agent's own Google account (the same account their Gmail/Calendar connection already uses).
-  // Dotloop and every API provider below stay selectable; they simply are not the default.
+  // and Google frames nothing (X-Frame) — so it is a portalSend provider opened in a popup, on the
+  // agent's own Google account (lane 88C's Drive placement of the filled packet is kept).
   google_esign:   { name: "google_esign",   label: "Google eSignature", implemented: false, portalSend: true, capabilities: { esign: true,  transactionForms: false, embed: false } },
   dotloop:        { name: "dotloop",        label: "Dotloop",         implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: false } },
+  // THE DEFAULT E-SIGN PROVIDER (wave 89): DocuSign's embedded SENDER VIEW frames inside our window
+  // (EnvelopeViews:createSender, viewAccess "envelope" — "iFrames are supported", DocuSign developer
+  // blog 2024-05), so the contact pick, signature-field placement and Send all happen in the platform.
+  // With no tenant credential the PLATFORM's own DocuSign account carries the envelope
+  // (lib/esign/docusign-platform-account.ts, JWT grant); a tenant's own DocuSign/Dotloop/SkySlope/
+  // Authentisign connection or explicit selection ALWAYS wins over this default.
   docusign:       { name: "docusign",       label: "DocuSign",        implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: false, embeddedSend: true } },
   skyslope:       { name: "skyslope",       label: "SkySlope",        implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: true  } },
   authentisign:   { name: "authentisign",   label: "Authentisign",    implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: false } },
@@ -142,31 +148,35 @@ export function getTransactionFormProviders(): ProviderName[] {
 }
 
 /**
- * THE DEFAULT E-SIGN PROVIDER — lane 88B (owner, wave 88: "google esign is default not dotloop.").
- * Every place that used to fall back to "dotloop" when no e-sign provider was chosen falls back
- * HERE instead: lib/kernel/providers.ts SYSTEM_DEFAULTS.esign, the send-for-esign workflow step's
- * unconfigured path, getEsignStatus, the settings override form and the onboarding e-sign
- * requirement. An explicit selection (provider_overrides esign) or a connected API provider still
- * wins — Dotloop remains selectable.
+ * THE DEFAULT E-SIGN PROVIDER — ONE constant, read by every unconfigured door: lib/kernel/providers.ts
+ * SYSTEM_DEFAULTS.esign, lib/integrations/resolve-esign-provider.ts (the actor resolver's fallback),
+ * the send-for-esign workflow step, getEsignStatus / launchEsignEnvelope, the settings override form,
+ * the forms library window and the onboarding e-sign requirement.
+ *
+ * Lane 88B made it Google eSignature ("google esign is default not dotloop"). Lane 89A moves it to
+ * DOCUSIGN on the owner's wave-89 ruling: "the platforms defualt esign is no longer google but we
+ * decided on docusign instead since it will embed in our platform window." THE RULE (not the value):
+ * the user's / team's / brokerage's e-sign SELECTION (provider_overrides `esign`) wins, then THIS
+ * default — never "whatever transaction-management vendor happens to be connected". Google
+ * eSignature stays selectable (its Drive hand-off is kept); Dotloop & co stay selectable.
  */
-export const DEFAULT_ESIGN_PROVIDER: ProviderName = "google_esign"
+export const DEFAULT_ESIGN_PROVIDER: ProviderName = "docusign"
 
-/** PURE — the e-sign provider to use given what is configured: a known e-sign provider when one is
- *  configured, else the default (never a silent Dotloop). "not_configured" / "none" / unknown → default. */
-export function resolveEsignProviderOrDefault(configured?: string | null): ProviderName {
-  const entry = getCatalogEntry(configured)
-  return entry && entry.capabilities.esign && (entry.implemented || entry.portalSend) ? entry.name : DEFAULT_ESIGN_PROVIDER
-}
+// TOMBSTONE (lane 89A): resolveEsignProviderOrDefault deleted. It mapped "unconfigured / unknown /
+// not an e-sign provider" to the default SILENTLY, and its last product reader (lib/kernel/forms.ts
+// getEsignStatus) now resolves through the survivor —
+// lib/integrations/resolve-esign-provider.ts:resolveESignProviderForActor (readSelection →
+// `selection.pick || DEFAULT_ESIGN_PROVIDER`), which defaults ONLY when nothing is selected and
+// REFUSES a selection that cannot sign by name (CLAUDE.md §4: fail closed, never "checked and fine").
 
-/** E-sign providers a user may SELECT (settings override menu): the portal-send default first,
- *  then every implemented (credential-connectable) e-sign provider. */
+/** E-sign providers a user may SELECT (settings override menu): the DEFAULT first, then every other
+ *  e-sign provider — implemented (credential-connectable) or portal-send (Google eSignature). */
 export function getSelectableEsignProviders(): ProviderName[] {
   return Object.values(PROVIDER_CATALOG)
     .filter((p) => p.capabilities.esign && (p.implemented || p.portalSend))
     .sort((a, b) => Number(b.name === DEFAULT_ESIGN_PROVIDER) - Number(a.name === DEFAULT_ESIGN_PROVIDER))
     .map((p) => p.name)
 }
-
 /** Implemented providers that can e-sign (credential-CONNECTABLE — a portalSend provider has no
  *  credential, so it is not here; lib/connections/scope.ts reads this as the connect allow-list). */
 export function getEsignProviders(): ProviderName[] {

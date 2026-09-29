@@ -53,8 +53,9 @@ const SYSTEM_DEFAULTS: Record<string, string> = {
   social:       "buffer",
   calendar:     "google",
   payment:      "stripe",
-  // Lane 88B (owner, wave 88: "google esign is default not dotloop."). The ONE default lives in
-  // lib/integrations/providers/catalog.ts; Dotloop stays selectable through provider_overrides.
+  // The ONE e-sign default lives in lib/integrations/providers/catalog.ts (lane 89A: DocuSign,
+  // embedded in the platform window; wave 88 had Google). Google, Dotloop and every API provider
+  // stay selectable through provider_overrides — a selection always wins over the default.
   esign:        DEFAULT_ESIGN_PROVIDER,
   transaction:  "dotloop",
   crm:          "follow_up_boss",

@@ -23,7 +23,7 @@
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { resolveESignChoice } from "@/lib/integrations/resolve-esign-provider"
-import { supportsEmbeddedSend, providerPortalMode } from "@/lib/integrations/providers/catalog"
+import { supportsEmbeddedSend, providerPortalMode, getCatalogEntry } from "@/lib/integrations/providers/catalog"
 import type { SignatureTag } from "@/lib/integrations/providers/transaction-provider.interface"
 
 export const FORMS_BUCKET = "brokerage-forms"
@@ -72,6 +72,11 @@ export interface DispatchPacketResult {
   ok: boolean
   kind?: "google" | "api"
   providerName?: string
+  /** Whose credential carried an API send: the tenant's own (user/team/brokerage) or the
+   *  platform's DocuSign account ("platform") — so the record and the UI can say which. */
+  credentialScope?: "user" | "team" | "brokerage" | "platform"
+  /** true when the provider is the platform DEFAULT rather than a tenant selection. */
+  isDefault?: boolean
   /** Provider envelope / loop id — or, for Google, the Drive file id of the first document. */
   envelopeId?: string | null
   /** "sent" = the provider emailed the signers; "awaiting_agent_send" = the agent presses
@@ -87,6 +92,41 @@ export interface DispatchPacketResult {
  */
 function dispatchStatusFor(kind: "google" | "api", embedded: boolean): "sent" | "awaiting_agent_send" {
   return kind === "google" || embedded ? "awaiting_agent_send" : "sent"
+}
+
+/**
+ * PURE — THE PROVIDER-WINDOW PATH (lane 89A; owner: "if it is the transaction provider instead of
+ * the forms package template in the platform, then the external provider's would open in the
+ * platform window, then in within the provider, select the forms and fill it out … then save and
+ * send for esigning"). The forms were selected, filled and sent INSIDE the transaction provider's
+ * own window (SkySlope Forms iframe; Dotloop / Form Simplicity / Authentisign popup), so there is
+ * no packet for us to attach and nothing to dispatch: the record stamps the provider (and the
+ * envelope / file id the provider window reported, when it did) as awaiting the agent's send, and
+ * the provider's webhook / doc-sync sweep brings the signed copy back. Brokermint has no e-sign,
+ * and a portal-send provider is not a transaction window — both are refused by name.
+ */
+export function describeProviderWindowSend(input: { provider: string; envelopeId?: string | null; propertyAddress: string }): DispatchPacketResult {
+  const entry = getCatalogEntry(input.provider)
+  if (!entry || !entry.capabilities.transactionForms || entry.portalSend) {
+    return { ok: false, error: `'${input.provider}' is not a transaction-forms provider — pick the forms from your transaction provider's window, or from your library.` }
+  }
+  if (!entry.capabilities.esign) {
+    return { ok: false, kind: "api", providerName: entry.name, error: `${entry.label} has no e-signature — fill the forms there, then send them for signature through your e-sign provider (select the filled PDFs from your library).` }
+  }
+  const portal = providerPortalMode(entry.name)
+  return {
+    ok: true,
+    kind: "api",
+    providerName: entry.name,
+    envelopeId: input.envelopeId ?? null,
+    status: "awaiting_agent_send",
+    attachedCount: 0,
+    handoff: portal ? {
+      mode: portal.mode === "iframe" ? "iframe" : "popup",
+      urls: [{ label: `${portal.label} — ${input.propertyAddress}`, url: portal.url }],
+      instructions: `The forms for ${input.propertyAddress} were filled inside ${portal.label}. Send them for signature from ${portal.label}'s window${input.envelopeId ? ` (envelope ${input.envelopeId})` : ""}; the signed copies return to this deal through the ${portal.label} connection.`,
+    } : undefined,
+  }
 }
 
 async function signedUrlsFor(svc: SupabaseClient, docs: DispatchDoc[]): Promise<{ ok: boolean; forms: Array<{ formName: string; formUrl: string }>; error?: string }> {
@@ -190,9 +230,13 @@ export async function dispatchEsignPacket(svc: SupabaseClient, input: DispatchPa
     }
   }
 
-  // ── API PROVIDER (DocuSign / Dotloop / SkySlope / Authentisign) ─────────────────
+  // ── API PROVIDER (DocuSign / Dotloop / SkySlope / Authentisign / Form Simplicity) ──
+  // The DEFAULT is DocuSign (lane 89A): with no tenant DocuSign connection the platform's own
+  // account carries the envelope (resolvedScope "platform") and the agent still picks contacts,
+  // places fields and presses Send inside OUR window through the embedded sender view.
   const { resolved } = choice
   const provider = resolved.provider
+  const stamp = { credentialScope: resolved.resolvedScope, isDefault: resolved.isDefault }
   let envelopeId = input.existingEnvelopeId ?? null
   if (!envelopeId) {
     const created = await provider.createTransaction({
@@ -238,12 +282,12 @@ export async function dispatchEsignPacket(svc: SupabaseClient, input: DispatchPa
       return { ok: false, kind: "api", providerName: resolved.providerName, envelopeId, attachedCount, error: view.error ?? "the provider did not return a sending window" }
     }
     return {
-      ok: true, kind: "api", providerName: resolved.providerName, envelopeId, attachedCount,
+      ok: true, kind: "api", providerName: resolved.providerName, envelopeId, attachedCount, ...stamp,
       status: dispatchStatusFor("api", true),
       handoff: {
         mode: "iframe",
         urls: [{ label: `${resolved.providerName} — review & send`, url: view.senderViewUrl }],
-        instructions: "Review the signature areas and recipients, then press Send in the window below. Signed copies return to this deal automatically.",
+        instructions: `Confirm the recipients, place or adjust the signature, initial and date fields on each saved form, then press Send in the window below${resolved.resolvedScope === "platform" ? " (sent through the platform's DocuSign account)" : ""}. Signed copies return to this deal automatically.`,
       },
     }
   }
@@ -252,5 +296,5 @@ export async function dispatchEsignPacket(svc: SupabaseClient, input: DispatchPa
   if (!sent.success) {
     return { ok: false, kind: "api", providerName: resolved.providerName, envelopeId, attachedCount, error: sent.error ?? `${resolved.providerName} refused the signature request` }
   }
-  return { ok: true, kind: "api", providerName: resolved.providerName, envelopeId, attachedCount, status: dispatchStatusFor("api", false) }
+  return { ok: true, kind: "api", providerName: resolved.providerName, envelopeId, attachedCount, ...stamp, status: dispatchStatusFor("api", false) }
 }

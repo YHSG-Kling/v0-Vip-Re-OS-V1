@@ -36,9 +36,16 @@ import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Loader2, ChevronLeft, ChevronRight, Check, Building2, Users, User, AlertCircle, ExternalLink, Sparkles, ShieldCheck, Upload } from "lucide-react"
+import { Loader2, ChevronLeft, ChevronRight, Check, Building2, Users, User, AlertCircle, ExternalLink, Sparkles, ShieldCheck, Upload, UserCircle2 } from "lucide-react"
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import type { Contact } from "@/lib/domain/types"
 import { createClient } from "@/lib/supabase/client"
+// THE E-SIGN WINDOW'S PLACEMENT (lane 89A): the saved forms' signature/initial/date fields, each
+// assigned to a party, become the provider-shaped tags the send carries (pure adapters).
+import { anchorsForProvider, type EsignProvider } from "@/lib/forms/esign-anchor-adapters"
+import type { EsignAnchor, SignerRole } from "@/lib/forms/esign-anchors"
+import { getContacts } from "@/app/actions/contacts"
 // The ONE TTL vocabulary for a persisted document URL — the same constant the
 // server-side signer uses (lib/storage/signed-doc-url.ts). Imported rather than
 // respelled so the wizard and the signer cannot drift.
@@ -136,6 +143,15 @@ interface WizardState {
   fieldValues?: Record<string, Record<string, string>>
   // Step 4 — Signers
   signers: Signer[]
+  // Step 5 — WHERE THEY SIGN (lane 89A): the agent's party assignment for fields the plan could not
+  // place on its own (keyed by formRef, then AcroForm field name), and the provider-shaped tags the
+  // send carries (rebuilt whenever the plan or an assignment changes).
+  anchorRoles?: Record<string, Record<string, SignerRole>>
+  esignTags?: ReturnType<typeof anchorsForProvider>
+  // Step 3 — THE PROVIDER-WINDOW PATH (lane 89A): what the transaction provider's window reported
+  // (SkySlope Forms posts its file / envelope ids to the host page) so the deal can record the send
+  // that happened inside the provider. Null until the provider window says something.
+  providerWindow?: { provider: TransactionProvider; fileId?: string | null; envelopeId?: string | null; status?: string | null } | null
   // Step 5/6
   offerId?: string
   esignProvider?: string | null
@@ -200,6 +216,10 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
   // How the e-sign step runs (lane 88C): "google_drive_handoff" (the default — popup),
   // "embedded_send" (DocuSign sender view in an iframe) or "api_send" (the provider emails).
   const [esignMode, setEsignMode] = useState<string | null>(null)
+  // Whose e-sign carries the send (lane 89A): "user" / "team" / "brokerage" (the tenant's own
+  // selection or connection), "platform" (the platform's DocuSign account behind the default).
+  const [esignScope, setEsignScope] = useState<string | null>(null)
+  const [esignIsDefault, setEsignIsDefault] = useState<boolean>(false)
   const [esignSetupError, setEsignSetupError] = useState<string | null>(null)
   // The in-window send step returned by the dispatch (iframe or popup), shown on step 6.
   const [handoff, setHandoff] = useState<EsignHandoff | null>(null)
@@ -428,6 +448,8 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
           : null)
         setEsignProvider(data.esignProvider ?? null)
         setEsignMode(data.esignMode ?? null)
+        setEsignScope(data.esignScope ?? null)
+        setEsignIsDefault(data.esignIsDefault === true)
         setEsignSetupError(data.esignError ?? null)
         setState(prev => ({ ...prev, transactionProvider: data.provider ?? null, transactionProviderEmbedUrl: data.embedUrl ?? null }))
       } else {
@@ -518,6 +540,11 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
       // method connected — still advanced to step 6 and said "Offer submitted". The filled
       // packet also never travelled: nothing here named a document, so the provider got an
       // empty envelope. Now the filled forms go with it and a refusal stays on this step.
+      // THE PROVIDER-WINDOW PATH (lane 89A): only provider-library forms were selected, so they
+      // were filled and sent inside the transaction provider's window (step 3) — the deal records
+      // that send instead of dispatching an empty packet (DocuSign refuses an empty envelope, and
+      // Dotloop used to send a loop with nothing in it).
+      const providerWindow = providerWindowSend(state)
       const sent = await submitForSignature({
         offerId,
         userId: agentUserId,
@@ -525,6 +552,9 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
           .filter(s => s.email)
           .map(s => ({ name: s.name, email: s.email, role: s.role })),
         documents: packetDocuments(state),
+        // WHERE THEY SIGN travels with the packet (lane 89A): the e-sign window's placement.
+        tags: state.esignTags,
+        providerWindow: providerWindow ?? undefined,
         embeddedSend: esignMode === "embedded_send",
         returnUrl: typeof window !== "undefined" ? `${window.location.origin}/crm/contacts/${contact.id}/offers/${offerId}` : undefined,
       })
@@ -614,7 +644,10 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
       // listing through the provider webhooks / esign-doc-sync sweep (or, for Google
       // eSignature, the listing's upload door), where the compliance gate promotes it.
       const docs = packetDocuments(state)
-      if (docs.length === 0) {
+      // THE PROVIDER-WINDOW PATH (lane 89A): the agreement was filled and sent inside the
+      // transaction provider's window — record that on the listing instead of stopping.
+      const providerWindow = providerWindowSend(state)
+      if (docs.length === 0 && !providerWindow) {
         setSendNotice("Draft listing created. No filled form from your library was selected, so nothing was sent — add the listing agreement from My Forms (or send it from your provider) to get it signed.")
         setStep(6)
         return
@@ -623,6 +656,8 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
         listingId: listingId as string,
         signers: state.signers.filter(s => s.email).map(s => ({ name: s.name, email: s.email, role: s.role })),
         documents: docs,
+        tags: state.esignTags,
+        providerWindow: providerWindow ?? undefined,
         embeddedSend: esignMode === "embedded_send",
         returnUrl: typeof window !== "undefined" ? `${window.location.origin}/dashboard/listings/${listingId}` : undefined,
       })
@@ -738,7 +773,7 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
           )}
           {step === 3 && <Step3Fill state={state} mode={mode} agentName={agentName} providerInfo={providerInfo} update={update} />}
           {step === 4 && <Step4Signers state={state} update={update} mode={mode} />}
-          {step === 5 && <Step5ESign state={state} mode={mode} esignProvider={esignProvider} busy={busy} onSubmit={mode === "offer" ? handleSubmitOffer : handleSubmitListing} />}
+          {step === 5 && <Step5ESign state={state} mode={mode} esignProvider={esignProvider} esignMode={esignMode} esignScope={esignScope} esignIsDefault={esignIsDefault} update={update} busy={busy} onSubmit={mode === "offer" ? handleSubmitOffer : handleSubmitListing} />}
           {step === 6 && mode === "listing" && state.listingId && (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
               <Check className="h-10 w-10 text-emerald-600" />
@@ -807,8 +842,12 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
               {busy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               {/* The listing lane now creates the draft AND sends the filled agreement
                   (lane 88C); with no filled form selected it creates the draft only and
-                  says so on step 6. */}
-              {mode === "offer" ? "Send for E-Sign" : "Create Draft & Send Agreement"}
+                  says so on step 6. A provider-window send (89A) is RECORDED, not dispatched. */}
+              {providerWindowSend(state)
+                ? (mode === "offer" ? "Record Provider Send" : "Create Draft & Record Provider Send")
+                : esignMode === "embedded_send"
+                  ? (mode === "offer" ? "Open E-Sign Window" : "Create Draft & Open E-Sign Window")
+                  : (mode === "offer" ? "Send for E-Sign" : "Create Draft & Send Agreement")}
             </Button>
           )}
           {step === 6 && (
@@ -865,6 +904,36 @@ function packetDocuments(state: WizardState): Array<{ name: string; storagePath:
     .filter(f => f.source === "my_forms")
     .map(f => ({ name: f.name.replace(/\.[^.]+$/, ""), storagePath: state.filledForms?.[f.formRef]?.filledPath ?? f.formRef }))
     .filter(d => !!d.storagePath && !/^https?:\/\//i.test(d.storagePath))
+}
+
+/**
+ * PURE — THE PROVIDER-WINDOW SEND (lane 89A): when the agent picked ONLY the transaction provider's
+ * forms (no library form to attach), the forms were selected, filled and sent inside the provider's
+ * own window in step 3, and the deal records that provider (plus the envelope / file id SkySlope's
+ * window posted, when it did). Null when a library packet exists — that packet is dispatched.
+ */
+function providerWindowSend(state: WizardState): { provider: string; envelopeId?: string | null } | null {
+  const providerForms = state.selectedForms.filter(f => f.source === "transaction_provider")
+  if (providerForms.length === 0 || packetDocuments(state).length > 0) return null
+  const provider = state.providerWindow?.provider ?? providerForms[0].providerName ?? state.transactionProvider
+  if (!provider) return null
+  return { provider, envelopeId: state.providerWindow?.envelopeId ?? state.providerWindow?.fileId ?? null }
+}
+
+/** The SkySlope Forms window posts these to its host page (github skyslope-2/skyslope-forms-widget,
+ *  "Listening for Events") — the ids let the deal record what was created and sent in that window. */
+const SKYSLOPE_FORMS_ORIGIN = "https://forms.skyslope.com"
+function parseSkyslopeMessage(origin: string, raw: unknown): { fileId?: string | null; envelopeId?: string | null; status?: string | null } | null {
+  if (origin !== SKYSLOPE_FORMS_ORIGIN) return null
+  let data: any = raw
+  if (typeof raw === "string") { try { data = JSON.parse(raw) } catch { return null } }
+  if (!data || typeof data !== "object") return null
+  const status = typeof data.status === "string" ? data.status : null
+  const meta = (data.metadata ?? {}) as Record<string, unknown>
+  const fileId = meta.fileId != null ? String(meta.fileId) : null
+  const envelopeId = meta.digisignEnvelopeId != null ? String(meta.digisignEnvelopeId) : meta.formsEnvelopeId != null ? String(meta.formsEnvelopeId) : null
+  if (!status && !fileId && !envelopeId) return null
+  return { fileId, envelopeId, status }
 }
 
 /** The in-window e-sign step: DocuSign's sender view framed here, or the popup launcher. */
@@ -1418,6 +1487,27 @@ function Step3Fill({ state, mode, agentName, providerInfo, update }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filled])
 
+  // THE PROVIDER WINDOW TALKS BACK (lane 89A). SkySlope Forms — the one provider that frames —
+  // posts the file / envelope it created and the "prepare for signature" / "ready to send" steps
+  // to the host page. Those ids are what the deal records when the forms were filled and sent
+  // inside the provider (providerWindowSend). Origin-checked; anything else is ignored.
+  useEffect(() => {
+    if (!hasProvider || !providerInfo || providerInfo === "loading" || providerInfo.embedMode !== "iframe") return
+    const onMessage = (event: MessageEvent) => {
+      const parsed = parseSkyslopeMessage(event.origin, event.data)
+      if (!parsed) return
+      update("providerWindow", {
+        provider: providerInfo.provider,
+        fileId: parsed.fileId ?? state.providerWindow?.fileId ?? null,
+        envelopeId: parsed.envelopeId ?? state.providerWindow?.envelopeId ?? null,
+        status: parsed.status ?? state.providerWindow?.status ?? null,
+      })
+    }
+    window.addEventListener("message", onMessage)
+    return () => window.removeEventListener("message", onMessage)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasProvider, providerInfo, state.providerWindow])
+
   return (
     <div className="space-y-4">
       <h3 className="font-semibold">Fill Forms</h3>
@@ -1532,6 +1622,20 @@ function Step3Fill({ state, mode, agentName, providerInfo, update }: {
               signed copies sync back to this deal through the provider connection.
             </p>
           )}
+          {state.providerWindow && (
+            <p className="text-xs text-emerald-700">
+              {providerInfo.label} reported {state.providerWindow.status ? `“${state.providerWindow.status.replace(/-/g, " ")}”` : "activity"}
+              {state.providerWindow.fileId ? ` · file ${state.providerWindow.fileId}` : ""}
+              {state.providerWindow.envelopeId ? ` · envelope ${state.providerWindow.envelopeId}` : ""} — it will be recorded on this deal when you finish.
+            </p>
+          )}
+          {myFormsList.length === 0 && (
+            <p className="text-xs text-muted-foreground">
+              Select the forms, fill them and send them for signature inside {providerInfo.label}
+              {providerInfo.embedMode === "iframe" ? " above" : "'s window"}; step 5 then records that send on this deal. To sign through a different
+              e-sign provider instead, download the filled PDFs from {providerInfo.label} and add them under My Forms → Upload.
+            </p>
+          )}
         </div>
       )}
 
@@ -1544,8 +1648,75 @@ function Step3Fill({ state, mode, agentName, providerInfo, update }: {
 
 // ─── Step 4 — Verify Signers ─────────────────────────────────────────────────
 
+const SIGNER_ROLE_LABELS: Record<Signer["role"], string> = { buyer: "Buyer", seller: "Seller", agent: "Agent", co_buyer: "Co-Buyer", listing_agent: "Listing Agent" }
+const SIGNER_ROLES: Signer["role"][] = ["buyer", "co_buyer", "seller", "agent", "listing_agent"]
+
+type PickableContact = { id: string; first_name: string | null; last_name: string | null; email: string | null; phone?: string | null }
+
+/**
+ * THE CONTACT PICK (lane 89A; owner: "select the customers contact info and email"). The same
+ * CRM list the Forms Library's picker reads (getContacts — agents see their own contacts, brokers
+ * the brokerage's), searched by name or email, filling the signer's name, email and phone. A
+ * contact with no email on file is shown but says so — the send refuses an addressless signer.
+ */
+function ContactPickerDialog({ open, onClose, onPick }: { open: boolean; onClose: () => void; onPick: (c: PickableContact) => void }) {
+  const [contacts, setContacts] = useState<PickableContact[] | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [search, setSearch] = useState("")
+  useEffect(() => {
+    if (!open || contacts !== null || loading) return
+    setLoading(true)
+    getContacts({ limit: 200 })
+      .then(res => {
+        if (!res.success) setLoadError(res.error ?? "Could not load your contacts.")
+        setContacts((res.contacts ?? []) as PickableContact[])
+      })
+      .catch(e => { setLoadError(e instanceof Error ? e.message : "Could not load your contacts."); setContacts([]) })
+      .finally(() => setLoading(false))
+  }, [open, contacts, loading])
+  const q = search.trim().toLowerCase()
+  const shown = (contacts ?? []).filter(c => !q || `${c.first_name ?? ""} ${c.last_name ?? ""}`.toLowerCase().includes(q) || (c.email ?? "").toLowerCase().includes(q)).slice(0, 50)
+  return (
+    <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><UserCircle2 className="h-4 w-4" /> Select a contact</DialogTitle>
+          <DialogDescription>Pick the customer from your CRM — their name, email and phone fill this signer.</DialogDescription>
+        </DialogHeader>
+        {loadError && <p className="text-xs text-destructive">{loadError}</p>}
+        <Command className="border rounded-md">
+          <CommandInput placeholder="Search contacts…" value={search} onValueChange={setSearch} />
+          <CommandList className="max-h-56">
+            {loading ? (
+              <div className="flex items-center justify-center py-6"><Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /></div>
+            ) : (
+              <>
+                <CommandEmpty>No contacts found.</CommandEmpty>
+                <CommandGroup>
+                  {shown.map(c => (
+                    <CommandItem key={c.id} value={`${c.first_name ?? ""} ${c.last_name ?? ""} ${c.email ?? ""}`} onSelect={() => onPick(c)} className="flex items-center gap-2 cursor-pointer">
+                      <UserCircle2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium">{`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "(no name)"}</p>
+                        <p className={`text-xs truncate ${c.email ? "text-muted-foreground" : "text-amber-700"}`}>{c.email || "no email on file — add one before sending"}</p>
+                      </div>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </>
+            )}
+          </CommandList>
+        </Command>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function Step4Signers({ state, update, mode }: { state: WizardState; update: <K extends keyof WizardState>(k: K, v: WizardState[K]) => void; mode: "offer" | "listing" }) {
   const signers = state.signers
+  // Which signer row the contact picker is open for (lane 89A).
+  const [pickerFor, setPickerFor] = useState<number | null>(null)
 
   function updateSigner(i: number, field: keyof Signer, value: string) {
     const next = signers.map((s, idx) => idx === i ? { ...s, [field]: value } : s)
@@ -1553,29 +1724,59 @@ function Step4Signers({ state, update, mode }: { state: WizardState; update: <K 
   }
 
   function addSigner() {
-    update("signers", [...signers, { name: "", email: "", role: "buyer" }])
+    // A new row defaults to the counterparty the mode still lacks, else a co-signer.
+    const counterparty: Signer["role"] = mode === "offer" ? "buyer" : "seller"
+    const role: Signer["role"] = signers.some(s => s.role === counterparty) ? (mode === "offer" ? "co_buyer" : "seller") : counterparty
+    update("signers", [...signers, { name: "", email: "", role }])
   }
 
   function removeSigner(i: number) {
     update("signers", signers.filter((_, idx) => idx !== i))
   }
 
-  const roleLabel = (role: Signer["role"]) => {
-    const labels: Record<string, string> = { buyer: "Buyer", seller: "Seller", agent: "Agent", co_buyer: "Co-Buyer", listing_agent: "Listing Agent" }
-    return labels[role] ?? role
+  function pickContact(i: number, c: PickableContact) {
+    const next = signers.map((s, idx) => idx === i
+      ? { ...s, name: `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || s.name, email: c.email ?? s.email, phone: c.phone ?? s.phone }
+      : s)
+    update("signers", next)
+    setPickerFor(null)
   }
+
+  const roleLabel = (role: Signer["role"]) => SIGNER_ROLE_LABELS[role] ?? role
 
   return (
     <div className="space-y-4">
       <h3 className="font-semibold">Verify Signers</h3>
-      <p className="text-sm text-muted-foreground">Confirm who needs to sign. All signers will receive an email with the document.</p>
+      <p className="text-sm text-muted-foreground">Confirm who needs to sign. Pick each customer from your contacts (or type them in); every signer receives the e-sign request by email.</p>
+
+      <ContactPickerDialog open={pickerFor !== null} onClose={() => setPickerFor(null)} onPick={c => { if (pickerFor !== null) pickContact(pickerFor, c) }} />
 
       <div className="space-y-3">
         {signers.map((signer, i) => (
           <div key={i} className="border rounded-lg p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <Badge variant="secondary" className="text-xs">{roleLabel(signer.role)}</Badge>
-              {i > 0 && <Button variant="ghost" size="sm" className="h-7 text-xs text-destructive" onClick={() => removeSigner(i)}>Remove</Button>}
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary" className="text-xs">{roleLabel(signer.role)}</Badge>
+                {signer.role !== "agent" && (
+                  <select
+                    className="h-7 rounded-md border border-input bg-background px-2 text-xs"
+                    value={signer.role}
+                    onChange={e => updateSigner(i, "role", e.target.value)}
+                    aria-label="Signer role"
+                  >
+                    {SIGNER_ROLES.filter(r => r !== "agent").map(r => <option key={r} value={r}>{SIGNER_ROLE_LABELS[r]}</option>)}
+                  </select>
+                )}
+              </div>
+              <div className="flex items-center gap-1">
+                {signer.role !== "agent" && (
+                  <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setPickerFor(i)}>
+                    <UserCircle2 className="h-3.5 w-3.5 mr-1" />
+                    Pick from contacts
+                  </Button>
+                )}
+                {i > 0 && <Button variant="ghost" size="sm" className="h-7 text-xs text-destructive" onClick={() => removeSigner(i)}>Remove</Button>}
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
@@ -1602,12 +1803,47 @@ function Step4Signers({ state, update, mode }: { state: WizardState; update: <K 
 
 // ─── Step 5 — Send for E-Sign ─────────────────────────────────────────────────
 
-interface AnchorPlanView { loading: boolean; anchorCount?: number; recipientRoles?: string[]; ambiguous?: Array<{ fieldName: string; reason: string }>; safe?: boolean; safetyViolations?: string[]; error?: string }
+interface AnchorPlanView {
+  loading: boolean
+  anchorCount?: number
+  recipientRoles?: string[]
+  anchors?: Array<{ key: string; fieldName: string; role: string; type: "signature" | "initial" | "date" }>
+  ambiguous?: Array<{ fieldName: string; reason: string; type?: "signature" | "initial" | "date" }>
+  safe?: boolean
+  safetyViolations?: string[]
+  error?: string
+}
 
-function Step5ESign({ state, mode, esignProvider, busy, onSubmit }: {
+/** PURE: the e-sign adapter the placement tags are shaped for (a non-API method → generic). */
+function adapterFor(esignProvider: string | null): EsignProvider {
+  return (["dotloop", "docusign", "skyslope", "authentisign"] as const).find(p => p === esignProvider) ?? "generic"
+}
+
+/**
+ * PURE — WHERE THEY SIGN, RESOLVED (lane 89A): the plan's auto-derived anchors with the agent's
+ * re-assignments applied, plus every ambiguous field the agent assigned a party to. A field the
+ * agent left unassigned is NOT tagged — it is placed by hand in the provider window, never guessed.
+ */
+function resolvedAnchors(plan: AnchorPlanView, roles: Record<string, SignerRole> | undefined): EsignAnchor[] {
+  const counts: Record<string, number> = {}
+  const out: EsignAnchor[] = []
+  const push = (fieldName: string, role: SignerRole, type: "signature" | "initial" | "date") => {
+    const idx = (counts[`${role}_${type}`] = (counts[`${role}_${type}`] ?? 0) + 1)
+    out.push({ role, type, key: `${role}_${type}_${idx}`, fieldName })
+  }
+  for (const a of plan.anchors ?? []) push(a.fieldName, (roles?.[a.fieldName] ?? a.role) as SignerRole, a.type)
+  for (const a of plan.ambiguous ?? []) { const r = roles?.[a.fieldName]; if (r && a.type) push(a.fieldName, r, a.type) }
+  return out
+}
+
+function Step5ESign({ state, mode, esignProvider, esignMode, esignScope, esignIsDefault, update, busy, onSubmit }: {
   state: WizardState
   mode: "offer" | "listing"
   esignProvider: string | null
+  esignMode: string | null
+  esignScope: string | null
+  esignIsDefault: boolean
+  update: <K extends keyof WizardState>(k: K, v: WizardState[K]) => void
   busy: boolean
   onSubmit: () => void
 }) {
@@ -1623,7 +1859,7 @@ function Step5ESign({ state, mode, esignProvider, busy, onSubmit }: {
       buildEsignAnchorPlanAction({ filledPath: ff.filledPath, provider: esignProvider }).then(res => {
         if (cancelled) return
         setPlans(prev => ({ ...prev, [ref]: res.success
-          ? { loading: false, anchorCount: res.anchorCount, recipientRoles: res.recipientRoles, ambiguous: res.ambiguous, safe: res.safe, safetyViolations: res.safetyViolations }
+          ? { loading: false, anchorCount: res.anchorCount, recipientRoles: res.recipientRoles, anchors: res.anchors, ambiguous: res.ambiguous, safe: res.safe, safetyViolations: res.safetyViolations }
           : { loading: false, error: res.error } }))
       }).catch(() => { if (!cancelled) setPlans(prev => ({ ...prev, [ref]: { loading: false, error: "anchor plan failed" } })) })
     }
@@ -1631,7 +1867,33 @@ function Step5ESign({ state, mode, esignProvider, busy, onSubmit }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.filledForms, esignProvider])
 
+  // THE PLACEMENT TRAVELS (lane 89A): whenever the plans or the agent's assignments change, the
+  // provider-shaped tags are rebuilt into wizard state — the send carries them (submitForSignature /
+  // sendListingAgreementForSignatureAction `tags`), so DocuSign's sender view opens with the fields
+  // already on the right parties and an API send places them without the agent dragging tabs.
+  useEffect(() => {
+    const adapter = adapterFor(esignProvider)
+    const anchors: EsignAnchor[] = []
+    for (const [ref, p] of Object.entries(plans)) if (!p.loading && !p.error) anchors.push(...resolvedAnchors(p, state.anchorRoles?.[ref]))
+    update("esignTags", anchorsForProvider(adapter, anchors))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plans, state.anchorRoles, esignProvider])
+
+  const setRole = (ref: string, fieldName: string, role: SignerRole | "") => {
+    const forForm = { ...(state.anchorRoles?.[ref] ?? {}) }
+    if (role) forForm[fieldName] = role; else delete forForm[fieldName]
+    update("anchorRoles", { ...(state.anchorRoles ?? {}), [ref]: forForm })
+  }
+
   const planEntries = Object.entries(plans)
+  const providerWindow = providerWindowSend(state)
+  const esignLabel = getCatalogEntry(esignProvider)?.label ?? esignProvider ?? "your e-sign provider"
+  // The party choices offered for a field: the roles the wizard's signers actually hold (+ co-signers).
+  const partyOptions: SignerRole[] = Array.from(new Set<SignerRole>([
+    ...state.signers.map(s => s.role as SignerRole),
+    ...(mode === "offer" ? (["buyer", "co_buyer", "agent", "listing_agent"] as SignerRole[]) : (["seller", "co_seller", "agent"] as SignerRole[])),
+  ]))
+  const partyLabel = (r: string) => ({ buyer: "Buyer", co_buyer: "Co-Buyer", seller: "Seller", co_seller: "Co-Seller", agent: "Agent", listing_agent: "Listing Agent" } as Record<string, string>)[r] ?? r
 
   return (
     <div className="space-y-4">
@@ -1645,34 +1907,77 @@ function Step5ESign({ state, mode, esignProvider, busy, onSubmit }: {
           compliance review of required documents, initials and signatures.
         </p>
       )}
-      {getCatalogEntry(esignProvider)?.portalSend && (
+      {/* HOW THIS SEND HAPPENS (lane 89A) — the e-sign window the owner described, per method. */}
+      {providerWindow ? (
         <p className="text-xs text-muted-foreground">
-          Google eSignature (your default): the filled forms are placed in your Google Drive and open in a
-          window beside this one — choose eSignature → Request signature there. Google has no API and does
-          not allow its window inside another site, so that one step happens in Drive.
+          The forms you selected from {getCatalogEntry(providerWindow.provider)?.label ?? providerWindow.provider} were filled and sent for
+          signature inside its window (step 3). Pressing the button records that send on this {mode === "offer" ? "offer" : "listing"}
+          {providerWindow.envelopeId ? ` (envelope ${providerWindow.envelopeId})` : ""}; signed copies return through the provider connection.
         </p>
-      )}
+      ) : esignMode === "embedded_send" ? (
+        <p className="text-xs text-muted-foreground">
+          {esignLabel}{esignIsDefault ? " (the platform default)" : ""}{esignScope === "platform" ? " — sent through the platform's DocuSign account" : ""}: the next window opens
+          {esignLabel}&apos;s sender view inside the platform with your signers as recipients and the fields below already placed. Confirm the
+          customer&apos;s contact info and email, adjust where they sign on each saved form, then press Send there.
+        </p>
+      ) : getCatalogEntry(esignProvider)?.portalSend ? (
+        <p className="text-xs text-muted-foreground">
+          Google eSignature (your selection): the filled forms are placed in your Google Drive and open in a
+          window beside this one — choose eSignature → Request signature there, add the signers and place
+          the fields. Google has no API and does not allow its window inside another site, so that step happens in Drive.
+        </p>
+      ) : esignMode === "api_send" ? (
+        <p className="text-xs text-muted-foreground">
+          {esignLabel}: the packet is sent to your signers with the fields below placed for each party; anything left unassigned is placed in {esignLabel}.
+        </p>
+      ) : null}
 
-      {planEntries.length > 0 && (
-        <div className="rounded-lg border p-4 space-y-2">
-          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">E-sign areas</p>
+      {planEntries.length > 0 && !providerWindow && (
+        <div className="rounded-lg border p-4 space-y-3">
+          <div>
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Where they sign</p>
+            <p className="text-[11px] text-muted-foreground">Each saved form&apos;s signature, initial and date fields, and the party each one is set for. Change a party here; a field with no party is placed by hand in the e-sign window, never guessed.</p>
+          </div>
           {planEntries.map(([ref, p]) => {
             const name = state.selectedForms.find(f => f.formRef === ref)?.name ?? "Form"
+            const roles = state.anchorRoles?.[ref] ?? {}
             return (
-              <div key={ref} className="text-xs flex items-start gap-2">
+              <div key={ref} className="text-xs space-y-1.5">
                 {p.loading ? <span className="text-muted-foreground">Checking {name}…</span> : p.error ? (
-                  <span className="text-muted-foreground">{name}: areas set manually in the provider.</span>
+                  <span className="text-muted-foreground">{name}: no fillable signature fields found — place the areas in the e-sign window.</span>
                 ) : (
-                  <span>
-                    <span className="font-medium">{name}</span>: {p.anchorCount ?? 0} area(s) set for {(p.recipientRoles ?? []).join(", ") || "signers"}.
-                    {p.safe === false && <span className="text-destructive"> ⚠ placement issue — review.</span>}
-                    {p.ambiguous && p.ambiguous.length > 0 && <span className="text-amber-600"> {p.ambiguous.length} area(s) need manual placement.</span>}
-                    {p.safe === true && (!p.ambiguous || p.ambiguous.length === 0) && <span className="text-emerald-600"> ✓ all areas confirmed.</span>}
-                  </span>
+                  <>
+                    <p>
+                      <span className="font-medium">{name}</span>: {p.anchorCount ?? 0} area(s) set for {(p.recipientRoles ?? []).join(", ") || "signers"}.
+                      {p.safe === false && <span className="text-destructive"> ⚠ placement issue — review.</span>}
+                      {p.ambiguous && p.ambiguous.length > 0 && <span className="text-amber-600"> {p.ambiguous.filter(a => !roles[a.fieldName]).length} area(s) still need a party.</span>}
+                      {p.safe === true && (!p.ambiguous || p.ambiguous.every(a => roles[a.fieldName])) && <span className="text-emerald-600"> ✓ all areas confirmed.</span>}
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                      {(p.anchors ?? []).map(a => (
+                        <label key={a.key} className="flex items-center justify-between gap-2 rounded border px-2 py-1">
+                          <span className="truncate" title={a.fieldName}>{a.fieldName} <span className="text-muted-foreground">({a.type})</span></span>
+                          <select className="h-6 rounded border border-input bg-background px-1 text-[11px]" value={roles[a.fieldName] ?? a.role} onChange={e => setRole(ref, a.fieldName, e.target.value as SignerRole)}>
+                            {Array.from(new Set<string>([a.role, ...partyOptions])).map(r => <option key={r} value={r}>{partyLabel(r)}</option>)}
+                          </select>
+                        </label>
+                      ))}
+                      {(p.ambiguous ?? []).map(a => (
+                        <label key={`amb-${a.fieldName}`} className={`flex items-center justify-between gap-2 rounded border px-2 py-1 ${roles[a.fieldName] ? "" : "border-amber-300"}`} title={a.reason}>
+                          <span className="truncate">{a.fieldName} <span className="text-muted-foreground">({a.type ?? "field"})</span></span>
+                          <select className="h-6 rounded border border-input bg-background px-1 text-[11px]" value={roles[a.fieldName] ?? ""} onChange={e => setRole(ref, a.fieldName, e.target.value as SignerRole | "")}>
+                            <option value="">Place by hand</option>
+                            {partyOptions.map(r => <option key={r} value={r}>{partyLabel(r)}</option>)}
+                          </select>
+                        </label>
+                      ))}
+                    </div>
+                  </>
                 )}
               </div>
             )
           })}
+          {(state.esignTags?.length ?? 0) > 0 && <p className="text-[11px] text-muted-foreground">{state.esignTags?.length} field placement(s) travel with the send.</p>}
         </div>
       )}
 
@@ -1707,16 +2012,27 @@ function Step5ESign({ state, mode, esignProvider, busy, onSubmit }: {
             <span className="text-sm capitalize">{state.transactionProvider}</span>
           </div>
         )}
-        {esignProvider ? (
+        {providerWindow ? (
           <div className="flex items-center gap-2">
             <Badge variant="outline" className="text-xs">Signatures via:</Badge>
-            <span className="text-sm capitalize">{getCatalogEntry(esignProvider)?.label ?? esignProvider}</span>
+            <span className="text-sm">{getCatalogEntry(providerWindow.provider)?.label ?? providerWindow.provider} (sent from its window)</span>
+          </div>
+        ) : esignProvider ? (
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="text-xs">Signatures via:</Badge>
+            <span className="text-sm">
+              {getCatalogEntry(esignProvider)?.label ?? esignProvider}
+              <span className="text-xs text-muted-foreground">
+                {esignScope === "platform" ? " · platform default (embedded)" : esignIsDefault ? " · default, your connection" : esignScope ? ` · your ${esignScope} setting` : ""}
+              </span>
+            </span>
           </div>
         ) : (
           <Alert className="py-2">
             <AlertCircle className="h-3 w-3" />
             <AlertDescription className="text-xs">
-              No e-sign method connected. Connect Google (Google eSignature is the default) or an e-sign provider in{" "}
+              No e-sign method available. The default is DocuSign (embedded in this window); connect your own DocuSign, Dotloop, SkySlope or
+              Authentisign — or select Google eSignature — in{" "}
               <a href="/dashboard/settings/integrations" className="underline">Integrations</a>.
             </AlertDescription>
           </Alert>

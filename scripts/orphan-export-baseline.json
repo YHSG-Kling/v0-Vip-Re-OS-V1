@@ -507,7 +507,7 @@
     "remotion/components/QrOutroBadge.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10358,
+  "census": 10363,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -3236,7 +3236,9 @@
     "lib/errors/collect-error.ts": 1,
     "lib/errors/error-classifier.ts": 4,
     "lib/errors/index.ts": 4,
-    "lib/esign/dispatch-packet.ts": 1,
+    "lib/esign/dispatch-packet.ts": 2,
+    "lib/esign/docusign-jwt.ts": 4,
+    "lib/esign/docusign-platform-account.ts": 1,
     "lib/esign/google-drive-upload.ts": 3,
     "lib/esign/google-esign-handoff.ts": 2,
     "lib/esign-webhooks/download-signed-package.ts": 1,
@@ -3356,7 +3358,7 @@
     "lib/integrations/connection-manager.ts": 4,
     "lib/integrations/integration-status.ts": 1,
     "lib/integrations/providers/brokerage-authority.ts": 7,
-    "lib/integrations/providers/catalog.ts": 8,
+    "lib/integrations/providers/catalog.ts": 7,
     "lib/integrations/providers/provider-resolver.ts": 4,
     "lib/integrations/providers/transaction-provider.interface.ts": 1,
     "lib/integrations/resolve-esign-provider.ts": 2,
@@ -16194,7 +16196,17 @@
       "handleError"
     ],
     "lib/esign/dispatch-packet.ts": [
+      "describeProviderWindowSend",
       "dispatchEsignPacket"
+    ],
+    "lib/esign/docusign-jwt.ts": [
+      "platformDocusignEnvStatus",
+      "normalizePem",
+      "buildDocusignJwtAssertion",
+      "docusignTokenExchangeBody"
+    ],
+    "lib/esign/docusign-platform-account.ts": [
+      "resolvePlatformDocusignCredential"
     ],
     "lib/esign/google-drive-upload.ts": [
       "googleDriveGranted",
@@ -16827,7 +16839,6 @@
       "providerPortalMode",
       "getImplementedProviders",
       "getTransactionFormProviders",
-      "resolveEsignProviderOrDefault",
       "getSelectableEsignProviders",
       "getEsignProviders",
       "supportsEmbeddedSend"

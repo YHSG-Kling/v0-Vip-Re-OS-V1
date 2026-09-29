@@ -22,10 +22,10 @@ import { createClient } from "@/lib/supabase/server"
  * function the Forms Library already used), which answers iframe vs popup from
  * the catalog's evidence-backed `embed` capability.
  *
- * The e-sign answer comes from resolveESignChoice (the ONE cascade — explicit
- * override → Google eSignature default when the agent's Google account is
- * connected → a connected API provider), not from the brokerage-wide newest
- * platform_credentials row the old getConnectedEsignProvider read.
+ * The e-sign answer comes from resolveESignChoice (the ONE rule — the user's / team's /
+ * brokerage's e-sign SELECTION, else the DocuSign default carried by the tenant's own
+ * DocuSign connection or the platform's DocuSign account; lane 89A), not from the
+ * brokerage-wide newest platform_credentials row the old getConnectedEsignProvider read.
  */
 export async function GET() {
   const supabase = await createClient()
@@ -58,6 +58,10 @@ export async function GET() {
     providerLabel: portal?.label ?? null,
     esignProvider: esign.ok ? esign.providerName : null,
     esignMode: esign.ok ? (esign.kind === "google" ? "google_drive_handoff" : supportsEmbeddedSend(esign.providerName) ? "embedded_send" : "api_send") : null,
+    /** Whose e-sign this is: a "user" / "team" / "brokerage" selection or credential, "platform"
+     *  (the platform's DocuSign account carrying the default) or "default" (Google chosen by nobody). */
+    esignScope: esign.ok ? (esign.kind === "google" ? esign.resolvedScope : esign.resolved.resolvedScope) : null,
+    esignIsDefault: esign.ok ? (esign.kind === "google" ? esign.resolvedScope === "default" : esign.resolved.isDefault) : null,
     esignError: esign.ok ? null : esign.error,
   })
 }

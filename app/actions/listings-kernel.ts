@@ -1093,6 +1093,13 @@ export async function sendListingAgreementForSignatureAction(params: {
   documents: Array<{ name: string; storagePath: string }>
   embeddedSend?: boolean
   returnUrl?: string
+  /** Signature/initial/date placement (lane 89A) — the wizard's e-sign window assigns each saved
+   *  form's fields to a party; provider-shaped by anchorsForProvider, placed by the provider. */
+  tags?: import("@/lib/integrations/providers/transaction-provider.interface").SignatureTag[]
+  /** THE PROVIDER-WINDOW PATH (lane 89A): the agreement was selected, filled and sent inside the
+   *  transaction provider's own window; nothing is attached — the listing records that provider
+   *  (and the envelope / file id the window reported). `documents` may be empty then. */
+  providerWindow?: { provider: string; envelopeId?: string | null }
 }): Promise<{
   success: boolean
   error?: string
@@ -1127,14 +1134,21 @@ export async function sendListingAgreementForSignatureAction(params: {
   if (!readiness.transactable) return { success: false, error: readiness.message ?? "Agent not clear to transact", blockerType: "agent_readiness" }
 
   const docs = (params.documents ?? []).filter((d) => d?.storagePath?.trim())
-  if (docs.length === 0) return { success: false, error: "Select and fill the listing agreement before sending it for signature.", blockerType: "no_documents" }
-  const { checkFormPathsInScope } = await import("@/lib/forms/form-path-scope")
-  const scope = await checkFormPathsInScope(svc, docs.map((d) => d.storagePath), { brokerageId: ctx.brokerageId, teamId: ctx.teamId, userId: ctx.userId })
-  if (!scope.ok) return { success: false, error: scope.error ?? `These forms are not in your library: ${scope.refused.join(", ")}` }
+  const providerWindow = docs.length === 0 && params.providerWindow ? params.providerWindow : null
+  if (docs.length === 0 && !providerWindow) return { success: false, error: "Select and fill the listing agreement before sending it for signature.", blockerType: "no_documents" }
+  if (docs.length > 0) {
+    const { checkFormPathsInScope } = await import("@/lib/forms/form-path-scope")
+    const scope = await checkFormPathsInScope(svc, docs.map((d) => d.storagePath), { brokerageId: ctx.brokerageId, teamId: ctx.teamId, userId: ctx.userId })
+    if (!scope.ok) return { success: false, error: scope.error ?? `These forms are not in your library: ${scope.refused.join(", ")}` }
+  }
 
   const address = [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
-  const { dispatchEsignPacket } = await import("@/lib/esign/dispatch-packet")
-  const dispatch = await dispatchEsignPacket(svc as any, {
+  const { dispatchEsignPacket, describeProviderWindowSend } = await import("@/lib/esign/dispatch-packet")
+  // The provider-window path (lane 89A) records the send that happened inside the transaction
+  // provider's own window; the tenant, readiness and seller gates above still ran.
+  const dispatch = providerWindow
+    ? describeProviderWindowSend({ provider: providerWindow.provider, envelopeId: providerWindow.envelopeId ?? null, propertyAddress: address || "Listing agreement" })
+    : await dispatchEsignPacket(svc as any, {
     brokerageId:        ctx.brokerageId,
     userId:             ctx.userId,
     teamId:             ctx.teamId,
@@ -1146,6 +1160,7 @@ export async function sendListingAgreementForSignatureAction(params: {
       ? ((listing.external_provider_transaction_id as string | null) ?? null) : null,
     signers,
     documents:          docs,
+    tags:               params.tags,
     embeddedSend:       params.embeddedSend === true,
     returnUrl:          params.returnUrl,
     recordId:           listing.id as string,
@@ -1180,6 +1195,10 @@ export async function sendListingAgreementForSignatureAction(params: {
         signature_request_id: dispatch.envelopeId ?? null,
         esign_provider:       dispatch.providerName,
         esign_status:         dispatch.status,
+        // Whose account carried it and whether the forms were filled in the provider's window (89A).
+        credential_scope:     dispatch.credentialScope ?? null,
+        is_default:           dispatch.isDefault ?? null,
+        provider_window:      !!providerWindow,
         source_forms:         docs.map((d) => ({ name: d.name, path: d.storagePath })),
         sent_by_user_id:      ctx.userId,
       },

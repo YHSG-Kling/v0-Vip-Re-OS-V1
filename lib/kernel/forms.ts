@@ -40,7 +40,6 @@
 
 import { emitKernelEvent } from "@/lib/kernel/emit"
 import { createServiceClient } from "@/lib/supabase/service"
-import { getTransactionProviderByName } from "@/lib/integrations/providers/provider-resolver"
 import { KernelEvent } from "./events"
 
 // ─── RESULT TYPE ────────────────────────────────────────────────────────────
@@ -138,8 +137,9 @@ export interface BuyerPropertyInterest {
 //
 // Resolves the brokerage's connected forms/transaction provider name.
 // Source of truth: platform_credentials table (is_active=true).
-// Returns "not_configured" when no credential is found (lane 88B: callers that need a provider fall
-// back to the catalog DEFAULT_ESIGN_PROVIDER — Google eSignature — never to "dotloop").
+// Returns "not_configured" when no credential is found. This is the TRANSACTION-FORMS (TM) vendor
+// only; e-sign is resolved by lib/integrations/resolve-esign-provider.ts (selection, else the
+// catalog DEFAULT_ESIGN_PROVIDER — DocuSign — never "dotloop" and never "whatever TM is connected").
 // Rule: provider is a brokerage/team property — NEVER a contact property.
 
 export async function resolveTransactionFormsProvider(input: {
@@ -679,24 +679,22 @@ export async function launchEsignEnvelope(input: {
       return { success: false, error: "Already sent for signature" }
     }
 
-    // Resolve provider with credentials from platform_credentials
-    const providerResult = await resolveTransactionFormsProvider({ brokerage_id: input.brokerage_id })
-    if (!providerResult.success) {
-      return { success: false, error: providerResult.error ?? "The e-sign provider could not be resolved for this brokerage." }
+    // Resolve the e-sign provider through the ONE rule (lane 89A): the brokerage's e-sign
+    // SELECTION, else the DocuSign default (the brokerage's own DocuSign connection, else the
+    // platform's DocuSign account). A portal-send selection (Google eSignature) is refused with
+    // where to send from — nothing was sent, so that stays an honest refusal. The old read here
+    // took "the newest transaction-management credential", which let the TM vendor pick the signer.
+    const { resolveESignProviderForActor } = await import("@/lib/integrations/resolve-esign-provider")
+    let resolvedEsign: Awaited<ReturnType<typeof resolveESignProviderForActor>>
+    try {
+      // brokerage scope only: `agent_id` here is not proven to be a users.id (the selection's
+      // user tier keys on users.id), so it is not passed as one.
+      resolvedEsign = await resolveESignProviderForActor({ brokerageId: input.brokerage_id })
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : "The e-sign provider could not be resolved for this brokerage." }
     }
-    if (!providerResult.data?.is_configured) {
-      // Lane 88B (owner, wave 88: "google esign is default not dotloop."): nothing connected means
-      // the DEFAULT — Google eSignature, a portal-send provider with no send API. Nothing was sent,
-      // so this stays an honest refusal, but it names the default and where to send from.
-      const { DEFAULT_ESIGN_PROVIDER, providerPortalMode } = await import("@/lib/integrations/providers/catalog")
-      const portal = providerPortalMode(DEFAULT_ESIGN_PROVIDER)
-      return { success: false, error: `E-sign defaults to ${portal?.label ?? "Google eSignature"}: open ${portal?.url ?? "Google Drive"}, open the filled document, then Tools → eSignature → Request signature. To auto-send instead, connect DocuSign, Dotloop or another provider in Settings > Integrations.` }
-    }
-    const { provider_name: providerName, access_token, account_id } = providerResult.data
-    const injectedCredentials = access_token && account_id
-      ? { apiKey: access_token, profileId: account_id }
-      : undefined
-    const provider = getTransactionProviderByName(providerName, injectedCredentials)
+    const providerName = resolvedEsign.providerName
+    const provider = resolvedEsign.provider
 
     // Delegate to provider (transport only)
     const sendResult = await provider.sendForSignature({
@@ -753,13 +751,13 @@ export async function getEsignStatus(input: {
   external_transaction_id: string
 }): Promise<KernelFormsResult<EsignStatus>> {
   try {
-    const providerResult = await resolveTransactionFormsProvider({ brokerage_id: input.brokerage_id })
-    // Lane 88B (owner, wave 88: "google esign is default not dotloop."): an unconfigured brokerage
-    // resolves to the catalog DEFAULT (Google eSignature), never a silent Dotloop — and a
-    // portal-send provider has no status API, so getTransactionProviderByName refuses it honestly.
-    const { resolveEsignProviderOrDefault } = await import("@/lib/integrations/providers/catalog")
-    const providerName   = resolveEsignProviderOrDefault(providerResult.data?.provider_name)
-    const provider       = getTransactionProviderByName(providerName)
+    // Lane 89A: the same ONE rule as the send — the brokerage's e-sign SELECTION, else the DocuSign
+    // default with its credential (the brokerage's own, else the platform's account). A portal-send
+    // selection (Google eSignature) has no status API and is refused honestly; never a silent Dotloop.
+    const { resolveESignProviderForActor } = await import("@/lib/integrations/resolve-esign-provider")
+    const resolvedEsign  = await resolveESignProviderForActor({ brokerageId: input.brokerage_id })
+    const providerName   = resolvedEsign.providerName
+    const provider       = resolvedEsign.provider
 
     const status = await provider.getSignatureStatus(input.external_transaction_id)
 

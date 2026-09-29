@@ -70,6 +70,11 @@ interface SubmitForSignatureParams {
   embeddedSend?: boolean
   /** App URL DocuSign's sender view returns to after Send. */
   returnUrl?: string
+  /** THE PROVIDER-WINDOW PATH (lane 89A): the forms were selected, filled and sent INSIDE the
+   *  transaction provider's own window (step 3 of the wizard), so there is no packet to attach —
+   *  the offer records the provider (and the envelope / file id the window reported) as awaiting
+   *  the agent's send there. Mutually exclusive with `documents`. */
+  providerWindow?: { provider: string; envelopeId?: string | null }
 }
 
 export async function submitForSignature(params: SubmitForSignatureParams) {
@@ -284,13 +289,18 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   // the packet in the agent's Drive for Google eSignature. A refusal now RETURNS a
   // refusal — the offer is not marked sent and no "signature requested" event is
   // filed for a packet that never left.
-  const { dispatchEsignPacket } = await import("@/lib/esign/dispatch-packet")
-  const dispatch = await dispatchEsignPacket(supabase as any, {
+  const { dispatchEsignPacket, describeProviderWindowSend } = await import("@/lib/esign/dispatch-packet")
+  const propertyAddress = (offer.property_address as string | null) ?? "Real estate transaction"
+  // The provider-window path (lane 89A) records the send that happened inside the transaction
+  // provider's own window; every gate above (session tenant, readiness, NAR disclosure) still ran.
+  const dispatch = params.providerWindow && packetDocs.length === 0
+    ? describeProviderWindowSend({ provider: params.providerWindow.provider, envelopeId: params.providerWindow.envelopeId ?? null, propertyAddress })
+    : await dispatchEsignPacket(supabase as any, {
     brokerageId,
     userId,
     teamId:            (callerRow.team_id as string | null) ?? null,
     transactionType:   "purchase",
-    propertyAddress:   (offer.property_address as string | null) ?? "Real estate transaction",
+    propertyAddress,
     contactId:         (offer.contact_id as string | null) ?? null,
     listingId:         (offer.listing_id as string | null) ?? null,
     // Google's "envelope" is a Drive file — never re-used as a provider envelope.
@@ -397,6 +407,11 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
       provider:     dispatch.providerName,
       status:       dispatch.status,
       attached:     dispatch.attachedCount ?? 0,
+      // Whose account carried it (tenant tier or the platform's DocuSign default) and whether the
+      // forms were filled in the provider's own window (lane 89A).
+      credential_scope: dispatch.credentialScope ?? null,
+      is_default:   dispatch.isDefault ?? null,
+      provider_window: !!params.providerWindow && packetDocs.length === 0,
       handoff_mode: dispatch.handoff?.mode ?? null,
       // Drive links are the agent's own files; a DocuSign sender-view URL is one-time and is NOT stored.
       handoff_urls: dispatch.kind === "google" ? (dispatch.handoff?.urls ?? []) : [],
@@ -467,7 +482,9 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
     success: true,
     message: dispatch.status === "sent"
       ? "Offer sent for signature"
-      : `Offer packet staged in ${dispatch.providerName} — send it from the window that just opened`,
+      : dispatch.handoff?.mode === "iframe"
+        ? `Offer packet staged in ${dispatch.providerName} — confirm the recipients and signature fields, then press Send in the window below`
+        : `Offer packet staged in ${dispatch.providerName} — send it from the window that just opened`,
     /** How the packet left: "sent" (provider emailed signers) or "awaiting_agent_send". */
     dispatchStatus: dispatch.status,
     esignProvider:  dispatch.providerName,

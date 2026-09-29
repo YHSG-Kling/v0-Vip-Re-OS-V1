@@ -29,7 +29,9 @@ import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { PDFDocument } from "pdf-lib"
 import { stripComments, blankStrings } from "./strip-comments"
-import { PROVIDER_CATALOG, providerPortalMode, supportsEmbeddedSend, PROVIDER_PORTAL_URLS } from "../lib/integrations/providers/catalog"
+import { PROVIDER_CATALOG, providerPortalMode, supportsEmbeddedSend, PROVIDER_PORTAL_URLS, getCatalogEntry, DEFAULT_ESIGN_PROVIDER } from "../lib/integrations/providers/catalog"
+import { deriveEsignAnchors } from "../lib/forms/esign-anchors"
+import { anchorsForProvider, docusignTabsByRecipient } from "../lib/forms/esign-anchor-adapters"
 import { checkFormPathsInScope } from "../lib/forms/form-path-scope"
 import { buildPartyPrefill } from "../lib/forms/party-prefill"
 import { matchStatePackage } from "../lib/forms/state-package-match"
@@ -202,7 +204,7 @@ async function main() {
   check("the dispatch core ATTACHES the packet before it sends", iAttach > 0 && iSend > iAttach)
   check("the dispatch core reads the provider's verdict on send AND attach", /if \(!sent\.success\)/.test(core) && /if \(!attached\.success\)/.test(core))
   check("a partial attach is a refusal, never 'sent'", /attachedCount < input\.documents\.length/.test(core))
-  check("the core resolves through the ONE e-sign choice (Google default)", /resolveESignChoice\(/.test(core))
+  check("the core resolves through the ONE e-sign choice (selection → the catalog default)", /resolveESignChoice\(/.test(core))
   for (const p of ["app/actions/buyer-offer/submit-for-signature.ts", "app/actions/transaction-document-signatures.ts", "app/dashboard/transactions/[id]/page.tsx"]) {
     const c = code(p)
     check(`${p}: no brokerage-wide 'newest platform_credentials' e-sign read`, !/\.from\("platform_credentials"\)/.test(c))
@@ -211,16 +213,22 @@ async function main() {
   check("submitForSignature and the per-document send both go through dispatchEsignPacket",
     /dispatchEsignPacket\(/.test(code("app/actions/buyer-offer/submit-for-signature.ts")) && /dispatchEsignPacket\(/.test(tds))
   const choice = code("lib/integrations/resolve-esign-provider.ts")
-  // The choice follows 88B's ONE order (explicit pick → a connected API provider → the default).
+  // The choice follows the ONE rule (lane 89A): the e-sign SELECTION (a Google selection = the
+  // Google choice; any other = its credential through the resolver), else the DEFAULT through the
+  // same resolver. A refusal is returned — never a silent switch to Google or to another vendor.
   const fnStart = choice.indexOf("export async function resolveESignChoice")
-  const iPick = choice.indexOf("if (pick && getCatalogEntry(pick)?.portalSend) return google(pickScope)", fnStart)
-  const iApi = choice.indexOf("const resolved = await resolveESignProviderForActor(ctx)", iPick)
-  const iDefault = choice.indexOf("return google(\"default\")", iApi)
-  check("choice order (88B's): explicit pick → a connected API provider → the Google default", fnStart > 0 && iPick > fnStart && iApi > iPick && iDefault > iApi)
+  const iChosen = choice.indexOf("const chosen = pick ?? DEFAULT_ESIGN_PROVIDER", fnStart)
+  const iPortal = choice.indexOf("if (getCatalogEntry(chosen)?.portalSend) return google(pickScope)", iChosen)
+  const iApi = choice.indexOf("const resolved = await resolveESignProviderForActor(ctx)", iPortal)
+  const fnEnd = choice.indexOf("\nfunction buildResolved", iApi)
+  const choiceBody = choice.slice(fnStart, fnEnd)
+  check("choice order (89A's rule): selection ?? default → a portal-send choice is Google → otherwise the resolver; no silent Google fallback",
+    fnStart > 0 && iChosen > fnStart && iPortal > iChosen && iApi > iPortal && !/return google\("default"\)/.test(choiceBody))
+  check("POSITIVE CONTROL: the finder sees the retired silent-Google fallback shape", /return google\("default"\)/.test(`  } catch {\n    return google("default")\n  }`))
   check("the platform e-sign default is the catalog's ONE constant (kernel + settings mirror)",
     /esign:\s*DEFAULT_ESIGN_PROVIDER/.test(code("lib/kernel/providers.ts")) && /esign:\s*DEFAULT_ESIGN_PROVIDER/.test(code("app/actions/settings/provider-settings-actions.ts")))
   check("POSITIVE CONTROL: the default finder sees a hard-coded Dotloop default", !/esign:\s*DEFAULT_ESIGN_PROVIDER/.test(`esign:       "dotloop",`))
-  check("Google (default) is selectable in Integrations", /getSelectableEsignProviders\(\)/.test(code("app/dashboard/settings/integrations/integrations-client.tsx")))
+  check("Google eSignature stays selectable in Integrations (a choice, not the default)", /getSelectableEsignProviders\(\)/.test(code("app/dashboard/settings/integrations/integrations-client.tsx")) && getCatalogEntry("google_esign")?.portalSend === true && DEFAULT_ESIGN_PROVIDER !== "google_esign")
   check("Google without the Drive grant falls to 88B's manual rail (Drive + filled PDFs), never a dead end",
     /if \(!placed\.needsReconnect\) return \{ ok: false/.test(coreCode) && /choice\.manualSteps/.test(coreCode) && /\(filled PDF\)/.test(coreCode))
   check("the workflow send step places the staged PDF in the agent's Drive when it can (88B rail kept as fallback)",
@@ -255,10 +263,59 @@ async function main() {
   check("the per-document send records provider_envelope_id (finalize-packet completes contract_signatures on it)",
     /provider_envelope_id:\s*dispatch\.envelopeId/.test(tds) && /from\("contract_signatures"\)[\s\S]{0,200}provider_envelope_id/.test(code("lib/esign-webhooks/finalize-packet.ts")))
 
+  // ── G. THE FULL RUN, BOTH PATHS (lane 89A) ────────────────────────────────
+  console.log("\n[G · the e-sign window: contact pick, where they sign, and the provider-window path]")
+  // G1 · the contact pick (owner: "select the customers contact info and email").
+  check("Signers step picks each customer from the CRM (the Forms Library's own getContacts) into name/email/phone",
+    /<ContactPickerDialog\b/.test(wizard) && /getContacts\(\{ limit: 200 \}\)/.test(wizard) && /function pickContact\(/.test(wizard) && /Pick from contacts/.test(wizard))
+  check("a contact with no email is shown as such, not silently addressed", /no email on file/.test(wizard))
+  check("a signer's party (buyer / co-buyer / seller / listing agent) is selectable on the row", /SIGNER_ROLES\.filter\(r => r !== "agent"\)/.test(wizard))
+  // G2 · where they sign — the placement TRAVELS with the send (it was built, shown and dropped).
+  const derived = deriveEsignAnchors(["Buyer Signature", "Seller Initials", "Date Signed", "Buyer Name"])
+  const manualRole = "seller" as const
+  const resolved = [...derived.anchors, ...derived.ambiguous.filter((a) => a.matchedRoles.length === 0).map((a) => ({ role: manualRole, type: a.type, key: `${manualRole}_${a.type}_9`, fieldName: a.fieldName }))]
+  const tags = anchorsForProvider("docusign", resolved)
+  check("auto-derived fields carry their party; an ambiguous field (no party named) becomes a tag ONLY once the agent assigns one",
+    derived.anchors.length === 2 && derived.ambiguous.length === 1 && derived.ambiguous[0].fieldName === "Date Signed" && tags.length === 3 && tags.some((t) => t.anchorKey === "seller_date_9"))
+  const buckets = docusignTabsByRecipient(tags)
+  check("DocuSign tags land on the RIGHT recipient (buyer signHere, seller initialHere + dateSigned)",
+    Array.isArray(buckets.buyer?.signHereTabs) && buckets.buyer.signHereTabs.length === 1 && Array.isArray(buckets.seller?.initialHereTabs) && Array.isArray(buckets.seller?.dateSignedTabs))
+  check("the wizard rebuilds the provider-shaped tags from the plan + the agent's assignments (anchorsForProvider) into state",
+    /update\("esignTags", anchorsForProvider\(adapter, anchors\)\)/.test(wizard) && /function resolvedAnchors\(/.test(wizard) && /Place by hand/.test(wizard))
+  check("an unassigned ambiguous field is never tagged (placed by hand, never guessed)", /const r = roles\?\.\[a\.fieldName\]; if \(r && a\.type\) push\(/.test(wizard))
+  check("the placement TRAVELS: both sends carry `tags: state.esignTags`", (wizard.match(/tags: state\.esignTags/g) ?? []).length === 2)
+  check("the listing send forwards tags to the dispatch core (offer send already did)", /tags:\s*params\.tags/.test(lk) && /tags:\s*params\.tags/.test(submit))
+  check("the anchor-plan action returns the anchors AND the ambiguous fields' types (the window needs both)",
+    /anchors: plan\.anchors\.map/.test(code("app/actions/buyer-offer/esign-anchor-plan.ts")) && /type: a\.type \}\)\)/.test(code("app/actions/buyer-offer/esign-anchor-plan.ts")))
+  check("DocuSign's sender view opens on the Tagger with the recipients (and their tabs) already added", /addRecipients\(request\)/.test(ds) && /startingScreen: "Tagger"/.test(ds))
+  // G3 · the provider-window path — recorded, never an empty envelope.
+  const { describeProviderWindowSend } = await import("../lib/esign/dispatch-packet")
+  const pw = describeProviderWindowSend({ provider: "skyslope", envelopeId: "env-77", propertyAddress: "12 Elm St" })
+  check("forms filled + sent inside SkySlope's window → recorded as awaiting the agent's send there, envelope kept, iframe hand-off",
+    pw.ok && pw.providerName === "skyslope" && pw.status === "awaiting_agent_send" && pw.envelopeId === "env-77" && pw.handoff?.mode === "iframe" && pw.attachedCount === 0)
+  check("Dotloop / Form Simplicity windows → popup hand-off", describeProviderWindowSend({ provider: "dotloop", propertyAddress: "x" }).handoff?.mode === "popup" && describeProviderWindowSend({ provider: "formsimplicity", propertyAddress: "x" }).ok)
+  const bm = describeProviderWindowSend({ provider: "brokermint", propertyAddress: "x" })
+  check("Brokermint (no e-sign) is refused by name — fill there, sign through the e-sign provider", !bm.ok && /Brokermint/.test(bm.error ?? ""))
+  const ge = describeProviderWindowSend({ provider: "google_esign", propertyAddress: "x" })
+  check("a portal-send provider is not a transaction window (refused)", !ge.ok)
+  check("POSITIVE CONTROL: the finder for an empty-packet dispatch sees the retired shape (documents: [] straight to the core)",
+    /documents:\s*packetDocuments\(state\)/.test(`documents: packetDocuments(state),`))
+  check("the wizard records a provider-window send instead of dispatching an empty packet (both lanes)",
+    /function providerWindowSend\(/.test(wizard) && (wizard.match(/providerWindow: providerWindow \?\? undefined/g) ?? []).length === 2 && /packetDocuments\(state\)\.length > 0\) return null/.test(wizard))
+  check("SkySlope Forms' postMessage is origin-checked and its file / envelope ids are kept", /SKYSLOPE_FORMS_ORIGIN = "https:\/\/forms\.skyslope\.com"/.test(wizard) && /if \(origin !== SKYSLOPE_FORMS_ORIGIN\) return null/.test(wizard) && /digisignEnvelopeId/.test(wizard))
+  check("submitForSignature / the listing send accept providerWindow and route it through describeProviderWindowSend (gates still run first)",
+    /params\.providerWindow && packetDocs\.length === 0/.test(submit) && submit.indexOf("checkAgentTransactable") < submit.indexOf("describeProviderWindowSend(") && /providerWindow\s*\?\s*describeProviderWindowSend/.test(lk))
+  // m665: the provider-window stamp for Form Simplicity — read live first, the CHECK lacks it.
+  const m665 = readFileSync(join(ROOT, "supabase/migrations/m665-offers-esign-provider-admits-formsimplicity.sql"), "utf8")
+  check("m665 widens offers.esign_provider with 'formsimplicity' (the RULE: the CHECK admits it — applied live 2026-09-29)", /offers_esign_provider_check/.test(m665) && /'formsimplicity'/.test(m665) && /'google_esign'/.test(m665))
+  // G4 · whose account carried it is recorded.
+  check("the dispatch result says whose credential carried the send (tenant tier or the platform's DocuSign account) and the records keep it",
+    /credentialScope:\s*resolved\.resolvedScope/.test(coreCode) && /credential_scope:\s*dispatch\.credentialScope/.test(submit) && /credential_scope:\s*dispatch\.credentialScope/.test(lk))
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-  console.log(" ✅ FormWizard → e-sign flow verified (package, real-time fill, tenant scope, send, signed back).")
+  console.log(" ✅ FormWizard → e-sign flow verified (package, real-time fill, tenant scope, send, signed back, contact pick, placement, provider window).")
   console.log(" FORM_WIZARD_ESIGN_PASS")
   process.exit(0)
 }

@@ -2,28 +2,38 @@
  * E-sign provider resolver — single source of truth for which provider
  * handles signature requests for a given user / team / brokerage.
  *
- * Resolution cascade (each agent's own settings win — e-sign is what the
- * USER uses, not just the brokerage):
- *   1. provider_overrides (scope='user', provider_type='esign', enabled)
- *   2. provider_overrides (scope='team', ...)
- *   3. provider_overrides (scope='brokerage', ...)
- *   4. platform_credentials (most recent active for user)
- *   5. platform_credentials (most recent active for brokerage)
+ * THE RULE (lane 89A, owner wave 89: "brokerage uses their own transaction and esign provider. the
+ * platforms defualt esign is no longer google but we decided on docusign instead since it will
+ * embed in our platform window."):
+ *   WHICH provider = the e-sign SELECTION (provider_overrides `esign`, user → team → brokerage),
+ *                    else the catalog DEFAULT_ESIGN_PROVIDER (DocuSign).
+ *   WHOSE credential = that ONE provider's connection through the ownership cascade
+ *                    (platform_credentials agent → team → brokerage → platform); for the DEFAULT
+ *                    only, the platform's own DocuSign account (lib/esign/docusign-platform-account.ts)
+ *                    is the last rung, so a tenant that connected nothing still sends.
  *
- * Throws when no API provider is configured. Lane 88B: the throw names the DEFAULT — Google
- * eSignature, a portal-send provider (catalog DEFAULT_ESIGN_PROVIDER) — and where to send from,
- * never "connect Dotloop"; an explicit Google selection is refused the same honest way.
+ * WHAT WAS FIXED: with no selection this resolver used to iterate EVERY supported vendor and return
+ * whichever credential was connected first (Dotloop before DocuSign) — "whatever TM is connected"
+ * chose the signer, which is the defect lane 88B2 removed from the workflow step and which lived on
+ * here for the FormWizard, the assistant tool, the BBA and commission-disclosure sends. Now a
+ * different vendor never stands in: a selected provider that is not connected is refused BY NAME.
+ *
+ * `provider` on the context is the one exception — the webhook downloader knows which vendor SENT
+ * the envelope it is syncing and must reach that vendor's client, whatever the tenant selects today.
+ *
+ * Throws (a value-returning sibling, resolveESignChoice, is below). A portal-send selection (Google
+ * eSignature) has no credential and is refused with WHERE to send from.
  */
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { getTransactionProviderByName } from "@/lib/integrations/providers/provider-resolver"
-import { DEFAULT_ESIGN_PROVIDER, getCatalogEntry, providerPortalMode } from "@/lib/integrations/providers/catalog"
+import { DEFAULT_ESIGN_PROVIDER, getCatalogEntry, getEsignProviders, providerPortalMode } from "@/lib/integrations/providers/catalog"
 import type { ITransactionProvider } from "@/lib/integrations/providers/transaction-provider.interface"
 
 export interface ResolvedESignProvider {
-  providerName: "dotloop" | "docusign" | "skyslope" | "authentisign"
+  providerName: "dotloop" | "docusign" | "skyslope" | "authentisign" | "formsimplicity"
   credentials: {
     apiKey:     string
     profileId:  string
@@ -31,16 +41,24 @@ export interface ResolvedESignProvider {
   accountId:    string | null
   credentialId: string
   provider:     ITransactionProvider
-  resolvedScope: "user" | "team" | "brokerage"
+  /** Whose credential carries the envelope. "platform" = the platform's own DocuSign account
+   *  (the default with nothing connected); "default" is never a scope — a default still resolves
+   *  to a credential at one of these tiers. */
+  resolvedScope: "user" | "team" | "brokerage" | "platform"
+  /** true when the provider is the platform DEFAULT rather than a tenant selection. */
+  isDefault: boolean
 }
 
 export interface ResolveESignContext {
   brokerageId: string
   userId?:     string | null
   teamId?:     string | null
+  /** The vendor that SENT an envelope being synced back (webhooks) — bypasses the selection. */
+  provider?:   string | null
 }
 
-const SUPPORTED_PLATFORMS = ["dotloop", "docusign", "skyslope", "authentisign"]
+/** The e-sign providers with a sending class — derived from the catalog, never a hand list. */
+const SUPPORTED_PLATFORMS: string[] = getEsignProviders()
 
 async function readOverride(
   scope: "user" | "team" | "brokerage",
@@ -72,106 +90,121 @@ export async function resolveESignProviderForActor(
   // goes through the unified ownership cascade (resolveScopedConnection: agent → team →
   // brokerage → platform, legacy fallback preserved), so per-tier scoping — including TEAM,
   // which the old per-column read skipped — resolves in one place.
-  const userPick      = ctx.userId ? await readOverride("user", ctx.userId)           : null
-  const teamPick      = ctx.teamId ? await readOverride("team", ctx.teamId)           : null
-  const brokeragePick = await readOverride("brokerage", ctx.brokerageId)
-  const preferredPlatform = userPick ?? teamPick ?? brokeragePick ?? null
+  const selection = await readSelection(ctx)
+  const providerName = (ctx.provider?.toLowerCase() || selection.pick || DEFAULT_ESIGN_PROVIDER)
+  const isDefault = !ctx.provider && !selection.pick
 
-  // Lane 88B (owner, wave 88: "google esign is default not dotloop."). This resolver answers "which
-  // CONNECTED API provider, with what credential". A portal-send selection (Google eSignature — the
-  // catalog DEFAULT) has neither, so it is refused here with WHERE to send from, not searched for
-  // a credential that cannot exist.
-  if (preferredPlatform && getCatalogEntry(preferredPlatform)?.portalSend) {
-    throw new Error(portalSendMessage(preferredPlatform))
+  // A portal-send selection (Google eSignature) has no credential and no send API: it is refused
+  // here with WHERE to send from, not searched for a credential that cannot exist.
+  if (getCatalogEntry(providerName)?.portalSend) {
+    throw new Error(portalSendMessage(providerName, isDefault))
+  }
+  if (!SUPPORTED_PLATFORMS.includes(providerName)) {
+    const label = getCatalogEntry(providerName)?.label ?? providerName
+    throw new Error(`E-sign is set to '${label}', which cannot send for signature. Choose DocuSign, Dotloop, SkySlope, Authentisign, Form Simplicity or Google eSignature in Settings → Integrations.`)
   }
 
   const scopeCtx = { agentUserId: ctx.userId ?? null, teamId: ctx.teamId ?? null, brokerageId: ctx.brokerageId }
-  const ownerToScope = (o: string): "user" | "team" | "brokerage" =>
-    o === "agent" ? "user" : o === "team" ? "team" : "brokerage"
+  const ownerToScope = (o: string): ResolvedESignProvider["resolvedScope"] =>
+    o === "agent" ? "user" : o === "team" ? "team" : o === "platform" ? "platform" : "brokerage"
 
-  const providersToTry = preferredPlatform ? [preferredPlatform] : SUPPORTED_PLATFORMS
-  for (const provider of providersToTry) {
-    const conn = await resolveScopedConnection(provider, scopeCtx)
-    if (conn && conn.apiKey && SUPPORTED_PLATFORMS.includes(conn.provider)) {
-      return buildResolved(
-        { id: conn.credentialId, platform: conn.provider, api_key: conn.apiKey, account_id: conn.accountId, config: conn.config },
-        ownerToScope(conn.ownerType),
-      )
-    }
+  // ONE provider, the tenant's own credential first (agent → team → brokerage → platform tier).
+  const conn = await resolveScopedConnection(providerName, scopeCtx)
+  if (conn && conn.apiKey && conn.provider === providerName) {
+    return buildResolved(
+      { id: conn.credentialId, platform: conn.provider, api_key: conn.apiKey, account_id: conn.accountId, config: conn.config },
+      ownerToScope(conn.ownerType),
+      isDefault,
+    )
   }
 
+  // The DEFAULT with nothing connected: the platform's own DocuSign account carries the envelope
+  // (lane 89A). Only for the default — a tenant that SELECTED a vendor gets that vendor or a refusal.
+  if (isDefault && providerName === DEFAULT_ESIGN_PROVIDER && providerName === "docusign") {
+    const { resolvePlatformDocusignCredential } = await import("@/lib/esign/docusign-platform-account")
+    const platform = await resolvePlatformDocusignCredential()
+    if (platform.ok) {
+      return buildResolved(
+        { id: "platform-docusign", platform: "docusign", api_key: platform.credential.apiKey, account_id: platform.credential.profileId, config: { base_uri: platform.credential.baseUri } },
+        "platform",
+        true,
+      )
+    }
+    throw new Error(`${platform.error} Connect your own DocuSign, Dotloop, SkySlope or Authentisign — or select Google eSignature — in Settings → Integrations.`)
+  }
+
+  const label = getCatalogEntry(providerName)?.label ?? providerName
   throw new Error(
-    preferredPlatform
-      ? `Selected '${preferredPlatform}' as e-sign provider but no active credentials are configured. Add credentials in Settings → Integrations.`
-      // Lane 88B — nothing selected and nothing connected = the DEFAULT (Google eSignature), which
-      // is sent from the agent's own Google Drive; the old copy told them to connect Dotloop & co.
-      : portalSendMessage(DEFAULT_ESIGN_PROVIDER),
+    isDefault
+      ? `E-sign defaults to ${label}, but no ${label} connection was found for you, your team or your brokerage. Connect ${label} (or another e-sign provider) in Settings → Integrations.`
+      : `E-sign is set to ${label}${selection.scope ? ` (${selection.scope} setting)` : ""}, but no active ${label} connection was found for you, your team or your brokerage. Connect it in Settings → Integrations, or change the e-sign selection.`,
   )
 }
 
-/** Lane 88B — the honest "send it from the provider's own window" sentence for a portal-send
- *  provider (Google eSignature): nothing was sent, and this says where the agent sends from. */
-function portalSendMessage(providerName: string): string {
-  const portal = providerPortalMode(providerName)
-  const label = portal?.label ?? providerName
-  return `E-sign is set to ${label} (the default), which sends from your own ${label} window — open ${portal?.url ?? label}, open the filled document, then Tools → eSignature → Request signature. To auto-send from here instead, connect DocuSign, Dotloop or another provider in Settings → Integrations.`
+/** The e-sign SELECTION (provider_overrides `esign`), most-specific scope first. */
+async function readSelection(ctx: ResolveESignContext): Promise<{ pick: string | null; scope: "user" | "team" | "brokerage" | null }> {
+  const userPick      = ctx.userId ? await readOverride("user", ctx.userId) : null
+  if (userPick) return { pick: userPick.toLowerCase(), scope: "user" }
+  const teamPick      = ctx.teamId ? await readOverride("team", ctx.teamId) : null
+  if (teamPick) return { pick: teamPick.toLowerCase(), scope: "team" }
+  const brokeragePick = await readOverride("brokerage", ctx.brokerageId)
+  if (brokeragePick) return { pick: brokeragePick.toLowerCase(), scope: "brokerage" }
+  return { pick: null, scope: null }
 }
 
-// ─── THE E-SIGN CHOICE FOR A SEND (lane 88C, merged onto 88B's Google default) ──
+/** The honest "send it from the provider's own window" sentence for a portal-send provider
+ *  (Google eSignature): nothing was sent, and this says where the agent sends from. */
+function portalSendMessage(providerName: string, isDefault = false): string {
+  const portal = providerPortalMode(providerName)
+  const label = portal?.label ?? providerName
+  return `E-sign is set to ${label}${isDefault ? " (the default)" : ""}, which sends from your own ${label} window — open ${portal?.url ?? label}, open the filled document, then Tools → eSignature → Request signature. To send from inside the platform instead, select DocuSign (the default) or connect Dotloop, SkySlope or Authentisign in Settings → Integrations.`
+}
+
+// ─── THE E-SIGN CHOICE FOR A SEND (lane 88C; re-anchored to the DocuSign default, lane 89A) ──
 //
-// resolveESignProviderForActor above answers "which CONNECTED API provider, with what
-// credential" and REFUSES the portal-send default with where to send from (88B). A SEND
-// (FormWizard offer + listing, the transaction page's per-document send — all through
-// lib/esign/dispatch-packet.ts) needs one more answer: when the choice IS the Google
-// default, do the filled forms go into the agent's Drive for them (lane 88C's hand-off,
-// lib/esign/google-esign-handoff.ts), or does the agent upload them by hand (88B's
-// portalSendMessage)? Same order as 88B's resolver and workflow step (§6 — one order):
-//   1. an explicit provider_overrides pick (user → team → brokerage) — a portal-send pick
-//      (google_esign) is the Google choice; any other pick resolves through the resolver;
-//   2. a connected API provider;
-//   3. the DEFAULT — Google eSignature (DEFAULT_ESIGN_PROVIDER), with whether the agent's
-//      Google connection can place the packet in Drive (connected + drive.file grant).
+// resolveESignProviderForActor above answers "which provider, with what credential" and
+// REFUSES a portal-send selection with where to send from. A SEND (FormWizard offer + listing,
+// the transaction page's per-document send — all through lib/esign/dispatch-packet.ts) needs one
+// more answer: when the choice is Google eSignature, do the filled forms go into the agent's
+// Drive for them (lane 88C's hand-off, lib/esign/google-esign-handoff.ts), or does the agent
+// upload them by hand? ONE order, the resolver's (§6):
+//   1. the e-sign SELECTION (user → team → brokerage) — google_esign is the Google choice; any
+//      other selection resolves to ITS credential or a named refusal;
+//   2. no selection → the DEFAULT (DocuSign): the tenant's own DocuSign connection, else the
+//      platform's DocuSign account. A refusal is a refusal — never a silent other vendor and
+//      never a silent Google fallback (Google is a CHOICE now, not the default).
 
 export type ESignChoice =
-  | { ok: true; kind: "google"; providerName: typeof DEFAULT_ESIGN_PROVIDER; resolvedScope: "user" | "team" | "brokerage" | "default"; connected: boolean; driveGranted: boolean | null; manualSteps: string }
+  | { ok: true; kind: "google"; providerName: "google_esign"; resolvedScope: "user" | "team" | "brokerage" | "default"; connected: boolean; driveGranted: boolean | null; manualSteps: string }
   | { ok: true; kind: "api"; providerName: ResolvedESignProvider["providerName"]; resolved: ResolvedESignProvider }
   | { ok: false; error: string }
 
 export async function resolveESignChoice(ctx: ResolveESignContext): Promise<ESignChoice> {
   if (!ctx.brokerageId) return { ok: false, error: "brokerageId required to resolve e-sign provider" }
-  const userPick      = ctx.userId ? await readOverride("user", ctx.userId) : null
-  const teamPick      = ctx.teamId ? await readOverride("team", ctx.teamId) : null
-  const brokeragePick = await readOverride("brokerage", ctx.brokerageId)
-  const pick = userPick ?? teamPick ?? brokeragePick ?? null
-  const pickScope: "user" | "team" | "brokerage" = userPick ? "user" : teamPick ? "team" : "brokerage"
+  const selection = await readSelection(ctx)
+  const pick = selection.pick
+  const pickScope: "user" | "team" | "brokerage" | "default" = selection.scope ?? "default"
 
   const google = async (scope: "user" | "team" | "brokerage" | "default"): Promise<ESignChoice> => {
     const { googleEsignReadiness } = await import("@/lib/esign/google-esign-handoff")
     const g = ctx.userId ? await googleEsignReadiness(ctx.userId) : { connected: false, driveGranted: null }
-    return { ok: true, kind: "google", providerName: DEFAULT_ESIGN_PROVIDER, resolvedScope: scope, connected: g.connected, driveGranted: g.driveGranted, manualSteps: portalSendMessage(DEFAULT_ESIGN_PROVIDER) }
+    return { ok: true, kind: "google", providerName: "google_esign", resolvedScope: scope, connected: g.connected, driveGranted: g.driveGranted, manualSteps: portalSendMessage("google_esign", scope === "default") }
   }
 
-  if (pick && getCatalogEntry(pick)?.portalSend) return google(pickScope)
-  if (pick) {
-    try {
-      const resolved = await resolveESignProviderForActor(ctx)
-      return { ok: true, kind: "api", providerName: resolved.providerName, resolved }
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) }
-    }
-  }
+  const chosen = pick ?? DEFAULT_ESIGN_PROVIDER
+  if (getCatalogEntry(chosen)?.portalSend) return google(pickScope)
   try {
     const resolved = await resolveESignProviderForActor(ctx)
     return { ok: true, kind: "api", providerName: resolved.providerName, resolved }
-  } catch {
-    // Nothing selected, nothing connected → the default. Never a silent Dotloop.
-    return google("default")
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
 }
 
 function buildResolved(
   cred: any,
-  scope: "user" | "team" | "brokerage",
+  scope: ResolvedESignProvider["resolvedScope"],
+  isDefault: boolean,
 ): ResolvedESignProvider {
   const cfg = (cred.config as Record<string, unknown> | null) ?? {}
   const profileId =
@@ -194,6 +227,7 @@ function buildResolved(
     credentialId:  cred.id as string,
     provider,
     resolvedScope: scope,
+    isDefault,
   }
 }
 
