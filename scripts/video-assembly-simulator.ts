@@ -666,9 +666,15 @@ function rendersEhoMark(source: string): boolean {
   // EndCard survivor (lane 78D — the four private outros merged onto
   // remotion/components/EndCard.tsx, which renders the mark itself; §endCard
   // below proves that, so this arm is inheritance, not absence).
+  // Lane 90E2b: the 16:9 slides compose their footer line ONCE through
+  // lib/video/cinema-finish.ts slideDisclosureText (brokerage · Equal Housing
+  // Opportunity · licence), so the slide imports and RENDERS the helper's text —
+  // the mark lives in the helper, and §slideDisclosure below proves the helper
+  // carries it, so this arm is inheritance, not absence.
   return (
     (/from\s+["'][^"']*EqualHousingMark["']/.test(source) && /<EqualHousingMark\b/.test(source)) ||
-    (/from\s+["'][^"']*components\/EndCard["']/.test(source) && /<EndCard\b/.test(source))
+    (/from\s+["'][^"']*components\/EndCard["']/.test(source) && /<EndCard\b/.test(source)) ||
+    (/from\s+["'][^"']*cinema-finish["']/.test(source) && /\bslideDisclosureText\(/.test(source) && /\{disclosure\}/.test(source))
   )
 }
 
@@ -677,6 +683,14 @@ function rendersEhoMark(source: string): boolean {
 // treat an imported-and-rendered <EndCard> as the mark, so the inheritance arm
 // above is proven rather than assumed.
 function endCardSection() {
+  console.log("\n── §slideDisclosure — the slides' footer line carries the mark (lane 90E2b) ──")
+  const cinemaFinish = readStripped("lib/video/cinema-finish.ts")
+  check("slideDisclosureText renders the Equal Housing Opportunity mark unless the brand opts out (the inheritance arm of rendersEhoMark rests on this)",
+    /export function slideDisclosureText\b/.test(cinemaFinish) && /Equal Housing Opportunity/.test(cinemaFinish) && /showEhoMark \?\? true/.test(cinemaFinish))
+  check("POSITIVE CONTROL: a slide that imports the helper but never renders its text is NOT the mark",
+    !rendersEhoMark(`import { slideDisclosureText } from "../lib/video/cinema-finish"\nconst disclosure = slideDisclosureText(brand)\nreturn <div />`))
+  check("POSITIVE CONTROL: importing and rendering the helper's text IS the mark",
+    rendersEhoMark(`import { slideDisclosureText } from "../lib/video/cinema-finish"\nconst disclosure = slideDisclosureText(brand)\nreturn <div>{disclosure}</div>`))
   console.log("\n── §endCard — one end card, four compositions (lane 78D consolidation) ──")
   const endCard = readStripped("remotion/components/EndCard.tsx")
   check("remotion/components/EndCard.tsx exports the ONE EndCard", /export const EndCard\b/.test(endCard))
