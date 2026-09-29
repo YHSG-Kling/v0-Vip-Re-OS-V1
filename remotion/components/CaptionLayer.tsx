@@ -95,6 +95,15 @@ export interface CaptionLayerProps {
    * on the safe inset exactly as before (cinemaCaptionStyle.bandBottom).
    */
   bandBottom?: number
+  /**
+   * WAVE 90 (lane 90E — the AFTER renders): the band's RIGHT inset, px from the
+   * frame's right edge, when a presenter ring stands in the bottom-right corner
+   * for the whole timeline (the presentation slides — cinemaSlideFooterStack
+   * `presenterRight`). The band centres in what is left of the width, so a wide
+   * cue never runs under the agent's face. Absent, the band spans the frame
+   * exactly as before.
+   */
+  bandRight?: number
 }
 
 /**
@@ -182,7 +191,7 @@ export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
           position: "absolute",
           ...(explicitTop !== null ? { top: `${explicitTop}%` } : { bottom: props.bandBottom ?? cs.bandBottom }),
           left: 0,
-          right: 0,
+          right: props.bandRight ?? 0,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",

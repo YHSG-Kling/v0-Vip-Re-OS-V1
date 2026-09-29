@@ -60,7 +60,7 @@ import React from "react"
 import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { AvatarPIP } from "./components/AvatarPIP"
-import { cinemaDisclosureStyle, cinemaFrame, cinemaSlideFooterStack } from "../lib/video/cinema-finish"
+import { cinemaDisclosureStyle, cinemaFrame, cinemaSlideFooterStack, SLIDE_PRESENTER_PIP, slideDisclosureText } from "../lib/video/cinema-finish"
 
 export type SlideKind = "title" | "image" | "comps" | "chart" | "closing"
 
@@ -103,15 +103,17 @@ export const ListingPresentationSlide: React.FC<ListingPresentationSlideProps> =
   agentPhotoUrl, agentName, brand,
 }) => {
   const surface = brand.surfaceColor ?? "#FFFFFF"
-  const showEho = brand.showEhoMark ?? true
   // WAVE 90 (lane 90E — the lane's real render): the footer, the nameplate and
   // the body's bottom edge come from the ONE slide stack (lib/video/cinema-
   // finish.ts cinemaSlideFooterStack) — the disclosure ON the safe inset in
   // readable type, the nameplate above it, the caption band above both, the
   // body clear of all three. They were a 40 px bar at the bottom edge in 12 px
   // type, a nameplate 32 px from the edge and a body that ran under the captions.
+  // The stack is laid out for THIS disclosure text (a real-length line wraps
+  // beside the presenter ring; the rows above stand on all of its lines).
   const { width, height } = useVideoConfig()
-  const stack = cinemaSlideFooterStack(width, height)
+  const disclosure = slideDisclosureText(brand)
+  const stack = cinemaSlideFooterStack(width, height, disclosure)
   const { safe } = cinemaFrame(width, height)
 
   return (
@@ -158,9 +160,10 @@ export const ListingPresentationSlide: React.FC<ListingPresentationSlideProps> =
         )}
       </div>
 
-      {/* Avatar PIP — bottom-right. ~280×280 with brand-accent ring.
-          The slide's avatar slice plays underneath; the homeowner
-          sees a continuous narration even as slide content cuts. */}
+      {/* Avatar PIP — bottom-right, SLIDE_PRESENTER_PIP (the footer stack reserves
+          its column from the same numbers). The slide's avatar slice plays
+          underneath; the homeowner sees a continuous narration even as slide
+          content cuts. */}
       <AvatarPIP
         avatarVideoUrl={avatarVideoUrl}
         agentPhotoUrl={agentPhotoUrl}
@@ -170,8 +173,8 @@ export const ListingPresentationSlide: React.FC<ListingPresentationSlideProps> =
         accentColor={brand.accentColor}
         primaryColor={brand.primaryColor}
         position="bottom-right"
-        size={280}
-        ringWidth={5}
+        size={SLIDE_PRESENTER_PIP.size}
+        ringWidth={SLIDE_PRESENTER_PIP.ringWidth}
       />
 
       {/* Bottom-left agent name plate — one line above the disclosure, on the safe side inset. */}
@@ -184,15 +187,14 @@ export const ListingPresentationSlide: React.FC<ListingPresentationSlideProps> =
       </div>
 
       {/* Footer: the decorative brand bar fills the unsafe band (no text in it); the
-          disclosure line sits ON the safe inset at the caption type step. */}
+          disclosure line sits ON the safe inset at the caption type step, centred in
+          the width LEFT of the presenter ring (stack.presenterRight) — never under it. */}
       <div style={{
         position: "absolute", bottom: 0, left: 0, right: 0, height: stack.footerBarHeight,
         backgroundColor: brand.primaryColor, opacity: 0.9,
       }} />
-      <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height), bottom: stack.disclosureBottom, color: brand.primaryColor, opacity: 0.9 }}>
-        {brand.brokerageName}
-        {showEho && " · Equal Housing Opportunity"}
-        {brand.licenseLine && ` · ${brand.licenseLine}`}
+      <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height), bottom: stack.disclosureBottom, right: stack.presenterRight, color: brand.primaryColor, opacity: 0.9 }}>
+        {disclosure}
       </div>
     </AbsoluteFill>
   )

@@ -34,7 +34,7 @@ import { QrOutroBadge } from "./components/QrOutroBadge"
 import { AvatarPIP } from "./components/AvatarPIP"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
-import { cinemaDisclosureStyle, cinemaFrame, cinemaSlideFooterStack } from "../lib/video/cinema-finish"
+import { cinemaDisclosureStyle, cinemaFrame, cinemaSlideFooterStack, SLIDE_PRESENTER_PIP, slideDisclosureText } from "../lib/video/cinema-finish"
 
 export type BuyerSlideKind =
   | "title"
@@ -106,14 +106,15 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
   qrCodeDataUrl, qrCaption, mlsClean, captionsCues, captionScript,
 }) => {
   const surface = brand.surfaceColor ?? SURFACE_DEFAULT
-  const showEho = brand.showEhoMark ?? true
   // WAVE 90 (lane 90E — the lane's real render): the ONE slide stack
   // (lib/video/cinema-finish.ts cinemaSlideFooterStack) — see
   // ListingPresentationSlide.tsx. Here the search cards and the closing copy
   // ran UNDER the burned-in captions and the nameplate, and the footer was a
-  // 40 px bar at the bottom edge in 12 px type.
+  // 40 px bar at the bottom edge in 12 px type. The stack is laid out for THIS
+  // disclosure text (a real-length line wraps beside the presenter ring).
   const { width, height } = useVideoConfig()
-  const stack = cinemaSlideFooterStack(width, height)
+  const disclosure = slideDisclosureText(brand)
+  const stack = cinemaSlideFooterStack(width, height, disclosure)
   const { safe } = cinemaFrame(width, height)
 
   return (
@@ -180,8 +181,8 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
         accentColor={brand.accentColor}
         primaryColor={brand.primaryColor}
         position="bottom-right"
-        size={280}
-        ringWidth={5}
+        size={SLIDE_PRESENTER_PIP.size}
+        ringWidth={SLIDE_PRESENTER_PIP.ringWidth}
       />
 
       {/* Nameplate one line above the disclosure, on the safe side inset. */}
@@ -194,15 +195,14 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
       </div>
 
       {/* Footer: the decorative brand bar fills the unsafe band (no text in it); the
-          disclosure line sits ON the safe inset at the caption type step. */}
+          disclosure line sits ON the safe inset at the caption type step, centred in
+          the width LEFT of the presenter ring (stack.presenterRight) — never under it. */}
       <div style={{
         position: "absolute", bottom: 0, left: 0, right: 0, height: stack.footerBarHeight,
         backgroundColor: brand.primaryColor, opacity: 0.9,
       }} />
-      <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height), bottom: stack.disclosureBottom, color: brand.primaryColor, opacity: 0.9 }}>
-        {brand.brokerageName}
-        {showEho && " · Equal Housing Opportunity"}
-        {brand.licenseLine && ` · ${brand.licenseLine}`}
+      <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height), bottom: stack.disclosureBottom, right: stack.presenterRight, color: brand.primaryColor, opacity: 0.9 }}>
+        {disclosure}
       </div>
       {kind === "closing" && (
         <QrOutroBadge qrCodeDataUrl={qrCodeDataUrl} caption={qrCaption ?? "Scan to get started"}
@@ -213,7 +213,7 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
           every other slide kind speaks for its full duration with no late branding
           reveal, so the caption runs the whole slide there. */}
       {kind !== "closing" && (
-        <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} bandBottom={stack.captionBandBottom} />
+        <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} bandBottom={stack.captionBandBottom} bandRight={stack.presenterRight} />
       )}
     </AbsoluteFill>
   )
@@ -292,7 +292,14 @@ const SearchSlideBody: React.FC<{
           <div key={i} style={{ fontSize: 18, lineHeight: 1.4, marginTop: 8, opacity: 0.8 }}>{p}</div>
         ))}
       </div>
-      <div style={{ flex: 1, display: "flex", gap: 20 }}>
+      {/* WAVE 90 (lane 90E — the lane's AFTER render, after-BuyerConsultationSlide-
+          bodyEnd.png): the card row is a flex item whose min-height was `auto`, so
+          the cards grew to their content (a 1600×1200 listing photo) — 554 px in a
+          349 px row — and ran 200 px past the body region, under the caption band
+          and the nameplate. `minHeight: 0` down the chain and a photo box that is
+          a flex-basis with the image ABSOLUTE inside it: the row can only be as
+          tall as the region the stack leaves it. */}
+      <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 20 }}>
         {three.length === 0 ? (
           <div style={{
             width: "100%", display: "flex", alignItems: "center", justifyContent: "center",
@@ -302,14 +309,14 @@ const SearchSlideBody: React.FC<{
           </div>
         ) : three.map((ex, i) => (
           <div key={i} style={{
-            flex: 1, borderRadius: 12, overflow: "hidden",
+            flex: 1, minHeight: 0, borderRadius: 12, overflow: "hidden",
             boxShadow: `0 4px 16px rgba(0,0,0,0.12)`,
             display: "flex", flexDirection: "column",
             border: `1px solid ${primaryColor}22`,
           }}>
-            <div style={{ height: "55%", backgroundColor: "#E5E7EB" }}>
+            <div style={{ flex: "0 0 55%", minHeight: 0, position: "relative", overflow: "hidden", backgroundColor: "#E5E7EB" }}>
               {ex.photoUrl ? (
-                <SafeImg src={ex.photoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                <SafeImg src={ex.photoUrl} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
               ) : (
                 <div style={{
                   width: "100%", height: "100%", display: "flex",
@@ -318,7 +325,7 @@ const SearchSlideBody: React.FC<{
                 }}>Photo</div>
               )}
             </div>
-            <div style={{ padding: "16px 20px", flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+            <div style={{ padding: "16px 20px", flex: 1, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
               <div>
                 <div style={{ fontSize: 28, fontWeight: 800, color: accentColor, marginBottom: 4 }}>
                   {ex.price}

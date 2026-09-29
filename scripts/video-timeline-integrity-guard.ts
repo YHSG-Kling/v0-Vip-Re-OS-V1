@@ -81,7 +81,9 @@ import { MAX_BRAND_BOOKEND_SECONDS, MUSIC_DUCK_VOLUME_PCT, MUSIC_SIDECHAIN_DUCK_
 import { stitchedIntroCategory } from "../lib/remotion/render-decision"
 import { geometryFor } from "../lib/remotion/composition-geometry"
 import { consumesVoiceover, stagesChapteredSpeech, stagesSpeech } from "../lib/remotion/content-contract"
-import { cinemaCaptionStyle, cinemaDisclosureStyle, cinemaMusicFades, cinemaSlideFooterStack } from "../lib/video/cinema-finish"
+import {
+  BLUR_VISIBLE_STREAK_PX, CINEMA_MOTION_BLUR, cinemaCameraStreakPx, cinemaCaptionStyle, cinemaDisclosureStyle, cinemaMotionBlurWindows, cinemaMusicFades, cinemaSlideFooterStack, DISCLOSURE_GLYPH_EM, SLIDE_PRESENTER_PIP, slideDisclosureText,
+} from "../lib/video/cinema-finish"
 import { memoryChapterSegments, chapterDurationFrames } from "../lib/video/memory-video-composition"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
@@ -356,14 +358,57 @@ console.log("\n── §disclosure · no typed sub-safe corner remains; the slid
   }
   for (const f of ["remotion/ListingPresentationSlide.tsx", "remotion/BuyerConsultationSlide.tsx"]) {
     const c = code(f)
-    check(`${f}: footer, nameplate and body read cinemaSlideFooterStack; no typed bottom: 0 / 32 / 120 remains`,
-      /cinemaSlideFooterStack\(width, height\)/.test(c) && /bottom: stack\.disclosureBottom/.test(c) && /bottom: stack\.nameplateBottom/.test(c) && /bottom: stack\.bodyBottom/.test(c)
+    check(`${f}: footer, nameplate and body read cinemaSlideFooterStack, laid out for the disclosure text the slide renders; no typed bottom: 0 / 32 / 120 remains`,
+      /const disclosure = slideDisclosureText\(brand\)/.test(c) && /cinemaSlideFooterStack\(width, height, disclosure\)/.test(c) && /\{disclosure\}/.test(c)
+      && /bottom: stack\.disclosureBottom/.test(c) && /bottom: stack\.nameplateBottom/.test(c) && /bottom: stack\.bodyBottom/.test(c)
       && !/bottom: 0, left: 0, right: 0, height: 40/.test(c) && !/bottom: 32, left: 56/.test(c) && !/bottom: 120,/.test(c))
   }
   check("BuyerConsultationSlide and ListingSectionReel raise their caption band onto the stack (CaptionLayer bandBottom)",
     /bandBottom=\{stack\.captionBandBottom\}/.test(code("remotion/BuyerConsultationSlide.tsx")) && /bandBottom=\{stack\.captionBandBottom\}/.test(code("remotion/ListingSectionReel.tsx")))
   check("CaptionLayer honours bandBottom (the band's bottom edge, px) and keeps the safe inset as its default", /bandBottom\?: number/.test(code("remotion/components/CaptionLayer.tsx")) && /props\.bandBottom \?\? cs\.bandBottom/.test(code("remotion/components/CaptionLayer.tsx")))
   check("CONTROL: the pre-90E slide footer (bottom: 0, 40 px bar, 12 px type) sat inside the unsafe band on the 16:9 frame", 0 < safeInsets(1920, 1080).bottom && 40 < safeInsets(1920, 1080).bottom)
+  // THE PRESENTER COLUMN (the lane's AFTER renders of the same two slides): the ring stands on the safe
+  // inset and rises above all three text rows, so each row keeps its column clear — a long brokerage +
+  // licence line was centred across the whole safe width and ran UNDER the agent's face.
+  {
+    const w = 1920, h = 1080
+    const st = cinemaSlideFooterStack(w, h), safe = safeInsets(w, h)
+    const ringLeft = w - safe.right - SLIDE_PRESENTER_PIP.size - SLIDE_PRESENTER_PIP.ringWidth
+    check(`1920×1080: the ring's band (${safe.bottom}..${st.presenterTop} px from the bottom) holds the disclosure (${st.disclosureBottom}), the nameplate (${st.nameplateBottom}) and the caption band (${st.captionBandBottom}) — all three must dodge it`,
+      st.presenterTop > st.captionBandBottom && st.presenterTop > st.nameplateBottom && st.presenterTop > st.disclosureBottom)
+    check(`1920×1080: the rows' right edge (${w - st.presenterRight}) is left of the ring's left edge (${ringLeft}); the column is derived from SLIDE_PRESENTER_PIP, not typed`,
+      w - st.presenterRight < ringLeft && st.presenterRight >= safe.right + SLIDE_PRESENTER_PIP.size + SLIDE_PRESENTER_PIP.ringWidth)
+    check("CONTROL: the pre-fix disclosure box (the whole safe width) reached under the ring", w - safe.right > ringLeft)
+    for (const f of ["remotion/ListingPresentationSlide.tsx", "remotion/BuyerConsultationSlide.tsx"]) {
+      const c = code(f)
+      check(`${f}: the disclosure keeps the presenter column (right: stack.presenterRight); the ring reads SLIDE_PRESENTER_PIP, no typed size={280}`,
+        /bottom: stack\.disclosureBottom, right: stack\.presenterRight/.test(c) && /size=\{SLIDE_PRESENTER_PIP\.size\}/.test(c) && /ringWidth=\{SLIDE_PRESENTER_PIP\.ringWidth\}/.test(c) && !/size=\{280\}/.test(c))
+    }
+    check("BuyerConsultationSlide and ListingSectionReel keep their caption band out of the presenter column (CaptionLayer bandRight)",
+      /bandRight=\{stack\.presenterRight\}/.test(code("remotion/BuyerConsultationSlide.tsx")) && /bandRight=\{stack\.presenterRight\}/.test(code("remotion/ListingSectionReel.tsx")))
+    check("CaptionLayer honours bandRight and spans the frame by default", /bandRight\?: number/.test(code("remotion/components/CaptionLayer.tsx")) && /right: props\.bandRight \?\? 0/.test(code("remotion/components/CaptionLayer.tsx")))
+    // THE DISCLOSURE'S OWN HEIGHT: a real-length line wraps beside the ring; the rows above stand on all of its lines.
+    const shortLine = slideDisclosureText({ brokerageName: "Demo Realty", showEhoMark: true, licenseLine: "Lic. #DEMO-0000" })
+    const longLine = slideDisclosureText({ brokerageName: "Demo Realty of Greater Miami and the Keys", showEhoMark: true, licenseLine: "Lic. #BK-DEMO-0000123" })
+    const one = cinemaSlideFooterStack(w, h, shortLine), two = cinemaSlideFooterStack(w, h, longLine), bare = cinemaSlideFooterStack(w, h)
+    const line = Math.ceil(cinemaDisclosureStyle(w, h).fontSize * cinemaDisclosureStyle(w, h).lineHeight)
+    check(`1920×1080: "${shortLine}" (${shortLine.length} ch) lays out on 1 line; "${longLine.slice(0, 28)}…" (${longLine.length} ch) on ${two.disclosureLines} — the nameplate rises by a line (${one.nameplateBottom} → ${two.nameplateBottom}) and the body with it (${one.bodyBottom} → ${two.bodyBottom})`,
+      one.disclosureLines === 1 && two.disclosureLines === 2 && two.nameplateBottom === one.nameplateBottom + line && two.bodyBottom === one.bodyBottom + line && bare.disclosureLines === 1)
+    check("1920×1080: the two-line stack still lies inside the ring's band (the rows keep dodging the presenter)", two.presenterTop > two.captionBandBottom)
+    check("the glyph estimate (DISCLOSURE_GLYPH_EM) is not under the advance the lane measured on its render (0.53 em: 82 glyphs across 1400 px at 32 px, letter-spacing 1)", DISCLOSURE_GLYPH_EM >= 0.53)
+    check("CONTROL: the one-line stack put the nameplate inside the long line's second row (the overprint in after2-ListingSectionReel-mid.png)", one.nameplateBottom < one.disclosureBottom + 2 * line)
+    check("ListingSectionReel lays its caption band out for the SAME disclosure text the slide inside it renders", /cinemaSlideFooterStack\(width, height, slideDisclosureText\(props\.brand\)\)/.test(code("remotion/ListingSectionReel.tsx")))
+    check("CONTROL: the composer still spells the Equal Housing mark and drops it only when the brand opts out", /Equal Housing Opportunity/.test(shortLine) && !/Equal Housing/.test(slideDisclosureText({ brokerageName: "X", showEhoMark: false })))
+    // THE SEARCH CARDS (after-BuyerConsultationSlide-bodyEnd.png): a flex row with min-height auto grew to its
+    // photos (554 px in a 349 px row) and ran under the caption band and the nameplate. Strings matter here
+    // (the flex basis, the absolute image), so this reads the comment-stripped source, not the blanked one.
+    const buyer = stripComments(read("remotion/BuyerConsultationSlide.tsx"))
+    check("BuyerConsultationSlide's search cards cannot outgrow the body region: minHeight 0 down the flex chain, the photo box a flex basis with the image ABSOLUTE inside it, no percentage-height photo box",
+      /flex: 1, minHeight: 0, display: "flex", gap: 20/.test(buyer) && /flex: 1, minHeight: 0, borderRadius: 12, overflow: "hidden"/.test(buyer)
+      && /flex: "0 0 55%", minHeight: 0, position: "relative", overflow: "hidden"/.test(buyer) && /position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover"/.test(buyer)
+      && !/height: "55%"/.test(buyer))
+    check("CONTROL: the finder still sees the pre-fix percentage-height photo box", /height: "55%"/.test(`<div style={{ height: "55%", backgroundColor: "#E5E7EB" }}>`))
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -412,6 +457,28 @@ console.log("\n── §avatar · D-ID segment boundaries match the script; an a
   check("partners-meeting stages the assistant's mp3 ONLY when no avatar clip narrates the show (the D-ID clip is the voice — D-ID first)",
     /const narratesByAvatar = typeof props\.avatarVideoUrl === "string"/.test(pm) && /narratesByAvatar \? null : await prepareReelVoiceover\(/.test(pm))
   check("CONTROL: the finder recognises the pre-90E shape (voiceover synthesized unconditionally)", !/narratesByAvatar/.test(`const vo = await prepareReelVoiceover({ brokerageId })\nif (vo) props.voiceover_url = vo.url`))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+console.log("\n── §blur · the memory film's photo push is MEASURED, so the blur ceiling is not paid on every frame ──")
+{
+  // Found by the lane's real render: MemoryVideoReel (706 frames) took 40 minutes because
+  // cinemaCameraStreakPx read `imageUrls` only — the memory film stages `photoUrls` — so every
+  // photo frame paid the 4-sample ceiling ("camera move of unmeasured speed"). Measured, the
+  // typical Ken Burns push sits under BLUR_VISIBLE_STREAK_PX and costs nothing (86B's rule).
+  const memory = staged.find((s) => s.id === "MemoryVideoReel")!
+  const geo = geometryFor("MemoryVideoReel")!
+  const total = memory.plan.durationInFrames
+  const windows = cinemaMotionBlurWindows("MemoryVideoReel", total, memory.plan, { width: geo.width, height: geo.height, fps: geo.fps, props: memory.props })
+  const streak = cinemaCameraStreakPx(memory.props, Math.min(...memory.plan.photoSlots.map((w) => w.durationInFrames)), memory.plan.photoSlots.length, { width: geo.width, height: geo.height, fps: geo.fps })
+  check(`the memory film's push is measured from photoUrls (${streak}px, under the ${BLUR_VISIBLE_STREAK_PX}px floor) → no blur window, ${total} frame renders for ${total} frames`,
+    streak !== null && streak < BLUR_VISIBLE_STREAK_PX && windows.length === 0)
+  const unread = { ...memory.props, photoUrls: undefined, pics: memory.props.photoUrls }
+  const ceiling = cinemaMotionBlurWindows("MemoryVideoReel", total, memory.plan, { width: geo.width, height: geo.height, fps: geo.fps, props: unread })
+  check(`CONTROL: the same photos under a key nobody reads → the ceiling on every photo segment (${ceiling.length} windows × ${CINEMA_MOTION_BLUR.samples} samples = ${ceiling.reduce((a, w) => a + (w.to - w.from) * w.samples, 0)} extra frame renders)`,
+    ceiling.length === memory.plan.photoSlots.length && ceiling.every((w) => w.samples === CINEMA_MOTION_BLUR.samples && w.streakPx === null))
+  check("cinemaCameraStreakPx reads the four photo keys assetsFromProps reads (imageUrls / images / photos / photoUrls)",
+    /\["imageUrls", "images", "photos", "photoUrls"\]/.test(stripComments(read("lib/video/cinema-finish.ts"))))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

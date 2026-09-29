@@ -11,7 +11,7 @@
  * Layer 1 (pure): worstStatus + classifyCount thresholds; rollupOsHealth (all-clear
  *   → ok; any breaching manager SLO → overall breach; credentials expiring-only →
  *   warn; a tenant-isolation finding → breach; red-team regression → breach).
- * Layer 2 (source): getOsHealthAction is staff-gated; the page redirects non-staff;
+ * Layer 2 (source): getOsHealthAction is staff-gated; the page refuses non-staff in place;
  *   the board consumes getOsHealthAction; the loader composes the EXISTING roll-ups
  *   (no reimplementation).
  * Layer 3 (live, gated): seed ONE unresolved tenant_safety_findings (flips a
@@ -129,7 +129,12 @@ async function main() {
   const pageSrc = readFileSync(join(process.cwd(), "app/dashboard/superadmin/sentinel/page.tsx"), "utf8")
   // Gate migrated to the ONE capability map (platform_capability_gates) —
   // the board admits by requirePlatformCapability("sentinel"), not a hand-rolled isStaff.
-  check("the board page redirects non-staff", /requirePlatformCapability\("sentinel"\)/.test(pageSrc) && /redirect\("\/dashboard"\)/.test(pageSrc))
+  // The RULE, not the waypoint (CLAUDE.md §2): the board gates through the one capability
+  // map and REFUSES IN PLACE — a silent redirect("/dashboard") on a role refusal is the
+  // defect lane 90A/90D removed (page-role-gate-roster P5), so its absence is asserted.
+  check("the board page gates on the sentinel capability and refuses non-staff in place",
+    /requirePlatformCapability\("sentinel"\)/.test(pageSrc) && /if \(!gate\.ok\) return/.test(pageSrc)
+      && !/redirect\("\/dashboard"\)/.test(pageSrc))
 
   // The REFLEX — sweep escalates on breach (deduped) + folds in rotation escalation, wired to a cron.
   check("runOsSentinelSweep escalates an overall breach via notifyPlatformStaff, deduped per day + folds in rotation escalation",

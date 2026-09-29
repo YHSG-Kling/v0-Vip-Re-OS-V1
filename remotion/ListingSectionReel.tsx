@@ -19,7 +19,7 @@ import { ListingPresentationSlide, type SlideKind } from "./ListingPresentationS
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
-import { cinemaSlideFooterStack } from "../lib/video/cinema-finish"
+import { cinemaSlideFooterStack, slideDisclosureText } from "../lib/video/cinema-finish"
 
 const SECTION_KIND: Record<string, SlideKind> = {
   intro:       "title",
@@ -67,8 +67,9 @@ export interface ListingSectionReelProps {
 export const ListingSectionReel: React.FC<ListingSectionReelProps> = (props) => {
   const { durationInFrames, width, height } = useVideoConfig()
   // Wave 90 (lane 90E): the caption band sits above the slide's nameplate and
-  // disclosure footer (the ONE slide stack the slide itself lays out).
-  const stack = cinemaSlideFooterStack(width, height)
+  // disclosure footer (the ONE slide stack the slide itself lays out, for the
+  // SAME disclosure text — a real-length line wraps and lifts the stack).
+  const stack = cinemaSlideFooterStack(width, height, slideDisclosureText(props.brand))
   const kind = SECTION_KIND[props.sectionKey] ?? "title"
   // Only the closing section reads as an outro — that's where the QR belongs.
   const isOutroSection = kind === "closing"
@@ -106,6 +107,7 @@ export const ListingSectionReel: React.FC<ListingSectionReelProps> = (props) => 
           script={props.captionScript}
           accentColor={props.brand.accentColor}
           bandBottom={stack.captionBandBottom}
+          bandRight={stack.presenterRight}
         />
       )}
     </AbsoluteFill>

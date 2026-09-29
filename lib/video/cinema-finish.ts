@@ -457,7 +457,17 @@ export function cinemaCameraStreakPx(
   photoWindows: number,
   opts: { width: number; height: number; fps: number },
 ): number | null {
-  const urls = Array.isArray(props.imageUrls) ? (props.imageUrls as unknown[]).filter((u) => typeof u === "string" && u) as string[] : []
+  // The photo keys the producers stage — the SAME four assetsFromProps reads
+  // (lib/video/body-visual-model.ts). WAVE 90 (lane 90E — found by the lane's
+  // real render of MemoryVideoReel, a 706-frame film that took 40 minutes at
+  // scale 0.5): this read `imageUrls` only, the memory film stages `photoUrls`,
+  // so its push was "unmeasured" and every photo frame paid the 4-sample
+  // ceiling (a five-chapter family film = 36,700 frame renders for 9,355
+  // frames). Measured, the typical Ken Burns push is under
+  // BLUR_VISIBLE_STREAK_PX and is not paid for — 86B's rule, now reachable.
+  const urls = (["imageUrls", "images", "photos", "photoUrls"] as const)
+    .map((k) => (Array.isArray(props[k]) ? (props[k] as unknown[]).filter((u) => typeof u === "string" && u) as string[] : []))
+    .find((list) => list.length > 0) ?? []
   if (urls.length === 0 || windowFrames <= 0) return null
   const perWindow = Math.max(1, Math.ceil(urls.length / Math.max(1, photoWindows)))
   return kenBurnsPeakStreakPx(kenBurnsPlan(urls.slice(0, perWindow), windowFrames, { fps: opts.fps }), opts.width, opts.height)
@@ -656,27 +666,82 @@ export function cinemaBadgeSlot(width: number, height: number): { bottom: number
  *   body region      — its bottom edge above a two-line caption band, so no
  *                      slide content is ever under a cue or the nameplate.
  * `footerBarHeight` is the decorative brand bar under the disclosure — the
- * unsafe band itself, which carries no text. PURE.
+ * unsafe band itself, which carries no text.
+ *
+ * THE PRESENTER COLUMN (the lane's AFTER renders of the same two slides): the
+ * presenter ring (AvatarPIP, bottom-right, SLIDE_PRESENTER_PIP) stands ON the
+ * safe bottom inset and rises `size + ringWidth` above it — the disclosure
+ * line, the nameplate row and the caption band ALL lie inside that vertical
+ * band, and the disclosure was centred across the WHOLE safe width: a
+ * brokerage name + licence line longer than the fixture's ("Demo Realty ·
+ * Equal Housing Opportunity · Lic. #DEMO-0000" ends 64 px short of the ring on
+ * 1920×1080) ran UNDER the presenter — the disclosure occluded by the agent's
+ * own face, the same defect class as a disclosure under a platform button.
+ * `presenterRight` is the right inset those three rows keep clear: the ring's
+ * column plus one gap. `presenterTop` is the ring's top edge (px from the
+ * bottom) so a caller can prove which rows share its band.
+ *
+ * THE DISCLOSURE'S OWN HEIGHT (the lane's second AFTER render, a real-length
+ * brokerage + licence line): in the width left of the presenter a 90-character
+ * disclosure WRAPS, and a stack that assumed one line put its second line
+ * straight through the nameplate ("Dana Demo" overprinted by "Demo Realty of
+ * Greater Miami…", `after2-ListingSectionReel-mid.png`). The stack takes the
+ * disclosure TEXT (slideDisclosureText — the one composer both slides render)
+ * and lifts the nameplate, the caption band and the body by the lines it
+ * needs, estimated from a conservative glyph advance (over-estimating costs
+ * the body a line of height; under-estimating is the collision). PURE.
  */
 export interface CinemaSlideFooterStack {
   disclosureBottom: number
+  /** Lines the disclosure is laid out for (1-3) — the rows above it stand on all of them. */
+  disclosureLines: number
   nameplateBottom: number
   captionBandBottom: number
   bodyBottom: number
   footerBarHeight: number
+  presenterRight: number
+  presenterTop: number
 }
 
-export function cinemaSlideFooterStack(width: number, height: number): CinemaSlideFooterStack {
+/**
+ * The presentation slides' presenter ring — ListingPresentationSlide and
+ * BuyerConsultationSlide pass these to AvatarPIP (`size` / `ringWidth`), and
+ * cinemaSlideFooterStack reserves the column from the SAME numbers (§6: one
+ * spelling, so the footer can never disagree with the ring it dodges).
+ */
+export const SLIDE_PRESENTER_PIP = { size: 280, ringWidth: 5 } as const
+
+/** A conservative advance per glyph for the disclosure's system-ui face, in em (measured 0.53 on the lane's render; 0.56 keeps the estimate on the safe side of a wrap). */
+export const DISCLOSURE_GLYPH_EM = 0.56
+
+/** The slides' disclosure line — brokerage · Equal Housing Opportunity · licence — composed ONCE, so the stack lays out the same text the slide renders. */
+export function slideDisclosureText(brand: { brokerageName: string; showEhoMark?: boolean | null; licenseLine?: string | null }): string {
+  return `${brand.brokerageName}${(brand.showEhoMark ?? true) ? " · Equal Housing Opportunity" : ""}${brand.licenseLine ? ` · ${brand.licenseLine}` : ""}`
+}
+
+export function cinemaSlideFooterStack(width: number, height: number, disclosureText?: string | null): CinemaSlideFooterStack {
   const { safe, type } = cinemaFrame(width, height)
   const d = cinemaDisclosureStyle(width, height)
   const cap = cinemaCaptionStyle(width, height)
   const line = Math.ceil(d.fontSize * d.lineHeight)
   const gap = Math.round(type.body * 0.3)
+  // The ring's corner is pipCornerStyle's (the safe insets, clamped to the frame) — the same
+  // clamp here so a tiny frame cannot reserve a column wider than the ring really takes.
+  const ringRight = Math.max(0, Math.min(safe.right, Math.max(0, width - SLIDE_PRESENTER_PIP.size)))
+  const ringBottom = Math.max(0, Math.min(safe.bottom, Math.max(0, height - SLIDE_PRESENTER_PIP.size)))
+  const presenterRight = ringRight + SLIDE_PRESENTER_PIP.size + SLIDE_PRESENTER_PIP.ringWidth + gap
+  const disclosureWidth = Math.max(1, width - safe.left - presenterRight)
+  const glyph = d.fontSize * DISCLOSURE_GLYPH_EM + d.letterSpacing
+  const disclosureLines = disclosureText ? Math.min(3, Math.max(1, Math.ceil((disclosureText.length * glyph) / disclosureWidth))) : 1
   const disclosureBottom = d.bottom
-  const nameplateBottom = disclosureBottom + line + gap
+  const nameplateBottom = disclosureBottom + line * disclosureLines + gap
   const captionBandBottom = nameplateBottom + line + gap
   const twoLineBand = Math.ceil(cap.fontSize * cap.lineHeight * 2 + cap.padY * 2 + cap.tickHeight + cap.tickGap)
-  return { disclosureBottom, nameplateBottom, captionBandBottom, bodyBottom: captionBandBottom + twoLineBand + gap, footerBarHeight: safe.bottom }
+  return {
+    disclosureBottom, disclosureLines, nameplateBottom, captionBandBottom, bodyBottom: captionBandBottom + twoLineBand + gap, footerBarHeight: safe.bottom,
+    presenterRight,
+    presenterTop: ringBottom + SLIDE_PRESENTER_PIP.size + SLIDE_PRESENTER_PIP.ringWidth,
+  }
 }
 
 // ── § AUDIO — fades derived from the composition, loudness from the master ──
