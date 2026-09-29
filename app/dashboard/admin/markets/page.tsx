@@ -8,7 +8,7 @@ import {
   getBatchDataFeedStatus,
 } from "@/app/actions/lead-scraping-config"
 import { MarketsSetupClient } from "./markets-client"
-import { BATCHDATA_MOTIVATION_TYPES } from "@/lib/external/batchdata-client"
+import { BATCHDATA_MOTIVATION_TYPES, quickListCatalogueForTrigger } from "@/lib/external/batchdata-client"
 import { ALL_RECORD_TYPES } from "@/lib/osint-client"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
@@ -151,9 +151,16 @@ export default async function MarketsSetupPage() {
  * minus 'expired', which is its own Data-sources toggle) and the OSINT court record types
  * (ALL_RECORD_TYPES). Built server-side so the client bundle never imports either provider client.
  */
-const MOTIVATED_SIGNAL_OPTIONS: Array<{ value: string; source: "batchdata" | "court" }> = [
-  ...BATCHDATA_MOTIVATION_TYPES.filter((t) => t !== "expired").map((value) => ({ value, source: "batchdata" as const })),
+const MOTIVATED_SIGNAL_OPTIONS: Array<{ value: string; source: "batchdata" | "court"; caption: string | null; quickList: string | null; defaultOn: boolean }> = [
+  // Lane 90B — each BatchData option carries the catalogue's JUDGEMENT (why the quickList is pulled
+  // this way, which published list it is, whether an unconfigured market already runs it) from
+  // quickListCatalogueForTrigger — lane 89B named it "the admin picker's caption source" and no
+  // picker read it (orphan census, category A). The operator switching a trigger on now sees why.
+  ...BATCHDATA_MOTIVATION_TYPES.filter((t) => t !== "expired").map((value) => {
+    const entry = quickListCatalogueForTrigger(value)
+    return { value, source: "batchdata" as const, caption: entry?.why ?? null, quickList: entry?.quickList ?? null, defaultOn: entry?.defaultOn === true }
+  }),
   ...(ALL_RECORD_TYPES as readonly string[])
     .filter((t) => !(BATCHDATA_MOTIVATION_TYPES as readonly string[]).includes(t))
-    .map((value) => ({ value, source: "court" as const })),
+    .map((value) => ({ value, source: "court" as const, caption: null, quickList: null, defaultOn: false })),
 ]

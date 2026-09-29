@@ -203,6 +203,19 @@ console.log("\n[C2 · BATCHDATA — every published quickList judged; triggers, 
     /for \(const list of BATCHDATA_INVESTOR_BUYER_TYPES\)/.test(route) && /intentSignals: \[list, "investor"\]/.test(route) && /source: "batchdata_cash_buyer", cost: investorCostUsd/.test(route))
   const page = stripped("app/dashboard/admin/markets/page.tsx")
   check("the admin 'Motivated signals' picker still DERIVES its options from BATCHDATA_MOTIVATION_TYPES (every new trigger is toggleable with no second edit)", /BATCHDATA_MOTIVATION_TYPES\.filter\(\(t\) => t !== "expired"\)/.test(page))
+  // Lane 90B — quickListCatalogueForTrigger was exported as "the admin picker's caption source" and no
+  // picker read it (orphan census, category A). The RULE: the options builder reads it per BatchData
+  // trigger and the client renders the caption; every picker option resolves to a judged entry.
+  const pickerClient = stripped("app/dashboard/admin/markets/markets-client.tsx")
+  const optionsAt = page.indexOf("const MOTIVATED_SIGNAL_OPTIONS")
+  check("the picker's options builder reads quickListCatalogueForTrigger(value) for each BatchData trigger (caption / quickList / defaultOn)",
+    optionsAt > 0 && page.indexOf("quickListCatalogueForTrigger(value)", optionsAt) > optionsAt && /caption:\s*entry\?\.why \?\? null/.test(page) && /quickList:\s*entry\?\.quickList \?\? null/.test(page))
+  check("…and the client renders the caption per trigger (o.caption) beside the published quickList (o.quickList)", /\{o\.caption \?/.test(pickerClient) && /o\.quickList/.test(pickerClient))
+  const pickerTriggers = (BATCHDATA_MOTIVATION_TYPES as readonly string[]).filter((t) => t !== "expired")
+  const captionless = pickerTriggers.filter((t) => !(quickListCatalogueForTrigger(t)?.why ?? "").trim())
+  check(`every picker trigger resolves to a judged catalogue entry with a caption (${pickerTriggers.length - captionless.length}/${pickerTriggers.length})`, captionless.length === 0, captionless.join(","))
+  check("POSITIVE CONTROL: a trigger with no quickList resolves to null (the picker would show no caption, never a fabricated one)", quickListCatalogueForTrigger("divorce") === null && quickListCatalogueForTrigger("time_travel") === null)
+  check("POSITIVE CONTROL: the finder flags a builder that ignores the catalogue", !/quickListCatalogueForTrigger\(value\)/.test(`BATCHDATA_MOTIVATION_TYPES.filter((t) => t !== "expired").map((value) => ({ value, source: "batchdata" as const }))`))
   check(`each pull is booked at the published per-record price ($${BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD}); the catalogue prices FSBO against the cheaper lane`, BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD === 0.05 && /fsbo_site_listing/.test(BATCHDATA_QUICKLIST_CATALOGUE["for-sale-by-owner"].why))
 }
 

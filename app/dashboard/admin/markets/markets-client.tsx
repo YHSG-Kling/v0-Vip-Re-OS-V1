@@ -70,6 +70,11 @@ export interface MotivatedParamsRow {
 interface MotivatedSignalOption {
   value: string
   source: "batchdata" | "court"
+  /** Lane 90B — the catalogue's judgement for a BatchData trigger (batchdata-client.ts::
+   *  quickListCatalogueForTrigger → why / published quickList / default-on); null for court types. */
+  caption?: string | null
+  quickList?: string | null
+  defaultOn?: boolean
 }
 
 export interface MarketRow {
@@ -528,16 +533,22 @@ export function MarketsSetupClient({
                       </label>
                       <div className="mt-2 grid gap-1.5 sm:grid-cols-3">
                         {signalTypeOptions.map((o) => (
-                          <label key={o.value} className="flex items-center gap-1.5 text-xs">
-                            <input
-                              type="checkbox"
-                              checked={signalTypes.includes(o.value)}
-                              onChange={(e) => setSignalTypes((prev) => e.target.checked
-                                ? Array.from(new Set([...prev, o.value]))
-                                : prev.filter((x) => x !== o.value))}
-                            />
-                            <span>{o.value.replace(/_/g, " ")}</span>
-                            <span className="text-[10px] text-muted-foreground">{o.source === "court" ? "court" : "property"}</span>
+                          <label key={o.value} className="flex flex-col gap-0.5 text-xs" title={o.caption ?? undefined}>
+                            <span className="flex items-center gap-1.5">
+                              <input
+                                type="checkbox"
+                                checked={signalTypes.includes(o.value)}
+                                onChange={(e) => setSignalTypes((prev) => e.target.checked
+                                  ? Array.from(new Set([...prev, o.value]))
+                                  : prev.filter((x) => x !== o.value))}
+                              />
+                              <span>{o.value.replace(/_/g, " ")}</span>
+                              <span className="text-[10px] text-muted-foreground">
+                                {o.source === "court" ? "court" : `property${o.quickList ? ` · ${o.quickList}` : ""}${o.defaultOn ? " · default" : ""}`}
+                              </span>
+                            </span>
+                            {/* Lane 90B — the catalogue's judgement (quickListCatalogueForTrigger), rendered per trigger. */}
+                            {o.caption ? <span className="pl-5 text-[10px] leading-tight text-muted-foreground">{o.caption}</span> : null}
                           </label>
                         ))}
                       </div>
