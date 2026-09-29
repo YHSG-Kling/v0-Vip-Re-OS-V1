@@ -1,4 +1,4 @@
--- ── WRITTEN, NOT APPLIED — the integrator applies it (CLAUDE.md §3: files are not the database) ──
+-- ── APPLIED LIVE 2026-09-29 via Supabase MCP apply_migration (project hrvaqgvukzxfskkcrwbt) ──
 --
 -- m671 — mail_response_tracking.response_metadata is RETIRED (lane 90A, wave 90
 -- orphan census burn-down; owner: "especially burning down left open, orphan

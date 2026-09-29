@@ -232,17 +232,8 @@ const DB_ONLY_READ_EXEMPTIONS: Record<string, string> = {
  * into DB-only reads, either of which would misname what actually happened.
  */
 const MIGRATION_ONLY_WRITE_EXEMPTIONS: Record<string, string> = {
-  "mail_response_tracking.response_metadata":
-    "The application-level writer was REMOVED on purpose — TOMBSTONE at app/actions/direct-mail.ts:653 " +
-    "(2026-09-07): \"response_metadata is NO LONGER WRITTEN HERE... It was a DUPLICATE (orphan doctrine §1.1). " +
-    "SURVIVOR: direct_mail_responses.response_metadata\", because mail_response_tracking's only consumers " +
-    "(app/api/cron/bundle-attribution-rollup/route.ts:166, lib/campaigns/roi-calculator.ts:316,812) read a " +
-    "COUNT or id/type/contact/lead columns, never metadata — the twin write at app/api/qr/scan/route.ts was " +
-    "dropped in the same edit. The ONLY remaining writer is supabase/migrations/" +
-    "m491-a-lead-can-be-mailed-but-there-is-no-column-that-can-say-who-answered.sql:399-402, a SELF-VERIFYING " +
-    "PROBE row inserted, asserted against, then explicitly deleted at line 454 within the same migration — " +
-    "never a production write. The column is genuinely dead going forward; this is recorded rather than " +
-    "reported as a live readerless write.",
+  // mail_response_tracking.response_metadata left this list when m671 (applied live 2026-09-29)
+  // dropped the duplicate column; the survivor is direct_mail_responses.response_metadata.
 }
 
 // ─── EVIDENCE SINK ───────────────────────────────────────────────────────────

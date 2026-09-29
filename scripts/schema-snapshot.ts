@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-09-29
  * source: public.live_schema_json()
- * body-sha256: 760d1af51bf5e6eb22ebba5117724bb9bbb7dec09797ded0d1745bbbef65804f
+ * body-sha256: 19bd066e2fb8f1bd2234ffae13b6779a46a321acebddaac83daf97e94ceadc48
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -403,7 +403,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   live_agent_sessions: ["agent_id", "brokerage_id", "contact_id", "created_at", "did_agent_id", "ended_at", "id", "last_seen_at", "metadata", "minutes_billed", "provider", "started_at", "status", "surface"],
   local_news_sources: ["brokerage_id", "category", "created_at", "enabled", "id", "is_active", "market_name", "market_zip_codes", "name", "refresh_frequency", "updated_at", "url"],
   locations: ["address", "brokerage_id", "city", "created_at", "id", "managing_broker_assigned_at", "managing_broker_assigned_by", "managing_broker_user_id", "name", "state"],
-  mail_response_tracking: ["brokerage_id", "campaign_id", "contact_id", "created_at", "id", "lead_id", "response_metadata", "response_type"],
+  mail_response_tracking: ["brokerage_id", "campaign_id", "contact_id", "created_at", "id", "lead_id", "response_type"],
   mail_tracking: ["batch_id", "brokerage_id", "campaign_id", "created_at", "delivered_at", "id", "mailed_at", "provider_delivery_status", "returned_at", "tracking_payload"],
   managed_agent_sessions: ["anthropic_session_id", "brokerage_id", "created_at", "ended_at", "entity_id", "entity_type", "id", "last_agent_message", "last_event_at", "managed_agent_id", "status", "stop_reason"],
   managed_agents: ["agent_kind", "anthropic_agent_id", "anthropic_version", "archived_at", "brokerage_id", "config", "created_at", "id", "model", "system_prompt_hash", "updated_at"],
