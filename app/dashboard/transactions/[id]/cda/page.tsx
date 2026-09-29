@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect, notFound } from "next/navigation"
 import { TRANSACTION_STAGES } from "@/lib/transactions/transaction-stages"
+import { isBrokerageFinanceAdminGrantRole } from "@/lib/auth/resolve-user-role"
 import { CDAWorkflowClient } from "./cda-workflow-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
@@ -74,7 +75,13 @@ export default async function CDAPage({ params }: PageProps) {
 
   // Auth: owning agent OR broker/admin/TC in same brokerage
   const isOwningAgent = !!txnAgent?.user_id && txnAgent.user_id === user.id
-  const hasAdminAccess = ["broker", "admin", "tc", "compliance_officer"].includes(userType)
+  // Lane 89D: the ladder spelled `broker, admin` for the books seats — the
+  // broker OWNER (and broker_admin) could not open a CDA in their own
+  // brokerage. The books roster is BROKERAGE_FINANCE_ADMIN_USER_TYPES (§4);
+  // the coordinator and the compliance officer keep their explicit seats
+  // (m467 lets compliance READ the books).
+  const hasAdminAccess =
+    isBrokerageFinanceAdminGrantRole(userType) || ["tc", "compliance_officer"].includes(userType)
   if (!isOwningAgent && !hasAdminAccess) {
     redirect("/dashboard")
   }

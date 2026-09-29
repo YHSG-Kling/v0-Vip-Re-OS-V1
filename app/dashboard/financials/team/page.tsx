@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { resolveLedTeamId } from "@/lib/kernel/resolve-user-team"
+import { isBrokerageFinanceAdminGrantRole } from "@/lib/auth/resolve-user-role"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
@@ -77,7 +78,14 @@ export default async function TeamFinancialsPage() {
   const led = await resolveLedTeamId(supabase, user.id)
   const ledTeamId = led.ok ? led.teamId : null
 
-  if (!ledTeamId && !isSuperadmin && !["broker", "admin"].includes(userRole)) {
+  // Lane 89D: `["broker", "admin"].includes(userRole)` was two spellings of
+  // the brokerage-books roster — broker_owner and broker_admin (the seats that
+  // OWN the books) were bounced to their personal ledger. The books roster is
+  // BROKERAGE_FINANCE_ADMIN_USER_TYPES (§4: the tenant roster minus team_lead
+  // per m472 and minus compliance_officer); team leads keep their seat on the
+  // FACT (ledTeamId) exactly as before.
+  const isBrokerageBooksAdmin = isBrokerageFinanceAdminGrantRole(userRole)
+  if (!ledTeamId && !isSuperadmin && !isBrokerageBooksAdmin) {
     redirect("/dashboard/financials/agent")
   }
 
@@ -565,7 +573,7 @@ export default async function TeamFinancialsPage() {
                   return (
                     <tr key={agent.id} className="border-b hover:bg-muted/50">
                       <td className="py-3 px-2">
-                        {userRole === "broker" || userRole === "admin" ? (
+                        {isBrokerageBooksAdmin ? (
                           <Link
                             href={`/dashboard/financials/agent?agentId=${agent.id}`}
                             className="text-blue-600 hover:underline"

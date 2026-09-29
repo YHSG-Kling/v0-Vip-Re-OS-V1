@@ -7,6 +7,7 @@ import { loadQrCodesForCaller } from '@/app/actions/qr-management'
 // would be a second vocabulary that drifts the first time the CHECK changes.
 import { QR_PURPOSES } from '@/lib/marketing/tracked-qr'
 import QRCodesClient from './QRCodesClient'
+import { isAdminOrBroker } from '@/lib/auth/resolve-user-role'
 
 export default async function AgentQRCodesPage() {
   // Kernel OS identity, self-healing an incomplete account IN PLACE so a
@@ -16,7 +17,13 @@ export default async function AgentQRCodesPage() {
   if (!ctx.isAuthenticated) redirect('/login')
 
   const userRole = toCanonicalRoleOrDefault(ctx.userType, 'agent')
-  if (!['agent', 'team_lead', 'admin', 'broker', 'superadmin'].includes(userRole)) notFound()
+  // Lane 89D: the allow-list spelled `team_lead, admin, broker` (+ a dead
+  // 'superadmin' arm) — broker_owner, broker_admin and compliance_officer got a
+  // 404 on the QR board that the broker, admin and team-lead sidebars link
+  // ("scoped by the caller's role — the admin seat sees the whole brokerage's
+  // codes", navigation-config.ts). A producing agent, or any seat on the ONE
+  // roster; anything else (vendor, contact) stays a 404 as before.
+  if (userRole !== 'agent' && !isAdminOrBroker({ user_type: userRole })) notFound()
 
   // Heal genuinely couldn't complete (pending invite / non-agent) — honest in-place
   // notice, not a 404 or a bounce. Only the BROKERAGE is required to render the

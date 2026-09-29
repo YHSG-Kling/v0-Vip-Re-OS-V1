@@ -5,6 +5,8 @@ import { createClient } from "@/lib/supabase/server"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 import {
   Brain,
   Activity,
@@ -42,8 +44,18 @@ function relativeTime(dateStr: string): string {
 export default async function BrokerageIntelligencePage() {
   const context = await getAgentContext()
   if (!context?.brokerageId) redirect("/login")
-  if (context.userType !== "admin" && context.userType !== "broker" && context.userType !== "superadmin") {
-    redirect("/dashboard")
+  // Lane 89D: was `!== "admin" && !== "broker" && !== "superadmin"` — the
+  // third arm is dead (no live row stores user_type='superadmin', §4) and the
+  // first two miss broker_owner / broker_admin / compliance_officer, so the
+  // owner seat the broker and admin sidebars send here ("Intelligence Center")
+  // was bounced to /dashboard. ONE roster predicate; refusal stated in place.
+  if (!isAdminOrBroker({ user_type: context.userType })) {
+    return (
+      <RoleGateNotice
+        surface="The Intelligence Center"
+        audience="your broker, brokerage admins, team leads and compliance officer"
+      />
+    )
   }
 
   const { brokerageId } = context

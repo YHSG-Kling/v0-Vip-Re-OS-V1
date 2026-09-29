@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect, notFound } from "next/navigation"
+import { isBrokerageFinanceAdminGrantRole } from "@/lib/auth/resolve-user-role"
 import { TransactionDetailClient } from "./transaction-detail-client"
 import { ClosingWatchtowerSection } from "./closing-watchtower-section"
 import { MilestoneDeadlinesButton } from "./milestone-deadlines-button"
@@ -110,7 +111,15 @@ export default async function TransactionDetailPage({ params }: PageProps) {
   const { getAgentContext } = await import("@/lib/identity/get-agent-context")
   const identity = await getAgentContext()
   const isOwningAgent = !!identity.agentId && transaction.agent_id === identity.agentId
-  const hasAdminAccess = ["broker", "admin", "tc"].includes(userType)
+  // Lane 89D: `["broker", "admin", "tc"]` bounced the broker OWNER and
+  // broker_admin off any deal in their own brokerage, and the compliance
+  // officer the owner ruled must "see transactions" (navigation-config.ts,
+  // TRANSACTION_ITEMS). The brokerage-wide seats come from the books roster
+  // (BROKERAGE_FINANCE_ADMIN_USER_TYPES — deliberately NOT the operational
+  // roster: a team lead sees their team's board, not every deal); tc and
+  // compliance_officer keep explicit seats, as on the CDA page.
+  const hasAdminAccess =
+    isBrokerageFinanceAdminGrantRole(userType) || ["tc", "compliance_officer"].includes(userType)
   if (!isOwningAgent && !hasAdminAccess) {
     redirect("/dashboard")
   }

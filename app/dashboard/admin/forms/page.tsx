@@ -4,6 +4,8 @@ import { toCanonicalRoleOrDefault } from '@/lib/security'
 import { createClient } from '@/lib/supabase/server'
 import { CHECK_VOCABULARIES } from '@/scripts/check-vocabularies'
 import FormsManagerClient from './FormsManagerClient'
+import { isAdminOrBroker } from '@/lib/auth/resolve-user-role'
+import { RoleGateNotice } from '@/app/components/shared/role-gate-notice'
 
 // The "who fills this form" selector's options come from the SAME live
 // vocabulary the submit route's reader (app/api/forms/submit/route.ts Step 4b)
@@ -23,7 +25,19 @@ export default async function AdminFormsPage() {
   if (!ctx.isAuthenticated) redirect('/login')
 
   const userRole = toCanonicalRoleOrDefault(ctx.userType, 'agent')
-  if (!['admin', 'broker', 'superadmin'].includes(userRole)) redirect('/dashboard')
+  // Lane 89D: `['admin', 'broker', 'superadmin'].includes(userRole)` was two
+  // live spellings plus a dead arm (§4: no live row stores user_type='superadmin'),
+  // so a broker_owner / broker_admin / compliance_officer clicking "Forms
+  // Manager" in the admin sidebar was bounced to /dashboard without a word.
+  // ONE roster predicate; the refusal is stated in place.
+  if (!isAdminOrBroker({ user_type: userRole })) {
+    return (
+      <RoleGateNotice
+        surface="The Forms Manager"
+        audience="your broker, brokerage admins, team leads and compliance officer"
+      />
+    )
+  }
   if (!ctx.brokerageId) redirect('/dashboard/onboarding')
 
   const supabase = await createClient()

@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { ensureAgentContextInPlace } from '@/lib/identity/ensure-agent-context'
+import { isBrokerageFinanceAdminGrantRole } from '@/lib/auth/resolve-user-role'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -35,7 +36,11 @@ export default async function CommissionsPage() {
       </div>
     )
   }
-  const isBrokerAdmin = role === 'broker' || role === 'broker_admin' || role === 'admin' || role === 'superadmin'
+  // Lane 89D: was `broker || broker_admin || admin || superadmin` — a hand list
+  // that dropped broker_owner (the books' owner) and kept a dead 'superadmin'
+  // user_type arm (§4: platform staff live in platform_role, no live row stores
+  // it). ONE roster: BROKERAGE_FINANCE_ADMIN_USER_TYPES.
+  const isBrokerAdmin = isBrokerageFinanceAdminGrantRole(role)
 
   const currentYear = new Date().getFullYear()
 

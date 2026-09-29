@@ -4,6 +4,8 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 // Gated doors (session tenant) — the router module is server-only since 2026-09-03.
 import { getActiveSessions, getAgentMetrics } from "@/app/actions/coordination"
 import { CoordinationDashboardClient } from "./coordination-dashboard-client"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -22,9 +24,19 @@ export default async function CoordinationPage() {
   
   const { brokerageId, role } = await getAgentContext()
   
-  // Only brokers and admins can access coordination dashboard
-  if (role !== 'broker' && role !== 'admin') {
-    redirect("/dashboard")
+  // Tenant-admin surface. Lane 89D: this read `role !== 'broker' && role !==
+  // 'admin'` — two spellings out of the six-role roster (CLAUDE.md §4), so a
+  // broker_owner / broker_admin / compliance_officer who reached this page from
+  // the broker, admin and superadmin sidebars (all three link it) was bounced
+  // to /dashboard with no explanation. ONE roster predicate (isAdminOrBroker
+  // reads TENANT_ADMIN_USER_TYPES), and the refusal says so in place.
+  if (!isAdminOrBroker({ user_type: role })) {
+    return (
+      <RoleGateNotice
+        surface="AI Coordination"
+        audience="your broker, brokerage admins, team leads and compliance officer"
+      />
+    )
   }
   
   // Fetch initial data

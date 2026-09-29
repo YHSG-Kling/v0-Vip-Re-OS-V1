@@ -5,6 +5,8 @@ import { ProgressDashboard } from "@/app/components/features/education/ProgressD
 import { ClientLearningPanel } from "./client-learning-panel"
 import { redirect } from "next/navigation"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -29,8 +31,22 @@ export default async function EducationPage() {
     .eq("id", user?.id ?? "")
     .maybeSingle()
 
-  if (!profile?.brokerage_id || profile.user_type !== "admin") {
+  if (!profile?.brokerage_id) {
     redirect("/dashboard")
+  }
+  // Lane 89D: this gate read `user_type !== "admin"` — ONE spelling of the
+  // six-role roster. The BROKER sidebar links this page as "Education Library"
+  // (app/config/navigation-config.ts, broker block), so every broker, broker
+  // owner and compliance officer who clicked it was bounced to /dashboard
+  // without a word. ONE roster predicate (TENANT_ADMIN_USER_TYPES); the
+  // refusal for a plain agent is stated in place rather than bounced.
+  if (!isAdminOrBroker({ user_type: profile.user_type })) {
+    return (
+      <RoleGateNotice
+        surface="The Education Library"
+        audience="your broker, brokerage admins, team leads and compliance officer"
+      />
+    )
   }
 
   // Options for the Client Learning panel. Both reads are pinned to the caller's
