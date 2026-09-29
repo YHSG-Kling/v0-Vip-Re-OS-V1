@@ -98,7 +98,6 @@ import { narrationWindowBudget, narrationWindowSeconds } from "../lib/video/narr
 // that mirrored it now reads narrationWindowFrames / planCompositionDuration.
 import {
   COMPOSITION_DURATION_RULES, PURPOSE_DURATION_RULES, narrationWindowFrames, planCompositionDuration, purposeBudgetFor,
-  compositionOpensOnHook,
 } from "../lib/video/duration-model"
 import {
   MEMORY_VIDEO_COMPOSITION_ID, MEMORY_VIDEO_COVER_SECONDS, MEMORY_VIDEO_MAX_SECONDS, MEMORY_VIDEO_OUTRO_SECONDS, MEMORY_VIDEO_PURPOSE,
@@ -333,7 +332,7 @@ function checkWindow(r: Resolved, host: Host) {
       // 87D2: a HOOK-FIRST avatar host speaks from frame 0 by rule (its intro is
       // zero), so its declared window starts at 0; every other avatar host's
       // starts after its cover.
-      r.window.declared && (r.window.from > 0 || (compositionOpensOnHook(r.id) && r.window.from === 0)))
+      r.window.declared && (r.window.from > 0 || (COMPOSITION_DURATION_RULES[r.id]?.hookFirst === true && r.window.from === 0)))
     // WAVE 78 — DERIVED, not mirrored: [intro, total − outro) from the ONE
     // registry's bookends equals the composition's OWN window, at the cap AND
     // at a planned duration (a table could only ever say it at the cap).

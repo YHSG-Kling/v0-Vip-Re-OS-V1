@@ -43,7 +43,7 @@ import {
 } from "../lib/video/script-structure"
 import { cinemaCaptionStyle, cinemaLowerThirdPlacement } from "../lib/video/cinema-finish"
 import { safeInsets } from "../lib/video/body-visual-model"
-import { compositionBookends, compositionOpensOnHook, narrationStartFrame, HOOK_FIRST_MAX_SPEECH_ONSET_SECONDS } from "../lib/video/duration-model"
+import { COMPOSITION_DURATION_RULES, compositionBookends, compositionKeepsBrandIntro, narrationStartFrame, HOOK_FIRST_MAX_SPEECH_ONSET_SECONDS } from "../lib/video/duration-model"
 import { stitchedIntroCategory } from "../lib/remotion/render-decision"
 import { hookStingFrames } from "../lib/video/script-structure"
 import { renderApprovedVideoScript } from "../lib/video/render-from-approval"
@@ -263,7 +263,10 @@ function frame() {
 function hookFirst() {
   console.log("§hook-first — the talking head speaks from frame 0 (87D2)")
   check("the talking head is declared hook-first with a ZERO-frame cover; its narration starts at frame 0",
-    compositionOpensOnHook("AgentTalkingHeadReel") && compositionBookends("AgentTalkingHeadReel").introFrames === 0 && narrationStartFrame("AgentTalkingHeadReel") === 0)
+    // The flag off the table (wave 90 follow-up: compositionOpensOnHook is tombstoned) AND the
+    // stitch decision its successor makes from it — no brand intro in front of the hook.
+    COMPOSITION_DURATION_RULES.AgentTalkingHeadReel.hookFirst === true && !compositionKeepsBrandIntro("AgentTalkingHeadReel")
+    && compositionBookends("AgentTalkingHeadReel").introFrames === 0 && narrationStartFrame("AgentTalkingHeadReel") === 0)
   check(`the rule's own number: the first word within ${HOOK_FIRST_MAX_SPEECH_ONSET_SECONDS}s (narration start / fps)`, narrationStartFrame("AgentTalkingHeadReel") / 30 <= HOOK_FIRST_MAX_SPEECH_ONSET_SECONDS)
   const row = (id: string) => ({ composition_id: id, stock_intro_category: "brand_intro" })
   check("NO brand intro clip is stitched in front of a hook-first film (the live row's brand_intro is dropped; the outro stands)", stitchedIntroCategory(row("AgentTalkingHeadReel")) === null)

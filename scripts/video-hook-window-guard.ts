@@ -51,7 +51,7 @@ import { blankStrings, stripComments } from "./strip-comments"
 import { VIDEO_COMPOSITION_FILES } from "./composition-segments"
 import {
   COMPOSITION_DURATION_RULES, HOOK_ON_COVER_MAX_SECONDS, PURPOSE_DURATION_RULES, SEATED_PURPOSES,
-  compositionKeepsBrandIntro, compositionOpensOnHook, movingCompositionIds, narrationStartFrame, purposeOpensOnHook,
+  compositionKeepsBrandIntro, movingCompositionIds, narrationStartFrame, purposeOpensOnHook,
   type VideoPurpose,
 } from "../lib/video/duration-model"
 import { stitchedIntroCategory } from "../lib/remotion/render-decision"
@@ -113,7 +113,7 @@ console.log(`\n── §cover · a scroll-format cover that delays the first wor
   const moving = movingCompositionIds().filter((id) => !!COMPOSITION_DURATION_RULES[id] && COMPOSITION_DURATION_RULES[id].bodyMode === "narration")
   const delayed = moving.filter((id) => purposeOpensOnHook(COMPOSITION_DURATION_RULES[id].purpose) && narrationStartFrame(id) > 0)
   const fromZero = moving.filter((id) => purposeOpensOnHook(COMPOSITION_DURATION_RULES[id].purpose) && narrationStartFrame(id) === 0)
-  console.log(`  · ${delayed.length} scroll-format compositions delay the first word to their cover's end; ${fromZero.length} narrate from frame 0 (${fromZero.length && compositionOpensOnHook(fromZero[0]) ? "incl. the hook-first talking head" : ""})`)
+  console.log(`  · ${delayed.length} scroll-format compositions delay the first word to their cover's end; ${fromZero.length} narrate from frame 0 (${fromZero.some((id) => COMPOSITION_DURATION_RULES[id]?.hookFirst === true) ? "incl. the hook-first talking head" : ""})`)
   check("the delayed set is non-empty (the PiP family is the case this rule exists for)", delayed.length > 0)
   for (const id of delayed) {
     const fps = geometryFor(id)?.fps ?? 30

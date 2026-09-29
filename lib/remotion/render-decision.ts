@@ -61,7 +61,8 @@ export function shouldApplyBookends(composition: RemotionCompositionRow): boolea
 /**
  * THE STOCK CATEGORY STITCHED IN FRONT OF THE FILM (wave 87, lane 87D2 — owner:
  * "hook first"). A hook-first composition (lib/video/duration-model.ts
- * compositionOpensOnHook) never gets a brand_intro clip before its first word:
+ * COMPOSITION_DURATION_RULES `hookFirst`, read through compositionKeepsBrandIntro)
+ * never gets a brand_intro clip before its first word:
  * the live registry row carries stock_intro_category 'brand_intro' for the
  * talking head, which put up to MAX_BRAND_BOOKEND_SECONDS + a dissolve of sting
  * in front of the hook. The brand moves to the END (the outro category is

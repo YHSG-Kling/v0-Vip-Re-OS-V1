@@ -725,7 +725,8 @@ export function onScreenCopyFromScript(script: string, title: string | null | un
 // spoken words of a hook-first film (wave 87, lane 87D2 — owner: "hook first").
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// A hook-first composition (lib/video/duration-model.ts compositionOpensOnHook)
+// A hook-first composition (lib/video/duration-model.ts COMPOSITION_DURATION_RULES
+// `hookFirst`, read by compositionKeepsBrandIntro)
 // has no cover card: the presenter speaks from frame 0 and the brand sting sits
 // over the hook. The sting must last exactly as long as the HOOK is being said
 // — too short and the headline flashes, too long and it covers the value beat

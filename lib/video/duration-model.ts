@@ -382,7 +382,7 @@ export const COMPOSITION_DURATION_RULES: Record<string, CompositionDurationSpec>
   // words inside the body (remotion/AgentTalkingHeadReel.tsx, timed from the
   // real narration by hookStingFrames), the brand's own card moves to the end
   // (the outro tile + the logo_outro stitch), and no brand_intro clip is
-  // stitched in front (compositionOpensOnHook → render-decision.ts
+  // stitched in front (compositionKeepsBrandIntro → render-decision.ts
   // stitchedIntroCategory). Speech starts at frame 0.
   AgentTalkingHeadReel:  { purpose: "welcome", alsoServes: ["seller_update"], host: "avatar", introFrames: 0, outroFrames: 60, bodyMode: "narration", hookFirst: true },
   // WAVE 89 (lane 89F — 87D2's open item: "other avatar-host compositions still
@@ -442,10 +442,15 @@ export function compositionDurationSpec(compositionId: string): CompositionDurat
 /** A hook-first film's first spoken word lands inside this many seconds (owner: hook first). */
 export const HOOK_FIRST_MAX_SPEECH_ONSET_SECONDS = 0.5
 
-/** Does this composition open on its hook (no cover card, no stitched brand intro)? PURE. */
-export function compositionOpensOnHook(compositionId: string | null | undefined): boolean {
-  return !!compositionId && COMPOSITION_DURATION_RULES[compositionId]?.hookFirst === true
-}
+// TOMBSTONE (wave 90 follow-up, CLAUDE.md §1.3 — the orphan-exports census,
+// category A): `compositionOpensOnHook(id)` stood here as a one-line accessor
+// over `COMPOSITION_DURATION_RULES[id].hookFirst`. Its production reader
+// (render-decision.ts stitchedIntroCategory) was superseded in wave 89 by
+// `compositionKeepsBrandIntro` below (lib/video/duration-model.ts:492), which
+// answers the SAME question by purpose AND by the hookFirst flag; the three
+// proofs that still named it (video-hook-window, render-from-approval,
+// video-type-matrix) now read the flag off the table directly, the same shape
+// the `purposeRule` tombstone above records. Nothing was lost: the flag is data.
 
 /**
  * WAVE 89 (lane 89F) — THE HOOK WINDOW, by PURPOSE. A SCROLL format (a reel

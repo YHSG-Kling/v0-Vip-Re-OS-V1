@@ -147,7 +147,7 @@
     "lib/enrichment/web-mention-search.ts": 2,
     "lib/external/apify-actors.ts": 1,
     "lib/external/arcgis-permits.ts": 8,
-    "lib/external/batchdata-client.ts": 7,
+    "lib/external/batchdata-client.ts": 10,
     "lib/external/batchdata-seller-signals.ts": 16,
     "lib/external/exa-client.ts": 2,
     "lib/external/nextdoor-extract.ts": 1,
@@ -440,6 +440,7 @@
     "lib/remotion/chromium-executable.ts": 2,
     "lib/remotion/code-revision.ts": 3,
     "lib/remotion/composition-cache.ts": 1,
+    "lib/remotion/content-contract.ts": 1,
     "lib/remotion/voiceover-mixer.ts": 2,
     "lib/security/oauth-refresh.ts": 2,
     "lib/security/secret-crypto.ts": 1,
@@ -511,7 +512,7 @@
     "remotion/components/QrOutroBadge.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10400,
+  "census": 10412,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2167,7 +2168,7 @@
     "app/dashboard/isa/components/isa-engagement-status-sheet.tsx": 1,
     "app/dashboard/isa/components/isa-lead-queue-panel.tsx": 1,
     "app/dashboard/isa/components/qualification-os.tsx": 6,
-    "app/dashboard/isa/components/speed-to-lead-panel.tsx": 1,
+    "app/dashboard/isa/components/speed-to-lead-panel.tsx": 2,
     "app/dashboard/jobs/jobs-client.tsx": 1,
     "app/dashboard/listings/[id]/cma/cma-client.tsx": 1,
     "app/dashboard/listings/[id]/cma/tabs/cma-report-tab.tsx": 1,
@@ -2805,7 +2806,7 @@
     "lib/ai-isa/brand-voice-prompt.ts": 2,
     "lib/ai-isa/build-call-context.ts": 1,
     "lib/ai-isa/buyer-intent-router.ts": 1,
-    "lib/ai-isa/callback-task.ts": 7,
+    "lib/ai-isa/callback-task.ts": 8,
     "lib/ai-isa/capability-catalogue.ts": 6,
     "lib/ai-isa/cold-contact-escalation.ts": 1,
     "lib/ai-isa/contact-channel-policy.ts": 2,
@@ -2853,7 +2854,7 @@
     "lib/ai-isa/showing-cancellation-followup.ts": 1,
     "lib/ai-isa/situational-portal-message.ts": 1,
     "lib/ai-isa/situational-voicemail.ts": 1,
-    "lib/ai-isa/speed-to-lead-policy.ts": 2,
+    "lib/ai-isa/speed-to-lead-policy.ts": 3,
     "lib/ai-isa/speed-to-lead.ts": 1,
     "lib/ai-isa/stale-contact-detector.ts": 2,
     "lib/ai-isa/tools.ts": 1,
@@ -3258,12 +3259,12 @@
     "lib/external/arcgis-permits.ts": 9,
     "lib/external/batchdata-ai-tools.ts": 1,
     "lib/external/batchdata-batchrank.ts": 1,
-    "lib/external/batchdata-client.ts": 31,
+    "lib/external/batchdata-client.ts": 34,
     "lib/external/batchdata-mcp.ts": 12,
     "lib/external/batchdata-seller-signals.ts": 20,
     "lib/external/batchdata-tokens.ts": 1,
     "lib/external/census-appreciation.ts": 4,
-    "lib/external/email-verifier.ts": 3,
+    "lib/external/email-verifier.ts": 4,
     "lib/external/exa-client.ts": 3,
     "lib/external/exa-intent-normalizer.ts": 1,
     "lib/external/free-probe.ts": 3,
@@ -4061,7 +4062,7 @@
     "lib/portal/client-action-dispatch.ts": 1,
     "lib/portal/client-action-router.ts": 2,
     "lib/portal/climate.ts": 2,
-    "lib/portal/home-assistant.ts": 4,
+    "lib/portal/home-assistant.ts": 7,
     "lib/portal/home-maintenance.ts": 3,
     "lib/portal/home-wealth.ts": 1,
     "lib/portal/journey-event-handlers.ts": 3,
@@ -4178,7 +4179,7 @@
     "lib/remotion/code-revision.ts": 4,
     "lib/remotion/composition-cache.ts": 9,
     "lib/remotion/composition-geometry.ts": 2,
-    "lib/remotion/content-contract.ts": 7,
+    "lib/remotion/content-contract.ts": 8,
     "lib/remotion/media-host.ts": 1,
     "lib/remotion/music-filter-graph.ts": 9,
     "lib/remotion/music-mixer.ts": 2,
@@ -4369,7 +4370,7 @@
     "lib/video/broll-url.ts": 1,
     "lib/video/caption-plan.ts": 7,
     "lib/video/chapter-video-generator.ts": 1,
-    "lib/video/cinema-finish.ts": 20,
+    "lib/video/cinema-finish.ts": 21,
     "lib/video/cma-reel-orchestrator.ts": 1,
     "lib/video/commission-situation.ts": 1,
     "lib/video/composite-attribution.ts": 6,
@@ -11709,6 +11710,7 @@
       "RetrainingSignalsPanel"
     ],
     "app/dashboard/isa/components/speed-to-lead-panel.tsx": [
+      "IsaProofNumbersStrip",
       "SpeedToLeadPanel"
     ],
     "app/dashboard/jobs/jobs-client.tsx": [
@@ -13882,6 +13884,7 @@
       "regexParseCallbackPhrase",
       "resolveCallbackDueDate",
       "createCallbackTask",
+      "handOffAbandonedCallback",
       "detectCallbackRequest"
     ],
     "lib/ai-isa/capability-catalogue.ts": [
@@ -14146,7 +14149,8 @@
     ],
     "lib/ai-isa/speed-to-lead-policy.ts": [
       "firstTouchDecision",
-      "summarizeFirstTouchLatency"
+      "summarizeFirstTouchLatency",
+      "summarizeIsaProofNumbers"
     ],
     "lib/ai-isa/speed-to-lead.ts": [
       "runSpeedToLead"
@@ -16303,6 +16307,9 @@
       "ownerContactPointsFromRow",
       "normalizeBatchDataProperty",
       "dateWindowCriteria",
+      "isListingStatusTrigger",
+      "listingStatusDate",
+      "withinListingStatusWindow",
       "buildPropertySearchBody",
       "fetchMotivatedSellers",
       "searchProperties",
@@ -16372,6 +16379,7 @@
       "fetchCensusAppreciation"
     ],
     "lib/external/email-verifier.ts": [
+      "isAutomatedLocalPart",
       "checkEmailSyntax",
       "checkEmailMx",
       "verifyEmailDeep"
@@ -20615,6 +20623,9 @@
       "validateHomeQuestion",
       "buildHomeFactsBlock",
       "buildHomeAssistantSystemPrompt",
+      "classifyHomeFollowUp",
+      "vendorCategoryFor",
+      "followUpAcknowledgement",
       "fallbackHomeAnswer"
     ],
     "lib/portal/home-maintenance.ts": [
@@ -21177,7 +21188,8 @@
       "contentContractError",
       "consumesVoiceover",
       "stagesVoiceover",
-      "stagesSpeech"
+      "stagesSpeech",
+      "stagesChapteredSpeech"
     ],
     "lib/remotion/media-host.ts": [
       "hostRenderedMedia"
@@ -22080,6 +22092,7 @@
       "cinemaLowerThirdPlacement",
       "cinemaDisclosureStyle",
       "cinemaBadgeSlot",
+      "cinemaSlideFooterStack",
       "cinemaMusicFades"
     ],
     "lib/video/cma-reel-orchestrator.ts": [
