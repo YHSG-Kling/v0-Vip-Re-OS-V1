@@ -23,6 +23,12 @@
  *   C3  EXA AS A LEAD SOURCE — every population per territory, produced (not just declared), the
  *       map-level intent no longer labels a seller record 'buyer', list-price cost fallback.
  *   C4  FSBO MARKETPLACE LANE — the cheaper FSBO population (Apify) in every registry, opt-in.
+ *   C6  (lane 90B) NOREPLY COST LEAK — THE gate's email rule (leadEmailProblem, whose automated-mailbox
+ *       arm is email-verifier.ts::isAutomatedLocalPart: exact / collapsed / token-wise) is applied by the
+ *       unknown-sender prefilter BEFORE the classifier and by processRawRecord BEFORE dedup + PeopleData;
+ *       `esignature-noreply@` and friends no longer buy a classification or a PDL match.
+ *   C7  (lane 90B) SOURCE COST LEDGER — leads.cost_per_record is WRITTEN at promotion (both doors); the
+ *       chain raw → lead → contact → person-timeline is closed; every paid cron source stamps its cost.
  *   C5  registration.
  */
 import { readFileSync } from "fs"
@@ -47,6 +53,18 @@ import { normalizeFsboSiteListing, sourceFsboSiteListings } from "../lib/lead-pi
 import { scrapeFsboSiteListings } from "../lib/external/apify-client"
 import { ACTOR_REGISTRY } from "../lib/external/apify-actors"
 import { stateNameFromCode } from "../lib/constants/us-states"
+// Lane 90B — C6 (the noreply cost leak) + C7 (the cost hop raw → lead → contact).
+import { AUTOMATED_LOCAL_PARTS, isAutomatedLocalPart } from "../lib/external/email-verifier"
+import { leadEmailProblem } from "../lib/lead-pipeline/canonical-lead-eligibility"
+// unknown-sender-identification.ts imports "server-only" (throws outside a Server Component): the
+// require-cache shim scripts/lead-email-conversion-simulator.ts uses, then a RUNTIME import in C6 —
+// only the pure prefilter is called (no model, no network, no DB).
+import { createRequire } from "node:module"
+const _require = createRequire(import.meta.url)
+try {
+  const soPath = _require.resolve("server-only")
+  _require.cache[soPath] = { id: soPath, filename: soPath, loaded: true, exports: {} } as any
+} catch { /* server-only not resolvable — nothing to shim */ }
 
 let passed = 0
 let failed = 0
@@ -250,6 +268,89 @@ console.log("\n[C4 · FSBO MARKETPLACE — the cheaper FSBO population, opt-in, 
   const gateAt = route.indexOf('enabledSources.has("fsbo_site_listing")')
   check("the cron gates it INSIDE the resolved-territory loop and writes its channel with the batch cost", gateAt > loopAt && loopAt > 0 && /await insertSocial\(records, "fsbo_site_listing", "social_intent", cost\)/.test(route) && /sourceFsboSiteListings\(\{ city: market\.city, state: market\.state, stateName: stateNameFromCode\(market\.state\) \}\)/.test(route))
   check("the social block's enable set includes it (a market that opts in only to this lane still runs the block)", /enabledSources\.has\("fsbo_site_listing"\)\s*\n/.test(route.slice(route.indexOf("const socialSourcesEnabled ="), route.indexOf("if (socialSourcesEnabled)"))))
+}
+
+// ── C6 · lane 90B — the automated-mailbox rule runs BEFORE any spend, in ONE place ───────────────
+console.log("\n[C6 · NOREPLY COST LEAK — THE gate's email rule is applied before the classifier and before PeopleData]")
+{
+  // The base rule matched the local part EXACTLY — this inline copy of it is the positive control
+  // (it must still miss what the rule now catches).
+  const baseExactRule = (email: string) => AUTOMATED_LOCAL_PARTS.has(email.split("@")[0].toLowerCase())
+  const leaks = ["esignature-noreply@google.com", "noreply-dmarc@x.io", "notifications-noreply@bank.example", "no_reply@x.io", "noreply+abc123@shop.example", "bounces.jane@x.io"]
+  check("isAutomatedLocalPart catches exact / separator-collapsed / token-wise automated parts (6 shapes the base rule passed)",
+    leaks.every((e) => isAutomatedLocalPart(e.split("@")[0])) && leaks.every((e) => leadEmailProblem(e) === "automated_mailbox"), leaks.filter((e) => leadEmailProblem(e) !== "automated_mailbox").join(","))
+  check("POSITIVE CONTROL: the base exact-match rule misses every one of them (the leak lane 89E §7 named)", leaks.every((e) => !baseExactRule(e)) && baseExactRule("noreply@x.io"))
+  check("…and real people still pass: jane.doe@, j-p.smith@, info@ (role), maria_gonzalez+home@", ["jane.doe@gmail.com", "j-p.smith@x.io", "info@smithhomes.com", "maria_gonzalez+home@x.io"].every((e) => leadEmailProblem(e) === null))
+  // The unknown-sender PREFILTER calls THE rule (no second syntax/automated test of its own).
+  const { preFilterAutomatedSender } = await import("../lib/lead-pipeline/unknown-sender-identification")
+  const pre = preFilterAutomatedSender({ fromEmail: "esignature-noreply@google.com" })
+  check("preFilterAutomatedSender drops esignature-noreply@google.com as automated_local_part BEFORE any model call (was: passed to the classifier + PDL)", pre.isAutomated && pre.reason === "automated_local_part")
+  check("…and a disposable mailbox (mailinator) is dropped up front as disposable_domain; invalid syntax still reads invalid_syntax; a person passes",
+    preFilterAutomatedSender({ fromEmail: "x@mailinator.com" }).reason === "disposable_domain" && preFilterAutomatedSender({ fromEmail: "jane@gmail" }).reason === "invalid_syntax" && !preFilterAutomatedSender({ fromEmail: "jane.doe@gmail.com" }).isAutomated)
+  const unknownMod = stripped("lib/lead-pipeline/unknown-sender-identification.ts")
+  const preAt = unknownMod.indexOf("export function preFilterAutomatedSender(")
+  const preBody = unknownMod.slice(preAt, unknownMod.indexOf("return { isAutomated: false, reason: null }", preAt))
+  check("the prefilter's syntax/disposable/automated verdict IS leadEmailProblem (one call), with no file-local EMAIL_RE or AUTOMATED_LOCAL_PARTS.has test left",
+    /const problem = leadEmailProblem\(email\)/.test(preBody) && !/EMAIL_RE\.test/.test(preBody) && !/AUTOMATED_LOCAL_PARTS\.has/.test(preBody))
+  const orchAt = unknownMod.indexOf("export async function identifyAndRouteUnknownSender(")
+  const preCall = unknownMod.indexOf("preFilterAutomatedSender(", orchAt)
+  const classifyCall = unknownMod.indexOf("classifyUnknownSenderIntent", orchAt)
+  const landCall = unknownMod.indexOf("landUnknownSenderRaw)(", orchAt)
+  check("order inside identifyAndRouteUnknownSender: prefilter → classifier → raw landing (enrichment) — the rejection sits before both spends", orchAt > 0 && preCall > orchAt && classifyCall > preCall && landCall > classifyCall)
+  // The RAW pipeline (every scraped source) applies the same rule to its enrichment anchor.
+  const pp = stripped("lib/lead-pipeline/pipeline-processor.ts")
+  const fnAt = pp.indexOf("export async function processRawRecord(")
+  const usableAt = pp.indexOf("const usableEmail        = emailProblem === null ? email : null", fnAt)
+  const enrichAt = pp.indexOf("await enrichWithPeopleData(", fnAt)
+  const dedupAt = pp.indexOf("const preEnrichLookup =", fnAt)
+  check("processRawRecord decides usableEmail = leadEmailProblem(email) === null BEFORE the pre-enrich dedup and BEFORE enrichWithPeopleData",
+    usableAt > fnAt && dedupAt > usableAt && enrichAt > dedupAt)
+  check("…the anchor, the dedup lookup and the enrichment call read usableEmail; the promotion gate still sees the raw address (`enriched.email ?? email`) so its reason stays honest",
+    /const hasEmail\s*=\s*!!usableEmail\?\.trim\(\)/.test(pp) && /const preEnrichLookup = \{ first_name: firstName, last_name: lastName, email: usableEmail, phone \}/.test(pp)
+    && /first_name: firstName, last_name: lastName, email: usableEmail, phone, city, state,/.test(pp) && /email:\s*enriched\.email \?\? email,/.test(pp))
+  check("POSITIVE CONTROL: the finder flags the old shape (email handed straight to enrichment)", /email, phone, city, state,/.test(`first_name: firstName, last_name: lastName, email, phone, city, state,`) && !/email: usableEmail/.test(`email, phone, city, state,`))
+}
+
+// ── C7 · lane 90B — the platform cost follows the person raw → lead → contact ────────────────────
+console.log("\n[C7 · SOURCE COST LEDGER — cost_per_record is written at EVERY hop, and lead intelligence reads it]")
+{
+  const pp = stripped("lib/lead-pipeline/pipeline-processor.ts")
+  const promoter = stripped("lib/lead-promotion/lead-promoter.ts")
+  const leadInsertAt = pp.indexOf(".from('leads')\n    .insert({")
+  const leadInsert = pp.slice(leadInsertAt, pp.indexOf(".select()", leadInsertAt))
+  check("pipeline-processor's lead insert carries cost_per_record from the raw row (the writerless hop: the column was read by contact-creator + person-timeline and written by nobody)",
+    leadInsertAt > 0 && /cost_per_record:\s*rec\.cost_per_record \?\? null/.test(leadInsert))
+  check("lead-promoter (the hand-promotion door) selects and inserts it too (parity)", /first_name, last_name, email, phone, cost_per_record'\)/.test(promoter) && /cost_per_record:\s*\(rawRecord as any\)\?\.cost_per_record/.test(promoter))
+  check("POSITIVE CONTROL: an insert without the column is flagged by the same finder", !/cost_per_record:\s*rec\.cost_per_record/.test(`.from('leads').insert({ source: rec.source, raw_record_id: rawRecordId })`))
+  const kernel = stripped("lib/kernel/scraping.ts")
+  const contactCreator = stripped("lib/contact-promotion/contact-creator.ts")
+  const timeline = stripped("lib/lead-intelligence/person-timeline.ts")
+  check("the chain is closed: raw (ingestRawSourceBatch stamps cost_per_record) → lead (above) → contact (contact-creator carries data.lead.cost_per_record) → lead intelligence (person-timeline reads raw + lead cost_per_record and the vendor ledger)",
+    /cost_per_record:\s*costPerRecord/.test(kernel) && /cost_per_record:\s*data\.lead\.cost_per_record \?\? null/.test(contactCreator)
+    && /cost_per_record, acquisition_cost, raw_record_id/.test(timeline) && /costPerRecord: r\.cost_per_record \?\? null/.test(timeline) && /platformPaidAcquisitionCost/.test(timeline))
+  // Every cron source's spend is stamped per record — the same finder the coverage guard uses (L5), re-run
+  // here so the two proofs cannot drift: a paid cron source whose write carries `batchCostUsd: null` is a gap.
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const carriesCost = (ch: string) => {
+    const c = esc(ch)
+    const ins = new RegExp(`insertSocial\\(\\s*[\\w.]+\\s*,\\s*${c}\\s*,\\s*"[a-z_]+"\\s*,\\s*([^,)]+)`).exec(route)
+    if (ins) return ins[1].trim() !== "null"
+    const at = route.search(new RegExp(`sourceChannel:\\s*${c}\\s*[,}]`))
+    if (at < 0) return false
+    const m = /batchCostUsd:\s*([^,\n]+)/.exec(route.slice(at, route.indexOf("})", at)))
+    return !!m && m[1].trim() !== "null"
+  }
+  const paidCron = KEYS.filter((k) => SOURCE_VENDOR[k] !== "internal" && SOURCE_ACQUISITION[k].entry === "lead_scraping_cron" && SOURCE_ACQUISITION[k].routeChannel)
+  const costless = paidCron.filter((k) => !carriesCost(SOURCE_ACQUISITION[k].routeChannel!))
+  check(`every paid cron source stamps its batch cost per raw row (${paidCron.length - costless.length}/${paidCron.length})`, costless.length === 0, costless.join(","))
+  check("the BatchData pulls keep the pull's FULL cost when the listing-status window drops stale rows (billed rows are booked; the ledger never under-reports)", /cost: r\.cost, staleDropped: r\.records\.length - fresh\.length/.test(stripped("lib/external/batchdata-client.ts")))
+  console.log("\n  SOURCE MATRIX (source · territory · dedup · enrichment · cost/record · scheduled) — derived from the registries")
+  for (const k of KEYS) {
+    const a = SOURCE_ACQUISITION[k]
+    const territory = a.entry === "lead_scraping_cron" ? "cron-loop" : a.entry === "batchdata_push" ? "push-match" : a.entry === "intent_campaign" ? "own-territory" : "own-mailbox"
+    const enrich = SOURCE_PAID_PERSON_DATA[k] ? "vendor_delivered" : "peopledata"
+    console.log(`    ${k.padEnd(28)} ${territory.padEnd(13)} ${(a.routeChannel === null && SOURCE_VENDOR[k] === "internal" && a.entry === "lead_scraping_cron" ? "signal-only" : "raw+lead+contact").padEnd(17)} ${enrich.padEnd(17)} ${(SOURCE_VENDOR[k] === "internal" ? "$0" : "stamped").padEnd(8)} ${a.entry === "lead_scraping_cron" || a.entry === "intent_campaign" ? "dispatcher" : "event"}`)
+  }
 }
 
 // ── C5 · registration ────────────────────────────────────────────────────────

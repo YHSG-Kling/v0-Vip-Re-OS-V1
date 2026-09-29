@@ -590,12 +590,19 @@ export async function GET(request: Request) {
             // ledger row), so a BatchData lead's cost-per-lead read $0 and the wallet reconcile's
             // estimate for 'batchdata' never included the platform's biggest scrape.
             const motivatedPulls = await Promise.all(motivatedTriggers.map((t) => batchdata.getMotivatedSellerDataWithCost(location, [t], pullWindow)))
+            // Lane 90B — the expired pull carries the same window: BatchData publishes no request-side
+            // filter on a listing's STATUS date, so the wrapper gates the rows client-side on
+            // listing.statusUpdatedAt (withinListingStatusWindow) after the pull.
             const expiredPull = enabledSources.has("expired_listing")
-              ? await batchdata.getMotivatedSellerDataWithCost(location, ["expired"])
+              ? await batchdata.getMotivatedSellerDataWithCost(location, ["expired"], pullWindow)
               : { records: [], cost: 0 }
             motivatedCostUsd = motivatedPulls.reduce((sum, r) => sum + (r.cost ?? 0), 0)
             expiredCostUsd = expiredPull.cost ?? 0
             const rawSellers = [...motivatedPulls.flatMap((r) => r.records), ...expiredPull.records]
+            // Lane 90B — rows the listing-status window dropped AFTER the pull (still billed — the
+            // count that moved is published, never hidden inside `sourceItemsFound`).
+            const staleDropped = [...motivatedPulls, expiredPull].reduce((sum, r) => sum + (r.staleDropped ?? 0), 0)
+            if (staleDropped > 0) console.log(`[Lead Scraping Cron] BatchData ${market.name}: ${staleDropped} expired/canceled/failed rows older than the ${pullWindow.lookbackDays}-day window dropped after the pull (billed, not ingested)`)
             // Normalize to canonical shape and filter by viability gate
             const sellers = rawSellers
               .map((r) => normalizeBatchDataRecord(r as Record<string, unknown>, market))

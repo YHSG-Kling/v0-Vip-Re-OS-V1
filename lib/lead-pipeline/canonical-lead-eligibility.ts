@@ -29,7 +29,11 @@
  *   · disposable domain (Mailinator, 10minutemail, …) → NOT an anchor (it expires in hours; the
  *     ISA's later touches would bounce);
  *   · automated mailbox (noreply@, mailer-daemon@, donotreply@, notifications@ …,
- *     AUTOMATED_LOCAL_PARTS) → NOT an anchor (no human reads it);
+ *     AUTOMATED_LOCAL_PARTS, read by email-verifier.ts::isAutomatedLocalPart — exact OR any
+ *     `. _ - +` token, so `esignature-noreply@` counts too, lane 90B) → NOT an anchor (no human
+ *     reads it). This same function is the unknown-sender PREFILTER's rule and the raw pipeline's
+ *     enrichment-anchor rule (pipeline-processor.ts), so an automated address is refused BEFORE
+ *     any classifier or PeopleData spend, not only at this gate after it;
  *   · ROLE address (info@, sales@, office@, contact@, hello@, team@ …) → COUNTS. A shared inbox is
  *     frequently a real person's only address (the owner-operator's info@theirname.com); refusing it
  *     would refuse real people. Role-ness is a deliverability FLAG downstream, not an identity test.
@@ -104,7 +108,7 @@
  * This module does no I/O — its one import is email-verifier.ts's pure vocabulary — so the
  * plain-`tsx` proofs call it directly.
  */
-import { checkEmailSyntax, AUTOMATED_LOCAL_PARTS } from "@/lib/external/email-verifier"
+import { checkEmailSyntax, isAutomatedLocalPart } from "@/lib/external/email-verifier"
 
 export interface LeadCandidate {
   first_name?: string | null
@@ -126,7 +130,10 @@ export function leadEmailProblem(email: string | null | undefined): LeadEmailPro
   if (!e) return "missing"
   const verdict = checkEmailSyntax(e)
   if (!verdict.verified) return verdict.isDisposable ? "disposable_domain" : "invalid_syntax"
-  if (AUTOMATED_LOCAL_PARTS.has(e.split("@")[0])) return "automated_mailbox"
+  // Lane 90B — the ONE automated-mailbox rule (email-verifier.ts::isAutomatedLocalPart): exact,
+  // separator-collapsed and token-wise, so `esignature-noreply@` is refused here AND at the unknown-
+  // sender prefilter, which now calls THIS function instead of re-testing the vocabulary itself.
+  if (isAutomatedLocalPart(e.split("@")[0])) return "automated_mailbox"
   return null
 }
 

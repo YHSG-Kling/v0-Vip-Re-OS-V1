@@ -34,7 +34,7 @@
 import { readFileSync, existsSync } from "fs"
 import { stripComments, blankStrings } from "./strip-comments"
 import {
-  ALL_SOURCE_KEYS, SOURCE_VENDOR, expandEnabledSources, vendorForSource, resolveSourceKey, type SourceKey,
+  ALL_SOURCE_KEYS, SOURCE_VENDOR, SOURCE_PAID_PERSON_DATA, expandEnabledSources, vendorForSource, resolveSourceKey, type SourceKey,
 } from "../lib/lead-pipeline/source-intent-map"
 import { SOURCE_ACQUISITION, acquisitionIntentLabel, OWNER_REQUIRED_INTENTS, recordAcquisitionIntents, type AcquisitionIntent } from "../lib/lead-pipeline/acquisition-coverage"
 import { parseSellerChatter, parseContactAgentChatter } from "../lib/lead-pipeline/scraper-parsers"
@@ -83,8 +83,20 @@ check("runtime reader: acquisitionIntentLabel renders the populations (markets p
   acquisitionIntentLabel("facebook_marketplace").split(" · ").length === SOURCE_ACQUISITION.facebook_marketplace.intents.length && acquisitionIntentLabel("reddit_relocation") === "relocators · agent-seekers")
 check("the markets panel reads acquisitionIntentLabel", /acquisitionIntentLabel\(key\)/.test(code("app/dashboard/admin/markets/markets-client.tsx")))
 
-console.log("\n  COVERAGE MATRIX (source · populations · vendor · door)")
-for (const k of KEYS) console.log(`    ${k.padEnd(28)} ${SOURCE_ACQUISITION[k].intents.join("/").padEnd(40)} ${SOURCE_VENDOR[k].padEnd(10)} ${SOURCE_ACQUISITION[k].entry}`)
+// Lane 90B — the matrix the owner asked for (source × territory-scoped × dedup × enrichment path × cost
+// stamped × wired to cron), every column DERIVED from the same registries the checks below assert on.
+// dedup = every door writes through ingestRawSourceBatch (raw/lead/contact at write) and processRawRecord
+// (pre + post enrichment); enrichment = PeopleData unless SOURCE_PAID_PERSON_DATA says the vendor sold the
+// person (then vendor_delivered, PDL skipped); internal ($0) lanes never enrich a person they already own.
+console.log("\n  COVERAGE MATRIX (source · populations · vendor · door · territory · dedup · enrichment · cost/record · scheduled)")
+for (const k of KEYS) {
+  const a = SOURCE_ACQUISITION[k]
+  const territory = a.entry === "lead_scraping_cron" ? "cron-loop" : a.entry === "batchdata_push" ? "push-match" : a.entry === "intent_campaign" ? "own-territory" : "own-mailbox"
+  const dedup = a.routeChannel === null && SOURCE_VENDOR[k] === "internal" && a.entry === "lead_scraping_cron" ? "signal-only" : "raw+lead+contact"
+  const enrich = SOURCE_PAID_PERSON_DATA[k] ? "vendor_delivered" : SOURCE_VENDOR[k] === "internal" ? "pdl(if raw)" : "peopledata"
+  const cost = SOURCE_VENDOR[k] === "internal" ? "$0" : "stamped"
+  console.log(`    ${k.padEnd(28)} ${a.intents.join("/").padEnd(38)} ${SOURCE_VENDOR[k].padEnd(10)} ${a.entry.padEnd(19)} ${territory.padEnd(13)} ${dedup.padEnd(17)} ${enrich.padEnd(17)} ${cost.padEnd(8)} ${a.entry === "lead_scraping_cron" || a.entry === "intent_campaign" ? "dispatcher" : "event"}`)
+}
 
 // ── L2 · territory ───────────────────────────────────────────────────────────
 console.log("\n[L2 · TERRITORY-SCOPED — only active-subscriber territories are scraped]")

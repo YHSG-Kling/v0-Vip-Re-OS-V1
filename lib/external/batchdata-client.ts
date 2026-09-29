@@ -34,7 +34,7 @@ export class BatchDataClient {
    * and booked NOTHING on vendor_usage_tracking — the platform ledger's BatchData line was the
    * wallet reconcile's drift, never a per-source cost. The cron now books this figure per source.
    */
-  async getMotivatedSellerDataWithCost(location: string, motivationTypes?: string[], window?: MotivatedPullWindow): Promise<{ records: BatchDataRecord[]; cost: number }> {
+  async getMotivatedSellerDataWithCost(location: string, motivationTypes?: string[], window?: MotivatedPullWindow): Promise<{ records: BatchDataRecord[]; cost: number; staleDropped?: number }> {
     const [city, state] = location.includes(',')
       ? location.split(',').map(s => s.trim())
       : ['', location]
@@ -48,7 +48,14 @@ export class BatchDataClient {
       ? dateWindowCriteria(motivationTypes[0], window)
       : undefined
     const r = await fetchMotivatedSellers({ state: state || location, city: city || undefined, motivationTypes, searchCriteria })
-    return { records: r.records, cost: r.cost }
+    // Lane 90B — listing-status triggers (expired / canceled / failed) have NO request-side status-date
+    // filter (withinListingStatusWindow's header); the market's window gates them here, after the pull.
+    // The cost stays the pull's (every returned row was billed); `staleDropped` reports the difference.
+    if (window && motivationTypes && motivationTypes.length === 1 && isListingStatusTrigger(motivationTypes[0])) {
+      const fresh = r.records.filter((rec) => withinListingStatusWindow(rec, motivationTypes[0], window))
+      return { records: fresh, cost: r.cost, staleDropped: r.records.length - fresh.length }
+    }
+    return { records: r.records, cost: r.cost, staleDropped: 0 }
   }
 }
 
@@ -135,6 +142,14 @@ export interface BatchDataRecord {
     minListPrice?:    number
     daysOnMarket?:    number
     status?:          string
+    /** Lane 90B — the listing's DATES (list_property_dataset_fields "listing", read 2026-09-29:
+     *  listing.statusUpdatedAt / originalListingDate / failedListingDate / soldDate). statusUpdatedAt
+     *  is when the listing became expired / canceled; the client-side freshness gate for those pulls
+     *  (withinListingStatusWindow) reads it — BatchData publishes no request-side filter on it. */
+    statusUpdatedAt?:     string
+    originalListingDate?: string
+    failedListingDate?:   string
+    soldDate?:            string
   }
   // The full motivated-seller spectrum BatchData covers — downsizers (high
   // equity), divorce, foreclosure / pre-foreclosure, tax lien, expired listings,
@@ -611,6 +626,11 @@ export function normalizeBatchDataProperty(p: Record<string, any>, requestedType
       minListPrice: typeof listing.minListPrice === 'number' ? listing.minListPrice : undefined,
       daysOnMarket: typeof listing.daysOnMarket === 'number' ? listing.daysOnMarket : undefined,
       status:       typeof listing.status === 'string' ? listing.status : undefined,
+      // Lane 90B — the listing dates the catalogue publishes (strings as sent; never parsed here).
+      statusUpdatedAt:     typeof listing.statusUpdatedAt === 'string' ? listing.statusUpdatedAt : undefined,
+      originalListingDate: typeof listing.originalListingDate === 'string' ? listing.originalListingDate : undefined,
+      failedListingDate:   typeof listing.failedListingDate === 'string' ? listing.failedListingDate : undefined,
+      soldDate:            typeof listing.soldDate === 'string' ? listing.soldDate : undefined,
     }),
     motivationType: (requestedType as BatchDataRecord['motivationType']) ?? 'distressed',
     motivationConfidence: 0.7,
@@ -646,8 +666,10 @@ export interface FetchMotivatedSellersOptions {
  * `searchCriteria` as `foreclosure.recordingDate {minDate,maxDate}`,
  * `foreclosure.auctionDate {minDate,maxDate}`, `tax.taxDelinquentYear {min,max}` and
  * `sale.lastSaleDate {minDate,maxDate}` — the same nested `{min,max}` grammar the pull already
- * uses for `valuation.equityPercent`. NOT wired (unresolved, no evidence of the key): a listing
- * DATE filter for expired / canceled / failed listings — those pulls stay window-less.
+ * uses for `valuation.equityPercent`. NOT wired on the REQUEST (unresolved — no request-side key for a
+ * listing's STATUS date; `min_listing_date` is the listed-on date, the wrong signal): a date filter
+ * for expired / canceled / failed listings — those pulls stay window-less on the request and are
+ * gated CLIENT-SIDE after the pull on listing.statusUpdatedAt (lane 90B, withinListingStatusWindow).
  *
  * PURE. Returns the searchCriteria fragment for ONE canonical trigger, or {} when the trigger
  * has no dated field or the window is unset (a pull without a window is the wave-88 pull,
@@ -681,6 +703,57 @@ export function dateWindowCriteria(trigger: string, window: MotivatedPullWindow)
     default:
       return {}
   }
+}
+
+/**
+ * Lane 90B — the LISTING-STATUS triggers (expired / canceled / failed listings) and their freshness
+ * gate. Lane 89E left these "unresolved (no evidence of the key)". Re-read 2026-09-29 without a paid
+ * call: (1) BatchData's MCP search schema publishes `min_listing_date` / `max_listing_date` — but that
+ * is the date a listing was LISTED, not the date it expired or was withdrawn, so a 30-day window on it
+ * would return almost nothing (a listing that expired this month was listed months ago); (2) the
+ * `listing` dataset catalogue carries `listing.statusUpdatedAt` (when the status last changed — the
+ * freshness signal these triggers want), `listing.failedListingDate` and `listing.soldDate`, and the
+ * search schema publishes NO filter on any of them. So the request side stays window-less
+ * (dateWindowCriteria returns {} — still UNRESOLVED as a request key) and the window is applied
+ * CLIENT-SIDE after the pull: a row whose status date is OLDER than today − lookback is dropped
+ * before ingest. The pull is still billed for every row it returned (the cost is the pull's,
+ * unchanged); what the window saves is re-ingesting, re-deduping and re-scoring the same stale
+ * expired rows every run. A row with NO status date is KEPT (an account without the listing dataset
+ * would otherwise lose the whole lane), which is the published blind spot.
+ */
+export const LISTING_STATUS_TRIGGERS: readonly string[] = ['expired', 'canceled_listing', 'failed_listing']
+
+export function isListingStatusTrigger(trigger: string): boolean {
+  return LISTING_STATUS_TRIGGERS.includes(canonicalTrigger(trigger))
+}
+
+/** PURE — the row's status date for a listing-status trigger, or null when the row carries none. */
+export function listingStatusDate(record: Pick<BatchDataRecord, 'listing'>, trigger: string): string | null {
+  const l = record.listing ?? {}
+  const t = canonicalTrigger(trigger)
+  const candidate = t === 'failed_listing'
+    ? (l.failedListingDate ?? l.statusUpdatedAt)
+    : (l.statusUpdatedAt ?? l.failedListingDate)
+  return typeof candidate === 'string' && candidate.length >= 10 ? candidate : null
+}
+
+/**
+ * PURE — does this row's status date fall inside the market's lookback window? No window → true
+ * (the window-less pull, unchanged). Not a listing-status trigger → true (the request-side window
+ * already applied). No status date on the row → true (kept; see the blind spot above). An
+ * unparseable date → true (never a silent drop on a shape drift).
+ */
+export function withinListingStatusWindow(record: Pick<BatchDataRecord, 'listing'>, trigger: string, window: MotivatedPullWindow): boolean {
+  const days = window.lookbackDays
+  if (typeof days !== 'number' || !Number.isFinite(days) || days <= 0) return true
+  if (!isListingStatusTrigger(trigger)) return true
+  const date = listingStatusDate(record, trigger)
+  if (!date) return true
+  const at = Date.parse(date)
+  if (!Number.isFinite(at)) return true
+  const today = window.today ?? new Date()
+  const floor = today.getTime() - Math.floor(days) * 86_400_000
+  return at >= floor
 }
 
 /** Keep only valid BatchData quickList slugs (supports the "not-" exclude prefix), capped at 3. */

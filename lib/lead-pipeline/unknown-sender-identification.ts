@@ -153,7 +153,9 @@ import { logAIUsage } from "@/lib/ai/cost-tracking"
 import { KernelEvent } from "@/lib/kernel/events"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { normalizeStreetAddress } from "@/lib/external/permit-signals"
-import { AUTOMATED_LOCAL_PARTS, ROLE_LOCAL_PARTS } from "@/lib/external/email-verifier"
+import { isAutomatedLocalPart, ROLE_LOCAL_PARTS } from "@/lib/external/email-verifier"
+// Lane 90B — the prefilter applies THE lead gate's email rule (canonical-lead-eligibility.ts) up front.
+import { leadEmailProblem } from "@/lib/lead-pipeline/canonical-lead-eligibility"
 import { calculateCost } from "@/lib/ai/cost-tracking"
 import type { NormalizedScrapedRecord } from "@/lib/lead-pipeline/raw-record-types"
 import type { ResolvedInboundProvider } from "@/lib/inbound-mail/resolve-user-provider"
@@ -355,6 +357,9 @@ export function extractInboundHeaderText(raw: unknown): string {
 export type PrefilterDropReason =
   | "invalid_syntax"
   | "automated_local_part"
+  /** Lane 90B — a self-expiring mailbox (leadEmailProblem's disposable_domain): the gate would refuse
+   *  it after the classifier + PeopleData spent on it. */
+  | "disposable_domain"
   | "known_vendor_or_newsletter_domain"
   | "own_domain_loop"
   | "list_unsubscribe_header"
@@ -365,7 +370,11 @@ export interface PrefilterVerdict {
   reason: PrefilterDropReason | null
 }
 
-const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/
+// TOMBSTONE (lane 90B) — the file-local EMAIL_RE syntax test and the exact `AUTOMATED_LOCAL_PARTS.has(local)`
+// test are DELETED from the prefilter; both live in the ONE rule the lead gate applies,
+// lib/lead-pipeline/canonical-lead-eligibility.ts::leadEmailProblem (syntax → disposable → automated
+// mailbox via email-verifier.ts::isAutomatedLocalPart). The prefilter used to pass `esignature-noreply@`
+// (exact match only), so the classifier ran and PeopleData was billed before the gate refused it.
 const LIST_UNSUBSCRIBE_RE = /^list-unsubscribe\s*:/im
 const AUTO_SUBMITTED_RE = /^(auto-submitted)\s*:\s*auto-(replied|generated)/im
 const PRECEDENCE_BULK_RE = /^precedence\s*:\s*(bulk|auto_reply|junk)/im
@@ -377,10 +386,15 @@ export function preFilterAutomatedSender(input: {
   ownDomains?: string[]
 }): PrefilterVerdict {
   const email = (input.fromEmail ?? "").trim().toLowerCase()
-  if (!EMAIL_RE.test(email)) return { isAutomated: true, reason: "invalid_syntax" }
+  // Lane 90B — THE gate's own email rule, applied BEFORE the classifier and before enrichment (it
+  // used to be applied only at the lead gate, after both had spent): invalid / disposable /
+  // automated (any `noreply` token, not just the exact local part) never reach a model or PeopleData.
+  const problem = leadEmailProblem(email)
+  if (problem === "missing" || problem === "invalid_syntax") return { isAutomated: true, reason: "invalid_syntax" }
+  if (problem === "automated_mailbox") return { isAutomated: true, reason: "automated_local_part" }
+  if (problem === "disposable_domain") return { isAutomated: true, reason: "disposable_domain" }
 
-  const [local, domain] = email.split("@")
-  if (AUTOMATED_LOCAL_PARTS.has(local)) return { isAutomated: true, reason: "automated_local_part" }
+  const domain = email.split("@")[1] ?? ""
   if (KNOWN_VENDOR_NEWSLETTER_DOMAINS.has(domain)) return { isAutomated: true, reason: "known_vendor_or_newsletter_domain" }
 
   const ownDomains = input.ownDomains ?? platformOwnDomains()
@@ -613,7 +627,7 @@ export function deriveSenderName(input: {
   const tokens = local.split(/[._-]/)
   if (
     tokens.length === 2 && tokens.every((t) => /^[a-z]{2,}$/.test(t)) &&
-    !AUTOMATED_LOCAL_PARTS.has(local) && !tokens.some((t) => AUTOMATED_LOCAL_PARTS.has(t) || ROLE_LOCAL_PARTS.has(t))
+    !isAutomatedLocalPart(local) && !tokens.some((t) => ROLE_LOCAL_PARTS.has(t))
   ) {
     candidates.push({ src: "email_local_part", name: tokens.map((t) => t[0].toUpperCase() + t.slice(1)).join(" ") })
   }

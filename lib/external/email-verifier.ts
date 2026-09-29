@@ -45,6 +45,25 @@ export const AUTOMATED_LOCAL_PARTS: ReadonlySet<string> = new Set<string>([
   "notifications", "notification", "digest", "newsletter", "alerts", "updates",
   "unsubscribe", "opt-out", "optout",
 ])
+
+/**
+ * PURE — is this local part an automated mailbox? THE ONE RULE (lane 90B, wave 90 — lane 89E §7's
+ * "noreply cost leak"): both readers of AUTOMATED_LOCAL_PARTS (the lead gate's leadEmailProblem and the
+ * unknown-sender prefilter) matched the local part EXACTLY, so `esignature-noreply@google.com`,
+ * `noreply-dmarc@`, `notifications-noreply@`, `no_reply@` and `noreply+abc123@` all read as a person:
+ * the prefilter let them through to the classifier and PeopleData ($0.25/match) before the gate
+ * refused the same address as an automated mailbox. The rule now reads the local part three ways —
+ * exact, with separators collapsed (`no_reply` → `noreply`), and token-wise on `. _ - +` (any token
+ * that IS an automated part). A real person's address never carries a whole `noreply`/`bounce`/
+ * `mailer-daemon` token, so the false-positive surface is the surname list already excluded above.
+ */
+export function isAutomatedLocalPart(local: string | null | undefined): boolean {
+  const l = (local ?? "").trim().toLowerCase()
+  if (!l) return false
+  if (AUTOMATED_LOCAL_PARTS.has(l)) return true
+  if (AUTOMATED_LOCAL_PARTS.has(l.replace(/[._+-]/g, ""))) return true
+  return l.split(/[._+-]+/).some((t) => t.length > 0 && AUTOMATED_LOCAL_PARTS.has(t))
+}
 // RFC 5322 — pragmatic regex: local-part chars + @ + dot-separated domain labels.
 const SYNTAX_RE = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/
 

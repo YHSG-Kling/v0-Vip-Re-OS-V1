@@ -205,8 +205,11 @@ check("NO door declares the retired person_initiated_inbound exemption (the unkn
 check("POSITIVE CONTROL: the finder sees a live declaration", /origin:\s*"person_initiated_inbound"/.test(stripComments(`createLeadOnlyRecordForAcquisitionSource({ origin: "person_initiated_inbound" })`)))
 check("POSITIVE CONTROL: a tombstone naming it in a comment is not a declaration", !/origin:\s*"person_initiated_inbound"/.test(stripComments(`// origin: "person_initiated_inbound" was retired`)))
 const promoter = stripped("lib/lead-promotion/lead-promoter.ts")
+// Lane 90B — re-anchored to the RULE (was pinned to `email, phone` being the LAST two selected columns —
+// a waypoint that went red when cost_per_record joined the select): the select names both first-class
+// columns and the resolver prefers them over raw_data.
 check("promoteRawRecordToLead reads the email/phone FIRST-CLASS columns before raw_data (the gate now requires the email)",
-  /\.select\('[^']*\bemail, phone'\)/.test(promoter) && /const email = \(rawRecord as any\)\?\.email \|\| rawData\.email/.test(promoter))
+  /\.select\('[^']*\bemail\b[^']*\bphone\b[^']*'\)/.test(promoter) && /const email = \(rawRecord as any\)\?\.email \|\| rawData\.email/.test(promoter))
 check("promoteRawRecordToLead refuses at its own insert (no caller can skip the gate)",
   promoter.indexOf("evaluateCanonicalLeadEligibility(") > 0 && promoter.indexOf("evaluateCanonicalLeadEligibility(") < promoter.indexOf(".from('leads')") && /if \(!gate\.eligible\) \{\s*\n\s*return \{ success: false/.test(promoter))
 check("the evaluator door (eligibility-core) delegates to the predicate", /evaluateCanonicalLeadEligibility\(\{/.test(stripped("lib/lead-promotion/eligibility-core.ts")))
@@ -229,8 +232,12 @@ check("POSITIVE CONTROL: an ordinary personal address passes (the finder is not 
 check("the gate's email vocabulary is email-verifier.ts's (no second copy of the disposable / automated lists)",
   /from "@\/lib\/external\/email-verifier"/.test(gateCode) && !/mailinator/.test(gateCode) && !/mailer-daemon/.test(gateCode))
 const unknownMod = stripped("lib/lead-pipeline/unknown-sender-identification.ts")
-check("the unknown-sender prefilter reads the SAME automated vocabulary (moved to email-verifier.ts, not redefined)",
-  /import \{ AUTOMATED_LOCAL_PARTS, ROLE_LOCAL_PARTS \} from "@\/lib\/external\/email-verifier"/.test(unknownMod) && !/const AUTOMATED_LOCAL_PARTS/.test(unknownMod))
+// Lane 90B — re-anchored to the RULE (was pinned to the exact import line, a waypoint): the module
+// declares no automated set of its own and reads the automated-mailbox rule from email-verifier.ts
+// (isAutomatedLocalPart) and/or THE gate (leadEmailProblem) — never a second vocabulary.
+check("the unknown-sender prefilter reads the SAME automated vocabulary (email-verifier.ts / the gate's leadEmailProblem, not redefined)",
+  /from "@\/lib\/external\/email-verifier"/.test(unknownMod) && /leadEmailProblem\(/.test(unknownMod)
+  && !/const AUTOMATED_LOCAL_PARTS/.test(unknownMod) && !/new Set<string>\(\[\s*"noreply"/.test(unknownMod))
 
 // ── G9 · the email-seek hook ────────────────────────────────────────────────
 console.log("\n[G9 · a phone-only raw row's enrich leg SEEKS AN EMAIL, then the gate re-runs]")

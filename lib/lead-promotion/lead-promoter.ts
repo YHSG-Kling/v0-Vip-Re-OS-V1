@@ -53,7 +53,7 @@ export async function promoteRawRecordToLead(
     // reads permanently undefined.
     const { data: rawRecord } = await supabase
       .from('raw_scraped_leads')
-      .select('source_origin, normalized_preview, email_verified, mailing_address, mailing_address_verified, first_name, last_name, email, phone')
+      .select('source_origin, normalized_preview, email_verified, mailing_address, mailing_address_verified, first_name, last_name, email, phone, cost_per_record')
       .eq('id', rawRecordId)
       .single()
 
@@ -120,6 +120,11 @@ export async function promoteRawRecordToLead(
         phone_secondary: phoneSecondary,
         source: source,
         source_origin: sourceOrigin,
+        // Lane 90B — the PLATFORM-paid scrape cost follows the person raw → lead → contact
+        // (contact-creator.ts reads leads.cost_per_record; person-timeline.ts reports it as
+        // platformPaidAcquisitionCost). No door wrote it before, so every promoted lead read $0.
+        // Parity with pipeline-processor.ts.
+        cost_per_record: (rawRecord as any)?.cost_per_record ?? rawData.cost_per_record ?? null,
         property_zip_code: propertyZipCode,
         mailing_zip: mailingZip,
         // Canonical physical-address + mailing-breakdown columns (parity with pipeline-processor).

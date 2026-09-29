@@ -22,6 +22,8 @@ import { meterVendorSpend } from '@/lib/vendor-governance/meter-vendor'
 import { buildPeopleDataProfile, demographicsFromProfile, peopleDataProfileToLeadColumns, householdFinancialsFromBatchData, mergeHouseholdFinancials } from './enrichment-column-map'
 import { mergeEnrichment, shouldGapFill, enrichViaPerplexity, type BaseEnrichment } from './perplexity-enrichment'
 import { recordAcquisitionIntents } from './acquisition-coverage'
+// Lane 90B — THE email rule (pure, no I/O) decides what is an enrichment anchor before any spend.
+import { leadEmailProblem as leadEmailProblemPure } from './canonical-lead-eligibility'
 import { KernelEvent } from '@/lib/kernel/events'
 import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 import { emitKernelEvent } from '@/lib/kernel/emit'
@@ -65,6 +67,9 @@ interface RawRecord {
   city?: string | null
   state?: string | null
   zip_code?: string | null
+  /** The PLATFORM-paid per-record scrape cost lib/kernel/scraping.ts stamped at ingest (lane 90B:
+   *  carried onto leads.cost_per_record at promotion — no door wrote that column before). */
+  cost_per_record?: number | null
   normalized_preview: {
     firstName?: string | null
     lastName?: string | null
@@ -289,7 +294,17 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   // already cleared to let the row exist as a raw_scraped_leads record in the
   // first place — a username-only record used to pass THAT gate and then die
   // here, one step later, never having reached PeopleData at all.
-  const hasEmail           = !!email?.trim()
+  // Lane 90B — an email THE gate would refuse (invalid / disposable / automated mailbox — the one rule,
+  // canonical-lead-eligibility.ts::leadEmailProblem) is not an identity anchor and buys nothing from
+  // PeopleData: `noreply@forsalebyowner.com` on a scraped FSBO card, or a portal's relay address, used
+  // to clear this gate as "an email", be handed to PDL ($0.25/match) and then be refused at the
+  // promotion gate as an automated mailbox. It is also not a DEDUP key (every card from that site
+  // would otherwise merge onto one person). The address still reaches the promotion gate below
+  // (`enriched.email ?? email`) so the refusal reason stays honest; a usable email enrichment finds
+  // (PDL / the email-seek hook) replaces it. Nothing is deleted: the row stays raw and retryable.
+  const emailProblem       = leadEmailProblemPure(email)
+  const usableEmail        = emailProblem === null ? email : null
+  const hasEmail           = !!usableEmail?.trim()
   const hasPhone           = !!phone?.trim()
   const hasFullNameAndLoc  = !!(firstName && lastName && (city || state))
   const hasPropertyAddress = !!(rec.normalized_preview?.propertyAddress ?? rec.raw_data?.propertyAddress)
@@ -321,7 +336,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   await setStatus(supabase, rawRecordId, 'queued_for_enrichment')
 
   const dedupScope = { excludeRawId: rawRecordId, rawCreatedAt: (rawRecord as { created_at?: string | null }).created_at ?? null, marketId: rec.market_id }
-  const preEnrichLookup = { first_name: firstName, last_name: lastName, email, phone }
+  const preEnrichLookup = { first_name: firstName, last_name: lastName, email: usableEmail, phone }
   const preEnrichDuplicate = await findBestMatch(preEnrichLookup, 'pre_enrichment', effectiveBrokerageId, supabase, dedupScope)
 
   if (preEnrichDuplicate) {
@@ -353,7 +368,8 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   await setStatus(supabase, rawRecordId, 'enriching')
 
   const enriched = await enrichWithPeopleData({
-    first_name: firstName, last_name: lastName, email, phone, city, state,
+    // Lane 90B — only a gate-usable email is an enrichment anchor (see usableEmail above).
+    first_name: firstName, last_name: lastName, email: usableEmail, phone, city, state,
     brokerageId: effectiveBrokerageId,
     // lane 72B — carried only so enrichWithPeopleData can resolve identity by
     // social profile when name/email/phone are all absent; never used for
@@ -583,7 +599,9 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   const promoEligibility = evaluateCanonicalLeadEligibility({
     first_name: enriched.first_name ?? firstName,
     last_name:  enriched.last_name  ?? lastName,
-    email:      enriched.email,
+    // Lane 90B — enrichment was handed only a gate-usable email; the raw address (possibly an
+    // automated mailbox) falls through here so the gate names the real reason, never "missing".
+    email:      enriched.email ?? email,
     phone:      enriched.phone ?? phone,
   })
 
@@ -762,6 +780,11 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       mailing_zip:           resolvedMailingZip,
       email_verified:        (enriched as any).email_verified        ?? (rec as any).email_verified                  ?? (rec.raw_data as any)?.email_verified ?? false,
       raw_record_id:         rawRecordId,
+      // Lane 90B — the PLATFORM-paid scrape cost follows the person raw → lead → contact. The column
+      // existed and was READ (contact-creator.ts → contacts.cost_per_record; person-timeline.ts →
+      // platformPaidAcquisitionCost; acquisition-cost.ts costPerRecord) but NO door wrote it, so every
+      // promoted lead's platform cost read $0 and the raw row's stamp died at this hop.
+      cost_per_record:       rec.cost_per_record ?? null,
     })
     .select()
     .single()
