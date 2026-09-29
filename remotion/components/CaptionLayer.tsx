@@ -87,6 +87,14 @@ export interface CaptionLayerProps {
    * posture as `hiddenFromFrame`).
    */
   visibleFromFrame?: number
+  /**
+   * WAVE 90 (lane 90E) — the band's BOTTOM edge, px from the frame's bottom,
+   * when a composition stacks something under the captions for the WHOLE
+   * timeline (the presentation slides' disclosure footer + nameplate —
+   * lib/video/cinema-finish.ts cinemaSlideFooterStack). Absent, the band sits
+   * on the safe inset exactly as before (cinemaCaptionStyle.bandBottom).
+   */
+  bandBottom?: number
 }
 
 /**
@@ -172,7 +180,7 @@ export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
       <div
         style={{
           position: "absolute",
-          ...(explicitTop !== null ? { top: `${explicitTop}%` } : { bottom: cs.bandBottom }),
+          ...(explicitTop !== null ? { top: `${explicitTop}%` } : { bottom: props.bandBottom ?? cs.bandBottom }),
           left: 0,
           right: 0,
           display: "flex",

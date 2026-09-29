@@ -24,6 +24,7 @@ import { SafeImg } from "./components/SafeImg"
 import { EndCard } from "./components/EndCard"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { avatarFadeOutFrame } from "../lib/video/script-structure"
+import { cinemaBadgeSlot, cinemaFrame } from "../lib/video/cinema-finish"
 
 type ReelCardKind = "team" | "finance" | "compliance"
 interface ReelCard { value: string; label: string; sub?: string; kind: ReelCardKind }
@@ -103,20 +104,28 @@ const SceneBackground: React.FC<{ brand: Brand; accent?: string }> = ({ brand, a
   </AbsoluteFill>
 )
 
-/** Header on every scene: logo (when set) + show name + brokerage, accent rule. */
-const SceneHeader: React.FC<{ brand: Brand; right?: React.ReactNode }> = ({ brand, right }) => (
-  <>
-    <div style={{ position: "absolute", top: 44, left: 64, right: 64, display: "flex", alignItems: "center", gap: 20 }}>
-      {brand.logoUrl && <SafeImg src={brand.logoUrl} style={{ height: 44, objectFit: "contain" }} />}
-      <div style={{ fontSize: 24, letterSpacing: 5, color: "#fff", opacity: 0.85, fontWeight: 700 }}>
-        {brand.brokerageName.toUpperCase()}
+/** Header on every scene: logo (when set) + show name + brokerage, accent rule.
+ *  WAVE 90 (lane 90E — the lane's real render): the header, the progress dots
+ *  and the presenter ring sit on the frame's SAFE insets (lib/video/cinema-
+ *  finish.ts cinemaFrame / cinemaBadgeSlot — the ONE safe-area rule), never a
+ *  typed 44 / 64 / 56 px: the desk/TV player paints its chrome over those bands. */
+const SceneHeader: React.FC<{ brand: Brand; right?: React.ReactNode }> = ({ brand, right }) => {
+  const { width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
+  return (
+    <>
+      <div style={{ position: "absolute", top: safe.top, left: safe.left, right: safe.right, display: "flex", alignItems: "center", gap: 20 }}>
+        {brand.logoUrl && <SafeImg src={brand.logoUrl} style={{ height: 44, objectFit: "contain" }} />}
+        <div style={{ fontSize: 24, letterSpacing: 5, color: "#fff", opacity: 0.85, fontWeight: 700 }}>
+          {brand.brokerageName.toUpperCase()}
+        </div>
+        <div style={{ fontSize: 20, letterSpacing: 4, color: "#fff", opacity: 0.45 }}>· PARTNERS&apos; MEETING</div>
+        <div style={{ marginLeft: "auto" }}>{right}</div>
       </div>
-      <div style={{ fontSize: 20, letterSpacing: 4, color: "#fff", opacity: 0.45 }}>· PARTNERS&apos; MEETING</div>
-      <div style={{ marginLeft: "auto" }}>{right}</div>
-    </div>
-    <div style={{ position: "absolute", top: 104, left: 64, width: 120, height: 4, borderRadius: 2, backgroundColor: brand.accentColor }} />
-  </>
-)
+      <div style={{ position: "absolute", top: safe.top + 60, left: safe.left, width: 120, height: 4, borderRadius: 2, backgroundColor: brand.accentColor }} />
+    </>
+  )
+}
 
 /** Presenter PIP: D-ID clip → assistant/agent photo → monogram, with a
  *  NAMEPLATE (the assistant's name) so the host is a character, not a circle. */
@@ -127,15 +136,19 @@ const AvatarPIP: React.FC<{
    *  no measurement); fades to 0 once the real clip has ended so the PIP
    *  never holds a frozen last frame for the rest of the window. */
   opacity?: number
+  /** px from the frame's bottom edge — the safe inset, or the badge slot when a caption band runs under it (wave 90). */
+  bottom: number
 }> = ({
-  avatarVideoUrl, agentPhotoUrl, agentName, accentColor, primaryColor, opacity = 1,
+  avatarVideoUrl, agentPhotoUrl, agentName, accentColor, primaryColor, opacity = 1, bottom,
 }) => {
+  const { width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
   const ring: React.CSSProperties = {
     width: 230, height: 230, borderRadius: 115, overflow: "hidden", backgroundColor: primaryColor,
     boxShadow: `0 0 0 5px ${accentColor}, 0 18px 40px rgba(0,0,0,0.35)`,
   }
   return (
-    <div style={{ position: "absolute", bottom: 44, right: 56, display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
+    <div style={{ position: "absolute", bottom, right: safe.right, display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
       {avatarVideoUrl ? (
         <div style={ring}><Video src={avatarVideoUrl} objectFit="cover" style={{ width: "100%", height: "100%", opacity }} /></div>
       ) : agentPhotoUrl ? (
@@ -155,8 +168,11 @@ const AvatarPIP: React.FC<{
   )
 }
 
-const ProgressDots: React.FC<{ index: number; total: number; accent: string }> = ({ index, total, accent }) => (
-  <div style={{ position: "absolute", bottom: 64, left: 64, display: "flex", gap: 12 }}>
+const ProgressDots: React.FC<{ index: number; total: number; accent: string }> = ({ index, total, accent }) => {
+  const { width, height } = useVideoConfig()
+  const slot = cinemaBadgeSlot(width, height)
+  return (
+  <div style={{ position: "absolute", bottom: slot.bottom, left: slot.left, display: "flex", gap: 12 }}>
     {Array.from({ length: total }, (_, i) => (
       <div key={i} style={{
         width: i === index ? 34 : 12, height: 12, borderRadius: 6,
@@ -164,7 +180,8 @@ const ProgressDots: React.FC<{ index: number; total: number; accent: string }> =
       }} />
     ))}
   </div>
-)
+  )
+}
 
 const CardScene: React.FC<{ card: ReelCard; index: number; total: number; brand: Brand }> = ({ card, index, total, brand }) => {
   const frame = useCurrentFrame()
@@ -258,9 +275,14 @@ const AskScene: React.FC<{ brand: Brand; oneAsk: string }> = ({ brand, oneAsk })
 export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
   weekLabel, cards, oneAsk, agentName, avatarVideoUrl, avatarDurationSeconds, agentPhotoUrl, brand, qrCodeDataUrl, qrCaption, captionsCues,
 }) => {
-  const { durationInFrames, fps } = useVideoConfig()
+  const { durationInFrames, fps, width, height } = useVideoConfig()
   const frame = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
+  // The presenter ring's place: on the safe bottom inset, or — when a caption
+  // band runs under it (the client-facing pitch / deal-room uses) — in the badge
+  // slot above that band, the same rule the QR badge and the EHO pill follow.
+  const hasCaptions = !!captionsCues && captionsCues.length > 0
+  const presenterBottom = hasCaptions ? cinemaBadgeSlot(width, height).bottom : cinemaFrame(width, height).safe.bottom
 
   // The bookends come from the ONE registry (lib/video/duration-model.ts,
   // wave 78) — the same numbers the planner and the proofs read — and the
@@ -339,7 +361,7 @@ export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
           before, full opacity throughout. */}
       <Sequence from={COVER} durationInFrames={presenterWindowFrames}>
         <AvatarPIP avatarVideoUrl={avatarVideoUrl} agentPhotoUrl={agentPhotoUrl} agentName={agentName}
-          accentColor={brand.accentColor} primaryColor={brand.primaryColor} opacity={avatarOpacity} />
+          accentColor={brand.accentColor} primaryColor={brand.primaryColor} opacity={avatarOpacity} bottom={presenterBottom} />
       </Sequence>
 
       {/* OUTRO */}
@@ -355,12 +377,14 @@ export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
         />
       </Sequence>
 
-      {/* WORD-SYNCED CAPTIONS — whole-timeline overlay, muted-feed readable.
-          Sits above the progress dots, clear of the presenter PIP. NO CAPTION
+      {/* WORD-SYNCED CAPTIONS — whole-timeline overlay, muted-feed readable, on the
+          safe bottom inset (cinemaCaptionStyle — wave 90 dropped the typed 84 %
+          band top, which put the band inside the player's bottom chrome); the
+          dots and the presenter ring sit in the badge slot above it. NO CAPTION
           OVER BRANDING (wave 57) — clipped before the outro's brokerage name/
           EHO mark/QR tile. */}
-      {captionsCues && captionsCues.length > 0 && (
-        <CaptionLayer cues={captionsCues} accentColor={brand.accentColor} bottomPercent={84}
+      {hasCaptions && (
+        <CaptionLayer cues={captionsCues} accentColor={brand.accentColor}
           hiddenFromFrame={durationInFrames - OUTRO} />
       )}
     </AbsoluteFill>

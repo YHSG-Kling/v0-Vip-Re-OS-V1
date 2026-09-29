@@ -410,7 +410,18 @@ export async function queuePartnersMeetingReel(
   // the AI team reporting TO the brokerage's own people, never a contact —
   // DEFAULT_LANGUAGE explicitly, never a second "en" literal (§6).
   const { DEFAULT_LANGUAGE } = await import("@/lib/video/multilingual-reel")
-  const vo = await prepareReelVoiceover({
+  // ONE VOICE, NOT TWO (wave 90, lane 90E — found by the lane's real render of
+  // this composition on the avatar path). When the broker's D-ID clip rides the
+  // PIP it already SPEAKS the same recap (composePartnersMeetingScript is the
+  // one source of both), through an unmuted <Video> in the composition; the
+  // assistant's mp3 muxed under it by the coordinator (voiceover_url) spoke the
+  // sentence twice, over itself — the same defect section-narration-
+  // orchestrator closed for the presentation lane. D-ID first (owner): the
+  // clip narrates; the assistant narrates only when no clip does. The clip's
+  // measured length (avatarDurationSeconds) sizes the show through
+  // narrationLengthFromProps, which reads it ahead of the word estimate below.
+  const narratesByAvatar = typeof props.avatarVideoUrl === "string" && props.avatarVideoUrl.length > 0
+  const vo = narratesByAvatar ? null : await prepareReelVoiceover({
     brokerageId: p.brokerageId, narration: req.inputProps.narration,
     voiceId: identity.voiceId, renderKey: `partners-${p.brokerageId.slice(0, 8)}`,
     languageCode: DEFAULT_LANGUAGE,

@@ -28,12 +28,13 @@
  * composition registry (m168 + lib/remotion/registry.ts).
  */
 import React from "react"
-import { AbsoluteFill, interpolate, useCurrentFrame } from "remotion"
+import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { AvatarPIP } from "./components/AvatarPIP"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaDisclosureStyle, cinemaFrame, cinemaSlideFooterStack } from "../lib/video/cinema-finish"
 
 export type BuyerSlideKind =
   | "title"
@@ -106,6 +107,14 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
 }) => {
   const surface = brand.surfaceColor ?? SURFACE_DEFAULT
   const showEho = brand.showEhoMark ?? true
+  // WAVE 90 (lane 90E — the lane's real render): the ONE slide stack
+  // (lib/video/cinema-finish.ts cinemaSlideFooterStack) — see
+  // ListingPresentationSlide.tsx. Here the search cards and the closing copy
+  // ran UNDER the burned-in captions and the nameplate, and the footer was a
+  // 40 px bar at the bottom edge in 12 px type.
+  const { width, height } = useVideoConfig()
+  const stack = cinemaSlideFooterStack(width, height)
+  const { safe } = cinemaFrame(width, height)
 
   return (
     <AbsoluteFill style={{
@@ -118,7 +127,7 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
         position: "absolute", top: 0, left: 0, right: 0, height: 80,
         backgroundColor: brand.primaryColor, color: "#fff",
         display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "0 48px",
+        padding: `0 ${safe.left}px`,
       }}>
         {brand.logoUrl ? (
           <SafeImg src={brand.logoUrl} style={{ height: 40, objectFit: "contain" }} />
@@ -141,10 +150,10 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
         </div>
       </div>
 
-      {/* Body region — varies by slide kind */}
+      {/* Body region — varies by slide kind; its bottom edge clears the footer stack. */}
       <div style={{
-        position: "absolute", top: 80, left: 0, right: 0, bottom: 120,
-        padding: "48px 56px",
+        position: "absolute", top: safe.top, left: 0, right: 0, bottom: stack.bodyBottom,
+        padding: `24px ${safe.left}px 16px`,
       }}>
         {kind === "title" && <TitleSlideBody title={title} body={body} accentColor={brand.accentColor} />}
         {kind === "loan" && <LoanSlideBody title={title} body={body} heroImageUrl={heroImageUrl ?? null} accentColor={brand.accentColor} />}
@@ -175,20 +184,22 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
         ringWidth={5}
       />
 
+      {/* Nameplate one line above the disclosure, on the safe side inset. */}
       <div style={{
-        position: "absolute", bottom: 32, left: 56,
+        position: "absolute", bottom: stack.nameplateBottom, left: safe.left,
         display: "flex", alignItems: "center", gap: 12,
       }}>
         <div style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: brand.accentColor }} />
-        <div style={{ fontSize: 18, fontWeight: 600, color: brand.primaryColor }}>{agentName}</div>
+        <div style={{ fontSize: 22, fontWeight: 600, color: brand.primaryColor }}>{agentName}</div>
       </div>
 
+      {/* Footer: the decorative brand bar fills the unsafe band (no text in it); the
+          disclosure line sits ON the safe inset at the caption type step. */}
       <div style={{
-        position: "absolute", bottom: 0, left: 0, right: 0, height: 40,
-        backgroundColor: brand.primaryColor, color: "#fff", opacity: 0.85,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 12, letterSpacing: 1,
-      }}>
+        position: "absolute", bottom: 0, left: 0, right: 0, height: stack.footerBarHeight,
+        backgroundColor: brand.primaryColor, opacity: 0.9,
+      }} />
+      <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height), bottom: stack.disclosureBottom, color: brand.primaryColor, opacity: 0.9 }}>
         {brand.brokerageName}
         {showEho && " · Equal Housing Opportunity"}
         {brand.licenseLine && ` · ${brand.licenseLine}`}
@@ -202,7 +213,7 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
           every other slide kind speaks for its full duration with no late branding
           reveal, so the caption runs the whole slide there. */}
       {kind !== "closing" && (
-        <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
+        <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} bandBottom={stack.captionBandBottom} />
       )}
     </AbsoluteFill>
   )

@@ -764,7 +764,10 @@ Format each scene as:
 <narration text>
 
 Focus on viewer benefits — what the home means for their life — not feature lists.
-Keep narration natural and conversational.`)
+Keep narration natural and conversational.
+Audience: the buyer this home fits by its features, layout and price — speak to their situation, never to who they are (Fair Housing: no protected characteristics, no "perfect for" anyone).
+Scene 1 opens on the hook — the strongest fact about the home in the first spoken line, never a greeting or a self-introduction.
+The final scene closes on ONE no-pressure next step (a showing, a question to send) — no urgency, no pitch, no guarantees.`)
 
   const { text } = await generateTextRouted({
     brokerageId: params.brokerageId ?? null,

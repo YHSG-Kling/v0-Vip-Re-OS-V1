@@ -640,6 +640,45 @@ export function cinemaBadgeSlot(width: number, height: number): { bottom: number
   return { bottom: cinemaLowerThirdPlacement(width, height).bottom, left: safe.left, right: safe.right }
 }
 
+/**
+ * THE SLIDE FOOTER STACK (wave 90, lane 90E — found by the lane's real renders
+ * of ListingSectionReel / BuyerConsultationSlide, the two 16:9 slides 89F
+ * published as un-rendered). Both slides typed their Equal Housing / licence
+ * footer as a 40 px bar at `bottom: 0` in 12 px type — inside every player's
+ * control bar (the safe bottom inset is 97 px on a 16:9 frame), the agent's
+ * nameplate at `bottom: 32`, and their burned-in caption band (which runs the
+ * WHOLE slide — a narrated slide has no late branding tile to hide it before)
+ * sat on the safe inset, i.e. on top of the footer. ONE stack now, bottom up:
+ *   disclosure line  — ON the safe bottom inset (cinemaDisclosureStyle);
+ *   nameplate        — one caption line above it;
+ *   caption band     — its bottom edge above the nameplate (CaptionLayer
+ *                      `bandBottom`);
+ *   body region      — its bottom edge above a two-line caption band, so no
+ *                      slide content is ever under a cue or the nameplate.
+ * `footerBarHeight` is the decorative brand bar under the disclosure — the
+ * unsafe band itself, which carries no text. PURE.
+ */
+export interface CinemaSlideFooterStack {
+  disclosureBottom: number
+  nameplateBottom: number
+  captionBandBottom: number
+  bodyBottom: number
+  footerBarHeight: number
+}
+
+export function cinemaSlideFooterStack(width: number, height: number): CinemaSlideFooterStack {
+  const { safe, type } = cinemaFrame(width, height)
+  const d = cinemaDisclosureStyle(width, height)
+  const cap = cinemaCaptionStyle(width, height)
+  const line = Math.ceil(d.fontSize * d.lineHeight)
+  const gap = Math.round(type.body * 0.3)
+  const disclosureBottom = d.bottom
+  const nameplateBottom = disclosureBottom + line + gap
+  const captionBandBottom = nameplateBottom + line + gap
+  const twoLineBand = Math.ceil(cap.fontSize * cap.lineHeight * 2 + cap.padY * 2 + cap.tickHeight + cap.tickGap)
+  return { disclosureBottom, nameplateBottom, captionBandBottom, bodyBottom: captionBandBottom + twoLineBand + gap, footerBarHeight: safe.bottom }
+}
+
 // ── § AUDIO — fades derived from the composition, loudness from the master ──
 
 /**

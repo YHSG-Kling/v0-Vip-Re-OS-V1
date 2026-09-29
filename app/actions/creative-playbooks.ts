@@ -59,6 +59,11 @@ async function authorPlaybookCopy(args: {
     // the charter alone. Found by test:video-type-matrix's derived writer scan.
     const { withSpokenScriptStandards } = await import("@/lib/video/realism-profile")
     const systemAsk = `You write real-estate marketing copy for ${args.brandLine}. Fair-Housing safe: never reference protected classes, family status, or steer. Write like a sharp human, never like a template.`
+      // The SPOKEN channel (wave 90, lane 90E): the avatar script opens on its hook
+      // and closes on one no-pressure ask — the shape every other spoken writer asks for.
+      + ("script" in args.shape
+        ? " The script opens on the hook — the viewer's situation or one specific fact in the first spoken line, never a greeting — and closes on ONE no-pressure next step: no urgency, no pitch, no guarantees."
+        : "")
     const keys = Object.entries(args.shape).map(([k, hint]) => `"${k}": ${hint}`).join(", ")
     const { text } = await generateTextRouted({
       feature: "client_message",

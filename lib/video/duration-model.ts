@@ -717,6 +717,20 @@ export interface PlanArgs {
    * exists for.
    */
   floorToPurposeMin?: boolean
+  /**
+   * WAVE 90 (lane 90E — found by the lane's real render of PartnersMeetingReel
+   * on the avatar path). The narration being planned is a PRESENTER CLIP that
+   * the composition mounts AFTER its cover (an AvatarPIP inside the body
+   * window), not a voiceover that plays from frame 0 under it. On a
+   * `narrationFrom: "cover"` composition the lead below subtracted the cover
+   * from the clip's span as if the clip had played under the cover — the
+   * presenter window came out 2.5 s shorter than the clip and the outro tile
+   * cut its last words. planDurationForProps sets this when the measured
+   * length came from `avatarDurationSeconds` (narrationLengthFromProps
+   * `from: "avatar"`); the window then starts at the cover's end and holds the
+   * whole clip. A from-frame-0 voiceover keeps 85E's rule unchanged.
+   */
+  narrationMountsAfterIntro?: boolean
 }
 
 /**
@@ -778,7 +792,7 @@ export function planCompositionDuration(args: PlanArgs): DurationPlan {
   // only the remainder needs body frames. Without this the plan appended the
   // whole narration AFTER a cover it had already played under — intro-seconds
   // of silence before the outro, computed by the model itself (lane 85E).
-  const leadFrames = spec.narrationFrom === "cover" ? spec.introFrames : 0
+  const leadFrames = spec.narrationFrom === "cover" && !args.narrationMountsAfterIntro ? spec.introFrames : 0
   let requestedBodySeconds: number
   if (spokenSeconds !== null && source !== null) {
     const spanSeconds = bodySecondsForNarration(spokenSeconds, source)
@@ -828,7 +842,9 @@ export function planCompositionDuration(args: PlanArgs): DurationPlan {
     compositionId: args.compositionId, purpose, host: spec.host, bodyMode: "narration", fps,
     introFrames: t.intro.durationInFrames, bodyFrames: t.body.durationInFrames, outroFrames: t.outro.durationInFrames,
     durationInFrames: t.totalFrames,
-    narrationWindow: { from: spec.narrationFrom === "cover" ? 0 : t.body.from, to: t.body.from + t.body.durationInFrames },
+    // A from-frame-0 narration (a lead was carried) starts at 0; a presenter clip
+    // mounted after the cover, and every non-cover composition, at the body.
+    narrationWindow: { from: leadFrames > 0 ? 0 : t.body.from, to: t.body.from + t.body.durationInFrames },
     spokenSeconds, spokenSecondsSource: source, requestedBodySeconds, bodySeconds,
     capFrames, clampedToCap, belowPurposeMin, abovePurposeMax, capBelowPurpose, notes,
   }
@@ -953,6 +969,8 @@ export function planDurationForProps(
     purpose,
     geometry: opts.geometry ?? null,
     floorToPurposeMin: length?.from === "copy",
+    // A D-ID clip mounts after the cover (see PlanArgs.narrationMountsAfterIntro).
+    narrationMountsAfterIntro: length?.from === "avatar",
   })
   // Wave 80C: a composition with its OWN pure planner (MemoryVideoReel — the
   // chapters' measured clips) is as long as that planner says, exactly as

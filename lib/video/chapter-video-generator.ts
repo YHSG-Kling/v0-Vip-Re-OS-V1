@@ -487,7 +487,8 @@ Style:
 - Lead with value, not a sales pitch ("them first" — what does the seller get?)
 - Conversational tone — first-person, warm
 - Concrete and specific, not generic
-- Open with a hook, close with a forward-look to the appointment
+- Open with a hook — the seller's situation or one specific fact, never a greeting or a self-introduction
+- Close with ONE no-pressure next step toward the appointment (what to have ready, a question to bring) — never a pitch, no urgency, no guarantees
 - ${targetWordCount(CHAPTER_TARGET_SECONDS_MIN)}-${chapterBudget.maxWords} words (that is ${CHAPTER_TARGET_SECONDS_MIN}-${CHAPTER_TARGET_SECONDS_MAX} seconds at a natural speaking pace)
 
 ${presentationContent ? `Source material from the listing presentation:\n${presentationContent.slice(0, 2000)}\n` : ""}

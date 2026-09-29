@@ -60,6 +60,7 @@ import {
 import { narrationWindowBudget } from "@/lib/video/narration-window"
 import {
   narrationLengthDirective,
+  shortFormStructureDirective,
   fitNarrationToBudget,
   spokenWords,
 } from "@/lib/video/script-structure"
@@ -338,6 +339,7 @@ Field rules:
 - narration: the words the presenter speaks on camera — conversational,
   first person, covers the three takeaways in order, ends by inviting the CTA.
   ${narrationLengthDirective(budget)}
+  ${shortFormStructureDirective({ durationSeconds: budget.compositionSeconds, persona: /seller|homeowner|owner/i.test(args.audience) ? "seller" : /buyer|renter|shopping/i.test(args.audience) ? "buyer" : null })}
   No stage directions, no emojis, plain spoken sentences only.
 
 Non-negotiable rules:

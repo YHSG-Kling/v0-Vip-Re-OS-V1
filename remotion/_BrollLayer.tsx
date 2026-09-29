@@ -30,6 +30,7 @@ import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from "remo
 import { SafeImg } from "./components/SafeImg"
 import { selectBrollPlan } from "../lib/video/broll-plan"
 import { isVideoUrl } from "../lib/video/broll-url"
+import { cinemaFrame } from "../lib/video/cinema-finish"
 import {
   FILM_GRAIN_BACKGROUND_IMAGE, FILM_GRAIN_OVERLAY_OPACITY, VIGNETTE_BACKGROUND_IMAGE,
   handheldDriftOffset,
@@ -434,7 +435,11 @@ const ClipFrame: React.FC<{
 }> = ({ clip, opacity, overlayColor, startFrame, spanFrames, handheldDrift }) => {
   const isVideo = isVideoUrl(clip.url)
   const frame = useCurrentFrame()
-  const { fps } = useVideoConfig()
+  const { fps, width, height } = useVideoConfig()
+  // WAVE 90 (lane 90E): the clip's caption chip sits in the safe TOP-left corner
+  // (cinemaFrame — the ONE safe-area rule), not 32 px from the bottom-left edge
+  // where the platform UI and the burned-in caption band both live.
+  const { safe } = cinemaFrame(width, height)
   // Seeded off startFrame so consecutive clips in the same layer don't drift
   // in lockstep with each other.
   const [driftX, driftY] = handheldDrift && !isVideo ? handheldDriftOffset(frame, fps, startFrame) : [0, 0]
@@ -496,7 +501,7 @@ const ClipFrame: React.FC<{
       )}
       {clip.caption && (
         <div style={{
-          position: "absolute", bottom: 32, left: 32,
+          position: "absolute", top: safe.top, left: safe.left,
           padding: "8px 16px", borderRadius: 6,
           backgroundColor: "rgba(0,0,0,0.55)", color: "#fff",
           fontSize: 18, fontWeight: 500, letterSpacing: 1,
@@ -522,16 +527,21 @@ export const ContextCueRow: React.FC<{
   accentColor: string
   position?:   "top" | "bottom"
 }> = ({ cues, accentColor, position }) => {
+  // WAVE 90 (lane 90E — the lane's real render): the row sits on the frame's
+  // safe top/bottom inset (cinemaFrame — the ONE safe-area rule), never a typed
+  // 24 px: on a 1:1 or 9:16 feed that edge is under the platform's own UI.
+  const { width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
   if (cues.length === 0) return null
   const pos = position ?? "top"
   return (
     <div style={{
       position: "absolute",
-      top:    pos === "top"    ? 24 : "auto",
-      bottom: pos === "bottom" ? 24 : "auto",
+      top:    pos === "top"    ? safe.top : "auto",
+      bottom: pos === "bottom" ? safe.bottom : "auto",
       left: 0, right: 0,
       display: "flex", justifyContent: "center", gap: 8, flexWrap: "wrap",
-      padding: "0 24px",
+      padding: `0 ${safe.left}px`,
     }}>
       {cues.map((cue, i) => (
         <span key={i} style={{

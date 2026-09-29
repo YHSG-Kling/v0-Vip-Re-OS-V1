@@ -46,6 +46,7 @@ import { SafeImg } from "./components/SafeImg"
 import { EndCard } from "./components/EndCard"
 import { KenBurnsPhoto } from "./components/KenBurnsPhoto"
 import { kenBurnsPlan } from "../lib/video/ken-burns-plan"
+import { cinemaFrame } from "../lib/video/cinema-finish"
 import { fitBodyVisualPlan, photoSlotsForSegment, type BodyVisualPlan, type BodyVisualSegment } from "../lib/video/body-visual-model"
 import {
   MEMORY_VIDEO_PAGE_CHARS,
@@ -122,24 +123,35 @@ function pageAt(sellerWords: string, frame: number, durationFrames: number): { p
   return { page: pages[pageIndex] ?? sellerWords, pageIndex, pages }
 }
 
-const ChapterEyebrow: React.FC<{ index: number; total: number; title: string; accentColor: string }> = ({ index, total, title, accentColor }) => (
-  <>
-    <div style={{ position: "absolute", top: 64, left: 100, right: 100, display: "flex", alignItems: "center", gap: 20 }}>
-      <div style={{ fontSize: 22, letterSpacing: 5, color: accentColor, fontWeight: 700, textTransform: "uppercase" }}>
-        Chapter {index + 1} of {total}
+// WAVE 90 (lane 90E — the lane's real render): the eyebrow, its rule, the words
+// strip and the maker's logo sit on the frame's SAFE insets (lib/video/cinema-
+// finish.ts cinemaFrame → the ONE safe-area rule), never a typed 64 / 96 / 48 px
+// — the living-room TV and the portal player paint their own chrome over the
+// top and bottom bands, and the seller's words are the film.
+const ChapterEyebrow: React.FC<{ index: number; total: number; title: string; accentColor: string }> = ({ index, total, title, accentColor }) => {
+  const { width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
+  return (
+    <>
+      <div style={{ position: "absolute", top: safe.top, left: safe.left, right: safe.right, display: "flex", alignItems: "center", gap: 20 }}>
+        <div style={{ fontSize: 22, letterSpacing: 5, color: accentColor, fontWeight: 700, textTransform: "uppercase" }}>
+          Chapter {index + 1} of {total}
+        </div>
+        <div style={{ fontSize: 22, letterSpacing: 3, opacity: 0.6 }}>{title}</div>
       </div>
-      <div style={{ fontSize: 22, letterSpacing: 3, opacity: 0.6 }}>{title}</div>
-    </div>
-    <div style={{ position: "absolute", top: 108, left: 100, width: 120, height: 4, borderRadius: 2, backgroundColor: accentColor }} />
-  </>
-)
+      <div style={{ position: "absolute", top: safe.top + 44, left: safe.left, width: 120, height: 4, borderRadius: 2, backgroundColor: accentColor }} />
+    </>
+  )
+}
 
 /** The seller's words as a caption strip over footage / photos (both media modes). */
 const WordsStrip: React.FC<{ sellerWords: string; frame: number; durationFrames: number }> = ({ sellerWords, frame, durationFrames }) => {
   const { page, pageIndex, pages } = pageAt(sellerWords, frame, durationFrames)
+  const { width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
   const fontSize = Math.max(28, Math.min(40, Math.round(1800 / Math.sqrt(Math.max(60, page.length)))))
   return (
-    <div style={{ position: "absolute", left: 120, right: 120, bottom: 96, padding: "22px 32px", borderRadius: 14, backgroundColor: "rgba(0,0,0,0.55)", color: "#fff" }}>
+    <div style={{ position: "absolute", left: safe.left + 24, right: safe.right + 24, bottom: safe.bottom, padding: "22px 32px", borderRadius: 14, backgroundColor: "rgba(0,0,0,0.55)", color: "#fff" }}>
       <div style={{ fontSize, lineHeight: 1.35, fontWeight: 500 }}>{page}</div>
       {pages.length > 1 && <div style={{ marginTop: 10, fontSize: 18, letterSpacing: 3, opacity: 0.5 }}>{pageIndex + 1} / {pages.length}</div>}
     </div>
@@ -157,7 +169,8 @@ const ChapterScene: React.FC<{
   photoUrls: string[]
 }> = ({ chapter, index, total, brand, segment, plan, mode, photoUrls }) => {
   const frame = useCurrentFrame()
-  const { fps } = useVideoConfig()
+  const { fps, width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
   const enter = interpolate(frame, [0, 16], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   const exit = interpolate(frame, [chapter.durationFrames - 12, chapter.durationFrames], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
 
@@ -234,7 +247,7 @@ const ChapterScene: React.FC<{
         )}
       </AbsoluteFill>
       {brand.logoUrl && (
-        <SafeImg src={brand.logoUrl} style={{ position: "absolute", bottom: 48, right: 100, height: 44, objectFit: "contain", opacity: 0.6 }} />
+        <SafeImg src={brand.logoUrl} style={{ position: "absolute", bottom: safe.bottom, right: safe.right, height: 44, objectFit: "contain", opacity: 0.6 }} />
       )}
     </AbsoluteFill>
   )

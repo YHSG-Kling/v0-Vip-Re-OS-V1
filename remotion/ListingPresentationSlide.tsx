@@ -57,9 +57,10 @@
  * inject whatever it needs without forking compositions.
  */
 import React from "react"
-import { AbsoluteFill, interpolate, useCurrentFrame } from "remotion"
+import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { AvatarPIP } from "./components/AvatarPIP"
+import { cinemaDisclosureStyle, cinemaFrame, cinemaSlideFooterStack } from "../lib/video/cinema-finish"
 
 export type SlideKind = "title" | "image" | "comps" | "chart" | "closing"
 
@@ -103,6 +104,15 @@ export const ListingPresentationSlide: React.FC<ListingPresentationSlideProps> =
 }) => {
   const surface = brand.surfaceColor ?? "#FFFFFF"
   const showEho = brand.showEhoMark ?? true
+  // WAVE 90 (lane 90E — the lane's real render): the footer, the nameplate and
+  // the body's bottom edge come from the ONE slide stack (lib/video/cinema-
+  // finish.ts cinemaSlideFooterStack) — the disclosure ON the safe inset in
+  // readable type, the nameplate above it, the caption band above both, the
+  // body clear of all three. They were a 40 px bar at the bottom edge in 12 px
+  // type, a nameplate 32 px from the edge and a body that ran under the captions.
+  const { width, height } = useVideoConfig()
+  const stack = cinemaSlideFooterStack(width, height)
+  const { safe } = cinemaFrame(width, height)
 
   return (
     <AbsoluteFill style={{
@@ -115,7 +125,7 @@ export const ListingPresentationSlide: React.FC<ListingPresentationSlideProps> =
         position: "absolute", top: 0, left: 0, right: 0, height: 80,
         backgroundColor: brand.primaryColor, color: "#fff",
         display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "0 48px",
+        padding: `0 ${safe.left}px`,
       }}>
         {brand.logoUrl ? (
           <SafeImg src={brand.logoUrl} style={{ height: 40, objectFit: "contain" }} />
@@ -127,10 +137,10 @@ export const ListingPresentationSlide: React.FC<ListingPresentationSlideProps> =
         </div>
       </div>
 
-      {/* Body region — varies by slide kind */}
+      {/* Body region — varies by slide kind; its bottom edge clears the footer stack. */}
       <div style={{
-        position: "absolute", top: 80, left: 0, right: 0, bottom: 120,
-        padding: "48px 56px",
+        position: "absolute", top: safe.top, left: 0, right: 0, bottom: stack.bodyBottom,
+        padding: `24px ${safe.left}px 16px`,
       }}>
         {kind === "title" && (
           <TitleSlideBody title={title} body={body} accentColor={brand.accentColor} />
@@ -164,22 +174,22 @@ export const ListingPresentationSlide: React.FC<ListingPresentationSlideProps> =
         ringWidth={5}
       />
 
-      {/* Bottom-left agent name plate */}
+      {/* Bottom-left agent name plate — one line above the disclosure, on the safe side inset. */}
       <div style={{
-        position: "absolute", bottom: 32, left: 56,
+        position: "absolute", bottom: stack.nameplateBottom, left: safe.left,
         display: "flex", alignItems: "center", gap: 12,
       }}>
         <div style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: brand.accentColor }} />
-        <div style={{ fontSize: 18, fontWeight: 600, color: brand.primaryColor }}>{agentName}</div>
+        <div style={{ fontSize: 22, fontWeight: 600, color: brand.primaryColor }}>{agentName}</div>
       </div>
 
-      {/* Footer attribution */}
+      {/* Footer: the decorative brand bar fills the unsafe band (no text in it); the
+          disclosure line sits ON the safe inset at the caption type step. */}
       <div style={{
-        position: "absolute", bottom: 0, left: 0, right: 0, height: 40,
-        backgroundColor: brand.primaryColor, color: "#fff", opacity: 0.85,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 12, letterSpacing: 1,
-      }}>
+        position: "absolute", bottom: 0, left: 0, right: 0, height: stack.footerBarHeight,
+        backgroundColor: brand.primaryColor, opacity: 0.9,
+      }} />
+      <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height), bottom: stack.disclosureBottom, color: brand.primaryColor, opacity: 0.9 }}>
         {brand.brokerageName}
         {showEho && " · Equal Housing Opportunity"}
         {brand.licenseLine && ` · ${brand.licenseLine}`}

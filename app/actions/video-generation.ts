@@ -53,7 +53,7 @@ import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 // THE ONE speaking-pace vocabulary (§6). The word counts a duration tier asks
 // for are DERIVED from its declared seconds at WORDS_PER_MINUTE — never a
 // second hand-typed range beside the seconds they restate.
-import { targetWordCount } from "@/lib/video/script-structure"
+import { targetWordCount, shortFormStructureDirective } from "@/lib/video/script-structure"
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 //
@@ -1400,11 +1400,11 @@ Tone: ${toneMap[params.tone || "friendly"] || "warm and professional"}
 Length: ${lengthLine}
 Contact Name: ${params.contactName}
 ${params.keyPoints?.trim() ? `\nKey points this script must cover:\n${params.keyPoints.trim()}\n` : ""}
+${shortFormStructureDirective({ durationSeconds: tierSeconds[0], persona: /seller|owner/i.test(personaKey) ? "seller" : /buyer|renter|investor/i.test(personaKey) ? "buyer" : null })}
+
 Requirements:
-- Start with a strong hook in the first 5 seconds
 - Be authentic and conversational
 - Include specific value propositions
-- End with a clear call-to-action
 - Use "you" and "your" language
 - No filler words or corporate jargon
 - Make it feel personal and genuine

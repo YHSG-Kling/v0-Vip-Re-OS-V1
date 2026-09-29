@@ -272,8 +272,10 @@ ${renderTopicsForPrompt(topics)}
 Subject line of the newsletter email: ${camp.subject_line ?? camp.campaign_name ?? "This week's market digest"}
 What's IN the email (supporting context, not the lead): ${sectionTitles.join(", ") || "Market Update, New Listings, Local News"}
 
-Style: first-person, warm, professional. Open with the value hook. Close
-with "Open the email for the full breakdown." or equivalent.
+Style: first-person, warm, professional. Open with the value hook (never a
+greeting or a self-introduction). Close with "Open the email for the full
+breakdown." or equivalent — that one soft ask is the whole close: no urgency,
+no pitch, no guarantees.
 Banned: protected-class refs (race, religion, family status, etc.);
 phrases like "perfect for families"; rate / valuation / appreciation
 guarantees; exclamation marks.

@@ -35,7 +35,11 @@ import { BrollLayer, ContextCueRow, type BrollClip } from "./_BrollLayer"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import type { CaptionCue } from "../lib/video/caption-plan"
-import { cinemaDisclosureStyle, cinemaFrame } from "../lib/video/cinema-finish"
+import { cinemaBadgeSlot, cinemaDisclosureStyle, cinemaFrame } from "../lib/video/cinema-finish"
+
+/** Clearance the presenter ring keeps above the highlight-chip row (the chips' own
+ *  height — value 36 + label 14 + 6 + 32 padding ≈ 92 px — plus a body-step gap). */
+const CHIP_ROW_CLEARANCE = 116
 
 export interface NeighborhoodHighlight {
   /** Short label — "Median price", "Walk score". 1-3 words. */
@@ -110,6 +114,14 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
   const overlay  = `${brand.primaryColor}A6`  // ~65% alpha — clips still readable
   const { durationInFrames, width, height } = useVideoConfig()
   const { safe } = cinemaFrame(width, height)
+  // WAVE 90 (lane 90E — the lane's real render): the highlight chips sat 56 px
+  // from the bottom edge (under the platform UI AND under the burned-in caption
+  // band), the presenter ring at a typed 160 px (across the caption band), the
+  // cue row 24 px from the top. The chips row now sits in the badge slot above
+  // the caption band (cinemaBadgeSlot — the same rule the QR badge and the EHO
+  // pill follow), the ring above the chips, the cue row on the safe top inset
+  // and the tagline below it.
+  const badge    = cinemaBadgeSlot(width, height)
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const BODY     = timeline.body.durationInFrames
 
@@ -161,7 +173,7 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
       <Sequence from={COVER} durationInFrames={BODY}>
         <AbsoluteFill style={{
           display: "flex", flexDirection: "column", justifyContent: "space-between",
-          padding: 56,
+          padding: `${safe.top + 52}px ${safe.right}px ${badge.bottom}px ${safe.left}px`,
         }}>
           {/* Top tagline */}
           <div style={{
@@ -176,7 +188,7 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
           {/* Optional agent PIP — small, bottom-left */}
           {(avatarVideoUrl || agentPhotoUrl) && (
             <div style={{
-              position: "absolute", bottom: 160, left: safe.left,
+              position: "absolute", bottom: badge.bottom + CHIP_ROW_CLEARANCE, left: safe.left,
               width: 180, height: 180, borderRadius: 90,
               boxShadow: `0 0 0 4px ${brand.accentColor}`,
               overflow: "hidden", backgroundColor: brand.primaryColor,

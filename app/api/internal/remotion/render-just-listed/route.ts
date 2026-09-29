@@ -585,7 +585,7 @@ Use ONLY these facts — do not invent:
 - Sq ft: ${args.facts.sqft || "(omitted)"}
 - Property type: ${args.facts.property_type || "(omitted)"}
 
-Style: first-person, energetic but professional. Lead with the hook, hit the strongest 1-2 facts, close with "DM me to tour."
+Style: first-person, energetic but professional. Lead with the hook (the strongest fact, never a greeting), hit the strongest 1-2 facts, close with "DM me to tour." — that ONE soft ask is the whole close: no urgency ("act now", "won't last"), no pitch, no guarantees.
 Banned: protected-class refs (race, religion, family status, national origin, gender, sexual orientation, disability, source of income); phrases like "perfect for families" or "ideal starter home"; rate/valuation/appreciation guarantees; exclamation marks.
 ${narrationLengthDirective(budget)}
 Return ONLY the script text the avatar will speak — no scene directions.`) + violationLine

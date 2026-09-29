@@ -541,5 +541,24 @@ export function stagesSpeech(
   compositionId: string | null | undefined,
   props: Record<string, unknown> | null | undefined,
 ): boolean {
-  return stagesVoiceover(compositionId, props) || isSupplied(props?.avatarVideoUrl)
+  return stagesVoiceover(compositionId, props) || isSupplied(props?.avatarVideoUrl) || stagesChapteredSpeech(props)
+}
+
+/**
+ * WAVE 90 (lane 90E — found by the timeline proof, confirmed on the lane's
+ * real render of MemoryVideoReel). The memory film's narration is the SELLER'S
+ * OWN recording per chapter — `chapters[].voiceoverUrl` (an <Audio> in each
+ * chapter scene) or `chapters[].videoUrl` (the seller on camera, the clip's own
+ * sound) — never a root `voiceoverUrl` and never an avatar clip, so the two
+ * arms above said "no speech" and the bed was mixed at one constant level
+ * straight through the family's story, unducked. Speech is speech wherever the
+ * composition plays it. PURE.
+ */
+export function stagesChapteredSpeech(props: Record<string, unknown> | null | undefined): boolean {
+  const chapters = props?.chapters
+  if (!Array.isArray(chapters)) return false
+  return chapters.some((c) => {
+    const ch = c as Record<string, unknown> | null
+    return !!ch && (isSupplied(ch.voiceoverUrl) || isSupplied(ch.videoUrl))
+  })
 }
