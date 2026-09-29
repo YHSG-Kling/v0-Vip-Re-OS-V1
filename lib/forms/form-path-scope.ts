@@ -16,7 +16,8 @@
  *   filled/{userId | offerId}/… filled copies written by prefillStorageFormAction
  */
 
-export type FormPathOwner =
+// File-local (opposite-missing cat 3, lane 89E): no other file names this type.
+type FormPathOwner =
   | { kind: "brokerage"; id: string }
   | { kind: "team"; id: string }
   | { kind: "agent"; id: string }

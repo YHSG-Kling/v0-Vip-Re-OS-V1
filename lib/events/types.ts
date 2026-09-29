@@ -54,6 +54,11 @@ export const EVENT_TYPES = {
   VIDEO_PUBLISHED: "video.published",
   VIDEO_HIGH_ENGAGEMENT: "video.high_engagement",
   IMAGE_GENERATED: "image.generated",
+  // Wave 89 (lane 89E, census round 34 — event-flow known gaps → handlers BUILT).
+  // Both were audit-echo inserts straight into lifecycle_events (dispatched to
+  // nobody). Emitted through the dispatching helpers now; routed below.
+  ONBOARDING_STALLED: "onboarding.stalled",
+  AGENT_DELEGATED_TO_AI: "agent.delegated_to_ai",
   AI_SUGGESTION_CREATED: "ai.suggestion_created",
   AI_SUGGESTION_ACTIONED: "ai.suggestion_actioned",
   // The client-portal journey (lanes 86F/86F2). All three are emitted from

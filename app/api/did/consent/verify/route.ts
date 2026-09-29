@@ -60,7 +60,10 @@ export async function POST(request: NextRequest) {
 
   if (!result.ok) {
     const failure = result.failure!
-    await supabase.from("agent_did_consents").update({
+    // supabase-js RESOLVES a refusal (CLAUDE.md §3): the verdict write is read,
+    // and a refused one rides the response — the agent's next attempt reads the
+    // row's status, so a verdict that never landed must not be reported as one.
+    const { error: verdictErr } = await supabase.from("agent_did_consents").update({
       // A retryable provider blip leaves the row PENDING so the agent can
       // simply try again against the same passcode; only a real rejection
       // marks it failed.
@@ -69,20 +72,41 @@ export async function POST(request: NextRequest) {
       source_url: body.source_url,
       updated_at: new Date().toISOString(),
     }).eq("id", row.id)
+    if (verdictErr) console.error("[did-consent-verify] verdict write refused for consent row", row.id, verdictErr.message)
 
     return NextResponse.json(
-      { error: failure.userMessage, kind: failure.kind, retryable: failure.retryable },
+      {
+        error: verdictErr
+          ? `${failure.userMessage} (the verdict could not be recorded on your consent row: ${verdictErr.message})`
+          : failure.userMessage,
+        kind: failure.kind,
+        retryable: failure.retryable,
+      },
       { status: failure.retryable ? 503 : 422 },
     )
   }
 
-  await supabase.from("agent_did_consents").update({
+  // D-ID verified the recording. If OUR row refuses the 'verified' stamp the
+  // agent is not verified as far as every consent gate reads (findVerifiedConsent
+  // reads status='verified'), so this cannot answer {status:"verified"}.
+  const { error: verifiedErr } = await supabase.from("agent_did_consents").update({
     status: "verified",
     failure_reason: null,
     source_url: body.source_url,
     verified_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }).eq("id", row.id)
+  if (verifiedErr) {
+    console.error("[did-consent-verify] D-ID verified consent", body.consent_id, "but the agent_did_consents row refused status=verified:", verifiedErr.message)
+    return NextResponse.json(
+      {
+        error: `D-ID verified your recording, but the consent row could not be marked verified: ${verifiedErr.message}. Submit again — the same passcode still applies.`,
+        kind: "ConsentRowWriteRefused",
+        retryable: true,
+      },
+      { status: 503 },
+    )
+  }
 
   return NextResponse.json({ status: "verified", consent_id: body.consent_id })
 }

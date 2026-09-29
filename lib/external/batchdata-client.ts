@@ -34,14 +34,20 @@ export class BatchDataClient {
    * and booked NOTHING on vendor_usage_tracking — the platform ledger's BatchData line was the
    * wallet reconcile's drift, never a per-source cost. The cron now books this figure per source.
    */
-  async getMotivatedSellerDataWithCost(location: string, motivationTypes?: string[]): Promise<{ records: BatchDataRecord[]; cost: number }> {
+  async getMotivatedSellerDataWithCost(location: string, motivationTypes?: string[], window?: MotivatedPullWindow): Promise<{ records: BatchDataRecord[]; cost: number }> {
     const [city, state] = location.includes(',')
       ? location.split(',').map(s => s.trim())
       : ['', location]
     // motivationTypes lets a caller target a SPECIFIC trigger as its own search (e.g. ['expired'] for
     // expired listings) — fetchMotivatedSellers labels every returned record with types[0], so each
     // trigger must be pulled trigger-by-trigger. Omitted → the default motivated-seller trio.
-    const r = await fetchMotivatedSellers({ state: state || location, city: city || undefined, motivationTypes })
+    // Lane 89E — a single-trigger pull may carry the market's DATE WINDOW (dateWindowCriteria):
+    // "same-day" court/recorder filings become a recording-date floor on the V1 pull instead of
+    // re-billing the same oldest 100 records every run.
+    const searchCriteria = window && motivationTypes && motivationTypes.length === 1
+      ? dateWindowCriteria(motivationTypes[0], window)
+      : undefined
+    const r = await fetchMotivatedSellers({ state: state || location, city: city || undefined, motivationTypes, searchCriteria })
     return { records: r.records, cost: r.cost }
   }
 }
@@ -627,6 +633,54 @@ export interface FetchMotivatedSellersOptions {
   searchCriteria?: Record<string, unknown>
   limit?: number
   skip?: number
+}
+
+/**
+ * Lane 89E — THE DATE WINDOW on a V1 motivated pull (lane 88G's open item: "BatchData filter
+ * field shapes unresolved … with them, 'same-day' becomes a recording-date window on the V1 pull").
+ *
+ * The shapes, CONFIRMED two ways without a paid call: (1) BatchData's own MCP search schema
+ * publishes `min_foreclosure_recording_date`, `min_auction_date`, `min_tax_delinquent_year`,
+ * `min_last_sale_date` (YYYY-MM-DD) as Property Search filters; (2) the published SDK that
+ * mirrors the v1 request schema (@land-catalyst/batch-data-sdk) serialises them under
+ * `searchCriteria` as `foreclosure.recordingDate {minDate,maxDate}`,
+ * `foreclosure.auctionDate {minDate,maxDate}`, `tax.taxDelinquentYear {min,max}` and
+ * `sale.lastSaleDate {minDate,maxDate}` — the same nested `{min,max}` grammar the pull already
+ * uses for `valuation.equityPercent`. NOT wired (unresolved, no evidence of the key): a listing
+ * DATE filter for expired / canceled / failed listings — those pulls stay window-less.
+ *
+ * PURE. Returns the searchCriteria fragment for ONE canonical trigger, or {} when the trigger
+ * has no dated field or the window is unset (a pull without a window is the wave-88 pull,
+ * unchanged). Merged verbatim by buildPropertySearchBody's passthrough.
+ */
+export interface MotivatedPullWindow {
+  /** lead_scraping_motivated_params.lookback_days — null/0 = no window. */
+  lookbackDays?: number | null
+  /** Injected by proofs; the clock otherwise. */
+  today?: Date
+}
+const isoDay = (d: Date) => d.toISOString().slice(0, 10)
+export function dateWindowCriteria(trigger: string, window: MotivatedPullWindow): Record<string, unknown> {
+  const days = window.lookbackDays
+  if (typeof days !== 'number' || !Number.isFinite(days) || days <= 0) return {}
+  const today = window.today ?? new Date()
+  const floor = isoDay(new Date(today.getTime() - Math.floor(days) * 86_400_000))
+  switch (canonicalTrigger(trigger)) {
+    // Recorder filings — the filing's own recording date is the freshness signal.
+    case 'pre_foreclosure':
+    case 'notice_of_default':
+    case 'lis_pendens':
+    case 'foreclosure':
+      return { foreclosure: { recordingDate: { minDate: floor } } }
+    // An auction is a FUTURE date: "upcoming" means from today forward, never a look-back.
+    case 'auction':
+      return { foreclosure: { auctionDate: { minDate: isoDay(today) } } }
+    // Tax default is kept by YEAR: a lookback in days becomes the earliest delinquent year.
+    case 'tax_lien':
+      return { tax: { taxDelinquentYear: { min: today.getUTCFullYear() - Math.max(1, Math.ceil(days / 365)) } } }
+    default:
+      return {}
+  }
 }
 
 /** Keep only valid BatchData quickList slugs (supports the "not-" exclude prefix), capped at 3. */

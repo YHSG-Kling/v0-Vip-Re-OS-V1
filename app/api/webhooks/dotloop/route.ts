@@ -145,18 +145,16 @@ export async function POST(request: NextRequest) {
         // payload and the actor is left to the core (no user acted here).
         const docBrokerageId = (doc.brokerage_id as string | null) ?? null
         if (loopFullyExecuted && doc.transaction_id && docBrokerageId) {
-          // Legacy event
-          const legacy = await recordLifecycleEvent(supabase, docBrokerageId, {
-            event_type: "transaction.documents_complete",
-            payload: {
-              transactionId: doc.transaction_id,
-              loopId: loop_id,
-              contact_id: doc.contact_id ?? undefined,
-            },
-            source: "webhook",
-            dedupe_key: `docs-complete-${doc.transaction_id}`,
-          })
-          if (!legacy.ok) console.error("[dotloop-webhook] documents_complete event not recorded:", legacy.error)
+          // TOMBSTONE (wave 89, lane 89E — census round 34, orphan doctrine §1.1):
+          // the "legacy" `transaction.documents_complete` event that was recorded
+          // here beside the normalized one was a DUPLICATE with no reader — no
+          // orchestrator handler, no chain trigger, no timeline or readiness
+          // reader named it (the only in-tree mention was the event-flow
+          // baseline that listed it as a known gap). Its payload (transactionId,
+          // loopId, contact_id) is carried in full by the survivor below,
+          // `provider.signatures.complete` (dedupe_key provider-sigs-complete-<tx>),
+          // whose activity twin lib/listing-lifecycle/readiness-checker.ts reads.
+          // Deleted onto that survivor; nothing merged because nothing was missing.
 
           // Normalized provider event
           const normalized = await recordLifecycleEvent(supabase, docBrokerageId, {

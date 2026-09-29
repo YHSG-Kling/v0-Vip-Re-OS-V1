@@ -23,9 +23,10 @@ import { prefillPropertyIntoPdf } from "@/lib/forms/prefill-property-into-pdf"
 import { fillPdfForm, readPdfTextFields, type PdfFieldValue } from "@/lib/forms/pdf-form-fill"
 import { buildPartyPrefill, type DealParties } from "@/lib/forms/party-prefill"
 import { checkFormPathsInScope } from "@/lib/forms/form-path-scope"
+// ONE bucket name (§6): survivor lib/esign/dispatch-packet.ts::FORMS_BUCKET (lane 89E).
+import { FORMS_BUCKET } from "@/lib/esign/dispatch-packet"
 import { resolveKnownPropertyFacts } from "@/lib/intelligence/offer-property-prefill-runner"
 
-const FORMS_BUCKET = "brokerage-forms"
 const FILLED_BUCKET = "brokerage-forms" // filled copies live alongside, under a filled/ prefix
 
 export interface PrefillStorageFormInput {

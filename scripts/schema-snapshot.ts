@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-09-29
  * source: public.live_schema_json()
- * body-sha256: eb054f0360929aba89d3f9cb6a35ef5b58269874c24142caf416c79f3d436204
+ * body-sha256: 760d1af51bf5e6eb22ebba5117724bb9bbb7dec09797ded0d1745bbbef65804f
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -322,7 +322,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   gamification_badges: ["badge_category", "badge_description", "badge_icon", "badge_name", "badge_tier", "brokerage_id", "created_at", "id", "is_active", "required_points", "trigger_event"],
   generated_documents: ["agent_id", "blob_id", "blob_url", "brokerage_id", "contact_id", "created_at", "document_type", "file_name", "file_size", "id", "listing_id", "metadata", "transaction_id"],
   gift_vendors: ["agent_id", "brokerage_id", "category", "contact_name", "created_at", "email", "id", "is_active", "name", "notes", "phone", "updated_at", "website"],
-  global_settings: ["additional_settings", "agent_notification_enabled", "airtable_api_key", "app_logo_url", "app_name", "brokerage_id", "buyer_notification_enabled", "created_at", "created_by_user_id", "currency_symbol", "date_format", "email_notifications_enabled", "fiscal_year_start", "font_family", "from_email", "from_name", "ghl_api_key", "id", "primary_color", "push_notifications_enabled", "secondary_color", "seller_notification_enabled", "sms_notifications_enabled", "smtp_host", "smtp_password", "smtp_port", "smtp_username", "timezone", "updated_at", "zapier_api_key"],
+  global_settings: ["additional_settings", "agent_notification_enabled", "airtable_api_key", "app_logo_url", "app_name", "brokerage_id", "buyer_notification_enabled", "created_at", "created_by_user_id", "currency_symbol", "date_format", "email_notifications_enabled", "fiscal_year_start", "font_family", "from_email", "from_name", "ghl_api_key", "id", "primary_color", "push_notifications_enabled", "secondary_color", "seller_notification_enabled", "sms_notifications_enabled", "smtp_host", "smtp_password", "smtp_port", "smtp_username", "timezone", "updated_at"],
   google_search_activity: ["brokerage_id", "detected_at", "detected_intent", "id", "lead_id", "scraped_via", "search_location", "search_patterns", "search_terms"],
   google_search_intelligence: ["brokerage_id", "detected_location", "id", "potential_leads_count", "related_searches", "scraped_at", "search_query", "trend"],
   hashtag_performance: ["agent_id", "avg_engagement", "brokerage_id", "engagement", "hashtag", "id", "last_used_at", "platform", "posts_count", "reach"],
@@ -354,7 +354,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   lead_engagement_scores: ["brokerage_id", "calculated_at", "created_at", "email_engagement_score", "frequency_score", "id", "lead_id", "monetary_potential_score", "overall_score", "property_interest_score", "recency_score", "response_rate_score", "score_breakdown", "website_engagement_score"],
   lead_enrichment_queue: ["brokerage_id", "completed_at", "confidence_score", "contact_id", "enrichment_cost", "enrichment_results", "enrichment_type", "enrichments_needed", "error_message", "id", "lead_id", "max_retries", "queued_at", "retry_count", "status", "trigger_type"],
   lead_idx_property_interactions: ["brokerage_id", "contact_id", "created_at", "id", "interaction_metadata", "interaction_type", "lead_id", "mls_number", "notes", "occurred_at", "property_address", "property_details", "property_id", "requested_showing", "saved", "shared", "view_duration_seconds"],
-  lead_imports: ["agent_id", "brokerage_id", "completed_at", "created_at", "created_count", "error_details", "failed_count", "field_map", "file_name", "file_url", "id", "merged_count", "skipped_count", "status", "total_rows"],
+  lead_imports: ["agent_id", "brokerage_id", "completed_at", "created_at", "created_count", "error_details", "failed_count", "field_map", "file_name", "file_url", "id", "list_cost_usd", "merged_count", "skipped_count", "status", "total_rows"],
   lead_intelligence: ["ai_summary", "brokerage_id", "buyer_seller_type", "created_at", "current_housing", "data_sources", "deal_breakers", "financial_readiness", "id", "identified_interests", "last_analyzed_at", "last_enriched_at", "lead_id", "location_preferences", "motivation_score", "must_haves", "nice_to_haves", "pre_approval_amount", "pre_approved", "price_range", "property_preferences", "property_type", "qualification_score", "readiness_score", "reason_for_move", "timeline", "updated_at"],
   lead_osint_data: ["brokerage_id", "confidence_score", "data_content", "data_source", "data_type", "enriched_at", "id", "lead_id"],
   lead_people_data: ["brokerage_id", "contact_enrichment", "created_at", "data_source", "demographic_data", "employment_data", "enriched_at", "financial_indicators", "id", "last_enriched_at", "lead_id", "life_events", "social_presence", "updated_at"],

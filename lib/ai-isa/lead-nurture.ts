@@ -249,23 +249,33 @@ async function proposeEmailVideo(
     videoStatus = reel.status
 
     // Stamp the lead association onto the reel's video_metadata (no lead_id column)
-    // so the delivery side + analytics can resolve the lead from the project. Best-
-    // effort, idempotent (merges into existing metadata).
+    // so the delivery side + analytics can resolve the lead from the project.
+    // Idempotent (merges into existing metadata). NOT best-effort any more: the
+    // delivery side resolves the LEAD from this stamp, so a refused stamp (RLS,
+    // a CHECK, PGRST204 — supabase-js resolves them all, CLAUDE.md §3) means the
+    // reel cannot be delivered to the right person; the refusal is read and the
+    // email proposal is NOT made against an unstamped reel.
     if (videoProjectId) {
-      const { data: vp } = await supabase
+      const { data: vp, error: vpReadErr } = await supabase
         .from("ai_video_projects")
         .select("video_metadata")
         .eq("id", videoProjectId)
         .maybeSingle()
+      if (vpReadErr) {
+        return { staged: true, videoProjectId, status: videoStatus, reason: `reel video_metadata read refused: ${vpReadErr.message}` }
+      }
       const md = ((vp as { video_metadata?: Record<string, unknown> } | null)?.video_metadata ?? {}) as Record<string, unknown>
       if (md.lead_id !== args.leadId || md.delivery_channel !== "email") {
-        await supabase
+        const { error: stampErr } = await supabase
           .from("ai_video_projects")
           .update({
             video_metadata: { ...md, lead_id: args.leadId, delivery_channel: "email", requested_via: "ai_isa_lead_nurture" },
             updated_at: new Date().toISOString(),
           })
           .eq("id", videoProjectId)
+        if (stampErr) {
+          return { staged: true, videoProjectId, status: videoStatus, reason: `lead stamp on the reel refused (${stampErr.message}) — email delivery not proposed against an unstamped reel` }
+        }
       }
     }
   } catch (e) {

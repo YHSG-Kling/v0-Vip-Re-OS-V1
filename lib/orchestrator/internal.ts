@@ -52,6 +52,8 @@ import {
   reactToJourneyAllTasksDone,
 } from "@/lib/portal/journey-event-handlers"
 import { writeSevenDayNurturePlan } from "@/lib/copilot/seven-day-plan"
+import { reactToOnboardingStalled } from "@/lib/onboarding/stalled-onboarding-reaction"
+import { reactToAgentDelegatedToAi } from "@/lib/portal-stream/ai-delegation-reaction"
 import {
   reactToVideoReady,
   reactToVideoScriptApproved,
@@ -230,6 +232,9 @@ const EVENT_HANDLERS: Record<string, EventHandlerInvoker> = {
   "journey.task_completed": async (e) => mustSucceed("journey task notification", reactToJourneyTaskCompleted(createServiceClient(), e.brokerage_id, e.payload ?? {})),
   "journey.stage_completed": async (e) => mustSucceed("journey stage message", reactToJourneyStageCompleted(createServiceClient(), e.brokerage_id, e.payload ?? {})),
   "journey.all_tasks_done": async (e) => mustSucceed("journey complete message", reactToJourneyAllTasksDone(createServiceClient(), e.brokerage_id, e.payload ?? {})),
+  // Wave 89 lane 89E — two former audit-only echoes with a stated downstream intent and no reader.
+  "onboarding.stalled": async (e) => mustSucceed("stalled-onboarding nudge", reactToOnboardingStalled(createServiceClient(), e.brokerage_id, e.payload ?? {})),
+  "agent.delegated_to_ai": async (e) => mustSucceed("AI-delegated reply draft", reactToAgentDelegatedToAi(createServiceClient(), e.brokerage_id, e.payload ?? {})),
 }
 
 /**
@@ -387,6 +392,8 @@ export async function orchestrateEvent(event: Event): Promise<void> {
       case EVENT_TYPES.JOURNEY_TASK_COMPLETED:
       case EVENT_TYPES.JOURNEY_STAGE_COMPLETED:
       case EVENT_TYPES.JOURNEY_ALL_TASKS_DONE:
+      case EVENT_TYPES.ONBOARDING_STALLED:
+      case EVENT_TYPES.AGENT_DELEGATED_TO_AI:
         results.push(await dispatchRegistered(event))
         break
 

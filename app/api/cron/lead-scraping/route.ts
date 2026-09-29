@@ -533,8 +533,13 @@ export async function GET(request: Request) {
       // (PGRST204, measured 2026-09-28: 0 rows), so no row could ever exist and the default-ON
       // batchdata_motivated source never ran. A row with is_active=false still turns it off.
       if (enabledSources.has("batchdata_motivated") || enabledSources.has("expired_listing")) {
-        const motivatedParams: { is_active?: boolean | null; signal_types?: string[] | null } =
+        const motivatedParams: { is_active?: boolean | null; signal_types?: string[] | null; lookback_days?: number | null } =
           market.lead_scraping_motivated_params?.[0] ?? { is_active: true, signal_types: [] }
+        // Lane 89E — the market's lookback_days (lane 88G's admin door writes it) becomes a DATE
+        // WINDOW on each single-trigger pull (dateWindowCriteria): recorder filings newer than the
+        // window, auctions from today forward, tax default by year. No row / no lookback = the
+        // window-less pull of wave 88, unchanged.
+        const pullWindow = { lookbackDays: motivatedParams.lookback_days ?? null }
         if (motivatedParams.is_active !== false) {
           // STEP 5 — open scraper_executions record
           const { data: execRecord, error: execOpenErr } = await supabase
@@ -584,7 +589,7 @@ export async function GET(request: Request) {
             // across the batch as raw_scraped_leads.cost_per_record — both were missing (null / no
             // ledger row), so a BatchData lead's cost-per-lead read $0 and the wallet reconcile's
             // estimate for 'batchdata' never included the platform's biggest scrape.
-            const motivatedPulls = await Promise.all(motivatedTriggers.map((t) => batchdata.getMotivatedSellerDataWithCost(location, [t])))
+            const motivatedPulls = await Promise.all(motivatedTriggers.map((t) => batchdata.getMotivatedSellerDataWithCost(location, [t], pullWindow)))
             const expiredPull = enabledSources.has("expired_listing")
               ? await batchdata.getMotivatedSellerDataWithCost(location, ["expired"])
               : { records: [], cost: 0 }

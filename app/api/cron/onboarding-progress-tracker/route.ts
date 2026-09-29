@@ -1,4 +1,3 @@
-import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import {
 NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -22,12 +21,16 @@ export const dynamic = "force-dynamic"
  *
  * Stalled =
  *   - status='in_progress'
- *   - last_nudge_sent_at IS NULL OR last_nudge_sent_at < now() - 7 days
- *   - current_day or start_date >= 2 days ago (give the actor breathing room)
+ *   - additional_data.last_nudge_sent_at IS NULL OR < now() - 7 days
+ *   - start_date >= 2 days ago (give the actor breathing room)
  *
- * For each stalled row we emit a lifecycle_event so downstream surfaces
- * (notifications, agent action queue, portal feed) can act. We also
- * update last_nudge_sent_at to avoid re-nudging the same row.
+ * For each stalled row the cron EMITS `onboarding.stalled` through the
+ * orchestrator (emitEventFromCron); the reaction — the bell to the stalled
+ * person, and to the brokerage's admins on a repeat stall — lives in
+ * lib/onboarding/stalled-onboarding-reaction.ts (wave 89, lane 89E: until then
+ * the row was an audit echo nobody handled and "nudged" meant a timestamp).
+ * additional_data.last_nudge_sent_at is MERGED in afterwards so the same row is
+ * not re-nudged inside a week.
  */
 
 export async function GET(request: NextRequest) {
@@ -54,36 +57,63 @@ export async function GET(request: NextRequest) {
 
   try {
     // ── Agent / TC / ISA / team_lead onboarding nudges ──────────────────
-    const { data: agentRows } = await svc
+    // Wave 89 (lane 89E — census round 34). Three defects in this loop, all fixed
+    // in place:
+    //   1. the header promised "last_nudge_sent_at IS NULL OR < now() - 7 days"
+    //      but the query never read it — every in-progress row older than two
+    //      days was "nudged" on EVERY run;
+    //   2. "nudged" was a lifecycle_events row inserted straight into the table
+    //      (an audit echo dispatched to nobody) plus a timestamp — NO NUDGE WAS
+    //      SENT. The event is now EMITTED (emitEventFromCron → orchestrator →
+    //      EVENT_TYPES.ONBOARDING_STALLED → lib/onboarding/stalled-onboarding-
+    //      reaction.ts), and the reaction is the bell;
+    //   3. the stamp overwrote the WHOLE additional_data jsonb with one key.
+    const { data: agentRows, error: agentRowsErr } = await svc
       .from("agent_onboarding")
-      .select("id, user_id, brokerage_id, agent_id, start_date, current_day, completion_percentage")
+      .select("id, user_id, brokerage_id, agent_id, start_date, current_day, completion_percentage, additional_data")
       .eq("status", "in_progress")
       .lt("start_date", twoDaysAgo)
       .limit(100)
+    if (agentRowsErr) errors.push(`agent_onboarding read refused: ${agentRowsErr.message}`)
 
+    const { emitEventFromCron } = await import("@/lib/orchestrator/internal")
     for (const r of (agentRows ?? []) as Array<{
       id: string; user_id: string | null; brokerage_id: string;
       agent_id: string; current_day: number; completion_percentage: number;
+      additional_data: Record<string, unknown> | null;
     }>) {
-      // Emit a lifecycle_event for each stalled actor
-      await sentinelWrite(svc, svc.from("lifecycle_events").insert({
+      const extra = (r.additional_data && typeof r.additional_data === "object") ? r.additional_data : {}
+      const lastNudge = typeof extra.last_nudge_sent_at === "string" ? extra.last_nudge_sent_at : null
+      if (lastNudge && lastNudge >= sevenDaysAgo) continue // nudged this week already
+      if (!r.user_id) { errors.push(`agent_onboarding ${r.id}: no user_id — nobody to nudge`); continue }
+
+      const emitted = await emitEventFromCron({
+        brokerage_id: r.brokerage_id,
+        user_id:      r.user_id,
         event_type:   "onboarding.stalled",
+        source:       "cron",
         entity_type:  "agent_onboarding",
         entity_id:    r.id,
-        brokerage_id: r.brokerage_id,
-        actor_user_id: r.user_id,
-        metadata: {
-          actor_kind:        "agent_or_staff",
-          completion_pct:    r.completion_percentage,
-          current_day:       r.current_day,
+        // One nudge per row per week; the reaction is idempotent on this key.
+        dedupe_key:   `onboarding.stalled:${r.id}:${new Date().toISOString().slice(0, 10)}`,
+        payload: {
+          onboarding_id:  r.id,
+          user_id:        r.user_id,
+          actor_kind:     "agent_or_staff",
+          completion_pct: r.completion_percentage,
+          current_day:    r.current_day,
+          repeat:         !!lastNudge,
         },
-        created_at: new Date().toISOString(),
-      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
-      // No nudge_sent_at column on agent_onboarding — use additional_data jsonb
-      await sentinelWrite(svc, svc
+      })
+      if (!emitted.eventId) { errors.push(`agent_onboarding ${r.id}: onboarding.stalled not recorded${emitted.error ? ` — ${emitted.error}` : ""}`); continue }
+      // No nudge_sent_at column on agent_onboarding — the stamp lives in additional_data,
+      // MERGED (the old write replaced the whole jsonb with this one key).
+      const { error: stampErr } = await svc
         .from("agent_onboarding")
-        .update({ additional_data: { last_nudge_sent_at: new Date().toISOString() }, updated_at: new Date().toISOString() })
-        .eq("id", r.id), { table: "agent_onboarding", flow: "onboarding_nudge_stamp", reason: "nudge timestamp; a loss only allows a repeat nudge" })
+        .update({ additional_data: { ...extra, last_nudge_sent_at: new Date().toISOString() }, updated_at: new Date().toISOString() })
+        .eq("id", r.id)
+        .eq("brokerage_id", r.brokerage_id)
+      if (stampErr) errors.push(`agent_onboarding ${r.id}: nudge stamp refused — ${stampErr.message} (the row will be nudged again next run)`)
       agentNudged++
     }
 
@@ -91,7 +121,6 @@ export async function GET(request: NextRequest) {
     // customer "education" is now milestone-gated via portal-stream
     // projector + learning_modules.gated_until_milestone, not a separate
     // welcome wizard. So this cron now only scans staff/agent onboarding.
-    void sevenDaysAgo  // referenced for the agent query if needed
 
     const summary = { agent_nudged: agentNudged, customer_nudged: 0, errors: errors.length }
     await recordCronSuccessAction({

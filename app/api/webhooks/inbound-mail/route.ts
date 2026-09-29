@@ -242,6 +242,31 @@ export async function POST(request: NextRequest) {
       userId:  resolvedCredential?.agent_user_id ?? null,
       address: resolvedCredential?.account_id ?? email.toEmail ?? null,
     }
+
+    // ── GOOGLE eSIGNATURE COMPLETION (wave 89, lane 89E) ──────────────────────
+    // Google eSignature has no API and no webhook; its completion notice is an
+    // EMAIL from esignature-noreply@google.com to the requester — this mailbox.
+    // Detected here on the same door that reads the mailbox for offers; the
+    // mailbox owner (the requester) is told to file the executed PDF through the
+    // signed-copy upload door. An attached executed PDF still runs through the
+    // deal-doc lookout below (it files the "file it to the deal" card by address);
+    // Google's automated sender then STOPS here — it is never a portal lead and
+    // never an unknown sender to enrich.
+    const googleEsign = await (async () => {
+      const { detectGoogleEsignMail } = await import("@/lib/esign/google-esign-completion")
+      return detectGoogleEsignMail({ fromEmail: email.fromEmail, subject: email.subject })
+    })()
+    if (googleEsign && brokerageId) {
+      const { noticeGoogleEsignCompletion } = await import("@/lib/esign/google-esign-completion")
+      const notice = await noticeGoogleEsignCompletion(supabase, {
+        brokerageId,
+        mailboxUserId: mailbox.userId,
+        mail: googleEsign,
+        pdfAttached: email.attachments.some((a) => a.mime === "application/pdf"),
+      })
+      if (!notice.ok) console.error("[inbound-mail] Google eSignature completion notice NOT delivered:", notice.error)
+    }
+
     if (brokerageId && email.attachments.some((a) => a.mime === "application/pdf")) {
       try {
         const { tryIngestInboundOffer, tryRouteOutboundOfferReply } = await import("@/lib/inbound-mail/offer-intake")
@@ -293,6 +318,14 @@ export async function POST(request: NextRequest) {
       } catch (e) {
         console.error("[inbound-mail] offer/deal-doc intake failed (non-fatal):", e)
       }
+    }
+
+    // Google's eSignature mailer is an automated sender: whatever the deal-doc
+    // lookout did with an attached executed PDF, the message goes no further —
+    // not a portal lead, not an unknown sender to identify and enrich.
+    if (googleEsign) {
+      results.push({ email_from: email.fromEmail, uploads: 0 })
+      continue
     }
 
     // PORTAL LEAD intake (Zillow / realtor.com / Opcity notification emails the

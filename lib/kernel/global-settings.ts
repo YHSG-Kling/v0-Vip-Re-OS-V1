@@ -27,7 +27,9 @@ export type GlobalSettingsRow = {
   sms_notifications_enabled: boolean
   push_notifications_enabled: boolean
   ghl_api_key: string | null
-  zapier_api_key: string | null
+  // zapier_api_key: RETIRED — dropped by m678 (lane 89E). Its only reader was the
+  // inbound Zapier door deleted in wave 87 (Zapier is outbound-only; tombstone in
+  // lib/providers/webhook-contract.ts). Not declared so no writer can target it.
   airtable_api_key: string | null
   additional_settings: Record<string, unknown> | null
   created_by_user_id: string | null

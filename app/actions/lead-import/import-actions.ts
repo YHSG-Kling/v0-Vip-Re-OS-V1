@@ -71,15 +71,24 @@ async function processImportRows(params: {
 
   const supabase = createServiceClient()
 
-  // Verify the import row belongs to caller's brokerage
+  // Verify the import row belongs to caller's brokerage — and read what the tenant
+  // PAID for the list (m678 lead_imports.list_cost_usd, lane 89E) so each imported
+  // row carries its share as tenant-paid spend.
   const { data: importRow } = await supabase
     .from('lead_imports')
-    .select('brokerage_id')
+    .select('brokerage_id, total_rows, list_cost_usd')
     .eq('id', params.importId)
     .maybeSingle()
   if (!importRow || importRow.brokerage_id !== brokerageId) {
     return { created: 0, merged: 0, failed: params.rows.length }
   }
+  const { purchasedListShareUsd, stampPurchasedListCost } = await import('@/lib/lead-import/list-cost-stamp')
+  const listShareUsd = purchasedListShareUsd(
+    (importRow as { list_cost_usd?: number | string | null }).list_cost_usd == null
+      ? null
+      : Number((importRow as { list_cost_usd?: number | string | null }).list_cost_usd),
+    (importRow as { total_rows?: number | null }).total_rows ?? params.rows.length,
+  )
 
   let created = 0
   let merged = 0
@@ -138,7 +147,7 @@ async function processImportRows(params: {
       const combinedNotes = [notes, ...auditLines].filter(Boolean).join('\n')
       const channel = enumValues.preferred_channel as 'phone' | 'email' | 'sms' | undefined
 
-      const { action } = await captureContact({
+      const { action, contactId } = await captureContact({
         brokerageId: brokerageId,
         ownerAgentId: importerAgentId,
         source: 'import',
@@ -166,6 +175,13 @@ async function processImportRows(params: {
       })
       if (action === 'created') created++
       else merged++
+      // The tenant paid for this row: its share of the list price is TENANT spend
+      // (created → the figure; merged → added to what the contact already carries).
+      // A refused stamp is a per-row error the summary shows, never a silent $0.
+      const stamped = await stampPurchasedListCost(supabase, {
+        brokerageId, contactId, shareUsd: listShareUsd, merged: action !== 'created',
+      })
+      if (!stamped.ok) errorDetails.push({ row: i + 1, error: `contact ${action}; list cost not recorded: ${stamped.error}` })
     } catch (err) {
       failed++
       errorDetails.push({
@@ -212,12 +228,19 @@ export async function createImportRecord(params: {
   fileName: string
   totalRows: number
   fieldMap: Record<string, string>
+  /** What the TENANT paid for this list (USD, whole file) — a purchased list's cost
+   *  becomes tenant-paid spend per imported row (m678, lane 89E). Omit / null when the
+   *  file is not a purchased list. Never negative. */
+  listCostUsd?: number | null
 }): Promise<{ importId: string }> {
   const supabase = await createClient()
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) throw new Error('Unauthorized')
 
   const { agentId, brokerageId } = await getAgentContext()
+
+  const listCost = typeof params.listCostUsd === 'number' && Number.isFinite(params.listCostUsd) ? params.listCostUsd : null
+  if (listCost !== null && listCost < 0) throw new Error('A purchased list cost cannot be negative')
 
   const serviceClient = createServiceClient()
   const { data, error } = await serviceClient
@@ -228,6 +251,7 @@ export async function createImportRecord(params: {
       file_name: params.fileName,
       total_rows: params.totalRows,
       field_map: params.fieldMap,
+      list_cost_usd: listCost === null ? null : Math.round(listCost * 100) / 100,
       created_count: 0,
       merged_count: 0,
       skipped_count: 0,
@@ -291,6 +315,8 @@ export async function listImports(): Promise<{
   created_count: number
   merged_count: number
   failed_count: number
+  /** m678 — what the tenant paid for the list (null = not a purchased list). */
+  list_cost_usd: number | null
   created_at: string
   completed_at: string | null
 }[]> {
@@ -302,7 +328,7 @@ export async function listImports(): Promise<{
 
   const { data, error } = await supabase
     .from('lead_imports')
-    .select('id, file_name, status, total_rows, created_count, merged_count, failed_count, created_at, completed_at')
+    .select('id, file_name, status, total_rows, created_count, merged_count, failed_count, list_cost_usd, created_at, completed_at')
     .eq('brokerage_id', brokerageId)
     .order('created_at', { ascending: false })
     .limit(50)

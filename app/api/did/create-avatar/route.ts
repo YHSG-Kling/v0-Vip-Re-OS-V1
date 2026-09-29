@@ -218,6 +218,8 @@ export async function POST(request: NextRequest) {
     }
 
     const did_avatar_id: string = (didData as { id?: string }).id ?? ""
+    /** Appended to the success message when a follow-up write was refused (read, never swallowed). */
+    let defaultClearNote = ""
 
     // ─── Persist on existing twin row OR create new asset ────────────────────
     if (twin_id) {
@@ -231,7 +233,11 @@ export async function POST(request: NextRequest) {
       if (!existing || existing.agent_id !== agentRow.id) {
         return NextResponse.json({ error: "Twin not found" }, { status: 404 })
       }
-      await supabase
+      // supabase-js RESOLVES a refusal (CLAUDE.md §3). The D-ID job is already
+      // submitted with `asset:<twin_id>` in user_data; a refused link here left
+      // the row without did_avatar_id, so neither the webhook nor the poll cron
+      // could ever finish it — and this route said "processing". Read it.
+      const { error: twinLinkErr } = await supabase
         .from("agent_avatar_assets")
         .update({
           did_avatar_id,
@@ -241,6 +247,18 @@ export async function POST(request: NextRequest) {
           updated_at: new Date().toISOString(),
         })
         .eq("id", twin_id)
+      if (twinLinkErr) {
+        console.error("[create-avatar] twin row refused the D-ID link:", twinLinkErr.message, { twin_id, did_avatar_id })
+        return NextResponse.json(
+          {
+            error: `D-ID accepted the twin (job ${did_avatar_id}) but your twin row could not be linked to it: ${twinLinkErr.message}. Retry the upload — the job id is recorded in the server log for support.`,
+            kind: "TwinRowWriteRefused",
+            needs_human_action: false,
+            retryable: true,
+          },
+          { status: 503 },
+        )
+      }
     } else {
       const { data: asset, error: insertError } = await supabase
         .from("agent_avatar_assets")
@@ -266,11 +284,18 @@ export async function POST(request: NextRequest) {
       }
       // If other avatars exist, clear their is_default flag when this one is set as default
       if (set_as_default) {
-        await supabase
+        // Read the refusal: a refused clear leaves TWO defaults, and whichever
+        // reader picks "the" default then picks the old twin. Said in the
+        // message the agent already reads, never dropped.
+        const { error: defaultClearErr } = await supabase
           .from("agent_avatar_assets")
           .update({ is_default: false })
           .eq("agent_id", agentRow.id)
           .neq("id", assetId)
+        if (defaultClearErr) {
+          console.error("[create-avatar] previous default could not be cleared:", defaultClearErr.message, { agent_id: agentRow.id, assetId })
+          defaultClearNote = ` The previous default twin could not be cleared (${defaultClearErr.message}) — set this twin as default again once it is ready.`
+        }
       }
     }
 
@@ -292,7 +317,7 @@ export async function POST(request: NextRequest) {
       asset_id: assetId,
       did_avatar_id,
       status: "pending",
-      message: "Twin is being processed. This usually takes 1–3 minutes.",
+      message: `Twin is being processed. This usually takes 1–3 minutes.${defaultClearNote}`,
     })
   } catch (error: any) {
     console.error("[create-avatar] Error:", error)

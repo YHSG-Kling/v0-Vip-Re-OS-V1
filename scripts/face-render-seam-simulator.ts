@@ -43,9 +43,13 @@
  *                    ONLY from SimliFaceSession.tsx — a
  *                    specimen importing it from an unrelated file IS caught
  *                    (positive control).
- *   §consentUntouched app/api/did/create-avatar/route.ts is byte-identical to
- *                    its content at the lane's own base commit (ae5776cb) —
- *                    the D-ID 428 consent path was never touched by this wave.
+ *   §consentUntouched app/api/did/create-avatar/route.ts's CONSENT PATH (the
+ *                    `// ─── CONSENT GATE` block + consentId handed to the D-ID
+ *                    request) is byte-identical to the lane's own base commit
+ *                    (ae5776cb) — the D-ID 428 consent gate was never touched.
+ *                    Re-anchored from whole-file byte identity (a waypoint) to
+ *                    the gate itself in wave 89 (lane 89E), so writes AFTER the
+ *                    gate can read their refusals without weakening this proof.
  *
  * METHOD (§2): every source scan reads STRIPPED source via
  * scripts/strip-comments.ts (stripComments for line-number-free structural
@@ -391,31 +395,76 @@ function importScopeSection() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// §consentUntouched — the D-ID 428 consent path is byte-identical to base
+// §consentUntouched — the D-ID 428 consent PATH is byte-identical to base
 // ═══════════════════════════════════════════════════════════════════════════
 const LANE_BASE_SHA = "ae5776cb"
 
-function consentUntouchedSection() {
-  console.log(`\n── §consentUntouched — app/api/did/create-avatar untouched since ${LANE_BASE_SHA} ──`)
-  try {
-    const baseline = execFileSync("git", ["show", `${LANE_BASE_SHA}:app/api/did/create-avatar/route.ts`], { cwd: root, encoding: "utf8" })
-    const current = readRaw("app/api/did/create-avatar/route.ts")
-    check("app/api/did/create-avatar/route.ts is BYTE-IDENTICAL to its content at the lane base commit",
-      baseline === current)
-  } catch (e) {
-    check(`app/api/did/create-avatar/route.ts is BYTE-IDENTICAL to its content at the lane base commit (git show failed: ${e instanceof Error ? e.message : String(e)})`, false)
-  }
+/**
+ * THE CONTRACT IS THE CONSENT PATH, NOT THE WHOLE FILE (re-anchored to the
+ * RULE, wave 89 lane 89E). This section used to pin the ENTIRE route file
+ * byte-identical to the lane base — a WAYPOINT (CLAUDE.md §2): it held only
+ * while nobody else touched any line of the door, and in wave 88 it forced two
+ * swallowed-refusal fixes on the same route (the twin-row link and the
+ * is_default clear — writes AFTER the consent gate, nothing to do with it) to
+ * be reverted, leaving two refusals silent to keep a proof green. The ruling
+ * the section proves is "the D-ID consent gate is untouched", so that is what
+ * it compares: the CONSENT GATE block (from its `// ─── CONSENT GATE` banner to
+ * the next section banner) and the `consentId` handed to
+ * buildExpressAvatarRequest. Anything else in the file may change; a change
+ * INSIDE the gate — the 428 refusal, resolveConsentIdForAvatar,
+ * consentRequiredFor, or the request no longer carrying consentId — goes red.
+ */
+const CONSENT_GATE_START = "// ─── CONSENT GATE"
+const CONSENT_GATE_END = "// The avatar's NAME"
+/** PURE: the consent path of a create-avatar source, or null when a banner is missing (that is itself a failure). */
+function consentPathOf(src: string): string | null {
+  const start = src.indexOf(CONSENT_GATE_START)
+  const end = src.indexOf(CONSENT_GATE_END)
+  if (start < 0 || end < 0 || end <= start) return null
+  const gate = src.slice(start, end)
+  // The gate's verdict must still be handed to the D-ID request.
+  const handed = /buildExpressAvatarRequest\(\{[\s\S]{0,600}?\bconsentId,/.test(src)
+  return `${gate}\n<<consentId handed to buildExpressAvatarRequest: ${handed}>>`
+}
 
-  // CONTROL: a deliberately mutated copy of the SAME baseline text is
-  // correctly recognized as different — proves the byte-compare isn't
-  // trivially true (e.g. two empty strings).
+function consentUntouchedSection() {
+  console.log(`\n── §consentUntouched — app/api/did/create-avatar's CONSENT PATH untouched since ${LANE_BASE_SHA} ──`)
+  let baseline: string | null = null
   try {
-    const baseline = execFileSync("git", ["show", `${LANE_BASE_SHA}:app/api/did/create-avatar/route.ts`], { cwd: root, encoding: "utf8" })
-    const mutated = baseline + "\n// a rogue edit\n"
-    check("[control] a deliberately mutated copy of the SAME baseline is correctly detected as NOT identical",
-      baseline !== mutated)
-  } catch {
-    check("[control] a deliberately mutated copy of the SAME baseline is correctly detected as NOT identical (git show unavailable — cannot run control)", false)
+    baseline = execFileSync("git", ["show", `${LANE_BASE_SHA}:app/api/did/create-avatar/route.ts`], { cwd: root, encoding: "utf8" })
+  } catch (e) {
+    check(`the lane-base create-avatar route is readable (git show failed: ${e instanceof Error ? e.message : String(e)})`, false)
+  }
+  if (baseline !== null) {
+    const current = readRaw("app/api/did/create-avatar/route.ts")
+    const basePath = consentPathOf(baseline)
+    const curPath = consentPathOf(current)
+    check("the consent gate block is FOUND in both the base and the current route (both banners present)",
+      basePath !== null && curPath !== null)
+    check("the consent PATH (gate block + consentId handed to the D-ID request) is BYTE-IDENTICAL to the lane base",
+      basePath !== null && basePath === curPath)
+    check("the current gate still refuses with 428 + kind ConsentRequired before any D-ID submit",
+      /status: 428/.test(curPath ?? "") && /kind: "ConsentRequired"/.test(curPath ?? "")
+      && (current.indexOf(CONSENT_GATE_START) < current.indexOf("didRequest<")))
+    check("the current request still carries consentId (the gate's verdict reaches D-ID)",
+      (curPath ?? "").endsWith("<<consentId handed to buildExpressAvatarRequest: true>>"))
+
+    // CONTROL (positive): a mutation INSIDE the gate is detected — the 428
+    // refusal weakened to a pass-through.
+    const weakened = baseline.replace('}, { status: 428 })', '}, { status: 200 })')
+    check("[control] a route whose consent refusal is weakened INSIDE the gate is detected as a changed consent path",
+      weakened !== baseline && consentPathOf(weakened) !== basePath)
+    // CONTROL (positive): the request no longer carrying consentId is detected
+    // even when the gate block itself is untouched.
+    const unhanded = baseline.replace(/\n(\s*)consentId,\n/, "\n$1consentId: null,\n")
+    check("[control] a route that stops handing consentId to buildExpressAvatarRequest is detected",
+      unhanded !== baseline && consentPathOf(unhanded) !== basePath)
+    // CONTROL (negative): a change OUTSIDE the gate — a write after the submit
+    // reading its refusal — is NOT flagged, which is the whole point of the
+    // re-anchor: the contract is scoped to the consent path.
+    const outside = baseline.replace("// If other avatars exist, clear their is_default flag", "// (edited outside the gate) clear their is_default flag")
+    check("[control] a change OUTSIDE the consent gate (the post-submit writes) is NOT a consent-path change",
+      outside !== baseline && consentPathOf(outside) === basePath)
   }
 
   // CONTROL: lib/did/consent.ts's WRITE path is untouched too — same sweep,

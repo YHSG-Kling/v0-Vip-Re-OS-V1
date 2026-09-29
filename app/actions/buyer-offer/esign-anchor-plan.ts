@@ -12,8 +12,10 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { buildEsignAnchorPlan } from "@/lib/forms/esign-anchor-plan"
 import type { EsignProvider } from "@/lib/forms/esign-anchor-adapters"
+// ONE bucket name (§6): the survivor is lib/esign/dispatch-packet.ts::FORMS_BUCKET — this file
+// and prefill-storage-form.ts each carried their own copy of the same literal (lane 89E).
+import { FORMS_BUCKET } from "@/lib/esign/dispatch-packet"
 
-const FORMS_BUCKET = "brokerage-forms"
 const SUPPORTED: EsignProvider[] = ["dotloop", "docusign", "skyslope", "authentisign", "generic"]
 
 export interface EsignAnchorPlanInput {

@@ -73,6 +73,10 @@ export interface LeadAcquisitionCostParts {
   costPerRecord?: number | null
   enrichmentSpend?: number | null
   campaignCostShare?: number | null
+  /** This contact's slice of a PURCHASED LIST the tenant bought and imported
+   *  (lead_imports.list_cost_usd ÷ total_rows — lane 89E, m678). Tenant-paid: the
+   *  list was bought with the brokerage's own money, never the platform's. */
+  purchasedListShare?: number | null
 }
 
 /**
@@ -93,6 +97,8 @@ export interface LeadAcquisitionCostParts {
  *   enrichmentSpend    → PLATFORM — vendor_usage_tracking rows booked for the person
  *                         (lib/lead-intelligence/person-spend.ts; PeopleData, BatchData, Versium…).
  *   campaignCostShare  → TENANT   — the tenant's OWN ad budget (ad_campaigns.lifetime_budget).
+ *   purchasedListShare → TENANT   — the tenant's OWN purchased list (lead_imports.list_cost_usd
+ *                         spread per imported row; lib/lead-import/list-cost-stamp.ts, lane 89E).
  *
  * TENANT-facing surfaces read computeLeadAcquisitionCost (→ acquisition_cost) and nothing else; the
  * PLATFORM view (superadmin — lead page when the viewer's scope is platform) reads
@@ -102,6 +108,7 @@ const LEAD_COST_PAYER: Record<keyof Required<LeadAcquisitionCostParts>, "tenant"
   costPerRecord: "platform",
   enrichmentSpend: "platform",
   campaignCostShare: "tenant",
+  purchasedListShare: "tenant",
 }
 
 function sumParts(parts: LeadAcquisitionCostParts, payer: "tenant" | "platform"): number | null {

@@ -20,7 +20,6 @@
  *       Co-Pilot drafting can pick up the work.
  */
 
-import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireCaller } from "@/lib/auth/require-caller"
@@ -399,23 +398,36 @@ export async function dispositionPortalEventAction(params: {
     console.error("[portalStream] disposition activity REJECTED — the portal event is resolved but the audit trail has no row for it:", dispositionActivityError.message)
   }
 
-  // AI delegation: fire a kernel-style lifecycle event so AI ISA / draft
-  // generators can pick it up. We use a generic 'agent.delegated_to_ai'
-  // event_type — downstream handlers can check metadata.source_event_type
-  // to know what to do.
+  // AI delegation — "AI do it". Wave 89 (lane 89E): this used to be a bare
+  // lifecycle_events INSERT (an audit echo dispatched to nobody) with a comment
+  // hoping "AI ISA / draft generators can pick it up" — nothing did, and the card
+  // simply disappeared. It now goes through the DISPATCHING core, so the
+  // orchestrator routes EVENT_TYPES.AGENT_DELEGATED_TO_AI to
+  // lib/portal-stream/ai-delegation-reaction.ts: the AI ISA drafts the delegated
+  // reply and PROPOSES it (gated — the agent approves before it reaches the
+  // client). Tenant = the row read above (never the body); actor = the session.
+  // A refused record is reported: the row is already marked completed_ai, so the
+  // agent must know the hand-off did NOT happen.
   if (params.mode === "ai_delegate") {
-    await sentinelWrite(svc, svc.from("lifecycle_events").insert({
-      event_type:    "agent.delegated_to_ai",
-      entity_type:   row.transaction_id ? "transaction" : "contact",
-      entity_id:     row.transaction_id ?? row.contact_id,
-      brokerage_id:  row.brokerage_id,
-      user_id:       user.id,
-      metadata: {
+    const { recordLifecycleEvent } = await import("@/lib/events/lifecycle-event-core")
+    const handoff = await recordLifecycleEvent(svc, row.brokerage_id, {
+      event_type:  "agent.delegated_to_ai",
+      entity_type: row.transaction_id ? "transaction" : "contact",
+      entity_id:   row.transaction_id ?? row.contact_id ?? undefined,
+      user_id:     user.id,
+      source:      "ui",
+      dedupe_key:  `agent.delegated_to_ai:${row.id}`,
+      payload: {
         portal_event_stream_id: row.id,
         source_event_type:      row.event_type,
         agent_action_label:     row.agent_action_label,
+        contact_id:             row.contact_id,
+        transaction_id:         row.transaction_id,
       },
-    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    })
+    if (!handoff.ok) {
+      return { success: false, error: `Marked as delegated, but the AI hand-off could not be recorded: ${handoff.error}` }
+    }
   }
 
   // Revalidate the surfaces the disposition affects

@@ -136,6 +136,7 @@ export const AI_TASK_ROUTING: Record<string, {
   offer_analysis:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Offer comparison narrative for buyer — decision-critical" },
   playbook_response:         { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Agent coaching playbook responses — nuanced guidance" },
   portal_message:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Client portal messages — relationship-critical, client-facing" },
+  portal_ai_delegation:      { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Lane 89E — the AI ISA drafting a portal reply the agent delegated ('AI do it' on an action card; lib/portal-stream/ai-delegation-reaction.ts). Client-facing, gated through proposeClientMessage; same posture as portal_message" },
   ai_isa_response:           { model: "claude-sonnet", fallback: "gpt-4o",       reason: "ISA conversation replies — empathy + conversion critical" },
   home_assistant_qa:         { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Lifetime portal 'ask your home anything' — scoped, compliance-safe, client-facing" },
   sequence_step_content:     { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Drip sequence email/SMS — must pass compliance pipeline" },
