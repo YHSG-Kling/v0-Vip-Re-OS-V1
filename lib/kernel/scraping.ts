@@ -692,6 +692,10 @@ export async function ingestRawSourceBatch(
             // matched phrases/addresses/prices) from the ZenRows/Exa page-level normalizers —
             // read by the canonical lead-creation gate and the AI-ISA script selector downstream.
             intent:          record.intent           ?? null,
+            // Lane 89B — ONE spelling: the vendor sold the person with this record (BatchData contact
+            // dataset). Read by pipeline-processor.ts to skip the PeopleData call — owner 2026-09-29:
+            // "…enriched by people data lab … unless we already paid for that lead data with the lead."
+            paid_person_data: record.paidPersonData === true,
           },
           processing_status:    'pending',
           scraper_execution_id: execId ?? null,
@@ -813,6 +817,8 @@ export function normalizeRawSourceRecord(
       // Rich intent block (buyer/seller/investor/agent + persona + property-alert + addresses/prices)
       // populated by ZenRows + Exa normalizers; null when the scraper produced no scoreable text.
       intent:          record.intent          ?? null,
+      // Lane 89B — same field, same reader as ingestRawSourceBatch's build above.
+      paid_person_data: record.paidPersonData === true,
     },
     processing_status: 'pending',
     // m647: source_family is the LINEAGE constant the live CHECK admits; the scrape category

@@ -42,6 +42,19 @@ export interface NormalizedScrapedRecord {
   motivationScore?: number | null
   sourceUrl?: string | null
 
+  /**
+   * Lane 89B (owner, 2026-09-29, verbatim: "…enriched by people data lab along with the rest
+   * scraped leads unless we already paid for that lead data with the lead"). TRUE only when the
+   * VENDOR that sold this record also sold the person's contact points with it (BatchData's
+   * `contact` dataset — owner.phoneNumbers / owner.emails — on a Property Search / Smart Search /
+   * cash-buyer pull). The raw writer stamps it as normalized_preview.paid_person_data (ONE spelling,
+   * lib/kernel/scraping.ts) and pipeline-processor.ts::enrichWithPeopleData skips the PeopleData
+   * call for such a row when it carries a phone or an email — the identity is already bought.
+   * A scraped reply email on a Craigslist post is NOT paid person data (nobody sold the person);
+   * source-intent-map.ts::SOURCE_PAID_PERSON_DATA is the per-source contract this flag must obey.
+   */
+  paidPersonData?: boolean
+
   /** Rich intent classification (when the source produced enough text to score). Optional so
    *  every scraper need not populate it; downstream code reads `intent?.winner` defensively. */
   intent?: {

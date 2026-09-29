@@ -31,6 +31,7 @@ import {
   scoreToUrgencyLevel,
   recordMatchesTerritory,
   hasScoringEntry,
+  deliversPaidPersonData,
 } from './source-intent-map'
 
 // ─── Processing status state machine ─────────────────────────────────────────
@@ -86,6 +87,9 @@ interface RawRecord {
     mailingAddress?: string | null
     sourceUrl?: string | null
     leadIdentityKey?: string | null
+    /** Lane 89B — the vendor sold the person's contact points with this record (BatchData
+     *  contact dataset). Stamped by lib/kernel/scraping.ts; read below to skip PeopleData. */
+    paid_person_data?: boolean | null
   } | null
   // First-class mailing breakdown columns on raw_scraped_leads (populated at
   // ingestion / enrichment). Kept distinct from the physical address because a
@@ -357,6 +361,9 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     username, source: rec.source,
     // Lane 85B — the email-seek hook's correlation ref + its no-rebill stamp from an earlier pass.
     rawRecordId, priorEmailSeek: (rec.normalized_preview as any)?.email_seek ?? null,
+    // Lane 89B — the vendor already sold this person with the record (normalized_preview.
+    // paid_person_data, one spelling); the contract map bounds which sources may say so.
+    paidPersonData: rec.normalized_preview?.paid_person_data === true && deliversPaidPersonData(scoringSource),
   })
 
   // ── Raw-lead HOUSEHOLD FINANCIALS (lane 85C) — a BatchData-sourced raw row arrives carrying the
@@ -884,8 +891,21 @@ async function enrichWithPeopleData(fields: {
   /** Lane 85B — email-seek hook inputs (see lib/lead-pipeline/email-seek.ts). */
   rawRecordId?: string | null
   priorEmailSeek?: import('./email-seek').EmailSeekStamp | null
+  /** Lane 89B — the vendor sold the person's contact points with the record. */
+  paidPersonData?: boolean | null
 }): Promise<any> {
   const hasNamePhoneEmail = !!(fields.first_name || fields.last_name || fields.phone || fields.email)
+
+  // ── PAID PERSON DATA — skip PeopleData (lane 89B; owner 2026-09-29, verbatim: "…enriched by
+  // people data lab along with the rest scraped leads unless we already paid for that lead data
+  // with the lead"). A BatchData row that arrived WITH the owner's phone or email (its `contact`
+  // dataset, bought on the pull) already carries the identity this call exists to buy; asking PDL
+  // again is a second bill for the same person. ONLY the PDL call (and its meter) is skipped: the
+  // email-seek hook below still turns a phone-only row into an email-bearing one ($0.07 BatchData
+  // reverse trace — the gate wants an email), the gap-fill still runs on its own rule, and the
+  // post-enrich dedup + lead gate run unchanged. A paid row that somehow carries NEITHER a phone nor
+  // an email is not "already bought" and goes through PDL like any other row (fail toward enrichment).
+  const skipPeopleData = fields.paidPersonData === true && !!(fields.phone || fields.email)
   // lane 72B — the record carries NOTHING PeopleData's name/phone/email params
   // can use, but it DOES carry a scraped social handle: derive the profile URL
   // (pure, no network) and let PDL identify by `profile` instead of refusing
@@ -903,13 +923,15 @@ async function enrichWithPeopleData(fields: {
   // name-only scraped row (the commonest shape the wave-84 gate strands) into a lead. The territory
   // city/state the record already carries is exactly that qualifier. PDL bills per MATCH only.
   const pdlLocation = [fields.city, fields.state].filter(Boolean).join(', ') || undefined
-  const enrichmentResult = await skipTraceWithPeopleData({
-    name:  [fields.first_name, fields.last_name].filter(Boolean).join(' ') || undefined,
-    phone: fields.phone   || undefined,
-    email: fields.email   || undefined,
-    address: pdlLocation,
-    profileUrl: profileUrl ?? undefined,
-  }).catch(() => ({ data: null }))
+  const enrichmentResult = skipPeopleData
+    ? { data: null }
+    : await skipTraceWithPeopleData({
+        name:  [fields.first_name, fields.last_name].filter(Boolean).join(' ') || undefined,
+        phone: fields.phone   || undefined,
+        email: fields.email   || undefined,
+        address: pdlLocation,
+        profileUrl: profileUrl ?? undefined,
+      }).catch(() => ({ data: null }))
 
   // METERING (lane 72B, CLAUDE.md §5 — "a wrong number [in the cost ledger] is
   // a wrong invoice"). The pre-existing name/phone/email enrichment path above
@@ -927,7 +949,7 @@ async function enrichWithPeopleData(fields: {
   // Lane 83A — EVERY PeopleData call from this path is booked, not only the profile-identify one:
   // the name/phone/email match (the common case) was unmetered here and nowhere else (82A's open
   // item: "booked by the CALLER" — no caller booked it). Platform-paid ledger, per MATCH ($0 miss).
-  if (fields.brokerageId && (profileUrl || hasNamePhoneEmail)) {
+  if (!skipPeopleData && fields.brokerageId && (profileUrl || hasNamePhoneEmail)) {
     const matched = !!enrichmentResult.data
     void meterVendorSpend({
       vendorName: 'peopledata',
@@ -956,6 +978,9 @@ async function enrichWithPeopleData(fields: {
     mailing_address?: string | null
     mailing_address_verified?: boolean
     mailing_address_source?: string | null
+    /** Lane 89B — 'vendor_delivered' when the acquisition vendor sold the contact points (PDL skipped). */
+    enrichmentSource?: 'vendor_delivered'
+    peopleDataSkipped?: boolean
   } = data
     ? {
         first_name:               data.firstName   || fields.first_name,
@@ -973,6 +998,18 @@ async function enrichWithPeopleData(fields: {
         peopleDataResult:         data,
         // Lane 83A — the demographic profile the lead insert and the raw row carry forward.
         peopleDataProfile:        buildPeopleDataProfile(data as any),
+      }
+    : skipPeopleData
+    ? {
+        first_name: fields.first_name,
+        last_name:  fields.last_name,
+        email:      fields.email,
+        phone:      fields.phone,
+        // A vendor-matched contact point is a person match the vendor stands behind, not a guess
+        // (PDL's own matched path reads 0.5 when it reports no confidence).
+        enrichmentConfidence: 0.6,
+        enrichmentSource: 'vendor_delivered',
+        peopleDataSkipped: true,
       }
     : {
         first_name: fields.first_name,

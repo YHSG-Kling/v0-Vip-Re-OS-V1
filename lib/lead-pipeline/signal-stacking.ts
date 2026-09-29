@@ -68,13 +68,24 @@ export const STACK_FAMILY: Readonly<Record<string, string>> = {
   must_sell: "urgent_sale", need_to_sell: "urgent_sale", motivated: "urgent_sale",
   // ENABLERS (tier-up only)
   absentee: "absentee_owner", absentee_owner: "absentee_owner",
+  // Lane 89B — the out-of-state tier is the SAME absentee family (one owner, one fact), not a second one.
+  out_of_state_owner: "absentee_owner", out_of_state_absentee: "absentee_owner",
   high_equity: "high_equity",
+  // Lane 89B — free-and-clear is the top of the equity ladder: one family with high_equity.
+  free_and_clear: "high_equity",
   senior_owner: "senior_owner", downsizing: "senior_owner",
   tired_landlord: "tired_landlord",
+  // Lane 89B — entity on title (LLC / trust): a fact that tiers a distress stack up (an inherited
+  // house held in a trust, an LLC's tax-default rental), never motivation by itself.
+  corporate_owned: "entity_owned", trust_owned: "entity_owned", llc_owned: "entity_owned",
+  // Lane 89B — thin/negative equity: with a foreclosure family it names the SHORT-SALE candidate.
+  low_equity: "low_equity", underwater: "low_equity",
+  // Lane 89B — land: a vacant lot is an asset class, not distress.
+  vacant_lot: "land",
 }
 
 /** Families that tier a stack up but never start one (researched: "multipliers, not components"). */
-const ENABLER_FAMILIES: ReadonlySet<string> = new Set(["absentee_owner", "high_equity", "senior_owner", "tired_landlord"])
+const ENABLER_FAMILIES: ReadonlySet<string> = new Set(["absentee_owner", "high_equity", "senior_owner", "tired_landlord", "entity_owned", "low_equity", "land"])
 
 export const STACK_BOOST_PER_EXTRA_FAMILY = 6
 export const STACK_BOOST_CAP = 20

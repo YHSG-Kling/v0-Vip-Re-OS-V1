@@ -64,7 +64,9 @@ export const SOURCE_ACQUISITION: Record<SourceKey, AcquisitionCoverage> = {
   google_phrase_intent:        { intents: ["buy", "sell"],                            entry: "lead_scraping_cron", routeChannel: '"google_phrase_intent"' },
   rental_listing:              { intents: ["sell", "investor"],                       entry: "lead_scraping_cron", routeChannel: '"rental"' },
   linkedin_relocation:         { intents: ["relocate", "buy"],                        entry: "lead_scraping_cron", routeChannel: '"linkedin"' },
-  exa_buyer_intent:            { intents: ["buy", "relocate"],                        entry: "lead_scraping_cron", routeChannel: '"exa"' },
+  // Lane 89B (owner: "exa is also another lead scrapping source") — every population per territory
+  // (exa-sourcer.ts::buildExaIntentQueries); the key keeps its historical spelling (ledger usage_type).
+  exa_buyer_intent:            { intents: ["buy", "relocate", "sell", "realtor_seeking", "investor"], entry: "lead_scraping_cron", routeChannel: '"exa"' },
   tavily_intent:               { intents: ["buy", "sell", "investor"],                entry: "lead_scraping_cron", routeChannel: '"tavily"' },
   osint_signal:                { intents: ["sell"],                                   entry: "lead_scraping_cron", routeChannel: '"osint_signal"' },
   realty_site_chatter:         { intents: ["buy", "sell", "realtor_seeking"],         entry: "lead_scraping_cron", routeChannel: "`${site}_chatter`" },
@@ -82,6 +84,8 @@ export const SOURCE_ACQUISITION: Record<SourceKey, AcquisitionCoverage> = {
   rental_to_buyer_graduation:  { intents: ["buy"],                                    entry: "lead_scraping_cron", routeChannel: null },
   review_acquisition_intent:   { intents: ["buy", "sell", "realtor_seeking"],         entry: "lead_scraping_cron", routeChannel: '"review_acquisition_intent"' },
   batchdata_cash_buyer:        { intents: ["investor", "buy"],                        entry: "lead_scraping_cron", routeChannel: '"batchdata_cash_buyer"' },
+  // Lane 89B — owner-posted listings on forsalebyowner.com (Apify), the cheaper FSBO population.
+  fsbo_site_listing:           { intents: ["sell"],                                   entry: "lead_scraping_cron", routeChannel: '"fsbo_site_listing"' },
   // tiktok_intent retired (lane 84C; owner 2026-09-26 "don't need tiktok." — tombstone in source-intent-map.ts).
 }
 

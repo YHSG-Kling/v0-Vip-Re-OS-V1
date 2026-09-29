@@ -35,9 +35,10 @@
 // adapter, per wave 70B's SDK-adoption ruling).
 //
 // Cost (docs/provider-matrix-2026-09.md's Exa row): `costDollars.total` returned per call
-// when Exa states one; `exaSearch` falls back to `0.005 × numResults` (Exa's stated
-// ~$0.005/search-result-unit class) when it does not — this lane reuses that same
-// wrapper and fallback rather than inventing a second price.
+// when Exa states one; `exaSearch` falls back to the published list price (lane 89B,
+// exa-client.ts::exaSearchListCost — $7/1k requests incl. 10 results + $1/1k results above
+// 10; the old `0.005 × numResults` overstated a 15-result query ~3×) when it does not — this
+// lane reuses that same wrapper and fallback rather than inventing a second price.
 
 import { exaSearch, type ExaResult } from "@/lib/external/exa-client"
 import { isViableRecord, type NormalizedScrapedRecord } from "./raw-record-types"

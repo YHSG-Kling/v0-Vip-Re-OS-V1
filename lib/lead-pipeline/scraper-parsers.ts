@@ -8,7 +8,7 @@
 
 import * as cheerio from "cheerio"
 import { isViableRecord, type NormalizedScrapedRecord } from "./raw-record-types"
-import { triggerForQuickListSlug } from "@/lib/external/batchdata-client"
+import { triggerForQuickListSlug, isInvestorBuyerTrigger } from "@/lib/external/batchdata-client"
 
 export interface MarketGeo {
   city: string | null
@@ -265,7 +265,8 @@ export function normalizeBatchDataRecord(
   // tax-default pull that is also vacant + absentee reads as three families to calculateSourceScore
   // (+5 per boost signal) and to lib/lead-pipeline/signal-stacking.ts. Was ONE signal: the trigger.
   // A listing whose current price sits below its own max list price carries `price_reduced`.
-  const stacked = quickLists.map((q) => triggerForQuickListSlug(String(q))).filter((t): t is string => !!t && t !== "cash_buyer")
+  // Lane 89B — every BUYER-side investor list (cash_buyer, fix_and_flip) stays out of a SELLER stack.
+  const stacked = quickLists.map((q) => triggerForQuickListSlug(String(q))).filter((t): t is string => !!t && !isInvestorBuyerTrigger(t))
   const listing = (record.listing ?? {}) as { price?: number; maxListPrice?: number }
   const priceCut = typeof listing.price === "number" && typeof listing.maxListPrice === "number" && listing.price > 0 && listing.price < listing.maxListPrice
   const intentSignals = Array.from(new Set([
@@ -290,6 +291,9 @@ export function normalizeBatchDataRecord(
     mailingAddress:  (record.address as string | null | undefined) ?? null,
     propertyAddress: (record.propertyAddress ?? record.property_address) as string | null | undefined ?? null,
     motivationScore: score,
+    // Lane 89B — the provider sold the person with the record (BatchData `contact` dataset); the raw
+    // writer stamps normalized_preview.paid_person_data and PeopleData is not asked again.
+    paidPersonData: record.paidPersonData === true,
     rawPayload: record,
   }
 }

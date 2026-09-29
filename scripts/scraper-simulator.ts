@@ -1328,7 +1328,10 @@ function testExaBuyerIntent() {
   const sellerRow = normalizeExaRow({ id: "x2", url: "https://blog/2", title: "Thinking of selling my home in Tampa", author: "owner_bob" })
   check("Exa seller content → seller intent", normalizeExaResult(sellerRow, { city: "Tampa", state: "FL" }).intentType === "seller")
   // Source intent + vendor routing.
-  check("exa → buyer intent", getSourceSemantics("exa").intentType === "buyer")
+  // Lane 89B (owner: "exa is also another lead scrapping source") — the lane runs EVERY population,
+  // so the map-level intent is 'unknown' and the RECORD decides (the two fixtures above: a buyer
+  // result stays buyer, a seller result stays seller and no longer promotes as a buyer lead).
+  check("exa → map-level intent 'unknown' (the record's own intent decides; was buyer-only)", getSourceSemantics("exa").intentType === "unknown" && getSourceSemantics("exa").leadType === "unknown")
   check("exa → exa vendor", SOURCE_VENDOR.exa_buyer_intent === "exa")
 }
 

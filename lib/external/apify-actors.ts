@@ -10,7 +10,7 @@
 
 import { actorExists } from "@/lib/providers/apify/client"
 
-export type ApifyTask = "reddit" | "facebook" | "instagram" | "craigslist" | "google" | "linkedin" | "facebook_marketplace"
+export type ApifyTask = "reddit" | "facebook" | "instagram" | "craigslist" | "google" | "linkedin" | "facebook_marketplace" | "fsbo_site"
 
 /**
  * Ordered candidate actors per task — primary first. Multiple public actors
@@ -38,6 +38,14 @@ export const ACTOR_REGISTRY: Record<ApifyTask, string[]> = {
   // location/category/search Marketplace URLs, no login); fallback is the property-specific
   // vivid-softwares/facebook-property-scraper ($18/1k, `forSaleOnly`, seller + beds/baths parsed).
   facebook_marketplace: ["apify/facebook-marketplace-scraper", "vivid-softwares/facebook-property-scraper"],
+  // Lane 89B (Exa, 2026-09-29): forsalebyowner.com — the dedicated FSBO marketplace — owner-posted
+  // listings by city slug. Primary memo23/forsalebyowner-scraper (states / `city-state` slugs /
+  // search URLs, `source: fsbo`, `status: for_sale`, `monitoringMode` returns only listings not seen
+  // on earlier runs, US-residential proxy handled by the actor); fallbacks parseforge/forsalebyowner-
+  // scraper (`mode: api` + `searchSlug`, 30+ fields incl. owner name + phone) and the homepage-only
+  // jungle_synthesizer actor (~20 featured cards, last resort). Pay-per-result ~$3–5 / 1k listings
+  // vs BatchData's 'for-sale-by-owner' quickList at $0.05 / RECORD — the same population ~10× cheaper.
+  fsbo_site: ["memo23/forsalebyowner-scraper", "parseforge/forsalebyowner-scraper", "jungle_synthesizer/forsalebyowner-scraper"],
   // TOMBSTONE — tiktok_search / tiktok_comments (lane 83A) retired by lane 84C. Owner, 2026-09-26:
   // "don't need tiktok." No other task uses those actors; nothing to merge.
 }

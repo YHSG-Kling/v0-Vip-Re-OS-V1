@@ -52,8 +52,26 @@ export async function exaSearch(params: {
   const rows = res.data.results
   return {
     results: rows.map((r) => normalizeExaRow(r)),
-    cost: typeof res.data.costDollarsTotal === "number" ? res.data.costDollarsTotal : 0.005 * rows.length,
+    cost: typeof res.data.costDollarsTotal === "number" ? res.data.costDollarsTotal : exaSearchListCost(params.numResults ?? rows.length),
   }
+}
+
+/**
+ * Lane 89B — Exa's PUBLISHED list price (exa.ai/pricing, read 2026-09-29): `/search` is $7 per 1k
+ * requests with the first 10 results (text + highlights) included, plus $1 per 1k results above 10;
+ * summaries $1 per 1k pages; `/monitors` $15 per 1k requests. The old fallback billed
+ * `0.005 × rows` — a 20-result query read as $0.10 when the list price is $0.017, so the platform
+ * ledger overstated every Exa lane ~6× whenever the response carried no `costDollars`. Used ONLY
+ * when the provider omits its own total (which wins whenever present).
+ */
+export const EXA_SEARCH_REQUEST_COST_USD = 0.007
+export const EXA_SEARCH_INCLUDED_RESULTS = 10
+export const EXA_SEARCH_EXTRA_RESULT_COST_USD = 0.001
+
+/** PURE — list-price cost of ONE `/search` request that asked for `numResults`. */
+export function exaSearchListCost(numResults: number): number {
+  const n = Math.max(0, Math.floor(numResults))
+  return EXA_SEARCH_REQUEST_COST_USD + Math.max(0, n - EXA_SEARCH_INCLUDED_RESULTS) * EXA_SEARCH_EXTRA_RESULT_COST_USD
 }
 
 /** Pure: a raw Exa result row → normalized ExaResult (defensive field mapping). */

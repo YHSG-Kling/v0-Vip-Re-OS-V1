@@ -10,7 +10,9 @@ import {
   buildSmartSearchSubscriptionPlan,
   BATCHDATA_SMART_SEARCH_SUBSCRIPTION_ACCOUNT_CAP,
   quickListSlugsFor,
+  BATCHDATA_INVESTOR_BUYER_TYPES,
 } from "@/lib/external/batchdata-client"
+import { stateNameFromCode } from "@/lib/constants/us-states"
 import { runIncrementalPropertySearchForMarket, runActiveListingDiscoveryForMarket, runBuyBoxMatchingForMarket } from "@/lib/kernel/listings-batchdata-feed"
 import { processRawRecord } from "@/lib/lead-pipeline"
 import { escalateScraperFailureIfNeeded, setScraperHealer } from "@/lib/lead-pipeline/scraper-health"
@@ -36,6 +38,7 @@ import {
   sourceRealtySiteChatter,
   sourceNewConstructionIntent,
   sourceFacebookMarketplace,
+  sourceFsboSiteListings,
   normalizeNextdoorPost,
 } from "@/lib/lead-pipeline/social-sourcer"
 // Lane 83A — the ONE keyword resolver: code defaults per population per territory + the market's own
@@ -715,21 +718,29 @@ export async function GET(request: Request) {
       // their batch cost and book per source like every other lane.
       if (enabledSources.has("batchdata_cash_buyer") && market.city && market.state) {
         try {
-          const pull = await batchdata.getMotivatedSellerDataWithCost(`${market.city}, ${market.state}`, ["cash_buyer"])
-          const buyers = pull.records
-            .map((r) => normalizeBatchDataRecord(r as Record<string, unknown>, market))
-            .map((r) => ({ ...r, source: "batchdata_cash_buyer", intentType: "buyer" as const, behaviorType: "investor_cash_purchase", intentSignals: ["cash_buyer", "investor"] }))
-            .filter(isViableRecord)
+          // Lane 89B — every INVESTOR BUYER list (cash_buyer + fix_and_flip), one call per list so each
+          // record is stamped with the list that pulled it (BatchData labels a search by its first
+          // trigger); the same source, ledger line and toggle. Cost is the sum of the pulls.
+          let investorCostUsd = 0
+          const buyers: NormalizedScrapedRecord[] = []
+          for (const list of BATCHDATA_INVESTOR_BUYER_TYPES) {
+            const pull = await batchdata.getMotivatedSellerDataWithCost(`${market.city}, ${market.state}`, [list])
+            investorCostUsd += pull.cost
+            buyers.push(...pull.records
+              .map((r) => normalizeBatchDataRecord(r as Record<string, unknown>, market))
+              .map((r) => ({ ...r, source: "batchdata_cash_buyer", intentType: "buyer" as const, behaviorType: "investor_cash_purchase", intentSignals: [list, "investor"] }))
+              .filter(isViableRecord))
+          }
           const { inserted } = await insertRawBatch({
             records: buyers, marketId: market.id,
             marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
             executionId: null,
             source: "batchdata_cash_buyer", sourceFamily: "investor_demand", sourceChannel: "batchdata_cash_buyer",
-            batchCostUsd: pull.cost,
+            batchCostUsd: investorCostUsd,
           })
           results.total_leads_created += inserted
-          await bookSourceSpend({ source: "batchdata_cash_buyer", cost: pull.cost, brokerageId: market.brokerage_id, marketId: market.id })
-          territorySpendUsd += pull.cost
+          await bookSourceSpend({ source: "batchdata_cash_buyer", cost: investorCostUsd, brokerageId: market.brokerage_id, marketId: market.id })
+          territorySpendUsd += investorCostUsd
         } catch (e) {
           results.errors.push(`Cash-buyer pull error for ${market.name}: ${e}`)
         }
@@ -769,7 +780,8 @@ export async function GET(request: Request) {
         enabledSources.has("new_construction_intent") ||
         enabledSources.has("permit_prelisting_intent") ||
         enabledSources.has("review_acquisition_intent") ||
-        enabledSources.has("facebook_marketplace")
+        enabledSources.has("facebook_marketplace") ||
+        enabledSources.has("fsbo_site_listing")
 
       // Lane 82B — AUTONOMY FIX: this block used to require configured lead_scraping_keywords, so a
       // platform with no keyword rows silently ran NONE of the territory-derived lanes below that
@@ -917,6 +929,15 @@ export async function GET(request: Request) {
             const { records, cost } = await sourceFacebookMarketplace(market.city, socialMarket, kw.marketplace.terms)
             sourceCostUsd += cost
             await insertSocial(records, "facebook_marketplace", "social_intent", cost)
+          }
+
+          // ── FSBO marketplace listings (Apify, forsalebyowner.com) — owner-posted sellers, lane 89B ──
+          // Territory-centric by construction: the actor is handed the market's own `city-state` slug;
+          // no city/state ⇒ no scrape. ~$3–5 / 1k listings vs BatchData's FSBO quickList at $50 / 1k.
+          if (enabledSources.has("fsbo_site_listing") && market.city && market.state) {
+            const { records, cost } = await sourceFsboSiteListings({ city: market.city, state: market.state, stateName: stateNameFromCode(market.state) })
+            sourceCostUsd += cost
+            await insertSocial(records, "fsbo_site_listing", "social_intent", cost)
           }
 
           // ── Instagram (Apify) — real-estate hashtags, buyer + seller intent ──

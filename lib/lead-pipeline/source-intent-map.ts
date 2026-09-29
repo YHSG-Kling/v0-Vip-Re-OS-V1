@@ -87,6 +87,15 @@ export type SourceKey =
   // territory who bought for CASH (the investor list PropStream/BatchData users build). BUYER-side,
   // DISTINCT from batchdata_buybox (demand matched to ONE listing) and from every seller lane.
   | 'batchdata_cash_buyer'
+  // Lane 89B (owner 2026-09-29: "if there is another way to get comparable lead quality for less
+  // money at a different lead source, then we should explore that") — owner-posted listings on the
+  // dedicated FSBO marketplaces (forsalebyowner.com first) via Apify: the OWNER's name + phone ride
+  // on the listing at ~$3–5 per 1,000 listings, where BatchData's 'for-sale-by-owner' quickList is
+  // $0.05 per RECORD ($50 per 1,000) for the same population. DISTINCT from craigslist_fsbo (a
+  // classifieds post), facebook_marketplace (a Marketplace card), the zenrows_* portal FSBO cards and
+  // the BatchData `fsbo` trigger — a different site is a different lane (wave-65 ruling), and the
+  // three-table dedup collapses the same owner across them. SELLER by construction.
+  | 'fsbo_site_listing'
   // TOMBSTONE — 'tiktok_intent' (lane 83A) RETIRED by lane 84C. Owner, 2026-09-26, verbatim:
   // "don't need tiktok." Nothing merged anywhere: the lane had no survivor to merge onto (no other
   // source reads TikTok comments) and the owner ruled the capability away. Live before retiring
@@ -372,18 +381,26 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     canPromoteBeforeEnrichment: false,
   },
 
-  // ── Exa neural-search buyer intent (AI-native) ───────────────────────────────
-  // Semantic discovery of buyer-intent content across the open web; per-result
-  // intent via detectIntent, anchored on the author handle.
+  // ── Exa neural-search intent (AI-native) ─────────────────────────────────────
+  // Semantic discovery of intent content across the open web; per-result intent via the Exa
+  // normalizer + detectIntent, anchored on the author handle.
+  // Lane 89B (owner 2026-09-29, verbatim: "exa is also another lead scrapping source") — the lane
+  // now runs EVERY population per territory (buyers, relocators, SELLERS, realtor-seekers,
+  // investors; exa-sourcer.ts::buildExaIntentQueries), so the map-level intent is 'unknown' and the
+  // RECORD's own intentType decides lead_type at promotion (pipeline-processor.ts::signalLeadType).
+  // It was 'buyer'/'buyer', which labelled the seller records normalizeExaResult already produced
+  // (the simulator's "Exa seller content → seller intent" fixture) as BUYER leads. The KEY keeps
+  // its historical spelling: it is the ledger's usage_type on every Exa row already booked, and a
+  // rename would split one source's cost history in two (CLAUDE.md §6 — one vocabulary).
   exa_buyer_intent: {
-    intentType:                'buyer',
-    leadType:                  'buyer',
-    motivationType:            'ai_neural_buyer_intent',
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'ai_neural_intent',
     behaviorType:              'search_signal',
     scoreRange:                [35, 65],
     baseScore:                 50,
-    boostSignals:              ['pre_approved', 'looking_to_buy', 'house_hunting', 'first_home', 'relocating', 'timeline'],
-    dampSignals:               ['just_browsing', 'no_timeline'],
+    boostSignals:              ['pre_approved', 'looking_to_buy', 'house_hunting', 'first_home', 'relocating', 'timeline', 'selling', 'fsbo', 'must_sell', 'need_a_realtor', 'recommend_a_realtor', 'investor', 'cash_buyer'],
+    dampSignals:               ['just_browsing', 'no_timeline', 'agent_promo'],
     identityPolicy:            'enrichment_first',
     canPromoteBeforeEnrichment: false,
   },
@@ -729,6 +746,23 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     canPromoteBeforeEnrichment: false,
   },
 
+  // ── FSBO marketplace listing (lane 89B) — the owner's own listing on forsalebyowner.com ───────
+  // Strong sell signal: the owner has ALREADY decided to sell and published a price. The listing
+  // carries the owner's name and (usually) phone, so identity is `property_required` like
+  // craigslist_fsbo — the address is the anchor; PeopleData fills what the card lacks.
+  fsbo_site_listing: {
+    intentType:                'seller',
+    leadType:                  'seller',
+    motivationType:            'fsbo_seller',
+    behaviorType:              'fsbo_listing',
+    scoreRange:                [65, 90],
+    baseScore:                 72,
+    boostSignals:              ['fsbo', 'by_owner', 'owner_financing', 'price_reduced', 'must_sell', 'motivated', 'days_on_market'],
+    dampSignals:               ['agent_listed', 'rental', 'no_price', 'sold', 'pending'],
+    identityPolicy:            'property_required',
+    canPromoteBeforeEnrichment: true,
+  },
+
   // TOMBSTONE — tiktok_intent's scoring entry retired with the SourceKey (lane 84C; owner
   // 2026-09-26: "don't need tiktok."). See the SourceKey union above for the live read.
 
@@ -838,6 +872,10 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
   // the SAME motivated-seller quickList universe; it scored as a stranger and its ledger vendor was
   // unresolvable. The CHANNEL stays distinct on raw_scraped_leads — only scoring/vendor resolve here.
   batchdata_incremental: "batchdata_motivated",
+  // Lane 89B — the CHANNEL the cron's motivated/expired pull writes (sourceChannel: "batchdata"); the
+  // per-record `source` is already batchdata_motivated / expired_listing, so this only lets the
+  // channel spelling resolve (vendor + paid-person-data contract) instead of reading as a stranger.
+  batchdata: "batchdata_motivated",
   cash_buyer: "batchdata_cash_buyer",
   // (lane 84C: the lane-83A aliases tiktok / tiktok_comments retired with tiktok_intent —
   // owner 2026-09-26 "don't need tiktok.")
@@ -887,6 +925,68 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
   review_acquisition: "review_acquisition_intent",
   review_intent: "review_acquisition_intent",
   reputation_acquisition: "review_acquisition_intent",
+  // Lane 89B — FSBO marketplace lane, second spellings seen in config/UI copy.
+  fsbo_site: "fsbo_site_listing",
+  forsalebyowner: "fsbo_site_listing",
+  fsbo_marketplace: "fsbo_site_listing",
+}
+
+/**
+ * Lane 89B — WHICH SOURCES SELL THE PERSON WITH THE LEAD (owner 2026-09-29, verbatim: "those
+ * would need to be brought into the linear raw leads and enriched by people data lab along with the
+ * rest scraped leads unless we already paid for that lead data with the lead").
+ *
+ * TRUE = the vendor's record can carry the owner's contact points (BatchData's `contact` dataset:
+ * owner.phoneNumbers / owner.emails / owner.enrichedEmails) bought in the same pull — PeopleData is
+ * NOT asked again for such a row when it arrives with a phone or an email
+ * (pipeline-processor.ts::enrichWithPeopleData). FALSE = the row's identity is scraped, never
+ * purchased (a post author, a reply email on a classifieds post, an FSBO card's phone) — it goes
+ * through PeopleData like every other scraped row. Compile-enforced per SourceKey so a new source
+ * cannot land without answering; the NORMALIZER still decides per record (a BatchData row whose
+ * account lacks the contact dataset carries no contact points and stamps false) — this map is the
+ * contract that bounds which normalizers may stamp true (raw-record-types.ts::paidPersonData).
+ */
+export const SOURCE_PAID_PERSON_DATA: Record<SourceKey, boolean> = {
+  batchdata_motivated:         true,
+  expired_listing:             true,   // the same BatchData Property Search pull, 'expired-listing' quickList
+  batchdata_smart_search:      true,   // hydrated through the same property lookup (contact dataset when licensed)
+  batchdata_cash_buyer:        true,
+  batchdata_buybox:            false,  // a listing↔criteria match; the investor row is a separate probe
+  zenrows_zillow:              false,
+  zenrows_realtor:             false,
+  zenrows_homes:               false,
+  nextdoor_intent:             false,
+  facebook_group:              false,
+  facebook_marketplace:        false,
+  reddit_intent:               false,
+  instagram_intent:            false,
+  craigslist_fsbo:             false,  // a reply email is scraped, not sold
+  craigslist_wanted:           false,
+  google_phrase_intent:        false,
+  rental_listing:              false,
+  linkedin_relocation:         false,
+  exa_buyer_intent:            false,
+  tavily_intent:               false,
+  osint_signal:                false,  // a court caption names a party; nobody sold the person
+  realty_site_chatter:         false,
+  reddit_relocation:           false,
+  facebook_recommend_realtor:  false,
+  agent_seeking_phrase_intent: false,
+  external_behavior:           false,
+  site_visitor_intent:         false,
+  email_engagement_intent:     false,
+  new_construction_intent:     false,
+  inbound_email_unknown:       false,
+  permit_prelisting_intent:    false,
+  rental_to_buyer_graduation:  false,
+  review_acquisition_intent:   false,
+  fsbo_site_listing:           false,  // the owner's phone is on the public card — scraped, not sold
+}
+
+/** Lane 89B — the ledger-side reader of SOURCE_PAID_PERSON_DATA (any spelling: key, alias, channel). */
+export function deliversPaidPersonData(source: string): boolean {
+  const key = resolveSourceKey(source)
+  return key in SOURCE_PAID_PERSON_DATA ? SOURCE_PAID_PERSON_DATA[key] : false
 }
 
 /**
@@ -956,7 +1056,8 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   // run that actually fell back, without this contract map pretending to know which provider
   // serves any given call.
   review_acquisition_intent: 'zenrows',
-  batchdata_cash_buyer:      'batchdata', // lane 82B — Property Search on the 'cash-buyer' quickList
+  batchdata_cash_buyer:      'batchdata', // lane 82B — Property Search on the 'cash-buyer' quickList (+ 'fix-and-flip', lane 89B)
+  fsbo_site_listing:         'apify',     // lane 89B — forsalebyowner.com listings via the Apify fsbo_site task
   // tiktok_intent → 'apify' retired (lane 84C; owner 2026-09-26 "don't need tiktok.")
 }
 
@@ -1024,6 +1125,7 @@ const GATE_TOKEN: Record<SourceKey, string> = {
   rental_to_buyer_graduation: 'rental_to_buyer_graduation',
   review_acquisition_intent: 'review_acquisition_intent',
   batchdata_cash_buyer:      'batchdata_cash_buyer',
+  fsbo_site_listing:         'fsbo_site_listing',   // lane 89B — its OWN gate token (opt-in per market)
   // tiktok_intent → gate 'tiktok' retired (lane 84C; owner 2026-09-26 "don't need tiktok.")
 }
 

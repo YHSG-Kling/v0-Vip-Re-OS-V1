@@ -55,6 +55,15 @@ export interface BatchDataRecord {
   lastName: string
   phone: string | null
   email: string | null
+  /** Lane 89B — EVERY contact point the provider's `contact` dataset carried on the row
+   *  (owner.phoneNumbers[].number / owner.emails[] / owner.enrichedEmails[].email — the field
+   *  catalogue read 2026-09-29 via list_property_dataset_fields "contact"). `phone`/`email` above
+   *  are the first of each; the rest ride here so nothing bought is dropped. */
+  phones?: string[]
+  emails?: string[]
+  /** Lane 89B — the provider SOLD the person's contact points with this record (raw-record-types.ts::
+   *  paidPersonData; source-intent-map.ts::SOURCE_PAID_PERSON_DATA). PeopleData is not asked again. */
+  paidPersonData?: boolean
   address: string
   city: string
   state: string
@@ -130,6 +139,8 @@ export interface BatchDataRecord {
     | 'fsbo' | 'senior_owner' | 'canceled_listing' | 'lis_pendens' | 'notice_of_default' | 'involuntary_lien'
     // Lane 88G — three published quickLists no trigger reached (see BATCHDATA_MOTIVATION_TYPES).
     | 'auction' | 'mailing_vacant' | 'failed_listing'
+    // Lane 89B — the LAST six published owner/equity quickLists no trigger reached (BATCHDATA_QUICKLIST_CATALOGUE).
+    | 'free_and_clear' | 'out_of_state_owner' | 'corporate_owned' | 'trust_owned' | 'low_equity' | 'vacant_lot'
   motivationConfidence: number
   /** Lane 85C — the property row's `demographic` dataset (marital status / household income / net
    *  worth) that a Property Search returns with every permitted dataset and this normalizer used to
@@ -164,10 +175,40 @@ export const BATCHDATA_MOTIVATION_TYPES = [
   //   failed_listing → 'failed-listing'         — a listing that failed to close (stale/withdrawn
   //                                                sibling of canceled/expired).
   'auction', 'mailing_vacant', 'failed_listing',
+  // Lane 89B (wave 89, owner verbatim: "batchdata has many other quicklists so don't just limit to
+  // motivated sellers") — the catalogue was re-enumerated against the provider's quicklist dataset
+  // (list_property_dataset_fields "quicklist", 2026-09-29: 38 flags) and EVERY flag now has a verdict
+  // in BATCHDATA_QUICKLIST_CATALOGUE below. These six are the owner/equity lists that were still
+  // unreached; each is opt-in (never in the default trio — see the catalogue's `defaultOn`):
+  //   free_and_clear     → 'free-and-clear'              no mortgage: the downsizer/estate seller with
+  //                                                       nothing to pay off (an ENABLER family for stacking)
+  //   out_of_state_owner → 'out-of-state-absentee-owner' the owner lives in another state — the
+  //                                                       strongest absentee tier ('out-of-state-owner'
+  //                                                       and 'in-state-absentee-owner' are aliases)
+  //   corporate_owned    → 'corporate-owned'             LLC/corporation on title — DEFAULT OFF: the
+  //                                                       lead gate refuses entity names (lane 84C), so a
+  //                                                       pull strands until a person is resolved; useful
+  //                                                       as a STACK enabler and for the investor bench
+  //   trust_owned        → 'trust-owned'                 a trust on title (estate planning / pre-probate);
+  //                                                       same gate posture as corporate_owned
+  //   low_equity         → 'low-equity'                  underwater / thin equity: with a foreclosure
+  //                                                       family it is the SHORT-SALE candidate
+  //   vacant_lot         → 'vacant-lot'                  land owners (builder/land-sale sellers)
+  'free_and_clear', 'out_of_state_owner', 'corporate_owned', 'trust_owned', 'low_equity', 'vacant_lot',
 ] as const
 
-/** The default high-intent seller trio used when no explicit triggers are given (API caps at 3). */
+/** The default high-intent seller trio used when no explicit triggers are given (API caps at 3).
+ *  Lane 89B — the ONE list; BATCHDATA_QUICKLIST_CATALOGUE's `defaultOn` flags must name exactly
+ *  these three (scripts/lead-source-catalogue-guard.ts holds the two in agreement). */
 const DEFAULT_MOTIVATION_TRIO = ['high_equity', 'pre_foreclosure', 'absentee'] as const
+
+/**
+ * Lane 89B — the INVESTOR BUYER lists (BUYER-side; never a seller trigger). 'cash_buyer' (lane 82B)
+ * plus 'fix_and_flip': an owner whose last two sales were months apart at a profit is an ACTIVE
+ * flipper — the buyer an investor-persona listing wants. Pulled only by the cron's
+ * batchdata_cash_buyer step, one call per list, each record stamped with its own list + 'investor'.
+ */
+export const BATCHDATA_INVESTOR_BUYER_TYPES = ['cash_buyer', 'fix_and_flip'] as const
 
 /** Config/DB aliases → our canonical BatchData motivation trigger. */
 const TRIGGER_ALIASES: Record<string, string> = {
@@ -189,6 +230,15 @@ const TRIGGER_ALIASES: Record<string, string> = {
   'active-auction': 'auction', foreclosure_auction: 'auction', trustee_sale: 'auction', sheriff_sale: 'auction',
   'mailing-address-vacant': 'mailing_vacant', change_of_address: 'mailing_vacant', moved_away: 'mailing_vacant', owner_moved: 'mailing_vacant',
   'failed-listing': 'failed_listing', stale_listing: 'failed_listing',
+  // Lane 89B — config/UI spellings for the six new triggers + the absentee tiers.
+  'free-and-clear': 'free_and_clear', freeandclear: 'free_and_clear', no_mortgage: 'free_and_clear', paid_off: 'free_and_clear',
+  'out-of-state-absentee-owner': 'out_of_state_owner', 'out-of-state-owner': 'out_of_state_owner', out_of_state_absentee: 'out_of_state_owner', out_of_state: 'out_of_state_owner',
+  'in-state-absentee-owner': 'absentee', in_state_absentee: 'absentee', in_state_absentee_owner: 'absentee',
+  'corporate-owned': 'corporate_owned', llc_owned: 'corporate_owned', entity_owned: 'corporate_owned',
+  'trust-owned': 'trust_owned', trustee: 'trust_owned', living_trust: 'trust_owned',
+  'low-equity': 'low_equity', underwater: 'low_equity', negative_equity: 'low_equity', short_sale: 'low_equity',
+  'vacant-lot': 'vacant_lot', land: 'vacant_lot', vacant_land: 'vacant_lot',
+  'fix-and-flip': 'fix_and_flip', flipper: 'fix_and_flip',
 }
 function canonicalTrigger(t: string): string {
   const k = String(t).trim().toLowerCase().replace(/\s+/g, '_')
@@ -262,9 +312,100 @@ const QUICKLIST_SLUG: Record<string, string> = {
   auction:           'active-auction',
   mailing_vacant:    'mailing-address-vacant',
   failed_listing:    'failed-listing',
+  // Lane 89B
+  free_and_clear:     'free-and-clear',
+  out_of_state_owner: 'out-of-state-absentee-owner',
+  corporate_owned:    'corporate-owned',
+  trust_owned:        'trust-owned',
+  low_equity:         'low-equity',
+  vacant_lot:         'vacant-lot',
   // Lane 82B — BUYER-side (investor) list, deliberately NOT in BATCHDATA_MOTIVATION_TYPES so a
   // seller pull can never reach it; pulled only by the cron's batchdata_cash_buyer step.
   cash_buyer:        'cash-buyer',
+  // Lane 89B — second investor-buyer list (BATCHDATA_INVESTOR_BUYER_TYPES), same posture.
+  fix_and_flip:      'fix-and-flip',
+}
+
+/** How ONE published quickList is used by this platform — every flag answers (lane 89B). */
+export type QuickListUse =
+  | 'seller_trigger'   // a BATCHDATA_MOTIVATION_TYPES trigger the motivated pull can request
+  | 'investor_buyer'   // a BATCHDATA_INVESTOR_BUYER_TYPES list the cash-buyer step pulls
+  | 'listing_feed'     // on-market inventory — lib/kernel/listings-batchdata-feed.ts (batchdata_active_listings), never a person lead
+  | 'farm'             // lib/kernel/farm-play.ts / neighbor-farm.ts (just-sold neighbour farming), seller-permission-gated
+  | 'fact_filter'      // a property/owner FACT (AND-filter or stack fact), not motivation — never pulled as a list
+
+export interface QuickListCatalogueEntry {
+  use: QuickListUse
+  /** The internal trigger (QUICKLIST_SLUG key) for seller_trigger / investor_buyer uses. */
+  trigger?: string
+  /** seller_trigger only — pulled for an UNCONFIGURED market (must equal DEFAULT_MOTIVATION_TRIO). */
+  defaultOn?: boolean
+  /** Why it is used this way (the operator's justification, surfaced beside the picker). */
+  why: string
+}
+
+/**
+ * Lane 89B — EVERY published quickList (BATCHDATA_QUICKLISTS, 38) with its verdict. Owner, 2026-09-29:
+ * "batchdata has many other quicklists so don't just limit to motivated sellers." The proof asserts the
+ * key set EQUALS BATCHDATA_QUICKLISTS (a flag the provider adds cannot sit unjudged), that every
+ * seller_trigger / investor_buyer entry names a trigger QUICKLIST_SLUG maps back onto its own slug, and
+ * that `defaultOn` names exactly DEFAULT_MOTIVATION_TRIO. Each pull is territory-scoped by the cron
+ * (market city/state in `query`), booked per source (bookSourceSpend), $0.05/record
+ * (BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD), and toggled per market through the admin
+ * "Motivated signals" picker (app/dashboard/admin/markets/page.tsx derives its options from
+ * BATCHDATA_MOTIVATION_TYPES) or the Data-sources toggles (expired_listing / batchdata_cash_buyer).
+ */
+export const BATCHDATA_QUICKLIST_CATALOGUE: Readonly<Record<string, QuickListCatalogueEntry>> = {
+  // ── seller triggers (the motivated pull) ──
+  'high-equity':                 { use: 'seller_trigger', trigger: 'high_equity',        defaultOn: true,  why: 'equity to move — the default trio; the market can sell' },
+  'preforeclosure':              { use: 'seller_trigger', trigger: 'pre_foreclosure',    defaultOn: true,  why: 'default trio — the classic distressed seller' },
+  'absentee-owner':              { use: 'seller_trigger', trigger: 'absentee',           defaultOn: true,  why: 'default trio — does not live there; landlord/second home' },
+  'inherited':                   { use: 'seller_trigger', trigger: 'probate',            defaultOn: false, why: 'deed shows inheritance — probate/estate seller' },
+  'notice-of-sale':              { use: 'seller_trigger', trigger: 'foreclosure',        defaultOn: false, why: 'auction stage of foreclosure' },
+  'tax-default':                 { use: 'seller_trigger', trigger: 'tax_lien',           defaultOn: false, why: 'delinquent taxes — the county tax-delinquent list, already bought' },
+  'expired-listing':             { use: 'seller_trigger', trigger: 'expired',            defaultOn: false, why: 'own Data-sources toggle (expired_listing) — failed to sell' },
+  'vacant':                      { use: 'seller_trigger', trigger: 'vacant',             defaultOn: false, why: 'nobody home — carrying cost with no use' },
+  'tired-landlord':              { use: 'seller_trigger', trigger: 'tired_landlord',     defaultOn: false, why: 'long-held rental — an ENABLER family' },
+  'for-sale-by-owner':           { use: 'seller_trigger', trigger: 'fsbo',               defaultOn: false, why: 'FSBO at $0.05/record — the fsbo_site_listing lane (Apify, ~$0.005/listing) covers the same population cheaper; keep for markets the FSBO sites miss' },
+  'senior-owner':                { use: 'seller_trigger', trigger: 'senior_owner',       defaultOn: false, why: 'life-stage downsizer — an ENABLER family' },
+  'canceled-listing':            { use: 'seller_trigger', trigger: 'canceled_listing',   defaultOn: false, why: 'withdrew a listing — expired playbook sibling' },
+  'notice-of-lis-pendens':       { use: 'seller_trigger', trigger: 'lis_pendens',        defaultOn: false, why: 'earliest foreclosure filing' },
+  'notice-of-default':           { use: 'seller_trigger', trigger: 'notice_of_default',  defaultOn: false, why: 'default recorded' },
+  'involuntary-lien':            { use: 'seller_trigger', trigger: 'involuntary_lien',   defaultOn: false, why: 'mechanic/HOA/judgment lien' },
+  'active-auction':              { use: 'seller_trigger', trigger: 'auction',            defaultOn: false, why: 'trustee/sheriff sale scheduled — same-day stage' },
+  'mailing-address-vacant':      { use: 'seller_trigger', trigger: 'mailing_vacant',     defaultOn: false, why: 'the lawful change-of-address proxy (NCOALink may not build mover lists)' },
+  'failed-listing':              { use: 'seller_trigger', trigger: 'failed_listing',     defaultOn: false, why: 'listing failed to close — stale' },
+  'free-and-clear':              { use: 'seller_trigger', trigger: 'free_and_clear',     defaultOn: false, why: 'no mortgage — nothing to pay off; ENABLER family (equity)' },
+  'out-of-state-absentee-owner': { use: 'seller_trigger', trigger: 'out_of_state_owner', defaultOn: false, why: 'owner lives in another state — the strongest absentee tier' },
+  'corporate-owned':             { use: 'seller_trigger', trigger: 'corporate_owned',    defaultOn: false, why: 'entity on title: the lead gate refuses LLC names until a person is resolved — stack enabler / investor bench, not a default' },
+  'trust-owned':                 { use: 'seller_trigger', trigger: 'trust_owned',        defaultOn: false, why: 'trust on title (pre-probate estate planning) — same gate posture as corporate' },
+  'low-equity':                  { use: 'seller_trigger', trigger: 'low_equity',         defaultOn: false, why: 'thin/negative equity — short-sale candidate when stacked with a foreclosure family' },
+  'vacant-lot':                  { use: 'seller_trigger', trigger: 'vacant_lot',         defaultOn: false, why: 'land owners — builder/land-sale sellers' },
+  // ── investor buyers (the cash-buyer step) ──
+  'cash-buyer':                  { use: 'investor_buyer', trigger: 'cash_buyer',   why: 'bought for cash — the investor buyer list (default ON via DEFAULT_MARKET_SOURCES)' },
+  'fix-and-flip':                { use: 'investor_buyer', trigger: 'fix_and_flip', why: 'flipped recently — an ACTIVE investor buyer' },
+  // ── on-market inventory (never a person lead from this platform) ──
+  'active-listing':              { use: 'listing_feed', why: 'batchdata_active_listings feed — represented listings (Article 16), transitions only' },
+  'on-market':                   { use: 'listing_feed', why: 'the same active-listing feed (on-market inventory)' },
+  'pending-listing':             { use: 'listing_feed', why: 'the same feed — the pending transition' },
+  'listed-below-market-price':   { use: 'listing_feed', why: 'a represented listing priced under AVM — buyer-side deal alert for the investor rail, never a seller solicitation' },
+  // ── just-sold farming ──
+  'recently-sold':               { use: 'farm', why: 'farm-play / neighbor-farm on every close (seller-permission-gated); a new owner is sphere, not a seller lead' },
+  // ── facts (AND-filters and stack facts, not motivation) ──
+  'owner-occupied':              { use: 'fact_filter', why: 'occupancy fact — AND-filter (not-owner-occupied narrows an absentee pull)' },
+  'same-property-and-mailing-address': { use: 'fact_filter', why: 'the inverse of absentee — a fact' },
+  'in-state-absentee-owner':     { use: 'fact_filter', why: 'the weaker absentee tier — aliased onto the absentee trigger for config; a fact on the stack' },
+  'out-of-state-owner':          { use: 'fact_filter', why: 'mailing state ≠ property state regardless of occupancy — aliased onto out_of_state_owner for config' },
+  'has-hoa':                     { use: 'fact_filter', why: 'an HOA governs the property — a fact, never motivation' },
+  'has-hoa-fees':                { use: 'fact_filter', why: 'HOA fees are charged — a carrying-cost fact for the stack, never a list' },
+  'unknown-equity':              { use: 'fact_filter', why: 'the provider could not value it — no signal' },
+}
+
+/** Lane 89B — the pullable seller triggers with their catalogue entry, derived (the admin picker's caption source). */
+export function quickListCatalogueForTrigger(trigger: string): (QuickListCatalogueEntry & { quickList: string }) | null {
+  const slug = QUICKLIST_SLUG[trigger]
+  const entry = slug ? BATCHDATA_QUICKLIST_CATALOGUE[slug] : undefined
+  return slug && entry ? { ...entry, quickList: slug } : null
 }
 
 /**
@@ -328,6 +469,50 @@ export function triggerForQuickListSlug(slug: string): string | null {
   return null
 }
 
+/** Lane 89B — true for a BUYER-side investor list trigger (never enters a seller stack). */
+export function isInvestorBuyerTrigger(trigger: string | null | undefined): boolean {
+  return !!trigger && (BATCHDATA_INVESTOR_BUYER_TYPES as readonly string[]).includes(trigger)
+}
+
+/**
+ * Lane 89B — PURE. Every phone / email the provider's `contact` dataset put on an `owner` object,
+ * in the order the provider ranked them. Shapes read: `phoneNumbers[]` of `{ number, … }` (the
+ * published catalogue), bare string arrays (`phones`, `emails`), `enrichedEmails[]` of `{ email }`,
+ * and the flat `phone` / `email` the legacy reader expected. Digits-only phone dedupe; lowercase
+ * email dedupe; DNC-flagged lines are KEPT (the phone-scrub at promotion decides reachability —
+ * dropping them here would hide a bought fact from the scrub).
+ */
+export function ownerContactPointsFromRow(owner: Record<string, any> | null | undefined): { phones: string[]; emails: string[] } {
+  const phones: string[] = []
+  const emails: string[] = []
+  const seenPhone = new Set<string>()
+  const seenEmail = new Set<string>()
+  const addPhone = (v: unknown) => {
+    const s = typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : ''
+    const digits = s.replace(/\D/g, '')
+    if (digits.length < 10 || seenPhone.has(digits)) return
+    seenPhone.add(digits); phones.push(s)
+  }
+  const addEmail = (v: unknown) => {
+    const s = typeof v === 'string' ? v.trim() : ''
+    const k = s.toLowerCase()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) || seenEmail.has(k)) return
+    seenEmail.add(k); emails.push(s)
+  }
+  if (!owner || typeof owner !== 'object') return { phones, emails }
+  for (const list of [owner.phoneNumbers, owner.phones]) {
+    if (!Array.isArray(list)) continue
+    for (const p of list) addPhone(p && typeof p === 'object' ? (p as any).number ?? (p as any).phone : p)
+  }
+  addPhone(owner.phone)
+  for (const list of [owner.emails, owner.enrichedEmails]) {
+    if (!Array.isArray(list)) continue
+    for (const e of list) addEmail(e && typeof e === 'object' ? (e as any).email ?? (e as any).address : e)
+  }
+  addEmail(owner.email)
+  return { phones, emails }
+}
+
 /** Pure: a BatchData Property Search `results.properties[]` row → BatchDataRecord. */
 export function normalizeBatchDataProperty(p: Record<string, any>, requestedType: string): BatchDataRecord {
   const addr      = p.address ?? {}
@@ -344,6 +529,12 @@ export function normalizeBatchDataProperty(p: Record<string, any>, requestedType
   // Lane 88G — BOTH wire shapes (object of camelCase flags AND the legacy array) through the ONE
   // reader; was `Array.isArray(p.quickLists)`, which dropped every object-shaped response's set.
   const quickLists = quickListSlugsFromRow(p)
+  // Lane 89B — the `contact` dataset (list_property_dataset_fields "contact", 2026-09-29):
+  // owner.phoneNumbers[].number / owner.emails[] / owner.enrichedEmails[].email. This normalizer read
+  // only the flat `owner.phone` / `owner.email` (a shape the catalogue does not publish), so every
+  // contact point the account had already PAID for on the pull was dropped and PeopleData was asked
+  // again for the same person. Read defensively across both shapes; unknown → empty, never invented.
+  const { phones, emails } = ownerContactPointsFromRow(owner)
 
   // Compact helper: drop undefined keys so sub-objects stay compact in the raw_data JSONB.
   const compact = <T extends Record<string, unknown>>(o: T): T | undefined => {
@@ -355,8 +546,13 @@ export function normalizeBatchDataProperty(p: Record<string, any>, requestedType
   return {
     firstName: ownerFirst || '',
     lastName:  ownerLast  || '',
-    phone:     owner.phone ?? null,
-    email:     owner.email ?? null,
+    phone:     phones[0] ?? null,
+    email:     emails[0] ?? null,
+    ...(phones.length ? { phones } : {}),
+    ...(emails.length ? { emails } : {}),
+    // The provider sold the person with the record (raw-record-types.ts::paidPersonData) — only when a
+    // contact point actually arrived; an account without the contact dataset stamps false.
+    paidPersonData: phones.length > 0 || emails.length > 0,
     address:   owner.mailingAddress?.street ?? addr.street ?? '',
     city:      owner.mailingAddress?.city   ?? addr.city   ?? '',
     state:     owner.mailingAddress?.state  ?? addr.state  ?? '',

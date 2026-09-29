@@ -167,6 +167,39 @@ export async function scrapeFacebookMarketplaceListings(params: {
   return { listings: result.data, cost: result.cost }
 }
 
+/**
+ * Lane 89B — forsalebyowner.com owner-posted listings for ONE territory city (Apify `fsbo_site`
+ * task). The slug is the site's own `city-state` form ("austin-texas"); no city/state ⇒ no run.
+ * The input carries every candidate's field names (memo23: `locationSlugs` / `source` / `status` /
+ * `monitoringMode`; parseforge: `mode` / `searchSlug` / `maxItems`) — runApifyTask hands each
+ * candidate the same input. `monitoringMode` asks the actor for listings it has not delivered
+ * before; the raw writer's source_record_id dedupe is the platform-side guarantee.
+ */
+export async function scrapeFsboSiteListings(params: {
+  city: string
+  state: string
+  /** Full state name for the site's slug ("texas"); falls back to the 2-letter code. */
+  stateName?: string | null
+  limit?: number
+}): Promise<{ listings: any[]; cost: number }> {
+  const citySlug = params.city.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  const stateSlug = (params.stateName ?? params.state).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  if (!citySlug || !stateSlug) return { listings: [], cost: 0 }
+  const slug = `${citySlug}-${stateSlug}`
+  const result = await runApifyTask('fsbo_site', {
+    locationSlugs: [slug],
+    states: [params.state.toUpperCase()],
+    source: 'fsbo',
+    status: 'for_sale',
+    monitoringMode: true,
+    mode: 'api',
+    searchSlug: slug,
+    stateFilter: [params.state.toUpperCase()],
+    maxItems: params.limit || 100,
+  })
+  return { listings: result.data, cost: result.cost }
+}
+
 // TOMBSTONE — scrapeTikTokSearch / scrapeTikTokComments (lane 83A's two Apify hops) retired by
 // lane 84C. Owner, 2026-09-26: "don't need tiktok." Their only caller was
 // lib/lead-pipeline/social-sourcer.ts::sourceTikTokIntent, retired in the same edit.

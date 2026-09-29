@@ -17,6 +17,7 @@ import {
   scrapeGoogleSearchResults,
   scrapeLinkedInPosts,
   scrapeFacebookMarketplaceListings,
+  scrapeFsboSiteListings,
 } from "@/lib/external/apify-client"
 import { isViableRecord, type NormalizedScrapedRecord } from "./raw-record-types"
 import { parseCraigslistHtml, buildRealtySiteChatterUrl, parseContactAgentChatter, parseSellerChatter } from "./scraper-parsers"
@@ -348,6 +349,65 @@ export async function sourceFacebookMarketplace(city: string, market: SocialMark
   const r = await scrapeFacebookMarketplaceListings({ city, queries, limit: 50 }).catch(() => ({ listings: [], cost: 0 }))
   return {
     records: (r.listings ?? []).map((x) => normalizeFacebookMarketplaceListing(x, market)).filter(isViableRecord),
+    cost: r.cost ?? 0,
+  }
+}
+
+// ── FSBO marketplace listing (forsalebyowner.com via Apify) → SELLER — lane 89B ─────────────
+// The owner published a price on the dedicated FSBO site: a decided seller. The card carries the
+// owner's name (memo23 `listedBy` / parseforge `ownerName` / `sellerName`) and often a phone; both
+// are SCRAPED, never sold (paidPersonData stays false — PeopleData still enriches the row).
+
+const FSBO_SITE_AGENT = /\b(realtor|broker(age)?|real estate agent|listing agent|mls|realty)\b/i
+const FSBO_SITE_RENTAL = /\b(for rent|rental|lease|per month|\/mo)\b/i
+
+export function normalizeFsboSiteListing(item: Record<string, any>, market: SocialMarket): NormalizedScrapedRecord {
+  const title = `${item.title ?? item.headline ?? ""}`
+  const description = `${item.description ?? item.summary ?? ""}`
+  const text = `${title} ${description}`
+  const ownerName = item.ownerName ?? item.sellerName ?? item.listedBy ?? item.owner?.name ?? item.contactName ?? null
+  const { firstName, lastName } = nameFromHandle(ownerName)
+  const status = String(item.status ?? item.listingStatus ?? "").toLowerCase()
+  const agentPosted = FSBO_SITE_AGENT.test(`${ownerName ?? ""} ${text}`) || item.source === "mls" || item.source === "agent"
+  const rental = FSBO_SITE_RENTAL.test(text) || status === "for_rent"
+  const priceCut = typeof item.priceReduced === "boolean" ? item.priceReduced : /\b(price (reduced|drop(ped)?|cut)|reduced)\b/i.test(text)
+  const signals = withTextSignals([
+    agentPosted ? "agent_listing" : "owner",
+    "fsbo", "by_owner",
+    ...(rental ? ["rental"] : []),
+    ...(status === "sold" ? ["sold"] : status === "pending" ? ["pending"] : []),
+    ...(item.ownerFinancing === true ? ["owner_financing"] : []),
+    ...(priceCut ? ["price_reduced"] : []),
+  ], text)
+  const street = item.addressLine1 ?? item.streetAddress ?? item.address?.street ?? (typeof item.address === "string" ? item.address : null)
+  const price = Number(item.priceAmount ?? item.price ?? item.listPrice ?? NaN)
+  const phone = item.ownerPhone ?? item.phone ?? item.contactPhone ?? item.owner?.phone ?? undefined
+  return {
+    sourceRecordId: `fsbo-site-${item.id ?? item.listingId ?? item.url ?? `${Date.now()}-${Math.random()}`}`,
+    source: "fsbo_site_listing",
+    behaviorType: "fsbo_listing",
+    intentType: "seller",
+    intentSignals: signals,
+    firstName,
+    lastName,
+    phone: typeof phone === "string" && phone.replace(/\D/g, "").length >= 10 ? phone : undefined,
+    email: typeof item.ownerEmail === "string" ? item.ownerEmail : typeof item.email === "string" ? item.email : undefined,
+    propertyAddress: street ? String(street).slice(0, 120) : title.slice(0, 120) || null,
+    city: item.city ?? item.address?.city ?? market.city,
+    state: item.state ?? item.stateCode ?? item.address?.state ?? market.state,
+    zip: item.zip ?? item.zipCode ?? item.postalCode ?? item.address?.zip ?? null,
+    sourceUrl: item.url ?? item.detailUrl ?? item.listingUrl ?? null,
+    motivationScore: agentPosted ? 45 : priceCut ? 80 : 72,
+    rawPayload: { ...item, parsed_price: Number.isFinite(price) ? price : null },
+  }
+}
+
+/** Territory-honest: no city or state ⇒ no call, $0. Every row is the owner's own listing. */
+export async function sourceFsboSiteListings(market: SocialMarket & { stateName?: string | null }): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
+  if (!market.city || !market.state) return { records: [], cost: 0 }
+  const r = await scrapeFsboSiteListings({ city: market.city, state: market.state, stateName: market.stateName ?? null, limit: 100 }).catch(() => ({ listings: [], cost: 0 }))
+  return {
+    records: (r.listings ?? []).map((x) => normalizeFsboSiteListing(x, market)).filter(isViableRecord),
     cost: r.cost ?? 0,
   }
 }
