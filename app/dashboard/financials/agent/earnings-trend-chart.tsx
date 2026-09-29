@@ -34,6 +34,16 @@ export function EarningsTrendChart({ data }: EarningsTrendChartProps) {
   // (imported above).
   const formatTooltipValue = usd
 
+  // Lane 90D (test:rendered-empty-states): a chart of no months rendered an
+  // empty 300px box. Say so instead — the first closing fills it.
+  if (data.length === 0) {
+    return (
+      <div className="h-[300px] flex items-center justify-center text-sm text-muted-foreground">
+        No closed earnings yet — the trend fills in after your first closing.
+      </div>
+    )
+  }
+
   return (
     <div className="h-[300px]">
       <ResponsiveContainer width="100%" height="100%">

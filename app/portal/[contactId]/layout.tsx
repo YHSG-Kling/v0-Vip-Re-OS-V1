@@ -281,6 +281,11 @@ export default async function PortalLayout({
   const isBuyer = view === "buyer"
   const isSeller = view === "seller"
   const persona = contact.contact_persona || "other"
+  // Lane 90D (89D P2-9): an INVESTOR is a contact_persona riding the buyer VIEW
+  // (determinePortalView returns buyer/seller/lifetime only — correct per the
+  // rulings), so the badge said "Buyer" to an investor. The label reads the
+  // persona; the view, the nav and every gate are unchanged.
+  const viewLabel = view === "buyer" && persona === "investor" ? "Investor" : VIEW_LABELS[view]
   // Log access with resolved view for tracing
   logPortalAccess(supabase, contactId, "layout", `view:${view}`, agentData?.id).catch(() => {})
 
@@ -294,7 +299,7 @@ export default async function PortalLayout({
                 Welcome, {contactName}
               </h1>
               <Badge className={VIEW_COLORS[view]} variant="secondary">
-                {VIEW_LABELS[view]}
+                {viewLabel}
               </Badge>
             </div>
             <p className="text-sm text-muted-foreground">

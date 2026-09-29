@@ -78,7 +78,9 @@ async function PlatformRailSignals() {
 export default async function OsSentinelPage() {
   const gate = await requirePlatformCapability("sentinel")
   if (!gate.userId) redirect("/login")
-  if (!gate.ok) redirect("/dashboard")
+  // Lane 90D (89D P3-11): refuse IN PLACE like every other superadmin page
+  // (audit-trail, plans, usage-reports) instead of a silent bounce to /dashboard.
+  if (!gate.ok) return <div className="p-6 text-red-600">Forbidden: requires platform sentinel capability</div>
 
   return (
     <div className="p-6 space-y-6">

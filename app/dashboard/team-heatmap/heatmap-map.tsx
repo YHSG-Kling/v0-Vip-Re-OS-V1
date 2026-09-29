@@ -213,7 +213,18 @@ export function HeatmapMap({
         async
         defer
       />
-      <div ref={mapRef} className="h-full w-full" />
+      <div className="relative h-full w-full">
+        <div ref={mapRef} className="h-full w-full" />
+        {/* Lane 90D (test:rendered-empty-states): with no snapshots the map
+            was a blank tile. The overlay says so; it never blocks the map. */}
+        {snapshots.length === 0 && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <p className="rounded-md bg-background/90 px-3 py-2 text-sm text-muted-foreground shadow-sm">
+              No activity recorded yet — the heatmap fills in as listings, buyers and closings land.
+            </p>
+          </div>
+        )}
+      </div>
     </>
   )
 }

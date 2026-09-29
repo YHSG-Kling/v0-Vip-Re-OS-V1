@@ -18,7 +18,8 @@ export const metadata = {
 export default async function ApiTokensPage() {
   const gate = await requirePlatformCapability("providers")
   if (!gate.userId) redirect("/login")
-  if (!gate.ok) redirect("/dashboard")
+  // Lane 90D (89D P3-11): refuse IN PLACE like the sibling superadmin pages.
+  if (!gate.ok) return <div className="p-6 text-red-600">Forbidden: requires platform providers capability</div>
 
   const res = await listAgenticTokens()
   const rows = res.ok ? res.rows : []

@@ -19,6 +19,10 @@ export function MobileBottomNav({ items }: MobileBottomNavProps) {
     return IconComponent ? <IconComponent className="w-5 h-5" /> : null
   }
 
+  // Lane 90D (test:rendered-empty-states): no items rendered an 80px white bar
+  // over the page content with nothing in it.
+  if (items.length === 0) return null
+
   return (
     // pb-[env(safe-area-inset-bottom)] — keep tap targets above the iOS home
     // indicator when installed as a PWA (root viewport uses viewport-fit=cover).

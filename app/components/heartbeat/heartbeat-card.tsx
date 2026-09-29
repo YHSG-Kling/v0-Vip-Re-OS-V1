@@ -90,7 +90,11 @@ export function HeartbeatCard({
   loading,
   className = "",
 }: HeartbeatCardProps) {
-  const isEmpty = metrics.length === 0 && !statusLine && ctas.length === 0 && !!emptyMessage
+  // Lane 90D (test:rendered-empty-states): a card with no metrics, no status
+  // line and no CTAs rendered an empty content area unless the CALLER remembered
+  // to pass emptyMessage. The empty branch is the card's own; the caller's
+  // message only replaces the default sentence.
+  const isEmpty = metrics.length === 0 && !statusLine && ctas.length === 0
 
   return (
     <Card className={`border-l-4 ${STATUS_BORDER[status]} ${className}`}>
@@ -116,7 +120,7 @@ export function HeartbeatCard({
         className={`space-y-3 pt-0 ${loading ? "opacity-50 pointer-events-none" : ""}`}
       >
         {isEmpty ? (
-          <p className="text-xs text-muted-foreground py-2">{emptyMessage}</p>
+          <p className="text-xs text-muted-foreground py-2">{emptyMessage || "Nothing to report yet."}</p>
         ) : (
           <>
             {metrics.length > 0 && (
