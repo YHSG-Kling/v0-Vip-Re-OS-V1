@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-28
+ * generated: 2026-09-29
  * source: public.live_schema_json()
- * body-sha256: 0bdf9f919a6a8b20fd6fb89d4c5f377fc976fd73ba7341ff2cedc01e61670e0b
+ * body-sha256: eb054f0360929aba89d3f9cb6a35ef5b58269874c24142caf416c79f3d436204
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -71,7 +71,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   agent_points_log: ["agent_id", "brokerage_id", "created_at", "id", "points", "reason", "reference_id", "reference_type"],
   agent_quiz_attempts: ["agent_id", "answers", "attempt_number", "brokerage_id", "created_at", "id", "passed", "quiz_id", "score"],
   agent_relationships: ["agent_id", "brokerage_id", "created_at", "depth_level", "effective_from", "effective_to", "id", "is_active", "relationship_type", "revenue_share_flat_cents", "revenue_share_percent", "source_of_funds", "sponsor_agent_id"],
-  agent_retention_scores: ["agent_id", "brokerage_id", "composite_score", "created_at", "driving_signals", "id", "previous_score", "score_date", "score_trend", "signal_breakdown", "tier"],
+  agent_retention_scores: ["agent_id", "brokerage_id", "composite_score", "created_at", "driving_signals", "id", "previous_score", "raw_signals", "score_date", "score_trend", "signal_breakdown", "support_suggested", "tier"],
   agent_reviews: ["agent_id", "auto_publish_at", "brokerage_id", "contact_id", "created_at", "id", "is_published", "kind", "platform", "rating", "response_at", "response_text", "review_text", "reviewer_name", "source_url", "transaction_id", "updated_at", "video_url"],
   agent_social_shares: ["agent_user_id", "brokerage_id", "external_share_id", "id", "share_platform", "share_variant_text", "shared_at", "social_post_id"],
   agent_state_machine: ["agent_type", "assigned_agent_id", "brokerage_id", "context", "created_at", "current_state", "ended_at", "entity_id", "entity_type", "escalation_reason", "escalation_urgency", "handoff_reason", "handoff_to", "human_override", "id", "outcome_summary", "priority", "session_id", "started_at", "status", "updated_at"],

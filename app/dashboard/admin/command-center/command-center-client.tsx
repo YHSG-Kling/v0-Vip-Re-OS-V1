@@ -388,6 +388,16 @@ export function CommandCenterClient({
                           {a.weakestSignal ? ` · weakest ${a.weakestSignal.key} ${a.weakestSignal.score}/100` : ""}
                         </p>
                       )}
+                      {/* WAVE 89 (lane 89C) — SUPPORT SUGGESTED: what the broker can do about each
+                          driving signal (agent_retention_scores.support_suggested). Broker/team-lead
+                          facing only; the agent never sees this board. */}
+                      {a.supportSuggested.length > 0 && (
+                        <ul className="mt-1 space-y-0.5">
+                          {a.supportSuggested.slice(0, 3).map((s) => (
+                            <li key={s} className="text-xs text-amber-800">Support suggested — {s}</li>
+                          ))}
+                        </ul>
+                      )}
                     </div>
                     <span className="text-lg font-semibold shrink-0">{a.score}<span className="text-xs text-muted-foreground">/100</span></span>
                   </Card>

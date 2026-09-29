@@ -36,6 +36,72 @@ export interface FatigueScoreInput {
  *  calculator imports it (score) and the card uses it (words), so they cannot disagree. */
 export const UNANSWERED_FOLLOW_UP_FLOOR = 2
 
+// ─── WAVE 89 (lane 89C) — THE WEIGHTS ARE BROKERAGE-TUNABLE ──────────────────
+// Lane 88A: "The weights (4 / 8 / 15 / 20) are mine. The owner may want to tune them." Owner ruling:
+// keep them as the DEFAULTS and expose them as a brokerage setting, written only through the one
+// settings writer (lib/settings/brokerage-settings-merge.ts) by the tenant admin door
+// (app/actions/buyer-fatigue.ts setContactFatigueWeights). PURE: the resolver reads the settings
+// object and clamps every value, so a malformed or hostile setting can never blow the score up.
+
+/** brokerage_settings.settings key holding the weights. */
+export const CONTACT_FATIGUE_WEIGHTS_KEY = "contact_fatigue_weights"
+
+export interface ContactFatigueWeights {
+  /** Per unanswered follow-up past the floor (capped by the calculator). */
+  unanswered_follow_up: number
+  /** Per channel at / over the over-touch cap. */
+  saturated_channel: number
+  /** Per missed appointment (capped by the calculator). */
+  missed_appointment: number
+  /** A seller with no signed listing agreement who is not answering. */
+  seller_unresponsive: number
+}
+
+/** The 88A defaults — unchanged by the owner's wave-89 ruling ("keep weights"). */
+export const DEFAULT_CONTACT_FATIGUE_WEIGHTS: ContactFatigueWeights = {
+  unanswered_follow_up: 4,
+  saturated_channel: 8,
+  missed_appointment: 15,
+  seller_unresponsive: 20,
+}
+/** A single weight may not exceed this (a 50-point term alone reaches HIGH fatigue). */
+export const MAX_CONTACT_FATIGUE_WEIGHT = 50
+
+/** PURE — the weights a brokerage's settings object resolves to: each key an integer 0..MAX, the
+ *  default for anything absent, non-numeric or out of range. Never throws. */
+export function resolveContactFatigueWeights(settings: unknown): ContactFatigueWeights {
+  const raw = settings && typeof settings === "object"
+    ? (settings as Record<string, unknown>)[CONTACT_FATIGUE_WEIGHTS_KEY]
+    : undefined
+  const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
+  const pick = (k: keyof ContactFatigueWeights): number => {
+    const v = Number(obj[k])
+    if (!Number.isFinite(v) || v < 0 || v > MAX_CONTACT_FATIGUE_WEIGHT) return DEFAULT_CONTACT_FATIGUE_WEIGHTS[k]
+    return Math.round(v)
+  }
+  return {
+    unanswered_follow_up: pick("unanswered_follow_up"),
+    saturated_channel: pick("saturated_channel"),
+    missed_appointment: pick("missed_appointment"),
+    seller_unresponsive: pick("seller_unresponsive"),
+  }
+}
+
+/** PURE — validate a proposed weights object from the admin door: every key present, integer, in range. */
+export function validateContactFatigueWeights(input: unknown): { ok: true; weights: ContactFatigueWeights } | { ok: false; error: string } {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, error: "Fatigue weights must be an object with the four weight keys." }
+  const obj = input as Record<string, unknown>
+  const out: Partial<ContactFatigueWeights> = {}
+  for (const k of Object.keys(DEFAULT_CONTACT_FATIGUE_WEIGHTS) as Array<keyof ContactFatigueWeights>) {
+    const v = Number(obj[k])
+    if (!Number.isInteger(v) || v < 0 || v > MAX_CONTACT_FATIGUE_WEIGHT) {
+      return { ok: false, error: `Fatigue weight "${k}" must be a whole number from 0 to ${MAX_CONTACT_FATIGUE_WEIGHT}.` }
+    }
+    out[k] = v
+  }
+  return { ok: true, weights: out as ContactFatigueWeights }
+}
+
 /** The factor snapshot, structurally (every field optional — old rows lack the wave-88 ones). */
 export interface FatigueFactorsInput {
   total_showings?:        number | null

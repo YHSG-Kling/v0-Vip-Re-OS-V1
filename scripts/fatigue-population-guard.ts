@@ -198,8 +198,11 @@ const DB = () => ({
   check("a DISENGAGED buyer with engagement inputs is IN (86G2's stage list skipped exactly this person)", ids.includes("c-diseng") && !(BUYER_ACTIVE_STAGES as readonly string[]).includes("BUYER_DISENGAGED"))
   check("a buyer ON the active ladder with NO input is OUT (nothing to derive from)", !ids.includes("c-noinp") && (BUYER_ACTIVE_STAGES as readonly string[]).includes("BUYER_SEARCHING"))
   check("a non-counted input row (a SCHEDULED showing) does not make a person", !ids.includes("c-noinp"))
-  check("a concluded search (BUYER_CLOSED) is OUT; soft-deleted and tenantless contacts are OUT",
-    !ids.includes("c-closed") && !ids.includes("c-del") && !ids.includes("c-orphan") && (BUYER_CONCLUDED_STAGES as readonly string[]).includes("BUYER_CLOSED"))
+  // WAVE 89 (lane 89C — owner: "lifetime customers get regular touches within their portal to keep them
+  // engaged"): a concluded search is IN the population now (the calculator turns its buyer-search term
+  // off — see F8); soft-deleted and tenantless contacts stay OUT.
+  check("a concluded search (BUYER_CLOSED) is IN — a lifetime customer is scored on follow-up (wave 89); soft-deleted and tenantless contacts are OUT",
+    ids.includes("c-closed") && !ids.includes("c-del") && !ids.includes("c-orphan") && (BUYER_CONCLUDED_STAGES as readonly string[]).includes("BUYER_CLOSED"))
   check("a NULL buyer_stage (a lead's conversion contact) stays IN", ids.includes("c-lead"))
   check("the lead's conversion contact is TAGGED fromLead", pop.persons.find((p) => p.contactId === "c-lead")?.fromLead === true
     && pop.persons.filter((p) => p.fromLead).length === 1)
@@ -209,8 +212,8 @@ const DB = () => ({
   const unpinned = db.calls.filter((c) => tenantTables.includes(c.table) && c.eq.brokerage_id !== B1)
   check("EVERY read of a tenant run is pinned to the session brokerage (§4)", db.calls.length > 0 && unpinned.length === 0, JSON.stringify(unpinned.slice(0, 3)))
   check("paging: the behavior log (1,201 rows) was read in TWO pages", db.calls.filter((c) => c.table === "buyer_behavior_log").length === 2)
-  check("stalest first: never-scored (c-lead) → oldest (c-diseng) → newest (c-show)", ids.join(",") === "c-lead,c-diseng,c-show", ids.join(","))
-  check("denominators are published: withInputs / excluded", pop.withInputs === 6 && pop.excluded === 3, JSON.stringify({ w: pop.withInputs, x: pop.excluded }))
+  check("stalest first: never-scored (c-closed, c-lead by id) → oldest (c-diseng) → newest (c-show)", ids.join(",") === "c-closed,c-lead,c-diseng,c-show", ids.join(","))
+  check("denominators are published: withInputs / excluded (wave 89: the concluded search is no longer an exclusion — 3 → 2)", pop.withInputs === 6 && pop.excluded === 2, JSON.stringify({ w: pop.withInputs, x: pop.excluded }))
   check("no source hit the page cap", pop.inputsCapped.length === 0)
 }
 {
@@ -459,6 +462,37 @@ check("coaching reads buyer_fatigue_scores by agent_id (agents.id) in the broker
   /\.from\("buyer_fatigue_scores"\)\.select\("agent_id"\)[\s\S]{0,120}\.eq\("brokerage_id", brokerageId\)\.in\("agent_id", agentIds\)[\s\S]{0,60}\.in\("risk_level", \["high", "critical"\]\)/.test(coachSrc)
     && /if \(fatiguedErr\)/.test(coachSrc) && /fatiguedContacts: fatiguedErr \? undefined/.test(coachSrc))
 
+// ── F8 ────────────────────────────────────────────────────────────────────────
+console.log("\n[F8 · wave 89 — lifetime customers in the model, tunable weights, the tempered cap]")
+check("the population loader no longer drops a concluded search (no BUYER_CONCLUDED_STAGES filter in the anchor)",
+  !/concluded\.includes\(/.test(popFn) && !/BUYER_CONCLUDED_STAGES/.test(popFn))
+check("POSITIVE CONTROL: the finder sees 88A's exclusion shape", /concluded\.includes\(/.test(`if (c.buyer_stage && concluded.includes(c.buyer_stage)) continue`))
+check("the calculator turns the BUYER-SEARCH term off for a concluded search (searchConcluded) and keeps the follow-up terms",
+  /const searchConcluded = !!contact\.buyer_stage && \(BUYER_CONCLUDED_STAGES as readonly string\[\]\)\.includes\(contact\.buyer_stage\)/.test(calcFn)
+    && /const hasBuyerSearch = !searchConcluded && \(/.test(calcFn) && /const searchPoints = searchConcluded \? 0 :/.test(calcFn)
+    && /responsivenessPoints\(factors, weights\)/.test(calcFn))
+check("the calculator's contact read carries buyer_stage (the field the rule reads)", /select\("id, first_name, last_name, agent_id, contact_type, buyer_stage"\)/.test(calcFn))
+const W = disp.resolveContactFatigueWeights
+check("weights: absent settings → the 88A defaults (4 / 8 / 15 / 20 — the owner kept them)",
+  JSON.stringify(W(undefined)) === JSON.stringify(disp.DEFAULT_CONTACT_FATIGUE_WEIGHTS) && disp.DEFAULT_CONTACT_FATIGUE_WEIGHTS.unanswered_follow_up === 4
+    && disp.DEFAULT_CONTACT_FATIGUE_WEIGHTS.saturated_channel === 8 && disp.DEFAULT_CONTACT_FATIGUE_WEIGHTS.missed_appointment === 15 && disp.DEFAULT_CONTACT_FATIGUE_WEIGHTS.seller_unresponsive === 20)
+check("weights: a brokerage's setting overrides one key and the rest stay default; out-of-range / non-numeric fall back",
+  W({ contact_fatigue_weights: { unanswered_follow_up: 6 } }).unanswered_follow_up === 6 && W({ contact_fatigue_weights: { unanswered_follow_up: 6 } }).seller_unresponsive === 20
+    && W({ contact_fatigue_weights: { missed_appointment: 999, saturated_channel: "x", seller_unresponsive: -1 } }).missed_appointment === 15
+    && W({ contact_fatigue_weights: { saturated_channel: "x" } }).saturated_channel === 8 && W({ contact_fatigue_weights: { seller_unresponsive: -1 } }).seller_unresponsive === 20)
+check("the points use the brokerage's weights (a weight of 0 removes a term; 10 doubles it)",
+  fc.responsivenessPoints({ unanswered_follow_ups: 4, saturated_channels: [], missed_appointments: 0, seller_unresponsive: false }, { ...disp.DEFAULT_CONTACT_FATIGUE_WEIGHTS, unanswered_follow_up: 0 }) === 0
+    && fc.responsivenessPoints({ unanswered_follow_ups: 0, saturated_channels: [], missed_appointments: 1, seller_unresponsive: false }, { ...disp.DEFAULT_CONTACT_FATIGUE_WEIGHTS, missed_appointment: 30 }) === 30)
+const sweepSrc = calcSrc.slice(calcSrc.indexOf("export async function runFatigueSweep("))
+check("the sweep reads the weights ONCE per brokerage per run and hands them to the calculator (not one settings read per person)",
+  /weightsByBrokerage = new Map/.test(sweepSrc) && /loadContactFatigueWeights\(weightsClient, brokerageId\)/.test(sweepSrc) && /calculateFatigue\(person\.contactId, person\.brokerageId, \{ weights: await weightsFor\(person\.brokerageId\) \}\)/.test(sweepSrc))
+// Sliced to evaluateDeconflict — the broadcast cap above it computes its own `since` from the same words.
+const dcAll = stripped("lib/kernel/deconflict/index.ts")
+const dcIdx = dcAll.slice(dcAll.indexOf("export async function evaluateDeconflict("))
+check("the over-touch engine reads the contact's fatigue (tenant-pinned, error READ) and tempers the cap BEFORE the window is computed",
+  /from\("buyer_fatigue_scores"\)\.select\("risk_level"\)[\s\S]{0,120}\.eq\("brokerage_id", input\.brokerageId\)\.eq\("contact_id", input\.contactId\)/.test(dcIdx)
+    && /if \(fatigueErr\) console\.error/.test(dcIdx) && dcIdx.indexOf("fatigueTemperedPolicy(policy, fatigueRisk)") < dcIdx.indexOf("const since  = new Date(Date.now() - policy.windowDays"))
+
 // ── F5 ────────────────────────────────────────────────────────────────────────
 console.log("\n[F5 · registration]")
 const pkg = JSON.parse(read("package.json")) as { scripts: Record<string, string> }
@@ -469,7 +503,7 @@ const { MAINTENANCE_DOMAINS } = await import("../lib/kernel/manager-registry")
 check("MAINTENANCE_DOMAINS owns it", Object.values(MAINTENANCE_DOMAINS).some((d: any) => d.proof === "test:fatigue-population"))
 
 console.log(`\n  denominators: ${fc.FATIGUE_INPUT_SOURCES.length} inputs (4 buyer-search · ${CONTACT_TOUCH_LEDGERS.length} over-touch ledgers · 1 no-show) + ${fc.FATIGUE_RESPONSE_SOURCES.length} reply lanes · 8 (+4 wave-88) contacts / 4 leads / 2 tenants in the double · 7 refused-read cases · 3 list readers + 6 one-contact doors`)
-console.log("  blind spots: the loader is run against an in-memory double, not live (live had 0 showings / tours / offers / behavior rows / leads on 2026-09-28); calculateFatigue's own reads are proven by source shape, not executed (it builds its own service client); a source row stamped brokerage_id NULL is seen only by the PLATFORM sweep; the population read is linear in input ROWS (PostgREST has no DISTINCT) — capped at 200 pages per source and reported as inputsCapped; WAVE 88: the new reads inside calculateFatigue are proven by source shape plus the pure terms (followUpResponsiveness / responsivenessPoints / saturatedChannels), not executed against a DB; the over-touch ledgers are counted as the engine counts them — every row regardless of delivery status (a lifetime touchpoint dates by created_at even when only scheduled); a reply is an inbound message / portal message / inbound call / ISA replied_at — an email reply that lands nowhere but a mailbox is not seen; a seller whose agreement lives only outside listing_agreements reads unsigned; the learned (learn:true) cadence is not applied — fatigue reads the default cap; appointments.status 'no_show' is NOT an input — nothing writes that table (test:writerless-reads), calendar_events is the one appointment ledger")
+console.log("  blind spots: the loader is run against an in-memory double, not live (live had 0 showings / tours / offers / behavior rows / leads on 2026-09-28); calculateFatigue's own reads are proven by source shape, not executed (it builds its own service client); a source row stamped brokerage_id NULL is seen only by the PLATFORM sweep; the population read is linear in input ROWS (PostgREST has no DISTINCT) — capped at 200 pages per source and reported as inputsCapped; WAVE 88: the new reads inside calculateFatigue are proven by source shape plus the pure terms (followUpResponsiveness / responsivenessPoints / saturatedChannels), not executed against a DB; the over-touch ledgers are counted as the engine counts them — every row regardless of delivery status (a lifetime touchpoint dates by created_at even when only scheduled); a reply is an inbound message / portal message / inbound call / ISA replied_at — an email reply that lands nowhere but a mailbox is not seen; a seller whose agreement lives only outside listing_agreements reads unsigned; the learned (learn:true) cadence is not applied — fatigue reads the default cap (wave 89: fatigue now TIGHTENS the engine's cap, but the fatigue reader still measures saturation against the base cap); WAVE 89: a lifetime customer's anniversary / referral / home-value touches count as follow-ups whether or not a reply was ever expected, so a well-touched past client who never writes back reads as unanswered — that is the over-touch the model exists to catch, but it is not a complaint; the brokerage weights are read from brokerage_settings once per brokerage per sweep and a refused settings read fails the run; appointments.status 'no_show' is NOT an input — nothing writes that table (test:writerless-reads), calendar_events is the one appointment ledger")
 console.log("\n" + "─".repeat(50))
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 console.log(failed === 0 ? " ✅ FATIGUE_POPULATION_PASS" : " ❌ FATIGUE_POPULATION_FAIL")

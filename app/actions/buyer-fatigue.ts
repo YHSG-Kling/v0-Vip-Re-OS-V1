@@ -7,6 +7,11 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { requireCaller, requireTenantAdminOrSoloOwner } from "@/lib/auth/require-caller"
 import { tenantScope } from "@/lib/kernel/tenant-scope"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
+import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
+import {
+  CONTACT_FATIGUE_WEIGHTS_KEY, DEFAULT_CONTACT_FATIGUE_WEIGHTS, resolveContactFatigueWeights, validateContactFatigueWeights,
+  type ContactFatigueWeights,
+} from "@/lib/fatigue/fatigue-display"
 
 // Every read in this file used to be unauthenticated and accepted
 // caller-supplied contactId / brokerageId. Any signed-in user could read
@@ -233,6 +238,42 @@ export async function recalculateBrokerageFatigue(): Promise<
   } catch (err) {
     return { success: false, error: (err as Error).message }
   }
+}
+
+// ─── THE BROKERAGE'S FATIGUE WEIGHTS (wave 89, lane 89C) ──────────────────────
+//
+// Lane 88A's open decision, closed by the owner: keep 4 / 8 / 15 / 20 as the DEFAULTS and expose them
+// as a brokerage-tunable setting. The tenant admin (or a solo owner) reads and writes them; the tenant
+// comes from the SESSION; the write goes through the ONE settings writer (mergeBrokerageSettings —
+// merged by key, so no other settings key is lost to a concurrent save). The calculator resolves the
+// same key through the same pure resolver, so the door and the score cannot disagree.
+
+export async function getContactFatigueWeights(): Promise<
+  | { success: true; weights: ContactFatigueWeights; defaults: ContactFatigueWeights; isDefault: boolean }
+  | { success: false; error: string }
+> {
+  const auth = await requireTenantAdminOrSoloOwner()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const { data, error } = await createServiceClient()
+    .from("brokerage_settings").select("settings").eq("brokerage_id", auth.brokerageId).maybeSingle()
+  if (error) return { success: false, error: `Could not read the brokerage's fatigue weights: ${error.message}` }
+  const settings = (data as { settings?: unknown } | null)?.settings
+  const weights = resolveContactFatigueWeights(settings)
+  const stored = settings && typeof settings === "object" ? (settings as Record<string, unknown>)[CONTACT_FATIGUE_WEIGHTS_KEY] : undefined
+  return { success: true, weights, defaults: DEFAULT_CONTACT_FATIGUE_WEIGHTS, isDefault: stored == null }
+}
+
+export async function setContactFatigueWeights(input: unknown): Promise<
+  | { success: true; weights: ContactFatigueWeights }
+  | { success: false; error: string }
+> {
+  const auth = await requireTenantAdminOrSoloOwner()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const valid = validateContactFatigueWeights(input)
+  if (!valid.ok) return { success: false, error: valid.error }
+  const write = await mergeBrokerageSettings(createServiceClient(), auth.brokerageId, { [CONTACT_FATIGUE_WEIGHTS_KEY]: valid.weights })
+  if (!write.ok) return { success: false, error: `Could not save the fatigue weights: ${write.error}` }
+  return { success: true, weights: valid.weights }
 }
 
 // ─── ACTIVE ALERT FOR ONE BUYER ───────────────────────────────────────────────

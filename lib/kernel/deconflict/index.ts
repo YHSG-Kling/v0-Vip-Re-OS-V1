@@ -40,6 +40,7 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   DEFAULT_DECONFLICT_POLICY,
+  fatigueTemperedPolicy,
   leadLogChannel,
   sourceChannel,
   touchTimestampColumn,
@@ -91,6 +92,10 @@ export interface DeconflictDecision {
   touchesInWindow: number
   policyMax:       number
   windowDays:      number
+  /** Wave 89 (lane 89C): the contact's fatigue risk level the cap was tempered by (null = none / not read). */
+  fatigueRisk?:    string | null
+  /** How many tightening steps fatigue applied to the policy (0 = base). */
+  fatigueSteps?:   number
 }
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -336,6 +341,26 @@ export async function evaluateDeconflict(input: DeconflictInput): Promise<Deconf
     } catch { /* fail open to the base policy */ }
   }
 
+  // WAVE 89 (lane 89C) — HIGH CONTACT FATIGUE TIGHTENS THE CAP FOR THAT CONTACT (owner ruling; lane
+  // 88A's open question). The one fatigue calculator's score row (buyer_fatigue_scores, tenant-pinned)
+  // is read with its error: a refused read leaves the BASE policy (logged — this is a guardrail, not a
+  // consent gate, so it cannot be the thing that blocks a legal send) and no fatigue row means no step.
+  // This is how the lifetime touch cadence is tempered too — the lifetime cron calls this engine.
+  let fatigueRisk: string | null = null
+  let fatigueSteps = 0
+  if (input.contactId) {
+    const { data: fatigueRow, error: fatigueErr } = await svc
+      .from("buyer_fatigue_scores").select("risk_level")
+      .eq("brokerage_id", input.brokerageId).eq("contact_id", input.contactId).maybeSingle()
+    if (fatigueErr) console.error(`[deconflict] fatigue read refused for contact ${input.contactId} — base cap applied: ${fatigueErr.message}`)
+    else {
+      fatigueRisk = (fatigueRow as { risk_level?: string | null } | null)?.risk_level ?? null
+      const tempered = fatigueTemperedPolicy(policy, fatigueRisk)
+      policy = tempered.policy
+      fatigueSteps = tempered.steps
+    }
+  }
+
   const since  = new Date(Date.now() - policy.windowDays * 86_400_000).toISOString()
 
   // Count touches by contact when promoted, else by lead — an unconverted lead gets the SAME
@@ -351,10 +376,13 @@ export async function evaluateDeconflict(input: DeconflictInput): Promise<Deconf
     allowed,
     reason: allowed
       ? undefined
-      : `Over-touch: ${touches} ${input.channel} touches in last ${policy.windowDays}d ≥ policy max ${policy.maxTouches}`,
+      : `Over-touch: ${touches} ${input.channel} touches in last ${policy.windowDays}d ≥ policy max ${policy.maxTouches}` +
+        (fatigueSteps > 0 ? ` (cap tightened for ${fatigueRisk} contact fatigue)` : ""),
     touchesInWindow: touches,
     policyMax:       policy.maxTouches,
     windowDays:      policy.windowDays,
+    fatigueRisk,
+    fatigueSteps,
   }
 
   if (!input.skipLog) {
@@ -371,6 +399,8 @@ export async function evaluateDeconflict(input: DeconflictInput): Promise<Deconf
         touches_in_window: touches,
         window_days:       policy.windowDays,
         policy_max:        policy.maxTouches,
+        // The cockpit can tell "held by the base cap" from "held because this contact is fatigued".
+        metadata:          fatigueSteps > 0 ? { fatigue_risk: fatigueRisk, fatigue_steps: fatigueSteps } : null,
       }), { table: "deconflict_suppression_log", flow: "deconflict_log", reason: "decision log; the allow/suppress decision is returned regardless" })
     } catch { /* never fail a send because the audit write hiccuped */ }
   }

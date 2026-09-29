@@ -39,6 +39,11 @@ export async function GET(request: Request) {
     birthdays: 0,
     referralRequests: 0,
     deferred: 0,
+    // WAVE 89 (lane 89C): a touch the send gate REFUSED (no email / no phone / consent / DNC / quiet
+    // hours). The three senders return { success: false } without throwing, and this route counted
+    // every call as a touch delivered — a blocked anniversary read as an anniversary sent. Counted
+    // honestly now, and named per touch in `errors`.
+    blocked: 0,
     errors: [] as string[],
   }
 
@@ -73,18 +78,31 @@ export async function GET(request: Request) {
     }
   }
 
+  // WAVE 89 (lane 89C) — FATIGUE TEMPERS THE LIFETIME CADENCE. The engine now reads the contact's
+  // fatigue score and tightens the cap for a high/critical contact (lib/kernel/deconflict), so an
+  // over-touched past client is held here without a second rule. The channel passed is the one the
+  // touch actually rides (anniversary = email; birthday / referral ask = sms) — every touch was
+  // evaluated as "email" before, so an SMS ask was capped by the email allowance.
   const touchedThisRun = new Set<string>()
-  async function lifetimeTouchAllowed(brokerageId: string | null, contactId: string, systemSource: string): Promise<boolean> {
+  async function lifetimeTouchAllowed(
+    brokerageId: string | null, contactId: string, systemSource: string, channel: "email" | "sms" = "email",
+  ): Promise<boolean> {
     if (touchedThisRun.has(contactId)) return false
     if (brokerageId) {
       try {
-        const d = await evaluateDeconflict({ brokerageId, contactId, channel: "email", systemSource })
+        const d = await evaluateDeconflict({ brokerageId, contactId, channel, systemSource })
           .catch(() => ({ allowed: true }))
         if (!(d as { allowed: boolean }).allowed) return false
       } catch { /* fail open — never block a touch on a de-confliction hiccup */ }
     }
     touchedThisRun.add(contactId)
     return true
+  }
+  /** Count a sender's result honestly: a gate refusal is `blocked`, not a touch. */
+  function countSend(kind: "anniversaries" | "birthdays" | "referralRequests", res: { success: boolean; error?: string }, contactId: string) {
+    if (res.success) results[kind]++
+    else { results.blocked++; results.errors.push(`${kind} blocked for ${contactId}: ${res.error ?? "send gate refused"}`) }
+    return res.success
   }
 
   try {
@@ -129,8 +147,8 @@ export async function GET(request: Request) {
           continue
         }
         try {
-          await sendAnniversaryMessage(txn.contact_id, yearsAgo, { agentId: txn.agent_id, client: supabase })
-          results.anniversaries++
+          const sent = await sendAnniversaryMessage(txn.contact_id, yearsAgo, { agentId: txn.agent_id, client: supabase })
+          if (!countSend("anniversaries", sent, txn.contact_id)) continue
 
           // EMIT THE EVENT. This cron was the only thing that knew an anniversary
           // had come round, and it kept that to itself — so the "Home Purchase
@@ -178,13 +196,12 @@ export async function GET(request: Request) {
       if (contact.birthday) {
         const birthday = new Date(contact.birthday)
         if (birthday.getMonth() === today.getMonth() && birthday.getDate() === today.getDate()) {
-          if (!(await lifetimeTouchAllowed((contact as any).brokerage_id ?? null, contact.id, "sphere_birthday"))) {
+          if (!(await lifetimeTouchAllowed((contact as any).brokerage_id ?? null, contact.id, "sphere_birthday", "sms"))) {
             results.deferred++
             continue
           }
           try {
-            await sendBirthdayMessage(contact.id, { agentId: contact.agent_id, client: supabase })
-            results.birthdays++
+            countSend("birthdays", await sendBirthdayMessage(contact.id, { agentId: contact.agent_id, client: supabase }), contact.id)
           } catch (error: any) {
             results.errors.push(`Birthday error: ${error.message}`)
           }
@@ -200,10 +217,12 @@ export async function GET(request: Request) {
     const thirtyDaysAgo = new Date(today)
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
 
+    // `funded` joins `closed` here too (wave 89, lane 89C) — the same ladder defect the anniversary
+    // read fixed above: a funded deal is past its close, and its client was never asked for a referral.
     const { data: recentCloses, error: recentClosesError } = await supabase
       .from("transactions")
       .select("id, contact_id, agent_id, brokerage_id, actual_close_date:close_date")
-      .eq("status", "closed")
+      .in("status", ["closed", "funded"])
       .in("close_date", [threeDaysAgo.toISOString().split("T")[0], thirtyDaysAgo.toISOString().split("T")[0]])
 
     if (recentClosesError) {
@@ -211,13 +230,12 @@ export async function GET(request: Request) {
     }
 
     for (const txn of recentCloses || []) {
-      if (!(await lifetimeTouchAllowed((txn as any).brokerage_id ?? null, txn.contact_id, "sphere_referral_request"))) {
+      if (!(await lifetimeTouchAllowed((txn as any).brokerage_id ?? null, txn.contact_id, "sphere_referral_request", "sms"))) {
         results.deferred++
         continue
       }
       try {
-        await sendReferralRequest(txn.contact_id, { agentId: txn.agent_id, client: supabase })
-        results.referralRequests++
+        countSend("referralRequests", await sendReferralRequest(txn.contact_id, { agentId: txn.agent_id, client: supabase }), txn.contact_id)
       } catch (error: any) {
         results.errors.push(`Referral request error: ${error.message}`)
       }

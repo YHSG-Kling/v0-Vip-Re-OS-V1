@@ -19,7 +19,11 @@ import { resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
 import { BUYER_CONCLUDED_STAGES } from "@/lib/contacts/buyer-stage"
 import { generateTextRouted }  from "@/lib/ai/models"
 import { KernelEvent }         from "@/lib/kernel/events"
-import { deriveRiskLevel, describeFatigueFactors, UNANSWERED_FOLLOW_UP_FLOOR, type FatigueRiskLevel } from "./fatigue-display"
+import {
+  deriveRiskLevel, describeFatigueFactors, UNANSWERED_FOLLOW_UP_FLOOR,
+  DEFAULT_CONTACT_FATIGUE_WEIGHTS, resolveContactFatigueWeights,
+  type ContactFatigueWeights, type FatigueRiskLevel,
+} from "./fatigue-display"
 import { generateRecoveryPlan } from "./recovery-generator"
 import { applyTenantScope, describeTenantScope, tenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
 // THE over-contact capability (lib/kernel/deconflict — "over contacting is already built", owner,
@@ -220,16 +224,14 @@ function fatigueResponse(supabase: Svc, scope: TenantScope, source: FatigueRespo
 const PER_PERSON_READ_LIMIT = 200
 
 // ── Weights of the wave-88 terms (the buyer-search weights above them are unchanged) ──
-/** Per unanswered follow-up past the floor, up to UNANSWERED_CAP. */
-const W_UNANSWERED = 4
+// WAVE 89 (lane 89C): the four weights are BROKERAGE-TUNABLE — DEFAULT_CONTACT_FATIGUE_WEIGHTS (4 / 8 /
+// 15 / 20, the 88A values the owner kept) resolved per brokerage from brokerage_settings.settings
+// .contact_fatigue_weights (resolveContactFatigueWeights, pure, clamped); written only by the tenant
+// admin door through the one settings writer. The CAPS stay fixed — they bound the term, not its slope.
+/** Unanswered follow-ups past the floor count up to this many. */
 const UNANSWERED_CAP = 8
-/** Per channel at / over the over-touch cap. */
-const W_SATURATED_CHANNEL = 8
-/** Per missed appointment, up to MISSED_CAP. */
-const W_MISSED_APPOINTMENT = 15
+/** Missed appointments count up to this many. */
 const MISSED_CAP = 3
-/** A seller with no signed listing agreement who is not answering follow-up. */
-const W_SELLER_UNRESPONSIVE = 20
 
 /** PURE — follow-up responsiveness from dated touches and replies. `unanswered` counts the touches
  *  AFTER the latest reply (all of them when nobody replied). */
@@ -249,15 +251,28 @@ export function followUpResponsiveness(
   }
 }
 
-/** PURE — the wave-88 points, so the proof drives every term with no DB. */
-export function responsivenessPoints(f: Pick<FatigueFactors, "unanswered_follow_ups" | "saturated_channels" | "missed_appointments" | "seller_unresponsive">): number {
+/** PURE — the wave-88 points, so the proof drives every term with no DB. `weights` defaults to the
+ *  88A values; the calculator passes the brokerage's resolved weights (wave 89). */
+export function responsivenessPoints(
+  f: Pick<FatigueFactors, "unanswered_follow_ups" | "saturated_channels" | "missed_appointments" | "seller_unresponsive">,
+  weights: ContactFatigueWeights = DEFAULT_CONTACT_FATIGUE_WEIGHTS,
+): number {
   const unanswered = f.unanswered_follow_ups >= UNANSWERED_FOLLOW_UP_FLOOR
-    ? Math.min(f.unanswered_follow_ups, UNANSWERED_CAP) * W_UNANSWERED
+    ? Math.min(f.unanswered_follow_ups, UNANSWERED_CAP) * weights.unanswered_follow_up
     : 0
   return unanswered
-    + f.saturated_channels.length * W_SATURATED_CHANNEL
-    + Math.min(f.missed_appointments, MISSED_CAP) * W_MISSED_APPOINTMENT
-    + (f.seller_unresponsive ? W_SELLER_UNRESPONSIVE : 0)
+    + f.saturated_channels.length * weights.saturated_channel
+    + Math.min(f.missed_appointments, MISSED_CAP) * weights.missed_appointment
+    + (f.seller_unresponsive ? weights.seller_unresponsive : 0)
+}
+
+/** Read a brokerage's contact-fatigue weights (the one settings jsonb). A refused read THROWS, like
+ *  every other read the calculator makes; an absent row / key resolves to the defaults. */
+export async function loadContactFatigueWeights(supabase: Svc, brokerageId: string): Promise<ContactFatigueWeights> {
+  const { data, error } = await supabase
+    .from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle()
+  if (error) throw new Error(`[fatigue] brokerage settings read refused for ${brokerageId}: ${error.message}`)
+  return resolveContactFatigueWeights((data as { settings?: unknown } | null)?.settings)
 }
 
 // ─── MAIN CALCULATOR ─────────────────────────────────────────────────────────
@@ -265,6 +280,7 @@ export function responsivenessPoints(f: Pick<FatigueFactors, "unanswered_follow_
 export async function calculateFatigue(
   contactId:   string,
   brokerageId: string,
+  opts: { weights?: ContactFatigueWeights } = {},
 ): Promise<FatigueResult> {
   const supabase = createServiceClient()
 
@@ -274,7 +290,7 @@ export async function calculateFatigue(
   // under the wrong tenant.
   const { data: contact, error: contactErr } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, agent_id, contact_type")
+    .select("id, first_name, last_name, agent_id, contact_type, buyer_stage")
     .eq("id", contactId)
     .eq("brokerage_id", brokerageId)
     .is("deleted_at", null)
@@ -283,6 +299,14 @@ export async function calculateFatigue(
   if (!contact) throw new Error(`[fatigue] contact ${contactId} is not a live contact of brokerage ${brokerageId}`)
   // Every input read below goes through the tenant-scoped readers with THIS brokerage.
   const scope = tenantScope(brokerageId, "fatigue calculate")
+  // The brokerage's weights (wave 89) — the sweep passes them once per brokerage; a one-off call loads them.
+  const weights = opts.weights ?? await loadContactFatigueWeights(supabase, brokerageId)
+  // LIFETIME CUSTOMERS ARE IN THE MODEL (wave 89, lane 89C — owner: "lifetime customers get regular
+  // touches within their portal to keep them engaged"; 88A had excluded BUYER_CLOSED / BUYER_LIFETIME
+  // entirely). A concluded search is excluded from the BUYER-SEARCH TERM only — "days searching"
+  // means nothing after the close — while the follow-up / over-touch / missed-appointment terms score
+  // the post-close relationship exactly as they score anyone else's.
+  const searchConcluded = !!contact.buyer_stage && (BUYER_CONCLUDED_STAGES as readonly string[]).includes(contact.buyer_stage)
 
   // ── 1. Load all raw stats ──────────────────────────────────────────────────
 
@@ -352,7 +376,8 @@ export async function calculateFatigue(
   // buyer-search inputs). Before wave 88 every scored person had one; now a seller or sphere contact
   // can be scored on follow-up alone, and "no behavior-log signal in 7 days" says nothing about them —
   // it would hand every such contact a flat +40 (lane 87A's "flat 40" defect, reborn).
-  const hasBuyerSearch = totalShowings > 0 || totalTourDays > 0 || offersRejected > 0 || signals.length > 0
+  // A concluded search (a lifetime customer) has no ACTIVE buyer search whatever the history says.
+  const hasBuyerSearch = !searchConcluded && (totalShowings > 0 || totalTourDays > 0 || offersRejected > 0 || signals.length > 0)
 
   let engagementDeclineFactor = 0
   // engagementTrend is the buyer_fatigue_scores.engagement_trend CHECK word (increasing | stable |
@@ -360,7 +385,7 @@ export async function calculateFatigue(
   // "no recent activity" / "sharp decline" — words the CHECK refuses, so every such upsert was
   // REFUSED (23514) and the person was never scored (live had 0 rows, so nobody saw it).
   let engagementTrend = "stable"
-  let engagementDetail = hasBuyerSearch ? "stable" : "no buyer search on file"
+  let engagementDetail = hasBuyerSearch ? "stable" : searchConcluded ? "search concluded — post-close relationship" : "no buyer search on file"
 
   if (hasBuyerSearch && (noSignals7d || (prior14Sum > 0 && recent14Sum / prior14Sum <= 0.4))) {
     engagementDeclineFactor = 2
@@ -450,13 +475,15 @@ export async function calculateFatigue(
     seller_unresponsive:       sellerUnresponsive,
   }
 
-  const searchPoints =
+  // The buyer-search term is OFF for a concluded search (wave 89): a lifetime customer's old showings
+  // and tour days are history, not fatigue. Their follow-up terms still count in full.
+  const searchPoints = searchConcluded ? 0 :
     (totalShowings   * 3) +
     (totalTourDays   * 8) +
     (daysSearching   / 10) +
     (offersRejected  * 15) +
     (engagementDeclineFactor * 20)
-  const followUpPoints = responsivenessPoints(factors)
+  const followUpPoints = responsivenessPoints(factors, weights)
   const rawScore = searchPoints + followUpPoints
 
   const score     = Math.min(100, Math.round(rawScore))
@@ -514,7 +541,7 @@ export async function calculateFatigue(
       const buyerName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || "This contact"
       // Who this person is to the agent — a buyer's SEARCH fatigue and a quiet seller's follow-up
       // fatigue need different coaching (wave 88).
-      const role = contactType === "seller" ? "seller" : contactType === "both" ? "buyer and seller" : hasBuyerSearch ? "buyer" : "contact"
+      const role = searchConcluded ? "past client (lifetime customer)" : contactType === "seller" ? "seller" : contactType === "both" ? "buyer and seller" : hasBuyerSearch ? "buyer" : "contact"
 
       // AI-generated reinvigoration message (non-blocking on failure)
       let alertMessage = `${buyerName} has a fatigue score of ${score} (${riskLabel(riskLevel)}). ${summary}.`
@@ -674,7 +701,8 @@ export interface FatigueSweepPopulation {
   persons: FatigueSweepPerson[]
   /** Distinct people with ≥1 input row, before anchoring. */
   withInputs: number
-  /** Dropped by the anchor: soft-deleted, tenantless, outside the scope, or search concluded. */
+  /** Dropped by the anchor: soft-deleted, tenantless, or outside the scope (wave 89: a concluded search
+   *  is no longer dropped — lifetime customers are scored on their follow-up terms). */
   excluded: number
   /** Leads in scope with NO contact — no input can exist for them (every input FKs contacts.id). */
   leadsWithoutInputs: number
@@ -689,8 +717,8 @@ export interface FatigueSweepPopulation {
  *      by its own brokerage_id — a source row stamped NULL is seen only by the
  *      platform sweep, which scores it under the CONTACT's tenant);
  *   2. anchored on contacts — live (deleted_at IS NULL), tenanted, inside the
- *      scope, and not past a concluded search (BUYER_CLOSED / BUYER_LIFETIME:
- *      "days searching" means nothing after the close). NULL buyer_stage stays IN;
+ *      scope. (Wave 89: a concluded search — BUYER_CLOSED / BUYER_LIFETIME — stays IN;
+ *      the calculator scores it on the follow-up terms only.) NULL buyer_stage stays IN;
  *   3. tagged when the contact is a lead's conversion, and the scope's unconverted
  *      leads counted — they have nothing the formula derives from.
  *   (wave 88) The inputs now include the over-touch engine's follow-up ledgers and the
@@ -730,7 +758,11 @@ export async function loadFatigueSweepPopulation(
   }
 
   // ── 2. anchor on contacts (tenant-pinned) ──
-  const concluded = BUYER_CONCLUDED_STAGES as readonly string[]
+  // WAVE 89 (lane 89C): a concluded search (BUYER_CLOSED / BUYER_LIFETIME) is NO LONGER excluded here —
+  // lifetime customers are in the model (owner: "lifetime customers get regular touches within their
+  // portal to keep them engaged"; a lifetime customer over-touched by post-close touches must be
+  // scored). The calculator turns the buyer-search term off for them (searchConcluded); the anchor
+  // still drops soft-deleted, tenantless and out-of-scope contacts. `excluded` keeps its meaning.
   const anchored = new Map<string, FatigueSweepPerson>()
   for (const ids of chunk([...named], ANCHOR_CHUNK)) {
     const q = supabase
@@ -748,7 +780,6 @@ export async function loadFatigueSweepPopulation(
     const { data, error } = await q
     if (error) throw new Error(`[fatigue-sweep] contact anchor read refused (${where}): ${error.message}`)
     for (const c of (data ?? []) as Array<{ id: string; brokerage_id: string; buyer_stage: string | null }>) {
-      if (c.buyer_stage && concluded.includes(c.buyer_stage)) continue
       anchored.set(c.id, { contactId: c.id, brokerageId: c.brokerage_id, fromLead: false, lastCalculatedAt: null })
     }
   }
@@ -892,11 +923,20 @@ export async function runFatigueSweep(scope: TenantScope, opts: FatigueSweepOpti
     inputsCapped: pop.inputsCapped,
   }
 
+  // WAVE 89: the brokerage's tunable weights, read ONCE per brokerage per run (not once per person).
+  const weightsClient = createServiceClient()
+  const weightsByBrokerage = new Map<string, Promise<ContactFatigueWeights>>()
+  const weightsFor = (brokerageId: string) => {
+    let p = weightsByBrokerage.get(brokerageId)
+    if (!p) { p = loadContactFatigueWeights(weightsClient, brokerageId); weightsByBrokerage.set(brokerageId, p) }
+    return p
+  }
+
   for (const slice of chunk(batch, concurrency)) {
     const settled = await Promise.allSettled(slice.map(async (person) => {
       // calculateFatigue re-pins the contact to person.brokerageId (read from the
       // tenant-scoped anchor, never from a caller) before any write.
-      const scored = await calculateFatigue(person.contactId, person.brokerageId)
+      const scored = await calculateFatigue(person.contactId, person.brokerageId, { weights: await weightsFor(person.brokerageId) })
       let recovered = false
       if (scored.alert_raised) {
         // Best-effort: a plan failure never un-counts the score.

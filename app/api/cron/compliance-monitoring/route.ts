@@ -72,6 +72,8 @@ export async function GET(request: NextRequest) {
       const ret = await runRetentionRadarAll(supabase)
       ;(results as any).retention_at_risk = ret.atRisk
       ;(results as any).retention_save_plays = ret.savePlays
+      // Wave 89 (lane 89C): support nudges raised on lit agent-fatigue signals (broker / team lead only).
+      ;(results as any).retention_support_nudged = ret.supportNudged
     } catch (e) {
       console.error("[ComplianceMonitoring] retention radar:", e)
     }

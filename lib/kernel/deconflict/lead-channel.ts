@@ -179,5 +179,39 @@ export function saturatedChannels(
   return out
 }
 
+// ─── FATIGUE TEMPERS THE CAP (wave 89, lane 89C) ─────────────────────────────
+//
+// Lane 88A left this open ("should high fatigue tighten evaluateDeconflict by 1, the way the learned
+// cadence does?"); the owner's wave-89 ruling closes it: HIGH CONTACT FATIGUE TIGHTENS THE CAP FOR
+// THAT CONTACT. One step = one fewer touch in the window (the learned cadence's own step, floored at
+// 1); when the channel is already at the floor the WINDOW doubles instead, so a step always tightens.
+// 'high' takes one step, 'critical' two. The legal gates (consent, DNC, opt-out, quiet hours) are
+// separate and always apply — this only lowers the UX guardrail, never raises it. PURE.
+
+/** buyer_fatigue_scores.risk_level words the cap reacts to (the live CHECK: fresh|moderate|high|critical). */
+export const FATIGUE_TIGHTENING_STEPS: Record<string, number> = { high: 1, critical: 2 }
+
+/** PURE — one tightening step on a channel policy. */
+export function tightenPolicyStep(policy: DeconflictChannelPolicy): DeconflictChannelPolicy {
+  if (policy.maxTouches > 1) return { maxTouches: policy.maxTouches - 1, windowDays: policy.windowDays }
+  return { maxTouches: 1, windowDays: policy.windowDays * 2 }
+}
+
+/** PURE — the policy evaluateDeconflict applies to a contact at this fatigue risk level. An unknown /
+ *  absent level (no score row, 'fresh', 'moderate') returns the base policy untouched. */
+export function fatigueTemperedPolicy(
+  policy: DeconflictChannelPolicy,
+  riskLevel: string | null | undefined,
+): { policy: DeconflictChannelPolicy; steps: number; reason: string | null } {
+  const steps = riskLevel ? (FATIGUE_TIGHTENING_STEPS[riskLevel] ?? 0) : 0
+  let out = policy
+  for (let i = 0; i < steps; i++) out = tightenPolicyStep(out)
+  return {
+    policy: out,
+    steps,
+    reason: steps > 0 ? `fatigue ${riskLevel}: cap tightened ${steps} step${steps === 1 ? "" : "s"} to ${out.maxTouches}/${out.windowDays}d (was ${policy.maxTouches}/${policy.windowDays}d)` : null,
+  }
+}
+
 /** @proofSeam the engine reads channels per touch row through CHANNEL_BY_TABLE / leadLogChannel and is typed by DeconflictChannel; the roster exists so scripts/deconflict-channel-simulator.ts can sweep every channel × every touch table (TOUCH_SOURCE_TABLES) and prove each spelling round-trips. */
 export const DECONFLICT_CHANNELS = ["email", "sms", "phone", "mail"] as const

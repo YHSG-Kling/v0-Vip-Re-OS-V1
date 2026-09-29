@@ -104,6 +104,12 @@ export interface AgentCoachingStats {
    *  lane 88A: unanswered follow-up, missed appointments, quiet unsigned sellers, search fatigue).
    *  Optional: a stats row built before wave 88 has none, and none is not zero-faked. */
   fatiguedContacts?: number
+  /** WAVE 89 (lane 89C) — the agent's own fatigue signals as the retention radar scored them today
+   *  (agent_retention_scores: tier + driving_signals + support_suggested, m674). BROKER-FACING ONLY:
+   *  rendered into the gated manager brief (renderCoachingMessage), never into the agent's dashboard
+   *  report (briefToWeeklyReport) — the owner's rule is support, not "you're at risk". Absent when
+   *  the radar has no row for the agent or the read was refused. */
+  retentionSupport?: { tier: string; signals: string[]; support: string[] }
   /** Education. */
   lessonsAssigned: number
   lessonsCompleted: number
@@ -256,6 +262,14 @@ function renderCoachingMessage(stats: AgentCoachingStats, brief: CoachingBrief):
     for (const l of brief.leaks) lines.push(`• ${l}`)
   }
   lines.push(`\n🎯 Focus this week: ${brief.focusThisWeek}`)
+  // WAVE 89 (lane 89C) — the broker's read of the AGENT's fatigue (the retention radar's signals) beside
+  // the coaching of the agent's book. This section exists ONLY in the manager-facing message.
+  const rs = stats.retentionSupport
+  if (rs && rs.signals.length > 0) {
+    lines.push(`\n🤝 Support suggested (for you, not the agent — ${rs.signals.length} fatigue signal${rs.signals.length === 1 ? "" : "s"} lit, retention tier ${rs.tier.replace(/_/g, " ")}):`)
+    for (const s of rs.signals) lines.push(`• ${s}`)
+    for (const s of rs.support) lines.push(`→ ${s}`)
+  }
   const subject = brief.leaks.length > 0
     ? `📋 Coaching brief: ${stats.name} — ${brief.leaks.length} thing${brief.leaks.length === 1 ? "" : "s"} to fix`
     : `📋 Coaching brief: ${stats.name} — on track`
@@ -455,6 +469,25 @@ async function buildCoachingStats(
     if (f.agent_id) fatiguedCount.set(f.agent_id, (fatiguedCount.get(f.agent_id) ?? 0) + 1)
   }
 
+  // WAVE 89 (lane 89C): the agent's own fatigue signals — the retention radar's latest row per agent
+  // (support_suggested / driving_signals / tier). Read for the BROKER's brief only; a refused read
+  // leaves the field absent. Newest first, first-seen per agent = latest.
+  const retentionByAgent = new Map<string, { tier: string; signals: string[]; support: string[] }>()
+  const retentionSince = new Date(now.getTime() - 30 * 86_400_000).toISOString().slice(0, 10)
+  const { data: retentionRows, error: retentionErr } = await supabase
+    .from("agent_retention_scores").select("agent_id, tier, driving_signals, support_suggested, score_date")
+    .eq("brokerage_id", brokerageId).in("agent_id", agentIds).gte("score_date", retentionSince)
+    .order("score_date", { ascending: false }).limit(4000)
+  if (retentionErr) console.error("[agent-coaching] retention signal read refused:", retentionErr.message)
+  for (const r of (retentionRows ?? []) as Array<{ agent_id: string; tier: string | null; driving_signals: string[] | null; support_suggested: string[] | null }>) {
+    if (retentionByAgent.has(r.agent_id)) continue
+    retentionByAgent.set(r.agent_id, {
+      tier: r.tier ?? "healthy",
+      signals: Array.isArray(r.driving_signals) ? r.driving_signals : [],
+      support: Array.isArray(r.support_suggested) ? r.support_suggested : [],
+    })
+  }
+
   return agents.map((a) => {
     const card = cardById.get(a.id)
     return {
@@ -470,6 +503,7 @@ async function buildCoachingStats(
       noShows: (a.user_id && noShowCount.get(a.user_id)) || 0,
       staleContacts: staleCount.get(a.id) ?? 0,
       fatiguedContacts: fatiguedErr ? undefined : (fatiguedCount.get(a.id) ?? 0),
+      retentionSupport: retentionErr ? undefined : retentionByAgent.get(a.id),
       lessonsAssigned: card?.lessonsAssigned ?? 0,
       lessonsCompleted: card?.lessonsCompleted ?? 0,
       educationCompletionPct: card?.educationCompletionPct ?? null,

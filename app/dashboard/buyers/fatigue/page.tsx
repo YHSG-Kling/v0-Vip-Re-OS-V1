@@ -3,8 +3,19 @@
 import { useState, useTransition, useEffect, useCallback } from "react"
 import { useRouter }                                         from "next/navigation"
 import { cn }                                               from "@/lib/utils"
-import { getBrokerageFatigueData, recalculateBrokerageFatigue } from "@/app/actions/buyer-fatigue"
-import { describeFatigueFactors, UNANSWERED_FOLLOW_UP_FLOOR, type FatigueFactorsInput } from "@/lib/fatigue/fatigue-display"
+import { getBrokerageFatigueData, recalculateBrokerageFatigue, getContactFatigueWeights, setContactFatigueWeights } from "@/app/actions/buyer-fatigue"
+import {
+  describeFatigueFactors, UNANSWERED_FOLLOW_UP_FLOOR, MAX_CONTACT_FATIGUE_WEIGHT,
+  type ContactFatigueWeights, type FatigueFactorsInput,
+} from "@/lib/fatigue/fatigue-display"
+
+/** The four brokerage-tunable weights (wave 89, lane 89C) — labels beside the calculator's terms. */
+const WEIGHT_FIELDS: Array<{ key: keyof ContactFatigueWeights; label: string }> = [
+  { key: "unanswered_follow_up", label: "Per unanswered follow-up (from the 2nd, up to 8)" },
+  { key: "saturated_channel",    label: "Per channel at the over-touch cap" },
+  { key: "missed_appointment",   label: "Per missed appointment (up to 3)" },
+  { key: "seller_unresponsive",  label: "Unsigned seller not answering" },
+]
 
 type RiskLevel = "fresh" | "moderate" | "high" | "critical"
 
@@ -70,6 +81,11 @@ export default function BrokerageFatiguePage() {
   // The brokerage run's COUNTED result (lane 87A) — "scored nobody" must read
   // differently from "refused", and leads with nothing to score are named.
   const [lastRun,    setLastRun]    = useState<string | null>(null)
+  // WAVE 89 (lane 89C): the brokerage's tunable weights — shown only when the door admits the caller
+  // (tenant admin / solo owner); an agent seat is refused by the door and simply sees no panel.
+  const [weights,    setWeights]    = useState<ContactFatigueWeights | null>(null)
+  const [weightsDefault, setWeightsDefault] = useState<ContactFatigueWeights | null>(null)
+  const [weightsNote, setWeightsNote] = useState<string | null>(null)
 
   const load = useCallback(() => {
     startTransition(async () => {
@@ -77,8 +93,19 @@ export default function BrokerageFatiguePage() {
       if (res.success) setRows(res.data as FatigueRow[])
       else             setError(res.error)
       setLoaded(true)
+      const w = await getContactFatigueWeights()
+      if (w.success) { setWeights(w.weights); setWeightsDefault(w.defaults) }
     })
   }, [])
+
+  function handleSaveWeights() {
+    if (!weights) return
+    startTransition(async () => {
+      const res = await setContactFatigueWeights(weights)
+      if (!res.success) setWeightsNote(res.error)
+      else setWeightsNote("Weights saved — the next Recalculate and the platform sweep score with them.")
+    })
+  }
 
   useEffect(() => { load() }, [load])
 
@@ -180,6 +207,45 @@ export default function BrokerageFatiguePage() {
           <p className="text-xs text-muted-foreground rounded-md border border-border bg-muted/30 px-3 py-2">
             {lastRun}
           </p>
+        )}
+
+        {/* Brokerage-tunable weights (wave 89) — tenant admin / solo owner only. */}
+        {weights && weightsDefault && (
+          <div className="rounded-lg border border-border bg-card px-4 py-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium">Follow-up fatigue weights</p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setWeights(weightsDefault)}
+                  className="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted/40"
+                >Reset to defaults</button>
+                <button
+                  type="button"
+                  onClick={handleSaveWeights}
+                  disabled={isPending}
+                  className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >Save weights</button>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              {WEIGHT_FIELDS.map((f) => (
+                <label key={f.key} className="text-xs text-muted-foreground space-y-1">
+                  <span className="block">{f.label}</span>
+                  <input
+                    type="number" min={0} max={MAX_CONTACT_FATIGUE_WEIGHT} step={1}
+                    value={weights[f.key]}
+                    onChange={(e) => setWeights({ ...weights, [f.key]: Number(e.target.value) })}
+                    className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground"
+                  />
+                </label>
+              ))}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Points per signal, 0–{MAX_CONTACT_FATIGUE_WEIGHT}. Defaults {weightsDefault.unanswered_follow_up} / {weightsDefault.saturated_channel} / {weightsDefault.missed_appointment} / {weightsDefault.seller_unresponsive}. High fatigue also tightens the over-touch cap for that contact.
+            </p>
+            {weightsNote && <p className="text-xs text-muted-foreground">{weightsNote}</p>}
+          </div>
         )}
 
         {/* Error */}

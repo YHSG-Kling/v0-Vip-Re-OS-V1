@@ -35,6 +35,13 @@ export interface RetentionBoardAgent {
    * carries no breakdown.
    */
   weakestSignal: { key: string; score: number } | null
+  /**
+   * WAVE 89 (lane 89C) — "SUPPORT SUGGESTED": the broker's concrete support action per driving
+   * signal, as the radar stored it that day (agent_retention_scores.support_suggested, m674).
+   * Broker / team-lead facing only — this board never renders for the agent. Empty on a row
+   * written before wave 89.
+   */
+  supportSuggested: string[]
 }
 
 export interface RetentionBoard {
@@ -61,6 +68,8 @@ interface RawScore {
   previous_score?: number | null
   /** key → 0–1 sub-score, exactly as computeRetentionScore built it. */
   signal_breakdown?: Record<string, number> | null
+  /** Wave 89: the stored support lines (absent on pre-89 rows and in the pure simulator). */
+  support_suggested?: string[] | null
 }
 
 const TIER_RANK: Record<string, number> = { critical: 0, at_risk: 1, watch: 2, healthy: 3, engaged: 4 }
@@ -111,6 +120,7 @@ export function summarizeRetentionBoard(
         ? r.composite_score - r.previous_score
         : null,
       weakestSignal: weakestOf(r.signal_breakdown),
+      supportSuggested: Array.isArray(r.support_suggested) ? r.support_suggested.filter((s): s is string => typeof s === "string" && s.length > 0) : [],
     })
   }
 
@@ -130,7 +140,7 @@ export async function generateRetentionBoard(
     const since = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10)
     const { data: scores } = await supabase
       .from("agent_retention_scores")
-      .select("agent_id, score_date, composite_score, tier, score_trend, driving_signals, previous_score, signal_breakdown")
+      .select("agent_id, score_date, composite_score, tier, score_trend, driving_signals, previous_score, signal_breakdown, support_suggested")
       .eq("brokerage_id", brokerageId).gte("score_date", since)
       .order("score_date", { ascending: false }).limit(2000)
     const rows = (scores ?? []) as RawScore[]
