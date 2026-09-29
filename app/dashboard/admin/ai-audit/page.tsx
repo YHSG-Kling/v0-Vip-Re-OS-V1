@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation'
+import { RoleGateNotice } from '@/app/components/shared/role-gate-notice'
 import { createClient } from '@/lib/supabase/server'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -16,7 +17,9 @@ export default async function AIAuditPage() {
   if (!ctx.isAuthenticated) redirect('/login')
 
   const userRole = toCanonicalRoleOrDefault(ctx.userType, 'agent')
-  if (!['admin', 'superadmin', 'compliance_officer'].includes(userRole)) redirect('/dashboard')
+  if (!['admin', 'superadmin', 'compliance_officer'].includes(userRole)) {
+    return <RoleGateNotice surface="The AI audit" audience="brokerage admins and the compliance officer" />
+  }
 
   const supabase = await createClient()
 

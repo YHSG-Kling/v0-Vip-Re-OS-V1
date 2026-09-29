@@ -34,13 +34,13 @@ export default async function ProgressPage() {
     .single()
 
   if (!userData?.brokerage_id) {
-    redirect("/dashboard")
+    redirect("/dashboard/onboarding")
   }
 
   // Check feature access
   const hasAccess = await canAccessFeature("training_progress", user.id, userData.brokerage_id)
   if (!hasAccess) {
-    redirect("/dashboard")
+    redirect("/dashboard/onboarding")
   }
 
   // Fetch initial progress data

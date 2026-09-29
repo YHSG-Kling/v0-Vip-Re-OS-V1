@@ -13,6 +13,7 @@ import { OnboardingStepsClient } from "./OnboardingStepsClient"
 // roster, matching the repointed action gate in app/actions/admin/onboarding-steps.ts.
 // 'superadmin' was dead: 0 live rows store that users.user_type.
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export default async function OnboardingStepsAdminPage() {
   const supabase = await createClient()
@@ -29,7 +30,7 @@ export default async function OnboardingStepsAdminPage() {
 
   if (userError || !userRow) redirect("/login")
   if (!isAdminOrBroker({ user_type: userRow.user_type })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="Onboarding steps" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   // listOnboardingSteps already enforces admin gate + brokerage scoping internally

@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { FeatureGovernanceClient } from "./feature-governance-client"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -17,7 +18,7 @@ export default async function FeatureGovernancePage() {
 
   if (!context?.brokerageId) redirect("/login")
   if (!isAdminOrBroker({ user_type: context.userType ?? "" })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="Feature governance" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   const supabase = await createClient()

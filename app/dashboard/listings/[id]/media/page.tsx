@@ -20,7 +20,7 @@ export default async function ListingMediaPage({ params }: PageProps) {
   // their org. Idempotent: a no-op for an already-anchored user.
   const ctx = await ensureAgentContextInPlace()
   if (!ctx.isAuthenticated) redirect("/login")
-  if (!ctx.brokerageId) redirect("/dashboard")
+  if (!ctx.brokerageId) redirect("/dashboard/onboarding")
   // Agents must have an agentId; brokers/admins can access without one
   if (!ctx.agentId && ctx.userType === "agent") redirect("/dashboard/onboarding")
 

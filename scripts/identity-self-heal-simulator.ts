@@ -30,7 +30,9 @@ function check(label: string, ok: boolean) {
 
 // The pages the live walkthrough reported bouncing, plus every sibling that shared the pattern.
 const SELF_HEALING_PAGES = [
-  "app/(dashboard)/transactions/pipeline/page.tsx",
+  // Lane 90A: moved out of the app/(dashboard) route group (deleted) into the
+  // dashboard shell — same file, same self-heal call.
+  "app/dashboard/transactions/pipeline/page.tsx",
   "app/dashboard/admin/automations/page.tsx",
   "app/dashboard/admin/forms/page.tsx",
   "app/dashboard/admin/page.tsx",

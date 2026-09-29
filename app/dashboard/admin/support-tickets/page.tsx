@@ -3,6 +3,7 @@ import { getAgentContext } from "@/lib/identity"
 import { listBrokerageTickets } from "@/app/actions/support"
 import { isTicketLane, type TicketLane } from "@/lib/support/ticket-constants"
 import { SupportQueueClient } from "./support-queue-client"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -32,7 +33,7 @@ export default async function SupportTicketsAdminPage({
 }) {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect("/login")
-  if (!ADMIN_ROLES.has(ctx.userType)) redirect("/dashboard")
+  if (!ADMIN_ROLES.has(ctx.userType)) return <RoleGateNotice surface="Support tickets" audience="brokerage admins, team leads and platform support" />
 
   const sp = (await searchParams) ?? {}
   const lane: TicketLane = isTicketLane(sp.lane) ? sp.lane : DEFAULT_LANE

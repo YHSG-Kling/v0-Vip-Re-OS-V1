@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { listPendingApprovalModulesAction, listRecentModuleDecisionsAction } from "@/app/actions/learning-modules-approvals"
 import { ApprovalsClient } from "./approvals-client"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -44,7 +45,7 @@ export default async function ApprovalsPage() {
     .maybeSingle()
   const t = (row?.user_type as string | undefined) ?? ""
   if (!isAdminOrBroker({ user_type: t })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="Learning-module approvals" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   return (

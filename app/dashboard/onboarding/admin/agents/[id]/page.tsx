@@ -58,7 +58,7 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
     .single()
 
   if (!userData?.brokerage_id) {
-    redirect('/dashboard')
+    redirect('/dashboard/onboarding')
   }
 
   if (!isAdminOrBroker({ user_type: userData.user_type || '' })) {

@@ -3,6 +3,7 @@ import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { createServiceClient } from "@/lib/supabase/service"
 import { AutomationsClient } from "./automations-client"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const metadata = { title: "Workflow Automations | Admin" }
 
@@ -14,12 +15,12 @@ export default async function AutomationsPage() {
   // their org. Idempotent: a no-op for an already-anchored user.
   const ctx = await ensureAgentContextInPlace()
   if (!ctx.isAuthenticated) redirect("/login")
-  if (!ctx.brokerageId) redirect("/dashboard")
+  if (!ctx.brokerageId) redirect("/dashboard/onboarding")
 
   // TRUE ADMIN GATE (operational: automations/assignment rules) — repointed to
   // the ONE tenant roster. 'superadmin' was dead: 0 live rows store that
   // users.user_type.
-  if (!isAdminOrBroker({ user_type: ctx.userType })) redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: ctx.userType })) return <RoleGateNotice surface="Automations" audience="your broker, brokerage admins, team leads and the compliance officer" />
 
   const service = createServiceClient()
 

@@ -3,13 +3,14 @@ import { getAgentContext } from "@/lib/identity"
 import { listLocationsAction, listBrokerageAgentsAction } from "@/app/actions/admin/locations"
 import { LocationsClient } from "./locations-client"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
 export default async function LocationsAdminPage() {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect("/login")
-  if (!isAdminOrBroker({ user_type: ctx.userType })) redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: ctx.userType })) return <RoleGateNotice surface="Locations" audience="your broker, brokerage admins, team leads and the compliance officer" />
 
   const [locRes, agentRes] = await Promise.all([listLocationsAction(), listBrokerageAgentsAction()])
   return (

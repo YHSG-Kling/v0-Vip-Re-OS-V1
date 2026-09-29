@@ -69,7 +69,7 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
     .eq("id", user.id)
     .single()
 
-  if (!userRow?.brokerage_id) redirect("/dashboard")
+  if (!userRow?.brokerage_id) redirect("/dashboard/onboarding")
 
   // Load listing — auth scope: agent=own, team_lead=team, broker/admin=any.
   // Default to the restrictive ("agent") path when user_type is absent.
@@ -875,7 +875,7 @@ const { data: listingVendorBookings } = await supabase
               listingId={listingId}
               userId={user.id}
               brokerageId={userRow.brokerage_id}
-              role={(userRow.user_type ?? "agent") as "agent" | "team_lead" | "admin" | "broker"}
+              role={userRow.user_type ?? "agent"}
               currentStage={currentStage}
               listingAddress={`${listing.address}, ${listing.city}, ${listing.state}`}
               listingStatus={(listing as any).status ?? ""}

@@ -9,6 +9,7 @@ import { reaperCoverage } from "@/lib/intelligence/reaper-net"
 import { ManagerTrustClient, type OwnedProofSeat } from "./manager-trust-client"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { MAINTENANCE_DOMAINS, MANAGERS, resolveMaintenanceManager, type ManagerKey } from "@/lib/kernel/manager-registry"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 /**
  * OWNED PROOFS — every maintenance/burn domain in the registry, grouped by the manager
@@ -41,7 +42,7 @@ export const dynamic = "force-dynamic"
 export default async function ManagerTrustPage() {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect("/login")
-  if (!isAdminOrBroker({ user_type: ctx.userType })) redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: ctx.userType })) return <RoleGateNotice surface="Manager trust" audience="your broker, brokerage admins, team leads and the compliance officer" />
 
   const res = await getManagerTrustScorecard()
   if (!res.ok) {

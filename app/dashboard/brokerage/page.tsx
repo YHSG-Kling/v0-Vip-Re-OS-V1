@@ -54,6 +54,7 @@ import { SetupReadinessCard } from "@/app/components/onboarding/setup-readiness-
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isPlatformStaffIdentity, isTenantAdminOrPlatformStaff } from "@/lib/auth/resolve-user-role"
 import { resolveCallerIdentity } from "@/lib/auth/require-caller"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -118,7 +119,7 @@ export default async function BrokerageDashboard({
   const user = { id: caller.userId }
 
   if (!isTenantAdminOrPlatformStaff({ user_type: caller.userType, platform_role: caller.platformRole })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="The brokerage dashboard" audience="brokerage admins and platform staff" />
   }
 
   const isPlatform = isPlatformStaffIdentity(caller.userType, caller.platformRole)

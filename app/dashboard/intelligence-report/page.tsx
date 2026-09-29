@@ -11,6 +11,7 @@ import {
 } from "@/lib/kernel/intelligence-report"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { TrustReceiptsCard } from "./trust-receipts-card"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -42,7 +43,7 @@ export default async function IntelligenceReportPage({
     .eq("id", user.id)
     .maybeSingle()
   const brokerageId = (me as any)?.brokerage_id as string | null
-  if (!brokerageId) redirect("/dashboard")
+  if (!brokerageId) redirect("/dashboard/onboarding")
 
   // TIER PARITY (same rule as the QBR / autonomy grant actions): broker/admin
   // always; solo agent IS the principal; team tier → the team lead.
@@ -55,7 +56,7 @@ export default async function IntelligenceReportPage({
       // user_type, never legacy users.role — PRINCIPAL_ROLES is user_type vocabulary.
       role: String((me as any)?.user_type ?? ""),
     }))
-  if (!principal) redirect("/dashboard")
+  if (!principal) return <RoleGateNotice surface="The intelligence report" audience="the brokerage's principal — broker, owner or admin" />
 
   // Month picker — the last 6 months; default to the current month.
   const months = lastMonthKeys(6)

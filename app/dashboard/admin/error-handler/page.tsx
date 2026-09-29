@@ -1,13 +1,13 @@
 export const dynamic = "force-dynamic"
 
 import { Suspense } from "react"
-import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity"
 import { getErrorMetrics } from "@/app/actions/error-handler"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { AlertTriangle, TrendingUp, Clock, CheckCircle } from "lucide-react"
 import ErrorHandlerClient from "./error-handler-client"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const metadata = {
   title: "Error Handler | VIP-OS Admin",
@@ -160,7 +160,7 @@ export default async function ErrorHandlerPage() {
   // SCOPE LADDER (kept inline — admits compliance_officer): 'superadmin'
   // removed — dead as users.user_type (0 live rows); broker_owner added.
   if (!["broker", "broker_owner", "admin", "compliance_officer"].includes(role)) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="The error handler" audience="your broker, broker owner, brokerage admins and the compliance officer" />
   }
 
   return (

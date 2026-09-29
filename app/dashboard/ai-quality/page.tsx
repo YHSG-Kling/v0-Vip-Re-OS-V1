@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getWeeklyMetrics } from "@/lib/intelligence/feedback-aggregator"
 import { getCalibrationLog } from "@/lib/intelligence/prompt-calibrator"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -27,23 +28,29 @@ export default async function AIQualityPage() {
   // Check user type - only admin/broker/superadmin can access
   const { data: userData } = await supabase
     .from("users")
-    .select("user_type")
+    .select("user_type, brokerage_id")
     .eq("id", user.id)
     .single()
 
   if (!userData || !isAdminOrBroker({ user_type: userData.user_type })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="AI quality" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
-  // Get agent context for brokerage
+  // Get agent context for brokerage. Lane 90A (89D P1-4, owner ruling): a
+  // tenant-admin seat has already passed the roster gate above but may hold
+  // NO agents row (live 2026-09-29: admin 2, compliance_officer 1, team_lead 1,
+  // tc 1 seats without one) — this page is brokerage-scoped, so the seat's
+  // own users.brokerage_id is the scope, not a reason to bounce. Admin seats
+  // are NOT provisioned agents rows for this (ruling).
   const { data: agent } = await supabase
     .from("agents")
     .select("brokerage_id")
     .eq("user_id", user.id)
-    .single()
+    .maybeSingle()
 
-  if (!agent) {
-    redirect("/dashboard")
+  const brokerageId = agent?.brokerage_id ?? userData.brokerage_id ?? null
+  if (!brokerageId) {
+    redirect("/dashboard/onboarding")
   }
 
   const serviceSupabase = createServiceClient()
@@ -61,16 +68,16 @@ export default async function AIQualityPage() {
 
   // Fetch data in parallel
   const [thisWeekMetrics, lastWeekMetrics, calibrationLog, agentStats] = await Promise.all([
-    getWeeklyMetrics(agent.brokerage_id, thisWeekStart),
-    getWeeklyMetrics(agent.brokerage_id, lastWeekStart),
-    getCalibrationLog(agent.brokerage_id, 20),
+    getWeeklyMetrics(brokerageId, thisWeekStart),
+    getWeeklyMetrics(brokerageId, lastWeekStart),
+    getCalibrationLog(brokerageId, 20),
     // Agent personalization - agents with > 10 feedbacks in last 30 days
     (async () => {
       const thirtyDaysAgo = new Date()
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
 
       const { data } = await serviceSupabase.rpc("get_agent_feedback_stats", {
-        p_brokerage_id: agent.brokerage_id,
+        p_brokerage_id: brokerageId,
         p_since: thirtyDaysAgo.toISOString(),
       })
 
@@ -79,7 +86,7 @@ export default async function AIQualityPage() {
         const { data: feedbackData } = await serviceSupabase
           .from("ai_feedback_log")
           .select("agent_id, rating")
-          .eq("brokerage_id", agent.brokerage_id)
+          .eq("brokerage_id", brokerageId)
           .gte("created_at", thirtyDaysAgo.toISOString())
 
         if (!feedbackData) return []

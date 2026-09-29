@@ -7,6 +7,7 @@ import { loadComplianceLedger } from "@/lib/kernel/compliance-ledger"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { resolveTenantScope, isTenantScopeRefusal, describeTenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const metadata = {
   title: "Compliance Ledger | Kernel OS Admin",
@@ -36,7 +37,7 @@ export default async function ComplianceLedgerPage({ searchParams }: { searchPar
   const { data: userData } = await supabase
     .from("users").select("user_type, platform_role, brokerage_id").eq("id", user.id).maybeSingle()
   const userType = userData?.user_type ?? "agent"
-  if (!isAdminOrBroker({ user_type: userType })) redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: userType })) return <RoleGateNotice surface="The compliance ledger" audience="your broker, brokerage admins, team leads and the compliance officer" />
   // Platform-wide ledger scope from BOTH identity columns. `userType ===
   // "superadmin"` is FALSE for the platform's only superadmin (user_type='admin',
   // platform_role='superadmin'), so brokerageId was never null and the

@@ -2,6 +2,8 @@ import { createClient } from '@/lib/supabase/server'
 import { getAgentContext } from '@/lib/identity'
 import { toCanonicalRoleOrDefault } from '@/lib/security'
 import { redirect } from 'next/navigation'
+import { isAdminOrBroker } from '@/lib/auth/resolve-user-role'
+import { RoleGateNotice } from '@/app/components/shared/role-gate-notice'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -31,8 +33,13 @@ export default async function AdminTasksPage() {
 
   // toCanonicalRoleOrDefault normalises legacy DB strings (TC→tc etc.)
   const userRole = toCanonicalRoleOrDefault(ctx.userType, 'agent')
-  const allowedRoles = ['admin', 'broker', 'superadmin']
-  if (!allowedRoles.includes(userRole)) redirect('/dashboard')
+  // Lane 90A: the ONE roster instead of `['admin','broker','superadmin']` — a
+  // two-line ladder P1b's adjacency regex had been blind to (now widened). It
+  // bounced broker_owner / broker_admin / team_lead / compliance_officer, and
+  // 'superadmin' is dead as a users.user_type (0 live rows, §4).
+  if (!isAdminOrBroker({ user_type: userRole })) {
+    return <RoleGateNotice surface="Admin tasks" audience="your broker, brokerage admins, team leads and the compliance officer" />
+  }
 
   const supabase = await createClient()
 

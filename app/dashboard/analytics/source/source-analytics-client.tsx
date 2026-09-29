@@ -68,9 +68,9 @@ import {
 // Props
 // ─────────────────────────────────────────────────────────────────────────────
 interface Props {
-  userId: string
   brokerageId: string
-  userType: string
+  /** Lane 90A: the server-resolved scope (null = brokerage-wide) — the client never re-derives it from a role. */
+  scopeAgentIds: string[] | null
   agentId: string | null
   initialSources: SourceMetrics[]
   initialSummary: {
@@ -366,9 +366,8 @@ function EmailReportDialog({
 // Main Component
 // ─────────────────────────────────────────────────────────────────────────────
 export function SourceAnalyticsClient({
-  userId,
   brokerageId,
-  userType,
+  scopeAgentIds,
   agentId,
   initialSources,
   initialSummary,
@@ -400,8 +399,6 @@ export function SourceAnalyticsClient({
   const [emailSuccess, setEmailSuccess] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
 
-  const isBrokerOrAdmin = userType === "broker" || userType === "admin" || userType === "superadmin"
-
   // Filter sources by tab and search
   const filteredSources = sources.filter(s => {
     if (familyFilter !== "all" && s.source_family !== familyFilter) return false
@@ -423,7 +420,7 @@ export function SourceAnalyticsClient({
     startLoading(async () => {
       const result = await getSourcePerformance({
         brokerageId,
-        agentId: isBrokerOrAdmin ? undefined : userId,
+        agentIds: scopeAgentIds,
         dateFrom: new Date(dateFrom).toISOString(),
         dateTo: new Date(dateTo).toISOString(),
         sourceFamilies: familyFilter !== "all" ? [familyFilter as SourceFamily] : undefined,
@@ -434,7 +431,7 @@ export function SourceAnalyticsClient({
         setSummary(result.summary)
       }
     })
-  }, [brokerageId, userId, isBrokerOrAdmin, dateFrom, dateTo, familyFilter, sortBy])
+  }, [brokerageId, scopeAgentIds, dateFrom, dateTo, familyFilter, sortBy])
 
   const handleGenerateInsights = useCallback(() => {
     setAIError(null)
@@ -453,7 +450,7 @@ export function SourceAnalyticsClient({
     startExporting(async () => {
       const result = await exportSourceCSV({
         brokerageId,
-        agentId: isBrokerOrAdmin ? undefined : userId,
+        agentIds: scopeAgentIds,
         dateFrom: new Date(dateFrom).toISOString(),
         dateTo: new Date(dateTo).toISOString(),
       })
@@ -469,13 +466,13 @@ export function SourceAnalyticsClient({
         setExportError(result.error ?? "Export failed")
       }
     })
-  }, [brokerageId, userId, isBrokerOrAdmin, dateFrom, dateTo])
+  }, [brokerageId, scopeAgentIds, dateFrom, dateTo])
 
   const handleSendEmail = useCallback((email: string, name: string) => {
     startEmailing(async () => {
       const result = await emailSourceReport(brokerageId, email, name, "brokerage", {
         brokerageId,
-        agentId: isBrokerOrAdmin ? undefined : userId,
+        agentIds: scopeAgentIds,
         dateFrom: new Date(dateFrom).toISOString(),
         dateTo: new Date(dateTo).toISOString(),
       })
@@ -484,7 +481,7 @@ export function SourceAnalyticsClient({
         setEmailSuccess(true)
       }
     })
-  }, [brokerageId, userId, isBrokerOrAdmin, dateFrom, dateTo])
+  }, [brokerageId, scopeAgentIds, dateFrom, dateTo])
 
   const handlePrint = useCallback(() => {
     window.print()

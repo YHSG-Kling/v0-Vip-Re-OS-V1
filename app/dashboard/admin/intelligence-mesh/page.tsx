@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/server"
 import { getBrokerageInsights } from "@/app/actions/brokerage-intelligence"
 import { IntelligenceMeshClient } from "./intelligence-mesh-client"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 /**
  * /dashboard/admin/intelligence-mesh
@@ -20,7 +21,7 @@ export default async function IntelligenceMeshPage() {
   const { data: profile } = await supabase
     .from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
 
-if (!isAdminOrBroker({ user_type: profile?.user_type ?? "" })) redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: profile?.user_type ?? "" })) return <RoleGateNotice surface="The intelligence mesh" audience="your broker, brokerage admins, team leads and the compliance officer" />
 
   // Load all open + recently dismissed for triage
   const [openRes, dismissedRes] = await Promise.all([

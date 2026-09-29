@@ -6,6 +6,7 @@ import { getConversations } from "@/app/actions/ai-communication-hub"
 import { getLeadInboxThreads } from "@/app/actions/inbox"
 import InboxClient from "./InboxClient"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const metadata = {
   title: "Inbox",
@@ -51,7 +52,13 @@ export default async function InboxPage() {
   const assistantName: string = profile.assistant_wake_name ?? "VIP"
   const role: string          = profile.user_type ?? "agent"
   const agentId = await resolveAgentId(service, user.id)
-  if (!agentId) redirect("/dashboard/onboarding")
+  // Lane 90A (89D P1-4, owner ruling): a tenant-admin seat without an agents row
+  // (live 2026-09-29: admin 2, compliance_officer 1, team_lead 1, tc 1 seats
+  // carry none) is NOT bounced and is NOT provisioned an agents row — the inbox
+  // falls back to BROKERAGE scope, which is what every read below already is
+  // (getConversations / getLeadInboxThreads / templates are brokerage-keyed).
+  // An agent seat still without one lands on onboarding, which self-heals it.
+  if (!agentId && !isAdminOrBroker({ user_type: role })) redirect("/dashboard/onboarding")
 
   // Fetch conversations + AI-ISA lead threads + email_templates in parallel
   const [conversationsResult, leadThreadsResult, templatesRes] = await Promise.all([
@@ -101,7 +108,12 @@ export default async function InboxPage() {
       conversations={[...conversations, ...leadConversations]}
       emailTemplates={emailTemplates}
       brokerageId={brokerageId}
-      agentId={agentId}
+      // A brokerage-scope seat (no agents row) hands the client an empty agent
+      // id: every action the client forwards it to (sendMessage,
+      // analyzeMessageSentiment, generateSmartResponse, analyzeConversation)
+      // derives the ACTOR from the session and refuses honestly when the
+      // caller is not an agent ("Caller is not an agent") — reads still land.
+      agentId={agentId ?? ""}
       userId={user.id}
       role={role}
       assistantName={assistantName}

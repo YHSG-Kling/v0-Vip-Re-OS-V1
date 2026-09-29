@@ -45,7 +45,7 @@ export default async function BrandSetupPage() {
     .single()
 
   if (!userData?.brokerage_id) {
-    redirect("/dashboard")
+    redirect("/dashboard/onboarding")
   }
 
   // Get brokerage info

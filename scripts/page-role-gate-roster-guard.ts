@@ -56,20 +56,64 @@
  * deliberate ladder, which also admits tc) is not; a boundary specimen without
  * "use client" fails the P3 checker.
  *
+ * WAVE 90 (lane 90A — 89D's P1 plan, owner: "finish the burn down"). Four more
+ * populations, all DERIVED from the tree:
+ *   P1c SCOPE LITERALS — a scope CHOICE spelled `userType === "broker" ||
+ *      userType === "admin"` (no redirect) gave a broker OWNER / broker admin /
+ *      compliance officer the AGENT-scoped view of campaigns/roi,
+ *      workflow-reports, analytics/source (+ its drill-down), and hid the
+ *      brokerage settings links in SettingsSidebar. Measured on base f74cf0bc:
+ *      6 sites. Each now asks the ONE resolver (lib/kernel/egress-scope.ts —
+ *      team_lead gets TEAM scope, "teams see only their own board") or the
+ *      roster predicate. Population: every page/layout AND app/components.
+ *      Baseline 0.
+ *   P5 SILENT ROLE BOUNCE — `redirect("/dashboard")` in the window of a roster
+ *      predicate (isAdminOrBroker / isBrokerageFinanceAdmin / ADMIN_ROLES.has /
+ *      an inline ladder …) is "a click that appeared to do nothing". Measured on
+ *      base: 76 files carried the literal, 49 sites were role refusals — every
+ *      one now renders RoleGateNotice naming the audience. What remains is a
+ *      PUBLISHED baseline (SILENT_BOUNCE_BASELINE) with the reason each stays:
+ *      resource gates that must not reveal a deal's or a lead's existence, a
+ *      malformed platform parameter, and three superadmin capability refusals
+ *      lane 90D owns. Ratchets down; a stale baseline entry is itself a failure.
+ *   P6 BROKERAGE-LESS LANDS ON ONBOARDING — a brokerage-less account bounced to
+ *      `/dashboard` only went `/dashboard` → determineFirstLoginDestination →
+ *      `/dashboard/onboarding` → (still brokerage-less) `/dashboard/agent`:
+ *      three hops. 21 sites now go straight to `/dashboard/onboarding`, and the
+ *      loop-freedom is HELD: the onboarding index never redirects to
+ *      `/dashboard` (it self-heals, else `/dashboard/agent`) and the agent
+ *      dashboard never redirects at all. Baseline 0.
+ *   P7 ALIAS PAGES ARE GATED AT THE EDGE — every thin `redirect()` page under
+ *      app/<seg>/ classifies public or protected in classifyProxyPath, never
+ *      'open' (89D measured /calendar, /documents, /financials … answering 200
+ *      unauthenticated). '/documents/shared' stays PUBLIC by name (token-gated).
+ *   P8 A TENANT-ADMIN SEAT WITHOUT AN agents ROW IS NOT BOUNCED — Inbox,
+ *      Calendar, AI quality and Podcast channels fall back to BROKERAGE scope
+ *      for a roster seat (live 2026-09-29: admin 2, compliance_officer 1,
+ *      team_lead 1, tc 1 seats carry no agents row; ruling: do not provision
+ *      one). Lexical: no `if (!agentId|agentRow|agent) redirect(` in those
+ *      pages, and the roster predicate present where the fallback is decided.
+ *
  * BLIND SPOTS (published beside the numbers): P1 is LEXICAL and LOCAL — a
  * literal comparison whose redirect sits more than 6 lines below, or that
  * gates by `return null`, is not seen (over-permissive, never over-accusing);
- * a scope CHOICE (`isBrokerOrAdmin ? brokerage : own`, e.g.
- * app/dashboard/analytics/source) is not a gate and is deliberately out of
- * scope — those are listed in the lane notes as findings, not held here;
  * `user_type === 'superadmin'` arms are dead (§4) but harmless and are not
  * counted; layouts that gate client-side through useAuth are read the same
- * way as pages (the finder does not know which side renders).
+ * way as pages (the finder does not know which side renders). P5 sees only
+ * the predicate spellings in BOUNCE_PREDICATE — a bounce after an
+ * action-result check (`if (!studio.ok) redirect("/dashboard")` in gifts,
+ * sphere, stale, wealth, financials/team) is an ACTION-FAILURE bounce, a
+ * different class, counted below as `otherDashboardBounces` and not held.
+ * P1c's literal shape is two `=== "<roster>"` joined by `||`; a ladder in a
+ * `Set` or a lone comparison is P1b's / P1's. P7 reads only depth ≤ 2 pages
+ * whose whole body is one redirect call.
  */
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
 import { join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import { blankComments, stringLiterals } from "./strip-comments"
+// P7 — the edge's own classifier, so the proof and proxy.ts cannot disagree.
+import { classifyProxyPath } from "../app/constants/auth"
 
 // ESM scope (package.json "type": "module"): no __dirname.
 const ROOT = fileURLToPath(new URL("..", import.meta.url))
@@ -118,6 +162,10 @@ const LITERAL_CMP = new RegExp(
   `${ROLE_IDENT}\\s*(?:!==|===)\\s*['"](${ROSTER.join("|")})['"]`, "g",
 )
 const LADDER = /\[\s*((?:['"][a-z_]+['"]\s*,?\s*)+)\]\s*\.includes\(/g
+// Lane 90A: the TWO-LINE spelling — `const allowedRoles = [...]` with the
+// `.includes(` on the next line — which the adjacency regex above had been
+// blind to (admin/tasks carried ['admin','broker','superadmin'] unflagged).
+const LADDER_TWO_LINE = /=\s*\[\s*((?:['"][a-z_]+['"]\s*,?\s*)+)\]\s*\n[^\n]*\.includes\(/g
 const GATE_WINDOW_LINES = 6
 
 type Finding = { line: number; text: string }
@@ -147,18 +195,85 @@ function findNarrowLadders(source: string): Finding[] {
   const src = blankComments(source)
   const out: Finding[] = []
   let m: RegExpExecArray | null
-  LADDER.lastIndex = 0
-  while ((m = LADDER.exec(src))) {
-    const names = [...m[1].matchAll(/['"]([a-z_]+)['"]/g)].map((x) => x[1])
-    const rosterNames = names.filter((n) => TENANT_ADMIN_USER_TYPES.has(n))
-    if (rosterNames.length === 0) continue // not a tenant-roster ladder at all
-    if (names.includes("broker") && !names.includes("broker_owner") && !names.includes("broker_admin")) {
-      const line = src.slice(0, m.index).split("\n").length
-      out.push({ line, text: src.split("\n")[line - 1].trim() })
+  for (const re of [LADDER, LADDER_TWO_LINE]) {
+    re.lastIndex = 0
+    while ((m = re.exec(src))) {
+      const names = [...m[1].matchAll(/['"]([a-z_]+)['"]/g)].map((x) => x[1])
+      const rosterNames = names.filter((n) => TENANT_ADMIN_USER_TYPES.has(n))
+      if (rosterNames.length === 0) continue // not a tenant-roster ladder at all
+      if (names.includes("broker") && !names.includes("broker_owner") && !names.includes("broker_admin")) {
+        const line = src.slice(0, m.index).split("\n").length
+        out.push({ line, text: src.split("\n")[line - 1].trim() })
+      }
     }
   }
   return out
 }
+
+// ── P1c / P5 / P6 / P7 / P8 finders (lane 90A; exported to the controls below) ──
+const ROSTER_OR_DEAD = `(?:${ROSTER.join("|")}|superadmin)`
+const SCOPE_LITERAL = new RegExp(
+  `${ROLE_IDENT}\\s*===\\s*['"]${ROSTER_OR_DEAD}['"]\\s*\\|\\|\\s*${ROLE_IDENT}\\s*===\\s*['"]${ROSTER_OR_DEAD}['"]`, "g",
+)
+/** P1c: a scope CHOICE spelled as two roster literals joined by `||`. */
+function findScopeLiterals(source: string): Finding[] {
+  const src = blankComments(source)
+  const lines = src.split("\n")
+  const out: Finding[] = []
+  let m: RegExpExecArray | null
+  SCOPE_LITERAL.lastIndex = 0
+  while ((m = SCOPE_LITERAL.exec(src))) {
+    const line = src.slice(0, m.index).split("\n").length
+    out.push({ line, text: lines[line - 1].trim() })
+  }
+  return out
+}
+
+const DASHBOARD_BOUNCE = /\bredirect\(\s*["']\/dashboard["']\s*\)/
+const BOUNCE_PREDICATE = /isAdminOrBroker\(|isBrokerageFinanceAdmin(?:GrantRole)?\(|isTenantAdminOrPlatformStaff\(|isTenantAdminGrantRole\(|isAgentOrTenantAdmin\(|ADMIN_ROLES\.has\(|PORTAL_ROLES\.has\(|allowed\.has\(|allowedRoles\.includes\(|ALLOWED_TYPES\.includes\(|\]\.includes\((?:role|userRole|callerRole|userType|t)\)|!mayEnter\b|!principal\b|!isAdmin\b|isTenantBillingAdmin|hasAdminAccess|!gate\.ok|!isPlatform\b|!vis\.allowed/
+const BOUNCE_WINDOW_LINES = 3
+type BounceKind = "role" | "brokerage_less" | "other"
+/** P5 / P6: every `redirect("/dashboard")`, classified by the 3-line window above it. */
+function findDashboardBounces(source: string): Array<Finding & { kind: BounceKind }> {
+  const src = blankComments(source)
+  const lines = src.split("\n")
+  const out: Array<Finding & { kind: BounceKind }> = []
+  for (let i = 0; i < lines.length; i++) {
+    if (!DASHBOARD_BOUNCE.test(lines[i])) continue
+    const window = lines.slice(Math.max(0, i - (BOUNCE_WINDOW_LINES - 1)), i + 1).join("\n")
+    const kind: BounceKind = BOUNCE_PREDICATE.test(window)
+      ? "role"
+      : /brokerage_id|brokerageId/.test(window) && !/agentId|agentRow/.test(window) ? "brokerage_less" : "other"
+    out.push({ line: i + 1, text: lines[i].trim(), kind })
+  }
+  return out
+}
+
+/** P5 baseline — PUBLISHED, with the reason each silent bounce stays. Ratchets down only. */
+const SILENT_BOUNCE_BASELINE: Record<string, { count: number; why: string }> = {
+  "app/dashboard/transactions/[id]/page.tsx": { count: 1, why: "resource gate: a deal outside the seat's scope is not revealed to exist (89D: the destination is meaningful)" },
+  "app/dashboard/transactions/[id]/cda/page.tsx": { count: 1, why: "resource gate, same as the deal detail" },
+  "app/leads/[leadId]/page.tsx": { count: 1, why: "lead desk: leads belong to the brokerage (§5); a lead's existence is not revealed to an agent seat" },
+  "app/dashboard/brokerage/page.tsx": { count: 1, why: "a malformed or unauthorised ?brokerageId parameter, not a role refusal" },
+  "app/dashboard/superadmin/layout.tsx": { count: 1, why: "the ONE platform-staff subtree gate for the god console — 89D P3, lane 90D" },
+}
+
+/** P8: the pre-90A shape — bounce the moment the agents row is missing. */
+const MISSING_AGENT_ROW_BOUNCE = /if\s*\(\s*!\s*(?:agentId|agentRow(?:\?\.id)?|agent)\s*\)\s*\{?\s*redirect\(/
+function bouncesOnMissingAgentRow(source: string): boolean {
+  return MISSING_AGENT_ROW_BOUNCE.test(blankComments(source))
+}
+
+/** P7: a page whose whole body is one redirect call (a thin alias) — returns its target. */
+const THIN_REDIRECT_PAGE = /export default (?:async )?function \w*\s*\([^)]*\)\s*\{\s*(?:return\s+)?(?:permanentRedirect|redirect)\(\s*["']([^"']+)["']\s*\)\s*;?\s*\}/
+function thinRedirectTarget(source: string): string | null {
+  const src = blankComments(source)
+  const m = THIN_REDIRECT_PAGE.exec(src)
+  if (!m) return null
+  if (/\.from\(|await |<[A-Za-z]/.test(src.replace(/^import .*$/gm, ""))) return null
+  return m[1]
+}
+function isThinRedirectPage(source: string): boolean { return thinRedirectTarget(source) !== null }
 
 console.log("── page-role-gate-roster: a page gate spells the roster once ──")
 console.log(`   roster (read from TENANT_ADMIN_USER_TYPES): ${ROSTER.join(", ")}`)
@@ -225,6 +340,73 @@ ok("P4 RoleGateNotice is exported, server-safe (no 'use client', no hooks)",
 const noticeUsers = FIXED.filter((rel) => /RoleGateNotice/.test(blankComments(readFileSync(join(ROOT, rel), "utf8"))))
 ok("P4 the roster-gated pages that refuse in place render RoleGateNotice (≥4)", noticeUsers.length >= 4, noticeUsers.join(","))
 
+// ── P1c scope literals over pages + layouts + app/components ────────────────
+const componentFiles = walk(join(APP, "components"), (f) => f.endsWith(".tsx") || f.endsWith(".ts"))
+const scopeLiterals: Array<{ file: string } & Finding> = []
+for (const f of [...pageFiles, ...componentFiles]) {
+  for (const x of findScopeLiterals(readFileSync(f, "utf8"))) scopeLiterals.push({ file: relative(ROOT, f), ...x })
+}
+for (const x of scopeLiterals) console.log(`   · scope literal ${x.file}:${x.line}  ${x.text}`)
+ok(`P1c no scope choice is spelled with roster literals (${pageFiles.length + componentFiles.length} files, baseline 0)`, scopeLiterals.length === 0, `${scopeLiterals.length} found`)
+
+// ── P5 / P6 every redirect("/dashboard") on a page, classified ──────────────
+const roleBounces: Array<{ file: string } & Finding> = []
+const brokerageLessBounces: Array<{ file: string } & Finding> = []
+let otherDashboardBounces = 0
+for (const f of pageFiles) {
+  for (const b of findDashboardBounces(readFileSync(f, "utf8"))) {
+    const rel = relative(ROOT, f)
+    if (b.kind === "role") roleBounces.push({ file: rel, ...b })
+    else if (b.kind === "brokerage_less") brokerageLessBounces.push({ file: rel, ...b })
+    else otherDashboardBounces++
+  }
+}
+const roleBounceCounts = new Map<string, number>()
+for (const b of roleBounces) roleBounceCounts.set(b.file, (roleBounceCounts.get(b.file) ?? 0) + 1)
+const overBaseline = [...roleBounceCounts.entries()].filter(([file, n]) => n > (SILENT_BOUNCE_BASELINE[file]?.count ?? 0))
+const staleBaseline = Object.keys(SILENT_BOUNCE_BASELINE).filter((file) => (roleBounceCounts.get(file) ?? 0) < SILENT_BOUNCE_BASELINE[file].count)
+for (const [file, n] of overBaseline) console.log(`   · silent role bounce ${file} ×${n} (baseline ${SILENT_BOUNCE_BASELINE[file]?.count ?? 0})`)
+for (const file of staleBaseline) console.log(`   · stale baseline entry ${file} — the bounce is gone; remove it (ratchet)`)
+console.log(`   redirect("/dashboard") on pages: role ${roleBounces.length} (baseline ${Object.values(SILENT_BOUNCE_BASELINE).reduce((a, b) => a + b.count, 0)}, each published with its reason) · brokerage-less ${brokerageLessBounces.length} · action-failure/other ${otherDashboardBounces} (not held — see BLIND SPOTS)`)
+ok("P5 no page bounces a refused ROLE to /dashboard beyond the published baseline (ratchet down)", overBaseline.length === 0, overBaseline.map(([f]) => f).join(","))
+ok("P5 the published baseline carries no stale entry", staleBaseline.length === 0, staleBaseline.join(","))
+for (const b of brokerageLessBounces) console.log(`   · brokerage-less → /dashboard ${b.file}:${b.line}  ${b.text}`)
+ok("P6 a brokerage-less account lands on /dashboard/onboarding, never on /dashboard (baseline 0)", brokerageLessBounces.length === 0, `${brokerageLessBounces.length} found`)
+const onboardingIndex = blankComments(readFileSync(join(APP, "dashboard/onboarding/page.tsx"), "utf8"))
+const agentDashboard = blankComments(readFileSync(join(APP, "dashboard/agent/page.tsx"), "utf8"))
+ok("P6 the onboarding index never redirects to /dashboard (no loop: it self-heals, else /dashboard/agent)", !DASHBOARD_BOUNCE.test(onboardingIndex) && /redirect\(\s*["']\/dashboard\/agent["']\s*\)/.test(onboardingIndex))
+ok("P6 the agent dashboard never redirects at all (the chain terminates there)", !/\bredirect\(/.test(agentDashboard))
+
+// ── P7 thin alias pages are gated at the edge ───────────────────────────────
+const shallowPages = pageFiles.filter((f) => {
+  const rel = relative(APP, f).split("/")
+  return rel.length <= 3 && rel[rel.length - 1] === "page.tsx" && !rel[0].startsWith("(")
+})
+const thinAliases = shallowPages
+  .map((f) => ({ path: "/" + relative(APP, f).replace(/(^|\/)page\.tsx$/, ""), target: thinRedirectTarget(readFileSync(f, "utf8")) }))
+  .filter((a): a is { path: string; target: string } => a.target !== null)
+// An alias is a finding when IT is open at the edge while its TARGET is not
+// public — the root `/` → /login alias is open by design (its target is public).
+const openAliases = thinAliases.filter((a) => classifyProxyPath(a.path) === "open" && classifyProxyPath(a.target) !== "public")
+for (const a of openAliases) console.log(`   · alias page outside the edge gate: ${a.path} → ${a.target}`)
+ok(`P7 every thin alias page (${thinAliases.length} found) into a non-public surface is public or protected at the edge, never open`, thinAliases.length >= 10 && openAliases.length === 0, openAliases.map((a) => a.path).join(","))
+
+// ── P8 tenant-admin seats without an agents row are not bounced ─────────────
+const AGENT_ROW_FALLBACK_PAGES = [
+  "app/dashboard/communications/inbox/page.tsx",
+  "app/dashboard/calendar/page.tsx",
+  "app/dashboard/ai-quality/page.tsx",
+  "app/dashboard/settings/podcast-channels/page.tsx",
+]
+for (const rel of AGENT_ROW_FALLBACK_PAGES) {
+  const src = readFileSync(join(ROOT, rel), "utf8")
+  ok(`P8 ${rel} does not bounce on a missing agents row`, !bouncesOnMissingAgentRow(src))
+}
+for (const rel of AGENT_ROW_FALLBACK_PAGES.slice(0, 2)) {
+  const src = blankComments(readFileSync(join(ROOT, rel), "utf8"))
+  ok(`P8 ${rel} decides the fallback with the roster predicate`, /isAdminOrBroker\(/.test(src))
+}
+
 // ── POSITIVE CONTROLS (§2) ───────────────────────────────────────────────────
 const PRE_89D_COORDINATION = `
   const { brokerageId, role } = await getAgentContext()
@@ -250,14 +432,47 @@ ok("CONTROL ['broker','admin'].includes ladder is flagged",
   findNarrowLadders(`if (!["broker", "admin"].includes(userRole)) redirect("/x")`).length === 1)
 ok("CONTROL deal-health's deliberate ladder (owner + admin + tc) is not flagged",
   findNarrowLadders(`const allowedRoles = ["broker", "broker_owner", "broker_admin", "admin", "tc"]\nif (!allowedRoles.includes(t)) redirect("/x")`).length === 0)
+ok("CONTROL the two-line ladder (pre-90A admin/tasks) is flagged",
+  findNarrowLadders(`  const allowedRoles = ['admin', 'broker', 'superadmin']\n  if (!allowedRoles.includes(userRole)) redirect('/dashboard')\n`).length === 1)
 ok("CONTROL a non-roster ladder is ignored",
   findNarrowLadders(`if (["sale", "rent"].includes(kind)) {}`).length === 0)
 ok("CONTROL a boundary without 'use client' fails the P3 shape",
   !boundaryShapeOk(`export default function E({ error, reset }: any) { return null }`))
 ok("CONTROL a proper boundary passes the P3 shape",
   boundaryShapeOk(`"use client"\nexport default function E({ error, reset }: any) { return null }`))
+// lane 90A controls
+const PRE_90A_SOURCE_SCOPE = `  const isBrokerOrAdmin = ctx.userType === "broker" || ctx.userType === "admin" || ctx.userType === "superadmin"\n`
+const PRE_90A_ROI_SCOPE = `  if (profile.user_type === "broker" || profile.user_type === "admin") {\n`
+const POST_90A_SCOPE = `  const scope = resolveEgressScope({ userType: ctx.userType, userId: ctx.userId, brokerageId: ctx.brokerageId, teamId: ctx.teamId })\n`
+ok("CONTROL the pre-90A analytics/source scope literal is flagged by P1c", findScopeLiterals(PRE_90A_SOURCE_SCOPE).length === 1)
+ok("CONTROL the pre-90A campaigns/roi scope literal is flagged by P1c", findScopeLiterals(PRE_90A_ROI_SCOPE).length === 1)
+ok("CONTROL the resolver call is not flagged by P1c", findScopeLiterals(POST_90A_SCOPE).length === 0)
+ok("CONTROL the same literal inside a comment is not flagged by P1c", findScopeLiterals(`// ${PRE_90A_SOURCE_SCOPE}`).length === 0)
+const PRE_90A_ROLE_BOUNCE = `  if (!isAdminOrBroker({ user_type: ctx.userType })) redirect("/dashboard")\n`
+const PRE_90A_ROLE_BOUNCE_BLOCK = `  if (!isAdminOrBroker({ user_type: t })) {\n    redirect("/dashboard")\n  }\n`
+const POST_90A_ROLE_NOTICE = `  if (!isAdminOrBroker({ user_type: t })) return <RoleGateNotice surface="X" audience="y" />\n`
+const PRE_90A_BROKERAGE_LESS = `  if (!profile?.brokerage_id) {\n    redirect("/dashboard")\n  }\n`
+const POST_90A_BROKERAGE_LESS = `  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")\n`
+const ACTION_FAILURE_BOUNCE = `  const studio = await getGiftStudioAction()\n  if (!studio.ok) redirect("/dashboard")\n`
+ok("CONTROL a one-line role bounce is classified 'role' by P5", findDashboardBounces(PRE_90A_ROLE_BOUNCE).map((b) => b.kind).join() === "role")
+ok("CONTROL a block-form role bounce is classified 'role' by P5", findDashboardBounces(PRE_90A_ROLE_BOUNCE_BLOCK).map((b) => b.kind).join() === "role")
+ok("CONTROL the in-place notice is not a bounce", findDashboardBounces(POST_90A_ROLE_NOTICE).length === 0)
+ok("CONTROL a brokerage-less bounce to /dashboard is classified 'brokerage_less' by P6", findDashboardBounces(PRE_90A_BROKERAGE_LESS).map((b) => b.kind).join() === "brokerage_less")
+ok("CONTROL a brokerage-less bounce to /dashboard/onboarding is not a finding", findDashboardBounces(POST_90A_BROKERAGE_LESS).length === 0)
+ok("CONTROL an action-failure bounce is 'other' (counted, not held — stated blind spot)", findDashboardBounces(ACTION_FAILURE_BOUNCE).map((b) => b.kind).join() === "other")
+ok("CONTROL the pre-90A inbox shape (bounce on a missing agents row) is flagged by P8",
+  bouncesOnMissingAgentRow(`  const agentId = await resolveAgentId(service, user.id)\n  if (!agentId) redirect("/dashboard/onboarding")\n`))
+ok("CONTROL the pre-90A calendar shape is flagged by P8", bouncesOnMissingAgentRow(`  if (!agentRow) {\n    redirect("/dashboard/onboarding")\n  }\n`))
+ok("CONTROL the post-90A fallback is not flagged by P8",
+  !bouncesOnMissingAgentRow(`  if (!agentId && !isAdminOrBroker({ user_type: role })) redirect("/dashboard/onboarding")\n`))
+ok("CONTROL a thin alias page is recognised by P7",
+  isThinRedirectPage(`import { redirect } from 'next/navigation'\n\nexport default function CalendarPage() {\n  redirect('/dashboard/calendar')\n}\n`))
+ok("CONTROL a page that reads data is not a thin alias",
+  !isThinRedirectPage(`import { redirect } from 'next/navigation'\nexport default async function P() {\n  const x = await load()\n  redirect('/y')\n}\n`))
+ok("CONTROL the edge classifier calls an unlisted path 'open' (so P7 can fail)", classifyProxyPath("/no-such-alias-90a") === "open")
+ok("CONTROL /calendar and /documents/shared classify protected and public", classifyProxyPath("/calendar") === "protected" && classifyProxyPath("/documents/shared/abc") === "public")
 
 console.log("──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ❌ PAGE_ROLE_GATE_ROSTER_FAIL"); process.exit(1) }
-console.log(" ✅ PAGE_ROLE_GATE_ROSTER_PASS — every page gate reads the one roster, refuses in place, and no segment is left without an error boundary")
+console.log(" ✅ PAGE_ROLE_GATE_ROSTER_PASS — every page gate reads the one roster, refuses in place, a brokerage-less account lands on onboarding, every alias is gated at the edge, and no segment is left without an error boundary")

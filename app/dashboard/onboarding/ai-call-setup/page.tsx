@@ -4,6 +4,7 @@ import { getAIIdentityProfile } from "@/app/actions/ai-identity"
 import { AICallSetupClient } from "./AICallSetupClient"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -30,8 +31,9 @@ export default async function AICallSetupPage() {
     .eq("id", user.id)
     .maybeSingle()
 
-  if (!profile?.brokerage_id || !isAdminOrBroker({ user_type: profile.user_type ?? "" })) {
-    redirect("/dashboard")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
+  if (!isAdminOrBroker({ user_type: profile.user_type ?? "" })) {
+    return <RoleGateNotice surface="AI call setup" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   const brokerageId = profile.brokerage_id

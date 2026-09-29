@@ -45,7 +45,7 @@ export default async function TrainingPage() {
     .single()
 
   if (!userData?.brokerage_id) {
-    redirect("/dashboard")
+    redirect("/dashboard/onboarding")
   }
 
   // Fetch training videos with progress

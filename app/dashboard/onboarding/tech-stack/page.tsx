@@ -41,7 +41,7 @@ export default async function TechStackPage() {
     .single()
 
   if (!userData?.brokerage_id) {
-    redirect("/dashboard")
+    redirect("/dashboard/onboarding")
   }
 
   // Get brokerage info

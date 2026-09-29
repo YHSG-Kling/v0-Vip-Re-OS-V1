@@ -38,7 +38,7 @@ export default async function PayoutsPage() {
     .eq('id', user.id)
     .maybeSingle()
 
-  if (!profile?.brokerage_id) redirect('/dashboard')
+  if (!profile?.brokerage_id) redirect('/dashboard/onboarding')
 
   // BROKERAGE-WIDE MONEY (m472). This page is the brokerage's COMMISSION
   // PAYOUT QUEUE — every agent's money, not one team's — and the local literal

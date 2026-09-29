@@ -9,6 +9,7 @@ import { IntentPhraseCard } from "./intent-phrase-card"
 import { redirect } from "next/navigation"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const metadata = {
   title:       "Scrape Diagnostics | Kernel OS Admin",
@@ -58,7 +59,7 @@ export default async function ScrapeDiagnosticsPage() {
   const isSuperadmin = isPlatformSuperadminIdentity(userType, userData?.platform_role)
 
   if (!isAdminOrBroker({ user_type: userType })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="Scrape diagnostics" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   // Delegate all data loading to the kernel command

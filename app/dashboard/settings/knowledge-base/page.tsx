@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
+import { RoleGateNotice } from '@/app/components/shared/role-gate-notice'
 import { KnowledgeBaseClient } from './knowledge-base-client'
 import { getEmbeddingQueueStatus } from '@/app/actions/knowledge/search'
 import { HELP_TOPIC_CATEGORIES } from "@/lib/knowledge/help-topic-categories"
@@ -30,8 +31,9 @@ export default async function KnowledgeBasePage() {
     .eq('id', user.id)
     .single()
 
-  if (!userData || !isAdminOrBroker({ user_type: userData.user_type })) {
-    redirect('/dashboard')
+  if (!userData) redirect('/dashboard/onboarding')
+  if (!isAdminOrBroker({ user_type: userData.user_type })) {
+    return <RoleGateNotice surface="The knowledge base" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   // Fetch initial articles

@@ -40,7 +40,7 @@ export default async function RequiredDocsSettingsPage() {
     .select("brokerage_id, team_id, user_type, first_name, last_name")
     .eq("id", user.id)
     .maybeSingle()
-  if (!profile?.brokerage_id) redirect("/dashboard")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
   if (!ADMIN_ROLES.includes(profile.user_type as string)) {
     return (
       <div className="p-6 max-w-3xl mx-auto">

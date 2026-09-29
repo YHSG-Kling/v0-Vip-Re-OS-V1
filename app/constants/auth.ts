@@ -90,6 +90,12 @@ export const PUBLIC_ROUTES = [
   // Token-gated vendor invitation landing (the invitee has no account yet).
   // Public only by ACCIDENT before lane 88E ('/v' loose-prefix match).
   '/vendor-invite',
+  // Token-gated shared-document landing (app/documents/shared/[token] — the
+  // share links are for people outside the tenant; the token is the gate).
+  // Named here BEFORE '/documents' joins PROTECTED_ROUTES (lane 90A), since
+  // classifyProxyPath answers public first and the alias prefix would
+  // otherwise 307 every share link to /login.
+  '/documents/shared',
   '/login',
   '/signup',
   '/auth/callback',
@@ -196,6 +202,24 @@ export const PROTECTED_ROUTES = [
   '/title',
   '/vendor',
   '/transaction',
+  // ── Thin alias pages (lane 90A, 89D P1-6) ───────────────────────────
+  // Each of these is a one-line `redirect()` page into a protected surface
+  // (app/routes-compatibility.ts ROUTE_ALIASES documents the map). They sat
+  // OUTSIDE this list, so the edge passed a sessionless request through and
+  // the page itself answered 200 + its redirect — a crawler nuisance, not a
+  // leak (the page reads nothing). Listed so the edge answers 307 → /login
+  // like every other protected prefix. '/documents/shared' stays public above.
+  '/calendar',
+  '/documents',
+  '/financials',
+  '/gifts',
+  '/intelligence',
+  '/onboarding',
+  '/past-clients',
+  '/reviews',
+  '/sphere',
+  '/support',
+  '/tasks',
   // ── API routes requiring session auth ────────────────────────────
   '/api/contacts',
   '/api/leads',

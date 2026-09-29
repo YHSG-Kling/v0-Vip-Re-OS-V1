@@ -32,7 +32,7 @@ export default async function EducationPage() {
     .maybeSingle()
 
   if (!profile?.brokerage_id) {
-    redirect("/dashboard")
+    redirect("/dashboard/onboarding")
   }
   // Lane 89D: this gate read `user_type !== "admin"` — ONE spelling of the
   // six-role roster. The BROKER sidebar links this page as "Education Library"

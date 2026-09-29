@@ -60,7 +60,7 @@ export default async function NewOfferPage({ params, searchParams }: Props) {
     .eq("id", user.id)
     .single()
 
-  if (!profile?.brokerage_id) redirect("/dashboard")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   // ONE ANSWER for "which team is this agent on" (lib/kernel/resolve-user-team.ts)
   // — threaded to FormWizard.teamId, which scopes e-sign template/provider

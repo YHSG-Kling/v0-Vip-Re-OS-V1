@@ -14,6 +14,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { isTenantAdminOrPlatformStaff } from "@/lib/auth/resolve-user-role"
 import TransactionFormsClient from "./transaction-forms-client"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -32,8 +33,9 @@ export default async function TransactionFormsPage() {
   const brokerageId = userRow?.brokerage_id
   // Tenant-admin config with platform staff admitted — user_type and platform_role
   // each answer their own half, never coalesced (same gate as the API route).
-  if (!brokerageId || !isTenantAdminOrPlatformStaff(userRow ?? {})) {
-    redirect("/dashboard")
+  if (!brokerageId) redirect("/dashboard/onboarding")
+  if (!isTenantAdminOrPlatformStaff(userRow ?? {})) {
+    return <RoleGateNotice surface="Transaction forms" audience="brokerage admins and platform staff" />
   }
 
   const { data: forms } = await supabase

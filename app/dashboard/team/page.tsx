@@ -27,6 +27,7 @@ import { getTeamDashboard } from "@/app/actions/multi-persona"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { resolveUserTeam, resolveTeamAgentIds } from "@/lib/kernel/resolve-user-team"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -118,7 +119,7 @@ export default async function TeamDashboard() {
   const userType = userData.user_type ?? ""
 
   // The role gate this page never had. See PORTAL_ROLES above.
-  if (PORTAL_ROLES.has(userType)) redirect("/dashboard")
+  if (PORTAL_ROLES.has(userType)) return <RoleGateNotice surface="The team board" audience="brokerage staff" />
 
   const boardScope = boardScopeFor(userType, userData.platform_role ?? null)
   // Unchanged semantics: this flag has always gated the MANAGEMENT affordances

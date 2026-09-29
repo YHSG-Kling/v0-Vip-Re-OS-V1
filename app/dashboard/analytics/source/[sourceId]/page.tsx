@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { createClient } from "@/lib/supabase/server"
+import { resolveReportScope } from "@/lib/kernel/reporting-scope"
 import { getSourceDrilldown } from "@/app/actions/source-analytics"
 import { SourceDetailClient } from "./source-detail-client"
 import type { SourceFamily } from "@/app/actions/source-analytics"
@@ -28,12 +30,21 @@ export default async function SourceDetailPage({ params, searchParams }: Props) 
 
   const sourceName = decodeURIComponent(resolvedParams.sourceId)
   const family = (resolvedSearch.family ?? "contact_direct") as SourceFamily
-  const isBrokerOrAdmin = ctx.userType === "broker" || ctx.userType === "admin" || ctx.userType === "superadmin"
+  // Lane 90A (89D P1-5): the ONE scope resolver — see app/dashboard/analytics/source/page.tsx.
+  const supabase = await createClient()
+  const scope = await resolveReportScope(supabase, {
+    userType: ctx.userType,
+    userId: ctx.userId,
+    agentId: ctx.agentId ?? "",
+    brokerageId: ctx.brokerageId,
+    teamId: ctx.teamId,
+  })
+  const scopeAgentIds = scope.agentIds ? scope.agentIds.filter(Boolean) : null
 
   const result = await getSourceDrilldown(
     ctx.brokerageId,
     `${sourceName}::${family}`,
-    isBrokerOrAdmin ? undefined : ctx.userId,
+    scopeAgentIds,
     resolvedSearch.dateFrom,
     resolvedSearch.dateTo
   )
@@ -56,8 +67,7 @@ export default async function SourceDetailPage({ params, searchParams }: Props) 
         sourceName={sourceName}
         sourceFamily={family}
         brokerageId={ctx.brokerageId}
-        userId={ctx.userId}
-        userType={ctx.userType}
+        scopeAgentIds={scopeAgentIds}
         initialData={result}
       />
     </div>

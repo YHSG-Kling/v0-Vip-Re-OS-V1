@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 import { SeedPageClient } from "./seed-page-client"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -22,7 +23,7 @@ export default async function SeedPage() {
     .single()
 
   if (!userData || !isAdminOrBroker({ user_type: userData.user_type })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="The seed page" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   return <SeedPageClient />

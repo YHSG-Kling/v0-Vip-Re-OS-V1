@@ -8,6 +8,7 @@ import { getAgentProfileForUserAction, type AgentProfile, type OfficeOption, typ
 import { getAgent360Action, type Agent360 } from "@/app/actions/admin/agent-360"
 import { Staff360Panels } from "./staff-360-panels"
 import { getStaff360Action, type Staff360 } from "@/app/actions/admin/staff-360"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -35,7 +36,7 @@ export default async function UserEditPage({ params }: Props) {
   // 'superadmin' removed — dead as users.user_type, which wins the ?? chain on
   // every populated row (0 live rows store it); broker_owner added — storable
   // seat that owns the brokerage.
-  if (!["admin", "broker", "broker_owner"].includes(callerRole)) redirect("/dashboard")
+  if (!["admin", "broker", "broker_owner"].includes(callerRole)) return <RoleGateNotice surface="User administration" audience="your broker, broker owner and brokerage admins" />
 
   // Load target user
   const { data: target } = await supabase

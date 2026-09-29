@@ -34,7 +34,7 @@ export default async function NewListingForContactPage({ params, searchParams }:
     .select("brokerage_id, first_name, last_name, email")
     .eq("id", user.id)
     .single()
-  if (!profile?.brokerage_id) redirect("/dashboard")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   // ONE ANSWER for "which team is this agent on" (lib/kernel/resolve-user-team.ts)
   // — threaded to FormWizard.teamId, which scopes e-sign template/provider

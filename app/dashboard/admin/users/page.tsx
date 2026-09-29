@@ -12,6 +12,7 @@ import { CHECK_VOCABULARIES } from "@/scripts/check-vocabularies"
 import { resolveSeatUsage, resolveCatalogSeatLimits } from "@/lib/kernel/seat-usage"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -55,7 +56,7 @@ export default async function AdminUsersPage() {
 
   const callerType = profile?.user_type ?? "agent"
   if (!isAdminOrBroker({ user_type: callerType })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="User administration" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   // SPLIT (console consolidation): the cross-tenant user listing belongs to the

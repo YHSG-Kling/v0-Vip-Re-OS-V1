@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { AgentOffboardingClient } from "./agent-offboarding-client"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -20,7 +21,8 @@ export default async function AgentOffboardingPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
   const { data: u } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
-  if (!u?.brokerage_id || !ADMIN_ROLES.has(u.user_type ?? "")) redirect("/dashboard")
+  if (!u?.brokerage_id) redirect("/dashboard/onboarding")
+  if (!ADMIN_ROLES.has(u.user_type ?? "")) return <RoleGateNotice surface="Agent offboarding" audience="your broker, broker owner and brokerage admins" />
 
   const svc = createServiceClient()
   const { data: agents } = await svc

@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { AlertTriangle, CheckCircle2, Clock, XCircle, Activity, Zap } from "lucide-react"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { ReprojectPortalButton } from "./reproject-portal-button"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -53,7 +54,7 @@ export default async function CronHealthPage() {
     .maybeSingle()
 
   if (!isAdminOrBroker({ user_type: profile?.user_type ?? "" })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="Cron health" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   const result = await getCronHealth()

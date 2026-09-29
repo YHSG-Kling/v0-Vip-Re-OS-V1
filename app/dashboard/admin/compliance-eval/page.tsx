@@ -11,6 +11,7 @@ import {
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { evalBrokerageOutbound, evalBrokerageDirectorReels } from "@/lib/agents/manager-outbound-eval"
 import { createServiceClient } from "@/lib/supabase/service"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const metadata = {
   title:       "Manager Compliance Eval | Kernel OS Admin",
@@ -47,7 +48,7 @@ export default async function ComplianceEvalPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
   const { data: userData } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
-  if (!isAdminOrBroker({ user_type: userData?.user_type ?? "agent" })) redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: userData?.user_type ?? "agent" })) return <RoleGateNotice surface="Compliance evaluation" audience="your broker, brokerage admins, team leads and the compliance officer" />
 
   const report = runManagerEval()
   const cleared = !report.releaseBlocked

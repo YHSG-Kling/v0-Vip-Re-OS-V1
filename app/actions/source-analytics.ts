@@ -150,13 +150,53 @@ export interface SourceDrilldownResult {
 
 export interface SourceAnalyticsFilter {
   brokerageId: string
+  /** ONE agent (agents.id — contacts/leads/transactions.agent_id all FK to agents, never users.id). */
   agentId?: string
+  /**
+   * Lane 90A: a team (teams.id) — declared here since the page shipped and READ
+   * BY NOTHING until now (the opposite-missing shape). Resolves to the team's
+   * agents.id set; "teams see only their own board" (CLAUDE.md §4).
+   */
   teamId?: string
+  /**
+   * Lane 90A: the RESOLVED scope from lib/kernel/reporting-scope.ts
+   * (resolveReportScope → agentIds): null = the whole brokerage, [] = a real
+   * scope with no agents (legitimately empty), [...] = exactly these agents.
+   * Wins over agentId / teamId when present.
+   */
+  agentIds?: string[] | null
   sourceFamilies?: SourceFamily[]
   dateFrom?: string
   dateTo?: string
   sortBy?: "roi" | "volume" | "revenue" | "appt_rate" | "close_rate" | "cost_efficiency"
   sortDir?: "asc" | "desc"
+}
+
+/**
+ * Lane 90A — ONE narrowing for every agent-keyed read in this module. Every
+ * `agent_id` filtered here is an agents.id (schema-fk-map: contacts / leads /
+ * transactions.agent_id → agents), so the ids handed in must be too. The pages
+ * used to pass `ctx.userId` (a users.id) for the agent view — a filter that
+ * matched nothing (CLAUDE.md §3, the disjoint-id trap) — while a broker OWNER
+ * got that empty agent view because the scope literal named only broker/admin.
+ * null = no narrowing (the whole brokerage).
+ */
+async function resolveScopeAgentIds(
+  supabase: { from: (t: string) => any },
+  f: Pick<SourceAnalyticsFilter, "brokerageId" | "agentId" | "agentIds" | "teamId">,
+): Promise<string[] | null> {
+  if (f.agentIds !== undefined) return f.agentIds
+  if (f.agentId) return [f.agentId]
+  if (f.teamId) {
+    const { data, error } = await supabase
+      .from("agents")
+      .select("id")
+      .eq("brokerage_id", f.brokerageId)
+      .eq("team_id", f.teamId)
+    if (error) throw error
+    return (data ?? []).map((a: { id: string }) => a.id)
+  }
+  return null
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -168,7 +208,8 @@ export async function getSourcePerformance(
 ): Promise<SourcePerformanceResult> {
   try {
     const supabase = await createClient()
-    const { brokerageId, agentId, dateFrom, dateTo, sourceFamilies, sortBy = "volume", sortDir = "desc" } = filter
+    const { brokerageId, agentId, agentIds, teamId, dateFrom, dateTo, sourceFamilies, sortBy = "volume", sortDir = "desc" } = filter
+    const scopeIds = await resolveScopeAgentIds(supabase, { brokerageId, agentId, agentIds, teamId })
 
     // Build date constraints
     const fromDate = dateFrom ?? new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString()
@@ -183,7 +224,7 @@ export async function getSourcePerformance(
       .lte("created_at", toDate)
       .is("deleted_at", null)
 
-    if (agentId) contactsQuery = contactsQuery.eq("agent_id", agentId)
+    if (scopeIds) contactsQuery = contactsQuery.in("agent_id", scopeIds)
     if (sourceFamilies?.length) contactsQuery = contactsQuery.in("source_family", sourceFamilies)
 
     const { data: contacts, error: cErr } = await contactsQuery
@@ -200,7 +241,7 @@ export async function getSourcePerformance(
       .gte("created_at", fromDate)
       .lte("created_at", toDate)
 
-    if (agentId) leadsQuery = leadsQuery.eq("agent_id", agentId)
+    if (scopeIds) leadsQuery = leadsQuery.in("agent_id", scopeIds)
     if (sourceFamilies?.length && !sourceFamilies.includes("contact_direct")) {
       leadsQuery = leadsQuery.in("source_family", sourceFamilies)
     }
@@ -236,7 +277,7 @@ export async function getSourcePerformance(
       .gte("created_at", fromDate)
       .lte("created_at", toDate)
 
-    if (agentId) txQuery = txQuery.eq("agent_id", agentId)
+    if (scopeIds) txQuery = txQuery.in("agent_id", scopeIds)
 
     const { data: transactions } = await txQuery
 
@@ -597,7 +638,8 @@ export async function getSourcePerformance(
 export async function getSourceDrilldown(
   brokerageId: string,
   sourceKey: string, // format: "source_name::source_family"
-  agentId?: string,
+  /** Lane 90A: the resolved scope (see SourceAnalyticsFilter.agentIds) — was a single users.id that matched nothing. */
+  scopeAgentIds?: string[] | null,
   dateFrom?: string,
   dateTo?: string
 ): Promise<SourceDrilldownResult> {
@@ -606,11 +648,12 @@ export async function getSourceDrilldown(
     const [sourceName, sourceFamily] = sourceKey.split("::")
     const fromDate = dateFrom ?? new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString()
     const toDate = dateTo ?? new Date().toISOString()
+    const scopeIds: string[] | null = scopeAgentIds ?? null
 
     // Build base metrics via getSourcePerformance filtered to this source
     const perfResult = await getSourcePerformance({
       brokerageId,
-      agentId,
+      agentIds: scopeIds,
       dateFrom: fromDate,
       dateTo: toDate,
     })
@@ -628,7 +671,7 @@ export async function getSourceDrilldown(
       .gte("created_at", fromDate)
       .order("created_at", { ascending: false })
       .limit(20)
-    if (agentId) contactsQuery = contactsQuery.eq("agent_id", agentId)
+    if (scopeIds) contactsQuery = contactsQuery.in("agent_id", scopeIds)
     const { data: recentContacts } = await contactsQuery
 
     // Recent leads (for raw/lead families)
@@ -642,7 +685,7 @@ export async function getSourceDrilldown(
         .gte("created_at", fromDate)
         .order("created_at", { ascending: false })
         .limit(15)
-      if (agentId) leadsQuery = leadsQuery.eq("agent_id", agentId)
+      if (scopeIds) leadsQuery = leadsQuery.in("agent_id", scopeIds)
       const { data: leadsData } = await leadsQuery
       recentLeadsData = leadsData?.map(l => ({
         id: l.id,
@@ -662,7 +705,7 @@ export async function getSourceDrilldown(
       .gte("created_at", fromDate)
       .order("created_at", { ascending: false })
       .limit(10)
-    if (agentId) txQuery = txQuery.eq("agent_id", agentId)
+    if (scopeIds) txQuery = txQuery.in("agent_id", scopeIds)
     const { data: txData } = await txQuery
 
     // Agent name lookup
@@ -672,11 +715,21 @@ export async function getSourceDrilldown(
     ])]
     let agentNames: Record<string, string> = {}
     if (agentIds.length > 0) {
-      const { data: agentRows } = await supabase
-        .from("users")
-        .select("id, first_name, last_name")
+      // Lane 90A: these are agents.id values (contacts / transactions.agent_id
+      // → agents), so the name lives one hop away on the agents → users join.
+      // Looking them up in `users` by id matched nothing (CLAUDE.md §3) and
+      // every recent contact rendered without an agent name.
+      const { data: agentRows, error: agentRowsError } = await supabase
+        .from("agents")
+        .select("id, users(first_name, last_name)")
         .in("id", agentIds.slice(0, 50))
-      agentRows?.forEach(a => { agentNames[a.id] = `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim() })
+      if (agentRowsError) console.error("[source-analytics] agent name read refused:", agentRowsError.message)
+      // The generated types read the to-one `users` embed as an array; it is one
+      // row (agents.user_id → users.id) — same handling as the pipeline page.
+      ;(agentRows ?? []).forEach((a: any) => {
+        const u = (Array.isArray(a.users) ? a.users[0] : a.users) as { first_name?: string | null; last_name?: string | null } | null
+        agentNames[a.id] = `${u?.first_name ?? ""} ${u?.last_name ?? ""}`.trim()
+      })
     }
 
     // Monthly timeline

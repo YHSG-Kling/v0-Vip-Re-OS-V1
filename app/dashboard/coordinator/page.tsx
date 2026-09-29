@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity"
 import { toCanonicalRoleOrDefault } from "@/lib/security"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { CoordinatorTransactionList } from "@/components/coordinator/transaction-list"
 import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
 import { generateUserTypeBrief } from "@/lib/intelligence/user-type-briefs"
@@ -93,7 +94,8 @@ export default async function CoordinatorDashboard({
               <Button variant="outline" asChild>
                 <Link href="/dashboard">Return to Dashboard</Link>
               </Button>
-              {(userData?.user_type === "broker" || userData?.user_type === "admin") && (
+              {/* Lane 90A: the roster, not a literal — a broker owner / admin / team lead may set up a TC too */}
+              {isAdminOrBroker({ user_type: userData?.user_type }) && (
                 <Button asChild>
                   <Link href="/dashboard/settings/team/tc">Setup TC Profile</Link>
                 </Button>

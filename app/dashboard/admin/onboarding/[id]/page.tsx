@@ -4,6 +4,7 @@ import { getAgentProgress } from "@/app/actions/onboarding/progress"
 import { ProgressDashboardClient } from "@/app/dashboard/onboarding/progress/progress-dashboard-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const metadata = {
   title: "Agent Progress | Admin View",
@@ -37,12 +38,12 @@ export default async function AdminAgentProgressPage({ params }: PageProps) {
     .maybeSingle()
 
   if (!userData?.brokerage_id) {
-    redirect("/dashboard")
+    redirect("/dashboard/onboarding")
   }
 
   // Only admins and brokers can access this page
   if (!isAdminOrBroker({ user_type: userData.user_type || "" })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="Onboarding administration" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   // Get agent details

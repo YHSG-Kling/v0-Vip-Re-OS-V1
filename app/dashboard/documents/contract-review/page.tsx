@@ -28,7 +28,7 @@ export default async function ContractReviewPage() {
     .select("brokerage_id, role")
     .eq("id", user.id)
     .maybeSingle()
-  if (!userRow?.brokerage_id) redirect("/dashboard")
+  if (!userRow?.brokerage_id) redirect("/dashboard/onboarding")
 
   // Agent row (for agentId)
   const { data: agentRow } = await supabase

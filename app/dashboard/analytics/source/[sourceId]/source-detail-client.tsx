@@ -45,8 +45,8 @@ interface Props {
   sourceName: string
   sourceFamily: SourceFamily
   brokerageId: string
-  userId: string
-  userType: string
+  /** Lane 90A: the server-resolved scope (null = brokerage-wide) — the client never re-derives it from a role. */
+  scopeAgentIds: string[] | null
   initialData: SourceDrilldownResult
 }
 
@@ -135,7 +135,7 @@ function TimelineChart({ data }: { data: Array<{ month: string; contacts: number
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-export function SourceDetailClient({ sourceName, sourceFamily, brokerageId, userId, userType, initialData }: Props) {
+export function SourceDetailClient({ sourceName, sourceFamily, brokerageId, scopeAgentIds, initialData }: Props) {
   const [data, setData] = useState<SourceDrilldownResult>(initialData)
   const [isRefreshing, startRefresh] = useTransition()
   const [isAILoading, startAILoading] = useTransition()
@@ -145,18 +145,16 @@ export function SourceDetailClient({ sourceName, sourceFamily, brokerageId, user
   const info = FAMILY_INFO[sourceFamily]
   const s = data.source
 
-  const isBrokerOrAdmin = userType === "broker" || userType === "admin" || userType === "superadmin"
-
   const handleRefresh = useCallback(() => {
     startRefresh(async () => {
       const result = await getSourceDrilldown(
         brokerageId,
         `${sourceName}::${sourceFamily}`,
-        isBrokerOrAdmin ? undefined : userId,
+        scopeAgentIds,
       )
       setData(result)
     })
-  }, [brokerageId, sourceName, sourceFamily, userId, isBrokerOrAdmin])
+  }, [brokerageId, sourceName, sourceFamily, scopeAgentIds])
 
   const handleGenerateAI = useCallback(() => {
     if (!s) return

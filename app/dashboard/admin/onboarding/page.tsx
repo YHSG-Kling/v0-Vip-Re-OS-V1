@@ -7,6 +7,7 @@ import { getBrokerageProviderReadiness } from "@/lib/platform/provider-posture"
 import { loadOnboardingRoster } from "@/lib/onboarding/onboarding-roster"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const metadata = {
   title: "Onboarding Operations | Admin OS",
@@ -50,12 +51,12 @@ export default async function AdminOnboardingOsPage({
     .single()
 
   if (!userData?.brokerage_id) {
-    redirect("/dashboard")
+    redirect("/dashboard/onboarding")
   }
 
   // Only admins and brokers can access this page
   if (!isAdminOrBroker({ user_type: userData.user_type || "" })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="Onboarding administration" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   // ONE roster for both broker-facing onboarding surfaces (this console and the

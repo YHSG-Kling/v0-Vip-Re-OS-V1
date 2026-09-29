@@ -7,6 +7,7 @@ import { getVendorReviewModerationQueue } from "@/app/actions/vendor-marketplace
 import { resolveVendorTiers, type VendorTier } from "@/lib/kernel/vendor-subscription"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -37,7 +38,7 @@ export default async function VendorApprovalsPage() {
   const isAdmin =
     isAdminOrBroker({ user_type: String(profile.user_type) }) ||
     isAdminOrBroker({ user_type: String((profile as { role?: string }).role) })
-  if (!isAdmin) redirect("/dashboard")
+  if (!isAdmin) return <RoleGateNotice surface="Vendor approvals" audience="your broker, brokerage admins, team leads and the compliance officer" />
 
   const [{ data: pending }, { data: settingsRow }] = await Promise.all([
     supabase

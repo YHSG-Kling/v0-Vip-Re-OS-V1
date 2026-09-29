@@ -40,7 +40,7 @@ export default async function LicenseIntakePage() {
     .single()
 
   if (!userData?.brokerage_id) {
-    redirect("/dashboard")
+    redirect("/dashboard/onboarding")
   }
 
   // Get initial status

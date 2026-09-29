@@ -24,6 +24,7 @@ import { CurrentPlanCard } from "./current-plan-card"
 import { UsageSection } from "./usage-section"
 import { InvoiceHistoryTable } from "./invoice-history-table"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -50,7 +51,7 @@ export default async function BillingSettingsPage() {
   // hand-typed ["broker","admin"] that silently excluded superadmin / broker_admin
   // / broker_owner and bounced the actual owner off their own billing page.
   if (!profile?.brokerage_id || !isBrokerageFinanceAdmin(profile)) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="Billing" audience="your broker, broker owner and brokerage admins" />
   }
 
   const brokerageId = profile.brokerage_id

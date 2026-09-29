@@ -15,6 +15,7 @@ import {
 } from "@/app/actions/buyer-fatigue"
 import { BrokerageFatigueDashboard } from "./brokerage-fatigue-dashboard"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const metadata = {
   title:       "Buyer Fatigue Dashboard",
@@ -40,11 +41,11 @@ export default async function BrokerageFatiguePage() {
     .eq("id", user.id)
     .single()
 
-  if (!profile?.brokerage_id) redirect("/dashboard")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
   // TENANT ADMIN GATE (kept inline; platform staff pass via the platform_role
   // clause): 'superadmin' removed — dead as users.user_type (0 live rows store it).
   if (!["broker", "broker_owner", "broker_admin", "admin"].includes(profile.user_type ?? "") && profile.platform_role !== "superadmin") {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="The fatigue board" audience="your broker, broker owner and brokerage admins" />
   }
 
   const brokerageId = profile.brokerage_id

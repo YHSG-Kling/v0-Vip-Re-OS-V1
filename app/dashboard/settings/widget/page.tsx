@@ -8,6 +8,7 @@ import { redirect } from "next/navigation"
 import WidgetSettingsClient from "./widget-settings-client"
 import { ChatWidgetScopeCard } from "@/app/components/settings/ChatWidgetScopeCard"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const metadata = { title: "Widget & AI Settings" }
 
@@ -32,14 +33,14 @@ export default async function WidgetSettingsPage() {
     .eq("id", user.id)
     .maybeSingle()
 
-  if (!profile?.brokerage_id) redirect("/dashboard")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   // Only internal staff can access this page
   // SCOPE LADDER (staff roster, kept inline): 'superadmin' removed — dead as
   // users.user_type (0 live rows); broker_owner added — storable seat that owns
   // the brokerage.
   const ALLOWED_TYPES = ["agent","broker","broker_owner","admin","tc","team_lead","isa","compliance_officer"]
-  if (!ALLOWED_TYPES.includes(profile.user_type ?? "")) redirect("/dashboard")
+  if (!ALLOWED_TYPES.includes(profile.user_type ?? "")) return <RoleGateNotice surface="The widget" audience="brokerage staff" />
 
   const brokerageId = profile.brokerage_id
 

@@ -16,8 +16,11 @@ export default async function BrandVoicePage() {
   // Page requires an agent context. Agents must have a resolved agentId.
   // Brokers/admins acting on behalf of agents need a brokerageId at minimum.
   // Any user who is not an agent and has no brokerage context cannot use this page.
-  if (ctx.userType === "agent" && !ctx.agentId) redirect("/dashboard")
-  if (ctx.userType !== "agent" && !ctx.brokerageId) redirect("/dashboard")
+  // Lane 90A: an account that still cannot self-provision lands on ONBOARDING
+  // (which self-heals again and otherwise shows the setup flow), never on
+  // /dashboard, whose router would only send it back here via onboarding.
+  if (ctx.userType === "agent" && !ctx.agentId) redirect("/dashboard/onboarding")
+  if (ctx.userType !== "agent" && !ctx.brokerageId) redirect("/dashboard/onboarding")
 
   const { profile } = await loadBrandVoiceProfileAction()
 

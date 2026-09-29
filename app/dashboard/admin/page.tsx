@@ -1,5 +1,6 @@
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { redirect } from 'next/navigation'
+import { RoleGateNotice } from '@/app/components/shared/role-gate-notice'
 import { createClient } from '@/lib/supabase/server'
 import { AdminDashboardClient } from './admin-dashboard-client'
 import { ProvisioningHealthPanel } from './components/provisioning-health-panel'
@@ -44,7 +45,7 @@ export default async function AdminPage() {
   // Verify user has admin/broker/superadmin role
   const allowedRoles = ['admin', 'superadmin', 'broker', 'broker_admin']
   if (!allowedRoles.includes(context.userType)) {
-    redirect('/dashboard')
+    return <RoleGateNotice surface="The admin dashboard" audience="your broker and brokerage admins" />
   }
 
   // For admins without a specific brokerage, query the first available brokerage

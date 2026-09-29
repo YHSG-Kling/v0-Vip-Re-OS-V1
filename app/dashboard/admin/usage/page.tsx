@@ -10,6 +10,7 @@ import { AlertTriangle, AlertCircle, Cpu, Phone, HardDrive, Video, DollarSign, D
 import { UsageByTypeChart } from "./usage-by-type-chart"
 import { UsageTrendsChart } from "./usage-trends-chart"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -40,7 +41,7 @@ export default async function UsageMeteringDashboard() {
 
   // Role gate: broker + admin + superadmin only
   if (!profile || !isAdminOrBroker({ user_type: profile.user_type ?? "" })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="Usage" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
   // Kernel guard: brokerage_id must be present for all dashboard queries
   if (!profile.brokerage_id) redirect("/dashboard/onboarding")

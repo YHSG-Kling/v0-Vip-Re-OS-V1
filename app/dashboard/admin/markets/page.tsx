@@ -11,6 +11,7 @@ import { MarketsSetupClient } from "./markets-client"
 import { BATCHDATA_MOTIVATION_TYPES } from "@/lib/external/batchdata-client"
 import { ALL_RECORD_TYPES } from "@/lib/osint-client"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -38,7 +39,7 @@ export default async function MarketsSetupPage() {
     .from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   const userType = userData?.user_type ?? "agent"
   const brokerageId = userData?.brokerage_id ?? null
-  if (!isAdminOrBroker({ user_type: userType })) redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: userType })) return <RoleGateNotice surface="Markets" audience="your broker, brokerage admins, team leads and the compliance officer" />
 
   // Markets carry their nested property/motivated params from getScrapingMarkets'
   // own select. Keywords and job history are the rest of the scrape config that

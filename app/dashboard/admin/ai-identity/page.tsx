@@ -4,6 +4,7 @@ import { AIIdentityEditor } from "@/app/components/ai-identity/AIIdentityEditor"
 import { getAIIdentityProfile } from "@/app/actions/ai-identity"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -32,8 +33,9 @@ export default async function AdminAIIdentityPage() {
     .maybeSingle()
 
   // Role gate: admin + broker only
-  if (!profile?.brokerage_id || !isAdminOrBroker({ user_type: profile.user_type || "" })) {
-    redirect("/dashboard")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
+  if (!isAdminOrBroker({ user_type: profile.user_type || "" })) {
+    return <RoleGateNotice surface="The brokerage AI identity" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   const brokerageId = profile.brokerage_id

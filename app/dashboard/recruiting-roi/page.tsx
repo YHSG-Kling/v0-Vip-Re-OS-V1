@@ -20,6 +20,7 @@ import { RecruitingPipelineClient } from "./recruiting-pipeline-client"
 import { RecruitingPitchPanel } from "./recruiting-pitch-panel"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -47,7 +48,7 @@ export default async function RecruitingROIPage() {
   // Check RBAC — user_type is canonical; role is legacy fallback
   const resolvedType = profile?.user_type ?? profile?.role ?? ""
   if (!isAdminOrBroker({ user_type: resolvedType })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="Recruiting ROI" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   // Fetch all data in parallel

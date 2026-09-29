@@ -7,6 +7,14 @@ import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-s
 
 export const dynamic = "force-dynamic"
 
+// TOMBSTONE (lane 90A, 89D P1-2): this page MOVED here from
+// app/(dashboard)/transactions/pipeline/page.tsx — a route group that held this
+// one page and no layout.tsx, so the stage board rendered OUTSIDE the dashboard
+// shell (no sidebar, no header) at the URL /transactions/pipeline. The route
+// group is deleted; the survivor is this file, under app/dashboard/layout.tsx,
+// at /dashboard/transactions/pipeline. The nav href
+// (app/config/navigation-config.ts, id 'transaction-pipeline') is repointed.
+// Logic unchanged — a move, not a rewrite.
 export default async function TransactionPipelinePage() {
   // ── Kernel OS: identity resolution via canonical helper ──────────────────
   // Self-healing identity: an agent who reached this page without a brokerage/agents row is

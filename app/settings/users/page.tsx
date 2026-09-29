@@ -6,6 +6,7 @@ import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 // Read on the SERVER so the ~1600-line generated vocabulary cache stays out of
 // the client bundle; only the ~15 admissible user_type strings cross.
 import { CHECK_VOCABULARIES } from "@/scripts/check-vocabularies"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -27,7 +28,7 @@ export default async function SettingsUsersPage() {
 
   // Only admin/broker/superadmin can manage users
   if (!isAdminOrBroker({ user_type: userType })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="User management" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   const brokerageId = profile?.brokerage_id

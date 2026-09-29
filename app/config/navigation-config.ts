@@ -123,13 +123,12 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       // status-grouped LIST, this is the per-stage board, and each answers a
       // different question.
       //
-      // NOTE FOR THE INTEGRATOR — the href is `/transactions/pipeline`, not
-      // `/dashboard/…`, because the page lives in the route GROUP
-      // app/(dashboard)/transactions/pipeline and route groups vanish from the
-      // URL. That group holds this one page and has no layout.tsx, so the board
-      // renders OUTSIDE the dashboard shell. Reported, not silently "fixed":
-      // relocating the page is a move another lane owns.
-      { id: 'transaction-pipeline', label: 'Transaction Pipeline', href: '/transactions/pipeline', icon: 'Columns' },
+      // Lane 90A (89D P1-2): the page used to live in the route GROUP
+      // app/(dashboard)/transactions/pipeline (href `/transactions/pipeline`),
+      // which had no layout.tsx, so the board rendered OUTSIDE the dashboard
+      // shell. It is MOVED to app/dashboard/transactions/pipeline/page.tsx and
+      // the group is deleted; this href follows it.
+      { id: 'transaction-pipeline', label: 'Transaction Pipeline', href: '/dashboard/transactions/pipeline', icon: 'Columns' },
       { id: 'closing-concierge', label: 'Closing Concierge', href: '/dashboard/transactions/closing-concierge', icon: 'ShieldCheck' },
       { id: 'documents', label: 'Document Center', href: '/dashboard/documents', icon: 'FolderOpen' },
       // Orphan-route sweep: AI contract review existed with zero inbound links.

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/auth/client';
 import { isResolvedPlatformSuperadmin } from '@/lib/platform/platform-staff-roster';
+import { isTenantAdminGrantRole } from '@/lib/auth/resolve-user-role';
 
 // personal: every tier (solo agents too); brokerage: admin/broker/superadmin only.
 const menuItems: Array<{ label: string; href: string; personal: boolean }> = [
@@ -33,8 +34,13 @@ export function SettingsSidebar() {
   // reads userContext.platformRole (populated by useAuth from the same
   // resolver the server gates use) through the roster's ONE resolved-role
   // spelling; tenant admin/broker still pass via roles.
+  // Lane 90A (89D P1-5): the ONE roster (isTenantAdminGrantRole — the same
+  // predicate app/settings/layout.tsx:25 admits with) instead of an
+  // `['admin','broker']` literal that hid Commission / Providers / Users from
+  // broker_owner, broker_admin, team_lead and compliance_officer seats the
+  // layout already let in by URL.
   const isBrokerageRole =
-    !!userContext?.roles.some((r) => ['admin', 'broker'].includes(r)) ||
+    !!userContext?.roles.some((r) => isTenantAdminGrantRole(r)) ||
     isResolvedPlatformSuperadmin(userContext?.platformRole);
   // Developers is principal-gated SERVER-side (isTenancyPrincipal: a solo-tier
   // agent IS their own principal) — the client can't compute tier/lead

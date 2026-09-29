@@ -1,6 +1,7 @@
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
+import { RoleGateNotice } from '@/app/components/shared/role-gate-notice'
 import {
   SystemCommandStrip,
   ProviderHealthPanel,
@@ -39,7 +40,7 @@ export default async function SystemPage() {
   // Role gate: broker, admin, superadmin only (NOT agents)
   // This is a broker/admin operations surface, not superadmin-only
   if (!isAdminOrBroker({ user_type: context.userType })) {
-    redirect('/dashboard')
+    return <RoleGateNotice surface="System operations" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   const { brokerageId } = context

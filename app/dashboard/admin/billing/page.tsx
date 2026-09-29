@@ -25,6 +25,7 @@ import { getSubscriptionAgreementAction } from "@/app/actions/admin/subscription
 import { getReferralEarningsAction } from "@/app/actions/admin/referral-earnings"
 import type { ReferralEarningRow } from "@/lib/platform/referral-payouts"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 /**
  * Billing & Tiering Admin Workspace
@@ -70,8 +71,9 @@ export default async function BillingAdminPage({
   // out here. Survivor: lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
   const isSuper = isPlatformSuperadminIdentity(userProfile?.user_type, (userProfile as any)?.platform_role)
   const isTenantBillingAdmin = isBrokerageFinanceAdmin({ user_type: userProfile?.user_type ?? "" })
-  if (!userProfile || (!isSuper && !isTenantBillingAdmin)) {
-    redirect("/dashboard")
+  if (!userProfile) redirect("/dashboard/onboarding")
+  if (!isSuper && !isTenantBillingAdmin) {
+    return <RoleGateNotice surface="Billing" audience="your broker, broker owner and brokerage admins" />
   }
 
   const params = await searchParams

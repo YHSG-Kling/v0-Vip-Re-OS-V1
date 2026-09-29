@@ -3,6 +3,8 @@ import { redirect } from "next/navigation"
 import { AIIdentityEditor } from "@/app/components/ai-identity/AIIdentityEditor"
 import { getAIIdentityProfile, getParentAIIdentityProfile } from "@/app/actions/ai-identity"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -26,12 +28,12 @@ export default async function AgentAIIdentityPage() {
   await ensureAgentContextInPlace()
   const { data: profile } = await supabase
     .from("users")
-    .select("id, brokerage_id, team_id")
+    .select("id, brokerage_id, team_id, user_type")
     .eq("id", user.id)
     .maybeSingle()
 
   if (!profile?.brokerage_id) {
-    redirect("/dashboard")
+    redirect("/dashboard/onboarding")
   }
 
   const brokerageId = profile.brokerage_id
@@ -52,7 +54,20 @@ export default async function AgentAIIdentityPage() {
   if (!agentRow?.id) {
     // ensureAgentContextInPlace ran above, so this is an account that genuinely
     // cannot self-provision (pending invite, or staff whose seat is not an agent).
-    redirect("/dashboard")
+    // Lane 90A: say so in place. A tenant-admin seat without an agents row has
+    // its own AI identity at the brokerage scope (admin/ai-identity); an agent
+    // seat that is still unprovisioned belongs on onboarding.
+    if (isAdminOrBroker({ user_type: profile.user_type })) {
+      return (
+        <RoleGateNotice
+          surface="The agent AI identity"
+          audience="agent seats; your seat administers the brokerage-level identity instead"
+          fallbackHref="/dashboard/admin/ai-identity"
+          fallbackLabel="brokerage AI identity page"
+        />
+      )
+    }
+    redirect("/dashboard/onboarding")
   }
 
   const agentId = agentRow.id

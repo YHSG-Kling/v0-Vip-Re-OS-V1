@@ -14,15 +14,16 @@ export default async function PodcastChannelsPage() {
 
   const service = createServiceClient()
 
-  // Resolve agent / brokerage
-  const { data: agent } = await service
-    .from("agents")
-    .select("id, brokerage_id")
-    .eq("user_id", user.id)
-    .maybeSingle()
+  // Resolve agent / brokerage. Lane 90A (89D P1-4): a tenant-admin seat may hold
+  // no agents row; the channels below are brokerage-keyed, so the seat's own
+  // users.brokerage_id is the scope. An account with neither lands on onboarding.
+  const [{ data: agent }, { data: seat }] = await Promise.all([
+    service.from("agents").select("id, brokerage_id").eq("user_id", user.id).maybeSingle(),
+    service.from("users").select("brokerage_id").eq("id", user.id).maybeSingle(),
+  ])
 
-  const brokerageId = agent?.brokerage_id ?? null
-  if (!brokerageId) redirect("/dashboard")
+  const brokerageId = agent?.brokerage_id ?? seat?.brokerage_id ?? null
+  if (!brokerageId) redirect("/dashboard/onboarding")
 
   // Fetch agent-level channels (personal overrides)
   const { data: agentChannels } = await service

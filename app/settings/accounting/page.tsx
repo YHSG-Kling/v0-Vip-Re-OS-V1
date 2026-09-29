@@ -24,6 +24,7 @@ import { TaxCategoryManager } from "./tax-category-manager"
 import { ManualEntryCard } from "./manual-entry-card"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -51,7 +52,7 @@ export default async function AccountingSettingsPage() {
 
   // Role gate: broker + admin only
   if (!isBrokerageFinanceAdmin({ user_type: profile.user_type ?? "" })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="Accounting" audience="your broker, broker owner and brokerage admins" />
   }
 
   // Fetch data in parallel

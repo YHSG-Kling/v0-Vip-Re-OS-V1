@@ -25,6 +25,7 @@ import { getQuarterlyReviewAction } from "@/app/actions/quarterly-review"
 import { listAiTeammatesAction } from "@/app/actions/ai-teammates"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const metadata = {
   title:       "Agent Command Center | Kernel OS Admin",
@@ -83,7 +84,7 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
       if (lead) mayEnter = true
     }
   }
-  if (!mayEnter) redirect("/dashboard")
+  if (!mayEnter) return <RoleGateNotice surface="The Command Center" audience="brokerage admins and team leads" />
 
   // Resolve the egress scope so the surface shows the right slice. superadmin = platform-wide (no
   // scope). For everyone else, resolve their office (agents.location_id) + team so a multi-location

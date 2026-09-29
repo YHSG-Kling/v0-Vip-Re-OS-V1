@@ -35,7 +35,7 @@ export default async function ListingMarketingTierPage({ params }: PageProps) {
     .eq("id", user.id)
     .single()
 
-  if (!userRow?.brokerage_id) redirect("/dashboard")
+  if (!userRow?.brokerage_id) redirect("/dashboard/onboarding")
 
   // Marketing tiers are superadmin-only — redirect everyone else.
   //

@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { TrendingUp } from "lucide-react"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { usd } from "@/lib/format/money"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -13,7 +14,7 @@ export const dynamic = "force-dynamic"
 export default async function RevenuePipelinePage() {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect("/login")
-  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) redirect("/dashboard")
+  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) return <RoleGateNotice surface="The revenue pipeline" audience="your broker, broker owner and brokerage admins" />
 
   const res = await getRevenuePipelineProjectionAction()
   if (!res.success) {

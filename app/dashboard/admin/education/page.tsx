@@ -5,6 +5,7 @@ import { getEducationModules } from "@/app/actions/admin/license-tracking"
 import { EducationContentClient } from "./education-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const metadata = {
   title: "Education Content | Admin",
@@ -31,7 +32,7 @@ export default async function AdminEducationPage() {
 
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
   if (!isAdminOrBroker({ user_type: profile.user_type ?? "" })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="Education administration" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   const { modules } = await getEducationModules(profile.brokerage_id)

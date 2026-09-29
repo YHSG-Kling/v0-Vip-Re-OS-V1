@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { listLearningModulesForBrokerageAction, getModulePublicationsAction } from "@/app/actions/learning-modules"
 import { LearningModulesClient } from "./learning-modules-client"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -47,7 +48,7 @@ export default async function LearningModulesPage() {
     .maybeSingle()
   const t = (row?.user_type as string | undefined) ?? ""
   if (!isAdminOrBroker({ user_type: t })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="Learning modules" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   return (

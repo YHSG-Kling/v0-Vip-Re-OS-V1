@@ -38,7 +38,14 @@ export interface EgressScope {
 // rows; platform staff carry platform_role). 'broker_owner' added: storable,
 // owns the brokerage, and previously fell to the "own work" tier below.
 const BROKERAGE_WIDE = new Set(["broker", "broker_owner", "broker_admin"])
-const ADMIN = new Set(["admin"])
+// Lane 90A: 'compliance_officer' joins the admin tier on the owner's 2026-09-04
+// ruling (CLAUDE.md §4 — the sixth tenant-admin seat, TENANT_ADMIN_USER_TYPES).
+// Before this it fell through to "own work" below, so every scope this resolver
+// decides (Command Center, exception center, reporting, source analytics) showed
+// the compliance officer an empty personal slice of a brokerage they administer.
+// Same tier as admin: location-aware, brokerage-wide without one. NOT a move of
+// any other role between tiers.
+const ADMIN = new Set(["admin", "compliance_officer"])
 const TEAM_LEVEL = new Set(["team_lead"])
 
 /**

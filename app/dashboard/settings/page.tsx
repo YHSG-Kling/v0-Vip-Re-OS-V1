@@ -9,6 +9,7 @@ import { SettingsControlOSClient } from "./settings-control-os-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { normalizeCapAnniversaryBasis } from "@/lib/commission/cap-resolver"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const metadata = { title: "Settings | Control Center" }
 
@@ -36,7 +37,7 @@ export default async function SettingsControlOSPage() {
   // Role gate: broker + admin only for full settings — user_type is canonical; role is legacy fallback
   const resolvedType = profile.user_type ?? profile.role ?? ""
   if (!isAdminOrBroker({ user_type: resolvedType })) {
-    redirect("/dashboard")
+    return <RoleGateNotice surface="The settings control center" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   const brokerageId = profile.brokerage_id
