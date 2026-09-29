@@ -1,5 +1,1 @@
-{
-  "app/api/did/consent/verify/route.ts → agent_did_consents": 1,
-  "app/api/did/create-avatar/route.ts → agent_avatar_assets": 2,
-  "lib/ai-isa/lead-nurture.ts → ai_video_projects": 1
-}
+{}

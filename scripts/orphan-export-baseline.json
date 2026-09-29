@@ -147,9 +147,9 @@
     "lib/enrichment/web-mention-search.ts": 2,
     "lib/external/apify-actors.ts": 1,
     "lib/external/arcgis-permits.ts": 8,
-    "lib/external/batchdata-client.ts": 4,
+    "lib/external/batchdata-client.ts": 7,
     "lib/external/batchdata-seller-signals.ts": 16,
-    "lib/external/exa-client.ts": 1,
+    "lib/external/exa-client.ts": 2,
     "lib/external/nextdoor-extract.ts": 1,
     "lib/external/nominatim-geocode.ts": 2,
     "lib/external/peopledata-client.ts": 4,
@@ -161,7 +161,7 @@
     "lib/external/versium-client.ts": 3,
     "lib/external/zenrows-client.ts": 1,
     "lib/external/zyte-client.ts": 2,
-    "lib/fatigue/fatigue-calculator.ts": 3,
+    "lib/fatigue/fatigue-calculator.ts": 4,
     "lib/finance/auto-dispute.ts": 1,
     "lib/finance/qb-reconciliation.ts": 3,
     "lib/finance/quarterly-tax-concierge.ts": 1,
@@ -230,6 +230,7 @@
     "lib/kernel/deal-play.ts": 1,
     "lib/kernel/deal-room-reel.ts": 2,
     "lib/kernel/deal-save-huddle.ts": 3,
+    "lib/kernel/deconflict/lead-channel.ts": 1,
     "lib/kernel/document-autofile.ts": 5,
     "lib/kernel/document-compliance-audit.ts": 4,
     "lib/kernel/document-custody.ts": 3,
@@ -310,7 +311,7 @@
     "lib/lead-pipeline/email-engagement-sourcer.ts": 1,
     "lib/lead-pipeline/email-seek.ts": 1,
     "lib/lead-pipeline/enrichment-column-map.ts": 5,
-    "lib/lead-pipeline/exa-sourcer.ts": 1,
+    "lib/lead-pipeline/exa-sourcer.ts": 2,
     "lib/lead-pipeline/osint-sourcer.ts": 2,
     "lib/lead-pipeline/parked-retention.ts": 4,
     "lib/lead-pipeline/permit-sourcer.ts": 4,
@@ -322,7 +323,7 @@
     "lib/lead-pipeline/scraper-health.ts": 2,
     "lib/lead-pipeline/signal-stacking.ts": 1,
     "lib/lead-pipeline/site-visitor-sourcer.ts": 1,
-    "lib/lead-pipeline/social-sourcer.ts": 12,
+    "lib/lead-pipeline/social-sourcer.ts": 13,
     "lib/lead-pipeline/source-cost-ledger.ts": 1,
     "lib/lead-pipeline/subscription-gate.ts": 1,
     "lib/lead-pipeline/tavily-sourcer.ts": 1,
@@ -377,6 +378,7 @@
     "lib/onboarding/license-lookup.ts": 2,
     "lib/onboarding/onboarding-roster.ts": 1,
     "lib/onboarding/setup-readiness.ts": 1,
+    "lib/onboarding/stalled-onboarding-reaction.ts": 1,
     "lib/onboarding/state-license-registry.ts": 1,
     "lib/onboarding/subscriber-stall.ts": 3,
     "lib/osint-client.ts": 2,
@@ -413,6 +415,7 @@
     "lib/portal/home-assistant.ts": 1,
     "lib/portal/home-maintenance.ts": 1,
     "lib/portal/portal-showing-feed.ts": 2,
+    "lib/portal-stream/ai-delegation-reaction.ts": 2,
     "lib/property/rentcast.ts": 1,
     "lib/providers/calendar/graph-event-shape.ts": 1,
     "lib/providers/calendar/personal-calendar.ts": 1,
@@ -425,8 +428,9 @@
     "lib/recruiting/mentor-match.ts": 2,
     "lib/recruiting/mentorship-lifecycle.ts": 4,
     "lib/recruiting/recruiting-pitch-kit.ts": 4,
-    "lib/recruiting/retention-intervention.ts": 2,
-    "lib/recruiting/retention-radar.ts": 2,
+    "lib/recruiting/retention-intervention.ts": 3,
+    "lib/recruiting/retention-radar.ts": 3,
+    "lib/recruiting/retention-score.ts": 1,
     "lib/recruiting/switch-propensity-scout.ts": 2,
     "lib/recruiting/switch-propensity.ts": 1,
     "lib/recruiting/vendor-recruitment-propensity.ts": 1,
@@ -465,12 +469,12 @@
     "lib/video/body-visual-model.ts": 4,
     "lib/video/body-visual-rule-ledger.ts": 1,
     "lib/video/caption-plan.ts": 1,
-    "lib/video/cinema-finish.ts": 7,
+    "lib/video/cinema-finish.ts": 6,
     "lib/video/composite-attribution.ts": 1,
     "lib/video/custom-video-archetypes.ts": 4,
     "lib/video/director-content.ts": 10,
     "lib/video/director-eval-harness.ts": 2,
-    "lib/video/duration-model.ts": 6,
+    "lib/video/duration-model.ts": 8,
     "lib/video/format-learning.ts": 6,
     "lib/video/listing-pitch-reel.ts": 1,
     "lib/video/multilingual-reel.ts": 1,
@@ -507,7 +511,7 @@
     "remotion/components/QrOutroBadge.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10363,
+  "census": 10400,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -640,7 +644,7 @@
     "app/actions/buyer-closing-costs.ts": 1,
     "app/actions/buyer-coaching.ts": 1,
     "app/actions/buyer-execution.ts": 8,
-    "app/actions/buyer-fatigue.ts": 10,
+    "app/actions/buyer-fatigue.ts": 12,
     "app/actions/buyer-financial.ts": 7,
     "app/actions/buyer-insights.ts": 2,
     "app/actions/buyer-lifecycle-core.ts": 16,
@@ -1770,6 +1774,7 @@
     "app/components/shared/internal-ai-assistant.tsx": 1,
     "app/components/shared/page-context-assistant.tsx": 1,
     "app/components/shared/push-permission-toggle.tsx": 1,
+    "app/components/shared/role-gate-notice.tsx": 1,
     "app/components/shared/staged-draft-banner.tsx": 1,
     "app/components/shell/todays-focus-card.tsx": 1,
     "app/components/title/transaction-list.tsx": 1,
@@ -3090,6 +3095,7 @@
     "lib/connections/zoom-transcripts.ts": 2,
     "lib/connections/zoom.ts": 22,
     "lib/constants/index.ts": 3,
+    "lib/constants/us-states.ts": 1,
     "lib/contact-pipeline/contact-capture.ts": 3,
     "lib/contact-promotion/acquisition-cost.ts": 1,
     "lib/contact-promotion/contact-creator.ts": 3,
@@ -3240,6 +3246,7 @@
     "lib/esign/docusign-jwt.ts": 4,
     "lib/esign/docusign-platform-account.ts": 1,
     "lib/esign/google-drive-upload.ts": 3,
+    "lib/esign/google-esign-completion.ts": 2,
     "lib/esign/google-esign-handoff.ts": 2,
     "lib/esign-webhooks/download-signed-package.ts": 1,
     "lib/esign-webhooks/finalize-packet.ts": 2,
@@ -3247,17 +3254,17 @@
     "lib/events/event-helpers.ts": 5,
     "lib/events/lifecycle-event-core.ts": 1,
     "lib/external/apify-actors.ts": 3,
-    "lib/external/apify-client.ts": 8,
+    "lib/external/apify-client.ts": 9,
     "lib/external/arcgis-permits.ts": 9,
     "lib/external/batchdata-ai-tools.ts": 1,
     "lib/external/batchdata-batchrank.ts": 1,
-    "lib/external/batchdata-client.ts": 27,
+    "lib/external/batchdata-client.ts": 31,
     "lib/external/batchdata-mcp.ts": 12,
     "lib/external/batchdata-seller-signals.ts": 20,
     "lib/external/batchdata-tokens.ts": 1,
     "lib/external/census-appreciation.ts": 4,
     "lib/external/email-verifier.ts": 3,
-    "lib/external/exa-client.ts": 2,
+    "lib/external/exa-client.ts": 3,
     "lib/external/exa-intent-normalizer.ts": 1,
     "lib/external/free-probe.ts": 3,
     "lib/external/geoapify-client.ts": 2,
@@ -3282,8 +3289,8 @@
     "lib/external/zenrows-normalizer.ts": 1,
     "lib/external/zyte-client.ts": 4,
     "lib/farm-mail/dispatch-farm-mail.ts": 1,
-    "lib/fatigue/fatigue-calculator.ts": 5,
-    "lib/fatigue/fatigue-display.ts": 3,
+    "lib/fatigue/fatigue-calculator.ts": 6,
+    "lib/fatigue/fatigue-display.ts": 5,
     "lib/fatigue/recovery-generator.ts": 1,
     "lib/finance/accounting-egress.ts": 3,
     "lib/finance/auto-dispute.ts": 2,
@@ -3553,7 +3560,7 @@
     "lib/kernel/deal-save-huddle.ts": 9,
     "lib/kernel/deconflict/cadence-policy.ts": 2,
     "lib/kernel/deconflict/index.ts": 2,
-    "lib/kernel/deconflict/lead-channel.ts": 5,
+    "lib/kernel/deconflict/lead-channel.ts": 7,
     "lib/kernel/document-autofile.ts": 8,
     "lib/kernel/document-compliance-audit.ts": 6,
     "lib/kernel/document-custody.ts": 5,
@@ -3738,6 +3745,7 @@
     "lib/lead-governance/sla-escalation.ts": 1,
     "lib/lead-governance/sla-monitor.ts": 2,
     "lib/lead-governance/stale-lead-processor.ts": 1,
+    "lib/lead-import/list-cost-stamp.ts": 2,
     "lib/lead-intelligence/behavioral-summary.ts": 1,
     "lib/lead-intelligence/interest-level.ts": 1,
     "lib/lead-intelligence/person-spend.ts": 3,
@@ -3756,7 +3764,7 @@
     "lib/lead-pipeline/enrichment-merge.ts": 2,
     "lib/lead-pipeline/enrichment-orchestrator.ts": 1,
     "lib/lead-pipeline/enrichment-retry.ts": 3,
-    "lib/lead-pipeline/exa-sourcer.ts": 2,
+    "lib/lead-pipeline/exa-sourcer.ts": 3,
     "lib/lead-pipeline/fuzzy-matcher.ts": 2,
     "lib/lead-pipeline/lead-intelligence-signals.ts": 1,
     "lib/lead-pipeline/lead-lifecycle.ts": 2,
@@ -3789,12 +3797,12 @@
     "lib/lead-pipeline/signal-stacking.ts": 4,
     "lib/lead-pipeline/site-visitor-sourcer.ts": 2,
     "lib/lead-pipeline/social-identity-resolve.ts": 1,
-    "lib/lead-pipeline/social-sourcer.ts": 29,
+    "lib/lead-pipeline/social-sourcer.ts": 31,
     "lib/lead-pipeline/source-conversion-learning.ts": 5,
     "lib/lead-pipeline/source-conversion-runner.ts": 2,
     "lib/lead-pipeline/source-cost-ledger.ts": 3,
     "lib/lead-pipeline/source-health.ts": 1,
-    "lib/lead-pipeline/source-intent-map.ts": 11,
+    "lib/lead-pipeline/source-intent-map.ts": 12,
     "lib/lead-pipeline/source-lifetime-health-runner.ts": 1,
     "lib/lead-pipeline/source-wording-diagnostic.ts": 1,
     "lib/lead-pipeline/stale-preapproval-reengage-runner.ts": 1,
@@ -3974,6 +3982,7 @@
     "lib/onboarding/onboarding-decisions.ts": 3,
     "lib/onboarding/onboarding-roster.ts": 2,
     "lib/onboarding/setup-readiness.ts": 3,
+    "lib/onboarding/stalled-onboarding-reaction.ts": 2,
     "lib/onboarding/state-license-registry.ts": 3,
     "lib/onboarding/state-machine.ts": 2,
     "lib/onboarding/step-categories.ts": 4,
@@ -4072,6 +4081,7 @@
     "lib/portal/seller-context-presentation.ts": 2,
     "lib/portal/seller-journey-copy.ts": 2,
     "lib/portal/static-lesson-bridge.ts": 3,
+    "lib/portal-stream/ai-delegation-reaction.ts": 3,
     "lib/portal-stream/event-to-stage-tags.ts": 1,
     "lib/portal-stream/event-translator.ts": 2,
     "lib/predictive-listing/auto-send.ts": 3,
@@ -4147,9 +4157,9 @@
     "lib/recruiting/recruiting-pitch-kit.ts": 5,
     "lib/recruiting/recruiting-roi-compute.ts": 2,
     "lib/recruiting/recruiting-roi-writer.ts": 2,
-    "lib/recruiting/retention-intervention.ts": 3,
-    "lib/recruiting/retention-radar.ts": 4,
-    "lib/recruiting/retention-score.ts": 4,
+    "lib/recruiting/retention-intervention.ts": 5,
+    "lib/recruiting/retention-radar.ts": 5,
+    "lib/recruiting/retention-score.ts": 6,
     "lib/recruiting/stale-recruit-policy.ts": 2,
     "lib/recruiting/stale-recruit-reaper.ts": 1,
     "lib/recruiting/switch-propensity-scout.ts": 4,
@@ -4359,7 +4369,7 @@
     "lib/video/broll-url.ts": 1,
     "lib/video/caption-plan.ts": 7,
     "lib/video/chapter-video-generator.ts": 1,
-    "lib/video/cinema-finish.ts": 18,
+    "lib/video/cinema-finish.ts": 20,
     "lib/video/cma-reel-orchestrator.ts": 1,
     "lib/video/commission-situation.ts": 1,
     "lib/video/composite-attribution.ts": 6,
@@ -4367,7 +4377,7 @@
     "lib/video/custom-video-archetypes.ts": 7,
     "lib/video/director-content.ts": 16,
     "lib/video/director-eval-harness.ts": 5,
-    "lib/video/duration-model.ts": 22,
+    "lib/video/duration-model.ts": 24,
     "lib/video/finish-spec.ts": 1,
     "lib/video/format-learning.ts": 13,
     "lib/video/intro-video-reactor.ts": 2,
@@ -5423,6 +5433,8 @@
       "dismissFatigueAlert",
       "triggerFatigueCalculation",
       "recalculateBrokerageFatigue",
+      "getContactFatigueWeights",
+      "setContactFatigueWeights",
       "getBuyerFatigueAlert",
       "getReinvigorationSuggestions",
       "getHighFatigueBuyers",
@@ -10506,6 +10518,9 @@
     "app/components/shared/push-permission-toggle.tsx": [
       "PushPermissionToggle"
     ],
+    "app/components/shared/role-gate-notice.tsx": [
+      "RoleGateNotice"
+    ],
     "app/components/shared/staged-draft-banner.tsx": [
       "StagedDraftBanner"
     ],
@@ -15545,6 +15560,9 @@
       "canonicalPropertyType",
       "isListingStatus"
     ],
+    "lib/constants/us-states.ts": [
+      "stateNameFromCode"
+    ],
     "lib/contact-pipeline/contact-capture.ts": [
       "resolveCapturedLanguage",
       "captureContact",
@@ -16213,6 +16231,10 @@
       "buildDriveMultipartBody",
       "driveFileOpenUrl"
     ],
+    "lib/esign/google-esign-completion.ts": [
+      "detectGoogleEsignMail",
+      "noticeGoogleEsignCompletion"
+    ],
     "lib/esign/google-esign-handoff.ts": [
       "googleEsignReadiness",
       "handOffToGoogleEsign"
@@ -16251,6 +16273,7 @@
       "scrapeCraigslistPosts",
       "scrapeLinkedInPosts",
       "scrapeFacebookMarketplaceListings",
+      "scrapeFsboSiteListings",
       "scrapeGoogleSearchResults"
     ],
     "lib/external/arcgis-permits.ts": [
@@ -16272,10 +16295,14 @@
     ],
     "lib/external/batchdata-client.ts": [
       "batchDataTriggersFor",
+      "quickListCatalogueForTrigger",
       "quickListSlugsFor",
       "quickListSlugsFromRow",
       "triggerForQuickListSlug",
+      "isInvestorBuyerTrigger",
+      "ownerContactPointsFromRow",
       "normalizeBatchDataProperty",
+      "dateWindowCriteria",
       "buildPropertySearchBody",
       "fetchMotivatedSellers",
       "searchProperties",
@@ -16351,6 +16378,7 @@
     ],
     "lib/external/exa-client.ts": [
       "exaSearch",
+      "exaSearchListCost",
       "normalizeExaRow"
     ],
     "lib/external/exa-intent-normalizer.ts": [
@@ -16484,11 +16512,14 @@
     "lib/fatigue/fatigue-calculator.ts": [
       "followUpResponsiveness",
       "responsivenessPoints",
+      "loadContactFatigueWeights",
       "calculateFatigue",
       "loadFatigueSweepPopulation",
       "runFatigueSweep"
     ],
     "lib/fatigue/fatigue-display.ts": [
+      "resolveContactFatigueWeights",
+      "validateContactFatigueWeights",
       "describeFatigueFactors",
       "deriveRiskLevel",
       "buildReachoutGuard"
@@ -17766,7 +17797,9 @@
       "leadLogChannel",
       "touchTimestampColumn",
       "touchChannelOf",
-      "saturatedChannels"
+      "saturatedChannels",
+      "tightenPolicyStep",
+      "fatigueTemperedPolicy"
     ],
     "lib/kernel/document-autofile.ts": [
       "isDocCategory",
@@ -18897,6 +18930,10 @@
     "lib/lead-governance/stale-lead-processor.ts": [
       "processStaleLeadsAndSLA"
     ],
+    "lib/lead-import/list-cost-stamp.ts": [
+      "purchasedListShareUsd",
+      "stampPurchasedListCost"
+    ],
     "lib/lead-intelligence/behavioral-summary.ts": [
       "buildBehavioralIntentSummary"
     ],
@@ -18994,6 +19031,7 @@
       "escalateConfigFaultOnce"
     ],
     "lib/lead-pipeline/exa-sourcer.ts": [
+      "buildExaIntentQueries",
       "normalizeExaResult",
       "sourceExaBuyerIntent"
     ],
@@ -19158,6 +19196,8 @@
       "sourceGoogle",
       "normalizeFacebookMarketplaceListing",
       "sourceFacebookMarketplace",
+      "normalizeFsboSiteListing",
+      "sourceFsboSiteListings",
       "normalizeRentalListing",
       "sourceRentalListings",
       "normalizeLinkedInPost",
@@ -19196,6 +19236,7 @@
       "calculateSourceScore",
       "getSourceSemantics",
       "hasScoringEntry",
+      "deliversPaidPersonData",
       "vendorForSource",
       "resolveSourceKey",
       "expandEnabledSources",
@@ -20083,6 +20124,10 @@
       "resolveSetupReadiness",
       "loadSetupReadiness"
     ],
+    "lib/onboarding/stalled-onboarding-reaction.ts": [
+      "stalledOnboardingCopy",
+      "reactToOnboardingStalled"
+    ],
     "lib/onboarding/state-license-registry.ts": [
       "getStateLicenseSource",
       "resolveLookupUrl",
@@ -20656,6 +20701,11 @@
       "isUuid",
       "bridgeStaticLessonCompletion"
     ],
+    "lib/portal-stream/ai-delegation-reaction.ts": [
+      "audienceForContactType",
+      "buildDelegationPrompt",
+      "reactToAgentDelegatedToAi"
+    ],
     "lib/portal-stream/event-to-stage-tags.ts": [
       "eventTypeToStageTags"
     ],
@@ -21013,9 +21063,12 @@
     "lib/recruiting/retention-intervention.ts": [
       "interventionKeyForDriver",
       "selectRetentionIntervention",
+      "supportSuggestionsFor",
+      "supportSuggestedLines",
       "buildSavePlayCopy"
     ],
     "lib/recruiting/retention-radar.ts": [
+      "clientResponsiveness",
       "proposeRetentionSavePlay",
       "runRetentionRadar",
       "draftSavePlaysForAtRiskAgents",
@@ -21023,6 +21076,8 @@
     ],
     "lib/recruiting/retention-score.ts": [
       "computeRetentionScore",
+      "agentFatigueSubScores",
+      "weakFatigueSignals",
       "scoreTier",
       "isAtRisk",
       "scoreTrendOf"
@@ -22023,6 +22078,8 @@
       "cinemaFrame",
       "cinemaCaptionStyle",
       "cinemaLowerThirdPlacement",
+      "cinemaDisclosureStyle",
+      "cinemaBadgeSlot",
       "cinemaMusicFades"
     ],
     "lib/video/cma-reel-orchestrator.ts": [
@@ -22083,6 +22140,8 @@
       "providerMaxSpokenSeconds",
       "compositionDurationSpec",
       "compositionOpensOnHook",
+      "purposeOpensOnHook",
+      "compositionKeepsBrandIntro",
       "compositionBookends",
       "narrationStartFrame",
       "compositionPurposes",
