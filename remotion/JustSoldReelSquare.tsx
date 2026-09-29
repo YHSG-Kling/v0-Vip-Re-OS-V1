@@ -33,6 +33,7 @@ import { QrOutroBadge } from "./components/QrOutroBadge"
 import { mlsNeutralTitle } from "../lib/video/render-cut"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaDisclosureStyle, cinemaFrame } from "../lib/video/cinema-finish"
 
 export interface JustSoldReelSquareProps {
   address:   string
@@ -105,7 +106,8 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
   captionsCues, captionScript, mlsClean,
 }) => {
   const frame    = useCurrentFrame()
-  const { durationInFrames } = useVideoConfig()
+  const { durationInFrames, width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const PHOTOS   = timeline.body.durationInFrames
   const images   = imageUrls.slice(0, 4)
@@ -149,7 +151,7 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
             {cityState}
           </div>
           {!mlsClean && brand.logoUrl && (
-            <div style={{ position: "absolute", top: 40, left: 40 }}>
+            <div style={{ position: "absolute", top: safe.top, left: safe.left }}>
               <SafeImg src={brand.logoUrl} style={{ height: 56, objectFit: "contain", opacity: 0.85 }} />
             </div>
           )}
@@ -179,8 +181,9 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
 
         {/* Top-right SOLD badge — small, persistent */}
         <AbsoluteFill style={{ pointerEvents: "none" }}>
+          {/* Wave 89 — inside the safe insets (it was a typed 24 px corner, inside the platform's top UI band). */}
           <div style={{
-            position: "absolute", top: 24, right: 24,
+            position: "absolute", top: safe.top, right: safe.right,
             padding: "10px 20px",
             backgroundColor: brand.accentColor,
             color: brand.primaryColor,
@@ -191,7 +194,7 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
           </div>
           {badge && (
             <div style={{
-              position: "absolute", top: 80, right: 24,
+              position: "absolute", top: safe.top + 56, right: safe.right,
               padding: "8px 16px",
               backgroundColor: "rgba(255,255,255,0.95)",
               color: brand.primaryColor,
@@ -239,10 +242,9 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
             </div>
           )}
           {showEho && (
-            <div style={{
-              position: "absolute", bottom: 24, left: 24,
-              fontSize: 16, color: "#fff", opacity: 0.5, letterSpacing: 1,
-            }}>
+            /* Wave 89 — the disclosure on the safe bottom inset at the caption
+               step (cinemaDisclosureStyle); it was a 24 px corner in 16 px type. */
+            <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height), color: "#fff" }}>
               Equal Housing Opportunity
             </div>
           )}

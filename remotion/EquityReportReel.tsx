@@ -49,6 +49,7 @@ import { horizontalBars } from "../lib/charts/geometry"
 import { ordinal } from "../lib/format/ordinal"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { AvatarPIP } from "./components/AvatarPIP"
+import { cinemaDisclosureStyle, cinemaFrame } from "../lib/video/cinema-finish"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
@@ -240,9 +241,11 @@ const AppreciationBars: React.FC<{
 // `AvatarPIP` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
 // byte-identical to remotion/components/AvatarPIP.tsx (imported above).
 
-const SceneChip: React.FC<{ label: string; accentColor: string }> = ({ label, accentColor }) => (
+// Wave 89 — the chip sits inside the frame's safe insets (it was a typed 32 px
+// corner, inside the platform's top UI band).
+const SceneChip: React.FC<{ label: string; accentColor: string; top: number; left: number }> = ({ label, accentColor, top, left }) => (
   <div style={{
-    position: "absolute", top: 32, left: 32,
+    position: "absolute", top, left,
     padding: "8px 16px", borderRadius: 6,
     backgroundColor: "rgba(0,0,0,0.55)", color: "#fff",
     fontSize: 16, fontWeight: 600, letterSpacing: 2,
@@ -266,7 +269,8 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
   const home      = address?.trim() ? address.trim() : "your home"
   const mode      = equityDisplayMode(estimatedEquity)
   const chip      = `${ordinal(yearsHeld)} HOME ANNIVERSARY · ESTIMATE`
-  const { durationInFrames } = useVideoConfig()
+  const { durationInFrames, width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: OUTRO })
   const BODY  = timeline.body.durationInFrames
   // THE THREE STAT WINDOWS (wave 80C) — BODY-relative: from the plan's beats,
@@ -347,7 +351,7 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
         <AbsoluteFill style={{ backgroundColor: brandColors.primaryColor }}>
           {/* Wave 81C — the plan's background per segment (solid / gradient / drift). */}
           <SegmentBackdrop plan={plan} primaryColor={brandColors.primaryColor} accentColor={brandColors.accentColor} frameOffset={COVER + panels[0].from} />
-          <SceneChip label={chip} accentColor={brandColors.accentColor} />
+          <SceneChip label={chip} accentColor={brandColors.accentColor} top={safe.top} left={safe.left} />
           <AvatarPIP {...pipFor(panels[0])} />
           <div style={{
             height: "100%", display: "flex", flexDirection: "column",
@@ -378,7 +382,7 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
         <AbsoluteFill style={{ backgroundColor: brandColors.primaryColor }}>
           {/* Wave 81C — the plan's background per segment (solid / gradient / drift). */}
           <SegmentBackdrop plan={plan} primaryColor={brandColors.primaryColor} accentColor={brandColors.accentColor} frameOffset={COVER + panels[1].from} />
-          <SceneChip label={chip} accentColor={brandColors.accentColor} />
+          <SceneChip label={chip} accentColor={brandColors.accentColor} top={safe.top} left={safe.left} />
           <AvatarPIP {...pipFor(panels[1])} />
           <StatCard
             label={gained ? "ESTIMATED VALUE GROWTH" : "ESTIMATED VALUE CHANGE"}
@@ -398,7 +402,7 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
         <AbsoluteFill style={{ backgroundColor: brandColors.primaryColor }}>
           {/* Wave 81C — the plan's background per segment (solid / gradient / drift). */}
           <SegmentBackdrop plan={plan} primaryColor={brandColors.primaryColor} accentColor={brandColors.accentColor} frameOffset={COVER + panels[2].from} />
-          <SceneChip label={chip} accentColor={brandColors.accentColor} />
+          <SceneChip label={chip} accentColor={brandColors.accentColor} top={safe.top} left={safe.left} />
           <AvatarPIP {...pipFor(panels[2])} />
           {mode === "value_minus_balance" && estimatedEquity != null ? (
             <StatCard
@@ -430,10 +434,9 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
             Want a precise picture? Let&apos;s talk.
           </div>
           <div style={{ fontSize: 36, color: brandColors.accentColor, fontWeight: 700 }}>{agentName}</div>
-          <div style={{
-            position: "absolute", bottom: 24, left: 0, right: 0,
-            textAlign: "center", fontSize: 14, opacity: 0.55, letterSpacing: 1,
-          }}>
+          {/* Wave 89 — the disclosure on the safe bottom inset at the caption
+              step (cinemaDisclosureStyle); it was 24 px from the edge in 14 px type. */}
+          <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height) }}>
             Estimates only · not an appraisal{brandColors.brokerageName ? ` · ${brandColors.brokerageName}` : ""}
             {showEho && " · Equal Housing Opportunity"}
           </div>

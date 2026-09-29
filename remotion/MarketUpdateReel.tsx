@@ -45,6 +45,7 @@ import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { AvatarPIP } from "./components/AvatarPIP"
 import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaDisclosureStyle, cinemaFrame } from "../lib/video/cinema-finish"
 
 export type StatDirection = "up_good" | "up_bad" | "down_good" | "down_bad" | "flat"
 
@@ -199,11 +200,13 @@ const StatCard: React.FC<{
   )
 }
 
-const AreaChip: React.FC<{ areaName: string; period: string; accentColor: string }> = ({
-  areaName, period, accentColor,
+const AreaChip: React.FC<{ areaName: string; period: string; accentColor: string; top: number; left: number }> = ({
+  areaName, period, accentColor, top, left,
 }) => (
+  // Wave 89 — the chip sits inside the frame's safe insets (it was a typed
+  // 32 px corner, inside the platform's top UI band).
   <div style={{
-    position: "absolute", top: 32, left: 32,
+    position: "absolute", top, left,
     padding: "8px 16px", borderRadius: 6,
     backgroundColor: "rgba(0,0,0,0.55)", color: "#fff",
     fontSize: 16, fontWeight: 600, letterSpacing: 2,
@@ -226,7 +229,8 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
   const downColor = brand.downColor ?? "#EF4444"
   const showEho   = brand.showEhoMark ?? true
   const finalCta  = ctaLabel ?? "Want my take on your block?"
-  const { durationInFrames } = useVideoConfig()
+  const { durationInFrames, width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const BODY  = timeline.body.durationInFrames
   // THE THREE STAT WINDOWS — BODY-relative, which is also the avatar track's
@@ -296,7 +300,7 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
           <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
             {/* Wave 81C — the plan's background per segment (solid / gradient / drift). */}
             <SegmentBackdrop plan={plan} primaryColor={brand.primaryColor} accentColor={brand.accentColor} frameOffset={COVER + p.from} />
-            <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} />
+            <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} top={safe.top} left={safe.left} />
             {/* `startFrame`/`endFrame` are relative to the avatar track's own
                 start, not the composition's — the panel's BODY-relative window. */}
             <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
@@ -322,10 +326,9 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
           {agentPhone && (
             <div style={{ fontSize: 28, color: "#fff", opacity: 0.85, marginTop: 12 }}>{agentPhone}</div>
           )}
-          <div style={{
-            position: "absolute", bottom: 24, left: 0, right: 0,
-            textAlign: "center", fontSize: 14, opacity: 0.55, letterSpacing: 1,
-          }}>
+          {/* Wave 89 — the disclosure on the safe bottom inset at the caption
+              step (cinemaDisclosureStyle); it was 24 px from the edge in 14 px type. */}
+          <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height) }}>
             {brand.brokerageName}{showEho && " · Equal Housing Opportunity"}
           </div>
           <QrOutroBadge qrCodeDataUrl={qrCodeDataUrl} caption={qrCaption ?? "Scan for the full market report"}

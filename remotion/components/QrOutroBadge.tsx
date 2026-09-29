@@ -20,7 +20,8 @@
  * INSIDE an outro <Sequence> (so it inherits that sequence's timing window).
  */
 import React from "react"
-import { Img, interpolate, useCurrentFrame } from "remotion"
+import { Img, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { cinemaBadgeSlot } from "../../lib/video/cinema-finish"
 
 export interface QrOutroBadgeProps {
   /** data:image/png;base64,... from QRCode.toDataURL. Null/undefined → render nothing. */
@@ -57,6 +58,7 @@ export const QrOutroBadge: React.FC<QrOutroBadgeProps> = ({
   corner = "bottom-right",
 }) => {
   const frame = useCurrentFrame()
+  const { width, height } = useVideoConfig()
 
   // Default-off + MLS-clean guard. A missing data URL means minting was
   // skipped or failed; the reel must still render cleanly without the badge.
@@ -69,13 +71,18 @@ export const QrOutroBadge: React.FC<QrOutroBadgeProps> = ({
     extrapolateRight: "clamp",
   })
 
-  const horizontal = corner === "bottom-left" ? { left: 28 } : { right: 28 }
+  // WAVE 89 (lane 89F) — the corner is the frame's badge slot (lib/video/
+  // cinema-finish.ts cinemaBadgeSlot): inside the safe sides and above the
+  // disclosure footer / caption band. It sat at a typed 28 px, inside the
+  // platform UI band and on top of the outro's Equal Housing line.
+  const slot = cinemaBadgeSlot(width, height)
+  const horizontal = corner === "bottom-left" ? { left: slot.left } : { right: slot.right }
 
   return (
     <div
       style={{
         position: "absolute",
-        bottom: 28,
+        bottom: slot.bottom,
         ...horizontal,
         opacity,
         display: "flex",

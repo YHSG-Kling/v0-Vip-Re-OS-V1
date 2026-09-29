@@ -28,9 +28,10 @@
  * `transform` string (Studio-editable, remotion-setup §5).
  */
 import React from "react"
-import { AbsoluteFill, interpolate, useCurrentFrame } from "remotion"
+import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
 import { SafeImg } from "./SafeImg"
 import { QrOutroBadge } from "./QrOutroBadge"
+import { cinemaDisclosureStyle } from "../../lib/video/cinema-finish"
 
 export interface EndCardBrand {
   primaryColor: string
@@ -73,6 +74,7 @@ export const EndCard: React.FC<EndCardProps> = ({
   qrCodeDataUrl, qrCaption, mlsClean, showQr = true, background, fadeInFrames = 15,
 }) => {
   const frame = useCurrentFrame()
+  const { width, height } = useVideoConfig()
   const fade = Math.max(1, fadeInFrames)
   const opacity = interpolate(frame, [0, fade], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   const rise = interpolate(frame, [0, fade + 6], [18, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
@@ -114,10 +116,10 @@ export const EndCard: React.FC<EndCardProps> = ({
         </div>
       </AbsoluteFill>
       {footerText && (
-        <div style={{
-          position: "absolute", bottom: 26, left: 0, right: 0,
-          textAlign: "center", fontSize: 14, opacity: 0.55, letterSpacing: 1, lineHeight: 1.5, color: "#fff",
-        }}>
+        /* WAVE 89 (lane 89F) — the disclosure line on the safe bottom inset at
+           the caption type step (lib/video/cinema-finish.ts cinemaDisclosureStyle);
+           it was 26 px from the edge in 14 px type at 55 %. */
+        <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height), color: "#fff" }}>
           {footerText}{showEho && " · Equal Housing Opportunity"}
         </div>
       )}

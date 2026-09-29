@@ -16,7 +16,7 @@
  */
 import type { CompositionTier, RemotionCompositionRow } from "./registry"
 import type { RenderIntent } from "./render-coordinator"
-import { compositionOpensOnHook } from "../video/duration-model"
+import { compositionKeepsBrandIntro } from "../video/duration-model"
 
 /** A composition with <=1 frame is a still card (renderStill → PNG):
  *  thumbnails, postcards, lead-magnet, newsletter-thumb. Everything
@@ -68,9 +68,16 @@ export function shouldApplyBookends(composition: RemotionCompositionRow): boolea
  * untouched). ONE decision for the coordinator, the render-cache predictor and
  * the plan-asset readiness pass — a key that predicted an intro the
  * coordinator no longer stitches would never hit. PURE.
+ *
+ * WAVE 89 (lane 89F): the rule is now BY PURPOSE, not by one declared flag —
+ * every SCROLL-format composition (lib/video/duration-model.ts SEATED_PURPOSES,
+ * compositionKeepsBrandIntro) opens on its own hook and gets no brand sting in
+ * front; the live registry rows all carry brand_intro (read 2026-09-29) and are
+ * untouched — a seated format (the memory film, the partners' recap, a dripped
+ * presentation section, the CMA reel) still stitches its registered intro.
  */
 export function stitchedIntroCategory(composition: Pick<RemotionCompositionRow, "composition_id" | "stock_intro_category">): string | null {
-  return compositionOpensOnHook(composition.composition_id) ? null : (composition.stock_intro_category ?? null)
+  return compositionKeepsBrandIntro(composition.composition_id) ? (composition.stock_intro_category ?? null) : null
 }
 
 /** A queued render row carries everything needed to reconstruct the

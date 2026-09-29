@@ -47,6 +47,7 @@ import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { AvatarPIP } from "./components/AvatarPIP"
 import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaDisclosureStyle } from "../lib/video/cinema-finish"
 
 export interface AgentExplainerReelProps {
   /** Short eyebrow above title (e.g. "FIRST-TIME BUYER"). 1-3 words. */
@@ -160,7 +161,7 @@ export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
 }) => {
   const frame   = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
-  const { durationInFrames } = useVideoConfig()
+  const { durationInFrames, width, height } = useVideoConfig()
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const BODY = timeline.body.durationInFrames
   // THE THREE PANELS — BODY-relative windows, which is also the avatar track's
@@ -173,7 +174,8 @@ export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
       backgroundColor: brand.primaryColor,
       fontFamily: "system-ui, -apple-system, sans-serif",
     }}>
-      {/* COVER — 0-3s */}
+      {/* COVER — 0-2s (wave 89: the title card IS the hook; held to the hook
+          window — lib/video/duration-model.ts HOOK_ON_COVER_MAX_SECONDS) */}
       <Sequence from={0} durationInFrames={COVER}>
         <AbsoluteFill style={{
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
@@ -236,10 +238,9 @@ export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
             {ctaLabel}
           </div>
           <div style={{ fontSize: 36, color: brand.accentColor, fontWeight: 700 }}>{agentName}</div>
-          <div style={{
-            position: "absolute", bottom: 24, left: 0, right: 0,
-            textAlign: "center", fontSize: 14, opacity: 0.55, letterSpacing: 1, lineHeight: 1.5,
-          }}>
+          {/* Wave 89 — the disclosure on the safe bottom inset at the caption
+              step (cinemaDisclosureStyle); it was 24 px from the edge in 14 px type. */}
+          <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height) }}>
             {brand.brokerageName}{showEho && " · Equal Housing Opportunity"}
           </div>
           <QrOutroBadge qrCodeDataUrl={qrCodeDataUrl} caption={qrCaption ?? "Scan to book a consult"}

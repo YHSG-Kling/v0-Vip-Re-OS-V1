@@ -11,7 +11,8 @@
  * Format:
  *   · 1080×1080 (square) — one render serves IG/FB feed, LinkedIn, X cards
  *   · 30s @ 30fps = 900 frames:
- *       0–2.5s   INTRO  — logo + eyebrow chip + title (brand card)
+ *       0–2s     INTRO  — logo + eyebrow chip + title (brand card; wave 89: the
+ *                         title card IS the hook, held to HOOK_ON_COVER_MAX_SECONDS)
  *       2.5–27s  BODY   — full-frame avatar clip, lower-third, watermark
  *       27–30s   OUTRO  — CTA + agent name + brokerage/EHO line + QR badge
  *
@@ -35,6 +36,7 @@ import { CaptionLayer } from "./components/CaptionLayer"
 import { EndCard } from "./components/EndCard"
 import { LowerThird } from "./components/LowerThird"
 import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaFrame } from "../lib/video/cinema-finish"
 
 export interface TeammateExplainerReelProps {
   /** Short eyebrow above the title (e.g. "BUYER BASICS"). 1-3 words. */
@@ -137,6 +139,9 @@ const AvatarBody: React.FC<{
   brand: TeammateExplainerReelProps["brand"]
 }> = ({ avatarVideoUrl, agentPhotoUrl, agentName, title, brand }) => {
   const frame = useCurrentFrame()
+  const { width, height } = useVideoConfig()
+  // Wave 89 — the watermark sits inside the frame's safe insets (it was a typed 40 px corner).
+  const { safe } = cinemaFrame(width, height)
   const fadeIn = interpolate(frame, [0, 10], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
@@ -168,7 +173,7 @@ const AvatarBody: React.FC<{
       {brand.logoUrl && (
         <SafeImg
           src={brand.logoUrl}
-          style={{ position: "absolute", top: 40, right: 40, height: 52, objectFit: "contain", opacity: 0.85 }}
+          style={{ position: "absolute", top: safe.top, right: safe.right, height: 52, objectFit: "contain", opacity: 0.85 }}
         />
       )}
 

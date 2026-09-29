@@ -224,6 +224,24 @@ export async function queueListingPitchReel(
   })
   if (card.card) props.thumbnail_props = card.card
   else console.warn(`[listing-pitch-reel] no companion share card for appointment ${p.appointmentId} — ${describeMissingContent(VIDEO_COVER_THUMB, card.missing)}`)
+  // THE VIDEO METER (wave 89, lane 89F — 88D's published blind spot: "the pitch
+  // reel is not on the video meter"). The pitch is a finished video the platform
+  // produced with no one clicking (the booking started it): the SAME meter every
+  // other creation counts on (lib/video/video-metering.ts — gate: the ONE refusal
+  // is a tier that excludes video; over the allowance is served and billed as
+  // overage; unreadable is served and labelled) — gated BEFORE the render is
+  // queued, COUNTED once the render row exists. The planned seconds are the
+  // narration's measured length when the voiceover landed, else the reel's own
+  // duration plan from its props (never a typed number).
+  const { gateVideoCreation, meterVideoCreation } = await import("@/lib/video/video-metering")
+  const { planDurationForProps: planPitchDuration } = await import("@/lib/video/duration-model")
+  const pitchPlan = planPitchDuration(LISTING_PITCH_COMPOSITION, props)
+  const plannedSeconds = pitchPlan.durationInFrames / Math.max(1, pitchPlan.fps)
+  const videoMeter = await gateVideoCreation({ brokerageId: p.brokerageId, plannedSeconds })
+  if (!videoMeter.allowed) {
+    console.warn(`[listing-pitch-reel] appointment ${p.appointmentId} — pitch reel NOT queued: ${videoMeter.reason}`)
+    return false
+  }
   const { recordRenderQueued } = await import("@/lib/remotion/registry")
   const r = await recordRenderQueued({
     brokerageId: p.brokerageId, compositionId: LISTING_PITCH_COMPOSITION,
@@ -231,6 +249,15 @@ export async function queueListingPitchReel(
     entityType: LISTING_PITCH_REEL_ENTITY, entityId: p.appointmentId,
     inputProps: props, scopeType: "brokerage", scopeId: p.brokerageId, requestedVia: "cron",
   })
+  if (r.ok) {
+    // agents.id for the ledger (never users.id — the two are disjoint, CLAUDE.md §3).
+    const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+    const agentId = p.agentUserId ? await resolveAgentIdInBrokerage(svc, p.agentUserId, p.brokerageId) : null
+    await meterVideoCreation({
+      brokerageId: p.brokerageId, agentId, userId: p.agentUserId ?? null, plannedSeconds,
+      feature: "listing_pitch_reel", projectId: r.renderId ?? null, autonomous: true, decision: videoMeter,
+    })
+  }
   return r.ok
 }
 

@@ -599,6 +599,47 @@ export function cinemaLowerThirdPlacement(width: number, height: number, fps = 3
   }
 }
 
+/**
+ * THE DISCLOSURE FOOTER (wave 89, lane 89F — the fleet-wide twin of 87D's one
+ * talking-head fix). Eleven outro tiles and the shared EndCard typed the
+ * Equal Housing / licence line as `bottom: 24, fontSize: 14, opacity: 0.55`
+ * — 24 px from the edge (inside every platform's UI band: safeInsets is 97 px
+ * on a 1:1 frame, 22 % on 9:16) in 14 px type at half opacity: a DISCLOSURE
+ * nobody on a phone could read. One derivation now: the line sits ON the
+ * safe-area bottom inset, inside the safe sides, on the scale's caption step,
+ * at readable contrast. Spread into the footer's style; the proof
+ * (scripts/video-hook-window-guard.ts §disclosure) fails any moving
+ * composition that still types the edge. PURE.
+ */
+export interface CinemaDisclosureStyle {
+  bottom: number
+  left: number
+  right: number
+  fontSize: number
+  lineHeight: number
+  letterSpacing: number
+  opacity: number
+  textAlign: "center"
+}
+
+export function cinemaDisclosureStyle(width: number, height: number): CinemaDisclosureStyle {
+  const { safe, type } = cinemaFrame(width, height)
+  return { bottom: safe.bottom, left: safe.left, right: safe.right, fontSize: type.caption, lineHeight: 1.5, letterSpacing: 1, opacity: 0.8, textAlign: "center" }
+}
+
+/**
+ * THE BADGE SLOT — where a corner badge (the tracked QR, the persistent
+ * Equal Housing pill) sits: inside the safe sides, and ABOVE the band the
+ * burned-in captions and the disclosure footer share (the lower-third's own
+ * cleared height, cinemaLowerThirdPlacement — one derivation), so a badge
+ * never lands under a caption cue or on top of the disclosure line. Both
+ * badges typed 24-28 px corners before (inside the platform UI band). PURE.
+ */
+export function cinemaBadgeSlot(width: number, height: number): { bottom: number; left: number; right: number } {
+  const { safe } = cinemaFrame(width, height)
+  return { bottom: cinemaLowerThirdPlacement(width, height).bottom, left: safe.left, right: safe.right }
+}
+
 // ── § AUDIO — fades derived from the composition, loudness from the master ──
 
 /**

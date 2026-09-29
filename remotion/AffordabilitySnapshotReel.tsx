@@ -33,7 +33,8 @@
  */
 import React from "react"
 import { Audio } from "@remotion/media"
-import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { cinemaDisclosureStyle, cinemaFrame } from "../lib/video/cinema-finish"
 import { SafeImg } from "./components/SafeImg"
 import { ContextCueRow } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
@@ -123,11 +124,14 @@ const ExampleCard: React.FC<{
   primaryColor:  string
 }> = ({ ex, index, accentColor, primaryColor }) => {
   const frame = useCurrentFrame()
+  const { width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
   return (
     <AbsoluteFill style={{ display: "flex", padding: 56, alignItems: "center" }}>
       {/* Index chip — pinned top */}
+      {/* Wave 89 — inside the safe insets (it was a typed 32 px corner). */}
       <div style={{
-        position: "absolute", top: 32, left: 32,
+        position: "absolute", top: safe.top, left: safe.left,
         padding: "6px 14px", borderRadius: 4,
         backgroundColor: accentColor, color: primaryColor,
         fontSize: 14, fontWeight: 900, letterSpacing: 4,
@@ -192,6 +196,8 @@ export const AffordabilitySnapshotReel: React.FC<AffordabilitySnapshotReelProps>
 }) => {
   const frame     = useCurrentFrame()
   const showEho   = brand.showEhoMark ?? true
+  const { width, height } = useVideoConfig()
+  const disclosure = cinemaDisclosureStyle(width, height)
   const finalCta  = ctaLabel ?? "Want a real list?"
   const cues      = contextCues ?? []
 
@@ -262,17 +268,19 @@ export const AffordabilitySnapshotReel: React.FC<AffordabilitySnapshotReelProps>
           )}
           <ContextCueRow cues={cues} accentColor={brand.accentColor} position="bottom" />
           {ratesAssumption && (
+            /* Wave 89 — the rate assumption is a disclosure too: one caption step
+               above the footer, inside the safe sides (it was 64 px from the
+               edge in 12 px type). */
             <div style={{
-              position: "absolute", bottom: 64, left: 0, right: 0,
-              fontSize: 12, color: "#fff", opacity: 0.55, letterSpacing: 1,
+              position: "absolute", bottom: disclosure.bottom + Math.round(disclosure.fontSize * disclosure.lineHeight * 2), left: disclosure.left, right: disclosure.right,
+              fontSize: disclosure.fontSize, color: "#fff", opacity: disclosure.opacity, letterSpacing: 1, textAlign: "center",
             }}>
               {ratesAssumption}
             </div>
           )}
-          <div style={{
-            position: "absolute", bottom: 24, left: 0, right: 0,
-            textAlign: "center", fontSize: 14, opacity: 0.55, letterSpacing: 1, lineHeight: 1.5,
-          }}>
+          {/* Wave 89 — the disclosure on the safe bottom inset at the caption
+              step (cinemaDisclosureStyle); it was 24 px from the edge in 14 px type. */}
+          <div style={{ position: "absolute", ...disclosure }}>
             {brand.brokerageName}{showEho && " · Equal Housing Opportunity"}
             {brand.licenseLine && (
               <>

@@ -35,6 +35,7 @@ import { BrollLayer, ContextCueRow, type BrollClip } from "./_BrollLayer"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaDisclosureStyle, cinemaFrame } from "../lib/video/cinema-finish"
 
 export interface NeighborhoodHighlight {
   /** Short label — "Median price", "Walk score". 1-3 words. */
@@ -107,7 +108,8 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
   const finalCta = ctaLabel ?? "Want a private tour?"
   const cues     = contextCues ?? []
   const overlay  = `${brand.primaryColor}A6`  // ~65% alpha — clips still readable
-  const { durationInFrames } = useVideoConfig()
+  const { durationInFrames, width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const BODY     = timeline.body.durationInFrames
 
@@ -174,7 +176,7 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
           {/* Optional agent PIP — small, bottom-left */}
           {(avatarVideoUrl || agentPhotoUrl) && (
             <div style={{
-              position: "absolute", bottom: 160, left: 40,
+              position: "absolute", bottom: 160, left: safe.left,
               width: 180, height: 180, borderRadius: 90,
               boxShadow: `0 0 0 4px ${brand.accentColor}`,
               overflow: "hidden", backgroundColor: brand.primaryColor,
@@ -240,10 +242,9 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
           {agentPhone && (
             <div style={{ fontSize: 24, color: "#fff", opacity: 0.85, marginTop: 12 }}>{agentPhone}</div>
           )}
-          <div style={{
-            position: "absolute", bottom: 24, left: 0, right: 0,
-            textAlign: "center", fontSize: 14, opacity: 0.55, letterSpacing: 1, lineHeight: 1.5,
-          }}>
+          {/* Wave 89 — the disclosure on the safe bottom inset at the caption
+              step (cinemaDisclosureStyle); it was 24 px from the edge in 14 px type. */}
+          <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height) }}>
             {brand.brokerageName}{showEho && " · Equal Housing Opportunity"}
             {brand.licenseLine && (
               <>

@@ -37,6 +37,7 @@ import { BrollLayer, ContextCueRow, type BrollClip } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaDisclosureStyle } from "../lib/video/cinema-finish"
 
 export interface ComingSoonReelProps {
   /** Property address line. NULL when the brokerage wants a
@@ -117,7 +118,7 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
   const clips    = brollClips ?? []
   const hasBroll = clips.length > 0
   const overlay  = `${brand.primaryColor}B3`  // ~70% alpha tint
-  const { durationInFrames } = useVideoConfig()
+  const { durationInFrames, width, height } = useVideoConfig()
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const BODY     = timeline.body.durationInFrames
 
@@ -253,10 +254,9 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
             {finalCta}
           </div>
           <div style={{ fontSize: 28, color: brand.accentColor, fontWeight: 700 }}>{agentName}</div>
-          <div style={{
-            position: "absolute", bottom: 24, left: 0, right: 0,
-            textAlign: "center", fontSize: 14, opacity: 0.55, letterSpacing: 1, lineHeight: 1.5,
-          }}>
+          {/* Wave 89 — the disclosure on the safe bottom inset at the caption
+              step (cinemaDisclosureStyle); it was 24 px from the edge in 14 px type. */}
+          <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height) }}>
             {brand.brokerageName}{showEho && " · Equal Housing Opportunity"}
             {brand.licenseLine && (
               <>

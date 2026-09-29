@@ -173,7 +173,10 @@ console.log("\n── §remotion · the compositions honour the flag; the backdr
     const out: string[] = []
     for (const chunk of chunks) {
       if (/if \((props\.)?mlsClean\) \{/.test(chunk)) continue // early-return MLS branch guards the rest
-      if (/\(\{\s*logoUrl\s*\}\)/.test(chunk)) continue // a bare-logo helper (BrandHeader) — guarded at its call sites below
+      // A bare-logo helper (BrandHeader) — guarded at its call sites below. The
+      // rule is "takes logoUrl bare", not the exact destructuring: wave 89 gave the
+      // header its safe-inset offsets (`({ logoUrl, top, left, right })`).
+      if (/\(\{\s*logoUrl\b[^}]*\}\)/.test(chunk)) continue
       const lines = chunk.split("\n")
       lines.forEach((l, i) => {
         const render = new RegExp(`\\{(brand\\.)?${key}\\}|src=\\{brand\\.${key}\\}|\\{(brand\\.)?${key} && \\($`).test(l)

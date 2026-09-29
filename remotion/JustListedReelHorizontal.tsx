@@ -35,6 +35,7 @@ import { QrOutroBadge } from "./components/QrOutroBadge"
 import { mlsNeutralTitle } from "../lib/video/render-cut"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaDisclosureStyle, cinemaFrame } from "../lib/video/cinema-finish"
 
 export interface JustListedReelHorizontalProps {
   hook:      string
@@ -82,11 +83,13 @@ const COVER  = BOOKENDS.introFrames
 const FACTS  = 4  * FPS               // 120
 const CTA    = BOOKENDS.outroFrames
 
+// Wave 89 — the header sits inside the frame's safe insets (it was a typed 32 px
+// band, inside the platform's top UI band).
 const BrandHeader: React.FC<{
-  logoUrl?: string; brokerageName?: string
-}> = ({ logoUrl }) => (
+  logoUrl?: string; brokerageName?: string; top: number; left: number; right: number
+}> = ({ logoUrl, top, left, right }) => (
   <div style={{
-    position: "absolute", top: 32, left: 32, right: 32,
+    position: "absolute", top, left, right,
     display: "flex", alignItems: "center", justifyContent: "space-between",
   }}>
     {logoUrl ? (
@@ -117,7 +120,8 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
   captionsCues, captionScript, mlsClean,
 }) => {
   const frame    = useCurrentFrame()
-  const { durationInFrames } = useVideoConfig()
+  const { durationInFrames, width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const BODY     = timeline.body.durationInFrames
   const FACTS_FRAMES = Math.min(FACTS, BODY - 1)
@@ -140,7 +144,7 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
           padding: 80, textAlign: "center",
         }}>
-          <BrandHeader logoUrl={mlsClean ? undefined : brand.logoUrl} />
+          <BrandHeader logoUrl={mlsClean ? undefined : brand.logoUrl} top={safe.top} left={safe.left} right={safe.right} />
           <div style={{
             fontSize: 32, letterSpacing: 8, textTransform: "uppercase",
             color: brand.accentColor, fontWeight: 800,
@@ -211,7 +215,7 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
           padding: 80, display: "flex", flexDirection: "column", justifyContent: "center",
           color: "#fff", backgroundColor: brand.primaryColor,
         }}>
-          <BrandHeader logoUrl={mlsClean ? undefined : brand.logoUrl} />
+          <BrandHeader logoUrl={mlsClean ? undefined : brand.logoUrl} top={safe.top} left={safe.left} right={safe.right} />
           <div style={{ fontSize: 44, opacity: 0.85, letterSpacing: 4, textTransform: "uppercase", marginBottom: 20 }}>
             {mlsClean ? cityState : "Your agent"}
           </div>
@@ -232,17 +236,16 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
           padding: 80, textAlign: "center", backgroundColor: brand.primaryColor, color: "#fff",
         }}>
-          <BrandHeader logoUrl={mlsClean ? undefined : brand.logoUrl} />
+          <BrandHeader logoUrl={mlsClean ? undefined : brand.logoUrl} top={safe.top} left={safe.left} right={safe.right} />
           <div style={{ fontSize: 108, fontWeight: 900, lineHeight: 1.05, marginBottom: 32 }}>
             {finalCta}
           </div>
           {!mlsClean && brand.agentName && (
             <div style={{ fontSize: 44, color: brand.accentColor, fontWeight: 700 }}>{brand.agentName}</div>
           )}
-          <div style={{
-            position: "absolute", bottom: 24, left: 0, right: 0,
-            textAlign: "center", fontSize: 16, opacity: 0.55, letterSpacing: 1,
-          }}>
+          {/* Wave 89 — the disclosure on the safe bottom inset at the caption
+              step (cinemaDisclosureStyle); it was 24 px from the edge in 16 px type. */}
+          <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height) }}>
             {showEho && "Equal Housing Opportunity · "}{brand.licenseLine ?? ""}
           </div>
           <QrOutroBadge

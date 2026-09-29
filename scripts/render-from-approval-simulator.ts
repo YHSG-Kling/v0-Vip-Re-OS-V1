@@ -267,7 +267,7 @@ function hookFirst() {
   check(`the rule's own number: the first word within ${HOOK_FIRST_MAX_SPEECH_ONSET_SECONDS}s (narration start / fps)`, narrationStartFrame("AgentTalkingHeadReel") / 30 <= HOOK_FIRST_MAX_SPEECH_ONSET_SECONDS)
   const row = (id: string) => ({ composition_id: id, stock_intro_category: "brand_intro" })
   check("NO brand intro clip is stitched in front of a hook-first film (the live row's brand_intro is dropped; the outro stands)", stitchedIntroCategory(row("AgentTalkingHeadReel")) === null)
-  check("CONTROL a composition that is not hook-first keeps its registered brand intro", stitchedIntroCategory(row("AgentExplainerReel")) === "brand_intro")
+  check("CONTROL a SEATED-purpose composition (the partners' recap) keeps its registered brand intro — wave 89: every scroll-format composition opens on its hook (scripts/video-hook-window-guard.ts)", stitchedIntroCategory(row("PartnersMeetingReel")) === "brand_intro" && stitchedIntroCategory(row("AgentExplainerReel")) === null)
   const s = (x: string) => stripped(x)
   check("the coordinator, the render-cache predictor and the readiness pass all ask the ONE decision (stitchedIntroCategory)",
     /const introCategory = stitchedIntroCategory\(composition\)/.test(s("lib/remotion/render-coordinator.ts"))

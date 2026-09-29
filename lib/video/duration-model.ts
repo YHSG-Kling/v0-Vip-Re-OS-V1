@@ -385,11 +385,24 @@ export const COMPOSITION_DURATION_RULES: Record<string, CompositionDurationSpec>
   // stitched in front (compositionOpensOnHook → render-decision.ts
   // stitchedIntroCategory). Speech starts at frame 0.
   AgentTalkingHeadReel:  { purpose: "welcome", alsoServes: ["seller_update"], host: "avatar", introFrames: 0, outroFrames: 60, bodyMode: "narration", hookFirst: true },
+  // WAVE 89 (lane 89F — 87D2's open item: "other avatar-host compositions still
+  // open on a 2-3 s cover plus a stitched brand intro"). The PiP family's cover
+  // IS its hook — the title card is the on-screen promise ("Three things to
+  // know before you bid"; VideoGuru 2026-08: "treat the on-screen title card as
+  // the hook: put your strongest line in large text inside the first frame") —
+  // so the cover stays; what the format cannot afford is a cover longer than
+  // the hook window or a brand sting in front of it (reel-e.ai 2026-03: "No
+  // logo intro, no 'welcome to' text card"; skip decisions "before the 2-second
+  // mark"). Every cover that delays the presenter's first word is held to
+  // HOOK_ON_COVER_MAX_SECONDS (the explainers' 3 s / 2.5 s covers were the only
+  // ones over it), and no scroll-purpose composition gets a brand_intro clip
+  // stitched in front (SEATED_PURPOSES / compositionKeepsBrandIntro below —
+  // render-decision.ts stitchedIntroCategory is the ONE decision).
   MarketUpdateReel:      { purpose: "market_update", host: "avatar", introFrames: 60, outroFrames: 60, bodyMode: "narration" },
   EquityReportReel:      { purpose: "anniversary_equity", host: "avatar", introFrames: 60, outroFrames: 120, bodyMode: "narration" },
-  AgentExplainerReel:    { purpose: "explainer", alsoServes: ["lead_reel"], host: "avatar", introFrames: 90, outroFrames: 90, bodyMode: "narration" },
-  ExplainerAnimReel:     { purpose: "explainer", host: "avatar", introFrames: 90, outroFrames: 90, bodyMode: "narration" },
-  TeammateExplainerReel: { purpose: "explainer", host: "avatar", introFrames: 75, outroFrames: 90, bodyMode: "narration" },
+  AgentExplainerReel:    { purpose: "explainer", alsoServes: ["lead_reel"], host: "avatar", introFrames: 60, outroFrames: 90, bodyMode: "narration" },
+  ExplainerAnimReel:     { purpose: "explainer", host: "avatar", introFrames: 60, outroFrames: 90, bodyMode: "narration" },
+  TeammateExplainerReel: { purpose: "explainer", host: "avatar", introFrames: 60, outroFrames: 90, bodyMode: "narration" },
   // ── Voiceover-hosted ──
   // Wave 80C: the silent cover and the "recorded for" end card ARE this
   // composition's bookends, read from the ONE memory timeline constant so the
@@ -432,6 +445,51 @@ export const HOOK_FIRST_MAX_SPEECH_ONSET_SECONDS = 0.5
 /** Does this composition open on its hook (no cover card, no stitched brand intro)? PURE. */
 export function compositionOpensOnHook(compositionId: string | null | undefined): boolean {
   return !!compositionId && COMPOSITION_DURATION_RULES[compositionId]?.hookFirst === true
+}
+
+/**
+ * WAVE 89 (lane 89F) — THE HOOK WINDOW, by PURPOSE. A SCROLL format (a reel
+ * the viewer flicks past on Reels / TikTok / Shorts, or opens lean-in in an
+ * email) must open on its hook: no brand sting in front, and any cover that
+ * delays the presenter's first word ends inside the hook window. A SEATED
+ * format — the viewer sat down for it (the memory film on the living-room TV,
+ * the partners' meeting recap, the seller's dripped presentation section, the
+ * silent CMA chart reel they read at their own pace) — may open on the
+ * brand's own sting the way a programme does.
+ *   · reel-e.ai 2026-03 (real-estate reels): "No logo intro, no 'welcome to'
+ *     text card, no fade from black"; "the majority of skip decisions happen
+ *     before the 2-second mark"; "A 3-second animated logo intro at the start
+ *     of a reel is instant death … Put your branding in the last 3 seconds".
+ *   · reel-e.ai 2026-03 (TikTok): "Never start with your logo or a title
+ *     card" — for LISTING tours; for explainers and market takes the same guide
+ *     and VideoGuru 2026-08 keep the TITLE CARD as the text hook ("treat the
+ *     on-screen title card as the hook … inside the first frame"), so a
+ *     PiP explainer's cover stands and is held to the window instead.
+ *   · VideoGuru 2026-08: "Real estate video hooks are the first 2-3 seconds".
+ * ONE set, ONE number; the proof (scripts/video-hook-window-guard.ts) walks
+ * the registry against them and the stitch decision reads them.
+ */
+export const SEATED_PURPOSES: ReadonlySet<VideoPurpose> = new Set<VideoPurpose>(["memory", "partners_meeting", "listing_presentation_section", "cma"])
+
+/** A scroll-format cover that delays the first spoken word ends inside this many seconds. */
+export const HOOK_ON_COVER_MAX_SECONDS = 2
+
+/** Is this purpose a scroll format (hook first, brand last)? PURE. */
+export function purposeOpensOnHook(purpose: VideoPurpose | null | undefined): boolean {
+  return !!purpose && !SEATED_PURPOSES.has(purpose)
+}
+
+/**
+ * May a brand_intro stock clip be stitched IN FRONT of this composition? Only a
+ * seated-purpose composition that is not declared hook-first. An unregistered
+ * id keeps the pre-89F behaviour (its registered category stands). PURE.
+ */
+export function compositionKeepsBrandIntro(compositionId: string | null | undefined): boolean {
+  if (!compositionId) return true
+  const spec = COMPOSITION_DURATION_RULES[compositionId]
+  if (!spec) return true
+  if (spec.hookFirst) return false
+  return !purposeOpensOnHook(spec.purpose)
 }
 
 export function compositionBookends(compositionId: string): { introFrames: number; outroFrames: number } {

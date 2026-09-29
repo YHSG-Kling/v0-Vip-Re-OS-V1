@@ -35,6 +35,7 @@ import { QrOutroBadge } from "./components/QrOutroBadge"
 import { mlsNeutralTitle } from "../lib/video/render-cut"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaDisclosureStyle, cinemaFrame } from "../lib/video/cinema-finish"
 
 export interface JustListedReelSquareProps {
   hook:      string
@@ -101,7 +102,8 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
   captionsCues, captionScript, mlsClean,
 }) => {
   const frame      = useCurrentFrame()
-  const { durationInFrames } = useVideoConfig()
+  const { durationInFrames, width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
   const timeline   = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const PHOTOS     = timeline.body.durationInFrames
   const images     = imageUrls.slice(0, 4)
@@ -138,7 +140,7 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
             {cityState}
           </div>
           <div style={{
-            position: "absolute", top: 40, left: 40, color: "#fff", opacity: 0.85,
+            position: "absolute", top: safe.top, left: safe.left, color: "#fff", opacity: 0.85,
             fontSize: 22, fontWeight: 600, letterSpacing: 2,
           }}>
             {!mlsClean && brand.logoUrl ? <SafeImg src={brand.logoUrl} style={{ height: 56, objectFit: "contain" }} /> : null}
@@ -209,10 +211,9 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
             </div>
           )}
           {showEho && (
-            <div style={{
-              position: "absolute", bottom: 24, left: 24,
-              fontSize: 16, color: "#fff", opacity: 0.5, letterSpacing: 1,
-            }}>
+            /* Wave 89 — the disclosure on the safe bottom inset at the caption
+               step (cinemaDisclosureStyle); it was a 24 px corner in 16 px type. */
+            <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height), color: "#fff" }}>
               Equal Housing Opportunity
             </div>
           )}

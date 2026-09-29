@@ -27,6 +27,7 @@ import { ContextCueRow } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaDisclosureStyle, cinemaFrame } from "../lib/video/cinema-finish"
 
 export interface OpenHouseAnnounceReelProps {
   /** Property address line. */
@@ -96,7 +97,8 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
   const finalCta = ctaLabel ?? "Save the date"
   const heroImg  = imageUrls[0] ?? null
   const restImgs = imageUrls.slice(1, 4)
-  const { durationInFrames } = useVideoConfig()
+  const { durationInFrames, width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const BODY     = timeline.body.durationInFrames
   const perPhoto = restImgs.length > 0 ? BODY / restImgs.length : BODY
@@ -145,7 +147,8 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
             </div>
           </div>
           {brand.logoUrl && (
-            <div style={{ position: "absolute", top: 32, left: 32 }}>
+            /* Wave 89 — inside the safe insets (it was a typed 32 px corner). */
+            <div style={{ position: "absolute", top: safe.top, left: safe.left }}>
               <SafeImg src={brand.logoUrl} style={{
                 height: 48, objectFit: "contain", opacity: 0.85,
               }} />
@@ -214,10 +217,9 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
           {agentPhone && (
             <div style={{ fontSize: 24, color: "#fff", opacity: 0.85, marginTop: 12 }}>{agentPhone}</div>
           )}
-          <div style={{
-            position: "absolute", bottom: 24, left: 0, right: 0,
-            textAlign: "center", fontSize: 14, opacity: 0.55, letterSpacing: 1, lineHeight: 1.5,
-          }}>
+          {/* Wave 89 — the disclosure on the safe bottom inset at the caption
+              step (cinemaDisclosureStyle); it was 24 px from the edge in 14 px type. */}
+          <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height) }}>
             {brand.brokerageName}{showEho && " · Equal Housing Opportunity"}
             {brand.licenseLine && (
               <>
