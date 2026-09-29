@@ -14,7 +14,11 @@ import {
   validateHomeQuestion,
   buildHomeAssistantSystemPrompt,
   fallbackHomeAnswer,
+  classifyHomeFollowUp,
+  vendorCategoryFor,
+  followUpAcknowledgement,
   type HomeFacts,
+  type HomeFollowUpKind,
 } from "@/lib/portal/home-assistant"
 import { computeHomeWealthStory } from "@/lib/portal/home-wealth"
 import { normalizeLifetimeSegment, type LifetimeSegment } from "@/lib/portal/lifetime-segment"
@@ -217,12 +221,77 @@ export async function submitNextMoveIntent(params: {
 // system prompt: stay scoped, no legal/tax/lending/appraisal advice, no value
 // guarantees/forecasts, no fair-housing steering, redirect to the agent when a
 // human is the right next step. Deterministic fallback floor when the gateway is
-// down — the client never sees an error. No persistence (self-serve, no noise);
-// AI usage is metered by the gateway.
+// down — the client never sees an error. AI usage is metered by the gateway.
+//
+// LANE 90C — THE FOLLOW-UP. "No persistence (self-serve, no noise)" meant a past
+// client asking what their home is worth, whether to refinance, or for a plumber
+// got an answer and NO follow-up — the loop ended at the one moment a lifetime
+// customer raised their hand. The question is now classified (pure,
+// lib/portal/home-assistant.ts) and the matching EXISTING ask in this file is
+// filed ONCE per week per kind: requestValueUpdate (the agent prepares and speaks
+// the number — never the AI), submitNextMoveIntent 'refinance' (agent bell +
+// Sphere Manager → finance desk), requestVendorIntro (an intro from the
+// brokerage's own bench). The answer gains its acknowledgement sentence ONLY when
+// the row landed — a promise the ledger does not back is never spoken.
+const HOME_FOLLOW_UP_DEDUPE_DAYS = 7
+
+/** The portal-message body prefix each survivor writes — the dedupe key. */
+function homeFollowUpMarker(kind: HomeFollowUpKind, category: string | null): string {
+  switch (kind) {
+    case "home_value": return "requested an updated home value estimate"
+    case "refinance": return "Next-move intent: refinance"
+    case "vendor": return `Vendor intro request: ${(category ?? "").replace(/_/g, " ")}`
+  }
+}
+
+/** File the follow-up the question earned through the EXISTING survivor; skip
+ *  when the same ask already landed inside the dedupe window. Every read reads
+ *  its error (§3); a refused dedupe read files nothing (fail closed — one extra
+ *  bell is cheaper than a phantom "I've let your agent know"). */
+async function fileHomeFollowUp(
+  svc: ReturnType<typeof createServiceClient>,
+  input: { contactId: string; brokerageId: string; kind: HomeFollowUpKind; question: string; knownVendorCategories: string[] },
+): Promise<{ filed: boolean; deduped: boolean; category: string | null; error?: string }> {
+  const category = input.kind === "vendor" ? vendorCategoryFor(input.question, input.knownVendorCategories) : null
+  const marker = homeFollowUpMarker(input.kind, category)
+  const since = new Date(Date.now() - HOME_FOLLOW_UP_DEDUPE_DAYS * 86_400_000).toISOString()
+  const { data: recent, error: recentErr } = await svc
+    .from("client_portal_messages")
+    .select("id")
+    .eq("contact_id", input.contactId)
+    .eq("brokerage_id", input.brokerageId)
+    .eq("direction", "client_to_agent")
+    .gte("created_at", since)
+    .ilike("body", `%${marker}%`)
+    .limit(1)
+    .maybeSingle()
+  if (recentErr) return { filed: false, deduped: false, category, error: `dedupe read refused: ${recentErr.message}` }
+  if (recent) return { filed: false, deduped: true, category }
+
+  try {
+    switch (input.kind) {
+      case "home_value": {
+        const r = await requestValueUpdate(input.contactId)
+        return { filed: r.success === true, deduped: false, category }
+      }
+      case "refinance": {
+        const r = await submitNextMoveIntent({ contactId: input.contactId, intent: "refinance", note: input.question })
+        return { filed: r.ok, deduped: false, category, error: r.error }
+      }
+      case "vendor": {
+        const r = await requestVendorIntro({ contactId: input.contactId, category: category ?? "home_services", reason: input.question.slice(0, 200) })
+        return { filed: r.ok, deduped: false, category, error: r.error }
+      }
+    }
+  } catch (e) {
+    return { filed: false, deduped: false, category, error: (e as Error)?.message ?? "follow-up refused" }
+  }
+}
+
 export async function askHomeAssistant(params: {
   contactId: string
   question: string
-}): Promise<{ ok: boolean; answer?: string; error?: string }> {
+}): Promise<{ ok: boolean; answer?: string; error?: string; followUp?: { kind: HomeFollowUpKind; filed: boolean; deduped: boolean } }> {
   const access = await requireContactAccess(params.contactId)
   if (!access.ok || !access.isContactSelf) return { ok: false, error: "Not allowed" }
 
@@ -260,6 +329,7 @@ export async function askHomeAssistant(params: {
       .filter((c): c is string => !!c),
   }
 
+  let answer: string
   try {
     const { generateTextRouted } = await import("@/lib/ai/models")
     const { text } = await generateTextRouted({
@@ -272,11 +342,31 @@ export async function askHomeAssistant(params: {
       userId: access.userId,
       agentId: ctx.contact?.agent_id ?? undefined,
     })
-    const answer = (text ?? "").trim()
+    const generated = (text ?? "").trim()
     // Empty / gateway-unconfigured → deterministic floor, never an error to the client.
-    return { ok: true, answer: answer.length > 0 ? answer : fallbackHomeAnswer(facts) }
+    answer = generated.length > 0 ? generated : fallbackHomeAnswer(facts)
   } catch {
-    return { ok: true, answer: fallbackHomeAnswer(facts) }
+    answer = fallbackHomeAnswer(facts)
+  }
+
+  // The follow-up the question earned (lane 90C) — filed through the existing
+  // asks, once per week per kind; the acknowledgement rides only a landed row.
+  const kind = classifyHomeFollowUp(question)
+  if (!kind) return { ok: true, answer }
+  // No in-house agent (a represented buyer, NAR Article 16) → nobody to route
+  // the ask to; the survivors would no-op "successfully", so nothing is filed
+  // and nothing is acknowledged. The answer's agent redirect is the floor.
+  if (!ctx.contact?.agent_id) return { ok: true, answer, followUp: { kind, filed: false, deduped: false } }
+  const filed = await fileHomeFollowUp(createServiceClient(), {
+    contactId: params.contactId, brokerageId: access.brokerageId, kind, question,
+    knownVendorCategories: ctx.vendorCategories ?? [],
+  })
+  if (filed.error) console.error(`[portal-lifetime] home-assistant follow-up (${kind}) NOT filed: ${filed.error}`)
+  const acknowledged = filed.filed || filed.deduped
+  return {
+    ok: true,
+    answer: acknowledged ? `${answer} ${followUpAcknowledgement(kind, facts.agentName)}` : answer,
+    followUp: { kind, filed: filed.filed, deduped: filed.deduped },
   }
 }
 

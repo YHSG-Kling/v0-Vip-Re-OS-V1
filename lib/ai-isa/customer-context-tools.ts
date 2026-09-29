@@ -522,9 +522,41 @@ export function buildSendMatchingListingsTool(ctx: CustomerContextToolsContext) 
       }
 
       // 3. Enroll/create the existing listing-alert record so it keeps
-      // sending — contact-only (property_alerts.contact_id is NOT NULL); a
-      // lead-only thread still gets the listings above, just no standing
-      // alert until they convert.
+      // sending — contact-only (property_alerts.contact_id is NOT NULL).
+      //
+      // LANE 90C — THE LEAD BRANCH USED TO END THE LOOP. A lead-only thread got
+      // today's list and "no standing alert until they convert" — but nothing
+      // converted it, so the tool's own promise ("keep sending as new matches
+      // come in") was never kept for the majority of ISA threads, which run
+      // lead-only until qualification. Buyer criteria ARE positive intent: the
+      // inbound-reply classifier already routes the same words to
+      // convertBuyerLeadOnIntent(reason:"criteria_request") (lib/ai-isa/
+      // inbound-intent-classifier.ts) — the ONE canonical hop (acceptAIISAHandoff
+      // → consented → assigned → contact, property_preferences captured, the
+      // Shopping Agent owns the buyer from here). Same survivor, never a second
+      // converter; the alert below then enrolls the CONTACT it became. A refused
+      // conversion (representation, lead gone) is REPORTED — the lead stays in
+      // the ISA's own nurture plan (advanceLeadActionPlans), which is the loop
+      // that continues for an unconverted lead.
+      let conversion: { ok: boolean; contactId?: string; error?: string; alreadyConverted?: boolean } | null = null
+      if (!ctx.contactId && ctx.leadId) {
+        const { convertBuyerLeadOnIntent } = await import("@/lib/ai-isa/convert-buyer-lead-on-intent")
+        const converted = await convertBuyerLeadOnIntent({
+          brokerageId: ctx.brokerageId,
+          leadId: ctx.leadId,
+          reason: "criteria_request",
+          criteria: {
+            minPrice: args.min_price, maxPrice: args.max_price,
+            minBeds: args.min_beds, minBaths: args.min_baths,
+            cities: args.city ? [args.city] : [], zipCodes: args.zip ? [args.zip] : [],
+            propertyTypes: args.property_type ? [args.property_type] : [],
+          },
+        })
+        conversion = { ok: converted.success && !!converted.contactId, contactId: converted.contactId, error: converted.error, alreadyConverted: converted.alreadyConverted }
+        // The rest of this turn (and the alert below) operates on the contact
+        // the lead became — the same ctx mutation the platform bundle uses.
+        if (conversion.ok) ctx.contactId = converted.contactId ?? null
+      }
       //
       // RENTERS ARE ENROLLED TOO (lane 77C, blind spot closed). This used to
       // skip a renter (`!forRent`) because property_alerts could not say which
@@ -589,7 +621,14 @@ export function buildSendMatchingListingsTool(ctx: CustomerContextToolsContext) 
         payload: { criteria: args, matchCount: listings.length, alertId },
       })
 
-      return { success: true, listings: listings.slice(0, 10), alertEnrolled: !!alertId }
+      return {
+        success: true,
+        listings: listings.slice(0, 10),
+        alertEnrolled: !!alertId,
+        // Honest: the model is told when the standing alert could NOT be set up
+        // (a refused conversion), so it never promises "I'll keep sending".
+        ...(conversion ? { convertedToContact: conversion.ok, conversionError: conversion.ok ? null : (conversion.error ?? "conversion refused") } : {}),
+      }
     },
   })
 }
@@ -609,6 +648,41 @@ export function buildScheduleHomeValueReviewTool(ctx: CustomerContextToolsContex
     }),
     execute: async ({ property_address, zip_code, preferred_callback_window }: { property_address: string; zip_code: string | null; preferred_callback_window: string }) => {
       const svc = createServiceClient()
+
+      // LANE 90C — THE LEAD BRANCH USED TO END THE LOOP. For a lead-only thread
+      // this tool wrote leads.next_followup_at (read ONLY by the nurture
+      // enroller's "don't nag before this date" check — nothing places a call)
+      // and notified an agent the lead does not have. The promised "callback to
+      // discuss the value" never happened, and by ruling the AI never speaks the
+      // number, so nobody did. Asking what the home is worth IS positive intent:
+      // the inbound-reply classifier routes the same words to
+      // convertSellerLeadOnIntent(reason:"cma_request") — the canonical hop that
+      // converts, assigns an agent, and PROPOSES the draft CMA on the contact so
+      // the agent has the value teed up for the call. The callback below then
+      // lands as the assigned agent's `activities` row (writeFollowUpActivity)
+      // instead of a dead lead column. Same survivor, never a second converter.
+      let conversionError: string | null = null
+      if (!ctx.contactId && ctx.leadId) {
+        const { convertSellerLeadOnIntent } = await import("@/lib/ai-isa/convert-seller-lead-on-intent")
+        const converted = await convertSellerLeadOnIntent({
+          brokerageId: ctx.brokerageId,
+          leadId: ctx.leadId,
+          reason: "cma_request",
+          propertyData: { address: property_address, zip: zip_code ?? undefined },
+        })
+        if (converted.success && converted.contactId) {
+          ctx.contactId = converted.contactId
+          if (!ctx.agentId) {
+            const { data: c, error: cErr } = await svc.from("contacts").select("agent_id").eq("id", converted.contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+            if (cErr) console.error(`[schedule_home_value_review] contact agent read refused: ${cErr.message}`)
+            ctx.agentId = (c as { agent_id?: string | null } | null)?.agent_id ?? null
+          }
+        } else {
+          conversionError = converted.error ?? "conversion refused"
+          console.error(`[schedule_home_value_review] lead ${ctx.leadId} NOT converted on cma_request: ${conversionError}`)
+        }
+      }
+
       // Record the address they gave us — contacts.address / leads.address,
       // the SAME column every other seller-facing reader already treats as
       // "the property they own" (no new column).
@@ -664,6 +738,10 @@ export function buildScheduleHomeValueReviewTool(ctx: CustomerContextToolsContex
       return {
         success: true,
         callbackScheduled: true,
+        // Honest: when the callback could only land on the lead column (no
+        // agent to call), the model is told so rather than promising a call.
+        callbackOwner: ctx.contactId && ctx.agentId ? ("agent" as const) : ("nurture_only" as const),
+        ...(conversionError ? { conversionError } : {}),
         note: "The agent will prepare and discuss the value on the call — never state a number here.",
       }
     },
@@ -718,6 +796,25 @@ export function buildFindListingAppointmentSlotsTool(ctx: CustomerContextToolsCo
       preferred_window: z.enum(["morning", "afternoon", "evening"]).nullable().describe("Time-of-day preference, or null"),
     }),
     execute: async ({ preferred_days, preferred_window }: { preferred_days: string[] | null; preferred_window: "morning" | "afternoon" | "evening" | null }) => {
+      // LANE 90C — a LEAD with no agent used to dead-end here ("No agent is
+      // assigned yet — offer a callback instead"): the person asked for an agent
+      // to come out and got a maybe-callback. Wanting the appointment IS the
+      // positive_reply intent the booking tool below already converts on — do
+      // the same canonical hop HERE, so Engine 2 assigns the agent whose
+      // calendar the slots come from. ctx is updated for the rest of the turn.
+      if (!ctx.agentId && !ctx.contactId && ctx.leadId) {
+        const { convertSellerLeadOnIntent } = await import("@/lib/ai-isa/convert-seller-lead-on-intent")
+        const converted = await convertSellerLeadOnIntent({ brokerageId: ctx.brokerageId, leadId: ctx.leadId, reason: "positive_reply" })
+        if (converted.success && converted.contactId) {
+          ctx.contactId = converted.contactId
+          const svc = createServiceClient()
+          const { data: c, error: cErr } = await svc.from("contacts").select("agent_id").eq("id", converted.contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+          if (cErr) console.error(`[find_listing_appointment_slots] contact agent read refused: ${cErr.message}`)
+          ctx.agentId = (c as { agent_id?: string | null } | null)?.agent_id ?? null
+        } else {
+          console.error(`[find_listing_appointment_slots] lead ${ctx.leadId} NOT converted on positive_reply: ${converted.error ?? "refused"}`)
+        }
+      }
       if (!ctx.agentId) return { success: false, error: "No agent is assigned yet — offer a callback instead." }
       const { findAgentAppointmentSlots } = await import("@/lib/ai-isa/listing-appointment")
       const result = await findAgentAppointmentSlots({

@@ -95,6 +95,15 @@ const row = {
 const facts = deriveProspectTenantFacts(row)
 check("facts derive from the row: company ← qualification.brokerage_name, email lowercased, tier ← seat band, territory + current tools carried",
   facts.ok && facts.facts.brokerageName === "Acme Realty" && facts.facts.adminEmail === "dana@acme.com" && facts.facts.adminFirstName === "Dana" && facts.facts.adminLastName === "Lee" && facts.facts.tier === "team" && facts.facts.territory === "Austin metro" && facts.facts.currentTools === "Follow Up Boss" && facts.facts.brokeragePhone === "+15125550100")
+// Lane 90C — the PRICED seats decide the band: producers_count when the assistant learned it, else size_seats.
+check("priced seats: 40 agents with 8 producers → team (pricedSeats 8), sizeSeats still reported as 40; without producers_count the band falls back to size_seats",
+  (() => {
+    const f = deriveProspectTenantFacts({ ...row, details: { qualification: { size_seats: 40, producers_count: 8 } } })
+    const g = deriveProspectTenantFacts({ ...row, details: { qualification: { size_seats: 40 } } })
+    return f.ok && f.facts.tier === "team" && f.facts.pricedSeats === 8 && f.facts.sizeSeats === 40 && g.ok && g.facts.pricedSeats === 40 && g.facts.tier === "multi_location"
+  })())
+check("priced seats: the enterprise floor is judged on the priced count — 40 agents / 8 producers is NOT an enterprise handoff, 40 / 40 is",
+  conversionHumanReasons({ tier: "team", sizeSeats: 8, currentTools: null }).length === 0 && conversionHumanReasons({ tier: "multi_location", sizeSeats: 40, currentTools: null }).includes("enterprise_size"))
 check("overrides win (the plan they chose, a corrected email, a company said out loud)", (() => { const f = deriveProspectTenantFacts(row, { tier: "brokerage", email: "owner@acme.com", company: "Acme Group" }); return f.ok && f.facts.tier === "brokerage" && f.facts.adminEmail === "owner@acme.com" && f.facts.brokerageName === "Acme Group" })())
 check("FAIL CLOSED: no usable email → refused; no name → refused (the sign-in link needs a mailbox, the owner row a first name)",
   !deriveProspectTenantFacts({ ...row, email: null }).ok && !deriveProspectTenantFacts({ ...row, name: null }).ok && !deriveProspectTenantFacts({ ...row, email: "not-an-email" }).ok)

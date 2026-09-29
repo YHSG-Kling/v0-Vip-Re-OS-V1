@@ -372,6 +372,99 @@ export async function createCallbackTask(svc: any, params: CreateCallbackTaskPar
   return { ok: true, taskId: data.id, dueIso: resolved.dueIso }
 }
 
+// ── The give-up hand-off (lane 90C — humans when warranted) ─────────────────
+//
+// THE LOOP-ENDER. The executor (app/api/cron/ai-callback-dispatch) gives up
+// after MAX_CALLBACK_ATTEMPTS and stamped "[GAVE UP … — needs a human callback]"
+// on a CANCELLED task that nobody reads: the person who asked to be called back
+// was never called and nobody was told. "Humans when warranted" is exactly this
+// moment. The hand-off rides the EXISTING agent-side follow-up writers
+// (lib/ai-isa/qualification-signals.ts — the same rows schedule_callback writes
+// for a contact): a CONTACT gets an `activities` row on their agent + the agent's
+// bell; a LEAD (no agent by ruling) gets its follow-up column stamped for the
+// nurture plan and the brokerage's LEAD DESK is belled (LEAD_DESK_USER_TYPES,
+// spread — never a retyped roster). Every write reads its error (§3).
+
+export interface AbandonedCallbackHandoff {
+  humanTask: "activity" | "lead_followup" | "none"
+  notified: number
+  error?: string
+}
+
+export async function handOffAbandonedCallback(svc: any, params: {
+  brokerageId: string
+  taskId: string
+  contactId: string | null
+  leadId: string | null
+  phone: string
+  reason: string | null
+  rawPhrase: string
+  attempts: number
+}): Promise<AbandonedCallbackHandoff> {
+  const { scheduleFollowUp, notifyAssignedAgent } = await import("./qualification-signals")
+  const notes = [
+    `The AI ISA could not place the callback to ${params.phone} after ${params.attempts} attempts — a person needs to call.`,
+    params.reason ? `Reason they asked: ${params.reason}` : null,
+    `They asked for: "${params.rawPhrase}"`,
+    `Callback task ${params.taskId}`,
+  ].filter(Boolean).join("\n")
+  const title = "Callback needs a human — the AI ISA could not reach them"
+  const errors: string[] = []
+  let humanTask: AbandonedCallbackHandoff["humanTask"] = "none"
+  let notified = 0
+
+  // CONTACT → the assigned agent's activities row + bell.
+  let agentId: string | null = null
+  if (params.contactId) {
+    const { data: c, error: cErr } = await svc.from("contacts").select("agent_id").eq("id", params.contactId).eq("brokerage_id", params.brokerageId).maybeSingle()
+    if (cErr) errors.push(`contact read refused: ${cErr.message}`)
+    agentId = (c as { agent_id?: string | null } | null)?.agent_id ?? null
+    const r = await scheduleFollowUp(
+      { brokerageId: params.brokerageId, contactId: params.contactId, agentId },
+      { activityType: "call", scheduledAt: new Date().toISOString(), notes, title },
+    )
+    if (r.success) humanTask = "activity"
+    else errors.push(`activity write refused: ${r.error}`)
+    if (agentId) {
+      await notifyAssignedAgent(
+        { brokerageId: params.brokerageId, contactId: params.contactId, agentId },
+        { type: "ai_callback_needs_human", title, body: notes.split("\n")[0], entityType: "contact", entityId: params.contactId },
+      )
+      notified += 1
+    }
+  } else if (params.leadId) {
+    const r = await scheduleFollowUp(
+      { brokerageId: params.brokerageId, leadId: params.leadId },
+      { activityType: "call", scheduledAt: new Date().toISOString(), notes, title },
+    )
+    if (r.success) humanTask = "lead_followup"
+    else errors.push(`lead follow-up write refused: ${r.error}`)
+  }
+
+  // No agent to tell (a lead, or an unassigned contact) → the brokerage's lead
+  // desk, inside the tenant, three bells at most.
+  if (!agentId) {
+    const { LEAD_DESK_USER_TYPES } = await import("@/lib/auth/lead-visibility")
+    const { data: desk, error: deskErr } = await svc
+      .from("users").select("id")
+      .eq("brokerage_id", params.brokerageId)
+      .in("user_type", [...LEAD_DESK_USER_TYPES])
+      .limit(3)
+    if (deskErr) errors.push(`lead desk roster read refused: ${deskErr.message}`)
+    for (const u of (desk ?? []) as Array<{ id: string }>) {
+      const { error } = await svc.from("notifications").insert({
+        brokerage_id: params.brokerageId, user_id: u.id,
+        type: "ai_callback_needs_human", title, body: notes.split("\n")[0], priority: "high",
+        entity_type: params.contactId ? "contact" : "lead", entity_id: params.contactId ?? params.leadId ?? params.taskId, is_read: false,
+      })
+      if (error) errors.push(`desk bell ${u.id} refused: ${error.message}`)
+      else notified += 1
+    }
+  }
+
+  return { humanTask, notified, ...(errors.length ? { error: errors.join("; ") } : {}) }
+}
+
 // ── The post-call transcript backstop (used by lib/ai-isa/post-call-outcome.ts) ─
 
 const CALLBACK_ASK = /\b(call (me|him|her|them) back|callback|give (me|him|her|them) a call back|return (my|the) call)\b/i

@@ -100,7 +100,7 @@ export async function GET(request: Request) {
       .limit(BATCH)
     if (error) throw new Error(`tasks read refused: ${error.message}`)
 
-    let dialed = 0, blocked = 0, cancelled = 0, alreadyClaimed = 0, malformed = 0, dialFailed = 0
+    let dialed = 0, blocked = 0, cancelled = 0, alreadyClaimed = 0, malformed = 0, dialFailed = 0, handedToHuman = 0
     const refusals: Array<{ task_id: string; error: string }> = []
 
     for (const t of due ?? []) {
@@ -135,6 +135,19 @@ export async function GET(request: Request) {
           status: "cancelled", updated_at: nowIso,
           description: `${(t as any).description}\n[GAVE UP after ${note.attempts} attempts — needs a human callback]`.slice(0, 2000),
         }).eq("id", taskId), { table: "tasks", flow: "ai_callback_give_up", reason: "gives up after max attempts; a loss is ledgered" })
+        // Lane 90C — "needs a human callback" was a note on a cancelled row nobody
+        // reads. Hand it to a person through the existing follow-up writers
+        // (lib/ai-isa/callback-task.ts::handOffAbandonedCallback): the contact's
+        // agent gets the activity + bell; a lead's brokerage lead desk is belled.
+        const { handOffAbandonedCallback } = await import("@/lib/ai-isa/callback-task")
+        const handoff = await handOffAbandonedCallback(svc, {
+          brokerageId, taskId,
+          contactId: ((t as any).contact_id as string | null) ?? null,
+          leadId: note.leadId ?? null,
+          phone: note.phone, reason: note.reason, rawPhrase: note.rawPhrase, attempts: note.attempts ?? 0,
+        })
+        if (handoff.humanTask !== "none" || handoff.notified > 0) handedToHuman++
+        if (handoff.error) refusals.push({ task_id: taskId, error: `give-up hand-off partial: ${handoff.error}` })
         continue
       }
 
@@ -237,7 +250,7 @@ export async function GET(request: Request) {
       scanned: due?.length ?? 0,
       batch_cap: BATCH,
       capped: (due?.length ?? 0) >= BATCH,
-      dialed, blocked, cancelled, alreadyClaimed, malformed, dialFailed,
+      dialed, blocked, cancelled, alreadyClaimed, malformed, dialFailed, handedToHuman,
       refusals: refusals.slice(0, 20),
     }
     await recordCronSuccessAction({

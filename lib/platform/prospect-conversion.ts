@@ -223,7 +223,14 @@ export interface ProspectTenantFacts {
   adminEmail: string
   brokeragePhone: string | null
   tier: CanonicalTier
+  /** Agents / seats they run, as stated (informational). */
   sizeSeats: number | null
+  /** Lane 90C — the PRICED seats (wave 79 seat ruling: producing agents are
+   *  the priced unit; staff/admins ride free): qualification.producers_count
+   *  when the assistant learned it, else size_seats. This is the number the
+   *  tier band and the enterprise floor are judged on — the same count
+   *  lib/platform/subscriber-door.ts already judges (`producerSeats`). */
+  pricedSeats: number | null
   territory: string | null
   currentTools: string | null
 }
@@ -278,12 +285,19 @@ export function deriveProspectTenantFacts(
   const { first, last } = splitPersonName(overrides.name ?? row.name)
   if (!first) return { ok: false, error: "The prospect's name is required to create the account — ask for it." }
   const q = qualificationOf(row)
-  const sizeSeats = typeof q.size_seats === "number" && Number.isFinite(q.size_seats) && q.size_seats > 0 ? Math.round(q.size_seats) : null
+  const positiveInt = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.round(v) : null)
+  const sizeSeats = positiveInt(q.size_seats)
+  // Lane 90C: the door used to band on size_seats alone — a 40-agent brokerage
+  // with 8 producers was quoted the custom tier (40 > every capped band) and
+  // handed to a person as "enterprise size" although the priced seats fit the
+  // Team plan. save_prospect already captures producers_count (lane 79B); the
+  // conversion now READS it, exactly as the self-serve door does.
+  const pricedSeats = positiveInt(q.producers_count) ?? sizeSeats
   const company = ((overrides.company ?? row.company) ?? "").trim()
     || (typeof q.brokerage_name === "string" ? q.brokerage_name.trim() : "")
     || `${first}${last ? ` ${last}` : ""} Real Estate`
   const declaredTier = (overrides.tier ?? "").trim()
-  const tier = CANONICAL_TIER_SET.has(declaredTier) ? (declaredTier as CanonicalTier) : tierForProspect(row.role_interest, sizeSeats)
+  const tier = CANONICAL_TIER_SET.has(declaredTier) ? (declaredTier as CanonicalTier) : tierForProspect(row.role_interest, pricedSeats)
   return {
     ok: true,
     facts: {
@@ -294,6 +308,7 @@ export function deriveProspectTenantFacts(
       brokeragePhone: (row.phone ?? "").trim() || null,
       tier,
       sizeSeats,
+      pricedSeats,
       territory: typeof q.territory === "string" && q.territory.trim() ? q.territory.trim().slice(0, 300) : null,
       currentTools: typeof q.current_tools === "string" && q.current_tools.trim() ? q.current_tools.trim().slice(0, 300) : null,
     },
@@ -428,7 +443,9 @@ export async function convertProspectToSubscriber(svc: any, input: ConvertProspe
 
   const handoff = (row.details?.human_handoff ?? null) as { reason?: string | null } | null
   const humanReasons = conversionHumanReasons({
-    tier: facts.tier, sizeSeats: facts.sizeSeats, currentTools: facts.currentTools,
+    // The enterprise floor is judged on the PRICED seats (lane 90C) — the
+    // same count the tier band used just above and the self-serve door uses.
+    tier: facts.tier, sizeSeats: facts.pricedSeats, currentTools: facts.currentTools,
     customPricingRequested: input.customPricingRequested, handoffReason: handoff?.reason ?? null,
   })
 

@@ -590,6 +590,68 @@ if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Layer 13 · lane 90C — NO qualification outcome ends the loop: lead-only branches convert on intent through the ONE canonical hop]")
+{
+  // Every follow-up a LEAD-only thread can earn must either (a) hand the lead to
+  // the AI ISA's own machinery (callback task — Layer 12) or (b) convert it on
+  // positive intent through the SAME converters the inbound-reply classifier
+  // uses, so the promise the tool makes ("keep sending", "a callback to discuss
+  // the value", "an agent will come out") has a row behind it. Stripped source.
+  // One tool's body = from its `export function` to the next one's (never a fixed
+  // window — send_matching_listings is long, and a short slice reads as "absent").
+  const sliceFrom = (marker: string) => {
+    const i = toolsSrc.indexOf(marker)
+    if (i < 0) return ""
+    const next = toolsSrc.indexOf("\nexport function", i + marker.length)
+    return toolsSrc.slice(i, next > 0 ? next : undefined)
+  }
+
+  const matching = sliceFrom("export function buildSendMatchingListingsTool")
+  check("send_matching_listings: a LEAD-only thread converts via convertBuyerLeadOnIntent(reason:'criteria_request') before the alert enrollment (the promise 'keep sending' has a property_alerts row behind it)",
+    /if \(!ctx\.contactId && ctx\.leadId\)[\s\S]{0,300}convertBuyerLeadOnIntent\(\{[\s\S]{0,200}reason: "criteria_request"/.test(matching)
+    && matching.indexOf("convertBuyerLeadOnIntent(") < matching.indexOf('.from("property_alerts")'))
+  check("send_matching_listings: the CONTACT the lead became is what the alert enrolls (ctx.contactId set from the conversion, never a model id)",
+    /if \(conversion\.ok\) ctx\.contactId = converted\.contactId/.test(matching))
+  check("send_matching_listings: a refused conversion is REPORTED to the model (convertedToContact/conversionError), never a silent 'alertEnrolled: false'",
+    matching.includes("convertedToContact: conversion.ok") && matching.includes("conversionError"))
+
+  const hvr = sliceFrom("export function buildScheduleHomeValueReviewTool")
+  check("schedule_home_value_review: a LEAD-only thread converts via convertSellerLeadOnIntent(reason:'cma_request') — the agent gets the draft CMA and the callback lands as the agent's activities row, not a dead leads.next_followup_at",
+    /if \(!ctx\.contactId && ctx\.leadId\)[\s\S]{0,300}convertSellerLeadOnIntent\(\{[\s\S]{0,200}reason: "cma_request"/.test(hvr)
+    && hvr.indexOf("convertSellerLeadOnIntent(") < hvr.indexOf("await scheduleFollowUp(ctx"))
+  check("schedule_home_value_review: the assigned agent is resolved from the CONTACT row after conversion (contacts.agent_id in the tenant) so notifyAssignedAgent has someone to tell",
+    /\.from\("contacts"\)\.select\("agent_id"\)\.eq\("id", converted\.contactId\)\.eq\("brokerage_id", ctx\.brokerageId\)/.test(hvr) && /ctx\.agentId = /.test(hvr))
+  check("schedule_home_value_review: the result says who owns the callback (agent vs nurture_only) — the model never promises a call nobody will place",
+    hvr.includes('"agent" as const') && hvr.includes('"nurture_only" as const'))
+
+  const slots = sliceFrom("export function buildFindListingAppointmentSlotsTool")
+  check("find_listing_appointment_slots: a LEAD with no agent converts on positive_reply FIRST so Engine 2 assigns the agent whose calendar the slots come from (was a dead end: 'No agent is assigned yet')",
+    /if \(!ctx\.agentId && !ctx\.contactId && ctx\.leadId\)[\s\S]{0,300}convertSellerLeadOnIntent\(\{ brokerageId: ctx\.brokerageId, leadId: ctx\.leadId, reason: "positive_reply" \}\)/.test(slots)
+    && slots.indexOf("convertSellerLeadOnIntent(") < slots.indexOf('if (!ctx.agentId) return { success: false, error: "No agent is assigned yet'))
+
+  // The AI ISA's OWN callback loop (Layer 12's lead arm) also ended silently: the
+  // executor gave up after MAX_CALLBACK_ATTEMPTS with a note on a cancelled row.
+  const cronSrc = stripped("app/api/cron/ai-callback-dispatch/route.ts")
+  const giveUp = cronSrc.slice(cronSrc.indexOf(">= MAX_CALLBACK_ATTEMPTS"), cronSrc.indexOf(">= MAX_CALLBACK_ATTEMPTS") + 1400)
+  check("ai-callback-dispatch: the give-up branch hands the callback to a HUMAN (handOffAbandonedCallback) and counts it — not just a note on a cancelled task",
+    giveUp.includes("handOffAbandonedCallback(") && giveUp.includes("handedToHuman++") && cronSrc.includes("handedToHuman,"))
+  const cbTaskSrc = stripped("lib/ai-isa/callback-task.ts")
+  const handoffFn = cbTaskSrc.slice(cbTaskSrc.indexOf("export async function handOffAbandonedCallback"))
+  check("handOffAbandonedCallback rides the EXISTING follow-up writers (scheduleFollowUp + notifyAssignedAgent from qualification-signals) — never a fourth activities writer",
+    handoffFn.includes('import("./qualification-signals")') && handoffFn.includes("await scheduleFollowUp(") && handoffFn.includes("await notifyAssignedAgent(") && !handoffFn.includes('.from("activities")'))
+  check("handOffAbandonedCallback bells the LEAD DESK by SPREADING LEAD_DESK_USER_TYPES (never a retyped roster), tenant-scoped, ≤ 3 bells",
+    /\.in\("user_type", \[\.\.\.LEAD_DESK_USER_TYPES\]\)/.test(handoffFn) && /\.eq\("brokerage_id", params\.brokerageId\)[\s\S]{0,80}\.in\("user_type"/.test(handoffFn) && handoffFn.includes(".limit(3)"))
+  check("handOffAbandonedCallback READS every write's error (§3) and returns them", (handoffFn.match(/errors\.push\(/g) ?? []).length >= 4 && handoffFn.includes("error: errors.join"))
+  check("POSITIVE CONTROL: the roster scan REJECTS a hand-typed roster", !/\.in\("user_type", \[\.\.\.LEAD_DESK_USER_TYPES\]\)/.test('.in("user_type", ["broker", "admin", "isa"])'))
+
+  // Layer 9's number rule still holds after the wire: nothing here reads an AVM.
+  check("the conversion wire did not bring a value back into schedule_home_value_review (no getCurrentAvm / estimatedValue)", !/getCurrentAvm|estimatedValue/.test(hvr))
+  // POSITIVE CONTROL — the converter scan can see a MISSING converter.
+  const fixtureDeadEnd = `execute: async () => { if (ctx.leadId && !ctx.contactId) { await scheduleFollowUp(ctx, { activityType: "call" }) } }`
+  check("POSITIVE CONTROL: the converter scan flags a fixture whose lead branch only writes the dead lead column",
+    !/convertSellerLeadOnIntent\(|convertBuyerLeadOnIntent\(/.test(fixtureDeadEnd) && fixtureDeadEnd.includes("scheduleFollowUp("))
+}
+
 console.log("\n" + "─".repeat(60))
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) {
