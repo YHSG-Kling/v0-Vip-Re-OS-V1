@@ -71,9 +71,14 @@ async function sendEmail(params: SendEmailParams) {
 
 async function sendSMS(params: SendSMSParams) {
   try {
+    // Wave 91 (lane 91B): the recipient key rides to the TCPA chokepoint. Without it the gate's
+    // consent block never ran (quiet hours only); a number-only send is now also resolved by
+    // phone against the tenant's leads (lead-stage refusal), so the key is the honest input.
+    const contactId = (params.metadata as { contactId?: string } | undefined)?.contactId
     return await providerSendSMS({
       to: params.to,
       message: params.message,
+      ...(contactId ? { contactId } : {}),
     })
   } catch (error) {
     console.error("[CommunicationService] Send SMS error:", error)

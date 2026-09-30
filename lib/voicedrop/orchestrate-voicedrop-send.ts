@@ -79,6 +79,19 @@ async function ensureCompliance(args: {
   // The compliance gate uses messageType='phone' to enforce TCPA
   // consent + dnc_status + phone_opt_out. Voicedrop = a phone call
   // by FCC interpretation, so we gate identically.
+  //
+  // Wave 91 (lane 91B) — a LEAD never gets a voicedrop (owner: "Leads usually are non consenting
+  // so no sms or calls allowed only email and direct mail"). The lead branch below used to pass a
+  // lead whose row happened to carry tcpa_consent, and a number-only drop returned ok with NO
+  // check at all. The TCPA chokepoint's lead-stage arm (the ONE predicate + the phone lookup for
+  // a keyless send) now runs first.
+  {
+    const { leadStageRefusal } = await import("@/lib/communication/tcpa-gate")
+    const leadStage = await leadStageRefusal({
+      channel: "call", phone: args.toPhone, contactId: args.contactId ?? null, leadId: args.leadId ?? null, brokerageId: args.brokerageId,
+    })
+    if (leadStage) return { ok: false, reason: leadStage }
+  }
   if (!args.contactId && !args.leadId) return { ok: true }
   const svc = createServiceClient()
   let kc: { id: string; tcpa_consent: boolean | null; dnc_status: boolean | null; phone_opt_out: boolean | null; status: string | null } | null = null

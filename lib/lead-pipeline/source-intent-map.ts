@@ -1061,6 +1061,76 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   // tiktok_intent → 'apify' retired (lane 84C; owner 2026-09-26 "don't need tiktok.")
 }
 
+// ── RECENCY PER SOURCE (wave 91, lane 91B) ───────────────────────────────────
+//
+// Owner, verbatim (2026-09-30): "we should only pull more recent data". Every SourceKey declares
+// (a) the CLIENT-SIDE window the raw writer applies (lib/kernel/scraping.ts::ingestRawSourceBatch
+// Gate 1b → raw-record-types.ts::isWithinRecencyWindow — a dated record older than this never
+// becomes a raw row, so it never reaches PeopleData), and (b) the REQUEST-SIDE window the vendor
+// call itself carries, when the provider publishes one. `windowDays: null` = no client gate, and
+// the entry says why (a vendor window already applies, or the lane is first-party / a standing
+// population rather than an event). Printed as the `recency` column of the coverage matrix
+// (scripts/acquisition-coverage-guard.ts) and proved by scripts/lead-channel-rule-guard.ts.
+
+/** The window for event/post sources that publish no request-side date filter. */
+export const DEFAULT_ACQUISITION_RECENCY_DAYS = 60
+
+export interface SourceRecency {
+  /** Client-side window (days) applied at the raw writer before enrichment; null = none. */
+  windowDays: number | null
+  /** The request-side window the vendor call carries, or why there is none. */
+  requestSide: string
+}
+
+const POST_WINDOW: SourceRecency = { windowDays: DEFAULT_ACQUISITION_RECENCY_DAYS, requestSide: "none published by the actor/page — client-side gate before enrichment" }
+
+export const SOURCE_RECENCY: Record<SourceKey, SourceRecency> = {
+  zenrows_zillow:              POST_WINDOW,
+  zenrows_realtor:             POST_WINDOW,
+  zenrows_homes:               POST_WINDOW,
+  nextdoor_intent:             POST_WINDOW,
+  facebook_group:              POST_WINDOW,
+  facebook_marketplace:        POST_WINDOW,
+  instagram_intent:            POST_WINDOW,
+  reddit_intent:               POST_WINDOW,
+  reddit_relocation:           POST_WINDOW,
+  craigslist_fsbo:             POST_WINDOW,
+  craigslist_wanted:           POST_WINDOW,
+  rental_listing:              POST_WINDOW,
+  google_phrase_intent:        POST_WINDOW,
+  agent_seeking_phrase_intent: POST_WINDOW,
+  new_construction_intent:     POST_WINDOW,
+  linkedin_relocation:         POST_WINDOW,
+  realty_site_chatter:         POST_WINDOW,
+  facebook_recommend_realtor:  POST_WINDOW,
+  review_acquisition_intent:   POST_WINDOW,
+  external_behavior:           POST_WINDOW,
+  tavily_intent:               POST_WINDOW,
+  osint_signal:                POST_WINDOW,
+  fsbo_site_listing:           { windowDays: DEFAULT_ACQUISITION_RECENCY_DAYS, requestSide: "monitoringMode (unseen-only — novelty, not a date) — client-side gate before enrichment" },
+  // Exa carries its OWN request-side window; the client gate mirrors it (costless belt and braces).
+  exa_buyer_intent:            { windowDays: 120, requestSide: "exa startPublishedDate = today − EXA_LOOKBACK_DAYS (lib/lead-pipeline/exa-sourcer.ts)" },
+  permit_prelisting_intent:    { windowDays: 45,  requestSide: "exa startPublishedDate = today − PERMIT_SOURCER_LOOKBACK_DAYS (lib/lead-pipeline/permit-sourcer.ts)" },
+  // BatchData — the windows are the market's own lookback_days (89E / 90B), never double-gated here.
+  batchdata_motivated:         { windowDays: null, requestSide: "lookback_days → dateWindowCriteria (recorder-date windows per trigger, lib/external/batchdata-client.ts)" },
+  expired_listing:             { windowDays: null, requestSide: "none published (no status-date key) — client status-date gate withinListingStatusWindow on lookback_days (lib/external/batchdata-client.ts)" },
+  batchdata_smart_search:      { windowDays: null, requestSide: "n/a — a standing buy-box/search population pushed by the provider, not an event feed" },
+  batchdata_buybox:            { windowDays: null, requestSide: "n/a — a standing investor buy-box population, not an event feed" },
+  batchdata_cash_buyer:        { windowDays: null, requestSide: "n/a — a standing cash-buyer quickList population, not an event feed" },
+  // First-party lanes read their own live signals.
+  site_visitor_intent:         { windowDays: null, requestSide: "first-party — the sourcer reads its own recent visitor window" },
+  email_engagement_intent:     { windowDays: null, requestSide: "first-party — the sourcer reads its own recent engagement window" },
+  inbound_email_unknown:       { windowDays: null, requestSide: "first-party — a live inbound message (always current)" },
+  rental_to_buyer_graduation:  { windowDays: null, requestSide: "first-party — the contact this repo already owns" },
+}
+
+/** The client-side recency window for any spelling the scrapers write (canonical, alias, channel);
+ *  the default window for an unregistered spelling (fail toward recent, never toward stale). */
+export function recencyWindowForSource(source: string): number | null {
+  const key = resolveSourceKey(source)
+  return key in SOURCE_RECENCY ? SOURCE_RECENCY[key].windowDays : DEFAULT_ACQUISITION_RECENCY_DAYS
+}
+
 /**
  * Lane 82B — THE ledger-side reader of SOURCE_VENDOR. Resolves any spelling the scrapers write
  * (canonical key, alias, or cron channel such as "zillow" / "craigslist_wanted") to the vendor the

@@ -24,9 +24,9 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
 import { sentinelWrite } from '@/lib/kernel/write-sentinel'
-import { recordMatchesTerritory } from '@/lib/lead-pipeline/source-intent-map'
+import { recordMatchesTerritory, recencyWindowForSource } from '@/lib/lead-pipeline/source-intent-map'
 import { resolveScrapeTerritoriesFrom } from '@/lib/lead-pipeline/scrape-territories'
-import type { NormalizedScrapedRecord } from '@/lib/lead-pipeline/raw-record-types'
+import { isWithinRecencyWindow, type NormalizedScrapedRecord } from '@/lib/lead-pipeline/raw-record-types'
 import {
   isViableRecord,
   buildLeadIdentityKey,
@@ -112,6 +112,9 @@ export interface IngestRawSourceBatchParams {
    * acquisition_cost (m634, live) sums this correctly once it is populated.
    */
   batchCostUsd?: number | null
+  /** Wave 91 (lane 91B): an explicit client-side recency window (days) for this batch. Omit
+   *  (undefined) to use the source's own SOURCE_RECENCY window; null/0 = no window. */
+  recencyDays?: number | null
 }
 
 export interface IngestBatchResult {
@@ -121,6 +124,9 @@ export interface IngestBatchResult {
   skipped_territory: number
   /** Inserts the database REFUSED (not 23505) — lane 88F; they used to be counted as duplicates. */
   skipped_refused: number
+  /** Wave 91 (lane 91B): DATED records older than their source's recency window — dropped before
+   *  the row exists, so they never reach enrichment spend. Undated records are kept. */
+  skipped_stale: number
   rawIds: string[]
 }
 
@@ -528,6 +534,7 @@ export async function ingestRawSourceBatch(
     skipped_not_viable: 0,
     skipped_territory: 0,
     skipped_refused: 0,
+    skipped_stale: 0,
     rawIds: [],
   }
 
@@ -610,6 +617,16 @@ export async function ingestRawSourceBatch(
       // Gate 1 — viability: must have at least one identity signal
       if (!isViableRecord(record)) {
         result.skipped_not_viable++
+        continue
+      }
+
+      // Gate 1b — RECENCY (wave 91, lane 91B; owner: "we should only pull more recent data"). A
+      // DATED record older than its source's window (source-intent-map.ts SOURCE_RECENCY, or the
+      // caller's explicit recencyDays) is dropped HERE — before the raw row exists, so it can never
+      // reach PeopleData. Undated records are kept (nothing proves them stale).
+      const recencyDays = params.recencyDays !== undefined ? params.recencyDays : recencyWindowForSource(record.source)
+      if (!isWithinRecencyWindow(record, recencyDays)) {
+        result.skipped_stale++
         continue
       }
 

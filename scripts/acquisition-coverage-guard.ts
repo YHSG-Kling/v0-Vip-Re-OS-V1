@@ -34,7 +34,7 @@
 import { readFileSync, existsSync } from "fs"
 import { stripComments, blankStrings } from "./strip-comments"
 import {
-  ALL_SOURCE_KEYS, SOURCE_VENDOR, SOURCE_PAID_PERSON_DATA, expandEnabledSources, vendorForSource, resolveSourceKey, type SourceKey,
+  ALL_SOURCE_KEYS, SOURCE_VENDOR, SOURCE_PAID_PERSON_DATA, SOURCE_RECENCY, expandEnabledSources, vendorForSource, resolveSourceKey, type SourceKey,
 } from "../lib/lead-pipeline/source-intent-map"
 import { SOURCE_ACQUISITION, acquisitionIntentLabel, OWNER_REQUIRED_INTENTS, recordAcquisitionIntents, type AcquisitionIntent } from "../lib/lead-pipeline/acquisition-coverage"
 import { parseSellerChatter, parseContactAgentChatter } from "../lib/lead-pipeline/scraper-parsers"
@@ -88,14 +88,36 @@ check("the markets panel reads acquisitionIntentLabel", /acquisitionIntentLabel\
 // dedup = every door writes through ingestRawSourceBatch (raw/lead/contact at write) and processRawRecord
 // (pre + post enrichment); enrichment = PeopleData unless SOURCE_PAID_PERSON_DATA says the vendor sold the
 // person (then vendor_delivered, PDL skipped); internal ($0) lanes never enrich a person they already own.
-console.log("\n  COVERAGE MATRIX (source · populations · vendor · door · territory · dedup · enrichment · cost/record · scheduled)")
+// Lane 91B — the RECENCY column (owner 2026-09-30: "we should only pull more recent data"), derived
+// from source-intent-map.ts SOURCE_RECENCY: `client:Nd` = the raw writer's Gate 1b window (before
+// enrichment); `req:<vendor key>` = the request-side window the vendor call carries; `none` is only
+// legal for a standing population / first-party lane, and the entry says why.
+console.log("\n  COVERAGE MATRIX (source · populations · vendor · door · territory · dedup · enrichment · cost/record · scheduled · recency)")
 for (const k of KEYS) {
   const a = SOURCE_ACQUISITION[k]
   const territory = a.entry === "lead_scraping_cron" ? "cron-loop" : a.entry === "batchdata_push" ? "push-match" : a.entry === "intent_campaign" ? "own-territory" : "own-mailbox"
   const dedup = a.routeChannel === null && SOURCE_VENDOR[k] === "internal" && a.entry === "lead_scraping_cron" ? "signal-only" : "raw+lead+contact"
   const enrich = SOURCE_PAID_PERSON_DATA[k] ? "vendor_delivered" : SOURCE_VENDOR[k] === "internal" ? "pdl(if raw)" : "peopledata"
   const cost = SOURCE_VENDOR[k] === "internal" ? "$0" : "stamped"
-  console.log(`    ${k.padEnd(28)} ${a.intents.join("/").padEnd(38)} ${SOURCE_VENDOR[k].padEnd(10)} ${a.entry.padEnd(19)} ${territory.padEnd(13)} ${dedup.padEnd(17)} ${enrich.padEnd(17)} ${cost.padEnd(8)} ${a.entry === "lead_scraping_cron" || a.entry === "intent_campaign" ? "dispatcher" : "event"}`)
+  const rec = SOURCE_RECENCY[k]
+  const recency = [
+    rec.windowDays ? `client:${rec.windowDays}d` : null,
+    /startPublishedDate/.test(rec.requestSide) ? "req:startPublishedDate" : /dateWindowCriteria/.test(rec.requestSide) ? "req:lookback_days" : /withinListingStatusWindow/.test(rec.requestSide) ? "client:status-date(lookback_days)" : null,
+  ].filter(Boolean).join("+") || (/first-party/.test(rec.requestSide) ? "first-party" : "population")
+  console.log(`    ${k.padEnd(28)} ${a.intents.join("/").padEnd(38)} ${SOURCE_VENDOR[k].padEnd(10)} ${a.entry.padEnd(19)} ${territory.padEnd(13)} ${dedup.padEnd(17)} ${enrich.padEnd(17)} ${cost.padEnd(8)} ${(a.entry === "lead_scraping_cron" || a.entry === "intent_campaign" ? "dispatcher" : "event").padEnd(10)} ${recency}`)
+}
+{
+  // L1r · every paid, EVENT-shaped source carries a recency window (client or request side); only a
+  // standing population (BatchData buy-box / cash-buyer / smart-search) or a first-party lane may
+  // carry none — and its entry must say which. Derived over every key; positive control below.
+  const recencyGap = (k: SourceKey, r: { windowDays: number | null; requestSide: string }) =>
+    !r.windowDays && !/startPublishedDate|dateWindowCriteria|withinListingStatusWindow|standing .*population|first-party/.test(r.requestSide)
+  const gaps = KEYS.filter((k) => recencyGap(k, SOURCE_RECENCY[k]))
+  check(`L1r every SourceKey declares a recency window or why it has none (${KEYS.length - gaps.length}/${KEYS.length})`, gaps.length === 0, gaps.join(", "))
+  check("L1r POSITIVE CONTROL: a paid post source with no window and no reason is flagged",
+    recencyGap("reddit_intent", { windowDays: null, requestSide: "none published" }))
+  check("L1r the raw writer applies the window (ingestRawSourceBatch Gate 1b reads recencyWindowForSource + isWithinRecencyWindow before the territory gate)",
+    /recencyWindowForSource\(record\.source\)/.test(code("lib/kernel/scraping.ts")) && /isWithinRecencyWindow\(record, recencyDays\)/.test(code("lib/kernel/scraping.ts")))
 }
 
 // ── L2 · territory ───────────────────────────────────────────────────────────

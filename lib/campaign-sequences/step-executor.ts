@@ -166,7 +166,10 @@ export async function executeSequenceStep(
   // voice are blocked until the lead is converted to a contact (which carries its own captured
   // TCPA consent). Closes the latent bypass where the compliance + TCPA gates below short-circuit
   // when contactId is null.
-  if (!contactId && step.channel !== "email" && step.channel !== "direct_mail") {
+  // Wave 91 (lane 91B): the ONE lead-stage predicate (lib/ai-isa/lead-channel-policy.ts) replaces
+  // the local `!== "email" && !== "direct_mail"` pair — same roster the chooser and the send doors use.
+  const { channelRefusalForRecipient } = await import("@/lib/ai-isa/lead-channel-policy")
+  if (!contactId && channelRefusalForRecipient({ contactId: null, leadId: enrollment.lead_id ?? "lead" }, step.channel)) {
     await logAndSkip(supabase, {
       enrollmentId, enrollment, step, contactId: null,
       reason: `lead-only enrollment: channel '${step.channel}' restricted to email/direct_mail`,

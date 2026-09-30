@@ -32,7 +32,7 @@ import {
 } from '@/lib/ai-isa'
 import { publishManagerSignal } from '@/lib/kernel/manager-signals'
 import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
-import { pickLeadOutreachChannel } from '@/lib/ai-isa/lead-channel-policy'
+import { pickLeadOutreachChannel, channelRefusalForRecipient } from '@/lib/ai-isa/lead-channel-policy'
 import { cohortFromEnrichment } from '@/lib/ai-isa/adaptive-reengagement'
 import {
   logISAOutreach,
@@ -230,8 +230,9 @@ export async function initiateAIISAEngagement(
     // ── forceChannel override (operator-initiated send from ISA console) ─────
     // Email and direct_mail are safe to force — no TCPA consent required.
     // Phone and SMS still require explicit TCPA validation; block them here.
-    const FORCE_ALLOWED_CHANNELS = new Set(['email', 'direct_mail'])
-    if (opts?.forceChannel && !FORCE_ALLOWED_CHANNELS.has(opts.forceChannel)) {
+    // Wave 91 (lane 91B): the allow-list is THE lead roster (LEAD_ALLOWED_CHANNELS, through the one
+    // predicate) — a hand-typed Set here was a second spelling of the rule (§6).
+    if (opts?.forceChannel && channelRefusalForRecipient({ contactId: null, leadId }, opts.forceChannel)) {
       throw new Error('Only email and direct_mail can be force-dispatched from the ISA console. Phone/SMS require TCPA compliance checks.')
     }
 
@@ -561,9 +562,11 @@ async function dispatchToChannel(
 
   // ── PHONE ──────────────────────────────────────────────────────────────
   if (channel === 'phone') {
-    // TCPA double-guard: phone is never permitted for unconsented leads
-    if (!contactRow?.id) {
-      console.error('[AI-ISA][TCPA] Phone blocked for unconsented lead', { leadId })
+    // TCPA double-guard: phone is never permitted for unconsented leads — the ONE lead-stage
+    // predicate (wave 91, lane 91B; lib/ai-isa/lead-channel-policy.ts), not a local test.
+    const phoneLeadStage = channelRefusalForRecipient({ contactId: contactRow?.id ?? null, leadId }, 'voice')
+    if (phoneLeadStage || !contactRow?.id) {
+      console.error('[AI-ISA][TCPA] Phone blocked for unconsented lead', { leadId, reason: phoneLeadStage })
       return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
     }
 
@@ -649,9 +652,11 @@ async function dispatchToChannel(
 
   // ── SMS ────────────────────────────────────────────────────────────────
   if (channel === 'sms') {
-    // TCPA double-guard: SMS is never permitted for unconsented leads
-    if (!contactRow?.id) {
-      console.error('[AI-ISA][TCPA] SMS blocked for unconsented lead', { leadId })
+    // TCPA double-guard: SMS is never permitted for unconsented leads — the ONE lead-stage
+    // predicate (wave 91, lane 91B), not a local test.
+    const smsLeadStage = channelRefusalForRecipient({ contactId: contactRow?.id ?? null, leadId }, 'sms')
+    if (smsLeadStage || !contactRow?.id) {
+      console.error('[AI-ISA][TCPA] SMS blocked for unconsented lead', { leadId, reason: smsLeadStage })
       return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
     }
 
@@ -679,8 +684,14 @@ async function dispatchToChannel(
     const smsCopyLead = buildDeterministicCopy(smsFactsLead, 'sms', lead.first_name ?? undefined)
     const smsBody = smsCopyLead.body
 
+    // WAVE 91 (lane 91B): the recipient key rides the send. This call used to carry NO contactId,
+    // so dispatchSms skipped its whole compliance block and the TCPA gate checked quiet hours
+    // only — the contact's own consent was never read. contactId (the contact's consent rules)
+    // + leadId (the lead-stage predicate) now travel with it.
     await dispatchSms({
       brokerageId: lead.brokerage_id,
+      contactId: contactRow.id,
+      leadId,
       to: phone,
       message: smsBody.slice(0, 320),
       metadata: { leadId, source: 'ai_isa', channel: 'sms' },

@@ -55,6 +55,7 @@ import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { needsCassCheck, interpretLobForGate, type MailingGateLead } from "@/lib/providers/mailing-cass-gate"
 import { resolveManagerAutonomy, autonomyDecision, managerForDispatch, HUMAN_APPROVED_SYSTEM_SOURCE } from "@/lib/managers/autonomy-gate"
 import { contentSafetyBackstop } from "@/lib/providers/content-safety"
+import { channelRefusalForRecipient } from "@/lib/ai-isa/lead-channel-policy"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
 import {
   DID_TALK_REALISM_CONFIG,
@@ -586,6 +587,14 @@ export interface DispatchSmsParams extends DispatchActorContext {
 }
 
 export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchResult> {
+  // ── LEAD-STAGE REFUSAL (wave 91, lane 91B) — owner: "Leads usually are non consenting so no
+  //    sms or calls allowed only email and direct mail." A LEAD-keyed SMS (leadId, no contactId)
+  //    used to reach evaluateOutboundCompliance on the LEAD row and then the TCPA gate with no
+  //    contactId, whose consent block never runs. Refused first, by the ONE predicate, before any
+  //    read or spend. The TCPA gate below carries the same predicate for number-only sends.
+  const leadStage = channelRefusalForRecipient({ contactId: params.contactId ?? null, leadId: params.leadId ?? null }, "sms")
+  if (leadStage) return { success: false, providerKey: "lead_channel_gate", error: `Outbound blocked: ${leadStage}` }
+
   // ── AUTONOMY GATE: hold an autonomous send from a manager outside its trust boundary ──
   const autonomyHeld = await autonomyGate(params)
   if (autonomyHeld) return autonomyHeld
@@ -697,6 +706,7 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
     to: params.to,
     message: params.message,
     contactId: params.contactId,
+    leadId: params.leadId ?? null,
     brokerageId: params.brokerageId,
     transactional: params.transactional,
   })

@@ -454,30 +454,39 @@ check("a custom tool naming an UNKNOWN capability is REFUSED",
   !invalidCustom.ok && invalidCustom.unknownCapabilities.includes("totally_invented_capability"))
 check("an empty composesCapabilities list is REFUSED (a custom tool must compose SOMETHING real)",
   !validateCustomToolDefinition({ id: "empty", label: "Empty", copy: "…", composesCapabilities: [] }).ok)
-console.log("\n[Layer 12 · schedule_callback is persona-scoped — LEAD → AI ISA callback, CONTACT → agent follow-up]")
+console.log("\n[Layer 12 · schedule_callback — a LEAD's callback ask CONVERTS it first (wave 91), a CONTACT gets the agent follow-up]")
 
 {
-  // ── SOURCE (stripped) — the branch exists, and the LEAD arm calls the
-  // EXISTING ISA outbound-callback door, never a second implementation. ──────
+  // Wave 91 (lane 91B) RE-ANCHORED TO THE RULE. Owner, 2026-09-30: "If the lead needs a callback,
+  // that is a positive intent so that lead gets converted." + "Leads usually are non consenting so
+  // no sms or calls allowed only email and direct mail." The wave-75 checks here pinned the
+  // superseded shape (LEAD arm → createCallbackTask with assigneeType 'ai_isa' → the executor
+  // DIALS the lead). The rule now: the LEAD arm converts through the ONE hop
+  // (callback-task.ts::convertLeadOnCallbackIntent → the existing converters) and falls into the
+  // CONTACT arm, so the callback lands on the assigned agent's contact.
   const cbSrc = toolsSrc // already stripped above (Layer 3)
   const leadBranchIdx = cbSrc.indexOf("if (ctx.leadId && !ctx.contactId)")
-  check("buildScheduleCallbackTool branches on `ctx.leadId && !ctx.contactId` — a LEAD-only thread is NOT the same arm as a CONTACT thread",
+  check("buildScheduleCallbackTool branches on `ctx.leadId && !ctx.contactId` — a LEAD-only thread is handled before the CONTACT arm",
     leadBranchIdx >= 0)
-  // The CONTACT arm starts at its own `const scheduledAt =` line (a CODE token,
-  // not a stripped comment — CLAUDE.md §2's "tombstone is not a call site" cuts
-  // both ways: a marker used to slice arms must survive comment-stripping too).
   const contactArmIdx = cbSrc.indexOf('const scheduledAt = isoIsUsable ? (when_iso as string) : new Date().toISOString()')
   check("the CONTACT arm comes AFTER the LEAD arm in source order (LEAD is checked first, never falls through unnoticed)",
     contactArmIdx > leadBranchIdx && leadBranchIdx >= 0)
   const leadArmSlice = leadBranchIdx >= 0 ? cbSrc.slice(leadBranchIdx, contactArmIdx > leadBranchIdx ? contactArmIdx : undefined) : ""
-  check("the LEAD arm imports/calls the EXISTING ISA callback writer (lib/ai-isa/callback-task.ts::createCallbackTask), never a second callback pipeline",
-    /import\(["']@\/lib\/ai-isa\/callback-task["']\)/.test(leadArmSlice) && /createCallbackTask\(/.test(leadArmSlice))
-  check("the LEAD arm hardcodes assigneeType 'ai_isa' — NEVER 'agent' (a lead has no agent to hand a task to, CLAUDE.md §5)",
-    /assigneeType:\s*["']ai_isa["']/.test(leadArmSlice) && !/assigneeType:\s*["']agent["']/.test(leadArmSlice))
-  check("the LEAD arm never calls notifyAssignedAgent (no agent task for an unqualified lead)",
-    !/notifyAssignedAgent\(/.test(leadArmSlice))
+  // The rule, as a finder — run on the live arm AND on the pre-91B arm (positive control).
+  const dialsTheLead = (arm: string) => /createCallbackTask\(/.test(arm) || /assigneeType:\s*["']ai_isa["']/.test(arm)
+  const convertsFirst = (arm: string) =>
+    /import\(["']@\/lib\/ai-isa\/callback-task["']\)/.test(arm) && /convertLeadOnCallbackIntent\(/.test(arm) && /ctx\.contactId\s*=\s*converted\.contactId/.test(arm)
+  check("the LEAD arm converts through the ONE hop (convertLeadOnCallbackIntent) and re-keys ctx to the new contact",
+    convertsFirst(leadArmSlice))
+  check("the LEAD arm never schedules a call TO the lead (no createCallbackTask, no assigneeType 'ai_isa')",
+    !dialsTheLead(leadArmSlice))
+  const PRE_91B_LEAD_ARM = `if (ctx.leadId && !ctx.contactId) { const { createCallbackTask } = await import("@/lib/ai-isa/callback-task"); const created = await createCallbackTask(svc, { brokerageId: ctx.brokerageId, contactId: null, leadId: ctx.leadId, phone, assigneeType: "ai_isa" }) }`
+  check("POSITIVE CONTROL: the finder flags the pre-91B LEAD arm (it dialled the lead through the executor)",
+    dialsTheLead(PRE_91B_LEAD_ARM) && !convertsFirst(PRE_91B_LEAD_ARM))
+  check("the LEAD arm does not return success on its own — a converted lead falls into the CONTACT arm",
+    !/return\s*\{\s*success:\s*true/.test(leadArmSlice))
   const contactArmSlice = contactArmIdx >= 0 ? cbSrc.slice(contactArmIdx) : ""
-  check("the CONTACT arm keeps calling notifyAssignedAgent (today's agent-side follow-up, unchanged)",
+  check("the CONTACT arm keeps calling notifyAssignedAgent (the agent-side follow-up the converted lead now lands on)",
     /notifyAssignedAgent\(/.test(contactArmSlice))
 }
 
@@ -500,7 +509,7 @@ if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
     } else {
       const brokerageId = (agent as any).brokerage_id as string
 
-      // ── (a) LEAD callback → a REAL ai_isa `tasks` row, no conversion ────────
+      // ── (a) LEAD callback → the lead CONVERTS, the callback lands on the agent's contact (wave 91) ──
       const { data: leadRow, error: leadErr } = await svc.from("leads").insert({
         brokerage_id: brokerageId, first_name: TAG, last_name: "CallbackLead",
         email: `${TAG}_lead@example.com`, phone: "+15125550100",
@@ -517,28 +526,19 @@ if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
           { when_iso: null, when_description: "next Tuesday afternoon", notes: "wants to talk pricing" },
           { toolCallId: "t-lead-callback", messages: [] },
         )
-        check("(7a) LEAD callback tool reports scheduledVia 'ai_isa_callback'",
-          leadResult?.success === true && leadResult?.scheduledVia === "ai_isa_callback", JSON.stringify(leadResult))
-
-        const { data: taskRow } = await svc
-          .from("tasks").select("id, contact_id, assignee_type, source, status, due_date")
-          .eq("brokerage_id", brokerageId).eq("source", "ai_callback")
-          .order("created_at", { ascending: false }).limit(1).maybeSingle()
-        if ((taskRow as any)?.id) reg("tasks", "id", (taskRow as any).id)
-        check("(7a) a REAL `tasks` row was written — source='ai_callback', assignee_type='ai_isa' (the AI ISA's own executor claims this, not a human)",
-          (taskRow as any)?.source === "ai_callback" && (taskRow as any)?.assignee_type === "ai_isa", JSON.stringify(taskRow))
-        check("(7a) the task carries NO contact_id — the lead never converted to place this callback",
-          (taskRow as any)?.contact_id === null || (taskRow as any)?.contact_id === undefined)
-
-        const { data: leadAfter } = await svc.from("leads").select("contact_id, is_active").eq("id", leadId).maybeSingle()
-        check("(7a) the lead did NOT convert — no contact_id, still active (a callback ask is not qualification)",
-          !(leadAfter as any)?.contact_id && (leadAfter as any)?.is_active === true, JSON.stringify(leadAfter))
-
-        const { count: agentActivityCount } = await svc
-          .from("activities").select("id", { count: "exact", head: true })
-          .eq("entity_id", leadId).eq("activity_type", "call")
-        check("(7a) NO agent-assigned follow-up activity was written for the lead (never an agent task for an unqualified lead)",
-          (agentActivityCount ?? 0) === 0, `activities=${agentActivityCount}`)
+        const { data: leadAfter } = await svc.from("leads").select("contact_id").eq("id", leadId).maybeSingle()
+        const convertedContactId = (leadAfter as any)?.contact_id ?? null
+        reg("activities", "contact_id", convertedContactId)
+        reg("contacts", "id", convertedContactId)
+        check("(7a) the LEAD converted on its callback ask (leads.contact_id set) — a callback is positive intent",
+          !!convertedContactId, JSON.stringify({ leadResult, leadAfter }))
+        check("(7a) the callback landed on the CONTACT as the agent-side follow-up (scheduledVia 'activity')",
+          leadResult?.success === true && leadResult?.scheduledVia === "activity", JSON.stringify(leadResult))
+        const { count: aiIsaTaskCount } = await svc
+          .from("tasks").select("id", { count: "exact", head: true })
+          .eq("brokerage_id", brokerageId).eq("source", "ai_callback").eq("assignee_type", "ai_isa")
+          .ilike("description", `%${leadId}%`)
+        check("(7a) NO ai_isa callback task keyed to the lead — a lead is never dialled", (aiIsaTaskCount ?? 0) === 0, `tasks=${aiIsaTaskCount}`)
       }
 
       // ── (7b) POSITIVE CONTROL — a CONTACT callback still gets the agent-side follow-up ──

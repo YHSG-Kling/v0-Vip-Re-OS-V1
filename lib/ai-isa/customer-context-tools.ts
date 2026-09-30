@@ -319,14 +319,12 @@ function buildSearchOurListingsTool(ctx: CustomerContextToolsContext) {
  * (wave 75, owner verbatim): "if a person says to call back again, that lead
  * has not been qualified yet and the ai isa needs to call them back."
  *
- *   • LEAD (no contactId yet — not yet qualified): the callback is placed by
- *     the AI ISA ITSELF, through the EXISTING outbound-callback door
- *     (lib/ai-isa/callback-task.ts::createCallbackTask → the every-5-minute
- *     executor at app/api/cron/ai-callback-dispatch — the SAME machinery the
- *     voice receptionist's own "call me back" turn action already uses, §6,
- *     never a second callback pipeline). NEVER a conversion, NEVER an agent
- *     task — assigneeType is hardcoded 'ai_isa', never 'agent' (a lead has no
- *     agent to assign one to per CLAUDE.md §5).
+ *   • LEAD (no contactId yet): SUPERSEDED wave 91 (owner: "If the lead needs a
+ *     callback, that is a positive intent so that lead gets converted." · "no
+ *     sms or calls" to a lead). The lead CONVERTS first
+ *     (callback-task.ts::convertLeadOnCallbackIntent → the existing converters)
+ *     and the callback lands on the assigned agent's contact via the CONTACT
+ *     branch. The wave-75 "AI ISA dials the lead itself" branch is gone.
  *   • CONTACT (already qualified/converted): unchanged — the agent-side
  *     follow-up (an `activities` row, the agent notified, a gated
  *     confirmation signal).
@@ -354,64 +352,32 @@ export function buildScheduleCallbackTool(ctx: CustomerContextToolsContext) {
     execute: async ({ when_iso, when_description, notes }: { when_iso: string | null; when_description: string; notes: string }) => {
       const isoIsUsable = !!when_iso && !Number.isNaN(Date.parse(when_iso))
 
-      // ── LEAD, NOT YET QUALIFIED — the AI ISA calls back itself, never a human task ──
+      // ── LEAD, NOT YET QUALIFIED — CONVERT FIRST (wave 91, lane 91B) ──────────────
+      // Owner, verbatim (2026-09-30): "If the lead needs a callback, that is a positive intent so
+      // that lead gets converted." and "Leads usually are non consenting so no sms or calls allowed
+      // only email and direct mail." The wave-75 branch that sat here had the AI ISA DIAL THE LEAD
+      // (createCallbackTask keyed to the lead → the executor cron) — the call the second ruling
+      // forbids. TOMBSTONE: that branch is replaced by the ONE conversion hop
+      // (lib/ai-isa/callback-task.ts::convertLeadOnCallbackIntent → the existing
+      // convertSellerLeadOnIntent / convertBuyerLeadOnIntent); the callback then lands on the
+      // assigned agent's CONTACT through the contact branch below — the same writer
+      // schedule_home_value_review already uses (lane 90C). A refused conversion is returned,
+      // never turned into a call to the lead.
       if (ctx.leadId && !ctx.contactId) {
         const svc = createServiceClient()
-        const { data: leadRow } = await svc
-          .from("leads").select("phone").eq("id", ctx.leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
-        const phone = (leadRow as { phone?: string | null } | null)?.phone ?? null
-        if (!phone) {
-          // No phone on file — the ISA has no number to dial. Record the ask on
-          // the lead's own follow-up column (the honest degraded case) rather
-          // than losing it silently.
+        const { convertLeadOnCallbackIntent } = await import("@/lib/ai-isa/callback-task")
+        const converted = await convertLeadOnCallbackIntent(svc, { brokerageId: ctx.brokerageId, leadId: ctx.leadId })
+        if (!converted.ok || !converted.contactId) {
           await scheduleFollowUp(ctx, {
             activityType: "call",
             scheduledAt: isoIsUsable ? (when_iso as string) : new Date().toISOString(),
-            notes: [`They said: ${when_description}`, notes, "(no phone on file — the AI ISA cannot place an outbound callback)"].filter(Boolean).join("\n"),
-            title: "Callback requested — no phone on file",
+            notes: [`They said: ${when_description}`, notes, `(callback is positive intent but the conversion was refused: ${converted.error ?? "unknown"} — a person must convert and call)`].filter(Boolean).join("\n"),
+            title: "Callback requested — conversion refused",
           })
-          return { success: false, error: "no phone number on file for this lead — the ask was recorded, but the AI ISA cannot dial without a number" }
+          return { success: false, error: `the lead could not be converted before its callback (${converted.error ?? "unknown"}) — recorded for a person; a lead is never called` }
         }
-
-        const { createCallbackTask } = await import("@/lib/ai-isa/callback-task")
-        const created = await createCallbackTask(svc, {
-          brokerageId: ctx.brokerageId,
-          contactId: null,
-          leadId: ctx.leadId,
-          phone,
-          whenPhrase: isoIsUsable ? (when_iso as string) : when_description,
-          reason: notes || null,
-          voiceCallId: null,
-          assigneeType: "ai_isa", // NEVER 'agent' — never a human task for an unqualified lead
-        })
-        if (!created.ok) return { success: false, error: created.error }
-
-        // Mirror the resolved due time onto leads.next_followup_at so the
-        // reactivation enroller's "don't nag before this date" check
-        // (followupSuppresses) does not also re-enroll the lead in nurture
-        // before the ISA's own callback fires.
-        await sentinelWrite(
-          svc,
-          svc.from("leads").update({
-            next_followup_at: created.dueIso,
-            next_followup_reason: `AI ISA callback scheduled — ${when_description}`.slice(0, 500),
-          }).eq("id", ctx.leadId).eq("brokerage_id", ctx.brokerageId),
-          { table: "leads", flow: "lead_isa_callback_scheduled", brokerageId: ctx.brokerageId },
-        )
-
-        // Visibility only, never a gated human confirmation — a lead has no
-        // portal contact yet, and SIGNAL_HANDLERS' proposeQualificationConfirmation
-        // already no-ops correctly for a lead-stage thread (signal.contactId absent).
-        await publishQualificationSignal({
-          brokerageId: ctx.brokerageId,
-          toManager: "shopping_agent",
-          signalType: "qualification_call_requested",
-          message: `AI ISA scheduled its own outbound callback to an unqualified lead: ${when_description}`,
-          contactId: null,
-          leadId: ctx.leadId,
-        })
-
-        return { success: true, scheduledVia: "ai_isa_callback" as const, dueAt: created.dueIso }
+        ctx.contactId = converted.contactId
+        if (!ctx.agentId) ctx.agentId = converted.agentId ?? null
       }
 
       // ── CONTACT (already qualified/converted) — unchanged: the agent-side follow-up ──

@@ -27,6 +27,8 @@
 //   1b. conversion_finality — a lead that has become a CONTACT is not a dial
 //                      target. `leadId` is a first-class key in this stack and
 //                      nothing asked whether it had converted. FAILS CLOSED.
+//   1c. lead_channel — an UNconverted lead is never dialled (wave 91 owner ruling:
+//                      leads get email and direct mail only). PURE, no read.
 //   2. suppression   — checkSuppression: contact flags (dnc_status /
 //                      call_stop_flag) AND contact_suppression_list,
 //                      brokerage-scoped. FAILS CLOSED (an unreadable list
@@ -95,6 +97,7 @@ export interface OutboundCallGateContext {
 export type OutboundCallGateKey =
   | "autonomy"
   | "conversion_finality"
+  | "lead_channel"
   | "suppression"
   | "tcpa"
   | "deconflict"
@@ -181,6 +184,20 @@ async function runConversionFinalityGate(ctx: OutboundCallGateContext): Promise<
   }
 }
 
+// ─── 2b. LEAD CHANNEL — a lead is never dialled (wave 91, lane 91B) ───────────
+// Owner, verbatim: "Leads usually are non consenting so no sms or calls allowed only email and
+// direct mail." Conversion finality above only refuses a CONVERTED lead; an UNconverted lead
+// passed it and then met a TCPA gate that, with no contactId, checks quiet hours alone. The ONE
+// predicate (lib/ai-isa/lead-channel-policy.ts::channelRefusalForRecipient) refuses a lead-keyed
+// dial here, PURE and before any read — so a refusal costs nothing. A dial already re-keyed to
+// the lead's contact carries a contactId and is judged by the contact's own consent (TCPA gate).
+async function runLeadChannelGate(ctx: OutboundCallGateContext): Promise<OutboundCallRefusal | null> {
+  const { channelRefusalForRecipient } = await import("@/lib/ai-isa/lead-channel-policy")
+  const refusal = channelRefusalForRecipient({ contactId: ctx.contactId, leadId: ctx.leadId ?? null }, "voice")
+  if (!refusal) return null
+  return { ok: false, error: `Outbound blocked: ${refusal}`, blocked: true, blockReason: "lead_stage" }
+}
+
 // ─── 3. SUPPRESSION — the list-aware gate the live lane never had ─────────────
 // checkSuppression reads BOTH the contact flags (dnc_status / call_stop_flag)
 // and contact_suppression_list, brokerage-scoped, and FAILS CLOSED on a refused
@@ -220,6 +237,7 @@ async function runTcpaGate(ctx: OutboundCallGateContext): Promise<OutboundCallRe
     channel: "call",
     phone: ctx.toNumber,
     contactId: ctx.contactId,
+    leadId: ctx.leadId ?? null,
     brokerageId: ctx.brokerageId,
     initiatedBy: ctx.initiatedBy ?? null,
     transactional: ctx.transactional ?? false,
@@ -293,7 +311,8 @@ async function runVendorBudgetGate(ctx: OutboundCallGateContext): Promise<Outbou
 export const OUTBOUND_CALL_GATES: readonly OutboundCallGate[] = [
   { key: "autonomy",            consumerProtection: true,  run: runAutonomyGate },
   { key: "conversion_finality", consumerProtection: true,  run: runConversionFinalityGate },
-  { key: "suppression",         consumerProtection: true,  run: runSuppressionGate },
+  { key: "lead_channel",        consumerProtection: true,  run: runLeadChannelGate },
+  { key: "suppression",        consumerProtection: true,  run: runSuppressionGate },
   { key: "tcpa",                consumerProtection: true,  run: runTcpaGate },
   { key: "deconflict",          consumerProtection: true,  run: runDeconflictGate },
   { key: "vendor_budget",       consumerProtection: false, run: runVendorBudgetGate },

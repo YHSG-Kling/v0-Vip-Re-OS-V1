@@ -321,6 +321,67 @@ export interface CreateCallbackTaskResult {
   taskId?: string
   dueIso?: string
   error?: string
+  /** Wave 91 (lane 91B): the contact the task landed on (the converted contact for a lead ask). */
+  contactId?: string | null
+  /** Who executes it — 'agent' whenever the ask came from a LEAD (converted first). */
+  assigneeType?: "ai_isa" | "agent"
+  /** Set when the ask came from a lead and the lead was converted before the task was written. */
+  convertedFromLeadId?: string | null
+}
+
+// ── CALLBACK = POSITIVE INTENT (wave 91, lane 91B) ─────────────────────────────
+//
+// Owner, verbatim (2026-09-30): "If the lead needs a callback, that is a positive intent so that
+// lead gets converted." and "Leads usually are non consenting so no sms or calls allowed only
+// email and direct mail." Before this, a LEAD's callback ask wrote an `assignee_type:'ai_isa'`
+// task keyed to the LEAD and the executor DIALLED the lead — the exact call the second ruling
+// forbids. Now every callback writer converts the lead FIRST through the EXISTING converters
+// (convertSellerLeadOnIntent / convertBuyerLeadOnIntent → acceptAIISAHandoff → assignment →
+// createContactFromLead — never a new converter), and the callback lands on the ASSIGNED AGENT'S
+// CONTACT. A lead is never the dial target of a callback.
+
+export interface CallbackConversion {
+  ok: boolean
+  contactId?: string
+  /** agents.id of the contact's assigned agent (tasks.assigned_to_agent_id FKs agents). */
+  agentId?: string | null
+  side?: "buyer" | "seller"
+  alreadyConverted?: boolean
+  error?: string
+}
+
+export type LeadCallbackConverter = (p: { brokerageId: string; leadId: string; side?: "buyer" | "seller" | null }) => Promise<CallbackConversion>
+
+/**
+ * convertLeadOnCallbackIntent — THE lead→contact hop for a callback ask. The side is the caller's
+ * when known, else the lead's own motivation_type / lead_type through the classifier's side rule
+ * (deriveLeadSide — 'both' is worked as a buyer until split), else buyer. The reason is
+ * 'positive_reply': a callback ask IS positive intent (owner) and carries no milestone of its own.
+ * Every read reads its error (§3); the tenant predicate rides every read.
+ */
+export async function convertLeadOnCallbackIntent(
+  svc: any,
+  params: { brokerageId: string; leadId: string; side?: "buyer" | "seller" | null },
+): Promise<CallbackConversion> {
+  let side = params.side ?? null
+  if (!side) {
+    const { data: lead, error } = await svc
+      .from("leads").select("motivation_type, lead_type")
+      .eq("id", params.leadId).eq("brokerage_id", params.brokerageId).maybeSingle()
+    if (error) return { ok: false, error: `lead read refused: ${error.message}` }
+    if (!lead) return { ok: false, error: "lead not found in this brokerage" }
+    const { deriveLeadSide } = await import("./inbound-intent-classifier")
+    side = deriveLeadSide((lead as any).motivation_type ?? null, (lead as any).lead_type ?? null) ?? "buyer"
+  }
+  const res = side === "seller"
+    ? await (await import("./convert-seller-lead-on-intent")).convertSellerLeadOnIntent({ brokerageId: params.brokerageId, leadId: params.leadId, reason: "positive_reply" })
+    : await (await import("./convert-buyer-lead-on-intent")).convertBuyerLeadOnIntent({ brokerageId: params.brokerageId, leadId: params.leadId, reason: "positive_reply" })
+  if (!res.success || !res.contactId) return { ok: false, side, error: res.error ?? "conversion refused" }
+  const { data: c, error: cErr } = await svc
+    .from("contacts").select("agent_id")
+    .eq("id", res.contactId).eq("brokerage_id", params.brokerageId).maybeSingle()
+  if (cErr) return { ok: true, contactId: res.contactId, agentId: null, side, alreadyConverted: res.alreadyConverted, error: `contact agent read refused: ${cErr.message}` }
+  return { ok: true, contactId: res.contactId, agentId: (c as { agent_id?: string | null } | null)?.agent_id ?? null, side, alreadyConverted: res.alreadyConverted }
 }
 
 /**
@@ -332,12 +393,49 @@ export interface CreateCallbackTaskResult {
  * hand. Never throws; a refused insert is reported, never swallowed (CLAUDE.md
  * §3 — supabase-js resolves refusals, so the error is always read here).
  */
-export async function createCallbackTask(svc: any, params: CreateCallbackTaskParams): Promise<CreateCallbackTaskResult> {
+export async function createCallbackTask(
+  svc: any,
+  params: CreateCallbackTaskParams,
+  /** Test seam — the proof injects the converter so no live conversion runs. */
+  deps?: { convertLead?: LeadCallbackConverter; handOff?: typeof handOffAbandonedCallback },
+): Promise<CreateCallbackTaskResult> {
   const phone = params.phone.trim()
   if (!phone) return { ok: false, error: "no callback phone number available" }
 
+  // CONVERT FIRST (wave 91, lane 91B — see the block above). A lead-keyed ask never becomes a
+  // lead-keyed task: the lead converts, the task lands on the contact, the assigned agent owns it.
+  let contactId = params.contactId
+  let assigneeType: "ai_isa" | "agent" = params.assigneeType ?? "ai_isa"
+  let assignedToAgentId = params.assignedToAgentId ?? null
+  let convertedFromLeadId: string | null = null
+  if (!contactId && params.leadId) {
+    const convert: LeadCallbackConverter = deps?.convertLead ?? ((p) => convertLeadOnCallbackIntent(svc, p))
+    const conv = await convert({ brokerageId: params.brokerageId, leadId: params.leadId })
+    if (!conv.ok || !conv.contactId) {
+      // FAIL CLOSED: no lead-keyed callback task (a lead is never called). The ask is not dropped:
+      // the EXISTING human hand-off (handOffAbandonedCallback below — lead follow-up column + the
+      // brokerage lead desk's bell) records it for a person. The refusal is returned either way.
+      try {
+        const handOff = deps?.handOff ?? handOffAbandonedCallback
+        await handOff(svc, {
+          brokerageId: params.brokerageId, taskId: "(not written — lead conversion refused)",
+          contactId: null, leadId: params.leadId, phone, reason: params.reason, rawPhrase: params.whenPhrase, attempts: 0,
+        })
+      } catch (e: any) {
+        console.error("[callback-task] lead-conversion-refused hand-off failed:", e?.message ?? e)
+      }
+      return {
+        ok: false,
+        error: `a callback ask is positive intent — the lead converts to a contact before the callback is scheduled, and the conversion was refused (${conv.error ?? "unknown"}); no call to a lead was scheduled`,
+      }
+    }
+    contactId = conv.contactId
+    assigneeType = "agent"
+    assignedToAgentId = conv.agentId ?? assignedToAgentId
+    convertedFromLeadId = params.leadId
+  }
+
   const resolved = await resolveCallbackDueDate(params.whenPhrase, new Date().toISOString())
-  const assigneeType = params.assigneeType ?? "ai_isa"
 
   const description = encodeCallbackNote({
     phone,
@@ -345,16 +443,17 @@ export async function createCallbackTask(svc: any, params: CreateCallbackTaskPar
     rawPhrase: params.whenPhrase,
     voiceCallId: params.voiceCallId,
     // leads.id rides in the note (see CallbackNote.leadId) — tasks.contact_id
-    // below is a contacts.id slot and must never receive it.
-    leadId: params.contactId ? null : params.leadId ?? null,
+    // below is a contacts.id slot and must never receive it. After the
+    // conversion above a lead ask carries its CONTACT, so the note is lead-free.
+    leadId: contactId ? null : params.leadId ?? null,
   })
 
   const { data, error } = await svc
     .from("tasks")
     .insert({
       brokerage_id: params.brokerageId,
-      contact_id: params.contactId,
-      assigned_to_agent_id: params.assignedToAgentId ?? null,
+      contact_id: contactId,
+      assigned_to_agent_id: assignedToAgentId,
       title: `Call back${params.reason ? ` — ${params.reason}` : ""}`.slice(0, 200),
       description,
       due_date: resolved.dueIso,
@@ -369,7 +468,7 @@ export async function createCallbackTask(svc: any, params: CreateCallbackTaskPar
 
   if (error) return { ok: false, error: error.message }
   if (!data?.id) return { ok: false, error: "callback task insert returned no row" }
-  return { ok: true, taskId: data.id, dueIso: resolved.dueIso }
+  return { ok: true, taskId: data.id, dueIso: resolved.dueIso, contactId, assigneeType, convertedFromLeadId }
 }
 
 // ── The give-up hand-off (lane 90C — humans when warranted) ─────────────────
@@ -480,7 +579,67 @@ const CALLBACK_ASK = /\b(call (me|him|her|them) back|callback|give (me|him|her|t
  */
 export function detectCallbackRequest(turns: string[]): { requested: boolean; phrase: string | null } {
   for (const t of turns) {
-    if (CALLBACK_ASK.test(t)) return { requested: true, phrase: t.slice(0, 120) }
+    // Wave 91 (lane 91B): the SAME detector now also reads a WRITTEN reply (the inbound email
+    // classifier asks it — a callback ask converts the lead, owner ruling), so it learned the
+    // written asks ("please call me", "give me a call") and a NEGATION guard: "don't call me back"
+    // / "never call me" is an opt-out, never a callback (the negative-intent halt owns it).
+    if (CALLBACK_NEGATED.test(t)) continue
+    if (CALLBACK_ASK.test(t) || CALLBACK_ASK_WRITTEN.test(t)) return { requested: true, phrase: t.slice(0, 120) }
   }
   return { requested: false, phrase: null }
 }
+
+/**
+ * PURE (wave 91, lane 91B) — a callback ask in an inbound message IS positive intent (owner:
+ * "If the lead needs a callback, that is a positive intent so that lead gets converted."). Returns
+ * the intent the inbound router converts on: the classifier's own when it found one, else the
+ * lead's known side with 'positive_reply', else buyer ('both'/unknown is worked as a buyer until
+ * split — the classifier's deriveLeadSide precedent). null when the message asks for no callback.
+ * Callers run it AFTER their negative-intent halt; the detector's negation guard is the second net.
+ */
+export function callbackPositiveIntent<T extends { side: "buyer" | "seller"; reason: string }>(
+  message: string,
+  classified: T | null,
+  knownSide: "buyer" | "seller" | null,
+): T | { side: "buyer" | "seller"; reason: "positive_reply" } | null {
+  if (!detectCallbackRequest([message]).requested) return null
+  return classified ?? { side: knownSide ?? "buyer", reason: "positive_reply" }
+}
+
+/**
+ * Lands a converted person's callback on the ASSIGNED AGENT'S CONTACT (wave 91, lane 91B): one
+ * `activities` follow-up through the EXISTING writer (qualification-signals.ts scheduleFollowUp →
+ * writeFollowUpActivity) at the time the person named, and the agent's bell (notifyAssignedAgent).
+ * Used by every surface that converts a lead on a callback ask without holding a callback task
+ * (the inbound email classifier). Every read reads its error.
+ */
+export async function landCallbackOnAgentContact(svc: any, params: {
+  brokerageId: string
+  contactId: string
+  whenPhrase: string
+  reason: string | null
+}): Promise<{ ok: boolean; activityId?: string; dueIso?: string; error?: string }> {
+  const { data: c, error: cErr } = await svc
+    .from("contacts").select("agent_id")
+    .eq("id", params.contactId).eq("brokerage_id", params.brokerageId).maybeSingle()
+  if (cErr) return { ok: false, error: `contact read refused: ${cErr.message}` }
+  const agentId = (c as { agent_id?: string | null } | null)?.agent_id ?? null
+  const due = await resolveCallbackDueDate(params.whenPhrase, new Date().toISOString())
+  const { scheduleFollowUp, notifyAssignedAgent } = await import("./qualification-signals")
+  const notes = [`They asked for a callback: "${params.whenPhrase.slice(0, 160)}"`, params.reason].filter(Boolean).join("\n")
+  const r = await scheduleFollowUp(
+    { brokerageId: params.brokerageId, contactId: params.contactId, agentId },
+    { activityType: "call", scheduledAt: due.dueIso, notes, title: "Callback requested — call them back" },
+  )
+  if (!r.success) return { ok: false, error: r.error }
+  await notifyAssignedAgent(
+    { brokerageId: params.brokerageId, contactId: params.contactId, agentId },
+    { type: "qualification_callback_requested", title: "New contact asked for a callback", body: notes.split("\n")[0], entityType: "contact", entityId: params.contactId },
+  )
+  return { ok: true, activityId: r.activityId, dueIso: due.dueIso }
+}
+
+/** Written callback asks — word-boundaried, no greedy `.*` (same caution as CALLBACK_ASK). */
+const CALLBACK_ASK_WRITTEN = /\b((please|pls|can you|could you|would you|can someone|could someone|have (someone|the agent|an agent|your agent)) (give me a call|call me)|give me a (call|ring)|call me (at|on|tomorrow|today|tonight|this|next|after|before|when|anytime|any time|asap)|best (time|number) to (call|reach) me)\b/i
+/** An ask that is NEGATED is not an ask. */
+const CALLBACK_NEGATED = /\b(don'?t|do not|never|stop|no need to|please don'?t)\s+(ever\s+)?(call|give me a call|ring|phone)\b/i

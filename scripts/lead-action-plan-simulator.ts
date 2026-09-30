@@ -410,8 +410,11 @@ check("CRON-PER-TENANT: the sweep is brokerage-scoped, never a global un-scoped 
 // (lib/campaign-sequences/step-executor.ts) keeps its lead restriction, and this
 // lane does not touch it.
 const stepExec = code("lib/campaign-sequences/step-executor.ts")
+// Re-anchored to the RULE (wave 91, lane 91B): the restriction now asks the ONE lead-stage
+// predicate (lead-channel-policy.ts::channelRefusalForRecipient) instead of a local
+// `step.channel !== "email" && …` pair — either spelling is the restriction; its absence is not.
 check("NO-SECOND-SEQUENCER: the generic step executor still restricts leads to email/direct_mail",
-  /!contactId\s*&&\s*step\.channel\s*!==/.test(stepExec))
+  /!contactId\s*&&\s*(step\.channel\s*!==|channelRefusalForRecipient\([^)]*step\.channel\))/.test(stepExec))
 check("NO-SECOND-SEQUENCER-CONTROL (positive control): this lane never writes sequence_enrollments",
   !/sequence_enrollments/.test(plan))
 

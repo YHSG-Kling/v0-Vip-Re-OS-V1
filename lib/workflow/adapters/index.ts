@@ -98,8 +98,11 @@ const aiCallAdapter: ChannelAdapter = {
   channel: "ai_call",
   async execute(ctx: StepContext): Promise<StepResult> {
     const { contact, agentId, entity } = ctx
-    if (entity === "lead") {
-      return { status: "skipped", providerKey: "ai_call", error: "ai_call not permitted for unconsented leads (email/direct-mail only)" }
+    // Wave 91 (lane 91B): the ONE lead-stage predicate, not a local entity test.
+    const { channelRefusalForRecipient } = await import("@/lib/ai-isa/lead-channel-policy")
+    const leadStage = channelRefusalForRecipient(entity === "lead" ? { leadId: (contact?.id as string) ?? "lead" } : { contactId: (contact?.id as string) ?? null }, "ai_call")
+    if (leadStage) {
+      return { status: "skipped", providerKey: "ai_call", error: leadStage }
     }
     if (!contact?.id || !contact?.phone) {
       return { status: "error", providerKey: "ai_call", error: "No contact phone for ai_call" }

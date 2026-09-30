@@ -70,6 +70,8 @@ export interface SendSMSParams {
   to: string
   message: string
   contactId?: string
+  /** Wave 91 (lane 91B): the LEAD this send is keyed to — the TCPA gate refuses it (no SMS to a lead). */
+  leadId?: string | null
   brokerageId?: string
   initiatedBy?: string
   /** Bypass EWC (still enforces DNC + quiet hours + opt-out + RND staleness) */
@@ -98,6 +100,7 @@ export async function sendSMS(params: SendSMSParams): Promise<SendSMSResult> {
       channel:       "sms",
       phone:         params.to,
       contactId:     params.contactId   ?? null,
+      leadId:        params.leadId      ?? null,
       brokerageId:   params.brokerageId ?? null,
       initiatedBy:   params.initiatedBy ?? null,
       transactional: params.transactional ?? false,
@@ -158,6 +161,8 @@ export interface PlaceCallParams {
   /** TwiML URL that Twilio will request to control the call flow */
   twimlUrl: string
   contactId?: string
+  /** Wave 91 (lane 91B): the LEAD this dial is keyed to — the TCPA gate refuses it (no calls to a lead). */
+  leadId?: string | null
   brokerageId?: string
   initiatedBy?: string
   /** Bypass EWC (still enforces DNC + quiet hours + RND staleness) */
@@ -183,6 +188,7 @@ export async function placeCall(params: PlaceCallParams): Promise<PlaceCallResul
       channel:       "call",
       phone:         params.to,
       contactId:     params.contactId   ?? null,
+      leadId:        params.leadId      ?? null,
       brokerageId:   params.brokerageId ?? null,
       initiatedBy:   params.initiatedBy ?? null,
       transactional: params.transactional ?? false,

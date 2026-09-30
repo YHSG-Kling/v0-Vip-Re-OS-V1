@@ -44,6 +44,7 @@ import {
   detectNegativeIntent,
   haltEngagementForNegativeReply,
 } from "./conversation-handler"
+import { callbackPositiveIntent, landCallbackOnAgentContact } from "./callback-task"
 import {
   convertSellerLeadOnIntent,
   type SellerIntentReason,
@@ -158,6 +159,10 @@ export interface ClassifyAndRouteResult {
    *  is too weak to convert on without the model — held, kept nurturing. */
   reason?: "none" | "negative" | "lead_not_found" | "convert_failed" | "degraded_held"
   error?: string
+  /** Wave 91 (lane 91B): the message asked for a callback (positive intent → converted). */
+  callbackRequested?: boolean
+  /** The callback landed as a follow-up on the assigned agent's contact. */
+  callbackLanded?: boolean
   /** Which layer classified this message (absent on the negative halt and the
    *  lead-not-found skip, where no classifier ran). */
   classifierSource?: ClassifierSource
@@ -253,6 +258,12 @@ export function keywordIntentFallback(
   // ── Side-explicit bare positive (sell / buy stated, no specific milestone) ──
   if (sellsSignal && !buysSignal) return { side: "seller", reason: "positive_reply" }
   if (buysSignal && !sellsSignal) return { side: "buyer", reason: "positive_reply" }
+
+  // ── CALLBACK ASK = POSITIVE INTENT (wave 91, lane 91B, owner ruling) ────────
+  // An explicit "please call me back" converts, on the known side (buyer when unknown — the
+  // deriveLeadSide 'both' precedent). The ONE detector (callback-task.ts), negation-guarded.
+  const callbackAsk = callbackPositiveIntent<ClassifiedIntent>(message, null, knownSide ?? null)
+  if (callbackAsk) return callbackAsk as ClassifiedIntent
 
   // ── Bare POSITIVE reply — route on knownSide ────────────────────────────────
   const positiveReply = has(text, "yes", "interested", "tell me more", "sounds good",
@@ -380,7 +391,9 @@ Respond with ONLY the label, nothing else.`,
 // Layer 2 — LIVE router: read context → classify → halt / route / nurture
 // ─────────────────────────────────────────────────────────────────────────────
 
-function deriveSide(motivation: string | null, leadType: string | null): IntentSide | null {
+/** Exported (wave 91, lane 91B) so the callback converter (lib/ai-isa/callback-task.ts
+ *  convertLeadOnCallbackIntent) resolves a lead's side by THIS rule, not a second copy (§6). */
+export function deriveLeadSide(motivation: string | null, leadType: string | null): IntentSide | null {
   const m = (motivation ?? "").toLowerCase()
   const lt = (leadType ?? "").toLowerCase()
   // Explicit seller signal wins; 'both' and bare buyer map to buyer (mirrors
@@ -454,7 +467,7 @@ export async function classifyAndRouteInbound(
     }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
   }
 
-  const knownSide = deriveSide((lead as any).motivation_type, (lead as any).lead_type)
+  const knownSide = deriveLeadSide((lead as any).motivation_type, (lead as any).lead_type)
 
   // What's already known on the (possibly already-converted) contact — lets the
   // SAME positive reply route correctly and avoids redundant milestone work.
@@ -497,7 +510,13 @@ export async function classifyAndRouteInbound(
     verdict.intent?.reason === "positive_reply" &&
     verdict.source === "keyword_fallback" &&
     verdict.degraded === "model_unavailable"
-  const classified = heldForModel ? null : verdict.intent
+  // CALLBACK = POSITIVE INTENT (wave 91, lane 91B — owner: "If the lead needs a callback, that
+  // is a positive intent so that lead gets converted."). An explicit callback ask converts even
+  // when the model read it as ambiguous, and even with the model down (it is a deterministic,
+  // negation-guarded ask — not the bare "ok" the degraded hold exists for). Negatives were halted
+  // at Gate 0 above. The callback then lands on the assigned agent's contact (below).
+  const callbackIntent = callbackPositiveIntent<ClassifiedIntent>(params.message, heldForModel ? null : verdict.intent, knownSide) as ClassifiedIntent | null
+  const classified: ClassifiedIntent | null = callbackIntent ?? (heldForModel ? null : verdict.intent)
 
   // AMBIGUOUS / no clear intent → NO conversion. Record a nurture touch, keep nurturing.
   if (!classified) {
@@ -586,11 +605,15 @@ export async function classifyAndRouteInbound(
     if (!res.success) {
       return { outcome: "skipped", classified, reason: "convert_failed", error: res.error, ...provenance }
     }
+    const landed = callbackIntent && res.contactId
+      ? await landCallbackOnAgentContact(svc, { brokerageId: params.brokerageId, contactId: res.contactId, whenPhrase: params.message.slice(0, 200), reason: "asked for a callback in their reply" })
+      : null
     return {
       outcome: "converted",
       classified,
       contactId: res.contactId,
       alreadyConverted: res.alreadyConverted,
+      ...(callbackIntent ? { callbackRequested: true, callbackLanded: landed?.ok === true, ...(landed && !landed.ok ? { error: `callback not landed: ${landed.error}` } : {}) } : {}),
       ...provenance,
     }
   }
@@ -608,11 +631,15 @@ export async function classifyAndRouteInbound(
   if (!res.success) {
     return { outcome: "skipped", classified, reason: "convert_failed", error: res.error, ...provenance }
   }
+  const landed = callbackIntent && res.contactId
+    ? await landCallbackOnAgentContact(svc, { brokerageId: params.brokerageId, contactId: res.contactId, whenPhrase: params.message.slice(0, 200), reason: "asked for a callback in their reply" })
+    : null
   return {
     outcome: "converted",
     classified,
     contactId: res.contactId,
     alreadyConverted: res.alreadyConverted,
+    ...(callbackIntent ? { callbackRequested: true, callbackLanded: landed?.ok === true, ...(landed && !landed.ok ? { error: `callback not landed: ${landed.error}` } : {}) } : {}),
     ...provenance,
   }
 }

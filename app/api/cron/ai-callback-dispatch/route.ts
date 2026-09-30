@@ -100,7 +100,7 @@ export async function GET(request: Request) {
       .limit(BATCH)
     if (error) throw new Error(`tasks read refused: ${error.message}`)
 
-    let dialed = 0, blocked = 0, cancelled = 0, alreadyClaimed = 0, malformed = 0, dialFailed = 0, handedToHuman = 0
+    let dialed = 0, blocked = 0, cancelled = 0, alreadyClaimed = 0, malformed = 0, dialFailed = 0, handedToHuman = 0, convertedToAgent = 0
     const refusals: Array<{ task_id: string; error: string }> = []
 
     for (const t of due ?? []) {
@@ -182,6 +182,47 @@ export async function GET(request: Request) {
         leadId = (leadRow as any)?.id ?? null
       }
 
+      // ── A LEAD IS NEVER DIALLED (wave 91, lane 91B) ─────────────────────────────
+      // Owner: "If the lead needs a callback, that is a positive intent so that lead gets
+      // converted." + "Leads usually are non consenting so no sms or calls allowed only email and
+      // direct mail." A lead-keyed task (written before the writer converted, or a raw caller who
+      // matched a lead by phone) used to be dialled right here. It now CONVERTS through the ONE hop
+      // (lib/ai-isa/callback-task.ts::convertLeadOnCallbackIntent → the existing converters) and the
+      // task is re-keyed to the contact and handed to the assigned agent (assignee_type 'agent' —
+      // the task-due sweep + click-to-call already serve it). No dial. A refused conversion
+      // cancels the task and hands the ask to the lead desk (the existing give-up hand-off).
+      if (!contactId && leadId) {
+        const { convertLeadOnCallbackIntent, handOffAbandonedCallback } = await import("@/lib/ai-isa/callback-task")
+        const conv = await convertLeadOnCallbackIntent(svc, { brokerageId, leadId })
+        if (!conv.ok || !conv.contactId) {
+          cancelled++
+          await sentinelWrite(svc, svc.from("tasks").update({
+            status: "cancelled", updated_at: nowIso,
+            description: `${(t as any).description}\n[NOT DIALLED — a lead is never called; conversion refused: ${conv.error ?? "unknown"}]`.slice(0, 2000),
+          }).eq("id", taskId), { table: "tasks", flow: "ai_callback_lead_not_dialled", reason: "cancels a lead-keyed callback whose conversion was refused; a loss is ledgered" })
+          const handoff = await handOffAbandonedCallback(svc, {
+            brokerageId, taskId, contactId: null, leadId,
+            phone: note.phone, reason: note.reason, rawPhrase: note.rawPhrase, attempts: note.attempts ?? 0,
+          })
+          if (handoff.humanTask !== "none" || handoff.notified > 0) handedToHuman++
+          refusals.push({ task_id: taskId, error: `lead callback not dialled — conversion refused: ${conv.error ?? "unknown"}` })
+          continue
+        }
+        const { data: rekeyed, error: rekeyErr } = await svc.from("tasks").update({
+          status: "pending", updated_at: nowIso,
+          contact_id: conv.contactId,
+          assignee_type: "agent",
+          assigned_to_agent_id: conv.agentId ?? null,
+          description: encodeCallbackNote({ ...note, leadId: null }),
+        }).eq("id", taskId).eq("brokerage_id", brokerageId).select("id")
+        if (rekeyErr || (rekeyed ?? []).length === 0) {
+          refusals.push({ task_id: taskId, error: `converted lead ${leadId} → contact ${conv.contactId}, but the task re-key was refused: ${rekeyErr?.message ?? "0 rows"}` })
+        } else {
+          convertedToAgent++
+        }
+        continue
+      }
+
       const { placeOutboundAiCall } = await import("@/lib/voice/twilio-outbound")
       const placed = await placeOutboundAiCall(svc, {
         toNumber: note.phone,
@@ -250,7 +291,7 @@ export async function GET(request: Request) {
       scanned: due?.length ?? 0,
       batch_cap: BATCH,
       capped: (due?.length ?? 0) >= BATCH,
-      dialed, blocked, cancelled, alreadyClaimed, malformed, dialFailed, handedToHuman,
+      dialed, blocked, cancelled, alreadyClaimed, malformed, dialFailed, handedToHuman, convertedToAgent,
       refusals: refusals.slice(0, 20),
     }
     await recordCronSuccessAction({

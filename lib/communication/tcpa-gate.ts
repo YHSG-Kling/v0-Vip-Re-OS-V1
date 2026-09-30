@@ -90,12 +90,17 @@ export type TCPABlockReason =
   | "opted_out"
   | "missing_phone"
   | "tcpa_litigator"
+  /** Wave 91 (lane 91B): the recipient is a LEAD — no SMS, no calls (owner ruling). */
+  | "lead_stage"
   | "other"
 
 export interface TCPAGateInput {
   channel:       "sms" | "call"
   phone:         string
   contactId?:    string | null
+  /** Wave 91 (lane 91B): the LEAD this send is keyed to, when there is no contact. A
+   *  lead-keyed send is refused outright — leads are non-consenting (owner ruling). */
+  leadId?:       string | null
   brokerageId?:  string | null
   initiatedBy?:  string | null
   /** Set true on system-of-record retention/transactional notices that may
@@ -122,6 +127,20 @@ export async function enforceTCPACompliance(input: TCPAGateInput): Promise<TCPAG
   if (!input.phone || input.phone.replace(/\D/g, "").length < 10) {
     const log = await writeLog(input, "blocked", "missing_phone", { reason: "phone empty or invalid format" })
     return { allowed: false, blockReason: "missing_phone", message: "Phone number missing or invalid", logEntryId: log }
+  }
+
+  // 0. LEAD-STAGE REFUSAL (wave 91, lane 91B — owner: "Leads usually are non consenting so no
+  //    sms or calls allowed only email and direct mail"). Without a contactId the consent block
+  //    below never runs, so a lead-keyed or number-only send used to reach quiet hours alone and
+  //    pass. The ONE predicate (lib/ai-isa/lead-channel-policy.ts::channelRefusalForRecipient)
+  //    refuses a lead-keyed send; a number-only send is resolved by phone against the tenant's
+  //    UNCONVERTED leads. FAILS CLOSED: an unreadable lookup refuses a marketing send.
+  {
+    const leadRefusal = await leadStageRefusal(input)
+    if (leadRefusal) {
+      const log = await writeLog(input, "blocked", "lead_stage", { reason: "lead_stage", detail: leadRefusal, lead_id: input.leadId ?? null })
+      return { allowed: false, blockReason: "lead_stage", message: leadRefusal, logEntryId: log }
+    }
   }
 
   // 1. Look up contact compliance state (when contactId provided — most paths have it)
@@ -295,6 +314,37 @@ export async function enforceTCPACompliance(input: TCPAGateInput): Promise<TCPAG
     recipientLocalHour: qh.recipientLocalHour,
     logEntryId:         logId,
   }
+}
+
+/**
+ * Wave 91 (lane 91B) — is this SMS/call aimed at a LEAD? The keys decide first (a contactId is a
+ * contact: its consent is judged below; a leadId alone is a lead). A NUMBER-ONLY send is resolved
+ * against the tenant's leads by phone: a match on an unconverted lead with no contact carrying the
+ * same number is a lead. A transactional (recipient-initiated) number-only send skips the lookup —
+ * the recipient reached us first — but an explicitly lead-keyed send never does.
+ * Returns the refusal reason, or null.
+ */
+export async function leadStageRefusal(input: TCPAGateInput): Promise<string | null> {
+  const { channelRefusalForRecipient, leadStageChannelRefusal } = await import("@/lib/ai-isa/lead-channel-policy")
+  const channel = input.channel === "call" ? "voice" : "sms"
+  const keyed = channelRefusalForRecipient({ contactId: input.contactId ?? null, leadId: input.leadId ?? null }, channel)
+  if (keyed) return keyed
+  if (input.contactId || input.leadId || input.transactional || !input.brokerageId) return null
+  const ten = input.phone.replace(/\D/g, "").slice(-10)
+  if (ten.length !== 10) return null
+  const svc = createServiceClient()
+  // phone_digits is GENERATED on both tables (regexp_replace(phone, '\D', '', 'g') — live read
+  // 2026-09-30), so a stored "+1 (512) …" reads as 1512…; both spellings are matched.
+  const [{ data: leadRows, error: leadErr }, { data: contactRows, error: contactErr }] = await Promise.all([
+    svc.from("leads").select("id").eq("brokerage_id", input.brokerageId).in("phone_digits", [ten, `1${ten}`]).is("contact_id", null).limit(1),
+    svc.from("contacts").select("id").eq("brokerage_id", input.brokerageId).in("phone_digits", [ten, `1${ten}`]).limit(1),
+  ])
+  const readErr = leadErr ?? contactErr
+  if (readErr) {
+    return `Could not verify whether this number belongs to a lead (${readErr.message}) — nothing was sent; a lead may not be texted or called.`
+  }
+  if ((leadRows ?? []).length > 0 && (contactRows ?? []).length === 0) return leadStageChannelRefusal(channel)
+  return null
 }
 
 async function writeLog(

@@ -308,7 +308,10 @@ export async function createCallbackTaskFromCall(
       await sentinelWrite(svc, svc.from("notifications").insert({
         user_id: ctx.agentUserId, brokerage_id: ctx.brokerageId, type: "callback_requested",
         title: "The AI receptionist booked a callback",
-        body: `A caller asked to be called back${reason ? ` about: ${reason}` : ""} — the ISA will place the call around ${new Date(result.dueIso!).toLocaleString()}. Transcript on the call record.`,
+        // Wave 91 (lane 91B): a LEAD's ask converts it first and lands on the assigned agent.
+        body: result.assigneeType === "agent"
+          ? `A caller asked to be called back${reason ? ` about: ${reason}` : ""} — a callback is positive intent, so they are now a contact and the callback is on the assigned agent's task list for ${new Date(result.dueIso!).toLocaleString()}. Transcript on the call record.`
+          : `A caller asked to be called back${reason ? ` about: ${reason}` : ""} — the ISA will place the call around ${new Date(result.dueIso!).toLocaleString()}. Transcript on the call record.`,
         entity_type: "voice_call", entity_id: call.id, priority: "medium", channel: "in_app", is_read: false,
       }), { table: "notifications", flow: "voice_callback_requested_notify", brokerageId: ctx.brokerageId, reason: "the callback task itself already exists; this is only the agent heads-up" })
     }

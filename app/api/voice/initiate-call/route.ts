@@ -79,7 +79,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       contactId = leadRow.contact_id
       resolvedLeadId = null // contact takes precedence; no need to track lead separately
     }
-    // If leadRow?.contact_id is null — leave contactId as null, call from lead
+    // If leadRow?.contact_id is null — the target is still a LEAD (see below).
+  }
+
+  // ── 0b. LEAD-STAGE REFUSAL (wave 91, lane 91B) — owner: "Leads usually are non consenting so no
+  //    sms or calls allowed only email and direct mail." This route used to "call from lead
+  //    directly" when the lead had no contact. Refused by the ONE predicate; the pre-dial stack
+  //    (lib/voice/outbound-call-gates.ts lead_channel) refuses it again from the leadId below.
+  {
+    const { channelRefusalForRecipient } = await import("@/lib/ai-isa/lead-channel-policy")
+    const leadStage = channelRefusalForRecipient({ contactId: contactId ?? null, leadId: resolvedLeadId }, "voice")
+    if (leadStage) {
+      return NextResponse.json({ blocked: true, reason: leadStage }, { status: 403 })
+    }
   }
 
   // ── 1. Optional compliance check when contactId is available ──────────────
@@ -177,6 +189,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const placed = await placeOutboundAiCall(supabase, {
     toNumber: phoneNumber,
     contactId: contactId ?? null,
+    leadId: resolvedLeadId,
     brokerageId,
     agentUserId: agentId,
     initiatedBy: agentId,
