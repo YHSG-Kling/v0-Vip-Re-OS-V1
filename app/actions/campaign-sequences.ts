@@ -19,7 +19,6 @@
 // which is not behaviour worth carrying forward.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
 import { revalidatePath } from "next/cache"

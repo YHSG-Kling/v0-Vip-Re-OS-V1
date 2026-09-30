@@ -59,7 +59,7 @@ export function pickLeadOutreachChannel(input: {
 // (TCPA express consent, opt-outs, DNC — lib/ai-isa/contact-channel-policy.ts and the TCPA gate).
 
 /** The stage a recipient is being addressed at. */
-export type RecipientStage = "lead" | "contact"
+type RecipientStage = "lead" | "contact"
 
 /** Spellings across the tree's channel vocabularies that are CARRIED BY email or by mail.
  *  Everything else — sms / text / phone / call / voice / voicemail / voicedrop / ai_call /

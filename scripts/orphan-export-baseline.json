@@ -49,7 +49,7 @@
     "lib/agents/education-delivery-producer.ts": 3,
     "lib/agents/recruit-outreach-producer.ts": 1,
     "lib/agents/referral-closer.ts": 2,
-    "lib/agents/seller-update-reel-producer.ts": 3,
+    "lib/agents/seller-update-reel-producer.ts": 4,
     "lib/ai/ai-error.ts": 2,
     "lib/ai/content-features.ts": 1,
     "lib/ai/web-search.ts": 1,
@@ -470,7 +470,7 @@
     "lib/video/body-visual-model.ts": 4,
     "lib/video/body-visual-rule-ledger.ts": 1,
     "lib/video/caption-plan.ts": 1,
-    "lib/video/cinema-finish.ts": 6,
+    "lib/video/cinema-finish.ts": 7,
     "lib/video/composite-attribution.ts": 1,
     "lib/video/custom-video-archetypes.ts": 4,
     "lib/video/director-content.ts": 10,
@@ -485,7 +485,6 @@
     "lib/video/realism-profile.ts": 5,
     "lib/video/render-cut.ts": 1,
     "lib/video/script-compliance.ts": 1,
-    "lib/video/script-structure.ts": 1,
     "lib/video/topic-video.ts": 2,
     "lib/video/video-director.ts": 7,
     "lib/video/video-metering.ts": 2,
@@ -509,10 +508,9 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 3,
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/CinemaFinish.tsx": 1,
-    "remotion/components/QrOutroBadge.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10411,
+  "census": 10438,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2772,7 +2770,7 @@
     "lib/agents/seller-conversion-eligibility.ts": 1,
     "lib/agents/seller-conversion-nurture.ts": 1,
     "lib/agents/seller-handler-copy.ts": 1,
-    "lib/agents/seller-update-reel-producer.ts": 7,
+    "lib/agents/seller-update-reel-producer.ts": 8,
     "lib/agents/session-status.ts": 1,
     "lib/agents/shopping-agent.ts": 1,
     "lib/agents/spawn-helper.ts": 1,
@@ -2806,7 +2804,7 @@
     "lib/ai-isa/brand-voice-prompt.ts": 2,
     "lib/ai-isa/build-call-context.ts": 1,
     "lib/ai-isa/buyer-intent-router.ts": 1,
-    "lib/ai-isa/callback-task.ts": 8,
+    "lib/ai-isa/callback-task.ts": 11,
     "lib/ai-isa/capability-catalogue.ts": 6,
     "lib/ai-isa/cold-contact-escalation.ts": 1,
     "lib/ai-isa/contact-channel-policy.ts": 2,
@@ -2821,12 +2819,12 @@
     "lib/ai-isa/generate-handoff-brief.ts": 1,
     "lib/ai-isa/ghost-escalation.ts": 1,
     "lib/ai-isa/ghost-reengagement.ts": 2,
-    "lib/ai-isa/inbound-intent-classifier.ts": 2,
+    "lib/ai-isa/inbound-intent-classifier.ts": 3,
     "lib/ai-isa/isa-acting-scope.ts": 2,
     "lib/ai-isa/isa-outreach-logger.ts": 4,
     "lib/ai-isa/lead-action-plan.ts": 7,
     "lib/ai-isa/lead-call-intent.ts": 1,
-    "lib/ai-isa/lead-channel-policy.ts": 1,
+    "lib/ai-isa/lead-channel-policy.ts": 3,
     "lib/ai-isa/lead-nurture.ts": 2,
     "lib/ai-isa/lead-reel-brief.ts": 1,
     "lib/ai-isa/listing-appointment.ts": 13,
@@ -2842,8 +2840,9 @@
     "lib/ai-isa/post-call-outcome.ts": 3,
     "lib/ai-isa/property-lookup-rail.ts": 12,
     "lib/ai-isa/property-lookup-tools.ts": 3,
-    "lib/ai-isa/qualification-core.ts": 5,
+    "lib/ai-isa/qualification-core.ts": 6,
     "lib/ai-isa/qualification-evaluator.ts": 2,
+    "lib/ai-isa/qualification-outcome-stamp.ts": 1,
     "lib/ai-isa/qualification-playbook.ts": 2,
     "lib/ai-isa/qualification-signals.ts": 4,
     "lib/ai-isa/reengagement-policy.ts": 10,
@@ -2965,7 +2964,7 @@
     "lib/buyer-offers/affordability.ts": 4,
     "lib/buyer-offers/home-comparison.ts": 1,
     "lib/buyer-search/buyer-criteria.ts": 1,
-    "lib/buyer-search/conversation-criteria.ts": 10,
+    "lib/buyer-search/conversation-criteria.ts": 14,
     "lib/buyer-search/explanation-generator.ts": 1,
     "lib/buyer-search/external-match.ts": 4,
     "lib/buyer-search/fair-housing.ts": 4,
@@ -2975,6 +2974,7 @@
     "lib/buyer-search/investor-offmarket-runner.ts": 3,
     "lib/buyer-search/listing-source-order.ts": 2,
     "lib/buyer-search/market-watch.ts": 2,
+    "lib/buyer-search/parse-buyer-criteria.ts": 1,
     "lib/buyer-search/persona-inference.ts": 2,
     "lib/buyer-search/portal-cards.ts": 2,
     "lib/buyer-search/search-engine.ts": 2,
@@ -3044,7 +3044,7 @@
     "lib/communication/call-compliance.ts": 2,
     "lib/communication/call-disclosures.ts": 4,
     "lib/communication/phone-reachability.ts": 1,
-    "lib/communication/tcpa-gate.ts": 4,
+    "lib/communication/tcpa-gate.ts": 5,
     "lib/communication-spine/conversation-manager.ts": 1,
     "lib/communication-spine/ingest-message-service.ts": 1,
     "lib/communication-spine/message-normalizer.ts": 2,
@@ -3782,7 +3782,7 @@
     "lib/lead-pipeline/portal-lead-intake.ts": 3,
     "lib/lead-pipeline/processing-status.ts": 3,
     "lib/lead-pipeline/promotion-gate-health.ts": 2,
-    "lib/lead-pipeline/raw-record-types.ts": 2,
+    "lib/lead-pipeline/raw-record-types.ts": 3,
     "lib/lead-pipeline/reactivation-cadence.ts": 1,
     "lib/lead-pipeline/reactivation-enroller.ts": 1,
     "lib/lead-pipeline/reactivation-sequence-installer.ts": 1,
@@ -3803,7 +3803,7 @@
     "lib/lead-pipeline/source-conversion-runner.ts": 2,
     "lib/lead-pipeline/source-cost-ledger.ts": 3,
     "lib/lead-pipeline/source-health.ts": 1,
-    "lib/lead-pipeline/source-intent-map.ts": 12,
+    "lib/lead-pipeline/source-intent-map.ts": 13,
     "lib/lead-pipeline/source-lifetime-health-runner.ts": 1,
     "lib/lead-pipeline/source-wording-diagnostic.ts": 1,
     "lib/lead-pipeline/stale-preapproval-reengage-runner.ts": 1,
@@ -4098,10 +4098,11 @@
     "lib/property/rent-estimate.ts": 2,
     "lib/property/rentcast-eligibility.ts": 2,
     "lib/property/rentcast-normalize.ts": 2,
+    "lib/property/rentcast-query.ts": 1,
     "lib/property/rentcast.ts": 10,
     "lib/property/resolve-property-facts.ts": 4,
     "lib/property/street-view.ts": 2,
-    "lib/property-alerts/alert-cadence.ts": 1,
+    "lib/property-alerts/alert-cadence.ts": 3,
     "lib/property-alerts/alert-engine.ts": 2,
     "lib/property-alerts/alert-matcher.ts": 2,
     "lib/property-alerts/alert-notifier.ts": 1,
@@ -4179,7 +4180,7 @@
     "lib/remotion/code-revision.ts": 4,
     "lib/remotion/composition-cache.ts": 9,
     "lib/remotion/composition-geometry.ts": 2,
-    "lib/remotion/content-contract.ts": 8,
+    "lib/remotion/content-contract.ts": 9,
     "lib/remotion/media-host.ts": 1,
     "lib/remotion/music-filter-graph.ts": 9,
     "lib/remotion/music-mixer.ts": 2,
@@ -4370,13 +4371,13 @@
     "lib/video/broll-url.ts": 1,
     "lib/video/caption-plan.ts": 7,
     "lib/video/chapter-video-generator.ts": 1,
-    "lib/video/cinema-finish.ts": 21,
+    "lib/video/cinema-finish.ts": 24,
     "lib/video/cma-reel-orchestrator.ts": 1,
     "lib/video/commission-situation.ts": 1,
     "lib/video/composite-attribution.ts": 6,
     "lib/video/comps-animation-spec.ts": 1,
     "lib/video/custom-video-archetypes.ts": 7,
-    "lib/video/director-content.ts": 16,
+    "lib/video/director-content.ts": 18,
     "lib/video/director-eval-harness.ts": 5,
     "lib/video/duration-model.ts": 23,
     "lib/video/finish-spec.ts": 1,
@@ -4402,7 +4403,7 @@
     "lib/video/playable-video.ts": 1,
     "lib/video/presenter-media.ts": 1,
     "lib/video/promo-composition.ts": 6,
-    "lib/video/realism-profile.ts": 22,
+    "lib/video/realism-profile.ts": 23,
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 1,
     "lib/video/render-cut.ts": 9,
@@ -13728,6 +13729,7 @@
       "interestLabelFor",
       "buildSellerUpdateReelProps",
       "buildSellerUpdateMessage",
+      "buildSellerUpdateScript",
       "sellerUpdateFacts",
       "requestSellerUpdateReel",
       "deliverSellerUpdateReels",
@@ -13883,9 +13885,12 @@
       "bumpCallbackAttempt",
       "regexParseCallbackPhrase",
       "resolveCallbackDueDate",
+      "convertLeadOnCallbackIntent",
       "createCallbackTask",
       "handOffAbandonedCallback",
-      "detectCallbackRequest"
+      "detectCallbackRequest",
+      "callbackPositiveIntent",
+      "landCallbackOnAgentContact"
     ],
     "lib/ai-isa/capability-catalogue.ts": [
       "parseCapabilitiesSettings",
@@ -13956,6 +13961,7 @@
     ],
     "lib/ai-isa/inbound-intent-classifier.ts": [
       "keywordIntentFallback",
+      "deriveLeadSide",
       "classifyAndRouteInbound"
     ],
     "lib/ai-isa/isa-acting-scope.ts": [
@@ -13981,7 +13987,9 @@
       "routeLeadCallIntent"
     ],
     "lib/ai-isa/lead-channel-policy.ts": [
-      "pickLeadOutreachChannel"
+      "pickLeadOutreachChannel",
+      "leadStageChannelRefusal",
+      "channelRefusalForRecipient"
     ],
     "lib/ai-isa/lead-nurture.ts": [
       "chooseLeadNurtureChannels",
@@ -14094,11 +14102,15 @@
       "signalTemperature",
       "deriveQualificationSignals",
       "qualificationScoreFor",
-      "voiceSignalFor"
+      "voiceSignalFor",
+      "nextQualificationResult"
     ],
     "lib/ai-isa/qualification-evaluator.ts": [
       "evaluateLeadQualification",
       "persistQualificationSignals"
+    ],
+    "lib/ai-isa/qualification-outcome-stamp.ts": [
+      "stampQualificationOutcome"
     ],
     "lib/ai-isa/qualification-playbook.ts": [
       "parseFollowUpPreference",
@@ -14936,6 +14948,10 @@
       "detectStatedSchoolDistrict",
       "detectStatedAgeRestrictedCommunity",
       "extractCriteriaFromTranscript",
+      "countCriteriaSignals",
+      "criteriaGaps",
+      "mergeModelCriteria",
+      "unsearchableAsks",
       "spokenAlertCallMarker",
       "writtenAlertMessageMarker",
       "hashConversationText",
@@ -14987,6 +15003,9 @@
     "lib/buyer-search/market-watch.ts": [
       "scoreCriteriaFit",
       "runMarketWatchForBuyer"
+    ],
+    "lib/buyer-search/parse-buyer-criteria.ts": [
+      "parseBuyerCriteria"
     ],
     "lib/buyer-search/persona-inference.ts": [
       "inferBuyerPersona",
@@ -15304,6 +15323,7 @@
       "isDncTcpaVerdictFresh",
       "evaluateFreshScrubVerdict",
       "enforceTCPACompliance",
+      "leadStageRefusal",
       "recordPhoneValidation"
     ],
     "lib/communication-spine/conversation-manager.ts": [
@@ -19113,6 +19133,7 @@
     ],
     "lib/lead-pipeline/raw-record-types.ts": [
       "isViableRecord",
+      "isWithinRecencyWindow",
       "buildLeadIdentityKey"
     ],
     "lib/lead-pipeline/reactivation-cadence.ts": [
@@ -19245,6 +19266,7 @@
       "getSourceSemantics",
       "hasScoringEntry",
       "deliversPaidPersonData",
+      "recencyWindowForSource",
       "vendorForSource",
       "resolveSourceKey",
       "expandEnabledSources",
@@ -20775,6 +20797,9 @@
       "normalizeRentcastComps",
       "normalizeRentcastMarketStats"
     ],
+    "lib/property/rentcast-query.ts": [
+      "buildRentcastListingQuery"
+    ],
     "lib/property/rentcast.ts": [
       "isRentcastConfigured",
       "searchRentcastSaleListings",
@@ -20798,7 +20823,9 @@
       "getStaticMapImageUrl"
     ],
     "lib/property-alerts/alert-cadence.ts": [
-      "isSnoozed"
+      "isSnoozed",
+      "alertListingRecencyDays",
+      "selectNewOrRepricedMatches"
     ],
     "lib/property-alerts/alert-engine.ts": [
       "runAlert",
@@ -21189,7 +21216,8 @@
       "consumesVoiceover",
       "stagesVoiceover",
       "stagesSpeech",
-      "stagesChapteredSpeech"
+      "stagesChapteredSpeech",
+      "finishVoiceoverUrl"
     ],
     "lib/remotion/media-host.ts": [
       "hostRenderedMedia"
@@ -22092,6 +22120,9 @@
       "cinemaLowerThirdPlacement",
       "cinemaDisclosureStyle",
       "cinemaBadgeSlot",
+      "qrOutroBadgeWidth",
+      "cinemaEndCardSideInset",
+      "slideDisclosureText",
       "cinemaSlideFooterStack",
       "cinemaMusicFades"
     ],
@@ -22137,7 +22168,9 @@
       "testimonialProps",
       "equityProps",
       "resolveDirectorIdentity",
-      "resolveDirectorContentProps"
+      "resolveDirectorContentProps",
+      "audienceFor",
+      "directorHookDirectives"
     ],
     "lib/video/director-eval-harness.ts": [
       "detectUngroundedClaims",
@@ -22309,6 +22342,7 @@
       "scanForAiTells",
       "avatarPipWindowFade",
       "estimateAvatarRenderCostUsd",
+      "didRenderUsdForSeconds",
       "roundUpToNearest15Seconds",
       "estimateStreamingMinutesCostUsd",
       "inferScriptSentiment",
