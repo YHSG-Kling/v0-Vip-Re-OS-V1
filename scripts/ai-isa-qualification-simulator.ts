@@ -38,6 +38,22 @@ import {
   effectiveAgentPool, teamScopeAllows, evaluateAssignmentEligibility,
 } from "../lib/lead-assignment/rule-matcher"
 import { MANAGERS } from "../lib/kernel/manager-registry"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { execSync } from "node:child_process"
+import { registerHooks } from "node:module"
+import { stripComments } from "./strip-comments"
+import { memSupabase } from "./in-memory-supabase"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { QUALIFICATION_RESULTS, nextQualificationResult } from "../lib/ai-isa/qualification-core"
+
+// Layer 1g drives the server-only outcome stamp under plain tsx.
+registerHooks({
+  resolve(spec: string, ctx: any, next: any) {
+    if (spec === "server-only") return { url: "data:text/javascript,export{}", shortCircuit: true }
+    return next(spec, ctx)
+  },
+})
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -315,6 +331,92 @@ async function testLiveChain() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// LAYER 1g — EVERY qualification_result value has a writer (wave 91 lane 91A; 90C's open item)
+// ─────────────────────────────────────────────────────────────────────────────
+// `no_response` and `appointment_set` were read by the ISA radar ("stalled"), analytics, the
+// campaigns' outcomes, the newly-converted panel and two manager counters, and written by NOBODY.
+// The rule asserted: every value of the LIVE CHECK vocabulary has at least one code writer —
+// derived from scripts/check-vocabularies.ts (generated from the database), never a pinned list.
+async function testOutcomeVocabularyWriters() {
+  console.log("\n[1g] qualification_result — one vocabulary, every value written")
+  const live = CHECK_VOCABULARIES.ai_isa_qualifications?.qualification_result ?? []
+  check("the code vocabulary IS the live CHECK vocabulary (same set, derived from the generated cache)",
+    live.length > 0 && [...live].sort().join() === [...QUALIFICATION_RESULTS].sort().join(), `${live.join(",")} vs ${QUALIFICATION_RESULTS.join(",")}`)
+
+  // WRITER FINDER — a value is written when stripped source sets `qualification_result: "<v>"` on an
+  // insert/update, or hands it to the ONE stamp (`result: "<v>"` inside stampQualificationOutcome(...)).
+  const writtenIn = (src: string, v: string) =>
+    new RegExp(`qualification_result:\\s*[^,\\n}]*["']${v}["']`).test(src)
+    || new RegExp(`stampQualificationOutcome\\([^)]*result:\\s*["']${v}["']`).test(src)
+  check("POSITIVE CONTROL: the finder sees an inline write, a ternary write and a stamp call, and NOT a read",
+    writtenIn(`.insert({ qualification_result: "qualified" })`, "qualified")
+    && writtenIn(`qualification_result: eligible ? "qualified" : "not_qualified",`, "not_qualified")
+    && writtenIn(`await stampQualificationOutcome(svc, { leadId, result: "no_response" })`, "no_response")
+    && !writtenIn(`rows.filter(r => r.qualification_result === "no_response")`, "no_response"))
+  const files = execSync("git ls-files app lib", { cwd: process.cwd(), encoding: "utf8" }).split("\n").filter((f) => /\.(ts|tsx)$/.test(f))
+  const corpus = files.map((f) => ({ f, src: stripComments(readFileSync(join(process.cwd(), f), "utf8")) }))
+    .filter((x) => /qualification_result|stampQualificationOutcome/.test(x.src))
+  const writersOf = (v: string) => corpus.filter((x) => writtenIn(x.src, v)).map((x) => x.f)
+  for (const v of live) {
+    const w = writersOf(v)
+    check(`'${v}' has a writer (${w.length}: ${w.slice(0, 4).join(", ") || "NONE"})`, w.length > 0)
+  }
+  check("POSITIVE CONTROL: with the stamp calls removed, the finder reports no_response + appointment_set writerless (the pre-91A tree)",
+    ["no_response", "appointment_set"].every((v) => corpus.filter((x) => writtenIn(x.src.replace(/stampQualificationOutcome\([^)]*\)/g, ""), v)).length === 0))
+  check("no_response is stamped by the ghost sweep; appointment_set by both bookers + recordAiIsaOutcome",
+    writersOf("no_response").includes("lib/ai-isa/ghost-reengagement.ts")
+    && ["lib/ai-isa/listing-appointment.ts", "lib/ai-isa/book-seller-appointment.ts", "lib/kernel/ai-isa.ts"].every((f) => writersOf("appointment_set").includes(f)))
+  const ghost = stripComments(readFileSync(join(process.cwd(), "lib/ai-isa/ghost-reengagement.ts"), "utf8"))
+  check("the ghost sweep reads its reply-count error and stamps NOTHING on a refusal (unknown ≠ silent; the lead is skipped)",
+    /error: replyCountErr/.test(ghost) && /if \(replyCountErr\) \{[\s\S]{0,300}skipped\+\+[\s\S]{0,40}continue/.test(ghost))
+
+  // THE PURE PRECEDENCE — appointment_set wins; no_response never downgrades a verdict.
+  check("precedence: appointment_set overwrites qualified / needs_follow_up / no_response / null, never itself",
+    nextQualificationResult("qualified", "appointment_set") === "appointment_set" && nextQualificationResult("needs_follow_up", "appointment_set") === "appointment_set"
+    && nextQualificationResult("no_response", "appointment_set") === "appointment_set" && nextQualificationResult(null, "appointment_set") === "appointment_set"
+    && nextQualificationResult("appointment_set", "appointment_set") === null)
+  check("precedence: no_response only over null / needs_follow_up — never over qualified, appointment_set, not_qualified",
+    nextQualificationResult(null, "no_response") === "no_response" && nextQualificationResult("needs_follow_up", "no_response") === "no_response"
+    && nextQualificationResult("qualified", "no_response") === null && nextQualificationResult("appointment_set", "no_response") === null
+    && nextQualificationResult("not_qualified", "no_response") === null && nextQualificationResult("no_response", "no_response") === null)
+
+  // THE WRITER, driven on the in-memory client (refusals resolve like supabase-js).
+  const { stampQualificationOutcome } = await import("../lib/ai-isa/qualification-outcome-stamp")
+  const B = "11111111-1111-4111-8111-111111111111", OTHER = "22222222-2222-4222-8222-222222222222"
+  const L = "l1000000-0000-4000-8000-000000000001", C = "c1000000-0000-4000-8000-000000000001"
+  const db = memSupabase({ ai_isa_qualifications: [
+    { id: "q-old", brokerage_id: B, lead_id: L, contact_id: null, qualification_result: "qualified", qualified_at: "2026-09-01T00:00:00Z" },
+    { id: "q-new", brokerage_id: B, lead_id: L, contact_id: null, qualification_result: "needs_follow_up", qualified_at: "2026-09-20T00:00:00Z" },
+    { id: "q-foreign", brokerage_id: OTHER, lead_id: L, contact_id: null, qualification_result: "needs_follow_up", qualified_at: "2026-09-29T00:00:00Z" },
+  ] })
+  const nr = await stampQualificationOutcome(db, { brokerageId: B, leadId: L, result: "no_response" })
+  const rows = db.tables.ai_isa_qualifications
+  check("no_response lands on the LATEST row in the tenant (not the older verdict, not the other tenant's row)",
+    nr.ok && (nr as any).mode === "updated" && (nr as any).rowId === "q-new" && rows.find((r) => r.id === "q-new")?.qualification_result === "no_response"
+    && rows.find((r) => r.id === "q-old")?.qualification_result === "qualified" && rows.find((r) => r.id === "q-foreign")?.qualification_result === "needs_follow_up", JSON.stringify(nr))
+  const again = await stampQualificationOutcome(db, { brokerageId: B, leadId: L, result: "no_response" })
+  check("the same stamp again is a no-op (the ghost sweep runs daily)", again.ok && (again as any).mode === "unchanged")
+  const appt = await stampQualificationOutcome(db, { brokerageId: B, leadId: L, contactId: C, result: "appointment_set" })
+  check("appointment_set overwrites the ghost verdict and fills the contact side on the same row",
+    appt.ok && (appt as any).mode === "updated" && rows.find((r) => r.id === "q-new")?.qualification_result === "appointment_set" && rows.find((r) => r.id === "q-new")?.contact_id === C)
+  const after = await stampQualificationOutcome(db, { brokerageId: B, leadId: L, result: "no_response" })
+  check("silence AFTER a booking is not 'no response' — the verdict stands", after.ok && (after as any).mode === "unchanged" && rows.find((r) => r.id === "q-new")?.qualification_result === "appointment_set")
+  const fresh = memSupabase({ ai_isa_qualifications: [] })
+  const ins = await stampQualificationOutcome(fresh, { brokerageId: B, contactId: C, result: "appointment_set" })
+  check("no row yet (a contact-keyed booking) → ONE row inserted in the tenant with the outcome",
+    ins.ok && (ins as any).mode === "inserted" && fresh.tables.ai_isa_qualifications.length === 1
+    && fresh.tables.ai_isa_qualifications[0].brokerage_id === B && fresh.tables.ai_isa_qualifications[0].contact_id === C && fresh.tables.ai_isa_qualifications[0].qualification_result === "appointment_set")
+  const refused = memSupabase({ ai_isa_qualifications: [] }, { refuse: { ai_isa_qualifications: "permission denied for table ai_isa_qualifications" } })
+  const rr = await stampQualificationOutcome(refused, { brokerageId: B, leadId: L, result: "no_response" })
+  check("a REFUSED read is returned (never treated as 'no row' → no blind insert)", !rr.ok && /read refused/.test((rr as any).error) && /permission denied/.test((rr as any).error))
+  const none = await stampQualificationOutcome(fresh, { brokerageId: B, result: "no_response" })
+  check("no lead and no contact → refused by name", !none.ok && /neither a lead nor a contact/.test((none as any).error))
+
+  // The readers learn the two values (the console state machine read neither).
+  const consoleSrc = stripComments(readFileSync(join(process.cwd(), "app/dashboard/isa/ai-isa-console-client.tsx"), "utf8"))
+  check("the ISA console maps appointment_set → handoff_ready and no_response → ai_nurturing",
+    /qualResult === 'appointment_set'\) return 'handoff_ready'/.test(consoleSrc) && /qualResult === 'no_response'\) return 'ai_nurturing'/.test(consoleSrc))
+}
 
 async function main() {
   console.log("══════════════════════════════════════════════════")
@@ -326,6 +428,7 @@ async function main() {
   testIsaOvernightBriefing()
   testRuleRouting()
   testTeamTierRouting()
+  await testOutcomeVocabularyWriters()
   await testLiveChain()
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)

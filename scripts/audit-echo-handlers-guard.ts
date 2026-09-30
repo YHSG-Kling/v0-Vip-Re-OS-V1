@@ -26,6 +26,7 @@
  * Run: npx tsx scripts/audit-echo-handlers-guard.ts
  */
 import { readFileSync } from "node:fs"
+import { execSync } from "node:child_process"
 import { join } from "node:path"
 import { registerHooks } from "node:module"
 import { stripComments } from "./strip-comments"
@@ -44,6 +45,8 @@ const STUB_BY_SPEC: Record<string, string> = {
   "server-only": "export{}",
   "@/lib/supabase/service": "export const createServiceClient = () => { throw new Error('not used by this proof') }",
   "@/lib/ai/models": "export const generateTextRouted = async () => { throw new Error('the proof injects the draft; no model call') }",
+  // §D drives recordLifecycleEvent's landed path; the kernel reactor is out of scope (dotted types never reach it).
+  "@/lib/kernel/emit": "export const isKernelEventValue = () => false; export const emitKernelEvent = async () => {}",
 }
 registerHooks({
   resolve(spec: string, ctx: any, next: any) {
@@ -156,6 +159,58 @@ async function main() {
   const flow = code("scripts/event-flow-guard.ts")
   ok("the event-flow guard reads STRIPPED source, resolves switch-case handlers, and classifies audit rows apart from dispatched emits",
     /stripComments\(readFileSync/.test(flow) && /switchCaseEvents\(/.test(flow) && /classifyEmitSite\(/.test(flow) && /audit_row/.test(flow))
+
+  console.log("\n[D · emitEventFromCron is HONEST — wave 91 lane 91A (89E §7's open item)]")
+  // The helper answered { success: true } — "non-fatal" — on a refused insert and on a throw, and
+  // read its dedupe probe without the error. It was also a second lifecycle_events writer beside
+  // recordLifecycleEvent (§1 duplicate); it now delegates to that survivor.
+  const emitBody = (() => {
+    const i = orch.indexOf("export async function emitEventFromCron(")
+    const j = orch.indexOf("export async function", i + 10)
+    return i < 0 ? "" : orch.slice(i, j < 0 ? undefined : j)
+  })()
+  // THE LIE FINDER: a `success: true` answered from a refusal branch (an `if (error…)` / catch).
+  const liesIn = (body: string) =>
+    /if\s*\(\s*error[^)]*\)\s*\{?\s*return\s*\{\s*success:\s*true/.test(body) || /catch\s*\([^)]*\)\s*\{[^}]*return\s*\{\s*success:\s*true/.test(body)
+  ok("POSITIVE CONTROL: the finder recognises the retired shape (success:true on a refused insert / in the catch)",
+    liesIn(`if (error || !event) {\n  return { success: true } // non-fatal\n}`) && liesIn(`} catch (err) {\n console.error(err)\n return { success: true } }`))
+  ok("emitEventFromCron is found and answers success:true from NO refusal branch", emitBody.length > 0 && !liesIn(emitBody), emitBody.slice(0, 200))
+  ok("…it DELEGATES to the survivor writer (recordLifecycleEvent) — no second lifecycle_events insert in the orchestrator",
+    /recordLifecycleEvent\(/.test(emitBody) && !/from\("lifecycle_events"\)\s*\.insert/.test(emitBody))
+  ok("…a refused record maps to success:false WITH the survivor's error; a throw maps to success:false",
+    /if \(!r\.ok\) return \{ success: false, error: r\.error \}/.test(emitBody) && /catch \(err\)[\s\S]{0,200}success: false/.test(emitBody))
+  ok("…the dedupe key names one occurrence for good (dedupeWindowHours: null) — the pre-merge semantic kept",
+    /dedupeWindowHours:\s*null/.test(emitBody))
+  // Behaviour of the survivor it now returns (the mapping above is 1:1).
+  const { recordLifecycleEvent } = await import("../lib/events/lifecycle-event-core")
+  const { registerEventDispatcher } = await import("../lib/events/dispatcher-registry")
+  const dispatched: string[] = []
+  registerEventDispatcher(async (e: any) => { dispatched.push(e.event_type) })
+  const refusedLe = memSupabase({ lifecycle_events: [], users }, { refuse: { lifecycle_events: "permission denied for table lifecycle_events" } })
+  const rr = await recordLifecycleEvent(refusedLe, BRK, { event_type: "video.generated", source: "system", payload: { video_id: "v1" }, dedupe_key: "video.generated:v1" }, { dedupeWindowHours: null })
+  ok("a REFUSED record is returned as ok:false naming the refusal (the dedupe probe's error is READ first)",
+    !rr.ok && /refused/.test((rr as any).error ?? "") && /permission denied/.test((rr as any).error ?? "") && dispatched.length === 0, JSON.stringify(rr))
+  const landed = memSupabase({ lifecycle_events: [], users })
+  const rl = await recordLifecycleEvent(landed, BRK, { event_type: "video.generated", source: "system", payload: { video_id: "v1", contact_id: CONTACT }, dedupe_key: "video.generated:v1", user_id: "u-other", entity_type: "video", entity_id: "v1" }, { dedupeWindowHours: null })
+  const leRow = landed.tables.lifecycle_events[0]
+  ok("a landed record is dispatched once; a foreign actor is DROPPED (written NULL, reported), the explicit entity wins",
+    rl.ok && !(rl as any).deduped && (rl as any).dispatched === true && dispatched.join() === "video.generated"
+    && leRow?.actor_user_id === null && /not a user of brokerage/.test((rl as any).actorDropped ?? "") && leRow?.entity_type === "video" && leRow?.entity_id === "v1", JSON.stringify(rl))
+  const again = await recordLifecycleEvent(landed, BRK, { event_type: "video.generated", source: "system", payload: { video_id: "v1" }, dedupe_key: "video.generated:v1" }, { dedupeWindowHours: null })
+  ok("the same key again → deduped onto the first row, nothing re-dispatched", again.ok && (again as any).deduped === true && dispatched.length === 1)
+  // EVERY CALLER READS THE RESULT — derived from the tree, not a list (a new caller is judged too).
+  const callerFiles = execSync("git ls-files app lib", { cwd: ROOT, encoding: "utf8" }).split("\n")
+    .filter((f) => /\.(ts|tsx)$/.test(f) && f !== "lib/orchestrator/internal.ts")
+    .filter((f) => /emitEventFromCron\(/.test(code(f)))
+  // A call site is READ when its value is bound or returned: `= await emitEventFromCron(` / `return emitEventFromCron(`.
+  const unread = (src: string) => [...src.matchAll(/emitEventFromCron\(/g)].some((m) => !/(?:=|\breturn)\s*(?:await\s+)?$/.test(src.slice(Math.max(0, m.index! - 40), m.index)))
+  ok("POSITIVE CONTROL: the unread-caller finder recognises a bare `await emitEventFromCron({…})` and a `.catch()`-only call",
+    unread(`try {\n  await emitEventFromCron({ brokerage_id: b })\n}`) && unread(`emitEventFromCron({ a: 1 }).catch((e) => log(e))`) && !unread(`const emitted = await emitEventFromCron({ a: 1 })`))
+  const offenders = callerFiles.filter((f) => unread(code(f)))
+  ok(`every caller of emitEventFromCron READS its result (${callerFiles.length} caller files found; unread: ${offenders.length})`,
+    callerFiles.length >= 1 && offenders.length === 0, offenders.join(", "))
+  ok("…and each one acts on success:false (logs / counts / throws with the reason), never on the old throw alone",
+    callerFiles.every((f) => /!\s*emitted\.(success|eventId)/.test(code(f))), callerFiles.filter((f) => !/!\s*emitted\.(success|eventId)/.test(code(f))).join(", "))
 
   console.log("\n[registration]")
   const dom = MAINTENANCE_DOMAINS["audit_echo_handlers"]

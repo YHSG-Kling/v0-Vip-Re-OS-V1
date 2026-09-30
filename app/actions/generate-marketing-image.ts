@@ -289,7 +289,9 @@ export async function generateMarketingImage(
   // marketing-campaign assets sharing the same umbrella.
   try {
     const { emitEventFromCron } = await import("@/lib/orchestrator/internal")
-    await emitEventFromCron({
+    // The result is READ (wave 91): the emitter used to answer success on a refused
+    // insert, so a fan-out that never happened was indistinguishable from one that did.
+    const emitted = await emitEventFromCron({
       brokerage_id: ctx.brokerageId,
       user_id:      ctx.userId ?? undefined,
       event_type:   "image.generated",
@@ -306,6 +308,9 @@ export async function generateMarketingImage(
         agent_user_id:         ctx.userId ?? null,
       },
     })
+    if (!emitted.success) {
+      console.error(`[generateMarketingImage] image.generated fan-out NOT recorded for asset ${asset.id}: ${emitted.error}`)
+    }
   } catch (eventErr) {
     console.error("[generateMarketingImage] image.generated event failed:", eventErr)
   }

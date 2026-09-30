@@ -229,6 +229,15 @@ export async function bookSellerListingAppointment(
     console.error(`[book-seller-appointment] listing prep not started (${prep.status}): ${prep.reason}`)
   }
 
+  // THE ISA OUTCOME 'appointment_set' (wave 91 lane 91A) — a booked listing appointment is the
+  // outcome the radar / analytics / managers count; stamped through the ONE writer on the
+  // lead's latest qualification row (the contact side is filled in on the same row).
+  {
+    const { stampQualificationOutcome } = await import("@/lib/ai-isa/qualification-outcome-stamp")
+    const stamped = await stampQualificationOutcome(svc, { brokerageId: params.brokerageId, leadId: params.leadId, contactId, result: "appointment_set" })
+    if (!stamped.ok) console.error(`[book-seller-appointment] appointment_set NOT stamped on the ISA qualification: ${stamped.error}`)
+  }
+
   return {
     success: true,
     calendarEventId,

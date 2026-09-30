@@ -1114,6 +1114,16 @@ export async function recordAiIsaOutcome(
       created_at: now,
     }), { table: "ai_isa_activities", flow: "ai_isa_activities_write", reason: "activity echo of an outcome recorded on the lead above" })
 
+    // THE ISA OUTCOME 'appointment_set' on the qualification ledger (wave 91 lane 91A) — the
+    // radar / analytics read ai_isa_qualifications.qualification_result, which no path wrote.
+    // The ONE writer; a refused stamp is logged by name and does not undo the outcome the lead
+    // update above already recorded (the activity + lifecycle echo below still land).
+    if (outcome === "appointment_set") {
+      const { stampQualificationOutcome } = await import("@/lib/ai-isa/qualification-outcome-stamp")
+      const stamped = await stampQualificationOutcome(supabase, { brokerageId: ctx.brokerageId, leadId, result: "appointment_set" })
+      if (!stamped.ok) console.error(`[kernel/ai-isa] appointment_set NOT stamped on the ISA qualification for lead ${leadId}: ${stamped.error}`)
+    }
+
     // Update the call record if callId is provided. ai_isa_calls has no
     // categorical outcome column — the result is captured above; here we
     // persist the appointment booking on the call row.

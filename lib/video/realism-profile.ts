@@ -1636,12 +1636,22 @@ const ELEVENLABS_USD_PER_1K_CHARS = 0.1
  */
 export function estimateAvatarRenderCostUsd(script: string): number {
   const chars = script.length
-  const seconds = Math.max(
-    DID_OFFLINE_SECONDS_PER_CREDIT,
-    roundUpToNearest15Seconds(estimateDurationSeconds(spokenWords(script).length)),
-  )
-  const usd = (chars / 1000) * ELEVENLABS_USD_PER_1K_CHARS + seconds * DID_USD_PER_VIDEO_SECOND
+  const usd = (chars / 1000) * ELEVENLABS_USD_PER_1K_CHARS
+    + didRenderUsdForSeconds(estimateDurationSeconds(spokenWords(script).length))
   return Math.round(usd * 10000) / 10000
+}
+
+/**
+ * PURE: the D-ID RENDER leg for `seconds` of avatar video — THE ONE derivation (wave 91 lane
+ * 91A). The plan-derived per-second rate (DID_USD_PER_VIDEO_SECOND, Scale $297 / 1,200 credits /
+ * 15 s = $0.0165/s ≈ $0.99/min), the seconds rounded UP to D-ID's 15-second credit interval, and
+ * the one-credit floor for any billed call. estimateAvatarRenderCostUsd (the metering line) and
+ * lib/remotion/registry.ts estimateCompositionCost (the pre-render forecast, which carried its own
+ * "~$0.30 per minute" — about 3.3x under the plan rate) both price the D-ID leg through here.
+ */
+export function didRenderUsdForSeconds(seconds: number): number {
+  const billed = Math.max(DID_OFFLINE_SECONDS_PER_CREDIT, roundUpToNearest15Seconds(seconds))
+  return Math.round(billed * DID_USD_PER_VIDEO_SECOND * 10000) / 10000
 }
 
 // ─── Live D-ID Agents streaming minutes (wave 60/61, live-agent-provider- ────

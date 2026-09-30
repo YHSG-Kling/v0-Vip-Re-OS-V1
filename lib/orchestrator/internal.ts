@@ -267,60 +267,65 @@ async function dispatchRegistered(event: Event): Promise<ProcessingResult> {
     }
   }
 }
-export async function emitEventFromCron(input: EventInput): Promise<{ success: boolean; eventId?: string; error?: string }> {
+/**
+ * emitEventFromCron — the trusted-context emitter (cron routes, render callbacks, the
+ * image generators). The caller hands a VERIFIED brokerage_id (its own row's tenant).
+ *
+ * HONEST RESULT (wave 91 lane 91A, 89E §7's open item). This used to answer
+ * `{ success: true }` — "non-fatal" — on a REFUSED lifecycle_events insert and on any
+ * throw, and it read its dedupe probe without its error (a refused probe read as "no
+ * duplicate"). Every caller therefore reported a fan-out that never happened. It was
+ * also a SECOND lifecycle_events writer beside lib/events/lifecycle-event-core.ts::
+ * recordLifecycleEvent (§1: a duplicate) — that survivor already reads the dedupe
+ * error, proves the actor (actor_user_id FKs users; a foreign id is dropped and
+ * reported, never a 23503 that loses the row), counts the insert and dispatches. The
+ * body now DELEGATES to it; what this adapter keeps is only what differed:
+ *   · the dedupe key names ONE occurrence for good (no 24 h window) — every caller
+ *     keys on an entity (video / image / the tracker's day-stamped key);
+ *   · the entity derivation puts video_id FIRST (a video.generated row is about the
+ *     video even when its payload also names the contact) — an explicit
+ *     entity_type / entity_id on the input now wins (the tracker passes both; they
+ *     were silently ignored before).
+ * The legacy `payload` / `user_id` columns are no longer written: no reader selects
+ * them (readers use metadata / actor_user_id — the survivor's columns).
+ * Result: `success:false` + `error` on every refusal; `dispatched:false` when the row
+ * landed but the orchestrator threw (the row stays for a re-run).
+ */
+export async function emitEventFromCron(input: EventInput): Promise<{ success: boolean; eventId?: string; error?: string; deduped?: boolean; dispatched?: boolean }> {
+  if (!input.brokerage_id) {
+    return { success: false, error: "brokerage_id is required" }
+  }
   try {
     const { createServiceClient: svcCreate } = await import("@/lib/supabase/service")
-    const svc = svcCreate()
-
-    if (!input.brokerage_id) {
-      return { success: false, error: "brokerage_id is required" }
-    }
-
-    if (input.dedupe_key) {
-      const { data: existing } = await svc
-        .from("lifecycle_events")
-        .select("id")
-        .eq("dedupe_key", input.dedupe_key)
-        .eq("brokerage_id", input.brokerage_id)
-        .maybeSingle()
-      if (existing) return { success: true, eventId: existing.id }
-    }
-
+    const { recordLifecycleEvent } = await import("@/lib/events/lifecycle-event-core")
     const pl = (input.payload ?? {}) as Record<string, any>
-    const entityId   = pl.video_id ?? pl.contact_id ?? pl.listing_id ?? pl.transaction_id ?? input.brokerage_id
-    const entityType = pl.video_id       ? "video"
-                     : pl.contact_id     ? "contact"
-                     : pl.listing_id     ? "listing"
-                     : pl.transaction_id ? "transaction"
-                     : "brokerage"
-    const { data: event, error } = await svc
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id:  input.brokerage_id,
-        actor_user_id: input.user_id ?? null,
-        user_id:       input.user_id ?? null,
-        event_type:    input.event_type,
-        payload:       pl,
-        metadata:      pl,
-        source:        input.source,
-        dedupe_key:    input.dedupe_key ?? null,
-        processed:     false,
-        entity_id:     entityId,
-        entity_type:   entityType,
-      })
-      .select()
-      .single()
-
-    if (error || !event) {
-      return { success: true } // non-fatal
-    }
-
-    // Orchestrate immediately — cron context is async by definition
-    await orchestrateEvent(event as Event)
-    return { success: true, eventId: event.id }
+    const derivedId: string | null = pl.video_id ?? pl.contact_id ?? pl.listing_id ?? pl.transaction_id ?? null
+    const derivedType = pl.video_id ? "video"
+                      : pl.contact_id ? "contact"
+                      : pl.listing_id ? "listing"
+                      : pl.transaction_id ? "transaction"
+                      : "brokerage"
+    const r = await recordLifecycleEvent(
+      svcCreate(),
+      input.brokerage_id,
+      {
+        user_id:     input.user_id,
+        event_type:  input.event_type,
+        payload:     pl,
+        source:      input.source,
+        dedupe_key:  input.dedupe_key,
+        entity_id:   input.entity_id ?? derivedId ?? input.brokerage_id,
+        entity_type: input.entity_type ?? (derivedId ? derivedType : "brokerage"),
+      },
+      { dedupeWindowHours: null },
+    )
+    if (!r.ok) return { success: false, error: r.error }
+    if (r.deduped) return { success: true, eventId: r.eventId, deduped: true }
+    if (r.actorDropped) console.warn(`[emitEventFromCron] ${input.event_type}: ${r.actorDropped}`)
+    return { success: true, eventId: r.event.id, deduped: false, dispatched: r.dispatched }
   } catch (err) {
     console.error("[emitEventFromCron] failed:", err)
-    return { success: true } // non-fatal
+    return { success: false, error: `emitEventFromCron threw: ${err instanceof Error ? err.message : String(err)}` }
   }
 }
 export async function orchestrateEvent(event: Event): Promise<void> {

@@ -97,12 +97,28 @@ export async function runGhostReengagement(
         ? lead.contacts[0]
         : lead.contacts
 
-      const { count: replyCount } = await supabase
+      const { count: replyCount, error: replyCountErr } = await supabase
         .from('lifecycle_events')
         .select('id', { count: 'exact', head: true })
         .eq('entity_id', leadId)
         .eq('entity_type', 'lead')
         .eq('event_type', KernelEvent.ISA_REPLY_RECEIVED)
+
+      // THE ISA OUTCOME 'no_response' (wave 91 lane 91A) — a lead the detector swept (idle past
+      // the threshold, unconverted) with no reply on record is exactly the radar's "stalled".
+      // Stamped through the ONE writer; a REFUSED reply count stamps nothing (unknown ≠ silent).
+      // The same refused count used to read as "no reply" and let the ladder send to someone who
+      // may have answered — fail closed: skip this lead this run, reported.
+      if (replyCountErr) {
+        console.error(`[ghost-reengagement] reply count refused for lead ${leadId} — skipped this run, no_response NOT stamped: ${replyCountErr.message}`)
+        skipped++
+        continue
+      }
+      if ((replyCount ?? 0) === 0) {
+        const { stampQualificationOutcome } = await import('@/lib/ai-isa/qualification-outcome-stamp')
+        const stamped = await stampQualificationOutcome(supabase, { brokerageId, leadId, result: 'no_response' })
+        if (!stamped.ok) console.error(`[ghost-reengagement] no_response NOT stamped for lead ${leadId}: ${stamped.error}`)
+      }
 
       const stopReason = ghostReengagementStopReason({
         lifecycle_state: lead.lifecycle_state,

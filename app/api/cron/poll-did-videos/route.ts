@@ -130,6 +130,8 @@ export async function GET(request: NextRequest) {
       completed: 0,
       failed: 0,
       still_processing: 0,
+      // video.generated fan-outs the emitter REFUSED (wave 91: it used to answer success).
+      fan_out_refused: 0,
     }
 
     const auth = `Basic ${Buffer.from(`${didApiKey}:`).toString("base64")}`
@@ -716,7 +718,7 @@ export async function GET(request: NextRequest) {
             // lib/video/playable-video, so the drafts carry the BRANDED, bucket-hosted cut
             // rather than whatever snapshot was true at emit time.
             if (video.brokerage_id) {
-              await emitEventFromCron({
+              const emitted = await emitEventFromCron({
                 brokerage_id: video.brokerage_id,
                 user_id:      agentUserId ?? undefined,
                 event_type:   "video.generated",
@@ -730,7 +732,11 @@ export async function GET(request: NextRequest) {
                   marketing_campaign_id: (video as any).marketing_campaign_id ?? null,
                   agent_user_id:         agentUserId ?? null,
                 },
-              }).catch((err) => console.error("[poll-did-videos] Orchestrator event failed:", err))
+              })
+              if (!emitted.success) {
+                results.fan_out_refused++
+                console.error(`[poll-did-videos] video.generated NOT recorded for video ${video.id}: ${emitted.error}`)
+              }
             }
 
             // Fast coordinated path — Asset Manager → Campaign Orchestrator (distribute,

@@ -55,7 +55,7 @@ import {
   type QueuedRenderRow,
 } from "@/lib/remotion/render-decision"
 import {
-  missingContentProps, describeMissingContent, contentContractError,
+  missingContentProps, describeMissingContent, contentContractError, finishVoiceoverUrl,
 } from "@/lib/remotion/content-contract"
 import { selectComposition, renderMedia, renderStill } from "@remotion/renderer"
 import path from "node:path"
@@ -204,7 +204,9 @@ export async function POST(req: NextRequest) {
       ? NO_FINISH
       : await predictFinishInputs(svc, cacheScope, composition, {
           musicMood: ((row.input_props as { music_mood?: unknown } | null)?.music_mood as string | undefined) ?? null,
-          narrationAudioUrl: ((row.input_props as { voiceover_url?: unknown } | null)?.voiceover_url as string | undefined) ?? null,
+          // The SAME rule the coordinator's mux applies (avatar wins → no finish voiceover), so the
+          // predicted finish and the actual one cannot disagree (wave 91 lane 91A).
+          narrationAudioUrl: finishVoiceoverUrl(row.input_props as Record<string, unknown> | null),
         })
     const probe = await probeRenderCache(svc, {
       brokerageId: row.brokerage_id,
@@ -529,7 +531,9 @@ async function emitRemotionVideoGenerated(
   }
 
   const { emitEventFromCron } = await import("@/lib/orchestrator/internal")
-  await emitEventFromCron({
+  // Result READ (wave 91): the emitter no longer answers success on a refused record,
+  // so a refusal THROWS here and the caller's fan-out catch reports it with the reason.
+  const emitted = await emitEventFromCron({
     brokerage_id: p.brokerage_id ?? row.brokerage_id,
     user_id:      agentUserId ?? undefined,
     event_type:   "video.generated",
@@ -550,6 +554,9 @@ async function emitRemotionVideoGenerated(
       agent_user_id:         agentUserId,
     },
   })
+  if (!emitted.success) {
+    throw new Error(`video.generated not recorded for project ${row.entity_id}: ${emitted.error ?? "no reason given"}`)
+  }
 }
 
 /** Select a still composition by id + render it to a PNG Buffer. Shared by

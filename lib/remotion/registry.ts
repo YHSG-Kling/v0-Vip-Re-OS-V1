@@ -27,6 +27,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { compositionSeconds } from "@/lib/remotion/composition-geometry"
 import { consumesVoiceover } from "@/lib/remotion/content-contract"
+import { didRenderUsdForSeconds } from "@/lib/video/realism-profile"
 
 export type CompositionTier =
   | "solo_agent"
@@ -182,15 +183,19 @@ export interface CompositionCostEstimate {
 export function estimateCompositionCost(
   composition: RemotionCompositionRow,
 ): CompositionCostEstimate {
-  // D-ID Talks API charges ~$0.30 per minute of avatar video.
+  // THE D-ID LEG IS PRICED BY THE ONE RATE (wave 91 lane 91A). This used to say "D-ID Talks API
+  // charges ~$0.30 per minute" and computed `max(0.10, minutes * 0.30)` — ~3.3x UNDER the
+  // plan-derived rate the metering line books (lib/video/realism-profile.ts
+  // DID_USD_PER_VIDEO_SECOND, Scale $297 / 1,200 credits x 15 s ≈ $0.99/min), and it ignored D-ID's
+  // 15-second credit rounding. The forecast now calls didRenderUsdForSeconds, the same function
+  // estimateAvatarRenderCostUsd prices through, so the budget gate and the ledger cannot disagree.
   // We compute from duration_frames + fps — through the ONE duration
   // computation (lib/remotion/composition-geometry.ts compositionSeconds), which
   // the render coordinator's narration pad and the render cache's
   // secondsAvoided also use. Three private copies of `duration_frames / fps`
   // were three chances to disagree (§6).
   const seconds = compositionSeconds(composition)
-  const minutes = seconds / 60
-  const did = composition.requires_did_avatar ? Math.max(0.10, minutes * 0.30) : 0
+  const did = composition.requires_did_avatar ? didRenderUsdForSeconds(seconds) : 0
 
   // ElevenLabs TTS at ~$0.18 per 1K characters; a typical narration
   // runs ~120 characters per second. Conservative cap at $0.10 even

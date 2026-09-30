@@ -562,3 +562,24 @@ export function stagesChapteredSpeech(props: Record<string, unknown> | null | un
     return !!ch && (isSupplied(ch.voiceoverUrl) || isSupplied(ch.videoUrl))
   })
 }
+
+/**
+ * WAVE 91 (lane 91A — 90E's published blind spot). ONE VOICE: when the frames
+ * already carry a PRESENTER CLIP (`avatarVideoUrl` — a D-ID talking head whose
+ * own lip-synced voice plays through the composition's unmuted <Video>; no
+ * composition mutes it on the avatar path, see stagesSpeech), the snake-key
+ * `voiceover_url` FINISH mux is dropped — the avatar wins, with its own audio.
+ * Without this, a row carrying both (PartnersMeetingReel rows staged before
+ * 90E's producer fix; any staged row lib/video/avatar-render-orchestrator.ts
+ * later merges a clip into — it keeps the staged voiceover_url on purpose)
+ * muxed the assistant's mp3 UNDER the presenter and spoke the script twice,
+ * over itself. The coordinator's mux and the render route's predicted finish
+ * both ask THIS, so the cache key and the artifact cannot disagree.
+ * Returns the http(s) URL to mux, or null. PURE.
+ */
+export function finishVoiceoverUrl(props: Record<string, unknown> | null | undefined): string | null {
+  const vo = props?.voiceover_url
+  if (typeof vo !== "string" || !vo.startsWith("http")) return null
+  if (isSupplied(props?.avatarVideoUrl)) return null
+  return vo
+}

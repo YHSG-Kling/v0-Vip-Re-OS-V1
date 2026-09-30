@@ -638,6 +638,14 @@ export async function bookListingAppointment(
     payload: { calendarEventId, propertyAddress: params.propertyAddress, startAt: params.slot.startTime },
   }).catch((e) => console.error("[listing-appointment] publishManagerSignal failed:", e))
 
+  // THE ISA OUTCOME 'appointment_set' (wave 91 lane 91A) — the ONE writer; keyed on the contact
+  // (this booking has no lead id), the latest qualification row for that person is stamped.
+  {
+    const { stampQualificationOutcome } = await import("@/lib/ai-isa/qualification-outcome-stamp")
+    const stamped = await stampQualificationOutcome(svc, { brokerageId: params.brokerageId, contactId: params.contactId, result: "appointment_set" })
+    if (!stamped.ok) console.error(`[listing-appointment] appointment_set NOT stamped on the ISA qualification: ${stamped.error}`)
+  }
+
   return {
     success: true, calendarEventId, contactId: params.contactId,
     startAt: params.slot.startTime, endAt: params.slot.endTime,

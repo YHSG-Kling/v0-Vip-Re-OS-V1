@@ -59,9 +59,11 @@ function deriveAIISAState(record: any): AIISAState {
   if (hasContact && hasAssignedAgent)               return 'handoff_complete'
   if (suggested === 'escalate_to_human')            return 'agent_handoff_required'
   if (urgency >= 80)                                return 'agent_handoff_required'
-  if (qualStage === 'qualified' || qualResult === 'qualified') return 'handoff_ready'
+  // appointment_set / no_response now have a writer (lib/ai-isa/qualification-outcome-stamp.ts,
+  // wave 91) — a booked appointment is ready for the agent; a ghost is on the re-engagement ladder.
+  if (qualStage === 'qualified' || qualResult === 'qualified' || qualResult === 'appointment_set') return 'handoff_ready'
   if (qualStage === 'awaiting_review' || qualResult === 'pending') return 'awaiting_approval'
-  if (qualStage === 'nurturing' || qualResult === 'needs_follow_up') return 'ai_nurturing'
+  if (qualStage === 'nurturing' || qualResult === 'needs_follow_up' || qualResult === 'no_response') return 'ai_nurturing'
   if (qualStage === 'contacting' || qualResult === 'in_progress') return 'ai_active'
   return 'ai_active'
 }

@@ -584,6 +584,7 @@ console.log("\n[19 · THE MOVING ASSISTANT + SENTIMENT-FROM-CONTENT (V4 era)]")
 import { ASSISTANT_EXPRESSIVE_AVATARS } from "../lib/video/assistant-options"
 import { sentimentForSituation } from "../lib/video/video-director"
 import { stripComments } from "./strip-comments"
+import { finishVoiceoverUrl } from "../lib/remotion/content-contract"
 import { validSignalRoute } from "../lib/kernel/manager-signals"
 {
   check("expressive presenter options exist and every id carries the @avt_ marker lib/did routes to /expressives",
@@ -725,6 +726,39 @@ console.log("\n[24 · AVATAR CLIP LENGTH PLUMBING — the presenter fades before
     /async function probeRemoteVideoDurationSeconds[\s\S]{0,400}await downloadVideoBytes\(url\)[\s\S]{0,300}await probeDuration\(filePath\)/.test(attribution))
   check("CONTROL: no ffmpeg binary → returns null immediately rather than spawning a doomed process",
     /export async function probeRemoteVideoDurationSeconds[\s\S]{0,150}if \(!FFMPEG_BIN\) return null/.test(attribution))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ONE VOICE ON A ROW THAT CARRIES BOTH (wave 91 lane 91A — 90E's published blind spot).
+// 90E stopped the PRODUCER writing voiceover_url beside a D-ID clip, but a row staged
+// before that fix — or any staged row the avatar orchestrator later merges a clip into
+// (it keeps the staged voiceover_url) — still carried both, and the coordinator muxed
+// the assistant's mp3 UNDER the presenter's own voice. The rule now lives in ONE pure
+// function the coordinator's mux AND the render route's predicted finish both call:
+// the avatar wins, with its own audio.
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  console.log("\n[one voice — avatar wins over a staged voiceover_url]")
+  const VO = "https://cdn.example/vo/partners.mp3", CLIP = "https://cdn.example/did/clip.mp4"
+  const both = buildPartnersMeetingReelProps(FULL, { avatarVideoUrl: CLIP } as any) as unknown as Record<string, unknown>
+  both.voiceover_url = VO
+  check("a PartnersMeetingReel row carrying BOTH a D-ID clip and voiceover_url → NO finish mux (the clip narrates, its own audio)",
+    both.avatarVideoUrl === CLIP && finishVoiceoverUrl(both) === null)
+  check("the same row with no clip → the voiceover IS muxed (the assistant narrates when no presenter does)",
+    finishVoiceoverUrl({ ...both, avatarVideoUrl: null }) === VO)
+  check("a blank clip string is not a presenter (isSupplied) → the voiceover is muxed",
+    finishVoiceoverUrl({ avatarVideoUrl: "  ", voiceover_url: VO }) === VO)
+  check("no voiceover / a non-http voiceover → nothing to mux", finishVoiceoverUrl({ avatarVideoUrl: null }) === null && finishVoiceoverUrl({ voiceover_url: "file:///tmp/x.mp3" }) === null)
+  // POSITIVE CONTROL — the pre-91A coordinator test (`typeof voUrl === "string" && voUrl.startsWith("http")`)
+  // said YES to the both-keys row: that is the double voice this rule removes.
+  const pre91A = (props: Record<string, unknown>) => { const v = props.voiceover_url; return typeof v === "string" && v.startsWith("http") }
+  check("[control] the retired coordinator test would have muxed the both-keys row (the double voice is visible to this proof)", pre91A(both))
+  const coord = stripComments(readFileSync(join(process.cwd(), "lib/remotion/render-coordinator.ts"), "utf8"))
+  check("the coordinator's mux asks finishVoiceoverUrl(stagedProps) and reads voiceover_url nowhere else",
+    /const voUrl = finishVoiceoverUrl\(stagedProps\)/.test(coord) && !/stagedProps\?\.voiceover_url/.test(coord))
+  const route = stripComments(readFileSync(join(process.cwd(), "app/api/internal/remotion/render-composition/route.ts"), "utf8"))
+  check("the render route predicts the cached finish with the SAME rule (cache key and artifact cannot disagree)",
+    /narrationAudioUrl:\s*finishVoiceoverUrl\(/.test(route) && !/\?\.voiceover_url as string/.test(route))
 }
 
 console.log("\n──────────────────────────────────────────────────")

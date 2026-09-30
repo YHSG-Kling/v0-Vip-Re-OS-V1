@@ -53,6 +53,7 @@ import {
   MUSIC_SIDECHAIN_DUCK_SETTINGS,
   MAX_BRAND_BOOKEND_SECONDS,
   estimateAvatarRenderCostUsd,
+  didRenderUsdForSeconds,
   inferScriptSentiment,
   SCRIPT_SENTIMENT_POSITIVE_CONTROLS,
   SCRIPT_SENTIMENT_NEGATIVE_CONTROL,
@@ -75,6 +76,23 @@ import {
   DEFAULT_MUSIC_FADE_OUT_SECONDS,
 } from "../lib/remotion/music-filter-graph"
 import { kenBurnsPlan } from "../lib/video/ken-burns-plan"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { registerHooks } from "node:module"
+import { stripComments } from "./strip-comments"
+
+// §costForecast loads lib/remotion/registry.ts (server-only; its DB client is never called here).
+const STUBS: Record<string, string> = {
+  "server-only": "export{}",
+  "@/lib/supabase/service": "export const createServiceClient = () => { throw new Error('no DB in this proof') }",
+}
+registerHooks({
+  resolve(spec: string, ctx: any, next: any) {
+    const stub = STUBS[spec]
+    if (stub !== undefined) return { url: `data:text/javascript,${encodeURIComponent(stub)}`, shortCircuit: true }
+    return next(spec, ctx)
+  },
+})
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -583,6 +601,49 @@ function costLedgerSection() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// § costForecast · the PRE-RENDER forecast prices D-ID through the ONE rate
+//   (wave 91 lane 91A — 89F / 90E's open item). estimateCompositionCost said
+//   "~$0.30 per minute" (max(0.10, minutes * 0.30)) while the metering line
+//   books the plan-derived DID_USD_PER_VIDEO_SECOND (about $0.99/min) with 15-s
+//   credit rounding — the budget gate forecast ~3.3x under what was booked.
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function costForecastSection() {
+  console.log("\n── §costForecast · estimateCompositionCost's D-ID leg == the metering rate, every registered moving composition ──")
+  const { estimateCompositionCost } = await import("../lib/remotion/registry")
+  const PRE_91A = (seconds: number) => Math.max(0.10, (seconds / 60) * 0.30) // the retired formula, kept as the control
+  const perSecond = didRenderUsdForSeconds(15) / 15
+  check(`the ONE rate is the plan rate: $${(perSecond * 60).toFixed(2)}/min (Scale $297 / 1,200 credits x 15 s = $0.99/min)`,
+    Math.abs(perSecond * 60 - 0.99) < 0.005)
+  let rows = 0, agree = 0, preUnder = 0
+  for (const [id, g] of Object.entries(COMPOSITION_GEOMETRY)) {
+    const secs = compositionSeconds(g)
+    if (secs <= 0 || g.duration_frames <= 1) continue
+    rows++
+    const row = { composition_id: id, duration_frames: g.duration_frames, fps: g.fps, requires_did_avatar: true } as any
+    const est = estimateCompositionCost(row)
+    if (Math.abs(est.didAvatarUsd - Number(didRenderUsdForSeconds(secs).toFixed(3))) < 1e-9) agree++
+    if (PRE_91A(secs) < didRenderUsdForSeconds(secs) * 0.5) preUnder++
+  }
+  check(`every registered moving composition's forecast D-ID leg equals didRenderUsdForSeconds(its seconds) (${agree}/${rows})`, rows > 0 && agree === rows)
+  check(`[control] the retired $0.30/min formula forecasts under HALF the booked rate on ${preUnder}/${rows} of the same rows — the check can see the defect`, preUnder > 0)
+  const sixty = didRenderUsdForSeconds(60)
+  check(`[control] 60 s of avatar: forecast $${sixty.toFixed(3)} vs the retired $${PRE_91A(60).toFixed(3)} — ${(sixty / PRE_91A(60)).toFixed(1)}x (the ~3x under-statement 90E measured)`,
+    sixty / PRE_91A(60) > 3)
+  check("D-ID's 15-s credit rounding: 16 s bills as 30 s; any billed call floors at one credit (15 s)",
+    didRenderUsdForSeconds(16) === didRenderUsdForSeconds(30) && didRenderUsdForSeconds(0) === didRenderUsdForSeconds(15) && didRenderUsdForSeconds(15) > 0)
+  check("the metering line prices its D-ID leg through the SAME function (an empty script = exactly the one-credit floor)",
+    estimateAvatarRenderCostUsd("") === didRenderUsdForSeconds(0))
+  const noAvatar = estimateCompositionCost({ composition_id: "CMAReel", duration_frames: 720, fps: 30, requires_did_avatar: false } as any)
+  check("a composition with no D-ID avatar forecasts $0 on the D-ID leg", noAvatar.didAvatarUsd === 0)
+  const reg = stripComments(readFileSync(join(process.cwd(), "lib/remotion/registry.ts"), "utf8"))
+  const body = reg.slice(reg.indexOf("export function estimateCompositionCost"), reg.indexOf("export async function recordRenderQueued"))
+  check("registry.ts's estimator carries no private D-ID rate (no `* 0.30`) and calls didRenderUsdForSeconds",
+    body.length > 0 && /didRenderUsdForSeconds\(seconds\)/.test(body) && !/\*\s*0\.30?\b/.test(body))
+  check("[control] the no-private-rate finder sees the retired line", /\*\s*0\.30?\b/.test("Math.max(0.10, minutes * 0.30)"))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // § bookend · MAX_BRAND_BOOKEND_SECONDS sanity — always shorter than even the
 //   shortest fixture, so a bookend never dominates the shortest reel this repo renders.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -667,6 +728,7 @@ async function main() {
   musicSection()
   kenBurnsSection()
   costLedgerSection()
+  await costForecastSection()
   bookendSection()
   scriptSentimentSection()
   handheldDriftSection()

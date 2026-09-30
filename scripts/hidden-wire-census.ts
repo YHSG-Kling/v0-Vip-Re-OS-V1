@@ -1008,6 +1008,56 @@ for (const name of categoryDUnusedAppliedRaw) {
   else categoryDUnusedApplied.push(name)
 }
 
+// ── THE NOT-YET-LIVE SLICE, SPLIT (wave 91 lane 91A) ────────────────────────
+// The slice above was REPORTED as one number (111) and never looked into. Measured
+// live on 2026-09-30, 111 of the 114 (d) names EXIST in the database — migrations
+// 033-061 predate the status banner, so claimOf reads them 'unstated', not because
+// they never landed. The slice is now split, report-only (the ratchet is untouched):
+//   · RETIRED — the LAST migration (by number) that names the function DROPs it
+//     (m598 / m615 / m621 / m677); the census used to count these as live wires;
+//   · SQL-INTERNAL — the same calls > decls rule as the applied slice;
+//   · SCRIPTED — named as a call in scripts/ (a proof / cache generator's SQL or
+//     .rpc — CLAUDE.md §1: a door used by the tooling is not an orphan);
+//   · NO CALLER IN THE TREE — printed by name, the adjudication list.
+// BLIND SPOT: a textual caller in a policy a LATER migration replaced still counts
+// as SQL-internal here — only the live read (pg_policies / pg_trigger / prosrc)
+// can see that; m677's header records the one done this wave.
+const migrationOrder = (rel: string): number => {
+  const m = /^m?(\d+)/.exec(rel.split("/").pop() ?? "")
+  return m ? parseInt(m[1], 10) : -1
+}
+const migrationRawByFile = new Map(migrationFiles().map((f) => [f, readFileSync(join(root, f), "utf8").replace(/--[^\n]*/g, "")]))
+function lastActionIsDrop(name: string, corpus: Map<string, string>): boolean {
+  const dropRe = new RegExp(`drop\\s+function\\s+(?:if\\s+exists\\s+)?(?:public\\.)?"?${name}"?\\b`, "i")
+  const createRe = new RegExp(`create\\s+(?:or\\s+replace\\s+)?function\\s+(?:public\\.)?"?${name}"?\\s*\\(`, "i")
+  let lastDrop = -1, lastCreate = -1
+  for (const [f, sql3] of corpus) {
+    const k = migrationOrder(f)
+    if (dropRe.test(sql3)) lastDrop = Math.max(lastDrop, k)
+    if (createRe.test(sql3)) lastCreate = Math.max(lastCreate, k)
+  }
+  return lastDrop >= 0 && lastDrop >= lastCreate
+}
+const scriptsCorpus = (() => {
+  try {
+    return readdirSync(join(root, "scripts"))
+      .filter((f: string) => /\.(ts|sql)$/.test(f) && f !== "hidden-wire-census.ts")
+      .map((f: string) => readFileSync(join(root, "scripts", f), "utf8"))
+      .join("\n")
+  } catch { return "" }
+})()
+const categoryDNotYetLiveRetired: string[] = []
+const categoryDNotYetLiveSqlInternal: string[] = []
+const categoryDNotYetLiveScripted: string[] = []
+const categoryDNotYetLiveNoCaller: string[] = []
+for (const name of categoryDUnusedNotYetLive) {
+  if (lastActionIsDrop(name, migrationRawByFile)) categoryDNotYetLiveRetired.push(name)
+  else if (hasSqlInternalCaller(name)) categoryDNotYetLiveSqlInternal.push(name)
+  else if (new RegExp(`\\b${name}\\s*\\(|rpc\\(\\s*["'\`]${name}["'\`]`).test(scriptsCorpus)) categoryDNotYetLiveScripted.push(name)
+  else categoryDNotYetLiveNoCaller.push(name)
+}
+const categoryDAppliedRetired = categoryDUnusedApplied.filter((n) => lastActionIsDrop(n, migrationRawByFile))
+
 // ── POSITIVE CONTROLS (CLAUDE.md §2) ────────────────────────────────────────
 function runControls(): string[] {
   const bad: string[] = []
@@ -1289,6 +1339,23 @@ function runControls(): string[] {
   ok("(d) SQL-internal control NEGATIVE: the rule does not fire for EVERY applied-unused function — it left at least one in categoryDUnusedApplied when one existed, or explicitly found none (both are checked, never silently assumed)",
     categoryDUnusedAppliedRaw.length === 0 || categoryDUnusedApplied.length + categoryDUnusedSqlInternal.length === categoryDUnusedAppliedRaw.length)
 
+  // (d) RETIREMENT rule (wave 91 lane 91A) — POSITIVE: create in 053, drop in m615 → retired;
+  // NEGATIVE: drop in 043 then re-created in m100 → live; never dropped → live.
+  {
+    const corpus = new Map<string, string>([
+      ["supabase/migrations/053-a.sql", "create or replace function public.zz_synth_b() returns trigger as $$ begin return new; end $$ language plpgsql;"],
+      ["supabase/migrations/m615-b.sql", "drop function if exists public.zz_synth_b();"],
+      ["supabase/migrations/043-c.sql", "drop function if exists zz_synth_c();"],
+      ["supabase/migrations/m100-d.sql", "create function zz_synth_c() returns int as $$ select 1 $$ language sql;"],
+      ["supabase/migrations/m200-e.sql", "create function zz_synth_d() returns int as $$ select 1 $$ language sql;"],
+    ])
+    ok("(d) retirement control POSITIVE: a function whose LAST migration drops it is retired", lastActionIsDrop("zz_synth_b", corpus))
+    ok("(d) retirement control NEGATIVE: dropped then RE-CREATED later is live", !lastActionIsDrop("zz_synth_c", corpus))
+    ok("(d) retirement control NEGATIVE: never dropped is live", !lastActionIsDrop("zz_synth_d", corpus))
+  }
+  ok("(d) not-yet-live split is exhaustive (retired + sql-internal + scripted + no-caller = the slice)",
+    categoryDNotYetLiveRetired.length + categoryDNotYetLiveSqlInternal.length + categoryDNotYetLiveScripted.length + categoryDNotYetLiveNoCaller.length === categoryDUnusedNotYetLive.length)
+
   return bad
 }
 
@@ -1318,6 +1385,8 @@ console.log(`(c) PROPS DRIFT: ${categoryCDeclared.length} declared-never-passed,
 console.log(`(d) RPC WIRING: ${categoryDMissing.length} called-with-no-migration ; ${categoryDUnused.length} migration-defined-never-called (of ${definedFns.size} functions across ${migrationFiles().length} migration files; ${rpcCalls.size} distinct .rpc() names called)`)
 console.log(`      · split by APPLIED status (scripts/migration-status.ts claimOf, cross-checked against migration-claim-guard's own classifier): ${categoryDUnusedAppliedRaw.length} defined in an APPLIED migration and never called via app-side .rpc() · ${categoryDUnusedNotYetLive.length} defined ONLY in a migration that has not (yet) stated 'applied' (work-in-flight — migration-claim-guard's own NOT_APPLIED ratchet tracks that, not this one)`)
 console.log(`      · of the ${categoryDUnusedAppliedRaw.length} applied-and-never-.rpc()'d: ${categoryDUnusedSqlInternal.length} have a SQL-INTERNAL caller (RLS policy predicate / trigger EXECUTE FUNCTION / another function's body — not an orphan, .rpc() was never the right door) · ${categoryDUnusedApplied.length} have NO caller anywhere, in-app or in-SQL (the real orphan — ratcheted below)`)
+console.log(`      · the not-yet-live slice of ${categoryDUnusedNotYetLive.length}, split (wave 91; report-only, the ratchet is unchanged): ${categoryDNotYetLiveRetired.length} RETIRED (the last migration naming it DROPs it) · ${categoryDNotYetLiveSqlInternal.length} SQL-internal caller · ${categoryDNotYetLiveScripted.length} called from scripts/ (proof / cache generator) · ${categoryDNotYetLiveNoCaller.length} NO caller in the tree${categoryDNotYetLiveNoCaller.length ? `: ${categoryDNotYetLiveNoCaller.join(", ")}` : ""}`)
+if (categoryDAppliedRetired.length) console.log(`      · of the applied no-caller slice, ${categoryDAppliedRetired.length} are RETIRED by a later DROP: ${categoryDAppliedRetired.join(", ")}`)
 console.log(`(e) DEAD SERVER-ACTION IMPORT (subset of a): ${categoryE.length}`)
 console.log("")
 console.log("BLIND SPOTS (see file header for the full statement):")

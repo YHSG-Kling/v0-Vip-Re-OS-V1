@@ -131,3 +131,33 @@ export function voiceSignalFor(input: {
 // Nothing is lost. Everything this expressed, the survivor expresses more
 // completely and in one place, with each of the eight legal lifecycle_state
 // values classified explicitly rather than by an inclusion list.
+
+// ─── THE OUTCOME VOCABULARY + PRECEDENCE (wave 91 lane 91A) ─────────────────
+//
+// ai_isa_qualifications.qualification_result — the live CHECK vocabulary
+// (scripts/check-vocabularies.ts), ONE spelling (§6). Two of the five had NO writer:
+// `no_response` (the ISA radar's "stalled" tile) and `appointment_set` (the analytics
+// "appointment set" row, the newly-converted panel's "Confirm appointment" action,
+// the managers' qualified count). Their writer is lib/ai-isa/qualification-outcome-stamp.ts;
+// this is the pure rule it applies to the latest row for the person.
+export const QUALIFICATION_RESULTS = ['qualified', 'not_qualified', 'needs_follow_up', 'appointment_set', 'no_response'] as const
+export type QualificationResult = (typeof QUALIFICATION_RESULTS)[number]
+
+/**
+ * What the latest row should say after an OUTCOME lands, or null = leave it.
+ *   · appointment_set — the strongest outcome: it overwrites anything but itself;
+ *   · no_response     — a ghosted person: only over "still being worked" (null /
+ *     needs_follow_up). It never downgrades a verdict (qualified, appointment_set,
+ *     not_qualified) — silence after a booking is not "no response".
+ * Any other incoming result is written by its own writer (the evaluator / the
+ * eligibility gate), not by this stamp → null.
+ */
+export function nextQualificationResult(
+  current: string | null | undefined,
+  incoming: QualificationResult,
+): QualificationResult | null {
+  const cur = current ?? null
+  if (incoming === 'appointment_set') return cur === 'appointment_set' ? null : 'appointment_set'
+  if (incoming === 'no_response') return cur === null || cur === 'needs_follow_up' ? 'no_response' : null
+  return null
+}

@@ -118,7 +118,8 @@ export async function uploadListingMedia(params: {
   if (params.mediaType === "photo" && params.isPrimary && !isMlsBound) {
     try {
       const { emitEventFromCron } = await import("@/lib/orchestrator/internal")
-      await emitEventFromCron({
+      // Result READ (wave 91) — a refused record is no longer reported as a fan-out.
+      const emitted = await emitEventFromCron({
         brokerage_id: params.brokerageId,
         user_id:      user.id,
         event_type:   "image.generated",
@@ -136,6 +137,9 @@ export async function uploadListingMedia(params: {
           skip_listing_attach: true,
         },
       })
+      if (!emitted.success) {
+        console.error(`[uploadListingMedia] image.generated fan-out NOT recorded for listing_media ${data.id}: ${emitted.error}`)
+      }
     } catch (eventErr) {
       console.error("[uploadListingMedia] image.generated fan-out failed:", eventErr)
     }

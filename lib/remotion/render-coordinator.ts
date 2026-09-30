@@ -45,7 +45,7 @@ import { concatIntroOutro } from "@/lib/video/composite-attribution"
 import { mixBackgroundMusic } from "./music-mixer"
 import { pickStockAsset } from "./stock-pick"
 import { computeArtifactKey, type FinishInputs } from "./composition-cache"
-import { stagesSpeech, stagesVoiceover } from "./content-contract"
+import { finishVoiceoverUrl, stagesSpeech, stagesVoiceover } from "./content-contract"
 import { shouldApplyBookends, stitchedIntroCategory, outputExtension, outputContentType } from "./render-decision"
 import { MUSIC_DUCK_VOLUME_PCT, appliedBookendSeconds } from "@/lib/video/realism-profile"
 import { cinemaMusicFades } from "@/lib/video/cinema-finish"
@@ -257,8 +257,11 @@ export async function finalizeCoordinatedRender(
   let usedVoiceover = false
   try {
     usedVoiceover = stagesVoiceover(composition.composition_id, stagedProps)
-    const voUrl = stagedProps?.voiceover_url
-    if (typeof voUrl === "string" && voUrl.startsWith("http")) {
+    // ONE VOICE (wave 91 lane 91A): a staged presenter clip (avatarVideoUrl) already speaks on
+    // the frames' own track — the avatar wins and the snake finish mux is skipped
+    // (finishVoiceoverUrl, the same rule the render route predicts the cached finish with).
+    const voUrl = finishVoiceoverUrl(stagedProps)
+    if (voUrl) {
       // How long the voice runs, from the alignment we already cached for
       // captions — so a script longer than this composition's FIXED
       // duration_frames extends the video instead of being cut off mid-sentence
