@@ -152,6 +152,12 @@ const StatCard: React.FC<{
 
   return (
     <div style={{
+      // WAVE 91 (lane 91E — the first real render of this reel): the panel sat IN FLOW after the
+      // positioned SegmentBackdrop (an AbsoluteFill), and CSS paints positioned boxes OVER in-flow
+      // ones whatever the DOM order — so the headline figure vanished the frame its fade-in reached
+      // opacity 1 (an element below opacity 1 is its own stacking layer and briefly showed through).
+      // `position: "relative"` puts the panel in the positioned layer, painted after the backdrop.
+      position: "relative",
       height: "100%", display: "flex", flexDirection: "column",
       justifyContent: "center", alignItems: "flex-start",
       padding: "0 88px 0 88px",

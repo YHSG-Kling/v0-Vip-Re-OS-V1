@@ -3,7 +3,7 @@
 // ONE Ken Burns photo — scale + pan via interpolate over the clip's LOCAL frame
 // window (the wrapping <Sequence> resets useCurrentFrame to 0 at the clip
 // start), plus a lead-in / lead-out opacity cross-fade, and an optional room
-// caption pinned bottom-left.
+// caption pinned to the safe top-left (wave 91 — it was a typed bottom-left corner).
 //
 // SURVIVOR (wave 80C, CLAUDE.md §1.1): this component lived as a private
 // `KenBurnsPhoto` in remotion/PhotoWalkthroughReel.tsx:225 (a tombstone stands
@@ -16,7 +16,8 @@
 // were chosen against the S·T transform composition below — see the note on
 // the transform string.
 import React from "react"
-import { AbsoluteFill, Easing, interpolate, useCurrentFrame } from "remotion"
+import { AbsoluteFill, Easing, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { cinemaFrame } from "../../lib/video/cinema-finish"
 import { SafeImg } from "./SafeImg"
 import type { KenBurnsClip } from "../../lib/video/ken-burns-plan"
 
@@ -29,6 +30,8 @@ export const KenBurnsPhoto: React.FC<{
   showCaption?: boolean
 }> = ({ clip, brand, showCaption = true }) => {
   const frame = useCurrentFrame()
+  const { width, height } = useVideoConfig()
+  const { safe } = cinemaFrame(width, height)
   const dur = clip.durationFrames
 
   // Ken Burns scale + pan. translate is expressed as a PERCENT of the frame
@@ -109,12 +112,20 @@ export const KenBurnsPhoto: React.FC<{
       <AbsoluteFill
         style={{ background: "linear-gradient(to top, rgba(0,0,0,0.62), transparent 38%)" }}
       />
+      {/* WAVE 91 (lane 91E — the real render, before-PhotoWalkthroughReel-mid.png): the room
+          label stood at a typed bottom: 56 / left: 56 — inside the player's bottom UI band
+          (safe 97 on 1:1) and directly under the burned-in caption band, so "Step inside"
+          printed beneath every cue. The tour beat now names the room from the SAFE TOP-LEFT
+          (cinemaFrame), on its own scrim; the bottom belongs to the captions. */}
+      {showCaption && clip.roomLabel && (
+        <AbsoluteFill style={{ background: "linear-gradient(to bottom, rgba(0,0,0,0.5), transparent 30%)" }} />
+      )}
       {showCaption && clip.roomLabel && (
         <div
           style={{
             position: "absolute",
-            bottom: 56,
-            left: 56,
+            top: safe.top,
+            left: safe.left,
             opacity: captionOpacity,
             display: "flex",
             flexDirection: "column",

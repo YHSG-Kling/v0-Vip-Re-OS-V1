@@ -30,7 +30,7 @@ import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from "remo
 import { SafeImg } from "./components/SafeImg"
 import { selectBrollPlan } from "../lib/video/broll-plan"
 import { isVideoUrl } from "../lib/video/broll-url"
-import { cinemaFrame } from "../lib/video/cinema-finish"
+import { cinemaBadgeSlot, cinemaEndCardSideInset, cinemaFrame } from "../lib/video/cinema-finish"
 import {
   FILM_GRAIN_BACKGROUND_IMAGE, FILM_GRAIN_OVERLAY_OPACITY, VIGNETTE_BACKGROUND_IMAGE,
   handheldDriftOffset,
@@ -530,18 +530,26 @@ export const ContextCueRow: React.FC<{
   // WAVE 90 (lane 90E — the lane's real render): the row sits on the frame's
   // safe top/bottom inset (cinemaFrame — the ONE safe-area rule), never a typed
   // 24 px: on a 1:1 or 9:16 feed that edge is under the platform's own UI.
+  //
+  // WAVE 91 (lane 91E — the real renders of OpenHouseAnnounceReel and TestimonialReel): the
+  // BOTTOM row sat ON the safe bottom inset — exactly where the burned-in caption band (body)
+  // and the disclosure line (the CTA tile) sit, so the chips printed over the caption tick and
+  // over the brokerage / licence line. A bottom row now stands in the BADGE SLOT, above the band
+  // captions and the disclosure share (cinemaBadgeSlot), and keeps out of both corner badges'
+  // columns (the QR bottom-right, the EHO pill bottom-left — cinemaEndCardSideInset).
   const { width, height } = useVideoConfig()
   const { safe } = cinemaFrame(width, height)
   if (cues.length === 0) return null
   const pos = position ?? "top"
+  const side = pos === "bottom" ? cinemaEndCardSideInset(width, height) : safe.left
   return (
     <div style={{
       position: "absolute",
       top:    pos === "top"    ? safe.top : "auto",
-      bottom: pos === "bottom" ? safe.bottom : "auto",
+      bottom: pos === "bottom" ? cinemaBadgeSlot(width, height).bottom : "auto",
       left: 0, right: 0,
       display: "flex", justifyContent: "center", gap: 8, flexWrap: "wrap",
-      padding: `0 ${safe.left}px`,
+      padding: `0 ${side}px`,
     }}>
       {cues.map((cue, i) => (
         <span key={i} style={{

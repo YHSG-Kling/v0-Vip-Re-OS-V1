@@ -160,10 +160,18 @@ export async function mixNarrationVoiceover(input: MixVoiceoverInput): Promise<M
 
     try {
       // Attempt A — the video HAS audio (avatar clip): narration on top.
+      // WAVE 91 (lane 91E — measured on the real renders): amix's default `normalize=1`
+      // scales EACH input by 1/inputs, so the narration left this mux 6 dB down (measured:
+      // source −28.2 dB mean → −37.2 mixed, −31.2 with normalize=0 — the 3 dB left is the
+      // mono→stereo upmix). The music pass then keyed its sidechain duck off a voice 6 dB too
+      // quiet: every muxed film (ProductPromoReel, PartnersMeetingReel's pitch / deal-room
+      // uses) held the bed only ~13 dB under the voice where every in-frame narration held it
+      // ~24 dB under. The composition's own track is silence or quiet chrome here, and the
+      // loudness master that follows limits true peak, so the narration keeps its level.
       await runFfmpeg([
         "-y", "-i", videoPath, "-i", voPath,
         "-filter_complex",
-        `${padFilter}[1:a]${delay}volume=1.0[vo];[0:a][vo]amix=inputs=2:duration=${mixDuration}:dropout_transition=0[aout]`,
+        `${padFilter}[1:a]${delay}volume=1.0[vo];[0:a][vo]amix=inputs=2:duration=${mixDuration}:dropout_transition=0:normalize=0[aout]`,
         "-map", videoMap, "-map", "[aout]", ...videoCodec, "-c:a", "aac",
         ...(pad > 0 ? [] : ["-shortest"]), outPath,
       ])

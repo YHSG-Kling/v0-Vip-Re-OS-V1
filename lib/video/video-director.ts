@@ -1191,6 +1191,10 @@ export async function commissionVideo(
     // VIDEO_FINISH_SPEC was probed tell-free before this was wired, so the
     // fallback path can never be refused by it.
     const { scanForAiTells } = await import("@/lib/video/realism-profile")
+    // Wave 91 (lane 91E): the persona is the SITUATION's audience (director-
+    // content.ts audienceFor — the survivor the explainer author already reads),
+    // never the placeholder "audience"; the hook rule rides as directives.
+    const { audienceFor, directorHookDirectives } = await import("@/lib/video/director-content")
 
     const result = await runWithComplianceRedraft({
       draft: async ({ violations: priorViolations }) => {
@@ -1202,8 +1206,9 @@ export async function commissionVideo(
             // Cascade tone is the default; an explicit opts.persona.tone still wins.
             persona: opts.persona
               ? { ...opts.persona, tone: opts.persona.tone ?? brandVoice?.tone ?? undefined }
-              : { audience: "audience", tone: brandVoice?.tone ?? undefined },
+              : { audience: audienceFor(situation.kind), tone: brandVoice?.tone ?? undefined },
             words: 8,
+            directives: directorHookDirectives(),
           },
           { body: fallbackHook },
           { generator: opts.copyGenerator },
@@ -1696,6 +1701,7 @@ async function draftAndGateHook(
     const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
     const { runWithComplianceRedraft } = await import("@/lib/kernel/compliance-redraft")
     const { evaluateOutbound } = await import("@/lib/kernel/compliance")
+    const { audienceFor, directorHookDirectives } = await import("@/lib/video/director-content")
 
     const facts = factStrings(situation, fallbackHook)
     const result = await runWithComplianceRedraft({
@@ -1705,8 +1711,10 @@ async function draftAndGateHook(
             goal: `a ${situation.kind.replace(/_/g, " ")} video hook headline${goalSuffix}${priorViolations.length ? ` (rewrite to clear: ${priorViolations.join("; ")})` : ""}`,
             facts,
             channel: situation.targetChannel,
-            persona: { audience: "audience", tone: opts.brandVoiceTone ?? undefined },
+            // Wave 91 (lane 91E): the situation's audience + the hook rule, as in commissionVideo.
+            persona: { audience: audienceFor(situation.kind), tone: opts.brandVoiceTone ?? undefined },
             words: 8,
+            directives: directorHookDirectives(),
           },
           { body: fallbackHook },
           { generator: opts.copyGenerator },

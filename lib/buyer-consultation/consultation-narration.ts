@@ -181,6 +181,9 @@ export async function generateBuyerSlideNarration(input: BuyerNarrationInput): P
     `- Fair housing is absolute: describe HOMES and the PROCESS, never the people of an area. No reference to who a neighborhood is for, no schools, no "safe", no "family" framing, no demographic language of any kind.`,
     `- Do not quote any rate, payment, approval amount, or lender terms, and never promise a result or a timeline.`,
     `- First person ("I", "we"), warm, confident. This is ${agent} speaking directly to the buyer.`,
+    // Wave 91 (lane 91E — test:script-compliance-first §8): the close had no rule, so a
+    // slide could end on a hard sell. One warm next step toward the consultation already booked.
+    `- End on ONE warm, no-pressure line pointing to the consultation you already have booked — never urgency, never a hard close, no sales pitch.`,
     `- ${narrationLengthDirective(budget)} Conversational, meant to be spoken aloud. No bullet points, no markdown, no stage directions.`,
     ``,
     `Write only the narration text.`,

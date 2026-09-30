@@ -929,6 +929,132 @@ async function main() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // 8. EVERY VIDEO PURPOSE — the writer behind it carries persona, purpose,
+  //    fair housing, hook-first ordering (scroll formats) and a non-salesy close
+  // ═══════════════════════════════════════════════════════════════════════════
+  // WAVE 91 (lane 91E — owner: "all video scripts/avatar use/video creation needs
+  // to be on an advanced level"). test:video-timeline-integrity §script derives
+  // the MODEL writers by scanning for a model call + a spoken sink — a file roster.
+  // It cannot see (a) a purpose whose words come from the Video Director's hook
+  // engine (generatePersonaCopy — it was excluded as "the hook engine") or (b) a
+  // purpose whose spoken script is a deterministic TEMPLATE. Both were defective:
+  // the Director drafted every hook for `persona: { audience: "audience" }`, and
+  // the seller's weekly update SPOKE its email body — a greeting, parentheses and
+  // the email signature. This section is keyed by the PURPOSE vocabulary itself
+  // (PURPOSE_DURATION_RULES), so a purpose added later with no row goes red.
+  console.log("\n[8] every video PURPOSE's writer — persona, purpose, fair housing, hook-first (scroll) and a non-salesy close")
+  {
+    const { PURPOSE_DURATION_RULES, purposeOpensOnHook } = await import("@/lib/video/duration-model")
+    const { assessScriptStructure, hookWordBudget } = await import("@/lib/video/script-structure")
+    const { audienceFor, directorHookDirectives } = await import("@/lib/video/director-content")
+    const { buildSellerUpdateScript, buildSellerUpdateMessage } = await import("@/lib/agents/seller-update-reel-producer")
+    const { composeProductVideoSpec } = await import("@/lib/platform/product-content")
+    type Route =
+      | { kind: "prompt"; file: string }
+      | { kind: "director"; situations: string[] }
+      | { kind: "template"; name: string; script: () => string }
+      | { kind: "none"; why: string }
+    const SELLER_STATS = { listingAddress: "12 Oak Ln", showingsThisWeek: 3, interestLabel: "strong" as const, daysOnMarket: 9, listPrice: 500000, videoScans: 37 }
+    const PURPOSE_WRITERS: Record<string, Route[]> = {
+      welcome:                      [{ kind: "prompt", file: "lib/video/intro-video-reactor.ts" }],
+      anniversary_equity:           [{ kind: "director", situations: ["anniversary"] }],
+      listing_promo:                [{ kind: "prompt", file: "lib/video/listing-promo-reactor.ts" }, { kind: "prompt", file: "app/api/internal/remotion/render-just-listed/route.ts" }, { kind: "director", situations: ["new_listing", "price_drop", "open_house", "coming_soon", "just_sold"] }],
+      cma:                          [{ kind: "none", why: "CMAReel is a silent chart reel (host 'silent', finish captions:false) — nothing is spoken" }],
+      market_update:                [{ kind: "prompt", file: "lib/kernel/video.ts" }, { kind: "director", situations: ["market_update"] }],
+      seller_update:                [{ kind: "template", name: "buildSellerUpdateScript", script: () => buildSellerUpdateScript(SELLER_STATS) }],
+      explainer:                    [{ kind: "prompt", file: "lib/video/avatar-explainer.ts" }, { kind: "director", situations: ["explainer", "concept_animation"] }],
+      product_demo:                 [{ kind: "template", name: "composeProductVideoSpec", script: () => composeProductVideoSpec("ai_team").script }],
+      memory:                       [{ kind: "none", why: "the seller's OWN recorded words — nothing is written for them" }],
+      partners_meeting:             [{ kind: "none", why: "an INTERNAL report read to the broker (seated; composePartnersMeetingScript states the week's figures) — no consumer, no ask" }],
+      lead_reel:                    [{ kind: "director", situations: ["lead_intro"] }],
+      geo_reel:                     [{ kind: "none", why: "a publication SURFACE over finished reels (geo-reel-autopublish) — each reel keeps its own writer's row above" }],
+      newsletter:                   [{ kind: "prompt", file: "app/api/internal/remotion/render-newsletter-video/route.ts" }],
+      photo_walkthrough:            [{ kind: "director", situations: ["photo_walkthrough"] }],
+      listing_presentation_section: [{ kind: "prompt", file: "lib/listing-presentation/section-narration.ts" }, { kind: "prompt", file: "lib/buyer-consultation/consultation-narration.ts" }],
+      testimonial:                  [{ kind: "director", situations: ["testimonial"] }],
+      neighborhood_spotlight:       [{ kind: "director", situations: ["neighborhood"] }],
+      buyer_match:                  [{ kind: "none", why: "AffordabilitySnapshotReel is silent (host 'silent') — on-screen copy only, no spoken script" }],
+    }
+    const purposes = Object.keys(PURPOSE_DURATION_RULES)
+    const unrowed = purposes.filter((p) => !PURPOSE_WRITERS[p])
+    const stray = Object.keys(PURPOSE_WRITERS).filter((p) => !purposes.includes(p))
+    check(`8.1 every one of the ${purposes.length} video purposes has a writer row (keyed by the PURPOSE vocabulary, not a file roster)`, unrowed.length === 0 && stray.length === 0, `unrowed: ${unrowed.join(", ")} · stray: ${stray.join(", ")}`)
+
+    // The INGREDIENTS — the same readings test:video-timeline-integrity §script uses.
+    const FAIR = /fair[- ]housing|protected characteristic|protected[- ]class/i
+    const FAIR_CODE = /FAIR_HOUSING_WRITING_FLOOR|buildComplianceSystemBlocks|complianceBlocks?\b|complianceDirectives/
+    const PERSONA = /persona|audience|firstName|contactName|for \$\{|speaking directly to|targeting|home seller|home buyer|homeowner/i
+    const HOOK = /shortFormStructureDirective\(|\bhook\b|open with|opens with|lead with|first spoken line/i
+    const CLOSE = /shortFormStructureDirective\(|no[- ]pressure|not salesy|no pitch|sales pitch|no urgency|never urgency|pushy|act now|"link in bio"|one ask|single, specific next step|specific next step|next step|forward-look/i
+    const promptMissing = (src: string, scroll: boolean): string[] => {
+      const miss: string[] = []
+      if (!FAIR.test(src) && !FAIR_CODE.test(src)) miss.push("fair-housing")
+      if (!PERSONA.test(src)) miss.push("persona")
+      if (scroll && !HOOK.test(src)) miss.push("hook-first")
+      if (!CLOSE.test(src)) miss.push("non-salesy close")
+      return miss
+    }
+    // A spoken TEMPLATE: opens on the viewer's situation (never a greeting), closes on ONE ask, speaks no URL or signature, trips no fair-housing flag.
+    const GREETING = /^(hi|hello|hey|here'?s|welcome|good (morning|afternoon|evening))\b/i
+    const templateMissing = (script: string, scroll: boolean): string[] => {
+      const a = assessScriptStructure(script)
+      const miss: string[] = []
+      if (scroll && GREETING.test(a.hook.trim())) miss.push(`hook opens on a greeting ("${a.hook}")`)
+      if (!a.ctaPresent) miss.push("the close asks for nothing")
+      if (/https?:\/\/|\s[—–]\s*[A-Z][a-z]+(\s[A-Z][a-z]+)?\s*$/.test(script)) miss.push("speaks a URL or an email signature")
+      if (detectFairHousingRedFlags(script, "seller").length > 0) miss.push("fair-housing red flag")
+      return miss
+    }
+    const directorSrc = code("lib/video/video-director.ts")
+    let rows = 0, published = 0
+    for (const purpose of purposes) {
+      const scroll = purposeOpensOnHook(purpose as never)
+      for (const r of PURPOSE_WRITERS[purpose] ?? []) {
+        rows++
+        if (r.kind === "none") { published++; console.log(`  ⊘ ${purpose} — ${r.why}`); continue }
+        if (r.kind === "prompt") {
+          let src = ""
+          try { src = code(r.file) } catch { /* missing file → red below */ }
+          const miss = src ? promptMissing(src, scroll) : ["the writer file"]
+          check(`8.2 ${purpose} ← ${r.file}: the writing prompt carries persona, fair housing${scroll ? ", hook-first ordering" : ""} and a non-salesy close`, miss.length === 0, `missing ${miss.join(", ")}`)
+        } else if (r.kind === "template") {
+          const miss = templateMissing(r.script(), scroll)
+          check(`8.3 ${purpose} ← ${r.name}: the spoken template ${scroll ? "opens on the viewer's situation, " : ""}closes on one ask, speaks no URL/signature, no fair-housing flag`, miss.length === 0, miss.join("; "))
+        } else {
+          const bad = r.situations.filter((s) => { const a = audienceFor(s as never); return !a || a.trim() === "audience" || detectFairHousingRedFlags(a, "seller").length > 0 })
+          check(`8.4 ${purpose} ← the Director hook (${r.situations.join(", ")}): each situation drafts for a named, situational audience`, bad.length === 0, `no audience for: ${bad.join(", ")}`)
+        }
+      }
+    }
+    // The Director's two hook drafts read the survivor and carry the hook rule.
+    const directorDrafts = (directorSrc.match(/generatePersonaCopy\(/g) ?? []).length
+    const withPersona = (directorSrc.match(/audience:\s*audienceFor\(situation\.kind\)/g) ?? []).length
+    const withDirectives = (directorSrc.match(/directives:\s*directorHookDirectives\(\)/g) ?? []).length
+    check(`8.5 every Director hook draft (${directorDrafts}) writes for audienceFor(situation.kind) and carries directorHookDirectives() — none for the placeholder "audience"`,
+      directorDrafts > 0 && withPersona === directorDrafts && withDirectives === directorDrafts && !/audience:\s*"audience"/.test(directorSrc),
+      `drafts ${directorDrafts} · persona ${withPersona} · directives ${withDirectives}`)
+    const dirs = directorHookDirectives().join(" ")
+    check("8.6 the Director hook directives spell the short-form hook budget, forbid a greeting opener, and leave the one no-pressure ask to the close",
+      dirs.includes(`${hookWordBudget()} words or fewer`) && /Never a greeting/.test(dirs) && /no-pressure ask/.test(dirs))
+    const copyEngine = raw("lib/kernel/ai-copy.ts")
+    check("8.7 the copy engine the Director drafts through writes fair housing and 'no pressure' into its own system prompt",
+      /FAIR HOUSING: never reference or imply race/.test(copyEngine) && /no pressure/.test(copyEngine) && /req\.directives/.test(stripComments(copyEngine)))
+    check(`8.8 the roster is not empty (${rows} writer rows over ${purposes.length} purposes; ${published} published exclusions, each with its reason)`, rows >= purposes.length && published <= 6)
+
+    // POSITIVE CONTROLS — each finder still recognises the defect it was written for.
+    check("8.9 CONTROL: the seller update's EMAIL body (what the avatar spoke before wave 91) fails the spoken-template rule",
+      templateMissing(buildSellerUpdateMessage(SELLER_STATS, "Dana Demo").body, true).length > 0)
+    check("8.10 CONTROL: the pre-91 product demo close ('See the AI team hand a real deal between managers — live.') asks for nothing",
+      !assessScriptStructure("Most software is another dashboard. One command center. See the AI team hand a real deal between managers — live.").ctaPresent)
+    check("8.11 CONTROL: a Director draft for the placeholder persona is caught by 8.5's finder",
+      /audience:\s*"audience"/.test(`persona: { audience: "audience", tone: brandVoice?.tone ?? undefined },`))
+    check("8.12 CONTROL: a prompt with no hook, no persona, no close and no fair-housing line is caught",
+      promptMissing("Write a 75-word engaging voiceover script. Professional tone. Return ONLY the script.", true).length === 4)
+    check("8.13 CONTROL: a template that opens 'Hi …' and ends on a signature is caught",
+      templateMissing("Hi Sam, here's your update. Three showings this week. — Dana Demo", true).length >= 2)
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${pass} passed, ${fails.length} failed`)
   if (fails.length > 0) {

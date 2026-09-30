@@ -33,6 +33,7 @@ import { computeAssemblyTimeline, evenShotSlots, slideFadeRange } from "../lib/v
 import { compositionBookends } from "../lib/video/duration-model"
 import { mlsNeutralTitle } from "../lib/video/render-cut"
 import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaDisclosureStyle, slideDisclosureText } from "../lib/video/cinema-finish"
 
 export interface JustListedReelProps {
   /** Hook label — "Just Listed" / "Just Sold" / "Price Update". */
@@ -56,6 +57,9 @@ export interface JustListedReelProps {
     agentName?:   string
     agentPhone?:  string
     showEhoMark?: boolean
+    /** Wave 91: the brokerage attribution printed on the end card (every producer stages it). */
+    brokerageName?: string
+    licenseLine?:   string
   }
   /** Voiceover MP3 URL (our Supabase storage). Optional — composition
    *  works silent if the TTS step failed. */
@@ -260,6 +264,9 @@ const FactCards: React.FC<JustListedReelProps> = ({ price, bedrooms, bathrooms, 
 
 const CTAFrame: React.FC<JustListedReelProps> = ({ brand, address, cityState, mlsClean }) => {
   const frame = useCurrentFrame()
+  const { width, height } = useVideoConfig()
+  // The persistent EqualHousingMark badge already carries the mark — the line adds the attribution.
+  const attribution = slideDisclosureText({ brokerageName: brand.brokerageName, showEhoMark: false, licenseLine: brand.licenseLine })
   const opacity = interpolate(frame, [0, 15, 75, 90], [0, 1, 1, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   // THE MLS CUT'S END CARD is neutral: the address (descriptive of the
   // property — IRMLS §1.19 f) and the fair-housing mark. No CTA, no name, no
@@ -287,6 +294,10 @@ const CTAFrame: React.FC<JustListedReelProps> = ({ brand, address, cityState, ml
       )}
       {brand.agentPhone && (
         <p style={{ color: "white", fontSize: 40, opacity: 0.9, marginTop: 8 }}>{brand.agentPhone}</p>
+      )}
+      {/* Wave 91 — the brokerage's name on the listing ad's end card (lane 91E — the producers staged brand.brokerageName and nothing read it; lib/video/cinema-finish.ts slideDisclosureText), on the safe bottom inset at the caption step. */}
+      {attribution && (
+        <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height), color: "#fff" }}>{attribution}</div>
       )}
     </AbsoluteFill>
   )

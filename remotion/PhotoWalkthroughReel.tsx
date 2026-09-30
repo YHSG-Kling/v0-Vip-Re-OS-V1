@@ -47,6 +47,7 @@ import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
 import { mlsNeutralTitle } from "../lib/video/render-cut"
 import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaBadgeSlot, cinemaFrame, slideDisclosureText } from "../lib/video/cinema-finish"
 
 export interface PhotoWalkthroughReelProps {
   /** Hook label — "Just Listed" / "Take the Tour" / "Step Inside". */
@@ -68,6 +69,9 @@ export interface PhotoWalkthroughReelProps {
     agentName?:   string
     agentPhone?:  string
     showEhoMark?: boolean
+    /** Wave 91 (lane 91E): the brokerage attribution on the end card — every producer stages it. */
+    brokerageName?: string
+    licenseLine?:   string
   }
   /** Outro CTA line. Defaults to "DM me to tour." */
   ctaLabel?: string
@@ -165,6 +169,13 @@ export const PhotoWalkthroughReel: React.FC<PhotoWalkthroughReelProps> = (props)
 // Wave 81C — on the MLS cut the cover paints no logo and the address instead of the hook.
 const CoverFrame: React.FC<PhotoWalkthroughReelProps> = ({ hook, address, cityState, brand, mlsClean }) => {
   const frame = useCurrentFrame()
+  // WAVE 91 (lane 91E — the real render, before/after-PhotoWalkthroughReel-f0.png): the cover's
+  // centred title block ran down into the badge slot, and the persistent Equal Housing pill
+  // (bottom-left, cinemaBadgeSlot) printed over the city line. The block now centres in the
+  // frame ABOVE the badge slot (the pill's own caption-step height cleared).
+  const { width, height } = useVideoConfig()
+  const { safe, type } = cinemaFrame(width, height)
+  const coverBottom = cinemaBadgeSlot(width, height).bottom + type.caption * 2
   const opacity = interpolate(frame, [0, 15, 45, 60], [0, 1, 1, 0.92], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
@@ -175,7 +186,7 @@ const CoverFrame: React.FC<PhotoWalkthroughReelProps> = ({ hook, address, citySt
     extrapolateRight: "clamp",
   })
   return (
-    <AbsoluteFill style={{ backgroundColor: brand.primaryColor, opacity, padding: 80 }}>
+    <AbsoluteFill style={{ backgroundColor: brand.primaryColor, opacity, padding: `${Math.max(80, safe.top)}px 80px ${coverBottom}px` }}>
       <div
         style={{
           display: "flex",
@@ -237,11 +248,14 @@ const PhotoTour: React.FC<{ clips: KenBurnsClip[]; brand: PhotoWalkthroughReelPr
 // mark only (no CTA, no name, no phone, no logo — lib/video/render-cut.ts).
 const OutroCTA: React.FC<PhotoWalkthroughReelProps> = ({ brand, ctaLabel, address, cityState, mlsClean }) => (
   <EndCard
-    brand={mlsClean ? { ...brand, logoUrl: undefined } : brand}
+    brand={mlsClean ? { ...brand, logoUrl: undefined } : { ...brand, showEhoMark: false }}
     headline={mlsClean ? mlsNeutralTitle(address, cityState) : (ctaLabel || "DM me to tour.")}
     subline={mlsClean ? null : (brand.agentName ?? null)}
     detail={mlsClean ? (brand.showEhoMark !== false ? "Equal Housing Opportunity" : null) : (brand.agentPhone ?? null)}
-    footer={null}
+    // Wave 91 (lane 91E): the brokerage attribution on the listing ad's end card (it staged
+    // brand.brokerageName and nothing read it). The persistent EqualHousingMark badge carries
+    // the mark, so the footer carries the name (+ licence) only; the MLS cut stays unbranded.
+    footer={mlsClean ? null : (slideDisclosureText({ brokerageName: brand.brokerageName, showEhoMark: false, licenseLine: brand.licenseLine }) || null)}
     align="start"
     logoHeight={56}
     fontFamily={FONT}

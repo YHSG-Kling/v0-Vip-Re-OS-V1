@@ -33,7 +33,7 @@ import { QrOutroBadge } from "./components/QrOutroBadge"
 import { mlsNeutralTitle } from "../lib/video/render-cut"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
-import { cinemaDisclosureStyle, cinemaFrame } from "../lib/video/cinema-finish"
+import { cinemaBadgeSlot, cinemaDisclosureStyle, cinemaFrame, slideDisclosureText } from "../lib/video/cinema-finish"
 
 export interface JustSoldReelSquareProps {
   address:   string
@@ -59,6 +59,9 @@ export interface JustSoldReelSquareProps {
     agentName?:   string
     agentPhone?:  string
     showEhoMark?: boolean
+    /** Wave 91 (lane 91E): the brokerage attribution on the end card — every producer stages it. */
+    brokerageName?: string
+    licenseLine?:   string
   }
   voiceoverUrl?: string
   /** Tracked outro QR PNG data URL (lib/video/video-qr.ts). Optional +
@@ -113,6 +116,10 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
   const images   = imageUrls.slice(0, 4)
   const perPhoto = images.length > 0 ? PHOTOS / images.length : PHOTOS
   const showEho  = brand.showEhoMark ?? true
+  // Wave 91 (lane 91E): brokerage · Equal Housing Opportunity · licence, composed ONCE
+  // (slideDisclosureText). The MLS cut stays unbranded — the mark alone (lib/video/render-cut.ts).
+  const disclosure = slideDisclosureText({ brokerageName: mlsClean ? null : brand.brokerageName, showEhoMark: showEho, licenseLine: mlsClean ? null : brand.licenseLine })
+  const factsSlot = cinemaBadgeSlot(width, height)
   const finalCta = mlsClean ? mlsNeutralTitle(address, cityState) : (ctaLabel ?? "List your home with me")
   const badge    = aboveAskingBadge(soldPrice, listPrice ?? null)
 
@@ -205,10 +212,15 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
             </div>
           )}
 
-          {/* Bottom facts strip — sold price + days on market */}
+          {/* Bottom facts strip — sold price + days on market.
+              WAVE 91 (lane 91E — the real render, before-JustSoldReelSquare-mid.png): the
+              strip's text sat at the frame's bottom edge (padding 32 px), inside the
+              player's bottom UI AND under the burned-in caption band, so every cue was
+              printed across the sold price. The gradient still reaches the edge; the TEXT
+              stands in the badge slot, above the caption band (cinemaBadgeSlot). */}
           <div style={{
             position: "absolute", bottom: 0, left: 0, right: 0,
-            padding: "32px 56px",
+            padding: `32px ${factsSlot.right}px ${factsSlot.bottom}px ${factsSlot.left}px`,
             background: "linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0) 100%)",
             color: "#fff",
           }}>
@@ -241,11 +253,11 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
               {brand.agentPhone}
             </div>
           )}
-          {showEho && (
+          {disclosure && (
             /* Wave 89 — the disclosure on the safe bottom inset at the caption
                step (cinemaDisclosureStyle); it was a 24 px corner in 16 px type. */
             <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height), color: "#fff" }}>
-              Equal Housing Opportunity
+              {disclosure}
             </div>
           )}
           <QrOutroBadge

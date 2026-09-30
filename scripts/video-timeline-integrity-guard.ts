@@ -55,6 +55,17 @@
  *   §script     every derived spoken writer's prompt carries the persona/
  *               audience, the purpose, a fair-housing block, a hook-first
  *               ordering and a non-salesy close.
+ *   §render91   (wave 91, lane 91E — the real renders of the 20 formats 90E had
+ *               not rendered, $S/l91e/harness) each defect those renders found,
+ *               held as a RULE with its control: style-object corners read
+ *               whole and in every mounted component; the brokerage name read
+ *               by every tenant film; no "Photo placeholder" panel; the sold
+ *               price above the caption band; centred end-card copy out of the
+ *               QR badge's column; the plan's b-roll verdict obeyed; footage
+ *               never re-shuttered; panels positioned over the SegmentBackdrop
+ *               (the equity / market-update figures were invisible); the ONE
+ *               lower-third above the caption band by default; the bottom
+ *               context-cue row above captions + disclosure, out of the badges.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { dirname, join } from "node:path"
@@ -82,7 +93,7 @@ import { stitchedIntroCategory } from "../lib/remotion/render-decision"
 import { geometryFor } from "../lib/remotion/composition-geometry"
 import { consumesVoiceover, stagesChapteredSpeech, stagesSpeech } from "../lib/remotion/content-contract"
 import {
-  BLUR_VISIBLE_STREAK_PX, CINEMA_MOTION_BLUR, cinemaCameraStreakPx, cinemaCaptionStyle, cinemaDisclosureStyle, cinemaMotionBlurWindows, cinemaMusicFades, cinemaSlideFooterStack, DISCLOSURE_GLYPH_EM, SLIDE_PRESENTER_PIP, slideDisclosureText,
+  BLUR_VISIBLE_STREAK_PX, CINEMA_MOTION_BLUR, cinemaBadgeSlot, cinemaCameraStreakPx, cinemaEndCardSideInset, cinemaFrame, cinemaLowerThirdPlacement, qrOutroBadgeWidth, cinemaCaptionStyle, cinemaDisclosureStyle, cinemaMotionBlurWindows, cinemaMusicFades, cinemaSlideFooterStack, DISCLOSURE_GLYPH_EM, SLIDE_PRESENTER_PIP, slideDisclosureText,
 } from "../lib/video/cinema-finish"
 import { memoryChapterSegments, chapterDurationFrames } from "../lib/video/memory-video-composition"
 
@@ -479,6 +490,208 @@ console.log("\n── §blur · the memory film's photo push is MEASURED, so the
     ceiling.length === memory.plan.photoSlots.length && ceiling.every((w) => w.samples === CINEMA_MOTION_BLUR.samples && w.streakPx === null))
   check("cinemaCameraStreakPx reads the four photo keys assetsFromProps reads (imageUrls / images / photos / photoUrls)",
     /\["imageUrls", "images", "photos", "photoUrls"\]/.test(stripComments(read("lib/video/cinema-finish.ts"))))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+console.log("\n── §render91 · what the wave-91 real renders of the remaining formats found (lane 91E) ──")
+{
+  // (a) THE CORNER FINDER WAS BLIND TO MULTI-LINE STYLE OBJECTS AND TO SHARED COMPONENTS.
+  //     §disclosure above reads one line at a time and only the composition files, so a
+  //     `style={{\n position: "absolute",\n bottom: 56,\n left: 56 }}` in remotion/components/
+  //     KenBurnsPhoto.tsx — the walkthrough's room label, under every caption cue on the real
+  //     render — counted as zero. This finder reads each style OBJECT whole, in every
+  //     composition AND every component / layer it imports, against that composition's frame.
+  //     Exempt: an absolute child of a `position: "relative"` box (its insets are the box's,
+  //     not the frame's) — published below as the finder's blind spot.
+  const STYLE_OBJ = /style=\{\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}\}/g
+  const typedSubSafe = (text: string, s: { top: number; bottom: number; left: number; right: number }): string[] => {
+    const out: string[] = []
+    for (const m of text.matchAll(STYLE_OBJ)) {
+      const body = m[1]
+      if (!/position:\s*"absolute"/.test(body)) continue
+      if (/position:\s*"relative"/.test(text.slice(Math.max(0, (m.index ?? 0) - 600), m.index))) continue
+      for (const side of ["top", "bottom", "left", "right"] as const) {
+        const v = new RegExp(`(?:^|[\\s,{])${side}:\\s*(\\d+)\\b`).exec(body)
+        if (v && Number(v[1]) > 0 && Number(v[1]) < s[side]) out.push(`${side}: ${v[1]} (safe ${s[side]})`)
+      }
+    }
+    return out
+  }
+  const hits: string[] = []
+  let walked = 0
+  for (const [id, f] of Object.entries(VIDEO_COMPOSITION_FILES)) {
+    const geo = geometryFor(id); if (!geo) continue
+    const s = safeInsets(geo.width, geo.height)
+    const src = stripComments(read(f))
+    const files = [f, ...[...src.matchAll(/from\s+"\.\/(components\/[A-Za-z]+|_[A-Za-z]+)"/g)].map((m) => `remotion/${m[1]}.tsx`)]
+    for (const file of files) { walked++; for (const h of typedSubSafe(stripComments(read(file)), s)) hits.push(`${id} ← ${file} ${h}`) }
+  }
+  check(`no moving composition — nor any component it mounts — types a style-object corner inside a platform UI band (${walked} composition×file reads)`, hits.length === 0, [...new Set(hits)].join("; "))
+  const KB_PRE91 = `<div\n  style={{\n    position: "absolute",\n    bottom: 56,\n    left: 56,\n    opacity: captionOpacity,\n  }}\n>`
+  check("CONTROL: the pre-91 KenBurnsPhoto room label (a MULTI-LINE style object) is caught here — and the one-line finder above cannot see it",
+    typedSubSafe(KB_PRE91, safeInsets(1080, 1080)).some((h) => h.startsWith("bottom: 56")) && !/position: "absolute", (top|bottom): (\d+), (left|right): (\d+)/.test(KB_PRE91))
+  check("CONTROL: an absolute child of a position:relative box is its box's business, not the frame's (the exemption, published)",
+    typedSubSafe(`<div style={{ flex: 1, position: "relative" }}>\n<div style={{\n position: "absolute", top: "50%", left: 32, right: 32 }} />`, safeInsets(1920, 1080)).length === 0)
+  note("blind spot: a text strip anchored bottom: 0 whose TEXT is lifted by padding (the pre-91 JustSold price strip) is not a typed corner — the diff-mask render finder ($S/l91e/harness) is what caught it")
+
+  // (b) THE BROKERAGE NAME ON EVERY TENANT FILM. Producers stage brand.brokerageName on every
+  //     listing reel (render-just-listed brandFor, director-content brandBlock); four listing
+  //     compositions never read it, so the ad carried "Equal Housing Opportunity" and no
+  //     brokerage anywhere (state licence law: the brokerage's name on the ad —
+  //     lib/kernel/marketing/real-estate-compliance-gate.ts). Derived over the whole fleet.
+  const BROKERAGE_EXCLUSIONS: Record<string, string> = {
+    ProductPromoReel: "PLATFORM self-marketing (tier_access {platform}) — its brand is the product's own, no tenant brokerage exists on it",
+  }
+  // A READ, not a type declaration: `.brokerageName` off the brand, or the composed line from the whole brand.
+  const READS_NAME = /\.brokerageName\b|slideDisclosureText\((props\.)?brand\)/
+  const noName = Object.entries(VIDEO_COMPOSITION_FILES).filter(([id, f]) => !BROKERAGE_EXCLUSIONS[id] && !READS_NAME.test(code(f)))
+  check(`every tenant film reads the brokerage name it is staged with (${Object.keys(VIDEO_COMPOSITION_FILES).length - Object.keys(BROKERAGE_EXCLUSIONS).length} compositions; ${Object.keys(BROKERAGE_EXCLUSIONS).length} published exclusion)`, noName.length === 0, noName.map(([id]) => id).join(", "))
+  for (const [id, why] of Object.entries(BROKERAGE_EXCLUSIONS)) note(`⊘ ${id} — ${why}`)
+  const JL_PRE91 = `brand: {\n primaryColor: string\n accentColor: string\n logoUrl?: string\n agentName?: string\n agentPhone?: string\n showEhoMark?: boolean\n }`
+  check("CONTROL: a brand block that DECLARES brokerageName but never reads it fails the reader rule", !READS_NAME.test(JL_PRE91 + "\n brokerageName?: string") && READS_NAME.test("{brand.brokerageName}"))
+  check("the ONE disclosure composer: a named brokerage reads exactly as before; no brokerage degrades to the mark alone (never a dangling '· Equal Housing')",
+    slideDisclosureText({ brokerageName: "Demo Realty", showEhoMark: true, licenseLine: "Lic. #DEMO-0000" }) === "Demo Realty · Equal Housing Opportunity · Lic. #DEMO-0000"
+    && slideDisclosureText({ brokerageName: null, showEhoMark: true }) === "Equal Housing Opportunity"
+    && slideDisclosureText({ brokerageName: "Demo Realty", showEhoMark: false }) === "Demo Realty")
+  const MLS_CLEAN = ["JustListedReelSquare", "JustSoldReelSquare", "JustListedReelHorizontal"]
+  check("the MLS cut stays unbranded: the listing reels that compose the line drop the brokerage name and licence when mlsClean (lib/video/render-cut.ts)",
+    MLS_CLEAN.every((id) => /brokerageName:\s*mlsClean\s*\?\s*null\s*:\s*brand\.brokerageName/.test(code(VIDEO_COMPOSITION_FILES[id]))))
+
+  // (c) THE HERO-IMAGE SLIDE KINDS (ImageSlideBody / LoanSlideBody — first rendered here).
+  const placeholderShips = Object.values(VIDEO_COMPOSITION_FILES).filter((f) => /Photo placeholder/.test(stripComments(read(f))))
+  check("no slide body prints a 'Photo placeholder' panel to a client — no hero image means no photo box (the copy takes the width)", placeholderShips.length === 0, placeholderShips.join(", "))
+  check("CONTROL: the pre-91 LoanSlideBody's fallback text is what the finder looks for", /Photo placeholder/.test(`}}>Photo placeholder</div>`))
+  check("the buyer consultation's loan slide stages a hero: the first home THIS buyer saved (it was staged heroImageUrl: null, always)",
+    /kind === "loan"[\s\S]{0,900}extra\.heroImageUrl = hero/.test(stripComments(read("lib/buyer-consultation/consultation-render.ts"))))
+
+  // (d) THE SOLD PRICE UNDER THE CAPTIONS (JustSoldReelSquare — the real render's mid frame).
+  const sold = stripComments(read("remotion/JustSoldReelSquare.tsx"))
+  check("JustSoldReelSquare's price strip stands its TEXT in the badge slot above the caption band (it sat at the frame edge, under every cue)",
+    /factsSlot = cinemaBadgeSlot\(width, height\)/.test(sold) && /\$\{factsSlot\.bottom\}px/.test(sold))
+  check("JustListedReelSquare's price strip (the same strip, the same defect on its render) stands its TEXT in the badge slot",
+    /\$\{cinemaBadgeSlot\(width, height\)\.bottom\}px/.test(stripComments(read("remotion/JustListedReelSquare.tsx"))))
+  // Derived over the fleet: no moving composition keeps the edge-padded strip shape.
+  const edgeStrips = Object.values(VIDEO_COMPOSITION_FILES).filter((f) => /padding: "32px 56px"/.test(stripComments(read(f))))
+  check(`no moving composition keeps the pre-91 edge-padded strip (padding 32px 56px from the frame edge) — ${edgeStrips.length} found`, edgeStrips.length === 0, edgeStrips.join(", "))
+  check("CONTROL: the strip finder still recognises the pre-91 shape", /padding: "32px 56px"/.test(`position: "absolute", bottom: 0, left: 0, right: 0,\n padding: "32px 56px",`))
+
+  // (e) THE QR BADGE AND THE CENTRED END CARD (ComingSoonReel's real render: the CTA headline
+  //     ran under the tracked QR). The badge's footprint is ONE spelling the badge itself
+  //     reads, and a centred card padded by cinemaEndCardSideInset cannot reach its column.
+  const badge = stripComments(read("remotion/components/QrOutroBadge.tsx"))
+  check("QrOutroBadge draws its footprint from QR_OUTRO_BADGE (no typed 132 / 156 / 12 / 3)",
+    /QR_OUTRO_BADGE\.code/.test(badge) && /QR_OUTRO_BADGE\.captionMaxWidth/.test(badge) && /QR_OUTRO_BADGE\.padding/.test(badge) && /QR_OUTRO_BADGE\.ring/.test(badge) && !/\b(132|156)\b/.test(badge))
+  for (const [w, h] of [[1080, 1080], [1080, 1920], [1920, 1080]] as Array<[number, number]>) {
+    const inset = cinemaEndCardSideInset(w, h)
+    const badgeLeft = w - cinemaBadgeSlot(w, h).right - qrOutroBadgeWidth()
+    check(`${w}×${h}: centred end-card copy padded by cinemaEndCardSideInset (${inset}) ends at ${w - inset}, left of the QR badge (${badgeLeft})`, w - inset < badgeLeft && inset < w / 2)
+  }
+  check("CONTROL: the pre-91 ComingSoon padding (64) lets centred copy reach the badge column on 9:16", 1080 - 64 > 1080 - cinemaBadgeSlot(1080, 1920).right - qrOutroBadgeWidth())
+  const QR_CLEARANCE_READERS = ["ComingSoonReel"]
+  check(`the end cards the real renders caught under the QR read the inset (${QR_CLEARANCE_READERS.join(", ")})`,
+    QR_CLEARANCE_READERS.every((id) => /cinemaEndCardSideInset\(width, height\)/.test(code(VIDEO_COMPOSITION_FILES[id]))))
+
+  // (f) THE PLAN'S B-ROLL VERDICT DECIDES WHETHER FOOTAGE PLAYS (ComingSoonReel).
+  const csr = code("remotion/ComingSoonReel.tsx")
+  check("ComingSoonReel plays staged b-roll only when the staged plan cut a b-roll segment (no plan → the pre-91 behaviour)",
+    /fitBodyVisualPlan\(bodyVisualPlan, "ComingSoonReel", durationInFrames\)/.test(stripComments(read("remotion/ComingSoonReel.tsx"))) && /hasBroll = clips\.length > 0 && \(!plan \|\| plan\.segments\.some\(/.test(csr))
+  {
+    const photos = ["a", "b", "c", "d"].map((x) => `https://example.com/${x}.jpg`)
+    const clips = [{ url: "https://example.com/b1.mp4", durationSeconds: 5 }, { url: "https://example.com/b2.mp4", durationSeconds: 4 }]
+    const base: Record<string, unknown> = { imageUrls: photos, voiceoverUrl: "https://example.com/vo.mp3", spokenSeconds: 8, spokenSecondsSource: "measured" }
+    const staged = stageBodyVisualPlan({ compositionId: "ComingSoonReel", props: { ...base, brollClips: clips }, avatarClip: false, script: scriptFor(8, "voiceover") })
+    const plan = staged.ok ? staged.plan : null
+    const D = plan?.durationInFrames ?? 0
+    check("with four photos the listing_promo plan cuts NO b-roll segment (the house is the star) — so ComingSoonReel now lays no footage", !!plan && !plan.segments.some((s) => s.treatment === "broll"))
+    // (g) FOOTAGE IS NEVER RE-SHUTTERED — a mixed plan (a photo push next to admitted footage).
+    const mixed = plan ? { ...plan, segments: plan.segments.map((s, i) => (i === 1 ? { ...s, treatment: "broll" as const } : s)) } : null
+    const withFootage = cinemaMotionBlurWindows("ComingSoonReel", D, mixed as BodyVisualPlan, { width: 1080, height: 1920, fps: 30, props: { ...base, brollClips: clips } })
+    const noFootage = cinemaMotionBlurWindows("ComingSoonReel", D, mixed as BodyVisualPlan, { width: 1080, height: 1920, fps: 30, props: base })
+    check("a film whose plan admits footage and stages clips gets no synthetic blur window (the blur re-extracted every clip once per sample)", withFootage.length === 0)
+    check("CONTROL: the same plan with no clips staged still blurs its photo push (the rule is about footage, not about the reel)", noFootage.length > 0)
+    const legacy = cinemaMotionBlurWindows("ComingSoonReel", D, null, { width: 1080, height: 1920, fps: 30, props: { ...base, brollClips: clips } })
+    check("a plan-less render with staged clips (the composition's legacy footage underlay) is not blurred either", legacy.length === 0)
+  }
+
+  // (h) PAINT ORDER OVER THE SEGMENT BACKDROP (EquityReportReel / MarketUpdateReel real renders:
+  //     the headline figures were INVISIBLE once their fade-in reached opacity 1). A positioned
+  //     backdrop paints over every IN-FLOW sibling whatever the DOM order, so every panel mounted
+  //     after <SegmentBackdrop> must itself be positioned. Derived: every file that mounts the
+  //     backdrop, every raw <div> and every same-file component mounted after it in that layer.
+  const firstStyle = (s: string): string => (new RegExp(STYLE_OBJ.source).exec(s) ?? [""])[0] ?? ""
+  const inFlowAfterBackdrop = (src: string): string[] => {
+    const out: string[] = []
+    for (const m of src.matchAll(/<SegmentBackdrop\b[^>]*\/>([\s\S]*?)<\/AbsoluteFill>/g)) {
+      // Only the backdrop's SIBLINGS (depth 0 in its layer) — a child of a positioned panel paints with it.
+      let depth = 0
+      for (const t of m[1].matchAll(/<(\/?)([A-Za-z][A-Za-z.]*)((?:[^>"]|"[^"]*")*?)(\/?)>/g)) {
+        const [, closing, name, attrs, selfClosing] = t
+        if (closing) { depth = Math.max(0, depth - 1); continue }
+        if (depth === 0) {
+          if (name === "div" && !/position:/.test(attrs)) out.push(`raw <div> (${attrs.trim().slice(0, 40)}…)`)
+          if (/^[A-Z]/.test(name)) {
+            // A same-file component: its ROOT's first style object. An imported one (AvatarPIP) is not read — published.
+            const def = new RegExp(`const ${name}: React\\.FC[\\s\\S]*?(?=\\n(?:const|export|function) |$)`).exec(src)
+            if (def && !/position:/.test(firstStyle(def[0]))) out.push(`<${name}> root`)
+          }
+        }
+        if (!selfClosing) depth++
+      }
+    }
+    return [...new Set(out)]
+  }
+  const backdropUsers = Object.values(VIDEO_COMPOSITION_FILES).filter((f) => /<SegmentBackdrop\b/.test(stripComments(read(f))))
+  const hidden = backdropUsers.flatMap((f) => inFlowAfterBackdrop(stripComments(read(f))).map((h) => `${f}: ${h}`))
+  check(`every panel mounted over a SegmentBackdrop is positioned, so it paints above it (${backdropUsers.length} compositions mount the backdrop)`, backdropUsers.length > 0 && hidden.length === 0, hidden.join("; "))
+  const PRE91 = `<AbsoluteFill>\n<SegmentBackdrop plan={plan} />\n<StatCard value="x" />\n</AbsoluteFill>\nconst StatCard: React.FC<{ value: string }> = ({ value }) => {\n  return (\n    <div style={{\n      height: "100%", display: "flex",\n    }}>{value}</div>\n  )\n}`
+  check("CONTROL: the pre-91 StatCard (an in-flow root after the backdrop) is caught", inFlowAfterBackdrop(PRE91).length === 1)
+
+  // (i) THE ONE LOWER-THIRD STANDS ABOVE THE CAPTION BAND BY DEFAULT (TeammateExplainerReel's real
+  //     render: its strap, parked at the typed default 168, ran under every caption cue).
+  const lt = stripComments(read("remotion/components/LowerThird.tsx"))
+  check("LowerThird's default height is cinemaLowerThirdPlacement (no typed default), its text on the safe side inset",
+    /bottom \?\? cinemaLowerThirdPlacement\(width, height, fps\)\.bottom/.test(lt) && !/bottom = \d+/.test(lt) && /cinemaFrame\(width, height\)\.safe\.left/.test(lt))
+  for (const [w, h] of [[1080, 1080], [1080, 1920], [1920, 1080]] as Array<[number, number]>) {
+    const cap = cinemaCaptionStyle(w, h)
+    const bandTop = cap.bandBottom + Math.ceil(cap.fontSize * cap.lineHeight * 2 + cap.padY * 2)
+    check(`${w}×${h}: the default strap (${cinemaLowerThirdPlacement(w, h, 30).bottom}) sits above a two-line caption band (top ${bandTop})`, cinemaLowerThirdPlacement(w, h, 30).bottom >= bandTop)
+  }
+  // (k) THE NARRATION MUX KEEPS THE VOICE'S LEVEL (ProductPromoReel's real render: the bed sat
+  //     13 dB under a muxed voice, 24 dB under every in-frame one). amix's default normalize=1
+  //     halves each of its two inputs, so the sidechain duck keyed off a voice 6 dB too quiet.
+  const vo = stripComments(read("lib/remotion/voiceover-mixer.ts"))
+  const muxAmix = [...vo.matchAll(/\[0:a\]\[vo\]amix=([^\[`]*)\[aout\]/g)].map((m) => m[1])
+  check(`the narration mux's amix does not normalize its inputs (${muxAmix.length} graph)`, muxAmix.length > 0 && muxAmix.every((g) => /normalize=0/.test(g)))
+  check("CONTROL: the pre-91 graph (ffmpeg's default normalize) is what the finder refuses", !/normalize=0/.test("inputs=2:duration=${mixDuration}:dropout_transition=0"))
+
+  // (l) CMAReel's persistent footer (a padded flex row 36 px from the edges in 18 px type — the
+  //     brokerage bottom-left, the mark bottom-right, both inside the player's UI band).
+  const cma = stripComments(read("remotion/CMAReel.tsx"))
+  check("CMAReel's footer is the ONE disclosure line on the safe inset (cinemaDisclosureStyle + slideDisclosureText), not an edge-padded flex row",
+    /\.\.\.cinemaDisclosureStyle\(width, height\)/.test(cma) && /slideDisclosureText\(\{ brokerageName: brand\.brokerageName/.test(cma) && !/justifyContent: "flex-end", padding: 36/.test(cma))
+  check("CONTROL: the pre-91 footer shape is what the finder refuses", /justifyContent: "flex-end", padding: 36/.test(`<AbsoluteFill style={{ justifyContent: "flex-end", padding: 36, pointerEvents: "none" }}>`))
+
+  // (n) AffordabilitySnapshotReel's rate assumption rides INSIDE the bottom-anchored disclosure
+  //     block (it stood a fixed two lines above it; a real-length brokerage line wraps to three).
+  const aff = stripComments(read("remotion/AffordabilitySnapshotReel.tsx"))
+  check("AffordabilitySnapshotReel stacks the rate assumption inside the disclosure block — no fixed-line offset above a line that can wrap",
+    /\.\.\.disclosure \}\}>\s*\{ratesAssumption &&/.test(aff) && !/bottom: disclosure\.bottom \+/.test(aff))
+  check("CONTROL: the pre-91 fixed offset is what the finder refuses", /bottom: disclosure\.bottom \+/.test(`position: "absolute", bottom: disclosure.bottom + Math.round(disclosure.fontSize * disclosure.lineHeight * 2),`))
+
+  // (m) PhotoWalkthroughReel's cover (the persistent EHO pill printed over the city line).
+  check("PhotoWalkthroughReel's cover centres its title block ABOVE the badge slot the EHO pill stands in",
+    /coverBottom = cinemaBadgeSlot\(width, height\)\.bottom \+ type\.caption \* 2/.test(stripComments(read("remotion/PhotoWalkthroughReel.tsx"))))
+
+  // (j) THE CONTEXT-CUE ROW (OpenHouse / Testimonial real renders: the bottom row printed over the
+  //     caption tick in the body and over the brokerage / licence line on the CTA tile).
+  const cue = stripComments(read("remotion/_BrollLayer.tsx"))
+  check("ContextCueRow's bottom row stands in the badge slot (above captions + disclosure) and out of both corner badges' columns",
+    /bottom: pos === "bottom" \? cinemaBadgeSlot\(width, height\)\.bottom/.test(cue) && /pos === "bottom" \? cinemaEndCardSideInset\(width, height\)/.test(cue))
+  check("in the BODY (captions below, the scene's title block in the badge slot) the cue rows stand on the safe top — ComingSoonReel, OpenHouseAnnounceReel",
+    ["remotion/ComingSoonReel.tsx", "remotion/OpenHouseAnnounceReel.tsx"].every((f) => /<ContextCueRow[^>]*position="top"/.test(stripComments(read(f))) && !/<ContextCueRow[^>]*position="bottom"/.test(stripComments(read(f)))))
+  check("CONTROL: the pre-91 bottom row (the safe bottom inset) is exactly the disclosure line's height — a collision by construction",
+    cinemaFrame(1080, 1080).safe.bottom === cinemaDisclosureStyle(1080, 1080).bottom && cinemaBadgeSlot(1080, 1080).bottom > cinemaDisclosureStyle(1080, 1080).bottom)
+  check("CONTROL: the pre-91 typed default (168) lies INSIDE the 1:1 caption band", (() => { const c = cinemaCaptionStyle(1080, 1080); return 168 > c.bandBottom && 168 < c.bandBottom + Math.ceil(c.fontSize * c.lineHeight * 2 + c.padY * 2) })())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

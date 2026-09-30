@@ -34,10 +34,11 @@ import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
 import { BrollLayer, ContextCueRow, type BrollClip } from "./_BrollLayer"
-import { QrOutroBadge } from "./components/QrOutroBadge"
+import { QrOutroBadge, shouldRenderQrBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
-import { cinemaDisclosureStyle } from "../lib/video/cinema-finish"
+import { fitBodyVisualPlan, type BodyVisualPlan } from "../lib/video/body-visual-model"
+import { cinemaDisclosureStyle, cinemaEndCardSideInset } from "../lib/video/cinema-finish"
 
 export interface ComingSoonReelProps {
   /** Property address line. NULL when the brokerage wants a
@@ -65,6 +66,9 @@ export interface ComingSoonReelProps {
    *  "Top searched in your zip". Composer pulls these from the
    *  competitor-intel content bank when available. */
   contextCues?: string[]
+  /** The staged body-visual plan (lib/video/body-visual-model.ts). Wave 91: its b-roll
+   *  verdict decides whether stock footage plays at all (see `hasBroll` below). */
+  bodyVisualPlan?: BodyVisualPlan | null
   /** Optional avatar PIP — pre-listing format usually skips it,
    *  but a brokerage with a strong personal brand may want
    *  the agent's face present. */
@@ -109,16 +113,26 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
   address, cityState, teaser, heroImageUrl, whenString, ctaLabel,
   brollClips, contextCues, avatarVideoUrl, agentPhotoUrl, agentName,
   voiceoverUrl, brand, qrCodeDataUrl, qrCaption, mlsClean,
-  captionsCues, captionScript,
+  captionsCues, captionScript, bodyVisualPlan,
 }) => {
   const frame    = useCurrentFrame()
   const showEho  = brand.showEhoMark ?? true
   const finalCta = ctaLabel ?? "DM me to be first in line"
   const cues     = contextCues ?? []
   const clips    = brollClips ?? []
-  const hasBroll = clips.length > 0
   const overlay  = `${brand.primaryColor}B3`  // ~70% alpha tint
   const { durationInFrames, width, height } = useVideoConfig()
+  // WAVE 91 (lane 91E — the real render of this reel): the Director stages stock b-roll for
+  // every coming-soon commission (needsBroll), and this layer played it under EVERY frame,
+  // whatever the plan said. The listing_promo rule is "the HOUSE is the star — stock cutaways
+  // only when the home has fewer than BROLL_PHOTO_SCARCITY photos" (body-visual-model.ts), and
+  // the staged plan with four photos cut NO b-roll segment — so footage the plan refused ran
+  // behind the photos, and the cinema finish's photo-push blur wrapped a <Video>, re-extracting
+  // the clip once per blur sample (the 315-frame render was stopped at 24 min). The plan's
+  // verdict now decides: footage plays only when the plan cut a b-roll segment (no plan staged
+  // keeps the pre-91 behaviour — a Studio / legacy render).
+  const plan     = fitBodyVisualPlan(bodyVisualPlan, "ComingSoonReel", durationInFrames)
+  const hasBroll = clips.length > 0 && (!plan || plan.segments.some((s) => s.treatment === "broll"))
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const BODY     = timeline.body.durationInFrames
 
@@ -214,15 +228,22 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
               {teaser}
             </div>
           )}
-          <ContextCueRow cues={cues} accentColor={brand.accentColor} position="bottom" />
+          {/* Wave 91 (lane 91E — the real render): in the BODY the bottom band belongs to the
+              captions and the badge slot above it to this scene's own title block, so the cue
+              chips stand on the safe TOP inset (as NeighborhoodSpotlightReel's do). */}
+          <ContextCueRow cues={cues} accentColor={brand.accentColor} position="top" />
         </AbsoluteFill>
       </Sequence>
 
-      {/* CTA — 10-12s. Agent + DM CTA. Small avatar PIP optional. */}
+      {/* CTA — 10-12s. Agent + DM CTA. Small avatar PIP optional.
+          Wave 91 (lane 91E — the real render, before-ComingSoonReel-outro.png): the centred
+          headline ran UNDER the tracked QR badge; with a QR on the card the copy is padded out
+          of the badge's column (cinemaEndCardSideInset). */}
       <Sequence from={COVER + BODY} durationInFrames={CTA}>
         <AbsoluteFill style={{
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-          padding: 64, textAlign: "center", backgroundColor: brand.primaryColor, color: "#fff",
+          padding: shouldRenderQrBadge({ qrCodeDataUrl, mlsClean }) ? `64px ${cinemaEndCardSideInset(width, height)}px` : 64,
+          textAlign: "center", backgroundColor: brand.primaryColor, color: "#fff",
         }}>
           {(avatarVideoUrl || agentPhotoUrl) && (
             <div style={{

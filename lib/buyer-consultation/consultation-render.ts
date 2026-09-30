@@ -333,6 +333,12 @@ export async function renderBuyerConsultationSlides(
     if (kind === "loan") {
       if (loanReadError) { resolved.push({ section: s, skip: `buyer_financial_profiles read refused: ${loanReadError}` }); continue }
       if (!ctx.hasLoanProfile) { resolved.push({ section: s, skip: "no buyer_financial_profiles row — nothing true to say about financing" }); continue }
+      // Wave 91 (lane 91E — the first real render of the loan kind): the slide was staged with
+      // heroImageUrl null below, so its 58 % photo box printed "Photo placeholder" to the buyer.
+      // The hero is the first home THIS buyer saved (the search slide's own photo, a public list
+      // photo already shown to them); with none, the slide lays its copy out full-width.
+      const hero = ctx.searchExamples.find((e) => typeof e.photoUrl === "string" && e.photoUrl.length > 0)?.photoUrl ?? null
+      if (hero) extra.heroImageUrl = hero
     }
     if (kind === "search") {
       if (searchReadError) { resolved.push({ section: s, skip: `saved_properties read refused: ${searchReadError}` }); continue }

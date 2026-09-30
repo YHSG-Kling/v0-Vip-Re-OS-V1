@@ -196,7 +196,9 @@ export function composeProductVideoSpec(
   const beats = custom
     ? [custom.proof, ...videoProofBeats("ai_team").slice(0, 2)]
     : videoProofBeats(resolvedAngle)
-  const cta = "See the AI team hand a real deal between managers — live."
+  // Wave 91 (lane 91E): the close ASKS for one next step (assessScriptStructure's close
+  // rule — "See … live." asked for nothing); one ask, no urgency. Root.tsx's approved-copy default matches.
+  const cta = "Book a live demo — watch the AI team hand a real deal between managers."
   const post = composeProductPost(f.channel, custom ? angle : resolvedAngle, brand, custom)
   const baseProps = {
     hook: a.hook, proofs: beats, cta,

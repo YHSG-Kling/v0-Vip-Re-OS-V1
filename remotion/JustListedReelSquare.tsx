@@ -35,7 +35,7 @@ import { QrOutroBadge } from "./components/QrOutroBadge"
 import { mlsNeutralTitle } from "../lib/video/render-cut"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
-import { cinemaDisclosureStyle, cinemaFrame } from "../lib/video/cinema-finish"
+import { cinemaBadgeSlot, cinemaDisclosureStyle, cinemaFrame, slideDisclosureText } from "../lib/video/cinema-finish"
 
 export interface JustListedReelSquareProps {
   hook:      string
@@ -59,6 +59,9 @@ export interface JustListedReelSquareProps {
      *  optional for non-listing organic content; here it defaults
      *  to true. */
     showEhoMark?: boolean
+    /** Wave 91 (lane 91E): the brokerage attribution on the end card — every producer stages it. */
+    brokerageName?: string
+    licenseLine?:   string
   }
   voiceoverUrl?: string
   /** Paid-ad CTA the brokerage wants on screen for the final
@@ -109,6 +112,9 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
   const images     = imageUrls.slice(0, 4)
   const perPhoto   = images.length > 0 ? PHOTOS / images.length : PHOTOS
   const showEho    = brand.showEhoMark ?? true
+  // Wave 91 (lane 91E): brokerage · Equal Housing Opportunity · licence, composed ONCE
+  // (slideDisclosureText). The MLS cut stays unbranded — the mark alone (lib/video/render-cut.ts).
+  const disclosure = slideDisclosureText({ brokerageName: mlsClean ? null : brand.brokerageName, showEhoMark: showEho, licenseLine: mlsClean ? null : brand.licenseLine })
   const finalCta   = mlsClean ? mlsNeutralTitle(address, cityState) : (ctaLabel ?? "Tour this listing")
 
   return (
@@ -173,11 +179,15 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
         {/* Persistent facts strip. Floats over the photos so the
             viewer always sees the offer without waiting for a card
             section. Bottom-anchored so it doesn't compete with the
-            photo's natural focal point. */}
+            photo's natural focal point.
+            WAVE 91 (lane 91E — the real render, after-JustListedReelSquare-mid.png): the price
+            sat 32 px from the frame's edge, inside the player's bottom UI and UNDER the burned-in
+            caption band — the JustSoldReelSquare defect, same strip. The gradient still reaches
+            the edge; the TEXT stands in the badge slot, above the caption band. */}
         <AbsoluteFill style={{ pointerEvents: "none" }}>
           <div style={{
             position: "absolute", bottom: 0, left: 0, right: 0,
-            padding: "32px 56px",
+            padding: `32px ${cinemaBadgeSlot(width, height).right}px ${cinemaBadgeSlot(width, height).bottom}px ${cinemaBadgeSlot(width, height).left}px`,
             background: "linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0) 100%)",
             color: "#fff",
           }}>
@@ -210,11 +220,11 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
               {brand.agentPhone}
             </div>
           )}
-          {showEho && (
+          {disclosure && (
             /* Wave 89 — the disclosure on the safe bottom inset at the caption
                step (cinemaDisclosureStyle); it was a 24 px corner in 16 px type. */
             <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height), color: "#fff" }}>
-              Equal Housing Opportunity
+              {disclosure}
             </div>
           )}
           <QrOutroBadge

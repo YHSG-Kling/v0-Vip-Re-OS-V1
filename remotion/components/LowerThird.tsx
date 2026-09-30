@@ -23,15 +23,19 @@
  * never a CSS transition, never a `transform` string.
  */
 import React from "react"
-import { interpolate, useCurrentFrame } from "remotion"
+import { interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { cinemaFrame, cinemaLowerThirdPlacement } from "../../lib/video/cinema-finish"
 
 export interface LowerThirdProps {
   agentName: string
   brokerageName: string
   primaryColor: string
   accentColor: string
-  /** Distance from the bottom edge, px. Default 168 (TeammateExplainerReel's
-   *  original placement above its progress bar). */
+  /** Distance from the bottom edge, px. Default: the ONE derivation, cinemaLowerThirdPlacement —
+   *  above the caption band. WAVE 91 (lane 91E — the real render of TeammateExplainerReel): the
+   *  typed default 168 put the strap UNDER the burned-in caption band on a 1:1 frame (band from
+   *  97 px up ~190 px), so every cue printed across the agent's name; the "progress bar" it was
+   *  parked above no longer exists. */
   bottom?: number
   /**
    * Wave 87 (lane 87D) — identify-then-leave. When set, the strap slides OUT
@@ -43,8 +47,13 @@ export interface LowerThirdProps {
   exitFrames?: number
 }
 
-export const LowerThird: React.FC<LowerThirdProps> = ({ agentName, brokerageName, primaryColor, accentColor, bottom = 168, holdFrames, exitFrames = 12 }) => {
+export const LowerThird: React.FC<LowerThirdProps> = ({ agentName, brokerageName, primaryColor, accentColor, bottom, holdFrames, exitFrames = 12 }) => {
   const frame = useCurrentFrame()
+  const { width, height, fps } = useVideoConfig()
+  const at = bottom ?? cinemaLowerThirdPlacement(width, height, fps).bottom
+  // The strap's bar still runs from the frame's edge (broadcast style); its TEXT starts on the
+  // safe side inset (wave 91 — it started 30 px from the edge, inside a feed's side chrome).
+  const textLeft = Math.max(20, cinemaFrame(width, height).safe.left - 10)
   const enter = interpolate(frame, [0, 16], [-560, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   const exitStart = typeof holdFrames === "number" && holdFrames > 0 ? 16 + holdFrames : null
   const exit = exitStart != null
@@ -53,7 +62,7 @@ export const LowerThird: React.FC<LowerThirdProps> = ({ agentName, brokerageName
   return (
     <div
       style={{
-        position: "absolute", left: 0, bottom,
+        position: "absolute", left: 0, bottom: at,
         translate: `${enter + exit}px`,
       }}
     >
@@ -66,7 +75,7 @@ export const LowerThird: React.FC<LowerThirdProps> = ({ agentName, brokerageName
         }}
       >
         <div style={{ width: 10, backgroundColor: accentColor }} />
-        <div style={{ padding: "16px 28px 16px 20px" }}>
+        <div style={{ padding: `16px 28px 16px ${textLeft}px` }}>
           <div style={{ fontSize: 34, fontWeight: 800, color: "#fff", lineHeight: 1.1 }}>{agentName}</div>
           <div style={{ fontSize: 20, fontWeight: 600, color: accentColor, letterSpacing: 1, marginTop: 4 }}>
             {brokerageName}

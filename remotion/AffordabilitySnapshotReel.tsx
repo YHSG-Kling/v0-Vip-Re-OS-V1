@@ -267,20 +267,17 @@ export const AffordabilitySnapshotReel: React.FC<AffordabilitySnapshotReelProps>
             <div style={{ fontSize: 22, color: "#fff", opacity: 0.85, marginTop: 10 }}>{agentPhone}</div>
           )}
           <ContextCueRow cues={cues} accentColor={brand.accentColor} position="bottom" />
-          {ratesAssumption && (
-            /* Wave 89 — the rate assumption is a disclosure too: one caption step
-               above the footer, inside the safe sides (it was 64 px from the
-               edge in 12 px type). */
-            <div style={{
-              position: "absolute", bottom: disclosure.bottom + Math.round(disclosure.fontSize * disclosure.lineHeight * 2), left: disclosure.left, right: disclosure.right,
-              fontSize: disclosure.fontSize, color: "#fff", opacity: disclosure.opacity, letterSpacing: 1, textAlign: "center",
-            }}>
-              {ratesAssumption}
-            </div>
-          )}
           {/* Wave 89 — the disclosure on the safe bottom inset at the caption
-              step (cinemaDisclosureStyle); it was 24 px from the edge in 14 px type. */}
+              step (cinemaDisclosureStyle); it was 24 px from the edge in 14 px type.
+              WAVE 91 (lane 91E — the real render, after2-AffordabilitySnapshotReel-outro.png):
+              the rate assumption stood a FIXED two lines above this block, and a real-length
+              brokerage line wraps to three, so the assumption printed across the brokerage
+              name. It is now the block's first line — one bottom-anchored stack that grows
+              upward with whatever the disclosure wraps to. */}
           <div style={{ position: "absolute", ...disclosure }}>
+            {ratesAssumption && (
+              <div style={{ letterSpacing: 1, marginBottom: Math.round(disclosure.fontSize * 0.5) }}>{ratesAssumption}</div>
+            )}
             {brand.brokerageName}{showEho && " · Equal Housing Opportunity"}
             {brand.licenseLine && (
               <>

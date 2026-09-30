@@ -200,7 +200,10 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
               </div>
             )}
           </AbsoluteFill>
-          <ContextCueRow cues={cues} accentColor={brand.accentColor} position="bottom" />
+          {/* Wave 91 (lane 91E — the real render): in the BODY the bottom band belongs to the
+              captions and the badge slot above it to this scene's own title block, so the cue
+              chips stand on the safe TOP inset (as NeighborhoodSpotlightReel's do). */}
+          <ContextCueRow cues={cues} accentColor={brand.accentColor} position="top" />
         </AbsoluteFill>
       </Sequence>
 

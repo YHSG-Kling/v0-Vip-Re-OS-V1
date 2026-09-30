@@ -36,6 +36,7 @@ import type { SituationKind, VideoSituation } from "./video-director"
 import { companionCard, seoHintFromNarration, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 import { describeMissingContent } from "@/lib/remotion/content-contract"
 import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
+import { hookWordBudget, SHORT_FORM_HOOK_MAX_SECONDS } from "@/lib/video/script-structure"
 
 type AnyClient = any
 
@@ -759,10 +760,49 @@ export async function resolveDirectorContentProps(
   }
 }
 
-function audienceFor(kind: SituationKind): string {
+/**
+ * WHO a Director video speaks to, by situation — the persona every Director
+ * writer draws with (the explainer author below AND the hook drafts in
+ * lib/video/video-director.ts commissionVideo / draftAndGateHook).
+ *
+ * WAVE 91 (lane 91E — "all video scripts … on an advanced level"): the hook
+ * drafts wrote with `persona: { audience: "audience" }` — a placeholder that
+ * tells the model nothing — so a just-listed hook, a market-update hook and an
+ * anniversary hook were all written for nobody. Extended here (the survivor)
+ * rather than a second table: listing situations speak to someone SHOPPING,
+ * value situations to a HOMEOWNER, the area reel to someone WEIGHING A MOVE.
+ * Every line names a SITUATION, never a group of people (Fair Housing: speak to
+ * the circumstance, never to who the viewer "is"). The three pre-91 answers are
+ * unchanged. PURE.
+ */
+export function audienceFor(kind: SituationKind): string {
   if (kind === "lead_intro") return "a new lead deciding whether to work with this agent"
   if (kind === "presentation") return "a homeowner considering listing"
+  if (kind === "new_listing" || kind === "price_drop" || kind === "open_house" || kind === "coming_soon" || kind === "photo_walkthrough") {
+    return "someone shopping for a home like this one"
+  }
+  if (kind === "just_sold") return "a nearby homeowner curious what homes like theirs sell for"
+  if (kind === "market_update" || kind === "cma" || kind === "anniversary") return "a homeowner keeping an eye on what their home is worth"
+  if (kind === "neighborhood") return "someone weighing a move to this area"
+  if (kind === "testimonial") return "someone choosing an agent"
   return "a client of this agent"
+}
+
+/**
+ * The writing constraints every Director HOOK draft carries (generatePersonaCopy
+ * `directives` — rules, never facts). The hook is the first line on screen and,
+ * on the presenter formats, the first words spoken, so it is written to the
+ * short-form hook rule (lib/video/script-structure.ts — the SAME budget
+ * assessScriptStructure checks afterwards) and leaves the ask to the close.
+ * Fair housing and "no pressure" are already in the copy engine's own system
+ * prompt (lib/kernel/ai-copy.ts rules 1 and 4); these add what it lacked. PURE.
+ */
+export function directorHookDirectives(): string[] {
+  return [
+    `This is the video's OPENING line — on screen first and, on presenter formats, the first words spoken. Open on the viewer's situation, one specific fact from the list, or a question; the first clause is ${hookWordBudget()} words or fewer so it lands inside ${SHORT_FORM_HOOK_MAX_SECONDS} seconds.`,
+    "Never a greeting, a self-introduction or the brand name first.",
+    "No call to action, urgency, guarantee or sales pitch in this line — the video's close carries its one no-pressure ask.",
+  ]
 }
 
 // ── reads ───────────────────────────────────────────────────────────────────

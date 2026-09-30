@@ -21,7 +21,7 @@
  */
 import React from "react"
 import { Img, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
-import { cinemaBadgeSlot } from "../../lib/video/cinema-finish"
+import { cinemaBadgeSlot, QR_OUTRO_BADGE } from "../../lib/video/cinema-finish"
 
 export interface QrOutroBadgeProps {
   /** data:image/png;base64,... from QRCode.toDataURL. Null/undefined → render nothing. */
@@ -89,19 +89,19 @@ export const QrOutroBadge: React.FC<QrOutroBadgeProps> = ({
         flexDirection: "column",
         alignItems: "center",
         gap: 8,
-        padding: 12,
+        padding: QR_OUTRO_BADGE.padding,
         borderRadius: 14,
         backgroundColor: "rgba(255,255,255,0.96)",
-        boxShadow: `0 0 0 3px ${accentColor}`,
+        boxShadow: `0 0 0 ${QR_OUTRO_BADGE.ring}px ${accentColor}`,
       }}
     >
       <Img
         src={qrCodeDataUrl}
-        style={{ width: 132, height: 132, objectFit: "contain" }}
+        style={{ width: QR_OUTRO_BADGE.code, height: QR_OUTRO_BADGE.code, objectFit: "contain" }}
       />
       <div
         style={{
-          maxWidth: 156,
+          maxWidth: QR_OUTRO_BADGE.captionMaxWidth,
           textAlign: "center",
           color: primaryColor,
           fontSize: 18,

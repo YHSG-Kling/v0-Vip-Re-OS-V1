@@ -171,6 +171,35 @@ export function buildSellerUpdateMessage(
   return { subject: `Your weekly update — ${stats.listingAddress}`, body: lines.join("\n\n") }
 }
 
+/**
+ * Pure: the SPOKEN twin of buildSellerUpdateMessage — the narration the
+ * avatar speaks and the burned-in captions show, from the SAME stats.
+ *
+ * WAVE 91 (lane 91E — "all video scripts … on an advanced level"). The avatar
+ * used to speak the EMAIL body: it opened on a 7-to-10-word greeting line
+ * ("Here's your weekly update on …"), read "(strong buyer interest)" with its
+ * parentheses, closed on "I'll follow up with next-step recommendations" (no
+ * ask — assessScriptStructure's close rule) and then SPOKE THE EMAIL
+ * SIGNATURE ("— Dana Demo") as its last words. A voice is not an email: the
+ * spoken form opens on the seller's own situation (their address), says the
+ * week in plain sentences, and closes on ONE no-pressure ask. The email body is
+ * unchanged byte-for-byte (the delivery still carries the video link and the
+ * signature). No new facts — every figure is the email's.
+ */
+export function buildSellerUpdateScript(stats: SellerUpdateStats): string {
+  // No name sign-off: the presenter IS the agent; the signature is the email's, not the voice's.
+  const dom = stats.daysOnMarket != null ? `${stats.daysOnMarket} days on market` : "freshly listed"
+  const week = stats.showingsThisWeek === 0
+    ? "It was a quieter week on showings"
+    : `We had ${stats.showingsThisWeek} showing${stats.showingsThisWeek === 1 ? "" : "s"} this week, with ${stats.interestLabel} buyer interest`
+  return [
+    `Your week at ${stats.listingAddress}.`,
+    `${week}, and we're at ${dom}.`,
+    (stats.videoScans ?? 0) > 0 ? `Your marketing videos have driven ${stats.videoScans} QR scan${stats.videoScans === 1 ? "" : "s"} from interested buyers so far.` : "",
+    "Want to talk through next steps? Give me a call anytime.",
+  ].filter(Boolean).join(" ")
+}
+
 type Svc = ReturnType<typeof createServiceClient>
 
 async function gatherSellerUpdateStats(supabase: Svc, brokerageId: string, listingId: string): Promise<{
@@ -334,7 +363,9 @@ export async function requestSellerUpdateReel(
   // The seller-safe narration, composed ONCE (§6) — the avatar speaks it below
   // and the companion card's seoHint is cut from it, so the two cannot drift
   // into two different accounts of the same week.
-  const sellerScript = buildSellerUpdateMessage(gathered.stats, agentName).body
+  // Wave 91 (lane 91E): the SPOKEN twin (buildSellerUpdateScript), not the email body —
+  // the avatar no longer reads a greeting line, parentheses and the email signature aloud.
+  const sellerScript = buildSellerUpdateScript(gathered.stats)
 
   const props: Record<string, unknown> = {
     ...buildSellerUpdateReelProps(gathered.stats, {

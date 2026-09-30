@@ -35,7 +35,7 @@ import { QrOutroBadge } from "./components/QrOutroBadge"
 import { mlsNeutralTitle } from "../lib/video/render-cut"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
-import { cinemaDisclosureStyle, cinemaFrame } from "../lib/video/cinema-finish"
+import { cinemaDisclosureStyle, cinemaFrame, slideDisclosureText } from "../lib/video/cinema-finish"
 
 export interface JustListedReelHorizontalProps {
   hook:      string
@@ -54,6 +54,8 @@ export interface JustListedReelHorizontalProps {
     agentPhone?:  string
     showEhoMark?: boolean
     licenseLine?: string
+    /** Wave 91 (lane 91E): the brokerage attribution on the end card — every producer stages it. */
+    brokerageName?: string
   }
   voiceoverUrl?: string
   ctaLabel?:    string
@@ -129,6 +131,7 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
   const images   = imageUrls.slice(0, 2)
   const perPhoto = images.length > 0 ? PHOTOS / images.length : PHOTOS
   const showEho  = brand.showEhoMark ?? true
+  const disclosure = slideDisclosureText({ brokerageName: mlsClean ? null : brand.brokerageName, showEhoMark: showEho, licenseLine: mlsClean ? null : brand.licenseLine })
   const finalCta = mlsClean ? mlsNeutralTitle(address, cityState) : (ctaLabel ?? "Tour this listing")
 
   return (
@@ -245,8 +248,11 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
           )}
           {/* Wave 89 — the disclosure on the safe bottom inset at the caption
               step (cinemaDisclosureStyle); it was 24 px from the edge in 16 px type. */}
+          {/* Wave 91 (lane 91E): brokerage · Equal Housing Opportunity · licence through the ONE
+              composer (slideDisclosureText) — it printed the mark and the licence with no brokerage
+              name, and a dangling " · " when no licence was staged. The MLS cut stays unbranded. */}
           <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height) }}>
-            {showEho && "Equal Housing Opportunity · "}{brand.licenseLine ?? ""}
+            {disclosure}
           </div>
           <QrOutroBadge
             mlsClean={mlsClean}

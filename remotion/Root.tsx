@@ -1307,7 +1307,7 @@ export const RemotionRoot: React.FC = () => {
             "One command center. Every action owned, gated, and auditable.",
             "A voice admin that takes a command and executes it end to end.",
           ],
-          cta: "See the AI team hand a real deal between managers — live.",
+          cta: "Book a live demo — watch the AI team hand a real deal between managers.",
           brand: { primaryColor: "#0F172A", accentColor: "#F59E0B", name: "VIP Agents", tagline: "The AI team that runs the whole business" },
           ctaDomain: "vipagents.ai/get-started",
         }}

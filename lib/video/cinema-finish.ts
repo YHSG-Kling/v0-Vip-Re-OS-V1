@@ -426,6 +426,15 @@ export function cinemaMotionBlurWindows(
     if (to > from) spans = [{ from, to, label: "body (no plan staged)" }]
   }
   if (spans.length === 0) return []
+  // FOOTAGE IS NEVER RE-SHUTTERED (wave 91, lane 91E — measured on the real render of
+  // ComingSoonReel): when the plan admits b-roll AND clips are staged, the composition lays the
+  // footage under the frame, and CameraMotionBlur would re-extract every clip once per sample
+  // (the compositor log: broll2.mp4 at t = 0.4167 / 0.4208 / 0.4250 / 0.4292 for ONE frame).
+  // Footage carries its own camera's shutter (cinemaMotionBlurFor's rule for footage-only
+  // reels); a film with admitted footage is not synthetically blurred.
+  const stagedClips = Array.isArray(opts.props?.brollClips) ? (opts.props!.brollClips as unknown[]).length : 0
+  // (No plan staged: the composition's own no-plan behaviour lays staged footage under the body.)
+  if (stagedClips > 0 && (!plan || !Array.isArray(plan.segments) || plan.segments.some((s) => s.treatment === "broll"))) return []
   // HOW FAST: the caller's streak, else the staged photos' own push over the shortest window.
   let streak: number | null = typeof opts.streakPx === "number" && Number.isFinite(opts.streakPx) ? opts.streakPx : null
   if (streak === null && opts.streakPx === undefined && opts.props) {
@@ -651,6 +660,30 @@ export function cinemaBadgeSlot(width: number, height: number): { bottom: number
 }
 
 /**
+ * THE TRACKED QR BADGE's footprint (remotion/components/QrOutroBadge.tsx reads these — one
+ * spelling): a 132 px code, 12 px padding, a caption ≤ 156 px wide, a 3 px accent ring.
+ */
+export const QR_OUTRO_BADGE = { code: 132, padding: 12, captionMaxWidth: 156, ring: 3 } as const
+
+/** The badge's outer width in px (the wider of code / caption, its padding and its ring). PURE. */
+export function qrOutroBadgeWidth(): number {
+  return Math.max(QR_OUTRO_BADGE.code, QR_OUTRO_BADGE.captionMaxWidth) + QR_OUTRO_BADGE.padding * 2 + QR_OUTRO_BADGE.ring * 2
+}
+
+/**
+ * THE END CARD'S SIDE INSET WHEN A QR RIDES IT (wave 91, lane 91E — the real render of
+ * ComingSoonReel, before-ComingSoonReel-outro.png: "DM me to be first in line" ran UNDER the
+ * tracked QR badge). The badge stands in the badge slot's bottom-right corner, and a centred
+ * end card's copy is centred vertically, so on a 1:1 or 9:16 frame its lines cross the badge's
+ * rows. Centred copy padded symmetrically by this inset can never reach the badge's column: the
+ * safe side + the badge's own width + one body-type gap. PURE.
+ */
+export function cinemaEndCardSideInset(width: number, height: number): number {
+  const { type } = cinemaFrame(width, height)
+  return cinemaBadgeSlot(width, height).right + qrOutroBadgeWidth() + Math.round(type.body * 0.5)
+}
+
+/**
  * THE SLIDE FOOTER STACK (wave 90, lane 90E — found by the lane's real renders
  * of ListingSectionReel / BuyerConsultationSlide, the two 16:9 slides 89F
  * published as un-rendered). Both slides typed their Equal Housing / licence
@@ -714,9 +747,26 @@ export const SLIDE_PRESENTER_PIP = { size: 280, ringWidth: 5 } as const
 /** A conservative advance per glyph for the disclosure's system-ui face, in em (measured 0.53 on the lane's render; 0.56 keeps the estimate on the safe side of a wrap). */
 export const DISCLOSURE_GLYPH_EM = 0.56
 
-/** The slides' disclosure line — brokerage · Equal Housing Opportunity · licence — composed ONCE, so the stack lays out the same text the slide renders. */
-export function slideDisclosureText(brand: { brokerageName: string; showEhoMark?: boolean | null; licenseLine?: string | null }): string {
-  return `${brand.brokerageName}${(brand.showEhoMark ?? true) ? " · Equal Housing Opportunity" : ""}${brand.licenseLine ? ` · ${brand.licenseLine}` : ""}`
+/**
+ * The disclosure line — brokerage · Equal Housing Opportunity · licence — composed ONCE, so the
+ * stack lays out the same text the slide renders.
+ *
+ * WAVE 91 (lane 91E — the real renders of the listing-promo fleet): JustListedReel,
+ * JustListedReelSquare, JustSoldReelSquare and PhotoWalkthroughReel printed "Equal Housing
+ * Opportunity" and NO brokerage name anywhere in the film, although every producer stages
+ * `brand.brokerageName` (render-just-listed brandFor, director-content brandBlock) — a write with
+ * no reader, on listing ADVERTISING, where the brokerage's name is the attribution state licence
+ * law asks for (lib/kernel/marketing/real-estate-compliance-gate.ts). Those end cards now read
+ * this same composer; `brokerageName` became optional so a brand without one degrades to the
+ * mark alone (never an empty "· Equal Housing" fragment). Output for a named brokerage is
+ * byte-identical to before. PURE.
+ */
+export function slideDisclosureText(brand: { brokerageName?: string | null; showEhoMark?: boolean | null; licenseLine?: string | null }): string {
+  return [
+    brand.brokerageName?.trim() || null,
+    (brand.showEhoMark ?? true) ? "Equal Housing Opportunity" : null,
+    brand.licenseLine?.trim() || null,
+  ].filter(Boolean).join(" · ")
 }
 
 export function cinemaSlideFooterStack(width: number, height: number, disclosureText?: string | null): CinemaSlideFooterStack {

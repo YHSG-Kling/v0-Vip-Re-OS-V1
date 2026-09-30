@@ -229,23 +229,22 @@ const TitleSlideBody: React.FC<{ title: string; body: string[]; accentColor: str
   )
 }
 
+// WAVE 91 (lane 91E — the first real render of the hero-image kind): with no hero
+// image the 58 % photo box printed the words "Photo placeholder" on a grey panel —
+// shipped to a client — and the text column kept its 42 % beside an empty box.
+// No photo → no box: the copy takes the whole body width (the title kind's
+// reading measure). The photo box, when there is a photo, is unchanged.
 const ImageSlideBody: React.FC<{
   title: string; body: string[]; heroImageUrl: string | null; accentColor: string
 }> = ({ title, body, heroImageUrl, accentColor }) => {
   return (
     <div style={{ height: "100%", display: "flex", gap: 48 }}>
-      <div style={{ width: "58%", height: "100%", borderRadius: 12, overflow: "hidden", backgroundColor: "#E5E7EB" }}>
-        {heroImageUrl ? (
+      {heroImageUrl && (
+        <div style={{ width: "58%", height: "100%", borderRadius: 12, overflow: "hidden", backgroundColor: "#E5E7EB" }}>
           <SafeImg src={heroImageUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-        ) : (
-          <div style={{
-            width: "100%", height: "100%", display: "flex",
-            alignItems: "center", justifyContent: "center",
-            color: "#9CA3AF", fontSize: 24,
-          }}>Photo placeholder</div>
-        )}
-      </div>
-      <div style={{ width: "42%", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+        </div>
+      )}
+      <div style={{ width: heroImageUrl ? "42%" : "100%", maxWidth: heroImageUrl ? undefined : 1200, display: "flex", flexDirection: "column", justifyContent: "center" }}>
         <div style={{ width: 48, height: 4, backgroundColor: accentColor, marginBottom: 20 }} />
         <div style={{ fontSize: 48, fontWeight: 800, lineHeight: 1.1, marginBottom: 24 }}>
           {title}

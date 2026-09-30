@@ -465,6 +465,9 @@ export async function generateSectionNarration(input: AINarrationInput): Promise
     // agreed with. The ceiling now comes from ListingSectionReel's own geometry.
     `- ${narrationLengthDirective(budget)} Conversational, meant to be spoken aloud. No bullet points, no markdown, no stage directions, no salutations.`,
     `- This is ${agent} speaking directly to the homeowner.`,
+    // Wave 91 (lane 91E — test:script-compliance-first §8): the section sells the marketing
+    // system, but its CLOSE had no rule. One warm next step toward the appointment already booked.
+    `- End on ONE warm, no-pressure line pointing to the appointment you already have booked — never urgency, never a hard close.`,
     ``,
     `Write only the narration text.`,
   ].filter(Boolean).join("\n")
