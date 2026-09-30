@@ -301,8 +301,25 @@ check("relay/plan: the outbound opt-out honours a LEAD-only leg under entityType
 const callbackSrc = stripped("lib/ai-isa/callback-task.ts")
 check("callback-task.ts: the note carries leadId (encode + decode) — tasks has no lead column and tasks.contact_id is a contacts.id slot",
   /leadId:\s*note\.leadId\s*\?\?\s*null/.test(callbackSrc) && /leadId:\s*typeof p\.leadId === "string"/.test(callbackSrc))
-check("callback-task.ts: createCallbackTask writes the lead id into the NOTE, never into contact_id",
-  /leadId:\s*params\.contactId\s*\?\s*null\s*:\s*params\.leadId\s*\?\?\s*null/.test(callbackSrc) && /contact_id:\s*params\.contactId,/.test(callbackSrc))
+// THE RULE, not the waypoint (CLAUDE.md §2): the tasks row's contact_id is a contacts.id slot, so
+// whatever variable feeds it may be assigned only from a contact id (the caller's contactId, or the
+// contact a lead converted INTO — wave 91 lane 91B converts a callback-asking lead first), never from a
+// lead id; and the note carries the lead id only when no contact exists.
+function callbackContactSlotIsLeadFree(src: string): boolean {
+  const slot = /contact_id:\s*([A-Za-z_$][\w$.]*)\s*,/.exec(src)?.[1]
+  if (!slot) return false
+  const bare = slot.split(".").pop()!
+  const assigns = [...src.matchAll(new RegExp(`\\b${bare}\\s*=\\s*([^\\n;]+)`, "g"))].map((m) => m[1])
+  const fromLead = assigns.some((rhs) => /leadId\b/.test(rhs) && !/contactId\b/.test(rhs))
+  const noteLeadOnlyWithoutContact = /leadId:\s*(?:params\.)?contactId\s*\?\s*null\s*:\s*params\.leadId\s*\?\?\s*null/.test(src)
+  return !fromLead && noteLeadOnlyWithoutContact
+}
+check("callback-task.ts: createCallbackTask writes the lead id into the NOTE, never into contact_id (the slot is fed only by a contact id, incl. a converted lead's contact)",
+  callbackContactSlotIsLeadFree(callbackSrc))
+check("POSITIVE CONTROL: a slot variable assigned from a lead id is flagged",
+  !callbackContactSlotIsLeadFree(`let contactId = params.contactId\nif (!contactId) contactId = params.leadId\nleadId: contactId ? null : params.leadId ?? null,\n.insert({ contact_id: contactId, })`))
+check("POSITIVE CONTROL: the post-91B convert-first shape passes",
+  callbackContactSlotIsLeadFree(`let contactId = params.contactId\ncontactId = conv.contactId\nleadId: contactId ? null : params.leadId ?? null,\n.insert({ contact_id: contactId, })`))
 const executorSrc = stripped("app/api/cron/ai-callback-dispatch/route.ts")
 check("ai-callback-dispatch: the executor prefers note.leadId (tenant-checked) over a phone re-guess",
   /else if \(note\.leadId\)/.test(executorSrc) && /\.eq\("id",\s*note\.leadId\)\.eq\("brokerage_id",\s*brokerageId\)/.test(executorSrc))
