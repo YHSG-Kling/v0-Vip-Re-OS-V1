@@ -52,6 +52,22 @@ Three flows, each with a VERIFY and CLEANUP:
 Always finish with the final cleanup-guard SELECT (expect every count = 0). This whole
 driver was run end-to-end in-session with all-zero leftovers.
 
+## Run the REAL functions (MCP replay bridge) — wave 91, lane 91D
+`*.supabase.co` is refused by the sandbox egress proxy and no service key exists, so
+supabase-js cannot run here. `mcp-bridge/` runs the app's real server functions
+in-process anyway: `@/lib/supabase/{service,server}` resolve to a bridge client that
+turns every query builder into SQL; the agent executes each batch with
+`execute_sql` and feeds the answer back (`run.ts <scenario> --ingest answer.json`).
+Writes whose result is unused are deferred and batched; each statement runs in its
+own subtransaction under `service_role` or `authenticated` + JWT claims (so RLS applies);
+a refusal is replayed at its own index. `journey-wave91.ts` is the prospect →
+lifetime-customer scenario. Traps paid for: un-awaited background chains reorder calls
+between runs — `quiesce()` after every step and identity-keyed replay handle it, but a
+cache recorded before those existed must be discarded (never replay a stale write);
+`auth.admin.*` is EMULATED on `auth.users` for demo emails only (no mail is sent);
+all `fetch` is refused (no Stripe/AI/mail call). Cleanup: `cleanup-template.sql`
+pattern in the lane-91D notes (per-table ROW_COUNT, passes until stable).
+
 ## Run (UI / human path) — NOT available in the sandbox
 The app needs Supabase env. Fetch it with the Supabase MCP and write `.env.local`
 (gitignored):

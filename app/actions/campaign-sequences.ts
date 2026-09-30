@@ -178,15 +178,24 @@ export async function createCampaignSequence(params: {
   sequence_type: string
   trigger_event?: string
 }): Promise<{ sequence: CampaignSequence | null; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { sequence: null, error: "Not authenticated" }
+  // TENANT FROM THE SESSION (lane 91D, CLAUDE.md §4). This insert runs on the
+  // service client and used to write `brokerage_id: params.brokerageId` behind
+  // only an "is anyone signed in" check — any signed-in user could plant a
+  // sequence in another brokerage. The body value is now only ASSERTED: a
+  // mismatch refuses, and the row carries the session's brokerage.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId) return { sequence: null, error: "Not authenticated" }
+  if (!ctx.brokerageId) return { sequence: null, error: "Your account is not linked to a brokerage yet." }
+  if (params.brokerageId && params.brokerageId !== ctx.brokerageId) {
+    return { sequence: null, error: "Forbidden: that brokerage is not yours." }
+  }
+  const user = { id: ctx.userId }
 
   const service = createServiceClient()
   const { data, error } = await service
     .from("campaign_sequences")
     .insert({
-      brokerage_id: params.brokerageId,
+      brokerage_id: ctx.brokerageId,
       name: params.name,
       description: params.description ?? null,
       sequence_type: params.sequence_type,
