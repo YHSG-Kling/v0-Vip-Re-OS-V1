@@ -4,6 +4,8 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ── saveWidgetSettings ────────────────────────────────────────────────────────
 // Updates agents.widget_embed_enabled and agents.widget_position for the
@@ -69,7 +71,7 @@ export async function saveWidgetSettings({
 export async function saveAIIdentity({
   identityId,
   agentId,
-  brokerageId,
+  brokerageId: claimedBrokerageId,
   assistantName,
   personaLabel,
   tone,
@@ -87,11 +89,32 @@ export async function saveAIIdentity({
   welcomeMessage: string
   followupStyle: string
 }): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated." }
+  // SESSION GATE (lane 91D2, CLAUDE.md §4). Before: any signed-in user could insert
+  // an assistant identity into ANY brokerage (body brokerageId) and rewrite ANY
+  // tenant's identity row by id — both on the service client. Now: the tenant is
+  // the session's (a different body brokerage is refused); a BROKERAGE-scope
+  // identity is a tenant-admin decision (the one roster); an AGENT-scope identity
+  // must name an agent of this tenant, and only that agent or a tenant admin may
+  // set it; an update touches only a row of this tenant, counted.
+  const caller = await requireCallerTenant(claimedBrokerageId)
+  if (!caller.ok) return { success: false, error: caller.error }
+  const brokerageId = caller.brokerageId
+  const user = { id: caller.userId }
+  const isAdmin = isAdminOrBroker({ user_type: caller.userType })
 
   const service = createServiceClient()
+
+  if (!agentId) {
+    if (!isAdmin) return { success: false, error: "Only a brokerage admin can set the brokerage's assistant." }
+  } else {
+    const { data: agentRow, error: agentErr } = await service
+      .from("agents").select("id, user_id").eq("id", agentId).eq("brokerage_id", brokerageId).maybeSingle()
+    if (agentErr) return { success: false, error: `Could not verify the agent: ${agentErr.message}` }
+    if (!agentRow) return { success: false, error: "Agent not found in your brokerage." }
+    if (!isAdmin && (agentRow as { user_id?: string | null }).user_id !== caller.userId) {
+      return { success: false, error: "You can only set your own assistant." }
+    }
+  }
 
   const payload = {
     brokerage_id: brokerageId,
@@ -115,7 +138,11 @@ export async function saveAIIdentity({
       .from("ai_identity_profiles")
       .update(payload)
       .eq("id", identityId)
+      .eq("brokerage_id", brokerageId)
+      .select("id")
     error = res.error
+    // §3: an UPDATE that matched nothing also resolves — count it.
+    if (!error && (res.data ?? []).length === 0) return { success: false, error: "That assistant identity is not in your brokerage." }
   } else {
     // Insert new
     const res = await service

@@ -21,8 +21,16 @@ import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isRuleType } from "@/lib/lead-assignment/rule-matcher"
 
-const RULE_TYPES = new Set(["round_robin", "load_balance", "geo_based", "specialization"])
+// TOMBSTONE (lane 91D2, §1.1 / §6 one vocabulary). A file-local
+// `RULE_TYPES = new Set(["round_robin","load_balance","geo_based","specialization"])`
+// stood here — a second spelling of the rule-type vocabulary, one value SHORT:
+// it refused `manual`, which the matcher routes ("Assigns nobody. The lead waits
+// for a person"), the admin page labels, and the live assignment_rules.rule_type
+// CHECK admits (scripts/check-vocabularies.ts). So the ONE write path could not
+// save a rule the rest of the system already understood. Survivor:
+// lib/lead-assignment/rule-matcher.ts:31 (`RULE_TYPES`) via `isRuleType`.
 
 async function requireAdmin(): Promise<
   | { ok: true; brokerageId: string; userId: string; userType: string }
@@ -60,7 +68,7 @@ export async function saveAssignmentRuleAction(
 
   const name = (input.name ?? "").trim()
   if (!name) return { ok: false, error: "Rule name is required" }
-  if (!RULE_TYPES.has(input.ruleType)) return { ok: false, error: `Invalid rule type: ${input.ruleType}` }
+  if (!isRuleType(input.ruleType)) return { ok: false, error: `Invalid rule type: ${input.ruleType}` }
   const priority = Number.isFinite(input.priority) ? Math.round(input.priority) : 10
   const agentIds = Array.isArray(input.agentIds) ? input.agentIds.filter((x) => typeof x === "string") : []
   const teamId = input.teamId?.trim() || null

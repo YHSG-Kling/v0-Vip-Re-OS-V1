@@ -270,7 +270,7 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
         // app/actions/lead-intelligence.ts:1245 and :2363, read by
         // app/actions/ai-predictions.ts:204, and named as the target of this exact
         // repoint in the eight-legacy-twin burn-down already recorded in
-        // scripts/doc-kernel-simulator.ts:2144. This file was the straggler.
+        // scripts/doc-kernel-simulator.ts:2148. This file was the straggler.
         //
         // Both tables carry `lead_id` and `signal_strength`, which is all this scorer
         // reads, so the threshold below is unchanged — it can simply now be met.

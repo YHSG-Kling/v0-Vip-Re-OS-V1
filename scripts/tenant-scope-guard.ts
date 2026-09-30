@@ -530,18 +530,32 @@ const GLOBAL_LOOKUP_EXEMPT: Record<string, string> = {
 // KNOWN BLIND SPOTS (CLAUDE.md §2):
 //   · arrow-function exports (`export const f = async (...) => {}`) are not
 //     walked — every finding fixed this wave was a `function` declaration.
-//   · a parameter carried inside a typed OBJECT parameter (`data: { brokerageId
-//     string }`, read back as `data.brokerageId`) is invisible — only a
-//     directly-named or destructured parameter is checked. transaction-
-//     compliance.ts's `params.brokerageId` shape needed a manual read to find.
+//   · CLOSED lane 91D2 (wave 91): a parameter carried inside an inline typed
+//     OBJECT parameter (`params: { brokerageId: string }`, read back as
+//     `params.brokerageId`) is now walked, as is the same object handed WHOLE (or
+//     spread without the tenant key overridden) to a `@/lib/kernel/*` command,
+//     and a body-supplied ROLE key (`requestingUserRole` / `userRole`) forwarded
+//     the same way. The live walkthrough found this exact shape on four
+//     transaction lifecycle actions (closeTransaction's pre-91D signature is
+//     replayed as a positive control below). A named-interface object param
+//     (`input: SomeInput`) is still invisible.
 //   · "shadowed" is textual: a `const brokerageId = ctx.brokerageId`-shaped
 //     reassignment ANYWHERE earlier in the same function body silences every
 //     later raw use, so a shadow that runs only on one code path (e.g. inside an
 //     `if`) can hide a raw use on another path.
 //   · the service-client variable must be created INSIDE the same function
-//     (`createServiceClient()`/`createAdminClient()`) — a service client
-//     received as a parameter or read off a module-level singleton is unseen.
+//     (`createServiceClient()`/`createAdminClient()`, assigned OR used inline as
+//     `createServiceClient().from(…)` — the inline form is walked since lane
+//     91D2) — a service client received as a parameter or read off a
+//     module-level singleton is unseen.
+//   · whole-object hand-off is judged only for callees imported from
+//     `@/lib/kernel/*` (static or dynamic import); a lib/application or other
+//     service-backed callee is unseen.
 const SERVICE_ID_EXEMPT: Record<string, string> = {
+  "app/actions/home-value.ts::scheduleSellerListingAppointment":
+    "PUBLIC lane by design (lane 91D2 review) — an unauthenticated seller on the result page books here; there is no session tenant. The agent AND the contact are both re-read under `.eq(\"brokerage_id\", args.brokerageId)` BEFORE any write and the booking refuses unless both belong to it, so the id is a consistency key, not a grant. Same shape as getListingAppointmentSlots below.",
+  "app/actions/lead-promotion/promote-lead.ts::listRawLeadsForReview":
+    "platform-only surface (lane 91D2 review): refuses unless the caller is platform staff (users.platform_role / user_type read from the session row) before the optional brokerageId filter is applied — a TARGET tenant for a platform reviewer. Its platform test is a local role list, not one of the named platform gates, which is why it is listed rather than auto-exempted.",
   "app/actions/home-value.ts::getListingAppointmentSlots":
     "PUBLIC lane by design — the result page and portal reach this with NO agent session at all; the brokerageId IS the scope (there is no session brokerage to prefer) and the row returned is an agent directory (name/photo/phone), not tenant financial or client data. Comment at the call site names this explicitly.",
   "app/actions/superadmin/tenant-entitlements.ts::getTenantEntitlementsAction":
@@ -567,7 +581,11 @@ const SERVICE_ID_EXEMPT: Record<string, string> = {
 }
 
 {
+  const PLATFORM_GATED_SEEN: string[] = []
   const TARGET_PARAM_NAMES = ["brokerageId", "brokerage_id", "tenantId", "tenant_id"]
+  // A body-supplied ROLE is the same defect one step up: reopenTransactionIfAuthorized
+  // (pre-91D) accepted `requestingUserRole` and its only caller sends "broker".
+  const ROLE_PARAM_NAMES = ["requestingUserRole", "userRole"]
   // A shadow is ANY local (const/let) redeclaration of the same name inside the
   // function body — this codebase resolves the session tenant through dozens of
   // differently-named helpers (ctx, auth, gate, session, profile, requireCaller,
@@ -584,9 +602,61 @@ const SERVICE_ID_EXEMPT: Record<string, string> = {
    * client `.eq(...)`/payload key unshadowed. Same rule as CHECK 1/2: this is
    * the function the positive controls exercise, not a paraphrase of it.
    */
+  /**
+   * Index of the `{` that opens a function BODY, given the index just past the
+   * parameter list's `)`. Lane 91D2: the previous `src.indexOf("{", …)` took the
+   * first brace after the signature, which for `): Promise<{ success: boolean }> {`
+   * is the RETURN TYPE's object literal — every export annotated that way was
+   * scanned as a one-line "body" and could never be reported (closeTransaction's
+   * pre-91D signature was exactly this). A `{` that follows `:`, `<`, `|`, `&`,
+   * `,` or `(` is a type literal; the body's `{` follows a completed type.
+   */
+  function functionBodyStart(src: string, from: number): number {
+    let angle = 0, paren = 0, brace = 0, bracket = 0
+    let prev = ")"
+    for (let i = from; i < src.length; i++) {
+      const c = src[i]
+      if (/\s/.test(c)) continue
+      if (c === "{" && angle === 0 && paren === 0 && brace === 0 && bracket === 0 && !/[:<|&,(=]/.test(prev)) return i
+      if (c === "<") angle++
+      else if (c === ">" && src[i - 1] !== "=") angle = Math.max(0, angle - 1)
+      else if (c === "(") paren++
+      else if (c === ")") paren--
+      else if (c === "{") brace++
+      else if (c === "}") brace--
+      else if (c === "[") bracket++
+      else if (c === "]") bracket--
+      prev = c
+    }
+    return -1
+  }
+
   function unverifiedServiceTenantIdsIn(raw: string): Array<{ fn: string; param: string }> {
     const src = stripComments(raw)
     const out: Array<{ fn: string; param: string }> = []
+    // PLATFORM AUTHORITY (lane 91D2). A platform-staff console action names a
+    // TARGET tenant by design — the eleven SERVICE_ID_EXEMPT entries below were
+    // all this one shape, written out by hand. A body whose FIRST gate (before
+    // the tenant id's first service-client use) is a platform-authority gate is
+    // that shape by construction; file-local aliases (`const gate = () =>
+    // gateStaffAction("tenants")`) are followed. Controls pin that a gate AFTER
+    // the use, or only in a comment, exempts nothing.
+    const aliases = [...src.matchAll(/const\s+(\w+)\s*=\s*\(\s*\)\s*=>\s*(?:requirePlatformCapability|gateStaffAction|requireSuperadmin|requireProviders)\s*\(/g)].map((a) => a[1])
+    const platformGateRe = new RegExp(
+      `\\b(?:requireSuperadmin|requirePlatformCapability|gateStaffAction|requireProviders|isPlatformSuperadminIdentity|isPlatformStaffIdentity${aliases.map((a) => `|${a}`).join("")})\\s*\\(`,
+    )
+    const platformGatedBefore = (body: string, idx: number): boolean => {
+      const g = platformGateRe.exec(body)
+      return !!g && g.index < idx
+    }
+    // Names this file imports from a kernel command module (static or dynamic).
+    const kernelFns = new Set<string>()
+    for (const km of src.matchAll(/(?:import|const)\s*\{([^}]*)\}\s*(?:from|=\s*await\s+import\()\s*["']@\/lib\/kernel\/[^"']+["']/g)) {
+      for (const part of km[1].split(",")) {
+        const nm = part.trim().split(/\s+as\s+|\s*:\s*/).pop()?.trim()
+        if (nm && /^\w+$/.test(nm) && nm !== "type") kernelFns.add(nm)
+      }
+    }
     const FN_RE = /export\s+async\s+function\s+(\w+)\s*\(([^)]*)\)/g
     let m: RegExpExecArray | null
     while ((m = FN_RE.exec(src))) {
@@ -596,7 +666,7 @@ const SERVICE_ID_EXEMPT: Record<string, string> = {
       if (targets.length === 0) continue
 
       // Brace-balance the body starting at the first `{` after the signature.
-      const bodyStart = src.indexOf("{", FN_RE.lastIndex)
+      const bodyStart = functionBodyStart(src, FN_RE.lastIndex)
       if (bodyStart === -1) continue
       let depth = 0
       let i = bodyStart
@@ -614,32 +684,91 @@ const SERVICE_ID_EXEMPT: Record<string, string> = {
       const SVC_RE = /(?:const|let)\s+(\w+)\s*=\s*(?:await\s+)?(?:createServiceClient|createAdminClient)\s*\(/g
       let sm: RegExpExecArray | null
       while ((sm = SVC_RE.exec(body))) svcVars.add(sm[1])
-      if (svcVars.size === 0) continue
+      // Inline form: `createServiceClient().from(…)` — no variable to name.
+      const inlineSvc = /(?:createServiceClient|createAdminClient)\s*\(\s*\)\s*\.from\(/.test(body)
+
+      // ── lane 91D2: OBJECT-carried tenant / role keys ────────────────────
+      // `params: { …brokerageId… }` read back as `params.brokerageId`, and the
+      // object handed whole to a kernel command. A member is VERIFIED when the
+      // body compares it to something (`!==`/`===` — the session-mismatch
+      // refusal) or passes it into a require*/assert*/verify* gate, anywhere
+      // before its first use.
+      {
+        const OBJ_RE = /(\w+)\s*\??\s*:\s*\{([^{}]*)\}/g
+        let om: RegExpExecArray | null
+        while ((om = OBJ_RE.exec(paramList))) {
+          const objName = om[1]
+          const inner = om[2]
+          const keys = [...TARGET_PARAM_NAMES, ...ROLE_PARAM_NAMES].filter((k) => new RegExp(`(?<![\\w])${k}\\s*\\??\\s*:`).test(inner))
+          if (keys.length === 0) continue
+          for (const key of keys) {
+            const member = `${objName}\\.${key}\\b`
+            const verifiedRe = new RegExp(
+              `${member}\\s*(?:!==|===)|(?:!==|===)\\s*${member}` +
+              // passed into a gate that asserts it against the session
+              `|\\b(?:require|assert|verify|session|resolve\\w*Tenant|\\w*Tenant)\\w*\\([^)]*${member}` +
+              // or the object re-keyed from a gate before use: params = { ...params, brokerageId: tenant.brokerageId }
+              `|\\b${objName}\\s*=\\s*\\{\\s*\\.\\.\\.${objName}\\b[^}]*\\b${key}\\s*:`,
+            )
+            const svcParts = [...svcVars].map((v) => `\\b${v}\\b`)
+            if (inlineSvc) svcParts.push("(?:createServiceClient|createAdminClient)\\s*\\(\\s*\\)")
+            const uses: number[] = []
+            if (svcParts.length) {
+              const svcAlt = svcParts.join("|")
+              const eq = new RegExp(`(?:${svcAlt})[\\s\\S]{0,400}?\\.eq\\(\\s*["'\`](?:brokerage_id|tenant_id|owner_id)["'\`]\\s*,\\s*${member}\\s*\\)`).exec(body)
+              const pay = new RegExp(`(?:${svcAlt})[\\s\\S]{0,200}?\\b(?:brokerage_id|tenant_id)\\s*:\\s*${member}\\s*[,}]`).exec(body)
+              if (eq) uses.push(eq.index); if (pay) uses.push(pay.index)
+            }
+            // Hand-off to a kernel command: the whole object, a spread that does
+            // not re-key the tenant/role afterwards, or the member as an argument.
+            for (const k of kernelFns) {
+              const whole = new RegExp(`\\b${k}\\(\\s*${objName}\\s*[,)]`).exec(body)
+              if (whole) uses.push(whole.index)
+              const spread = new RegExp(`\\b${k}\\(\\s*\\{\\s*\\.\\.\\.${objName}\\b([^}]*)\\}`).exec(body)
+              if (spread && !new RegExp(`\\b${key}\\s*:`).test(spread[1])) uses.push(spread.index)
+              // The USE is the member's own position (this codebase writes no
+              // semicolons, so the call's extent is bounded by length, not `;`).
+              const arg = new RegExp(`\\b${k}\\([\\s\\S]{0,400}?\\b\\w+\\s*:\\s*${member}`).exec(body)
+              if (arg) uses.push(arg.index + arg[0].length)
+            }
+            if (uses.length === 0) continue
+            const first = Math.min(...uses)
+            const ver = verifiedRe.exec(body)
+            if (ver && ver.index < first) continue
+            if (platformGatedBefore(body, first)) { PLATFORM_GATED_SEEN.push(fnName); continue }
+            out.push({ fn: fnName, param: `${objName}.${key}` })
+          }
+        }
+      }
+      if (svcVars.size === 0 && !inlineSvc) continue
 
       for (const param of targets) {
         // Shadowed anywhere in the body BEFORE a raw use silences this param —
         // a local (const/let) redeclaration of the same name, destructured or
         // plain, from ANY source (see the note above this block).
         const shadowRe = new RegExp(
-          `(?:const|let)\\s*(?:\\{[^}]*\\b${param}\\b[^}]*\\}|${param})\\s*=`,
+          `(?:const|let)\\s*(?:\\{[^}]*\\b${param}\\b[^}]*\\}|${param})\\s*(?::\\s*[^=;\\n]+)?=`,
         )
         const shadowMatch = shadowRe.exec(body)
 
         // Raw use: <svcVar>....eq("brokerage_id"|"tenant_id", param) within 400
         // chars, or a payload key `brokerage_id: param` / `tenant_id: param`
         // within 200 chars after a <svcVar> call.
-        const svcAlt = [...svcVars].join("|")
+        const svcParts = [...svcVars].map((v) => `\\b${v}\\b`)
+        if (inlineSvc) svcParts.push("(?:createServiceClient|createAdminClient)\\s*\\(\\s*\\)")
+        const svcAlt = svcParts.join("|")
         const eqRe = new RegExp(
-          `\\b(?:${svcAlt})\\b[\\s\\S]{0,400}?\\.eq\\(\\s*["'\`](?:brokerage_id|tenant_id)["'\`]\\s*,\\s*${param}\\s*\\)`,
+          `(?:${svcAlt})[\\s\\S]{0,400}?\\.eq\\(\\s*["'\`](?:brokerage_id|tenant_id|owner_id)["'\`]\\s*,\\s*${param}\\s*\\)`,
         )
         const payloadRe = new RegExp(
-          `\\b(?:${svcAlt})\\b[\\s\\S]{0,200}?\\b(?:brokerage_id|tenant_id)\\s*:\\s*${param}\\s*[,}]`,
+          `(?:${svcAlt})[\\s\\S]{0,200}?\\b(?:brokerage_id|tenant_id)\\s*:\\s*${param}\\s*[,}]`,
         )
         const eqMatch = eqRe.exec(body)
         const payloadMatch = payloadRe.exec(body)
         const useMatch = eqMatch ?? payloadMatch
         if (!useMatch) continue
         if (shadowMatch && shadowMatch.index < useMatch.index) continue // shadowed before the use
+        if (platformGatedBefore(body, useMatch.index)) { PLATFORM_GATED_SEEN.push(fnName); continue } // platform staff naming a TARGET tenant
 
         out.push({ fn: fnName, param })
       }
@@ -689,6 +818,122 @@ const SERVICE_ID_EXEMPT: Record<string, string> = {
         ].join("\n"),
       },
       {
+        name: "REPLAY of pre-91D closeTransaction (object param handed whole to a kernel command) is REPORTED",
+        expect: 1,
+        why: "the walkthrough's finding is invisible again — a body brokerageId reaches a service-client kernel command through the object hand-off",
+        src: [
+          'export async function closeTransaction(params: {',
+          '  transactionId: string',
+          '  brokerageId: string',
+          '  agentId: string',
+          '  reason?: string',
+          '}): Promise<{ success: boolean; error?: string }> {',
+          '  if (!isValidUUID(params.transactionId)) return { success: false, error: "Invalid transaction ID" }',
+          '  if (!isValidUUID(params.brokerageId)) return { success: false, error: "Invalid brokerage ID" }',
+          '  const { closeTransactionCommand } = await import("@/lib/kernel/transactions")',
+          '  return closeTransactionCommand(params)',
+          '}',
+        ].join("\n"),
+      },
+      {
+        name: "REPLAY of pre-91D reopenTransactionIfAuthorized (body ROLE + brokerage handed whole) is REPORTED for both keys",
+        expect: 2,
+        why: "a self-asserted role or tenant forwarded to a kernel command is being missed",
+        src: [
+          'export async function reopenTransactionIfAuthorized(params: {',
+          '  transactionId: string',
+          '  brokerageId: string',
+          '  requestingUserId: string',
+          '  requestingUserRole: string',
+          '  reason: string',
+          '}): Promise<{ success: boolean; error?: string }> {',
+          '  if (!["broker", "admin"].includes(params.requestingUserRole)) return { success: false }',
+          '  const { reopenTransactionCommand } = await import("@/lib/kernel/transactions")',
+          '  return reopenTransactionCommand(params)',
+          '}',
+        ].join("\n"),
+      },
+      {
+        name: "the 91D FIX (session gate, tenant re-keyed from the gate) is NOT reported",
+        expect: 0,
+        why: "the fixed shape is being accused — the finder would push the next lane to undo a correct fix",
+        src: [
+          'export async function recalculateCommissionState(params: {',
+          '  transactionId: string',
+          '  brokerageId: string',
+          '  agentId: string',
+          '}): Promise<{ success: boolean; error?: string }> {',
+          '  const gate = await requireTransactionActor(params.transactionId)',
+          '  if (!gate.ok) return { success: false, error: gate.error }',
+          '  const { recalculateCommissionStateCommand } = await import("@/lib/kernel/transactions")',
+          '  return recalculateCommissionStateCommand({ ...params, brokerageId: gate.brokerageId })',
+          '}',
+        ].join("\n"),
+      },
+      {
+        name: "an object-carried tenant on an INLINE service client (.eq(owner_id, data.brokerageId)) is REPORTED",
+        expect: 1,
+        why: "disconnectProvider's shape (pre-91D2) is invisible — inline createServiceClient().from() or the object member",
+        src: [
+          'export async function disconnect(data: { provider: string; brokerageId: string }) {',
+          '  await createServiceClient().from("platform_credentials").update({ is_active: false })',
+          '    .eq("owner_type", "brokerage").eq("owner_id", data.brokerageId)',
+          '}',
+        ].join("\n"),
+      },
+      {
+        name: "an object-carried tenant ASSERTED against the session before use is NOT reported",
+        expect: 0,
+        why: "the mismatch-refusal pattern (transaction-inspections' requireCallerForBrokerage) is being accused",
+        src: [
+          'export async function act(params: { transactionId: string; brokerageId?: string }) {',
+          '  const auth = await requireCallerForBrokerage(params.brokerageId)',
+          '  if (!auth.ok) return null',
+          '  const svc = createServiceClient()',
+          '  await svc.from("x").update({ a: 1 }).eq("brokerage_id", params.brokerageId)',
+          '}',
+        ].join("\n"),
+      },
+      {
+        name: "a platform-staff action gated by requirePlatformCapability BEFORE the target tenant is used is NOT reported",
+        expect: 0,
+        why: "the superadmin console shape (a TARGET tenant is the point) is being accused",
+        src: [
+          'export async function extendTrial(params: { brokerageId: string; days: number }) {',
+          '  const gate = await requirePlatformCapability("billing", { requireWrite: true })',
+          '  if (!gate.ok) return { ok: false }',
+          '  const svc = createServiceClient()',
+          '  await svc.from("subscriptions").update({ status: "trialing" }).eq("brokerage_id", params.brokerageId)',
+          '}',
+        ].join("\n"),
+      },
+      {
+        name: "a platform gate that runs only AFTER the service-client use exempts nothing",
+        expect: 1,
+        why: "a late gate is being taken as authority for a write it never guarded",
+        src: [
+          'export async function late(params: { brokerageId: string }) {',
+          '  const svc = createServiceClient()',
+          '  await svc.from("subscriptions").update({ status: "paused" }).eq("brokerage_id", params.brokerageId)',
+          '  const gate = await requireSuperadmin()',
+          '}',
+        ].join("\n"),
+      },
+      {
+        name: "the object RE-KEYED from a session gate before use is NOT reported",
+        expect: 0,
+        why: "launchNeighborNotification's fixed shape (params = { ...params, brokerageId: tenant.brokerageId }) is being accused",
+        src: [
+          'export async function launch(params: { campaignId: string; brokerageId: string }) {',
+          '  const tenant = await sessionTenant(params.brokerageId)',
+          '  if (!tenant.ok) return null',
+          '  params = { ...params, brokerageId: tenant.brokerageId }',
+          '  const supabase = createServiceClient()',
+          '  await supabase.from("c").select("*").eq("brokerage_id", params.brokerageId)',
+          '}',
+        ].join("\n"),
+      },
+      {
         name: "a raw param used only on a SESSION client (RLS-backed) is NOT reported",
         expect: 0,
         why: "CHECK 3 targets the service-client bypass specifically; the session-client + RLS pattern used throughout this repo is a separate, RLS-dependent question this textual guard cannot answer and must not accuse",
@@ -725,10 +970,15 @@ const SERVICE_ID_EXEMPT: Record<string, string> = {
   // session, same as any other internal function argument, and scanning `lib/`
   // here produced ~60 such false positives before this scope line was added.
   const svcOffenders: string[] = []
+  PLATFORM_GATED_SEEN.length = 0 // the controls above exercised the finder; count the corpus only
   let svcScanned = 0
-  for (const abs of scanCorpus(["app/actions"])) {
+  // Lane 91D2: every "use server" module under app/ (route-local actions.ts files
+  // such as app/dashboard/marketing/review/actions.ts are the same public endpoint
+  // class as app/actions/*). Only the DIRECTIVE counts — a file whose first
+  // statement is "use server" — not the words in a comment.
+  for (const abs of scanCorpus(["app"])) {
     const raw = readFileSync(abs, "utf8")
-    if (!/["']use server["']/.test(raw)) continue
+    if (!/^\s*["']use server["']/.test(raw)) continue
     svcScanned += 1
     const rel = relative(root, abs).replace(/\\/g, "/")
     for (const { fn, param } of unverifiedServiceTenantIdsIn(raw)) {
@@ -740,8 +990,12 @@ const SERVICE_ID_EXEMPT: Record<string, string> = {
 
   console.log(`\n── SERVICE-CLIENT TENANT-ID GUARD ──`)
   console.log(
-    `  ${svcScanned} "use server" files scanned under app/actions · ${Object.keys(SERVICE_ID_EXEMPT).length} documented platform-staff/public exemptions`,
+    `  ${svcScanned} "use server" files scanned under app/ · ${Object.keys(SERVICE_ID_EXEMPT).length} documented platform-staff/public exemptions`,
   )
+  // Published beside the number (§2): which functions passed ONLY because a
+  // platform-authority gate ran before the target tenant was used.
+  const gated = [...new Set(PLATFORM_GATED_SEEN)].sort()
+  console.log(`  ${gated.length} platform-gated (target tenant by design, gate before use): ${gated.join(", ") || "none"}`)
   if (svcOffenders.length > 0) {
     console.log(`  ✗ ${svcOffenders.length} caller-supplied tenant id reaches a SERVICE client unshadowed:`)
     for (const o of [...new Set(svcOffenders)]) console.log(`     - ${o}`)

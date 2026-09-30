@@ -176,7 +176,7 @@ export async function bookSellerListingAppointment(
     calendarEventId = await scheduleISAAppointment({
       brokerageId: params.brokerageId,
       contactId,
-      agentId: agentUserId,
+      agentUserId,
       startAt: params.startAt,
       endAt: params.endAt,
       timezoneName: params.timezoneName,

@@ -2,6 +2,8 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { scheduleISAAppointment } from '@/lib/ai-isa/appointment-scheduler'
+import { isAgentOrTenantAdmin } from '@/lib/auth/resolve-user-role'
+import { resolveAgentRecipient } from '@/lib/notifications/recipient-tenant'
 
 export type ScheduleAppointmentInput = {
   leadId?: string
@@ -47,12 +49,47 @@ export async function scheduleAppointment(
     return { success: false, error: 'User profile not found' }
   }
 
-  if (!['admin', 'broker', 'superadmin', 'agent'].includes(profile.user_type)) {
+  // THE ONE ROSTER (lane 91D2). This was a retyped list — ['admin','broker',
+  // 'superadmin','agent'] — which named a user_type no live row has
+  // ('superadmin'; platform staff live in platform_role, §4) and refused
+  // broker_owner, broker_admin and team_lead, all of whom the roster admits.
+  if (!isAgentOrTenantAdmin({ user_type: profile.user_type })) {
     return { success: false, error: 'Forbidden: insufficient permissions to schedule ISA appointments' }
+  }
+  if (!profile.brokerage_id) {
+    return { success: false, error: 'Your account is not linked to a brokerage yet.' }
   }
 
   if (!input.leadId && !input.contactId) {
     return { success: false, error: 'Either leadId or contactId is required' }
+  }
+
+  // THE BOOKING AGENT (lane 91D2, CLAUDE.md §3). The scheduler stamps a USERS id
+  // (calendar_events.agent_user_id). For a CONTACT the appointment belongs to the
+  // contact's agent — contacts.agent_id is an AGENTS id, crossed to users through
+  // agents.user_id, never substituted — so a broker booking for an agent's client
+  // no longer lands the appointment on the broker's own calendar. A LEAD has no
+  // agent by ruling (§5: leads belong to the brokerage), so the booker holds it.
+  let agentUserId: string = profile.id
+  if (input.contactId) {
+    const { data: contact, error: contactError } = await supabase
+      .from('contacts')
+      .select('agent_id')
+      .eq('id', input.contactId)
+      .eq('brokerage_id', profile.brokerage_id)
+      .maybeSingle()
+    if (contactError) return { success: false, error: `Could not read the contact: ${contactError.message}` }
+    if (!contact) return { success: false, error: 'Contact not found in your brokerage' }
+    const contactAgentId = (contact as { agent_id?: string | null }).agent_id ?? null
+    if (contactAgentId) {
+      // The ONE agents.id → users.id crossing (lib/notifications/recipient-tenant.ts
+      // resolveAgentRecipient), not a private agents.user_id read. Its tenant is the
+      // recipient's users.brokerage_id; an agent resolving outside the caller's
+      // brokerage is never booked onto (the booker keeps the appointment).
+      const crossed = await resolveAgentRecipient(supabase, contactAgentId)
+      if (!crossed.ok) return { success: false, error: `Could not resolve the contact's agent: ${crossed.reason}` }
+      if (crossed.userId && crossed.brokerageId === profile.brokerage_id) agentUserId = crossed.userId
+    }
   }
 
   try {
@@ -60,7 +97,7 @@ export async function scheduleAppointment(
       brokerageId:  profile.brokerage_id,
       leadId:       input.leadId,
       contactId:    input.contactId,
-      agentId:      profile.id,
+      agentUserId,
       startAt:      new Date(input.startAt),
       endAt:        new Date(input.endAt),
       timezoneName: input.timezoneName,

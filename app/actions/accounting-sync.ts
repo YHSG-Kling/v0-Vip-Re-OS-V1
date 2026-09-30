@@ -3,12 +3,20 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 import { QuickBooksProvider, type AccountingWriteResult } from "@/lib/providers/accounting/quickbooks"
 
 // ─── GET PROVIDER CONNECTION STATUS ──────────────────────────────────────────
-export async function getProviderConnectionStatus(brokerageId: string) {
+export async function getProviderConnectionStatus(claimedBrokerageId: string) {
+  // TENANT FROM THE SESSION (lane 91D2, CLAUDE.md §4). This was an UNGATED public
+  // action reading platform_credentials (QuickBooks account name/id) for whatever
+  // brokerage id the caller named, on the service client. The argument is now only
+  // asserted: a different brokerage is refused.
+  const caller = await requireCallerTenant(claimedBrokerageId)
+  if (!caller.ok) throw new Error(caller.error)
+  const brokerageId = caller.brokerageId
   const supabase = await createClient()
 
   const { data: credentials } = await supabase
@@ -96,12 +104,18 @@ export async function disconnectProvider(data: {
   if (!profile || !isBrokerageFinanceAdmin({ user_type: profile.user_type ?? profile.role })) {
     throw new Error("Unauthorized: broker or admin role required")
   }
+  // The finance admin acts on THEIR brokerage (lane 91D2): the body id used to go
+  // straight to a service-client credential deactivation for any tenant.
+  if (!profile.brokerage_id || data.brokerageId !== profile.brokerage_id) {
+    throw new Error("Forbidden: that brokerage is not yours.")
+  }
+  const brokerageId: string = profile.brokerage_id
 
   // Deactivate the credential
   const { error } = await supabase
     .from("integration_credentials")
     .update({ is_active: false, updated_at: new Date().toISOString() })
-    .eq("brokerage_id", data.brokerageId)
+    .eq("brokerage_id", brokerageId)
     .eq("provider_name", data.provider)
 
   if (error) throw error
@@ -116,16 +130,16 @@ export async function disconnectProvider(data: {
     .from("platform_credentials")
     .update({ is_active: false, updated_at: new Date().toISOString() })
     .eq("owner_type", "brokerage")
-    .eq("owner_id", data.brokerageId)
+    .eq("owner_id", brokerageId)
     .eq("platform", data.provider)
   if (ownerCredError) throw new Error(`Integration deactivated, but the stored credential is still active: ${ownerCredError.message}`)
 
   // Kernel event — audit row + reactor (was a bare insert nobody downstream heard).
   await emitKernelEvent({
-    brokerageId: data.brokerageId,
+    brokerageId,
     event: KernelEvent.INTEGRATION_DEACTIVATED,
     entityType: "integration_credentials",
-    entityId: data.brokerageId,
+    entityId: brokerageId,
     actorUserId: user.id,
     metadata: {
       provider: data.provider,
@@ -237,9 +251,10 @@ export async function retrySyncError(data: {
 
   if (deleteError) throw deleteError
 
-  // Log that we're re-queuing this record — audit row + reactor.
+  // Log that we're re-queuing this record — audit row + reactor. The tenant is the
+  // ROW's (read above under RLS), never the body's (lane 91D2).
   await emitKernelEvent({
-    brokerageId: data.brokerageId,
+    brokerageId: errorRecord.brokerage_id,
     event: KernelEvent.SYSTEM_SYNC_TRIGGERED,
     entityType: "sync_errors",
     entityId: data.errorId,

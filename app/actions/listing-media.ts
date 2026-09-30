@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
 // TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
 // imported here and never called. This file's event rail is the ORCHESTRATOR,
 // not the notification engine: the hero-photo fan-out at :113 emits through
@@ -70,6 +71,11 @@ export async function uploadListingMedia(params: {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { data: null, error: "Not authenticated" }
+  // TENANT FROM THE SESSION (lane 91D2, CLAUDE.md §4): the body brokerageId reached
+  // a service-client write further down; it is now asserted, and re-keyed.
+  const tenant = await requireCallerTenant(params.brokerageId)
+  if (!tenant.ok) return { data: null, error: tenant.error }
+  params = { ...params, brokerageId: tenant.brokerageId }
 
   const usageIntent = params.usageIntent ?? "public_marketing"
   const isMlsBound = usageIntent === "mls"

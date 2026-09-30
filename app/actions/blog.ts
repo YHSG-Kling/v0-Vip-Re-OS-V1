@@ -14,6 +14,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { resolveWordPressCredential, wordPressUnavailableReason } from "@/lib/blog/wordpress-connection"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -761,6 +762,16 @@ export async function discoverKeywordsAI(
   keywords?: DiscoveredKeyword[]
   error?: string
 }> {
+  // ── 0. Session gate (lane 91D2, CLAUDE.md §4) ───────────────────────────────
+  // Both ids used to be trusted from the caller: an unauthenticated request could
+  // run the keyword model under a named user's feature grant in a named tenant.
+  // The tenant is the session's (a different body brokerage is refused) and the
+  // user must be the signed-in one.
+  const tenant = await requireCallerTenant(params.brokerageId)
+  if (!tenant.ok) return { success: false, error: tenant.error }
+  if (userId !== tenant.userId) return { success: false, error: "Forbidden: you can only run this as yourself." }
+  params = { ...params, brokerageId: tenant.brokerageId }
+
   const supabase = await createClient()
 
   // ── 1. Feature gate ──────────────────────────────────────────────────────────

@@ -4442,7 +4442,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       }
 
       // 20 — a brokerage admin deactivated an accounting/CRM integration (app/actions/
-      // accounting-sync.ts:126, entityType "integration_credentials"). Finance Manager (owns
+      // accounting-sync.ts:140, entityType "integration_credentials"). Finance Manager (owns
       // back-office integrations) hands the credential change to Data Steward — mirrors
       // subscription_cancelled's own finance_manager -> data_steward shape exactly.
       if (params.event === KernelEvent.INTEGRATION_DEACTIVATED) {
@@ -4460,7 +4460,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       }
 
       // 21 — an accounting sync run started or a sync error was retried (app/api/accounting/
-      // sync/route.ts:76, app/actions/accounting-sync.ts:243, entityType "accounting_sync_log" |
+      // sync/route.ts:76, app/actions/accounting-sync.ts:258, entityType "accounting_sync_log" |
       // "sync_errors"). Data Steward (the sync-run ledger writer) hands the start to Finance
       // Manager — the START counterpart of the existing system_sync_completed pair
       // (data_steward -> finance_manager).

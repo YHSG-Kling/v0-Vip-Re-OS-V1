@@ -41,6 +41,7 @@ import type {
 // publish path in that file that ran with NO compliance gate at all — see
 // checkContentCompliance below, which that same handler now also calls).
 import { toReadinessContentType } from "@/lib/campaign-readiness/content-type-vocabulary"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
 
 // ─── READINESS INPUT BUILDER ──────────────────────────────────────────────────
 // Systems 4.2 (compliance) → 4.3 (approval) → 4.5 (readiness) are a chain.
@@ -546,14 +547,28 @@ export async function launchListingCampaign(params: {
   adCopyText?: string
   brokerageId?: string
 }) {
+  // ── Session gate (lane 91D2, CLAUDE.md §4) ─────────────────────────────────
+  // The compliance gate used to run in the BODY's tenant with no author; the
+  // tenant and the author are now the session's (a different body brokerage is
+  // refused).
+  const tenant = await requireCallerTenant(params.brokerageId)
+  if (!tenant.ok) return { success: false, error: tenant.error }
+
   // ── Compliance gate ───────────────────────────────────────────────────────
+  // FAIL CLOSED (§4): a gate that could not run used to be read as `passed:
+  // true`, so a compliance outage launched ad copy nobody checked. It now blocks
+  // with the reason; the operator retries when the gate is back.
   const adCopyText = params.adCopyText?.trim() || params.campaignName
   const complianceResult = await runComplianceGate({
     content: adCopyText,
-    brokerageId: params.brokerageId ?? null,
-    authorUserId: "",
+    brokerageId: tenant.brokerageId,
+    authorUserId: tenant.userId,
     contentType: "ad",
-  }).catch(() => ({ passed: true, violations: [], requiresHumanReview: false }))
+  }).catch((err: unknown) => ({
+    passed: false,
+    violations: [{ severity: "blocker" as const, detail: `The compliance check could not run (${(err as Error)?.message ?? "unknown error"}) — nothing was launched; try again shortly.` }],
+    requiresHumanReview: true,
+  }))
 
   if (!complianceResult.passed) {
     const blockers = complianceResult.violations
@@ -588,18 +603,24 @@ export async function checkContentCompliance(params: {
   brokerageId: string
   contentType: "social_post" | "ad" | "listing_remarks" | "comment_reply" | "newsletter" | "blog"
 }): Promise<{ passed: boolean; blockers: string[]; warnings: string[] }> {
+  // Session gate (lane 91D2, CLAUDE.md §4): the check runs in the SESSION's tenant
+  // as the signed-in author; a different body brokerage is refused.
+  const tenant = await requireCallerTenant(params.brokerageId)
+  if (!tenant.ok) return { passed: false, blockers: [tenant.error], warnings: [] }
   try {
     const result = await runComplianceGate({
       content: params.content,
-      brokerageId: params.brokerageId || null,
-      authorUserId: "",
+      brokerageId: tenant.brokerageId,
+      authorUserId: tenant.userId,
       contentType: params.contentType,
     })
     const blockers = result.violations.filter((v) => v.severity === "blocker").map((v) => v.detail)
     const warnings = result.violations.filter((v) => v.severity === "warning").map((v) => v.detail)
     return { passed: result.passed, blockers, warnings }
-  } catch {
-    // Fail open — do not block publishing on gate errors
-    return { passed: true, blockers: [], warnings: [] }
+  } catch (err) {
+    // FAIL CLOSED (§4). This used to answer `passed: true` when the gate threw —
+    // "nobody checked" rendered as "checked and fine". The caller now sees a
+    // blocker naming the outage instead of a green light.
+    return { passed: false, blockers: [`The compliance check could not run (${(err as Error)?.message ?? "unknown error"}) — try again shortly.`], warnings: [] }
   }
 }

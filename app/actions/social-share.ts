@@ -12,6 +12,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
 
 // ============================================
 // AGENT SOCIAL SHARE
@@ -38,6 +39,13 @@ export async function shareListingPost(params: {
   if (!isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid brokerage ID" }
   }
+  // SESSION GATE (lane 91D2, CLAUDE.md §4): the tenant is the session's (a
+  // different body brokerage is refused) and the sharer is the signed-in user —
+  // agentUserId named whose feature grant and whose share was recorded.
+  const tenant = await requireCallerTenant(params.brokerageId)
+  if (!tenant.ok) return { success: false, error: tenant.error }
+  if (params.agentUserId !== tenant.userId) return { success: false, error: "Forbidden: you can only share as yourself." }
+  params = { ...params, brokerageId: tenant.brokerageId }
 
   // Feature access check
   const canAccess = await canAccessFeature(params.agentUserId, "social_automation")

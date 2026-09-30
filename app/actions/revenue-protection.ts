@@ -24,6 +24,7 @@ import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { resolveActorNamesEitherClass } from "@/lib/kernel/actor-attribution"
 import { revalidatePath } from "next/cache"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
 
 export interface AgentRevenueProtection {
   agentId:            string
@@ -128,6 +129,11 @@ export async function getBrokerageRevenueProtection(params: {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Unauthorized" }
+  // TENANT FROM THE SESSION (lane 91D2, CLAUDE.md §4): the per-agent name
+  // hydration below runs on a service client with this id.
+  const tenant = await requireCallerTenant(params.brokerageId)
+  if (!tenant.ok) return { success: false, error: tenant.error }
+  params = { ...params, brokerageId: tenant.brokerageId }
 
   // Brokerage-wide snapshot (agent_id IS NULL). A refused read is an error,
   // not "no rollup yet" — the widget would otherwise render the empty state

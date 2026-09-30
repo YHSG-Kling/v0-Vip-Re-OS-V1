@@ -103,7 +103,7 @@ export type CallerRefusal = {
    * `no_brokerage` to onboarding; `unreadable` means the gate could not run and
    * must be surfaced as a refusal, never as "no data" (§4 fail closed).
    */
-  reason: "unauthenticated" | "unreadable" | "no_brokerage"
+  reason: "unauthenticated" | "unreadable" | "no_brokerage" | "tenant_mismatch"
   error: string
 }
 
@@ -362,3 +362,23 @@ export async function requireAdsActor(): Promise<{ actor?: AdsSessionActor; erro
 //   app/actions/buyer-fatigue.ts:14
 //   app/actions/video-repurposing.ts:28
 //   app/actions/video-generation.ts:68
+
+/**
+ * requireCaller() + THE BODY-TENANT RULE (lane 91D2, CLAUDE.md §4). A "use server"
+ * export that still accepts a `brokerageId` from its caller (for signature
+ * compatibility) passes it here: the tenant it acts in is the SESSION's, and a
+ * body value that names a DIFFERENT brokerage is refused, never silently
+ * replaced — a mismatch is either a stale client or an IDOR attempt, and
+ * neither should read as success. Absent/empty body value → the session wins.
+ * test:tenant-scope (CHECK 3) recognises `requireCallerTenant(params.brokerageId)`
+ * as the verification of that member. (Appended at the foot, below the census,
+ * so the `require-caller.ts:<line>` references other files hold stay true.)
+ */
+export async function requireCallerTenant(claimedBrokerageId?: string | null): Promise<RequireCallerResult> {
+  const caller = await requireCaller()
+  if (!caller.ok) return caller
+  if (claimedBrokerageId && claimedBrokerageId !== caller.brokerageId) {
+    return { ok: false, reason: "tenant_mismatch", error: "Forbidden: that brokerage is not yours." }
+  }
+  return caller
+}

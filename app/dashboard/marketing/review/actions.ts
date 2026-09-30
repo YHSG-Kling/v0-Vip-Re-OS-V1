@@ -18,6 +18,8 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 const MEDIA_TRIGGERS = ["video.generated", "image.generated"]
 
@@ -71,6 +73,19 @@ export async function loadMarketingReview(params: {
   agentUserId: string | null
   isAgentScope: boolean
 }): Promise<MarketingReviewSnapshot> {
+  // SESSION GATE (lane 91D2, CLAUDE.md §4). This "use server" export had NO gate:
+  // any caller naming a brokerage id read its pending AI drafts (with contact
+  // names), social posts, media and QR codes on the service client. The tenant is
+  // now the session's (a different body brokerage is refused), the scoped user is
+  // the signed-in one, and only a tenant admin (the one roster) may widen to the
+  // whole brokerage — a caller can no longer pass isAgentScope:false for itself.
+  const caller = await requireCallerTenant(params.brokerageId)
+  if (!caller.ok) throw new Error(caller.error)
+  params = {
+    brokerageId: caller.brokerageId,
+    agentUserId: caller.userId,
+    isAgentScope: params.isAgentScope || !isAdminOrBroker({ user_type: caller.userType }),
+  }
   const svc = createServiceClient()
   const since7d = new Date(Date.now() - 7 * 86_400_000).toISOString()
 

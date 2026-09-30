@@ -46,6 +46,7 @@ import {
 // THE ONE CREATOR (wave 85D). Aliased: this file's own export carries the kernel's name.
 import { createDirectMailCampaign as fileDirectMailCampaign } from "@/lib/kernel/marketing"
 import type { CampaignPieceType } from "@/lib/direct-mail/piece-type"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
 
 /**
  * WHO THE MODEL SPEND IS BILLED TO — from the SESSION, never from the request.
@@ -140,6 +141,15 @@ export async function aiWritePostcardCopy(params: {
     if (!isValidUUID(params.agentId)) {
       return { success: false, error: "Invalid agent ID" }
     }
+    // SESSION GATE (lane 91D2, CLAUDE.md §4). This public action had none: any
+    // caller could spend model tokens billed to a named user in a named tenant.
+    // The tenant is the session's (a different body brokerage is refused) and the
+    // author must be the signed-in user (params.agentId is a users.id here — it is
+    // read back from `users` below).
+    const tenant = await requireCallerTenant(params.brokerageId)
+    if (!tenant.ok) return { success: false, error: tenant.error }
+    if (params.agentId !== tenant.userId) return { success: false, error: "Forbidden: you can only write copy as yourself." }
+    params = { ...params, brokerageId: tenant.brokerageId }
 
     // ── Kernel Gate: canAccessFeature ──
     const access = await canAccessFeature(params.agentId, "direct_mail")

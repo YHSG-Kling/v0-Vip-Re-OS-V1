@@ -25,10 +25,11 @@ export async function scheduleISAAppointment(params: {
   brokerageId: string
   leadId?: string
   contactId?: string
-  /** The auth users.id — stamps calendar_events.agent_user_id (a USERS-class
+  /** The BOOKING AGENT'S users.id (renamed from `agentId`, lane 91D2 — the old name
+   *  invited an agents.id, a disjoint class, §3). Stamps calendar_events.agent_user_id (a USERS-class
    *  column: agent-coaching + no-show autopilot key it against users). Callers
    *  holding agents.id must resolve via resolveAgentRecordToUserId first. */
-  agentId: string
+  agentUserId: string
   startAt: Date
   endAt: Date
   timezoneName: string
@@ -99,7 +100,7 @@ export async function scheduleISAAppointment(params: {
       const { data: booker } = await supabase
         .from('users')
         .select('user_type, platform_role, team_id, brokerage_id')
-        .eq('id', params.agentId)
+        .eq('id', params.agentUserId)
         .maybeSingle()
       const scope = connectionScopeForUserType(
         (booker?.user_type as string) ?? '',
@@ -108,7 +109,7 @@ export async function scheduleISAAppointment(params: {
       const outcome = await ensureZoomMeetingForAppointment(supabase, {
         host: {
           scope: scope as any,
-          agentUserId: params.agentId,
+          agentUserId: params.agentUserId,
           teamId: (booker?.team_id as string | null) ?? null,
           brokerageId: (booker?.brokerage_id as string | null) ?? params.brokerageId,
         },
@@ -156,7 +157,7 @@ export async function scheduleISAAppointment(params: {
     .from('calendar_events')
     .insert({
       brokerage_id:        params.brokerageId,
-      agent_user_id:       params.agentId,
+      agent_user_id:       params.agentUserId,
       entity_type:         entityType,
       entity_id:           entityId,
       event_type:          params.eventType ?? CalendarEventType.ISA_APPOINTMENT,

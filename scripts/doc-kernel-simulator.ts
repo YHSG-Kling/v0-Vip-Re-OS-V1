@@ -1950,7 +1950,11 @@ async function main() {
         // USERS id falling back to the AGENTS id it was resolved FROM, on the
         // column pass 12 itself identified as users-class. Assert the resolve
         // and the refusal, not the expression that undid them.
-        && src("lib/ai-isa/book-seller-appointment.ts").includes("agentId: agentUserId,")
+        // Lane 91D2 renamed the scheduler's users-class param `agentId` → `agentUserId`
+        // (the old name invited an agents.id); the RULE is unchanged — the RESOLVED
+        // users id is handed over, with no fallback to the agents id.
+        && /scheduleISAAppointment\(\{[\s\S]{0,300}?\bagentUserId(?:\s*:\s*agentUserId)?\s*,/.test(src("lib/ai-isa/book-seller-appointment.ts"))
+        && !/agentUserId\s*\?\?\s*params\.agentId/.test(src("lib/ai-isa/book-seller-appointment.ts"))
         && src("lib/ai-isa/book-seller-appointment.ts").includes("the appointment was not scheduled")
         && src("app/actions/voice-assistant.ts").includes("getTodayAppointments(caller.userId)")
         && src("lib/intelligence/daily-briefing-generator.ts").includes("const briefingUserId = identityRow?.user_id ?? agentId")

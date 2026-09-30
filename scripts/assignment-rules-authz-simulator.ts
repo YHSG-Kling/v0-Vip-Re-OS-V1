@@ -10,6 +10,7 @@
 
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 
 let passed = 0, failed = 0
 function check(name: string, ok: boolean, detail?: string) {
@@ -43,8 +44,22 @@ console.log("\n── the server action is admin-gated + brokerage-pinned ──
     a.includes("brokerage_id: auth.brokerageId"))
   check("update/toggle/delete verify the rule belongs to the caller's brokerage first",
     a.includes("ruleBelongsToBrokerage"))
-  check("rule_type is validated against the allowed set",
-    a.includes("RULE_TYPES") && a.includes("round_robin"))
+  // Lane 91D2 (§6 one vocabulary): the action's own copy of the set — one value
+  // short of the matcher and the live CHECK (no `manual`) — was tombstoned onto
+  // the matcher. Assert the RULE on STRIPPED source (the tombstone names the old
+  // spelling and must not count as it): validated through the ONE vocabulary,
+  // and no local rule-type literal set remains.
+  {
+    const aCode = stripComments(a)
+    check("rule_type is validated against the ONE rule-type vocabulary (the matcher's)",
+      /import\s*\{[^}]*\bisRuleType\b[^}]*\}\s*from\s*["\x27]@\/lib\/lead-assignment\/rule-matcher["\x27]/.test(aCode) &&
+      /isRuleType\(\s*input\.ruleType\s*\)/.test(aCode))
+    check("…and the action keeps no second spelling of the rule types",
+      !/new\s+Set\(\s*\[\s*["\x27]round_robin["\x27]/.test(aCode))
+    // positive control: the retired shape is recognised by the same finder
+    check("control · the retired local set IS recognised as a second spelling",
+      /new\s+Set\(\s*\[\s*["\x27]round_robin["\x27]/.test(`const RULE_TYPES = new Set(["round_robin", "load_balance"])`))
+  }
 }
 
 console.log("\n── the client page no longer writes assignment_rules directly ──")

@@ -14,6 +14,7 @@ import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
 import type {
   VoiceTrainingJobStatus,
   VoiceProfileTrainingStatus,
@@ -162,6 +163,19 @@ export async function createVoiceProfile(data: {
 }) {
   if (!isValidUUID(data.brokerageId) || !isValidUUID(data.agentId)) {
     throw new Error("Invalid brokerage or agent ID")
+  }
+  // TENANT FROM THE SESSION (lane 91D2, CLAUDE.md §4): this public action had no
+  // session gate and wrote voice-profile rows on the service client for the body
+  // brokerage. Asserted now (a different brokerage is refused), then re-keyed.
+  const tenant = await requireCallerTenant(data.brokerageId)
+  if (!tenant.ok) throw new Error(tenant.error)
+  data = { ...data, brokerageId: tenant.brokerageId }
+  {
+    // …and the agents.id must be an agent OF that tenant (§3: agents.id is its own class).
+    const { data: agentRow, error: agentErr } = await createServiceClient()
+      .from("agents").select("id").eq("id", data.agentId).eq("brokerage_id", tenant.brokerageId).maybeSingle()
+    if (agentErr) throw new Error(`Could not verify the agent: ${agentErr.message}`)
+    if (!agentRow) throw new Error("Agent not found in your brokerage")
   }
 
   const supabase = await createClient()

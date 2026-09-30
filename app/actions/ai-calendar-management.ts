@@ -10,6 +10,7 @@ import { handleError } from "@/lib/errors"
 import { z } from "zod"
 import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
 import { CalendarEventType, canonicalCalendarEventType } from "@/lib/kernel/calendar-types"
 
 /**
@@ -98,6 +99,10 @@ export async function createAppointment(params: {
   brokerageId: string
 }) {
   try {
+    // TENANT FROM THE SESSION (lane 91D2, CLAUDE.md §4): the body brokerageId is
+    // only asserted — a different brokerage is refused, the row carries the session's.
+    const tenant = await requireCallerTenant(params.brokerageId)
+    if (!tenant.ok) return { success: false, error: tenant.error }
     const supabase = await createClient()
 
     // Determine entity for calendar_events
@@ -119,7 +124,7 @@ export async function createAppointment(params: {
         // ONE spelling per kind (lane 87B2, §6): a stale client's legacy
         // "listing_consultation" is stored as "listing_appointment".
         event_type: canonicalCalendarEventType(params.type || "showing"),
-        brokerage_id: params.brokerageId,
+        brokerage_id: tenant.brokerageId,
         metadata: {
           title: params.title,
           location: params.location,

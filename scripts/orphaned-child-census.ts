@@ -303,7 +303,7 @@ const CROSS_SCHEMA_FK = new Set<string>([
 // `tax_categories.provider_account_id` is a DIFFERENT idea that happens to share
 // the name: an EXTERNAL accounting-provider (QuickBooks/Xero) account id, keyed
 // by `category_name`, resolved by lib/finance/accounting-egress.ts:76 and
-// written by app/actions/accounting-sync.ts:461 — "NEVER a fabricated account
+// written by app/actions/accounting-sync.ts:476 — "NEVER a fabricated account
 // id" per that file's own comment. It cannot reference `calendar_provider_
 // accounts` (that would be a WRONG-PARENT schema defect, the exact thing
 // CLAUDE.md §1 forbids — wiring a wrong parent just to make a census pass), and

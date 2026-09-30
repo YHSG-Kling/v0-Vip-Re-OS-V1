@@ -31,6 +31,7 @@ import {
 import { SOCIAL_POST_CHAR_LIMITS, SOCIAL_POST_CHAR_LIMIT_DEFAULT } from "@/lib/constants"
 import { analyzeContentQuality, type QualityScore } from "@/lib/quality-checker"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -180,6 +181,12 @@ export async function generateSocialPostContent(params: {
   contentId?: string | null
 }> {
   try {
+    // TENANT FROM THE SESSION (lane 91D2, CLAUDE.md §4): the brand voice, the
+    // compliance actor context and the service-client ledger all keyed on the
+    // body brokerageId. Asserted now; a different brokerage is refused.
+    const tenant = await requireCallerTenant(params.brokerageId)
+    if (!tenant.ok) return { success: false, error: tenant.error }
+    params = { ...params, brokerageId: tenant.brokerageId }
     const supabase = await createClient()
 
     // ── 1. Resolve brand voice (3-level hierarchy) ───────────────────────────
@@ -543,6 +550,11 @@ export async function generateContextualDraft(params: {
   usage?: GeneratedUsage
 }> {
   try {
+    // TENANT FROM THE SESSION (lane 91D2, CLAUDE.md §4) — same rule as
+    // generateSocialPostContent above; an absent body value takes the session's.
+    const tenant = await requireCallerTenant(params.brokerageId)
+    if (!tenant.ok) return { success: false, error: tenant.error }
+    params = { ...params, brokerageId: tenant.brokerageId }
     const brandVoice = await resolveBrandVoice(
       params.brokerageId ?? "",
       params.agentId,

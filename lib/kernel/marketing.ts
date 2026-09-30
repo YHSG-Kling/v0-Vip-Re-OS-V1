@@ -813,7 +813,7 @@ export async function submitDirectMailCampaign(params: {
 //
 // This was an unwired DUPLICATE of the AI blog writer (re-exported by lib/kernel/index.ts,
 // called by nothing). It was merged onto the survivor and deleted:
-//   survivor door  app/actions/blog.ts:68 generateBlogPost (session-gated)
+//   survivor door  app/actions/blog.ts:69 generateBlogPost (session-gated)
 //   survivor body  lib/kernel/content-creators.ts:921 writeBlogPost
 // What it carried that the survivor lacked, now on the survivor: the umbrella campaign
 // verified in the tenant before it is written (verifyInTenant), and the insert on the service
