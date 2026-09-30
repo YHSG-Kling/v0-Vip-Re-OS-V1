@@ -147,6 +147,13 @@ export interface AlertSearchContext {
    *  without one. Resolved by the caller (see alert-engine.ts) because the
    *  saved-search row carries no state column. */
   state?: string | null
+  /** Recency window (days) the RentCast legs ask for — `daysOld` on the wire.
+   *  Derived by the engine from the alert's own columns
+   *  (alert-cadence.ts alertListingRecencyDays). Omitted = no window. The IDX
+   *  and own-board legs are not windowed: the IDX featured-set reader takes no
+   *  date filter, and our own board is free to read (the send ledger stops
+   *  repeats on every leg). */
+  listedWithinDays?: number | null
 }
 
 export interface AlertListingSearchResult {
@@ -366,6 +373,7 @@ export async function searchIDXForAlert(
           // (lib/property-alerts/alert-matcher.ts), so the filter is applied
           // here, after the fetch, where the two vocabularies can be reconciled.
           limit: RENTCAST_LIMIT_PER_AREA,
+          listedWithinDays: ctx.listedWithinDays ?? undefined,
         },
       })
       api_called = true
@@ -563,6 +571,7 @@ async function searchRentalsForAlert(
         priceMin: criteria.min_price ?? undefined,
         priceMax: criteria.max_price ?? undefined,
         limit: RENTCAST_LIMIT_PER_AREA,
+        listedWithinDays: ctx.listedWithinDays ?? undefined,
       },
     })
     api_called = true

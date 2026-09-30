@@ -22,7 +22,7 @@ import { scorePropertyForAlert } from "./alert-matcher"
 import { deliverAlertResults } from "./alert-notifier"
 import type { AlertProperty } from "./alert-matcher"
 import type { ListingSource } from "@/lib/property/listing-source"
-import { isSnoozed } from "./alert-cadence"
+import { isSnoozed, alertListingRecencyDays, selectNewOrRepricedMatches } from "./alert-cadence"
 import { applyTenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
 
 export interface RunAlertResult {
@@ -95,6 +95,10 @@ export async function runAlert(alertId: string): Promise<RunAlertResult> {
     // so a pre-conversion record cannot reach a property provider through here.
     contactId: alert.contact_id,
     state: await resolveAlertSearchState(supabase, alert, brokerageId),
+    // RECENCY (wave 91, owner: "we should only pull more recent data") — the
+    // window this sweep asks the provider for, derived from the alert's own
+    // columns by the one pure rule (alert-cadence.ts alertListingRecencyDays).
+    listedWithinDays: alertListingRecencyDays(alert as any),
   })
 
   // A REFUSAL IS NOT A ZERO. `refusal` set means nothing was searched: the
@@ -123,29 +127,40 @@ export async function runAlert(alertId: string): Promise<RunAlertResult> {
     .map(p => ({ property: p, match: scorePropertyForAlert(p, alert) }))
     .filter(({ match }) => match.qualifies)
 
-  // ── 4. Dedup against already-sent results ─────────────────────────────────
-  const { data: existingResults } = await supabase
+  // ── 4. Dedup against the SEND LEDGER — only NEW or PRICE-REDUCED ─────────
+  //
+  // Wave 91 (owner: no repeats). The rule is the pure one in alert-cadence.ts
+  // (selectNewOrRepricedMatches), which reads what THIS alert last sent —
+  // never a provider flag, so a RentCast price drop is seen too.
+  //
+  // THE ERROR IS READ AND THE RUN REFUSES (§3, fail closed). This read used to
+  // be `{ data }` only: a refused ledger read resolved as "nothing sent yet", so
+  // every qualifying home — including every one the buyer already received —
+  // was mailed again. "We could not tell what was sent" now sends nothing.
+  const { data: existingResults, error: ledgerError } = await supabase
     .from("property_alert_results")
-    .select("mls_number, is_price_reduction, list_price")
+    .select("mls_number, list_price, property_address, buyer_dismissed")
     .eq("alert_id", alertId)
-
-  const sentMlsNums = new Map<string, { is_price_reduction: boolean; list_price: number | null }>(
-    (existingResults ?? []).map(r => [r.mls_number, { is_price_reduction: r.is_price_reduction, list_price: r.list_price }])
-  )
-
-  const newResults: Array<AlertProperty & { matchScore: number; matchReasons: string[] }> = []
-
-  for (const { property, match } of scored) {
-    const prev = sentMlsNums.get(property.mls_number)
-    if (!prev) {
-      newResults.push({ ...property, matchScore: match.score, matchReasons: match.reasons })
-      continue
-    }
-    // Already sent — only re-send if it's a NEW price reduction we haven't seen
-    if (property.is_price_reduction && !prev.is_price_reduction) {
-      newResults.push({ ...property, matchScore: match.score, matchReasons: match.reasons })
-    }
+  if (ledgerError) {
+    await logDelivery({ supabase, alertId, brokerageId, contactId: alert.contact_id, batchId,
+      propertiesChecked, propertiesMatched: 0, propertiesSent: 0,
+      apiCalled: searchResult.api_called, responseTimeMs: searchResult.response_time_ms,
+      error: `send_ledger_unreadable: ${ledgerError.message} — nothing sent, so nothing could be sent twice` })
+    return { success: false, alertId, propertiesChecked, propertiesMatched: 0, propertiesSent: 0, source: searchResult.source, error: "send_ledger_unreadable" }
   }
+
+  const decisions = selectNewOrRepricedMatches(
+    scored.map(({ property, match }) => ({ ...property, matchScore: match.score, matchReasons: match.reasons })),
+    (existingResults ?? []) as Array<{ mls_number: string; list_price: number | string | null; property_address: string | null; buyer_dismissed: boolean | null }>,
+    alert,
+  )
+  // A REPRICED home rides out marked as a reduction against the price THIS
+  // buyer last saw (previous_price) — the notifier and the portal chips read
+  // those two fields; the provider's own flag is not needed to raise one.
+  const newResults: Array<AlertProperty & { matchScore: number; matchReasons: string[]; __ledgerKey?: string }> =
+    decisions.map((d) => d.kind === "new"
+      ? d.item
+      : { ...d.item, is_price_reduction: true, previous_price: d.previousPrice, __ledgerKey: d.ledgerKey })
 
   const propertiesMatched = newResults.length
 
@@ -164,13 +179,19 @@ export async function runAlert(alertId: string): Promise<RunAlertResult> {
   // Respect max_results_per_alert
   const capped = newResults.slice(0, alert.max_results_per_alert ?? 10)
 
-  // ── 5. Insert property_alert_results ──────────────────────────────────────
+  // ── 5. Record in the send ledger (property_alert_results) ────────────────
   // THE ERROR IS READ (§3). supabase-js RESOLVES a refusal, so a rejected insert
   // was byte-identical to a stored batch — and this table is what the dedup in
   // step 4 reads on the NEXT run. A silent refusal here means the same homes are
   // mailed to the buyer again tomorrow.
-  const { error: resultsInsertError } = await supabase.from("property_alert_results").insert(
-    capped.map(p => ({
+  //
+  // WAVE 91 — RECORD FIRST, DELIVER ONLY WHAT WAS RECORDED. The ledger is
+  // UNIQUE (alert_id, mls_number), so a repriced home is an UPDATE of its one
+  // row (to the price sent today), never a second INSERT: the old second insert
+  // was a 23505 that refused the whole batch and made every home in it repeat
+  // on every sweep. And a home whose ledger write was refused is NOT mailed —
+  // it goes out on the next sweep, once, instead of today and every day after.
+  const ledgerRow = (p: (typeof capped)[number]) => ({
       brokerage_id:           brokerageId,
       alert_id:               alertId,
       contact_id:             alert.contact_id,
@@ -200,26 +221,58 @@ export async function runAlert(alertId: string): Promise<RunAlertResult> {
       listed_at:              p.listed_at,
       match_score:            p.matchScore,
       match_reasons:          p.matchReasons,
-      is_new_listing:         !p.is_price_reduction,
+      is_new_listing:         !p.__ledgerKey,
       delivery_batch_id:      batchId,
-    }))
-  )
-  if (resultsInsertError) {
-    console.error(
-      `[property-alerts] alert ${alertId} (brokerage ${brokerageId}): the matched results were REFUSED by the database (${resultsInsertError.message}) — the buyer may be re-sent these homes on the next run`,
-    )
+  })
+
+  const freshOnes = capped.filter((p) => !p.__ledgerKey)
+  const repricedOnes = capped.filter((p) => !!p.__ledgerKey)
+  const recorded: typeof capped = []
+  const ledgerRefusals: string[] = []
+
+  if (freshOnes.length) {
+    const { error: resultsInsertError } = await supabase.from("property_alert_results").insert(freshOnes.map(ledgerRow))
+    if (resultsInsertError) {
+      ledgerRefusals.push(`new results not stored: ${resultsInsertError.message}`)
+      console.error(
+        `[property-alerts] alert ${alertId} (brokerage ${brokerageId}): ${freshOnes.length} new result(s) were REFUSED by the database (${resultsInsertError.message}) — NOT delivered this run, so they cannot repeat; the next sweep retries them`,
+      )
+    } else {
+      recorded.push(...freshOnes)
+    }
+  }
+  for (const p of repricedOnes) {
+    // COUNTED (§3): an update that matched nothing resolves with no error.
+    const { data: updated, error: updateError } = await supabase.from("property_alert_results")
+      // Resurfaces on the portal's unviewed list (idx_alert_results_unviewed):
+      // the buyer has not seen THIS price.
+      .update({ ...ledgerRow(p), buyer_viewed: false, buyer_viewed_at: null })
+      .eq("alert_id", alertId)
+      .eq("mls_number", p.__ledgerKey!)
+      .select("id")
+    if (updateError || !updated?.length) {
+      ledgerRefusals.push(`repriced ${p.mls_number} not recorded: ${updateError?.message ?? "ledger row not found"}`)
+      continue
+    }
+    recorded.push(p)
   }
 
-  // ── 6. Deliver ────────────────────────────────────────────────────────────
-  const deliverResult = await deliverAlertResults(alert, capped, brokerageId, batchId)
+  // ── 6. Deliver — only what the ledger recorded ───────────────────────────
+  const deliverResult = recorded.length
+    ? await deliverAlertResults(alert, recorded, brokerageId, batchId)
+    : { sent: 0, channelsUsed: [] as string[] }
   const propertiesSent = deliverResult.sent
 
   // ── 7. Update alert stats ─────────────────────────────────────────────────
-  await supabase.from("property_alerts").update({
+  // THE ERROR IS READ (§3). last_run_at feeds the next sweep's recency window
+  // (alert-cadence.ts alertListingRecencyDays); a refused stamp is reported —
+  // the send ledger, not this stamp, is what stops repeats.
+  const { error: statsError } = await supabase.from("property_alerts").update({
     last_run_at:        new Date().toISOString(),
     last_match_count:   propertiesMatched,
     total_alerts_sent:  (alert.total_alerts_sent ?? 0) + propertiesSent,
   }).eq("id", alertId)
+  if (statsError) ledgerRefusals.push(`alert stats not stamped: ${statsError.message}`)
 
   // ── 8. Delivery log ───────────────────────────────────────────────────────
   await logDelivery({
@@ -228,7 +281,7 @@ export async function runAlert(alertId: string): Promise<RunAlertResult> {
     channelsUsed: deliverResult.channelsUsed,
     apiCalled: searchResult.api_called,
     responseTimeMs: searchResult.response_time_ms,
-    error: [degradedNote, resultsInsertError ? `results not stored: ${resultsInsertError.message}` : null]
+    error: [degradedNote, ...ledgerRefusals]
       .filter(Boolean)
       .join("; ") || undefined,
   })

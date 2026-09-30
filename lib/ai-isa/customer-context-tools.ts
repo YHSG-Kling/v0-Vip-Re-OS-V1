@@ -32,6 +32,8 @@ import { tool } from "ai"
 import { z } from "zod"
 import { createServiceClient } from "@/lib/supabase/service"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+// Lane 91C — the one recency window for a buyer listing pull (pure constant).
+import { BUYER_LISTING_RECENCY_DAYS } from "@/lib/property-alerts/alert-cadence"
 import { QUALIFICATION_FOLLOW_UP_MENU, QUALIFICATION_GOALS, parseFollowUpPreference } from "@/lib/ai-isa/qualification-playbook"
 import {
   writeFollowUpActivity, scheduleFollowUp, notifyAssignedAgent, publishQualificationSignal,
@@ -428,14 +430,51 @@ export function buildSendMatchingListingsTool(ctx: CustomerContextToolsContext) 
       min_beds: z.number().nullable(),
       min_baths: z.number().nullable(),
       property_type: z.string().nullable().describe("e.g. Single Family, Condo, Townhouse — or null"),
+      buyer_words: z.string().nullable().optional().describe("The buyer's OWN sentence(s) stating what they want, copied verbatim (e.g. '3 bed under 450 in Frisco, need a yard') — the criteria parser fills anything the fields above left null. Or null."),
     }),
-    execute: async (args: {
+    execute: async (rawArgs: {
       listing_type?: "sale" | "rent" | null
       city: string | null; state: string | null; zip: string | null
       min_price: number | null; max_price: number | null; min_beds: number | null; min_baths: number | null
       property_type: string | null
+      buyer_words?: string | null
     }) => {
       const svc = createServiceClient()
+      // LANE 91C — THE ONE NL CRITERIA PARSER (lib/buyer-search/parse-buyer-
+      // criteria.ts). The model's structured fields STAND; the parser fills
+      // only what they left null, from the buyer's literal words — a city off
+      // the model's radar, a ZIP, the "need a yard" feature that has no field
+      // above. Features ride into the standing alert's must_have_features.
+      // Its spend books to THIS tenant (ctx.brokerageId, bound by the surface).
+      const args = { ...rawArgs }
+      let parsedFeatures: string[] = []
+      let criteriaNotes: string[] = []
+      let criteriaGapsOpen: string[] = []
+      if (rawArgs.buyer_words && rawArgs.buyer_words.trim().length >= 5) {
+        const { parseBuyerCriteria } = await import("@/lib/buyer-search/parse-buyer-criteria")
+        const parsed = await parseBuyerCriteria(rawArgs.buyer_words, { brokerageId: ctx.brokerageId })
+        const c = parsed.criteria
+        if (!args.city && !args.zip && c.cities?.length) args.city = c.cities[0]
+        if (!args.zip && !args.city && c.zipCodes?.length) args.zip = c.zipCodes[0]
+        if (!args.state && c.state) args.state = c.state
+        if (args.min_price == null && args.max_price == null) { args.min_price = c.minPrice ?? null; args.max_price = c.maxPrice ?? null }
+        if (args.min_beds == null && c.minBeds != null) args.min_beds = c.minBeds
+        if (args.min_baths == null && c.minBaths != null) args.min_baths = c.minBaths
+        if (!args.property_type && c.propertyTypes?.length) args.property_type = c.propertyTypes[0]
+        if (!args.listing_type && c.listingType === "rent") args.listing_type = "rent"
+        parsedFeatures = c.features ?? []
+        criteriaNotes = parsed.notes
+        criteriaGapsOpen = parsed.gaps
+      }
+      // RentCast searches a city only WITH a state. A city the buyer named
+      // without one takes the tenant's own state (the rule alert-engine.ts
+      // resolveAlertSearchState applies to saved searches) — read with its
+      // error, never guessed.
+      if (args.city && !args.state && !args.zip) {
+        const { data: tenant, error: tenantError } = await svc.from("brokerages").select("state").eq("id", ctx.brokerageId).maybeSingle()
+        if (tenantError) console.error(`[send_matching_listings] brokerage state read refused (brokerage ${ctx.brokerageId}): ${tenantError.message}`)
+        args.state = (tenant as { state?: string | null } | null)?.state ?? null
+      }
       const forRent = args.listing_type === "rent"
       const listings: Array<Record<string, unknown>> = []
 
@@ -455,7 +494,10 @@ export function buildSendMatchingListingsTool(ctx: CustomerContextToolsContext) 
         if (args.min_price !== null) ownQuery = ownQuery.gte("list_price", args.min_price)
         if (args.max_price !== null) ownQuery = ownQuery.lte("list_price", args.max_price)
         if (args.min_beds !== null) ownQuery = ownQuery.gte("bedrooms", args.min_beds)
-        const { data: ownListings } = await ownQuery
+        // THE ERROR IS READ (§3) — a refused read of our own board is not "we
+        // have nothing"; RentCast still runs below and the refusal is reported.
+        const { data: ownListings, error: ownError } = await ownQuery
+        if (ownError) console.error(`[send_matching_listings] own listings read refused (brokerage ${ctx.brokerageId}): ${ownError.message}`)
         for (const l of ownListings ?? []) listings.push({ ...l, source: "our_listings" })
       }
 
@@ -464,7 +506,17 @@ export function buildSendMatchingListingsTool(ctx: CustomerContextToolsContext) 
       // SAME resolveRentcastEligibility every AVM/comp reader uses). Rental
       // mode uses the RENTAL endpoint (searchRentcastRentalListings — the
       // reader wave 66 corrected to the same range syntax as the sale reader).
-      if (listings.length < 10) {
+      //
+      // LANE 91C: recency-windowed (owner, wave 91: "we should only pull more
+      // recent data" — BUYER_LISTING_RECENCY_DAYS → RentCast `daysOld`), and
+      // only with a searchable AREA (a ZIP, or a city with its state): an
+      // area-less RentCast call is a paid national sweep scored against a
+      // buyer who named no place. Never BatchData — this is the buyer listing
+      // path (scripts/buyer-nl-search-simulator.ts holds that).
+      let rentcastSkipped: string | null = null
+      if (listings.length < 10 && !(args.zip || (args.city && args.state))) {
+        rentcastSkipped = "No city+state or ZIP yet — ask where they are looking before pulling listings."
+      } else if (listings.length < 10) {
         const { searchRentcastSaleListings, searchRentcastRentalListings } = await import("@/lib/property/rentcast")
         const search = forRent ? searchRentcastRentalListings : searchRentcastSaleListings
         const rc = await search({
@@ -480,6 +532,7 @@ export function buildSendMatchingListingsTool(ctx: CustomerContextToolsContext) 
             priceMax: args.max_price ?? undefined,
             propertyType: args.property_type ?? undefined,
             limit: 10 - listings.length,
+            listedWithinDays: BUYER_LISTING_RECENCY_DAYS,
           },
         })
         if (rc.success) {
@@ -565,7 +618,7 @@ export function buildSendMatchingListingsTool(ctx: CustomerContextToolsContext) 
             property_types: args.property_type ? [args.property_type] : [],
             cities: args.city ? [args.city] : [],
             zip_codes: args.zip ? [args.zip] : [],
-            must_have_features: [], keywords: null,
+            must_have_features: parsedFeatures, keywords: null,
             new_listings_only: true, include_coming_soon: true, include_price_reductions: true,
             price_reduction_min_percent: 2, frequency: "daily",
             delivery_channels: ["email", "in_app"], max_results_per_alert: 10,
@@ -591,6 +644,13 @@ export function buildSendMatchingListingsTool(ctx: CustomerContextToolsContext) 
         success: true,
         listings: listings.slice(0, 10),
         alertEnrolled: !!alertId,
+        // Lane 91C — what the criteria parser could not turn into a filter
+        // (school quality, …) and which concrete criteria are still missing,
+        // so the reply asks the next question instead of guessing.
+        ...(criteriaNotes.length ? { criteriaNotes } : {}),
+        ...(criteriaGapsOpen.length ? { stillNeed: criteriaGapsOpen } : {}),
+        ...(rentcastSkipped ? { listingFeedSkipped: rentcastSkipped } : {}),
+        recencyWindowDays: rentcastSkipped ? null : BUYER_LISTING_RECENCY_DAYS,
         // Honest: the model is told when the standing alert could NOT be set up
         // (a refused conversion), so it never promises "I'll keep sending".
         ...(conversion ? { convertedToContact: conversion.ok, conversionError: conversion.ok ? null : (conversion.error ?? "conversion refused") } : {}),

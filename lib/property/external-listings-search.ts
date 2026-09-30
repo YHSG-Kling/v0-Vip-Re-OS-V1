@@ -115,6 +115,14 @@ export interface ExternalSearchInput {
   systemSource?: string
   /** Vendor-ledger attribution only. Never a credential selector or tenant boundary. */
   contactId?: string | null
+  /**
+   * RECENCY WINDOW in days (wave 91, owner: "we should only pull more recent
+   * data") — RentCast `daysOld`. Honoured on the RentCast tier; the tenant's
+   * IDX featured-set reader takes no date filter, so an IDX answer is not
+   * windowed (stated, not faked). Buyer-facing callers pass
+   * BUYER_LISTING_RECENCY_DAYS (lib/property-alerts/alert-cadence.ts).
+   */
+  listedWithinDays?: number
 }
 
 export interface ExternalSearchResult {
@@ -269,6 +277,7 @@ export async function searchExternalListings(
       priceMax: input.priceMax,
       propertyType: input.propertyType,
       limit: input.limit,
+      listedWithinDays: input.listedWithinDays,
     }
     const caller = {
       brokerageId: input.brokerageId,

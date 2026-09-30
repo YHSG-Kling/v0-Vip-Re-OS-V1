@@ -1,7 +1,9 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
+// The ONE natural-language buyer-criteria parser (lane 91C) — smartSearch's
+// inline model prompt was merged onto it (tombstone in smartSearch below).
+import { parseBuyerCriteria } from "@/lib/buyer-search/parse-buyer-criteria"
 // THE SPEND ACTOR. Every export in this "use server" file is a public HTTP
 // endpoint, so the AI cost ledger's tenant can only come from the SESSION
 // (CLAUDE.md §4) — never from an id the caller supplied.
@@ -82,66 +84,101 @@ export async function smartSearch(data: {
       .order("created_at", { ascending: false })
       .limit(10)
 
-    const interpretPrompt = `Convert this natural language property search into structured filters:
-
-Query: "${data.naturalLanguageQuery}"
-
-Buyer context:
-- Persona: ${contact.contact_persona || "not specified"}
-- Budget: ${contact.budget_min || contact.budget_max ? `$${contact.budget_min ?? "?"}–$${contact.budget_max ?? "?"}` : "not specified"}
-- Timeline: ${contact.timeline || "not specified"}
-- Previous searches: ${searchHistory?.map((s) => JSON.stringify(s.extracted_filters)).join(", ") || "none"}
-
-Extract:
-- Price range (min/max in dollars)
-- Beds (minimum number)
-- Baths (minimum number)
-- Property types (array: single_family, condo, townhouse, multi_family)
-- Location (city, zip, neighborhood)
-- Special requirements (pool, garage, schools, etc.)
-- Keywords for description search
-- Intent level: "serious" | "browsing" | "researching"
-
-Output ONLY valid JSON with this exact structure:
-{
-  "minPrice": number or null,
-  "maxPrice": number or null,
-  "beds": number or null,
-  "baths": number or null,
-  "propertyType": ["single_family"] or null,
-  "city": "string" or null,
-  "keywords": "string" or null,
-  "intent": "serious"
-}`
-
-    const interpretation = await generateText({
+    // TOMBSTONE (lane 91C, §1/§6): an inline "convert this natural language
+    // property search into structured filters" prompt lived here — a SECOND
+    // NL parser with its own JSON shape, called with no `feature` key, so every
+    // buyer search ran on the 'unspecified' Sonnet row (and it asked the model
+    // for "schools" as a requirement, which the one parser refuses to infer).
+    // Survivor: lib/buyer-search/parse-buyer-criteria.ts parseBuyerCriteria —
+    // rules first (free), the Haiku lane buyer_criteria_parse only for a gap,
+    // every model value re-checked against the buyer's words. The buyer
+    // context the prompt carried is honoured where it is a FACT the buyer gave
+    // us: the contact's saved budget fills a price the query did not state.
+    const parsed = await parseBuyerCriteria(data.naturalLanguageQuery, {
       brokerageId: spendActor.brokerageId,
       userId: spendActor.userId || null,
-      model: "openai/gpt-4o-mini",
-      prompt: interpretPrompt,
     })
+    const c = parsed.criteria
+    const filters: PropertyFilters & { intent?: string; zipCodes?: string[]; state?: string; features?: string[]; notes?: string[] } = {
+      minPrice: c.minPrice ?? (c.maxPrice == null && contact.budget_min ? Number(contact.budget_min) : undefined),
+      maxPrice: c.maxPrice ?? (c.minPrice == null && contact.budget_max ? Number(contact.budget_max) : undefined),
+      beds: c.minBeds,
+      baths: c.minBaths,
+      propertyType: c.propertyTypes,
+      city: c.cities?.[0],
+      zip: c.zipCodes?.[0],
+      state: c.state,
+      zipCodes: c.zipCodes,
+      features: c.features,
+      keywords: c.features?.length ? c.features.join(" ") : undefined,
+      intent: parsed.confidence === "high" ? "serious" : "browsing",
+      notes: parsed.notes,
+    }
+    void searchHistory // read for the log's continuity; no longer fed to a prompt
 
-    let filters: PropertyFilters & { intent?: string }
-    try {
-      filters = JSON.parse(interpretation.text)
-    } catch (parseError) {
-      // Fallback to basic filter extraction
-      filters = {
-        keywords: data.naturalLanguageQuery,
-        intent: "browsing",
+    // Search using extracted filters — the tenant's IDX API when configured;
+    // otherwise THE ONE listing router (searchExternalListings: the tenant's
+    // own IDX board, else the platform's RentCast — windowed to recent
+    // listings). Before lane 91C an unconfigured IDX env ended the buyer's
+    // natural-language search with "IDX API not configured" even though the
+    // platform provider the owner named ("we use rentcast for property
+    // listings … even nlp") was available.
+    let searchResult: { success: boolean; properties: any[]; error?: string; requiresConfiguration?: boolean } = await searchProperties(filters)
+    if (!searchResult.success && searchResult.requiresConfiguration && spendActor.brokerageId) {
+      const { searchExternalListings } = await import("@/lib/property/external-listings-search")
+      const { BUYER_LISTING_RECENCY_DAYS } = await import("@/lib/property-alerts/alert-cadence")
+      let state = filters.state
+      if (!state && filters.city && !filters.zip) {
+        const { data: brokerage, error: brokerageError } = await supabase.from("brokerages").select("state").eq("id", spendActor.brokerageId).maybeSingle()
+        if (brokerageError) console.error("[smartSearch] brokerage state read refused:", brokerageError.message)
+        state = (brokerage as { state?: string | null } | null)?.state ?? undefined
       }
+      const ext = (filters.city && state) || filters.zip
+        ? await searchExternalListings({
+            brokerageId: spendActor.brokerageId,
+            city: filters.zip ? undefined : filters.city,
+            state: filters.zip ? undefined : state,
+            zipCode: filters.zip,
+            bedroomsMin: filters.beds ?? undefined,
+            bathroomsMin: filters.baths ?? undefined,
+            priceMin: filters.minPrice ?? undefined,
+            priceMax: filters.maxPrice ?? undefined,
+            propertyType: filters.propertyType?.[0],
+            listingType: parsed.criteria.listingType === "rent" ? "rental" : "sale",
+            contactId: data.contactId,
+            listedWithinDays: BUYER_LISTING_RECENCY_DAYS,
+            limit: 25,
+          })
+        : { listings: [], source: "none" as const, error: "Tell me a city or ZIP to search — the listing feed searches one area at a time." }
+      searchResult = {
+        success: ext.source !== "none" || ext.listings.length > 0,
+        error: ext.error,
+        properties: ext.listings.map((l) => ({
+          id: `ext_${l.source}_${l.externalId}`,
+          mls_number: `${l.source}-${l.externalId}`, mlsNumber: `${l.source}-${l.externalId}`,
+          address: l.address, city: l.city, state: l.state, zip: l.zip,
+          price: l.price, list_price: l.price,
+          beds: l.bedrooms, bedrooms: l.bedrooms, baths: l.bathrooms, bathrooms: l.bathrooms,
+          sqft: l.squareFeet, property_type: l.propertyType,
+          daysOnMarket: l.daysOnMarket, days_on_market: l.daysOnMarket,
+          primary_photo_url: l.photoUrl, photos: l.photoUrl ? [l.photoUrl] : [],
+          status: "Active", source: l.source, listing_type: l.listingType,
+        })),
+      }
+      if (!searchResult.success) return { success: false, error: ext.error ?? "No listing source could be searched.", properties: [], filters }
     }
 
-    // Search using extracted filters
-    const searchResult = await searchProperties(filters)
-
-    await supabase.from("property_search_log").insert({
+    // THE ERROR IS READ (§3): this log is the "previous searches" history the
+    // agent's search screen reads; a refused write is reported, not swallowed.
+    // It never fails the buyer's search — the results below are real.
+    const { error: searchLogError } = await supabase.from("property_search_log").insert({
       contact_id: data.contactId,
       query_text: data.naturalLanguageQuery,
       extracted_filters: filters,
       result_count: searchResult.properties?.length || 0,
       metadata: { intent: filters.intent || "browsing" },
     })
+    if (searchLogError) console.error("[smartSearch] property_search_log NOT recorded:", searchLogError.message)
 
     return {
       success: true,

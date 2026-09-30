@@ -24,7 +24,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
-import { canonicalPropertyType, type PropertyType } from "@/lib/constants"
+import { buildRentcastListingQuery } from "./rentcast-query"
 import {
   callRentcastGet,
   callRentcastGetById,
@@ -76,37 +76,10 @@ type RentcastListingRowExtras = {
   photos?: string[]
 }
 
-/** RentCast's own property-type vocabulary, as the generated query type spells it. */
-type RentcastQueryPropertyType = NonNullable<NonNullable<RentcastSaleListingsQuery>["propertyType"]>
-
-/**
- * OUR canonical property-type spellings → RENTCAST's (§6 — two vocabularies, one translator).
- *
- * The defect this closes was already named at lib/property-alerts/idx-alert-search.ts:343: an
- * untranslated canonical value ("single_family") sent as a provider filter returns an empty page
- * indistinguishable from "no homes". That lane's answer was to stop sending the filter; the other
- * callers (external-listings-search, rent-estimate) kept sending the untranslated string. Now the
- * query object is TYPED to RentCast's union, so the translation is forced to happen — here, at
- * the vendor boundary, never as a cast.
- *
- * `commercial` and `other` are deliberately absent: RentCast has no equivalent filter value, and
- * a wrong guess narrows the search to the wrong homes. Absent → the filter is OMITTED, which is
- * the same honest fallback idx-alert-search chose.
- */
-const RENTCAST_PROPERTY_TYPE: Partial<Record<PropertyType, RentcastQueryPropertyType>> = {
-  single_family: "Single Family",
-  condo:         "Condo",
-  townhouse:     "Townhouse",
-  multi_family:  "Multi-Family",
-  land:          "Land",
-}
-
-/** Narrow ANY caller-held property-type string to RentCast's vocabulary, or undefined (= omit
- *  the filter). Accepts display spellings too — canonicalPropertyType absorbs those first. */
-function toRentcastPropertyType(raw: string | null | undefined): RentcastQueryPropertyType | undefined {
-  const canonical = canonicalPropertyType(raw)
-  return canonical ? RENTCAST_PROPERTY_TYPE[canonical] : undefined
-}
+// TOMBSTONE (lane 91C, §1): the canonical → RentCast property-type translator
+// (RENTCAST_PROPERTY_TYPE / toRentcastPropertyType) moved to
+// lib/property/rentcast-query.ts beside THE ONE listing-query builder, its only
+// caller.
 
 /**
  * RentCast bills PER REQUEST — every successful API request counts for billing purposes
@@ -231,7 +204,27 @@ export interface RentcastSearchFilters {
    *  to the generated query type's own union broke nobody and stops a junk status from riding
    *  to the vendor as a silently-ignored parameter. */
   status?: "Active" | "Inactive"
+  /**
+   * RECENCY WINDOW (wave 91, owner: "we should only pull more recent data").
+   * Only listings put on the market within the last N days. Sent as RentCast's
+   * own `daysOld` numeric-range parameter (`*:N` — "at most N days since it was
+   * listed"; spec: lib/external/_generated/rentcast-openapi.ts, /listings/sale
+   * and /listings/rental/long-term query). Area searches only — a single-home
+   * `address` lookup omits every other parameter by RentCast's contract, so a
+   * window there is dropped rather than sent beside it. Omitted = no window
+   * (the reader's pre-wave-91 behaviour, kept for callers that pull comps or a
+   * rent estimate where an older active listing is still evidence).
+   * The window a BUYER-facing caller passes is BUYER_LISTING_RECENCY_DAYS
+   * (lib/property-alerts/alert-cadence.ts) or the alert's own derived window.
+   */
+  listedWithinDays?: number
 }
+
+// TOMBSTONE (lane 91C, §1/§6): THE ONE area-query builder for both listing
+// readers (buildRentcastListingQuery — merged from the two per-reader copies
+// that had drifted) and the recency window (daysOld) live in the pure sibling
+// lib/property/rentcast-query.ts, the rentcast-normalize.ts pattern: no key, no
+// gate, no egress, so the request SHAPE is provable without a network call.
 
 export interface RentcastListing {
   externalId: string
@@ -405,26 +398,11 @@ export async function searchRentcastSaleListings(
   // The query object is TYPED (RentcastSaleListingsQuery, from the OpenAPI spec): the range
   // params below (`bedrooms`, `bathrooms`, `price`) are `string` on the spec precisely because
   // they carry range syntax, so a numeric exact-match regression now fails to compile.
-  let q: NonNullable<RentcastSaleListingsQuery>
-  if (f.address) {
-    q = { address: f.address }
-  } else {
-    q = { status: f.status ?? "Active", limit: f.limit ?? 30 }
-    if (f.city) q.city = f.city
-    if (f.state) q.state = f.state
-    if (f.zipCode) q.zipCode = f.zipCode
-    // MCP-verified contract: bedrooms/bathrooms/price are RANGE params — a plain
-    // "3" means EXACTLY 3 (a 3+ buyer would silently lose 4-bed homes); the min-
-    // only form is "3:*". Price has no minPrice/maxPrice — one `price=min:max`.
-    if (f.bedroomsMin != null && f.bedroomsMax != null) q.bedrooms = `${f.bedroomsMin}:${f.bedroomsMax}`
-    else if (f.bedroomsMin != null) q.bedrooms = `${f.bedroomsMin}:*`
-    if (f.bathroomsMin != null) q.bathrooms = `${f.bathroomsMin}:*`
-    if (f.priceMin != null && f.priceMax != null) q.price = `${f.priceMin}:${f.priceMax}`
-    else if (f.priceMin != null) q.price = `${f.priceMin}:*`
-    else if (f.priceMax != null) q.price = `*:${f.priceMax}`
-    const pt = toRentcastPropertyType(f.propertyType)
-    if (pt) q.propertyType = pt
-  }
+  //
+  // Built by THE ONE area-query builder (lib/property/rentcast-query.ts) —
+  // wave 91 merged this reader's copy of the block onto it; the copy had lost
+  // the max-only bedroom range the rental copy carried.
+  const q: NonNullable<RentcastSaleListingsQuery> = buildRentcastListingQuery(f, { defaultLimit: 30, endpoint: "sale" })
   try {
     const res = await callRentcastGet("/listings/sale", q, apiKey)
     meterCall({
@@ -682,29 +660,13 @@ export async function searchRentcastRentalListings(
   // Typed as the RENTAL endpoint's own query (RentcastRentalListingsQuery), which is the sale
   // query minus "Land" on propertyType — the compiler now holds the two builders to their own
   // endpoints instead of one URLSearchParams shape pretending to fit both.
-  let q: NonNullable<RentcastRentalListingsQuery>
-  if (f.address) {
-    q = { address: f.address }
-  } else {
-    q = { status: f.status ?? "Active", limit: f.limit ?? 20 }
-    if (f.city) q.city = f.city
-    if (f.state) q.state = f.state
-    if (f.zipCode) q.zipCode = f.zipCode
-    // Same MCP-verified range contract as the for-sale search: a bare "3" means
-    // EXACTLY 3, so a min-only filter must be written "3:*". `price` here is the
-    // monthly rent range, which is the same query parameter on this endpoint.
-    if (f.bedroomsMin != null && f.bedroomsMax != null) q.bedrooms = `${f.bedroomsMin}:${f.bedroomsMax}`
-    else if (f.bedroomsMin != null) q.bedrooms = `${f.bedroomsMin}:*`
-    else if (f.bedroomsMax != null) q.bedrooms = `*:${f.bedroomsMax}`
-    if (f.bathroomsMin != null) q.bathrooms = `${f.bathroomsMin}:*`
-    if (f.priceMin != null && f.priceMax != null) q.price = `${f.priceMin}:${f.priceMax}`
-    else if (f.priceMin != null) q.price = `${f.priceMin}:*`
-    else if (f.priceMax != null) q.price = `*:${f.priceMax}`
-    const pt = toRentcastPropertyType(f.propertyType)
-    // "Land" is a valid SALE filter but not a rental one (there is no such thing as a long-term
-    // land rental on this endpoint) — omitted rather than guessed into a different type.
-    if (pt && pt !== "Land") q.propertyType = pt
-  }
+  //
+  // Built by THE ONE area-query builder (buildRentcastListingQuery) — wave 91
+  // merged this reader's copy onto it. `price` here is the monthly rent range,
+  // the same query parameter on this endpoint; the builder omits "Land" for the
+  // rental endpoint, which is the only property-type difference between the
+  // two query types, so the narrowing below is exact.
+  const q = buildRentcastListingQuery(f, { defaultLimit: 20, endpoint: "rental" }) as NonNullable<RentcastRentalListingsQuery>
   try {
     const res = await callRentcastGet("/listings/rental/long-term", q, apiKey)
     meterCall({

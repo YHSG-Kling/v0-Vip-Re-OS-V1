@@ -224,6 +224,7 @@ export const AI_TASK_ROUTING: Record<string, {
   // ── SIMPLE DECISIONS + ROUTING (cheapest path) ────────────────────────────
   intent_classification:     { model: "gpt-4o-mini", fallback: "claude-haiku", reason: "Classify user intent — voice/command bar routing" },
   yes_no_decision:           { model: "gpt-4o-mini", fallback: "claude-haiku", reason: "Binary decisions — approve/deny heuristics" },
+  buyer_criteria_parse:      { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Lane 91C — THE one natural-language buyer-criteria parser's model assist (lib/buyer-search/parse-buyer-criteria.ts): a buyer's sentence in chat/email/portal → the existing criteria shape (structured output, ~300 tokens), called ONLY when the free rules pass leaves a gap (location / price / beds). Every value it returns is re-checked against the buyer's own words before use (conversation-criteria.ts mergeModelCriteria), and its schema has no school/age/household field. Replaces the inline prompt app/actions/idx-search.ts smartSearch carried with NO feature key — which routed to the 'unspecified' Sonnet row on every search." },
   generate_text:             { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Generic short text — default fallback for unspecified tasks" },
   simple:                    { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Generic simple task from pipeline.ts runPipelineSimple" },
 
