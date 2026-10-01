@@ -43,7 +43,14 @@ export async function GET(req: NextRequest) {
 
   const results: Array<{ source_id: string; query: string; fetched: number; inserted: number; updated: number }> = []
 
+  // ACTIVE-TERRITORY PRE-CHECK (wave 92, lane 92B — owner: "checking the active territories before
+  // scrapping and pulling data will cutdown on runs"): ONE resolution, every skipped run counted.
+  // A tenant's own topic source runs only for a live tenant; a PLATFORM source (brokerage_id null)
+  // is not tenant-bound and always runs.
+  const { resolveActivePullGate } = await import("@/lib/lead-pipeline/scrape-territories")
+  const pullGate = await resolveActivePullGate(svc)
   for (const s of (sources ?? []) as SourceRow[]) {
+    if (s.brokerage_id && !pullGate.check({ brokerageId: s.brokerage_id }).allowed) continue
     const query = s.source_config?.query
     if (!query) continue
     let fetched = 0, inserted = 0, updated = 0
@@ -108,6 +115,7 @@ export async function GET(req: NextRequest) {
     .lt("expires_at", new Date().toISOString()), { table: "content_topic_bank", flow: "content_topic_bank_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   return NextResponse.json({
+    territory_gate: pullGate.tally,
     ran_at: new Date().toISOString(),
     sources_processed: results.length,
     results,

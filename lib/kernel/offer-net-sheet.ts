@@ -222,7 +222,7 @@ export async function runOfferNetSheets(
           m
             ? { street: m[1], city: m[2], state: m[3].toUpperCase(), zip: m[4] }
             : { street: addr, city: (lst as any).city ?? null, state: (lst as any).state ?? null, zip: (lst as any).zip_code ?? null },
-          // The listing's own tenant — the ONE BatchData gate refuses a tenant-less reach.
+          // The listing's own tenant — RentCast is metered per tenant (wave 92: the record rides RentCast).
           { brokerageId: (lst as any).brokerage_id ?? null },
         )
         if (rec.annualTaxAmount !== null) {

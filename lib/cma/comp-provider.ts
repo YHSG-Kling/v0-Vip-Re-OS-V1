@@ -34,6 +34,18 @@
  * meet the owner's mix reports that it cannot; it does not quietly return a
  * thinner set and let the reader assume the market was thin.
  *
+ * ─── WAVE 92 (lane 92B) — THE CONNECTION RULE IS NARROWED TO ITS SUBSTITUTE ──
+ * Owner, verbatim (2026-10-01): "use rentcast as much as possible regarding
+ * property listings, market, comparable, home values … this is supposed to run
+ * for the full platform." · "batchdata is to be used more for scrapping leads."
+ * The IDX rule above suppressed RentCast for the SOLD side too, although IDX
+ * cannot serve solds — so an IDX-connected tenant got a CMA with no value range.
+ * Comparables are now a PROPERTY-DATA read (rentcast-eligibility.ts `readKind`):
+ * RentCast serves the sold side for EVERY tenant; the tenant's IDX feed still
+ * wins the ACTIVE/PENDING side, which is the one it can substitute for. The
+ * sold-side SUPPLEMENT is RentCast's own widened comparable search (§3b) — the
+ * BatchData comps-dataset supplement is retired (tombstone at §3b).
+ *
  * ─── PROVIDER RESOLUTION ────────────────────────────────────────────────────
  * SOLD side   → RentCast, always. RentCast is the platform-owned provider and
  *               it is the ONLY connected source that can serve closed/off-market
@@ -88,14 +100,7 @@ import {
   type RentcastEligibilityReason,
 } from "@/lib/property/rentcast-eligibility"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
-import { meterVendorSpend } from "@/lib/vendor-governance/meter-vendor"
 import { IDXBrokerClient, type NormalizedIdxListing } from "@/lib/idxbroker-client"
-import { fetchBatchDataComps, readBatchDataComp, BATCHDATA_COMPS_COST_CENTS, type BatchDataComp } from "@/lib/external/batchdata-client"
-import {
-  comparablePropertyCount,
-  comparablePropertyPreview,
-  comparablePropertyPage,
-} from "@/lib/external/batchdata-mcp"
 import { getCachedCompSupplement, setCachedCompSupplement } from "./comp-supplement-cache"
 import { RENTCAST_USD_PER_REQUEST } from "@/lib/property/rentcast"
 import {
@@ -177,6 +182,16 @@ const PERPLEXITY_GAP_FILL_COST_CENTS = Math.round(PERPLEXITY_COMP_SEARCH_COST_US
  * default `compCount`; it is not raised past that to avoid a rejected request.
  */
 const RENTCAST_COMP_PULL_LIMIT = 20
+
+/**
+ * THE WIDENED SOLD-SIDE SUPPLEMENT (wave 92, lane 92B) — RentCast's own /avm/value comparable
+ * search bounds, asked ONLY when the first pull left the sold side short: the most comparables
+ * one request returns (25, the spec's compCount ceiling), a wider radius, and a last-seen window
+ * as long as the widened sold window (12 months). One more RentCast request, never a second vendor.
+ */
+const RENTCAST_SUPPLEMENT_COMP_LIMIT = 25
+const RENTCAST_SUPPLEMENT_RADIUS_MILES = 3
+const RENTCAST_SUPPLEMENT_DAYS_OLD = 365
 
 /** How many IDX featured rows to consider before narrowing. */
 const IDX_PULL_LIMIT = 100
@@ -374,18 +389,13 @@ export interface CompProvenance {
   citations: string[]
   /** Provider spend attributable to this pull, in cents. */
   estimatedCostCents: number
-  /**
-   * THE "COMPS AVAILABLE" BADGE SIGNAL (wave 69) — a cheap, no-charge read of BatchData's
-   * MCP `comparable_property_preview` tool, taken independent of whether the sold side
-   * ended up needing a BatchData pull at all (RentCast alone may have met the mix). `true`
-   * = BatchData's preview sample returned at least one comparable for this address; `false`
-   * = the preview ran and returned nothing; `null` = the preview was never reachable (no MCP
-   * token configured, or the call itself failed) — NEVER coerced to `false`, because "we
-   * could not ask" and "we asked and there was nothing" are different facts a CMA UI badge
-   * must not conflate. See PROVIDER_AVM_BASELINE_LABEL for the same discipline applied to
-   * the RentCast AVM.
-   */
-  batchDataMcpPreviewAvailable: boolean | null
+  // TOMBSTONE (wave 92, lane 92B, §1.3): `batchDataMcpPreviewAvailable` (the BatchData MCP
+  // comparable_property_preview "comps available" badge signal) left with the BatchData comps
+  // supplement — no surface read it (grep: zero readers outside this file). Survivor for "where
+  // did the sold side come from": `rentcastSupplementSoldCount` below + each comp's sourceProvider.
+  /** How many of the closed comps came from RentCast's WIDENED supplement search (§3b), 0 when
+   *  the first pull met the minimum or the supplement found nothing. */
+  rentcastSupplementSoldCount: number
 }
 
 export interface SourcedComps {
@@ -421,8 +431,10 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
     brokerageId: req.brokerageId,
     agentUserId: req.agentUserId ?? null,
     teamId: req.teamId ?? null,
+    // Wave 92 (lane 92B): comparables are PROPERTY DATA — an IDX feed cannot serve the sold side,
+    // so it no longer suppresses RentCast here (header). The IDX feed still wins ACTIVE/PENDING (§4).
+    readKind: "property_data",
   })
-  const tenantOwnsIdx = rentcastEligibility.idx.status === "connected"
 
   let rentcastRows: RentcastComp[] = []
   // The AVM baseline rides on the SAME `/avm/value` response as the comparables
@@ -549,139 +561,69 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
     )
   }
 
-  // ── 3b. BATCHDATA COMPS DATASET — a SECOND REAL DATA PROVIDER, sold side only ──
+  // ── 3b. RENTCAST WIDENED SUPPLEMENT — sold side only (wave 92, lane 92B) ──
   //
-  // Owner ruling (wave 66): "Batchdata also allows you to find properties that
-  // are active and other new features… enhance our lead acquisition,
-  // enrichment and listing providing." Wired here BESIDE RentCast, never
-  // replacing it — RentCast stays the platform default (the ruling this file's
-  // header already implements). Tried ONLY when RentCast alone left the sold
-  // side short, because a real second PROVIDER (unlike Perplexity's AI web
-  // search, which AI_GAP_FILL_SLOTS refuses for the sold side on purpose — see
-  // that constant's own reasoning) is allowed to help fill closed sales: it is
-  // still a licensed data feed with a verifiable comp record, not a model's
-  // guess. Every row carries `sourceProvider: "batchdata"` so the disclaimer
-  // and the appraiser packet can distinguish it from RentCast's own comps.
-  let batchDataSoldContribution = 0
-  let batchDataMcpPreviewAvailable: boolean | null = null
-  if (closedComps.length < REQUIRED_SOLD_COMPS && process.env.BATCHDATA_API_KEY) {
-    // THE ONE BATCHDATA GATE (wave 81 lane B): the comps supplement is the STAFF
-    // "valuation" purpose — lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess
-    // (tier ≠ off, tenant required; the cache / free MCP pre-flight / RentCast-first order
-    // below is this lane's own cheaper-first ladder and stays). Refused → the shortfall
-    // stands and the note says why; never an ungated reach. The short-mix guard above is
-    // kept verbatim (test:cma-provider-lane anchors on it) — the gate sits INSIDE it.
-    const compsAccess = await (await import("@/lib/ai-isa/property-lookup-rail")).resolveBatchDataAccess({ brokerageId: req.brokerageId, purpose: "valuation" })
-    if (!compsAccess.allowed) notes.push(`BatchData comps supplement not reached — ${compsAccess.reason}.`)
-    if (compsAccess.allowed) try {
-      // ── SAME-DAY CACHE, CHECKED FIRST (wave 70 owner ruling: "…need to best output for
-      // property appraisal adjusted comps without high costs") — lib/cma/comp-supplement-
-      // cache.ts. A cache hit skips BOTH the free MCP pre-flight/preview AND the billed pull
-      // entirely: the same subject address re-run the same day (a retry, a regenerate, a
-      // second agent) never pays BatchData twice for the identical answer.
+  // TOMBSTONE (§1.3): the BatchData comps-dataset supplement that stood here (wave 66/69/70 —
+  // the free MCP comparable_property_count pre-flight, the comparable_property_preview badge
+  // read, the billed comparable_property_page / REST fetchBatchDataComps pull, metered as
+  // batchdata comps_lookup) is RETIRED. Owner (2026-10-01): "use rentcast as much as possible
+  // regarding … comparable" · "batchdata is to be used more for scrapping leads." Survivor: the
+  // block below — RentCast's own comparable search asked again with WIDER bounds
+  // (RENTCAST_SUPPLEMENT_*), one more RentCast request, the same same-day cache and the same
+  // closed-row rule as §2/§3. Still a real provider record, never an AI guess (AI_GAP_FILL_SLOTS
+  // still refuses the sold side).
+  let supplementSoldContribution = 0
+  if (closedComps.length < REQUIRED_SOLD_COMPS && rentcastEligibility.eligible) {
+    try {
+      // SAME-DAY CACHE, CHECKED FIRST (wave 70 owner ruling: "…need to best output for property
+      // appraisal adjusted comps without high costs") — a re-run CMA never pays twice.
       const cached = await getCachedCompSupplement(fullAddress)
-      let bdComps: BatchDataComp[] = []
-      let compsVia: "mcp" | "rest" = "rest"
-
+      let wideRows: RentcastComp[] = []
       if (cached.hit && cached.payload) {
-        bdComps = cached.payload.comps
-        compsVia = cached.payload.via
-        batchDataMcpPreviewAvailable = bdComps.length > 0
-        notes.push(`BatchData comps dataset supplement served from today's cache for this address (${bdComps.length} row(s)) — the billed pull was skipped (original pull cost ${cached.costCents}¢ of platform spend, not re-incurred).`)
+        wideRows = cached.payload.comps
+        notes.push(`RentCast widened comparable supplement served from today's cache for this address (${wideRows.length} row(s)) — no request was re-billed (original request ${cached.costCents}¢).`)
       } else {
-        // ── MCP PRE-FLIGHT (wave 69 owner ruling: "scraping is not frozen so those six
-        // scraping frozen orphan exports should not be blocked" + "keep [provider cost] down
-        // ... try to use an sdk or mcp if it is provided but keeping pricing in mind") ──────
-        // `comparable_property_count` is a cheap/no-charge MCP count — ask it FIRST whether
-        // BatchData has anything at all for this address before paying for the billed `comps`
-        // dataset pull. A confirmed zero SKIPS the pull outright; anything else (a real count,
-        // "unconfigured", or a provider error) falls through unchanged — the pre-flight only
-        // ever SKIPS a pull, it never blocks one it can't be sure about (fail-open on itself).
-        const preflight = await comparablePropertyCount({ address: fullAddress })
-        const preflightConfirmsEmpty = preflight.ok && preflight.count === 0
-
-        // `comparable_property_preview` — the CHEAP, no-charge sample the CMA UI's "comps
-        // available" badge reads (CompProvenance.batchDataMcpPreviewAvailable). Read
-        // regardless of what the pull below does, so the badge reports the true state even
-        // on the empty-preflight path.
-        const preview = await comparablePropertyPreview({ address: fullAddress })
-        batchDataMcpPreviewAvailable = preview.ok ? preview.rows.length > 0 : null
-
-        void logVendorUsage({
-          vendorName: "batchdata", usageType: "comps_mcp_preflight", unitCount: 1, estimatedCost: 0,
-          systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE, brokerageId: req.brokerageId,
-          metadata: {
-            purpose: "cma_sold_comp_preflight", preflightOk: preflight.ok, preflightCount: preflight.count,
-            previewOk: preview.ok, previewRows: preview.ok ? preview.rows.length : null, contact_id: req.contactId ?? null,
-          },
-        }).catch(() => null)
-
-        if (preflightConfirmsEmpty) {
-          notes.push("BatchData's MCP comps pre-flight (comparable_property_count) reported 0 available comparables for this address — the billed comps dataset pull was skipped rather than paying for an empty result.")
-          // Cached too, at zero cost: a same-day repeat skips the pre-flight call as well.
-          void setCachedCompSupplement(fullAddress, { comps: [], via: "rest" }, 0).catch(() => null)
+        const wide = await getRentcastAvmAndComps({
+          brokerageId: req.brokerageId,
+          agentUserId: req.agentUserId ?? null,
+          teamId: req.teamId ?? null,
+          address: fullAddress,
+          limit: RENTCAST_SUPPLEMENT_COMP_LIMIT,
+          maxRadiusMiles: RENTCAST_SUPPLEMENT_RADIUS_MILES,
+          daysOld: RENTCAST_SUPPLEMENT_DAYS_OLD,
+          systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE,
+          contactId: req.contactId ?? null,
+        })
+        costCents += RENTCAST_COMPS_COST_CENTS
+        wideRows = wide.comps
+        if (wide.avmUnavailableReason === "provider_error" && wideRows.length === 0) {
+          notes.push("RentCast's widened comparable search was tried to fill the sold-side shortfall and failed — the shortfall stands.")
+          // NOT cached: a transient failure is not the same fact as "confirmed empty".
         } else {
-          // The billed pull: MCP `comparable_property_page` tried FIRST (this module's own
-          // header: "agentic callers route property / owner / motivation queries through MCP
-          // when configured, with automatic fallback to the existing REST batchdata-client
-          // path"), REST fetchBatchDataComps as the fallback — never both, never twice-billed.
-          const mcpPage = await comparablePropertyPage({ address: fullAddress, take: REQUIRED_SOLD_COMPS * 3 })
-          let compsCostDollars = 0
-          let compsError: string | null = null
-          if (mcpPage.ok && mcpPage.rows.length > 0) {
-            bdComps = mcpPage.rows.map((row) => readBatchDataComp(row as unknown as Record<string, any>))
-            compsVia = "mcp"
-            compsCostDollars = BATCHDATA_COMPS_COST_CENTS / 100
-          } else {
-            if (mcpPage.error && !mcpPage.unconfigured) {
-              notes.push(`BatchData comps dataset (MCP comparable_property_page) failed, falling back to REST: ${mcpPage.error}`)
-            }
-            const rest = await fetchBatchDataComps(fullAddress)
-            bdComps = rest.comps
-            compsCostDollars = rest.cost
-            compsError = rest.ok ? null : rest.error ?? null
-          }
-          costCents += Math.round(compsCostDollars * 100)
-
-          // PLATFORM SPEND (wave 70 owner ruling: "batchdata is platform spend") — metered
-          // through the SAME meterVendorSpend gateway every other BatchData caller uses
-          // (lib/buyer-search/investor-offmarket-runner.ts), not a second logging path.
-          // brokerageId travels for COST-LEDGER ATTRIBUTION ONLY (which CMA spent it) — see
-          // lib/external/batchdata-client.ts::reconcileBatchDataWalletSpend, which sums
-          // vendor_usage_tracking for vendor 'batchdata' PLATFORM-WIDE against BatchData's own
-          // wallet consumption report; it is never a tenant charge.
-          await meterVendorSpend({
-            vendorName: "batchdata", usageType: "comps_lookup",
-            cost: compsCostDollars, systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE,
-            brokerageId: req.brokerageId,
-            metadata: { purpose: "cma_sold_comp_gap_fill", rows: bdComps.length, via: compsVia, contact_id: req.contactId ?? null },
-          }).catch(() => null)
-
-          if (compsError && bdComps.length === 0) {
-            notes.push(`BatchData comps dataset was tried to fill the sold-side shortfall and failed: ${compsError}`)
-            // NOT cached: a transient failure is not the same fact as "confirmed empty", and
-            // caching it would turn a retry into a silent, permanent-for-the-day empty result.
-          } else {
-            void setCachedCompSupplement(fullAddress, { comps: bdComps, via: compsVia }, Math.round(compsCostDollars * 100)).catch(() => null)
-          }
+          void setCachedCompSupplement(fullAddress, { comps: wideRows, via: "rentcast" }, Math.round(RENTCAST_COMPS_COST_CENTS)).catch(() => null)
         }
       }
-
-      if (bdComps.length > 0) {
-        const seenAddr = new Set(closedComps.map((c) => normalizeAddress(c.address)))
-        const closedBd = bdComps
-          .filter((c) => c.status === "closed" && c.address && !seenAddr.has(normalizeAddress(c.address)))
-          .map((c) => toScoredCompFromBatchData(req.subject, c))
-          .slice(0, REQUIRED_SOLD_COMPS - closedComps.length)
-        if (closedBd.length > 0) {
-          closedComps.push(...closedBd)
-          batchDataSoldContribution = closedBd.length
-          citations.push(compsVia === "mcp" ? "BatchData comparable-property MCP dataset (comps)" : "BatchData comparable-property dataset (comps)")
-          notes.push(`${closedBd.length} closed comparable sale(s) came from BatchData's comps dataset (via ${compsVia.toUpperCase()}), a SECOND real data provider, to fill the sold-side shortfall RentCast left — not an AI gap-fill.`)
+      const seenAddr = new Set(closedComps.map((c) => normalizeAddress(c.address)))
+      const extraClosed = wideRows
+        .filter((row) => !!row.removed_date && !seenAddr.has(normalizeAddress(row.address)))
+        .map((row) => ({ comp: toScoredCompFromRentcast(row, "closed", row.removed_date as string), date: row.removed_date as string }))
+        .filter((c) => monthsBetween(c.date, now) <= WIDENED_SOLD_WINDOW_MONTHS)
+        .sort((a, b) => b.comp.similarityScore - a.comp.similarityScore || compareDesc(a.date, b.date))
+        .slice(0, REQUIRED_SOLD_COMPS - closedComps.length)
+      if (extraClosed.length > 0) {
+        closedComps.push(...extraClosed.map((c) => c.comp))
+        supplementSoldContribution = extraClosed.length
+        if (extraClosed.some((c) => monthsBetween(c.date, now) > PRIMARY_SOLD_WINDOW_MONTHS)) {
+          soldWindowWidened = true
+          soldWindowMonths = WIDENED_SOLD_WINDOW_MONTHS
+        } else if (soldWindowMonths == null) {
+          soldWindowMonths = PRIMARY_SOLD_WINDOW_MONTHS
         }
+        citations.push(`RentCast comparable sales — widened search (${RENTCAST_SUPPLEMENT_RADIUS_MILES} mi, ${RENTCAST_SUPPLEMENT_DAYS_OLD} days)`)
+        notes.push(`${extraClosed.length} closed comparable sale(s) came from RentCast's WIDENED comparable search (${RENTCAST_SUPPLEMENT_RADIUS_MILES}-mile radius, last ${RENTCAST_SUPPLEMENT_DAYS_OLD} days) to fill the sold-side shortfall the first pull left — provider records, not an AI gap-fill.`)
       }
     } catch (e) {
-      notes.push(`BatchData comps dataset lookup threw and was skipped: ${e instanceof Error ? e.message : String(e)}`)
+      notes.push(`RentCast widened comparable search threw and was skipped: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
@@ -691,6 +633,10 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
     teamId: req.teamId ?? null,
   }).catch(() => null)
   const idxConnected = !!idx?.isConfigured()
+  // Wave 92 (lane 92B): with comparables asked as property_data the gate no longer reads the
+  // tenant's IDX credential, so the provenance fact comes from the IDX client this section
+  // already builds (the SAME resolver the gate used — rentcast-eligibility.ts header).
+  const tenantOwnsIdx = idxConnected
 
   let activeComps: ScoredComp[] = []
   let pendingComps: ScoredComp[] = []
@@ -918,7 +864,7 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
     activeComps,
     pendingComps,
     provenance: {
-      soldProvider: closedComps.length === 0 ? "none" : batchDataSoldContribution > closedComps.length - batchDataSoldContribution ? "batchdata" : "rentcast",
+      soldProvider: closedComps.length === 0 ? "none" : "rentcast",
       activeProvider,
       pendingProvider,
       idxConnected,
@@ -940,7 +886,7 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
       notes,
       citations,
       estimatedCostCents: costCents,
-      batchDataMcpPreviewAvailable,
+      rentcastSupplementSoldCount: supplementSoldContribution,
     },
   }
 }
@@ -1104,41 +1050,9 @@ function toScoredCompFromRentcast(
   }
 }
 
-/** BatchData's `comps` dataset publishes no similarity metric of its own (unlike
- *  RentCast's `correlation`, which is used directly when present) — falls back to
- *  the same deterministic featureSimilarity every IDX/AI row already uses. */
-function toScoredCompFromBatchData(subject: SubjectFeatures, c: BatchDataComp): ScoredComp {
-  const { fullBaths, halfBaths } = splitBaths(c.bathrooms)
-  const comp: ScoredComp = {
-    address: c.address ?? "",
-    status: c.status === "unknown" ? "closed" : c.status,
-    salePrice: c.salePrice ?? 0,
-    saleDate: c.saleDate ?? new Date().toISOString().slice(0, 10),
-    sqftLiving: c.sqftLiving,
-    bedrooms: c.bedrooms,
-    fullBaths,
-    halfBaths,
-    garageSpaces: null,
-    hasPool: null,
-    isWaterfront: null,
-    hasView: null,
-    lotSizeAcres: null,
-    yearBuilt: null,
-    conditionGrade: null,
-    basementFinished: null,
-    isNewConstruction: null,
-    isGated: null,
-    daysOnMarket: null,
-    pricePerSqft: c.salePrice && c.sqftLiving && c.sqftLiving > 0 ? Math.round(c.salePrice / c.sqftLiving) : null,
-    similarityScore: c.similarityScore ?? 0,
-    citation: "BatchData comparable-property dataset (comps)",
-    distanceMiles: c.distanceMiles,
-    sourceProvider: "batchdata",
-    priceBasis: c.status === "closed" ? "closed_sale" : "list_price",
-  }
-  if (comp.similarityScore === 0) comp.similarityScore = featureSimilarity(subject, comp)
-  return comp
-}
+// TOMBSTONE (wave 92, lane 92B, §1.3): toScoredCompFromBatchData (the BatchData comps-dataset row
+// mapper) left with that supplement — survivor: toScoredCompFromRentcast above, which maps the
+// widened RentCast supplement rows (§3b).
 
 function toScoredCompFromIdx(
   subject: SubjectFeatures,

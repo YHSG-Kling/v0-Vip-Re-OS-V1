@@ -211,10 +211,17 @@ interface World {
   idxConfigured: boolean
   idxRows: any[]
   ai: any
+  /** Wave 92 — the WIDENED RentCast supplement's answer (a call carrying maxRadiusMiles); absent →
+   *  the first pull's answer is repeated. */
+  rentcastWide?: any
+  /** Wave 92 — the same-day supplement cache's answer for this scenario. */
+  cache?: any
   /** Spies. */
   rentcastCalls: any[]
   aiCalls: any[]
   ledger: any[]
+  cacheWrites: any[]
+  eligibilityCalls: any[]
 }
 
 let W: World
@@ -236,6 +243,15 @@ function tenantHasIdx(): any {
   }
 }
 
+function budgetExhausted(): any {
+  return {
+    eligible: false, reason: "budget_exhausted",
+    idx: { status: "not_connected" }, platformKeyPresent: true,
+    budget: { checked: true, degraded: false },
+    detail: "RentCast was not called: this brokerage is over its monthly vendor budget, so the paid property-data tier is paused for the rest of the billing month.",
+  }
+}
+
 function newWorld(over: Partial<World> = {}): World {
   return {
     eligibility: eligible(),
@@ -243,26 +259,31 @@ function newWorld(over: Partial<World> = {}): World {
     idxConfigured: false,
     idxRows: [],
     ai: null,
-    rentcastCalls: [], aiCalls: [], ledger: [],
+    rentcastCalls: [], aiCalls: [], ledger: [], cacheWrites: [], eligibilityCalls: [],
     ...over,
   }
 }
 
 ;(globalThis as any).__CPL = {
-  resolveRentcastEligibility: async () => W.eligibility,
+  // Wave 92 (lane 92B): the gate's readKind rule — a tenant-IDX verdict suppresses only a
+  // SALE-LISTINGS read; a property-data read (comparables) is eligible. The REAL resolver's rule is
+  // proved in scripts/rentcast-platform-guard.ts; this stub mirrors it so the REAL comp sourcing is
+  // exercised under it, and records the readKind the caller asked with (P1i asserts it).
+  resolveRentcastEligibility: async (args: any) => {
+    W.eligibilityCalls.push(args)
+    if (args?.readKind === "property_data" && W.eligibility?.reason === "tenant_has_idx") return eligible()
+    return W.eligibility
+  },
   getRentcastAvmAndComps: async (args: any) => {
     W.rentcastCalls.push(args)
-    return { ...W.rentcast, eligibility: W.eligibility }
+    const answer = args?.maxRadiusMiles != null && W.rentcastWide ? W.rentcastWide : W.rentcast
+    return { ...answer, eligibility: W.eligibility }
   },
   logVendorUsage: async (row: any) => { W.ledger.push(row); return null },
-  // Wave 70 — defensive defaults. BATCHDATA_API_KEY is never set in this
-  // simulator's env, so the BatchData supplement branch is unreachable at
-  // runtime in every scenario below (wave70Layer proves its shape STATICALLY
-  // instead — see that function's header for why); these exist only so an
-  // accidental future runtime call does not throw "not a function".
   meterVendorSpend: async (row: any) => { W.ledger.push(row); return true },
-  getCachedCompSupplement: async () => ({ hit: false, payload: null }),
-  setCachedCompSupplement: async () => {},
+  // Wave 92 — the RentCast widened supplement's same-day cache, driven per scenario (P5).
+  getCachedCompSupplement: async () => W.cache ?? { hit: false, payload: null, costCents: 0 },
+  setCachedCompSupplement: async (...a: any[]) => { W.cacheWrites.push(a) },
   idxForBrokerage: async () => ({
     isConfigured: () => W.idxConfigured,
     searchActiveListings: async () => W.idxRows,
@@ -311,10 +332,17 @@ async function behaviourLayer(): Promise<void> {
       systemSource: "ai_cma", contactId: "contact-42", ...over,
     })
 
-  // ── P1 · PRECEDENCE — the tenant's own IDX beats the platform's RentCast ──
-  console.log("\n[P1 · sourcing precedence — tenant IDX beats platform RentCast]")
+  // ── P1 · PRECEDENCE — re-anchored wave 92 (lane 92B) to the owner's ruling (2026-10-01): "use
+  // rentcast as much as possible regarding … comparable … this is supposed to run for the full
+  // platform." The tenant's own IDX feed still wins the side it can SUBSTITUTE for (active /
+  // pending); the SOLD side — which IDX cannot serve — is RentCast's for EVERY tenant.
+  console.log("\n[P1 · sourcing precedence — tenant IDX wins active/pending; RentCast serves the sold side for every tenant]")
   W = newWorld({
     eligibility: tenantHasIdx(),
+    rentcast: {
+      comps: [rcComp({ removed_date: isoDaysAgo(35) }), rcComp({ removed_date: isoDaysAgo(65) }), rcComp({ removed_date: isoDaysAgo(95) })],
+      avm: { value: null, rangeLow: null, rangeHigh: null }, avmAvailable: false, avmUnavailableReason: "no_estimate",
+    },
     idxConfigured: true,
     idxRows: [
       { address: "10 IDX Ln", city: "Tampa", state: "FL", price: 610_000, bedrooms: 3, bathrooms: 2, squareFeet: 2000, yearBuilt: 2006, daysOnMarket: 5, status: "Active", mlsNumber: "M1" },
@@ -323,20 +351,20 @@ async function behaviourLayer(): Promise<void> {
     ],
   })
   let r = await source()
-  check("P1a a tenant with their OWN IDX feed never has the RentCast pull issued at all",
-    W.rentcastCalls.length === 0, `rentcast called ${W.rentcastCalls.length}×`)
-  check("P1b the provenance names the DELIBERATE suppression, not a provider failure",
-    r.provenance.rentcastEligibility === "tenant_has_idx" && r.provenance.tenantOwnsIdx === true
-      && r.provenance.rentcastConfigured === false,
+  check("P1a a tenant with their OWN IDX feed STILL has the RentCast comparable pull issued (sold side)",
+    W.rentcastCalls.length === 1, `rentcast called ${W.rentcastCalls.length}×`)
+  check("P1b the provenance says RentCast was eligible and queried, and that the tenant owns an IDX feed",
+    r.provenance.rentcastEligibility === "eligible" && r.provenance.tenantOwnsIdx === true
+      && r.provenance.rentcastConfigured === true,
     JSON.stringify({ reason: r.provenance.rentcastEligibility, owns: r.provenance.tenantOwnsIdx }))
   check("P1c the active side is served by the tenant's IDX feed",
     r.provenance.activeProvider === "idxbroker" && r.activeComps.length === 2)
-  check("P1d the closed side has NO provider — and the report says the 3-sale minimum cannot be met",
-    r.closedComps.length === 0 && r.provenance.soldProvider === "none"
-      && r.provenance.meetsRequiredMix === false
-      && r.provenance.notes.some((n) => /DOES NOT MEET THE REQUIRED MIX/.test(n)))
-  check("P1e no spend was booked against a provider that was never called",
-    r.provenance.estimatedCostCents === 0, `cents=${r.provenance.estimatedCostCents}`)
+  check("P1d the closed side is RentCast's — 3 sold, the value range has a basis",
+    r.closedComps.length === 3 && r.provenance.soldProvider === "rentcast")
+  check("P1e the one RentCast request is booked on the CMA's cost estimate",
+    r.provenance.estimatedCostCents > 0, `cents=${r.provenance.estimatedCostCents}`)
+  check("P1i the comp sourcing asks the gate as a PROPERTY-DATA read (the IDX substitute rule is for sale-listing searches)",
+    W.eligibilityCalls.some((a) => a?.readKind === "property_data"), JSON.stringify(W.eligibilityCalls.map((a) => a?.readKind)))
 
   // ── P1f · precedence the other way — no tenant IDX → RentCast serves ──────
   W = newWorld({
@@ -347,8 +375,9 @@ async function behaviourLayer(): Promise<void> {
     },
   })
   r = await source()
-  check("P1f with no tenant IDX, RentCast serves the closed side and the pull IS issued",
-    W.rentcastCalls.length === 1 && r.provenance.soldProvider === "rentcast" && r.closedComps.length === 3)
+  check("P1f with no tenant IDX, RentCast serves the closed side and the pull IS issued — ONCE (the mix was met, so no widened supplement)",
+    W.rentcastCalls.length === 1 && r.provenance.soldProvider === "rentcast" && r.closedComps.length === 3
+      && r.provenance.rentcastSupplementSoldCount === 0)
   check("P1g the CMA lane is what the vendor ledger records — not the client's default lane",
     W.rentcastCalls[0]?.systemSource === "ai_cma", `systemSource=${W.rentcastCalls[0]?.systemSource}`)
   check("P1h the contact the CMA is for reaches the ledger, so a charge is traceable past the tenant",
@@ -410,7 +439,9 @@ async function behaviourLayer(): Promise<void> {
 
   // ── P4 · a missing baseline reads as missing, never as zero ───────────────
   console.log("\n[P4 · a refused or absent baseline reads as absent — never 0, never silent]")
-  W = newWorld({ eligibility: tenantHasIdx(), idxConfigured: true, idxRows: [] })
+  // Re-anchored wave 92: a tenant-IDX verdict no longer suppresses a property-data read, so the
+  // DELIBERATE non-call this scenario needs is the budget pause (still a decision, not an outage).
+  W = newWorld({ eligibility: budgetExhausted(), idxConfigured: true, idxRows: [] })
   r = await source()
   let b = r.provenance.avmBaseline
   check("P4a suppressed provider → available:false, value NULL (not 0), reason present",
@@ -418,7 +449,7 @@ async function behaviourLayer(): Promise<void> {
       && typeof b.unavailableNote === "string" && b.unavailableNote.length > 0,
     JSON.stringify(b))
   check("P4b the reason names the DELIBERATE suppression rather than a provider outage",
-    /IDX Broker credentials/i.test(b.unavailableNote ?? ""))
+    /over its monthly vendor budget/i.test(b.unavailableNote ?? ""))
   check("P4c the absence is stated in the notes rather than silently omitted",
     r.provenance.notes.some((n) => /No provider AVM baseline is available/.test(n)))
 
@@ -447,6 +478,64 @@ async function behaviourLayer(): Promise<void> {
   check("P4g a FAILED lookup is not reported as 'the property has no value'",
     r.provenance.avmBaseline.available === false
       && /lookup failure, not a statement/i.test(r.provenance.avmBaseline.unavailableNote ?? ""))
+
+  // ── P5 · THE WIDENED RENTCAST SUPPLEMENT (wave 92, lane 92B) ──────────────
+  // Replaced the BatchData comps-dataset supplement: when the first pull leaves the SOLD side
+  // short, RentCast's own comparable search is asked ONCE more with wider bounds; a same-day cache
+  // hit costs nothing; a failed widened request is never cached.
+  console.log("\n[P5 · the sold-side supplement is RentCast's WIDENED search — never BatchData]")
+  W = newWorld({
+    rentcast: {
+      comps: [rcComp({ address: "1 First Pull Rd", removed_date: isoDaysAgo(40) })],
+      avm: { value: null, rangeLow: null, rangeHigh: null }, avmAvailable: false, avmUnavailableReason: "no_estimate",
+    },
+    rentcastWide: {
+      comps: [rcComp({ address: "1 First Pull Rd", removed_date: isoDaysAgo(40) }), rcComp({ address: "2 Wide Rd", removed_date: isoDaysAgo(150) }),
+              rcComp({ address: "3 Wide Rd", removed_date: isoDaysAgo(250) }), rcComp({ address: "4 Too Old Rd", removed_date: isoDaysAgo(500) })],
+      avm: { value: null, rangeLow: null, rangeHigh: null }, avmAvailable: false, avmUnavailableReason: "no_estimate",
+    },
+  })
+  r = await source()
+  const wideCall = W.rentcastCalls[1]
+  check("P5a a short sold side triggers EXACTLY one widened RentCast request (25 comps, 3 mi, 365 days)",
+    W.rentcastCalls.length === 2 && wideCall?.limit === 25 && wideCall?.maxRadiusMiles === 3 && wideCall?.daysOld === 365,
+    JSON.stringify(wideCall))
+  check("P5b the widened rows fill the sold side to the minimum — de-duplicated by address, the >12-month row refused",
+    r.closedComps.length === 3 && r.provenance.rentcastSupplementSoldCount === 2
+      && !r.closedComps.some((c) => /Too Old/.test(c.address)) && r.provenance.soldWindowWidened === true,
+    JSON.stringify({ n: r.closedComps.length, supp: r.provenance.rentcastSupplementSoldCount }))
+  check("P5c every supplement row is a RentCast provider record (never BatchData, never AI)",
+    r.closedComps.every((c) => c.sourceProvider === "rentcast"))
+  check("P5d the successful widened answer is cached for the day (one write, tagged rentcast)",
+    W.cacheWrites.length === 1 && W.cacheWrites[0]?.[1]?.via === "rentcast")
+  // The stubbed Perplexity gap-fill (active/pending, 1¢ — PERPLEXITY_COMP_SEARCH_COST_USD 0.01) is
+  // booked beside the two RentCast requests when it ran; it is subtracted so this asserts RentCast.
+  const gapFillCents = r.provenance.aiGapFillAttempted ? 1 : 0
+  check("P5e both RentCast requests are on the CMA's cost estimate (2 × RentCast's per-request price)",
+    Math.abs(r.provenance.estimatedCostCents - gapFillCents - 2 * 7.4) < 0.01, `cents=${r.provenance.estimatedCostCents} gapFill=${gapFillCents}`)
+
+  const firstPull = W.rentcast
+  W = newWorld({
+    rentcast: firstPull,
+    cache: { hit: true, costCents: 7, payload: { via: "rentcast", comps: [rcComp({ address: "8 Cached Rd", removed_date: isoDaysAgo(60) }), rcComp({ address: "9 Cached Rd", removed_date: isoDaysAgo(80) })] } },
+  })
+  r = await source()
+  check("P5f a same-day cache HIT fills the shortfall with NO second request",
+    W.rentcastCalls.length === 1 && r.closedComps.length === 3 && W.cacheWrites.length === 0)
+
+  W = newWorld({
+    rentcast: firstPull,
+    rentcastWide: { comps: [], avm: { value: null, rangeLow: null, rangeHigh: null }, avmAvailable: false, avmUnavailableReason: "provider_error" },
+  })
+  r = await source()
+  check("P5g a FAILED widened request is never cached and the shortfall is stated",
+    W.rentcastCalls.length === 2 && W.cacheWrites.length === 0 && r.closedComps.length === 1
+      && r.provenance.notes.some((n) => /widened comparable search was tried/.test(n)))
+
+  W = newWorld({ eligibility: budgetExhausted() })
+  r = await source()
+  check("P5h a budget-paused tenant gets NO supplement request either (the gate governs both pulls)",
+    W.rentcastCalls.length === 0)
 
   // ── P2 · PERPLEXITY NEVER REACHES THE CLOSED SET ──────────────────────────
   console.log("\n[P2 · the AI gap-fill cannot reach the closed set — asserted against a finder that TRIES]")
@@ -564,167 +653,82 @@ function constructLayer(): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WAVE 70 — RentCast stays primary, BatchData is a bounded supplement, the
-// same-day cache actually skips the billed pull, and the cost constant is
-// DERIVED rather than a second literal that can silently disagree.
+// WAVE 70 → WAVE 92 — RentCast primary AND supplement, the same-day cache skips
+// the billed request, and the cost constant is DERIVED.
 //
-// Owner, verbatim: "comps for sold were being pulled from rentcast … I guess
-// it wouldn't hurt to also add comps from batchdata to help with the ai to
-// analyze for cma's but need to best output for property appraisal adjusted
-// comps without high costs."
-//
-// STATIC (source-regex on STRIPPED source, §2) rather than behavioural: the
-// BatchData branch is gated behind `process.env.BATCHDATA_API_KEY`, and
-// exercising it through the module-interception harness above would mean
-// stubbing four more modules (batchdata-client, batchdata-mcp, comp-
-// supplement-cache, meter-vendor) for a branch the harness has never
-// exercised — see FINDING below for why that stays reported, not built here.
-// Each structural check below carries its own POSITIVE CONTROL: a synthetic
-// fixture string, built to contain the SAME defect the check exists to catch,
-// asserted to make the check fail — proving the regex discriminates rather
-// than being vacuously true (§2 "every absence assertion needs a positive
-// control" — these are presence/ordering assertions, but the discipline is
-// the same: prove the finder can find the thing it is looking for).
+// Wave 70 owner: "comps for sold were being pulled from rentcast … I guess it
+// wouldn't hurt to also add comps from batchdata … without high costs."
+// Wave 92 owner (2026-10-01): "use rentcast as much as possible regarding …
+// comparable" · "batchdata is to be used more for scrapping leads." The BatchData
+// comps-dataset supplement is RETIRED; the supplement is RentCast's own widened
+// comparable search. STATIC checks on STRIPPED source (§2) — the behaviour of the
+// supplement is P5 above; these hold the SHAPE (order, guard, cache) with a
+// positive control each.
 // ─────────────────────────────────────────────────────────────────────────────
 function wave70Layer(): void {
-  console.log("\n[wave 70 · RentCast primary, BatchData supplement, same-day cache, derived cost]")
+  console.log("\n[wave 70→92 · RentCast primary + widened supplement, same-day cache, derived cost, no BatchData]")
   const comps = code(F.comps)
+  const GUARD = "if (closedComps.length < REQUIRED_SOLD_COMPS && rentcastEligibility.eligible)"
 
-  // ── W1: RentCast is pulled BEFORE the BatchData branch is even reachable ──
+  // ── W1: the first RentCast pull precedes the supplement guard ──
   const rentcastPullIdx = comps.indexOf("avmPull = await getRentcastAvmAndComps(")
-  const batchdataGuardIdx = comps.indexOf(
-    "if (closedComps.length < REQUIRED_SOLD_COMPS && process.env.BATCHDATA_API_KEY)",
-  )
-  check(
-    "W1 RentCast is pulled before the BatchData branch is reachable at all",
-    rentcastPullIdx !== -1 && batchdataGuardIdx !== -1 && rentcastPullIdx < batchdataGuardIdx,
-    `rentcastPullIdx=${rentcastPullIdx} batchdataGuardIdx=${batchdataGuardIdx}`,
-  )
-  // POSITIVE CONTROL for W1 — a synthetic fixture with the SAME structural
-  // shape but the order reversed. If this synthetic passes the same check,
-  // the check is not discriminating and W1 above proves nothing.
+  const guardIdx = comps.indexOf(GUARD)
+  check("W1 the first RentCast pull precedes the widened-supplement guard",
+    rentcastPullIdx !== -1 && guardIdx !== -1 && rentcastPullIdx < guardIdx, `pull=${rentcastPullIdx} guard=${guardIdx}`)
   {
-    const reversed =
-      `if (closedComps.length < REQUIRED_SOLD_COMPS && process.env.BATCHDATA_API_KEY) { }\n` +
-      `avmPull = await getRentcastAvmAndComps(`
-    const a = reversed.indexOf("avmPull = await getRentcastAvmAndComps(")
-    const b = reversed.indexOf("if (closedComps.length < REQUIRED_SOLD_COMPS && process.env.BATCHDATA_API_KEY)")
+    const reversed = `${GUARD} { }\navmPull = await getRentcastAvmAndComps(`
+    const a = reversed.indexOf("avmPull = await getRentcastAvmAndComps("), b = reversed.indexOf(GUARD)
     check("W1-positive-control the ordering check correctly fails on a reversed-order fixture", !(a !== -1 && b !== -1 && a < b))
   }
 
-  // ── W2: the BatchData supplement pull runs ONLY when RentCast left the sold
-  // side short — the guard is the ONE gate on every call inside the branch,
-  // never an unconditional call site elsewhere in the file. ──
-  const guardedRegion = batchdataGuardIdx === -1 ? "" : comps.slice(batchdataGuardIdx)
-  const firstCountCallIdx = comps.indexOf("comparablePropertyCount(")
-  check(
-    "W2 the MCP pre-flight count call is reachable only from inside the short-mix guard",
-    firstCountCallIdx !== -1 && batchdataGuardIdx !== -1 && firstCountCallIdx > batchdataGuardIdx,
-  )
-  check(
-    "W2b the guard tests closedComps.length against REQUIRED_SOLD_COMPS, not a different threshold",
-    /if \(closedComps\.length < REQUIRED_SOLD_COMPS && process\.env\.BATCHDATA_API_KEY\)/.test(comps),
-  )
-  {
-    // POSITIVE CONTROL — a fixture that calls the pre-flight UNCONDITIONALLY
-    // (no guard at all). The same "reachable only from inside the guard"
-    // predicate must report false on it.
-    const unconditional = `comparablePropertyCount({ address })`
-    const idx = unconditional.indexOf("comparablePropertyCount(")
-    check("W2-positive-control the guard check correctly fails on an unconditional call fixture", !(idx !== -1 && idx > -1 && false))
-    // (the fixture has no guard index at all — -1 — which the real predicate
-    // above already treats as "not reachable from inside a guard"; asserted
-    // explicitly here so the control is not a tautology)
-    check("W2-positive-control an unconditional call has no guard to be reachable from",
-      unconditional.indexOf("if (closedComps.length < REQUIRED_SOLD_COMPS") === -1)
-  }
+  // ── W2: the widened request sits inside the short-mix guard ──
+  const wideIdx = comps.indexOf("maxRadiusMiles: RENTCAST_SUPPLEMENT_RADIUS_MILES")
+  check("W2 the widened RentCast request is reachable only from inside the short-mix guard",
+    wideIdx !== -1 && guardIdx !== -1 && wideIdx > guardIdx)
+  check("W2b the guard tests closedComps.length against REQUIRED_SOLD_COMPS AND the same eligibility verdict",
+    comps.includes(GUARD))
+  check("W2-positive-control an unguarded widened call has no guard to be reachable from",
+    "await getRentcastAvmAndComps({ maxRadiusMiles: RENTCAST_SUPPLEMENT_RADIUS_MILES })".indexOf(GUARD) === -1)
 
-  // ── W3: a same-day cache hit skips the billed pull entirely — the cache
-  // check runs FIRST, and its `if (cached.hit …)` branch never itself calls
-  // the pre-flight, the MCP page pull, or the REST fallback. ──
-  const cacheCheckIdx = comps.indexOf("const cached = await getCachedCompSupplement(")
-  check(
-    "W3a the cache is checked before the pre-flight / MCP / REST calls",
-    cacheCheckIdx !== -1 && firstCountCallIdx !== -1 && cacheCheckIdx < firstCountCallIdx,
-  )
-  const hitBranchStart = comps.indexOf("if (cached.hit && cached.payload) {")
-  const hitBranchElse = comps.indexOf("} else {", hitBranchStart)
-  const hitBranch = hitBranchStart !== -1 && hitBranchElse !== -1 ? comps.slice(hitBranchStart, hitBranchElse) : ""
-  check(
-    "W3b the cache-HIT branch never calls the pre-flight, MCP page or REST fallback",
-    hitBranch.length > 0 &&
-      !/comparablePropertyCount\(|comparablePropertyPage\(|fetchBatchDataComps\(/.test(hitBranch),
-    `hitBranch length=${hitBranch.length}`,
-  )
-  check(
-    "W3c a successful billed pull is cached (so a same-day repeat can hit)",
-    /setCachedCompSupplement\(fullAddress,\s*\{\s*comps:\s*bdComps,\s*via:\s*compsVia\s*\}/.test(comps),
-  )
+  // ── W3: the same-day cache is checked first; a hit never calls the provider ──
+  const cacheIdx = comps.indexOf("const cached = await getCachedCompSupplement(")
+  check("W3a the cache is checked before the widened request", cacheIdx !== -1 && wideIdx !== -1 && cacheIdx < wideIdx)
+  const hitStart = comps.indexOf("if (cached.hit && cached.payload) {")
+  const hitElse = comps.indexOf("} else {", hitStart)
+  const hitBranch = hitStart !== -1 && hitElse !== -1 ? comps.slice(hitStart, hitElse) : ""
+  check("W3b the cache-HIT branch never calls the provider", hitBranch.length > 0 && !/getRentcastAvmAndComps\(/.test(hitBranch), `hit length=${hitBranch.length}`)
+  check("W3c a successful widened answer is cached, tagged rentcast",
+    /setCachedCompSupplement\(fullAddress,\s*\{\s*comps:\s*wideRows,\s*via:\s*"rentcast"\s*\}/.test(comps))
   {
-    // Reads RAW source deliberately (not stripped) — the thing being verified
-    // IS a comment explaining why the branch has no cache write, so stripping
-    // comments first would remove the exact evidence this check reads. §2's
-    // "strip before scanning for code tokens" rule is about not mistaking a
-    // comment for a CALL SITE; this checks the ABSENCE of one, which the
-    // regex below verifies structurally too (no setCachedCompSupplement call
-    // in the same if-block), so a raw-source comment match is not the only
-    // leg this stands on.
     const rawSrc = raw(F.comps)
-    const failIdx = rawSrc.indexOf("if (compsError && bdComps.length === 0) {")
-    const failBlockEnd = rawSrc.indexOf("} else {", failIdx)
-    const failBlock = failIdx !== -1 && failBlockEnd !== -1 ? rawSrc.slice(failIdx, failBlockEnd) : ""
-    check(
-      "W3d a transient pull FAILURE is never cached — only a real (possibly empty) result is",
-      failBlock.length > 0 &&
-        /NOT cached/.test(failBlock) &&
-        !/setCachedCompSupplement\(/.test(failBlock),
-      `failBlock length=${failBlock.length}`,
-    )
+    const failIdx = rawSrc.indexOf('if (wide.avmUnavailableReason === "provider_error" && wideRows.length === 0) {')
+    const failEnd = rawSrc.indexOf("} else {", failIdx)
+    const failBlock = failIdx !== -1 && failEnd !== -1 ? rawSrc.slice(failIdx, failEnd) : ""
+    check("W3d a transient widened FAILURE is never cached", failBlock.length > 0 && /NOT cached/.test(failBlock) && !/setCachedCompSupplement\(/.test(failBlock))
   }
   {
-    // POSITIVE CONTROL — a fixture whose "hit" branch DOES call the billed
-    // pull (the defect this check exists to catch), proving W3b discriminates.
-    const brokenFixture = `if (cached.hit && cached.payload) {\n  await comparablePropertyPage({ address })\n} else {`
-    const s = brokenFixture.indexOf("if (cached.hit && cached.payload) {")
-    const e = brokenFixture.indexOf("} else {", s)
-    const branch = s !== -1 && e !== -1 ? brokenFixture.slice(s, e) : ""
-    check(
-      "W3-positive-control the hit-branch check correctly fails when the fixture calls the billed pull",
-      !(branch.length > 0 && !/comparablePropertyCount\(|comparablePropertyPage\(|fetchBatchDataComps\(/.test(branch)),
-    )
+    const broken = `if (cached.hit && cached.payload) {\n  wideRows = (await getRentcastAvmAndComps({ address })).comps\n} else {`
+    const st = broken.indexOf("if (cached.hit && cached.payload) {"), en = broken.indexOf("} else {", st)
+    const br = st !== -1 && en !== -1 ? broken.slice(st, en) : ""
+    check("W3-positive-control the hit-branch check correctly fails when the fixture calls the provider",
+      !(br.length > 0 && !/getRentcastAvmAndComps\(/.test(br)))
   }
 
-  // ── W4: the cost constant is DERIVED from RENTCAST_USD_PER_REQUEST, not a
-  // second literal (was a hard-coded 15, flagged unresolved in wave 69's
-  // docs/lead-acquisition-coverage-2026-09.md — see that file's own note). ──
-  check(
-    "W4a RENTCAST_COMPS_COST_CENTS is derived from RENTCAST_USD_PER_REQUEST, not a bare literal",
-    /const RENTCAST_COMPS_COST_CENTS = RENTCAST_USD_PER_REQUEST \* 100/.test(comps),
-  )
-  check(
-    "W4b RENTCAST_USD_PER_REQUEST is IMPORTED from lib/property/rentcast, not redeclared here",
-    /import \{ RENTCAST_USD_PER_REQUEST \} from "@\/lib\/property\/rentcast"/.test(comps),
-  )
-  check(
-    "W4c the retired literal (15) no longer appears as the cost-cents assignment",
-    !/const RENTCAST_COMPS_COST_CENTS = 15\b/.test(comps),
-  )
-  check(
-    "W4d RENTCAST_USD_PER_REQUEST itself is 0.074 (7.4¢/request) at its declaration — the real source",
-    /export const RENTCAST_USD_PER_REQUEST = 0\.074/.test(code(F.readers)),
-  )
+  // ── W4: the cost constant is DERIVED from RENTCAST_USD_PER_REQUEST ──
+  check("W4a RENTCAST_COMPS_COST_CENTS is derived from RENTCAST_USD_PER_REQUEST, not a bare literal",
+    /const RENTCAST_COMPS_COST_CENTS = RENTCAST_USD_PER_REQUEST \* 100/.test(comps))
+  check("W4b RENTCAST_USD_PER_REQUEST is IMPORTED from lib/property/rentcast, not redeclared here",
+    /import \{ RENTCAST_USD_PER_REQUEST \} from "@\/lib\/property\/rentcast"/.test(comps))
+  check("W4c the retired literal (15) no longer appears as the cost-cents assignment",
+    !/const RENTCAST_COMPS_COST_CENTS = 15\b/.test(comps))
+  check("W4d RENTCAST_USD_PER_REQUEST itself is 0.074 (7.4¢/request) at its declaration — the real source",
+    /export const RENTCAST_USD_PER_REQUEST = 0\.074/.test(code(F.readers)))
 
-  // ── W5: BatchData spend is metered as PLATFORM spend through the SAME
-  // meterVendorSpend gateway every other BatchData caller uses (owner:
-  // "batchdata is platform spend"), not a second logging path. ──
-  check(
-    "W5 the billed BatchData comps pull is metered through meterVendorSpend (not a second logger)",
-    /await meterVendorSpend\(\{\s*\n\s*vendorName:\s*"batchdata",\s*usageType:\s*"comps_lookup",/.test(comps),
-  )
-  check(
-    "W5b meterVendorSpend is imported from the shared vendor-governance gateway",
-    /import \{ meterVendorSpend \} from "@\/lib\/vendor-governance\/meter-vendor"/.test(comps),
-  )
+  // ── W5: no BatchData anywhere in the comp lane (wave 92) ──
+  const BD = /@\/lib\/external\/batchdata-|comparableProperty(?:Count|Preview|Page)\(|fetchBatchDataComps\(|vendorName:\s*"batchdata"/
+  check("W5 the comp lane imports and calls NO BatchData module (stripped source)", !BD.test(comps))
+  check("W5-positive-control the same finder flags the retired BatchData pre-flight",
+    BD.test(`const preflight = await comparablePropertyCount({ address: fullAddress })`) && BD.test(`import { x } from "@/lib/external/batchdata-mcp"`))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -874,26 +878,31 @@ async function main(): Promise<void> {
       replace: `export const PROVIDER_AVM_BASELINE_LABEL: string = ""; const _UNUSED_LABEL =`,
     })
 
-    // 9. WAVE 70 — the BatchData supplement guard loses its "RentCast left it
-    //    short" condition, so BatchData would run even when RentCast alone met
-    //    the sold mix — exactly the "unconditionally, or before RentCast" defect
-    //    this lane was sent to rule out.
-    controlled("the BatchData supplement guard dropping its short-mix condition", {
+    // 9. WAVE 92 (was wave 70's BatchData guard) — the widened supplement guard
+    //    loses its "the first pull left it short" condition, so a second request
+    //    is paid even when RentCast alone met the sold mix (P1f / P3d go red).
+    controlled("the widened-supplement guard dropping its short-mix condition", {
       file: F.comps,
-      find: `if (closedComps.length < REQUIRED_SOLD_COMPS && process.env.BATCHDATA_API_KEY) {`,
-      replace: `if (process.env.BATCHDATA_API_KEY) {`,
+      find: `if (closedComps.length < REQUIRED_SOLD_COMPS && rentcastEligibility.eligible) {`,
+      replace: `if (rentcastEligibility.eligible) {`,
     })
 
-    // 10. WAVE 70 — the cache-hit branch reverts to calling the billed pull
-    //     anyway, defeating the entire point of the same-day cache.
-    controlled("the cache-hit branch calling the billed pull instead of skipping it", {
+    // 10. WAVE 92 — the cache-hit branch reverts to paying for the widened request
+    //     anyway, defeating the same-day cache (P5f goes red).
+    controlled("the cache-hit branch paying for the widened request instead of skipping it", {
       file: F.comps,
       find: `      if (cached.hit && cached.payload) {
-        bdComps = cached.payload.comps
-        compsVia = cached.payload.via`,
+        wideRows = cached.payload.comps`,
       replace: `      if (cached.hit && cached.payload) {
-        bdComps = (await comparablePropertyPage({ address: fullAddress, take: REQUIRED_SOLD_COMPS * 3 })).rows as any
-        compsVia = cached.payload.via`,
+        wideRows = (await getRentcastAvmAndComps({ brokerageId: req.brokerageId, address: fullAddress, limit: 25, maxRadiusMiles: 3 })).comps`,
+    })
+
+    // 11. WAVE 92 — the comp sourcing asks the gate as a sale-listings read again,
+    //     so a tenant-IDX verdict suppresses the SOLD side once more (P1 goes red).
+    controlled("the comp sourcing dropping its property-data read kind", {
+      file: F.comps,
+      find: `    readKind: "property_data",`,
+      replace: ``,
     })
   }
 
@@ -909,7 +918,7 @@ async function main(): Promise<void> {
     process.exit(1)
   }
   console.log(
-    `PASSED (${pass} assertions) — a tenant's own IDX feed outranks the platform's RentCast, ` +
+    `PASSED (${pass} assertions) — a tenant's own IDX feed outranks RentCast on the active side while RentCast serves every tenant's sold side, ` +
     `no AI web search reaches the closed set the range is computed from, and the provider's AVM ` +
     `is a labelled baseline that never becomes the recommendation and never reads as zero when it is absent`,
   )

@@ -45,7 +45,8 @@ import {
 // brokerage's lead_scraping_keywords rows (scrape-keywords.ts).
 import { resolveSourceKeywords, renderKeywordQuery, type ScrapeKeywordRow } from "@/lib/lead-pipeline/scrape-keywords"
 import { sourcePermitPrelistingIntent, routePermitPrelistingHits } from "@/lib/lead-pipeline/permit-sourcer"
-import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-territories"
+import { resolveActivePullGate } from "@/lib/lead-pipeline/scrape-territories"
+import { runExpiredListingPrefilter } from "@/lib/lead-pipeline/expired-listing-prefilter"
 import { sourceOsintRecords, osintRecordTypesFor } from "@/lib/lead-pipeline/osint-sourcer"
 import { sourceSiteVisitorIntent } from "@/lib/lead-pipeline/site-visitor-sourcer"
 import { sourceEmailEngagementIntent } from "@/lib/lead-pipeline/email-engagement-sourcer"
@@ -166,6 +167,15 @@ export async function GET(request: Request) {
     recruits_sourced: 0,
     recruits_promoted: 0,
     errors: [] as string[],
+    // Wave 92 (lane 92B, owner: "checking the active territories before scrapping and pulling data
+    // will cutdown on runs") — the runs the pre-checks SAVED, counted for the cron log:
+    //   no_op            — the whole tick (no live tenant / no active territory / unreadable read)
+    //   budget_exhausted — territories whose monthly scrape budget was spent
+    //   expired_batchdata_pull — BatchData expired area pulls skipped because the RentCast
+    //                      inactive sweep found nothing that left the market inside the window
+    skipped_runs: { no_op: 0, budget_exhausted: 0, expired_batchdata_pull: 0 },
+    territory_gate: null as unknown,
+    expired_prefilter: [] as Array<{ market: string; mode: string; removalsSeen: number; freshRemovals: number; lookupsMatched: number; soldDropped: number; batchDataCostUsd: number }>,
   }
 
   try {
@@ -174,21 +184,27 @@ export async function GET(request: Request) {
     // territories (set up in settings at onboarding). Only those areas are ever
     // scraped. No active tenants / no territories → honest no-op with the
     // stated reason — the platform never scrapes fixed/global geography.
-    const territoryResolution = await resolveActiveScrapeTerritories(supabase)
+    // Wave 92 (lane 92B): THE ONE pull gate (resolveActivePullGate) — the same resolution, plus a
+    // per-pull check and a tally the cron log carries.
+    const pullGate = await resolveActivePullGate(supabase)
+    const territoryResolution = pullGate.resolution
     if (territoryResolution.noOp) {
       const reason = territoryResolution.reason === "no_active_subscribers"
         ? "No active-subscription brokerages — nothing to scrape"
         : "No active territories configured for active-subscription brokerages"
       console.log(`[Lead Scraping Cron] ${reason} (${territoryResolution.reason})`)
+      results.skipped_runs.no_op = 1
       await recordCronSuccessAction({
         context_id: contextId,
         records_processed: 0,
         output_count: 0,
-        metadata: { no_op_reason: territoryResolution.reason },
+        metadata: { no_op_reason: territoryResolution.reason, skipped_runs: results.skipped_runs },
       })
       return NextResponse.json({ message: reason, no_op_reason: territoryResolution.reason, results })
     }
-    const markets = territoryResolution.territories
+    const markets = territoryResolution.territories.filter((m) =>
+      pullGate.check({ brokerageId: m.brokerage_id, city: m.city, state: m.state, zip: m.zip_codes?.[0] ?? null }, { requireArea: true }).allowed)
+    results.territory_gate = pullGate.tally
 
     // Brokerage keyword rows (lane 83A). Each territory reads ONLY its own brokerage's rows, ON TOP of
     // the code defaults (scrape-keywords.ts::resolveSourceKeywords) — so a platform with zero rows
@@ -360,6 +376,7 @@ export async function GET(request: Request) {
         const reason = `Skipped ${market.name}: monthly budget reached ($${market.spend_this_month ?? 0} / $${market.monthly_budget_usd ?? 100})`
         console.warn(`[Lead Scraping Cron] ${reason}`)
         results.errors.push(reason)
+        results.skipped_runs.budget_exhausted++
         continue
       }
 
@@ -593,9 +610,31 @@ export async function GET(request: Request) {
             // Lane 90B — the expired pull carries the same window: BatchData publishes no request-side
             // filter on a listing's STATUS date, so the wrapper gates the rows client-side on
             // listing.statusUpdatedAt (withinListingStatusWindow) after the pull.
-            const expiredPull = enabledSources.has("expired_listing")
-              ? await batchdata.getMotivatedSellerDataWithCost(location, ["expired"], pullWindow)
-              : { records: [], cost: 0 }
+            //
+            // Wave 92 (lane 92B) — THE RENTCAST INACTIVE PREFILTER (lib/lead-pipeline/expired-listing-
+            // prefilter.ts; lane 91B §4.3's recommendation, wired): RentCast's Inactive listings carry
+            // the removal DATE BatchData cannot filter on, so the fresh removals are found first (one
+            // RentCast request, ≤500 rows) and BatchData is asked ONLY for those owners — or not at
+            // all when nothing left the market inside the window. When RentCast cannot answer, the
+            // BatchData area pull above runs exactly as before (a dark RentCast never darkens the lane).
+            let expiredPull: { records: Awaited<ReturnType<typeof batchdata.getMotivatedSellerDataWithCost>>["records"]; cost: number; staleDropped?: number } = { records: [], cost: 0 }
+            if (enabledSources.has("expired_listing")) {
+              const pre = market.brokerage_id
+                ? await runExpiredListingPrefilter({
+                    brokerageId: market.brokerage_id, city: market.city, state: market.state,
+                    lookbackDays: pullWindow.lookbackDays, maxLookups: market.max_records_per_run ?? null,
+                  })
+                : null
+              if (pre && pre.mode === "prefiltered") {
+                expiredPull = { records: pre.records, cost: pre.batchDataCostUsd, staleDropped: 0 }
+                if (pre.freshRemovals === 0) results.skipped_runs.expired_batchdata_pull++
+                results.expired_prefilter.push({ market: market.name, mode: pre.mode, removalsSeen: pre.removalsSeen, freshRemovals: pre.freshRemovals, lookupsMatched: pre.lookupsMatched, soldDropped: pre.soldDropped, batchDataCostUsd: pre.batchDataCostUsd })
+                console.log(`[Lead Scraping Cron] Expired prefilter ${market.name}: ${pre.reason}`)
+              } else {
+                if (pre) results.expired_prefilter.push({ market: market.name, mode: pre.mode, removalsSeen: 0, freshRemovals: 0, lookupsMatched: 0, soldDropped: 0, batchDataCostUsd: 0 })
+                expiredPull = await batchdata.getMotivatedSellerDataWithCost(location, ["expired"], pullWindow)
+              }
+            }
             motivatedCostUsd = motivatedPulls.reduce((sum, r) => sum + (r.cost ?? 0), 0)
             expiredCostUsd = expiredPull.cost ?? 0
             const rawSellers = [...motivatedPulls.flatMap((r) => r.records), ...expiredPull.records]

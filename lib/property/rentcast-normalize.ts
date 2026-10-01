@@ -9,6 +9,23 @@ export interface RentcastMarketStats {
   new_listings_30d: number
   /** YoY median price change %, derived from RentCast saleData.history when present. */
   price_trend_yoy_pct: number
+  /** Wave 92 (lane 92B, owner: "use any other attributes that are available") — the SAME /markets
+   *  response's further sale attributes. Null when RentCast did not publish them (never 0). */
+  median_price_per_sqft?: number | null
+  median_square_footage?: number | null
+  total_listings_at?: string | null
+  /** The /markets RENTAL half (dataType "All" — one billed request returns both halves). Null when
+   *  RentCast published no rental data for the zip. */
+  rental?: RentcastRentalMarketStats | null
+}
+
+/** The /markets rentalData half, normalized. Monthly rents. */
+export interface RentcastRentalMarketStats {
+  median_rent: number
+  avg_days_on_market: number | null
+  active_listings: number | null
+  new_listings_30d: number | null
+  median_rent_per_sqft: number | null
 }
 
 /** Normalized comparable sale — matches the shape the CMA pipeline consumes. */
@@ -122,5 +139,29 @@ export function normalizeRentcastMarketStats(saleData: Record<string, any> | nul
     active_listings: Math.round(Number(saleData.totalListings ?? 0)),
     new_listings_30d: Math.round(Number(saleData.newListings ?? 0)),
     price_trend_yoy_pct: Math.round(yoy * 10) / 10,
+    median_price_per_sqft: positiveOrNull(saleData.medianPricePerSquareFoot ?? saleData.averagePricePerSquareFoot),
+    median_square_footage: positiveOrNull(saleData.medianSquareFootage ?? saleData.averageSquareFootage),
+    total_listings_at: typeof saleData.lastUpdatedDate === "string" ? saleData.lastUpdatedDate : null,
+  }
+}
+
+function positiveOrNull(v: unknown): number | null {
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null
+}
+
+/** Pure (wave 92, lane 92B): a RentCast /markets rentalData object → normalized rental stats (or
+ *  null when no median/average rent was published — never a 0 rent). */
+export function normalizeRentcastRentalMarketStats(rentalData: Record<string, any> | null | undefined): RentcastRentalMarketStats | null {
+  if (!rentalData || typeof rentalData !== "object") return null
+  const rent = positiveOrNull(rentalData.medianRent ?? rentalData.averageRent)
+  if (rent == null) return null
+  const count = (v: unknown): number | null => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.round(n) : null }
+  return {
+    median_rent: Math.round(rent),
+    avg_days_on_market: count(rentalData.averageDaysOnMarket ?? rentalData.medianDaysOnMarket),
+    active_listings: count(rentalData.totalListings),
+    new_listings_30d: count(rentalData.newListings),
+    median_rent_per_sqft: positiveOrNull(rentalData.medianRentPerSquareFoot ?? rentalData.averageRentPerSquareFoot),
   }
 }

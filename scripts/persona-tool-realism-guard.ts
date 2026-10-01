@@ -238,10 +238,11 @@ check("rung order is cache → tenant_idx → rentcast → public_records → ba
   check("POSITIVE CONTROL: with the reasons removed the finder flags exactly rentcast→public_records and rentcast→batchdata (the claim lane84E found false)",
     ctl.length === 2 && ctl.every((x) => x.startsWith("rentcast")) && ctl.some((x) => x.includes("public_records")) && ctl.some((x) => x.includes("batchdata")), ctl.join("; "))
 }
-// Re-anchored lane 81B: 'valuation' (the wave-70 staff comps/AVM lane) joined the carve-out
-// through the ONE gate; a conversation or a listing intake still never reaches BatchData.
-check("BATCHDATA_ELIGIBLE_PURPOSES = acquisition / skip_trace / dnc / valuation — never conversation or listing_intake",
-  [...BATCHDATA_ELIGIBLE_PURPOSES].sort().join(",") === "acquisition,dnc,skip_trace,valuation")
+// Re-anchored wave 92 (lane 92B): the carve-out is LEAD work only — 'valuation' (81B's staff
+// comps/AVM lane) left it when its callers moved to RentCast (owner: "batchdata is to be used more
+// for scrapping leads"); a conversation or a listing intake still never reaches BatchData.
+check("BATCHDATA_ELIGIBLE_PURPOSES = acquisition / skip_trace / dnc — never conversation, listing_intake or valuation",
+  [...BATCHDATA_ELIGIBLE_PURPOSES].sort().join(",") === "acquisition,dnc,skip_trace")
 check("isBatchDataRungAllowed: conversation → false even under an allowing policy; acquisition → true only with tier≠off AND opt-in",
   !isBatchDataRungAllowed("conversation", ALLOW) && !isBatchDataRungAllowed("listing_intake", ALLOW)
   && isBatchDataRungAllowed("acquisition", ALLOW) && !isBatchDataRungAllowed("acquisition", NO_OPT_IN) && !isBatchDataRungAllowed("acquisition", OFF))

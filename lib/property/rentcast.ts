@@ -15,6 +15,27 @@
  * listing data — only `external_listing_id`, address, and last-seen price
  * are kept (24h TTL). All MLS-licensed display data is re-fetched at view time.
  *
+ * WAVE 92 (lane 92B) — RENTCAST IS THE PLATFORM PROPERTY SOURCE. Owner, verbatim
+ * (2026-10-01): "use rentcast as much as possible regarding property listings, market,
+ * comparable, home values and use any other attributes that are available, also can use it
+ * for a simple property lookup. this is supposed to run for the full platform." Three things
+ * changed here, and nothing else about the readers' contracts did:
+ *   1. The gate is asked PER READ KIND (rentcast-eligibility.ts `readKind`): the tenant-IDX
+ *      substitute rule applies only to the ACTIVE for-sale listing SEARCH; every property-data
+ *      read (record, AVM + comps, markets, rentals, listing status, inactive sweeps) runs for
+ *      every tenant on the ONE platform key. There is no brokerage RentCast key to keep as an
+ *      override — lib/connections/scope.ts keeps RentCast out of the user-connectable
+ *      providers, so none exists.
+ *   2. Property FACTS are cached (record 30 d, AVM/comps 14 d, market stats 7 d — never
+ *      listings, whose display data is MLS-licensed and time-sensitive) through
+ *      lib/cma/comp-supplement-cache.ts's provider-payload store, so a repeat read of the
+ *      same address inside the window costs no request.
+ *   3. Every attribute RentCast returns is carried: the full property record
+ *      (getRentcastPropertyDetail — features, sale history, owner, assessor ids, zoning),
+ *      the listing dates / agent / office / coordinates on every listing row, and the rental
+ *      half of /markets. Limits respected: <=500 listings per request (rentcast-query.ts),
+ *      20 req/s per key (sweeps are sequential), plan quota via the vendor budget gate.
+ *
  * Key endpoints used:
  *   GET /v1/listings/sale?city=X&state=Y&bedrooms=&bathrooms=&maxPrice=&minPrice=
  *   GET /v1/listings/rental/long-term?city=X&state=Y&...
@@ -43,9 +64,11 @@ import {
   resolveRentcastEligibility,
   type RentcastEligibility,
   type RentcastEligibilityContext,
+  type RentcastReadKind,
 } from "./rentcast-eligibility"
 import {
   normalizeRentcastMarketStats,
+  normalizeRentcastRentalMarketStats,
   normalizeRentcastComps,
   type RentcastMarketStats,
   type RentcastComp,
@@ -218,6 +241,9 @@ export interface RentcastSearchFilters {
    * (lib/property-alerts/alert-cadence.ts) or the alert's own derived window.
    */
   listedWithinDays?: number
+  /** Wave 92 (lane 92B) — RentCast's pagination index (the first row to return). A sweep that
+   *  needs more than RENTCAST_MAX_LISTINGS_PER_REQUEST rows pages with this; area mode only. */
+  offset?: number
 }
 
 // TOMBSTONE (lane 91C, §1/§6): THE ONE area-query builder for both listing
@@ -254,6 +280,121 @@ export interface RentcastListing {
   mlsNumber: string | null
   mlsName: string | null
   source: "rentcast"
+  /**
+   * WAVE 92 (lane 92B, owner: "use any other attributes that are available") — the rest of the
+   * /listings row, carried instead of dropped. All optional, all null-when-absent (never 0):
+   * the listing's own DATES are what an inactive-listing sweep and a recency rule read
+   * (`removedDate` is when it left the market — the expired/withdrawn freshness signal).
+   */
+  listedDate?: string | null
+  removedDate?: string | null
+  lastSeenDate?: string | null
+  createdDate?: string | null
+  listingType?: string | null
+  latitude?: number | null
+  longitude?: number | null
+  county?: string | null
+  lotSizeSqft?: number | null
+  hoaMonthly?: number | null
+  /** Public listing-marketing contacts (the MLS's own published listing agent / office). */
+  listingAgent?: RentcastListingContact | null
+  listingOffice?: RentcastListingContact | null
+}
+
+/** A listing's published agent / office contact block. */
+interface RentcastListingContact { name: string | null; phone: string | null; email: string | null; website: string | null }
+
+/** PURE — the wave-92 extras off one /listings row (sale or rental), shared by both mappers so
+ *  the two readers cannot drift on which attributes they carry (§6). */
+function listingRowExtras(r: Record<string, any>): Pick<RentcastListing,
+  "listedDate" | "removedDate" | "lastSeenDate" | "createdDate" | "listingType" | "latitude" | "longitude"
+  | "county" | "lotSizeSqft" | "hoaMonthly" | "listingAgent" | "listingOffice"> {
+  const s = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null)
+  const n = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v !== 0 ? v : null)
+  const contact = (c: unknown): RentcastListingContact | null => (c && typeof c === "object"
+    ? { name: s((c as any).name), phone: s((c as any).phone), email: s((c as any).email), website: s((c as any).website) }
+    : null)
+  return {
+    listedDate: s(r?.listedDate),
+    removedDate: s(r?.removedDate),
+    lastSeenDate: s(r?.lastSeenDate),
+    createdDate: s(r?.createdDate),
+    listingType: s(r?.listingType),
+    latitude: n(r?.latitude),
+    longitude: n(r?.longitude),
+    county: s(r?.county),
+    lotSizeSqft: n(r?.lotSize),
+    hoaMonthly: n(r?.hoa?.fee),
+    listingAgent: contact(r?.listingAgent),
+    listingOffice: contact(r?.listingOffice),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PROPERTY-FACT CACHE (wave 92, lane 92B) — "be careful of the limitations"
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a RentCast answer is reused, per endpoint family, in days. Facts only: a property
+ * RECORD (assessor facts change yearly), an AVM / comparable set (RentCast recomputes on its own
+ * cadence; two weeks is the AVM chain's own staleness bar, lib/avm/provider-chain.ts
+ * DEFAULT_CACHE_STALE_DAYS) and zip market aggregates. LISTINGS ARE NEVER CACHED: their display
+ * data is MLS-licensed (this file's header) and a buyer is owed today's status.
+ */
+const RENTCAST_CACHE_TTL_DAYS = { record: 30, avm: 14, markets: 7 } as const
+
+/** PURE — one stable cache key for an address (case, punctuation and spacing folded). */
+function addressCacheKey(address: string): string {
+  return address.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()
+}
+
+/** Instance-local layer in front of the shared store (a burst on one instance — a CMA and its
+ *  narrative on the same address — never reaches the database twice). */
+const memoryCache = new Map<string, { at: number; data: unknown }>()
+const MEMORY_CACHE_MAX_ENTRIES = 500
+
+/** Remember one answer in the instance layer. Bounded: a long-lived instance must not grow without
+ *  limit — the oldest entry goes first (Map iteration is insertion order); the shared store keeps
+ *  the long tail. */
+function rememberInMemory(key: string, data: unknown): void {
+  if (memoryCache.has(key)) memoryCache.delete(key)
+  else if (memoryCache.size >= MEMORY_CACHE_MAX_ENTRIES) {
+    const oldest = memoryCache.keys().next().value
+    if (oldest !== undefined) memoryCache.delete(oldest)
+  }
+  memoryCache.set(key, { at: Date.now(), data })
+}
+
+/**
+ * Read-through cache for ONE RentCast fact request. A hit costs nothing and is not metered (no
+ * request was made). A miss runs `fetcher` (which meters its own request) and stores ONLY a
+ * successful answer — a failed request is never cached, so a transient outage cannot become a
+ * week of "no data". The shared store is best-effort by construction (lib/cma/comp-supplement-
+ * cache.ts): an unreadable or unwritable store degrades to "make the request", never to a refusal.
+ */
+async function cachedRentcastRead<T>(
+  key: string,
+  maxAgeDays: number,
+  fetcher: () => Promise<{ ok: boolean; data: T | null }>,
+): Promise<{ ok: boolean; data: T | null; cacheHit: boolean }> {
+  const ttlMs = maxAgeDays * 86_400_000
+  const mem = memoryCache.get(key)
+  if (mem && Date.now() - mem.at < ttlMs) return { ok: true, data: mem.data as T, cacheHit: true }
+  let store: typeof import("@/lib/cma/comp-supplement-cache") | null = null
+  try { store = await import("@/lib/cma/comp-supplement-cache") } catch { store = null }
+  if (store) {
+    const hit = await store.getCachedProviderPayload<T>(`rentcast:${key}`, maxAgeDays).catch(() => null)
+    if (hit) {
+      rememberInMemory(key, hit)
+      return { ok: true, data: hit, cacheHit: true }
+    }
+  }
+  const fresh = await fetcher()
+  if (fresh.ok && fresh.data != null) {
+    rememberInMemory(key, fresh.data)
+    if (store) void store.setCachedProviderPayload(`rentcast:${key}`, fresh.data, Math.round(RENTCAST_USD_PER_REQUEST * 100)).catch(() => null)
+  }
+  return { ...fresh, cacheHit: false }
 }
 
 // ---------------------------------------------------------------------------
@@ -342,8 +483,11 @@ export async function isRentcastConfigured(brokerageId: string): Promise<boolean
  */
 async function gateRentcast(
   caller: RentcastCaller,
+  readKind: RentcastReadKind,
 ): Promise<{ apiKey: string | null; eligibility: RentcastEligibility }> {
-  const eligibility = await resolveRentcastEligibility(caller)
+  // Wave 92 (lane 92B): the READER names its kind — never the caller — so a property-data read
+  // cannot be suppressed by the IDX substitute rule and an active for-sale search cannot skip it.
+  const eligibility = await resolveRentcastEligibility({ ...caller, readKind })
   if (!eligibility.eligible) return { apiKey: null, eligibility }
   return { apiKey: await getApiKey(caller.brokerageId), eligibility }
 }
@@ -370,9 +514,21 @@ function refusalMessage(eligibility: RentcastEligibility): string {
 // ---------------------------------------------------------------------------
 
 export async function searchRentcastSaleListings(
-  params: RentcastCaller & { filters: RentcastSearchFilters },
+  params: RentcastCaller & {
+    filters: RentcastSearchFilters
+    /** Wave 92 (lane 92B): a MARKET SWEEP — platform market intelligence over a territory (the
+     *  active-listing discovery feed, lib/kernel/listings-batchdata-feed.ts), never a list a buyer
+     *  is shown. Read as property_data: no tenant IDX feed substitutes for a market-wide sweep. */
+    marketSweep?: boolean
+  },
 ): Promise<{ success: boolean; listings: RentcastListing[]; error?: string }> {
-  const { apiKey, eligibility } = await gateRentcast(params)
+  // Wave 92: an ACTIVE for-sale search a buyer is shown is the one read a tenant's IDX feed
+  // substitutes for. An INACTIVE (off-market) sweep or a market sweep is market data IDX cannot
+  // serve — property_data.
+  const { apiKey, eligibility } = await gateRentcast(
+    params,
+    params.filters.status === "Inactive" || params.marketSweep === true ? "property_data" : "sale_listings",
+  )
   if (!apiKey) {
     return {
       success: false,
@@ -448,6 +604,7 @@ export async function searchRentcastSaleListings(
       mlsNumber: r?.mlsNumber != null && r.mlsNumber !== "" ? String(r.mlsNumber) : null,
       mlsName: r?.mlsName != null && r.mlsName !== "" ? String(r.mlsName) : null,
       source: "rentcast",
+      ...listingRowExtras(r as Record<string, any>),
     }))
 
     return { success: true, listings }
@@ -532,24 +689,122 @@ export function normalizeRentcastPropertyRecord(r: RentcastPropertyRecord | Reco
 export async function getRentcastPropertyRecord(
   params: RentcastCaller & { address: string },
 ): Promise<RentcastPropertyFacts | null> {
-  const { apiKey } = await gateRentcast(params)
+  const row = await fetchRentcastPropertyRow(params)
+  return row ? normalizeRentcastPropertyRecord(row) : null
+}
+
+/**
+ * THE ONE /properties request (wave 92, lane 92B) behind BOTH projections — the public
+ * whitelist above (getRentcastPropertyRecord) and the full staff record below
+ * (getRentcastPropertyDetail). One gate (property_data — an IDX feed carries no assessor
+ * record), one meter, one cache entry (RENTCAST_CACHE_TTL_DAYS.record): the two projections of
+ * the same address never pay twice. Null — never throws — when refused, not found or failed.
+ */
+async function fetchRentcastPropertyRow(
+  params: RentcastCaller & { address: string },
+): Promise<RentcastPropertyRecord | null> {
+  const { apiKey } = await gateRentcast(params, "property_data")
   if (!apiKey || !params.address?.trim()) return null
   try {
-    const res = await callRentcastGet("/properties", { address: params.address.trim() }, apiKey)
-    meterCall({
-      brokerageId: params.brokerageId,
-      usageType: "api_call",
-      cost: RENTCAST_USD_PER_REQUEST,
-      endpoint: "/properties",
-      systemSource: params.systemSource,
-      contactId: params.contactId,
-      metadata: { ok: res.ok, status: res.status },
-    })
-    if (!res.ok || !Array.isArray(res.data) || res.data.length === 0) return null
-    return normalizeRentcastPropertyRecord(res.data[0])
+    const address = params.address.trim()
+    const read = await cachedRentcastRead<RentcastPropertyRecord>(
+      `/properties|${addressCacheKey(address)}`, RENTCAST_CACHE_TTL_DAYS.record, async () => {
+        const res = await callRentcastGet("/properties", { address }, apiKey)
+        meterCall({
+          brokerageId: params.brokerageId,
+          usageType: "api_call",
+          cost: RENTCAST_USD_PER_REQUEST,
+          endpoint: "/properties",
+          systemSource: params.systemSource,
+          contactId: params.contactId,
+          metadata: { ok: res.ok, status: res.status },
+        })
+        const first = res.ok && Array.isArray(res.data) && res.data.length > 0 ? res.data[0] : null
+        return { ok: first != null, data: first }
+      })
+    return read.ok ? read.data : null
   } catch {
     return null
   }
+}
+
+/**
+ * EVERY ATTRIBUTE of one RentCast property record (wave 92, lane 92B — owner: "use any other
+ * attributes that are available"). STAFF-ONLY by construction: it carries the owner block, the
+ * sale history and the last sale price, which the public whitelist (RentcastPropertyFacts) never
+ * maps. Callers: the property-lookup rail's staff audience, the deal investigator. A customer or
+ * public surface must use getRentcastPropertyRecord.
+ */
+export interface RentcastPropertyDetail extends RentcastPropertyFacts {
+  rentcastId: string | null
+  county: string | null
+  latitude: number | null
+  longitude: number | null
+  assessorId: string | null
+  legalDescription: string | null
+  subdivision: string | null
+  zoning: string | null
+  lastSaleDate: string | null
+  lastSalePrice: number | null
+  ownerOccupied: boolean | null
+  ownerNames: string[]
+  ownerType: string | null
+  ownerMailingAddress: string | null
+  /** RentCast's `features` block verbatim (garage, pool, heating, cooling, roof, floors…). */
+  features: Record<string, unknown> | null
+  /** Sale / listing history events, newest first: { date, event, price }. */
+  history: Array<{ date: string; event: string | null; price: number | null }>
+  /** Every tax-assessment and tax-bill year RentCast published (not just the latest). */
+  taxAssessments: Array<{ year: number; value: number | null; land: number | null; improvements: number | null }>
+  propertyTaxes: Array<{ year: number; total: number | null }>
+}
+
+/** PURE — one raw /properties row → the full staff record. */
+function normalizeRentcastPropertyDetail(r: RentcastPropertyRecord | Record<string, unknown>): RentcastPropertyDetail {
+  const row = r as Record<string, any>
+  const s = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null)
+  const n = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v !== 0 ? v : null)
+  const owner = (row.owner ?? {}) as Record<string, any>
+  const mail = (owner.mailingAddress ?? {}) as Record<string, any>
+  const byYear = (m: unknown) => (m && typeof m === "object" ? Object.values(m as Record<string, any>).filter((v) => v && typeof v === "object") : [])
+  return {
+    ...normalizeRentcastPropertyRecord(r),
+    rentcastId: s(row.id),
+    county: s(row.county),
+    latitude: n(row.latitude),
+    longitude: n(row.longitude),
+    assessorId: s(row.assessorID),
+    legalDescription: s(row.legalDescription),
+    subdivision: s(row.subdivision),
+    zoning: s(row.zoning),
+    lastSaleDate: s(row.lastSaleDate),
+    lastSalePrice: posNum(row.lastSalePrice),
+    ownerOccupied: typeof row.ownerOccupied === "boolean" ? row.ownerOccupied : null,
+    ownerNames: Array.isArray(owner.names) ? owner.names.filter((x: unknown): x is string => typeof x === "string" && !!x.trim()) : [],
+    ownerType: s(owner.type),
+    ownerMailingAddress: s(mail.formattedAddress) ?? s(mail.addressLine1),
+    features: row.features && typeof row.features === "object" ? (row.features as Record<string, unknown>) : null,
+    history: Object.entries((row.history ?? {}) as Record<string, any>)
+      .map(([date, h]) => ({ date: s(h?.date) ?? date, event: s(h?.event), price: posNum(h?.price) }))
+      .sort((a, b) => (a.date < b.date ? 1 : -1)),
+    taxAssessments: byYear(row.taxAssessments)
+      .map((a: any) => ({ year: Number(a.year), value: posNum(a.value), land: posNum(a.land), improvements: posNum(a.improvements) }))
+      .filter((a) => Number.isFinite(a.year))
+      .sort((a, b) => b.year - a.year),
+    propertyTaxes: byYear(row.propertyTaxes)
+      .map((t: any) => ({ year: Number(t.year), total: posNum(t.total) }))
+      .filter((t) => Number.isFinite(t.year))
+      .sort((a, b) => b.year - a.year),
+  }
+}
+
+/** The full RentCast property record (every attribute) — STAFF audiences only. Same request,
+ *  gate, meter and cache entry as getRentcastPropertyRecord. Null when refused / not found. */
+export async function getRentcastPropertyDetail(
+  params: RentcastCaller & { address: string },
+): Promise<RentcastPropertyDetail | null> {
+  const row = await fetchRentcastPropertyRow(params)
+  return row ? normalizeRentcastPropertyDetail(row) : null
 }
 
 // ---------------------------------------------------------------------------
@@ -572,7 +827,7 @@ export async function getRentcastPropertyRecord(
 export async function getRentcastListingStatus(
   params: RentcastCaller & { externalId: string },
 ): Promise<string | null> {
-  const { apiKey } = await gateRentcast(params)
+  const { apiKey } = await gateRentcast(params, "property_data")
   if (!apiKey || !params.externalId) return null
   try {
     const res = await callRentcastGetById("/listings/sale/{id}", params.externalId, apiKey)
@@ -631,7 +886,9 @@ export async function getRentcastListingStatus(
 export async function searchRentcastRentalListings(
   params: RentcastCaller & { filters: RentcastSearchFilters },
 ): Promise<{ success: boolean; listings: RentcastListing[]; error?: string }> {
-  const { apiKey, eligibility } = await gateRentcast(params)
+  // Wave 92: property_data — the tenant IDX feed this product reads carries no rentals, so it is
+  // no substitute (rent-estimate.ts's own note said so while the gate still suppressed it).
+  const { apiKey, eligibility } = await gateRentcast(params, "property_data")
   if (!apiKey) {
     return {
       success: false,
@@ -711,6 +968,7 @@ export async function searchRentcastRentalListings(
       mlsNumber: r?.mlsNumber != null && r.mlsNumber !== "" ? String(r.mlsNumber) : null,
       mlsName: r?.mlsName != null && r.mlsName !== "" ? String(r.mlsName) : null,
       source: "rentcast",
+      ...listingRowExtras(r as Record<string, any>),
     }))
     return { success: true, listings }
   } catch (err: any) {
@@ -750,23 +1008,28 @@ function parseAvmValue(data: RentcastAvmValueResponse | null): { value: number |
 export async function getRentcastAVM(
   params: RentcastCaller & { address: string },
 ): Promise<{ value: number | null; rangeLow: number | null; rangeHigh: number | null }> {
-  const { apiKey } = await gateRentcast(params)
+  const { apiKey } = await gateRentcast(params, "property_data")
   if (!apiKey) return { value: null, rangeLow: null, rangeHigh: null }
 
   try {
     const q: RentcastAvmValueQuery = { address: params.address }
-    const res = await callRentcastGet("/avm/value", q, apiKey)
-    meterCall({
-      brokerageId: params.brokerageId,
-      usageType: "avm_lookup",
-      cost: RENTCAST_USD_PER_REQUEST,
-      endpoint: "/avm/value",
-      systemSource: params.systemSource,
-      contactId: params.contactId,
-      metadata: { ok: res.ok, status: res.status },
-    })
-    if (!res.ok) return { value: null, rangeLow: null, rangeHigh: null }
-    return parseAvmValue(res.data)
+    // Wave 92: a home value is a property FACT for its window — cached (RENTCAST_CACHE_TTL_DAYS.avm).
+    const read = await cachedRentcastRead<RentcastAvmValueResponse>(
+      `/avm/value|${addressCacheKey(params.address)}`, RENTCAST_CACHE_TTL_DAYS.avm, async () => {
+        const res = await callRentcastGet("/avm/value", q, apiKey)
+        meterCall({
+          brokerageId: params.brokerageId,
+          usageType: "avm_lookup",
+          cost: RENTCAST_USD_PER_REQUEST,
+          endpoint: "/avm/value",
+          systemSource: params.systemSource,
+          contactId: params.contactId,
+          metadata: { ok: res.ok, status: res.status },
+        })
+        return { ok: res.ok, data: res.ok ? res.data : null }
+      })
+    if (!read.ok) return { value: null, rangeLow: null, rangeHigh: null }
+    return parseAvmValue(read.data)
   } catch {
     return { value: null, rangeLow: null, rangeHigh: null }
   }
@@ -783,26 +1046,37 @@ export async function getRentcastAVM(
 export async function getRentcastMarketStats(
   params: RentcastCaller & { zipCode: string },
 ): Promise<RentcastMarketStats | null> {
-  const { apiKey } = await gateRentcast(params)
+  const { apiKey } = await gateRentcast(params, "property_data")
   if (!apiKey || !params.zipCode) return null
 
   try {
-    const q: RentcastMarketsQuery = { zipCode: params.zipCode, dataType: "Sale", historyRange: 12 }
-    const res = await callRentcastGet("/markets", q, apiKey)
-    meterCall({
-      brokerageId: params.brokerageId,
-      usageType: "market_stats",
-      cost: RENTCAST_USD_PER_REQUEST,
-      endpoint: "/markets",
-      systemSource: params.systemSource,
-      contactId: params.contactId,
-      metadata: { ok: res.ok, status: res.status, zip: params.zipCode },
-    })
-    if (!res.ok) return null
+    // Wave 92 (lane 92B): dataType "All" — the SAME one billed request returns the sale AND the
+    // rental half ("use any other attributes that are available"); was "Sale", which paid for a
+    // request and left the rental market on the table. Cached RENTCAST_CACHE_TTL_DAYS.markets
+    // (RentCast refreshes zip aggregates on its own cadence; a same-week re-read is the same row).
+    const zip = params.zipCode.trim()
+    const q: RentcastMarketsQuery = { zipCode: zip, dataType: "All", historyRange: 12 }
+    const read = await cachedRentcastRead<RentcastMarketsResponse>(
+      `/markets|${zip}`, RENTCAST_CACHE_TTL_DAYS.markets, async () => {
+        const res = await callRentcastGet("/markets", q, apiKey)
+        meterCall({
+          brokerageId: params.brokerageId,
+          usageType: "market_stats",
+          cost: RENTCAST_USD_PER_REQUEST,
+          endpoint: "/markets",
+          systemSource: params.systemSource,
+          contactId: params.contactId,
+          metadata: { ok: res.ok, status: res.status, zip },
+        })
+        return { ok: res.ok, data: res.ok ? res.data : null }
+      })
+    if (!read.ok) return null
     // The alias makes the read explicit: `saleData` is a spec-promised member, so a renamed
     // field in a regenerated spec fails HERE at compile time instead of as a silent null stats.
-    const data: RentcastMarketsResponse | null = res.data
-    return normalizeRentcastMarketStats(data?.saleData)
+    const data: RentcastMarketsResponse | null = read.data
+    const sale = normalizeRentcastMarketStats(data?.saleData)
+    if (!sale) return null
+    return { ...sale, rental: normalizeRentcastRentalMarketStats(data?.rentalData) }
   } catch {
     return null
   }
@@ -851,7 +1125,15 @@ export interface RentcastAvmAndComps {
  * Never throws.
  */
 export async function getRentcastAvmAndComps(
-  params: RentcastCaller & { address: string; limit?: number },
+  params: RentcastCaller & {
+    address: string
+    limit?: number
+    /** Wave 92 (lane 92B) — RentCast's own /avm/value comparable-search bounds, used by the CMA's
+     *  WIDENED sold-side supplement (lib/cma/comp-provider.ts §3b), which replaced the retired
+     *  BatchData comps pull: a wider radius (miles) and an older last-seen window (days). */
+    maxRadiusMiles?: number
+    daysOld?: number
+  },
 ): Promise<RentcastAvmAndComps> {
   const empty = (
     reason: RentcastAvmUnavailableReason,
@@ -865,24 +1147,35 @@ export async function getRentcastAvmAndComps(
     eligibility,
   })
 
-  const { apiKey, eligibility } = await gateRentcast(params)
+  const { apiKey, eligibility } = await gateRentcast(params, "property_data")
   if (!apiKey) return empty("not_eligible", eligibility)
   if (!params.address) return empty("no_address", eligibility)
 
   try {
-    const q: RentcastAvmValueQuery = { address: params.address, compCount: params.limit ?? 10 }
-    const res = await callRentcastGet("/avm/value", q, apiKey)
-    meterCall({
-      brokerageId: params.brokerageId,
-      usageType: "comps_lookup",
-      cost: RENTCAST_USD_PER_REQUEST,
-      endpoint: "/avm/value(comps)",
-      systemSource: params.systemSource,
-      contactId: params.contactId,
-      metadata: { ok: res.ok, status: res.status },
-    })
-    if (!res.ok) return empty("provider_error", eligibility)
-    const data = res.data
+    // RentCast's compCount is 5..25 (spec); the request is clamped rather than refused.
+    const compCount = Math.min(25, Math.max(5, Math.floor(params.limit ?? 10)))
+    const q: RentcastAvmValueQuery = { address: params.address, compCount }
+    if (params.maxRadiusMiles != null && params.maxRadiusMiles > 0) q.maxRadius = params.maxRadiusMiles
+    if (params.daysOld != null && params.daysOld >= 1) q.daysOld = Math.floor(params.daysOld)
+    // Wave 92: cached per (address, comp bounds) for RENTCAST_CACHE_TTL_DAYS.avm — a re-generated
+    // CMA, a second agent on the same listing or a retry reads the same row instead of re-paying.
+    const read = await cachedRentcastRead<RentcastAvmValueResponse>(
+      `/avm/value(comps)|${addressCacheKey(params.address)}|${compCount}|${q.maxRadius ?? ""}|${q.daysOld ?? ""}`,
+      RENTCAST_CACHE_TTL_DAYS.avm, async () => {
+        const res = await callRentcastGet("/avm/value", q, apiKey)
+        meterCall({
+          brokerageId: params.brokerageId,
+          usageType: "comps_lookup",
+          cost: RENTCAST_USD_PER_REQUEST,
+          endpoint: "/avm/value(comps)",
+          systemSource: params.systemSource,
+          contactId: params.contactId,
+          metadata: { ok: res.ok, status: res.status },
+        })
+        return { ok: res.ok, data: res.ok ? res.data : null }
+      })
+    if (!read.ok) return empty("provider_error", eligibility)
+    const data = read.data
     const comparables = data?.comparables
     const comps = normalizeRentcastComps(comparables)
     // PULL-DRIFT SENTINEL: RentCast returned comparables but the normalizer

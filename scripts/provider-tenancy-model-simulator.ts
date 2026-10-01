@@ -434,7 +434,7 @@ A.push({
     },
     {
       // The chain returns whatever rentcast gave it, including null — ending the
-      // cascade before BatchData is ever tried.
+      // cascade before the next provider is ever tried.
       file: F.chain,
       find: "      const rc = await tryRentcast(req)\n      if (rc && rc.confidence >= 0.6) return rc",
       replace: "      const rc = await tryRentcast(req)\n      return rc",
@@ -442,8 +442,10 @@ A.push({
     {
       // The adapter propagates instead of falling through.
       file: F.chain,
-      find: "  } catch {\n    return null\n  }\n}\n\nasync function tryBatchData",
-      replace: "  } catch (e) {\n    throw e\n  }\n}\n\nasync function tryBatchData",
+      // Wave 92 (lane 92B): tryBatchData was retired from the chain (a home value is RentCast's);
+      // the adapter after tryRentcast is now tryZillowViaZenRows — the anchor follows it.
+      find: "  } catch {\n    return null\n  }\n}\n\nasync function tryZillowViaZenRows",
+      replace: "  } catch (e) {\n    throw e\n  }\n}\n\nasync function tryZillowViaZenRows",
     },
   ],
 })

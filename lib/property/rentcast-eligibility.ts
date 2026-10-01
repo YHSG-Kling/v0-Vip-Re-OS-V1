@@ -120,7 +120,37 @@ export interface RentcastEligibilityContext {
   brokerageId: string
   agentUserId?: string | null
   teamId?: string | null
+  /**
+   * WHICH KIND OF RENTCAST READ is being asked about (wave 92, lane 92B). Default
+   * `"sale_listings"` — every caller that predates this field keeps its meaning.
+   *
+   * Owner, verbatim (2026-10-01): "use rentcast as much as possible regarding
+   * property listings, market, comparable, home values and use any other
+   * attributes that are available, also can use it for a simple property lookup.
+   * this is supposed to run for the full platform."
+   *
+   * The earlier ruling ("rentcast is platform owned and should not be used if the
+   * tenant adds their idx broker credentials") is a rule about a SUBSTITUTE: a
+   * tenant's IDX Broker feed replaces RentCast's FOR-SALE listing search. It was
+   * applied to every RentCast endpoint, so an IDX-connected tenant also lost the
+   * things IDX cannot serve at all — closed comparables, the AVM, market
+   * statistics, the assessor property record, rental listings. That is the
+   * per-brokerage gate that "blocks platform use"; it now applies only where a
+   * substitute exists:
+   *   "sale_listings"  — for-sale listing SEARCH a buyer is shown. The tenant's own
+   *                      IDX feed wins (tenant_has_idx / idx_check_unreadable).
+   *   "property_data"  — property records, AVM + comparables, rent comparables /
+   *                      rental listings, market statistics, single-listing status,
+   *                      market-wide listing sweeps (inactive prefilter, active
+   *                      discovery). No IDX substitute exists, so the IDX question
+   *                      is not asked (no credential read is spent on it either).
+   * The platform key and the vendor budget gate apply to BOTH kinds.
+   */
+  readKind?: RentcastReadKind
 }
+
+/** The two kinds of RentCast read (see RentcastEligibilityContext.readKind). */
+export type RentcastReadKind = "sale_listings" | "property_data"
 
 /**
  * What the IDX-connection check actually found.
@@ -323,7 +353,11 @@ export async function resolveRentcastEligibility(
   ctx: RentcastEligibilityContext,
 ): Promise<RentcastEligibility> {
   const platformKeyPresent = !!platformRentcastKey()
-  const idx = await resolveTenantIdxConnection(ctx)
+  // Wave 92 (lane 92B): the IDX substitute question is asked ONLY for a for-sale
+  // listing search — a property-data read has no IDX substitute (readKind header).
+  const idx: TenantIdxConnection = (ctx.readKind ?? "sale_listings") === "sale_listings"
+    ? await resolveTenantIdxConnection(ctx)
+    : { status: "not_connected" }
   const budgetUnchecked = { checked: false, degraded: false }
 
   if (idx.status === "connected") {

@@ -247,25 +247,11 @@ export async function investorBuyboxPage(args: { address: string; city?: string;
   return { ok: r.ok, rows: r.ok ? extractRows(r.data) : [], unconfigured: !!r.unconfigured, error: r.error }
 }
 
-/** Preview of the comps dataset for an address — the MCP-side mirror of
- *  lib/external/batchdata-client.ts::fetchBatchDataComps's REST call, used when a
- *  caller already routes other property reads through MCP and wants ONE egress path
- *  rather than mixing REST and MCP for the same CMA. */
-export async function comparablePropertyPreview(args: { address: string; city?: string; state?: string; zip?: string }): Promise<{ ok: boolean; rows: BuyBoxMatchRow[]; unconfigured: boolean; error: string | null }> {
-  const r = await callBatchDataMcp("comparable_property_preview", args)
-  return { ok: r.ok, rows: r.ok ? extractRows(r.data) : [], unconfigured: !!r.unconfigured, error: r.error }
-}
-
-export async function comparablePropertyCount(args: { address: string; city?: string; state?: string; zip?: string }): Promise<{ ok: boolean; count: number | null; unconfigured: boolean; error: string | null }> {
-  const r = await callBatchDataMcp<Record<string, any>>("comparable_property_count", args)
-  const count = r.ok ? (typeof r.data?.count === "number" ? r.data.count : (typeof r.data === "number" ? r.data : null)) : null
-  return { ok: r.ok, count, unconfigured: !!r.unconfigured, error: r.error }
-}
-
-export async function comparablePropertyPage(args: { address: string; city?: string; state?: string; zip?: string; take?: number; skip?: number }): Promise<{ ok: boolean; rows: BuyBoxMatchRow[]; unconfigured: boolean; error: string | null }> {
-  const r = await callBatchDataMcp("comparable_property_page", args)
-  return { ok: r.ok, rows: r.ok ? extractRows(r.data) : [], unconfigured: !!r.unconfigured, error: r.error }
-}
+// TOMBSTONE (wave 92, lane 92B, §1.3): comparablePropertyPreview / comparablePropertyCount /
+// comparablePropertyPage (the MCP mirrors of the BatchData comps dataset — pre-flight, badge and
+// billed page for the CMA sold-side supplement, their ONE caller) are deleted with that pull.
+// Survivor: lib/cma/comp-provider.ts §3b (RentCast widened comparable search). The staff
+// copilot's discovered MCP catalogue is a separate surface (lib/external/batchdata-ai-tools.ts).
 
 // ─── SCRUB-BEFORE-USE — thin typed mirrors over the wave-67 MCP tool set ──────────────
 // (help.batchdata.io article 12860581: "check_dnc_status, check_tcpa_status, verify_phone").

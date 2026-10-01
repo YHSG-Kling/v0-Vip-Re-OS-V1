@@ -123,7 +123,9 @@ for (const k of KEYS) {
 // ── L2 · territory ───────────────────────────────────────────────────────────
 console.log("\n[L2 · TERRITORY-SCOPED — only active-subscriber territories are scraped]")
 const loopAt = route.indexOf("for (const market of markets)")
-const resolveAt = route.indexOf("resolveActiveScrapeTerritories(")
+// Wave 92 (lane 92B): the cron asks THE ONE pull gate (resolveActivePullGate — the same
+// resolveActiveScrapeTerritories resolution plus a per-pull check and a skip tally).
+const resolveAt = route.search(/resolveActivePullGate\(|resolveActiveScrapeTerritories\(/)
 check("cron resolves active territories BEFORE the per-market loop", resolveAt > 0 && loopAt > resolveAt)
 check("cron's `markets` IS the resolver's territories (no second geography)", /const markets = territoryResolution\.territories/.test(route))
 function gateInsideLoop(src: string, key: SourceKey, loopIdx: number): boolean {

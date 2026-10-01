@@ -1,10 +1,17 @@
 /**
  * lib/agentic-os/deal-investigator.ts
  *
- * "One paragraph, three vendors" agent — given a contact, fan out to PDL (person) + RentCast
- * (typed MLS) + BatchData (MCP-first, REST fallback) and ask Claude to synthesize a single
+ * "One paragraph, three sources" agent — given a contact, fan out to PDL (person) + RentCast
+ * (AVM) + RentCast (the full property record) and ask Claude to synthesize a single
  * AI-ISA-ready summary of why this contact, why now. Replaces three manual lookups with one
  * structured artifact the agent can read.
+ *
+ * WAVE 92 (lane 92B): the PROPERTY leg was BatchData (batchDataPreferMcp("property.search"),
+ * purpose "valuation"). Owner (2026-10-01): "use rentcast as much as possible regarding … a
+ * simple property lookup" · "batchdata is to be used more for scrapping leads". TOMBSTONE
+ * (§1.3): that leg is deleted — survivor: lib/property/rentcast.ts::getRentcastPropertyDetail
+ * (every attribute of the record: features, owner, sale history, tax years; staff-only, which
+ * this investigator is), gated + metered + cached 30 days by the ONE RentCast client.
  *
  * Every external call routes through the canonical gateway. Never throws (gateway contract).
  */
@@ -98,31 +105,25 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
 
   if (result.cost >= cap) { result.warnings.push("cap reached after MLS — skipping property"); return result }
 
-  // (3) Property — BatchData MCP first, REST adapter as fallback (per recommendation #2).
-  // THE ONE BATCHDATA GATE (wave 81 lane B): a deal investigation is the STAFF "valuation"
-  // purpose — lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess (tier ≠ off, the
-  // contact's tenant). Refused → the property source stays null and the warning says why.
+  // (3) Property — the full RentCast property RECORD (wave 92; the BatchData leg is retired —
+  // header). Same tenant attribution as the AVM leg above; a refusal leaves the source null and
+  // says why. A cached record costs nothing (the client's 30-day fact cache).
   try {
-    const { resolveBatchDataAccess } = await import("@/lib/ai-isa/property-lookup-rail")
-    const access = address ? await resolveBatchDataAccess({ brokerageId: contact.brokerage_id, purpose: "valuation" }) : null
-    if (access && !access.allowed) result.warnings.push(`batchdata: not reached — ${access.reason}`)
-    if (address && access?.allowed) {
-      const { batchDataPreferMcp } = await import("@/lib/external/batchdata-mcp")
-      const property = await batchDataPreferMcp<Record<string, unknown>>(
-        "property.search",
-        { address },
-        async () => {
-          // REST fallback would call lib/external/batchdata-client.fetchMotivatedSellers / similar
-          // shaped for a single address; left as a thunk returning null so this turn ships without
-          // tightly coupling investigator to the existing REST module's specific signature.
-          return null as unknown as Record<string, unknown>
-        },
-      )
-      result.cost += 0.02
-      result.sources.property = property.data
-      if (property.via === "rest") result.warnings.push("batchdata: fell back to REST (MCP unconfigured or failed)")
+    if (address && contact.brokerage_id) {
+      const { getRentcastPropertyDetail, RENTCAST_USD_PER_REQUEST } = await import("@/lib/property/rentcast")
+      const detail = await getRentcastPropertyDetail({
+        brokerageId: contact.brokerage_id,
+        address,
+        systemSource: "deal_investigator",
+        contactId: contact.id,
+      })
+      result.cost += RENTCAST_USD_PER_REQUEST
+      result.sources.property = detail as unknown as Record<string, unknown> | null
+      if (!detail) result.warnings.push("rentcast: no property record (not configured, budget paused, or no record for this address)")
+    } else if (address) {
+      result.warnings.push("rentcast: contact has no brokerage_id to meter the property record against")
     }
-  } catch (e) { result.warnings.push(`batchdata: ${(e as Error).message}`) }
+  } catch (e) { result.warnings.push(`rentcast property record: ${(e as Error).message}`) }
 
   // (4) Synthesize — one paragraph, AI-ISA-ready, via the Vercel AI Gateway.
   if (!process.env.AI_GATEWAY_API_KEY) {
@@ -141,7 +142,7 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
           "Lead with the strongest motivation signal. End with a concrete next-step suggestion. NO bullet points.\n\n" +
           `PERSON (PeopleData): ${JSON.stringify(result.sources.person).slice(0, 2000)}\n\n` +
           `MLS (RentCast): ${JSON.stringify(result.sources.mls).slice(0, 1500)}\n\n` +
-          `PROPERTY (BatchData): ${JSON.stringify(result.sources.property).slice(0, 1500)}`,
+          `PROPERTY RECORD (RentCast): ${JSON.stringify(result.sources.property).slice(0, 1500)}`,
       }],
     })
     if (llm.ok && llm.content) {

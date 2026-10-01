@@ -147,7 +147,7 @@
     "lib/enrichment/web-mention-search.ts": 2,
     "lib/external/apify-actors.ts": 1,
     "lib/external/arcgis-permits.ts": 8,
-    "lib/external/batchdata-client.ts": 9,
+    "lib/external/batchdata-client.ts": 8,
     "lib/external/batchdata-seller-signals.ts": 16,
     "lib/external/exa-client.ts": 2,
     "lib/external/nextdoor-extract.ts": 1,
@@ -371,7 +371,6 @@
     "lib/offers/closing-cost-accuracy.ts": 5,
     "lib/offers/net-sheet-calc.ts": 1,
     "lib/offers/offer-target.ts": 1,
-    "lib/offers/public-record-preload.ts": 1,
     "lib/onboarding/certification-engine.ts": 1,
     "lib/onboarding/checkin-cadence.ts": 2,
     "lib/onboarding/critical-setup.ts": 1,
@@ -2892,7 +2891,7 @@
     "lib/auth/provision-isa-actor.ts": 1,
     "lib/auth/require-admin-maintenance-access.ts": 1,
     "lib/auth/require-brokerage-admin.ts": 1,
-    "lib/auth/require-caller.ts": 8,
+    "lib/auth/require-caller.ts": 9,
     "lib/auth/resolve-user-role.ts": 12,
     "lib/auth/role-grants.ts": 9,
     "lib/auth/useAuth.ts": 1,
@@ -3012,7 +3011,7 @@
     "lib/cma/ai-cma-report.ts": 1,
     "lib/cma/comp-adjustments.ts": 1,
     "lib/cma/comp-provider.ts": 1,
-    "lib/cma/comp-supplement-cache.ts": 2,
+    "lib/cma/comp-supplement-cache.ts": 4,
     "lib/cma/customer-facing-guard.ts": 6,
     "lib/cma/net-sheet-math.ts": 1,
     "lib/cma/perplexity-comp-finder.ts": 1,
@@ -3259,8 +3258,8 @@
     "lib/external/arcgis-permits.ts": 9,
     "lib/external/batchdata-ai-tools.ts": 1,
     "lib/external/batchdata-batchrank.ts": 1,
-    "lib/external/batchdata-client.ts": 34,
-    "lib/external/batchdata-mcp.ts": 12,
+    "lib/external/batchdata-client.ts": 31,
+    "lib/external/batchdata-mcp.ts": 9,
     "lib/external/batchdata-seller-signals.ts": 20,
     "lib/external/batchdata-tokens.ts": 1,
     "lib/external/census-appreciation.ts": 4,
@@ -3766,6 +3765,7 @@
     "lib/lead-pipeline/enrichment-orchestrator.ts": 1,
     "lib/lead-pipeline/enrichment-retry.ts": 3,
     "lib/lead-pipeline/exa-sourcer.ts": 3,
+    "lib/lead-pipeline/expired-listing-prefilter.ts": 1,
     "lib/lead-pipeline/fuzzy-matcher.ts": 2,
     "lib/lead-pipeline/lead-intelligence-signals.ts": 1,
     "lib/lead-pipeline/lead-lifecycle.ts": 2,
@@ -3791,7 +3791,7 @@
     "lib/lead-pipeline/review-acquisition-sourcer.ts": 4,
     "lib/lead-pipeline/schedule-followup.ts": 1,
     "lib/lead-pipeline/scrape-keywords.ts": 8,
-    "lib/lead-pipeline/scrape-territories.ts": 3,
+    "lib/lead-pipeline/scrape-territories.ts": 4,
     "lib/lead-pipeline/scraper-health.ts": 4,
     "lib/lead-pipeline/scraper-parsers.ts": 8,
     "lib/lead-pipeline/scraping-job-ledger.ts": 2,
@@ -3969,7 +3969,7 @@
     "lib/offers/offer-strategy-types.ts": 1,
     "lib/offers/offer-strength.ts": 2,
     "lib/offers/offer-target.ts": 5,
-    "lib/offers/public-record-preload.ts": 2,
+    "lib/offers/public-record-preload.ts": 1,
     "lib/offers/regional-closing-costs.ts": 8,
     "lib/offers/seller-closing-costs.ts": 4,
     "lib/onboarding/certificate-pdf.ts": 1,
@@ -4097,9 +4097,9 @@
     "lib/property/property-evaluation.ts": 1,
     "lib/property/rent-estimate.ts": 2,
     "lib/property/rentcast-eligibility.ts": 2,
-    "lib/property/rentcast-normalize.ts": 2,
+    "lib/property/rentcast-normalize.ts": 3,
     "lib/property/rentcast-query.ts": 1,
-    "lib/property/rentcast.ts": 10,
+    "lib/property/rentcast.ts": 11,
     "lib/property/resolve-property-facts.ts": 4,
     "lib/property/street-view.ts": 2,
     "lib/property-alerts/alert-cadence.ts": 3,
@@ -14476,7 +14476,8 @@
       "assertRowBrokerageOwnership",
       "authTenantAdminBrokerage",
       "requireUserRowContext",
-      "requireAdsActor"
+      "requireAdsActor",
+      "requireCallerTenant"
     ],
     "lib/auth/resolve-user-role.ts": [
       "isPlatformStaffIdentity",
@@ -15175,7 +15176,9 @@
     ],
     "lib/cma/comp-supplement-cache.ts": [
       "getCachedCompSupplement",
-      "setCachedCompSupplement"
+      "setCachedCompSupplement",
+      "getCachedProviderPayload",
+      "setCachedProviderPayload"
     ],
     "lib/cma/customer-facing-guard.ts": [
       "findSuggestedPriceLeaks",
@@ -16335,7 +16338,6 @@
       "searchProperties",
       "neighborStreetQuery",
       "fetchBatchRankPropensity",
-      "enrichPropertyWithBatchData",
       "createSmartSearchSubscription",
       "deleteSmartSearchSubscription",
       "listSmartSearchSubscriptions",
@@ -16346,8 +16348,6 @@
       "enrichPropertyDatasetsBatchData",
       "lookupBatchDataPropertiesByIds",
       "fetchIncrementalPropertySearch",
-      "readBatchDataComp",
-      "fetchBatchDataComps",
       "normalizeBuyBoxInvestorRecord",
       "fetchBatchDataWalletBalance",
       "fetchBatchDataWalletConsumptionReport",
@@ -16360,9 +16360,6 @@
       "investorBuyboxPreview",
       "investorBuyboxCount",
       "investorBuyboxPage",
-      "comparablePropertyPreview",
-      "comparablePropertyCount",
-      "comparablePropertyPage",
       "checkDncStatus",
       "checkTcpaStatus",
       "verifyPhone"
@@ -19063,6 +19060,9 @@
       "normalizeExaResult",
       "sourceExaBuyerIntent"
     ],
+    "lib/lead-pipeline/expired-listing-prefilter.ts": [
+      "runExpiredListingPrefilter"
+    ],
     "lib/lead-pipeline/fuzzy-matcher.ts": [
       "isConfidentMatch",
       "calculateFuzzyMatch"
@@ -19174,7 +19174,8 @@
     "lib/lead-pipeline/scrape-territories.ts": [
       "resolveScrapeTerritoriesFrom",
       "territoryUnion",
-      "resolveActiveScrapeTerritories"
+      "resolveActiveScrapeTerritories",
+      "resolveActivePullGate"
     ],
     "lib/lead-pipeline/scraper-health.ts": [
       "scraperTypeToConnector",
@@ -20086,7 +20087,6 @@
       "resolveBuyerMaxBudget"
     ],
     "lib/offers/public-record-preload.ts": [
-      "extractTaxFigures",
       "preloadPublicRecordCosts"
     ],
     "lib/offers/regional-closing-costs.ts": [
@@ -20795,7 +20795,8 @@
     ],
     "lib/property/rentcast-normalize.ts": [
       "normalizeRentcastComps",
-      "normalizeRentcastMarketStats"
+      "normalizeRentcastMarketStats",
+      "normalizeRentcastRentalMarketStats"
     ],
     "lib/property/rentcast-query.ts": [
       "buildRentcastListingQuery"
@@ -20805,6 +20806,7 @@
       "searchRentcastSaleListings",
       "normalizeRentcastPropertyRecord",
       "getRentcastPropertyRecord",
+      "getRentcastPropertyDetail",
       "getRentcastListingStatus",
       "searchRentcastRentalListings",
       "getRentcastAVM",

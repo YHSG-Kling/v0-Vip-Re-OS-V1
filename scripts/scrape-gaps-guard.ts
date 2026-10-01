@@ -328,7 +328,9 @@ function s11() {
   check("CONTROL: an unknown previous price is never a cut", !detectPriceCut({ previousStatus: "active", status: "active", previousPrice: null, price: 379000 }).cut)
   check("CONTROL: the provider's max list price must corroborate (an AVM fallback never reads as a cut)", !detectPriceCut({ previousStatus: "active", status: "active", previousPrice: 450000, price: 379000, maxListPrice: 379000 }).cut)
   const feed = stripped("lib/kernel/listings-batchdata-feed.ts")
-  check("the feed stores the LIST price (listing.price), the AVM only as fallback", /const listPrice = record\.listing\?\.price \?\? record\.estimatedValue \?\? null/.test(feed) && /list_price: listPrice,/.test(feed))
+  // Re-anchored wave 92 (lane 92B): the feed is a RentCast sweep — a RentCast listing row's `price`
+  // IS the list price and carries no AVM, so there is no fallback to read as a cut.
+  check("the feed stores the LIST price (the RentCast listing row's price — never an AVM)", /list_price: l\.price \?\? null,/.test(feed) && !/estimatedValue/.test(feed))
   check("a price cut files PRICE_REDUCED_SIGNAL_TYPE, weak, attach-only (matched lead/contact)", /signalType: PRICE_REDUCED_SIGNAL_TYPE,\s+strength: "weak"/.test(feed) && feed.indexOf("findLeadOrContactByAddress(supabase") < feed.indexOf("signalType: PRICE_REDUCED_SIGNAL_TYPE"))
   check("the type is declared through the seller-signal spec (BATCHDATA_SIGNAL_TYPES)", BATCHDATA_SIGNAL_TYPES.includes(PRICE_REDUCED_SIGNAL_TYPE))
   const migs = readdirSync(join(root, "supabase/migrations"))

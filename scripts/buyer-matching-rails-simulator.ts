@@ -108,7 +108,9 @@ function regularBuyerRailSource() {
   check("cron still drives runMarketWatchForBuyer (no new cron — folded into the existing one)", /runMarketWatchForBuyer\(svc, p\.brokerage_id, p\.contact_id\)/.test(cron))
 
   const feed = stripped("lib/kernel/listings-batchdata-feed.ts")
-  check("feed writer WRITES beds/baths/sqft/property_type from the BatchData record", /beds: record\.beds \?\? null[\s\S]*?baths: record\.baths \?\? null[\s\S]*?sqft: record\.sqft \?\? null[\s\S]*?property_type: record\.propertyType \?\? null/.test(feed))
+  // Re-anchored wave 92 (lane 92B): the discovery feed is a RentCast sweep — the specs come from the
+  // RentCast listing row (bedrooms / bathrooms / squareFeet / propertyType).
+  check("feed writer WRITES beds/baths/sqft/property_type from the RentCast listing row", /beds: l\.bedrooms \?\? null[\s\S]*?baths: l\.bathrooms \?\? null[\s\S]*?sqft: l\.squareFeet \?\? null[\s\S]*?property_type: l\.propertyType \?\? null/.test(feed))
 
   const client = stripped("lib/external/batchdata-client.ts")
   check("normalizeBatchDataProperty reads propertyType off the BatchData record", /propertyType: building\.propertyType \?\? building\.property_type \?\? p\.propertyType \?\? undefined/.test(client))

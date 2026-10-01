@@ -162,13 +162,19 @@ check("the listing landing page mounts the payment card with the listing id (cli
   /<PropertyPaymentCard listingSlug=\{listing\.id\} \/>/.test(stripped("app/listing/[slug]/page.tsx"))
   && /onClick=\{run\}/.test(stripped("app/components/listing-landing/PropertyPaymentCard.tsx")))
 const railSrc = stripped("lib/ai-isa/property-lookup-rail.ts")
-check("the RentCast rung reads the PROPERTY RECORD (tax/HOA) for public_facts, the listing search otherwise",
-  /if \(req\.purpose === "public_facts"\)[\s\S]{0,400}getRentcastPropertyRecord\(/.test(railSrc) && /searchRentcastSaleListings\(/.test(railSrc))
+// Re-anchored wave 92 (lane 92B, owner: "also can use it for a simple property lookup"): the record
+// is the RentCast rung for EVERY purpose; only a customer CONVERSATION asks the listing first.
+check("the RentCast rung reads the PROPERTY RECORD (tax/HOA) — public_facts never takes the listing-first branch",
+  /if \(req\.purpose === "conversation"\)[\s\S]{0,400}searchRentcastSaleListings\(/.test(railSrc) && /getRentcastPropertyRecord\(/.test(railSrc)
+  && !/req\.purpose === "public_facts"[\s\S]{0,80}searchRentcastSaleListings\(/.test(railSrc))
 check("the own-listing cache rung carries hoa_dues; the public-records rung carries the tax bill",
   /hoa_dues/.test(railSrc) && /annualPropertyTax: num\(r\.annualPropertyTax\)/.test(railSrc)
   && /"annualPropertyTax":/.test(read("lib/property/address-lookup.ts")))
-check("getRentcastPropertyRecord is gated + metered like every RentCast reader",
-  /export async function getRentcastPropertyRecord[\s\S]{0,300}gateRentcast\(params\)[\s\S]{0,400}meterCall\(\{/.test(stripped("lib/property/rentcast.ts")))
+// Re-anchored wave 92: the record reader delegates to the ONE shared /properties fetch, which is
+// gated (property_data) and metered — and cached — like every RentCast reader.
+check("getRentcastPropertyRecord is gated + metered like every RentCast reader (through the one shared fetch)",
+  /export async function getRentcastPropertyRecord[\s\S]{0,200}fetchRentcastPropertyRow\(params\)/.test(stripped("lib/property/rentcast.ts"))
+  && /async function fetchRentcastPropertyRow[\s\S]{0,300}gateRentcast\(params, "property_data"\)[\s\S]{0,900}meterCall\(\{/.test(stripped("lib/property/rentcast.ts")))
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 6 · ai-predictions — nothing was removed]")

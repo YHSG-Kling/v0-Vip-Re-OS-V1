@@ -538,8 +538,10 @@ function testScrapeTerritoryResolver() {
 function testScraperTerritoryConformance() {
   console.log("\n[Layer 4 · every scraper derives its areas from the shared resolver (static conformance)]")
   const cron = src("app/api/cron/lead-scraping/route.ts")
-  check("lead-scraping cron (ZenRows/BatchData/Apify social/Exa/Tavily/OSINT/recruiting) consumes resolveActiveScrapeTerritories",
-    /resolveActiveScrapeTerritories\(/.test(cron))
+  // Re-anchored wave 92 (lane 92B): the cron asks THE ONE pull gate, resolveActivePullGate — the
+  // same resolveActiveScrapeTerritories resolution plus a per-pull area check and a skip tally.
+  check("lead-scraping cron (ZenRows/BatchData/Apify social/Exa/Tavily/OSINT/recruiting) consumes the shared resolver (resolveActivePullGate → resolveActiveScrapeTerritories)",
+    /resolveActivePullGate\(/.test(cron) && /resolveActiveScrapeTerritories\(supabase\)/.test(src("lib/lead-pipeline/scrape-territories.ts")))
   check("cron no-ops honestly with a stated reason (no inline subscription query, no global fallback)",
     /no_op_reason/.test(cron) && !/from\("subscriptions"\)/.test(cron))
   const kernel = src("lib/kernel/scraping.ts")

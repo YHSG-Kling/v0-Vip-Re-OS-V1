@@ -252,25 +252,23 @@ const read = (rel: string) => stripComments(readFileSync(join(root, rel), "utf8"
 // exports should not be blocked." Every scan below reads STRIPPED source (§2) — a
 // comment naming the pattern must never count as the pattern itself.
 {
-  console.log("\n[wave 69 — count-before-page pre-flight, CMA comps lane]")
-  const compProvider = read("lib/cma/comp-provider.ts")
-  ok(/comparablePropertyCount\s*\(\s*\{\s*address:\s*fullAddress\s*\}\s*\)/.test(compProvider),
-     "CMA comp lane: calls comparablePropertyCount BEFORE the billed comps pull")
-  ok(/preflight\.ok && preflight\.count === 0/.test(compProvider),
-     "CMA comp lane: a confirmed zero count SKIPS the billed comparable_property_page/REST pull")
-  ok(/comparablePropertyPreview\s*\(\s*\{\s*address:\s*fullAddress\s*\}\s*\)/.test(compProvider),
-     "CMA comp lane: calls comparablePropertyPreview for the CMA UI 'comps available' badge")
-  ok(/batchDataMcpPreviewAvailable/.test(compProvider),
-     "CMA comp lane: the preview result rides on CompProvenance (the badge's data)")
-  ok(/comparablePropertyPage\s*\(\s*\{\s*address:\s*fullAddress/.test(compProvider),
-     "CMA comp lane: the billed pull itself tries comparable_property_page (MCP) before the REST fallback")
-  ok(/mcpPage\.ok && mcpPage\.rows\.length > 0/.test(compProvider),
-     "CMA comp lane: only accepts the MCP page result when it actually returned rows (falls back to REST otherwise)")
-  // POSITIVE CONTROL (§2): a fixture that pulls REST FIRST with no pre-flight at all must
-  // fail the "calls comparablePropertyCount before the pull" check.
-  const noPreflightFixture = `const bd = await fetchBatchDataComps(fullAddress)\ncostCents += Math.round(bd.cost * 100)`
-  ok(!/comparablePropertyCount\s*\(\s*\{\s*address:\s*fullAddress\s*\}\s*\)/.test(noPreflightFixture),
-     "positive control: a fixture with no pre-flight correctly fails the pre-flight check")
+  // Re-anchored wave 92 (lane 92B): the CMA's BatchData comps-dataset supplement (pre-flight count,
+  // preview badge, billed page / REST pull) is RETIRED — owner 2026-10-01 "use rentcast as much as
+  // possible regarding … comparable" · "batchdata is to be used more for scrapping leads". The
+  // survivor is RentCast's widened comparable search (lib/cma/comp-provider.ts §3b); the MCP mirrors
+  // were deleted with their one caller. Read on STRIPPED source so the tombstone naming them is
+  // not counted as a call (CLAUDE.md §2).
+  console.log("\n[wave 92 — the CMA comps lane is RentCast-only; the BatchData comps mirrors are gone]")
+  const compProvider = stripComments(read("lib/cma/comp-provider.ts"))
+  const COMPS_BD = /comparableProperty(?:Count|Preview|Page)\s*\(|fetchBatchDataComps\s*\(|batchDataMcpPreviewAvailable/
+  ok(!COMPS_BD.test(compProvider), "CMA comp lane: no BatchData comps call (count / preview / page / REST) in stripped source")
+  ok(/getRentcastAvmAndComps\(\{[\s\S]{0,400}maxRadiusMiles: RENTCAST_SUPPLEMENT_RADIUS_MILES/.test(compProvider),
+     "CMA comp lane: the sold-side supplement is RentCast's WIDENED comparable search")
+  ok(!/export async function comparableProperty(?:Count|Preview|Page)\(/.test(stripComments(read("lib/external/batchdata-mcp.ts"))),
+     "batchdata-mcp.ts: the comps MCP mirrors are deleted with their one caller")
+  // POSITIVE CONTROL (§2): the same finder flags a fixture that still calls the retired pre-flight.
+  ok(COMPS_BD.test(`const preflight = await comparablePropertyCount({ address: fullAddress })`),
+     "positive control: a fixture calling the retired BatchData comps pre-flight IS flagged")
 
   console.log("\n[wave 69 — count-before-page pre-flight, listing Buy Box lane]")
   const feed = read("lib/kernel/listings-batchdata-feed.ts")
@@ -318,8 +316,10 @@ console.log("\n[wave 71 → lane 79B — ONE row reader; the ISA tool set no lon
   const mcpSrc = read("lib/external/batchdata-mcp.ts")
   ok(/^function extractRows\(/m.test(mcpSrc) && !/export function extractRows\(/.test(mcpSrc),
      "batchdata-mcp.ts: extractRows is module-private again (no external importer since lane 79B) — never a second copy elsewhere")
-  ok((mcpSrc.match(/extractRows\(r\.data\)/g) ?? []).length >= 4,
-     "batchdata-mcp.ts: the four typed wrappers (comparable preview/page, buybox preview/page) still read rows through the ONE extractRows")
+  // Re-anchored wave 92 (lane 92B): the comparable preview/page wrappers left with the BatchData
+  // comps supplement; the Buy Box preview/page wrappers (investor LEAD lanes) remain.
+  ok((mcpSrc.match(/extractRows\(r\.data\)/g) ?? []).length >= 2,
+     "batchdata-mcp.ts: the remaining typed row wrappers (buybox preview/page) still read rows through the ONE extractRows")
   const isaToolsSrc = read("lib/ai-isa/batchdata-isa-tools.ts")
   ok(!/\bextractRows\b/.test(isaToolsSrc) && /import\s*\{[^}]*\bcheckDncStatus\b[^}]*\}\s*from\s*["']@\/lib\/external\/batchdata-mcp["']/.test(isaToolsSrc),
      "batchdata-isa-tools.ts: no extractRows import remains (no row-returning tool remains) — it imports ONLY the phone/DNC wrappers from batchdata-mcp.ts")

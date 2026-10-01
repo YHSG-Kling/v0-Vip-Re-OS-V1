@@ -239,6 +239,10 @@ export async function estimateMonthlyRentFromComps(
     brokerageId: req.brokerageId,
     agentUserId: req.agentUserId ?? null,
     teamId: req.teamId ?? null,
+    // Wave 92 (lane 92B, owner: "this is supposed to run for the full platform"): rental comps
+    // are PROPERTY DATA — the IDX feed carries no rentals, so a tenant's IDX connection no longer
+    // suppresses them (the tenant_has_idx note below is kept for a sale-listings asker only).
+    readKind: "property_data",
   })
   if (!eligibility.eligible) {
     // The reason is stated in the surface's own words, per reason, because "no

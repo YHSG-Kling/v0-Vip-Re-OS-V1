@@ -395,6 +395,10 @@ export async function runAllActiveAlerts(
   failed: number
   /** Alerts skipped because the buyer has them snoozed. */
   skippedSnoozed: number
+  /** Wave 92 (lane 92B): alerts skipped BEFORE any provider call because their tenant is not a
+   *  live subscriber with an active territory (lib/lead-pipeline/scrape-territories.ts
+   *  resolveActivePullGate) — the runs the active-territory check saved, counted. */
+  skippedInactiveTenant: number
   /** Alerts that were due but over the per-run cap — the next run takes them. */
   deferred: number
   /**
@@ -419,7 +423,7 @@ export async function runAllActiveAlerts(
   // carries its written reason; there is no third case and no silent widening.
   const query = supabase
     .from("property_alerts")
-    .select("id, snoozed_until")
+    .select("id, snoozed_until, brokerage_id")
     .eq("frequency", frequency)
     .eq("is_active", true)
   // Mutates the builder in place (the lib/kernel/command-center.ts shape —
@@ -434,7 +438,7 @@ export async function runAllActiveAlerts(
   if (alertsError) {
     console.error(`[property-alerts] ${frequency}: the due-alert sweep was REFUSED (${alertsError.message}) — no alert was evaluated`)
     return {
-      total: 0, succeeded: 0, failed: 0, skippedSnoozed: 0, deferred: 0,
+      total: 0, succeeded: 0, failed: 0, skippedSnoozed: 0, skippedInactiveTenant: 0, deferred: 0,
       bySource: { idx: 0, rentcast: 0, none: 0 },
       unevaluated: 0, unevaluatedReasons: {},
       errors: [`sweep_refused: ${alertsError.message}`],
@@ -443,7 +447,7 @@ export async function runAllActiveAlerts(
 
   if (!alerts?.length) {
     return {
-      total: 0, succeeded: 0, failed: 0, skippedSnoozed: 0, deferred: 0,
+      total: 0, succeeded: 0, failed: 0, skippedSnoozed: 0, skippedInactiveTenant: 0, deferred: 0,
       bySource: { idx: 0, rentcast: 0, none: 0 },
       unevaluated: 0, unevaluatedReasons: {},
       errors: [],
@@ -451,9 +455,23 @@ export async function runAllActiveAlerts(
   }
 
   const now = new Date()
-  const due = (alerts as Array<{ id: string; snoozed_until: string | null }>)
+  const unsnoozed = (alerts as Array<{ id: string; snoozed_until: string | null; brokerage_id: string | null }>)
     .filter((a) => !isSnoozed(a.snoozed_until, now))
-  const skippedSnoozed = alerts.length - due.length
+  const skippedSnoozed = alerts.length - unsnoozed.length
+
+  // ACTIVE-TERRITORY PRE-CHECK (wave 92, lane 92B — owner: "checking the active territories before
+  // scrapping and pulling data will cutdown on runs"). ONE resolution for the whole sweep; an
+  // alert whose tenant is not a live subscriber with an active territory is skipped BEFORE its
+  // provider call and counted. TENANT-level, not area-level: a buyer's saved search names the
+  // buyer's own area (a relocation buyer searches elsewhere by definition). Fail closed: an
+  // unreadable subscription/territory read skips the sweep's provider calls, said by name.
+  const { resolveActivePullGate } = await import("@/lib/lead-pipeline/scrape-territories")
+  const pullGate = await resolveActivePullGate(supabase)
+  const due = unsnoozed.filter((a) => pullGate.check({ brokerageId: a.brokerage_id }).allowed)
+  const skippedInactiveTenant = unsnoozed.length - due.length
+  if (skippedInactiveTenant > 0) {
+    console.log(`[property-alerts] ${frequency}: ${skippedInactiveTenant} alert(s) skipped before any provider call — tenant not active (${JSON.stringify(pullGate.tally.byReason)})`)
+  }
 
   // BATCH CAP, ported from the retired engine (which capped at 50 per brokerage
   // per run). One run must not be able to exhaust the IDX rate limit for
@@ -496,7 +514,7 @@ export async function runAllActiveAlerts(
     }; ${skippedSnoozed} snoozed, ${deferred} deferred`,
   )
 
-  return { total: batch.length, succeeded, failed, skippedSnoozed, deferred, bySource, unevaluated, unevaluatedReasons, errors }
+  return { total: batch.length, succeeded, failed, skippedSnoozed, skippedInactiveTenant, deferred, bySource, unevaluated, unevaluatedReasons, errors }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

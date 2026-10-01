@@ -524,6 +524,9 @@ async function searchRentalsForAlert(
     brokerageId,
     agentUserId: ctx.agentUserId ?? null,
     teamId: ctx.teamId ?? null,
+    // Wave 92 (lane 92B): rentals are PROPERTY DATA — an IDX board is for-sale inventory and is
+    // no substitute, so a tenant's IDX connection no longer suppresses a renter's alert.
+    readKind: "property_data",
   })
   if (eligibility.idx.status === "unreadable") {
     console.warn(`[alert-search] rental alert ${alertId} (brokerage ${brokerageId}) refused — ${eligibility.detail}`)

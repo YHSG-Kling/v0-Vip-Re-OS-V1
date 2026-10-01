@@ -15,9 +15,9 @@ export class BatchDataClient {
     const motivationTypes = (filters.minEquity ?? 0) > 0 ? ["high_equity", "pre_foreclosure", "absentee"] : undefined
     return fetchMotivatedSellers({ state: filters.state || "", city: filters.city, motivationTypes }).then(r => r.records)
   }
-  async getPropertyDetails(propertyId: string) {
-    return enrichPropertyWithBatchData(propertyId).then(r => r)
-  }
+  // TOMBSTONE (wave 92, lane 92B): getPropertyDetails (zero callers; it wrapped the deleted
+  // enrichPropertyWithBatchData) — property details are RentCast's: lib/property/rentcast.ts::
+  // getRentcastPropertyDetail.
   /**
    * Alias used by the lead-scraping cron.
    * Accepts a "City, State" string, splits it, and delegates to fetchMotivatedSellers — passing
@@ -996,33 +996,10 @@ export async function fetchBatchRankPropensity(address: string): Promise<BatchRa
   }
 }
 
-export async function enrichPropertyWithBatchData(address: string): Promise<{
-  condition: 'turnkey' | 'fixer' | 'unknown'
-  estimatedValue: number
-  daysOnMarket?: number
-  cost: number
-}> {
-  // No dedicated "enrichment" endpoint on BatchData — a single-address Property
-  // Search returns the property valuation + attributes we derive condition from.
-  const data = await batchDataPropertySearch(
-    { searchCriteria: { query: address }, options: { take: 1, skip: 0 } },
-    "BatchData enrichment error",
-  )
-  const prop = (data?.results?.properties ?? data?.results ?? [])[0] ?? {}
-  // Lane 88G — through the ONE quickList reader: `ql['tax-default']` never matched the object shape
-  // (the flag is camelCase `taxDefault`), and `foreclosure` is not a published quickList at all.
-  const ql = new Set(quickListSlugsFromRow(prop))
-  // Distress/vacancy signals imply a likely fixer; otherwise unknown.
-  const condition: 'turnkey' | 'fixer' | 'unknown' =
-    ql.has('vacant') || ql.has('notice-of-sale') || ql.has('preforeclosure') || ql.has('tax-default') ? 'fixer' : 'unknown'
-
-  return {
-    condition,
-    estimatedValue: prop.valuation?.estimatedValue ?? prop.estimatedValue ?? 0,
-    daysOnMarket: prop.listing?.daysOnMarket,
-    cost: 0.03,
-  }
-}
+// TOMBSTONE (wave 92, lane 92B, §1.3): enrichPropertyWithBatchData (a single-address property
+// search read for its `valuation.estimatedValue` — the AVM chain's BatchData leg, its ONE caller)
+// is deleted. A home value is a RentCast read now — survivor: lib/property/rentcast.ts::
+// getRentcastAVM, the AVM chain's paid leg (lib/avm/provider-chain.ts tryRentcast).
 
 // ─── SMART SEARCH = V2 PROPERTY SUBSCRIPTION ──────────────────────────────────────────
 // A DISTINCT capability from fetchMotivatedSellers (V1 Property Search, us polling on a
@@ -1947,107 +1924,13 @@ export async function fetchIncrementalPropertySearch(params: {
   }
 }
 
-// ─── COMPARABLE PROPERTY (COMPS DATASET) — a REAL data provider beside RentCast ───────
-// Product surface (batchdata.io/api-solutions): "Comparables identifier" / "Comps
-// dataset developer guide: low-cost comparable-property analysis". CONFIRMED (Exa
-// fetch, developer.batchdata.com Property Lookup reference, 2026-09-16): `comps` is one
-// of the 14 named dataset projections a Property Search/Lookup request can select
-// (`basic comps batchrank contact core deed demographic foreclosure image listing
-// mortgage-liens owner permit quicklist valuation`) — so this is the SAME
-// `property/search` call every other function in this file uses, requesting the `comps`
-// dataset rather than a separate endpoint. Wired into lib/cma/comp-provider.ts as a
-// provider BESIDE RentCast (never replacing it — RentCast stays the sold-side default
-// per the owner's ruling in that file); cost is booked through logVendorUsage at the
-// CMA call site, matching every other comp source's own accounting.
-export interface BatchDataComp {
-  address: string | null
-  status: "closed" | "active" | "pending" | "unknown"
-  salePrice: number | null
-  saleDate: string | null
-  sqftLiving: number | null
-  bedrooms: number | null
-  bathrooms: number | null
-  distanceMiles: number | null
-  similarityScore: number | null
-}
-
-export interface BatchDataCompsResult {
-  ok: boolean
-  comps: BatchDataComp[]
-  cost: number
-  error?: string
-}
-
-/** PURE — one `comps` dataset row → BatchDataComp. Read defensively: the dataset's own
- *  field catalogue was not independently re-walked this wave (see lib/external/
- *  batchdata-seller-signals.ts's own 2026-08-20 catalogue reads for the sibling
- *  datasets this repo HAS confirmed); every field is read from the same address/
- *  valuation/lastSale shapes normalizeBatchDataProperty already trusts elsewhere in
- *  this file, so a drift in one place is a drift the whole file already tolerates. */
-// EXPORTED (wave 69 — the MCP comps pre-flight in lib/cma/comp-provider.ts reuses this SAME
-// mapper for `comparable_property_page`'s MCP rows, which are the same provider `comps` dataset
-// shape as the REST path below: one vocabulary, §6, rather than a second field-mapping guess.
-export function readBatchDataComp(row: Record<string, any>): BatchDataComp {
-  const addr = row.address ?? {}
-  const building = row.building ?? {}
-  const lastSale = row.lastSale ?? row.sale ?? {}
-  const listing = row.listing ?? {}
-  const removedDate = typeof row.removedDate === "string" ? row.removedDate : null
-  const status: BatchDataComp["status"] =
-    removedDate || lastSale.date || lastSale.saleDate ? "closed"
-      : String(listing.statusCategory ?? listing.status ?? "").toLowerCase().includes("pend") ? "pending"
-        : (listing.status || listing.daysOnMarket != null) ? "active"
-          : "unknown"
-  return {
-    address: typeof addr.street === "string" ? addr.street : null,
-    status,
-    salePrice: typeof lastSale.price === "number" ? lastSale.price : (typeof listing.listPrice === "number" ? listing.listPrice : null),
-    saleDate: removedDate ?? (typeof lastSale.date === "string" ? lastSale.date : (typeof lastSale.saleDate === "string" ? lastSale.saleDate : null)),
-    sqftLiving: typeof building.livingAreaSquareFeet === "number" ? building.livingAreaSquareFeet : null,
-    bedrooms: typeof building.bedroomCount === "number" ? building.bedroomCount : null,
-    bathrooms: typeof building.bathroomCount === "number" ? building.bathroomCount : null,
-    distanceMiles: typeof row.distanceMiles === "number" ? row.distanceMiles : null,
-    similarityScore: typeof row.correlation === "number" ? row.correlation : null,
-  }
-}
-
-/** Cost telemetry, cents — no per-comp price independently confirmed; priced the same
- *  as the property-enrichment dataset pull (enrichPropertyDatasetsBatchData) since both
- *  are one address lookup against a named dataset projection. EXPORTED (wave 69): the
- *  MCP comps pre-flight in lib/cma/comp-provider.ts prices its MCP-sourced pull at the
- *  same conservative estimate — no independently-confirmed MCP-specific comps price
- *  exists either, and re-declaring the literal would be a second spelling of one cost. */
-export const BATCHDATA_COMPS_COST_CENTS = 5
-
-export async function fetchBatchDataComps(address: string, opts?: { limit?: number }): Promise<BatchDataCompsResult> {
-  if (!process.env.BATCHDATA_API_KEY) {
-    return { ok: false, comps: [], cost: 0, error: "BATCHDATA_API_KEY not configured" }
-  }
-  if (!address?.trim()) {
-    return { ok: false, comps: [], cost: 0, error: "no address to look up" }
-  }
-  try {
-    const data = await batchDataPropertySearch(
-      {
-        searchCriteria: { query: address },
-        options: { take: opts?.limit ?? RENTCAST_COMP_PULL_LIMIT_FALLBACK, skip: 0 },
-        dataset: ["core", "comps"],
-      },
-      "BatchData comps error",
-    )
-    const rows: any[] = data?.results?.comps ?? data?.results?.properties?.[0]?.comps ?? []
-    if (!Array.isArray(rows) || rows.length === 0) {
-      return { ok: true, comps: [], cost: BATCHDATA_COMPS_COST_CENTS / 100, error: "no comps dataset rows on the response" }
-    }
-    return { ok: true, comps: rows.map(readBatchDataComp), cost: BATCHDATA_COMPS_COST_CENTS / 100 }
-  } catch (e) {
-    return { ok: false, comps: [], cost: 0, error: e instanceof Error ? e.message : String(e) }
-  }
-}
-/** Named locally so fetchBatchDataComps does not depend on lib/cma's own pull-limit
- *  constant (this file must stay CMA-agnostic — lib/cma/* imports FROM here, never the
- *  reverse). */
-const RENTCAST_COMP_PULL_LIMIT_FALLBACK = 20
+// TOMBSTONE (wave 92, lane 92B, §1.3 — owner 2026-10-01: "use rentcast as much as possible
+// regarding … comparable" · "batchdata is to be used more for scrapping leads"): the BatchData
+// COMPS-DATASET reader (BatchDataComp, BatchDataCompsResult, readBatchDataComp,
+// BATCHDATA_COMPS_COST_CENTS, fetchBatchDataComps) is deleted with its ONE caller, the CMA
+// sold-side supplement. Survivor: RentCast's widened comparable search —
+// lib/cma/comp-provider.ts §3b over lib/property/rentcast.ts::getRentcastAvmAndComps
+// (maxRadiusMiles / daysOld). BatchData stays this file's LEAD-acquisition client.
 
 // ─── BUY BOX — investor-match rows normalized into BUYER-side raw leads ───────────────
 // mcp__batchdata__investor_buybox_count/page/preview (the BatchData MCP server's own

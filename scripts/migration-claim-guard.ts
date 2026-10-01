@@ -270,7 +270,11 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // once the integrator applies it and flips the header. Wave-77 sibling lanes
 // (77A m655, 77B m656, 77D m658) each bump this line for their own file — the
 // integrator sums them when merging.
-const NOT_APPLIED_BASELINE = 1
+// 1 → 2 (wave 92, lane 92B): m680-market-active-listings-off-market-status.sql — WRITTEN NOT
+// APPLIED, widens market_active_listings.current_status for the RentCast discovery feed's
+// 'off_market' rows (beside m681, wave 91D, still waiting on the Supabase connector). Deliberate
+// bump, named; drops by one as the integrator applies each.
+const NOT_APPLIED_BASELINE = 2
 console.log("\n[3 · the work-in-flight list only shrinks]")
 if (notApplied.length) for (const f of notApplied) console.log(`     · ${f}`)
 check(`files claiming NOT APPLIED at or below ${NOT_APPLIED_BASELINE} (found ${notApplied.length})`,

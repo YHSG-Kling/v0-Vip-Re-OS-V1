@@ -327,6 +327,12 @@ const RENTCAST_EXPORTS = [
   // `const { apiKey } = await gateRentcast(params)` in the file, which is now this reader's — an
   // export missing from this list let that control stay green with the defect present.
   "getRentcastPropertyRecord",
+  // Wave 92 (lane 92B) — the record is fetched ONCE by a module-private shared reader that BOTH
+  // projections delegate to (the public whitelist above and the full staff record below): it is
+  // the one that must pass gate-before-network, so it is listed by name (regionOf reads a
+  // non-exported function the same way). The negative control below now rewrites ITS gate line.
+  "fetchRentcastPropertyRow",
+  "getRentcastPropertyDetail",
 ]
 
 /**
@@ -563,7 +569,9 @@ async function main(): Promise<void> {
       "a RentCast export reaching the network before the gate",
       {
         file: F.readers,
-        find: `  const { apiKey } = await gateRentcast(params)`,
+        // Wave 92: every gate call now names its read kind; the FIRST plain one in the file is
+        // the shared /properties fetch's (fetchRentcastPropertyRow).
+        find: `  const { apiKey } = await gateRentcast(params, "property_data")`,
         replace: `  const apiKey = await getApiKey(params.brokerageId)`,
       },
       assertGatedBeforeNetwork,

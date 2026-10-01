@@ -239,12 +239,11 @@ const GATED = [
   "lib/compliance/phone-scrub-runner.ts",
   "lib/communication/tcpa-gate.ts",
   "lib/ai-isa/property-lookup-rail.ts", // the facts rung, behind isBatchDataRungAllowed
-  // Lane 81B — the six former blind spots that still reach BatchData, now gated (purpose
-  // "valuation" for the staff analytics lane, "acquisition" for the lead/investor lanes).
-  "lib/cma/comp-provider.ts",
-  "lib/avm/provider-chain.ts",
-  "lib/agentic-os/deal-investigator.ts",
-  "lib/offers/public-record-preload.ts",
+  // Lane 81B — the former blind spots that still reach BatchData, gated "acquisition" (lead /
+  // investor lanes). Wave 92 (lane 92B) STRUCK the four "valuation" files — comp-provider,
+  // avm/provider-chain, deal-investigator, public-record-preload — they no longer import BatchData
+  // at all (property reads moved to RentCast; "valuation" left BATCHDATA_ELIGIBLE_PURPOSES), and a
+  // gate claim on a file that no longer reaches BatchData would be stale (the check below).
   "app/actions/investor-buybox-preview.ts",
   "app/actions/lead-intelligence.ts",
   // Wave 82 lane A — the reverse skip trace wrapper (person-keyed, purpose "skip_trace").
@@ -258,7 +257,7 @@ const TRANSPORT = new Set([
   "lib/platform/go-live-readiness.ts", // connectivity probe
   "app/api/admin/billing/batchdata-wallet/route.ts", // wallet balance read
   "app/api/internal/ai-chat/route.ts", // mounts the tier-gated registry, no direct reach
-  "lib/cma/comp-supplement-cache.ts", // type-only import
+  // (wave 92: lib/cma/comp-supplement-cache.ts left — its payload is RentcastComp now, no import)
 ])
 // (b) scraper lanes — FROZEN (wave 80): reachability proven by vercel.json / cron-dispatch, not this proof.
 const SCRAPER_LANE = new Set([
@@ -268,6 +267,9 @@ const SCRAPER_LANE = new Set([
   // (lane 84C: lib/lead-pipeline/promotion-address-verification.ts left this list — the file is
   // deleted with the wave-14 address anchor; its verifyAddressBatchData reach went with it.)
   "app/api/cron/permit-signal-scan/route.ts", // cron: permit → seller-signal scan
+  // Wave 92 (lane 92B): the RentCast inactive-listing prefilter of the lead-scraping cron's expired
+  // lane — called ONLY from that cron, inside its active-territory gate (lead acquisition).
+  "lib/lead-pipeline/expired-listing-prefilter.ts",
   "app/actions/admin/run-scrape-test.ts", "app/api/admin/scrape-test/route.ts", // admin dry-run of a scrape source
 ])
 // (d) published blind spots — direct reaches not yet migrated. SHRINK-ONLY. Lane 81B struck all

@@ -45,6 +45,9 @@ function toRentcastPropertyType(raw: string | null | undefined): RentcastQueryPr
   return canonical ? RENTCAST_PROPERTY_TYPE[canonical] : undefined
 }
 
+/** RentCast's per-request listing ceiling (spec: `limit` "between 1 and 500"). */
+export const RENTCAST_MAX_LISTINGS_PER_REQUEST = 500
+
 /**
  * RentCast's `daysOld` range for a recency window, or undefined when the
  * window is absent/garbage. PURE. The spec states a minimum of 1, so a window
@@ -76,7 +79,15 @@ export function buildRentcastListingQuery(
   // A SINGLE-HOME LOOKUP IS ITS OWN QUERY MODE, not one more filter — see the
   // readers' notes: the documented shape is the address and NOTHING else.
   if (f.address) return { address: f.address }
-  const q: NonNullable<RentcastSaleListingsQuery> = { status: f.status ?? "Active", limit: f.limit ?? opts.defaultLimit }
+  // Wave 92 (lane 92B) — RentCast's documented page bound: `limit` is 1..500 per request (spec:
+  // "between 1 and 500"). A caller asking for more is CLAMPED here (one billed request returns at
+  // most 500 rows; a larger ask is paginated by the caller with `offset`), never sent as a value
+  // the provider rejects. `offset` is the provider's own pagination index.
+  const q: NonNullable<RentcastSaleListingsQuery> = {
+    status: f.status ?? "Active",
+    limit: Math.min(RENTCAST_MAX_LISTINGS_PER_REQUEST, Math.max(1, Math.floor(f.limit ?? opts.defaultLimit))),
+  }
+  if (f.offset != null && Number.isFinite(f.offset) && f.offset > 0) q.offset = Math.floor(f.offset)
   if (f.city) q.city = f.city
   if (f.state) q.state = f.state
   if (f.zipCode) q.zipCode = f.zipCode

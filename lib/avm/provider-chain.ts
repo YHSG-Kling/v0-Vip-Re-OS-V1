@@ -10,7 +10,10 @@
  * Configured providers (super-admin tier):
  *   - RentCast (RENTCAST_API_KEY — the ONE platform key; RentCast is platform-
  *     gated, there is no per-tenant key) — chosen AVM provider
- *   - BatchData (BATCHDATA_API_KEY) — strong property records + value
+ *   - (BatchData — RETIRED from this chain, wave 92 lane 92B: owner "use rentcast as much as
+ *     possible regarding … home values" / "batchdata is to be used more for scrapping leads".
+ *     Survivor: the RentCast leg, which now runs for EVERY tenant — its gate no longer asks the
+ *     tenant-IDX substitute question for a property-data read, rentcast-eligibility.ts readKind.)
  *   - ZenRows + Zillow (ZENROWS_API_KEY) — Zillow Zestimate scrape
  *   - Perplexity Sonar (via lib/ai/models.ts) — live AVM context
  *   - OSINT public records — value derived from sale records + comps
@@ -20,8 +23,8 @@
  * propagates as an error to the caller.
  *
  * STATUS (verified): the adapters are LIVE — RentCast via lib/property/rentcast
- * (connector-gateway, X-Api-Key, per-call metering), BatchData via
- * lib/external/batchdata-client, Zillow-via-ZenRows via lib/external/
+ * (connector-gateway, X-Api-Key, per-call metering), (BatchData leg retired wave 92),
+ * Zillow-via-ZenRows via lib/external/
  * zenrows-client, Perplexity via the AI gateway. Each is creds-gated (no key →
  * null → next provider) and the paid tier sits behind usePaidProviders + the
  * vendor budget gate. The only remaining stub is the OSINT direct-AVM path
@@ -30,6 +33,8 @@
 
 import "server-only"
 
+// "batchdata" stays in the union ONLY so a historical cached row's provenance still types; no
+// adapter produces it since wave 92 (lane 92B).
 export type AvmSource = "rentcast" | "batchdata" | "zenrows_zillow" | "perplexity" | "osint" | "cached" | "market_appreciation_fallback"
 
 export interface AvmResult {
@@ -63,7 +68,7 @@ interface AvmRequest {
   /** Allow caller to skip certain providers (e.g., for testing) */
   skipProviders?: AvmSource[]
   /**
-   * When true, fall through to PAID providers (RentCast, BatchData,
+   * When true, fall through to PAID providers (RentCast — BatchData retired wave 92 —
    * ZenRows/Zillow) as Tier 2/3 if Perplexity returns nothing confident.
    * Default false — agents pay only when they explicitly request a Premium
    * CMA before a listing appointment via runAiCma({ mode: 'premium' }).
@@ -141,7 +146,9 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
   let rentcastEligible = false
   if (paidAllowed && req.brokerageId) {
     const { resolveRentcastEligibility, rentcastBudgetBlocked } = await import("@/lib/property/rentcast-eligibility")
-    const eligibility = await resolveRentcastEligibility({ brokerageId: req.brokerageId })
+    // Wave 92 (lane 92B): a home value is a PROPERTY-DATA read — no IDX substitute exists, so the
+    // tenant-IDX rule no longer blocks it; key + budget still apply.
+    const eligibility = await resolveRentcastEligibility({ brokerageId: req.brokerageId, readKind: "property_data" })
     rentcastEligible = eligibility.eligible
     const overBudget = eligibility.budget.checked
       ? eligibility.reason === "budget_exhausted"
@@ -153,18 +160,11 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
       const rc = await tryRentcast(req)
       if (rc && rc.confidence >= 0.6) return rc
     }
-    if (!skip.has("batchdata") && process.env.BATCHDATA_API_KEY) {
-      // THE ONE BATCHDATA GATE (wave 81 lane B): the AVM leg is the STAFF "valuation"
-      // purpose — lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess (tier ≠ off,
-      // tenant required). RentCast already ran first above; a refusal falls to the next
-      // rung, never to an ungated reach.
-      const { resolveBatchDataAccess } = await import("@/lib/ai-isa/property-lookup-rail")
-      const access = await resolveBatchDataAccess({ brokerageId: req.brokerageId, purpose: "valuation" })
-      if (access.allowed) {
-        const bd = await tryBatchData(req)
-        if (bd && bd.confidence >= 0.6) return bd
-      }
-    }
+    // TOMBSTONE (wave 92, lane 92B, §1.3): the BatchData AVM leg (tryBatchData →
+    // enrichPropertyWithBatchData, gated as purpose "valuation") stood here. A home value is a
+    // RentCast read — survivor: the tryRentcast leg above. "valuation" left
+    // BATCHDATA_ELIGIBLE_PURPOSES (lib/ai-isa/property-lookup-rail.ts), so no valuation lane can
+    // reach BatchData again.
     if (!skip.has("zenrows_zillow") && process.env.ZENROWS_API_KEY) {
       const zen = await tryZillowViaZenRows(req)
       if (zen && zen.confidence >= 0.55) return zen
@@ -203,23 +203,6 @@ async function tryRentcast(req: AvmRequest): Promise<AvmResult | null> {
       source: "rentcast",
       fetchedAt: new Date().toISOString(),
       notes: avm.rangeLow && avm.rangeHigh ? `RentCast AVM (range $${avm.rangeLow.toLocaleString()}–$${avm.rangeHigh.toLocaleString()})` : "RentCast AVM",
-    }
-  } catch {
-    return null
-  }
-}
-
-async function tryBatchData(req: AvmRequest): Promise<AvmResult | null> {
-  try {
-    const { enrichPropertyWithBatchData } = await import("@/lib/external/batchdata-client")
-    const result = await enrichPropertyWithBatchData(req.address)
-    if (!result || !result.estimatedValue || result.estimatedValue <= 0) return null
-    return {
-      value: result.estimatedValue,
-      confidence: 0.8,
-      source: "batchdata",
-      fetchedAt: new Date().toISOString(),
-      notes: `BatchData property enrichment (condition: ${result.condition})`,
     }
   } catch {
     return null

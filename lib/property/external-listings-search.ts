@@ -156,7 +156,14 @@ export async function searchExternalListings(
   //
   // RentCast: platform key AND the owner ruling AND the vendor budget.
   const listingType: ExternalListingType = input.listingType ?? "sale"
-  const rentcast = await resolveRentcastEligibility({ brokerageId: input.brokerageId })
+  // Wave 92 (lane 92B, owner: "use rentcast as much as possible regarding property listings …
+  // this is supposed to run for the full platform"): a RENTAL search is a property-data read — the
+  // tenant's IDX feed carries no rentals, so it is no substitute and is not asked about. A SALE
+  // search keeps the IDX-substitute precedence.
+  const rentcast = await resolveRentcastEligibility({
+    brokerageId: input.brokerageId,
+    readKind: listingType === "rental" ? "property_data" : "sale_listings",
+  })
   const idx: TenantIdxConnection = rentcast.idx
 
   // FAIL CLOSED. If we could not determine whether this tenant owns an IDX feed
@@ -202,31 +209,11 @@ export async function searchExternalListings(
   const hasRentcastPlatformKey = await isRentcastConfigured(input.brokerageId)
   const hasRentcast = hasRentcastPlatformKey && rentcast.eligible
 
-  // ── THE RENTAL SIDE HAS NO IDX PROVIDER ───────────────────────────────────
-  //
-  // Decided HERE, before the IDX pull and before RentCast is spent, because both
-  // alternatives are dishonest. `searchActiveListings` reads `/clients/featured`
-  // — the brokerage's own featured FOR-SALE set — so running it for a rental
-  // query would return homes for sale under a rent search. And spending the
-  // platform's RentCast on a tenant who connected their own feed is the exact
-  // thing the owner ruled out; "but their feed can't serve rentals" is not an
-  // exception the ruling contains, and inventing one here would put this file
-  // back to holding a second opinion about the precedence.
-  //
-  // So the honest outcome is the CMA lane's outcome for the closed-sale side: no
-  // provider covers it for this tenant, stated in words, with nothing
-  // substituted. The caller still serves platform-internal listings.
-  if (listingType === "rental" && hasIdx) {
-    return {
-      listings: [],
-      source: "none",
-      listingType,
-      error:
-        `No external rental listings were searched, and that was DELIBERATE, not a failure: this brokerage has connected its own IDX Broker credentials${
-          idx.status === "connected" ? ` (at ${idx.ownerType} level)` : ""
-        }, and RentCast is the platform's provider for brokerages that have not. The IDX Broker feed this product reads serves the brokerage's own featured FOR-SALE inventory and carries no rental listings, so no external provider covers the rental side for this tenant.`,
-    }
-  }
+  // TOMBSTONE (wave 92, lane 92B, §1.3): the "rental && hasIdx → source none" refusal stood here
+  // (an IDX tenant's renter got NO external rentals). The owner's 2026-10-01 ruling narrows the
+  // IDX rule to the read IDX substitutes for — so a rental search is asked as property_data above,
+  // `hasIdx` is false for it, and it falls to RentCast's RENTAL endpoint below like every other
+  // tenant's. Survivor: the Tier-2 rental branch.
 
   // Tier 1: IDX Broker feed (the brokerage's own MLS-enabled active listings).
   let idxListings: NormalizedIdxListing[] = []
@@ -251,8 +238,8 @@ export async function searchExternalListings(
   const chosen = resolveListingSource({ hasIdx, hasRentcast })
 
   if (chosen === "idx") {
-    // Unreachable for a rental query — the branch above returned already — so
-    // this is always a for-sale set.
+    // Unreachable for a rental query — a rental search never asks the IDX question (readKind
+    // property_data above), so hasIdx is false for it — this is always a for-sale set.
     return { listings: idxListings.map(idxToExternal), source: "idx", listingType: "sale" }
   }
 

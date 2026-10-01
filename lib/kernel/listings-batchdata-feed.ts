@@ -7,7 +7,10 @@
  *
  * THREE DISTINCT CAPABILITIES, never merged (owner's standing rule):
  *
- *  1. ACTIVE-LISTING DISCOVERY — `runActiveListingDiscoveryForMarket`. Polls
+ *  1. ACTIVE-LISTING DISCOVERY — `runActiveListingDiscoveryForMarket`. WAVE 92
+ *     (lane 92B): now a RENTCAST sweep (owner 2026-10-01: "use rentcast as much as
+ *     possible regarding property listings" · "batchdata is to be used more for
+ *     scrapping leads") — see the function's header. Was: polls
  *     BatchData's `on-market` quickList per territory into a NEW listings feed
  *     table (`market_active_listings`, m636 — no existing table fit: `listings`
  *     is the TENANT's own inventory, `market_data`/`market_trends` are
@@ -40,6 +43,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { ingestRawSourceBatch } from "@/lib/kernel/scraping"
 import { isViableRecord } from "@/lib/lead-pipeline/raw-record-types"
 import { normalizeStreetAddress } from "@/lib/external/permit-signals"
+import { RENTCAST_MAX_LISTINGS_PER_REQUEST } from "@/lib/property/rentcast-query"
 import {
   fetchIncrementalPropertySearch,
   normalizeBuyBoxInvestorRecord,
@@ -50,7 +54,6 @@ import { investorBuyboxPage, investorBuyboxCount } from "@/lib/external/batchdat
 import {
   ACTIVE_LISTING_SIGNAL_TYPE,
   EXPIRED_LISTING_SIGNAL_TYPE,
-  WITHDRAWN_LISTING_SIGNAL_TYPE,
   SOLD_LISTING_SIGNAL_TYPE,
   PRICE_REDUCED_SIGNAL_TYPE,
   buildBatchDataSignalRow,
@@ -80,17 +83,9 @@ export interface FeedMarket {
   zip_codes: string[] | null
 }
 
-// ─── quickList → our own status bucket ────────────────────────────────────────
-/** PURE. Reads the property's on-market bucket off the quickLists BatchData
- *  returned, most-specific first (a property can carry more than one). */
-function statusFromQuickLists(quickLists: readonly string[] | undefined): "active" | "expired" | "withdrawn" | "sold" | "unknown" {
-  const ql = new Set((quickLists ?? []).map((q) => q.toLowerCase()))
-  if (ql.has("expired-listing")) return "expired"
-  if (ql.has("canceled-listing") || ql.has("failed-listing")) return "withdrawn"
-  if (ql.has("recently-sold")) return "sold"
-  if (ql.has("on-market") || ql.has("active-listing") || ql.has("pending-listing")) return "active"
-  return "unknown"
-}
+// TOMBSTONE (wave 92, lane 92B, §1.3): statusFromQuickLists (BatchData on-market quickList →
+// status bucket) left with the BatchData discovery pull — survivor: the RentCast listing STATUS
+// ("Active" / "Inactive" + removedDate) read inside runActiveListingDiscoveryForMarket below.
 
 /** Lane 88G — a list-price drop smaller than this is rounding / a relist artefact, not a price cut. */
 const PRICE_CUT_MIN_FRACTION = 0.01
@@ -117,61 +112,94 @@ export function detectPriceCut(params: {
   return { cut: fraction >= PRICE_CUT_MIN_FRACTION, fraction: Math.round(fraction * 1000) / 1000 }
 }
 
-const STATUS_SIGNAL_TYPE: Record<"active" | "expired" | "withdrawn" | "sold", string> = {
-  active: ACTIVE_LISTING_SIGNAL_TYPE,
-  expired: EXPIRED_LISTING_SIGNAL_TYPE,
-  withdrawn: WITHDRAWN_LISTING_SIGNAL_TYPE,
-  sold: SOLD_LISTING_SIGNAL_TYPE,
-}
+// TOMBSTONE (wave 92, lane 92B): STATUS_SIGNAL_TYPE (quickList bucket → signal type) left with
+// the BatchData quickList statuses; the RentCast sweep picks its signal type inline (active /
+// sold / left-unsold) in runActiveListingDiscoveryForMarket.
+
+/** Wave 92 (lane 92B) — a market feed refreshed within this many hours is not re-swept ("checking
+ *  … before scrapping and pulling data will cutdown on runs"): the lead-scraping tick runs several
+ *  times a day; a territory's inventory picture is a DAILY fact. */
+const ACTIVE_FEED_MIN_INTERVAL_HOURS = 20
+
+/** Wave 92 — an INACTIVE RentCast listing is a transition only when it left the market inside this
+ *  window (its own removedDate). Older removals are history, not news. Listing STATUS CHANGES are
+ *  where a recency window belongs (owner: "pulling recent data should be only on where it is
+ *  appropriate"). */
+const OFF_MARKET_TRANSITION_WINDOW_DAYS = 30
 
 /**
  * ACTIVE-LISTING DISCOVERY — one territory per call. Best-effort throughout:
  * a read/write failure on one property never aborts the rest of the pull, and
- * the caller (the BatchData branch of the lead-scraping cron) treats this as a
- * side-channel exactly like the Smart Search reconcile beside it.
+ * the caller (the lead-scraping cron, after the active-territory gate) treats this
+ * as a side-channel exactly like the Smart Search reconcile beside it.
+ *
+ * WAVE 92 (lane 92B) — RENTCAST, NOT BATCHDATA. TOMBSTONE (§1.3): the BatchData
+ * `on-market` quickList pull (fetchIncrementalPropertySearch, billed PER RECORD on every
+ * re-walk — "20x-100x RentCast's per-request cost for the same coverage", this file's own
+ * wave-68 note) is deleted. Survivor: TWO RentCast /listings/sale requests per territory per
+ * day — status "Active" (up to RENTCAST_MAX_LISTINGS_PER_REQUEST rows) and status "Inactive"
+ * (its removedDate is the off-market date). Same feed table, same upsert key, same price-cut
+ * rule, same signal builder. Status vocabulary: RentCast says only Active / Inactive and cannot
+ * tell expired from withdrawn from sold, so an off-market row is stored as `off_market`
+ * (supabase/migrations/m680 widens the CHECK — until it is applied those rows are refused and
+ * reported ONCE per run) and a SIGNAL is filed only for an address this brokerage already holds,
+ * after ONE cached RentCast property-record read decides sold (lastSaleDate on/after the
+ * removal) vs left-unsold. The stored opt-in spelling `batchdata_on_market` still gates this
+ * feed (platform-staff written; renaming it is a migration needing a ruling — the same
+ * historical-spelling note as BATCHDATA_BILLED_PULL_OPT_IN).
  */
 export async function runActiveListingDiscoveryForMarket(
   supabase: SupabaseClient,
   market: FeedMarket,
-): Promise<{ observed: number; transitions: number; signalsWritten: number; errors: string[] }> {
+): Promise<{ observed: number; transitions: number; signalsWritten: number; errors: string[]; skippedRecent?: boolean }> {
   const errors: string[] = []
   let signalsWritten = 0
   let transitions = 0
-
-  // COST GATE (wave 68, owner: "that is a lot of money to spend for leads…" — RESEARCHED: this
-  // pull bills per RECORD and must re-walk the whole active set every cycle to detect status
-  // transitions, 20x-100x RentCast's per-request cost for the same coverage). Skip the billed
-  // pull entirely when this brokerage's order excludes "batchdata_on_market" (the m642 default).
+  // OPT-IN GATE (platform-staff, m642/m643) — unchanged: no opt-in → no feed and no spend.
   const sources = await resolveActiveListingSources(market.brokerage_id)
   if (!sources.includes("batchdata_on_market")) {
     return { observed: 0, transitions: 0, signalsWritten: 0, errors: [] }
   }
 
-  const pull = await fetchIncrementalPropertySearch({
-    quicklist: "on-market",
-    city: market.city,
-    state: market.state,
-    searchSession: `feed-${market.id}-onmarket`,
-    take: 100,
-  })
-  if (!pull.ok) {
-    errors.push(`active-listing pull failed for ${market.name}: ${pull.error}`)
+  // CADENCE GATE — one sweep per territory per day.
+  const { data: lastRow, error: lastErr } = await supabase
+    .from("market_active_listings")
+    .select("last_seen_at")
+    .eq("market_id", market.id)
+    .order("last_seen_at", { ascending: false })
+    .limit(1)
+  if (lastErr) errors.push(`feed cadence read refused for ${market.name} (sweeping anyway): ${lastErr.message}`)
+  const lastSeen = Date.parse(String((lastRow ?? [])[0]?.last_seen_at ?? ""))
+  if (Number.isFinite(lastSeen) && Date.now() - lastSeen < ACTIVE_FEED_MIN_INTERVAL_HOURS * 3_600_000) {
+    return { observed: 0, transitions: 0, signalsWritten: 0, errors, skippedRecent: true }
+  }
+
+  const { searchRentcastSaleListings, getRentcastPropertyRecordFacts } = await loadRentcast()
+  const area = { city: market.city, state: market.state, limit: RENTCAST_MAX_LISTINGS_PER_REQUEST }
+  const caller = { brokerageId: market.brokerage_id, systemSource: "active_listing_discovery", marketSweep: true as const }
+  const active = await searchRentcastSaleListings({ ...caller, filters: { ...area, status: "Active" } })
+  if (!active.success) {
+    errors.push(`active-listing sweep failed for ${market.name}: ${active.error ?? "no reason reported"}`)
     return { observed: 0, transitions: 0, signalsWritten: 0, errors }
   }
-  await meterVendorSpend({
-    vendorName: "batchdata", usageType: "active_listing_discovery", cost: pull.cost,
-    brokerageId: market.brokerage_id, metadata: { market_id: market.id },
-  })
+  const inactive = await searchRentcastSaleListings({ ...caller, filters: { ...area, status: "Inactive" } })
+  if (!inactive.success) errors.push(`off-market sweep failed for ${market.name} (active rows still recorded): ${inactive.error ?? "no reason reported"}`)
+  const removedFloor = Date.now() - OFF_MARKET_TRANSITION_WINDOW_DAYS * 86_400_000
+  const rows: Array<{ l: (typeof active.listings)[number]; status: "active" | "off_market" }> = [
+    ...active.listings.map((l) => ({ l, status: "active" as const })),
+    ...(inactive.success ? inactive.listings : [])
+      .filter((l) => { const t = Date.parse(String(l.removedDate ?? "")); return Number.isFinite(t) && t >= removedFloor })
+      .map((l) => ({ l, status: "off_market" as const })),
+  ]
+  let offMarketRefusedByCheck = false
 
-  for (const record of pull.records) {
-    const addressRaw = record.propertyAddress || record.address
+  for (const { l, status } of rows) {
+    const addressRaw = l.address
     if (!addressRaw) continue
     const addressKey = normalizeStreetAddress(addressRaw)
     if (!addressKey) continue
-    const status = statusFromQuickLists(record.quickLists)
-    if (status === "unknown") continue
 
-    // ── upsert the feed row and detect a transition ─────────────────────────
+    // ── read the feed row and detect a transition ─────────────────────────
     const { data: existing, error: readErr } = await supabase
       .from("market_active_listings")
       .select("id, current_status, list_price")
@@ -183,16 +211,16 @@ export async function runActiveListingDiscoveryForMarket(
       continue
     }
     const previousStatus = existing?.current_status ?? null
+    // An off-market row is NEWS only for an address this feed last saw ACTIVE; a first-seen
+    // inactive row is history and is not stored (no write, no signal).
+    if (status === "off_market" && previousStatus !== "active") continue
+    if (status === "off_market" && offMarketRefusedByCheck) continue
     const isTransition = previousStatus !== null && previousStatus !== status
     const isFirstSeen = previousStatus === null
-    // Lane 88G — the LIST price (listing.price), not the AVM. estimatedValue stays only as the
-    // fallback for a row whose listing dataset is absent, so buyer criteria-fit keeps a number.
-    const listPrice = record.listing?.price ?? record.estimatedValue ?? null
     const priceCut = detectPriceCut({
       previousStatus, status,
       previousPrice: (existing as { list_price?: number | null } | null)?.list_price ?? null,
-      price: record.listing?.price ?? null,
-      maxListPrice: record.listing?.maxListPrice ?? null,
+      price: l.price ?? null,
     })
 
     const { error: upsertErr } = await supabase
@@ -203,18 +231,19 @@ export async function runActiveListingDiscoveryForMarket(
           brokerage_id: market.brokerage_id,
           address_key: addressKey,
           property_address: addressRaw,
-          city: record.propertyCity ?? record.city ?? market.city,
-          state: record.propertyState ?? record.state ?? market.state,
-          zip: record.propertyZip ?? record.zip ?? null,
+          city: l.city ?? market.city,
+          state: l.state ?? market.state,
+          zip: l.zip ?? null,
           current_status: status,
-          list_price: listPrice,
-          // m639 — criteria-fit specs (beds/baths/sqft/property_type), nullable: honest when a
-          // pull's building sub-object is absent, never a fabricated 0/null-string default.
-          beds: record.beds ?? null,
-          baths: record.baths ?? null,
-          sqft: record.sqft ?? null,
-          property_type: record.propertyType ?? null,
-          batchdata_quicklists: record.quickLists ?? [],
+          list_price: l.price ?? null,
+          // m639 — criteria-fit specs (beds/baths/sqft/property_type), nullable: honest when the
+          // listing row omits them, never a fabricated 0/null-string default.
+          beds: l.bedrooms ?? null,
+          baths: l.bathrooms ?? null,
+          sqft: l.squareFeet ?? null,
+          property_type: l.propertyType ?? null,
+          // Historical column (BatchData quickLists) — a RentCast row carries none.
+          batchdata_quicklists: [],
           last_seen_at: new Date().toISOString(),
           ...(isTransition || isFirstSeen ? { last_status_change_at: new Date().toISOString() } : {}),
           updated_at: new Date().toISOString(),
@@ -222,6 +251,12 @@ export async function runActiveListingDiscoveryForMarket(
         { onConflict: "market_id,address_key" },
       )
     if (upsertErr) {
+      if (status === "off_market" && (upsertErr as { code?: string }).code === "23514") {
+        // m680 not applied yet — the CHECK still refuses 'off_market'. Said ONCE, then skipped.
+        offMarketRefusedByCheck = true
+        errors.push(`off_market feed rows refused by the current_status CHECK for ${market.name} — supabase/migrations/m680 is not applied yet (active rows unaffected)`)
+        continue
+      }
       errors.push(`feed write failed for ${addressRaw}: ${upsertErr.message}`)
       continue
     }
@@ -237,27 +272,46 @@ export async function runActiveListingDiscoveryForMarket(
     const matched = await findLeadOrContactByAddress(supabase, market.brokerage_id, addressKey)
     if (!matched) continue
 
-    const signal: DerivedSellerSignal = isTransition
-      ? {
-          signalType: STATUS_SIGNAL_TYPE[status],
-          strength: status === "expired" || status === "withdrawn" ? "moderate" : "weak",
-          variant: `t:${previousStatus}->${status}`,
-          reason: `Active-listing monitor observed this address's MLS status change from ${previousStatus} to ${status}`,
-          observed: { previous_status: previousStatus, new_status: status, quicklists: record.quickLists ?? [] },
-        }
-      : {
-          signalType: PRICE_REDUCED_SIGNAL_TYPE,
-          strength: "weak",
-          variant: `p:${(existing as { list_price?: number | null } | null)?.list_price ?? "?"}->${record.listing?.price ?? "?"}`,
-          reason: "Active-listing monitor observed this still-listed address's list price drop since the last pass",
-          observed: {
-            previous_list_price: (existing as { list_price?: number | null } | null)?.list_price ?? null,
-            list_price: record.listing?.price ?? null,
-            max_list_price: record.listing?.maxListPrice ?? null,
-            days_on_market: record.listing?.daysOnMarket ?? null,
-            cut_fraction: priceCut.fraction,
-          },
-        }
+    let signal: DerivedSellerSignal
+    if (isTransition && status === "off_market") {
+      // SOLD vs LEFT UNSOLD — RentCast's listing row cannot say, its property RECORD can: a last
+      // sale on/after the removal date is a sale. ONE request, only for an address this brokerage
+      // already holds, cached 30 days by the RentCast client.
+      const record = await getRentcastPropertyRecordFacts({ brokerageId: market.brokerage_id, systemSource: "active_listing_discovery", address: addressRaw })
+      const removedAt = Date.parse(String(l.removedDate ?? ""))
+      const soldAt = Date.parse(String(record?.lastSaleDate ?? ""))
+      const sold = Number.isFinite(removedAt) && Number.isFinite(soldAt) && soldAt >= removedAt - 7 * 86_400_000
+      signal = {
+        signalType: sold ? SOLD_LISTING_SIGNAL_TYPE : EXPIRED_LISTING_SIGNAL_TYPE,
+        strength: sold ? "weak" : "moderate",
+        variant: `t:${previousStatus}->${sold ? "sold" : "off_market"}`,
+        reason: sold
+          ? "Active-listing monitor observed this address leave the market and the property record shows a sale on/after the removal"
+          : "Active-listing monitor observed this address leave the market UNSOLD (RentCast cannot tell an expired listing from a withdrawn one)",
+        observed: { previous_status: previousStatus, new_status: "off_market", removed_date: l.removedDate ?? null, last_sale_date: record?.lastSaleDate ?? null },
+      }
+    } else if (isTransition) {
+      signal = {
+        signalType: ACTIVE_LISTING_SIGNAL_TYPE,
+        strength: "weak",
+        variant: `t:${previousStatus}->${status}`,
+        reason: `Active-listing monitor observed this address's MLS status change from ${previousStatus} to ${status}`,
+        observed: { previous_status: previousStatus, new_status: status, listed_date: l.listedDate ?? null },
+      }
+    } else {
+      signal = {
+        signalType: PRICE_REDUCED_SIGNAL_TYPE,
+        strength: "weak",
+        variant: `p:${(existing as { list_price?: number | null } | null)?.list_price ?? "?"}->${l.price ?? "?"}`,
+        reason: "Active-listing monitor observed this still-listed address's list price drop since the last pass",
+        observed: {
+          previous_list_price: (existing as { list_price?: number | null } | null)?.list_price ?? null,
+          list_price: l.price ?? null,
+          days_on_market: l.daysOnMarket ?? null,
+          cut_fraction: priceCut.fraction,
+        },
+      }
+    }
     const row = buildBatchDataSignalRow({
       signal,
       entity: matched.entity,
@@ -278,7 +332,18 @@ export async function runActiveListingDiscoveryForMarket(
     }
   }
 
-  return { observed: pull.records.length, transitions, signalsWritten, errors }
+  return { observed: rows.length, transitions, signalsWritten, errors }
+}
+
+/** The RentCast readers this feed uses, loaded lazily (the client is gated + metered itself). The
+ *  property RECORD's last-sale date is read through the full staff record (an internal signal
+ *  decision, never shown to a customer). */
+async function loadRentcast() {
+  const rc = await import("@/lib/property/rentcast")
+  return {
+    searchRentcastSaleListings: rc.searchRentcastSaleListings,
+    getRentcastPropertyRecordFacts: rc.getRentcastPropertyDetail,
+  }
 }
 
 /** PURE-ish (one read). Address-keyed lookup against the brokerage's OWN leads

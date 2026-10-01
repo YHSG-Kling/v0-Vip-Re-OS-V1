@@ -62,7 +62,14 @@ export async function GET(req: NextRequest) {
 
   const results: Array<{ source_id: string; actor: string; fetched: number; inserted: number; updated: number }> = []
 
+  // ACTIVE-TERRITORY PRE-CHECK (wave 92, lane 92B — owner: "checking the active territories before
+  // scrapping and pulling data will cutdown on runs"): ONE resolution, every skipped run counted.
+  // A tenant's own topic source runs only for a live tenant; a PLATFORM source (brokerage_id null)
+  // is not tenant-bound and always runs.
+  const { resolveActivePullGate } = await import("@/lib/lead-pipeline/scrape-territories")
+  const pullGate = await resolveActivePullGate(svc)
   for (const s of (sources ?? []) as SourceRow[]) {
+    if (s.brokerage_id && !pullGate.check({ brokerageId: s.brokerage_id }).allowed) continue
     const cfg = s.source_config ?? {}
     const actor      = cfg.actor
     const input      = cfg.input
@@ -130,6 +137,7 @@ export async function GET(req: NextRequest) {
   }
 
   return NextResponse.json({
+    territory_gate: pullGate.tally,
     ran_at: new Date().toISOString(),
     sources_processed: results.length,
     results,

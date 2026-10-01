@@ -400,7 +400,9 @@ async function main() {
   console.log("\n[13 · pure — the SELLER DECISION trust layer (provenance → confidence → policy)]")
   {
     const { defaultProvenance, netSheetConfidence, decideNetSheetPolicy, counterScenario } = await import("../lib/offers/net-sheet-calc")
-    const { extractTaxFigures } = await import("../lib/offers/public-record-preload")
+    // Wave 92 (lane 92B): the preload rides RentCast's property RECORD; its parser is the record
+    // normalizer (the BatchData-shape extractTaxFigures was retired with the BatchData leg).
+    const { normalizeRentcastPropertyRecord } = await import("../lib/property/rentcast")
     const base = defaultProvenance()
     check("a defaulted payoff is LOW confidence → RED: a $0 payoff overstates net by the whole mortgage — figures stay agent-only",
       netSheetConfidence(base) === "low" && decideNetSheetPolicy(base).decision === "red"
@@ -414,11 +416,11 @@ async function main() {
       { commissionRate: 0.06, mortgagePayoff: 200_000, countyCityTaxes: 2_500, hoaDuesProration: 300, otherProratedFees: 5_000, transactionFee: 0 })
     check("counter what-if: recomputed net + honest delta + risk-aware explanation (no persuasion on a downside)",
       cs.deltaVsOffer === Math.round(15_000 * 0.94) && cs.explanation.includes("if the buyer accepts"))
-    check("the records parser adopts ONLY positive finite figures across BatchData's shapes; garbage yields nulls",
-      extractTaxFigures({ assessment: { taxAmount: "4,250", assessedValue: 310_000, taxYear: 2025 } }).tax === 4250
-      && extractTaxFigures({ tax: { annualTaxAmount: 3900 } }).tax === 3900
-      && extractTaxFigures({ assessment: { taxAmount: -5 } }).tax === null
-      && extractTaxFigures("garbage").tax === null)
+    check("the records parser adopts ONLY positive finite figures (latest tax year wins); garbage yields nulls",
+      normalizeRentcastPropertyRecord({ propertyTaxes: { "2024": { year: 2024, total: 4100 }, "2025": { year: 2025, total: 4250 } }, taxAssessments: { "2025": { year: 2025, value: 310_000 } } }).annualPropertyTax === 4250
+      && normalizeRentcastPropertyRecord({ propertyTaxes: { "2025": { year: 2025, total: 4250 } } }).taxYear === 2025
+      && normalizeRentcastPropertyRecord({ propertyTaxes: { "2025": { year: 2025, total: -5 } } }).annualPropertyTax === null
+      && normalizeRentcastPropertyRecord({ junk: "garbage" } as any).annualPropertyTax === null)
   }
 
   console.log("\n[14 · wiring — the net-sheet runner carries the trust layer end to end]")
@@ -437,9 +439,9 @@ async function main() {
       sheet.includes("Payoff is still $0") && sheet.includes("counterScenario")
       && sheet.includes("What if we counter?"))
     const preload = src("lib/offers/public-record-preload.ts")
-    check("the preload rides the EXISTING BatchData rail and never fabricates a 'verified' (clean skip on unconfigured/no-figure)",
-      preload.includes("batchDataPreferMcp") && preload.includes("never a fabricated")
-      && preload.includes("skipReason"))
+    check("the preload rides RentCast's property record (wave 92 — never BatchData) and never fabricates a 'verified' (clean skip on unconfigured/no-figure)",
+      preload.includes("getRentcastPropertyRecord") && !/batchDataPreferMcp\(|resolveBatchDataAccess\(/.test(stripComments(preload))
+      && preload.includes("never a") && preload.includes("skipReason"))
   }
 
   console.log("\n[15 · pure + wiring — THE ONBOARDING DECISION ROOM (day one IS the product)]")

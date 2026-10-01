@@ -190,6 +190,8 @@ interface World {
   ledger: LedgerRow[]
   upserts: any[]
   contactBrokerageId: string | null
+  /** Wave 92 — the readKind every gate call asked with. */
+  readKinds: string[]
 }
 
 let W: World
@@ -246,6 +248,7 @@ function resetWorld(over: Partial<World> = {}): void {
     ledger: [],
     upserts: [],
     contactBrokerageId: "brok-1",
+    readKinds: [],
     ...over,
   }
 }
@@ -258,7 +261,15 @@ function resetWorld(over: Partial<World> = {}): void {
     return { ok: W.httpOk, status: W.httpStatus, data: W.httpOk ? rows : null }
   },
   logVendorUsage: async (e: any) => { W.ledger.push(e); return { success: true } },
-  resolveRentcastEligibility: async () => W.eligibility,
+  // Wave 92 (lane 92B): the gate's readKind rule — a tenant-IDX verdict suppresses only a
+  // SALE-LISTINGS read; rentals / rent comps are property data (no IDX substitute). The REAL
+  // resolver's rule is proved in scripts/rentcast-platform-guard.ts; this stub mirrors it and
+  // records which kind each caller asked with.
+  resolveRentcastEligibility: async (args: any) => {
+    W.readKinds.push(args?.readKind ?? "sale_listings")
+    if (args?.readKind === "property_data" && W.eligibility?.reason === "tenant_has_idx") return eligible()
+    return W.eligibility
+  },
   idxForBrokerage: async () => ({
     isConfigured: () => W.idxConfigured,
     searchActiveListings: async () => W.idxRows,
@@ -384,7 +395,10 @@ async function main(): Promise<void> {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  console.log("\n3. PRECEDENCE — an IDX-connected tenant is never billed for RentCast")
+  console.log("\n3. PRECEDENCE (re-anchored wave 92) — an IDX tenant's RENTALS come from RentCast; its FOR-SALE search stays on IDX")
+  // Owner 2026-10-01: "use rentcast as much as possible regarding property listings … this is
+  // supposed to run for the full platform." IDX substitutes only for the for-sale search; rentals
+  // are property data, so an IDX-connected tenant's renter is no longer left with nothing.
   // ───────────────────────────────────────────────────────────────────────────
   {
     resetWorld({ eligibility: tenantHasIdx() })
@@ -392,24 +406,27 @@ async function main(): Promise<void> {
       brokerageId: "brok-idx", city: "Austin", state: "TX", bedrooms: 3,
       systemSource: "rent_lane_proof",
     })
-    check("NO provider call was issued", W.http.length === 0, String(W.http.length))
-    check("NOTHING was metered", W.ledger.length === 0, String(W.ledger.length))
-    check("no rent is reported", est.available === false && est.monthlyRent === null)
-    check("the reason is the RULING, not an outage", est.eligibilityReason === "tenant_has_idx")
-    check("the note says the suppression was DELIBERATE",
-      /DELIBERATE/.test(est.unavailableNote ?? ""), est.unavailableNote ?? "")
-    check("the note says the IDX feed cannot serve rentals either",
-      /no rental listings|carries no rental/i.test(est.unavailableNote ?? ""))
+    check("the rent estimate asked the gate as a PROPERTY-DATA read", W.readKinds.includes("property_data"), W.readKinds.join(","))
+    check("the RENTAL provider call WAS issued for an IDX tenant", W.http.some((c) => c.path === "/listings/rental/long-term"), String(W.http.length))
+    check("the call was metered on the vendor ledger", W.ledger.length >= 1, String(W.ledger.length))
+    check("a provider-sourced rent is reported", est.available === true && typeof est.monthlyRent === "number" && est.monthlyRent > 0, JSON.stringify(est.unavailableNote))
+    check("the reason is eligible — the IDX substitute rule did not fire for rentals", est.eligibilityReason === "eligible")
 
     // And the router agrees — one decision, not two opinions.
     resetWorld({ eligibility: tenantHasIdx(), idxConfigured: true })
     const routed = await searchExternalListings({
       brokerageId: "brok-idx", city: "Austin", state: "TX", listingType: "rental",
     })
-    check("the router issued no rental provider call for an IDX tenant", W.http.length === 0)
-    check("the router reports no provider rather than a for-sale substitute", routed.source === "none")
-    check("the router echoes back that a RENTAL search was asked for", routed.listingType === "rental")
-    check("the router explains why in words", (routed.error ?? "").length > 80)
+    check("the router issued the RENTAL provider call for an IDX tenant", W.http.some((c) => c.path === "/listings/rental/long-term"))
+    check("the router reports RentCast, never a for-sale substitute", routed.source === "rentcast" && routed.listingType === "rental")
+    check("the router never ran the for-sale endpoint under a rental search", !W.http.some((c) => c.path.startsWith("/listings/sale")))
+
+    // POSITIVE CONTROL — the for-sale search for the same IDX tenant still asks the IDX question
+    // and does NOT reach RentCast's sale endpoint (the substitute rule is narrowed, not removed).
+    resetWorld({ eligibility: tenantHasIdx(), idxConfigured: true })
+    const sale = await searchExternalListings({ brokerageId: "brok-idx", city: "Austin", state: "TX", listingType: "sale" })
+    check("POSITIVE CONTROL: an IDX tenant's FOR-SALE search stays on IDX (no RentCast sale call)",
+      !W.http.some((c) => c.path.startsWith("/listings/sale")) && sale.source !== "rentcast", sale.source)
   }
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -545,7 +562,9 @@ async function main(): Promise<void> {
       ],
       investor: { estimatedMonthlyRent: MODEL_RENT, capRate: 42, arv: 700_000, estimatedRehab: 50_000, rentComps: [] },
     }
-    W.eligibility = tenantHasIdx()
+    // Re-anchored wave 92 (lane 92B): a tenant-IDX verdict no longer suppresses rentals (property
+    // data); the suppressed-provider case is now a dark platform key — still no provider rent.
+    W.eligibility = noPlatformKey()
     const suppressed = await evaluatePropertyValue({
       address: "100 Subject Rd", city: "Austin", state: "TX",
       audience: "investor", brokerageId: "brok-idx", systemSource: "rent_lane_proof",
@@ -878,7 +897,7 @@ async function main(): Promise<void> {
   }
   console.log(
     " ✅ RENT_LANE_PASS — every rent figure comes from published rental listings, a rent search" +
-    " reaches the rental endpoint, an IDX tenant is never billed for it, the spend names its own lane," +
+    " reaches the rental endpoint, every tenant (IDX-connected too) gets RentCast rentals, the spend names its own lane," +
     " and a rent nobody could source reads as missing rather than as zero, a model's guess, or a" +
     " fraction of the price",
   )

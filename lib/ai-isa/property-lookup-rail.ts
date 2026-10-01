@@ -23,13 +23,20 @@
  *                       lib/buyer-search/listing-source-order.ts derives
  *                       "idx" for the brokerage (their MLS data, no vendor
  *                       spend to the platform). $0 to the platform.
- *   3. rentcast       — lib/property/rentcast.ts::searchRentcastSaleListings
- *                       in its documented single-address mode (RENTCAST_USD_
- *                       PER_REQUEST ≈ $0.074/request on the Scale ladder,
- *                       metered by the reader itself). Gated INSIDE that
- *                       reader by resolveRentcastEligibility (IDX-connected
- *                       tenants never reach it; budget-exhausted tenants
- *                       never reach it).
+ *   3. rentcast       — the ONE RentCast client (lib/property/rentcast.ts).
+ *                       WAVE 92 (lane 92B, owner: "also can use it for a
+ *                       simple property lookup … this is supposed to run for
+ *                       the full platform"): the PROPERTY RECORD
+ *                       (getRentcastPropertyRecord, /properties — ~140M
+ *                       assessor records, so an unlisted home resolves too) is
+ *                       the rung for every purpose; a customer CONVERSATION
+ *                       asks the single-address LISTING first (a buyer asking
+ *                       about a home for sale is owed its list price and
+ *                       status) and falls to the record. RENTCAST_USD_PER_
+ *                       REQUEST ≈ $0.074/request, metered by the reader, the
+ *                       record cached 30 days. A property-data read is no
+ *                       longer suppressed by a tenant IDX connection
+ *                       (rentcast-eligibility.ts readKind); budget still is.
  *   4. public_records — lib/property/address-lookup.ts::lookupPropertyBy
  *                       Address (Perplexity Sonar over county assessor /
  *                       public pages, ~$0.005–0.015, booked to ai_tool_usage
@@ -54,6 +61,14 @@
  *   acquisition    — platform lead acquisition (off-market sourcing, seller
  *                    signal enrichment). BatchData allowed when the platform
  *                    policy admits it.
+ *   valuation      — WAVE 92 (lane 92B): NO LONGER a BatchData purpose. Owner
+ *                    (2026-10-01): "use rentcast as much as possible regarding
+ *                    … comparable, home values" · "batchdata is to be used
+ *                    more for scrapping leads." Every former valuation caller
+ *                    (CMA comps supplement, AVM chain, net-sheet tax preload,
+ *                    deal investigator) now reads RentCast; the purpose stays
+ *                    in the vocabulary and is REFUSED by the gate, so a
+ *                    regression cannot quietly reopen the reach.
  *   skip_trace     — owner-contact discovery for an acquisition lane. Allowed
  *                    under the same policy.
  *   dnc            — phone compliance (DNC/TCPA) before an outbound send.
@@ -142,15 +157,13 @@
  *                 (checkDncStatus → unconfigured → the runner DEFERS). The gate
  *                 still declares the purpose, so the reach is auditable.
  *   conversation / listing_intake — refused, always.
- *   valuation   — (wave 81 lane B) the STAFF valuation / deal-analytics lane the
- *                 owner admitted in wave 70 ("BatchData supplement when short"
- *                 for CMA comps): lib/cma/comp-provider.ts (comps supplement),
- *                 lib/avm/provider-chain.ts (AVM chain), lib/offers/public-
- *                 record-preload.ts (net-sheet tax line), lib/agentic-os/deal-
- *                 investigator.ts (deal synthesis). Tier ≠ off, tenant required,
- *                 no on-market opt-in (it is not a per-tenant list pull); each
- *                 caller keeps its own cheaper-first order (RentCast / cache /
- *                 free preview) and its own budget gate. Never a customer audience.
+ *   valuation   — REFUSED since wave 92 (lane 92B). It was (wave 81 lane B) the
+ *                 STAFF valuation lane the owner admitted in wave 70; its four
+ *                 callers — lib/cma/comp-provider.ts (comps supplement → RentCast
+ *                 widened search), lib/avm/provider-chain.ts (AVM chain → the
+ *                 RentCast leg), lib/offers/public-record-preload.ts (tax line →
+ *                 the RentCast record), lib/agentic-os/deal-investigator.ts
+ *                 (→ the RentCast record) — no longer import BatchData at all.
  *
  * ── PROVIDER CHOICE — PEOPLESEARCH vs BATCHDATA (wave 81 lane B) ────────────
  * Owner verbatim: "make sure that peoplesearch and batchdata don't overlap and if
@@ -219,11 +232,13 @@ function isPropertyLookupPurpose(v: unknown): v is PropertyLookupPurpose {
   return typeof v === "string" && (PROPERTY_LOOKUP_PURPOSES as readonly string[]).includes(v)
 }
 
-/** The owner's carve-out (wave 79: acquisition / skip-trace / DNC) plus the wave-70
- *  staff valuation lane (comps supplement): the ONLY purposes that may ever reach
- *  BatchData. A conversation or a listing intake never does. */
+/** The owner's carve-out (wave 79: acquisition / skip-trace / DNC): the ONLY purposes that may
+ *  ever reach BatchData — LEAD work. A conversation, a listing intake, public facts or a
+ *  valuation never does. Wave 92 (lane 92B) struck "valuation" (the wave-70 staff comps/AVM lane
+ *  admitted by 81B): owner 2026-10-01 "batchdata is to be used more for scrapping leads" — its
+ *  four callers read RentCast now (header). */
 export const BATCHDATA_ELIGIBLE_PURPOSES: ReadonlySet<PropertyLookupPurpose> = new Set<PropertyLookupPurpose>([
-  "acquisition", "skip_trace", "dnc", "valuation",
+  "acquisition", "skip_trace", "dnc",
 ])
 
 // ─── PROVIDER CHOICE TABLE (data, cheapest first) ───────────────────────────
@@ -378,7 +393,7 @@ export const PROPERTY_LOOKUP_RUNG_COST_USD: Readonly<Record<PropertyLookupRung, 
       + "customer. RentCast returns a structured assessor record in one metered request. batchdata (the rung) is "
       + "cheaper per call but is a policy rung: never reached for a customer conversation or a listing "
       + "intake (owner ruling, wave 79: own DB → RentCast → BatchData only for acquisition / skip-trace "
-      + "/ DNC / staff valuation).",
+      + "/ DNC; wave 92 struck staff valuation — RentCast serves it).",
   },
   public_records: { usd: 0.015 }, // Perplexity Sonar upper bound (lib/property/address-lookup.ts), booked to ai_tool_usage, not a vendor
   batchdata: { usd: 0.05 },       // MCP_TOOL_CALL_COST_USD (lib/external/batchdata-ai-tools.ts) per call, per-record priced at scale
@@ -667,41 +682,51 @@ async function tenantIdxRung(req: PropertyLookupRequest): Promise<PropertyLookup
 }
 
 async function rentcastRung(req: PropertyLookupRequest): Promise<PropertyLookupFacts | null> {
-  if (req.purpose === "public_facts") {
-    // The PROPERTY RECORD endpoint (/properties) — the one RentCast shape that carries the tax
-    // bill, the assessed tax basis and the HOA fee. Same gate, same meter, same price per request
-    // as the listing search below; its reader is a whitelist that never maps the owner block.
-    const { getRentcastPropertyRecord } = await import("@/lib/property/rentcast")
-    const p = await getRentcastPropertyRecord({
-      brokerageId: req.brokerageId, systemSource: "public_calculator", contactId: req.contactId ?? null,
-      address: formatFullAddress(req.address),
+  const rc = await import("@/lib/property/rentcast")
+  const fullAddress = formatFullAddress(req.address)
+  // WAVE 92 (lane 92B): a customer CONVERSATION asks the single-address LISTING first — a buyer
+  // asking about a home for sale is owed its list price and status, which only a listing row
+  // carries. Every purpose then (or otherwise) reads the PROPERTY RECORD, which resolves listed and
+  // unlisted homes alike — "a simple property lookup".
+  if (req.purpose === "conversation") {
+    const r = await rc.searchRentcastSaleListings({
+      brokerageId: req.brokerageId,
+      systemSource: "ai_agent_tool",
+      contactId: req.contactId ?? null,
+      filters: { address: fullAddress },
     })
-    if (!p) return null
-    return {
-      ...emptyFacts("rentcast", "From RentCast's public property record (county assessor data; platform-metered)."),
-      address: p.address, city: p.city, state: p.state, zip: p.zip,
-      beds: p.bedrooms, baths: p.bathrooms, sqft: p.squareFeet, yearBuilt: p.yearBuilt,
-      // RentCast reports lotSize in SQUARE FEET; the rail's lotSize is acres (address-lookup's unit).
-      lotSize: p.lotSizeSqft != null ? Math.round((p.lotSizeSqft / 43560) * 100) / 100 : null,
-      propertyType: p.propertyType, taxAssessedValue: p.assessedValue,
-      annualPropertyTax: p.annualPropertyTax, propertyTaxYear: p.taxYear, hoaMonthly: p.hoaMonthly,
+    if (r.success && r.listings.length > 0) {
+      const l = r.listings[0]
+      return {
+        ...emptyFacts("rentcast", "From RentCast's listing record (platform-metered)."),
+        address: l.address, city: l.city, state: l.state, zip: l.zip,
+        beds: l.bedrooms, baths: l.bathrooms, sqft: l.squareFeet, yearBuilt: l.yearBuilt,
+        lotSize: l.lotSizeSqft != null ? Math.round((l.lotSizeSqft / 43560) * 100) / 100 : null,
+        propertyType: l.propertyType, listingStatus: l.status ? l.status.toLowerCase() : null,
+        listPrice: l.price, mlsNumber: l.mlsNumber, hoaMonthly: l.hoaMonthly ?? null,
+        lat: l.latitude ?? null, lon: l.longitude ?? null,
+      }
     }
   }
-  const { searchRentcastSaleListings } = await import("@/lib/property/rentcast")
-  const r = await searchRentcastSaleListings({
+  // The PROPERTY RECORD endpoint (/properties) — the RentCast shape that carries the tax bill,
+  // the assessed tax basis and the HOA fee. Same gate, same meter, same price per request as the
+  // listing search above, cached 30 days; its reader is a whitelist that never maps the owner
+  // block, so it is safe for every audience (redactFactsForAudience still strips value figures).
+  const p = await rc.getRentcastPropertyRecord({
     brokerageId: req.brokerageId,
-    systemSource: "ai_agent_tool",
+    systemSource: req.purpose === "public_facts" ? "public_calculator" : "ai_agent_tool",
     contactId: req.contactId ?? null,
-    filters: { address: formatFullAddress(req.address) },
+    address: fullAddress,
   })
-  if (!r.success || r.listings.length === 0) return null
-  const l = r.listings[0]
+  if (!p) return null
   return {
-    ...emptyFacts("rentcast", "From RentCast's listing record (platform-metered)."),
-    address: l.address, city: l.city, state: l.state, zip: l.zip,
-    beds: l.bedrooms, baths: l.bathrooms, sqft: l.squareFeet, yearBuilt: l.yearBuilt,
-    propertyType: l.propertyType, listingStatus: l.status ? l.status.toLowerCase() : null,
-    listPrice: l.price, mlsNumber: l.mlsNumber,
+    ...emptyFacts("rentcast", "From RentCast's public property record (county assessor data; platform-metered)."),
+    address: p.address, city: p.city, state: p.state, zip: p.zip,
+    beds: p.bedrooms, baths: p.bathrooms, sqft: p.squareFeet, yearBuilt: p.yearBuilt,
+    // RentCast reports lotSize in SQUARE FEET; the rail's lotSize is acres (address-lookup's unit).
+    lotSize: p.lotSizeSqft != null ? Math.round((p.lotSizeSqft / 43560) * 100) / 100 : null,
+    propertyType: p.propertyType, taxAssessedValue: p.assessedValue,
+    annualPropertyTax: p.annualPropertyTax, propertyTaxYear: p.taxYear, hoaMonthly: p.hoaMonthly,
   }
 }
 
@@ -807,7 +832,7 @@ export function decideBatchDataAccess(
     return { allowed: false, purpose, reason: `purpose "${String(purpose)}" is not one of ${PROPERTY_LOOKUP_PURPOSES.join("/")} — refused, fail closed` }
   }
   if (!BATCHDATA_ELIGIBLE_PURPOSES.has(purpose)) {
-    return { allowed: false, purpose, reason: `purpose "${purpose}" never reaches BatchData (reserved for acquisition / skip-trace / DNC / staff valuation)` }
+    return { allowed: false, purpose, reason: `purpose "${purpose}" never reaches BatchData (reserved for LEAD work: acquisition / skip-trace / DNC — property reads are RentCast's)` }
   }
   if (purpose === "dnc") return { allowed: true, purpose, reason: "DNC/TCPA compliance scrub — never refused by a spend policy; the MCP wrapper reports unconfigured" }
   if (!req.brokerageId) return { allowed: false, purpose, reason: "no tenant on the request — a tenant-less billed BatchData reach is refused (§4)" }
@@ -816,7 +841,6 @@ export function decideBatchDataAccess(
     return { allowed: false, purpose, reason: `tenant not opted into billed BatchData pulls by platform staff (${BATCHDATA_BILLED_PULL_OPT_IN})` }
   }
   const reason = purpose === "acquisition" ? "acquisition under tier + platform-staff opt-in"
-    : purpose === "valuation" ? "staff valuation / deal analytics under tier (platform-wide cap; the caller's own cheaper-first order and budget gate still apply)"
     : "skip trace under tier (platform-wide cap)"
   return { allowed: true, purpose, reason }
 }
@@ -874,7 +898,7 @@ export async function lookupPropertyForConversation(
   for (const rung of PROPERTY_LOOKUP_RUNG_ORDER) {
     if (rung === "batchdata") {
       if (!BATCHDATA_ELIGIBLE_PURPOSES.has(req.purpose)) {
-        result.skipped.push({ rung, reason: `purpose "${req.purpose}" never reaches BatchData (reserved for acquisition / skip-trace / DNC / staff valuation)` })
+        result.skipped.push({ rung, reason: `purpose "${req.purpose}" never reaches BatchData (reserved for acquisition / skip-trace / DNC — LEAD work)` })
         continue
       }
       policy = policy ?? (await readProductionPolicy(req.brokerageId))

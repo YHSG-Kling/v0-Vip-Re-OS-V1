@@ -80,7 +80,13 @@ export async function GET(req: NextRequest) {
     errors:          string[]
   }> = []
 
+  // ACTIVE-TERRITORY PRE-CHECK (wave 92, lane 92B — owner: "checking the active territories before
+  // scrapping and pulling data will cutdown on runs"): ONE resolution, every skipped run counted.
+  // TENANT-level: a competitor watchlist is the tenant's own; an inactive tenant costs no Exa run.
+  const { resolveActivePullGate } = await import("@/lib/lead-pipeline/scrape-territories")
+  const pullGate = await resolveActivePullGate(svc)
   for (const [brokerageId, competitors] of perBrokerage.entries()) {
+    if (!pullGate.check({ brokerageId }).allowed) continue
     let ingested = 0
     const upsertedAdIds: string[] = []
     const errors: string[] = []
@@ -158,6 +164,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     ran_at:               new Date().toISOString(),
     brokerages_processed: results.length,
+    territory_gate:       pullGate.tally,
     results,
   })
 }

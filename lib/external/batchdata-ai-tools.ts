@@ -47,9 +47,9 @@ export interface BatchDataAiToolsContext {
 
 // No confirmed per-MCP-call price exists (the MCP server bills the same underlying
 // per-record datasets as REST, per the account's token provisioning) — priced the
-// same as the property-enrichment / comps dataset pull elsewhere in this repo
-// (BATCHDATA_COMPS_COST_CENTS in batchdata-client.ts) rather than inventing a
-// different number for the same class of call.
+// same as the property-enrichment dataset pull elsewhere in this repo (the retired
+// BATCHDATA_COMPS_COST_CENTS carried the same 5¢ — wave 92 deleted it with the BatchData comps
+// supplement) rather than inventing a different number for the same class of call.
 //
 // EXPORTED (wave 71) so lib/ai-isa/batchdata-isa-tools.ts's hand-authored ISA/investor
 // tool set prices its own full "page"/lookup/scrub calls at the SAME estimate rather

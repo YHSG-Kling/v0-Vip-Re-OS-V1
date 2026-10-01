@@ -168,9 +168,12 @@ const ALLOW: Policy = { batchDataTier: "lean", batchDataOptedIn: true }
 const NO_OPT: Policy = { batchDataTier: "lean", batchDataOptedIn: false }
 const OFF: Policy = { batchDataTier: "off", batchDataOptedIn: true }
 const d = (purpose: Purpose, policy: Policy, brokerageId: string | null = "b-1") => decideBatchDataAccess({ brokerageId, purpose }, policy).allowed
-check("BATCHDATA_ELIGIBLE_PURPOSES = acquisition / skip_trace / dnc / valuation", [...BATCHDATA_ELIGIBLE_PURPOSES].sort().join(",") === "acquisition,dnc,skip_trace,valuation")
-check("valuation: tier≠off → allowed WITHOUT the on-market opt-in; tier off → refused; no tenant → refused (§4)",
-  d("valuation", ALLOW) && d("valuation", NO_OPT) && !d("valuation", OFF) && !d("valuation", ALLOW, null))
+// Re-anchored wave 92 (lane 92B): "valuation" LEFT the carve-out — property reads are RentCast's
+// (owner 2026-10-01: "batchdata is to be used more for scrapping leads"). The gate REFUSES it under
+// every policy, so a regression cannot quietly reopen the reach.
+check("BATCHDATA_ELIGIBLE_PURPOSES = acquisition / skip_trace / dnc (LEAD work only)", [...BATCHDATA_ELIGIBLE_PURPOSES].sort().join(",") === "acquisition,dnc,skip_trace")
+check("valuation: REFUSED under every policy (allowing, no opt-in, off, tenant-less)",
+  !d("valuation", ALLOW) && !d("valuation", NO_OPT) && !d("valuation", OFF) && !d("valuation", ALLOW, null))
 check("acquisition still needs the opt-in; conversation / listing_intake still never reach BatchData",
   d("acquisition", ALLOW) && !d("acquisition", NO_OPT) && !d("conversation", ALLOW) && !d("listing_intake", ALLOW))
 // The eight wave-80 blind spots: each is now GATED (resolveBatchDataAccess( before its first reach)
@@ -181,10 +184,11 @@ check("acquisition still needs the opt-in; conversation / listing_intake still n
 const BD_REACH = /callBatchDataMcp\(|batchDataPreferMcp(?:<[^(]*?>)?\(|skipTraceBatchDataV3Batch\(|enrichPropertyDatasetsBatchData\(|fetchIncrementalPropertySearch\(|checkDncStatus\(|checkTcpaStatus\(|verifyPhone\(|(?<![Ii]dx\w*\.)searchProperties\(|fetchMotivatedSellers\(|enrichPropertyWithBatchData\(|fetchBatchDataComps\(|investorBuybox\w+\(|verifyAddressBatchData\(|fetchBatchRankPropensity\(|lookupBatchDataPropertiesByIds\(|new BatchDataClient\(|comparableProperty\w+\(/
 const GATE = /resolveBatchDataAccess\(/
 const FORMER_BLIND_SPOTS: Array<{ file: string; expect: "gated" | "no_reach"; purpose?: string }> = [
-  { file: "lib/cma/comp-provider.ts", expect: "gated", purpose: "valuation" },
-  { file: "lib/avm/provider-chain.ts", expect: "gated", purpose: "valuation" },
-  { file: "lib/agentic-os/deal-investigator.ts", expect: "gated", purpose: "valuation" },
-  { file: "lib/offers/public-record-preload.ts", expect: "gated", purpose: "valuation" },
+  // Wave 92 (lane 92B): the four valuation files moved to RentCast — no BatchData reach at all.
+  { file: "lib/cma/comp-provider.ts", expect: "no_reach" },
+  { file: "lib/avm/provider-chain.ts", expect: "no_reach" },
+  { file: "lib/agentic-os/deal-investigator.ts", expect: "no_reach" },
+  { file: "lib/offers/public-record-preload.ts", expect: "no_reach" },
   { file: "app/actions/investor-buybox-preview.ts", expect: "gated", purpose: "acquisition" },
   { file: "app/actions/lead-intelligence.ts", expect: "gated", purpose: "acquisition" },
   { file: "app/actions/calculators.ts", expect: "no_reach" },   // repointed to the rail (customer audience)
@@ -206,7 +210,7 @@ for (const b of FORMER_BLIND_SPOTS) {
 check("app/actions/calculators.ts rides the rail's PUBLIC facts door (lookupPublicPropertyFacts — facts only) — never a raw BatchData row to a public visitor",
   /lookupPublicPropertyFacts\(\{[\s\S]{0,40}brokerageId,/.test(stripped("app/actions/calculators.ts"))
   && !/lookupPropertyForConversation\(/.test(stripped("app/actions/calculators.ts")))
-check("lib/kernel/offer-net-sheet.ts hands the listing's OWN tenant to the preload (the gate refuses a tenant-less reach)",
+check("lib/kernel/offer-net-sheet.ts hands the listing's OWN tenant to the preload (RentCast is metered per tenant; a tenant-less read is refused)",
   /preloadPublicRecordCosts\([\s\S]{0,400}brokerageId: \(lst as any\)\.brokerage_id/.test(stripped("lib/kernel/offer-net-sheet.ts")))
 const DEF_RESOLVER = /function decideBatchDataAccess\(|function resolveBatchDataAccess\(|CONTACT_PROVIDER_ROUTES\s*[:=]|function resolveContactProviderRoute\(/
 const resolverFiles = CORPUS.filter((p) => DEF_RESOLVER.test(code(p)))
