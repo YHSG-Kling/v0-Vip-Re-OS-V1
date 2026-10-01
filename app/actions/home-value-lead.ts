@@ -43,6 +43,22 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
 
   const svc = createServiceClient()
 
+  // PUBLIC lane (lane 92A, CLAUDE.md §4): an unauthenticated homeowner submits this from
+  // /home-value/[agentSlug], so there is no session tenant to prefer — the three ids are
+  // the page's own agents row (app/home-value/[agentSlug]/page.tsx reads id, user_id,
+  // brokerage_id off ONE row). They are a CONSISTENCY KEY, not a grant: before any write
+  // they must still name ONE agent of ONE brokerage, or a forged body could file a contact
+  // into one tenant under another tenant's agent, or notify a user of a different tenant.
+  const { data: agentRow, error: agentErr } = await svc
+    .from("agents")
+    .select("id")
+    .eq("id", input.agentId)
+    .eq("brokerage_id", input.brokerageId)
+    .eq("user_id", input.agentUserId)
+    .maybeSingle()
+  if (agentErr) return { success: false, error: `Could not verify the agent for this home value request: ${agentErr.message}` }
+  if (!agentRow) return { success: false, error: "That agent is not part of that brokerage — the home value request was not recorded" }
+
   // Split name
   const nameParts = input.fullName.trim().split(/\s+/)
   const firstName = nameParts[0] ?? ""

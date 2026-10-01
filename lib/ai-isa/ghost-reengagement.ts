@@ -117,7 +117,14 @@ export async function runGhostReengagement(
       if ((replyCount ?? 0) === 0) {
         const { stampQualificationOutcome } = await import('@/lib/ai-isa/qualification-outcome-stamp')
         const stamped = await stampQualificationOutcome(supabase, { brokerageId, leadId, result: 'no_response' })
-        if (!stamped.ok) console.error(`[ghost-reengagement] no_response NOT stamped for lead ${leadId}: ${stamped.error}`)
+        if (!stamped.ok) {
+          console.error(`[ghost-reengagement] no_response NOT stamped for lead ${leadId}: ${stamped.error}`)
+          // Lane 92A: surfaced where refusals are shown (self_heal_events → the repair digest /
+          // Exception Center), not only logged — the radar's "stalled" tile counts this stamp.
+          const { recordBestEffortLoss } = await import('@/lib/kernel/write-sentinel')
+          await recordBestEffortLoss(supabase, { table: 'ai_isa_qualifications', flow: 'isa_outcome_stamp', brokerageId,
+            reason: "the ghost sweep continues; the ISA radar's stalled count misses this lead until the qualification row is re-stamped" }, stamped.error)
+        }
       }
 
       const stopReason = ghostReengagementStopReason({

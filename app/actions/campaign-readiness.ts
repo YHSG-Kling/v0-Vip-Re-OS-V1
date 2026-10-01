@@ -8,6 +8,7 @@
 import { isValidUUID } from "@/lib/validations"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
 import {
   evaluateCampaignReadiness,
   batchEvaluateCampaignReadiness,
@@ -394,10 +395,16 @@ async function resolveReadScope(
   if (!claimedBrokerageId) {
     return { ok: false, error: "brokerageId is required — readiness reads are tenant-scoped." }
   }
-  if (claimedBrokerageId !== ctx.brokerageId) {
+  // Lane 92A: the comparison is the ONE decision table for a caller-supplied tenant
+  // (lib/platform/acting-context.ts:292 decideClaimedTenant), not a file-local copy. The
+  // identity read stays on getAgentContext, which resolves the TARGET tenant while a staff
+  // member acts-as — so act-as reads work and nothing in the body is trusted. The
+  // REQUIRED-claim refusal above stays here because only an aggregate needs it.
+  const decision = decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId })
+  if (!decision.ok) {
     return { ok: false, error: "Brokerage scope mismatch — refusing to read another brokerage's readiness." }
   }
-  return { ok: true, brokerageId: ctx.brokerageId }
+  return { ok: true, brokerageId: decision.brokerageId }
 }
 
 /**

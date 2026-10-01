@@ -14,6 +14,8 @@
  * Conversion logic is deterministic and documented.
  */
 
+import { elevenLabsUsdForChars } from "@/lib/video/realism-profile"
+
 export type UnitType = 'tokens' | 'api_calls' | 'emails' | 'minutes' | 'records' | 'pieces' | 'credits'
 
 export interface VendorPricing {
@@ -148,8 +150,11 @@ export const VENDOR_PRICING: Record<string, VendorPricing> = {
   'elevenlabs': {
     vendorName: 'ElevenLabs',
     unitType: 'tokens',
-    costPerUnit: 0.00030, // $0.30 per 1K characters
-    notes: 'AI voice generation',
+    // lane 92A: THE ONE voice price (lib/video/realism-profile.ts elevenLabsUsdForChars,
+    // $0.10/1K). Was a private $0.30/1K copy — 3x the billed rate, written into the slideshow
+    // voiceover's video_render_log.cost_usd (app/api/videos/listing-voiceover/route.ts).
+    costPerUnit: elevenLabsUsdForChars(1), // per CHARACTER
+    notes: 'AI voice generation — per character',
   },
   
   // Direct Mail

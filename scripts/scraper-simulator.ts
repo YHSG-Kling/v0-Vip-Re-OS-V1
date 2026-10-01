@@ -83,6 +83,7 @@ import { normalizeTavilyResult } from "../lib/lead-pipeline/tavily-sourcer"
 import { normalizeTavilyRow } from "../lib/external/tavily-client"
 import { runWebSearch } from "../lib/ai/web-search"
 import { normalizeRentcastMarketStats } from "../lib/property/rentcast-normalize"
+import { elevenLabsUsdForChars } from "../lib/video/realism-profile"
 import {
   isNeighborhoodReportAllowed,
   computeLivabilityScore,
@@ -611,7 +612,10 @@ async function testVendorGateway() {
     PLATFORM_VENDOR_RATES.elevenlabs.unit === "character" && PLATFORM_VENDOR_RATES.vapi.unit === "minute")
   check("D-ID 1 video → $0.10", estimatePlatformVendorCost("did", 1) === 0.10)
   check("HeyGen 1 video → $0.50", estimatePlatformVendorCost("heygen", 1) === 0.50)
-  check("ElevenLabs 1000 chars → $0.18", estimatePlatformVendorCost("elevenlabs", 1000) === 0.18)
+  // Lane 92A: re-anchored from a pinned "$0.18" (meter-vendor's private copy) to the RULE — the
+  // TTS meter prices through THE ONE voice price, lib/video/realism-profile.ts elevenLabsUsdForChars.
+  check("ElevenLabs 1000 chars → elevenLabsUsdForChars(1000) (the one voice price, 4dp)",
+    estimatePlatformVendorCost("elevenlabs", 1000) === Math.round(elevenLabsUsdForChars(1000) * 10000) / 10000 && elevenLabsUsdForChars(1000) > 0)
   check("Vapi 5 minutes → $0.35", estimatePlatformVendorCost("vapi", 5) === 0.35)
   check("zero/negative units → $0 (no charge)", estimatePlatformVendorCost("did", 0) === 0 && estimatePlatformVendorCost("vapi", -3) === 0)
 

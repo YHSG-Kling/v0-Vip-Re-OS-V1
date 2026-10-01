@@ -414,8 +414,39 @@ async function testOutcomeVocabularyWriters() {
 
   // The readers learn the two values (the console state machine read neither).
   const consoleSrc = stripComments(readFileSync(join(process.cwd(), "app/dashboard/isa/ai-isa-console-client.tsx"), "utf8"))
-  check("the ISA console maps appointment_set → handoff_ready and no_response → ai_nurturing",
-    /qualResult === 'appointment_set'\) return 'handoff_ready'/.test(consoleSrc) && /qualResult === 'no_response'\) return 'ai_nurturing'/.test(consoleSrc))
+  // Lane 92A: re-anchored from two literal `qualResult === '…'` lines (a WAYPOINT) to the
+  // RULE — the console maps the result through a table keyed by the ONE vocabulary, every
+  // CHECK value has a row, and no comparison names a value the CHECK cannot store.
+  const vocab = new Set<string>(CHECK_VOCABULARIES.ai_isa_qualifications.qualification_result)
+  const resultTable = (src: string): Record<string, string> => {
+    const m = /const\s+RESULT_STATE\s*:\s*Record<QualificationResult,\s*AIISAState>\s*=\s*\{([^}]*)\}/.exec(src)
+    if (!m) return {}
+    return Object.fromEntries([...m[1].matchAll(/(\w+)\s*:\s*'(\w+)'/g)].map((x) => [x[1], x[2]]))
+  }
+  const strayResultLiterals = (src: string): string[] =>
+    [...src.matchAll(/qualResult\s*===\s*'(\w+)'/g)].map((x) => x[1]).filter((v) => !vocab.has(v))
+  const table = resultTable(consoleSrc)
+  check("the ISA console maps the result through RESULT_STATE, keyed by the CHECK vocabulary, with a row for EVERY CHECK value",
+    /QUALIFICATION_RESULTS/.test(consoleSrc) && [...vocab].every((v) => v in table) && Object.keys(table).every((k) => vocab.has(k)))
+  check("…appointment_set → handoff_ready and no_response → ai_nurturing (the wave-91 writers' values land where the radar expects)",
+    table.appointment_set === "handoff_ready" && table.no_response === "ai_nurturing")
+  check("…and no comparison names a qualification_result the CHECK cannot store (the retired 'pending' / 'in_progress' reader-only spellings)",
+    strayResultLiterals(consoleSrc).length === 0)
+  // Lane 92A: a REFUSED stamp is surfaced, not only logged — every caller of the ONE writer
+  // that branches on `!stamped.ok` ledgers the loss (recordBestEffortLoss → self_heal_events,
+  // the repair digest / Exception Center). Derived from the tree: a new caller is judged too.
+  const stampCallers = execSync("git ls-files app lib", { cwd: process.cwd(), encoding: "utf8" }).split("\n")
+    .filter((f) => /\.(ts|tsx)$/.test(f) && f !== "lib/ai-isa/qualification-outcome-stamp.ts")
+    .filter((f) => /stampQualificationOutcome\(/.test(stripComments(readFileSync(join(process.cwd(), f), "utf8"))))
+  const ledgersRefusal = (src: string) => /if\s*\(\s*!stamped\.ok\s*\)\s*\{[\s\S]{0,700}?recordBestEffortLoss\(/.test(src)
+  const unledgered = stampCallers.filter((f) => !ledgersRefusal(stripComments(readFileSync(join(process.cwd(), f), "utf8"))))
+  check(`every caller of stampQualificationOutcome LEDGERS a refused stamp (${stampCallers.length} callers; only-logged: ${unledgered.length}${unledgered.length ? ` — ${unledgered.join(", ")}` : ""})`,
+    stampCallers.length >= 3 && unledgered.length === 0)
+  check("control · a caller that only console.errors the refused stamp is caught",
+    !ledgersRefusal('if (!stamped.ok) console.error(`appointment_set NOT stamped: ${stamped.error}`)'))
+  // Positive control: the pre-92A shape is still recognised as a stray spelling.
+  check("control · the pre-92A `qualResult === 'pending'` / `'in_progress'` branches ARE flagged",
+    strayResultLiterals("if (qualStage === 'awaiting_review' || qualResult === 'pending') return x\nif (qualResult === 'in_progress') return y").join(",") === "pending,in_progress")
 }
 
 async function main() {

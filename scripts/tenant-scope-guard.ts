@@ -528,8 +528,19 @@ const GLOBAL_LOOKUP_EXEMPT: Record<string, string> = {
 // silence a sibling export in the same file.
 //
 // KNOWN BLIND SPOTS (CLAUDE.md §2):
-//   · arrow-function exports (`export const f = async (...) => {}`) are not
-//     walked — every finding fixed this wave was a `function` declaration.
+//   · CLOSED lane 92A: arrow-function exports (`export const f = async (...) =>
+//     { … }`) are walked like declarations (positive control below). An
+//     EXPRESSION-bodied arrow (`=> fn(params)`, no block) is still skipped.
+//   · CLOSED lane 92A: a NAMED object param (`input: SomeInput`) whose interface
+//     or object type alias is declared IN THE SAME FILE is expanded to its keys
+//     (transaction-hazard-insurance's `input: RecordHazardPolicyInput` was this
+//     shape). A type IMPORTED from another module, `Partial<…>`/`Pick<…>`, or an
+//     intersection is still unseen.
+//   · CLOSED lane 92A: a MODULE-LEVEL service singleton and a file-local wrapper
+//     that returns `createServiceClient()` count as service clients. A client
+//     received as a PARAMETER of a "use server" export is not a hole by
+//     construction (a Supabase client cannot cross the HTTP boundary); a wrapper
+//     imported from another module is still unseen.
 //   · CLOSED lane 91D2 (wave 91): a parameter carried inside an inline typed
 //     OBJECT parameter (`params: { brokerageId: string }`, read back as
 //     `params.brokerageId`) is now walked, as is the same object handed WHOLE (or
@@ -546,8 +557,7 @@ const GLOBAL_LOOKUP_EXEMPT: Record<string, string> = {
 //   · the service-client variable must be created INSIDE the same function
 //     (`createServiceClient()`/`createAdminClient()`, assigned OR used inline as
 //     `createServiceClient().from(…)` — the inline form is walked since lane
-//     91D2) — a service client received as a parameter or read off a
-//     module-level singleton is unseen.
+//     91D2), or be a module-level singleton / file-local wrapper (lane 92A).
 //   · whole-object hand-off is judged only for callees imported from
 //     `@/lib/kernel/*` (static or dynamic import); a lib/application or other
 //     service-backed callee is unseen.
@@ -556,6 +566,10 @@ const SERVICE_ID_EXEMPT: Record<string, string> = {
     "PUBLIC lane by design (lane 91D2 review) — an unauthenticated seller on the result page books here; there is no session tenant. The agent AND the contact are both re-read under `.eq(\"brokerage_id\", args.brokerageId)` BEFORE any write and the booking refuses unless both belong to it, so the id is a consistency key, not a grant. Same shape as getListingAppointmentSlots below.",
   "app/actions/lead-promotion/promote-lead.ts::listRawLeadsForReview":
     "platform-only surface (lane 91D2 review): refuses unless the caller is platform staff (users.platform_role / user_type read from the session row) before the optional brokerageId filter is applied — a TARGET tenant for a platform reviewer. Its platform test is a local role list, not one of the named platform gates, which is why it is listed rather than auto-exempted.",
+  "app/actions/home-value-lead.ts::captureHomeValueLead":
+    "PUBLIC lane by design (lane 92A review, surfaced once the guard could read the NAMED `input: HomeValueLeadInput` param) — an unauthenticated homeowner on /home-value/[agentSlug]; there is no session tenant. Before ANY write the action re-reads `agents` under `.eq(id, input.agentId).eq(brokerage_id, input.brokerageId).eq(user_id, input.agentUserId)` and refuses unless that one row exists, so the ids are a consistency key, not a grant. Same shape as scheduleSellerListingAppointment above.",
+  "app/actions/lead-magnet-capture.ts::captureFormSubmissionAction":
+    "PUBLIC lane by design (lane 92A review, surfaced once the guard could read the NAMED `input: CaptureFormInput` param) — the /lm/[slug] form an anonymous visitor submits; there is no session tenant. The kernel command it hands off to (lib/kernel/lead-magnets.ts captureFormSubmission) reads `lead_capture_forms` under `.eq(id, formId).eq(brokerage_id, brokerageId)` and refuses before any write unless the form belongs to that brokerage — a consistency key, not a grant.",
   "app/actions/home-value.ts::getListingAppointmentSlots":
     "PUBLIC lane by design — the result page and portal reach this with NO agent session at all; the brokerageId IS the scope (there is no session brokerage to prefer) and the row returned is an agent directory (name/photo/phone), not tenant financial or client data. Comment at the call site names this explicitly.",
   "app/actions/superadmin/tenant-entitlements.ts::getTenantEntitlementsAction":
@@ -657,17 +671,62 @@ const SERVICE_ID_EXEMPT: Record<string, string> = {
         if (nm && /^\w+$/.test(nm) && nm !== "type") kernelFns.add(nm)
       }
     }
-    const FN_RE = /export\s+async\s+function\s+(\w+)\s*\(([^)]*)\)/g
-    let m: RegExpExecArray | null
-    while ((m = FN_RE.exec(src))) {
-      const fnName = m[1]
-      const paramList = m[2]
+    // ── lane 92A: three published blind spots closed ──────────────────────
+    // (1) NAMED object types. `input: RecordHazardPolicyInput` was invisible: only an
+    //     inline `{ … }` param was walked. A param typed by an interface / object type
+    //     alias DECLARED IN THIS FILE is expanded to its members (nested object
+    //     members flattened away, so only the param's own keys count). A type imported
+    //     from another module is still unseen (published below).
+    const localObjectTypes = new Map<string, string>()
+    for (const tm of src.matchAll(/\b(?:interface\s+(\w+)(?:\s+extends\s+[^{]+)?\s*\{|type\s+(\w+)\s*=\s*\{)/g)) {
+      const typeName = tm[1] ?? tm[2]
+      const open = (tm.index ?? 0) + tm[0].length - 1
+      let d = 0
+      let j = open
+      for (; j < src.length; j++) {
+        if (src[j] === "{") d++
+        else if (src[j] === "}") { d--; if (d === 0) break }
+      }
+      let inner = src.slice(open + 1, j)
+      while (/\{[^{}]*\}/.test(inner)) inner = inner.replace(/\{[^{}]*\}/g, "")
+      localObjectTypes.set(typeName, inner)
+    }
+    const expandNamedTypes = (list: string): string =>
+      list.replace(/(\w+)(\s*\??\s*:\s*)([A-Z]\w*)\b(?!\s*[<.[])/g, (all, n: string, sep: string, t: string) =>
+        localObjectTypes.has(t) ? `${n}${sep}{${localObjectTypes.get(t)}}` : all)
+    // (3) SERVICE-CLIENT FACTORIES beyond the two constructors: a file-local wrapper
+    //     (`function svc() { return createServiceClient() }` / `const svc = () =>
+    //     createServiceClient()`) and a MODULE-LEVEL singleton (`const admin =
+    //     createServiceClient()` at column 0, visible to every export in the file).
+    const svcFactoryNames = ["createServiceClient", "createAdminClient"]
+    for (const w of src.matchAll(/function\s+(\w+)\s*\([^)]*\)[^{]*\{\s*return\s+(?:createServiceClient|createAdminClient)\s*\(/g)) svcFactoryNames.push(w[1])
+    for (const w of src.matchAll(/const\s+(\w+)\s*=\s*(?:async\s*)?\([^)]*\)\s*(?::[^=]+)?=>\s*(?:createServiceClient|createAdminClient)\s*\(/g)) svcFactoryNames.push(w[1])
+    const svcFactory = `(?:${svcFactoryNames.join("|")})`
+    const moduleSvcVars = new Set<string>()
+    for (const g of src.matchAll(new RegExp(`^(?:const|let)\\s+(\\w+)\\s*=\\s*(?:await\\s+)?${svcFactory}\\s*\\(`, "gm"))) {
+      if (!svcFactoryNames.includes(g[1])) moduleSvcVars.add(g[1])
+    }
+
+    // (2) ARROW-FUNCTION exports: `export const f = async (…) => { … }` is walked the
+    //     same as a declaration. An expression-bodied arrow (no `{` body) is skipped.
+    type Exported = { fnName: string; paramList: string; after: number; arrow: boolean }
+    const exported: Exported[] = []
+    for (const fm of src.matchAll(/export\s+async\s+function\s+(\w+)\s*\(([^)]*)\)/g)) {
+      exported.push({ fnName: fm[1], paramList: fm[2], after: (fm.index ?? 0) + fm[0].length, arrow: false })
+    }
+    for (const am of src.matchAll(/export\s+const\s+(\w+)\s*(?::[^=]+)?=\s*async\s*\(([^)]*)\)/g)) {
+      exported.push({ fnName: am[1], paramList: am[2], after: (am.index ?? 0) + am[0].length, arrow: true })
+    }
+    for (const ex of exported) {
+      const fnName = ex.fnName
+      const paramList = expandNamedTypes(ex.paramList)
       const targets = TARGET_PARAM_NAMES.filter((n) => new RegExp(`\\b${n}\\b`).test(paramList))
       if (targets.length === 0) continue
 
       // Brace-balance the body starting at the first `{` after the signature.
-      const bodyStart = functionBodyStart(src, FN_RE.lastIndex)
+      const bodyStart = functionBodyStart(src, ex.after)
       if (bodyStart === -1) continue
+      if (ex.arrow && !src.slice(ex.after, bodyStart).trimEnd().endsWith("=>")) continue
       let depth = 0
       let i = bodyStart
       for (; i < src.length; i++) {
@@ -679,13 +738,17 @@ const SERVICE_ID_EXEMPT: Record<string, string> = {
       }
       const body = src.slice(bodyStart, i + 1)
 
-      // Service-client variable names created INSIDE this body.
+      // Service-client variable names created INSIDE this body, plus the module's
+      // singletons (lane 92A) unless this body redeclares the name.
       const svcVars = new Set<string>()
-      const SVC_RE = /(?:const|let)\s+(\w+)\s*=\s*(?:await\s+)?(?:createServiceClient|createAdminClient)\s*\(/g
+      const SVC_RE = new RegExp(`(?:const|let)\\s+(\\w+)\\s*=\\s*(?:await\\s+)?${svcFactory}\\s*\\(`, "g")
       let sm: RegExpExecArray | null
       while ((sm = SVC_RE.exec(body))) svcVars.add(sm[1])
+      for (const v of moduleSvcVars) {
+        if (!new RegExp(`(?:const|let)\\s+${v}\\s*=`).test(body)) svcVars.add(v)
+      }
       // Inline form: `createServiceClient().from(…)` — no variable to name.
-      const inlineSvc = /(?:createServiceClient|createAdminClient)\s*\(\s*\)\s*\.from\(/.test(body)
+      const inlineSvc = new RegExp(`${svcFactory}\\s*\\(\\s*\\)\\s*\\.from\\(`).test(body)
 
       // ── lane 91D2: OBJECT-carried tenant / role keys ────────────────────
       // `params: { …brokerageId… }` read back as `params.brokerageId`, and the
@@ -711,7 +774,7 @@ const SERVICE_ID_EXEMPT: Record<string, string> = {
               `|\\b${objName}\\s*=\\s*\\{\\s*\\.\\.\\.${objName}\\b[^}]*\\b${key}\\s*:`,
             )
             const svcParts = [...svcVars].map((v) => `\\b${v}\\b`)
-            if (inlineSvc) svcParts.push("(?:createServiceClient|createAdminClient)\\s*\\(\\s*\\)")
+            if (inlineSvc) svcParts.push(`${svcFactory}\\s*\\(\\s*\\)`)
             const uses: number[] = []
             if (svcParts.length) {
               const svcAlt = svcParts.join("|")
@@ -755,7 +818,7 @@ const SERVICE_ID_EXEMPT: Record<string, string> = {
         // chars, or a payload key `brokerage_id: param` / `tenant_id: param`
         // within 200 chars after a <svcVar> call.
         const svcParts = [...svcVars].map((v) => `\\b${v}\\b`)
-        if (inlineSvc) svcParts.push("(?:createServiceClient|createAdminClient)\\s*\\(\\s*\\)")
+        if (inlineSvc) svcParts.push(`${svcFactory}\\s*\\(\\s*\\)`)
         const svcAlt = svcParts.join("|")
         const eqRe = new RegExp(
           `(?:${svcAlt})[\\s\\S]{0,400}?\\.eq\\(\\s*["'\`](?:brokerage_id|tenant_id|owner_id)["'\`]\\s*,\\s*${param}\\s*\\)`,
@@ -884,10 +947,10 @@ const SERVICE_ID_EXEMPT: Record<string, string> = {
       {
         name: "an object-carried tenant ASSERTED against the session before use is NOT reported",
         expect: 0,
-        why: "the mismatch-refusal pattern (transaction-inspections' requireCallerForBrokerage) is being accused",
+        why: "the mismatch-refusal pattern (lib/auth/require-caller.ts requireCallerTenant, the survivor transaction-inspections moved onto in lane 92A) is being accused",
         src: [
           'export async function act(params: { transactionId: string; brokerageId?: string }) {',
-          '  const auth = await requireCallerForBrokerage(params.brokerageId)',
+          '  const auth = await requireCallerTenant(params.brokerageId)',
           '  if (!auth.ok) return null',
           '  const svc = createServiceClient()',
           '  await svc.from("x").update({ a: 1 }).eq("brokerage_id", params.brokerageId)',
@@ -930,6 +993,89 @@ const SERVICE_ID_EXEMPT: Record<string, string> = {
           '  params = { ...params, brokerageId: tenant.brokerageId }',
           '  const supabase = createServiceClient()',
           '  await supabase.from("c").select("*").eq("brokerage_id", params.brokerageId)',
+          '}',
+        ].join("\n"),
+      },
+      // ── lane 92A: the three closed blind spots, each with its fixed twin ──
+      {
+        name: "a NAMED-INTERFACE object param (input: SomeInput, declared in-file) forwarding its brokerageId is REPORTED",
+        expect: 1,
+        why: "a tenant carried inside a named interface is invisible again — `input: RecordHazardPolicyInput` is that shape",
+        src: [
+          'interface RecordInput {',
+          '  transactionId: string',
+          '  brokerageId?: string',
+          '  meta?: { brokerageId: string }',
+          '}',
+          'export async function record(input: RecordInput): Promise<{ success: boolean }> {',
+          '  const svc = createServiceClient()',
+          '  await svc.from("x").update({ a: 1 }).eq("brokerage_id", input.brokerageId)',
+          '  return { success: true }',
+          '}',
+        ].join("\n"),
+      },
+      {
+        name: "the same NAMED-INTERFACE param asserted through requireCallerTenant before use is NOT reported",
+        expect: 0,
+        why: "the fixed shape (transaction-hazard-insurance after lane 92A) is being accused",
+        src: [
+          'type RecordInput = { transactionId: string; brokerageId?: string }',
+          'export async function record(input: RecordInput): Promise<{ success: boolean }> {',
+          '  const auth = await requireCallerTenant(input.brokerageId)',
+          '  if (!auth.ok) return { success: false }',
+          '  const svc = createServiceClient()',
+          '  await svc.from("x").update({ a: 1 }).eq("brokerage_id", input.brokerageId)',
+          '  return { success: true }',
+          '}',
+        ].join("\n"),
+      },
+      {
+        name: "an ARROW-FUNCTION export forwarding a raw brokerageId into a SERVICE client is REPORTED",
+        expect: 1,
+        why: "`export const f = async (…) => {}` is unwalked again",
+        src: [
+          'export const getStats = async (brokerageId: string): Promise<{ n: number }> => {',
+          '  const svc = createServiceClient()',
+          '  const { count } = await svc.from("contacts").select("id", { count: "exact" }).eq("brokerage_id", brokerageId)',
+          '  return { n: count ?? 0 }',
+          '}',
+        ].join("\n"),
+      },
+      {
+        name: "an ARROW-FUNCTION export that shadows the param from the session first is NOT reported",
+        expect: 0,
+        why: "the arrow walk accuses the fixed shape",
+        src: [
+          'export const getStats = async (_brokerageId: string) => {',
+          '  const ctx = await getAgentContext()',
+          '  const brokerageId = ctx.brokerageId',
+          '  const svc = createServiceClient()',
+          '  return svc.from("contacts").select("id").eq("brokerage_id", brokerageId)',
+          '}',
+        ].join("\n"),
+      },
+      {
+        name: "a MODULE-LEVEL service singleton used with a raw brokerageId is REPORTED",
+        expect: 1,
+        why: "a service client created outside the function is unseen again",
+        src: [
+          'const admin = createServiceClient()',
+          'export async function wipe(brokerageId: string) {',
+          '  await admin.from("x").delete().eq("brokerage_id", brokerageId)',
+          '}',
+        ].join("\n"),
+      },
+      {
+        name: "a FILE-LOCAL WRAPPER returning createServiceClient() used with a raw brokerageId is REPORTED",
+        expect: 1,
+        why: "a service client reached through a local factory is unseen again",
+        src: [
+          'function svc() {',
+          '  return createServiceClient()',
+          '}',
+          'export async function wipe(brokerageId: string) {',
+          '  const db = svc()',
+          '  await db.from("x").delete().eq("brokerage_id", brokerageId)',
           '}',
         ].join("\n"),
       },

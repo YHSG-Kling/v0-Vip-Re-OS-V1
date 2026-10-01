@@ -343,7 +343,8 @@ export async function POST(request: NextRequest) {
     // the D-ID lane deliberately refuses to invent a figure it has no price
     // table for (see app/api/did/generate-video/route.ts:497 — that refusal
     // stands). ElevenLabs is different: lib/vendor-governance/cost-normalizer.ts
-    // carries a documented $0.30/1K-character rate for it, and the character
+    // carries its per-character rate — since lane 92A the ONE voice price
+    // (lib/video/realism-profile.ts elevenLabsUsdForChars, was a private $0.30/1K) — and the character
     // count of the script is right here. So this is the repo's own price table
     // applied to a measured quantity, not a per-render guess — the distinction
     // §5 draws when it says a wrong number in a cost ledger is a wrong invoice.

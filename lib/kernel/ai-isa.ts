@@ -1121,7 +1121,14 @@ export async function recordAiIsaOutcome(
     if (outcome === "appointment_set") {
       const { stampQualificationOutcome } = await import("@/lib/ai-isa/qualification-outcome-stamp")
       const stamped = await stampQualificationOutcome(supabase, { brokerageId: ctx.brokerageId, leadId, result: "appointment_set" })
-      if (!stamped.ok) console.error(`[kernel/ai-isa] appointment_set NOT stamped on the ISA qualification for lead ${leadId}: ${stamped.error}`)
+      if (!stamped.ok) {
+        console.error(`[kernel/ai-isa] appointment_set NOT stamped on the ISA qualification for lead ${leadId}: ${stamped.error}`)
+        // Lane 92A: surfaced where refusals are shown (self_heal_events → the repair digest /
+        // Exception Center), not only logged.
+        const { recordBestEffortLoss } = await import("@/lib/kernel/write-sentinel")
+        await recordBestEffortLoss(supabase, { table: "ai_isa_qualifications", flow: "isa_outcome_stamp", brokerageId: ctx.brokerageId,
+          reason: "the booking itself stands; the ISA radar / analytics / managers' appointment_set count misses this person until the qualification row is re-stamped" }, stamped.error)
+      }
     }
 
     // Update the call record if callId is provided. ai_isa_calls has no

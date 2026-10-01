@@ -235,7 +235,14 @@ export async function bookSellerListingAppointment(
   {
     const { stampQualificationOutcome } = await import("@/lib/ai-isa/qualification-outcome-stamp")
     const stamped = await stampQualificationOutcome(svc, { brokerageId: params.brokerageId, leadId: params.leadId, contactId, result: "appointment_set" })
-    if (!stamped.ok) console.error(`[book-seller-appointment] appointment_set NOT stamped on the ISA qualification: ${stamped.error}`)
+    if (!stamped.ok) {
+      console.error(`[book-seller-appointment] appointment_set NOT stamped on the ISA qualification: ${stamped.error}`)
+      // Lane 92A: surfaced where refusals are shown (self_heal_events → the repair digest /
+      // Exception Center), not only logged.
+      const { recordBestEffortLoss } = await import("@/lib/kernel/write-sentinel")
+      await recordBestEffortLoss(svc, { table: "ai_isa_qualifications", flow: "isa_outcome_stamp", brokerageId: params.brokerageId,
+        reason: "the booking itself stands; the ISA radar / analytics / managers' appointment_set count misses this person until the qualification row is re-stamped" }, stamped.error)
+    }
   }
 
   return {

@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
 import { scheduleInspection, updateInspection } from "@/lib/application/transactions"
 import { requestQuoteApproval, approveQuote, declineQuote } from "@/lib/transactions/vendor-quote-workflow"
 import { completeMilestone } from "@/lib/transactions/milestone-service"
@@ -10,33 +11,29 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 
 // ─── AUTH HELPERS ──────────────────────────────────────────────────────────────
-
-async function requireCallerForBrokerage(claimedBrokerageId?: string) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false as const, error: "Not authenticated" }
-  const { data: profile } = await supabase
-    .from("users").select("brokerage_id, user_type, role").eq("id", user.id).maybeSingle()
-  if (!profile?.brokerage_id) return { ok: false as const, error: "Not authenticated" }
-  if (claimedBrokerageId && profile.brokerage_id !== claimedBrokerageId) {
-    return { ok: false as const, error: "Cannot act on transactions outside your brokerage" }
-  }
-  return {
-    ok: true as const,
-    userId: user.id,
-    brokerageId: profile.brokerage_id as string,
-    userRole: (profile.role ?? profile.user_type ?? "agent") as string,
-  }
-}
+//
+// TOMBSTONE (lane 92A): the file-local `requireCallerForBrokerage(claimed?)` —
+// DELETED as a duplicate. SURVIVOR: lib/auth/require-caller.ts:381 `requireCallerTenant`
+// (whose comparison is lib/platform/acting-context.ts:292 `decideClaimedTenant`,
+// the one decision table for a caller-supplied tenant). Nothing was lost:
+// the copy read the session user and the users row, refused a foreign claimed
+// brokerage, and returned userId/brokerageId — the survivor does all of that AND
+// reads the users-row error (the copy did not: an RLS refusal of the caller's own
+// row read as "Not authenticated"). The copy's `userRole` (`role ?? user_type ??
+// "agent"`) had no reader in this file, and its default-to-agent is the grading
+// defect require-caller.ts's header names.
 
 async function verifyTransactionInBrokerage(transactionId: string, brokerageId: string) {
   const svc = createServiceClient()
-  const { data: tx } = await svc
+  const { data: tx, error } = await svc
     .from("transactions")
     .select("brokerage_id")
     .eq("id", transactionId)
     .maybeSingle()
-  return !!tx && tx.brokerage_id === brokerageId
+  // §3: a refused read resolves. Fail closed (false), but say so in the log — a
+  // refusal must not be indistinguishable from "not in your brokerage".
+  if (error) console.error("[transaction-inspections] transaction tenant check refused:", error.message)
+  return !error && !!tx && tx.brokerage_id === brokerageId
 }
 
 // ─── SCHEDULE INSPECTION ───────────────────────────────────────────────────────
@@ -53,7 +50,7 @@ export async function scheduleInspectionAction(params: {
   cost?: number
   notes?: string
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
@@ -137,7 +134,7 @@ export async function approveInspectionQuoteAction(params: {
   vendorName: string
   notes?: string
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
@@ -178,7 +175,7 @@ export async function declineInspectionQuoteAction(params: {
   brokerageId?: string
   reason?: string
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
@@ -204,7 +201,7 @@ export async function markInspectionCompleteAction(params: {
   transactionId: string
   brokerageId?: string
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
@@ -283,7 +280,7 @@ export async function uploadInspectionReportAction(params: {
   reportUrl: string
   fileName: string
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
@@ -336,7 +333,7 @@ export async function requestInsuranceQuoteAction(params: {
   vendorPhone?: string
   notes?: string
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
@@ -389,7 +386,7 @@ export async function submitInsuranceQuoteApprovalAction(params: {
   vendorName: string
   quoteAmount: number
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
@@ -444,7 +441,7 @@ export async function approveInsuranceQuoteAction(params: {
   vendorName: string
   notes?: string
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
@@ -508,7 +505,7 @@ export async function updateEarnestMoneyAction(params: {
   earnestMoneyHeldBy?: string
   earnestMoneyReceivedDate?: string
 }) {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {

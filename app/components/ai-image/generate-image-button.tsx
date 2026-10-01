@@ -124,6 +124,9 @@ export function GenerateImageButton(props: Props) {
       if (result.success && result.imageUrl) {
         setGeneratedUrl(result.imageUrl)
         setGeneratedAssetId(result.assetId)
+        // Lane 92A: saved, but a follow-on step was refused — shown on the same line that
+        // shows a refused generation, beside the (usable) image.
+        if (result.warning) setError(result.warning)
       } else {
         setError(
           result.errorCode === "no_api_key"

@@ -97,38 +97,45 @@ export async function sentinelWrite(
     const result = await op
     const err = (result as any)?.error
     if (!err) return true
-    await recordSelfHeal(svc, {
-      brokerageId: ctx.brokerageId ?? null,
-      domain: "data_flow",
-      subject: `${ctx.flow}:${ctx.table}`,
-      action: "best_effort_write",
-      outcome: "failed",
-      detail: {
-        flow: ctx.flow,
-        table: ctx.table,
-        message: String(err.message ?? "").slice(0, 300),
-        code: err.code ?? null,
-        reason: ctx.reason ?? null,
-      },
-    })
+    await recordBestEffortLoss(svc, ctx, String(err.message ?? ""), err.code ?? null)
     return false
   } catch (err) {
-    await recordSelfHeal(svc, {
-      brokerageId: ctx.brokerageId ?? null,
-      domain: "data_flow",
-      subject: `${ctx.flow}:${ctx.table}`,
-      action: "best_effort_write",
-      outcome: "failed",
-      detail: {
-        flow: ctx.flow,
-        table: ctx.table,
-        message: err instanceof Error ? err.message.slice(0, 300) : "rejected",
-        code: null,
-        reason: ctx.reason ?? null,
-      },
-    }).catch(() => null)
+    await recordBestEffortLoss(svc, ctx, err instanceof Error ? err.message : "rejected").catch(() => null)
     return false
   }
+}
+
+/**
+ * The sentinel's LEDGER HALF on its own (lane 92A) — for a best-effort step whose
+ * refusal arrives as a RESULT (`{ ok: false, error }` / `{ success: false, error }`)
+ * from a helper that already read the supabase error itself, so there is no raw
+ * `{ error }` promise to hand sentinelWrite. Same row, same domain/action/outcome,
+ * so the loss lands on the surface that already shows refusals — the repair digest
+ * and the Exception Center (composeSentinelLossReport below) — instead of only a log
+ * line. sentinelWrite's two branches call this; nothing writes the shape twice.
+ * Service-role client only (see the ruling above: a cookie client cannot reach the
+ * ledger). Never throws.
+ */
+export async function recordBestEffortLoss(
+  svc: any,
+  ctx: SentinelWriteContext,
+  message: string,
+  code: string | null = null,
+): Promise<void> {
+  await recordSelfHeal(svc, {
+    brokerageId: ctx.brokerageId ?? null,
+    domain: "data_flow",
+    subject: `${ctx.flow}:${ctx.table}`,
+    action: "best_effort_write",
+    outcome: "failed",
+    detail: {
+      flow: ctx.flow,
+      table: ctx.table,
+      message: String(message ?? "").slice(0, 300),
+      code,
+      reason: ctx.reason ?? null,
+    },
+  })
 }
 
 // ─── THE OBSERVATION SURFACE ─────────────────────────────────────────────────

@@ -363,6 +363,10 @@ export async function requireAdsActor(): Promise<{ actor?: AdsSessionActor; erro
 //   app/actions/video-repurposing.ts:28
 //   app/actions/video-generation.ts:68
 
+// Imported here, at the foot, so the `require-caller.ts:<line>` references other
+// files hold into the census above stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
+
 /**
  * requireCaller() + THE BODY-TENANT RULE (lane 91D2, CLAUDE.md §4). A "use server"
  * export that still accepts a `brokerageId` from its caller (for signature
@@ -377,7 +381,13 @@ export async function requireAdsActor(): Promise<{ actor?: AdsSessionActor; erro
 export async function requireCallerTenant(claimedBrokerageId?: string | null): Promise<RequireCallerResult> {
   const caller = await requireCaller()
   if (!caller.ok) return caller
-  if (claimedBrokerageId && claimedBrokerageId !== caller.brokerageId) {
+  // Lane 92A: the comparison is the ONE decision table for a caller-supplied
+  // tenant, lib/platform/acting-context.ts decideClaimedTenant (pure, unit-tested
+  // by test:act-as-write-seam) — not a second copy here. Its act-as sibling,
+  // resolveWriteContextForTenant(), composes the same table with the
+  // impersonation seam; this composes it with the plain session read.
+  const decision = decideClaimedTenant({ actingBrokerageId: caller.brokerageId, claimedBrokerageId })
+  if (!decision.ok) {
     return { ok: false, reason: "tenant_mismatch", error: "Forbidden: that brokerage is not yours." }
   }
   return caller

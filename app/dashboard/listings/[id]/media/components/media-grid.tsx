@@ -215,12 +215,18 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
       setForm({ fileUrl: "", thumbnailUrl: "", caption: "", altText: "", mediaType: "photo", isPrimary: false })
       setFileUploadSuccess(false)
       setFileUploadError(null)
+      // Lane 92A: a refused hero-photo fan-out rides the same toast that reports this
+      // upload's compliance problems — saved, but not sent on to marketing.
+      const fanoutWarning = result.data?.fanoutWarning ?? null
       toast({
         title: "Media uploaded",
-        description: result.data?.compliance?.passed
-          ? "Brand compliance passed."
-          : "Uploaded — compliance check flagged some issues.",
-        variant: result.data?.compliance?.passed ? "default" : "destructive",
+        description: [
+          result.data?.compliance?.passed
+            ? "Brand compliance passed."
+            : "Uploaded — compliance check flagged some issues.",
+          fanoutWarning,
+        ].filter(Boolean).join(" "),
+        variant: result.data?.compliance?.passed && !fanoutWarning ? "default" : "destructive",
       })
     })
   }

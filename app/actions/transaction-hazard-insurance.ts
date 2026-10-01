@@ -32,6 +32,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
 import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
 import {
   readHazardInsurance,
@@ -50,27 +51,16 @@ import {
 const INSURANCE_CATEGORY = "insurance"
 
 // ─── AUTH ────────────────────────────────────────────────────────────────────
-// Same shape as app/actions/transaction-inspections.ts — the brokerage comes
-// from the SESSION, never from the caller's parameters.
-
-async function requireCallerForBrokerage(claimedBrokerageId?: string) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false as const, error: "Not authenticated" }
-  const { data: profile, error: profileError } = await supabase
-    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
-  if (profileError) {
-    console.error("[hazard-insurance] caller profile read failed:", profileError.message)
-    return { ok: false as const, error: "Could not verify your account" }
-  }
-  if (!profile?.brokerage_id) {
-    return { ok: false as const, error: "Your account is not linked to a brokerage yet — ask an admin to assign you one." }
-  }
-  if (claimedBrokerageId && profile.brokerage_id !== claimedBrokerageId) {
-    return { ok: false as const, error: "Cannot act on transactions outside your brokerage" }
-  }
-  return { ok: true as const, userId: user.id, brokerageId: profile.brokerage_id as string }
-}
+//
+// TOMBSTONE (lane 92A): the file-local `requireCallerForBrokerage(claimed?)` —
+// DELETED as a duplicate (it said so itself: "same shape as
+// transaction-inspections.ts", whose copy went the same way). SURVIVOR:
+// lib/auth/require-caller.ts:381 `requireCallerTenant` — the session user, the
+// users row WITH its error read (this copy's one advantage over its twin, and the
+// survivor already carries it), a tenant-less caller refused, and a foreign
+// claimed brokerage refused through lib/platform/acting-context.ts:292
+// `decideClaimedTenant`. The brokerage
+// comes from the SESSION, never from the caller's parameters.
 
 interface TransactionScope {
   id: string
@@ -209,7 +199,7 @@ export async function getTransactionHazardInsuranceAction(
     buyerContactId: null, closeDate: null, representsBuyer: true, sideNote: null,
   }
 
-  const auth = await requireCallerForBrokerage(brokerageId)
+  const auth = await requireCallerTenant(brokerageId)
   if (!auth.ok) return { ...empty, error: auth.error }
 
   const scoped = await loadTransactionScope(transactionId, auth.brokerageId)
@@ -406,7 +396,7 @@ export interface RecordHazardPolicyInput {
 export async function recordHazardPolicyAction(
   input: RecordHazardPolicyInput,
 ): Promise<{ success: boolean; error?: string }> {
-  const auth = await requireCallerForBrokerage(input.brokerageId)
+  const auth = await requireCallerTenant(input.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   const carrier = input.carrier?.trim()

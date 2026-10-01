@@ -495,11 +495,19 @@ const CHECKS: Check[] = [
     id: "actions/scope-refuses-mismatch",
     file: "actions",
     name: "a brokerageId that disagrees with the session is REFUSED, not honoured",
+    // Lane 92A: the comparison moved onto the ONE decision table for a
+    // caller-supplied tenant (lib/platform/acting-context.ts decideClaimedTenant,
+    // whose own comparison test:act-as-write-seam holds with a control). Asserted
+    // as the RULE: the scope hands it (the SESSION brokerage, the claim), refuses
+    // on !ok, and returns the DECISION's brokerage — never the claim.
     assert: (s) => {
       const body = fnBody(s.actions, "resolveReadScope")
-      return /claimedBrokerageId\s*!==\s*ctx\.brokerageId/.test(body) && /ok:\s*false/.test(body)
+      const m = /const\s+(\w+)\s*=\s*decideClaimedTenant\(\s*\{\s*actingBrokerageId:\s*ctx\.brokerageId\s*,\s*claimedBrokerageId\s*\}\s*\)/.exec(body)
+      return !!m &&
+        new RegExp(`if\\s*\\(\\s*!${m[1]}\\.ok\\s*\\)\\s*\\{?\\s*return\\s*\\{\\s*ok:\\s*false`).test(body) &&
+        new RegExp(`return\\s*\\{\\s*ok:\\s*true,\\s*brokerageId:\\s*${m[1]}\\.brokerageId\\s*\\}`).test(body)
     },
-    mutate: (raw) => replaceOnce(raw, `  if (claimedBrokerageId !== ctx.brokerageId) {`, `  if (false) {`),
+    mutate: (raw) => replaceOnce(raw, `  if (!decision.ok) {\n    return { ok: false, error: "Brokerage scope mismatch`, `  if (false) {\n    return { ok: false, error: "Brokerage scope mismatch`),
   },
   {
     id: "actions/stats-passes-session-value",

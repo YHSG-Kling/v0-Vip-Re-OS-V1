@@ -121,6 +121,7 @@ export async function uploadListingMedia(params: {
   // Hero-photo fan-out — ONLY when the asset is public-marketing-bound.
   // MLS-bound uploads stay attached to the listing only; they would
   // violate MLS rules if they auto-drafted into branded social posts.
+  let fanoutWarning: string | null = null
   if (params.mediaType === "photo" && params.isPrimary && !isMlsBound) {
     try {
       const { emitEventFromCron } = await import("@/lib/orchestrator/internal")
@@ -145,13 +146,24 @@ export async function uploadListingMedia(params: {
       })
       if (!emitted.success) {
         console.error(`[uploadListingMedia] image.generated fan-out NOT recorded for listing_media ${data.id}: ${emitted.error}`)
+        fanoutWarning = `The hero photo was saved, but it was not sent on to marketing: ${emitted.error ?? "the event was refused"}`
       }
     } catch (eventErr) {
       console.error("[uploadListingMedia] image.generated fan-out failed:", eventErr)
+      fanoutWarning = `The hero photo was saved, but it was not sent on to marketing: ${eventErr instanceof Error ? eventErr.message : "the event failed"}`
+    }
+    // Lane 92A: surfaced, not only logged — the refusal ledger (self_heal_events → repair
+    // digest / Exception Center; service client, the session client cannot reach it) and
+    // the upload toast that already reports this upload's compliance problems.
+    if (fanoutWarning) {
+      const { recordBestEffortLoss } = await import("@/lib/kernel/write-sentinel")
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      await recordBestEffortLoss(createServiceClient(), { table: "lifecycle_events", flow: "image_generated_fanout", brokerageId: params.brokerageId,
+        reason: "the image itself is saved; the image.generated fan-out (attach to the listing / campaign, social draft) did not run for it" }, fanoutWarning)
     }
   }
 
-  return { data: { ...data, compliance }, error: null }
+  return { data: { ...data, compliance, fanoutWarning }, error: null }
 }
 
 export async function approveListingMedia(mediaId: string) {

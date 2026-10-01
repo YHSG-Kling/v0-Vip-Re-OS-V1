@@ -13,9 +13,9 @@
 import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
-  generateAIReplyDraft,
+  generateAIReplyDraftForTenant,
   type GenerateAIReplyDraftResult,
-} from "./ai-reply-coach"
+} from "@/lib/ai-reply-coach/reply-draft-core"
 
 export interface QuickDraftParams {
   conversationId: string
@@ -41,22 +41,25 @@ export async function quickDraftForConversation(
 
   const svc = createServiceClient()
 
+  // Lane 92A: tenant-predicated. This read was by id alone on the SERVICE client, so
+  // any conversation id on the platform drafted against another tenant's thread, and the
+  // draft's tenant then fell back to that ROW's brokerage. The session's tenant is the one.
   const { data: convo, error: convoErr } = await svc
     .from("conversations")
-    .select("id, contact_id, type, brokerage_id")
+    .select("id, contact_id, type")
     .eq("id", params.conversationId)
+    .eq("brokerage_id", ctx.brokerageId)
     .maybeSingle()
 
-  if (convoErr || !convo) {
-    return { success: false, error: convoErr?.message ?? "Conversation not found" }
-  }
+  if (convoErr) return { success: false, error: `Could not read the conversation: ${convoErr.message}` }
+  if (!convo) return { success: false, error: "Conversation not found in your brokerage" }
 
   const channel = toDraftChannel(convo.type)
   if (!channel) {
     return { success: false, error: `Reply draft not supported for channel: ${convo.type}` }
   }
 
-  const { data: lastInbound } = await svc
+  const { data: lastInbound, error: inboundErr } = await svc
     .from("messages")
     .select("id, body")
     .eq("conversation_id", convo.id)
@@ -65,8 +68,13 @@ export async function quickDraftForConversation(
     .limit(1)
     .maybeSingle()
 
-  return generateAIReplyDraft({
-    brokerageId: convo.brokerage_id ?? ctx.brokerageId,
+  if (inboundErr) return { success: false, error: `Could not read the last inbound message: ${inboundErr.message}` }
+
+  // The generator trusts its tenant (lib/ai-reply-coach/reply-draft-core.ts); this
+  // action resolved it from the act-as write seam above, so it calls the core directly
+  // rather than the public door (whose plain session read would not see an act-as).
+  return generateAIReplyDraftForTenant({
+    brokerageId: ctx.brokerageId,
     agentUserId: ctx.userId,
     conversationId: convo.id,
     contactId: convo.contact_id,

@@ -141,8 +141,10 @@ export async function draftProactiveReply(input: {
   agentUserId: string
   body: string
 }): Promise<void> {
-  const { generateAIReplyDraft } = await import("@/app/actions/ai-reply-coach")
-  await generateAIReplyDraft({
+  // Lane 92A: the generator CORE — this is the sessionless webhook path (the tenant is
+  // the number's routing), and the public "use server" door now gates on a session.
+  const { generateAIReplyDraftForTenant } = await import("@/lib/ai-reply-coach/reply-draft-core")
+  const drafted = await generateAIReplyDraftForTenant({
     brokerageId: input.brokerageId,
     agentUserId: input.agentUserId,
     conversationId: input.conversationId,
@@ -151,6 +153,11 @@ export async function draftProactiveReply(input: {
     inboundBody: input.body,
     channel: "sms",
   })
+  // The draft is a convenience (nothing auto-sends), so a refusal must not fail the
+  // inbound webhook — but it is no longer discarded unread either.
+  if (!drafted.success) {
+    console.error(`[sms-inbound] proactive reply draft refused for conversation ${input.conversationId}: ${drafted.error ?? "unknown"}`)
+  }
 }
 
 /**

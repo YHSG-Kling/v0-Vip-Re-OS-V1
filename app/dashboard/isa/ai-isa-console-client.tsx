@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { acceptAIISAHandoff } from '@/app/actions/ai-isa/accept-handoff'
+import { QUALIFICATION_RESULTS, type QualificationResult } from '@/lib/ai-isa/qualification-core'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -59,13 +60,39 @@ function deriveAIISAState(record: any): AIISAState {
   if (hasContact && hasAssignedAgent)               return 'handoff_complete'
   if (suggested === 'escalate_to_human')            return 'agent_handoff_required'
   if (urgency >= 80)                                return 'agent_handoff_required'
-  // appointment_set / no_response now have a writer (lib/ai-isa/qualification-outcome-stamp.ts,
-  // wave 91) — a booked appointment is ready for the agent; a ghost is on the re-engagement ladder.
-  if (qualStage === 'qualified' || qualResult === 'qualified' || qualResult === 'appointment_set') return 'handoff_ready'
-  if (qualStage === 'awaiting_review' || qualResult === 'pending') return 'awaiting_approval'
-  if (qualStage === 'nurturing' || qualResult === 'needs_follow_up' || qualResult === 'no_response') return 'ai_nurturing'
-  if (qualStage === 'contacting' || qualResult === 'in_progress') return 'ai_active'
+  // ONE vocabulary (§6, lane 92A): the result is looked up in RESULT_STATE, which is keyed by
+  // the live CHECK's own list (QUALIFICATION_RESULTS — scripts/check-vocabularies.ts). The
+  // `'pending'` / `'in_progress'` comparisons that stood here named values the CHECK cannot
+  // store, so those branches could never fire; they are gone, and a stage-less row is read
+  // from its result alone. The stage (no CHECK) still wins where it says more.
+  const resultState = isQualificationResult(qualResult) ? RESULT_STATE[qualResult] : null
+  if (qualStage === 'qualified' || resultState === 'handoff_ready') return 'handoff_ready'
+  if (qualStage === 'awaiting_review') return 'awaiting_approval'
+  if (qualStage === 'nurturing' || resultState === 'ai_nurturing') return 'ai_nurturing'
   return 'ai_active'
+}
+
+/**
+ * Every qualification_result the CHECK admits → the console state it puts the lead in.
+ * Typed `Record<QualificationResult, …>`, so a value added to the CHECK (and so to
+ * QUALIFICATION_RESULTS) fails tsc here until someone decides where it lands.
+ *   · qualified / appointment_set — ready for the agent (a booked listing appointment is
+ *     waiting on the agent's confirmation; wave 91's stamp writes it).
+ *   · needs_follow_up / no_response — still the AI's to work; a ghost is on the
+ *     re-engagement ladder (email + direct mail only for a lead, wave 91 ruling).
+ *   · not_qualified — not a handoff and not an active chase: long-term nurture. Before
+ *     lane 92A it fell through to 'ai_active', which read as the AI still working it.
+ */
+const RESULT_STATE: Record<QualificationResult, AIISAState> = {
+  qualified:       'handoff_ready',
+  appointment_set: 'handoff_ready',
+  needs_follow_up: 'ai_nurturing',
+  no_response:     'ai_nurturing',
+  not_qualified:   'ai_nurturing',
+}
+
+function isQualificationResult(v: unknown): v is QualificationResult {
+  return typeof v === 'string' && (QUALIFICATION_RESULTS as readonly string[]).includes(v)
 }
 
 // ──────────────────────────────────────────────────────────────

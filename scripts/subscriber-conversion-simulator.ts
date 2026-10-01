@@ -272,6 +272,42 @@ const outsideSelfHeal = creationPaths.filter((p) => p !== SELF_HEAL)
 console.log(`    denominator: ${runtimeFiles.length} .ts/.tsx files under lib/ + app/; creation paths: ${creationPaths.join(" · ")}`)
 check(`exactly ONE brokerages insert outside the documented brokerage-of-one self-heal (${SELF_HEAL}), and it is the core (found: ${outsideSelfHeal.join(", ")})`, outsideSelfHeal.length === 1 && outsideSelfHeal[0] === CORE)
 check("POSITIVE CONTROL: a fixture with a second `from(\"brokerages\").insert(` is counted, and a commented one is not (the finder is not blind)", insertRe.test(stripComments('const { data } = await svc\n  .from("brokerages")\n  .insert({ name: "n" })')) && !insertRe.test(stripComments('// legacy: svc.from("brokerages").insert({...})\nconst a = 1')))
+// Lane 92A — ONE SOURCE FOR "is this tenant paying, and until when?". The
+// brokerages.billing_metadata column DEFAULT (scripts/120-…sql) carried
+// subscription_status "active" + trial_ends_at null, so a trial tenant created
+// through the core was born with a bag that contradicted its subscriptions row.
+// RULE: every brokerages insert writes billing_metadata EXPLICITLY (never the
+// default), and no runtime write puts a status/trial key into the bag.
+{
+  const insertBody = (src: string): string => {
+    const i = src.search(/from\("brokerages"\)\s*\.\s*insert\(\{/)
+    if (i === -1) return ""
+    const open = src.indexOf("{", i)
+    let d = 0, j = open
+    for (; j < src.length; j++) { if (src[j] === "{") d++; else if (src[j] === "}") { d--; if (d === 0) break } }
+    return src.slice(open, j + 1)
+  }
+  const writesBagExplicitly = (src: string) => /\bbilling_metadata\s*:/.test(insertBody(src))
+  const explicit = creationPaths.filter((p) => writesBagExplicitly(stripComments(readFileSync(join(root, p), "utf8"))))
+  check(`every brokerages insert writes billing_metadata explicitly — the column DEFAULT's 'active' bag never stamps a new tenant (${explicit.length}/${creationPaths.length}: ${creationPaths.join(", ")})`,
+    creationPaths.length > 0 && explicit.length === creationPaths.length)
+  check("POSITIVE CONTROL: an insert that leaves the bag to the DEFAULT is caught",
+    !writesBagExplicitly('await svc.from("brokerages").insert({ name, trial_ends_at: t, onboarding_status: "pending" })') &&
+    writesBagExplicitly('await svc.from("brokerages").insert({ name, billing_metadata: {}, trial_ends_at: t })'))
+  // A write of a duplicate status key INTO the bag: `billing_metadata: { … subscription_status: …` (one
+  // level, spread-merges included). Reads of other keys (coupon, signup_intent, seat_override…) are fine.
+  const bagStatusWrite = /billing_metadata\s*:\s*\{[^{}]*\b(?:subscription_status|trial_ends_at)\s*:/
+  const offenders = runtimeFiles
+    .map((f) => [f.replace(root + "/", ""), stripComments(readFileSync(f, "utf8"))] as const)
+    .filter(([, s]) => bagStatusWrite.test(s))
+    .map(([p]) => p)
+  check(`no runtime file writes subscription_status / trial_ends_at into billing_metadata (subscriptions + brokerages.trial_ends_at are the one source) — found ${offenders.length}${offenders.length ? `: ${offenders.join(", ")}` : ""}`,
+    offenders.length === 0)
+  check("POSITIVE CONTROL: the bag-status finder sees a mirror write, and ignores a comment and an unrelated bag key",
+    bagStatusWrite.test('update({ billing_metadata: { ...bm, subscription_status: "trialing", trial_ends_at: end } })') &&
+    !bagStatusWrite.test(stripComments('// billing_metadata: { subscription_status: "active" }\nconst a = 1')) &&
+    !bagStatusWrite.test('update({ billing_metadata: { ...bm, coupon: { id } } })'))
+}
 const coreSrc = stripped(CORE)
 const signupSrc = stripped(SIGNUP)
 const staffSrc = stripped(STAFF_DOOR)

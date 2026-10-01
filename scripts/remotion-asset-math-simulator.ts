@@ -38,7 +38,7 @@
  * underrun/misfire, proving the check can see the defect it exists to catch.
  */
 import { COMPOSITION_GEOMETRY, compositionSeconds, geometryFor } from "../lib/remotion/composition-geometry"
-import { compositionBookends, planCompositionDuration, purposeBudgetFor } from "../lib/video/duration-model"
+import { compositionBookends, planCompositionDuration, purposeBudgetFor, wordsForSeconds, AVERAGE_CHARS_PER_WORD } from "../lib/video/duration-model"
 import {
   WORDS_PER_MINUTE,
   narrationBudget,
@@ -54,6 +54,7 @@ import {
   MAX_BRAND_BOOKEND_SECONDS,
   estimateAvatarRenderCostUsd,
   didRenderUsdForSeconds,
+  elevenLabsUsdForChars,
   inferScriptSentiment,
   SCRIPT_SENTIMENT_POSITIVE_CONTROLS,
   SCRIPT_SENTIMENT_NEGATIVE_CONTROL,
@@ -644,6 +645,76 @@ async function costForecastSection() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// § voiceForecast · the ElevenLabs leg is priced by the ONE function (lane 92A)
+//   — 91A's open item. FOUR rates priced the same characters: realism-profile
+//   $0.10/1K (avatar metering), registry "$0.18/1K x 120 chars/s" with a $0.05
+//   floor (the forecast — ~8x a real narration's pace), meter-vendor $0.18/1K
+//   (the TTS budget check + usage log) and cost-normalizer $0.30/1K (the
+//   slideshow voiceover's render-log cost). All four now read
+//   elevenLabsUsdForChars. Asserted as the RULE (every reader == the function),
+//   never as a pinned dollar figure.
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function voiceForecastSection() {
+  console.log("\n── §voiceForecast · forecast, metering and both vendor rate tables price voice through elevenLabsUsdForChars ──")
+  const { estimateCompositionCost } = await import("../lib/remotion/registry")
+  const { consumesVoiceover } = await import("../lib/remotion/content-contract")
+  const { PLATFORM_VENDOR_RATES, estimatePlatformVendorCost } = await import("../lib/vendor-governance/meter-vendor")
+  const { VENDOR_PRICING, normalizeVendorCost } = await import("../lib/vendor-governance/cost-normalizer")
+  const charsFor = (secs: number) => wordsForSeconds(secs, "voiceover") * AVERAGE_CHARS_PER_WORD
+  const PRE_92A = (secs: number) => Math.max(0.05, (secs * 120 / 1000) * 0.18) // the retired line, kept as the control
+
+  let narrated = 0, agree = 0, silentZero = 0, silent = 0, preOver = 0
+  for (const [id, g] of Object.entries(COMPOSITION_GEOMETRY)) {
+    const secs = compositionSeconds(g)
+    if (secs <= 0 || g.duration_frames <= 1) continue
+    const est = estimateCompositionCost({ composition_id: id, duration_frames: g.duration_frames, fps: g.fps, requires_did_avatar: false } as any)
+    if (consumesVoiceover(id)) {
+      narrated++
+      if (Math.abs(est.voiceoverUsd - Number(elevenLabsUsdForChars(charsFor(secs)).toFixed(3))) < 1e-9) agree++
+      if (PRE_92A(secs) >= 5 * Math.max(elevenLabsUsdForChars(charsFor(secs)), 1e-9)) preOver++
+    } else {
+      silent++
+      if (est.voiceoverUsd === 0) silentZero++
+    }
+  }
+  check(`every narrated registered composition's forecast voice leg == elevenLabsUsdForChars(its narration's characters) (${agree}/${narrated})`, narrated > 0 && agree === narrated)
+  check(`a composition that narrates nothing forecasts $0 voice (${silentZero}/${silent})`, silentZero === silent)
+  const r60 = PRE_92A(60) / elevenLabsUsdForChars(charsFor(60))
+  check(`[control] the retired forecast over-states voice >=5x on ${preOver}/${narrated} narrated rows; at 60 s it was ${r60.toFixed(1)}x (the ~10x 91A measured) — the check can see the defect`,
+    preOver > 0 && r60 >= 5)
+  const script = "Welcome home to 1420 Ocean Drive — three bedrooms, two baths, and the light pours in all afternoon. Call me to see it this week."
+  const avatar = estimateAvatarRenderCostUsd(script)
+  const didLeg = didRenderUsdForSeconds(estimateDurationSeconds(spokenWords(script).length))
+  check("the avatar METERING line's voice leg is elevenLabsUsdForChars(script.length) (metering minus the D-ID leg, 4dp)",
+    Math.abs((avatar - didLeg) - Math.round(elevenLabsUsdForChars(script.length) * 10000) / 10000) < 1e-4)
+  check("meter-vendor PLATFORM_VENDOR_RATES.elevenlabs (the per-call TTS budget check + usage log) == elevenLabsUsdForChars(1) per character",
+    PLATFORM_VENDOR_RATES.elevenlabs.perUnit === elevenLabsUsdForChars(1) && PLATFORM_VENDOR_RATES.elevenlabs.unit === "character")
+  check("estimatePlatformVendorCost('elevenlabs', 2400) agrees with elevenLabsUsdForChars(2400) to 4dp",
+    Math.abs(estimatePlatformVendorCost("elevenlabs", 2400) - Math.round(elevenLabsUsdForChars(2400) * 10000) / 10000) < 1e-9)
+  check("cost-normalizer VENDOR_PRICING.elevenlabs (the slideshow voiceover's render-log cost) == elevenLabsUsdForChars(1) per character",
+    VENDOR_PRICING.elevenlabs?.costPerUnit === elevenLabsUsdForChars(1) && Math.abs(normalizeVendorCost("elevenlabs", 900) - elevenLabsUsdForChars(900)) < 1e-12)
+  check("characters, not calls: no floor (0 chars → $0) and the price is linear (2x chars → 2x USD)",
+    elevenLabsUsdForChars(0) === 0 && Math.abs(elevenLabsUsdForChars(2000) - 2 * elevenLabsUsdForChars(1000)) < 1e-12)
+  // Static: no PRIVATE voice rate left in the three readers (stripped source — a tombstone quoting the retired figure is prose).
+  const privateVoiceRate = (src: string) => /\*\s*0\.18\b|seconds\s*\*\s*120\b|perUnit:\s*0\.000\d+\s*,\s*unit:\s*"character"|costPerUnit:\s*0\.000\d+/.test(src)
+  const reg = stripComments(readFileSync(join(process.cwd(), "lib/remotion/registry.ts"), "utf8"))
+  const regBody = reg.slice(reg.indexOf("export function estimateCompositionCost"), reg.indexOf("export async function recordRenderQueued"))
+  const mv = stripComments(readFileSync(join(process.cwd(), "lib/vendor-governance/meter-vendor.ts"), "utf8"))
+  const cn = stripComments(readFileSync(join(process.cwd(), "lib/vendor-governance/cost-normalizer.ts"), "utf8"))
+  const cnStart = cn.indexOf("'elevenlabs'")
+  const cnEleven = cnStart === -1 ? "" : cn.slice(cnStart, cn.indexOf("}", cnStart))
+  check("registry.ts's estimator calls elevenLabsUsdForChars and carries no private voice rate",
+    regBody.length > 0 && /elevenLabsUsdForChars\(/.test(regBody) && !privateVoiceRate(regBody))
+  check("meter-vendor.ts and cost-normalizer.ts carry no private per-character ElevenLabs literal",
+    /elevenlabs:\s*\{\s*perUnit:\s*elevenLabsUsdForChars\(1\)/.test(mv) && cnEleven.length > 0 && /elevenLabsUsdForChars\(1\)/.test(cnEleven) && !privateVoiceRate(cnEleven))
+  check("[control] the private-rate finder sees all three retired lines",
+    privateVoiceRate("Math.max(0.05, (seconds * 120 / 1000) * 0.18)") &&
+    privateVoiceRate('elevenlabs: { perUnit: 0.00018, unit: "character" },') &&
+    privateVoiceRate("costPerUnit: 0.00030, // $0.30 per 1K characters"))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // § bookend · MAX_BRAND_BOOKEND_SECONDS sanity — always shorter than even the
 //   shortest fixture, so a bookend never dominates the shortest reel this repo renders.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -729,6 +800,7 @@ async function main() {
   kenBurnsSection()
   costLedgerSection()
   await costForecastSection()
+  await voiceForecastSection()
   bookendSection()
   scriptSentimentSection()
   handheldDriftSection()

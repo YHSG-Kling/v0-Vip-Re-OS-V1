@@ -1552,7 +1552,8 @@ const W24_TABLES = [
 
 /** A2's reason, per table and file: D1 is green against a file with no writers left. */
 const W24_WRITER_FLOORS: Array<{ file: string; table: string; floor: number }> = [
-  { file: "app/actions/ai-reply-coach.ts", table: "smart_assistant_suggestions", floor: 1 },
+  // lane 92A: the reply-draft generator moved to a lib core (the action is its gated door)
+  { file: "lib/ai-reply-coach/reply-draft-core.ts", table: "smart_assistant_suggestions", floor: 1 },
   { file: "lib/fatigue/fatigue-calculator.ts", table: "smart_assistant_suggestions", floor: 1 },
   { file: "lib/property-alerts/alert-notifier.ts", table: "smart_assistant_suggestions", floor: 1 },
   { file: "lib/campaign-sequences/step-executor.ts", table: "sequence_step_executions", floor: 4 },

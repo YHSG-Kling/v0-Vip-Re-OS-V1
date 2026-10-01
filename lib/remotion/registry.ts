@@ -27,7 +27,8 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { compositionSeconds } from "@/lib/remotion/composition-geometry"
 import { consumesVoiceover } from "@/lib/remotion/content-contract"
-import { didRenderUsdForSeconds } from "@/lib/video/realism-profile"
+import { didRenderUsdForSeconds, elevenLabsUsdForChars } from "@/lib/video/realism-profile"
+import { wordsForSeconds, AVERAGE_CHARS_PER_WORD } from "@/lib/video/duration-model"
 
 export type CompositionTier =
   | "solo_agent"
@@ -197,9 +198,14 @@ export function estimateCompositionCost(
   const seconds = compositionSeconds(composition)
   const did = composition.requires_did_avatar ? didRenderUsdForSeconds(seconds) : 0
 
-  // ElevenLabs TTS at ~$0.18 per 1K characters; a typical narration
-  // runs ~120 characters per second. Conservative cap at $0.10 even
-  // for short clips because the API has a minimum charge.
+  // THE VOICE LEG IS PRICED BY THE ONE RATE (lane 92A, the twin of the D-ID fix above). This
+  // used to say "ElevenLabs TTS at ~$0.18 per 1K characters; a typical narration runs ~120
+  // characters per second" with a $0.05 floor for "a minimum charge". 120 chars/s is ~8x a
+  // real narration (150 wpm x 6 chars/word = 15 chars/s — lib/video/duration-model.ts
+  // wordsForSeconds + AVERAGE_CHARS_PER_WORD, the pace and character budget the narration
+  // planner itself uses), $0.18 was ~1.8x the billed v3 rate, and ElevenLabs bills
+  // characters, not calls — so the forecast over-stated voice ~10x. It now prices through
+  // elevenLabsUsdForChars, the function the avatar metering line prices through.
   //
   // WHICH compositions carry that narration is read from the ONE set
   // (consumesVoiceover — lib/remotion/content-contract.ts), not from the row's
@@ -222,7 +228,7 @@ export function estimateCompositionCost(
     ? consumesVoiceover(composition.composition_id)
     : composition.requires_voiceover
   const voice = narrated
-    ? Math.max(0.05, (seconds * 120 / 1000) * 0.18)
+    ? elevenLabsUsdForChars(wordsForSeconds(seconds, "voiceover") * AVERAGE_CHARS_PER_WORD)
     : 0
 
   // Remotion render on Vercel Lambda: ~$0.005 per second of output.

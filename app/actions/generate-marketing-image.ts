@@ -90,6 +90,9 @@ export interface GenerateMarketingImageResult {
   cost?: number
   error?: string
   errorCode?: string
+  /** Lane 92A: the image was saved but a follow-on step was refused (the image.generated
+   *  fan-out). success stays true; the dialog shows this beside the image. */
+  warning?: string
 }
 
 export async function generateMarketingImage(
@@ -287,6 +290,7 @@ export async function generateMarketingImage(
   // route the image to the same downstream destinations as videos: social
   // post drafts, contact message drafts, listing landing page, and any
   // marketing-campaign assets sharing the same umbrella.
+  let fanoutWarning: string | undefined
   try {
     const { emitEventFromCron } = await import("@/lib/orchestrator/internal")
     // The result is READ (wave 91): the emitter used to answer success on a refused
@@ -310,9 +314,20 @@ export async function generateMarketingImage(
     })
     if (!emitted.success) {
       console.error(`[generateMarketingImage] image.generated fan-out NOT recorded for asset ${asset.id}: ${emitted.error}`)
+      fanoutWarning = `Image saved, but it was not sent on to its listing/campaign: ${emitted.error ?? "the event was refused"}`
     }
   } catch (eventErr) {
     console.error("[generateMarketingImage] image.generated event failed:", eventErr)
+    fanoutWarning = `Image saved, but it was not sent on to its listing/campaign: ${eventErr instanceof Error ? eventErr.message : "the event failed"}`
+  }
+  // Lane 92A: a refused fan-out is no longer only logged — it lands on the surface that
+  // already shows refusals (self_heal_events → repair digest / Exception Center) and on
+  // the result the image dialog renders.
+  if (fanoutWarning) {
+    const { recordBestEffortLoss } = await import("@/lib/kernel/write-sentinel")
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    await recordBestEffortLoss(createServiceClient(), { table: "lifecycle_events", flow: "image_generated_fanout", brokerageId: ctx.brokerageId,
+      reason: "the image itself is saved; the image.generated fan-out (attach to the listing / campaign, social draft) did not run for it" }, fanoutWarning)
   }
 
   return {
@@ -322,5 +337,6 @@ export async function generateMarketingImage(
     thumbnailUrl: genResult.thumbnailUrl,
     revisedPrompt: genResult.revisedPrompt,
     cost: genResult.cost,
+    ...(fanoutWarning ? { warning: fanoutWarning } : {}),
   }
 }

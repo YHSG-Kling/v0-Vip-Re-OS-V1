@@ -1635,10 +1635,32 @@ const ELEVENLABS_USD_PER_1K_CHARS = 0.1
  * 15-second interval, i.e. one credit) — never $0 for a call that was billed.
  */
 export function estimateAvatarRenderCostUsd(script: string): number {
-  const chars = script.length
-  const usd = (chars / 1000) * ELEVENLABS_USD_PER_1K_CHARS
+  const usd = elevenLabsUsdForChars(script.length)
     + didRenderUsdForSeconds(estimateDurationSeconds(spokenWords(script).length))
   return Math.round(usd * 10000) / 10000
+}
+
+/**
+ * PURE: the ElevenLabs TTS leg for `chars` synthesised characters — THE ONE voice price
+ * (lane 92A, the twin of didRenderUsdForSeconds below). Before this, FOUR rates priced the
+ * same characters: this file's $0.10/1K (the avatar metering line), lib/remotion/registry.ts
+ * estimateCompositionCost's "$0.18/1K x 120 chars/s" (about 8x over a 150-wpm narration's
+ * ~15 chars/s, and 1.8x over on rate), lib/vendor-governance/meter-vendor.ts
+ * PLATFORM_VENDOR_RATES.elevenlabs $0.18/1K (the per-call TTS budget check + usage log) and
+ * lib/vendor-governance/cost-normalizer.ts VENDOR_PRICING.elevenlabs $0.30/1K (the slideshow
+ * voiceover's video_render_log.cost_usd). All four now price through here.
+ *
+ * WHY $0.10 AND NOT v4's $0.08 (wave 91 lane 91E: Eleven v4 lists $0.08/1K, Flash/Turbo
+ * $0.04). The platform does not synthesise on v4: the model ids in the tree are eleven_v3,
+ * eleven_multilingual_v2, eleven_flash_v2_5, eleven_turbo_v2_5 and the legacy v1/v2 — and
+ * v3 / multilingual_v2 are the $0.10 row (the research note above, elevenlabs.io/pricing/api).
+ * Booking v4's price for v3 characters would UNDER-book; §5 prefers the over-book until the
+ * synthesis moves to v4, and then this one constant is the only number to change.
+ * No floor: ElevenLabs bills characters, not calls (contrast D-ID's one-credit floor).
+ */
+export function elevenLabsUsdForChars(chars: number): number {
+  const c = Number.isFinite(chars) && chars > 0 ? chars : 0
+  return (c / 1000) * ELEVENLABS_USD_PER_1K_CHARS
 }
 
 /**

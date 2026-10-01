@@ -212,6 +212,35 @@ async function main() {
   ok("…and each one acts on success:false (logs / counts / throws with the reason), never on the old throw alone",
     callerFiles.every((f) => /!\s*emitted\.(success|eventId)/.test(code(f))), callerFiles.filter((f) => !/!\s*emitted\.(success|eventId)/.test(code(f))).join(", "))
 
+  // Lane 92A — the two USER-FACING image doors no longer only LOG a refused fan-out: the
+  // loss lands on the refusal ledger the repair digest / Exception Center read
+  // (recordBestEffortLoss → self_heal_events), AND on the result the door's own UI
+  // already renders. Asserted per door on stripped source, plus the ledger row itself.
+  console.log("\n[a refused image fan-out is SURFACED, not only logged — lane 92A]")
+  const surfaces = (src: string, resultKey: string) =>
+    /recordBestEffortLoss\(/.test(src) && new RegExp(`\\b${resultKey}\\b`).test(src)
+  const doors: Array<[string, string, string, RegExp]> = [
+    ["app/actions/generate-marketing-image.ts", "warning", "app/components/ai-image/generate-image-button.tsx", /if \(result\.warning\) setError\(result\.warning\)/],
+    ["app/actions/listing-media.ts", "fanoutWarning", "app/dashboard/listings/[id]/media/components/media-grid.tsx", /result\.data\?\.fanoutWarning/],
+  ]
+  for (const [door, key, ui, uiRe] of doors) {
+    ok(`${door}: a refused image.generated fan-out is ledgered (recordBestEffortLoss) and handed back as \`${key}\``, surfaces(code(door), key))
+    ok(`…and ${ui} renders it on the line/toast that already shows this action's refusals`, uiRe.test(code(ui)))
+  }
+  ok("POSITIVE CONTROL: a door that only console.errors the refusal is NOT counted as surfaced",
+    !surfaces(`if (!emitted.success) { console.error("fan-out NOT recorded") }`, "warning"))
+  const { recordBestEffortLoss } = await import("../lib/kernel/write-sentinel")
+  const ledger = memSupabase({ self_heal_events: [] })
+  await recordBestEffortLoss(ledger, { table: "lifecycle_events", flow: "image_generated_fanout", brokerageId: BRK, reason: "r" }, "permission denied")
+  const lossRow = ledger.tables.self_heal_events[0]
+  ok("recordBestEffortLoss writes the SAME row sentinelWrite writes (data_flow · best_effort_write · failed · flow:table · message + reason)",
+    ledger.tables.self_heal_events.length === 1 && lossRow?.domain === "data_flow" && lossRow?.action === "best_effort_write" && lossRow?.outcome === "failed"
+    && lossRow?.subject === "image_generated_fanout:lifecycle_events" && lossRow?.brokerage_id === BRK && (lossRow?.detail as any)?.message === "permission denied" && (lossRow?.detail as any)?.reason === "r", JSON.stringify(lossRow))
+  const ws = code("lib/kernel/write-sentinel.ts")
+  const swBody = ws.slice(ws.indexOf("export async function sentinelWrite("), ws.indexOf("export async function recordBestEffortLoss("))
+  ok("sentinelWrite's two loss branches go through recordBestEffortLoss — one writer of the loss row, not two spellings",
+    (swBody.match(/recordBestEffortLoss\(/g) ?? []).length === 2 && !/recordSelfHeal\(/.test(swBody))
+
   console.log("\n[registration]")
   const dom = MAINTENANCE_DOMAINS["audit_echo_handlers"]
   ok("MAINTENANCE_DOMAINS.audit_echo_handlers is owned (data_steward) with recruiting_manager + ai_isa + cron_manager co-owners named in prose",

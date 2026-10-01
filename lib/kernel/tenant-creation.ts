@@ -294,6 +294,20 @@ export async function createTenantCore(service: any, input: TenantCreationInput)
       plan_tier: input.tier,
       ...platformMembershipFlags(input),
       trial_ends_at: trialEndsAt,
+      // ONE SOURCE FOR STATUS AND TRIAL END (lane 92A, §6). Left to the column DEFAULT
+      // (scripts/120-create-usage-tracking-billing.sql), the bag was born saying
+      // `subscription_status: "active"`, `trial_ends_at: null` on a tenant whose
+      // subscriptions row (step 5) says 'trialing' with a trial_end — two answers to
+      // "is this account paying, and until when?", and the bag's was wrong for every
+      // trial and every paid-pending activation. Nothing reads those two bag keys; the
+      // truth is subscriptions.status / trial_end (lib/billing/billing-access.ts) and
+      // brokerages.trial_ends_at above. So the bag is written explicitly WITHOUT them —
+      // it carries only what has no other home (coupon, signup_intent, seat_override,
+      // non_producing_user_ids, setup_fee_waiver, subscriber_stall), merged in later.
+      // The column DEFAULT and older rows still carry the two keys until a migration
+      // drops them (drafted as m679, held until the database connector is back);
+      // nothing reads them, so they are inert in the meantime.
+      billing_metadata: {},
       signup_source: input.signupSource,
       onboarding_status: "pending",
       created_at: nowIso,

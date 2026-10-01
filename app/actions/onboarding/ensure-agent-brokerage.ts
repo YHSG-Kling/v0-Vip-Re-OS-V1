@@ -120,6 +120,11 @@ export async function ensureAgentBrokerage(): Promise<EnsureAgentBrokerageResult
       brokerage_on_platform: false,
       team_on_platform: false,
       trial_ends_at: trialEndsAt,
+      // Not the column DEFAULT's bag, which says subscription_status "active" /
+      // trial_ends_at null on this TRIAL tenant (lane 92A — same rule as the core,
+      // lib/kernel/tenant-creation.ts: status and trial end live in subscriptions +
+      // brokerages.trial_ends_at, never in the bag).
+      billing_metadata: {},
       // signup_source is CHECK-constrained to self_serve/superadmin/partner/import;
       // this is a self-serve provision (auto-triggered), so 'self_serve' is correct.
       signup_source: "self_serve",

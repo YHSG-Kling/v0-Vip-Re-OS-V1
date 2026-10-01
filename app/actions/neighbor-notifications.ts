@@ -18,6 +18,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { revalidatePath } from "next/cache"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 // THE ONE CREATOR of a user-authored direct mail campaign row (wave 85D).
@@ -41,21 +42,18 @@ export interface NeighborNotificationCampaign {
  * THE TENANT IS THE SESSION'S (§4, wave 85D). Three exports below ran on the SERVICE client
  * keyed on a body-supplied `brokerageId`. That is the IDOR shape: a caller naming another
  * brokerage's id created, approved and launched that tenant's neighbour mailers. The
- * argument stays as a cross-check only, and a foreign id is refused. Module-private, so it
- * is not an endpoint.
+ * argument stays as a cross-check only, and a foreign id is refused.
+ *
+ * TOMBSTONE (lane 92A): the module-private `sessionTenant(claimed)` — DELETED as a
+ * duplicate. SURVIVOR: lib/platform/acting-context.ts:326 `resolveWriteContextForTenant`
+ * (the act-as WRITE seam), whose claimed-vs-session comparison is :292
+ * `decideClaimedTenant`. Nothing was lost: the copy resolved getAgentContext (the
+ * survivor does the same, re-validating the impersonation grant on the call), refused a
+ * session with no tenant, refused a foreign claim, and returned userId + brokerageId (the
+ * survivor returns both, brokerageId narrowed to string). What the copy LACKED and the
+ * survivor carries: every caller here is a WRITE, and a READ-ONLY impersonation grant is
+ * refused (a grant walks the account and never exceeds it, §5).
  */
-async function sessionTenant(claimedBrokerageId: string): Promise<
-  { ok: true; userId: string; brokerageId: string } | { ok: false; error: string }
-> {
-  const actor = await getAgentContext()
-  if (!actor.isAuthenticated || !actor.userId || !actor.brokerageId) {
-    return { ok: false, error: "Not signed in to a brokerage — a neighbour notification belongs to a signed-in brokerage user" }
-  }
-  if (claimedBrokerageId && claimedBrokerageId !== actor.brokerageId) {
-    return { ok: false, error: "That brokerage is not yours — a neighbour notification is run in your own brokerage" }
-  }
-  return { ok: true, userId: actor.userId, brokerageId: actor.brokerageId }
-}
 
 /**
  * Step 1: Create the campaign and identify candidate recipients. Defaults
@@ -75,7 +73,7 @@ export async function createNeighborNotificationCampaign(params: {
   minTenureYears?: number
   knowsBuyerScoreThreshold?: number
 }): Promise<{ success: boolean; campaignId?: string; identified?: number; error?: string }> {
-  const tenant = await sessionTenant(params.brokerageId)
+  const tenant = await resolveWriteContextForTenant(params.brokerageId)
   if (!tenant.ok) return { success: false, error: tenant.error }
   params = { ...params, brokerageId: tenant.brokerageId }
   const supabase = createServiceClient()
@@ -173,7 +171,7 @@ export async function grantSellerPermission(params: {
   sellerContactId: string
   brokerageId: string
 }): Promise<{ success: boolean; error?: string }> {
-  const tenant = await sessionTenant(params.brokerageId)
+  const tenant = await resolveWriteContextForTenant(params.brokerageId)
   if (!tenant.ok) return { success: false, error: tenant.error }
   const supabase = createServiceClient()
 
@@ -205,7 +203,7 @@ export async function launchNeighborNotification(params: {
   campaignId: string
   brokerageId: string
 }): Promise<{ success: boolean; staged?: number; note?: string; error?: string }> {
-  const tenant = await sessionTenant(params.brokerageId)
+  const tenant = await resolveWriteContextForTenant(params.brokerageId)
   if (!tenant.ok) return { success: false, error: tenant.error }
   params = { ...params, brokerageId: tenant.brokerageId }
   const supabase = createServiceClient()

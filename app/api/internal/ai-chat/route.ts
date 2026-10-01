@@ -898,8 +898,10 @@ export async function POST(req: NextRequest) {
           .limit(1)
           .maybeSingle()
 
-        const { generateAIReplyDraft } = await import("@/app/actions/ai-reply-coach")
-        const result = await generateAIReplyDraft({
+        // Lane 92A: the generator core (tenant verified above: the contact and the
+        // conversation were both read under this session's brokerage).
+        const { generateAIReplyDraftForTenant } = await import("@/lib/ai-reply-coach/reply-draft-core")
+        const result = await generateAIReplyDraftForTenant({
           brokerageId,
           agentUserId: user.id,
           conversationId: convo.id,
