@@ -509,7 +509,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10438,
+  "census": 10447,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2833,7 +2833,7 @@
     "lib/ai-isa/next-best-touch.ts": 4,
     "lib/ai-isa/opt-out-utils.ts": 1,
     "lib/ai-isa/outreach-identity.ts": 2,
-    "lib/ai-isa/persona-tool-policy.ts": 12,
+    "lib/ai-isa/persona-tool-policy.ts": 13,
     "lib/ai-isa/personalize-outreach.ts": 4,
     "lib/ai-isa/portal-link.ts": 3,
     "lib/ai-isa/post-call-outcome.ts": 3,
@@ -2861,6 +2861,7 @@
     "lib/ai-isa/user-type-tools.ts": 1,
     "lib/ai-isa/video-generator.ts": 1,
     "lib/ai-isa/voice-dial-batch.ts": 6,
+    "lib/ai-reply-coach/reply-draft-core.ts": 1,
     "lib/analytics/ai-prediction-outcomes.ts": 3,
     "lib/analytics/assignment-outcomes.ts": 6,
     "lib/analytics/intent-phrase-rollup.ts": 1,
@@ -3723,7 +3724,7 @@
     "lib/kernel/warm-handoff.ts": 3,
     "lib/kernel/week-in-review.ts": 3,
     "lib/kernel/welcome-personal-video.ts": 1,
-    "lib/kernel/write-sentinel.ts": 4,
+    "lib/kernel/write-sentinel.ts": 5,
     "lib/knowledge/embedding-service.ts": 10,
     "lib/knowledge/help-topic-categories.ts": 2,
     "lib/lead-assignment/assignment-engine.ts": 3,
@@ -4364,7 +4365,7 @@
     "lib/video/avatar-explainer.ts": 4,
     "lib/video/avatar-render-orchestrator.ts": 8,
     "lib/video/avatar-track-submit.ts": 1,
-    "lib/video/body-visual-model.ts": 22,
+    "lib/video/body-visual-model.ts": 25,
     "lib/video/body-visual-rule-ledger.ts": 5,
     "lib/video/broll-picker.ts": 1,
     "lib/video/broll-plan.ts": 1,
@@ -4403,7 +4404,7 @@
     "lib/video/playable-video.ts": 1,
     "lib/video/presenter-media.ts": 1,
     "lib/video/promo-composition.ts": 6,
-    "lib/video/realism-profile.ts": 23,
+    "lib/video/realism-profile.ts": 24,
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 1,
     "lib/video/render-cut.ts": 9,
@@ -4415,7 +4416,7 @@
     "lib/video/topic-video-runner.ts": 1,
     "lib/video/topic-video.ts": 20,
     "lib/video/verbal-disclosure.ts": 1,
-    "lib/video/video-director.ts": 13,
+    "lib/video/video-director.ts": 14,
     "lib/video/video-event-reactions.ts": 4,
     "lib/video/video-guide.ts": 6,
     "lib/video/video-identity.ts": 1,
@@ -4543,7 +4544,7 @@
     "remotion/TeammateExplainerReel.tsx": 1,
     "remotion/TestimonialReel.tsx": 1,
     "remotion/VideoCoverThumb.tsx": 1,
-    "remotion/_BrollLayer.tsx": 6,
+    "remotion/_BrollLayer.tsx": 7,
     "remotion/charts/AffordabilityDonut.tsx": 1,
     "remotion/charts/CompsBar.tsx": 1,
     "remotion/charts/DaysOnMarketBars.tsx": 1,
@@ -14056,6 +14057,7 @@
       "resolveBatchDataToolMonthlyCapCents",
       "evaluateEffectiveBatchDataTier",
       "resolveEffectiveBatchDataToolTier",
+      "isBatchDataPropertyLookupTool",
       "isToolAllowedForTier",
       "filterToolsByTier",
       "filterRentCastToolsForPersona",
@@ -14196,6 +14198,9 @@
       "approveIsaDialBatch",
       "enqueueDialBatchNotifications",
       "publishIsaCallOutcomes"
+    ],
+    "lib/ai-reply-coach/reply-draft-core.ts": [
+      "generateAIReplyDraftForTenant"
     ],
     "lib/analytics/ai-prediction-outcomes.ts": [
       "captureWinProbabilitySnapshot",
@@ -18847,6 +18852,7 @@
     ],
     "lib/kernel/write-sentinel.ts": [
       "sentinelWrite",
+      "recordBestEffortLoss",
       "isRuntimeDriftLoss",
       "composeSentinelLossReport",
       "loadSentinelLosses"
@@ -22059,6 +22065,9 @@
       "brollAvailable",
       "planBodyVisual",
       "segmentUsesBroll",
+      "brollBenefit",
+      "brollMountWindows",
+      "photoSpansAround",
       "fitBodyVisualPlan",
       "sceneWindowsFromPlan",
       "panelWindowsFromPlan",
@@ -22344,6 +22353,7 @@
       "scanForAiTells",
       "avatarPipWindowFade",
       "estimateAvatarRenderCostUsd",
+      "elevenLabsUsdForChars",
       "didRenderUsdForSeconds",
       "roundUpToNearest15Seconds",
       "estimateStreamingMinutesCostUsd",
@@ -22447,6 +22457,7 @@
     ],
     "lib/video/video-director.ts": [
       "selectVideoFormat",
+      "directorBrollDecision",
       "selectVideoFormatLearned",
       "sentimentForSituation",
       "musicMoodForSituation",
@@ -23041,6 +23052,7 @@
       "brollSlots",
       "brollDrawAt",
       "BrollLayer",
+      "PlannedBrollLayer",
       "ContextCueRow"
     ],
     "remotion/charts/AffordabilityDonut.tsx": [
