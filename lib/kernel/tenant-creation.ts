@@ -304,9 +304,8 @@ export async function createTenantCore(service: any, input: TenantCreationInput)
       // brokerages.trial_ends_at above. So the bag is written explicitly WITHOUT them —
       // it carries only what has no other home (coupon, signup_intent, seat_override,
       // non_producing_user_ids, setup_fee_waiver, subscriber_stall), merged in later.
-      // The column DEFAULT and older rows still carry the two keys until a migration
-      // drops them (drafted as m679, held until the database connector is back);
-      // nothing reads them, so they are inert in the meantime.
+      // m679 (applied live 2026-10-01) dropped the two keys from the column DEFAULT
+      // and from every existing row, so no brokerage carries a second status.
       billing_metadata: {},
       signup_source: input.signupSource,
       onboarding_status: "pending",

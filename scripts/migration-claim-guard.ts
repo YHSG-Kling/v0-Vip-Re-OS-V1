@@ -274,7 +274,8 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // APPLIED, widens market_active_listings.current_status for the RentCast discovery feed's
 // 'off_market' rows (beside m681, wave 91D, still waiting on the Supabase connector). Deliberate
 // bump, named; drops by one as the integrator applies each.
-const NOT_APPLIED_BASELINE = 2
+// 2 → 0 (wave 93): m679, m680 and m681 applied live 2026-10-01 via the Supabase MCP.
+const NOT_APPLIED_BASELINE = 0
 console.log("\n[3 · the work-in-flight list only shrinks]")
 if (notApplied.length) for (const f of notApplied) console.log(`     · ${f}`)
 check(`files claiming NOT APPLIED at or below ${NOT_APPLIED_BASELINE} (found ${notApplied.length})`,

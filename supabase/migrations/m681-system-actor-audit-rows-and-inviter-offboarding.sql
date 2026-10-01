@@ -1,4 +1,4 @@
--- ── WRITTEN, NOT APPLIED — the integrator applies it (CLAUDE.md §3: files are not the database) ──
+-- ── APPLIED LIVE 2026-10-01 via Supabase MCP apply_migration (project hrvaqgvukzxfskkcrwbt) ──
 --
 -- m681 — two NOT NULL columns that refuse writes the code is RIGHT to make
 -- (lane 91D, wave 91 full-platform walkthrough; both measured against the live

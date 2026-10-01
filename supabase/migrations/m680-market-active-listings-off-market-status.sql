@@ -1,4 +1,4 @@
--- ── WRITTEN, NOT APPLIED — the integrator applies it (CLAUDE.md §3: files are not the database) ──
+-- ── APPLIED LIVE 2026-10-01 via Supabase MCP apply_migration (project hrvaqgvukzxfskkcrwbt) ──
 --
 -- m680 — market_active_listings.current_status admits 'off_market' (lane 92B, wave 92).
 --
@@ -15,7 +15,7 @@
 -- property record's last sale — that decision does not need this column.)
 --
 -- Until this is applied the CHECK refuses 'off_market' (23514); the feed detects that, reports it
--- ONCE per run ("m680 is not applied yet") and keeps writing ACTIVE rows — nothing else changes.
+-- ONCE per run (the live CHECK refused off_market) and keeps writing ACTIVE rows — nothing else changes.
 --
 -- After applying: regenerate the vocabulary cache (CLAUDE.md §3 — scripts/generate-check-
 -- vocabularies.ts) so scripts/check-vocabularies.ts lists 'off_market' for this column.

@@ -252,9 +252,10 @@ export async function runActiveListingDiscoveryForMarket(
       )
     if (upsertErr) {
       if (status === "off_market" && (upsertErr as { code?: string }).code === "23514") {
-        // m680 not applied yet — the CHECK still refuses 'off_market'. Said ONCE, then skipped.
+        // The live current_status CHECK refused 'off_market' (m680 admits it) — a drifted
+        // schema, not a row defect. Said ONCE, then skipped; active rows are unaffected.
         offMarketRefusedByCheck = true
-        errors.push(`off_market feed rows refused by the current_status CHECK for ${market.name} — supabase/migrations/m680 is not applied yet (active rows unaffected)`)
+        errors.push(`off_market feed rows refused by the current_status CHECK for ${market.name} — the live CHECK must admit it (m680) — active rows unaffected`)
         continue
       }
       errors.push(`feed write failed for ${addressRaw}: ${upsertErr.message}`)

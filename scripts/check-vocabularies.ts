@@ -18,9 +18,9 @@
  * MEASURED AT GENERATION: 440 tables, 779 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-29
+ * generated: 2026-10-01
  * source: public.live_check_constraints_json()
- * body-sha256: 10510f360ae6421b5359834577a2c12ebda83354117fdb94d816fd124a3e8cbc
+ * body-sha256: 5399652db448e3dad2d45e214115b8f33fadb3f60e8a2aa52a37f285b2c1ddbb
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -923,7 +923,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["consumed", "expired", "open"],
   },
   market_active_listings: {
-    current_status: ["active", "expired", "sold", "withdrawn"],
+    current_status: ["active", "expired", "off_market", "sold", "withdrawn"],
   },
   market_data: {
     dom_trend: ["decreasing", "increasing", "stable"],
