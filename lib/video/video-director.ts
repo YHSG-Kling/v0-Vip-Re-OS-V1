@@ -72,6 +72,8 @@ import {
 // Wave 81C — ANY TYPE OF VIDEO: a described video planned by archetype rule.
 import { planCustomVideo, type CustomVideoBrief, type CustomVideoPlan } from "@/lib/video/custom-video-archetypes"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+// Wave 92 (lane 92E) — WHEN B-ROLL IS BENEFICIAL: the ONE rule (pure; the Remotion-safe module).
+import { assetsFromProps, brollBenefit, type BodyVisualAssets, type BrollBenefit } from "@/lib/video/body-visual-model"
 
 // ============================================================================
 // SITUATION + FORMAT CONTRACTS (pure)
@@ -161,7 +163,7 @@ function aspectForChannel(channel: TargetChannel): VideoAspect {
   }
 }
 
-/** Vertical-first social channels favor the SQUARE/vertical reel + B-roll. */
+/** Vertical-first social channels favor the SQUARE/vertical reel. */
 function isVerticalSocial(channel: TargetChannel): boolean {
   return channel === "tiktok" || channel === "instagram"
 }
@@ -169,20 +171,22 @@ function isVerticalSocial(channel: TargetChannel): boolean {
 /**
  * selectVideoFormat — PURE creative-director logic. No I/O, no DB.
  *
- * The mapping (each documented):
+ * The mapping (each documented). B-ROLL is not part of this table (wave 92):
+ * every format's `needsBroll` is THE rule — brollBenefit over the situation's
+ * known inventory (directorBrollDecision below).
  *
  *   new_listing
- *     · tiktok / instagram → JustListedReelSquare WITH Remotion B-roll. The
- *       square 1:1 cut is the organic-feed default for Meta/IG/TikTok; B-roll
- *       lifestyle clips under the listing facts is what stops the scroll.
+ *     · tiktok / instagram → JustListedReelSquare. The square 1:1 cut is the
+ *       organic-feed default for Meta/IG/TikTok; stock cutaways only fill the
+ *       beats a photo-scarce listing cannot (the house is the star).
  *     · youtube / facebook → JustListedReelHorizontal — the 16:9 cut sized for
- *       YouTube + FB in-stream / CTV; no B-roll (long-form reads the photos).
+ *       YouTube + FB in-stream / CTV.
  *     · email / portal → JustListedReelSquare (embeds inline without letterbox).
  *   price_drop  → JustListedReelSquare (same listing chrome, neutral pricing copy
  *                 carried by the script; horizontal on youtube/facebook).
  *   just_sold   → JustSoldReelSquare — social-proof companion, square feed cut.
  *   open_house  → OpenHouseAnnounceReel — event headline (date/time/address).
- *   coming_soon → ComingSoonReel — pre-MLS teaser, heaviest B-roll user.
+ *   coming_soon → ComingSoonReel — pre-MLS teaser (footage when the gallery is thin).
  *   market_update → MarketUpdateReel — CHART stat-cards + avatar narration.
  *   cma         → CMAReel — the chart flagship (price trend + comps + DOM + donut).
  *   explainer   → AgentExplainerReel — AVATAR-led educational reel.
@@ -193,6 +197,63 @@ function isVerticalSocial(channel: TargetChannel): boolean {
  *   neighborhood→ NeighborhoodSpotlightReel — lifestyle B-roll spotlight.
  */
 export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
+  const format = formatForSituation(situation)
+  // WAVE 92 (lane 92E) — needsBroll is no longer a hand table beside the format. It was
+  // (vertical social ⇒ the square listing reel, every coming-soon, every neighbourhood, a
+  // custom plan's verdict) and it disagreed with both halves it should have agreed with:
+  // JustListedReelSquare had no b-roll layer to render what was picked, and a listing with
+  // ample photos got stock footage its purpose's verdict refuses. It is now THE rule
+  // (brollBenefit, lib/video/body-visual-model.ts) over what the situation already says
+  // (facts.photoCount / facts.imageUrls — unknown reads as none on hand), refined at
+  // commission time against the staged content (directorBrollDecision in commissionVideo).
+  const decision = directorBrollDecision({
+    compositionId: format.compositionId,
+    purpose: videoPurposeForSituation(situation.kind, format.compositionId, customPlanOf(situation)?.purpose ?? null),
+    facts: situation.facts ?? null,
+    avatarClip: format.needsAvatar,
+    charts: format.needsCharts,
+  })
+  return { ...format, needsBroll: decision.beneficial && decision.renders }
+}
+
+/**
+ * WAVE 92 (lane 92E) — THE DIRECTOR'S B-ROLL PICK IS THE RULE. PURE.
+ *
+ * The Director sources STOCK footage (lib/video/broll-picker.ts pickBrollClips), so it
+ * asks brollBenefit with brollSource "stock" over the inventory it knows: the staged
+ * content props when they exist (assetsFromProps — the same reader the plan uses), else
+ * the situation's facts (a photo count or the photo URLs; stat cards when the format
+ * draws charts). It picks only when the rule says the format BENEFITS and the
+ * composition RENDERS the layer — both, so a pick can never again be a write with no
+ * reader. The MLS cut never takes stock footage (brollBenefit's first clause).
+ */
+export function directorBrollDecision(args: {
+  compositionId: string
+  purpose?: VideoPurpose | null
+  props?: Record<string, unknown> | null
+  facts?: Record<string, unknown> | null
+  avatarClip: boolean
+  charts?: boolean
+  cut?: RenderCut | null
+}): BrollBenefit {
+  let assets: Partial<BodyVisualAssets>
+  if (args.props) {
+    assets = { ...assetsFromProps(args.props, { avatarClip: args.avatarClip, compositionId: args.compositionId }), brollSource: "stock" }
+  } else {
+    const f = args.facts ?? {}
+    const listLen = (k: string) => (Array.isArray(f[k]) ? (f[k] as unknown[]).length : 0)
+    const counted = typeof f.photoCount === "number" && Number.isFinite(f.photoCount) ? Math.max(0, Math.floor(f.photoCount)) : null
+    assets = {
+      avatarClip: args.avatarClip,
+      brollSource: "stock",
+      propertyPhotos: counted ?? Math.max(listLen("imageUrls"), listLen("photos"), listLen("photoUrls")),
+      statCards: args.charts ? 1 : 0,
+    }
+  }
+  return brollBenefit({ compositionId: args.compositionId, purpose: args.purpose ?? null, assets, cut: args.cut ?? null })
+}
+
+function formatForSituation(situation: VideoSituation): Omit<SelectedFormat, "needsBroll"> {
   const { kind, targetChannel } = situation
   const vertical = isVerticalSocial(targetChannel)
   const wantsHorizontal = targetChannel === "youtube" || targetChannel === "facebook"
@@ -204,19 +265,18 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
     case "new_listing":
     case "price_drop": {
       if (wantsHorizontal) {
-        // YouTube / FB in-stream / CTV → 16:9, no B-roll (long-form reads photos).
+        // YouTube / FB in-stream / CTV → 16:9 (b-roll only where brollBenefit says the photos run out).
         return {
           compositionId: "JustListedReelHorizontal",
-          needsAvatar: false, needsBroll: false, needsCharts: false, needsSlides: false,
+          needsAvatar: false, needsCharts: false, needsSlides: false,
           aspect: "horizontal",
           targetChannels: ["youtube", "facebook"],
         }
       }
-      // TikTok / IG / email / portal → the square reel; vertical social adds B-roll.
+      // TikTok / IG / email / portal → the square reel (b-roll: brollBenefit, in selectVideoFormat).
       return {
         compositionId: "JustListedReelSquare",
         needsAvatar: false,
-        needsBroll: vertical, // B-roll is what stops the scroll on TikTok/IG
         needsCharts: false, needsSlides: false,
         aspect: vertical ? aspectForChannel(targetChannel) : "square",
         targetChannels: vertical ? socialFeed : [targetChannel],
@@ -226,7 +286,7 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
     case "just_sold":
       return {
         compositionId: "JustSoldReelSquare",
-        needsAvatar: false, needsBroll: false, needsCharts: false, needsSlides: false,
+        needsAvatar: false, needsCharts: false, needsSlides: false,
         aspect: "square",
         targetChannels: socialFeed,
       }
@@ -234,7 +294,7 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
     case "open_house":
       return {
         compositionId: "OpenHouseAnnounceReel",
-        needsAvatar: false, needsBroll: false, needsCharts: false, needsSlides: false,
+        needsAvatar: false, needsCharts: false, needsSlides: false,
         aspect: "square",
         targetChannels: socialFeed,
       }
@@ -243,7 +303,6 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
       return {
         compositionId: "ComingSoonReel",
         needsAvatar: false,
-        needsBroll: true, // coming-soon teaser is the heaviest B-roll user
         needsCharts: false, needsSlides: false,
         aspect: "square",
         targetChannels: socialFeed,
@@ -253,7 +312,6 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
       return {
         compositionId: "MarketUpdateReel",
         needsAvatar: true,   // avatar narrates the stat cards
-        needsBroll: false,
         needsCharts: true,   // three big chart stat-cards
         needsSlides: false,
         aspect: "square",
@@ -263,7 +321,7 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
     case "cma":
       return {
         compositionId: "CMAReel",
-        needsAvatar: false, needsBroll: false,
+        needsAvatar: false,
         needsCharts: true,   // price trend + comps + DOM + affordability donut
         needsSlides: false,
         aspect: "square",
@@ -274,7 +332,7 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
       return {
         compositionId: "AgentExplainerReel",
         needsAvatar: true,   // avatar-led educational reel
-        needsBroll: false, needsCharts: false, needsSlides: false,
+        needsCharts: false, needsSlides: false,
         aspect: "square",
         targetChannels: socialFeed,
       }
@@ -286,7 +344,7 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
       return {
         compositionId: "AgentExplainerReel",
         needsAvatar: true,   // the agent's avatar introduces themselves to the lead
-        needsBroll: false, needsCharts: false, needsSlides: false,
+        needsCharts: false, needsSlides: false,
         aspect: "square",
         targetChannels: ["email"],
       }
@@ -294,7 +352,7 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
     case "presentation":
       return {
         compositionId: "ListingSectionReel",
-        needsAvatar: false, needsBroll: false, needsCharts: false,
+        needsAvatar: false, needsCharts: false,
         needsSlides: true,   // narrated slide section, 1920×1080
         aspect: "horizontal",
         targetChannels: ["email", "portal"],
@@ -313,7 +371,7 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
       // without one. See resolveAvatarRequirement's header for the full ruling.
       return {
         compositionId: "EquityReportReel",
-        needsAvatar: true, needsBroll: false,
+        needsAvatar: true,
         needsCharts: true,   // equity vs purchase price report
         needsSlides: false,
         aspect: "square",
@@ -323,7 +381,7 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
     case "testimonial":
       return {
         compositionId: "TestimonialReel",
-        needsAvatar: false, needsBroll: false, needsCharts: false, needsSlides: false,
+        needsAvatar: false, needsCharts: false, needsSlides: false,
         aspect: "square",
         targetChannels: socialFeed,
       }
@@ -332,7 +390,6 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
       return {
         compositionId: "NeighborhoodSpotlightReel",
         needsAvatar: false,
-        needsBroll: true,    // lifestyle clips under the data highlights
         needsCharts: false, needsSlides: false,
         aspect: "square",
         targetChannels: socialFeed,
@@ -342,7 +399,7 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
       return {
         compositionId: "PhotoWalkthroughReel",
         needsAvatar: false,  // the photos ARE the video (finish-spec)
-        needsBroll: false, needsCharts: false, needsSlides: false,
+        needsCharts: false, needsSlides: false,
         aspect: "square",
         targetChannels: socialFeed,
       }
@@ -351,7 +408,7 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
       return {
         compositionId: "ExplainerAnimReel",
         needsAvatar: false,  // the animation IS the visual (finish-spec: CHART_REEL, broll none)
-        needsBroll: false, needsCharts: true, needsSlides: false,
+        needsCharts: true, needsSlides: false,
         aspect: "square",
         targetChannels: socialFeed,
       }
@@ -362,11 +419,9 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
       // hand table here. No plan → no format: fail loudly rather than pick.
       const customPlan = customPlanOf(situation)
       if (!customPlan) throw new Error("custom situation has no facts.customPlan — customPlan it first with planCustomVideo (lib/video/custom-video-archetypes.ts)")
-      const verdict = customPlan.rule.broll.verdict
       return {
         compositionId: customPlan.compositionId,
         needsAvatar: customPlan.host === "avatar",
-        needsBroll: verdict === "needed" || verdict === "optional",
         needsCharts: customPlan.rule.required.includes("chart"),
         needsSlides: false,
         aspect: aspectForChannel(targetChannel),
@@ -1248,18 +1303,16 @@ export async function commissionVideo(
     }
   }
 
-  // 5b. SOURCE the B-roll when the chosen format wants it. The Director already
-  //     FLAGS needsBroll; here we fill it — pickBrollClips walks the EXISTING
-  //     agent → team → brokerage video_assets cascade (same walk as the render
-  //     coordinator's bookend/music pick) and returns the ordered clips the
-  //     composition's B-roll layer composites under the narration. Best-effort:
-  //     an empty scope (no uploaded b_roll) returns [] and the composition
-  //     renders WITHOUT B-roll exactly like today — a picker failure NEVER
-  //     blocks staging.
+  // 5b. TOMBSTONE (wave 92, lane 92E): the b-roll pick that stood here ran on
+  //     `format.needsBroll` BEFORE the content was resolved — so it could not know
+  //     how many photos the listing had, which is the one fact the listing verdict
+  //     turns on. It MOVED to 6e″ below (after resolveDirectorContentProps), where
+  //     directorBrollDecision asks THE rule (brollBenefit) over the staged content.
+  //     The pick itself — pickBrollClips over the agents.id cascade — is unchanged.
   let brollClips: import("@/lib/video/broll-picker").PickedBrollClip[] = []
   let brollSourcedCount = 0
   let brollSourcedScope: string | null = null
-  if (format.needsBroll) {
+  const pickStockBroll = async (): Promise<void> => {
     try {
       const { pickBrollClips } = await import("@/lib/video/broll-picker")
       const picked = await pickBrollClips(
@@ -1322,7 +1375,6 @@ export async function commissionVideo(
     composition_id: format.compositionId,
     supports_bookends: supportsBookends,
     needs_avatar: requiresAvatar,
-    needs_broll: format.needsBroll,
     needs_charts: format.needsCharts,
     needs_slides: format.needsSlides,
     aspect: format.aspect,
@@ -1349,11 +1401,8 @@ export async function commissionVideo(
     // so the format choice is auditable on the row itself.
     format_source: formatSource,
     format_why: formatWhy,
-    // B-roll the Director sourced from the scope cascade (empty when none
-    // uploaded — the composition then renders without B-roll, like today).
-    broll_clips:         brollClips,
-    broll_sourced_count: brollSourcedCount,
-    broll_sourced_scope: brollSourcedScope,
+    // B-roll the Director sourced from the scope cascade — stamped at the insert
+    // (wave 92: the pick now runs after the content is known, 6e″ below).
   }
 
   // 6b. THE CONTENT. Everything above this line is CHROME — the bookends, the
@@ -1473,12 +1522,23 @@ export async function commissionVideo(
       }
     }
   }
-  // The Director's b-roll comes from the stock library (pickBrollClips) — the
-  // verdict-aware planner needs to know it is not the home's own media.
+  // 6e″. B-ROLL WHEN BENEFICIAL (wave 92, lane 92E — owner: "we should be using
+  //      broll when appropriate or benefinical"). The pick is THE rule over the
+  //      content now staged (directorBrollDecision → brollBenefit): footage only
+  //      where it fills a narration gap the composition can actually render, never
+  //      stock on the MLS cut. The Director's b-roll comes from the stock library
+  //      (pickBrollClips) — the verdict-aware planner is told it is not the home's
+  //      own media.
+  const brollDecision = directorBrollDecision({
+    compositionId: format.compositionId, purpose: stagedPurpose, props: contentProps as Record<string, unknown>,
+    avatarClip: requiresAvatar, cut,
+  })
+  const brollWanted = brollDecision.beneficial && brollDecision.renders
+  if (brollWanted) await pickStockBroll()
   const visualProps: Record<string, unknown> = {
     ...contentProps,
     ...(stagedPurpose ? { videoPurpose: stagedPurpose } : {}),
-    ...(format.needsBroll ? { brollClips, brollSource: "stock" } : {}),
+    ...(brollWanted ? { brollClips, brollSource: "stock" } : {}),
   }
   // 6e′. WAVE 84A — READ THE PLAN, CHECK THE BUCKETS, CREATE WHAT IS MISSING
   //      (owner verbatim: "autonomous videos need to read the plan and create
@@ -1558,7 +1618,7 @@ export async function commissionVideo(
       mlsClean,
       renderCut: cut,
       music_mood: finish.music ? effectiveMood : null,
-      ...(format.needsBroll || stagedBroll.length > 0 ? { brollClips: stagedBroll, brollSource: readyPatch.brollSource ?? "stock" } : {}),
+      ...(brollWanted || stagedBroll.length > 0 ? { brollClips: stagedBroll, brollSource: readyPatch.brollSource ?? "stock" } : {}),
     },
   }
   // Wave 81C — THE MLS CUT: the same props with every branded element
@@ -1614,11 +1674,18 @@ export async function commissionVideo(
       brand_voice_context: brandVoiceContext,
       intro_video_url: null,             // assembled by the render coordinator's bookend pass
       outro_video_url: null,
-      b_roll_urls: format.needsBroll || stagedBroll.length > 0 ? stagedBroll.map((c) => c.url) : null,
+      b_roll_urls: brollWanted || stagedBroll.length > 0 ? stagedBroll.map((c) => c.url) : null,
       // Wave 80C — the audit stamp the learning loop reads back (format-learning.ts).
       // Wave 84A — asset_readiness: wanted vs final treatments, the provenance
       // of every asset (reused | created | missing, source, cost), degradations.
-      video_metadata: { ...(opts.extraMetadata ?? {}), ...videoMetadata, supports_bookends: finish.bookends && supportsBookends, body_visual: bodyVisualStamp(visual.plan), asset_readiness: readiness.stamp },
+      video_metadata: {
+        ...(opts.extraMetadata ?? {}), ...videoMetadata, supports_bookends: finish.bookends && supportsBookends, body_visual: bodyVisualStamp(visual.plan), asset_readiness: readiness.stamp,
+        // Wave 92 (lane 92E) — the b-roll decision and its reason (brollBenefit), the clips the
+        // stock cascade returned (empty when none uploaded — the composition renders without
+        // footage), and the windows the final plan actually put them in.
+        needs_broll: brollWanted, broll_why: brollDecision.why, broll_planned_windows: visual.plan.brollWindows.length,
+        broll_clips: brollClips, broll_sourced_count: brollSourcedCount, broll_sourced_scope: brollSourcedScope,
+      },
       provider_metadata: providerMetadata,
       created_at: now,
       updated_at: now,

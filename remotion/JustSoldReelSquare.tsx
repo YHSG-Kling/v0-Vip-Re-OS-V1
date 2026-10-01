@@ -34,6 +34,8 @@ import { mlsNeutralTitle } from "../lib/video/render-cut"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
 import { cinemaBadgeSlot, cinemaDisclosureStyle, cinemaFrame, slideDisclosureText } from "../lib/video/cinema-finish"
+import { brollMountWindows, fitBodyVisualPlan, photoSpansAround, type BodyVisualPlan } from "../lib/video/body-visual-model"
+import { PlannedBrollLayer, type BrollClip } from "./_BrollLayer"
 
 export interface JustSoldReelSquareProps {
   address:   string
@@ -76,6 +78,12 @@ export interface JustSoldReelSquareProps {
   captionScript?: string | null
   /** Wave 81C — THE MLS CUT (lib/video/render-cut.ts): no logo, no name, no phone, no CTA, no QR; the address instead. */
   mlsClean?: boolean
+  /** WAVE 92 (lane 92E) — cutaway footage for the narration gaps a photo-scarce sale leaves
+   *  (brollBenefit, lib/video/body-visual-model.ts); played only where the staged plan cut it. */
+  brollClips?: BrollClip[]
+  /** "own" = the listing's own footage; anything else is stock — never on the MLS cut. */
+  brollSource?: "own" | "stock" | null
+  bodyVisualPlan?: BodyVisualPlan | null
 }
 
 const FPS    = 30
@@ -106,7 +114,7 @@ function aboveAskingBadge(sold: string, list: string | null | undefined): string
 export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
   address, cityState, soldPrice, listPrice, daysOnMarket, imageUrls,
   ctaLabel, brand, voiceoverUrl, qrCodeDataUrl, qrCaption,
-  captionsCues, captionScript, mlsClean,
+  captionsCues, captionScript, mlsClean, brollClips, brollSource, bodyVisualPlan,
 }) => {
   const frame    = useCurrentFrame()
   const { durationInFrames, width, height } = useVideoConfig()
@@ -114,7 +122,11 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const PHOTOS   = timeline.body.durationInFrames
   const images   = imageUrls.slice(0, 4)
-  const perPhoto = images.length > 0 ? PHOTOS / images.length : PHOTOS
+  // WAVE 92 (lane 92E): footage only in the plan's narration gaps, never on the end card or as
+  // stock on the MLS cut; the photos tile the frames the footage leaves (no photo repeats).
+  const footage  = mlsClean && brollSource !== "own" ? [] : (brollClips ?? [])
+  const brollWins = footage.length > 0 ? brollMountWindows(fitBodyVisualPlan(bodyVisualPlan, "JustSoldReelSquare", durationInFrames), { within: timeline.body }) : []
+  const photoSpans = photoSpansAround(PHOTOS, brollWins.map((w) => ({ from: w.from - COVER, durationInFrames: w.durationInFrames })), images.length)
   const showEho  = brand.showEhoMark ?? true
   // Wave 91 (lane 91E): brokerage · Equal Housing Opportunity · licence, composed ONCE
   // (slideDisclosureText). The MLS cut stays unbranded — the mark alone (lib/video/render-cut.ts).
@@ -176,15 +188,14 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
             Closed — congratulations to the seller
           </AbsoluteFill>
         ) : (
-          images.map((url, idx) => {
-            const start = idx * perPhoto
-            return (
-              <Sequence key={idx} from={start} durationInFrames={perPhoto}>
-                <SoldPhotoFrame url={url} span={perPhoto} />
-              </Sequence>
-            )
-          })
+          photoSpans.map((p, idx) => (
+            <Sequence key={idx} from={p.from} durationInFrames={p.durationInFrames}>
+              <SoldPhotoFrame url={images[p.photoIndex]} span={p.durationInFrames} />
+            </Sequence>
+          ))
         )}
+        <PlannedBrollLayer clips={footage} windows={brollWins} offset={COVER}
+          overlayColor={`${brand.primaryColor}59`} clipCaptions={false} filmGrain />
 
         {/* Top-right SOLD badge — small, persistent */}
         <AbsoluteFill style={{ pointerEvents: "none" }}>

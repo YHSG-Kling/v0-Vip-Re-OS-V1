@@ -108,11 +108,16 @@ console.log("═══ 0. Fail closed: every file this guard judges must be read
 console.log("\n═══ 1. The windows under test are the REGISTERED ones, derived ═══")
 const consumers: Array<{ file: string; id: string; totalFrames: number; fps: number }> = []
 {
-  const files = readdirSync("remotion").filter((n) => /\.tsx$/.test(n))
+  // WAVE 92 (lane 92E): a composition mounts the layer either bare (<BrollLayer>) or
+  // through the ONE plan-windowed mount (<PlannedBrollLayer>, which mounts <BrollLayer>
+  // per window inside the layer's own file). The layer's own file is the primitive, not a
+  // consumer, so it is excluded by path — the RULE (who mounts footage) is unchanged.
+  const MOUNT = /<BrollLayer\b|<PlannedBrollLayer\b/
+  const files = readdirSync("remotion").filter((n) => /\.tsx$/.test(n) && `remotion/${n}` !== LAYER)
   const mounts: string[] = []
   for (const n of files) {
     const src = readStripped(`remotion/${n}`)
-    if (!src || !/<BrollLayer\b/.test(src)) continue
+    if (!src || !MOUNT.test(src)) continue
     mounts.push(n)
     const id = n.replace(/\.tsx$/, "")
     const g = COMPOSITION_GEOMETRY[id]
@@ -126,8 +131,9 @@ const consumers: Array<{ file: string; id: string; totalFrames: number; fps: num
   // POSITIVE CONTROL (§2): a scanner that finds nothing and a repo with no
   // consumers both report zero.
   ok("the mount scanner recognises a mount, and reads STRIPPED source so a\n    tombstone naming <BrollLayer> is not a mount",
-    /<BrollLayer\b/.test(blankStrings(stripComments(`<BrollLayer clips={c} totalFrames={T} />`)))
-    && !/<BrollLayer\b/.test(blankStrings(stripComments(`// see <BrollLayer clips={c} />\nconst s = "<BrollLayer/>"`))))
+    MOUNT.test(blankStrings(stripComments(`<BrollLayer clips={c} totalFrames={T} />`)))
+    && MOUNT.test(blankStrings(stripComments(`<PlannedBrollLayer clips={c} windows={w} />`)))
+    && !MOUNT.test(blankStrings(stripComments(`// see <BrollLayer clips={c} />\nconst s = "<PlannedBrollLayer/>"`))))
   console.log("    NOTE, so the number is not overclaimed: a composition's B-roll window is not")
   console.log("    always its whole registered duration — AgentTalkingHeadReel mounts the layer")
   console.log("    inside its BODY sequence, which is SHORTER than duration_frames. The rule")

@@ -77,6 +77,8 @@ import {
   promoEventLabel,
 } from "@/lib/video/promo-composition"
 import { spokenSecondsProps } from "@/lib/video/duration-model"
+import { stageBodyVisualPlan } from "@/lib/video/body-visual-model"
+import { directorBrollDecision } from "@/lib/video/video-director"
 import {
   narrationLengthDirective,
   narrationMaxTokens,
@@ -270,6 +272,8 @@ export async function POST(req: NextRequest) {
       promoId: promo.id,
       brokerageId: promo.brokerage_id,
       agentUserId: promoAgentUserId,
+      // agents.id — the b-roll stock cascade scopes an agent by it (never users.id).
+      agentRecordId: promo.agent_id,
       facts,
       brand,
       voiceoverUrl,
@@ -754,6 +758,8 @@ async function renderRemotionReel(args: {
   promoId: string
   brokerageId: string
   agentUserId: string | null
+  /** agents.id of the promo's agent — the b-roll cascade's scope (wave 92). */
+  agentRecordId?: string | null
   facts: ListingFacts
   brand: BrandContext
   voiceoverUrl: string
@@ -817,6 +823,38 @@ async function renderRemotionReel(args: {
   Object.assign(inputProps as Record<string, unknown>, spokenSecondsProps({
     measuredSeconds: args.voiceoverDurationSeconds, narration: args.script, compositionId,
   }))
+
+  // B-ROLL WHEN BENEFICIAL (wave 92, lane 92E — owner: "we should be using broll when
+  // appropriate or benefinical"). This route is the listing-promo fleet's main producer, and it
+  // staged no footage at all: a listing with one photo narrated over a repeated still, and one
+  // with none over "Photos coming soon". THE rule (brollBenefit — the listing verdict admits
+  // stock footage only under BROLL_PHOTO_SCARCITY photos, and only where a narrated beat has no
+  // photo left) decides; when it says yes, the stock cascade (pickBrollClips, agents.id) is
+  // walked and the plan is staged so the composition plays the clips ONLY in those beats. Best
+  // effort: an empty library or a failed pick renders exactly as before.
+  const promoProps = inputProps as Record<string, unknown>
+  // The SAME pick rule the Video Director runs at commission (directorBrollDecision — stock
+  // footage over the staged content's own inventory), never a second spelling of it.
+  const brollDecision = directorBrollDecision({ compositionId, props: promoProps, avatarClip: false })
+  if (brollDecision.beneficial && brollDecision.renders && args.agentRecordId) {
+    try {
+      const { pickBrollClips } = await import("@/lib/video/broll-picker")
+      const picked = await pickBrollClips({ brokerageId: args.brokerageId, scopeType: "agent", scopeId: args.agentRecordId })
+      if (picked.clips.length > 0) {
+        promoProps.brollClips = picked.clips
+        promoProps.brollSource = "stock"
+        const staged = stageBodyVisualPlan({ compositionId, props: promoProps, script: args.script })
+        if (staged.ok) promoProps.bodyVisualPlan = staged.plan
+        else {
+          // No plan → no windows: unplanned footage never plays (and never rides along unread).
+          delete promoProps.brollClips; delete promoProps.brollSource
+          console.warn(`[render-just-listed] b-roll picked but no body plan staged (${staged.reason}); rendering without footage`)
+        }
+      }
+    } catch (e) {
+      console.warn(`[render-just-listed] b-roll pick failed; rendering without footage:`, (e as Error).message)
+    }
+  }
 
   const composition = await selectComposition({
     serveUrl: bundleLocation,

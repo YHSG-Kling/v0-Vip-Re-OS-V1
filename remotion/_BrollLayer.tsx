@@ -26,10 +26,11 @@
  */
 import React from "react"
 import { Video } from "@remotion/media"
-import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { selectBrollPlan } from "../lib/video/broll-plan"
 import { isVideoUrl } from "../lib/video/broll-url"
+import type { BrollMountWindow } from "../lib/video/body-visual-model"
 import { cinemaBadgeSlot, cinemaEndCardSideInset, cinemaFrame } from "../lib/video/cinema-finish"
 import {
   FILM_GRAIN_BACKGROUND_IMAGE, FILM_GRAIN_OVERLAY_OPACITY, VIGNETTE_BACKGROUND_IMAGE,
@@ -113,6 +114,14 @@ export interface BrollLayerProps {
    * be a real photo."
    */
   handheldDrift?:      boolean
+  /**
+   * WAVE 92 (lane 92E) — print each clip's caption chip ("Brickell promenade").
+   * Default true (the neighbourhood montage labels its streets). A LISTING reel
+   * passes false: a stock clip captioned with a place name over a listing reads
+   * as the property's own location, and the reel's top corner carries its own
+   * status badge.
+   */
+  clipCaptions?:       boolean
 }
 
 /**
@@ -381,7 +390,7 @@ export function brollDrawAt(
 }
 
 export const BrollLayer: React.FC<BrollLayerProps> = ({
-  clips, totalFrames, crossfadeFrames, overlayColor, loop, filmGrain, handheldDrift,
+  clips, totalFrames, crossfadeFrames, overlayColor, loop, filmGrain, handheldDrift, clipCaptions,
 }) => {
   const frame   = useCurrentFrame()
   const { fps } = useVideoConfig()
@@ -399,6 +408,7 @@ export const BrollLayer: React.FC<BrollLayerProps> = ({
           startFrame={d.startFrame}
           spanFrames={d.spanFrames}
           handheldDrift={handheldDrift}
+          showCaption={clipCaptions ?? true}
         />
       ))}
       {/* WAVE 57 REALISM — subtle grain + vignette over the WHOLE layer (not
@@ -432,7 +442,8 @@ const ClipFrame: React.FC<{
   /** Opt-in handheld drift for the still-photo branch only — see
    *  BrollLayerProps.handheldDrift. */
   handheldDrift?: boolean
-}> = ({ clip, opacity, overlayColor, startFrame, spanFrames, handheldDrift }) => {
+  showCaption?:   boolean
+}> = ({ clip, opacity, overlayColor, startFrame, spanFrames, handheldDrift, showCaption }) => {
   const isVideo = isVideoUrl(clip.url)
   const frame = useCurrentFrame()
   const { fps, width, height } = useVideoConfig()
@@ -472,11 +483,19 @@ const ClipFrame: React.FC<{
         // `trimBefore={0}` is gone with it: it was the DEFAULT, and it read like
         // a deliberate statement that the clip starts at its beginning — which is
         // precisely what was not happening.
+        //
+        // `muted` (wave 92, lane 92E): b-roll is PICTURE. A stock clip's own sound
+        // (street noise, a library track) sat under the narration at full level —
+        // the music pass sidechain-ducks the BED under speech, never a clip's
+        // track — so the cutaway is silent and the voice + the ducked bed are the
+        // whole mix (remotion-markup/embedding-videos.md: "Use `muted` to silence
+        // the video entirely").
         <Video
           objectFit="cover"
           src={clip.url}
           from={startFrame}
           durationInFrames={Math.max(1, spanFrames)}
+          muted
           style={{ width: "100%", height: "100%" }}
         />
       ) : (
@@ -499,7 +518,7 @@ const ClipFrame: React.FC<{
       {overlayColor && (
         <AbsoluteFill style={{ backgroundColor: overlayColor }} />
       )}
-      {clip.caption && (
+      {showCaption !== false && clip.caption && (
         <div style={{
           position: "absolute", top: safe.top, left: safe.left,
           padding: "8px 16px", borderRadius: 6,
@@ -510,6 +529,44 @@ const ClipFrame: React.FC<{
         </div>
       )}
     </AbsoluteFill>
+  )
+}
+
+/**
+ * THE PLAN-WINDOWED B-ROLL MOUNT (wave 92, lane 92E) — the ONE way a composition
+ * puts footage on screen. It mounts `<BrollLayer>` once per window that
+ * lib/video/body-visual-model.ts `brollMountWindows` derived from the staged
+ * plan: only the segments the plan cut to footage (a narration gap), never the
+ * outro end card where the disclosure line and the QR sit. Each window is its
+ * own `<Sequence>` (remotion-markup/sequencing.md — delay and limit an element's
+ * window), so the layer's slots and cross-fades run on the window's own clock
+ * and the clip the plan assigned to the window's first segment opens it.
+ *
+ * Paint order is the caller's contract: mount this BEFORE the caption layer and
+ * the end-card disclosure in the JSX, so captions paint over the footage and
+ * never under it (scripts/video-timeline-integrity-guard.ts §broll92).
+ */
+export const PlannedBrollLayer: React.FC<
+  Omit<BrollLayerProps, "clips" | "totalFrames"> & {
+    clips: BrollClip[]
+    windows: readonly BrollMountWindow[]
+    /** The enclosing `<Sequence>`'s absolute start (windows are composition-absolute). */
+    offset?: number
+  }
+> = ({ clips, windows, offset = 0, ...layer }) => {
+  if (!Array.isArray(clips) || clips.length === 0 || windows.length === 0) return null
+  return (
+    <>
+      {windows.map((w, i) => {
+        const k = ((w.startClip % clips.length) + clips.length) % clips.length
+        const ordered = [...clips.slice(k), ...clips.slice(0, k)]
+        return (
+          <Sequence key={`broll-${i}`} name="B-roll" from={w.from - offset} durationInFrames={w.durationInFrames}>
+            <BrollLayer clips={ordered} totalFrames={w.durationInFrames} {...layer} />
+          </Sequence>
+        )
+      })}
+    </>
   )
 }
 

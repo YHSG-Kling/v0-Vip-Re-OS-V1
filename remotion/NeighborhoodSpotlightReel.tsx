@@ -31,7 +31,8 @@ import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } 
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
-import { BrollLayer, ContextCueRow, type BrollClip } from "./_BrollLayer"
+import { ContextCueRow, PlannedBrollLayer, type BrollClip } from "./_BrollLayer"
+import { brollMountWindows } from "../lib/video/body-visual-model"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import type { CaptionCue } from "../lib/video/caption-plan"
@@ -132,12 +133,14 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
     }}>
       {voiceoverUrl && <Audio src={voiceoverUrl} />}
 
-      {/* B-roll layer — plays under the entire reel when supplied.
-          When no clips are passed, the layer returns null and the
-          brand background carries through. */}
-      {brollClips.length > 0 && (
-        <BrollLayer clips={brollClips} totalFrames={durationInFrames} overlayColor={overlay} loop filmGrain handheldDrift />
-      )}
+      {/* B-roll layer — plays under the cover and the body when supplied (the montage IS the
+          format: verdict "needed"). When no clips are passed, the layer returns null and the
+          brand background carries through.
+          WAVE 92 (lane 92E): it ran the WHOLE film (totalFrames = durationInFrames), decoding
+          footage under the opaque CTA end card that carries the disclosure and the QR. It now
+          mounts through the ONE windowed mount (brollMountWindows), cover + body, never the end card. */}
+      <PlannedBrollLayer clips={brollClips} windows={brollMountWindows(null, { within: { from: 0, durationInFrames: COVER + BODY }, fallback: "within" })}
+        overlayColor={overlay} loop filmGrain handheldDrift />
 
       {/* COVER — 0-3s. Neighborhood name + tagline. */}
       <Sequence from={0} durationInFrames={COVER}>

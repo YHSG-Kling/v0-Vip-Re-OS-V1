@@ -760,13 +760,26 @@ export const DISCLOSURE_GLYPH_EM = 0.56
  * this same composer; `brokerageName` became optional so a brand without one degrades to the
  * mark alone (never an empty "· Equal Housing" fragment). Output for a named brokerage is
  * byte-identical to before. PURE.
+ *
+ * WAVE 92 (lane 92E — 91E's 16:9 slide renders): a wrapped disclosure broke INSIDE a hyphenated
+ * licence ("Lic. #BK-" / "DEMO-0000123"), so the number a reader must copy split across two
+ * lines. The licence is now one unbreakable token — its hyphens are U+2011 NON-BREAKING HYPHEN
+ * and its spaces U+00A0 — so the line wraps at the " · " separators or before the licence,
+ * never through it. The glyphs look identical (a reader comparing characters maps U+2011 back
+ * to "-" and U+00A0 back to " ").
  */
 export function slideDisclosureText(brand: { brokerageName?: string | null; showEhoMark?: boolean | null; licenseLine?: string | null }): string {
   return [
     brand.brokerageName?.trim() || null,
     (brand.showEhoMark ?? true) ? "Equal Housing Opportunity" : null,
-    brand.licenseLine?.trim() || null,
+    unbreakableLicence(brand.licenseLine),
   ].filter(Boolean).join(" · ")
+}
+
+/** The licence as ONE line-break-free token (U+2011 hyphens, U+00A0 spaces). PURE. */
+function unbreakableLicence(licenseLine: string | null | undefined): string | null {
+  const t = licenseLine?.trim()
+  return t ? t.replace(/-/g, "\u2011").replace(/ /g, "\u00A0") : null
 }
 
 export function cinemaSlideFooterStack(width: number, height: number, disclosureText?: string | null): CinemaSlideFooterStack {

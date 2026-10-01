@@ -23,7 +23,8 @@ import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } 
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
-import { ContextCueRow } from "./_BrollLayer"
+import { ContextCueRow, PlannedBrollLayer, type BrollClip } from "./_BrollLayer"
+import { brollMountWindows, fitBodyVisualPlan, photoSpansAround, type BodyVisualPlan } from "../lib/video/body-visual-model"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
@@ -76,6 +77,10 @@ export interface OpenHouseAnnounceReelProps {
     showEhoMark?:    boolean
     licenseLine?:    string
   }
+  /** WAVE 92 (lane 92E) — cutaway footage for the narration gaps a photo-scarce open house leaves
+   *  (brollBenefit, lib/video/body-visual-model.ts); played only where the staged plan cut it. */
+  brollClips?: BrollClip[]
+  bodyVisualPlan?: BodyVisualPlan | null
 }
 
 const FPS    = 30
@@ -90,7 +95,7 @@ void FPS
 export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
   address, cityState, dateLabel, timeLabel, imageUrls, bodyLine,
   ctaLabel, agentName, agentPhone, voiceoverUrl, contextCues,
-  qrCodeDataUrl, qrCaption, brand, captionsCues, captionScript,
+  qrCodeDataUrl, qrCaption, brand, captionsCues, captionScript, brollClips, bodyVisualPlan,
 }) => {
   const frame    = useCurrentFrame()
   const showEho  = brand.showEhoMark ?? true
@@ -101,7 +106,11 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
   const { safe } = cinemaFrame(width, height)
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const BODY     = timeline.body.durationInFrames
-  const perPhoto = restImgs.length > 0 ? BODY / restImgs.length : BODY
+  // WAVE 92 (lane 92E): footage only in the plan's narration gaps; the body photos tile the
+  // frames the footage leaves (photoSpansAround — no photo repeats).
+  const footage   = brollClips ?? []
+  const brollWins = footage.length > 0 ? brollMountWindows(fitBodyVisualPlan(bodyVisualPlan, "OpenHouseAnnounceReel", durationInFrames), { within: timeline.body }) : []
+  const photoSpans = photoSpansAround(BODY, brollWins.map((w) => ({ from: w.from - COVER, durationInFrames: w.durationInFrames })), restImgs.length)
   const cues     = contextCues ?? []
 
   return (
@@ -162,10 +171,10 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
         <AbsoluteFill>
           {/* Background — cycling photos when supplied */}
           {restImgs.length > 0 ? (
-            restImgs.map((url, idx) => (
-              <Sequence key={idx} from={idx * perPhoto} durationInFrames={perPhoto}>
+            photoSpans.map((p, idx) => (
+              <Sequence key={idx} from={p.from} durationInFrames={p.durationInFrames}>
                 <AbsoluteFill>
-                  <SafeImg src={url} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  <SafeImg src={restImgs[p.photoIndex]} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                   <AbsoluteFill style={{ backgroundColor: `${brand.primaryColor}B3` }} />
                 </AbsoluteFill>
               </Sequence>
@@ -176,6 +185,8 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
               <AbsoluteFill style={{ backgroundColor: `${brand.primaryColor}B3` }} />
             </AbsoluteFill>
           ) : null}
+          <PlannedBrollLayer clips={footage} windows={brollWins} offset={COVER}
+            overlayColor={`${brand.primaryColor}B3`} clipCaptions={false} filmGrain />
 
           <AbsoluteFill style={{
             display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",

@@ -611,12 +611,16 @@ export const COMPOSITION_TREATMENTS: Record<string, BodyTreatment[]> = {
   // seller_audio_photos) — the words stay on screen as captions.
   MemoryVideoReel:           ["client_footage", "property_photos", "kinetic_text", "brand_card"],
   // The facts strip (price / beds / baths) is a stat card.
-  JustListedReel:            ["property_photos", "stat_card", "kinetic_text", "brand_card"],
-  JustListedReelSquare:      ["property_photos", "kinetic_text", "brand_card"],
-  JustListedReelHorizontal:  ["property_photos", "kinetic_text", "brand_card"],
-  JustSoldReelSquare:        ["property_photos", "kinetic_text", "brand_card"],
+  // Wave 92 (lane 92E): every listing_promo reel mounts the plan-windowed b-roll layer
+  // (PlannedBrollLayer) — the listing verdict admits stock footage when the home has fewer
+  // than BROLL_PHOTO_SCARCITY photos, and brollBenefit says it fills the beats the photos
+  // cannot. Before, only ComingSoonReel could render what the Director picked.
+  JustListedReel:            ["property_photos", "broll", "stat_card", "kinetic_text", "brand_card"],
+  JustListedReelSquare:      ["property_photos", "broll", "kinetic_text", "brand_card"],
+  JustListedReelHorizontal:  ["property_photos", "broll", "kinetic_text", "brand_card"],
+  JustSoldReelSquare:        ["property_photos", "broll", "kinetic_text", "brand_card"],
   ComingSoonReel:            ["broll", "property_photos", "kinetic_text", "brand_card"],
-  OpenHouseAnnounceReel:     ["property_photos", "kinetic_text", "brand_card"],
+  OpenHouseAnnounceReel:     ["property_photos", "broll", "kinetic_text", "brand_card"],
   PhotoWalkthroughReel:      ["property_photos", "kinetic_text", "brand_card"],
   NeighborhoodSpotlightReel: ["broll", "kinetic_text", "brand_card"],
   TestimonialReel:           ["kinetic_text", "brand_card"],
@@ -681,7 +685,7 @@ export const COMPOSITION_BACKGROUNDS: Record<string, BackgroundKind[]> = {
 export const TREATMENT_MARKS: Record<BodyTreatment, RegExp> = {
   full_avatar:     /<Video[\s\S]{0,120}?src=\{avatarVideoUrl\}|src=\{avatarVideoUrl\}/,
   avatar_pip:      /<AvatarPIP\b|"avatar_pip"/,
-  broll:           /<BrollLayer\b/,
+  broll:           /<BrollLayer\b|<PlannedBrollLayer\b/,
   property_photos: /kenBurnsPlan|PropertyImages|imageUrls|photoUrl|heroImageUrl|imageUrl\b|KenBurns/,
   screenshot:      /kenBurnsPlan|PropertyImages|imageUrls|photoUrl|heroImageUrl|imageUrl\b|KenBurns|screenshotUrls/,
   kinetic_text:    /interpolate\(|spring\(/,
@@ -877,6 +881,11 @@ export interface PlanBodyVisualArgs {
   purpose?: VideoPurpose | null
   /** Live learned overrides for this tenant (lib/video/body-visual-rule-ledger.ts). */
   overrides?: readonly BodyVisualRuleOverride[] | null
+  /** WAVE 92 (lane 92E) — brollBenefit's question only: cut the plan as if the
+   *  composition could mount the b-roll layer, so the PURPOSE's answer ("would
+   *  footage fill a narration gap here?") is read independently of what the
+   *  composition renders today. Never set by a producer. */
+  assumeBrollRenderable?: boolean
 }
 
 function r3(n: number): number { return Math.round(n * 1000) / 1000 }
@@ -899,10 +908,11 @@ export function brollAvailable(rule: PurposeBodyVisualRule, assets: BodyVisualAs
  */
 export function planBodyVisual(args: PlanBodyVisualArgs): BodyVisualPlan {
   const { compositionId, duration } = args
-  const renderable = COMPOSITION_TREATMENTS[compositionId]
-  if (!renderable) {
+  const registered = COMPOSITION_TREATMENTS[compositionId]
+  if (!registered) {
     throw new Error(`body-visual-model: ${compositionId} has no COMPOSITION_TREATMENTS row — register what it can render before it is planned (lib/video/body-visual-model.ts)`)
   }
+  const renderable: BodyTreatment[] = args.assumeBrollRenderable && !registered.includes("broll") ? [...registered, "broll"] : registered
   const paintable = COMPOSITION_BACKGROUNDS[compositionId] ?? []
   const purpose = args.purpose ?? duration.purpose
   if (!PURPOSE_BODY_VISUAL_RULES[purpose]) throw new Error(`body-visual-model: purpose "${purpose}" has no PURPOSE_BODY_VISUAL_RULES row`)
@@ -1013,6 +1023,21 @@ export function planBodyVisual(args: PlanBodyVisualArgs): BodyVisualPlan {
       if (presenterFor(s.treatment) !== "none" && off) { s.treatment = off; notes.push(`${compositionId}: ${s.kind} #${s.index} cut away to ${off} (presence cap ${bounds.max}).`) }
     }
   }
+  // 3b. THE NARRATION GAP (wave 92, lane 92E — owner: "we should be using broll when
+  //     appropriate or benefinical"). A photo segment past the photos on hand would show the
+  //     viewer a photo they have already seen while the narration moves on — the gap a cutaway
+  //     exists to fill ("too few listing photos to fill the cut"). Where the purpose's verdict
+  //     admits footage (brollAvailable — for a listing, only under BROLL_PHOTO_SCARCITY) and the
+  //     composition can mount it (the segment's own candidate chain), that segment cuts away to
+  //     b-roll instead of repeating. With photos to spare nothing moves: the house stays the star.
+  let photosShown = 0
+  for (const s of segments) {
+    if (s.treatment !== "property_photos") continue
+    if (photosShown >= assets.propertyPhotos && broll.ok && s.candidates.includes("broll")) {
+      s.treatment = "broll"
+      notes.push(`${compositionId}: ${s.kind} #${s.index} would repeat a photo (${assets.propertyPhotos} on hand) — cut away to b-roll (narration gap).`)
+    } else photosShown++
+  }
   // 4. Backgrounds and the presenter follow the final treatment; asset indices —
   //    each cutaway / card segment starts on the next clip / photo / still / card / recording.
   for (const s of segments) {
@@ -1045,6 +1070,196 @@ export function planBodyVisual(args: PlanBodyVisualArgs): BodyVisualPlan {
 /** Does this segment put FOOTAGE on screen — a cutaway, or the talking-head reel's floating card over footage? ONE predicate for the windows and the gate. PURE. */
 export function segmentUsesBroll(s: Pick<BodyVisualSegment, "treatment" | "assetIndex">, compositionId: string): boolean {
   return s.treatment === "broll" || (s.treatment === "avatar_pip" && s.assetIndex !== null && compositionId === "AgentTalkingHeadReel")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// § WHEN B-ROLL IS BENEFICIAL — the ONE format-level rule (wave 92, lane 92E)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// OWNER (2026-10-01, verbatim): "we should be using broll when appropriate or
+// benefinical." · "broll/images/music/intro/outro/branding are all correctly
+// calculated in the complete videos using voiceover or an avatar."
+//
+// THE DEFECT. Three spellings answered "does this video get footage?": the
+// Director's hand table (video-director.ts selectVideoFormat `needsBroll` —
+// vertical social ⇒ the square listing reel, every coming-soon, every
+// neighbourhood), finish-spec's per-composition label (`broll: required` on
+// every listing reel), and this module's per-purpose VERDICT. They disagreed:
+// the Director picked stock clips for JustListedReelSquare, a composition with
+// no b-roll layer (a write with no reader — lane 91E's open item), and picked
+// them for a listing with ample photos that the listing_promo verdict refuses.
+//
+// THE RULE — derived from the verdict table and the preference chains, never a
+// second table. Footage is BENEFICIAL to a format when
+//   · the cut may carry it (the MLS cut is the listing's own media only),
+//   · the reel is narrated (a silent reel's on-screen copy is its content),
+//   · the purpose's verdict admits it for these assets (brollAvailable — e.g.
+//     a listing only under BROLL_PHOTO_SCARCITY photos; a testimonial or a
+//     seller's update only on the client's own media), and
+//   · cut as if the composition could mount it, the plan would actually put
+//     footage on screen in at least one narrated segment — a NARRATION GAP:
+//     a beat the photos cannot fill without repeating, a stretch the purpose
+//     prefers footage for (a neighbourhood montage), a cutaway that breaks a
+//     talking head past its full-frame cap. A verdict that admits footage but
+//     whose stat cards / bullets already carry every beat (a market update, an
+//     explainer) is ADMITTED, NOT BENEFICIAL — the research behind those rows
+//     says the charts ARE the b-roll there.
+// `renders` is the other half the proof holds it to: every format the rule
+// says benefits mounts the layer (COMPOSITION_TREATMENTS, proven against the
+// stripped source by test:body-visual-model), and the Director picks footage
+// exactly when both hold (scripts/video-timeline-integrity-guard.ts §broll92).
+
+export interface BrollBenefitArgs {
+  compositionId: string
+  /** The purpose it is cut for (alsoServes); defaults to the composition's own. */
+  purpose?: VideoPurpose | null
+  /** What the producer has on hand (photos, the footage's origin, the avatar
+   *  clip, stat cards…). Clips themselves are ASSUMED sourceable — the question
+   *  is whether footage would fill a gap, not whether the library holds any. */
+  assets?: Partial<BodyVisualAssets> | null
+  /** "mls" — the syndicated cut (lib/video/render-cut.ts). */
+  cut?: "ads" | "mls" | null
+  overrides?: readonly BodyVisualRuleOverride[] | null
+}
+
+export interface BrollBenefit {
+  compositionId: string
+  purpose: VideoPurpose | null
+  verdict: BrollVerdictKind | null
+  /** THE RULE — footage would fill a narration gap in this format. */
+  beneficial: boolean
+  /** The composition mounts the b-roll layer (COMPOSITION_TREATMENTS). */
+  renders: boolean
+  /** Narrated body segments the rule's plan cut to footage. */
+  gapSegments: number
+  why: string
+}
+
+/** PURE — THE one answer to "is b-roll beneficial to this format, now?". */
+export function brollBenefit(args: BrollBenefitArgs): BrollBenefit {
+  const id = args.compositionId
+  const spec = COMPOSITION_DURATION_RULES[id]
+  const renders = (COMPOSITION_TREATMENTS[id] ?? []).includes("broll")
+  const purpose = args.purpose ?? spec?.purpose ?? null
+  const out = (beneficial: boolean, verdict: BrollVerdictKind | null, gapSegments: number, why: string): BrollBenefit =>
+    ({ compositionId: id, purpose, verdict, beneficial, renders, gapSegments, why })
+  if (!spec || !purpose || !PURPOSE_BODY_VISUAL_RULES[purpose] || !COMPOSITION_TREATMENTS[id]) {
+    return out(false, null, 0, `${id}: no duration / body-visual rule — no narration to find a gap in`)
+  }
+  const rule = resolvePurposeRule(purpose, args.overrides)
+  const verdict = rule.broll.verdict
+  const a = args.assets ?? {}
+  const source: "own" | "stock" = a.brollSource === "own" ? "own" : "stock"
+  if (args.cut === "mls" && source !== "own") {
+    return out(false, verdict, 0, "the MLS cut carries the listing's own media only — stock footage of another place is not the property (lib/video/render-cut.ts; NAR Code Art. 12, the true picture)")
+  }
+  if (spec.host === "silent") return out(false, verdict, 0, `${id} is a silent reel — no narration for footage to sit under; its on-screen copy is the content`)
+  const assets: BodyVisualAssets = {
+    avatarClip: a.avatarClip ?? spec.host === "avatar",
+    brollClips: Math.max(1, a.brollClips ?? 0),
+    brollSource: source,
+    propertyPhotos: Math.max(0, a.propertyPhotos ?? 0),
+    screenshots: Math.max(0, a.screenshots ?? 0),
+    statCards: Math.max(0, a.statCards ?? 0),
+    clientFootage: Math.max(0, a.clientFootage ?? 0),
+    ...(typeof a.chartData === "boolean" ? { chartData: a.chartData } : {}),
+  }
+  const admitted = brollAvailable(rule, assets)
+  if (!admitted.ok) return out(false, verdict, 0, admitted.why ?? `verdict ${verdict} does not admit footage here`)
+  const plan = planBodyVisual({
+    compositionId: id, duration: planDurationForProps(id, { videoPurpose: purpose }, { purpose }), purpose,
+    assets, overrides: args.overrides ?? null, assumeBrollRenderable: true,
+  })
+  const gap = plan.segments.filter((s) => segmentUsesBroll(s, id))
+  if (gap.length === 0) {
+    const carried = [...new Set(plan.segments.map((s) => s.treatment))].join(" / ")
+    return out(false, verdict, 0, `verdict ${verdict} admits footage, but every narrated segment is already carried (${carried}) — no gap to fill`)
+  }
+  return out(true, verdict, gap.length, `${gap.length} narrated segment(s) (${gap.map((s) => s.kind).join(", ")}) cut to footage under verdict ${verdict}${renders ? "" : ` — and ${id} does NOT mount the b-roll layer`}`)
+}
+
+/** One window a composition mounts its b-roll layer in — composition-absolute
+ *  frames, plus the clip the plan assigned to the window's first segment. */
+export interface BrollMountWindow extends AssemblySegment { startClip: number }
+
+/**
+ * WHERE the footage plays — PURE, the ONE derivation every b-roll composition
+ * mounts from (remotion/_BrollLayer.tsx PlannedBrollLayer).
+ *   · With a plan: the plan's footage segments (segmentUsesBroll), contiguous
+ *     runs merged so the layer cross-fades through them instead of restarting,
+ *     clipped to the BODY and to `within` (a composition's photo window).
+ *     Never the intro brand card, never the OUTRO — the end card carries the
+ *     disclosure line, the QR and the brand, and footage is never under them.
+ *   · `leadIn`: a teaser whose cover rides the same footage (ComingSoon,
+ *     Neighborhood) extends the first run back to `within.from` when the run
+ *     opens the body.
+ *   · No plan (a Studio / legacy render): `fallback: "within"` keeps the old
+ *     footage-under-the-window behaviour, `"none"` (the default) mounts none —
+ *     footage nobody planned does not play.
+ */
+export function brollMountWindows(
+  plan: BodyVisualPlan | null | undefined,
+  opts: { within: AssemblySegment; fallback?: "none" | "within"; leadIn?: boolean },
+): BrollMountWindow[] {
+  const wFrom = Math.max(0, Math.floor(opts.within.from))
+  const wTo = wFrom + Math.max(0, Math.floor(opts.within.durationInFrames))
+  if (!plan || !Array.isArray(plan.segments) || plan.segments.length === 0) {
+    return opts.fallback === "within" && wTo > wFrom ? [{ from: wFrom, durationInFrames: wTo - wFrom, startClip: 0 }] : []
+  }
+  const bFrom = plan.body.from, bTo = plan.body.from + plan.body.durationInFrames
+  const runs: Array<{ from: number; to: number; startClip: number }> = []
+  for (const s of [...plan.segments].sort((x, y) => x.from - y.from)) {
+    if (!segmentUsesBroll(s, plan.compositionId)) continue
+    const last = runs[runs.length - 1]
+    if (last && last.to === s.from) last.to = s.from + s.durationInFrames
+    else runs.push({ from: s.from, to: s.from + s.durationInFrames, startClip: Math.max(0, s.assetIndex ?? 0) })
+  }
+  if (opts.leadIn && runs.length > 0 && runs[0].from === bFrom) runs[0].from = Math.min(runs[0].from, wFrom)
+  const out: BrollMountWindow[] = []
+  for (const r of runs) {
+    const from = Math.max(r.from, wFrom, opts.leadIn ? Math.min(wFrom, bFrom) : bFrom)
+    const to = Math.min(r.to, wTo, bTo)
+    if (to > from) out.push({ from, durationInFrames: to - from, startClip: r.startClip })
+  }
+  return out
+}
+
+/**
+ * The photo track AROUND the footage — PURE. A photo reel tiles its window
+ * `[0, span)` across `count` photos; where b-roll windows (span-relative)
+ * cover part of it, the photos tile only the frames the footage leaves, in
+ * order, through the ONE tiler (weightedShotSlots). A photo the footage
+ * splits shows in two pieces; no photo is repeated and no frame is left
+ * empty. No windows → the even split the reels always drew.
+ */
+export function photoSpansAround(span: number, around: readonly AssemblySegment[], count: number): Array<AssemblySegment & { photoIndex: number }> {
+  const total = Math.max(0, Math.floor(span))
+  const n = Math.max(0, Math.floor(count))
+  if (n === 0 || total === 0) return []
+  const cuts = around
+    .map((w) => [Math.max(0, Math.min(total, Math.floor(w.from))), Math.max(0, Math.min(total, Math.floor(w.from + w.durationInFrames)))] as const)
+    .filter(([a, b]) => b > a)
+    .sort((x, y) => x[0] - y[0])
+  const gaps: Array<{ from: number; to: number }> = []
+  let at = 0
+  for (const [a, b] of cuts) { if (a > at) gaps.push({ from: at, to: a }); at = Math.max(at, b) }
+  if (at < total) gaps.push({ from: at, to: total })
+  const free = gaps.reduce((s, g) => s + (g.to - g.from), 0)
+  if (free === 0) return []
+  const slots = weightedShotSlots(free, Array.from({ length: n }, () => 1))
+  const out: Array<AssemblySegment & { photoIndex: number }> = []
+  slots.forEach((slot, photoIndex) => {
+    const lo = slot.from, hi = slot.from + slot.durationInFrames
+    let offset = 0
+    for (const g of gaps) {
+      const len = g.to - g.from
+      const a = Math.max(lo, offset), b = Math.min(hi, offset + len)
+      if (b > a) out.push({ from: g.from + (a - offset), durationInFrames: b - a, photoIndex })
+      offset += len
+      if (offset >= hi) break
+    }
+  })
+  return out
 }
 
 /** The windows every consumer reads — derived from the segments, one place. */

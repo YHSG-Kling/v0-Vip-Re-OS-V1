@@ -43,6 +43,15 @@
  * spelling, even where one caller reads the unit as frames).
  *
  * PURE. No I/O, no `server-only`, no Supabase, no Remotion runtime.
+ *
+ * ── WHEN, NOT HOW (wave 92, lane 92E) ───────────────────────────────────────
+ * This file divides a window it is HANDED. Whether a format gets footage at all
+ * and WHICH windows it plays in is decided once, beside the per-purpose b-roll
+ * verdicts it is derived from: lib/video/body-visual-model.ts `brollBenefit`
+ * (the rule the Director and the listing-promo route both ask) and
+ * `brollMountWindows` (the narration-gap windows every composition mounts
+ * through remotion/_BrollLayer.tsx `PlannedBrollLayer`). A second "when" rule
+ * here would be a §6 second spelling of BROLL_VERDICTS.
  */
 
 /** One clip in the ordered B-roll timeline plan. */

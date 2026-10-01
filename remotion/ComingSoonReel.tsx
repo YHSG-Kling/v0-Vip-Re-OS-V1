@@ -33,11 +33,11 @@ import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } 
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
-import { BrollLayer, ContextCueRow, type BrollClip } from "./_BrollLayer"
+import { ContextCueRow, PlannedBrollLayer, type BrollClip } from "./_BrollLayer"
 import { QrOutroBadge, shouldRenderQrBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
-import { fitBodyVisualPlan, type BodyVisualPlan } from "../lib/video/body-visual-model"
+import { brollMountWindows, fitBodyVisualPlan, type BodyVisualPlan } from "../lib/video/body-visual-model"
 import { cinemaDisclosureStyle, cinemaEndCardSideInset } from "../lib/video/cinema-finish"
 
 export interface ComingSoonReelProps {
@@ -62,6 +62,8 @@ export interface ComingSoonReelProps {
    *  go-to here (sunset over the bay, walkable street, café
    *  patio). Helper layer crossfades between clips. */
   brollClips?: BrollClip[]
+  /** Wave 92 (lane 92E): "own" = the listing's own footage; anything else is stock — never on the MLS cut. */
+  brollSource?: "own" | "stock" | null
   /** Optional content-bank cue chips — "Trending: low inventory",
    *  "Top searched in your zip". Composer pulls these from the
    *  competitor-intel content bank when available. */
@@ -111,7 +113,7 @@ void FPS
 
 export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
   address, cityState, teaser, heroImageUrl, whenString, ctaLabel,
-  brollClips, contextCues, avatarVideoUrl, agentPhotoUrl, agentName,
+  brollClips, brollSource, contextCues, avatarVideoUrl, agentPhotoUrl, agentName,
   voiceoverUrl, brand, qrCodeDataUrl, qrCaption, mlsClean,
   captionsCues, captionScript, bodyVisualPlan,
 }) => {
@@ -119,7 +121,7 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
   const showEho  = brand.showEhoMark ?? true
   const finalCta = ctaLabel ?? "DM me to be first in line"
   const cues     = contextCues ?? []
-  const clips    = brollClips ?? []
+  const clips    = mlsClean && brollSource !== "own" ? [] : (brollClips ?? [])
   const overlay  = `${brand.primaryColor}B3`  // ~70% alpha tint
   const { durationInFrames, width, height } = useVideoConfig()
   // WAVE 91 (lane 91E — the real render of this reel): the Director stages stock b-roll for
@@ -131,10 +133,17 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
   // the clip once per blur sample (the 315-frame render was stopped at 24 min). The plan's
   // verdict now decides: footage plays only when the plan cut a b-roll segment (no plan staged
   // keeps the pre-91 behaviour — a Studio / legacy render).
+  //
+  // WAVE 92 (lane 92E): and only WHERE the plan cut it. The layer ran the whole film
+  // (totalFrames = durationInFrames) whenever any segment was footage — under the CTA end card
+  // that carries the disclosure and the QR too. It now mounts in the plan's footage windows
+  // (brollMountWindows — the ONE derivation every b-roll composition uses), riding back under
+  // the cover when the first window opens the body (the teaser opens on footage); no plan keeps
+  // footage under the cover + body only, never the end card.
   const plan     = fitBodyVisualPlan(bodyVisualPlan, "ComingSoonReel", durationInFrames)
-  const hasBroll = clips.length > 0 && (!plan || plan.segments.some((s) => s.treatment === "broll"))
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const BODY     = timeline.body.durationInFrames
+  const brollWins = clips.length > 0 ? brollMountWindows(plan, { within: { from: 0, durationInFrames: COVER + BODY }, fallback: "within", leadIn: true }) : []
 
   return (
     <AbsoluteFill style={{
@@ -143,17 +152,16 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
     }}>
       {voiceoverUrl && <Audio src={voiceoverUrl} />}
 
-      {/* B-roll under everything when available. */}
-      {hasBroll && (
-        <BrollLayer
-          clips={clips}
-          totalFrames={durationInFrames}
-          overlayColor={overlay}
-          loop
-          filmGrain
-          handheldDrift
-        />
-      )}
+      {/* B-roll in the plan's narration gaps (and under the cover it opens), never the end card. */}
+      <PlannedBrollLayer
+        clips={clips}
+        windows={brollWins}
+        overlayColor={overlay}
+        loop
+        filmGrain
+        handheldDrift
+        clipCaptions={false}
+      />
 
       {/* COVER — 0-3s. "COMING SOON" badge with accent burst. */}
       <Sequence from={0} durationInFrames={COVER}>

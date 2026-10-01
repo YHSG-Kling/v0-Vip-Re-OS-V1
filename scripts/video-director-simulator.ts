@@ -122,10 +122,17 @@ async function main() {
   const tiktokListing = selectVideoFormat({ kind: "new_listing", tier: "solo_agent", targetChannel: "tiktok" })
   check("new_listing × TikTok → JustListedReelSquare + B-roll + vertical",
     tiktokListing.compositionId === "JustListedReelSquare" && tiktokListing.needsBroll === true && tiktokListing.aspect === "vertical")
-  // new listing on YouTube → horizontal 16:9, no B-roll (long-form reads photos).
-  const ytListing = selectVideoFormat({ kind: "new_listing", tier: "solo_agent", targetChannel: "youtube" })
-  check("new_listing × YouTube → JustListedReelHorizontal + 16:9 + no B-roll",
+  // new listing on YouTube → horizontal 16:9. WAVE 92 (lane 92E): b-roll is no longer a
+  // per-channel table entry (it was "no B-roll" here and "B-roll" on TikTok by fiat) — it is
+  // THE rule (brollBenefit): a photo-rich listing gets none on ANY channel, a photo-scarce one
+  // gets footage in the beats its photos cannot fill. Asserted as the rule, both ways.
+  const ytListing = selectVideoFormat({ kind: "new_listing", tier: "solo_agent", targetChannel: "youtube", facts: { photoCount: 8 } })
+  check("new_listing × YouTube → JustListedReelHorizontal + 16:9 + no B-roll with a full gallery",
     ytListing.compositionId === "JustListedReelHorizontal" && ytListing.aspect === "horizontal" && ytListing.needsBroll === false)
+  check("new_listing × YouTube with one photo → footage fills the beats the photos cannot (the 16:9 reel now mounts it)",
+    selectVideoFormat({ kind: "new_listing", tier: "solo_agent", targetChannel: "youtube", facts: { photoCount: 1 } }).needsBroll === true)
+  check("new_listing × TikTok with a full gallery → NO stock footage (the house is the star)",
+    selectVideoFormat({ kind: "new_listing", tier: "solo_agent", targetChannel: "tiktok", facts: { photoCount: 8 } }).needsBroll === false)
   // market update → charts + avatar narration.
   const mkt = selectVideoFormat({ kind: "market_update", tier: "solo_agent", targetChannel: "instagram" })
   check("market_update → MarketUpdateReel + charts + avatar", mkt.compositionId === "MarketUpdateReel" && mkt.needsCharts && mkt.needsAvatar)

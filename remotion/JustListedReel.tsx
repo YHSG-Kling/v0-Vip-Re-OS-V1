@@ -29,7 +29,9 @@ import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { EqualHousingMark } from "./components/EqualHousingMark"
-import { computeAssemblyTimeline, evenShotSlots, slideFadeRange } from "../lib/video/assembly-timeline"
+import { computeAssemblyTimeline, slideFadeRange } from "../lib/video/assembly-timeline"
+import { brollMountWindows, fitBodyVisualPlan, photoSpansAround, type BodyVisualPlan } from "../lib/video/body-visual-model"
+import { PlannedBrollLayer, type BrollClip } from "./_BrollLayer"
 import { compositionBookends } from "../lib/video/duration-model"
 import { mlsNeutralTitle } from "../lib/video/render-cut"
 import type { CaptionCue } from "../lib/video/caption-plan"
@@ -82,6 +84,13 @@ export interface JustListedReelProps {
    *  mlsCutProps; this flag is the composition's own guard so a branded prop
    *  that somehow rode along still cannot paint. */
   mlsClean?: boolean
+  /** WAVE 92 (lane 92E) — cutaway footage for the narration gaps a photo-scarce listing leaves
+   *  (brollBenefit, lib/video/body-visual-model.ts); it plays inside the image tour, only where
+   *  the staged plan cut it — never over the fact cards or the end card. */
+  brollClips?: BrollClip[]
+  /** "own" = the listing's own footage; anything else is stock — never on the MLS cut. */
+  brollSource?: "own" | "stock" | null
+  bodyVisualPlan?: BodyVisualPlan | null
 }
 
 // THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts). A
@@ -101,6 +110,12 @@ export const JustListedReel: React.FC<JustListedReelProps> = (props) => {
   const BODY = timeline.body.durationInFrames
   const FACTS_FRAMES = Math.min(FACTS, BODY - 1)
   const IMAGES = BODY - FACTS_FRAMES
+  // WAVE 92 (lane 92E): footage only in the plan's narration gaps inside the image tour; the
+  // photos tile the frames the footage leaves (photoSpansAround — no photo repeats).
+  const images = props.imageUrls.slice(0, 8)
+  const footage = props.mlsClean && props.brollSource !== "own" ? [] : (props.brollClips ?? [])
+  const brollWins = footage.length > 0 ? brollMountWindows(fitBodyVisualPlan(props.bodyVisualPlan, "JustListedReel", durationInFrames), { within: { from: COVER, durationInFrames: IMAGES } }) : []
+  const spans = photoSpansAround(IMAGES, brollWins.map((w) => ({ from: w.from - COVER, durationInFrames: w.durationInFrames })), images.length)
   return (
     <AbsoluteFill style={{ backgroundColor: "#111" }}>
       {props.voiceoverUrl && <Audio src={props.voiceoverUrl} />}
@@ -110,7 +125,9 @@ export const JustListedReel: React.FC<JustListedReelProps> = (props) => {
       </Sequence>
 
       <Sequence from={COVER} durationInFrames={IMAGES}>
-        <PropertyImages images={props.imageUrls.slice(0, 8)} windowFrames={IMAGES} />
+        <PropertyImages images={images} spans={spans} />
+        <PlannedBrollLayer clips={footage} windows={brollWins} offset={COVER}
+          overlayColor={`${props.brand.primaryColor}59`} clipCaptions={false} filmGrain />
       </Sequence>
 
       <Sequence from={COVER + IMAGES} durationInFrames={FACTS_FRAMES}>
@@ -162,7 +179,7 @@ const CoverFrame: React.FC<JustListedReelProps> = ({ hook, address, cityState, b
   )
 }
 
-const PropertyImages: React.FC<{ images: string[]; windowFrames: number }> = ({ images, windowFrames }) => {
+const PropertyImages: React.FC<{ images: string[]; spans: Array<{ from: number; durationInFrames: number; photoIndex: number }> }> = ({ images, spans }) => {
   const frame = useCurrentFrame()
   // The window is divided across however many images actually arrived — the
   // same idiom as JustListedReelSquare/Horizontal's `perPhoto`, now the ONE
@@ -173,10 +190,12 @@ const PropertyImages: React.FC<{ images: string[]; windowFrames: number }> = ({ 
   // 16s window rendered EMPTY (gradient over the #111 background) while the
   // voiceover kept narrating. `windowFrames` is the COMPUTED image window the
   // parent derived from the render's own durationInFrames (wave 78).
-  const slots = evenShotSlots(windowFrames, images.length)
-  const idxFound = slots.findIndex((s) => frame < s.from + s.durationInFrames)
-  const idx = idxFound >= 0 ? idxFound : Math.max(0, slots.length - 1)
-  const activeSlot = slots[idx] ?? { from: 0, durationInFrames: windowFrames }
+  //
+  // WAVE 92 (lane 92E): the slots are the parent's photoSpansAround — the same even tiler with
+  // no footage, and the frames the plan's b-roll leaves when there is footage.
+  const idxFound = spans.findIndex((s) => frame < s.from + s.durationInFrames)
+  const idx = idxFound >= 0 ? idxFound : Math.max(0, spans.length - 1)
+  const activeSlot = spans[idx] ?? { from: 0, durationInFrames: 1, photoIndex: 0 }
   const slideFrames = activeSlot.durationInFrames
   const localFrame = frame - activeSlot.from
   // Ken-burns: subtle scale + drift over each slide
@@ -189,7 +208,7 @@ const PropertyImages: React.FC<{ images: string[]; windowFrames: number }> = ({ 
   const opacity = fade
     ? interpolate(localFrame, fade, [0, 1, 1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
     : 1
-  const url = images[idx]
+  const url = spans.length > 0 ? images[activeSlot.photoIndex] : undefined
   // HONEST EMPTY (found in the wave-48 assembly audit). Zero images used to
   // fall through this `!url` guard into a bare-null render — no message, no
   // card, just the root #111 background showing through for the whole 16s

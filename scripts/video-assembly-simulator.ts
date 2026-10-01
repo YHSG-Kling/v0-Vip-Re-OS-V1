@@ -1325,17 +1325,19 @@ function aiVideoRealismSection() {
 
   // ── Film grain wired into every BrollLayer call site, not left as a dead
   //    constant (§1 orphan doctrine — an unreferenced constant is a defect).
+  //    WAVE 92 (lane 92E): a call site is either the bare <BrollLayer> or the ONE
+  //    plan-windowed mount <PlannedBrollLayer> (it forwards both props to the layer).
   const brollLayerFiles = ["remotion/ComingSoonReel.tsx", "remotion/NeighborhoodSpotlightReel.tsx", "remotion/AgentTalkingHeadReel.tsx"]
   for (const f of brollLayerFiles) {
     const src = readStripped(f)
     check(`${f}: <BrollLayer> passes filmGrain (the constant this wave added is a live call site, not orphaned)`,
-      /<BrollLayer[\s\S]{0,200}filmGrain/.test(src))
+      /<(?:Planned)?BrollLayer[\s\S]{0,260}filmGrain/.test(src))
     // WAVE 61 ADVANCEMENT — handheldDrift is opt-in and wired onto the SAME
     // "look real" call sites as filmGrain (still-photo b-roll only, inside
     // _BrollLayer.tsx — see lib/video/realism-profile.ts's research note on
     // why it does not also apply to a Ken Burns still or a b-roll video clip).
     check(`${f}: <BrollLayer> passes handheldDrift (WAVE 61 opt-in still-photo drift, not orphaned)`,
-      /<BrollLayer[\s\S]{0,200}handheldDrift/.test(src))
+      /<(?:Planned)?BrollLayer[\s\S]{0,260}handheldDrift/.test(src))
   }
 
   // ── WAVE 61 REALISM ADVANCEMENTS — wired, not just declared ───────────────

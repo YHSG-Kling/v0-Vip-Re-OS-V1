@@ -3,8 +3,9 @@
  *
  * THE B-ROLL PICKER — the stop-the-scroll missing link. The Video Director
  * already FLAGS which formats want lifestyle B-roll under the narration
- * (format.needsBroll → ComingSoonReel / NeighborhoodSpotlightReel / the
- * vertical Just-Listed cut), but until now NOTHING sourced the actual clips.
+ * (format.needsBroll — since wave 92 THE rule, brollBenefit in
+ * lib/video/body-visual-model.ts, which the listing-promo route asks too),
+ * but until now NOTHING sourced the actual clips.
  * This module sources them — from the EXISTING video_assets stock library,
  * honoring the EXISTING agent → team → brokerage scope cascade
  * (lib/remotion/stock-scope resolveStockScopeOrder, the same walk the render
@@ -199,7 +200,7 @@ export async function pickBrollClips(
   let sourcedScope: string | null = null
   for (const ref of scopes) {
     try {
-      const { data } = await svc.from("video_assets")
+      const { data, error } = await svc.from("video_assets")
         .select("video_url, duration_seconds, title, category")
         .eq("brokerage_id", input.brokerageId)
         .eq("scope_type",   ref.scopeType)
@@ -207,6 +208,9 @@ export async function pickBrollClips(
         .in("category",     ["b_roll", "neighborhood"])
         .not("video_url", "is", null)
         .order("created_at", { ascending: false })
+      // CLAUDE.md §3 — supabase-js RESOLVES a refusal: read it, say so, and walk on
+      // (wave 92, lane 92E: a refused read used to read as "this scope has no b-roll").
+      if (error) { console.warn(`[broll-picker] video_assets read refused for ${ref.scopeType}:${ref.scopeId}: ${error.message}`); continue }
       const got = (data ?? []) as typeof rows
       if (got.length > 0) {
         rows = got

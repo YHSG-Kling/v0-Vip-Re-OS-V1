@@ -360,6 +360,12 @@ function checkBroll(r: Resolved) {
     try { windowFrames = safeEval(m[1], r.scope) } catch { /* unresolvable — fall back to the narration window */ }
     check(`${label}: <BrollLayer totalFrames={${m[1].trim()}}> resolves to ${windowFrames} ≤ the registered ${r.total} frames`, windowFrames > 0 && windowFrames <= r.total)
   }
+  // WAVE 92 (lane 92E): a composition that mounts footage through the ONE plan-windowed mount
+  // sizes each layer to a window brollMountWindows derived (inside the cover/body, never the
+  // end card) — the window arithmetic itself is proven in test:video-timeline-integrity §broll92.
+  if (/<PlannedBrollLayer\b/.test(r.source)) {
+    check(`${label}: <PlannedBrollLayer> mounts in windows from brollMountWindows (the ONE derivation)`, /brollMountWindows\(/.test(r.source))
+  }
   const slots = brollSlots(BROLL_FIXTURE, windowFrames, r.fps, 10)
   const tiles = slots.length > 0 && slots[0].from === 0 && slots.every((s, i) => i === 0 || s.from === slots[i - 1].from + slots[i - 1].durationFrames)
     && slots[slots.length - 1].from + slots[slots.length - 1].durationFrames === windowFrames

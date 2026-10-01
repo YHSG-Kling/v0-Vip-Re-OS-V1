@@ -36,6 +36,8 @@ import { mlsNeutralTitle } from "../lib/video/render-cut"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
 import { cinemaBadgeSlot, cinemaDisclosureStyle, cinemaFrame, slideDisclosureText } from "../lib/video/cinema-finish"
+import { brollMountWindows, fitBodyVisualPlan, photoSpansAround, type BodyVisualPlan } from "../lib/video/body-visual-model"
+import { PlannedBrollLayer, type BrollClip } from "./_BrollLayer"
 
 export interface JustListedReelSquareProps {
   hook:      string
@@ -80,6 +82,14 @@ export interface JustListedReelSquareProps {
   captionScript?: string | null
   /** Wave 81C — THE MLS CUT (lib/video/render-cut.ts): no logo, no name, no phone, no CTA, no QR; the address instead. */
   mlsClean?: boolean
+  /** WAVE 92 (lane 92E) — the cutaway footage the Video Director picked (lib/video/broll-picker.ts)
+   *  when brollBenefit says this listing has too few photos to fill its narration. Before this the
+   *  Director staged clips here and NOTHING read them (no b-roll layer — lane 91E's open item). */
+  brollClips?: BrollClip[]
+  /** "own" = the listing's own footage; anything else is stock — never on the MLS cut. */
+  brollSource?: "own" | "stock" | null
+  /** The staged body-visual plan: footage plays ONLY in the segments it cut to b-roll. */
+  bodyVisualPlan?: BodyVisualPlan | null
 }
 
 const FPS    = 30
@@ -102,7 +112,7 @@ function kenBurnsScale(localFrame: number, span: number): number {
 export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
   hook, address, cityState, price, bedrooms, bathrooms, sqft,
   imageUrls, brand, voiceoverUrl, ctaLabel, qrCodeDataUrl, qrCaption,
-  captionsCues, captionScript, mlsClean,
+  captionsCues, captionScript, mlsClean, brollClips, brollSource, bodyVisualPlan,
 }) => {
   const frame      = useCurrentFrame()
   const { durationInFrames, width, height } = useVideoConfig()
@@ -110,7 +120,12 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
   const timeline   = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const PHOTOS     = timeline.body.durationInFrames
   const images     = imageUrls.slice(0, 4)
-  const perPhoto   = images.length > 0 ? PHOTOS / images.length : PHOTOS
+  // WAVE 92 (lane 92E): footage only in the plan's narration gaps (brollMountWindows — never the
+  // CTA end card), never stock on the MLS cut; the photos tile the frames the footage leaves
+  // (photoSpansAround) so no photo repeats under the narration.
+  const footage    = mlsClean && brollSource !== "own" ? [] : (brollClips ?? [])
+  const brollWins  = footage.length > 0 ? brollMountWindows(fitBodyVisualPlan(bodyVisualPlan, "JustListedReelSquare", durationInFrames), { within: timeline.body }) : []
+  const photoSpans = photoSpansAround(PHOTOS, brollWins.map((w) => ({ from: w.from - COVER, durationInFrames: w.durationInFrames })), images.length)
   const showEho    = brand.showEhoMark ?? true
   // Wave 91 (lane 91E): brokerage · Equal Housing Opportunity · licence, composed ONCE
   // (slideDisclosureText). The MLS cut stays unbranded — the mark alone (lib/video/render-cut.ts).
@@ -167,15 +182,14 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
             Photos coming soon
           </AbsoluteFill>
         ) : (
-          images.map((url, idx) => {
-            const start    = idx * perPhoto
-            return (
-              <Sequence key={idx} from={start} durationInFrames={perPhoto}>
-                <PhotoFrame url={url} span={perPhoto} />
-              </Sequence>
-            )
-          })
+          photoSpans.map((p, idx) => (
+            <Sequence key={idx} from={p.from} durationInFrames={p.durationInFrames}>
+              <PhotoFrame url={images[p.photoIndex]} span={p.durationInFrames} />
+            </Sequence>
+          ))
         )}
+        <PlannedBrollLayer clips={footage} windows={brollWins} offset={COVER}
+          overlayColor={`${brand.primaryColor}59`} clipCaptions={false} filmGrain />
         {/* Persistent facts strip. Floats over the photos so the
             viewer always sees the offer without waiting for a card
             section. Bottom-anchored so it doesn't compete with the

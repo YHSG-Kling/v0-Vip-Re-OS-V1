@@ -66,6 +66,16 @@
  *               (the equity / market-update figures were invisible); the ONE
  *               lower-third above the caption band by default; the bottom
  *               context-cue row above captions + disclosure, out of the badges.
+ *   §broll92    (wave 92, lane 92E — owner: "we should be using broll when
+ *               appropriate or benefinical") THE ONE b-roll rule (brollBenefit):
+ *               rule-says-beneficial ⇒ the composition renders it (and the
+ *               converse), Director picks ⇔ beneficial ∧ mounted over every
+ *               situation × channel × photo count, the named NOT-beneficial
+ *               cases (MLS cut, photo walkthrough, full gallery, stock under a
+ *               testimonial, silent reels, stat-card market updates); footage
+ *               windows ⇔ a measured narration gap, never in the outro end card,
+ *               inside the narration where the bed is ducked; photos tile around
+ *               footage; mounts painted under the captions; clips muted.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { dirname, join } from "node:path"
@@ -74,15 +84,17 @@ import { blankStrings, stripComments } from "./strip-comments"
 import { VIDEO_COMPOSITION_FILES } from "./composition-segments"
 import {
   COMPOSITION_DURATION_RULES, HOOK_ON_COVER_MAX_SECONDS, PURPOSE_DURATION_RULES, SEATED_PURPOSES,
-  compositionBookends, compositionPurposes, movingCompositionIds, narrationStartFrame, planCompositionDuration, planDurationForProps,
+  compositionBookends, compositionPurposes, movingCompositionIds, narrationStartFrame, narrationWindowFrames, planCompositionDuration, planDurationForProps,
   purposeOpensOnHook, requiredCapFrames, hostWordsPerMinute, spokenSecondsForWords,
   type VideoPurpose,
 } from "../lib/video/duration-model"
 import {
-  PURPOSE_BODY_VISUAL_RULES, fitBodyVisualPlan, gateVisualPlanForDispatch, safeInsets, segmentUsesBroll, stageBodyVisualPlan,
-  type BodyVisualAssets, type BodyVisualPlan,
+  COMPOSITION_TREATMENTS, PURPOSE_BODY_VISUAL_RULES, brollBenefit, brollMountWindows, fitBodyVisualPlan, gateVisualPlanForDispatch, photoSpansAround, safeInsets, segmentUsesBroll, stageBodyVisualPlan,
+  type BodyVisualAssets, type BodyVisualPlan, type BrollBenefit,
 } from "../lib/video/body-visual-model"
-import { weightedShotSlots } from "../lib/video/assembly-timeline"
+import { evenShotSlots, weightedShotSlots } from "../lib/video/assembly-timeline"
+import { directorBrollDecision, selectVideoFormat, videoPurposeForSituation, type SituationKind, type TargetChannel } from "../lib/video/video-director"
+import { planCustomVideo } from "../lib/video/custom-video-archetypes"
 import { spokenWords } from "../lib/video/script-structure"
 import { brollSlots, clipFrames, type BrollClip } from "../remotion/_BrollLayer"
 import { finishForVideo, REEL_USE_FINISH } from "../lib/video/finish-spec"
@@ -108,6 +120,9 @@ function check(name: string, cond: boolean, detail?: string) {
   else { failed++; failures.push(name + (detail ? ` — ${detail}` : "")); console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`) }
 }
 const note = (s: string) => console.log(`  · ${s}`)
+
+/** A composed disclosure with the non-breaking glyphs (U+2011, U+00A0) mapped back to plain (wave 92). */
+const disclosurePlainText = (t: string): string => t.replace(/\u2011/g, "-").replace(/\u00A0/g, " ")
 
 // ─── fixtures ───────────────────────────────────────────────────────────────
 const SCRIPT_BANK = [
@@ -550,9 +565,18 @@ console.log("\n── §render91 · what the wave-91 real renders of the remaini
   const JL_PRE91 = `brand: {\n primaryColor: string\n accentColor: string\n logoUrl?: string\n agentName?: string\n agentPhone?: string\n showEhoMark?: boolean\n }`
   check("CONTROL: a brand block that DECLARES brokerageName but never reads it fails the reader rule", !READS_NAME.test(JL_PRE91 + "\n brokerageName?: string") && READS_NAME.test("{brand.brokerageName}"))
   check("the ONE disclosure composer: a named brokerage reads exactly as before; no brokerage degrades to the mark alone (never a dangling '· Equal Housing')",
-    slideDisclosureText({ brokerageName: "Demo Realty", showEhoMark: true, licenseLine: "Lic. #DEMO-0000" }) === "Demo Realty · Equal Housing Opportunity · Lic. #DEMO-0000"
+    disclosurePlainText(slideDisclosureText({ brokerageName: "Demo Realty", showEhoMark: true, licenseLine: "Lic. #DEMO-0000" })) === "Demo Realty · Equal Housing Opportunity · Lic. #DEMO-0000"
     && slideDisclosureText({ brokerageName: null, showEhoMark: true }) === "Equal Housing Opportunity"
     && slideDisclosureText({ brokerageName: "Demo Realty", showEhoMark: false }) === "Demo Realty")
+  // Wave 92 (lane 92E) — the licence never wraps THROUGH itself (91E's 16:9 slide renders broke
+  // "Lic. #BK-" / "DEMO-0000123"): inside the licence there is no breakable hyphen or space.
+  {
+    const line = slideDisclosureText({ brokerageName: "Demo Realty of Greater Miami and the Keys", showEhoMark: true, licenseLine: "Lic. #BK-DEMO-0000123" })
+    const licence = line.split(" · ").pop() ?? ""
+    check(`the licence is one unbreakable token on every composed disclosure ("${disclosurePlainText(licence)}" carries ${(licence.match(/\u2011/g) ?? []).length} non-breaking hyphens, no plain hyphen or space)`,
+      !/[- ]/.test(licence) && disclosurePlainText(licence) === "Lic. #BK-DEMO-0000123")
+    check("CONTROL: the pre-92 composition (plain hyphen + space) is caught by the same finder", /[- ]/.test("Lic. #BK-DEMO-0000123"))
+  }
   const MLS_CLEAN = ["JustListedReelSquare", "JustSoldReelSquare", "JustListedReelHorizontal"]
   check("the MLS cut stays unbranded: the listing reels that compose the line drop the brokerage name and licence when mlsClean (lib/video/render-cut.ts)",
     MLS_CLEAN.every((id) => /brokerageName:\s*mlsClean\s*\?\s*null\s*:\s*brand\.brokerageName/.test(code(VIDEO_COMPOSITION_FILES[id]))))
@@ -593,8 +617,11 @@ console.log("\n── §render91 · what the wave-91 real renders of the remaini
 
   // (f) THE PLAN'S B-ROLL VERDICT DECIDES WHETHER FOOTAGE PLAYS (ComingSoonReel).
   const csr = code("remotion/ComingSoonReel.tsx")
-  check("ComingSoonReel plays staged b-roll only when the staged plan cut a b-roll segment (no plan → the pre-91 behaviour)",
-    /fitBodyVisualPlan\(bodyVisualPlan, "ComingSoonReel", durationInFrames\)/.test(stripComments(read("remotion/ComingSoonReel.tsx"))) && /hasBroll = clips\.length > 0 && \(!plan \|\| plan\.segments\.some\(/.test(csr))
+  // Wave 92 (lane 92E) re-anchored to the RULE: footage plays only in the windows the plan
+  // cut (brollMountWindows over the fitted plan, through the ONE windowed mount) — the wave-91
+  // spelling (`hasBroll = … plan.segments.some(…)` gating a whole-film layer) is retired.
+  check("ComingSoonReel plays staged b-roll only where the staged plan cut it (brollMountWindows over the fitted plan; no plan → cover + body only)",
+    /fitBodyVisualPlan\(bodyVisualPlan, "ComingSoonReel", durationInFrames\)/.test(stripComments(read("remotion/ComingSoonReel.tsx"))) && /brollMountWindows\(plan,/.test(csr) && /<PlannedBrollLayer\b/.test(csr) && !/<BrollLayer\b/.test(csr))
   {
     const photos = ["a", "b", "c", "d"].map((x) => `https://example.com/${x}.jpg`)
     const clips = [{ url: "https://example.com/b1.mp4", durationSeconds: 5 }, { url: "https://example.com/b2.mp4", durationSeconds: 4 }]
@@ -742,6 +769,183 @@ console.log("\n── §script · every derived spoken writer's prompt carries p
   check("chapter-video-generator closes on ONE no-pressure next step toward the appointment (never a pitch)", /no-pressure next step/i.test(stripComments(read("lib/video/chapter-video-generator.ts"))) && /never a pitch/i.test(stripComments(read("lib/video/chapter-video-generator.ts"))))
   check("the studio writer (video-generation) asks for a hook inside the short-form window and a no-pressure close, not a bare 'clear call-to-action'", /shortFormStructureDirective\(\{/.test(code("app/actions/video-generation.ts")))
   check("the just-listed and newsletter render routes close without urgency (their prompts say so)", /no urgency/i.test(stripComments(read("app/api/internal/remotion/render-just-listed/route.ts"))) && /no urgency/i.test(stripComments(read("app/api/internal/remotion/render-newsletter-video/route.ts"))))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+console.log("\n── §broll92 · b-roll WHEN BENEFICIAL: Director picks ⇔ rule says beneficial ⇔ composition renders; cues in narration gaps, never under captions / disclosure; the bed still ducks (lane 92E) ──")
+{
+  const MOUNT = /<BrollLayer\b|<PlannedBrollLayer\b/
+  const PHOTO_COUNTS = [0, 1, 2, 3, 8]
+  // (a) THE RULE ⇒ RENDERS, for every moving composition × every purpose it serves × an
+  //     inventory grid (photos × avatar × the footage's origin × stat cards). The table is the
+  //     ONE rule's (brollBenefit), so this is the claim "every format the rule says benefits
+  //     CAN render it", plus its converse "no composition carries a layer the rule never wants".
+  const benefitCells: string[] = [], orphanCells: string[] = []
+  const rendersAnywhere = new Map<string, boolean>()
+  let cells = 0
+  for (const id of moving) for (const purpose of compositionPurposes(id)) {
+    for (const propertyPhotos of PHOTO_COUNTS) for (const avatarClip of [true, false]) for (const brollSource of ["stock", "own"] as const) for (const statCards of [0, 1]) {
+      const b = brollBenefit({ compositionId: id, purpose, assets: { propertyPhotos, avatarClip, brollSource, statCards } })
+      cells++
+      if (b.beneficial) { benefitCells.push(`${id}/${purpose}`); rendersAnywhere.set(id, true); if (!b.renders) orphanCells.push(`${id}/${purpose} photos=${propertyPhotos} avatar=${avatarClip} ${brollSource}: ${b.why}`) }
+    }
+  }
+  const beneficialIds = [...rendersAnywhere.keys()].sort()
+  note(`denominator: ${cells} composition×purpose×inventory cells over ${moving.length} moving compositions; beneficial in ${benefitCells.length} cells across ${beneficialIds.length} compositions (${beneficialIds.join(", ")})`)
+  check("every cell the rule says benefits from footage is a composition that renders it (COMPOSITION_TREATMENTS has broll)", orphanCells.length === 0, orphanCells.slice(0, 4).join("; "))
+  const rowWithoutRule = moving.filter((id) => (COMPOSITION_TREATMENTS[id] ?? []).includes("broll") && !rendersAnywhere.get(id))
+  check("no composition carries a b-roll layer the rule never wants (renders ⇒ beneficial in some cell)", rowWithoutRule.length === 0, rowWithoutRule.join(", "))
+  // The source agrees with the row both ways (test:body-visual-model proves row ⇒ mark; this is mark ⇒ row).
+  const mountedNoRow = moving.filter((id) => VIDEO_COMPOSITION_FILES[id] && MOUNT.test(code(VIDEO_COMPOSITION_FILES[id])) && !(COMPOSITION_TREATMENTS[id] ?? []).includes("broll"))
+  const rowNoMount = moving.filter((id) => (COMPOSITION_TREATMENTS[id] ?? []).includes("broll") && !(VIDEO_COMPOSITION_FILES[id] && MOUNT.test(code(VIDEO_COMPOSITION_FILES[id]))))
+  check("every composition whose stripped source mounts the b-roll layer has the broll row, and every row is a real mount", mountedNoRow.length === 0 && rowNoMount.length === 0, `mount without row: ${mountedNoRow.join(", ")} · row without mount: ${rowNoMount.join(", ")}`)
+  // POSITIVE CONTROL — the pre-92 square reel (no layer, no row) under the SAME rule is caught.
+  const pre92Square = ["property_photos", "kinetic_text", "brand_card"]
+  const squareScarce = brollBenefit({ compositionId: "JustListedReelSquare", assets: { propertyPhotos: 1 } })
+  check(`CONTROL: a photo-scarce JustListedReelSquare is beneficial (${squareScarce.gapSegments} gap segments) — the pre-92 row ${JSON.stringify(pre92Square)} would fail the rule ⇒ renders check`, squareScarce.beneficial && !pre92Square.includes("broll"))
+  check("CONTROL: the mount finder reads stripped source (a tombstone naming <PlannedBrollLayer> is not a mount)",
+    MOUNT.test(blankStrings(stripComments("<PlannedBrollLayer clips={c} windows={w} />"))) && !MOUNT.test(blankStrings(stripComments("// was <BrollLayer clips={c} />\nconst s = \"<PlannedBrollLayer/>\""))))
+
+  // (b) WHEN IT IS NOT — each named "not beneficial" case is the rule's answer, with its reason.
+  const notCases: Array<[string, BrollBenefit]> = [
+    ["the MLS cut (stock footage of another place is not the property)", brollBenefit({ compositionId: "JustListedReel", assets: { propertyPhotos: 0 }, cut: "mls" })],
+    ["a pure photo walkthrough (the photos ARE the video)", brollBenefit({ compositionId: "PhotoWalkthroughReel", assets: { propertyPhotos: 0 } })],
+    ["a listing reel with a full gallery (the house is the star)", brollBenefit({ compositionId: "JustListedReelSquare", assets: { propertyPhotos: 8 } })],
+    ["a testimonial over stock footage (own media only)", brollBenefit({ compositionId: "TestimonialReel", assets: { brollSource: "stock" } })],
+    ["a silent chart reel (no narration to sit under)", brollBenefit({ compositionId: "CMAReel" })],
+    ["a market update whose stat cards carry every beat (the charts ARE the b-roll)", brollBenefit({ compositionId: "MarketUpdateReel", assets: { avatarClip: true, statCards: 3 } })],
+  ]
+  for (const [what, b] of notCases) check(`NOT beneficial — ${what}: ${b.why}`, !b.beneficial)
+  const yesCases: Array<[string, BrollBenefit]> = [
+    ["a neighbourhood montage (verdict needed)", brollBenefit({ compositionId: "NeighborhoodSpotlightReel" })],
+    ["a coming-soon teaser with no gallery staged", brollBenefit({ compositionId: "ComingSoonReel", assets: { propertyPhotos: 0 } })],
+    ["a photo-scarce just-sold (2 photos, 3 narrated photo beats)", brollBenefit({ compositionId: "JustSoldReelSquare", assets: { propertyPhotos: 2 } })],
+    ["an agent's talking head past its full-frame cap (a cutaway breaks the monologue)", brollBenefit({ compositionId: "AgentTalkingHeadReel", assets: { avatarClip: true } })],
+    ["a seller's update over the home's OWN footage", brollBenefit({ compositionId: "AgentTalkingHeadReel", purpose: "seller_update", assets: { avatarClip: true, brollSource: "own" } })],
+  ]
+  for (const [what, b] of yesCases) check(`beneficial — ${what}: ${b.why}`, b.beneficial && b.renders)
+
+  // (c) THE DIRECTOR PICKS ⇔ THE RULE ⇔ THE COMPOSITION RENDERS, every declared situation ×
+  //     channel × known photo count. The rule's answer is asked here from the format's own
+  //     flags (independently of the Director's internal wiring), and the composition's
+  //     renders is read off the STRIPPED SOURCE, not off the row.
+  const kindBlock = stripComments(read("lib/video/video-director.ts")).match(/export type SituationKind =([\s\S]*?)\n\n/)
+  const kinds = kindBlock ? Array.from(kindBlock[1].matchAll(/\|\s*"([a-z_]+)"/g)).map((m) => m[1] as SituationKind) : []
+  const channels: TargetChannel[] = ["tiktok", "instagram", "youtube", "facebook", "email", "portal"]
+  const custom = planCustomVideo({ audience: "first-time buyers", goal: "explain closing costs in three steps", host: "avatar", assets: { avatarClip: true, brollClips: 0, propertyPhotos: 0, screenshots: 0 } })
+  const disagree: string[] = [], pickNoMount: string[] = []
+  let picks = 0, combos = 0
+  for (const kind of kinds) for (const targetChannel of channels) for (const photoCount of PHOTO_COUNTS) {
+    const facts: Record<string, unknown> = { photoCount, ...(kind === "custom" && custom.ok ? { customPlan: custom.plan } : {}) }
+    if (kind === "custom" && !custom.ok) continue
+    const f = selectVideoFormat({ kind, tier: "solo_agent", targetChannel, facts })
+    combos++
+    const purpose = videoPurposeForSituation(kind, f.compositionId, kind === "custom" && custom.ok ? custom.plan.purpose : null)
+    const rule = brollBenefit({ compositionId: f.compositionId, purpose, assets: { propertyPhotos: photoCount, avatarClip: f.needsAvatar, statCards: f.needsCharts ? 1 : 0, brollSource: "stock" } })
+    const mounts = !!VIDEO_COMPOSITION_FILES[f.compositionId] && MOUNT.test(code(VIDEO_COMPOSITION_FILES[f.compositionId]))
+    if (f.needsBroll) picks++
+    if (f.needsBroll !== (rule.beneficial && mounts)) disagree.push(`${kind}×${targetChannel} photos=${photoCount} → ${f.compositionId}: picks ${f.needsBroll}, rule ${rule.beneficial}, mounts ${mounts}`)
+    if (f.needsBroll && !mounts) pickNoMount.push(`${kind}×${targetChannel}→${f.compositionId}`)
+  }
+  note(`denominator: ${combos} situation × channel × photo-count combos over ${kinds.length} declared kinds; the Director picks footage in ${picks}`)
+  check(`the Director picks b-roll exactly when the rule says beneficial AND the composition mounts the layer (${combos} combos, ${kinds.length} kinds)`, kinds.length >= 16 && disagree.length === 0, disagree.slice(0, 4).join("; "))
+  check("the Director never picks b-roll a composition cannot render", pickNoMount.length === 0, pickNoMount.join(", "))
+  check("the Director picks footage somewhere (the walk is not vacuous) and not everywhere", picks > 0 && picks < combos)
+  // POSITIVE CONTROL — the pre-92 hand table (vertical social ⇒ the square reel gets b-roll)
+  // disagrees with the rule on a full gallery, and the finder above would report it.
+  const pre92Table = (kind: string, ch: TargetChannel) => kind === "new_listing" && (ch === "tiktok" || ch === "instagram")
+  const fullGallery = brollBenefit({ compositionId: "JustListedReelSquare", assets: { propertyPhotos: 8, brollSource: "stock" } })
+  check("CONTROL: the pre-92 table picks stock footage for a full-gallery TikTok listing; the rule refuses it", pre92Table("new_listing", "tiktok") && !fullGallery.beneficial)
+  // Commission time: the Director re-asks the SAME rule over the staged content.
+  const listingProps = (n: number) => ({ imageUrls: Array.from({ length: n }, (_, i) => `https://example.com/p${i}.jpg`) })
+  const atCommission = [1, 5].map((n) => directorBrollDecision({ compositionId: "JustListedReelSquare", props: listingProps(n), avatarClip: false }))
+  check("at commission, 1 staged photo → pick; 5 staged photos → no pick (directorBrollDecision over assetsFromProps)", atCommission[0].beneficial && atCommission[0].renders && !atCommission[1].beneficial)
+  check("at commission, the MLS cut never picks stock footage", !directorBrollDecision({ compositionId: "JustListedReel", props: listingProps(0), avatarClip: false, cut: "mls" }).beneficial)
+  check("commissionVideo sources stock b-roll only behind the decision (pickStockBroll runs under brollWanted = beneficial && renders)",
+    /const brollWanted = brollDecision\.beneficial && brollDecision\.renders/.test(code("lib/video/video-director.ts")) && /if \(brollWanted\) await pickStockBroll\(\)/.test(code("lib/video/video-director.ts")))
+
+  // (d) CUES LAND IN NARRATION GAPS — every listing reel, photo-scarce, through the REAL stager.
+  const clips = [{ url: "https://example.com/b1.mp4", durationSeconds: 5 }, { url: "https://example.com/b2.mp4", durationSeconds: 4 }]
+  const listingReels = moving.filter((id) => COMPOSITION_DURATION_RULES[id].purpose === "listing_promo")
+  for (const id of listingReels) {
+    for (const photos of [0, 1, 2]) {
+      const props: Record<string, unknown> = { ...listingProps(photos), brollClips: clips, brollSource: "stock", spokenSeconds: 14, spokenSecondsSource: "measured", narrationScript: scriptFor(14, "voiceover") }
+      const st = stageBodyVisualPlan({ compositionId: id, props, avatarClip: false })
+      if (!st.ok) { check(`${id} photos=${photos}: stages a plan`, false, st.reason); continue }
+      // The GAP is measured, not assumed: the same plan with no footage to cut to — how many
+      // narrated photo segments would the photos have to fill?
+      const bare = stageBodyVisualPlan({ compositionId: id, props: { ...props, brollClips: [] }, avatarClip: false })
+      const wantedPhotoSegs = bare.ok ? bare.plan.segments.filter((s) => s.treatment === "property_photos").length : 0
+      const gap = photos === 0 ? true : wantedPhotoSegs > photos
+      const plan = st.plan
+      const D = plan.durationInFrames
+      const within = id === "ComingSoonReel" ? { from: 0, durationInFrames: plan.outro.from } : plan.body
+      const wins = brollMountWindows(plan, { within, leadIn: id === "ComingSoonReel" })
+      const photoSegs = plan.segments.filter((s) => s.treatment === "property_photos").length
+      const nw = narrationWindowFrames(id, D)
+      const inBody = wins.every((w) => w.from >= (id === "ComingSoonReel" ? 0 : plan.body.from) && w.from + w.durationInFrames <= plan.outro.from)
+      const inNarration = wins.every((w) => w.from >= nw.from && w.from + w.durationInFrames <= nw.to)
+      // The duck is a sidechain on the speech (§music); inside the body the plan's duck window is that stretch.
+      const ducked = wins.every((w) => Math.max(w.from, plan.body.from) >= plan.musicDuck.from && w.from + w.durationInFrames <= plan.musicDuck.to)
+      check(`${id} photos=${photos}: ${wins.length} footage window(s) ⇔ a narration gap (${wantedPhotoSegs} photo beats for ${photos} photos) — never in the outro end card (disclosure + QR, from frame ${plan.outro.from}), all inside the narration ${nw.from}–${nw.to} where the bed is ducked; photo segments ${photoSegs} ≤ photos ${photos} (no repeat)`,
+        (wins.length > 0) === gap && inBody && inNarration && ducked && photoSegs <= Math.max(photos, 0))
+    }
+    // A full gallery: no footage at all, every narrated beat is the home.
+    const full = stageBodyVisualPlan({ compositionId: id, props: { ...listingProps(6), brollClips: clips, brollSource: "stock", spokenSeconds: 14, spokenSecondsSource: "measured", narrationScript: scriptFor(14, "voiceover") }, avatarClip: false })
+    check(`${id} photos=6: no footage window even with clips staged (the house is the star)`, full.ok && brollMountWindows(full.plan, { within: full.plan.body }).length === 0)
+  }
+  // POSITIVE CONTROL — without the gap rule (no clips to cut to) the same 2-photo plan repeats a photo.
+  const noClips = stageBodyVisualPlan({ compositionId: "JustListedReelSquare", props: { ...listingProps(2), spokenSeconds: 14, spokenSecondsSource: "measured", narrationScript: scriptFor(14, "voiceover") }, avatarClip: false })
+  check("CONTROL: with no footage the 2-photo square reel plans more photo segments than photos (the repeat the gap rule fills)", noClips.ok && noClips.plan.segments.filter((s) => s.treatment === "property_photos").length > 2)
+  // POSITIVE CONTROL — a plan whose CTA segment were footage is CLAMPED out of the outro.
+  {
+    const st = stageBodyVisualPlan({ compositionId: "JustListedReelSquare", props: { ...listingProps(0), brollClips: clips, brollSource: "stock", spokenSeconds: 14, spokenSecondsSource: "measured", narrationScript: scriptFor(14, "voiceover") }, avatarClip: false })
+    if (st.ok) {
+      const p = st.plan
+      const smuggled: BodyVisualPlan = { ...p, segments: p.segments.map((s) => ({ ...s, treatment: "broll" as const, assetIndex: 0 })), body: p.body }
+      const raw = { from: smuggled.segments[0].from, to: p.durationInFrames } // what an unclamped "until the end" layer would cover
+      const clamped = brollMountWindows(smuggled, { within: { from: 0, durationInFrames: p.durationInFrames } })
+      check(`CONTROL: an unclamped layer would run ${raw.to - p.outro.from} frames into the end card; the mount clamps every window to the body (ends ${clamped.length ? clamped[clamped.length - 1].from + clamped[clamped.length - 1].durationInFrames : -1} ≤ ${p.outro.from})`,
+        raw.to > p.outro.from && clamped.length > 0 && clamped.every((w) => w.from + w.durationInFrames <= p.outro.from))
+    }
+  }
+  // The photos tile what the footage leaves — no frame under both, no frame under neither.
+  {
+    const span = 300, around = [{ from: 180, durationInFrames: 90 }]
+    const spans = photoSpansAround(span, around, 2)
+    const cover = new Array(span).fill(0)
+    for (const s of spans) for (let f = s.from; f < s.from + s.durationInFrames; f++) cover[f]++
+    for (const w of around) for (let f = w.from; f < w.from + w.durationInFrames; f++) cover[f]++
+    check(`photoSpansAround: 2 photos + a 90-frame footage window tile 300 frames exactly once (${spans.length} pieces, photos ${[...new Set(spans.map((s) => s.photoIndex))].join("/")})`,
+      cover.every((c) => c === 1) && new Set(spans.map((s) => s.photoIndex)).size === 2)
+    const even = evenShotSlots(span, 2)
+    check("CONTROL: the pre-92 even photo split puts a photo UNDER the footage window (the overlap photoSpansAround removes)",
+      even.some((s) => s.from < 270 && s.from + s.durationInFrames > 180))
+  }
+
+  // (e) NEVER UNDER CAPTIONS / DISCLOSURE — paint order, the clip chip, the end card.
+  const mounting = Object.keys(VIDEO_COMPOSITION_FILES).filter((id) => /<PlannedBrollLayer\b/.test(code(VIDEO_COMPOSITION_FILES[id])))
+  const badOrder = mounting.filter((id) => {
+    const s = code(VIDEO_COMPOSITION_FILES[id])
+    const m = s.search(/<PlannedBrollLayer\b/), c = s.search(/<CaptionLayer\b/)
+    return c >= 0 && m > c
+  })
+  check(`every windowed mount (${mounting.length}: ${mounting.join(", ")}) is painted BEFORE the caption layer — captions over footage, never under it`, mounting.length >= 7 && badOrder.length === 0, badOrder.join(", "))
+  check("CONTROL: a mount written after <CaptionLayer> is caught by the paint-order finder",
+    (() => { const s = blankStrings(stripComments("<CaptionLayer cues={c} />\n<PlannedBrollLayer clips={k} windows={w} />")); return s.search(/<PlannedBrollLayer\b/) > s.search(/<CaptionLayer\b/) })())
+  const listingMounts = mounting.filter((id) => COMPOSITION_DURATION_RULES[id]?.purpose === "listing_promo")
+  check(`the listing reels (${listingMounts.length}) print no stock-clip caption chip over the home (clipCaptions={false})`,
+    listingMounts.length >= 6 && listingMounts.every((id) => /<PlannedBrollLayer\b[\s\S]{0,320}clipCaptions=\{false\}/.test(code(VIDEO_COMPOSITION_FILES[id]))))
+  const layer = code("remotion/_BrollLayer.tsx")
+  check("a clip's caption chip stands on the safe TOP inset — never in the caption band", /showCaption !== false && clip\.caption && \([\s\S]{0,120}top: safe\.top/.test(layer))
+  const mlsGated = listingMounts.filter((id) => id !== "OpenHouseAnnounceReel")
+  check(`the listing reels with an MLS cut (${mlsGated.length}) never mount stock footage on it (mlsClean && brollSource !== own)`,
+    mlsGated.length >= 5 && mlsGated.every((id) => /mlsClean && (props\.)?brollSource !== /.test(code(VIDEO_COMPOSITION_FILES[id]))))
+
+  // (f) THE BED STILL DUCKS — the footage is picture only, so the only voices in the mix are the
+  //     narration and the sidechain-ducked bed (§music proves the duck graph).
+  check("every b-roll <Video> is muted (a stock clip's own track would sit un-ducked under the voice)", /<Video\b[\s\S]{0,260}\bmuted\b/.test(layer))
+  check("CONTROL: the mute finder fails the pre-92 clip mount", !/<Video\b[\s\S]{0,260}\bmuted\b/.test(blankStrings(stripComments("<Video objectFit=\"cover\" src={clip.url} from={startFrame} durationInFrames={Math.max(1, spanFrames)} style={{ width: \"100%\" }} />"))))
 }
 
 console.log(`\nvideo-timeline-integrity: ${passed} passed, ${failed} failed (denominator ${passed + failed})`)

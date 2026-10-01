@@ -39,7 +39,9 @@ export interface VideoFinish {
   captions: boolean
 }
 
-const MARKETING: VideoFinish = { presenter: "none", bookends: true, broll: "required", music: true, qr: true, thumbnail: true, captions: true }
+// broll "optional" = the ONE rule decides per film (lib/video/body-visual-model.ts brollBenefit:
+// a narration gap with no photo left to show) — not every marketing reel wants footage (wave 92 lane 92E).
+const MARKETING: VideoFinish = { presenter: "none", bookends: true, broll: "optional", music: true, qr: true, thumbnail: true, captions: true }
 const CHART_REEL: VideoFinish = { presenter: "none", bookends: true, broll: "optional", music: true, qr: true, thumbnail: true, captions: true }
 const AVATAR_LED: VideoFinish = { presenter: "did_talking_head", bookends: true, broll: "optional", music: true, qr: true, thumbnail: true, captions: true }
 const REPORT_INTERNAL: VideoFinish = { presenter: "circle_pip", bookends: true, broll: "none", music: true, qr: false, thumbnail: true, captions: false }

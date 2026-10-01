@@ -36,6 +36,8 @@ import { mlsNeutralTitle } from "../lib/video/render-cut"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
 import { cinemaDisclosureStyle, cinemaFrame, slideDisclosureText } from "../lib/video/cinema-finish"
+import { brollMountWindows, fitBodyVisualPlan, photoSpansAround, type BodyVisualPlan } from "../lib/video/body-visual-model"
+import { PlannedBrollLayer, type BrollClip } from "./_BrollLayer"
 
 export interface JustListedReelHorizontalProps {
   hook:      string
@@ -73,6 +75,13 @@ export interface JustListedReelHorizontalProps {
   captionScript?: string | null
   /** Wave 81C — THE MLS CUT (lib/video/render-cut.ts): no logo, no name, no phone, no CTA, no QR; the address instead. */
   mlsClean?: boolean
+  /** WAVE 92 (lane 92E) — cutaway footage for the narration gaps a photo-scarce listing leaves
+   *  (brollBenefit, lib/video/body-visual-model.ts); it plays in the PHOTO panel, only where the
+   *  staged plan cut it, never across the facts column or the end card. */
+  brollClips?: BrollClip[]
+  /** "own" = the listing's own footage; anything else is stock — never on the MLS cut. */
+  brollSource?: "own" | "stock" | null
+  bodyVisualPlan?: BodyVisualPlan | null
 }
 
 const FPS    = 30
@@ -119,7 +128,7 @@ const PhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) => {
 export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> = ({
   hook, address, cityState, price, bedrooms, bathrooms, sqft,
   imageUrls, brand, voiceoverUrl, ctaLabel, qrCodeDataUrl, qrCaption,
-  captionsCues, captionScript, mlsClean,
+  captionsCues, captionScript, mlsClean, brollClips, brollSource, bodyVisualPlan,
 }) => {
   const frame    = useCurrentFrame()
   const { durationInFrames, width, height } = useVideoConfig()
@@ -129,7 +138,11 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
   const FACTS_FRAMES = Math.min(FACTS, BODY - 1)
   const PHOTOS   = BODY - FACTS_FRAMES
   const images   = imageUrls.slice(0, 2)
-  const perPhoto = images.length > 0 ? PHOTOS / images.length : PHOTOS
+  // WAVE 92 (lane 92E): footage only in the plan's narration gaps inside the photo window;
+  // the photos tile what the footage leaves (photoSpansAround — no photo repeats).
+  const footage  = mlsClean && brollSource !== "own" ? [] : (brollClips ?? [])
+  const brollWins = footage.length > 0 ? brollMountWindows(fitBodyVisualPlan(bodyVisualPlan, "JustListedReelHorizontal", durationInFrames), { within: { from: COVER, durationInFrames: PHOTOS } }) : []
+  const photoSpans = photoSpansAround(PHOTOS, brollWins.map((w) => ({ from: w.from - COVER, durationInFrames: w.durationInFrames })), images.length)
   const showEho  = brand.showEhoMark ?? true
   const disclosure = slideDisclosureText({ brokerageName: mlsClean ? null : brand.brokerageName, showEhoMark: showEho, licenseLine: mlsClean ? null : brand.licenseLine })
   const finalCta = mlsClean ? mlsNeutralTitle(address, cityState) : (ctaLabel ?? "Tour this listing")
@@ -172,17 +185,17 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
 
       {/* PHOTOS — 3-13s. Split layout: photo (60%) + facts (40%). */}
       <Sequence from={COVER} durationInFrames={PHOTOS}>
-        <AbsoluteFill style={{ display: "flex" }}>
+        {/* WAVE 92 (lane 92E — the real render): <AbsoluteFill> is a COLUMN flexbox, so the
+            "split layout" stacked the 60 % photo panel ABOVE the facts column and squeezed the
+            photo (and now the footage) into the top third of the frame. The split is a ROW. */}
+        <AbsoluteFill style={{ display: "flex", flexDirection: "row" }}>
           <div style={{ width: "60%", height: "100%", position: "relative" }}>
             {images.length > 0 ? (
-              images.map((url, idx) => {
-                const start = idx * perPhoto
-                return (
-                  <Sequence key={idx} from={start} durationInFrames={perPhoto}>
-                    <PhotoFrame url={url} span={perPhoto} />
-                  </Sequence>
-                )
-              })
+              photoSpans.map((p, idx) => (
+                <Sequence key={idx} from={p.from} durationInFrames={p.durationInFrames}>
+                  <PhotoFrame url={images[p.photoIndex]} span={p.durationInFrames} />
+                </Sequence>
+              ))
             ) : (
               <AbsoluteFill style={{
                 backgroundColor: brand.primaryColor, display: "flex",
@@ -191,6 +204,8 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
                 Photos coming soon
               </AbsoluteFill>
             )}
+            <PlannedBrollLayer clips={footage} windows={brollWins} offset={COVER}
+              overlayColor={`${brand.primaryColor}40`} clipCaptions={false} filmGrain />
           </div>
           <div style={{
             width: "40%", height: "100%",
