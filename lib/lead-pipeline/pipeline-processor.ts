@@ -380,6 +380,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     // Lane 89B — the vendor already sold this person with the record (normalized_preview.
     // paid_person_data, one spelling); the contract map bounds which sources may say so.
     paidPersonData: rec.normalized_preview?.paid_person_data === true && deliversPaidPersonData(scoringSource),
+    knownDemographics: householdFinancialsFromBatchData(rec.raw_data),
   })
 
   // ── Raw-lead HOUSEHOLD FINANCIALS (lane 85C) — a BatchData-sourced raw row arrives carrying the
@@ -916,6 +917,9 @@ async function enrichWithPeopleData(fields: {
   priorEmailSeek?: import('./email-seek').EmailSeekStamp | null
   /** Lane 89B — the vendor sold the person's contact points with the record. */
   paidPersonData?: boolean | null
+  /** Wave 93 (93B3) — demographic values already on the row (BatchData's demographic dataset), so the
+   *  Versium demographic append skips the categories they fill. */
+  knownDemographics?: Record<string, unknown> | null
 }): Promise<any> {
   const hasNamePhoneEmail = !!(fields.first_name || fields.last_name || fields.phone || fields.email)
 
@@ -961,6 +965,9 @@ async function enrichWithPeopleData(fields: {
         systemSource: 'lead_scraping',
         metadata: { source: fields.source ?? null, path: 'raw_record_promotion' },
         attribution: { rawRecordId: fields.rawRecordId ?? null },
+        // Wave 93 (93B3): demographics the acquisition vendor already sold with the row (BatchData's
+        // demographic dataset) are not re-bought from Versium.
+        existingProfile: fields.knownDemographics ?? null,
       })
     : null
   const versiumAnswered = !!versium?.answered && versium.emails.length > 0
@@ -1051,6 +1058,10 @@ async function enrichWithPeopleData(fields: {
         enrichmentConfidence: 0.6,
         enrichmentSource: 'versium_contact_append',
         peopleDataSkipped: true,
+        // Wave 93 (93B3): the demographic profile PDL used to supply, bought from Versium on the hit
+        // and built on PDL's vocabulary — the lead insert and the raw row carry it exactly as they
+        // carry a PDL profile (peopleDataProfile is the field both read).
+        ...(versium.demographicsProfile ? { peopleDataProfile: versium.demographicsProfile } : {}),
       }
     : skipPeopleData
     ? {

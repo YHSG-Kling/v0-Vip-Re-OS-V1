@@ -537,6 +537,74 @@ export function householdFinancialsFromVersium(result: unknown): HouseholdFinanc
   })
 }
 
+// ─── VERSIUM DEMOGRAPHICS → THE SAME PROFILE VOCABULARY (wave 93, lane 93B3) ──────────────────
+// Since 93B2 a Versium contact hit ends the enrichment chain without People Data Labs, which used to
+// supply the demographic profile. Versium's Demographic Append sells the same categories (1 match
+// credit per category output): `demographic` (basic — age range, gender, marital status, household,
+// children, education, home ownership / value) and `financial` (household income, net worth, modeled
+// credit rating). This maps them onto the SAME enrichment_profile keys PDL fills (DEMOGRAPHIC_PROFILE_
+// FIELDS — §6, no second vocabulary); the four household fields go through THE ONE household merge
+// (mergeHouseholdFinancials, provider 'versium'), so every reader (peopleDataProfileToContactColumns,
+// peopleDataProfileToLeadColumns, demographicsFromProfile, the persona readers) reads it unchanged.
+// UNRESOLVED (no live call this lane): the `demographic` output's exact field names — read
+// defensively from the documented sample's spellings; an absent field stays absent, never guessed.
+
+/** The Versium demographic output categories this repo buys, and the profile keys each one fills. */
+export const VERSIUM_DEMOGRAPHIC_CATEGORY_FIELDS = {
+  demographic: ['age_range', 'gender', 'marital_status', 'household_size', 'children_count', 'education', 'home_owner_status', 'home_value'],
+  financial: ['household_income', 'net_worth', 'credit_score_range'],
+} as const
+export type VersiumDemographicCategory = keyof typeof VERSIUM_DEMOGRAPHIC_CATEGORY_FIELDS
+
+/** PURE — the categories worth buying for a profile: a category is skipped when EVERY field it fills
+ *  is already present (a credit is billed per category, so a filled category is never re-bought). */
+export function versiumDemographicCategoriesNeeded(profile: Record<string, unknown> | null | undefined): VersiumDemographicCategory[] {
+  const present = (k: string) => {
+    const v = profile?.[k]
+    return v !== undefined && v !== null && !(typeof v === 'string' && v.trim() === '')
+  }
+  return (Object.keys(VERSIUM_DEMOGRAPHIC_CATEGORY_FIELDS) as VersiumDemographicCategory[])
+    .filter((c) => VERSIUM_DEMOGRAPHIC_CATEGORY_FIELDS[c].some((k) => !present(k)))
+}
+
+/** PURE — Versium demographic/financial results → a profile on the PDL vocabulary (provider
+ *  'versium'). Only keys Versium actually returned are kept. */
+export function buildVersiumDemographicProfile(
+  results: Partial<Record<VersiumDemographicCategory, Record<string, unknown> | null>>,
+  capturedAt: string = new Date().toISOString(),
+): Record<string, any> {
+  const d = (results.demographic ?? {}) as Record<string, unknown>
+  const f = (results.financial ?? {}) as Record<string, unknown>
+  const pick = (r: Record<string, unknown>, keys: string[]): unknown => {
+    for (const k of keys) { const v = r[k]; if (v !== undefined && v !== null && !(typeof v === 'string' && v.trim() === '')) return v }
+    return undefined
+  }
+  const str = (v: unknown) => (typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : undefined)
+  const int = (v: unknown) => { const n = typeof v === 'number' ? v : Number(String(v ?? '').replace(/[^\d.]/g, '')); return Number.isFinite(n) && String(v ?? '').trim() !== '' ? Math.round(n) : undefined }
+  const money = (v: unknown) => { const n = typeof v === 'number' ? v : Number(String(v ?? '').replace(/[$,\s]/g, '')); return Number.isFinite(n) && n > 0 ? n : undefined }
+  const ownRaw = str(pick(d, ['Home Own/Rent', 'Home Own Rent', 'Homeowner Status', 'Home Owner', 'Homeowner']))?.toLowerCase()
+  const homeOwner = ownRaw ? (/rent/.test(ownRaw) ? 'renter' : /own|yes|^y$/.test(ownRaw) ? 'owner' : undefined) : undefined
+  const childrenRaw = pick(d, ['Number of Children', 'Children Count', 'Presence of Children'])
+  const children = typeof childrenRaw === 'string' && /^(yes|y)$/i.test(childrenRaw.trim()) ? 1
+    : typeof childrenRaw === 'string' && /^(no|n)$/i.test(childrenRaw.trim()) ? 0 : int(childrenRaw)
+  const educationRaw = str(pick(d, ['Education Level', 'Education']))
+  const profile: Record<string, any> = {
+    provider: 'versium',
+    captured_at: capturedAt,
+    age_range: str(pick(d, ['Age Range', 'Age'])),
+    gender: str(pick(d, ['Gender'])),
+    household_size: int(pick(d, ['Household Size', 'Number of People in Household', 'Number of Adults in Household'])),
+    children_count: children,
+    education: educationRaw ? [{ degree: educationRaw }] : undefined,
+    home_owner_status: homeOwner,
+    home_value: money(pick(d, ['Home Market Value', 'Home Value', 'Estimated Home Value'])),
+  }
+  for (const k of Object.keys(profile)) if (profile[k] === undefined) delete profile[k]
+  // The four household fields through THE ONE merge (marital status rides the basic output; income,
+  // net worth and the MODELED credit band ride the financial output).
+  return mergeHouseholdFinancials(profile, householdFinancialsFromVersium({ ...f, 'Marital Status': pick(d, ['Marital Status']) ?? f['Marital Status'] }), 'versium', { capturedAt })
+}
+
 /** PURE — the household financial values a profile already carries (top-level keys). */
 export function householdFinancialsFromProfile(profile: Record<string, unknown> | null | undefined): HouseholdFinancials {
   if (!profile) return {}

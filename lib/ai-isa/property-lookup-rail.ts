@@ -204,7 +204,7 @@ import type { BatchDataToolTier } from "@/lib/ai-isa/persona-tool-policy"
 import { BATCHDATA_SKIP_TRACE_COST_USD, BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD } from "@/lib/external/batchdata-client"
 import { PEOPLEDATA_MATCH_COST_USD, PEOPLEDATA_EMAIL_VALIDATE_COST_USD } from "@/lib/external/peopledata-client"
 import { MCP_TOOL_CALL_COST_USD } from "@/lib/external/batchdata-ai-tools"
-import { VERSIUM_MATCH_CREDIT_USD, type VersiumIdentity, type VersiumContactCall } from "@/lib/external/versium-client"
+import { VERSIUM_MATCH_CREDIT_USD, type VersiumIdentity, type VersiumContactCall, type VersiumDemographicCall } from "@/lib/external/versium-client"
 import { BATCHDATA_BILLED_PULL_OPT_IN } from "@/lib/buyer-search/listing-source-order"
 
 /**
@@ -417,23 +417,32 @@ export async function runVersiumContactLeg(
     systemSource: string
     metadata?: Record<string, unknown>
     attribution?: { leadId?: string | null; contactId?: string | null; rawRecordId?: string | null }
+    /**
+     * Wave 93 (lane 93B3): the person's CURRENT enrichment profile (or the demographic values already
+     * known). On a contact hit the leg buys only the Versium demographic categories this profile still
+     * lacks (enrichment-column-map.ts::versiumDemographicCategoriesNeeded) — a filled category is never
+     * re-bought. Omitted → treated as empty (every category is asked).
+     */
+    existingProfile?: Record<string, unknown> | null
   },
   deps: {
     call?: VersiumContactCall
+    demographicCall?: VersiumDemographicCall
     meter?: (input: { vendorName: string; usageType: string; cost: number; brokerageId?: string | null; systemSource?: string; metadata?: Record<string, unknown>; attribution?: { leadId?: string | null; contactId?: string | null; rawRecordId?: string | null } }) => Promise<unknown>
   } = {},
-): Promise<{ answered: boolean; emails: string[]; phones: string[]; cost: number; skipped: string | null }> {
+): Promise<{ answered: boolean; emails: string[]; phones: string[]; cost: number; skipped: string | null; demographicsProfile: Record<string, any> | null; demographicCategories: string[] }> {
   const outputs: Array<"email" | "phone"> = []
   if (!req.hasEmail) outputs.push("email")
   if (req.stage === "contact" && !req.hasPhone) outputs.push("phone")
-  if (outputs.length === 0) return { answered: false, emails: [], phones: [], cost: 0, skipped: "nothing_to_append" }
+  const none = { demographicsProfile: null, demographicCategories: [] as string[] }
+  if (outputs.length === 0) return { answered: false, emails: [], phones: [], cost: 0, skipped: "nothing_to_append", ...none }
   try {
-    const { appendVersiumContact } = await import("@/lib/external/versium-client")
+    const { appendVersiumContact, appendVersiumDemographics } = await import("@/lib/external/versium-client")
     const r = await appendVersiumContact(req.identity, outputs, { call: deps.call })
-    if (r.skipped) return { answered: false, emails: [], phones: [], cost: 0, skipped: r.skipped }
+    if (r.skipped) return { answered: false, emails: [], phones: [], cost: 0, skipped: r.skipped, ...none }
+    const meter = deps.meter
+      ?? ((m: import("@/lib/vendor-governance/meter-vendor").MeterVendorInput) => import("@/lib/vendor-governance/meter-vendor").then((v) => v.meterVendorSpend(m)))
     if (r.cost > 0) {
-      const meter = deps.meter
-        ?? ((m: import("@/lib/vendor-governance/meter-vendor").MeterVendorInput) => import("@/lib/vendor-governance/meter-vendor").then((v) => v.meterVendorSpend(m)))
       await Promise.resolve(meter({
         vendorName: "versium",
         usageType: "contact_append",
@@ -444,9 +453,48 @@ export async function runVersiumContactLeg(
         attribution: req.attribution,
       })).catch(() => null)
     }
-    return { answered: r.matched, emails: r.emails, phones: r.phones, cost: r.cost, skipped: r.error && !r.matched ? `error: ${r.error}` : null }
+    // ── Wave 93 (lane 93B3): DEMOGRAPHICS on a contact HIT ─────────────────────────────────────
+    // A Versium hit ends the chain without People Data Labs (93B2), which used to supply the
+    // demographic profile. The SAME step now buys Versium's demographic categories — only those the
+    // person's profile still lacks — and maps them onto the SAME enrichment_profile vocabulary PDL
+    // fills (enrichment-column-map.ts::buildVersiumDemographicProfile, provider 'versium'). Each
+    // category credit is booked as its own ledger row (usage `demographic_append_<category>`).
+    let demographicsProfile: Record<string, any> | null = null
+    let demographicCategories: string[] = []
+    let demographicCost = 0
+    if (r.matched) {
+      const { versiumDemographicCategoriesNeeded, buildVersiumDemographicProfile } = await import("@/lib/lead-pipeline/enrichment-column-map")
+      const wanted = versiumDemographicCategoriesNeeded(req.existingProfile ?? null)
+      if (wanted.length > 0) {
+        // Ask with the email Versium just found — the strongest key for the same person.
+        const id = { ...req.identity, email: req.identity.email || r.emails[0] || null }
+        const demo = await appendVersiumDemographics(id, wanted, { call: deps.demographicCall })
+        for (const [category, credits] of Object.entries(demo.creditsByCategory)) {
+          const cost = Math.round((credits ?? 0) * VERSIUM_MATCH_CREDIT_USD * 100) / 100
+          if (cost <= 0) continue
+          await Promise.resolve(meter({
+            vendorName: "versium",
+            usageType: `demographic_append_${category}`,
+            cost,
+            brokerageId: req.brokerageId,
+            systemSource: req.systemSource,
+            metadata: { ...(req.metadata ?? {}), answered_by: "versium", category, credits },
+            attribution: req.attribution,
+          })).catch(() => null)
+        }
+        demographicCost = demo.cost
+        demographicCategories = Object.keys(demo.results)
+        if (demographicCategories.length > 0) demographicsProfile = buildVersiumDemographicProfile(demo.results)
+      }
+    }
+    return {
+      answered: r.matched, emails: r.emails, phones: r.phones,
+      cost: Math.round((r.cost + demographicCost) * 100) / 100,
+      skipped: r.error && !r.matched ? `error: ${r.error}` : null,
+      demographicsProfile, demographicCategories,
+    }
   } catch (e) {
-    return { answered: false, emails: [], phones: [], cost: 0, skipped: `error: ${e instanceof Error ? e.message : String(e)}` }
+    return { answered: false, emails: [], phones: [], cost: 0, skipped: `error: ${e instanceof Error ? e.message : String(e)}`, ...none }
   }
 }
 

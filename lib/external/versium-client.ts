@@ -279,3 +279,69 @@ export async function appendVersiumContact(
   out.cost = out.credits > 0 ? Math.round(out.credits * VERSIUM_MATCH_CREDIT_USD * 100) / 100 : VERSIUM_NO_MATCH_COST_USD
   return out
 }
+
+// ─── DEMOGRAPHIC APPEND after a contact hit — wave 93, lane 93B3 ──────────────────────────────
+// The categories PDL used to supply, bought from Versium instead (one match credit per category
+// output, a no-match is free): GET /v2/demographic?output[]=demographic | output[]=financial. One
+// request per category (one value per gateway query key), so each category is billed — and booked by
+// the caller — on its own. The financial category is the SAME output appendVersiumFinancial buys for
+// the household-financials rung; this returns the RAW result so the caller maps every category through
+// enrichment-column-map.ts::buildVersiumDemographicProfile (one vocabulary).
+
+/** One Versium demographic request (injectable so the proof runs with zero network). */
+export type VersiumDemographicCall = (output: "demographic" | "financial", query: Record<string, string>) =>
+  Promise<{ ok: boolean; status: number | null; data: unknown; error?: string | null }>
+
+export interface VersiumDemographicsResult {
+  results: Partial<Record<"demographic" | "financial", Record<string, unknown>>>
+  /** Credits charged per category (the response's own match_counts; a result with no count is one). */
+  creditsByCategory: Partial<Record<"demographic" | "financial", number>>
+  cost: number
+  skipped?: "unconfigured" | "no_identity" | "nothing_to_buy"
+  error?: string
+}
+
+/** Versium demographic append for ONE person, for the given categories only. Never throws. */
+export async function appendVersiumDemographics(
+  id: VersiumIdentity,
+  categories: ReadonlyArray<"demographic" | "financial">,
+  deps: { call?: VersiumDemographicCall } = {},
+): Promise<VersiumDemographicsResult> {
+  const out: VersiumDemographicsResult = { results: {}, creditsByCategory: {}, cost: 0 }
+  if (categories.length === 0) return { ...out, skipped: "nothing_to_buy" }
+  const apiKey = process.env.VERSIUM_API_KEY
+  if (!apiKey && !deps.call) return { ...out, skipped: "unconfigured" }
+  const query = versiumQueryFor(id)
+  if (!query) return { ...out, skipped: "no_identity" }
+  const call: VersiumDemographicCall = deps.call ?? (async (output, q) => {
+    const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+    return callConnector<any>({
+      connector: "versium",
+      baseUrl: VERSIUM_API_BASE,
+      path: "demographic",
+      method: "GET",
+      query: { ...q, "output[]": output, cfg_maxrecs: "1", rcfg_max_time: VERSIUM_MAX_TIME_SECONDS },
+      auth: { style: "header", name: "x-versium-api-key", value: apiKey as string },
+      timeoutMs: 15_000,
+    })
+  })
+  let credits = 0
+  for (const category of categories) {
+    try {
+      const res = await call(category, query)
+      if (!res.ok) { out.error = `${versiumStatusProblem(res.status)}${res.error ? ` — ${res.error}` : ""}`; continue }
+      const v = (res.data && typeof res.data === "object" ? (res.data as Record<string, any>).versium : null) ?? {}
+      const first = Array.isArray(v.results) ? v.results.find((r: unknown) => !!r && typeof r === "object") : null
+      if (!first) continue
+      const counted = Number(v.match_counts?.[category])
+      const c = Number.isFinite(counted) && counted >= 0 ? counted : 1
+      out.results[category] = first as Record<string, unknown>
+      out.creditsByCategory[category] = c
+      credits += c
+    } catch (e) {
+      out.error = e instanceof Error ? e.message : String(e)
+    }
+  }
+  out.cost = credits > 0 ? Math.round(credits * VERSIUM_MATCH_CREDIT_USD * 100) / 100 : VERSIUM_NO_MATCH_COST_USD
+  return out
+}

@@ -559,6 +559,8 @@ export async function processEnrichmentQueue(
         via: 'v3' | 'reverse' | 'versium'
       } | null = null
       let batchDataFallbackCost = 0
+      // Wave 93 (93B3): the Versium demographic profile bought on a contact hit (PDL's vocabulary).
+      let versiumDemographics: Record<string, any> | null = null
 
       // ── Step 5-pre: VERSIUM FIRST (wave 93, lane 93B2 — owner cost decision: "Versium first for
       // owner/person email+phone append, People Data Labs only when Versium misses"). The route names
@@ -577,8 +579,11 @@ export async function processEnrichmentQueue(
           systemSource: 'skip_trace',
           metadata: { entityType, entityId, queueEntryId: entry.id, route: route.providers.join('>') },
           attribution: personAttribution(entityType, entityId),
+          // Wave 93 (93B3): the categories this person's profile already carries are not re-bought.
+          existingProfile: (entity.enrichment_profile as Record<string, unknown> | null) ?? null,
         })
         batchDataFallbackCost += v.cost
+        versiumDemographics = v.demographicsProfile
         if (v.answered) batchDataFallback = { phones: v.phones, emails: v.emails, via: 'versium' }
         else if (v.skipped) console.info('[enrichment-orchestrator] versium contact append skipped:', v.skipped)
       }
@@ -1196,7 +1201,22 @@ export async function processEnrichmentQueue(
             reversePerson && !(entity.first_name || entity.last_name) && reversePerson.firstName
               ? { first_name: reversePerson.firstName, ...(reversePerson.lastName && { last_name: reversePerson.lastName }) }
               : {}
+          // Wave 93 (lane 93B3): a VERSIUM hit carries the demographic profile PDL used to supply —
+          // merged onto the person's existing profile (filled categories were not re-bought) and
+          // written into the SAME columns the PDL path writes (one mapper per table, §6).
+          const demographicProfile = batchDataFallback.via === 'versium' && versiumDemographics
+            ? carryForwardHouseholdFinancials(
+                { ...((entity.enrichment_profile as Record<string, any> | null) ?? {}), ...versiumDemographics },
+                entity.enrichment_profile as Record<string, any> | null,
+              )
+            : null
+          const demographicColumns: Record<string, unknown> = demographicProfile
+            ? (entityType === 'lead'
+                ? { ...peopleDataProfileToLeadColumns(demographicProfile), enrichment_profile: demographicProfile }
+                : { ...peopleDataProfileToContactColumns(demographicProfile, { enrichedAt: new Date().toISOString() }), enrichment_profile: demographicProfile })
+            : {}
           const patch: Record<string, unknown> = {
+            ...demographicColumns,
             ...phonePatch,
             // The reverse leg was ASKED with the row's own email — never replace it with another.
             ...(batchDataFallback.emails[0] && !(batchDataFallback.via === 'reverse' && entity.email) && { email: batchDataFallback.emails[0] }),
@@ -1219,7 +1239,7 @@ export async function processEnrichmentQueue(
               enrichment_cost: cost + batchDataFallbackCost,
               enrichment_results: {
                 lane: contactLaneOf(batchDataFallback.via),
-                person_enrichment: 'batchdata_match',
+                person_enrichment: batchDataFallback.via === 'versium' ? (demographicProfile ? 'versium_demographics' : 'versium_match') : 'batchdata_match',
                 free_osint: free ? freeLaneProfileBlock(free) : null,
                 note: `${batchDataFallback.via === 'versium' ? 'Versium contact append' : `BatchData ${batchDataFallback.via === 'reverse' ? 'REVERSE' : 'V3'} skip trace`} (cheapest adequate provider, route ${route.providers.join('>')}) found a contact point; PeopleData ${askPeopleData ? 'demographics: no match ($0)' : 'not asked'}`,
               },

@@ -140,6 +140,82 @@ const px = stripped("lib/lead-pipeline/perplexity-enrichment.ts")
 check("the Perplexity gap-fill books its grounding search under the provider that served it",
   /meterVendorSpend\(\{\s*\n\s*vendorName: grounding\.provider,/.test(px) && /grounding\.provider !== "none" && grounding\.cost > 0/.test(px) && px.indexOf("meterVendorSpend(") < px.indexOf("generateObjectRouted("))
 
+// ── D7 ──────────────────────────────────────────────────────────────────────
+// Wave 93 (lane 93B3). Since 93B2 a Versium contact hit ends the chain without People Data Labs; the
+// SAME Versium step now buys the demographic categories PDL used to supply and writes them onto the
+// SAME profile vocabulary — so a Versium hit no longer loses the demographic profile.
+console.log("\n[D7 · Versium hit → demographics filled on PDL's vocabulary, PDL NOT called (93B3)]")
+{
+  const { runVersiumContactLeg } = await import("../lib/ai-isa/property-lookup-rail")
+  const { VERSIUM_DEMOGRAPHIC_CATEGORY_FIELDS, versiumDemographicCategoriesNeeded, peopleDataProfileToContactColumns } = await import("../lib/lead-pipeline/enrichment-column-map")
+  const { VERSIUM_MATCH_CREDIT_USD } = await import("../lib/external/versium-client")
+  const asked: string[] = []
+  const booked: any[] = []
+  let pdlCalls = 0
+  const contactHit = async (output: string) => { asked.push(`contact:${output}`); return { ok: true, status: 200, data: { versium: { match_counts: { [output]: 1 }, results: [{ "Email Address": "ana@example.com" }] } } } }
+  const demoCall = async (output: "demographic" | "financial") => {
+    asked.push(`demographic:${output}`)
+    const row = output === "demographic"
+      ? { "Age Range": "35-44", Gender: "Female", "Marital Status": "Married", "Household Size": "4", "Presence of Children": "Yes", "Education Level": "Bachelor Degree", "Home Own/Rent": "Home Owner", "Home Market Value": "$425,000" }
+      : { "Household Income": "$100,000 - $149,999", "Estimated Net Worth": "$250,000 - $499,999", "Credit Rating": "700-749" }
+    return { ok: true, status: 200, data: { versium: { match_counts: { [output]: 1 }, results: [row] } } }
+  }
+  const meter = async (row: any) => { booked.push(row) }
+  const id = { firstName: "Ana", lastName: "Owner", city: "Austin", state: "TX" }
+  const v = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: contactHit as any, demographicCall: demoCall, meter })
+  const p = v.demographicsProfile ?? {}
+  // What the drain / raw path would do next: PeopleData is asked only on a contact-point MISS.
+  if (!v.answered) pdlCalls++
+  check("EXECUTED: a Versium contact HIT buys BOTH demographic categories through the SAME step (email, then demographic + financial)",
+    v.answered && asked.join(",") === "contact:email,demographic:demographic,demographic:financial", asked.join(","))
+  check("EXECUTED: the demographics land on PDL's vocabulary — age_range, gender, marital_status, household_size, children_count, education, home_owner_status, home_value, household_income, net_worth, credit_score_range",
+    p.provider === "versium" && p.age_range === "35-44" && p.gender === "Female" && p.marital_status === "married" && p.household_size === 4
+      && p.children_count === 1 && p.home_owner_status === "owner" && p.home_value === 425000 && p.household_income === "$100,000 - $149,999"
+      && p.net_worth === "$250,000 - $499,999" && p.credit_score_range === "700-749" && p.household_financials?.sources?.credit_score_range === "versium"
+      && p.household_financials?.credit_basis === "modeled_marketing_estimate", JSON.stringify(p))
+  check("EXECUTED: every key it writes is a DEMOGRAPHIC_PROFILE_FIELDS key (no second vocabulary, §6) and the subset readers see it",
+    Object.keys(p).filter((k) => !["provider", "captured_at", "household_financials"].includes(k)).every((k) => (DEMOGRAPHIC_PROFILE_FIELDS as readonly string[]).includes(k))
+      && Object.keys(demographicsFromProfile(p)).length >= 10)
+  const cols = peopleDataProfileToContactColumns(p, {})
+  check("EXECUTED: the SAME contact-column mapper PDL uses writes it (age_range, gender, home_owner_status, marital_status, household_income, net_worth_range, credit_score_range) and stamps enrichment_source 'versium'",
+    cols.age_range === "35-44" && cols.home_owner_status === "owner" && cols.marital_status === "married" && cols.net_worth_range === "$250,000 - $499,999"
+      && cols.credit_score_range === "700-749" && cols.enrichment_source === "versium" && cohortFromEnrichment(p as any) !== "unknown", JSON.stringify(cols))
+  check("EXECUTED: each category credit is its OWN ledger row (contact_append, demographic_append_demographic, demographic_append_financial), vendor versium",
+    booked.map((b) => b.usageType).join(",") === "contact_append,demographic_append_demographic,demographic_append_financial"
+      && booked.every((b) => b.vendorName === "versium" && b.cost === VERSIUM_MATCH_CREDIT_USD) && v.cost === Math.round(3 * VERSIUM_MATCH_CREDIT_USD * 100) / 100)
+  check("POSITIVE CONTROL: PeopleData is NOT called after the Versium hit (0 calls), and the hit still carries a demographic profile", pdlCalls === 0 && v.demographicsProfile !== null)
+
+  // Skip categories already filled.
+  asked.length = 0; booked.length = 0
+  const filled = { household_income: "$75,000", net_worth: "$100,000", credit_score_range: "650-699" }
+  const v2 = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof", existingProfile: filled }, { call: contactHit as any, demographicCall: demoCall, meter })
+  check("EXECUTED: a category whose fields are ALREADY filled is not re-bought (financial skipped; only the basic demographic credit is booked)",
+    asked.join(",") === "contact:email,demographic:demographic" && booked.filter((b) => b.usageType.startsWith("demographic_append_")).length === 1
+      && versiumDemographicCategoriesNeeded({ ...filled, ...Object.fromEntries(VERSIUM_DEMOGRAPHIC_CATEGORY_FIELDS.demographic.map((k) => [k, "x"])) }).length === 0 && v2.answered)
+
+  // A miss buys no demographics (the chain continues to BatchData → PeopleData).
+  asked.length = 0; booked.length = 0
+  const miss = async (output: string) => { asked.push(`contact:${output}`); return { ok: true, status: 200, data: { versium: { match_counts: {}, results: [] } } } }
+  const v3 = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: miss as any, demographicCall: demoCall, meter })
+  check("EXECUTED: a Versium MISS buys no demographics ($0, no ledger row) — PeopleData's profile leg follows downstream as before",
+    !v3.answered && v3.demographicsProfile === null && asked.join(",") === "contact:email" && booked.length === 0)
+  // POSITIVE CONTROL: the 93B2 shape (hit, no demographic step) leaves the profile empty — the loss this fixes.
+  const v4 = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof", existingProfile: Object.fromEntries([...VERSIUM_DEMOGRAPHIC_CATEGORY_FIELDS.demographic, ...VERSIUM_DEMOGRAPHIC_CATEGORY_FIELDS.financial].map((k) => [k, "known"])) }, { call: contactHit as any, demographicCall: demoCall, meter })
+  check("POSITIVE CONTROL: with nothing left to buy the step returns NO profile — so the D7 fills above came from the Versium demographic step, not from the contact hit",
+    v4.answered && v4.demographicsProfile === null)
+
+  // Wiring: both paths write the Versium profile into the SAME places the PDL profile goes.
+  const orchD7 = stripped("lib/lead-pipeline/enrichment-orchestrator.ts")
+  check("the drain passes the person's existing profile, keeps the Versium profile, and writes it through the SAME lead/contact mappers + enrichment_profile",
+    /existingProfile: \(entity\.enrichment_profile as Record<string, unknown> \| null\) \?\? null/.test(orchD7) && /versiumDemographics = v\.demographicsProfile/.test(orchD7)
+      && /peopleDataProfileToLeadColumns\(demographicProfile\), enrichment_profile: demographicProfile/.test(orchD7)
+      && /peopleDataProfileToContactColumns\(demographicProfile, \{ enrichedAt: new Date\(\)\.toISOString\(\) \}\), enrichment_profile: demographicProfile/.test(orchD7))
+  const ppD7 = stripped("lib/lead-pipeline/pipeline-processor.ts")
+  check("the raw path carries the Versium profile as peopleDataProfile (the field the lead insert + raw row read) and skips categories BatchData already sold",
+    /\.\.\.\(versium\.demographicsProfile \? \{ peopleDataProfile: versium\.demographicsProfile \} : \{\}\)/.test(ppD7)
+      && /knownDemographics: householdFinancialsFromBatchData\(rec\.raw_data\)/.test(ppD7) && /existingProfile: fields\.knownDemographics \?\? null/.test(ppD7))
+}
+
 // ── cost ────────────────────────────────────────────────────────────────────
 console.log("\n[cost — derived from the constants, platform-paid]")
 const perPerson = BATCHDATA_SKIP_TRACE_COST_USD + PEOPLEDATA_MATCH_COST_USD
