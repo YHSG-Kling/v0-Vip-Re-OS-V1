@@ -286,10 +286,17 @@ console.log("\n[Layer 5 · voice ISA — native multi-step tool-calling, bounded
   const { parseTurnPlan, VOICE_TOOL_ALLOWLIST } = await import("../lib/voice/reception-brain")
   const { planTurnWithPrompt, VOICE_TOOL_ROUND_MAX_STEPS, VOICE_TOOL_ROUND_DEADLINE_MS } = await import("../lib/voice/twilio-voice")
 
-  check("VOICE_TOOL_ALLOWLIST is the closed, property-only subset (no skip-trace/dnc/tcpa on the voice line)",
-    (VOICE_TOOL_ALLOWLIST as readonly string[]).length === 4 &&
-    !(VOICE_TOOL_ALLOWLIST as readonly string[]).includes("skip_trace_property") &&
-    !(VOICE_TOOL_ALLOWLIST as readonly string[]).includes("check_dnc_status"))
+  // Re-anchored wave 92 (lane 92B2) to the owner's rule: "tools for the ai agents should not be
+  // using batchdata tools if there are less expensive tools to look up properties". The four names
+  // the allowlist carried were all BatchData PROPERTY-LOOKUP tools; the call's property lookup is
+  // the free bundle's lookup_property_facts (the rail → RentCast). No BatchData tool rides a call.
+  const { isBatchDataPropertyLookupTool } = await import("../lib/ai-isa/persona-tool-policy")
+  check("VOICE_TOOL_ALLOWLIST admits NO BatchData tool (no property lookup on BatchData, no skip-trace/dnc/tcpa on the voice line)",
+    (VOICE_TOOL_ALLOWLIST as readonly string[]).length === 0)
+  check("POSITIVE CONTROL: the ONE predicate flags every name the old voice allowlist carried (lookup_property, comparable_property_preview/count, verify_address) and the staff catalogue's batchdata_ spelling",
+    ["lookup_property", "comparable_property_preview", "comparable_property_count", "verify_address", "batchdata_lookup_property", "batchdata_comparable_property_page", "batchdata_geocode_address"].every(isBatchDataPropertyLookupTool))
+  check("…and does NOT flag BatchData LEAD work (skip trace, DNC/TCPA, phone verify, motivated-list search, buy box) — the rule discriminates",
+    !["skip_trace_property", "check_dnc_status", "check_tcpa_status", "verify_phone", "search_properties_preview", "batchdata_search_properties_page", "investor_buybox_page"].some(isBatchDataPropertyLookupTool))
   check("VOICE_TOOL_ROUND_MAX_STEPS obeys the turn-engine's ≤3 design ceiling",
     VOICE_TOOL_ROUND_MAX_STEPS >= 1 && VOICE_TOOL_ROUND_MAX_STEPS <= 3)
   check("VOICE_TOOL_ROUND_DEADLINE_MS is a positive, finite ms budget (env-tunable, default 4000)",
@@ -324,10 +331,10 @@ console.log("\n[Layer 5 · voice ISA — native multi-step tool-calling, bounded
         if (tools?.lookup_property) await tools.lookup_property.execute({ address: "123 Main St", city: null, state: null, zip: null }, { toolCallId: "t1", messages: [] })
         return { text: JSON.stringify({ say: "It's a 3-bed built in 1998.", action: "continue" }) }
       },
+      // ADVERSARIAL REGISTRY (wave 92): a BatchData registry that DOES grant a property lookup
+      // (lookup_property) and a lead/compliance tool (verify_phone). Neither may reach a call.
       batchDataIsaTools: async () => ({
         lookup_property: { execute: async (args: any) => { executedArgs = args; return { success: true, data: { address: args.address } } } },
-        // NOT in VOICE_TOOL_ALLOWLIST — proves the voice line's property-only
-        // subset filter applies even when a persona's fuller registry grants it.
         verify_phone: { execute: async () => ({ success: true }) },
       }),
     },
@@ -344,15 +351,16 @@ console.log("\n[Layer 5 · voice ISA — native multi-step tool-calling, bounded
   // Lane 79B — lookup_property_facts (the cheapest-first property rail's
   // tool, lib/ai-isa/property-lookup-tools.ts) rides the no-identity bundle
   // too, so it is FOUR free tools + the one allowlisted (injected) BatchData tool.
-  check("native round: VOICE_TOOL_ALLOWLIST subset (lookup_property) reaches `tools:` ALONGSIDE the free capture bundle's unconditional tools (get_my_context, search_our_listings, get_listing_details, lookup_property_facts) — verify_phone (non-allowlisted BatchData) is still filtered out",
-    seenToolNames.includes("lookup_property") && seenToolNames.includes("get_my_context") && seenToolNames.includes("search_our_listings") && seenToolNames.includes("get_listing_details")
-    && seenToolNames.includes("lookup_property_facts") && !seenToolNames.includes("verify_phone") && seenToolNames.length === 5)
-  check("native round: free (rank 0) tools sort before the paid BatchData tool — cost-ranked order (CLAUDE.md §6)",
-    seenToolNames.indexOf("get_my_context") < seenToolNames.indexOf("lookup_property")
-    && seenToolNames.indexOf("search_our_listings") < seenToolNames.indexOf("lookup_property"))
+  // Re-anchored wave 92 (lane 92B2): the property lookup on a call is lookup_property_facts (the
+  // rail → RentCast); the adversarial registry's BatchData lookup_property and verify_phone are
+  // both filtered out, so the round carries exactly the four free unconditional tools.
+  check("native round: the free bundle's unconditional tools (get_my_context, search_our_listings, get_listing_details, lookup_property_facts) reach `tools:` — and NO BatchData tool does, even when the registry grants a property lookup",
+    seenToolNames.includes("get_my_context") && seenToolNames.includes("search_our_listings") && seenToolNames.includes("get_listing_details")
+    && seenToolNames.includes("lookup_property_facts") && !seenToolNames.includes("lookup_property") && !seenToolNames.includes("verify_phone") && seenToolNames.length === 4,
+    seenToolNames.join(","))
+  check("native round: the BatchData property lookup was never executable on the call (the model could not reach it)", executedArgs === null)
   check("native round: maxSteps is the bounded ceiling, not an unbounded loop", seenMaxSteps === VOICE_TOOL_ROUND_MAX_STEPS)
   check("native round: a real per-turn deadline (AbortSignal) is passed through to generateTextRouted", seenAbortSignal instanceof AbortSignal)
-  check("native round: the offered tool's execute() actually ran with the model's args", executedArgs?.address === "123 Main St")
   check("native round: the final say comes from the ONE generateTextRouted call — the SDK folds the tool result in itself, never a second manual re-prompt",
     finalPlan.say === "It's a 3-bed built in 1998.")
 
@@ -498,6 +506,72 @@ check(".env.example's documented skip-trace price agrees with the code constant 
 const providersDocSrc = readFileSync("docs/real-estate-data-providers-2026-09.md", "utf8")
 check("docs/real-estate-data-providers-2026-09.md records the reconciliation (not still flagging an unreconciled discrepancy)",
   providersDocSrc.includes("RECONCILED lane 72B") && providersDocSrc.includes("BATCHDATA_SKIP_TRACE_COST_USD"))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYER 9 — WAVE 92 (lane 92B2): NO PROPERTY-LOOKUP TOOL BACKED BY BATCHDATA ON ANY AGENT SURFACE.
+// Owner: "tools for the ai agents should not be using batchdata tools if there are less expensive
+// tools to look up properties." The staff copilot's BatchData MCP catalogue no longer BUILDS a
+// property lookup; the tier filter cuts one at EVERY tier ("full" included); the staff copilot's
+// property lookup is lookup_property_facts on the ONE RentCast client. The population of tool
+// registries that reach BatchData is DERIVED from stripped source (a file that defines AI-SDK
+// tools AND calls a BatchData transport), with a positive control.
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Layer 9 · no BatchData-backed property-lookup tool on any agent surface — derived registries, executed filter]")
+{
+  const { isBatchDataPropertyLookupTool, filterToolsByTier } = await import("../lib/ai-isa/persona-tool-policy")
+  const catalogue = { batchdata_lookup_property: 1, batchdata_comparable_property_preview: 2, batchdata_verify_address: 3, batchdata_skip_trace_property: 4, batchdata_check_dnc_status: 5, batchdata_search_properties_page: 6 }
+  const full = filterToolsByTier(catalogue, "full")
+  check("EXECUTED: at the \"full\" tier every BatchData PROPERTY-LOOKUP tool is cut, every LEAD tool survives",
+    !("batchdata_lookup_property" in full) && !("batchdata_comparable_property_preview" in full) && !("batchdata_verify_address" in full)
+    && "batchdata_skip_trace_property" in full && "batchdata_check_dnc_status" in full && "batchdata_search_properties_page" in full, Object.keys(full).join(","))
+  const lean = filterToolsByTier({ lookup_property: 1, comparable_property_count: 2, search_properties_preview: 3, check_tcpa_status: 4 }, "lean")
+  check("EXECUTED: at the \"lean\" tier the property lookups are cut too, while lead previews/counts and compliance checks keep their tier rule",
+    !("lookup_property" in lean) && !("comparable_property_count" in lean) && "search_properties_preview" in lean && "check_tcpa_status" in lean, Object.keys(lean).join(","))
+
+  const bdTools = stripped("lib/external/batchdata-ai-tools.ts")
+  const guardAt = bdTools.indexOf("if (isBatchDataPropertyLookupTool(t.name)) continue")
+  const buildAt = bdTools.indexOf("registry[`batchdata_${t.name}`] = tool(")
+  check("the staff copilot catalogue (batchDataMcpTools) skips a property lookup BEFORE it builds the tool",
+    guardAt > -1 && buildAt > guardAt)
+
+  // DERIVED POPULATION — every file that defines AI-SDK tools AND reaches a BatchData transport.
+  const BD_CALL = /callBatchDataMcp(?:<[^(]*?>)?\(|batchDataPreferMcp(?:<[^(]*?>)?\(|checkDncStatus\(|checkTcpaStatus\(|verifyPhone\(|skipTraceBatchDataV3Batch\(|reverseSkipTraceBatchData\(/
+  const walk = (dir: string, out: string[] = []): string[] => {
+    for (const e of readdirSync(dir)) {
+      const p = join(dir, e)
+      if (e === "node_modules" || e.startsWith(".")) continue
+      if (statSync(p).isDirectory()) walk(p, out)
+      else if (/\.(ts|tsx)$/.test(e)) out.push(p)
+    }
+    return out
+  }
+  const registries = [...walk("lib"), ...walk("app")].filter((p) => { const src = stripped(p); return /\btool\(\{/.test(src) && BD_CALL.test(src) })
+  const offenders: string[] = []
+  for (const p of registries) {
+    const src = stripped(p)
+    const literalKeys = [...src.matchAll(/(\w+)\s*:\s*tool\(\{/g)].map((m) => m[1])
+    const bad = literalKeys.filter(isBatchDataPropertyLookupTool)
+    const dynamic = /registry\[`batchdata_\$\{/.test(src)
+    if (bad.length) offenders.push(`${p}: ${bad.join(",")}`)
+    if (dynamic && !/isBatchDataPropertyLookupTool\(/.test(src)) offenders.push(`${p}: dynamic BatchData catalogue without the property-lookup cut`)
+  }
+  console.log(`  denominator: ${registries.length} tool registries reach a BatchData transport: ${registries.join(", ")}`)
+  check(`no agent tool registry builds a BatchData-backed property lookup (${registries.length - offenders.length}/${registries.length})`, registries.length >= 2 && offenders.length === 0, offenders.join("; "))
+  {
+    const fx = `const t = { lookup_property: tool({ execute: async () => callBatchDataMcp("lookup_property", {}) }) }`
+    const keys = [...fx.matchAll(/(\w+)\s*:\s*tool\(\{/g)].map((m) => m[1])
+    check("POSITIVE CONTROL: a fixture registry building lookup_property on BatchData IS flagged by the same predicates",
+      BD_CALL.test(fx) && keys.some(isBatchDataPropertyLookupTool))
+  }
+
+  const lpt = stripped("lib/ai-isa/property-lookup-tools.ts")
+  const staff = lpt.slice(lpt.indexOf("function buildStaffLookupPropertyFactsTool("))
+  check("the staff copilot's property lookup (lookup_property_facts, staff) rides the ONE RentCast client — value + comparables and the full record — and reaches no BatchData",
+    /getRentcastAvmAndComps\(/.test(staff) && /getRentcastPropertyDetail\(/.test(staff) && /lookupPropertyForConversation\(/.test(staff)
+    && !/@\/lib\/external\/batchdata-|callBatchDataMcp\(|batchDataPreferMcp\(/.test(lpt))
+  check("a CUSTOMER surface never gets the value/record flags (the staff builder is reached only for audience \"staff\")",
+    /if \(audience === "staff"\) return buildStaffLookupPropertyFactsTool\(/.test(lpt))
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n" + "─".repeat(60))

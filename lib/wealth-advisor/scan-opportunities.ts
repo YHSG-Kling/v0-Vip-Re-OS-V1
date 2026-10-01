@@ -11,10 +11,13 @@
  *                                 (first time crossing $100k, $250k, $500k, $1M)
  *
  * VALUE FRESHNESS:
- *   - getCurrentAvm() uses Perplexity AI-CMA as Tier 1 (~$0.01 per call)
+ *   - Wave 92 (lane 92B2, owner: "use rentcast as much as possible regarding … home values"):
+ *     getCurrentAvm() asks RENTCAST FIRST for the brokerage this scan runs for (one request per
+ *     home per 14 days at most — the contact's own 14-day window below AND RentCast's 14-day fact
+ *     cache), with Perplexity AI-CMA (~$0.01) as the fallback when RentCast is not eligible
+ *     (platform key unset / vendor budget paused) or has no confident value.
  *   - Cache window: 14 days. Stale values auto-refresh every cron run.
- *   - No daily budget cap on refreshes — Perplexity cost is small enough that
- *     keeping data current beats budgeting against it.
+ *   - The vendor budget gate is the cap: over budget, the scan falls back to Perplexity.
  *   - Premium paid providers only fire via runAiCma({ mode: 'premium' }) on
  *     agent click, never from this background scan.
  *
@@ -321,8 +324,8 @@ async function detectOpportunities(input: {
   let refreshedAvm = false
   let avm = contact.home_value_estimate ?? null
 
-  // Refresh AVM if missing or stale (>14 days). Free Perplexity AI-CMA, no
-  // budget cap — keeping the value current beats stale-data risk.
+  // Refresh AVM if missing or stale (>14 days). RentCast first (wave 92), Perplexity
+  // AI-CMA as the fallback — keeping the value current beats stale-data risk.
   const needsRefresh =
     !avm ||
     !contact.last_enriched_at ||
@@ -337,6 +340,9 @@ async function detectOpportunities(input: {
       cachedValue: avm,
       cachedAt: contact.last_enriched_at,
       cacheStaleAfterDays: 14,
+      // Wave 92 (lane 92B2): the tenant this scan runs for — RentCast is metered and gated per
+      // tenant, so without it the chain can never reach its first tier.
+      brokerageId: brokerageId ?? null,
     })
     if (fresh && fresh.value > 0) {
       avm = fresh.value

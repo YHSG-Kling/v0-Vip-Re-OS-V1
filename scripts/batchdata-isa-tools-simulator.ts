@@ -315,19 +315,31 @@ let sphereToolsEligible: Record<string, unknown> = {}
   ok(isToolAllowedForTier("search_properties_page", "full"), "isToolAllowedForTier: full allows a _page tool")
   ok(!isToolAllowedForTier("search_properties_page", "lean"), "isToolAllowedForTier: lean CUTS a _page tool")
   ok(isToolAllowedForTier("search_properties_preview", "lean"), "isToolAllowedForTier: lean KEEPS a _preview tool")
-  ok(isToolAllowedForTier("comparable_property_count", "lean"), "isToolAllowedForTier: lean KEEPS a _count tool")
-  ok(isToolAllowedForTier("lookup_property", "lean"), "isToolAllowedForTier: lean KEEPS lookup_property")
-  ok(isToolAllowedForTier("verify_address", "lean"), "isToolAllowedForTier: lean KEEPS a verify-prefixed tool")
+  // Re-anchored wave 92 (lane 92B2) to the owner's rule: "tools for the ai agents should not be
+  // using batchdata tools if there are less expensive tools to look up properties". A BatchData
+  // PROPERTY-LOOKUP tool (lookup_property, comparable_property_*, verify_address, geocode_*) is cut
+  // at EVERY tier, "full" included — the survivor is lookup_property_facts on the RentCast client.
+  // LEAD work keeps its tier rule (positive controls below).
+  ok(isToolAllowedForTier("search_properties_count", "lean"), "isToolAllowedForTier: lean KEEPS a LEAD _count tool (motivated-list search)")
+  ok(!isToolAllowedForTier("comparable_property_count", "lean") && !isToolAllowedForTier("comparable_property_count", "full"),
+     "isToolAllowedForTier: a BatchData PROPERTY _count (comparable_property_count) is cut at lean AND full")
+  ok(!isToolAllowedForTier("lookup_property", "lean") && !isToolAllowedForTier("lookup_property", "full") && !isToolAllowedForTier("batchdata_lookup_property", "full"),
+     "isToolAllowedForTier: lookup_property (bare or batchdata_-keyed) is cut at every tier")
+  ok(!isToolAllowedForTier("verify_address", "lean") && isToolAllowedForTier("verify_phone", "lean"),
+     "isToolAllowedForTier: verify_address (a property lookup) is cut; verify_phone (compliance) keeps the verify-prefixed lean rule — the rule discriminates")
   ok(isToolAllowedForTier("check_dnc_status", "lean") && isToolAllowedForTier("check_tcpa_status", "lean"),
      "isToolAllowedForTier: lean KEEPS check_dnc_status/check_tcpa_status")
-  ok(!isToolAllowedForTier("skip_trace_property", "lean"), "isToolAllowedForTier: lean CUTS a skip-trace-shaped tool name (generic over any registry, incl. the staff copilot's)")
+  ok(!isToolAllowedForTier("skip_trace_property", "lean") && isToolAllowedForTier("skip_trace_property", "full"),
+     "isToolAllowedForTier: a skip-trace tool keeps its tier rule (cut at lean, allowed at full) — LEAD work is not swept up by the property rule")
   ok(!isToolAllowedForTier("anything", "off"), "isToolAllowedForTier: off allows nothing")
 
   const sampleRegistry = { lookup_property: 1, search_properties_page: 2, comparable_property_preview: 3, skip_trace_property: 4 }
-  ok(Object.keys(filterToolsByTier(sampleRegistry, "full")).length === 4, "filterToolsByTier: full is a no-op")
+  const fulled = filterToolsByTier(sampleRegistry, "full")
+  ok(Object.keys(fulled).length === 2 && "search_properties_page" in fulled && "skip_trace_property" in fulled,
+     "filterToolsByTier: full keeps every LEAD tool and cuts only the BatchData property lookups")
   const leaned = filterToolsByTier(sampleRegistry, "lean")
-  ok("lookup_property" in leaned && "comparable_property_preview" in leaned && !("search_properties_page" in leaned) && !("skip_trace_property" in leaned),
-     "filterToolsByTier: lean keeps lookup_property/comparable_property_preview, cuts search_properties_page/skip_trace_property")
+  ok(!("lookup_property" in leaned) && !("comparable_property_preview" in leaned) && !("search_properties_page" in leaned) && !("skip_trace_property" in leaned),
+     "filterToolsByTier: lean cuts the property lookups AND the _page / skip-trace pulls")
   ok(Object.keys(filterToolsByTier(sampleRegistry, "off")).length === 0, "filterToolsByTier: off returns {}")
 
   // evaluateEffectiveBatchDataTier — the PURE auto-downgrade rule

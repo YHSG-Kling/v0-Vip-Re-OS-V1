@@ -26,8 +26,9 @@
  * (connector-gateway, X-Api-Key, per-call metering), (BatchData leg retired wave 92),
  * Zillow-via-ZenRows via lib/external/
  * zenrows-client, Perplexity via the AI gateway. Each is creds-gated (no key →
- * null → next provider) and the paid tier sits behind usePaidProviders + the
- * vendor budget gate. The only remaining stub is the OSINT direct-AVM path
+ * null → next provider). Wave 92 (lane 92B2): RentCast is the FIRST tier for every call
+ * that names a tenant (key + vendor budget gated); the premium Zillow scrape still sits
+ * behind usePaidProviders + the vendor budget gate. The only remaining stub is the OSINT direct-AVM path
  * (public records give life events, not values — deliberate).
  */
 
@@ -68,10 +69,9 @@ interface AvmRequest {
   /** Allow caller to skip certain providers (e.g., for testing) */
   skipProviders?: AvmSource[]
   /**
-   * When true, fall through to PAID providers (RentCast — BatchData retired wave 92 —
-   * ZenRows/Zillow) as Tier 2/3 if Perplexity returns nothing confident.
-   * Default false — agents pay only when they explicitly request a Premium
-   * CMA before a listing appointment via runAiCma({ mode: 'premium' }).
+   * When true, also try the PREMIUM paid tier (ZenRows/Zillow) after the free fallbacks. Wave 92
+   * (lane 92B2): RentCast no longer waits for this flag — it is the FIRST tier for every call that
+   * names a tenant (budget- and key-gated); this flag now governs only the premium scrape.
    */
   usePaidProviders?: boolean
 }
@@ -99,79 +99,67 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
     }
   }
 
-  // ── 1. Perplexity Sonar (FREE Tier 1, primary) ─────────────────────────
-  // ~$0.01/call via web-search-grounded AI. No rate limits, always-current.
-  // This is the default value source — daily background work, dashboard
-  // reads, wealth/PLS scans all flow through here when cache is stale.
+  // ── 1. RENTCAST FIRST (wave 92, lane 92B2) ─────────────────────────────
+  // Owner, verbatim (2026-10-01): "use rentcast as much as possible regarding property listings,
+  // market, comparable, home values". A home value is RentCast's FIRST — for the daily background
+  // scans too (lib/wealth-advisor/scan-opportunities.ts), not only an agent's premium CMA. What
+  // bounds the cost is the 14-day freshness window twice over: the caller's own cachedValue
+  // short-circuit above AND RentCast's own fact cache (lib/property/rentcast.ts
+  // RENTCAST_CACHE_TTL_DAYS.avm = 14), so one home costs at most one request per 14 days.
+  // Perplexity Sonar stays as the FALLBACK when RentCast is not eligible or has no confident value.
+  //
+  // THE ONE ELIGIBILITY GATE decides it (lib/property/rentcast-eligibility.ts, readKind
+  // "property_data" — a home value has no IDX substitute, so a tenant's IDX feed never blocks it;
+  // the platform key and the vendor budget still do). Over budget → RentCast AND the premium paid
+  // tier are skipped; the free fallbacks below still answer. A tenant-less call never reaches
+  // RentCast (an unattributable paid call is spend nobody can see).
+  let rentcastEligible = false
+  let overBudget = false
+  if (req.brokerageId && !skip.has("rentcast")) {
+    const { resolveRentcastEligibility, rentcastBudgetBlocked } = await import("@/lib/property/rentcast-eligibility")
+    const eligibility = await resolveRentcastEligibility({ brokerageId: req.brokerageId, readKind: "property_data" })
+    rentcastEligible = eligibility.eligible
+    overBudget = eligibility.budget.checked
+      ? eligibility.reason === "budget_exhausted"
+      : (await rentcastBudgetBlocked(req.brokerageId)).blocked
+  }
+  const rentcastFirst = rentcastEligible && !overBudget
+  if (rentcastFirst) {
+    if (!skip.has("rentcast") && req.brokerageId && rentcastEligible) {
+      const rc = await tryRentcast(req)
+      if (rc && rc.confidence >= 0.6) return rc
+    }
+  }
+
+  // ── 2. Perplexity Sonar (FALLBACK) ──────────────────────────────────────
+  // ~$0.01/call via web-search-grounded AI. Reached when RentCast is not eligible for this tenant
+  // (no platform key, budget paused, no tenant on the call) or answered without a confident value.
   if (!skip.has("perplexity")) {
     const px = await tryPerplexitySonar(req)
     if (px && px.confidence >= 0.5) return px
   }
 
-  // ── 2. OSINT public records (free fallback) ────────────────────────────
+  // ── 3. OSINT public records (free fallback) ────────────────────────────
   if (!skip.has("osint")) {
     const os = await tryOsintPublicRecords(req)
     if (os && os.confidence >= 0.45) return os
   }
 
-  // ── 3. Paid providers — agent-triggered Premium CMA only ───────────────
-  // Caller must pass usePaidProviders=true to opt into these. The standard
-  // entry point for that is runAiCma({ mode: 'premium' }) which sets the
-  // flag explicitly. Daily background work never sets it.
-  //
-  // DOWNGRADE LADDER: if the brokerage is over its monthly vendor budget, the paid
-  // tier is skipped — the caller still gets the free Perplexity/OSINT AVM computed
-  // above. The cap throttles cost, not capability.
-  //
-  // THE RENTCAST HALF NOW GOES THROUGH THE ONE ELIGIBILITY GATE. This file had
-  // BUDGET gating and no IDX gating: it consulted checkVendorBudget and never
-  // asked whether the tenant had connected their own IDX Broker feed, which the
-  // owner ruling makes decisive ("rentcast is platform owned and should not be
-  // used if the tenant adds their idx broker credentials"). It asks the resolver
-  // in lib/property/rentcast-eligibility.ts instead, so the AVM cascade, the CMA
-  // comp provider and the listing search cannot hold three different opinions.
-  //
-  // THE CASCADE'S FALL-THROUGH IS PRESERVED, deliberately and in two separate
-  // ways, because "RentCast is ineligible" must mean "try the next provider" and
-  // never "fail the AVM":
-  //   · RentCast ineligible skips ONLY the RentCast adapter. BatchData and
-  //     ZenRows/Zillow still run, and the free Perplexity/OSINT tiers above have
-  //     already run regardless.
-  //   · The BUDGET verdict still governs the WHOLE paid tier exactly as before —
-  //     over budget skips all three paid providers, not just RentCast. The gate
-  //     short-circuits (a tenant with their own IDX feed never reaches the budget
-  //     question), so when it stopped early the budget is asked directly rather
-  //     than inferred from a reason that was never evaluated.
-  let paidAllowed = !!req.usePaidProviders
-  let rentcastEligible = false
-  if (paidAllowed && req.brokerageId) {
-    const { resolveRentcastEligibility, rentcastBudgetBlocked } = await import("@/lib/property/rentcast-eligibility")
-    // Wave 92 (lane 92B): a home value is a PROPERTY-DATA read — no IDX substitute exists, so the
-    // tenant-IDX rule no longer blocks it; key + budget still apply.
-    const eligibility = await resolveRentcastEligibility({ brokerageId: req.brokerageId, readKind: "property_data" })
-    rentcastEligible = eligibility.eligible
-    const overBudget = eligibility.budget.checked
-      ? eligibility.reason === "budget_exhausted"
-      : (await rentcastBudgetBlocked(req.brokerageId)).blocked
-    if (overBudget) paidAllowed = false
-  }
-  if (paidAllowed) {
-    if (!skip.has("rentcast") && req.brokerageId && rentcastEligible) {
-      const rc = await tryRentcast(req)
-      if (rc && rc.confidence >= 0.6) return rc
-    }
-    // TOMBSTONE (wave 92, lane 92B, §1.3): the BatchData AVM leg (tryBatchData →
-    // enrichPropertyWithBatchData, gated as purpose "valuation") stood here. A home value is a
-    // RentCast read — survivor: the tryRentcast leg above. "valuation" left
-    // BATCHDATA_ELIGIBLE_PURPOSES (lib/ai-isa/property-lookup-rail.ts), so no valuation lane can
-    // reach BatchData again.
+  // ── 4. PREMIUM paid tier — agent-triggered only (usePaidProviders) ──────
+  // TOMBSTONE (wave 92, lane 92B, §1.3): the BatchData AVM leg (tryBatchData →
+  // enrichPropertyWithBatchData, gated as purpose "valuation") stood in this tier. A home value is
+  // a RentCast read — survivor: the RentCast-first tier above. "valuation" left
+  // BATCHDATA_ELIGIBLE_PURPOSES (lib/ai-isa/property-lookup-rail.ts), so no valuation lane can reach
+  // BatchData again. What remains here is the Zillow scrape, still premium-only and still skipped
+  // over budget (the budget governs the whole paid tier, as before).
+  if (req.usePaidProviders && !overBudget) {
     if (!skip.has("zenrows_zillow") && process.env.ZENROWS_API_KEY) {
       const zen = await tryZillowViaZenRows(req)
       if (zen && zen.confidence >= 0.55) return zen
     }
   }
 
-  // ── 4. Market appreciation fallback ────────────────────────────────────
+  // ── 5. Market appreciation fallback ────────────────────────────────────
   // Take the cached value (even if stale) and apply zip-level appreciation.
   if (req.cachedValue && req.zipCode) {
     const adjusted = await marketAppreciationFallback(req.cachedValue, req.zipCode, req.cachedAt)

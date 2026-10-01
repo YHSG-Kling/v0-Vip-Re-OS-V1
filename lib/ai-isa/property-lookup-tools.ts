@@ -145,10 +145,9 @@ export function buildLookupPropertyFactsTool(
   opts: { audience?: "customer" | "staff"; userId?: string | null } = {},
 ) {
   const audience = opts.audience ?? "customer"
+  if (audience === "staff") return buildStaffLookupPropertyFactsTool(ctx, opts.userId ?? null)
   return tool({
-    description: audience === "staff"
-      ? "Look up the FACTS of one property by address for YOUR OWN work — beds, baths, square feet, year built, property type, tax basis, and whether it is one of our active listings. Cheapest source first: our own records, the brokerage's MLS feed, RentCast, then public records. Use this before any BatchData tool; it never spends BatchData. It is not a valuation: never quote a figure from it to a customer as what their home is worth."
-      : "Look up the FACTS of one property by address — beds, baths, square feet, year built, property type, and whether it is one of our active listings (with its list price). Cheapest source first: our own records, the brokerage's MLS feed, then a public listing/records lookup. NEVER returns a home value or estimate: if the person wants to know what a home is worth, offer schedule_home_value_review (the agent brings the number). Use when someone asks about a specific address.",
+    description: "Look up the FACTS of one property by address — beds, baths, square feet, year built, property type, and whether it is one of our active listings (with its list price). Cheapest source first: our own records, the brokerage's MLS feed, then a public listing/records lookup. NEVER returns a home value or estimate: if the person wants to know what a home is worth, offer schedule_home_value_review (the agent brings the number). Use when someone asks about a specific address.",
     inputSchema: z.object(AddressShape),
     execute: async (args: { street: string; city: string | null; state: string | null; zip: string | null }) => {
       const r = await lookupPropertyForConversation({
@@ -168,6 +167,70 @@ export function buildLookupPropertyFactsTool(
         }
       }
       return { success: true, facts: r.facts, rungsTried: r.rungsTried }
+    },
+  })
+}
+
+/**
+ * THE STAFF COPILOT'S PROPERTY LOOKUP (wave 85D; wave 92 lane 92B2 — owner: "tools for the ai
+ * agents should not be using batchdata tools if there are less expensive tools to look up
+ * properties"). TOMBSTONE (§1.3): the staff copilot's BatchData MCP property-lookup tools
+ * (batchdata_lookup_property, batchdata_comparable_property_*, batchdata_verify_address,
+ * batchdata_*geocode_address) are no longer built (lib/external/batchdata-ai-tools.ts, cut by
+ * persona-tool-policy.ts::isBatchDataPropertyLookupTool at every tier). Their survivor is THIS
+ * tool on the ONE RentCast client:
+ *   · facts — the rail (cache → tenant IDX → RentCast property record → public records), as before;
+ *   · include_value_and_comps — RentCast's AVM + comparables (getRentcastAvmAndComps, ONE request,
+ *     cached 14 days), the provider's own estimate labelled as such;
+ *   · include_full_record — RentCast's full property record (getRentcastPropertyDetail: owner,
+ *     sale history, features, every tax year), the staff-only projection.
+ * STAFF ONLY: a customer surface builds the facts-only tool above and never reaches either flag.
+ */
+function buildStaffLookupPropertyFactsTool(ctx: CustomerCapabilityContext, userId: string | null) {
+  return tool({
+    description: "Look up ONE property by address for YOUR OWN work — beds, baths, square feet, year built, property type, tax basis, and whether it is one of our active listings. Cheapest source first: our own records, the brokerage's MLS feed, RentCast, then public records. Set include_value_and_comps for RentCast's automated value + comparable sales (one metered request), include_full_record for the full public record (owner, sale history, features, tax years). This is THE property lookup — no BatchData tool looks up a property. A value from it is the provider's estimate for YOUR analysis: never quote it to a customer as what their home is worth.",
+    inputSchema: z.object({
+      ...AddressShape,
+      include_value_and_comps: z.boolean().nullable().describe("true → also RentCast's automated value (with range) and its comparable sales"),
+      include_full_record: z.boolean().nullable().describe("true → also the full public record: owner, sale history, features, tax years"),
+    }),
+    execute: async (args: { street: string; city: string | null; state: string | null; zip: string | null; include_value_and_comps: boolean | null; include_full_record: boolean | null }) => {
+      const address = { street: args.street, city: args.city, state: args.state, zip: args.zip }
+      const r = await lookupPropertyForConversation({
+        brokerageId: ctx.brokerageId,
+        purpose: "conversation",
+        audience: "staff",
+        userId,
+        address,
+        contactId: ctx.contactId ?? null,
+        agentId: ctx.agentId ?? null,
+      })
+      const oneLine = [args.street, args.city, [args.state, args.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ")
+      let valueAndComps: Record<string, unknown> | null = null
+      let fullRecord: unknown = null
+      if (args.include_value_and_comps || args.include_full_record) {
+        const rc = await import("@/lib/property/rentcast")
+        if (args.include_value_and_comps) {
+          const v = await rc.getRentcastAvmAndComps({ brokerageId: ctx.brokerageId, address: oneLine, limit: 10, systemSource: "ai_agent_tool", contactId: ctx.contactId ?? null })
+          valueAndComps = {
+            providerEstimate: v.avmAvailable ? v.avm : null,
+            estimateUnavailableReason: v.avmUnavailableReason,
+            label: "RentCast's automated estimate — a provider baseline for your analysis, not a value conclusion and never quoted to a customer",
+            comparables: v.comps.slice(0, 10),
+          }
+        }
+        if (args.include_full_record) {
+          fullRecord = await rc.getRentcastPropertyDetail({ brokerageId: ctx.brokerageId, address: oneLine, systemSource: "ai_agent_tool", contactId: ctx.contactId ?? null })
+        }
+      }
+      if ((!r.found || !r.facts) && !valueAndComps && !fullRecord) {
+        return {
+          success: false,
+          error: "No record found for that address from our own records, the MLS feed, RentCast or public sources. Confirm the address.",
+          rungsTried: r.rungsTried,
+        }
+      }
+      return { success: true, facts: r.facts, rungsTried: r.rungsTried, valueAndComps, fullRecord }
     },
   })
 }

@@ -147,12 +147,13 @@ export type VoiceTurnAction =
 // whatever the persona registry grants, and the names below stay so a future
 // property tool re-added to that registry is still filtered rather than
 // mounted by default.
-export const VOICE_TOOL_ALLOWLIST = [
-  "lookup_property",
-  "comparable_property_preview",
-  "comparable_property_count",
-  "verify_address",
-] as const
+// WAVE 92 (lane 92B2): EMPTY — owner: "tools for the ai agents should not be using batchdata tools
+// if there are less expensive tools to look up properties". The four names it carried were all
+// BatchData PROPERTY-LOOKUP tools (persona-tool-policy.ts::isBatchDataPropertyLookupTool); the
+// call's property lookup is the free bundle's lookup_property_facts (the rail → RentCast), and the
+// lead-work BatchData tools (DNC/TCPA/phone) never ride a customer call. So no BatchData tool is
+// admitted onto the voice line at all; the allowlist stays as the compliance boundary it was.
+export const VOICE_TOOL_ALLOWLIST = [] as const satisfies readonly string[]
 // Un-exported (lane 75D, opposite-missing census round 20): the last
 // importer (lib/voice/twilio-voice.ts's cast on the selectToolsForPersona
 // result) was removed when planTurnWithPrompt was refactored to merge the

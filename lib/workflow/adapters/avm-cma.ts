@@ -174,9 +174,13 @@ export const avmCmaAdapter: ChannelAdapter = {
       if (reportType === "avm") {
         const { getCurrentAvm } = await import("@/lib/avm/provider-chain")
         // Skip non-preferred providers when an explicit source is set
+        // Wave 92 (lane 92B2): RentCast is the chain's FIRST tier for every tenant call. An explicit
+        // "perplexity" source still means "the AI estimate only" (RentCast skipped). The "batchdata"
+        // value source is retired from the chain (a home value is RentCast's — provider-chain.ts
+        // tombstone), so a workflow still naming it gets the RentCast-first chain instead of a
+        // chain with its only paid provider switched off.
         const skipProviders =
-          dataSource === "housecannary" ? ["batchdata" as const]
-          : dataSource === "batchdata"  ? ["rentcast" as const]
+          dataSource === "perplexity" ? ["rentcast" as const]
           : []
         const avm = await getCurrentAvm({
           address: propertyContext.address,

@@ -35,6 +35,7 @@
  * (CLAUDE.md §4 — never a request body), passed in as `ctx`.
  */
 
+import { isBatchDataPropertyLookupTool } from "@/lib/ai-isa/persona-tool-policy"
 import { tool, jsonSchema, type Tool } from "ai"
 import { listBatchDataMcpTools, callBatchDataMcp } from "@/lib/external/batchdata-mcp"
 import { resolveBatchDataToken } from "@/lib/external/batchdata-tokens"
@@ -99,6 +100,12 @@ export async function batchDataMcpTools(ctx: BatchDataAiToolsContext): Promise<R
 
   const registry: Record<string, Tool> = {}
   for (const t of catalogue) {
+    // Wave 92 (lane 92B2): a BatchData PROPERTY-LOOKUP tool (lookup_property, comparable_property_*,
+    // verify_address, geocode_*) is never built for an agent — the survivor is the ONE RentCast
+    // client through lib/ai-isa/property-lookup-tools.ts::buildLookupPropertyFactsTool (the staff
+    // copilot's lookup_property_facts: facts, and for staff RentCast's value + comparables).
+    // Lead work (skip trace, DNC/TCPA, motivated-list search, buy box) is built as before.
+    if (isBatchDataPropertyLookupTool(t.name)) continue
     registry[`batchdata_${t.name}`] = tool({
       description: t.description || `BatchData MCP tool: ${t.name}`,
       inputSchema: jsonSchema(t.inputSchema as any),

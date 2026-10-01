@@ -416,6 +416,23 @@ export async function resolveEffectiveBatchDataToolTier(
   return tier
 }
 
+/**
+ * WAVE 92 (lane 92B2) — NO PROPERTY-LOOKUP TOOL BACKED BY BATCHDATA, ON ANY AGENT SURFACE.
+ * Owner, verbatim: "tools for the ai agents should not be using batchdata tools if there are
+ * less expensive tools to look up properties" · "batchdata is to be used more for scrapping
+ * leads." A BatchData MCP tool that LOOKS UP A PROPERTY — one address's record, its comparables,
+ * an address verification or a geocode — has a cheaper survivor on the ONE RentCast client
+ * (lib/ai-isa/property-lookup-tools.ts::buildLookupPropertyFactsTool → the rail → RentCast's
+ * property record; for staff also RentCast's value + comparables) and is cut at EVERY tier,
+ * "full" included. BatchData tools that are LEAD work — skip trace, DNC/TCPA/phone checks,
+ * motivated-seller list searches (search_properties_*), investor buy box — are not matched and
+ * keep their tier rules. Matches the bare MCP name and the staff catalogue's `batchdata_` key.
+ */
+const BATCHDATA_PROPERTY_LOOKUP_TOOL = /^(?:batchdata_)?(?:lookup_property|comparable_property(?:_\w+)?|verify_address|geocode_address|reverse_geocode_address)$/
+export function isBatchDataPropertyLookupTool(toolName: string): boolean {
+  return BATCHDATA_PROPERTY_LOOKUP_TOOL.test(toolName)
+}
+
 /** PURE — is `toolName` still allowed once the tier's own constriction is
  *  applied? "full" imposes none. "off" allows nothing. "lean" keeps
  *  preview/count tools, `lookup_property`, and the verify-prefixed and
@@ -424,12 +441,13 @@ export async function resolveEffectiveBatchDataToolTier(
  *  ungoverned catalogue — this predicate is generic over tool NAMES, not tied
  *  to batchdata-isa-tools.ts's registry) is cut. */
 export function isToolAllowedForTier(toolName: string, tier: BatchDataToolTier): boolean {
+  // Wave 92 (lane 92B2): a BatchData PROPERTY-LOOKUP tool is cut at every tier (above).
+  if (isBatchDataPropertyLookupTool(toolName)) return false
   if (tier === "full") return true
   if (tier === "off") return false
   return (
     toolName.endsWith("_preview") ||
     toolName.endsWith("_count") ||
-    toolName === "lookup_property" ||
     toolName.startsWith("verify_") ||
     toolName === "check_dnc_status" ||
     toolName === "check_tcpa_status"
@@ -443,7 +461,6 @@ export function isToolAllowedForTier(toolName: string, tier: BatchDataToolTier):
  * platform-wide constriction, not specific to one tool registry's shape.
  */
 export function filterToolsByTier<T extends Record<string, unknown>>(registry: T, tier: BatchDataToolTier): Partial<T> {
-  if (tier === "full") return registry
   if (tier === "off") return {}
   const out: Record<string, unknown> = {}
   for (const [name, def] of Object.entries(registry)) {

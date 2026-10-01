@@ -140,6 +140,25 @@ async function main() {
   check("the property-lookup rail's RentCast rung reads the PROPERTY RECORD for every purpose (a conversation asks the listing first)",
     /getRentcastPropertyRecord\(/.test(rung) && /req\.purpose === "conversation"/.test(rung) && rung.indexOf("searchRentcastSaleListings(") < rung.indexOf("getRentcastPropertyRecord("))
 
+  // HOME VALUES — RentCast FIRST for every tenant call, background scans included (lane 92B2;
+  // owner: "use rentcast as much as possible regarding … home values"). Perplexity is the fallback.
+  const chain = stripped("lib/avm/provider-chain.ts")
+  const avmBody = fnBody(chain, "getCurrentAvm")
+  const rcAt = avmBody.indexOf("await tryRentcast(req)"), pxAt = avmBody.indexOf("await tryPerplexitySonar(req)")
+  const firstOrder = (b: string) => { const r = b.indexOf("await tryRentcast(req)"), p = b.indexOf("await tryPerplexitySonar(req)"); return r > -1 && p > -1 && r < p }
+  check("the AVM chain asks RentCast BEFORE the Perplexity fallback", firstOrder(avmBody), `rentcast@${rcAt} perplexity@${pxAt}`)
+  check("POSITIVE CONTROL: the ordering check fails on a Perplexity-first fixture",
+    !firstOrder(`const px = await tryPerplexitySonar(req)\nconst rc = await tryRentcast(req)`))
+  const preRc = avmBody.slice(0, rcAt)
+  check("…and RentCast-first does NOT wait for usePaidProviders (the premium flag governs only the Zillow scrape), but is gated by the ONE eligibility verdict (property_data) and the budget",
+    !/usePaidProviders/.test(preRc) && /readKind: "property_data"/.test(preRc) && /const rentcastFirst = rentcastEligible && !overBudget/.test(preRc)
+    && /if \(req\.usePaidProviders && !overBudget\)[\s\S]{0,200}tryZillowViaZenRows\(req\)/.test(avmBody))
+  const scan = stripped("lib/wealth-advisor/scan-opportunities.ts")
+  check("the daily wealth scan (the background value refresh) hands the chain its tenant, so RentCast is reachable from the scan",
+    /getCurrentAvm\(\{[\s\S]{0,400}brokerageId: brokerageId \?\? null/.test(scan) && /cacheStaleAfterDays: 14/.test(scan))
+  check("the cost bound is the 14-day window twice: the scan's own stale check AND RentCast's AVM fact cache",
+    /RENTCAST_CACHE_TTL_DAYS = \{ record: 30, avm: 14, markets: 7 \}/.test(rc) && /> 14 \* 24 \* 60 \* 60 \* 1000/.test(scan))
+
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[B · no BatchData on property reads — derived population, retired readers gone, valuation refused]")
   const BD_IMPORT = /["']@\/lib\/external\/batchdata-[a-z-]+["']|["']@\/lib\/batchdata-client["']|from ["']@\/lib\/external["']/
