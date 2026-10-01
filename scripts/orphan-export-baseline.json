@@ -458,7 +458,6 @@
     "lib/transactions/contingency-deadlines.ts": 2,
     "lib/transactions/deal-vendor-notify.ts": 1,
     "lib/transactions/final-compliance-check.ts": 1,
-    "lib/transactions/offer-bridge.ts": 1,
     "lib/usage.ts": 1,
     "lib/vendor/assignment-access.ts": 1,
     "lib/vendors/rank.ts": 1,
@@ -511,7 +510,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10462,
+  "census": 10469,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2839,7 +2838,7 @@
     "lib/ai-isa/personalize-outreach.ts": 4,
     "lib/ai-isa/portal-link.ts": 3,
     "lib/ai-isa/post-call-outcome.ts": 3,
-    "lib/ai-isa/property-lookup-rail.ts": 12,
+    "lib/ai-isa/property-lookup-rail.ts": 13,
     "lib/ai-isa/property-lookup-tools.ts": 3,
     "lib/ai-isa/qualification-core.ts": 6,
     "lib/ai-isa/qualification-evaluator.ts": 2,
@@ -2927,6 +2926,7 @@
     "lib/brand-template-registry/registry-logger.ts": 8,
     "lib/brand-template-registry/template-classifier.ts": 5,
     "lib/branding/business-registration.ts": 14,
+    "lib/branding/formality.ts": 1,
     "lib/branding/resolve-brand-context.ts": 1,
     "lib/brokerage/compliance-identity.ts": 1,
     "lib/brokerage/get-brokerage-settings.ts": 17,
@@ -3286,7 +3286,7 @@
     "lib/external/socrata-client.ts": 4,
     "lib/external/socrata-market-registry.ts": 7,
     "lib/external/tavily-client.ts": 2,
-    "lib/external/versium-client.ts": 4,
+    "lib/external/versium-client.ts": 6,
     "lib/external/vision-property.ts": 1,
     "lib/external/zenrows-client.ts": 5,
     "lib/external/zenrows-normalizer.ts": 1,
@@ -3763,7 +3763,7 @@
     "lib/lead-pipeline/contact-signal-rescrape.ts": 1,
     "lib/lead-pipeline/email-engagement-sourcer.ts": 2,
     "lib/lead-pipeline/email-seek.ts": 2,
-    "lib/lead-pipeline/enrichment-column-map.ts": 19,
+    "lib/lead-pipeline/enrichment-column-map.ts": 21,
     "lib/lead-pipeline/enrichment-merge.ts": 2,
     "lib/lead-pipeline/enrichment-orchestrator.ts": 1,
     "lib/lead-pipeline/enrichment-retry.ts": 3,
@@ -3782,7 +3782,7 @@
     "lib/lead-pipeline/persona-drift-runner.ts": 1,
     "lib/lead-pipeline/persona-drift.ts": 1,
     "lib/lead-pipeline/pipeline-processor.ts": 1,
-    "lib/lead-pipeline/pooled-pull.ts": 8,
+    "lib/lead-pipeline/pooled-pull.ts": 9,
     "lib/lead-pipeline/portal-lead-intake.ts": 3,
     "lib/lead-pipeline/processing-status.ts": 3,
     "lib/lead-pipeline/promotion-gate-health.ts": 2,
@@ -14085,6 +14085,7 @@
     ],
     "lib/ai-isa/property-lookup-rail.ts": [
       "resolveContactProviderRoute",
+      "runVersiumContactLeg",
       "isBatchDataRungAllowed",
       "redactFactsForAudience",
       "toPublicPropertyFacts",
@@ -14712,6 +14713,9 @@
       "pickRepresentative",
       "repTitleForUserType",
       "loadBusinessRegistrationSources"
+    ],
+    "lib/branding/formality.ts": [
+      "normalizeFormalityLevel"
     ],
     "lib/branding/resolve-brand-context.ts": [
       "resolveBrandContext"
@@ -16524,7 +16528,9 @@
       "versiumQueryFor",
       "versiumStatusProblem",
       "parseVersiumFinancialResponse",
-      "appendVersiumFinancial"
+      "appendVersiumFinancial",
+      "appendVersiumContact",
+      "appendVersiumDemographics"
     ],
     "lib/external/vision-property.ts": [
       "scorePropertyImage"
@@ -19052,6 +19058,8 @@
       "normalizeHouseholdFinancials",
       "householdFinancialsFromBatchData",
       "householdFinancialsFromVersium",
+      "versiumDemographicCategoriesNeeded",
+      "buildVersiumDemographicProfile",
       "householdFinancialsFromProfile",
       "missingHouseholdFinancials",
       "mergeHouseholdFinancials",
@@ -19139,6 +19147,7 @@
       "splitPullCost",
       "productionPooledBatchDataDeps",
       "runPooledBatchDataLane",
+      "planPooledPersistence",
       "groupIdenticalAreas",
       "runPooledFsboLane"
     ],
