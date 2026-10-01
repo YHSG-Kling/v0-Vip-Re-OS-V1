@@ -45,6 +45,9 @@
  * wins the ACTIVE/PENDING side, which is the one it can substitute for. The
  * sold-side SUPPLEMENT is RentCast's own widened comparable search (§3b) — the
  * BatchData comps-dataset supplement is retired (tombstone at §3b).
+ * WAVE 93 (lane 93B, owner: "use batchdata as a backup"): BatchData returns as the BACKUP
+ * only — §3c, when RentCast did not answer at all (unconfigured / error / no comparable),
+ * through the provider chain's one backup door (lib/avm/provider-chain.ts).
  *
  * ─── PROVIDER RESOLUTION ────────────────────────────────────────────────────
  * SOLD side   → RentCast, always. RentCast is the platform-owned provider and
@@ -100,6 +103,7 @@ import {
   type RentcastEligibilityReason,
 } from "@/lib/property/rentcast-eligibility"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
+import type { RentcastMissReason } from "@/lib/ai-isa/property-lookup-rail"
 import { IDXBrokerClient, type NormalizedIdxListing } from "@/lib/idxbroker-client"
 import { getCachedCompSupplement, setCachedCompSupplement } from "./comp-supplement-cache"
 import { RENTCAST_USD_PER_REQUEST } from "@/lib/property/rentcast"
@@ -396,6 +400,9 @@ export interface CompProvenance {
   /** How many of the closed comps came from RentCast's WIDENED supplement search (§3b), 0 when
    *  the first pull met the minimum or the supplement found nothing. */
   rentcastSupplementSoldCount: number
+  /** Wave 93 (lane 93B): how many closed comps came from the BatchData BACKUP (§3c) — non-zero only
+   *  when RentCast did not answer (unconfigured / error / no comparable). */
+  batchDataBackupSoldCount: number
 }
 
 export interface SourcedComps {
@@ -624,6 +631,57 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
       }
     } catch (e) {
       notes.push(`RentCast widened comparable search threw and was skipped: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  // ── 3c. BATCHDATA — THE BACKUP for the sold side (wave 93, lane 93B) ─────
+  //
+  // Owner, verbatim (2026-10-01): "use batchdata as a backup." Reached ONLY when RentCast did not
+  // answer at all — unconfigured, a provider error, or no comparable for this address — through
+  // the provider chain's ONE backup door (lib/avm/provider-chain.ts::batchDataPropertyFallback:
+  // the BatchData gate's fallback purpose, the 14-day fallback cache, the ledger row naming who
+  // answered). A RentCast answer that was merely SHORT is not a miss: §3b's widened RentCast search
+  // is its supplement. Over budget is not a trigger (BATCHDATA_FALLBACK_MISS_REASONS). Closed rows
+  // only, same window rule — a real provider record, never an AI guess (AI_GAP_FILL_SLOTS).
+  let batchDataBackupSoldCount = 0
+  const rentcastCompMiss: RentcastMissReason | null = !rentcastEligibility.eligible
+    ? (rentcastEligibility.reason === "budget_exhausted" ? "over_budget" : rentcastEligibility.reason === "no_platform_key" ? "unconfigured" : null)
+    : rentcastRows.length === 0 ? (avmPull?.avmUnavailableReason === "provider_error" ? "error" : "no_record") : null
+  if (closedComps.length < REQUIRED_SOLD_COMPS && rentcastCompMiss) {
+    try {
+      const { batchDataPropertyFallback } = await import("@/lib/avm/provider-chain")
+      const bd = await batchDataPropertyFallback({
+        brokerageId: req.brokerageId, address: fullAddress, kind: "comps", rentcastMiss: rentcastCompMiss,
+        systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE, contactId: req.contactId ?? null,
+      })
+      if (bd.answeredBy !== "batchdata" || !bd.result) {
+        notes.push(`BatchData backup for the sold side not used — ${bd.reason}.`)
+      } else {
+        if (!bd.cacheHit) costCents += Math.round(bd.result.cost * 100)
+        const seenAddr = new Set(closedComps.map((c) => normalizeAddress(c.address)))
+        const extra = bd.result.comps
+          .filter((c) => c.status === "closed" && c.salePrice != null && !!c.saleDate && !seenAddr.has(normalizeAddress(c.address ?? "")))
+          .map((c) => toScoredCompFromBatchDataBackup(req.subject, c))
+          .filter((c) => monthsBetween(c.saleDate, now) <= WIDENED_SOLD_WINDOW_MONTHS)
+          .sort((a, b) => b.similarityScore - a.similarityScore)
+          .slice(0, REQUIRED_SOLD_COMPS - closedComps.length)
+        if (extra.length > 0) {
+          closedComps.push(...extra)
+          batchDataBackupSoldCount = extra.length
+          if (extra.some((c) => monthsBetween(c.saleDate, now) > PRIMARY_SOLD_WINDOW_MONTHS)) {
+            soldWindowWidened = true
+            soldWindowMonths = WIDENED_SOLD_WINDOW_MONTHS
+          } else if (soldWindowMonths == null) {
+            soldWindowMonths = PRIMARY_SOLD_WINDOW_MONTHS
+          }
+          citations.push("BatchData comparable-property dataset (comps) — the backup after a RentCast miss")
+          notes.push(`${extra.length} closed comparable sale(s) came from BatchData as the BACKUP provider, because RentCast did not answer (${rentcastCompMiss}) — provider records, not an AI gap-fill.`)
+        } else {
+          notes.push(`BatchData answered as the backup (RentCast miss: ${rentcastCompMiss}) but carried no closed comparable inside the ${WIDENED_SOLD_WINDOW_MONTHS}-month window.`)
+        }
+      }
+    } catch (e) {
+      notes.push(`BatchData backup comparable search threw and was skipped: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
@@ -864,7 +922,9 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
     activeComps,
     pendingComps,
     provenance: {
-      soldProvider: closedComps.length === 0 ? "none" : "rentcast",
+      // Wave 93: the provider that served the MAJORITY of the sold side (the BatchData backup only
+      // fills it when RentCast did not answer — §3c); each comp's sourceProvider is the per-row answer.
+      soldProvider: closedComps.length === 0 ? "none" : batchDataBackupSoldCount * 2 > closedComps.length ? "batchdata" : "rentcast",
       activeProvider,
       pendingProvider,
       idxConnected,
@@ -887,6 +947,7 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
       citations,
       estimatedCostCents: costCents,
       rentcastSupplementSoldCount: supplementSoldContribution,
+      batchDataBackupSoldCount,
     },
   }
 }
@@ -1052,7 +1113,45 @@ function toScoredCompFromRentcast(
 
 // TOMBSTONE (wave 92, lane 92B, §1.3): toScoredCompFromBatchData (the BatchData comps-dataset row
 // mapper) left with that supplement — survivor: toScoredCompFromRentcast above, which maps the
-// widened RentCast supplement rows (§3b).
+// widened RentCast supplement rows (§3b). Wave 93 (lane 93B) BUILT the backup half back as
+// toScoredCompFromBatchDataBackup below — reached only from §3c, after a RentCast miss.
+
+/** One BatchData backup comp → ScoredComp (closed rows only reach it — §3c filters). */
+function toScoredCompFromBatchDataBackup(
+  subject: SubjectFeatures,
+  c: NonNullable<Awaited<ReturnType<typeof import("@/lib/avm/provider-chain").batchDataPropertyFallback>>["result"]>["comps"][number],
+): ScoredComp {
+  const { fullBaths, halfBaths } = splitBaths(c.bathrooms)
+  const comp: ScoredComp = {
+    address: c.address ?? "",
+    status: "closed",
+    salePrice: c.salePrice ?? 0,
+    saleDate: c.saleDate ?? "",
+    sqftLiving: c.sqftLiving,
+    bedrooms: c.bedrooms,
+    fullBaths,
+    halfBaths,
+    garageSpaces: null,
+    hasPool: null,
+    isWaterfront: null,
+    hasView: null,
+    lotSizeAcres: null,
+    yearBuilt: null,
+    conditionGrade: null,
+    basementFinished: null,
+    isNewConstruction: null,
+    isGated: null,
+    daysOnMarket: null,
+    pricePerSqft: c.salePrice && c.sqftLiving && c.sqftLiving > 0 ? Math.round(c.salePrice / c.sqftLiving) : null,
+    similarityScore: c.similarityScore ?? 0,
+    citation: "BatchData comparable-property dataset (comps) — backup provider",
+    distanceMiles: c.distanceMiles,
+    sourceProvider: "batchdata",
+    priceBasis: "closed_sale",
+  }
+  if (!comp.similarityScore) comp.similarityScore = featureSimilarity(subject, comp)
+  return comp
+}
 
 function toScoredCompFromIdx(
   subject: SubjectFeatures,

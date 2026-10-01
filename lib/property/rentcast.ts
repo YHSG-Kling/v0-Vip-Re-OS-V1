@@ -148,7 +148,32 @@ function meterCall(params: {
   systemSource?: string
   contactId?: string | null
   metadata?: Record<string, any>
+  /** Wave 93 (lane 93B) — a POOLED sweep served every brokerage named here with the SAME rows. */
+  pooledBrokerageIds?: readonly string[] | null
 }) {
+  // ONE PULL, SPLIT LEDGER (wave 93, lane 93B — owner: "pull all of the active territories … to
+  // make it one pull to keep the cost down"). A pooled area sweep is one billed request whose
+  // identical rows every pool member receives, so the split by records received is EQUAL: one
+  // ledger row per member at cost ÷ n (the last row absorbs the rounding so the rows sum to the
+  // vendor charge exactly — lib/lead-pipeline/pooled-pull.ts::splitPullCost is the one rule).
+  const pool = [...new Set((params.pooledBrokerageIds ?? []).filter(Boolean))]
+  if (pool.length > 1) {
+    void import("@/lib/lead-pipeline/pooled-pull").then(({ splitPullCost }) => {
+      const shares = splitPullCost(params.cost, new Map(pool.map((b) => [b, 1])))
+      for (const [brokerageId, share] of shares) {
+        void logVendorUsage({
+          vendorName: "rentcast",
+          usageType: params.usageType,
+          unitCount: 1 / pool.length,
+          estimatedCost: share,
+          systemSource: params.systemSource ?? DEFAULT_SYSTEM_SOURCE,
+          brokerageId,
+          metadata: { endpoint: params.endpoint, pooled: true, pool_size: pool.length, ...(params.metadata ?? {}) },
+        }).catch(() => null)
+      }
+    }).catch(() => null)
+    return
+  }
   void logVendorUsage({
     vendorName: "rentcast",
     usageType: params.usageType,
@@ -188,6 +213,12 @@ type RentcastCaller = RentcastEligibilityContext & {
    * row carried only a brokerage.
    */
   contactId?: string | null
+  /**
+   * Wave 93 (lane 93B) — the brokerages a POOLED area sweep serves (identical geography, identical
+   * rows). The request is gated + attributed to `brokerageId` (one of them) and the ledger row is
+   * SPLIT equally across every id here (meterCall). Only the area sweeps pass it.
+   */
+  pooledBrokerageIds?: readonly string[] | null
 }
 
 export interface RentcastSearchFilters {
@@ -569,6 +600,7 @@ export async function searchRentcastSaleListings(
       systemSource: params.systemSource,
       contactId: params.contactId,
       metadata: { ok: res.ok, status: res.status },
+      pooledBrokerageIds: params.pooledBrokerageIds ?? null,
     })
     if (!res.ok) {
       return { success: false, listings: [], error: `Rentcast returned ${res.status ?? 0}` }
@@ -689,7 +721,7 @@ export function normalizeRentcastPropertyRecord(r: RentcastPropertyRecord | Reco
 export async function getRentcastPropertyRecord(
   params: RentcastCaller & { address: string },
 ): Promise<RentcastPropertyFacts | null> {
-  const row = await fetchRentcastPropertyRow(params)
+  const { row } = await fetchRentcastPropertyRow(params)
   return row ? normalizeRentcastPropertyRecord(row) : null
 }
 
@@ -700,16 +732,30 @@ export async function getRentcastPropertyRecord(
  * record), one meter, one cache entry (RENTCAST_CACHE_TTL_DAYS.record): the two projections of
  * the same address never pay twice. Null — never throws — when refused, not found or failed.
  */
+/**
+ * WHY a RentCast read came back empty (wave 93, lane 93B). The provider chain's BatchData BACKUP
+ * (lib/avm/provider-chain.ts) runs only after a NAMED miss, so the readers it asks report one:
+ * `not_eligible` (the gate refused — `eligibility.reason` says which question), `error` (non-2xx,
+ * including a plan-quota 429/402, or a throw), `no_record` (RentCast answered with nothing).
+ * "answered" = a usable row/price came back. Never collapsed to a boolean.
+ */
+export type RentcastReadOutcome = "answered" | "not_eligible" | "error" | "no_record"
+
+/** THE /properties request WITH its outcome (wave 93) — the one body both projections and the
+ *  provider chain's lookup (getRentcastPropertyDetailWithOutcome) share. */
 async function fetchRentcastPropertyRow(
   params: RentcastCaller & { address: string },
-): Promise<RentcastPropertyRecord | null> {
-  const { apiKey } = await gateRentcast(params, "property_data")
-  if (!apiKey || !params.address?.trim()) return null
+): Promise<{ row: RentcastPropertyRecord | null; outcome: RentcastReadOutcome; eligibility: RentcastEligibility }> {
+  const { apiKey, eligibility } = await gateRentcast(params, "property_data")
+  if (!apiKey) return { row: null, outcome: "not_eligible", eligibility }
+  if (!params.address?.trim()) return { row: null, outcome: "no_record", eligibility }
+  let httpOk = true
   try {
     const address = params.address.trim()
     const read = await cachedRentcastRead<RentcastPropertyRecord>(
       `/properties|${addressCacheKey(address)}`, RENTCAST_CACHE_TTL_DAYS.record, async () => {
         const res = await callRentcastGet("/properties", { address }, apiKey)
+        httpOk = res.ok
         meterCall({
           brokerageId: params.brokerageId,
           usageType: "api_call",
@@ -722,10 +768,20 @@ async function fetchRentcastPropertyRow(
         const first = res.ok && Array.isArray(res.data) && res.data.length > 0 ? res.data[0] : null
         return { ok: first != null, data: first }
       })
-    return read.ok ? read.data : null
+    if (read.ok && read.data) return { row: read.data, outcome: "answered", eligibility }
+    return { row: null, outcome: httpOk ? "no_record" : "error", eligibility }
   } catch {
-    return null
+    return { row: null, outcome: "error", eligibility }
   }
+}
+
+/** The full staff record WITH why it is absent — the provider chain's RentCast leg for a property
+ *  lookup (getPropertyRecordWithFallback). Same request, gate, meter and cache as the two readers. */
+export async function getRentcastPropertyDetailWithOutcome(
+  params: RentcastCaller & { address: string },
+): Promise<{ detail: RentcastPropertyDetail | null; outcome: RentcastReadOutcome; eligibility: RentcastEligibility }> {
+  const r = await fetchRentcastPropertyRow(params)
+  return { detail: r.row ? normalizeRentcastPropertyDetail(r.row) : null, outcome: r.outcome, eligibility: r.eligibility }
 }
 
 /**
@@ -803,7 +859,7 @@ function normalizeRentcastPropertyDetail(r: RentcastPropertyRecord | Record<stri
 export async function getRentcastPropertyDetail(
   params: RentcastCaller & { address: string },
 ): Promise<RentcastPropertyDetail | null> {
-  const row = await fetchRentcastPropertyRow(params)
+  const { row } = await fetchRentcastPropertyRow(params)
   return row ? normalizeRentcastPropertyDetail(row) : null
 }
 
@@ -1005,11 +1061,17 @@ function parseAvmValue(data: RentcastAvmValueResponse | null): { value: number |
   }
 }
 
+/**
+ * Wave 93 (lane 93B): the read also says WHY it is empty (`outcome`, RentcastReadOutcome) — the AVM
+ * chain's BatchData backup runs only after a NAMED miss. Extra fields only: every caller that reads
+ * value / rangeLow / rangeHigh keeps its contract.
+ */
 export async function getRentcastAVM(
   params: RentcastCaller & { address: string },
-): Promise<{ value: number | null; rangeLow: number | null; rangeHigh: number | null }> {
-  const { apiKey } = await gateRentcast(params, "property_data")
-  if (!apiKey) return { value: null, rangeLow: null, rangeHigh: null }
+): Promise<{ value: number | null; rangeLow: number | null; rangeHigh: number | null; outcome: RentcastReadOutcome; eligibility: RentcastEligibility }> {
+  const none = { value: null, rangeLow: null, rangeHigh: null }
+  const { apiKey, eligibility } = await gateRentcast(params, "property_data")
+  if (!apiKey) return { ...none, outcome: "not_eligible", eligibility }
 
   try {
     const q: RentcastAvmValueQuery = { address: params.address }
@@ -1028,10 +1090,11 @@ export async function getRentcastAVM(
         })
         return { ok: res.ok, data: res.ok ? res.data : null }
       })
-    if (!read.ok) return { value: null, rangeLow: null, rangeHigh: null }
-    return parseAvmValue(read.data)
+    if (!read.ok) return { ...none, outcome: "error", eligibility }
+    const avm = parseAvmValue(read.data)
+    return { ...avm, outcome: avm.value != null ? "answered" : "no_record", eligibility }
   } catch {
-    return { value: null, rangeLow: null, rangeHigh: null }
+    return { ...none, outcome: "error", eligibility }
   }
 }
 

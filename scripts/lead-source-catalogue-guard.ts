@@ -199,8 +199,12 @@ console.log("\n[C2 · BATCHDATA — every published quickList judged; triggers, 
   const sig = stackedRow.intentSignals
   check("a seller pull stamps the new co-occurring triggers (free_and_clear, trust_owned) and never the investor-buyer lists (cash_buyer, fix_and_flip)",
     sig.includes("free_and_clear") && sig.includes("trust_owned") && !sig.includes("cash_buyer") && !sig.includes("fix_and_flip"), sig.join(","))
-  check("the cron pulls EVERY investor-buyer list under batchdata_cash_buyer (one call per list, stamped with its list) and books the summed cost per source",
-    /for \(const list of BATCHDATA_INVESTOR_BUYER_TYPES\)/.test(route) && /intentSignals: \[list, "investor"\]/.test(route) && /source: "batchdata_cash_buyer", cost: investorCostUsd/.test(route))
+  // Re-anchored (wave 93, lane 93B — "one pull"): every list is pulled ONCE per cycle for every territory
+  // (the pooled want names all of BATCHDATA_INVESTOR_BUYER_TYPES; the pool pulls one per list — the
+  // list labels its records), and each territory books ITS share. The rule held: every list, stamped, costed.
+  check("the cron pulls EVERY investor-buyer list under batchdata_cash_buyer (one pooled pull per list, stamped with its list) and books the territory's cost per source",
+    /triggers: \[\.\.\.BATCHDATA_INVESTOR_BUYER_TYPES\]/.test(route) && /runPooledBatchDataLane\("batchdata_cash_buyer", cashWants, bdDeps\)/.test(route)
+    && /intentSignals: \[list, "investor"\]/.test(route) && /list: String\(raw\.motivationType\)/.test(route) && /source: "batchdata_cash_buyer", cost: investorCostUsd/.test(route))
   const page = stripped("app/dashboard/admin/markets/page.tsx")
   check("the admin 'Motivated signals' picker still DERIVES its options from BATCHDATA_MOTIVATION_TYPES (every new trigger is toggleable with no second edit)", /BATCHDATA_MOTIVATION_TYPES\.filter\(\(t\) => t !== "expired"\)/.test(page))
   // Lane 90B — quickListCatalogueForTrigger was exported as "the admin picker's caption source" and no
@@ -272,14 +276,21 @@ console.log("\n[C4 · FSBO MARKETPLACE — the cheaper FSBO population, opt-in, 
   check("POSITIVE CONTROL: an agent-posted / sold card is DAMPED (agent_listing + sold), never scored as an owner", agent.intentSignals.includes("agent_listing") && agent.intentSignals.includes("sold") && !agent.intentSignals.includes("owner"))
   check("a short/junk phone is dropped, never stored", normalizeFsboSiteListing({ id: "L3", listedBy: "Jo Bloggs", phone: "555" }, MARKET).phone === undefined)
   await (async () => {
-    const r1 = await sourceFsboSiteListings({ city: null, state: null })
+    // Wave 93 (lane 93B): the sourcer takes a LIST of locations (one actor run for every territory).
+    const r1 = await sourceFsboSiteListings([{ city: "", state: "" }])
     const r2 = await scrapeFsboSiteListings({ city: "", state: "TX" })
     check("no territory city/state ⇒ no call, $0 (both the sourcer and the client)", r1.records.length === 0 && r1.cost === 0 && r2.listings.length === 0 && r2.cost === 0)
   })()
   check("the slug uses the site's own city-state form via stateNameFromCode (TX → texas)", stateNameFromCode("TX") === "Texas" && stateNameFromCode("zz") === null)
   const loopAt = route.indexOf("for (const market of markets)")
   const gateAt = route.indexOf('enabledSources.has("fsbo_site_listing")')
-  check("the cron gates it INSIDE the resolved-territory loop and writes its channel with the batch cost", gateAt > loopAt && loopAt > 0 && /await insertSocial\(records, "fsbo_site_listing", "social_intent", cost\)/.test(route) && /sourceFsboSiteListings\(\{ city: market\.city, state: market\.state, stateName: stateNameFromCode\(market\.state\) \}\)/.test(route))
+  // Re-anchored (wave 93, lane 93B — "one pull"): the actor runs ONCE per cycle for every territory in
+  // the pooled phase (runPooledFsboLane → sourceFsboSiteListings(locations), slugs via stateNameFromCode);
+  // the loop still gates the source per territory and writes ITS share with ITS cost.
+  check("the cron gates it INSIDE the resolved-territory loop and writes its channel with the batch cost (pooled: one run for every territory)",
+    gateAt > loopAt && loopAt > 0 && /await insertSocial\(records, "fsbo_site_listing", "social_intent", cost\)/.test(route)
+    && /runPooledFsboLane\(fsboMarkets, \{ run: \(locations\) => sourceFsboSiteListings\(locations\) \}, stateNameFromCode\)/.test(route)
+    && /const fsboShare = pooled\.fsbo\.get\(market\.id\)/.test(route))
   check("the social block's enable set includes it (a market that opts in only to this lane still runs the block)", /enabledSources\.has\("fsbo_site_listing"\)\s*\n/.test(route.slice(route.indexOf("const socialSourcesEnabled ="), route.indexOf("if (socialSourcesEnabled)"))))
 }
 

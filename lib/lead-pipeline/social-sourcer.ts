@@ -402,12 +402,27 @@ export function normalizeFsboSiteListing(item: Record<string, any>, market: Soci
   }
 }
 
-/** Territory-honest: no city or state ⇒ no call, $0. Every row is the owner's own listing. */
-export async function sourceFsboSiteListings(market: SocialMarket & { stateName?: string | null }): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
-  if (!market.city || !market.state) return { records: [], cost: 0 }
-  const r = await scrapeFsboSiteListings({ city: market.city, state: market.state, stateName: market.stateName ?? null, limit: 100 }).catch(() => ({ listings: [], cost: 0 }))
+/**
+ * Territory-honest: no city or state ⇒ no call, $0. Every row is the owner's own listing.
+ *
+ * Wave 93 (lane 93B, "one pull") — takes a LIST of territory locations and runs them in ONE actor
+ * run (the actor's input is a list). It was one location per call, called once per territory by the
+ * lead-scraping cron; the per-territory signature is MERGED into this one (a single location is
+ * simply a list of one) — lib/lead-pipeline/pooled-pull.ts::runPooledFsboLane is its caller. Each
+ * listing keeps its OWN city/state (normalizeFsboSiteListing reads them off the item) so the pool
+ * can fan it back by containment; the location is a fallback only when the run carried exactly one
+ * (a pooled listing that does not say where it is cannot be attributed and is counted, not guessed).
+ */
+export async function sourceFsboSiteListings(
+  locations: ReadonlyArray<{ city: string; state: string; stateName?: string | null }>,
+): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
+  const usable = locations.filter((l) => !!l.city && !!l.state)
+  const [first, ...more] = usable
+  if (!first) return { records: [], cost: 0 }
+  const r = await scrapeFsboSiteListings({ ...first, more, limit: 100 * usable.length }).catch(() => ({ listings: [], cost: 0 }))
+  const fallback: SocialMarket = usable.length === 1 ? { city: first.city, state: first.state } : { city: null, state: null }
   return {
-    records: (r.listings ?? []).map((x) => normalizeFsboSiteListing(x, market)).filter(isViableRecord),
+    records: (r.listings ?? []).map((x) => normalizeFsboSiteListing(x, fallback)).filter(isViableRecord),
     cost: r.cost ?? 0,
   }
 }

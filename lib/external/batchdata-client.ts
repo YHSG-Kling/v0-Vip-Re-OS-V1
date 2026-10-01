@@ -85,6 +85,9 @@ export interface BatchDataRecord {
   propertyCity?: string
   propertyState?: string
   propertyZip?: string
+  /** Wave 93 (lane 93B) — the property's county (address.county), read so a POOLED county pull
+   *  can fan its rows back to the territory that named that county (pooled-pull.ts). */
+  propertyCounty?: string
   beds?: number
   baths?: number
   sqft?: number
@@ -582,7 +585,8 @@ export function normalizeBatchDataProperty(p: Record<string, any>, requestedType
     propertyCity:    addr.city   ?? undefined,
     propertyState:   addr.state  ?? undefined,
     propertyZip:     addr.zip    ?? undefined,
-    beds:  building.bedroomCount       ?? building.beds  ?? undefined,
+    propertyCounty:  typeof addr.county === 'string' ? addr.county : undefined,
+    beds: building.bedroomCount       ?? building.beds  ?? undefined,
     baths: building.bathroomCount      ?? building.baths ?? undefined,
     sqft:  building.livingAreaSquareFeet ?? building.sqft ?? undefined,
     propertyType: building.propertyType ?? building.property_type ?? p.propertyType ?? undefined,
@@ -999,7 +1003,9 @@ export async function fetchBatchRankPropensity(address: string): Promise<BatchRa
 // TOMBSTONE (wave 92, lane 92B, §1.3): enrichPropertyWithBatchData (a single-address property
 // search read for its `valuation.estimatedValue` — the AVM chain's BatchData leg, its ONE caller)
 // is deleted. A home value is a RentCast read now — survivor: lib/property/rentcast.ts::
-// getRentcastAVM, the AVM chain's paid leg (lib/avm/provider-chain.ts tryRentcast).
+// getRentcastAVM, the AVM chain's paid leg (lib/avm/provider-chain.ts tryRentcast). Wave 93 (lane
+// 93B): BatchData's home value returns ONLY as the BACKUP behind RentCast — survivor for that half:
+// fetchBatchDataPropertyFallback below (the "PROPERTY-READ FALLBACK" block).
 
 // ─── SMART SEARCH = V2 PROPERTY SUBSCRIPTION ──────────────────────────────────────────
 // A DISTINCT capability from fetchMotivatedSellers (V1 Property Search, us polling on a
@@ -1924,13 +1930,163 @@ export async function fetchIncrementalPropertySearch(params: {
   }
 }
 
-// TOMBSTONE (wave 92, lane 92B, §1.3 — owner 2026-10-01: "use rentcast as much as possible
-// regarding … comparable" · "batchdata is to be used more for scrapping leads"): the BatchData
-// COMPS-DATASET reader (BatchDataComp, BatchDataCompsResult, readBatchDataComp,
-// BATCHDATA_COMPS_COST_CENTS, fetchBatchDataComps) is deleted with its ONE caller, the CMA
-// sold-side supplement. Survivor: RentCast's widened comparable search —
-// lib/cma/comp-provider.ts §3b over lib/property/rentcast.ts::getRentcastAvmAndComps
-// (maxRadiusMiles / daysOld). BatchData stays this file's LEAD-acquisition client.
+// ─── PROPERTY-READ FALLBACK — BatchData BEHIND RentCast (wave 93, lane 93B) ───────────
+// Owner, verbatim (2026-10-01): "use batchdata as a backup." Wave 92 (lane 92B) moved every
+// property read (lookup, home value, comps) to RentCast and deleted this file's property readers
+// (enrichPropertyWithBatchData, the comps dataset reader). This block BUILDS the backup half back
+// — ONE reader, ONE request — and it has exactly ONE caller: the provider chain's fallback leg
+// (lib/avm/provider-chain.ts::batchDataPropertyFallback), which runs it ONLY after a RentCast miss
+// (unconfigured / provider error / no record) and ONLY through the BatchData gate's fallback
+// purpose (lib/ai-isa/property-lookup-rail.ts::decideBatchDataAccess, purpose "valuation" with
+// `afterRentcastMiss`). It is never a primary and never an AI agent tool (the agent tool
+// registries cut every BatchData property-lookup tool — persona-tool-policy.ts::
+// isBatchDataPropertyLookupTool — and the conversation rail never reaches a "valuation" rung).
+//
+// THE REQUEST: the v1 Property Search the lead lanes already ride (batchDataPropertySearch), one
+// address as the `query`, take 1 — billed as ONE record (BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD).
+// The comps dataset is asked for only when the caller needs comparables (the CMA's sold side).
+// Field shapes read DEFENSIVELY (the same address / building / valuation / lastSale shapes
+// normalizeBatchDataProperty already trusts); a drift reads as "no record", never a fabricated value.
+
+/** One BatchData comparable (the `comps` dataset row), restored for the fallback path only. */
+export interface BatchDataComp {
+  address: string | null
+  status: "closed" | "active" | "pending" | "unknown"
+  salePrice: number | null
+  saleDate: string | null
+  sqftLiving: number | null
+  bedrooms: number | null
+  bathrooms: number | null
+  distanceMiles: number | null
+  similarityScore: number | null
+}
+
+/** PURE — one `comps` dataset row → BatchDataComp (the wave-66 mapper, restored verbatim in effect). */
+function readBatchDataComp(row: Record<string, any>): BatchDataComp {
+  const addr = row.address ?? {}
+  const building = row.building ?? {}
+  const lastSale = row.lastSale ?? row.sale ?? {}
+  const listing = row.listing ?? {}
+  const removedDate = typeof row.removedDate === "string" ? row.removedDate : null
+  const status: BatchDataComp["status"] =
+    removedDate || lastSale.date || lastSale.saleDate ? "closed"
+      : String(listing.statusCategory ?? listing.status ?? "").toLowerCase().includes("pend") ? "pending"
+        : (listing.status || listing.daysOnMarket != null) ? "active"
+          : "unknown"
+  const n = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null)
+  return {
+    address: typeof addr.street === "string" ? addr.street : null,
+    status,
+    salePrice: n(lastSale.price) ?? n(listing.listPrice) ?? n(listing.price),
+    saleDate: removedDate ?? (typeof lastSale.date === "string" ? lastSale.date : (typeof lastSale.saleDate === "string" ? lastSale.saleDate : null)),
+    sqftLiving: n(building.livingAreaSquareFeet),
+    bedrooms: n(building.bedroomCount),
+    bathrooms: n(building.bathroomCount),
+    distanceMiles: typeof row.distanceMiles === "number" ? row.distanceMiles : null,
+    similarityScore: typeof row.correlation === "number" ? row.correlation : null,
+  }
+}
+
+/** What the fallback reader returns. `found` false = BatchData answered with no row (or failed). */
+export interface BatchDataPropertyFallback {
+  ok: boolean
+  found: boolean
+  facts: {
+    address: string | null; city: string | null; state: string | null; zip: string | null
+    beds: number | null; baths: number | null; sqft: number | null; yearBuilt: number | null
+    propertyType: string | null; assessedValue: number | null; annualPropertyTax: number | null; taxYear: number | null
+    ownerNames: string[]; lastSaleDate: string | null; lastSalePrice: number | null
+  } | null
+  valuation: { value: number | null; rangeLow: number | null; rangeHigh: number | null }
+  comps: BatchDataComp[]
+  /** USD billed — one record when a row came back, 0 otherwise. */
+  cost: number
+  error: string | null
+}
+
+/** PURE — one Property Search row → the fallback's facts + valuation (no I/O; proofs feed it rows). */
+function readBatchDataPropertyFallbackRow(p: Record<string, any>): Pick<BatchDataPropertyFallback, "facts" | "valuation"> {
+  const n = (v: unknown): number | null => { const x = typeof v === "string" ? Number(v) : v; return typeof x === "number" && Number.isFinite(x) && x > 0 ? x : null }
+  const s = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null)
+  const rec = normalizeBatchDataProperty(p, "distressed")
+  const tax = (p.tax ?? p.taxes ?? {}) as Record<string, any>
+  const assess = (p.assessment ?? {}) as Record<string, any>
+  const owner = (p.owner ?? {}) as Record<string, any>
+  const names = Array.isArray(owner.names)
+    ? owner.names.map((x: any) => s(typeof x === "string" ? x : x?.full ?? x?.fullName)).filter((x: string | null): x is string => !!x)
+    : [s(owner.fullName)].filter((x): x is string => !!x)
+  return {
+    facts: {
+      address: rec.propertyAddress ?? null, city: rec.propertyCity ?? null, state: rec.propertyState ?? null, zip: rec.propertyZip ?? null,
+      beds: n(rec.beds), baths: n(rec.baths), sqft: n(rec.sqft), yearBuilt: n((p.building ?? {}).yearBuilt),
+      propertyType: rec.propertyType ?? null,
+      assessedValue: n(assess.totalAssessedValue ?? assess.assessedValue),
+      annualPropertyTax: n(tax.taxAmount ?? tax.totalTaxAmount ?? assess.taxAmount),
+      taxYear: n(tax.taxYear ?? assess.assessmentYear),
+      ownerNames: names,
+      lastSaleDate: rec.lastSale?.date ?? null,
+      lastSalePrice: n(rec.lastSale?.price),
+    },
+    valuation: {
+      value: n(rec.valuation?.estimatedValue),
+      rangeLow: n(rec.valuation?.lowValue),
+      rangeHigh: n(rec.valuation?.highValue),
+    },
+  }
+}
+
+/**
+ * ONE BatchData Property Search for ONE address — the provider chain's fallback read. Never
+ * throws. Unconfigured → ok:false (no request, no cost). Called ONLY by
+ * lib/avm/provider-chain.ts::batchDataPropertyFallback (gate + cache + ledger live there).
+ */
+export async function fetchBatchDataPropertyFallback(
+  address: string,
+  opts: { comps?: boolean; compLimit?: number } = {},
+): Promise<BatchDataPropertyFallback> {
+  const empty = (error: string | null, ok = false): BatchDataPropertyFallback =>
+    ({ ok, found: false, facts: null, valuation: { value: null, rangeLow: null, rangeHigh: null }, comps: [], cost: 0, error })
+  if (!process.env.BATCHDATA_API_KEY) return empty("BATCHDATA_API_KEY not configured")
+  if (!address?.trim()) return empty("no address to look up")
+  try {
+    const data = await batchDataPropertySearch(
+      {
+        searchCriteria: { query: address.trim() },
+        options: { take: 1, skip: 0 },
+        ...(opts.comps ? { dataset: ["core", "valuation", "comps"] } : {}),
+      },
+      "BatchData property fallback error",
+    )
+    const row = (data?.results?.properties ?? [])[0] as Record<string, any> | undefined
+    if (!row) return empty(null, true)
+    const read = readBatchDataPropertyFallbackRow(row)
+    const compRows: any[] = opts.comps ? (data?.results?.comps ?? row.comps ?? []) : []
+    const comps = (Array.isArray(compRows) ? compRows : []).slice(0, Math.max(1, opts.compLimit ?? 20)).map(readBatchDataComp)
+    return { ok: true, found: true, ...read, comps, cost: BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD, error: null }
+  } catch (e) {
+    return empty(e instanceof Error ? e.message : String(e))
+  }
+}
+
+// ─── POOLED SEARCH (wave 93, lane 93B — "one pull") ─────────────────────────────────────
+// Owner, verbatim (2026-10-01): "can't you pull all of the active territories to add to the
+// criteria and pull all homeowners in the platform to make it one pull to keep the cost down?"
+// CONFIRMED (Exa 2026-10-01: batchdata.io "How to Build a Property Search Portal" — "combine
+// multiple locations in one query, such as searching across several ZIP codes simultaneously",
+// "up to 2,000 results per request"; the published v1 SDK serialises `address.zip.inList`,
+// `address.state.inList`, `address.city.inList` under searchCriteria): one request can carry a
+// LIST of places. Filters AND together, so zips, cities and counties are separate requests (an
+// OR across kinds is not expressible). The pooled runner (lib/lead-pipeline/pooled-pull.ts) chunks
+// within these limits; the query string is the state (required field).
+/** Results per pooled request — half the published 2,000 ceiling (latency + a bounded page). */
+export const BATCHDATA_POOLED_MAX_TAKE = 1000
+/** Values per `inList` filter — NOT published; a conservative bound, the chunker's other axis. */
+export const BATCHDATA_POOLED_MAX_INLIST = 100
+
+/** PURE — the searchCriteria fragment for one pooled geography chunk (merged by buildPropertySearchBody). */
+export function pooledGeographyCriteria(kind: "zip" | "city" | "county", values: readonly string[]): Record<string, unknown> {
+  return { address: { [kind]: { inList: [...values] } } }
+}
 
 // ─── BUY BOX — investor-match rows normalized into BUYER-side raw leads ───────────────
 // mcp__batchdata__investor_buybox_count/page/preview (the BatchData MCP server's own

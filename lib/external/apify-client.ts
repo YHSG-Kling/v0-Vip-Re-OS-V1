@@ -181,21 +181,33 @@ export async function scrapeFsboSiteListings(params: {
   /** Full state name for the site's slug ("texas"); falls back to the 2-letter code. */
   stateName?: string | null
   limit?: number
+  /**
+   * Wave 93 (lane 93B, "one pull") — MORE locations in the SAME actor run. The actor's input is a
+   * LIST (`locationSlugs` / `states` / `stateFilter`), so every active territory's slug rides one
+   * run (lib/lead-pipeline/pooled-pull.ts::runPooledFsboLane chunks them ≤10 per run). `limit` is
+   * then the run's total (100 per location unless the caller says otherwise).
+   */
+  more?: ReadonlyArray<{ city: string; state: string; stateName?: string | null }>
 }): Promise<{ listings: any[]; cost: number }> {
-  const citySlug = params.city.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
-  const stateSlug = (params.stateName ?? params.state).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
-  if (!citySlug || !stateSlug) return { listings: [], cost: 0 }
-  const slug = `${citySlug}-${stateSlug}`
+  const slugOf = (city: string, state: string, stateName?: string | null) => {
+    const citySlug = city.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    const stateSlug = (stateName ?? state).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    return citySlug && stateSlug ? `${citySlug}-${stateSlug}` : null
+  }
+  const all = [{ city: params.city, state: params.state, stateName: params.stateName ?? null }, ...(params.more ?? [])]
+  const slugs = [...new Set(all.map((l) => slugOf(l.city, l.state, l.stateName)).filter((s): s is string => !!s))]
+  if (slugs.length === 0) return { listings: [], cost: 0 }
+  const states = [...new Set(all.map((l) => l.state.toUpperCase()).filter(Boolean))]
   const result = await runApifyTask('fsbo_site', {
-    locationSlugs: [slug],
-    states: [params.state.toUpperCase()],
+    locationSlugs: slugs,
+    states,
     source: 'fsbo',
     status: 'for_sale',
     monitoringMode: true,
     mode: 'api',
-    searchSlug: slug,
-    stateFilter: [params.state.toUpperCase()],
-    maxItems: params.limit || 100,
+    searchSlug: slugs[0],
+    stateFilter: states,
+    maxItems: params.limit || 100 * slugs.length,
   })
   return { listings: result.data, cost: result.cost }
 }

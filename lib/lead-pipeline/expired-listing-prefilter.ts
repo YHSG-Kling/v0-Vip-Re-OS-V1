@@ -30,7 +30,10 @@
  * expired lane. When RentCast answers with ZERO fresh removals, the BatchData pull is SKIPPED:
  * nothing came off the market, so there is nothing to buy.
  *
- * Called ONLY by app/api/cron/lead-scraping/route.ts, inside the active-territory gate.
+ * Called ONLY by app/api/cron/lead-scraping/route.ts, inside the active-territory gate. Wave 93 (lane
+ * 93B, "one pull"): the cron runs it ONCE per identical area per cycle (pooled-pull.ts::
+ * groupIdenticalAreas) and fans the result to every territory naming that area — the RentCast sweep's
+ * ledger row and the BatchData lookups are split equally across them (identical records received).
  */
 import type { BatchDataRecord } from "@/lib/external/batchdata-client"
 import type { RentcastListing } from "@/lib/property/rentcast"
@@ -110,7 +113,7 @@ interface ExpiredPrefilterResult {
 }
 
 interface ExpiredPrefilterDeps {
-  inactiveListings: (q: { brokerageId: string; city: string; state: string }) => Promise<{ success: boolean; listings: RentcastListing[]; error?: string }>
+  inactiveListings: (q: { brokerageId: string; city: string; state: string; pooledBrokerageIds?: readonly string[] | null }) => Promise<{ success: boolean; listings: RentcastListing[]; error?: string }>
   lookupOwner: (address: string) => Promise<BatchDataRecord | null>
   recordCostUsd: number
   nowMs?: number
@@ -126,6 +129,8 @@ async function productionDeps(): Promise<ExpiredPrefilterDeps> {
   return {
     inactiveListings: (q) => searchRentcastSaleListings({
       brokerageId: q.brokerageId,
+      // Wave 93 (lane 93B): one sweep serves every territory naming this area — ledger split equally.
+      pooledBrokerageIds: q.pooledBrokerageIds ?? null,
       systemSource: "expired_listing_prefilter",
       filters: { city: q.city, state: q.state, status: "Inactive", limit: RENTCAST_MAX_LISTINGS_PER_REQUEST },
     }),
@@ -144,7 +149,7 @@ async function productionDeps(): Promise<ExpiredPrefilterDeps> {
  * that address only.
  */
 export async function runExpiredListingPrefilter(
-  params: { brokerageId: string; city: string; state: string; lookbackDays?: number | null; maxLookups?: number | null },
+  params: { brokerageId: string; city: string; state: string; lookbackDays?: number | null; maxLookups?: number | null; pooledBrokerageIds?: readonly string[] | null },
   deps?: ExpiredPrefilterDeps,
 ): Promise<ExpiredPrefilterResult> {
   const base = { records: [] as BatchDataRecord[], removalsSeen: 0, freshRemovals: 0, lookupsMatched: 0, soldDropped: 0, batchDataCostUsd: 0 }
@@ -154,7 +159,7 @@ export async function runExpiredListingPrefilter(
   }
   if (!params.city || !params.state) return { ...base, mode: "unavailable", reason: "territory has no city + state for an area sweep" }
   let inactive: { success: boolean; listings: RentcastListing[]; error?: string }
-  try { inactive = await d.inactiveListings({ brokerageId: params.brokerageId, city: params.city, state: params.state }) } catch (e) {
+  try { inactive = await d.inactiveListings({ brokerageId: params.brokerageId, city: params.city, state: params.state, pooledBrokerageIds: params.pooledBrokerageIds ?? null }) } catch (e) {
     return { ...base, mode: "unavailable", reason: `RentCast inactive sweep threw: ${e instanceof Error ? e.message : String(e)}` }
   }
   if (!inactive.success) return { ...base, mode: "unavailable", reason: `RentCast inactive sweep unavailable: ${inactive.error ?? "no reason reported"}` }

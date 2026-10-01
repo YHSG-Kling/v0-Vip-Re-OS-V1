@@ -32,6 +32,15 @@
  *      listing prefilter selects fresh removals by removedDate, dedupes, drops sold-after-removal,
  *      skips BatchData when nothing is fresh, and yields to the area pull when RentCast is dark
  *      (EXECUTED with injected providers); the cron wires it before the BatchData expired pull.
+ *   E  WAVE 93 (lane 93B) — BATCHDATA AS THE BACKUP. Owner, verbatim (2026-10-01): "use batchdata as
+ *      a backup." The ONE provider chain (lib/avm/provider-chain.ts) reaches BatchData only through
+ *      ONE door (batchDataPropertyFallback) and only after a NAMED RentCast miss the gate accepts
+ *      (unconfigured / error / no record — never over budget). EXECUTED with injected seams: RentCast
+ *      answered → BatchData never called (POSITIVE CONTROL for the backup: a RentCast miss → BatchData
+ *      answered, booked on the ledger as `answered_by: batchdata` with the miss); the gate refusing →
+ *      no call, no booking; a cache hit → no request, no booking; the record lookup names its
+ *      provider. Section B's rule is re-anchored: no property reader reaches BatchData EXCEPT the
+ *      chain's one backup door (B held the wave-92 waypoint "no BatchData at all").
  */
 import { readFileSync, readdirSync, statSync, existsSync } from "fs"
 import { join } from "path"
@@ -162,7 +171,7 @@ async function main() {
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[B · no BatchData on property reads — derived population, retired readers gone, valuation refused]")
   const BD_IMPORT = /["']@\/lib\/external\/batchdata-[a-z-]+["']|["']@\/lib\/batchdata-client["']|from ["']@\/lib\/external["']/
-  const BD_REACH = /callBatchDataMcp\(|batchDataPreferMcp(?:<[^(]*?>)?\(|enrichPropertyDatasetsBatchData\(|fetchIncrementalPropertySearch\(|(?<!\.)searchProperties\(|fetchMotivatedSellers\(|enrichPropertyWithBatchData\(|fetchBatchDataComps\(|comparableProperty\w*\(|lookupBatchDataPropertiesByIds\(|new BatchDataClient\(/
+  const BD_REACH = /callBatchDataMcp\(|batchDataPreferMcp(?:<[^(]*?>)?\(|enrichPropertyDatasetsBatchData\(|fetchIncrementalPropertySearch\(|(?<!\.)searchProperties\(|fetchMotivatedSellers\(|enrichPropertyWithBatchData\(|fetchBatchDataComps\(|comparableProperty\w*\(|lookupBatchDataPropertiesByIds\(|fetchBatchDataPropertyFallback\(|new BatchDataClient\(/
   const RENTCAST_IMPORT = /["']@\/lib\/property\/rentcast["']|["']\.\/rentcast["']/
   const propertyReaders = CORPUS.filter((p) =>
     /^lib\/(property|avm|cma)\//.test(p) || RENTCAST_IMPORT.test(stripped(p))
@@ -174,21 +183,36 @@ async function main() {
     "lib/lead-pipeline/expired-listing-prefilter.ts": "expired-seller LEADS: RentCast finds fresh removals, BatchData the owners",
     "lib/kernel/listings-batchdata-feed.ts": "incremental motivated-seller + Buy Box investor LEAD lanes (discovery body held below)",
     "lib/ai-isa/property-lookup-rail.ts": "the BatchData rung is reachable only for LEAD purposes (BATCHDATA_ELIGIBLE_PURPOSES held below)",
+    // Wave 93 (lane 93B): the provider chain's ONE BatchData BACKUP door — held in section E (only
+    // batchDataPropertyFallback reaches BatchData, only after a named RentCast miss).
+    "lib/avm/provider-chain.ts": "THE BACKUP door (batchDataPropertyFallback) — reached only after a named RentCast miss (section E)",
   }
   const offenders = propertyReaders.filter((p) => !LEAD_LANE_ALLOW[p] && (BD_IMPORT.test(stripped(p)) || BD_REACH.test(code(p))))
   console.log(`  denominator: ${CORPUS.length} files under app/ lib/ · ${propertyReaders.length} property readers (RentCast importers + lib/property|avm|cma + the 2 named) · ${Object.keys(LEAD_LANE_ALLOW).length} lead-lane exceptions`)
   check(`no property reader imports or reaches BatchData (${propertyReaders.length - offenders.length}/${propertyReaders.length})`, offenders.length === 0, offenders.join(", "))
   check("POSITIVE CONTROL: the same predicates flag a property module importing and calling BatchData",
     BD_IMPORT.test(`import { enrichPropertyWithBatchData } from "@/lib/external/batchdata-client"`) && BD_REACH.test(blankStrings(`await batchDataPreferMcp("lookup_property", {})`)))
-  check("the four former 'valuation' callers are in the derived population and BatchData-free (comps, AVM, net-sheet tax, deal investigator)",
-    ["lib/cma/comp-provider.ts", "lib/avm/provider-chain.ts", "lib/offers/public-record-preload.ts", "lib/agentic-os/deal-investigator.ts"]
-      .every((p) => propertyReaders.includes(p) && !BD_IMPORT.test(stripped(p)) && !BD_REACH.test(code(p))))
+  // Re-anchored (wave 93, lane 93B — owner: "use batchdata as a backup"): the wave-92 rule "no
+  // BatchData at all" was a WAYPOINT; the rule now is "only through the chain's ONE backup door".
+  check("the three former 'valuation' callers stay BatchData-free and reach the backup only THROUGH the chain (comps §3c, net-sheet tax, deal investigator)",
+    ["lib/cma/comp-provider.ts", "lib/offers/public-record-preload.ts", "lib/agentic-os/deal-investigator.ts"]
+      .every((p) => propertyReaders.includes(p) && !BD_IMPORT.test(stripped(p)) && !BD_REACH.test(code(p)))
+    && /batchDataPropertyFallback\(/.test(code("lib/cma/comp-provider.ts"))
+    && ["lib/offers/public-record-preload.ts", "lib/agentic-os/deal-investigator.ts"].every((p) => /getPropertyRecordWithFallback\(/.test(code(p))))
+  const chainCode = code("lib/avm/provider-chain.ts")
+  const doorBody = fnBody(chainCode, "batchDataPropertyFallback")
+  const outsideDoor = chainCode.replace(doorBody, "")
+  check("inside the chain, BatchData is reached ONLY in the one backup door (batchDataPropertyFallback) — every other chain function is BatchData-free",
+    doorBody.length > 200 && /fetchBatchDataPropertyFallback/.test(doorBody) && !/fetchBatchDataPropertyFallback|batchDataPreferMcp|fetchMotivatedSellers/.test(outsideDoor))
   const feed = code("lib/kernel/listings-batchdata-feed.ts")
-  const discovery = fnBody(feed, "runActiveListingDiscoveryForMarket")
-  check("the active-listing DISCOVERY body (a listings read) reaches RentCast, never BatchData",
-    discovery.length > 200 && /searchRentcastSaleListings\(/.test(discovery) && !BD_REACH.test(discovery))
+  // Re-anchored (wave 93, lane 93B): the sweep moved into sweepDiscoveryArea so the POOLED entry buys
+  // one sweep per identical area; the rule (a listings read reaches RentCast, never BatchData) holds
+  // over all three discovery bodies.
+  const discovery = ["runActiveListingDiscoveryForMarket", "sweepDiscoveryArea", "runActiveListingDiscoveryPooled"].map((n) => fnBody(feed, n)).join("\n")
+  check("the active-listing DISCOVERY bodies (a listings read: per-territory, the shared sweep, the pooled entry) reach RentCast, never BatchData",
+    discovery.length > 600 && /searchRentcastSaleListings\(/.test(fnBody(feed, "sweepDiscoveryArea")) && !BD_REACH.test(discovery))
   const bdc = stripped("lib/external/batchdata-client.ts"), bdm = stripped("lib/external/batchdata-mcp.ts")
-  const retired = ["enrichPropertyWithBatchData", "fetchBatchDataComps", "readBatchDataComp"].filter((n) => new RegExp(`export (?:async )?function ${n}\\(`).test(bdc))
+  const retired = ["enrichPropertyWithBatchData", "fetchBatchDataComps", "readBatchDataComp", "getPropertyDetails"].filter((n) => new RegExp(`export (?:async )?function ${n}\\(`).test(bdc))
     .concat(["comparablePropertyPreview", "comparablePropertyCount", "comparablePropertyPage"].filter((n) => new RegExp(`export async function ${n}\\(`).test(bdm)))
   check("the retired BatchData PROPERTY readers are deleted (AVM enrichment, comps dataset, comps MCP mirrors)", retired.length === 0, retired.join(","))
   const { BATCHDATA_ELIGIBLE_PURPOSES, decideBatchDataAccess } = await import("../lib/ai-isa/property-lookup-rail")
@@ -240,7 +264,8 @@ async function main() {
   check("EXECUTED: no live subscriber → every pull is skipped (no_active_subscribers)", nobody.check({ brokerageId: "b-x" }).reason === "no_active_subscribers")
 
   // The PULL population — derived from the pull calls each cron makes.
-  const PULL = /new BatchDataClient\(|fetchMotivatedSellers\(|exaSearch\(|runApifyScrape\(|fetchTopThreads\(|fetchExaCompetitorAds\(|refreshMarketData\(|generateMarketInsight\(|refreshInvestorOffMarketMatches\(|runAllActiveAlerts\(|runExternalMarketWatchForBuyer\(|runIntentCampaign\(|ingestBatchDataSellerSignals\(|searchRentcast\w*\(|getRentcastMarketStats\(/
+  // Wave 93 (lane 93B): runPooled…( is a pull — the lead-scraping cron's vendor pulls moved into the pooled lanes.
+  const PULL = /runPooled\w+\(|new BatchDataClient\(|fetchMotivatedSellers\(|exaSearch\(|runApifyScrape\(|fetchTopThreads\(|fetchExaCompetitorAds\(|refreshMarketData\(|generateMarketInsight\(|refreshInvestorOffMarketMatches\(|runAllActiveAlerts\(|runExternalMarketWatchForBuyer\(|runIntentCampaign\(|ingestBatchDataSellerSignals\(|searchRentcast\w*\(|getRentcastMarketStats\(/
   const GATE = /resolveActivePullGate\(|resolveActiveScrapeTerritories\(/
   // A cron that pulls through ONE library entry is gated when that entry's module asks the gate.
   const DELEGATE: Record<string, string> = { "runAllActiveAlerts(": "lib/property-alerts/alert-engine.ts", "runIntentCampaign(": "lib/kernel/intent-campaign.ts" }
@@ -322,16 +347,83 @@ async function main() {
   const wide = await runExpiredListingPrefilter({ brokerageId: "b-live", city: "Austin", state: "TX", lookbackDays: 200 }, deps(inactiveRows))
   check("POSITIVE CONTROL: widening the market's lookback to 200 days admits the 100-day removal (the window is the market's own)",
     wide.freshRemovals === 3 && lookedUp.some((a) => /Old St/.test(a)))
-  const preIdx = lead.indexOf("runExpiredListingPrefilter(")
-  const areaPullIdx = lead.indexOf(`getMotivatedSellerDataWithCost(location, [`, preIdx)
-  check("the lead-scraping cron runs the prefilter BEFORE its BatchData expired area pull, which runs only when RentCast is unavailable",
-    preIdx > -1 && areaPullIdx > preIdx && /pre && pre\.mode === "prefiltered"/.test(stripped("app/api/cron/lead-scraping/route.ts")) && /results\.skipped_runs\.expired_batchdata_pull\+\+/.test(lead))
+  // Re-anchored (wave 93, lane 93B — "one pull"): the prefilter and the BatchData expired pull moved
+  // into the cron's POOLED phase (once per identical area / once per cycle). The RULE held: the
+  // prefilter runs first and the BatchData expired pull is fed ONLY the territories RentCast could not answer.
+  const phase = stripped("app/api/cron/lead-scraping/route.ts")
+  const preIdx = phase.indexOf("await runExpiredListingPrefilter(")
+  const areaPullIdx = phase.indexOf(`runPooledBatchDataLane("expired_listing"`, preIdx)
+  check("the lead-scraping cron runs the prefilter BEFORE its BatchData expired pull, which is fed only the territories RentCast could not answer",
+    preIdx > -1 && areaPullIdx > preIdx && /if \(pre && pre\.mode === "prefiltered"\) \{[\s\S]{0,400}\} else \{[\s\S]{0,300}expiredFallback\.push\(/.test(phase) && /results\.skipped_runs\.expired_batchdata_pull\+\+/.test(lead))
+
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[E · BatchData as the BACKUP — one door, only after a named RentCast miss, booked by who answered]")
+  const chain2 = await import("../lib/avm/provider-chain")
+  const railMod = await import("../lib/ai-isa/property-lookup-rail")
+  check("the miss vocabulary maps RentCast's outcome: no key → unconfigured, budget → over_budget, error/no_record verbatim, answered → none",
+    chain2.rentcastMissFrom("not_eligible", "no_platform_key") === "unconfigured" && chain2.rentcastMissFrom("not_eligible", "budget_exhausted") === "over_budget"
+      && chain2.rentcastMissFrom("error", null) === "error" && chain2.rentcastMissFrom("no_record", null) === "no_record" && chain2.rentcastMissFrom("answered", "eligible") === null)
+  check("the backup triggers are unconfigured / error / no_record — over_budget is NOT one (a spent tenant cap never buys a second paid vendor)",
+    [...railMod.BATCHDATA_FALLBACK_MISS_REASONS].sort().join(",") === "error,no_record,unconfigured")
+  const bdRow = { ok: true, found: true, facts: { address: "1 Main St", city: "Austin", state: "TX", zip: "78701", beds: 3, baths: 2, sqft: 1800, yearBuilt: 1999, propertyType: "SFR", assessedValue: 300000, annualPropertyTax: 6100, taxYear: 2025, ownerNames: ["A Owner"], lastSaleDate: null, lastSalePrice: null },
+    valuation: { value: 455000, rangeLow: 430000, rangeHigh: 480000 }, comps: [], cost: 0.05, error: null }
+  const booked: any[] = []
+  let fetched = 0
+  const seams = (allowed: boolean, cacheHit = false) => ({
+    access: async (r: any) => railMod.decideBatchDataAccess(r, { batchDataTier: allowed ? "lean" : "off", batchDataOptedIn: false }),
+    fetch: async () => { fetched++; return bdRow as any },
+    meter: async (m: any) => { booked.push(m) },
+    cache: { get: async () => (cacheHit ? (bdRow as any) : null), set: async () => null },
+  })
+  const answered = await chain2.batchDataPropertyFallback({ brokerageId: "b-1", address: "1 Main St, Austin, TX 78701", kind: "avm", rentcastMiss: "no_record", systemSource: "proof" }, seams(true))
+  check("EXECUTED (POSITIVE CONTROL): after a RentCast miss the backup ANSWERS — one request, booked as vendor batchdata with answered_by + fallback_for + the miss",
+    answered.answeredBy === "batchdata" && fetched === 1 && booked.length === 1 && booked[0].vendorName === "batchdata"
+      && booked[0].metadata.answered_by === "batchdata" && booked[0].metadata.fallback_for === "rentcast" && booked[0].metadata.rentcast_miss === "no_record"
+      && booked[0].cost === 0.05 && booked[0].usageType === "property_fallback_avm", JSON.stringify({ answered, booked }))
+  fetched = 0; booked.length = 0
+  const overBudget = await chain2.batchDataPropertyFallback({ brokerageId: "b-1", address: "1 Main St", kind: "avm", rentcastMiss: "over_budget" }, seams(true))
+  check("EXECUTED: an OVER-BUDGET miss is refused at the gate — no request, nothing booked", overBudget.answeredBy === null && fetched === 0 && booked.length === 0)
+  const killed = await chain2.batchDataPropertyFallback({ brokerageId: "b-1", address: "1 Main St", kind: "avm", rentcastMiss: "error" }, seams(false))
+  check("EXECUTED: the platform kill switch (tier off) refuses the backup — no request, nothing booked", killed.answeredBy === null && fetched === 0 && booked.length === 0)
+  const cached = await chain2.batchDataPropertyFallback({ brokerageId: "b-1", address: "1 Main St", kind: "avm", rentcastMiss: "unconfigured" }, seams(true, true))
+  check("EXECUTED: a 14-day fallback-cache hit answers with NO request and NO booking", cached.answeredBy === "batchdata" && cached.cacheHit && fetched === 0 && booked.length === 0)
+
+  // The lookup half — RentCast answered → BatchData never called; RentCast missed → the backup answers.
+  const rcDetail = { address: "1 Main St", city: "Austin", state: "TX", zip: "78701", bedrooms: 3, bathrooms: 2, squareFeet: 1800, yearBuilt: 1999, propertyType: "SFR", assessedValue: 1, annualPropertyTax: 6000, taxYear: 2025, ownerNames: [], lastSaleDate: null, lastSalePrice: null } as any
+  fetched = 0; booked.length = 0
+  const viaRc = await chain2.getPropertyRecordWithFallback({ brokerageId: "b-1", address: "1 Main St" }, {
+    rentcast: async () => ({ detail: rcDetail, outcome: "answered", eligibility: { reason: "eligible" } }), fallback: seams(true),
+  })
+  check("EXECUTED: RentCast answered → the record names provider rentcast and BatchData is NEVER called",
+    viaRc.record?.provider === "rentcast" && fetched === 0 && booked.length === 0 && viaRc.backupCostUsd === 0)
+  const viaBd = await chain2.getPropertyRecordWithFallback({ brokerageId: "b-1", address: "1 Main St" }, {
+    rentcast: async () => ({ detail: null, outcome: "no_record", eligibility: { reason: "eligible" } }), fallback: seams(true),
+  })
+  check("EXECUTED (POSITIVE CONTROL): RentCast had no record → BatchData answered as the backup, the record names provider batchdata, its cost is reported",
+    viaBd.record?.provider === "batchdata" && viaBd.rentcastMiss === "no_record" && viaBd.record.annualPropertyTax === 6100 && fetched === 1 && viaBd.backupCostUsd === 0.05)
+  fetched = 0
+  const notMiss = await chain2.getPropertyRecordWithFallback({ brokerageId: "b-1", address: "1 Main St" }, {
+    rentcast: async () => ({ detail: null, outcome: "not_eligible", eligibility: { reason: "budget_exhausted" } }), fallback: seams(true),
+  })
+  check("EXECUTED: RentCast paused over budget → no backup (free tiers only), no BatchData request", notMiss.record === null && notMiss.rentcastMiss === "over_budget" && fetched === 0)
+
+  // The AVM chain's ORDER: RentCast → BatchData backup → Perplexity; the backup sits behind a miss.
+  const avm = fnBody(stripped("lib/avm/provider-chain.ts"), "getCurrentAvm")
+  const iRc = avm.indexOf("await tryRentcast(req)"), iBd = avm.indexOf("await tryBatchDataBackup(req, rentcastMiss)"), iPx = avm.indexOf("await tryPerplexitySonar(req)")
+  check("the AVM chain asks RentCast → the BatchData BACKUP → Perplexity, and the backup is guarded by a named miss + a tenant + skipProviders",
+    iRc > -1 && iBd > iRc && iPx > iBd && /if \(rentcastMiss && req\.brokerageId && !skip\.has\("batchdata"\)\)/.test(avm), JSON.stringify({ iRc, iBd, iPx }))
+  check("POSITIVE CONTROL: a BatchData-before-RentCast fixture fails the same ordering test",
+    (() => { const fx = "await tryBatchDataBackup(req, rentcastMiss)\nawait tryRentcast(req)"; return !(fx.indexOf("await tryRentcast(req)") < fx.indexOf("await tryBatchDataBackup(req, rentcastMiss)")) })())
+  const comp = stripped("lib/cma/comp-provider.ts")
+  check("the CMA sold side asks the backup only when RentCast did NOT ANSWER (not when it was merely short — §3b's widened RentCast search owns that)",
+    /rentcastRows\.length === 0 \? \(avmPull\?\.avmUnavailableReason === "provider_error" \? "error" : "no_record"\) : null/.test(comp)
+      && /if \(closedComps\.length < REQUIRED_SOLD_COMPS && rentcastCompMiss\)/.test(comp) && /batchDataBackupSoldCount/.test(comp))
 
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ RENTCAST_PLATFORM_FAIL"); process.exit(1) }
-  console.log(" ✅ RENTCAST_PLATFORM_PASS — RentCast serves every property read for every tenant (IDX substitutes only the for-sale search), BatchData is lead work only, every pull asks the active-territory gate first and counts what it skipped, and recency windows sit on listings and status changes, never on property facts")
+  console.log(" ✅ RENTCAST_PLATFORM_PASS — RentCast serves every property read for every tenant (IDX substitutes only the for-sale search), BatchData is lead work plus the server-side BACKUP after a named RentCast miss (one door, booked by who answered), every pull asks the active-territory gate first and counts what it skipped, and recency windows sit on listings and status changes, never on property facts")
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })

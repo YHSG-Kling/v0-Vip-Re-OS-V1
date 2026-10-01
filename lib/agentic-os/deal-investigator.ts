@@ -12,6 +12,10 @@
  * (§1.3): that leg is deleted — survivor: lib/property/rentcast.ts::getRentcastPropertyDetail
  * (every attribute of the record: features, owner, sale history, tax years; staff-only, which
  * this investigator is), gated + metered + cached 30 days by the ONE RentCast client.
+ * WAVE 93 (lane 93B, owner: "use batchdata as a backup"): the leg now asks the provider chain's
+ * lookup (lib/avm/provider-chain.ts::getPropertyRecordWithFallback) — RentCast first, BatchData
+ * only as the backup after a named RentCast miss. This is a staff button (runDealInvestigatorAction),
+ * not an AI agent tool, so the server-side backup is permitted here.
  *
  * Every external call routes through the canonical gateway. Never throws (gateway contract).
  */
@@ -110,16 +114,22 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
   // says why. A cached record costs nothing (the client's 30-day fact cache).
   try {
     if (address && contact.brokerage_id) {
-      const { getRentcastPropertyDetail, RENTCAST_USD_PER_REQUEST } = await import("@/lib/property/rentcast")
-      const detail = await getRentcastPropertyDetail({
+      // Wave 93 (lane 93B, owner: "use batchdata as a backup"): THE PROVIDER CHAIN's lookup —
+      // RentCast's full record first, BatchData only as the backup after a named RentCast miss.
+      const [{ getPropertyRecordWithFallback }, { RENTCAST_USD_PER_REQUEST }] = await Promise.all([
+        import("@/lib/avm/provider-chain"),
+        import("@/lib/property/rentcast"),
+      ])
+      const { record, note, backupCostUsd } = await getPropertyRecordWithFallback({
         brokerageId: contact.brokerage_id,
         address,
         systemSource: "deal_investigator",
         contactId: contact.id,
       })
-      result.cost += RENTCAST_USD_PER_REQUEST
-      result.sources.property = detail as unknown as Record<string, unknown> | null
-      if (!detail) result.warnings.push("rentcast: no property record (not configured, budget paused, or no record for this address)")
+      result.cost += RENTCAST_USD_PER_REQUEST + backupCostUsd
+      result.sources.property = record ? ((record.rentcastDetail ?? record) as unknown as Record<string, unknown>) : null
+      if (!record) result.warnings.push(`property record: none (${note})`)
+      else if (record.provider === "batchdata") result.warnings.push(`property record: ${note}`)
     } else if (address) {
       result.warnings.push("rentcast: contact has no brokerage_id to meter the property record against")
     }

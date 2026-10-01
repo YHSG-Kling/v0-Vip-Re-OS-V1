@@ -14,6 +14,12 @@
  *     possible regarding … home values" / "batchdata is to be used more for scrapping leads".
  *     Survivor: the RentCast leg, which now runs for EVERY tenant — its gate no longer asks the
  *     tenant-IDX substitute question for a property-data read, rentcast-eligibility.ts readKind.)
+ *   - BatchData — THE BACKUP (wave 93, lane 93B, owner: "use batchdata as a backup"). Runs
+ *     ONLY after a named RentCast miss (unconfigured / error / no record — never over budget),
+ *     only server-side, through the ONE BatchData gate's fallback purpose. The same backup
+ *     serves the property LOOKUP (getPropertyRecordWithFallback) and the CMA comps
+ *     (lib/cma/comp-provider.ts §3c) through batchDataPropertyFallback below. Never a
+ *     primary, never an AI agent tool.
  *   - ZenRows + Zillow (ZENROWS_API_KEY) — Zillow Zestimate scrape
  *   - Perplexity Sonar (via lib/ai/models.ts) — live AVM context
  *   - OSINT public records — value derived from sale records + comps
@@ -33,9 +39,12 @@
  */
 
 import "server-only"
+import type { RentcastMissReason } from "@/lib/ai-isa/property-lookup-rail"
+import type { BatchDataPropertyFallback } from "@/lib/external/batchdata-client"
+import type { RentcastPropertyDetail, RentcastReadOutcome } from "@/lib/property/rentcast"
 
-// "batchdata" stays in the union ONLY so a historical cached row's provenance still types; no
-// adapter produces it since wave 92 (lane 92B).
+// "batchdata" is produced again since wave 93 (lane 93B) — ONLY by the BACKUP leg
+// (tryBatchDataBackup), after a named RentCast miss. Wave 92 had retired it as a primary.
 export type AvmSource = "rentcast" | "batchdata" | "zenrows_zillow" | "perplexity" | "osint" | "cached" | "market_appreciation_fallback"
 
 export interface AvmResult {
@@ -124,11 +133,27 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
       : (await rentcastBudgetBlocked(req.brokerageId)).blocked
   }
   const rentcastFirst = rentcastEligible && !overBudget
+  // Wave 93 (lane 93B): the NAMED reason RentCast did not answer — the only door to the backup.
+  let rentcastMiss: RentcastMissReason | null = null
   if (rentcastFirst) {
     if (!skip.has("rentcast") && req.brokerageId && rentcastEligible) {
       const rc = await tryRentcast(req)
-      if (rc && rc.confidence >= 0.6) return rc
+      if (rc.result && rc.result.confidence >= 0.6) return rc.result
+      rentcastMiss = rc.result ? "no_record" : rentcastMissFrom(rc.outcome, rc.eligibilityReason)
     }
+  } else if (req.brokerageId && !skip.has("rentcast")) {
+    rentcastMiss = overBudget ? "over_budget" : "unconfigured"
+  }
+
+  // ── 1b. BATCHDATA — THE BACKUP (wave 93, lane 93B) ─────────────────────
+  // Owner, verbatim (2026-10-01): "use batchdata as a backup." Reached ONLY after a named RentCast
+  // miss the gate accepts (unconfigured / error / no record — never over budget, see
+  // BATCHDATA_FALLBACK_MISS_REASONS), only for a tenant-attributed call, through the ONE BatchData
+  // gate's fallback purpose. Its answer is booked as vendor "batchdata" with `answered_by` and the
+  // miss on the ledger row, and cached 14 days (the same window as RentCast's AVM cache).
+  if (rentcastMiss && req.brokerageId && !skip.has("batchdata")) {
+    const bd = await tryBatchDataBackup(req, rentcastMiss)
+    if (bd && bd.confidence >= 0.55) return bd
   }
 
   // ── 2. Perplexity Sonar (FALLBACK) ──────────────────────────────────────
@@ -176,24 +201,184 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
 // silent-fail to the next provider. The one deliberate null is OSINT (public
 // records yield life events, not values).
 
-async function tryRentcast(req: AvmRequest): Promise<AvmResult | null> {
-  if (!req.brokerageId) return null
+/** The RentCast leg's answer: the AVM (or null) and WHY it is null — the miss the backup reads. */
+type RentcastLeg = { result: AvmResult | null; outcome: RentcastReadOutcome; eligibilityReason: string | null }
+
+async function tryRentcast(req: AvmRequest): Promise<RentcastLeg> {
+  if (!req.brokerageId) return { result: null, outcome: "not_eligible", eligibilityReason: null }
   try {
     const { getRentcastAVM } = await import("@/lib/property/rentcast")
     const avm = await getRentcastAVM({ brokerageId: req.brokerageId, address: req.address })
-    if (!avm.value || avm.value <= 0) return null
+    if (!avm.value || avm.value <= 0) return { result: null, outcome: avm.outcome === "answered" ? "no_record" : avm.outcome, eligibilityReason: avm.eligibility.reason }
     // Tighter range around the point estimate → higher confidence.
     const spread = avm.rangeLow && avm.rangeHigh && avm.value > 0 ? (avm.rangeHigh - avm.rangeLow) / avm.value : 0.3
     const confidence = Math.max(0.6, Math.min(0.92, 0.9 - spread))
     return {
-      value: avm.value,
-      confidence,
-      source: "rentcast",
-      fetchedAt: new Date().toISOString(),
-      notes: avm.rangeLow && avm.rangeHigh ? `RentCast AVM (range $${avm.rangeLow.toLocaleString()}–$${avm.rangeHigh.toLocaleString()})` : "RentCast AVM",
+      result: {
+        value: avm.value,
+        confidence,
+        source: "rentcast",
+        fetchedAt: new Date().toISOString(),
+        notes: avm.rangeLow && avm.rangeHigh ? `RentCast AVM (range $${avm.rangeLow.toLocaleString()}–$${avm.rangeHigh.toLocaleString()})` : "RentCast AVM",
+      },
+      outcome: "answered",
+      eligibilityReason: avm.eligibility.reason,
     }
   } catch {
+    return { result: null, outcome: "error", eligibilityReason: null }
+  }
+}
+
+/** The AVM half of the backup — BatchData's own valuation for the address, after a RentCast miss. */
+async function tryBatchDataBackup(req: AvmRequest, miss: RentcastMissReason): Promise<AvmResult | null> {
+  if (!req.brokerageId) return null
+  const bd = await batchDataPropertyFallback({ brokerageId: req.brokerageId, address: req.address, kind: "avm", rentcastMiss: miss, systemSource: "avm_provider_chain" })
+  const v = bd.result?.valuation
+  if (bd.answeredBy !== "batchdata" || !v?.value) return null
+  const spread = v.rangeLow && v.rangeHigh ? (v.rangeHigh - v.rangeLow) / v.value : 0.35
+  return {
+    value: v.value,
+    confidence: Math.max(0.55, Math.min(0.85, 0.85 - spread)),
+    source: "batchdata",
+    fetchedAt: new Date().toISOString(),
+    notes: `BatchData AVM — the BACKUP, used because RentCast did not answer (${miss})${bd.cacheHit ? "; served from the 14-day fallback cache" : ""}`,
+  }
+}
+
+// ─── THE BATCHDATA BACKUP — one door for every property read (wave 93, lane 93B) ───────
+
+/** PURE — RentCast's read outcome → the miss the BatchData gate judges (null = RentCast answered,
+ *  or a sale-listings-only IDX reason a property read can never carry).
+ *  @proofSeam exported so scripts/rentcast-platform-guard.ts (section E) can execute the vocabulary
+ *  directly; its production readers are getCurrentAvm and getPropertyRecordWithFallback in this file. */
+export function rentcastMissFrom(outcome: RentcastReadOutcome, eligibilityReason: string | null): RentcastMissReason | null {
+  if (outcome === "answered") return null
+  if (outcome === "not_eligible") {
+    if (eligibilityReason === "budget_exhausted") return "over_budget"
+    if (eligibilityReason === "no_platform_key") return "unconfigured"
     return null
+  }
+  return outcome
+}
+
+/** Injectable seams so the proof runs the backup with zero network (scripts/rentcast-platform-guard.ts). */
+export interface BatchDataFallbackDeps {
+  access?: (req: { brokerageId: string; purpose: "valuation"; afterRentcastMiss: RentcastMissReason }) => Promise<{ allowed: boolean; reason: string }>
+  fetch?: (address: string, opts: { comps?: boolean }) => Promise<BatchDataPropertyFallback>
+  meter?: (input: { vendorName: string; usageType: string; cost: number; brokerageId: string; systemSource: string; metadata: Record<string, unknown> }) => Promise<unknown>
+  cache?: { get: (key: string) => Promise<BatchDataPropertyFallback | null>; set: (key: string, value: BatchDataPropertyFallback, costCents: number) => Promise<unknown> } | null
+}
+
+const BATCHDATA_FALLBACK_CACHE_DAYS = 14
+
+/**
+ * THE ONE BATCHDATA BACKUP for a property read (lookup, value, comps). Order of questions:
+ *   1. the gate (resolveBatchDataAccess, purpose "valuation" + afterRentcastMiss) — refused → null;
+ *   2. the 14-day fallback cache (a hit costs nothing and books nothing);
+ *   3. ONE BatchData Property Search (fetchBatchDataPropertyFallback);
+ *   4. the ledger: vendor "batchdata", usage `property_fallback_<kind>`, metadata answered_by +
+ *      fallback_for "rentcast" + the miss — so "which provider answered" is a ledger fact.
+ * Never throws. `answeredBy` is "batchdata" only when a row came back.
+ */
+export async function batchDataPropertyFallback(
+  req: { brokerageId: string; address: string; kind: "avm" | "record" | "comps"; rentcastMiss: RentcastMissReason; systemSource?: string; contactId?: string | null },
+  deps: BatchDataFallbackDeps = {},
+): Promise<{ answeredBy: "batchdata" | null; result: BatchDataPropertyFallback | null; reason: string; cacheHit: boolean }> {
+  try {
+    const access = deps.access
+      ? await deps.access({ brokerageId: req.brokerageId, purpose: "valuation", afterRentcastMiss: req.rentcastMiss })
+      : await (await import("@/lib/ai-isa/property-lookup-rail")).resolveBatchDataAccess({ brokerageId: req.brokerageId, purpose: "valuation", afterRentcastMiss: req.rentcastMiss })
+    if (!access.allowed) return { answeredBy: null, result: null, reason: access.reason, cacheHit: false }
+    const key = `batchdata:fallback|${req.kind === "comps" ? "comps" : "property"}|${req.address.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()}`
+    const cache = deps.cache !== undefined ? deps.cache : await productionFallbackCache()
+    const hit = cache ? await cache.get(key).catch(() => null) : null
+    if (hit && hit.found) return { answeredBy: "batchdata", result: hit, reason: "BatchData backup served from the 14-day fallback cache — no request billed", cacheHit: true }
+    const fetcher = deps.fetch
+      ?? ((address: string, opts: { comps?: boolean }) => import("@/lib/external/batchdata-client").then((m) => m.fetchBatchDataPropertyFallback(address, opts)))
+    const result = await fetcher(req.address, { comps: req.kind === "comps" })
+    if (!result.ok || !result.found) {
+      return { answeredBy: null, result, reason: result.error ? `BatchData backup failed: ${result.error}` : "BatchData backup answered with no record for this address", cacheHit: false }
+    }
+    const meter = deps.meter
+      ?? ((m: Parameters<NonNullable<BatchDataFallbackDeps["meter"]>>[0]) => import("@/lib/vendor-governance/meter-vendor").then((v) => v.meterVendorSpend(m)))
+    await Promise.resolve(meter({
+      vendorName: "batchdata",
+      usageType: `property_fallback_${req.kind}`,
+      cost: result.cost,
+      brokerageId: req.brokerageId,
+      systemSource: req.systemSource ?? "property_provider_chain",
+      metadata: { answered_by: "batchdata", fallback_for: "rentcast", rentcast_miss: req.rentcastMiss, contact_id: req.contactId ?? null },
+    })).catch(() => null)
+    if (cache) void Promise.resolve(cache.set(key, result, Math.round(result.cost * 100))).catch(() => null)
+    return { answeredBy: "batchdata", result, reason: `BatchData answered as the backup (RentCast miss: ${req.rentcastMiss})`, cacheHit: false }
+  } catch (e) {
+    return { answeredBy: null, result: null, reason: `BatchData backup threw: ${e instanceof Error ? e.message : String(e)}`, cacheHit: false }
+  }
+}
+
+/** The shared provider-payload store (lib/cma/comp-supplement-cache.ts) as the fallback cache. */
+async function productionFallbackCache(): Promise<BatchDataFallbackDeps["cache"]> {
+  try {
+    const store = await import("@/lib/cma/comp-supplement-cache")
+    return {
+      get: (key) => store.getCachedProviderPayload<BatchDataPropertyFallback>(key, BATCHDATA_FALLBACK_CACHE_DAYS),
+      set: (key, value, costCents) => store.setCachedProviderPayload(key, value, costCents),
+    }
+  } catch { return null }
+}
+
+/** One property record, whichever provider answered (the lookup half of the chain). */
+export interface ChainPropertyRecord {
+  provider: "rentcast" | "batchdata"
+  address: string | null; city: string | null; state: string | null; zip: string | null
+  bedrooms: number | null; bathrooms: number | null; squareFeet: number | null; yearBuilt: number | null
+  propertyType: string | null; assessedValue: number | null; annualPropertyTax: number | null; taxYear: number | null
+  ownerNames: string[]; lastSaleDate: string | null; lastSalePrice: number | null
+  /** The full RentCast staff record when RentCast answered (every attribute); null on the backup. */
+  rentcastDetail: RentcastPropertyDetail | null
+}
+
+/**
+ * THE PROPERTY LOOKUP on the chain (wave 93, lane 93B): RentCast's full record first; on a named
+ * miss, the BatchData backup. SERVER-SIDE callers only (net-sheet tax preload, deal investigator) —
+ * the AI agents' lookup_property_facts rides the conversation rail, which never reaches BatchData.
+ */
+export async function getPropertyRecordWithFallback(
+  params: { brokerageId: string; address: string; systemSource?: string; contactId?: string | null },
+  deps: { rentcast?: (p: { brokerageId: string; address: string; systemSource?: string; contactId?: string | null }) => Promise<{ detail: RentcastPropertyDetail | null; outcome: RentcastReadOutcome; eligibility: { reason: string } }>; fallback?: BatchDataFallbackDeps } = {},
+): Promise<{ record: ChainPropertyRecord | null; rentcastMiss: RentcastMissReason | null; note: string; backupCostUsd: number }> {
+  const rc = deps.rentcast
+    ? await deps.rentcast(params)
+    : await (await import("@/lib/property/rentcast")).getRentcastPropertyDetailWithOutcome(params)
+  if (rc.detail) {
+    const d = rc.detail
+    return {
+      record: {
+        provider: "rentcast", address: d.address, city: d.city, state: d.state, zip: d.zip,
+        bedrooms: d.bedrooms, bathrooms: d.bathrooms, squareFeet: d.squareFeet, yearBuilt: d.yearBuilt,
+        propertyType: d.propertyType, assessedValue: d.assessedValue, annualPropertyTax: d.annualPropertyTax, taxYear: d.taxYear,
+        ownerNames: d.ownerNames, lastSaleDate: d.lastSaleDate, lastSalePrice: d.lastSalePrice, rentcastDetail: d,
+      },
+      rentcastMiss: null,
+      note: "RentCast property record",
+      backupCostUsd: 0,
+    }
+  }
+  const miss = rentcastMissFrom(rc.outcome, rc.eligibility.reason)
+  if (!miss) return { record: null, rentcastMiss: null, note: `RentCast did not answer (${rc.outcome}) and no backup applies`, backupCostUsd: 0 }
+  const bd = await batchDataPropertyFallback({ ...params, kind: "record", rentcastMiss: miss }, deps.fallback)
+  const f = bd.result?.facts
+  if (bd.answeredBy !== "batchdata" || !f) return { record: null, rentcastMiss: miss, note: `RentCast missed (${miss}); ${bd.reason}`, backupCostUsd: 0 }
+  return {
+    record: {
+      provider: "batchdata", address: f.address, city: f.city, state: f.state, zip: f.zip,
+      bedrooms: f.beds, bathrooms: f.baths, squareFeet: f.sqft, yearBuilt: f.yearBuilt, propertyType: f.propertyType,
+      assessedValue: f.assessedValue, annualPropertyTax: f.annualPropertyTax, taxYear: f.taxYear,
+      ownerNames: f.ownerNames, lastSaleDate: f.lastSaleDate, lastSalePrice: f.lastSalePrice, rentcastDetail: null,
+    },
+    rentcastMiss: miss,
+    note: `BatchData property record — the backup after a RentCast miss (${miss})`,
+    backupCostUsd: bd.cacheHit ? 0 : (bd.result?.cost ?? 0),
   }
 }
 

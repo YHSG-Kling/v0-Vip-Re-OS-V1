@@ -439,8 +439,12 @@ async function main() {
       sheet.includes("Payoff is still $0") && sheet.includes("counterScenario")
       && sheet.includes("What if we counter?"))
     const preload = src("lib/offers/public-record-preload.ts")
-    check("the preload rides RentCast's property record (wave 92 — never BatchData) and never fabricates a 'verified' (clean skip on unconfigured/no-figure)",
-      preload.includes("getRentcastPropertyRecord") && !/batchDataPreferMcp\(|resolveBatchDataAccess\(/.test(stripComments(preload))
+    // Re-anchored (wave 93, lane 93B — "use batchdata as a backup"): the preload rides the provider
+    // chain's lookup (RentCast's record first, BatchData only as the server-side backup after a named
+    // miss) and reaches no BatchData seam itself. Read on STRIPPED source — the old raw read was
+    // satisfied by a comment naming the reader.
+    check("the preload rides the provider chain's lookup (RentCast first; BatchData only as the chain's backup) and never fabricates a 'verified' (clean skip on unconfigured/no-figure)",
+      /getPropertyRecordWithFallback\(/.test(stripComments(preload)) && !/batchDataPreferMcp\(|resolveBatchDataAccess\(|fetchBatchDataPropertyFallback\(/.test(stripComments(preload))
       && preload.includes("never a") && preload.includes("skipReason"))
   }
 

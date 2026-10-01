@@ -319,8 +319,13 @@ function activeListingSourceOrderWave69() {
   const feed = stripped("lib/kernel/listings-batchdata-feed.ts")
   check("listings-batchdata-feed.ts imports the SAME resolver",
     /import \{ resolveActiveListingSources \} from "@\/lib\/buyer-search\/listing-source-order"/.test(feed))
-  check("runActiveListingDiscoveryForMarket SKIPS the billed pull when batchdata_on_market is excluded",
-    /const sources = await resolveActiveListingSources\(market\.brokerage_id\)[\s\S]{0,120}if \(!sources\.includes\("batchdata_on_market"\)\)[\s\S]{0,120}return \{ observed: 0, transitions: 0, signalsWritten: 0, errors: \[\] \}/.test(feed))
+  // Re-anchored (wave 93, lane 93B): the opt-in + cadence gates moved into discoveryDue so the POOLED
+  // entry (runActiveListingDiscoveryPooled) asks them before buying one sweep for every identical
+  // territory. The RULE held: a refused opt-in returns before any sweep, and BOTH entries ask it first.
+  check("the discovery feed SKIPS the billed pull when batchdata_on_market is excluded (both entries ask the gate before any sweep)",
+    /const sources = await resolveActiveListingSources\(market\.brokerage_id\)[\s\S]{0,120}if \(!sources\.includes\("batchdata_on_market"\)\)[\s\S]{0,40}return \{ (?:observed: 0, transitions: 0, signalsWritten: 0, errors: \[\] |due: false, errors )\}/.test(feed)
+    && /export async function runActiveListingDiscoveryPooled[\s\S]{0,900}await discoveryDue\(supabase, m\)[\s\S]{0,1600}sweepDiscoveryArea\(/.test(feed)
+    && /(?:export )?async function runActiveListingDiscoveryForMarket[\s\S]{0,700}if \(!opts\.sweep\) \{\s*const gate = await discoveryDue\(supabase, market\)/.test(feed))
 
   // ── SETTINGS SURFACE — tenant page has NO source checklist, mounts the IDX form ONLY ────────
   check("the wave-68 tenant write seam is DELETED", !existsSync(join(process.cwd(), "app/actions/settings/active-listing-sources.ts")))

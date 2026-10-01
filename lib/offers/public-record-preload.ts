@@ -29,9 +29,10 @@ export interface PublicRecordCosts {
   annualTaxAmount: number | null
   assessedValue: number | null
   taxYear: number | null
-  /** "rest" = the RentCast REST record; "skipped" = nothing adopted ("mcp" is historical — the
-   *  retired BatchData MCP leg). */
-  via: "mcp" | "rest" | "skipped"
+  /** "rest" = the RentCast REST record; "batchdata_backup" = BatchData answered as the provider
+   *  chain's backup after a RentCast miss (wave 93); "skipped" = nothing adopted ("mcp" is
+   *  historical — the retired BatchData MCP leg). */
+  via: "mcp" | "rest" | "batchdata_backup" | "skipped"
   /** why nothing was adopted (unconfigured / no balance / no figure). */
   skipReason: string | null
 }
@@ -55,19 +56,23 @@ export async function preloadPublicRecordCosts(address: {
   if (!opts.brokerageId) return none("no tenant on the request — a tenant-less property-record read is refused (§4)")
 
   try {
-    const { getRentcastPropertyRecord } = await import("@/lib/property/rentcast")
-    const record = await getRentcastPropertyRecord({
+    // Wave 93 (lane 93B, owner: "use batchdata as a backup"): THE PROVIDER CHAIN's property lookup —
+    // RentCast's record first (the same /properties request getRentcastPropertyRecord makes), and
+    // BatchData ONLY as the backup after a named RentCast miss (lib/avm/provider-chain.ts). The
+    // record's `provider` says which one answered; the ledger row says so too.
+    const { getPropertyRecordWithFallback } = await import("@/lib/avm/provider-chain")
+    const { record, note } = await getPropertyRecordWithFallback({
       brokerageId: opts.brokerageId,
       systemSource: "offer_net_sheet",
       address: [address.street, address.city, `${address.state} ${address.zip}`].join(", "),
     })
-    if (!record) return none("property record unavailable (RentCast not configured, budget paused, or no record for this address)")
-    if (record.annualPropertyTax === null) return none("the property record carries no usable tax figure")
+    if (!record) return none(`property record unavailable (RentCast not configured, budget paused, or no record for this address — ${note})`)
+    if (record.annualPropertyTax === null) return none(`the property record (${record.provider}) carries no usable tax figure`)
     return {
       annualTaxAmount: record.annualPropertyTax,
       assessedValue: record.assessedValue,
       taxYear: record.taxYear,
-      via: "rest",
+      via: record.provider === "batchdata" ? "batchdata_backup" : "rest",
       skipReason: null,
     }
   } catch (e: any) {

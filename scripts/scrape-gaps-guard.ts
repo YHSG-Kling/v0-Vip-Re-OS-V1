@@ -284,7 +284,10 @@ function s9() {
   check("the motivated pull no longer REQUIRES a params row (the row could never be written)", !/lead_scraping_motivated_params\?\.length > 0/.test(cronRaw))
   check("POSITIVE CONTROL: the finder recognises the old gate", /lead_scraping_motivated_params\?\.length > 0/.test("if (x && market.lead_scraping_motivated_params?.length > 0) {"))
   check("no row ⇒ the default trio (signal_types [] → batchDataTriggersFor default); is_active=false still turns it off",
-    (cronRaw.match(/\?\? \{ is_active: true, signal_types: \[\] \}/g) ?? []).length === 2 && /is_active !== false/.test(cronRaw) && /is_active === false\) continue/.test(cronRaw))
+    // Re-anchored (wave 93, lane 93B): the pooled phase (runPooledVendorPhase) reads the SAME default
+    // as the loop — the rule is "every reader of the params row defaults to the trio", not a count of 2.
+    (cronRaw.match(/\?\? \{ is_active: true, signal_types: \[\] \}/g) ?? []).length >= 2 && /is_active !== false/.test(cronRaw) && /is_active === false\) continue/.test(cronRaw)
+    && /async function runPooledVendorPhase[\s\S]{0,1600}\?\? \{ is_active: true, signal_types: \[\] \}[\s\S]{0,200}mp\.is_active !== false/.test(cronRaw))
   check("OSINT receives its selected types", /osintRecordTypesFor\(/.test(cron) && /\{ recordTypes: osintTypes \}/.test(cronRaw))
   for (const s of ["batchdata_motivated", "expired_listing", "osint_signal", "batchdata_cash_buyer"]) {
     check(`cost still booked per source: bookSourceSpend({ source: "${s}" …`, cronRaw.includes(`bookSourceSpend({ source: "${s}"`))

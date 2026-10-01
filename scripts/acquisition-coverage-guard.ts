@@ -259,8 +259,12 @@ check("BatchData: each maps to a PUBLISHED quickList", newTriggers.every((t) => 
 check("BatchData: config spellings resolve (by_owner→fsbo, downsizer→senior_owner, withdrawn→canceled_listing, nod→notice_of_default)",
   JSON.stringify(batchDataTriggersFor(["by_owner", "downsizer", "withdrawn", "nod"])) === JSON.stringify(["fsbo", "senior_owner", "canceled_listing", "notice_of_default"]))
 check("POSITIVE CONTROL: divorce still has NO quickList (stays on OSINT court records)", !(BATCHDATA_MOTIVATION_TYPES as readonly string[]).includes("divorce") && JSON.stringify(batchDataTriggersFor(["divorce"])) === JSON.stringify(["high_equity", "pre_foreclosure", "absentee"]))
-check("cron keeps the BatchData pull's cost (getMotivatedSellerDataWithCost) and books both sources",
-  /getMotivatedSellerDataWithCost\(/.test(route) && /source: "batchdata_motivated", cost: motivatedCostUsd/.test(route) && /source: "expired_listing", cost: expiredCostUsd/.test(route))
+// Re-anchored (wave 93, lane 93B — "one pull"): the pull now runs ONCE per cycle in the pooled phase
+// (runPooledBatchDataLane → fetchMotivatedSellers, which carries records × the per-record price), and
+// each territory books ITS SHARE of that charge. The rule held: the pull's cost is kept and booked per source.
+check("cron keeps the BatchData pull's cost (the pooled lane's per-territory share of fetchMotivatedSellers' charge) and books both sources",
+  /runPooledBatchDataLane\(/.test(route) && /cost: motivatedShare\?\.costUsd \?\? 0/.test(route)
+  && /source: "batchdata_motivated", cost: motivatedCostUsd/.test(route) && /source: "expired_listing", cost: expiredCostUsd/.test(route))
 check("cash-buyer INVESTOR list: 'cash_buyer' maps to the published 'cash-buyer' quickList and is NOT a seller trigger",
   JSON.stringify(quickListSlugsFor(["cash_buyer"])) === JSON.stringify(["cash-buyer"]) && !(BATCHDATA_MOTIVATION_TYPES as readonly string[]).includes("cash_buyer")
   && !batchDataTriggersFor(["cash_buyer"]).includes("cash_buyer"))

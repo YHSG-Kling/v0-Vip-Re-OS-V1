@@ -412,14 +412,16 @@ A.push({
     const tryRc = chain.get("tryRentcast")
     if (!getCurrent) return { ok: false, detail: "getCurrentAvm not found in the AVM chain" }
     if (!tryRc) return { ok: false, detail: "tryRentcast adapter not found in the AVM chain" }
-    const conditional = /const\s+(\w+)\s*=\s*await\s+tryRentcast\(\s*req\s*\)\s*;?\s*if\s*\(\s*\1\s*&&[\s\S]{0,80}?\)\s*return\s+\1\b/
+    // Wave 93 (lane 93B): tryRentcast now returns { result, outcome } (the outcome names the miss the
+    // BatchData BACKUP needs) — the rule is unchanged: the result is consumed behind a guard.
+    const conditional = /const\s+(\w+)\s*=\s*await\s+tryRentcast\(\s*req\s*\)\s*;?\s*if\s*\(\s*\1(?:\.result)?\s*&&[\s\S]{0,80}?\)\s*return\s+\1\b/
     if (!conditional.test(getCurrent.body)) {
       return { ok: false, detail: "the rentcast result is not consumed behind a confidence guard — a dark lane would end the cascade" }
     }
     if (/\bthrow\b/.test(tryRc.body)) {
       return { ok: false, detail: "tryRentcast can throw — a RentCast failure would propagate instead of falling through" }
     }
-    if (!/catch[\s\S]*return null/.test(tryRc.body)) {
+    if (!/catch[\s\S]*return (?:null|\{ result: null\b)/.test(tryRc.body)) {
       return { ok: false, detail: "tryRentcast has no silent-fail-to-null path" }
     }
     return { ok: true, detail: "no key → null → the next provider" }
@@ -436,16 +438,17 @@ A.push({
       // The chain returns whatever rentcast gave it, including null — ending the
       // cascade before the next provider is ever tried.
       file: F.chain,
-      find: "      const rc = await tryRentcast(req)\n      if (rc && rc.confidence >= 0.6) return rc",
-      replace: "      const rc = await tryRentcast(req)\n      return rc",
+      find: "      const rc = await tryRentcast(req)\n      if (rc.result && rc.result.confidence >= 0.6) return rc.result",
+      replace: "      const rc = await tryRentcast(req)\n      return rc.result",
     },
     {
       // The adapter propagates instead of falling through.
       file: F.chain,
       // Wave 92 (lane 92B): tryBatchData was retired from the chain (a home value is RentCast's);
       // the adapter after tryRentcast is now tryZillowViaZenRows — the anchor follows it.
-      find: "  } catch {\n    return null\n  }\n}\n\nasync function tryZillowViaZenRows",
-      replace: "  } catch (e) {\n    throw e\n  }\n}\n\nasync function tryZillowViaZenRows",
+      // Wave 93 (lane 93B): the adapter after tryRentcast is now the BatchData BACKUP leg.
+      find: "  } catch {\n    return { result: null, outcome: \"error\", eligibilityReason: null }\n  }\n}\n\n/** The AVM half of the backup",
+      replace: "  } catch (e) {\n    throw e\n  }\n}\n\n/** The AVM half of the backup",
     },
   ],
 })

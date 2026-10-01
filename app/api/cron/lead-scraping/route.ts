@@ -2,7 +2,7 @@ import {
 NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
-import { ZenrowsClient, BatchDataClient, batchDataTriggersFor } from "@/lib/external"
+import { ZenrowsClient, batchDataTriggersFor } from "@/lib/external"
 import {
   createSmartSearchSubscription,
   deleteSmartSearchSubscription,
@@ -11,9 +11,10 @@ import {
   BATCHDATA_SMART_SEARCH_SUBSCRIPTION_ACCOUNT_CAP,
   quickListSlugsFor,
   BATCHDATA_INVESTOR_BUYER_TYPES,
+  type BatchDataRecord,
 } from "@/lib/external/batchdata-client"
 import { stateNameFromCode } from "@/lib/constants/us-states"
-import { runIncrementalPropertySearchForMarket, runActiveListingDiscoveryForMarket, runBuyBoxMatchingForMarket } from "@/lib/kernel/listings-batchdata-feed"
+import { runIncrementalPropertySearchForMarket, runActiveListingDiscoveryPooled, runBuyBoxMatchingForMarket } from "@/lib/kernel/listings-batchdata-feed"
 import { processRawRecord } from "@/lib/lead-pipeline"
 import { escalateScraperFailureIfNeeded, setScraperHealer } from "@/lib/lead-pipeline/scraper-health"
 import { MAX_PROMOTION_ATTEMPTS, STRANDED_STATUSES, reportStuckRawLeads } from "@/lib/lead-pipeline/promotion-gate-health"
@@ -47,6 +48,17 @@ import { resolveSourceKeywords, renderKeywordQuery, type ScrapeKeywordRow } from
 import { sourcePermitPrelistingIntent, routePermitPrelistingHits } from "@/lib/lead-pipeline/permit-sourcer"
 import { resolveActivePullGate } from "@/lib/lead-pipeline/scrape-territories"
 import { runExpiredListingPrefilter } from "@/lib/lead-pipeline/expired-listing-prefilter"
+// Wave 93 (lane 93B) — ONE PULL PER VENDOR PER CYCLE: the pooled runners + the one cost-split rule.
+import {
+  runPooledBatchDataLane,
+  runPooledFsboLane,
+  productionPooledBatchDataDeps,
+  groupIdenticalAreas,
+  splitPullCost,
+  type PooledWant,
+  type PooledShare,
+  type PooledLaneLedger,
+} from "@/lib/lead-pipeline/pooled-pull"
 import { sourceOsintRecords, osintRecordTypesFor } from "@/lib/lead-pipeline/osint-sourcer"
 import { sourceSiteVisitorIntent } from "@/lib/lead-pipeline/site-visitor-sourcer"
 import { sourceEmailEngagementIntent } from "@/lib/lead-pipeline/email-engagement-sourcer"
@@ -157,7 +169,8 @@ export async function GET(request: Request) {
   // Enrichment (PeopleData/OSINT/validation) runs inside processRawRecord during
   // the promotion pass — not here — so only the scrape clients are needed.
   const zenrows   = new ZenrowsClient()
-  const batchdata = new BatchDataClient()
+  // Wave 93 (lane 93B): the per-territory `new BatchDataClient()` is gone from this route — every
+  // BatchData lead pull runs ONCE per cycle in the pooled phase (runPooledVendorPhase below).
 
   const results = {
     markets_processed: 0,
@@ -176,6 +189,9 @@ export async function GET(request: Request) {
     skipped_runs: { no_op: 0, budget_exhausted: 0, expired_batchdata_pull: 0 },
     territory_gate: null as unknown,
     expired_prefilter: [] as Array<{ market: string; mode: string; removalsSeen: number; freshRemovals: number; lookupsMatched: number; soldDropped: number; batchDataCostUsd: number }>,
+    // Wave 93 (lane 93B) — what each pooled vendor lane did this cycle: requests issued vs the
+    // per-territory requests they replaced, the charge, and the per-territory split's total.
+    pooled_pulls: [] as PooledLaneLedger[],
   }
 
   try {
@@ -205,6 +221,18 @@ export async function GET(request: Request) {
     const markets = territoryResolution.territories.filter((m) =>
       pullGate.check({ brokerageId: m.brokerage_id, city: m.city, state: m.state, zip: m.zip_codes?.[0] ?? null }, { requireArea: true }).allowed)
     results.territory_gate = pullGate.tally
+
+    // ── ONE PULL PER VENDOR PER CYCLE (wave 93, lane 93B) ─────────────────────
+    // Owner, verbatim (2026-10-01): "can't you pull all of the active territories to add to the
+    // criteria and pull all homeowners in the platform to make it one pull to keep the cost down?"
+    // Every gate-admitted territory whose budget is not spent is merged into ONE criteria set per
+    // vendor lane, pulled once in limit-sized chunks, fanned back by territory containment, and the
+    // charge split by records received (lib/lead-pipeline/pooled-pull.ts). The per-territory loop
+    // below READS each territory's share — it no longer calls BatchData, the RentCast inactive
+    // sweep or the FSBO-site actor itself.
+    const pooled = await runPooledVendorPhase(supabase, markets)
+    results.pooled_pulls = pooled.ledgers
+    results.errors.push(...pooled.errors)
 
     // Brokerage keyword rows (lane 83A). Each territory reads ONLY its own brokerage's rows, ON TOP of
     // the code defaults (scrape-keywords.ts::resolveSourceKeywords) — so a platform with zero rows
@@ -591,22 +619,21 @@ export async function GET(request: Request) {
               started_at: new Date().toISOString(),
             })
 
-            // STEP 7 — geography comes entirely from market record, never hardcoded
-            const location = `${market.city}, ${market.state}`
+            // STEP 7 — geography comes entirely from market record, never hardcoded.
             // Motivated-seller scrapes (probate, foreclosure, pre_foreclosure, tax_lien, vacant,
             // tired_landlord, high_equity, absentee) come from BatchData FIRST — the market's CONFIGURED
             // signal types map to real BatchData quickLists, pulled TRIGGER-BY-TRIGGER (BatchData labels
             // every record in a search with the first trigger, so each must be its own call). Types
             // BatchData can't serve (divorce/bankruptcy/eviction) fall to OSINT. Expired is its own call.
-            const motivatedTriggers = enabledSources.has("batchdata_motivated")
-              ? batchDataTriggersFor(motivatedParams.signal_types)
-              : []
+            // Wave 93 (lane 93B): those pulls ran ONCE for every territory in the pooled phase; this
+            // territory reads the records its geography CONTAINS and its share of the charge.
             // Lane 82B — the cost-carrying pull: each trigger's records × the per-record search
             // price, booked per SOURCE below (batchdata_motivated vs expired_listing) and spread
             // across the batch as raw_scraped_leads.cost_per_record — both were missing (null / no
             // ledger row), so a BatchData lead's cost-per-lead read $0 and the wallet reconcile's
             // estimate for 'batchdata' never included the platform's biggest scrape.
-            const motivatedPulls = await Promise.all(motivatedTriggers.map((t) => batchdata.getMotivatedSellerDataWithCost(location, [t], pullWindow)))
+            const motivatedShare = enabledSources.has("batchdata_motivated") ? pooled.motivated.get(market.id) : undefined
+            const motivatedPulls = [{ records: motivatedShare?.records ?? [], cost: motivatedShare?.costUsd ?? 0, staleDropped: motivatedShare?.staleDropped ?? 0 }]
             // Lane 90B — the expired pull carries the same window: BatchData publishes no request-side
             // filter on a listing's STATUS date, so the wrapper gates the rows client-side on
             // listing.statusUpdatedAt (withinListingStatusWindow) after the pull.
@@ -617,22 +644,19 @@ export async function GET(request: Request) {
             // RentCast request, ≤500 rows) and BatchData is asked ONLY for those owners — or not at
             // all when nothing left the market inside the window. When RentCast cannot answer, the
             // BatchData area pull above runs exactly as before (a dark RentCast never darkens the lane).
-            let expiredPull: { records: Awaited<ReturnType<typeof batchdata.getMotivatedSellerDataWithCost>>["records"]; cost: number; staleDropped?: number } = { records: [], cost: 0 }
+            let expiredPull: { records: BatchDataRecord[]; cost: number; staleDropped?: number } = { records: [], cost: 0 }
             if (enabledSources.has("expired_listing")) {
-              const pre = market.brokerage_id
-                ? await runExpiredListingPrefilter({
-                    brokerageId: market.brokerage_id, city: market.city, state: market.state,
-                    lookbackDays: pullWindow.lookbackDays, maxLookups: market.max_records_per_run ?? null,
-                  })
-                : null
+              // Wave 93 (lane 93B): the prefilter ran ONCE per identical area in the pooled phase; a
+              // territory whose RentCast sweep could not answer was pooled into ONE BatchData expired pull.
+              const ex = pooled.expired.get(market.id)
+              const pre = ex?.prefilter ?? null
+              if (ex) expiredPull = { records: ex.records, cost: ex.costUsd, staleDropped: ex.staleDropped }
               if (pre && pre.mode === "prefiltered") {
-                expiredPull = { records: pre.records, cost: pre.batchDataCostUsd, staleDropped: 0 }
                 if (pre.freshRemovals === 0) results.skipped_runs.expired_batchdata_pull++
-                results.expired_prefilter.push({ market: market.name, mode: pre.mode, removalsSeen: pre.removalsSeen, freshRemovals: pre.freshRemovals, lookupsMatched: pre.lookupsMatched, soldDropped: pre.soldDropped, batchDataCostUsd: pre.batchDataCostUsd })
+                results.expired_prefilter.push({ market: market.name, mode: pre.mode, removalsSeen: pre.removalsSeen, freshRemovals: pre.freshRemovals, lookupsMatched: pre.lookupsMatched, soldDropped: pre.soldDropped, batchDataCostUsd: ex?.costUsd ?? 0 })
                 console.log(`[Lead Scraping Cron] Expired prefilter ${market.name}: ${pre.reason}`)
-              } else {
-                if (pre) results.expired_prefilter.push({ market: market.name, mode: pre.mode, removalsSeen: 0, freshRemovals: 0, lookupsMatched: 0, soldDropped: 0, batchDataCostUsd: 0 })
-                expiredPull = await batchdata.getMotivatedSellerDataWithCost(location, ["expired"], pullWindow)
+              } else if (pre) {
+                results.expired_prefilter.push({ market: market.name, mode: pre.mode, removalsSeen: 0, freshRemovals: 0, lookupsMatched: 0, soldDropped: 0, batchDataCostUsd: 0 })
               }
             }
             motivatedCostUsd = motivatedPulls.reduce((sum, r) => sum + (r.cost ?? 0), 0)
@@ -751,7 +775,8 @@ export async function GET(request: Request) {
       // on-market inventory awareness without running seller-signal triggers.
       if (enabledSources.has("batchdata_active_listings")) {
         try {
-          const r = await runActiveListingDiscoveryForMarket(supabase, market)
+          // Wave 93 (lane 93B): swept ONCE per identical area per cycle in the pooled phase.
+          const r = pooled.discovery.get(market.id) ?? { observed: 0, transitions: 0, signalsWritten: 0, errors: [] as string[] }
           results.errors.push(...r.errors)
           if (r.transitions > 0 || r.signalsWritten > 0) {
             console.log(`[Lead Scraping Cron] Active-listing feed ${market.name}: observed=${r.observed} transitions=${r.transitions} signals=${r.signalsWritten}`)
@@ -772,16 +797,15 @@ export async function GET(request: Request) {
           // Lane 89B — every INVESTOR BUYER list (cash_buyer + fix_and_flip), one call per list so each
           // record is stamped with the list that pulled it (BatchData labels a search by its first
           // trigger); the same source, ledger line and toggle. Cost is the sum of the pulls.
-          let investorCostUsd = 0
-          const buyers: NormalizedScrapedRecord[] = []
-          for (const list of BATCHDATA_INVESTOR_BUYER_TYPES) {
-            const pull = await batchdata.getMotivatedSellerDataWithCost(`${market.city}, ${market.state}`, [list])
-            investorCostUsd += pull.cost
-            buyers.push(...pull.records
-              .map((r) => normalizeBatchDataRecord(r as Record<string, unknown>, market))
-              .map((r) => ({ ...r, source: "batchdata_cash_buyer", intentType: "buyer" as const, behaviorType: "investor_cash_purchase", intentSignals: [list, "investor"] }))
-              .filter(isViableRecord))
-          }
+          // Wave 93 (lane 93B): pulled ONCE for every territory (pooled phase, one pull per list per
+          // state-chunk); each record still carries the list that pulled it (fetchMotivatedSellers
+          // labels a search by its trigger → motivationType).
+          const cashShare = pooled.cashBuyer.get(market.id)
+          const investorCostUsd = cashShare?.costUsd ?? 0
+          const buyers: NormalizedScrapedRecord[] = (cashShare?.records ?? [])
+            .map((raw) => ({ list: String(raw.motivationType), rec: normalizeBatchDataRecord(raw as Record<string, unknown>, market) }))
+            .map(({ list, rec }) => ({ ...rec, source: "batchdata_cash_buyer", intentType: "buyer" as const, behaviorType: "investor_cash_purchase", intentSignals: [list, "investor"] }))
+            .filter(isViableRecord)
           const { inserted } = await insertRawBatch({
             records: buyers, marketId: market.id,
             marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
@@ -986,7 +1010,11 @@ export async function GET(request: Request) {
           // Territory-centric by construction: the actor is handed the market's own `city-state` slug;
           // no city/state ⇒ no scrape. ~$3–5 / 1k listings vs BatchData's FSBO quickList at $50 / 1k.
           if (enabledSources.has("fsbo_site_listing") && market.city && market.state) {
-            const { records, cost } = await sourceFsboSiteListings({ city: market.city, state: market.state, stateName: stateNameFromCode(market.state) })
+            // Wave 93 (lane 93B): ONE actor run carried every territory's slug (pooled phase); this
+            // territory reads the listings inside its own city + state and its share of the run cost.
+            const fsboShare = pooled.fsbo.get(market.id)
+            const records = fsboShare?.records ?? []
+            const cost = fsboShare?.costUsd ?? 0
             sourceCostUsd += cost
             await insertSocial(records, "fsbo_site_listing", "social_intent", cost)
           }
@@ -1688,6 +1716,131 @@ interface InsertRawBatchParams {
    *  raw_scraped_leads.source_origin = 'brokerage'. Omit (undefined) to keep the platform-pool
    *  default every other call site here already relies on. */
   brokerageId?: string | null
+}
+
+// ─── THE POOLED VENDOR PHASE (wave 93, lane 93B) ─────────────────────────────────────────
+// ONE pull per vendor lane per cycle over every gate-admitted, budget-live territory — see the
+// header of lib/lead-pipeline/pooled-pull.ts for the chunk axes (each vendor's own limits).
+interface PooledVendorPhase {
+  motivated: Map<string, PooledShare<BatchDataRecord>>
+  cashBuyer: Map<string, PooledShare<BatchDataRecord>>
+  expired: Map<string, PooledShare<BatchDataRecord> & { prefilter: Awaited<ReturnType<typeof runExpiredListingPrefilter>> | null }>
+  fsbo: Map<string, PooledShare<NormalizedScrapedRecord>>
+  discovery: Awaited<ReturnType<typeof runActiveListingDiscoveryPooled>>["byMarket"]
+  ledgers: PooledLaneLedger[]
+  errors: string[]
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the SCRAPE_TERRITORY_SELECT rows the resolver returns
+async function runPooledVendorPhase(supabase: ReturnType<typeof createServiceClient>, markets: any[]): Promise<PooledVendorPhase> {
+  const out: PooledVendorPhase = { motivated: new Map(), cashBuyer: new Map(), expired: new Map(), fsbo: new Map(), discovery: new Map(), ledgers: [], errors: [] }
+  // The SAME budget rule the loop's STEP 3 applies — a spent territory funds no pooled pull.
+  const live = markets.filter((m) => (m.spend_this_month ?? 0) < (m.monthly_budget_usd ?? 100))
+  const motivatedWants: PooledWant[] = []
+  const cashWants: PooledWant[] = []
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const expiredMarkets: any[] = []
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fsboMarkets: any[] = []
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const discoveryMarkets: any[] = []
+  for (const m of live) {
+    const es = expandEnabledSources(m.enabled_sources ?? [...DEFAULT_MARKET_SOURCES])
+    const mp: { is_active?: boolean | null; signal_types?: string[] | null; lookback_days?: number | null } =
+      m.lead_scraping_motivated_params?.[0] ?? { is_active: true, signal_types: [] }
+    if ((es.has("batchdata_motivated") || es.has("expired_listing")) && mp.is_active !== false) {
+      if (es.has("batchdata_motivated")) motivatedWants.push({ territory: m, triggers: batchDataTriggersFor(mp.signal_types), lookbackDays: mp.lookback_days ?? null })
+      if (es.has("expired_listing")) expiredMarkets.push(m)
+    }
+    // Cash buyers were always pulled by the territory's CITY (the investor's own market), so the
+    // pool keeps that geography (ZIPs/counties stripped for this lane only).
+    if (es.has("batchdata_cash_buyer") && m.city && m.state) cashWants.push({ territory: { ...m, zip_codes: null, counties: null }, triggers: [...BATCHDATA_INVESTOR_BUYER_TYPES], lookbackDays: null })
+    if (es.has("fsbo_site_listing") && m.city && m.state) fsboMarkets.push(m)
+    // The discovery feed was never behind the territory budget gate (a free-to-tenant market feed);
+    // it keeps that: every gate-admitted territory that enables it is considered.
+  }
+  for (const m of markets) {
+    const es = expandEnabledSources(m.enabled_sources ?? [...DEFAULT_MARKET_SOURCES])
+    if (es.has("batchdata_active_listings")) discoveryMarkets.push(m)
+  }
+
+  let bdDeps: Awaited<ReturnType<typeof productionPooledBatchDataDeps>> | null = null
+  try { bdDeps = await productionPooledBatchDataDeps() } catch (e) { out.errors.push(`pooled BatchData lanes could not load: ${e}`) }
+
+  if (bdDeps && motivatedWants.length > 0) {
+    const r = await runPooledBatchDataLane("batchdata_motivated", motivatedWants, bdDeps)
+    out.motivated = r.byTerritory; out.ledgers.push(r.ledger); out.errors.push(...r.errors)
+  }
+  if (bdDeps && cashWants.length > 0) {
+    const r = await runPooledBatchDataLane("batchdata_cash_buyer", cashWants, bdDeps)
+    out.cashBuyer = r.byTerritory; out.ledgers.push(r.ledger); out.errors.push(...r.errors)
+  }
+
+  // EXPIRED — the RentCast inactive prefilter ONCE per identical area (RentCast takes one city +
+  // state per request), its result fanned to every territory naming that area with the BatchData
+  // lookups split equally (identical records received); areas RentCast could not answer pool into
+  // ONE BatchData expired pull (each territory's own status-date window applied at fan-out).
+  const expiredFallback: PooledWant[] = []
+  const areaGroups = groupIdenticalAreas(expiredMarkets, (t) => `${t.lead_scraping_motivated_params?.[0]?.lookback_days ?? ""}|${t.max_records_per_run ?? ""}`)
+  let prefilterSweeps = 0
+  for (const g of areaGroups) {
+    const brokerages = [...new Set(g.members.map((m) => m.brokerage_id).filter((b): b is string => !!b))]
+    const lookbackDays = g.members[0].lead_scraping_motivated_params?.[0]?.lookback_days ?? null
+    const pre = brokerages.length > 0
+      ? await runExpiredListingPrefilter({
+          brokerageId: brokerages[0], city: g.city, state: g.state, lookbackDays,
+          maxLookups: g.members[0].max_records_per_run ?? null, pooledBrokerageIds: brokerages,
+        })
+      : null
+    if (pre) prefilterSweeps++
+    if (pre && pre.mode === "prefiltered") {
+      const shares = splitPullCost(pre.batchDataCostUsd, new Map(g.members.map((m) => [m.id as string, 1])))
+      for (const m of g.members) out.expired.set(m.id, { records: pre.records, costUsd: shares.get(m.id) ?? 0, staleDropped: 0, prefilter: pre })
+    } else {
+      for (const m of g.members) {
+        out.expired.set(m.id, { records: [], costUsd: 0, staleDropped: 0, prefilter: pre })
+        expiredFallback.push({ territory: m, triggers: ["expired"], lookbackDays: m.lead_scraping_motivated_params?.[0]?.lookback_days ?? null })
+      }
+    }
+  }
+  // Territories with no city + state never reach a RentCast area sweep — straight to the pool.
+  const grouped = new Set(areaGroups.flatMap((g) => g.members.map((m) => m.id)))
+  for (const m of expiredMarkets) if (!grouped.has(m.id)) expiredFallback.push({ territory: m, triggers: ["expired"], lookbackDays: m.lead_scraping_motivated_params?.[0]?.lookback_days ?? null })
+  if (expiredMarkets.length > 0) {
+    out.ledgers.push({
+      lane: "expired_listing_prefilter", vendor: "rentcast", territories: expiredMarkets.length, requests: prefilterSweeps, chunks: areaGroups.length,
+      chargeUsd: 0, allocatedUsd: 0, unattributedRecords: 0, unallocatedUsd: 0, perTerritoryRequestsReplaced: expiredMarkets.length,
+    })
+  }
+  if (bdDeps && expiredFallback.length > 0) {
+    const r = await runPooledBatchDataLane("expired_listing", expiredFallback, bdDeps)
+    for (const [id, share] of r.byTerritory) {
+      const prev = out.expired.get(id)
+      out.expired.set(id, { ...share, prefilter: prev?.prefilter ?? null })
+    }
+    out.ledgers.push(r.ledger); out.errors.push(...r.errors)
+  }
+
+  if (fsboMarkets.length > 0) {
+    const r = await runPooledFsboLane(fsboMarkets, { run: (locations) => sourceFsboSiteListings(locations) }, stateNameFromCode)
+    out.fsbo = r.byTerritory; out.ledgers.push(r.ledger); out.errors.push(...r.errors)
+  }
+  if (discoveryMarkets.length > 0) {
+    try {
+      const r = await runActiveListingDiscoveryPooled(supabase, discoveryMarkets)
+      out.discovery = r.byMarket
+      out.ledgers.push({
+        lane: "active_listing_discovery", vendor: "rentcast", territories: discoveryMarkets.length, requests: r.sweeps * 2, chunks: r.sweeps,
+        chargeUsd: 0, allocatedUsd: 0, unattributedRecords: 0, unallocatedUsd: 0, perTerritoryRequestsReplaced: r.due * 2,
+      })
+    } catch (e) {
+      out.errors.push(`pooled active-listing discovery failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  for (const l of out.ledgers) {
+    console.log(`[Lead Scraping Cron] Pooled ${l.lane} (${l.vendor}): ${l.requests} request(s) for ${l.territories} territor${l.territories === 1 ? "y" : "ies"} (per-territory loop: ${l.perTerritoryRequestsReplaced}) · charge $${l.chargeUsd} · split $${l.allocatedUsd} · unattributed rows ${l.unattributedRecords}`)
+  }
+  return out
 }
 
 async function insertRawBatch(params: InsertRawBatchParams): Promise<{ inserted: number; rawIds: string[] }> {

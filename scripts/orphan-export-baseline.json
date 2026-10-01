@@ -84,6 +84,7 @@
     "lib/application/listing-lifecycle.ts": 1,
     "lib/assets/screenshot-capture.ts": 22,
     "lib/auth/role-grants.ts": 1,
+    "lib/avm/provider-chain.ts": 1,
     "lib/billing/ai-overage.ts": 1,
     "lib/billing/billing-access.ts": 1,
     "lib/billing/dunning.ts": 3,
@@ -147,7 +148,7 @@
     "lib/enrichment/web-mention-search.ts": 2,
     "lib/external/apify-actors.ts": 1,
     "lib/external/arcgis-permits.ts": 8,
-    "lib/external/batchdata-client.ts": 8,
+    "lib/external/batchdata-client.ts": 6,
     "lib/external/batchdata-seller-signals.ts": 16,
     "lib/external/exa-client.ts": 2,
     "lib/external/nextdoor-extract.ts": 1,
@@ -315,6 +316,7 @@
     "lib/lead-pipeline/osint-sourcer.ts": 2,
     "lib/lead-pipeline/parked-retention.ts": 4,
     "lib/lead-pipeline/permit-sourcer.ts": 4,
+    "lib/lead-pipeline/pooled-pull.ts": 3,
     "lib/lead-pipeline/portal-lead-intake.ts": 1,
     "lib/lead-pipeline/promotion-gate-health.ts": 1,
     "lib/lead-pipeline/rental-graduation-sourcer.ts": 1,
@@ -509,7 +511,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10447,
+  "census": 10461,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2896,7 +2898,7 @@
     "lib/auth/resolve-user-role.ts": 12,
     "lib/auth/role-grants.ts": 9,
     "lib/auth/useAuth.ts": 1,
-    "lib/avm/provider-chain.ts": 3,
+    "lib/avm/provider-chain.ts": 6,
     "lib/behavior-learning/prediction-engine.ts": 2,
     "lib/behavior-learning/preference-updater.ts": 2,
     "lib/behavior-learning/signal-mapping.ts": 7,
@@ -3259,7 +3261,7 @@
     "lib/external/arcgis-permits.ts": 9,
     "lib/external/batchdata-ai-tools.ts": 1,
     "lib/external/batchdata-batchrank.ts": 1,
-    "lib/external/batchdata-client.ts": 31,
+    "lib/external/batchdata-client.ts": 33,
     "lib/external/batchdata-mcp.ts": 9,
     "lib/external/batchdata-seller-signals.ts": 20,
     "lib/external/batchdata-tokens.ts": 1,
@@ -3780,6 +3782,7 @@
     "lib/lead-pipeline/persona-drift-runner.ts": 1,
     "lib/lead-pipeline/persona-drift.ts": 1,
     "lib/lead-pipeline/pipeline-processor.ts": 1,
+    "lib/lead-pipeline/pooled-pull.ts": 8,
     "lib/lead-pipeline/portal-lead-intake.ts": 3,
     "lib/lead-pipeline/processing-status.ts": 3,
     "lib/lead-pipeline/promotion-gate-health.ts": 2,
@@ -4100,7 +4103,7 @@
     "lib/property/rentcast-eligibility.ts": 2,
     "lib/property/rentcast-normalize.ts": 3,
     "lib/property/rentcast-query.ts": 1,
-    "lib/property/rentcast.ts": 11,
+    "lib/property/rentcast.ts": 12,
     "lib/property/resolve-property-facts.ts": 4,
     "lib/property/street-view.ts": 2,
     "lib/property-alerts/alert-cadence.ts": 3,
@@ -14514,6 +14517,9 @@
     ],
     "lib/avm/provider-chain.ts": [
       "getCurrentAvm",
+      "rentcastMissFrom",
+      "batchDataPropertyFallback",
+      "getPropertyRecordWithFallback",
       "computeEquityRatio",
       "parseLengthOfResidence"
     ],
@@ -16353,6 +16359,8 @@
       "enrichPropertyDatasetsBatchData",
       "lookupBatchDataPropertiesByIds",
       "fetchIncrementalPropertySearch",
+      "fetchBatchDataPropertyFallback",
+      "pooledGeographyCriteria",
       "normalizeBuyBoxInvestorRecord",
       "fetchBatchDataWalletBalance",
       "fetchBatchDataWalletConsumptionReport",
@@ -18102,7 +18110,7 @@
     ],
     "lib/kernel/listings-batchdata-feed.ts": [
       "detectPriceCut",
-      "runActiveListingDiscoveryForMarket",
+      "runActiveListingDiscoveryPooled",
       "runIncrementalPropertySearchForMarket",
       "runBuyBoxMatchingForMarket"
     ],
@@ -19122,6 +19130,16 @@
     ],
     "lib/lead-pipeline/pipeline-processor.ts": [
       "processRawRecord"
+    ],
+    "lib/lead-pipeline/pooled-pull.ts": [
+      "planPooledGeography",
+      "territoryContains",
+      "fanOutByTerritory",
+      "splitPullCost",
+      "productionPooledBatchDataDeps",
+      "runPooledBatchDataLane",
+      "groupIdenticalAreas",
+      "runPooledFsboLane"
     ],
     "lib/lead-pipeline/portal-lead-intake.ts": [
       "detectPortal",
@@ -20812,6 +20830,7 @@
       "searchRentcastSaleListings",
       "normalizeRentcastPropertyRecord",
       "getRentcastPropertyRecord",
+      "getRentcastPropertyDetailWithOutcome",
       "getRentcastPropertyDetail",
       "getRentcastListingStatus",
       "searchRentcastRentalListings",

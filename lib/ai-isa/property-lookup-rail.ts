@@ -157,7 +157,10 @@
  *                 (checkDncStatus → unconfigured → the runner DEFERS). The gate
  *                 still declares the purpose, so the reach is auditable.
  *   conversation / listing_intake — refused, always.
- *   valuation   — REFUSED since wave 92 (lane 92B). It was (wave 81 lane B) the
+ *   valuation   — FALLBACK ONLY since wave 93 (lane 93B, owner: "use batchdata as a backup"):
+ *                 admitted only with `afterRentcastMiss` in BATCHDATA_FALLBACK_MISS_REASONS, from the
+ *                 server-side provider chain (lib/avm/provider-chain.ts); never a primary, never
+ *                 the conversation rail. As a PRIMARY it is REFUSED since wave 92 (lane 92B). It was (wave 81 lane B) the
  *                 STAFF valuation lane the owner admitted in wave 70; its four
  *                 callers — lib/cma/comp-provider.ts (comps supplement → RentCast
  *                 widened search), lib/avm/provider-chain.ts (AVM chain → the
@@ -239,6 +242,31 @@ function isPropertyLookupPurpose(v: unknown): v is PropertyLookupPurpose {
  *  four callers read RentCast now (header). */
 export const BATCHDATA_ELIGIBLE_PURPOSES: ReadonlySet<PropertyLookupPurpose> = new Set<PropertyLookupPurpose>([
   "acquisition", "skip_trace", "dnc",
+])
+
+/**
+ * WAVE 93 (lane 93B) — BATCHDATA AS THE BACKUP. Owner, verbatim (2026-10-01): "use batchdata as a
+ * backup." The "valuation" purpose is RE-OPENED FOR THE FALLBACK PATH ONLY: a property read
+ * (lookup, home value, comps) reaches BatchData only when the SERVER-SIDE provider chain
+ * (lib/avm/provider-chain.ts::batchDataPropertyFallback) names the RentCast miss that sent it
+ * there, and only for a miss in BATCHDATA_FALLBACK_MISS_REASONS. It stays OUT of
+ * BATCHDATA_ELIGIBLE_PURPOSES, so the conversation rail (every AI agent's lookup_property_facts)
+ * never reaches a BatchData rung — agents keep RentCast; only the server-side chain falls back.
+ *
+ * Why a miss, and which:
+ *   unconfigured — the platform RentCast key is unset (the whole lane is dark).
+ *   error        — RentCast answered non-2xx (incl. a 429/402 plan-quota refusal) or threw.
+ *   no_record    — RentCast answered and had nothing for this address.
+ *   over_budget  — DELIBERATELY NOT A FALLBACK TRIGGER. The vendor budget gate is per TENANT and
+ *                  sums EVERY vendor (lib/vendor-governance/budget-gate.ts); a tenant over it would
+ *                  be billed a second paid vendor against the same spent cap. The ladder rule
+ *                  (vendor-policy.ts: "the cap throttles COST, not CAPABILITY") routes it to the
+ *                  FREE tiers instead. Adding "over_budget" to the set below is the one-line switch
+ *                  if the owner wants the paid backup anyway.
+ */
+export type RentcastMissReason = "unconfigured" | "over_budget" | "error" | "no_record"
+export const BATCHDATA_FALLBACK_MISS_REASONS: ReadonlySet<RentcastMissReason> = new Set<RentcastMissReason>([
+  "unconfigured", "error", "no_record",
 ])
 
 // ─── PROVIDER CHOICE TABLE (data, cheapest first) ───────────────────────────
@@ -824,12 +852,24 @@ export interface BatchDataAccess {
 
 /** PURE — the per-purpose carve-out over the two policy facts (header: ONE GATE). */
 export function decideBatchDataAccess(
-  req: { brokerageId?: string | null; purpose: PropertyLookupPurpose },
+  req: { brokerageId?: string | null; purpose: PropertyLookupPurpose; afterRentcastMiss?: RentcastMissReason | null },
   policy: PropertyLookupPolicy,
 ): BatchDataAccess {
   const { purpose } = req
   if (!isPropertyLookupPurpose(purpose)) {
     return { allowed: false, purpose, reason: `purpose "${String(purpose)}" is not one of ${PROPERTY_LOOKUP_PURPOSES.join("/")} — refused, fail closed` }
+  }
+  // Wave 93 (lane 93B): the valuation purpose is a FALLBACK, never a primary — admitted only behind
+  // a named RentCast miss the fallback set accepts (BATCHDATA_FALLBACK_MISS_REASONS header).
+  if (purpose === "valuation") {
+    const miss = req.afterRentcastMiss ?? null
+    if (!miss) return { allowed: false, purpose, reason: `purpose "valuation" never reaches BatchData as a primary — property reads are RentCast's; BatchData is the backup only after a RentCast miss` }
+    if (!BATCHDATA_FALLBACK_MISS_REASONS.has(miss)) {
+      return { allowed: false, purpose, reason: `RentCast miss "${miss}" is not a BatchData fallback trigger (${[...BATCHDATA_FALLBACK_MISS_REASONS].join("/")}) — the free tiers answer instead` }
+    }
+    if (!req.brokerageId) return { allowed: false, purpose, reason: "no tenant on the request — a tenant-less billed BatchData reach is refused (§4)" }
+    if (policy.batchDataTier === "off") return { allowed: false, purpose, reason: "BatchData tier is off (configured off, or the platform monthly cap is spent)" }
+    return { allowed: true, purpose, reason: `BatchData backup after a RentCast miss (${miss}) under tier (platform-wide cap)` }
   }
   if (!BATCHDATA_ELIGIBLE_PURPOSES.has(purpose)) {
     return { allowed: false, purpose, reason: `purpose "${purpose}" never reaches BatchData (reserved for LEAD work: acquisition / skip-trace / DNC — property reads are RentCast's)` }
@@ -851,10 +891,13 @@ export function decideBatchDataAccess(
  * decideBatchDataAccess. `deps.policy` lets a proof inject the policy.
  */
 export async function resolveBatchDataAccess(
-  req: { brokerageId?: string | null; purpose: PropertyLookupPurpose },
+  req: { brokerageId?: string | null; purpose: PropertyLookupPurpose; afterRentcastMiss?: RentcastMissReason | null },
   deps: { policy?: PropertyLookupPolicy } = {},
 ): Promise<BatchDataAccess> {
-  if (req.purpose === "dnc" || !BATCHDATA_ELIGIBLE_PURPOSES.has(req.purpose)) {
+  // Wave 93 (lane 93B): a valuation FALLBACK with an accepted miss reads the tier like any billed reach.
+  const fallbackRead = req.purpose === "valuation" && !!req.afterRentcastMiss
+    && BATCHDATA_FALLBACK_MISS_REASONS.has(req.afterRentcastMiss) && !!req.brokerageId
+  if (!fallbackRead && (req.purpose === "dnc" || !BATCHDATA_ELIGIBLE_PURPOSES.has(req.purpose))) {
     // No policy read needed: DNC is never spend-gated and an ineligible purpose is refused outright.
     return decideBatchDataAccess(req, deps.policy ?? { batchDataTier: "off", batchDataOptedIn: false })
   }

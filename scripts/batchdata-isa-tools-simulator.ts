@@ -431,5 +431,64 @@ let sphereToolsEligible: Record<string, unknown> = {}
      "positive control: blankComments erases a comment-only import mention, so it cannot count as a live wire")
 }
 
+// ─── 9. WAVE 93 (lane 93B) — BATCHDATA IS THE BACKUP, NEVER AN AGENT TOOL ─────────────────
+// Owner, verbatim (2026-10-01): "use batchdata as a backup." Standing: no BatchData tools on AI
+// agent surfaces — agents keep RentCast; only the SERVER-SIDE provider chain falls back. The gate's
+// "valuation" purpose re-opened for the fallback path ONLY (afterRentcastMiss), and it stays out of
+// BATCHDATA_ELIGIBLE_PURPOSES, so the conversation rail never reaches a BatchData rung.
+{
+  const rail = await import("../lib/ai-isa/property-lookup-rail")
+  const ALLOW = { batchDataTier: "full" as const, batchDataOptedIn: true }
+  const conversationAfterMiss = rail.decideBatchDataAccess({ brokerageId: "b-1", purpose: "conversation", afterRentcastMiss: "no_record" }, ALLOW)
+  ok(!conversationAfterMiss.allowed, "a CONVERSATION (every agent tool's purpose) is refused BatchData even after a RentCast miss under a full tier")
+  ok(!rail.BATCHDATA_ELIGIBLE_PURPOSES.has("valuation"), "the backup purpose stays OUT of the rail's eligible set (the conversation rail never reaches it)")
+  ok(!rail.decideBatchDataAccess({ brokerageId: "b-1", purpose: "valuation" }, ALLOW).allowed, "valuation WITHOUT a named RentCast miss is refused — BatchData is never a primary")
+  ok(!rail.decideBatchDataAccess({ brokerageId: "b-1", purpose: "valuation", afterRentcastMiss: "over_budget" }, ALLOW).allowed,
+    "valuation after an OVER-BUDGET miss is refused — a spent tenant cap never buys a second paid vendor")
+  ok(rail.decideBatchDataAccess({ brokerageId: "b-1", purpose: "valuation", afterRentcastMiss: "no_record" }, ALLOW).allowed,
+    "POSITIVE CONTROL: the server-side backup (valuation + a RentCast miss) IS admitted by the same gate")
+  ok(!rail.decideBatchDataAccess({ brokerageId: "b-1", purpose: "valuation", afterRentcastMiss: "error" }, { batchDataTier: "off", batchDataOptedIn: true }).allowed,
+    "the backup still honours the platform kill switch (tier off)")
+
+  // EXECUTED: the conversation rail with RentCast missing — the BatchData rung never runs for a
+  // conversation, and DOES run for a lead purpose (positive control — the ladder discriminates).
+  const tried: string[] = []
+  const miss = async () => null
+  const rungs = { cache: miss, tenant_idx: miss, rentcast: miss, public_records: miss, batchdata: async () => { tried.push("batchdata"); return null } }
+  await rail.lookupPropertyForConversation({ brokerageId: "b-1", purpose: "conversation", audience: "customer", address: { street: "1 Main St", city: "Austin", state: "TX" } }, { rungs, policy: ALLOW })
+  ok(tried.length === 0, "EXECUTED: an agent conversation with RentCast missing never reaches the BatchData rung")
+  await rail.lookupPropertyForConversation({ brokerageId: "b-1", purpose: "acquisition", audience: "staff", address: { street: "1 Main St", city: "Austin", state: "TX" } }, { rungs, policy: ALLOW })
+  ok(tried.length === 1, "POSITIVE CONTROL: the same ladder DOES reach BatchData for a lead (acquisition) purpose")
+
+  // DERIVED POPULATION: every AI-agent tool surface that reaches the provider chain. A surface that
+  // calls getCurrentAvm must skip the backup; none may call the backup or the record chain directly.
+  const { readdirSync, statSync } = await import("node:fs")
+  const walk = (dir: string, out: string[] = []): string[] => {
+    for (const e of readdirSync(join(root, dir))) {
+      const rel = `${dir}/${e}`
+      if (e === "node_modules" || e.startsWith(".")) continue
+      if (statSync(join(root, rel)).isDirectory()) walk(rel, out)
+      else if (/\.(ts|tsx)$/.test(e)) out.push(rel)
+    }
+    return out
+  }
+  const AGENT_SURFACE = (p: string) => /^lib\/ai-isa\/.*tools?\.ts$/.test(p) || /^lib\/external\/.*-ai-tools\.ts$/.test(p)
+    || /^app\/api\/agentic-os\//.test(p) || p === "lib/voice/reception-brain.ts" || /^app\/api\/did\//.test(p) || /^app\/api\/internal\/ai-chat\//.test(p)
+  const surfaces = [...walk("lib"), ...walk("app")].filter(AGENT_SURFACE)
+  const CHAIN_CALL = /getCurrentAvm\(|getPropertyRecordWithFallback\(|batchDataPropertyFallback\(/
+  const reaching = surfaces.filter((p) => CHAIN_CALL.test(readBlanked(p)))
+  const leaks = reaching.filter((p) => {
+    const src = readBlanked(p)
+    if (/getPropertyRecordWithFallback\(|batchDataPropertyFallback\(/.test(src)) return true
+    const calls = src.match(/getCurrentAvm\(\{[^}]*\}/g) ?? []
+    return calls.some((c) => !/skipProviders:\s*\[[^\]]*"batchdata"/.test(c))
+  })
+  console.log(`  denominator: ${surfaces.length} AI-agent tool surfaces · ${reaching.length} reach the provider chain: ${reaching.join(", ")}`)
+  ok(reaching.length >= 2 && leaks.length === 0, `no AI-agent tool surface can reach the BatchData backup (${reaching.length - leaks.length}/${reaching.length}) — ${leaks.join(", ")}`)
+  const leakFixture = `const v = await getCurrentAvm({ address, brokerageId: ctx.brokerageId, usePaidProviders: false })`
+  ok((leakFixture.match(/getCurrentAvm\(\{[^}]*\}/g) ?? []).some((c) => !/skipProviders:\s*\[[^\]]*"batchdata"/.test(c)),
+    "POSITIVE CONTROL: an agent surface calling the chain WITHOUT skipping the backup is flagged by the same predicate")
+}
+
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

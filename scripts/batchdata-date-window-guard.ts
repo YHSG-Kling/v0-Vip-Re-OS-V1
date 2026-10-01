@@ -85,7 +85,15 @@ console.log("\n[C · the cron threads the market's lookback into each single-tri
 const cron = code("app/api/cron/lead-scraping/route.ts")
 ok("the motivated-params row type carries lookback_days and the cron derives pullWindow from it",
   /lookback_days\?: number \| null/.test(cron) && /const pullWindow = \{ lookbackDays: motivatedParams\.lookback_days \?\? null \}/.test(cron))
-ok("every motivated trigger's pull passes pullWindow", /getMotivatedSellerDataWithCost\(location, \[t\], pullWindow\)/.test(cron))
+// Re-anchored (wave 93, lane 93B — "one pull"): the per-territory pulls became ONE pooled pull per
+// (trigger, window) per cycle. The RULE held: every territory's lookback rides its want into the pool,
+// and the pool key + request carry the trigger's own date window (pooled-pull.ts::runPooledBatchDataLane).
+const pooledSrc = code("lib/lead-pipeline/pooled-pull.ts")
+ok("every motivated trigger's pull passes its territory's window (the pooled want carries lookback_days; the pool asks dateWindow per trigger and sends it)",
+  /motivatedWants\.push\(\{ territory: m, triggers: batchDataTriggersFor\(mp\.signal_types\), lookbackDays: mp\.lookback_days \?\? null \}\)/.test(cron)
+  && /const criteria = deps\.dateWindow\(trigger, \{ lookbackDays: w\.lookbackDays \}\)/.test(pooledSrc)
+  && /searchCriteria: \{ \.\.\.pool\.criteria, \.\.\.deps\.geographyCriteria\(chunk\.kind, chunk\.values\) \}/.test(pooledSrc)
+  && /dateWindow: \(t, w\) => bd\.dateWindowCriteria\(t, w\)/.test(pooledSrc))
 ok("POSITIVE CONTROL: the finder recognises the retired window-less call", /getMotivatedSellerDataWithCost\(location, \[t\]\)/.test(`batchdata.getMotivatedSellerDataWithCost(location, [t])`) && !/getMotivatedSellerDataWithCost\(location, \[t\]\)/.test(cron))
 const client = code("lib/external/batchdata-client.ts")
 ok("the wrapper applies a window ONLY to a single-trigger pull (a multi-trigger pull is labelled types[0] and must not be narrowed by one trigger's window)",
@@ -118,8 +126,10 @@ ok("a recorder trigger is never gated here (its window is on the REQUEST — sec
 ok("POSITIVE CONTROL: the same gate with a 400-day window keeps the 2025-11-02 row (the window is what decides)", withinListingStatusWindow(staleRow, "expired", W(400)) === true)
 ok("the wrapper applies withinListingStatusWindow ONLY to a single listing-status trigger with a window, keeps the pull's full cost and reports staleDropped",
   /isListingStatusTrigger\(motivationTypes\[0\]\)\)\s*\{\s*const fresh = r\.records\.filter\(\(rec\) => withinListingStatusWindow\(rec, motivationTypes\[0\], window\)\)\s*return \{ records: fresh, cost: r\.cost, staleDropped: r\.records\.length - fresh\.length \}/.test(client))
-ok("the cron passes pullWindow to the EXPIRED pull too (was window-less) and publishes the dropped count",
-  /getMotivatedSellerDataWithCost\(location, \["expired"\], pullWindow\)/.test(cron) && /staleDropped/.test(cron))
+ok("the EXPIRED pull carries each territory's window too (applied per territory at fan-out — no request-side status-date key) and the dropped count is published",
+  /expiredFallback\.push\(\{ territory: m, triggers: \[(?:"expired"|\s*)\], lookbackDays: m\.lead_scraping_motivated_params\?\.\[0\]\?\.lookback_days \?\? null \}\)/.test(cron)
+  && /deps\.statusWindow\(r, pool\.trigger, \{ lookbackDays: memberWindow\.get\(t\.id\) \?\? null \}\)/.test(pooledSrc)
+  && /statusWindow: \(r, t, w\) => bd\.withinListingStatusWindow\(r, t, w\)/.test(pooledSrc) && /staleDropped/.test(cron))
 ok("POSITIVE CONTROL: the finder recognises the retired window-less expired call", /getMotivatedSellerDataWithCost\(location, \["expired"\]\)/.test(`batchdata.getMotivatedSellerDataWithCost(location, ["expired"])`) && !/getMotivatedSellerDataWithCost\(location, \["expired"\]\)/.test(cron))
 
 console.log("\n[registration]")

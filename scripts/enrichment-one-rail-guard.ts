@@ -231,7 +231,7 @@ check("the facts rung's own gate is unchanged (isBatchDataRungAllowed: acquisiti
 const BD_IMPORT = /["']@\/lib\/external\/batchdata-[a-z-]+["']|["']@\/lib\/batchdata-client["']|["']\.\/batchdata-[a-z-]+["']|["']@\/lib\/external["']/
 // batchDataPreferMcp is generic — `batchDataPreferMcp<T>(` — so the reach token admits a type argument
 // (the first run reported the rail and public-record-preload as NOT reaching: the finder was blind).
-const BD_REACH = /callBatchDataMcp\(|batchDataPreferMcp(?:<[^(]*?>)?\(|skipTraceBatchDataV3Batch\(|enrichPropertyDatasetsBatchData\(|fetchIncrementalPropertySearch\(|checkDncStatus\(|checkTcpaStatus\(|verifyPhone\(|searchProperties\(|fetchMotivatedSellers\(|enrichPropertyWithBatchData\(|fetchBatchDataComps\(|investorBuybox\w+\(|verifyAddressBatchData\(|fetchBatchRankPropensity\(|lookupBatchDataPropertiesByIds\(|reverseSkipTraceBatchData\(|new BatchDataClient\(/
+const BD_REACH = /callBatchDataMcp\(|batchDataPreferMcp(?:<[^(]*?>)?\(|skipTraceBatchDataV3Batch\(|enrichPropertyDatasetsBatchData\(|fetchIncrementalPropertySearch\(|checkDncStatus\(|checkTcpaStatus\(|verifyPhone\(|searchProperties\(|fetchMotivatedSellers\(|enrichPropertyWithBatchData\(|fetchBatchDataComps\(|investorBuybox\w+\(|verifyAddressBatchData\(|fetchBatchRankPropensity\(|lookupBatchDataPropertiesByIds\(|reverseSkipTraceBatchData\(|fetchBatchDataPropertyFallback\(|new BatchDataClient\(/
 const GATE = /resolveBatchDataAccess\(/
 const GATED = [
   "lib/lead-pipeline/enrichment-orchestrator.ts",
@@ -248,6 +248,11 @@ const GATED = [
   "app/actions/lead-intelligence.ts",
   // Wave 82 lane A — the reverse skip trace wrapper (person-keyed, purpose "skip_trace").
   "lib/enrichment/reverse-skip-trace.ts",
+  // Wave 93 (lane 93B, owner: "use batchdata as a backup") — the provider chain's ONE BatchData
+  // BACKUP door (batchDataPropertyFallback): purpose "valuation" WITH afterRentcastMiss, asked before
+  // the reach. The three former valuation callers (comp-provider, deal-investigator,
+  // public-record-preload) still import nothing from BatchData — they reach the backup only through it.
+  "lib/avm/provider-chain.ts",
 ]
 // (a) transports / registries / probes / re-exports — they ARE the seam, not a caller.
 const TRANSPORT = new Set([
@@ -270,6 +275,9 @@ const SCRAPER_LANE = new Set([
   // Wave 92 (lane 92B): the RentCast inactive-listing prefilter of the lead-scraping cron's expired
   // lane — called ONLY from that cron, inside its active-territory gate (lead acquisition).
   "lib/lead-pipeline/expired-listing-prefilter.ts",
+  // Wave 93 (lane 93B, "one pull"): the pooled lead pulls — called ONLY from the lead-scraping cron's
+  // pooled phase, after its active-territory gate (lead acquisition).
+  "lib/lead-pipeline/pooled-pull.ts",
   "app/actions/admin/run-scrape-test.ts", "app/api/admin/scrape-test/route.ts", // admin dry-run of a scrape source
 ])
 // (d) published blind spots — direct reaches not yet migrated. SHRINK-ONLY. Lane 81B struck all

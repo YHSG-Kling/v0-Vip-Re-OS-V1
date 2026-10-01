@@ -148,18 +148,22 @@ const OFF_MARKET_TRANSITION_WINDOW_DAYS = 30
  * feed (platform-staff written; renaming it is a migration needing a ruling — the same
  * historical-spelling note as BATCHDATA_BILLED_PULL_OPT_IN).
  */
-export async function runActiveListingDiscoveryForMarket(
+/** The two RentCast sweeps one area needs (wave 93: fetched ONCE per identical area per cycle). */
+type DiscoverySweep = {
+  active: Awaited<ReturnType<Awaited<ReturnType<typeof loadRentcast>>["searchRentcastSaleListings"]>>
+  inactive: Awaited<ReturnType<Awaited<ReturnType<typeof loadRentcast>>["searchRentcastSaleListings"]>>
+}
+
+/** The opt-in + cadence gates, asked BEFORE any sweep (wave 93: lifted out so the pooled entry can
+ *  decide which territories are DUE before one sweep is bought for all of them). */
+async function discoveryDue(
   supabase: SupabaseClient,
   market: FeedMarket,
-): Promise<{ observed: number; transitions: number; signalsWritten: number; errors: string[]; skippedRecent?: boolean }> {
+): Promise<{ due: boolean; errors: string[]; skippedRecent?: boolean }> {
   const errors: string[] = []
-  let signalsWritten = 0
-  let transitions = 0
   // OPT-IN GATE (platform-staff, m642/m643) — unchanged: no opt-in → no feed and no spend.
   const sources = await resolveActiveListingSources(market.brokerage_id)
-  if (!sources.includes("batchdata_on_market")) {
-    return { observed: 0, transitions: 0, signalsWritten: 0, errors: [] }
-  }
+  if (!sources.includes("batchdata_on_market")) return { due: false, errors }
 
   // CADENCE GATE — one sweep per territory per day.
   const { data: lastRow, error: lastErr } = await supabase
@@ -171,18 +175,86 @@ export async function runActiveListingDiscoveryForMarket(
   if (lastErr) errors.push(`feed cadence read refused for ${market.name} (sweeping anyway): ${lastErr.message}`)
   const lastSeen = Date.parse(String((lastRow ?? [])[0]?.last_seen_at ?? ""))
   if (Number.isFinite(lastSeen) && Date.now() - lastSeen < ACTIVE_FEED_MIN_INTERVAL_HOURS * 3_600_000) {
-    return { observed: 0, transitions: 0, signalsWritten: 0, errors, skippedRecent: true }
+    return { due: false, errors, skippedRecent: true }
+  }
+  return { due: true, errors }
+}
+
+/** The two sweeps for one area — the request a pool of identical territories shares. */
+async function sweepDiscoveryArea(
+  market: FeedMarket,
+  pooledBrokerageIds: readonly string[] | null,
+): Promise<DiscoverySweep> {
+  const { searchRentcastSaleListings } = await loadRentcast()
+  const area = { city: market.city, state: market.state, limit: RENTCAST_MAX_LISTINGS_PER_REQUEST }
+  const caller = { brokerageId: market.brokerage_id, systemSource: "active_listing_discovery", marketSweep: true as const, pooledBrokerageIds }
+  const active = await searchRentcastSaleListings({ ...caller, filters: { ...area, status: "Active" } })
+  const inactive = active.success
+    ? await searchRentcastSaleListings({ ...caller, filters: { ...area, status: "Inactive" } })
+    : { success: false, listings: [], error: "not swept — the active sweep failed" }
+  return { active, inactive }
+}
+
+/**
+ * ONE SWEEP PER IDENTICAL AREA PER CYCLE (wave 93, lane 93B — owner: "pull all of the active
+ * territories … to make it one pull to keep the cost down"). RentCast's /listings/sale takes ONE
+ * city + state, so territories naming the SAME area (two brokerages in one city) are the pool: the
+ * DUE territories (opt-in + cadence, asked first) are grouped by area, swept ONCE (the ledger row
+ * split equally across the due brokerages — identical rows received, rentcast.ts meterCall), and
+ * every member's feed rows are written from that one sweep. Returns each territory's result.
+ */
+export async function runActiveListingDiscoveryPooled(
+  supabase: SupabaseClient,
+  markets: readonly FeedMarket[],
+): Promise<{ byMarket: Map<string, Awaited<ReturnType<typeof runActiveListingDiscoveryForMarket>>>; sweeps: number; due: number }> {
+  const byMarket = new Map<string, Awaited<ReturnType<typeof runActiveListingDiscoveryForMarket>>>()
+  const dueByArea = new Map<string, FeedMarket[]>()
+  for (const m of markets) {
+    const gate = await discoveryDue(supabase, m)
+    if (!gate.due) { byMarket.set(m.id, { observed: 0, transitions: 0, signalsWritten: 0, errors: gate.errors, skippedRecent: gate.skippedRecent }); continue }
+    const key = `${(m.city ?? "").trim().toLowerCase()}|${(m.state ?? "").trim().toUpperCase()}`
+    dueByArea.set(key, [...(dueByArea.get(key) ?? []), m])
+    if (gate.errors.length) byMarket.set(m.id, { observed: 0, transitions: 0, signalsWritten: 0, errors: gate.errors })
+  }
+  let sweeps = 0, due = 0
+  for (const members of dueByArea.values()) {
+    due += members.length
+    const brokerages = [...new Set(members.map((m) => m.brokerage_id))]
+    const sweep = await sweepDiscoveryArea(members[0], brokerages.length > 1 ? brokerages : null)
+    sweeps++
+    for (const m of members) {
+      const r = await runActiveListingDiscoveryForMarket(supabase, m, { sweep })
+      const prior = byMarket.get(m.id)
+      byMarket.set(m.id, prior ? { ...r, errors: [...prior.errors, ...r.errors] } : r)
+    }
+  }
+  return { byMarket, sweeps, due }
+}
+
+// Module-private since wave 93 (lane 93B): its ONE caller is runActiveListingDiscoveryPooled above —
+// the cron's door (one sweep per identical area per cycle). The per-territory body is unchanged.
+async function runActiveListingDiscoveryForMarket(
+  supabase: SupabaseClient,
+  market: FeedMarket,
+  opts: { sweep?: DiscoverySweep } = {},
+): Promise<{ observed: number; transitions: number; signalsWritten: number; errors: string[]; skippedRecent?: boolean }> {
+  const errors: string[] = []
+  let signalsWritten = 0
+  let transitions = 0
+  // Wave 93 (lane 93B): a POOLED caller (runActiveListingDiscoveryPooled) already asked both gates
+  // and bought the sweep for every identical territory; a direct caller still asks them here.
+  if (!opts.sweep) {
+    const gate = await discoveryDue(supabase, market)
+    errors.push(...gate.errors)
+    if (!gate.due) return { observed: 0, transitions: 0, signalsWritten: 0, errors, skippedRecent: gate.skippedRecent }
   }
 
-  const { searchRentcastSaleListings, getRentcastPropertyRecordFacts } = await loadRentcast()
-  const area = { city: market.city, state: market.state, limit: RENTCAST_MAX_LISTINGS_PER_REQUEST }
-  const caller = { brokerageId: market.brokerage_id, systemSource: "active_listing_discovery", marketSweep: true as const }
-  const active = await searchRentcastSaleListings({ ...caller, filters: { ...area, status: "Active" } })
+  const { getRentcastPropertyRecordFacts } = await loadRentcast()
+  const { active, inactive } = opts.sweep ?? (await sweepDiscoveryArea(market, null))
   if (!active.success) {
     errors.push(`active-listing sweep failed for ${market.name}: ${active.error ?? "no reason reported"}`)
     return { observed: 0, transitions: 0, signalsWritten: 0, errors }
   }
-  const inactive = await searchRentcastSaleListings({ ...caller, filters: { ...area, status: "Inactive" } })
   if (!inactive.success) errors.push(`off-market sweep failed for ${market.name} (active rows still recorded): ${inactive.error ?? "no reason reported"}`)
   const removedFloor = Date.now() - OFF_MARKET_TRANSITION_WINDOW_DAYS * 86_400_000
   const rows: Array<{ l: (typeof active.listings)[number]; status: "active" | "off_market" }> = [
