@@ -991,6 +991,17 @@ for (const name of categoryDUnused) {
 //    that are themselves the `CREATE [OR REPLACE] FUNCTION name(` declaration
 //    — anything left over is a real call site somewhere in the database.
 const migrationCorpusStripped = migrationFiles().map((f) => readFileSync(join(root, f), "utf8").replace(/--[^\n]*/g, ""))
+// The CALLER search also reads the out-of-band SQL in scripts/*.sql (wave 93): those files were
+// applied to the live database outside supabase/migrations, and some carry the ONLY recorded
+// binding of a function — e.g. scripts/1061-fix-handle-new-auth-user-trigger.sql binds
+// on_auth_user_created → handle_new_auth_user (live read 2026-10-01). Declarations above still
+// come from migrations only; this widens where a CALL may be found, never what counts as defined.
+function outOfBandSqlFiles(): string[] {
+  try {
+    return readdirSync(join(root, "scripts")).filter((f: string) => f.endsWith(".sql")).map((f: string) => join("scripts", f))
+  } catch { return [] }
+}
+migrationCorpusStripped.push(...outOfBandSqlFiles().map((f) => readFileSync(join(root, f), "utf8").replace(/--[^\n]*/g, "")))
 function hasSqlInternalCaller(name: string): boolean {
   const callRe = new RegExp(`\\b${name}\\s*\\(`, "g")
   const declRe = new RegExp(`create\\s+(?:or\\s+replace\\s+)?function\\s+(?:public\\.)?"?${name}"?\\s*\\(`, "gi")
