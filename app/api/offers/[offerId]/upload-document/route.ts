@@ -113,9 +113,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ off
     return NextResponse.json({ error: r.error ?? "uploadDocument failed" }, { status: 500 })
   }
 
-  return NextResponse.json({
-    success:     true,
-    document_id: r.documentId,
-    storage_url: storageUrl,
-  })
+  // Returns only what a caller reads (route-response census). `success` is carried by the HTTP
+  // status (callers check res.ok); the stored file is reached through document_id (the document
+  // row carries its storage path), so `storage_url` had no reader.
+  return NextResponse.json({ document_id: r.documentId })
 }

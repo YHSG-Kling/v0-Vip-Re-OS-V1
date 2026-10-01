@@ -278,7 +278,8 @@ function readFieldsAt(site: FetchSite): Set<string> {
 
   // Pattern B: `const X = await ….json()` then member access `X.field` /
   // `X?.field`, or a LATER destructure `const { a } = X`.
-  const ASSIGN_RE = /(?:const|let)\s+(\w+)\s*=\s*await\s+[\w.]*\.json\(\)/g
+  // Also the parenthesised cast `const X = (await res.json().catch(() => ({}))) as {...}` (wave 93).
+  const ASSIGN_RE = /(?:const|let)\s+(\w+)\s*=\s*\(?\s*await\s+[\w.]*\.json\(\)/g
   let am: RegExpExecArray | null
   while ((am = ASSIGN_RE.exec(windowMasked))) {
     const varName = am[1]
@@ -392,6 +393,20 @@ console.log("[positive controls]")
   const reads2 = readFieldsAt(fakeSite2)
   control("CONTROL member-access reads (data.alpha, data?.zeta) are both recognised",
     reads2.has("alpha") && reads2.has("zeta"), [...reads2].join(","))
+
+  // Parenthesised cast variant (wave 93): `const filed = (await res.json().catch(() => ({}))) as {...}`
+  const pcCallerSrc = `
+    async function load3() {
+      const res = await fetch("/api/__control__/specimen")
+      const filed = (await res.json().catch(() => ({}))) as { alpha?: string }
+      if (filed.alpha) return filed.alpha
+    }
+  `
+  const pcMasked = blankStrings(pcCallerSrc)
+  const pcFm = /fetch\(/.exec(pcMasked)!
+  const pcSite: FetchSite = { file: "control.ts", line: 1, idx: pcFm.index, masked: pcMasked, raw: pcCallerSrc, segs: ["__control__", "specimen"] }
+  const pcReads = readFieldsAt(pcSite)
+  control("CONTROL a parenthesised-cast read (filed.alpha) is recognised", pcReads.has("alpha"), [...pcReads].join(","))
 
   // Spread route: a returned field cannot be enumerated past a `...rest`, so
   // the returned-unread list must be SUPPRESSED for that route (never guess).

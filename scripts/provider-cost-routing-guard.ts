@@ -172,7 +172,7 @@ console.log("\n[Layer 2b · VERSIUM FIRST — executed; PeopleData only after a 
   const orchS = stripped("lib/lead-pipeline/enrichment-orchestrator.ts")
   const iV = orchS.indexOf("await runVersiumContactLeg("), iB = orchS.indexOf("skipTraceBatchDataV3Batch("), iP = orchS.indexOf("await skipTraceWithPeopleData(")
   check("the drain runs the Versium leg FIRST (when the route names it), then BatchData, then PeopleData — source order",
-    iV > -1 && iB > iV && iP > iB && /if \(route\.providers\[0\] === 'versium'\) \{\s*const v = await runVersiumContactLeg\(/.test(orchS)
+    iV > -1 && iB > iV && iP > iB && /if \((?:contactPointLegs && )?route\.providers\[0\] === 'versium'\) \{\s*const v = await runVersiumContactLeg\(/.test(orchS)
     && /if \(v\.answered\) batchDataFallback = \{ phones: v\.phones, emails: v\.emails, via: 'versium' \}/.test(orchS))
   const pp = stripped("lib/lead-pipeline/pipeline-processor.ts")
   const iVr = pp.indexOf("runVersiumContactLeg("), iPr = pp.indexOf("await skipTraceWithPeopleData(")
@@ -210,7 +210,7 @@ check("the PeopleData call is guarded on the route naming it, and on a contact-p
   /const askPeopleData = route\.providers\.includes\('peopledata'\)\s*&& \(!batchDataFallback \|\| \(DEMOGRAPHICS_AFTER_CONTACT_MATCH && batchDataFallback\.via !== 'versium'\)\)/.test(orchStr)
   && /askPeopleData\s*\?\s*await skipTraceWithPeopleData\(/.test(orchStr))
 check("the BatchData leg runs only when no earlier leg answered and the route names it, and declares purpose 'skip_trace'",
-  /!batchDataFallback && route\.providers\.includes\('batchdata'\)[\s\S]{0,120}resolveBatchDataAccess\(\{ brokerageId, purpose: 'skip_trace' \}\)/.test(orchStr))
+  /!batchDataFallback && (?:contactPointLegs && )?route\.providers\.includes\('batchdata'\)[\s\S]{0,120}resolveBatchDataAccess\(\{ brokerageId, purpose: 'skip_trace' \}\)/.test(orchStr))
 const meterPdl = (orchStr.match(/vendorName: 'peopledata'/g) ?? []).length, meterBd = (orchStr.match(/vendorName: 'batchdata'/g) ?? []).length
 const trackCalls = (orch.match(/trackVendorUsageService\(\{/g) ?? []).length
 check(`both providers book through meterVendorSpend at the REPORTED cost (peopledata ×${meterPdl}, batchdata ×${meterBd}); the only trackVendorUsageService left is the $0 osint_free lane (×${trackCalls})`,
