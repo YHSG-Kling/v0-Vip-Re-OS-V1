@@ -588,7 +588,7 @@ function source() {
     ["app/actions/email-campaigns.ts", "createEmailCampaign", "createEmailCampaign", /requireCaller\(\)/],
     ["app/actions/blog.ts", "saveBlogPost", "createBlogPostDraft", /getAgentContext\(\)/],
     ["app/actions/podcast-generation.ts", "createPodcastEpisode", "createPodcastEpisode", /getAgentContext\(\)/],
-    ["app/actions/video/create-video-project.ts", "createVideoProject", "createVideoProject", /requireCaller\(\)/],
+    ["app/actions/video/create-video-project.ts", "createVideoProject", "createVideoProject", /requireCallerTenant\(params\.brokerageId\)/], // lane 93A: session gate + body-tenant rule in one survivor
   ]
   for (const [file, fn, kernel, gate] of DOORS) {
     const body = fnBody(stripComments(read(file)), fn) ?? ""

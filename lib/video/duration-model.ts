@@ -370,6 +370,21 @@ export interface CompositionDurationSpec {
    * real render (scripts/render-from-approval-simulator.ts §hook-first).
    */
   hookFirst?: true
+  /**
+   * WAVE 93 (lane 93A) — a FIXED design beat at the END of the body, painted by
+   * the composition whatever the narration says: JustListedReel's FactCards and
+   * JustListedReelHorizontal's agent card (4 s each). It used to be a private
+   * `4 * FPS` inside each composition that the visual plan did not know about,
+   * so on a short narration the plan put a b-roll (or photo) beat exactly where
+   * the composition shows the facts — the mount refused to cover them and the
+   * footage was lost (lane 92E's render: 0 footage cells at the 8 s fixture).
+   * Now the ONE number lives here: bodyTailFrames() sizes the composition's
+   * tile AND planBodyVisual / fitBodyVisualPlan carve it out as a fixed segment,
+   * so no planned beat ever lands on it. `treatment` is what the tile shows, in
+   * the body-visual vocabulary (it must be in the composition's
+   * COMPOSITION_TREATMENTS row — test:video-timeline-integrity §facts93).
+   */
+  bodyTail?: { frames: number; treatment: "stat_card" | "brand_card"; what: string }
   note?: string
 }
 
@@ -409,9 +424,9 @@ export const COMPOSITION_DURATION_RULES: Record<string, CompositionDurationSpec>
   // body-visual plan's intro/body/outro split and memoryVideoChapterLayout
   // agree by construction (30 fps is the registered geometry).
   MemoryVideoReel:           { purpose: "memory", host: "voiceover", introFrames: MEMORY_VIDEO_COVER_SECONDS * 30, outroFrames: MEMORY_VIDEO_OUTRO_SECONDS * 30, bodyMode: "narration", multiClip: true, durationFromProps: (props, fps) => memoryVideoDurationFrames(props as unknown as MemoryVideoTimelineProps, fps) },
-  JustListedReel:            { purpose: "listing_promo", host: "voiceover", introFrames: 60, outroFrames: 90, bodyMode: "narration", narrationFrom: "cover" },
+  JustListedReel:            { purpose: "listing_promo", host: "voiceover", introFrames: 60, outroFrames: 90, bodyMode: "narration", narrationFrom: "cover", bodyTail: { frames: 120, treatment: "stat_card", what: "FactCards — price / beds / baths / sqft" } },
   JustListedReelSquare:      { purpose: "listing_promo", host: "voiceover", introFrames: 60, outroFrames: 60, bodyMode: "narration", narrationFrom: "cover" },
-  JustListedReelHorizontal:  { purpose: "listing_promo", host: "voiceover", introFrames: 90, outroFrames: 90, bodyMode: "narration", narrationFrom: "cover" },
+  JustListedReelHorizontal:  { purpose: "listing_promo", host: "voiceover", introFrames: 90, outroFrames: 90, bodyMode: "narration", narrationFrom: "cover", bodyTail: { frames: 120, treatment: "brand_card", what: "SPLIT FACTS — the agent identity card" } },
   JustSoldReelSquare:        { purpose: "listing_promo", host: "voiceover", introFrames: 60, outroFrames: 60, bodyMode: "narration", narrationFrom: "cover" },
   ComingSoonReel:            { purpose: "listing_promo", host: "voiceover", introFrames: 90, outroFrames: 60, bodyMode: "narration", narrationFrom: "cover" },
   OpenHouseAnnounceReel:     { purpose: "listing_promo", host: "voiceover", introFrames: 90, outroFrames: 60, bodyMode: "narration", narrationFrom: "cover" },
@@ -439,14 +454,16 @@ export function compositionDurationSpec(compositionId: string): CompositionDurat
  * An unregistered id gets no chrome (the whole duration is body): a component
  * must still render, and a missing row is what the proof fails on.
  */
-/** A hook-first film's first spoken word lands inside this many seconds (owner: hook first). */
+/** A hook-first film's first spoken word lands inside this many seconds (owner: hook first).
+ * @proofSeam kept exported for scripts/render-from-approval-simulator.ts, which asserts a hook-first film speaks inside this bound (lane 93A).
+ */
 export const HOOK_FIRST_MAX_SPEECH_ONSET_SECONDS = 0.5
 
 // TOMBSTONE (wave 90 follow-up, CLAUDE.md §1.3 — the orphan-exports census,
 // category A): `compositionOpensOnHook(id)` stood here as a one-line accessor
 // over `COMPOSITION_DURATION_RULES[id].hookFirst`. Its production reader
 // (render-decision.ts stitchedIntroCategory) was superseded in wave 89 by
-// `compositionKeepsBrandIntro` below (lib/video/duration-model.ts:492), which
+// `compositionKeepsBrandIntro` below (lib/video/duration-model.ts:511), which
 // answers the SAME question by purpose AND by the hookFirst flag; the three
 // proofs that still named it (video-hook-window, render-from-approval,
 // video-type-matrix) now read the flag off the table directly, the same shape
@@ -476,7 +493,9 @@ export const HOOK_FIRST_MAX_SPEECH_ONSET_SECONDS = 0.5
  */
 export const SEATED_PURPOSES: ReadonlySet<VideoPurpose> = new Set<VideoPurpose>(["memory", "partners_meeting", "listing_presentation_section", "cma"])
 
-/** A scroll-format cover that delays the first spoken word ends inside this many seconds. */
+/** A scroll-format cover that delays the first spoken word ends inside this many seconds.
+ * @proofSeam kept exported for scripts/video-hook-window-guard.ts and scripts/video-timeline-integrity-guard.ts, which bound a scroll-format cover that delays the first word (lane 93A).
+ */
 export const HOOK_ON_COVER_MAX_SECONDS = 2
 
 /** Is this purpose a scroll format (hook first, brand last)? PURE. */
@@ -500,6 +519,19 @@ export function compositionKeepsBrandIntro(compositionId: string | null | undefi
 export function compositionBookends(compositionId: string): { introFrames: number; outroFrames: number } {
   const spec = COMPOSITION_DURATION_RULES[compositionId]
   return spec ? { introFrames: spec.introFrames, outroFrames: spec.outroFrames } : { introFrames: 0, outroFrames: 0 }
+}
+
+/**
+ * The frames of a composition's fixed body-tail tile (CompositionDurationSpec
+ * .bodyTail) inside a body of `bodyFrames` — 0 when it registers none. Capped
+ * one frame short of the body, the arithmetic the compositions always used, so
+ * the image window never collapses to nothing. ONE answer for the composition
+ * (its <Sequence>) and the visual plan (the fixed segment). PURE.
+ */
+export function bodyTailFrames(compositionId: string, bodyFrames: number): number {
+  const tail = COMPOSITION_DURATION_RULES[compositionId]?.bodyTail
+  if (!tail) return 0
+  return Math.max(0, Math.min(tail.frames, Math.floor(bodyFrames) - 1))
 }
 
 /**

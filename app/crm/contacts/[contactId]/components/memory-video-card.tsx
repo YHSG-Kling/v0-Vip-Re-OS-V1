@@ -35,7 +35,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
 import { MEMORY_VIDEO_MODES, type MemoryVideoMode } from "@/lib/video/memory-video-composition"
 import { Badge } from "@/components/ui/badge"
-import { MEMORY_VIDEO_PROMPTS, type SellerDictatedSegment } from "@/lib/video/memory-video-gate"
+import { MEMORY_VIDEO_PROMPTS, MODEL_MAY, MODEL_MAY_NOT, type SellerDictatedSegment } from "@/lib/video/memory-video-gate"
 import { offerMemoryVideoAction, saveMemoryVideoDictationAction, renderMemoryVideoAction } from "@/app/actions/video/memory-video"
 // Wave 81C — the in-card file picker (lane 80C's open item) rides the ONE
 // signed-upload survivor: the tenant prefix comes from the SESSION at mint
@@ -208,6 +208,26 @@ export function MemoryVideoCard({
           Type what they say, as they say it. Nothing on this page writes any part of this film —
           a family&apos;s history is theirs to tell, not ours to compose.
         </p>
+        {/* Lane 93A — the rule this card's header says is "stated to the agent on
+            the card" was only ever in a comment: MODEL_MAY / MODEL_MAY_NOT had a
+            proof as their only reader. They are rendered here, from the one list. */}
+        <details className="text-xs text-muted-foreground">
+          <summary className="cursor-pointer">What the system may and may not do with this film</summary>
+          <div className="mt-2 grid gap-3 sm:grid-cols-2">
+            <div>
+              <p className="font-medium text-foreground">May</p>
+              <ul className="list-disc pl-4">
+                {MODEL_MAY.map((rule) => <li key={rule}>{rule}</li>)}
+              </ul>
+            </div>
+            <div>
+              <p className="font-medium text-foreground">May not</p>
+              <ul className="list-disc pl-4">
+                {MODEL_MAY_NOT.map((rule) => <li key={rule}>{rule}</li>)}
+              </ul>
+            </div>
+          </div>
+        </details>
 
         <Button onClick={offer} disabled={pending || offered} size="sm">
           {offered ? "Offer already proposed" : "Offer the memory video"}

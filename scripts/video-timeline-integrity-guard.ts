@@ -84,7 +84,7 @@ import { blankStrings, stripComments } from "./strip-comments"
 import { VIDEO_COMPOSITION_FILES } from "./composition-segments"
 import {
   COMPOSITION_DURATION_RULES, HOOK_ON_COVER_MAX_SECONDS, PURPOSE_DURATION_RULES, SEATED_PURPOSES,
-  compositionBookends, compositionPurposes, movingCompositionIds, narrationStartFrame, narrationWindowFrames, planCompositionDuration, planDurationForProps,
+  bodyTailFrames, compositionBookends, compositionPurposes, movingCompositionIds, narrationStartFrame, narrationWindowFrames, planCompositionDuration, planDurationForProps,
   purposeOpensOnHook, requiredCapFrames, hostWordsPerMinute, spokenSecondsForWords,
   type VideoPurpose,
 } from "../lib/video/duration-model"
@@ -946,6 +946,98 @@ console.log("\n── §broll92 · b-roll WHEN BENEFICIAL: Director picks ⇔ ru
   //     narration and the sidechain-ducked bed (§music proves the duck graph).
   check("every b-roll <Video> is muted (a stock clip's own track would sit un-ducked under the voice)", /<Video\b[\s\S]{0,260}\bmuted\b/.test(layer))
   check("CONTROL: the mute finder fails the pre-92 clip mount", !/<Video\b[\s\S]{0,260}\bmuted\b/.test(blankStrings(stripComments("<Video objectFit=\"cover\" src={clip.url} from={startFrame} durationInFrames={Math.max(1, spanFrames)} style={{ width: \"100%\" }} />"))))
+}
+
+console.log("\n── §facts93 · the fixed facts tile is a PLAN segment: no planned b-roll / photo beat lands on it, at any narration length (lane 93A) ──")
+{
+  // THE DEFECT (lane 92E's render, published open item): JustListedReel / -Horizontal paint a fixed
+  // 4 s facts tile at the end of the body from a private `4 * FPS` the visual plan did not know.
+  // On a short narration the plan put a b-roll beat exactly there; the mount clips footage to the
+  // image tour, so the footage was LOST (0 footage cells at the 8 s fixture). The rule now: the
+  // tile is registered ONCE (duration-model bodyTail), the composition sizes its <Sequence> from
+  // bodyTailFrames(), and planBodyVisual / fitBodyVisualPlan carve it out as a fixed segment.
+  const TAILED = moving.filter((id) => !!COMPOSITION_DURATION_RULES[id]?.bodyTail)
+  const callsTail = moving.filter((id) => VIDEO_COMPOSITION_FILES[id] && new RegExp(`\\bbodyTailFrames\\(\\s*["']${id}["']`).test(stripComments(read(VIDEO_COMPOSITION_FILES[id]))))
+  note(`denominator: ${TAILED.length} compositions register a body tail (${TAILED.join(", ")}); ${callsTail.length} size their tile from bodyTailFrames()`)
+  check("the two listing reels with a fixed facts tile register it (JustListedReel, JustListedReelHorizontal)", TAILED.includes("JustListedReel") && TAILED.includes("JustListedReelHorizontal"))
+  check("registry ⇔ source: every registered tail is sized from bodyTailFrames() in its composition, and every composition that calls it is registered",
+    TAILED.every((id) => callsTail.includes(id)) && callsTail.every((id) => TAILED.includes(id)), `registered ${TAILED.join(",")} · calling ${callsTail.join(",")}`)
+  const literal = TAILED.filter((id) => /\b\d+\s*\*\s*FPS\b|const\s+FACTS\s*=/.test(code(VIDEO_COMPOSITION_FILES[id])))
+  check("no tailed composition keeps a private tile length (`N * FPS` / `const FACTS =`)", literal.length === 0, literal.join(", "))
+  check("CONTROL: the literal finder catches the pre-93A `const FACTS = 4 * FPS`", /\b\d+\s*\*\s*FPS\b|const\s+FACTS\s*=/.test(blankStrings(stripComments("const FPS = 30\nconst FACTS = 4 * FPS\n"))))
+  for (const id of TAILED) {
+    const tr = COMPOSITION_DURATION_RULES[id].bodyTail!.treatment
+    check(`${id}: its tail treatment (${tr}) is one the composition registers (COMPOSITION_TREATMENTS)`, (COMPOSITION_TREATMENTS[id] ?? []).includes(tr))
+  }
+
+  const SECONDS = [6, 8, 12, 18]
+  const PHOTOS = [0, 1, 2]
+  let cases = 0, lostBefore = 0, lostCases = 0
+  const badTail: string[] = [], overlap: string[] = [], lost: string[] = [], badFit: string[] = [], badStale: string[] = [], gateRefused: string[] = []
+  for (const id of TAILED) for (const seconds of SECONDS) for (const photos of PHOTOS) {
+    const props: Record<string, unknown> = {
+      videoPurpose: "listing_promo", narrationScript: scriptFor(seconds, "voiceover"), spokenSeconds: seconds, spokenSecondsSource: "measured",
+      voiceoverUrl: "https://x/vo.mp3", price: "$625,000", imageUrls: Array.from({ length: photos }, (_, i) => `https://x/${i}.jpg`),
+      brollClips: BROLL_FIXTURE, brollSource: "stock",
+    }
+    const st = stageBodyVisualPlan({ compositionId: id, props, purpose: "listing_promo" })
+    if (!st.ok) { badTail.push(`${id} ${seconds}s/${photos}p: ${st.reason}`); continue }
+    const plan = st.plan
+    cases++
+    const bodyTo = plan.body.from + plan.body.durationInFrames
+    const tail = bodyTailFrames(id, plan.body.durationInFrames)
+    const fixed = plan.segments.filter((x) => x.fixed === "body_tail")
+    const last = [...plan.segments].sort((a, b) => a.from - b.from).at(-1)
+    if (!(tail > 0 && fixed.length === 1 && last?.fixed === "body_tail" && fixed[0].from === bodyTo - tail && fixed[0].durationInFrames === tail && fixed[0].treatment === COMPOSITION_DURATION_RULES[id].bodyTail!.treatment)) {
+      badTail.push(`${id} ${seconds}s/${photos}p: tail ${tail}, fixed ${fixed.map((f) => `${f.from}+${f.durationInFrames}`).join(",")}, body ends ${bodyTo}`)
+    }
+    const narratedTo = bodyTo - tail
+    const intruders = plan.segments.filter((x) => !x.fixed && x.from + x.durationInFrames > narratedTo)
+    if (intruders.length) overlap.push(`${id} ${seconds}s/${photos}p: ${intruders.map((x) => `${x.treatment}@${x.from}`).join(",")}`)
+    // The composition's own image window: [intro, intro + body − tail).
+    const within = { from: plan.body.from, durationInFrames: plan.body.durationInFrames - tail }
+    const planned = plan.segments.filter((x) => segmentUsesBroll(x, id)).reduce((a, x) => a + x.durationInFrames, 0)
+    const mounted = brollMountWindows(plan, { within }).reduce((a, w) => a + w.durationInFrames, 0)
+    if (planned !== mounted) lost.push(`${id} ${seconds}s/${photos}p: planned ${planned} footage frames, mounted ${mounted}`)
+    // A re-fit to a measured render keeps the tile at the registry's frames, at the end.
+    for (const dt of [-45, 30, 150]) {
+      const target = plan.durationInFrames + dt
+      const fit = fitBodyVisualPlan(plan, id, target)
+      if (!fit) { badFit.push(`${id} → ${target}: refused`); continue }
+      const ft = bodyTailFrames(id, fit.body.durationInFrames)
+      const fs = fit.segments.find((x) => x.fixed === "body_tail")
+      const tl = tiles(fit)
+      if (!tl.ok || !fs || fs.durationInFrames !== ft || fs.from !== fit.body.from + fit.body.durationInFrames - ft) badFit.push(`${id} ${seconds}s → ${target}: ${tl.why || `tail ${fs?.from}+${fs?.durationInFrames} vs ${ft}`}`)
+    }
+    // A plan STORED before the tail was registered (no fixed segment) is carved on fit too.
+    const stale: BodyVisualPlan = { ...plan, segments: plan.segments.filter((x) => !x.fixed) }
+    const refit = fitBodyVisualPlan(stale, id, plan.durationInFrames + 30)
+    if (refit) {
+      const rt = bodyTailFrames(id, refit.body.durationInFrames)
+      const rWithin = { from: refit.body.from, durationInFrames: refit.body.durationInFrames - rt }
+      const rPlanned = refit.segments.filter((x) => segmentUsesBroll(x, id)).reduce((a, x) => a + x.durationInFrames, 0)
+      const rMounted = brollMountWindows(refit, { within: rWithin }).reduce((a, w) => a + w.durationInFrames, 0)
+      if (!refit.segments.some((x) => x.fixed === "body_tail") || rPlanned !== rMounted || !tiles(refit).ok) badStale.push(`${id} ${seconds}s/${photos}p: planned ${rPlanned} mounted ${rMounted} ${tiles(refit).why}`)
+    } else badStale.push(`${id}: stale plan refused`)
+    // The dispatch gate does not demand a staged asset for the composition's own design tile.
+    const g = gateVisualPlanForDispatch(plan, { avatarClip: false, brollClips: BROLL_FIXTURE.length, brollSource: "stock", propertyPhotos: photos, screenshots: 0, statCards: 0 })
+    if (!g.ok && g.missing.some((m) => m === `asset_missing:${COMPOSITION_DURATION_RULES[id].bodyTail!.treatment}`)) gateRefused.push(`${id} ${seconds}s/${photos}p: ${g.missing.join(",")}`)
+    // POSITIVE CONTROL — the pre-93A plan: the same narrated segments tiled over the WHOLE body.
+    const narrated = plan.segments.filter((x) => !x.fixed)
+    const old = weightedShotSlots(plan.body.durationInFrames, narrated.map((x) => Math.max(1, x.durationInFrames)))
+    const oldPlan: BodyVisualPlan = { ...plan, segments: narrated.map((x, i) => ({ ...x, from: plan.body.from + old[i].from, durationInFrames: old[i].durationInFrames })) }
+    const oldPlanned = oldPlan.segments.filter((x) => segmentUsesBroll(x, id)).reduce((a, x) => a + x.durationInFrames, 0)
+    const oldMounted = brollMountWindows(oldPlan, { within }).reduce((a, w) => a + w.durationInFrames, 0)
+    if (oldPlanned > oldMounted) { lostBefore += oldPlanned - oldMounted; lostCases++ }
+  }
+  note(`${cases} plans cut (${TAILED.length} compositions × narration ${SECONDS.join("/")} s × photos ${PHOTOS.join("/")}, 3 stock clips)`)
+  check("every plan ends its body on exactly one fixed tile segment at the registry's frames and treatment", cases > 0 && badTail.length === 0, badTail.slice(0, 3).join("; "))
+  check("no narrated segment (b-roll, photo, copy) reaches into the facts tile", overlap.length === 0, overlap.slice(0, 3).join("; "))
+  check("every planned footage frame is mounted inside the composition's image window — none lost to the facts tile", lost.length === 0, lost.slice(0, 3).join("; "))
+  check("a re-fit to a measured render keeps the tile at the registry's frames, at the body's end, and the timeline still tiles", badFit.length === 0, badFit.slice(0, 3).join("; "))
+  check("a plan stored before the tail was registered is carved on re-fit — its footage stays inside the image window", badStale.length === 0, badStale.slice(0, 3).join("; "))
+  check("the dispatch gate asks no staged asset for the fixed tile (it is painted from the composition's own props)", gateRefused.length === 0, gateRefused.slice(0, 3).join("; "))
+  check(`CONTROL: the pre-93A tiling (narration over the whole body) loses footage to the facts tile — ${lostBefore} frames across ${lostCases} cases`, lostCases > 0 && lostBefore > 0)
 }
 
 console.log(`\nvideo-timeline-integrity: ${passed} passed, ${failed} failed (denominator ${passed + failed})`)

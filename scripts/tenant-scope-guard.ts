@@ -12,7 +12,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs"
 import { walkTs, rootRuntimeFiles } from "./runtime-roots"
-import { stripComments } from "./strip-comments"
+import { stripComments, blankStrings } from "./strip-comments"
 import { join, relative } from "node:path"
 
 // High-risk tenant tables — rows here belong to ONE brokerage.
@@ -507,6 +507,36 @@ const GLOBAL_LOOKUP_EXEMPT: Record<string, string> = {
   console.log("  ✅ TENANT_BINDING_PASS — no surface binds a foreign user via a typed identifier")
 }
 
+/**
+ * (Module level since lane 93A — CHECK 3 and CHECK 4 both walk function bodies with it.)
+ * Index of the `{` that opens a function BODY, given the index just past the
+ * parameter list's `)`. Lane 91D2: the previous `src.indexOf("{", …)` took the
+ * first brace after the signature, which for `): Promise<{ success: boolean }> {`
+ * is the RETURN TYPE's object literal — every export annotated that way was
+ * scanned as a one-line "body" and could never be reported (closeTransaction's
+ * pre-91D signature was exactly this). A `{` that follows `:`, `<`, `|`, `&`,
+ * `,` or `(` is a type literal; the body's `{` follows a completed type.
+ */
+function functionBodyStart(src: string, from: number): number {
+  let angle = 0, paren = 0, brace = 0, bracket = 0
+  let prev = ")"
+  for (let i = from; i < src.length; i++) {
+    const c = src[i]
+    if (/\s/.test(c)) continue
+    if (c === "{" && angle === 0 && paren === 0 && brace === 0 && bracket === 0 && !/[:<|&,(=]/.test(prev)) return i
+    if (c === "<") angle++
+    else if (c === ">" && src[i - 1] !== "=") angle = Math.max(0, angle - 1)
+    else if (c === "(") paren++
+    else if (c === ")") paren--
+    else if (c === "{") brace++
+    else if (c === "}") brace--
+    else if (c === "[") bracket++
+    else if (c === "]") bracket--
+    prev = c
+  }
+  return -1
+}
+
 // ── CHECK 3: a caller-supplied tenant id forwarded unverified into a SERVICE-
 // role query ─────────────────────────────────────────────────────────────────
 //
@@ -616,35 +646,6 @@ const SERVICE_ID_EXEMPT: Record<string, string> = {
    * client `.eq(...)`/payload key unshadowed. Same rule as CHECK 1/2: this is
    * the function the positive controls exercise, not a paraphrase of it.
    */
-  /**
-   * Index of the `{` that opens a function BODY, given the index just past the
-   * parameter list's `)`. Lane 91D2: the previous `src.indexOf("{", …)` took the
-   * first brace after the signature, which for `): Promise<{ success: boolean }> {`
-   * is the RETURN TYPE's object literal — every export annotated that way was
-   * scanned as a one-line "body" and could never be reported (closeTransaction's
-   * pre-91D signature was exactly this). A `{` that follows `:`, `<`, `|`, `&`,
-   * `,` or `(` is a type literal; the body's `{` follows a completed type.
-   */
-  function functionBodyStart(src: string, from: number): number {
-    let angle = 0, paren = 0, brace = 0, bracket = 0
-    let prev = ")"
-    for (let i = from; i < src.length; i++) {
-      const c = src[i]
-      if (/\s/.test(c)) continue
-      if (c === "{" && angle === 0 && paren === 0 && brace === 0 && bracket === 0 && !/[:<|&,(=]/.test(prev)) return i
-      if (c === "<") angle++
-      else if (c === ">" && src[i - 1] !== "=") angle = Math.max(0, angle - 1)
-      else if (c === "(") paren++
-      else if (c === ")") paren--
-      else if (c === "{") brace++
-      else if (c === "}") brace--
-      else if (c === "[") bracket++
-      else if (c === "]") bracket--
-      prev = c
-    }
-    return -1
-  }
-
   function unverifiedServiceTenantIdsIn(raw: string): Array<{ fn: string; param: string }> {
     const src = stripComments(raw)
     const out: Array<{ fn: string; param: string }> = []
@@ -1155,3 +1156,319 @@ const SERVICE_ID_EXEMPT: Record<string, string> = {
   )
 }
 
+// ── CHECK 4: a HAND-ROLLED "claimed brokerage ≠ session" comparison ──────────
+//
+// lane 93A (CLAUDE.md §6 — one vocabulary per function). The rule "a caller-
+// supplied tenant that names a brokerage other than the session's is REFUSED,
+// an absent one lets the session win" has ONE spelling:
+// lib/platform/acting-context.ts decideClaimedTenant — composed with the plain
+// session read by lib/auth/require-caller.ts requireCallerTenant and with the
+// act-as seam by resolveWriteContextForTenant. Lanes 92A/93A measured the same
+// comparison re-typed by hand across ~20 "use server" files and API routes, each
+// a little different (some refused an absent claim, one defaulted the role to
+// "agent", one read the legacy users.role first). A copy is a FINDING here: the
+// fix is to call the survivor, never to add an exemption.
+//
+// WHAT COUNTS. Inside one function body (stripped of comments, strings blanked):
+// a `===`/`!==`/`==`/`!=` whose one operand is a CALLER-CLAIMED tenant and whose
+// other operand is a SESSION tenant.
+//   · claimed = a param named brokerageId/brokerage_id/tenantId/tenant_id of an
+//     EXPORTED function (a public endpoint, §4), `<param>.<that name>`, a param of
+//     ANY function named claimed*/target*/requested*BrokerageId, or — in a route
+//     handler — a local read from searchParams / req.json() / body / formData
+//     (and a local that defaults from one: `x = claimed || session`).
+//   · session = anything that is NOT a fetched ROW. A row is a variable bound
+//     `{ data: x } = await ….from("<table>")` — except the caller's OWN users row
+//     (read `.eq("id", user.id)`), which IS the session's tenant.
+//   · a row-vs-claim comparison is a consistency key (public lanes, platform
+//     consoles), not this rule, and is not reported; neither is a comparison
+//     after a platform-authority gate (a target tenant by design).
+//
+// KNOWN BLIND SPOTS (published, §2):
+//   · scope is "use server" files and route.ts handlers under app/; a lib/ helper
+//     that re-implements the comparison is unseen (lib/ is internal plumbing that
+//     receives an already-resolved tenant — same scope line as CHECK 3).
+//   · a claim carried under another name (`orgId`, `b`) or through a nested
+//     object (`params.scope.brokerageId`) is unseen; so is a comparison written
+//     as `[a, b].includes` or a Set lookup.
+//   · "session" is everything not proven a row, so a comparison between a claim
+//     and a row read by a helper (not `.from(` in the same body) is REPORTED —
+//     an over-report, never a miss; none exists in the tree today.
+//   · shadowing is textual: a binding of the claim's name anywhere earlier in the
+//     body (const/let, destructure binding — not a destructure KEY) silences it.
+const CLAIM_PUBLIC_NAMES = ["brokerageId", "brokerage_id", "tenantId", "tenant_id"]
+const CLAIM_EXPLICIT = /^(?:claimed|target|requested|body|input)(?:Brokerage|Tenant)_?[iI]d$/
+const TENANTISH = /(?:[bB]rokerage_?[iI]d|[tT]enant_?[iI]d)$/
+
+/** One finding per hand-rolled claimed≠session comparison. The function the controls exercise. */
+function handRolledClaimComparisons(raw: string): Array<{ fn: string; line: number; text: string }> {
+  const stripped = stripComments(raw)
+  const src = blankStrings(stripped)
+  if (src.length !== stripped.length) throw new Error("blankStrings changed offsets — CHECK 4 cannot align row tables")
+  const out: Array<{ fn: string; line: number; text: string }> = []
+  const headRe = /(export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)\s*(?:<[^>]*>)?\s*\(|(export\s+)?const\s+(\w+)\s*(?::[^=]+)?=\s*async\s*\(/g
+  const seen = new Set<string>()
+  let m: RegExpExecArray | null
+  while ((m = headRe.exec(src))) {
+    const exported = !!(m[1] ?? m[3])
+    const fn = m[2] ?? m[4]
+    const open = m.index + m[0].length - 1
+    let close = -1
+    for (let i = open, d = 0; i < src.length; i++) {
+      if (src[i] === "(") d++
+      else if (src[i] === ")") { d--; if (d === 0) { close = i + 1; break } }
+    }
+    if (close < 0) continue
+    const params = src.slice(open + 1, close - 1)
+    const bodyStart = functionBodyStart(src, close)
+    if (bodyStart < 0) continue
+    let j = bodyStart
+    for (let d = 0; j < src.length; j++) { if (src[j] === "{") d++; else if (src[j] === "}") { d--; if (d === 0) break } }
+    const body = src.slice(bodyStart, j + 1)
+    const bodyText = stripped.slice(bodyStart, j + 1)
+
+    // Top-level parameter names, and names destructured straight out of a param.
+    const top: string[] = []
+    { let depth = 0, cur = ""
+      for (const ch of params + ",") {
+        if ("{(<[".includes(ch)) depth++
+        if ("})>]".includes(ch)) depth--
+        if (ch === "," && depth === 0) { const n = cur.trim().match(/^(?:\.\.\.)?(\w+)/); if (n) top.push(n[1]); cur = "" } else cur += ch
+      } }
+    const destructured = [...params.matchAll(/^\s*\{([^}]*)\}/g)].flatMap((p) => p[1].split(",").map((x) => x.trim().split(/[:=\s]/)[0]))
+    const claimNames = [...top, ...destructured].filter((n) => CLAIM_EXPLICIT.test(n) || (exported && CLAIM_PUBLIC_NAMES.includes(n)))
+    const objParams = exported ? top.filter((n) => !TENANTISH.test(n)) : []
+    const reqLocals: string[] = []
+    if (exported) {
+      for (const lm of body.matchAll(/(?:const|let)\s+(?:\{([^}]*)\}|(\w+))\s*(?::[^=\n]+)?=\s*([^\n]*)/g)) {
+        if (!/searchParams|\.json\(\)|\bbody\b|formData|\bpayload\b/.test(lm[3])) continue
+        const names = lm[1] ? lm[1].split(",").map((x) => x.trim().split(/[:\s]/).pop()!.trim()) : [lm[2]]
+        for (const n of names) if (n && TENANTISH.test(n)) reqLocals.push(n)
+      }
+      for (const am of body.matchAll(/(?<![\w.])(\w+)\s*=\s*(?:body|json|payload)\??\.(\w+)/g)) if (TENANTISH.test(am[1]) || TENANTISH.test(am[2])) reqLocals.push(am[1])
+      for (const pm of body.matchAll(/(?:const|let)\s+(\w+)\s*(?::[^=\n]+)?=\s*(\w+)\s*(?:\|\||\?\?)/g)) {
+        if ([...claimNames, ...reqLocals].includes(pm[2]) && TENANTISH.test(pm[1])) reqLocals.push(pm[1])
+      }
+    }
+    const bare = [...claimNames, ...reqLocals]
+    const objAlt = [...objParams, "body", "json", "payload"].join("|")
+    const claimRe = new RegExp(`^(?:${bare.length ? `(?:${bare.join("|")})` : "__none__"}|(?:${objAlt})\\??\\.(?:brokerageId|brokerage_id|tenantId|tenant_id))$`)
+
+    // Bindings declared before a position (a destructure KEY is not a binding).
+    const bindingsBefore = (at: number): Set<string> => {
+      const b = new Set<string>()
+      const pre = body.slice(0, at)
+      for (const d of pre.matchAll(/(?:const|let|var)\s+(\w+)/g)) b.add(d[1])
+      for (const d of pre.matchAll(/(?:const|let|var)\s*\{/g)) {
+        const k = (d.index ?? 0) + d[0].length - 1
+        let e = k
+        for (let depth = 0; e < pre.length; e++) { if (pre[e] === "{") depth++; else if (pre[e] === "}") { depth--; if (depth === 0) break } }
+        let dd = 0, cur = ""
+        const parts: string[] = []
+        for (const ch of pre.slice(k + 1, e) + ",") { if ("{[".includes(ch)) dd++; if ("}]".includes(ch)) dd--; if (ch === "," && dd === 0) { parts.push(cur); cur = "" } else cur += ch }
+        for (const part of parts) {
+          const t = part.trim().replace(/^\.\.\./, "")
+          if (!t) continue
+          const colon = t.indexOf(":")
+          const bind = colon >= 0 ? t.slice(colon + 1).trim() : t.split("=")[0].trim()
+          const w = bind.match(/^\w+/)
+          if (w && !bind.startsWith("{")) b.add(w[0])
+        }
+      }
+      return b
+    }
+    const shadowed = (name: string, at: number) => !reqLocals.includes(name) && bindingsBefore(at).has(name)
+
+    // Fetched ROWS (table names read from the un-blanked text at the same offsets).
+    const rowVars = new Set<string>()
+    for (const r of bodyText.matchAll(/\{\s*data\s*:\s*(\w+)[^}]*\}\s*=\s*await\s+([\s\S]{0,240}?)\.from\(\s*["'`]?(\w*)["'`]?\s*\)([\s\S]{0,300})/g)) {
+      const ownUsersRow = r[3] === "users" && /\.eq\(\s*["'`]id["'`]\s*,\s*(?:\w+\.)*user\.id\s*\)/.test(r[4].split(/\n\s*\n/)[0])
+      if (!ownUsersRow) rowVars.add(r[1])
+    }
+    for (const r of body.matchAll(/(?:const|let)\s+(\w+)\s*(?::[^=\n]+)?=\s*\(?\s*(\w+)/g)) if (rowVars.has(r[2])) rowVars.add(r[1])
+    const rootOf = (x: string) => x.replace(/^\(\s*/, "").match(/^\w+/)?.[0] ?? ""
+    const platformGate = /\b(?:requireSuperadmin|requirePlatformCapability|requirePlatformStaff|gateStaffAction|requireProviders|isPlatformSuperadminIdentity|isPlatformStaffIdentity)\s*\(/.exec(body)
+
+    const OPND = String.raw`(?:\([^()]*\)|[\w$])[\w$.?]*`
+    const cmpRe = new RegExp(`(${OPND})\\s*(!==|===|!=|==)\\s*(${OPND})`, "g")
+    let c: RegExpExecArray | null
+    while ((c = cmpRe.exec(body))) {
+      const a = c[1], b = c[3]
+      if (!TENANTISH.test(a) || !TENANTISH.test(b)) continue
+      const aClaim = claimRe.test(a) && !shadowed(a.split(".")[0], c.index)
+      const bClaim = claimRe.test(b) && !shadowed(b.split(".")[0], c.index)
+      if (aClaim === bClaim) continue
+      if (platformGate && platformGate.index < c.index) continue
+      if (rowVars.has(rootOf(aClaim ? b : a))) continue
+      const line = src.slice(0, bodyStart + c.index).split("\n").length
+      const key = `${line}:${c[0]}`
+      if (seen.has(key)) continue // an inner function's body is also inside its outer one
+      seen.add(key)
+      out.push({ fn, line, text: c[0] })
+    }
+  }
+  return out
+}
+
+{
+  const controls: Array<{ name: string; src: string; expect: number; why: string }> = [
+    {
+      name: "the pre-93A stage-machine helper (private, `claimedBrokerageId` vs the users row) IS reported",
+      expect: 1,
+      why: "the exact third copy lane 93A merged onto requireCallerTenant",
+      src: [
+        "async function requireCallerForBrokerage(claimedBrokerageId: string) {",
+        "  const supabase = await createClient()",
+        "  const { data: { user } } = await supabase.auth.getUser()",
+        '  const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()',
+        "  if (profile.brokerage_id !== claimedBrokerageId) return { ok: false }",
+        "}",
+      ].join("\n"),
+    },
+    {
+      name: "an exported door comparing `params.brokerageId` to the session context IS reported",
+      expect: 1,
+      why: "the common shape (email-campaigns, blog, direct-mail before 93A)",
+      src: [
+        "export async function createThing(params: { brokerageId?: string; name: string }) {",
+        "  const ctx = await getAgentContext()",
+        "  if (params.brokerageId && params.brokerageId !== ctx.brokerageId) return { error: 'x' }",
+        "}",
+      ].join("\n"),
+    },
+    {
+      name: "the same door asking decideClaimedTenant is NOT reported",
+      expect: 0,
+      why: "the survivor must not be accused",
+      src: [
+        "export async function createThing(params: { brokerageId?: string; name: string }) {",
+        "  const ctx = await getAgentContext()",
+        "  if (!decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: params.brokerageId }).ok) return { error: 'x' }",
+        "}",
+      ].join("\n"),
+    },
+    {
+      name: "the caller's OWN users row (`.eq(\"id\", user.id)`) vs a body claim IS reported (accounting-sync shape)",
+      expect: 1,
+      why: "the own users row IS the session tenant — treating every .from() as a row would hide this copy",
+      src: [
+        "export async function disconnect(data: { provider: string; brokerageId: string }) {",
+        "  const { data: { user } } = await supabase.auth.getUser()",
+        '  const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()',
+        "  if (!profile.brokerage_id || data.brokerageId !== profile.brokerage_id) throw new Error('x')",
+        "}",
+      ].join("\n"),
+    },
+    {
+      name: "a route handler's query-string claim vs the session IS reported",
+      expect: 1,
+      why: "app/api/admin/usage/export-csv before 93A",
+      src: [
+        "export async function GET(request: NextRequest) {",
+        "  const ctx = await requireCaller()",
+        "  const { searchParams } = new URL(request.url)",
+        '  const brokerageId = searchParams.get("brokerageId") || ctx.brokerageId',
+        "  if (brokerageId !== ctx.brokerageId) return NextResponse.json({}, { status: 403 })",
+        "}",
+      ].join("\n"),
+    },
+    {
+      name: "a claim assigned from the body and defaulted into a second local IS reported",
+      expect: 1,
+      why: "app/api/integrations/test/[provider] before 93A (`brokerageId = body.brokerage_id`, `target = brokerageId || session`)",
+      src: [
+        "export async function POST(request: NextRequest) {",
+        "  let brokerageId: string | undefined",
+        "  const body = await request.json()",
+        "  brokerageId = body.brokerage_id",
+        "  const ctx = await requireCaller()",
+        "  const targetBrokerageId = brokerageId || ctx.brokerageId",
+        "  if (targetBrokerageId !== ctx.brokerageId) return NextResponse.json({}, { status: 403 })",
+        "}",
+      ].join("\n"),
+    },
+    {
+      name: "a fetched ROW vs the claim (a public lane's consistency key) is NOT reported",
+      expect: 0,
+      why: "agent-public-profile / push-listing-to-seller-portal shape — not the claimed≠session rule",
+      src: [
+        "export async function capture(input: { agentId: string; brokerageId: string }) {",
+        '  const { data: agent } = await svc.from("agents").select("brokerage_id").eq("id", input.agentId).maybeSingle()',
+        "  if (agent.brokerage_id !== input.brokerageId) return { error: 'x' }",
+        "}",
+      ].join("\n"),
+    },
+    {
+      name: "a comparison after a platform-authority gate is NOT reported (target tenant by design)",
+      expect: 0,
+      why: "superadmin consoles name another tenant on purpose",
+      src: [
+        "export async function enter(params: { brokerageId: string }) {",
+        "  const gate = await requirePlatformCapability('support')",
+        "  const ctx = await getAgentContext()",
+        "  if (ctx.brokerageId !== params.brokerageId) return { note: 'acting' }",
+        "}",
+      ].join("\n"),
+    },
+    {
+      name: "a comparison only in a COMMENT or a STRING is NOT reported (stripped + blanked)",
+      expect: 0,
+      why: "a tombstone naming the retired copy is not a call site (CLAUDE.md §2)",
+      src: [
+        "export async function f(params: { brokerageId: string }) {",
+        "  // if (params.brokerageId !== ctx.brokerageId) — the retired copy",
+        "  const fixture = 'if (params.brokerageId !== ctx.brokerageId) refuse'",
+        "  return fixture",
+        "}",
+      ].join("\n"),
+    },
+    {
+      name: "a private helper's ordinary `brokerageId` arg vs a row is NOT reported (internal plumbing)",
+      expect: 0,
+      why: "verifyXInBrokerage(id, brokerageId) receives the session's tenant from its caller",
+      src: [
+        "async function verifyTxInBrokerage(txId: string, brokerageId: string) {",
+        '  const { data: tx } = await svc.from("transactions").select("brokerage_id").eq("id", txId).maybeSingle()',
+        "  return !!tx && tx.brokerage_id === brokerageId",
+        "}",
+      ].join("\n"),
+    },
+  ]
+  let controlFailed = false
+  for (const c of controls) {
+    const got = handRolledClaimComparisons(c.src).length
+    if (got === c.expect) console.log(`  ✓ control · ${c.name}`)
+    else {
+      controlFailed = true
+      console.log(`  ✗ CONTROL FAILED · ${c.name} — expected ${c.expect}, got ${got}`)
+      console.log(`      ${c.why}`)
+    }
+  }
+  if (controlFailed) {
+    console.log(" ❌ CLAIMED_TENANT_CONTROL_FAIL — the finder cannot prove it still works, so its zero means nothing")
+    process.exit(1)
+  }
+
+  let scanned = 0
+  const copies: string[] = []
+  for (const abs of scanCorpus(["app"])) {
+    const raw = readFileSync(abs, "utf8")
+    const isServer = /^\s*["']use server["']/.test(raw)
+    const isRoute = /\/route\.tsx?$/.test(abs.replace(/\\/g, "/"))
+    if (!isServer && !isRoute) continue
+    scanned += 1
+    const rel = relative(root, abs).replace(/\\/g, "/")
+    for (const f of handRolledClaimComparisons(raw)) copies.push(`${rel}:${f.line} ${f.fn} — \`${f.text}\``)
+  }
+  console.log(`\n── HAND-ROLLED CLAIMED-TENANT GUARD ──`)
+  console.log(`  ${scanned} "use server" files + route handlers scanned under app/ · 0 exemptions (a copy is fixed by calling the survivor, never listed)`)
+  if (copies.length > 0) {
+    console.log(`  ✗ ${copies.length} hand-rolled "claimed brokerage ≠ session" comparison(s):`)
+    for (const o of copies) console.log(`     - ${o}`)
+    console.log(
+      " ❌ CLAIMED_TENANT_FAIL — call lib/auth/require-caller.ts requireCallerTenant(claim), resolveWriteContextForTenant(claim), or lib/platform/acting-context.ts decideClaimedTenant (CLAUDE.md §4/§6)",
+    )
+    process.exit(1)
+  }
+  console.log(" ✅ CLAIMED_TENANT_PASS — every caller-claimed tenant is decided by the one survivor (decideClaimedTenant / requireCallerTenant / resolveWriteContextForTenant)")
+}

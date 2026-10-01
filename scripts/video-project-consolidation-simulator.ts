@@ -313,10 +313,12 @@ function routeLayer() {
   const doorStart = door.search(/export\s+async\s+function\s+createVideoProject\s*\(/)
   const doorBody = doorStart < 0 ? "" : door.slice(doorStart, doorStart + 3000)
   // TENANT SCOPE — the route's requireAuth + body-brokerage 403, now the door's.
-  check("the tenant is the caller's SESSION (requireCaller), never the body",
-    /requireCaller\(\)/.test(doorBody) && /brokerageId:\s*caller\.brokerageId/.test(doorBody))
-  check("...and a body-named brokerage that is not the caller's is refused",
-    /params\.brokerageId\s*&&\s*params\.brokerageId\s*!==\s*caller\.brokerageId/.test(doorBody))
+  // lane 93A re-anchor: the session read and the body-tenant refusal are ONE survivor,
+  // lib/auth/require-caller.ts requireCallerTenant (it composes decideClaimedTenant).
+  check("the tenant is the caller's SESSION (requireCallerTenant), never the body",
+    /requireCallerTenant\(\s*params\.brokerageId\s*\)/.test(doorBody) && /brokerageId:\s*caller\.brokerageId/.test(doorBody))
+  check("...and a body-named brokerage that is not the caller's is refused (requireCallerTenant's tenant_mismatch, no hand-rolled !==)",
+    /caller\.reason === "tenant_mismatch"/.test(doorBody) && !/params\.brokerageId\s*!==/.test(doorBody))
 
   const body = survivorCreateBody()
   // videoType against the CHECK vocabulary — the route's VIDEO_TYPES check.

@@ -347,7 +347,9 @@ console.log("\n[wave 83E · SEQUENCE REPORTS CREDIT THE CURRENT HOLDER — the e
 
   const wr = code("app/actions/workflow-reports.ts")
   check("workflow reports: tenant from the SESSION (auth.getUser → users.brokerage_id), a foreign brokerageId refused unless platform staff",
-    /auth\.getUser\(\)/.test(wr) && /isStaff \? \(filters\.brokerageId/.test(wr) && /!isStaff && filters\.brokerageId && filters\.brokerageId !== brokerageId/.test(wr) && !/\.eq\("brokerage_id", filters\.brokerageId\)/.test(wr))
+    /auth\.getUser\(\)/.test(wr) && /isStaff \? \(filters\.brokerageId/.test(wr)
+    // lane 93A re-anchor: the foreign-claim refusal is the ONE decision table (decideClaimedTenant), not a hand-rolled `!==`
+    && /!isStaff && !decideClaimedTenant\(\{ actingBrokerageId: brokerageId, claimedBrokerageId: filters\.brokerageId \}\)\.ok/.test(wr) && !/\.eq\("brokerage_id", filters\.brokerageId\)/.test(wr))
   check("workflow reports: team/agent scope is READ (it was a label) — scopeAgentIds from the led team or own agents row, enrollments filtered by the CURRENT holder, inherited counted",
     /eq\("team_lead_id", user\.id\)/.test(wr) && /resolveAgentIdInBrokerage\(supabase, user\.id, brokerageId\)/.test(wr)
     && /creditEnrollment\(e,/.test(wr) && /scopeAgentIds\.has\(credit\.creditedAgentId\)/.test(wr) && /inheritedEnrollments \+= 1/.test(wr))

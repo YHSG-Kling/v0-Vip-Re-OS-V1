@@ -72,7 +72,7 @@ export async function generateBlogPost(
 ): Promise<{ success: boolean; postId?: string; error?: string; keywordWarnings?: string[]; complianceWarnings?: string[] }> {
   const actor = await resolveBlogActor(userId)
   if (!actor.ok) return { success: false, error: actor.error }
-  if (params.brokerageId && params.brokerageId !== actor.brokerageId) {
+  if (!decideClaimedTenant({ actingBrokerageId: actor.brokerageId, claimedBrokerageId: params.brokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
     return { success: false, error: "That brokerage is not yours — a blog post is written for your own brokerage only." }
   }
 
@@ -1208,3 +1208,6 @@ function buildInstrumentedBlogContent(originalContent: string, blogPostId: strin
 </script>`
   return originalContent + shareBlock + trackerScript
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

@@ -89,7 +89,7 @@ export async function getWorkflowReport(filters: WorkflowReportFilters): Promise
     const isStaff = isPlatformStaffIdentity(me?.user_type, me?.platform_role)
     const brokerageId = isStaff ? (filters.brokerageId ?? me?.brokerage_id ?? null) : (me?.brokerage_id ?? null)
     if (!brokerageId) return { success: false, error: "Workflow report refused: your account carries no brokerage." }
-    if (!isStaff && filters.brokerageId && filters.brokerageId !== brokerageId) {
+    if (!isStaff && !decideClaimedTenant({ actingBrokerageId: brokerageId, claimedBrokerageId: filters.brokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
       return { success: false, error: "Workflow report refused: that brokerage is not yours." }
     }
     const admin = isStaff
@@ -322,3 +322,6 @@ function emptyReport(scope: ReportScope): WorkflowReportSummary {
     topSequences: [],
   }
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

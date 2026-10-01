@@ -32,7 +32,7 @@ import { EqualHousingMark } from "./components/EqualHousingMark"
 import { computeAssemblyTimeline, slideFadeRange } from "../lib/video/assembly-timeline"
 import { brollMountWindows, fitBodyVisualPlan, photoSpansAround, type BodyVisualPlan } from "../lib/video/body-visual-model"
 import { PlannedBrollLayer, type BrollClip } from "./_BrollLayer"
-import { compositionBookends } from "../lib/video/duration-model"
+import { bodyTailFrames, compositionBookends } from "../lib/video/duration-model"
 import { mlsNeutralTitle } from "../lib/video/render-cut"
 import type { CaptionCue } from "../lib/video/caption-plan"
 import { cinemaDisclosureStyle, slideDisclosureText } from "../lib/video/cinema-finish"
@@ -98,17 +98,18 @@ export interface JustListedReelProps {
 // bookends are read from the ONE registry; the facts tile is a fixed design
 // beat INSIDE the body; the image tour is whatever the render's
 // durationInFrames leaves (calculateMetadata sizes it to the fitted narration).
-const FPS   = 30
 const BOOKENDS = compositionBookends("JustListedReel")
 const COVER = BOOKENDS.introFrames
-const FACTS = 4 * FPS
+// The facts tile's length is REGISTERED (lane 93A): duration-model bodyTail /
+// bodyTailFrames — the same number the visual plan carves out, so no planned
+// b-roll beat lands on the fact cards.
 const CTA   = BOOKENDS.outroFrames
 
 export const JustListedReel: React.FC<JustListedReelProps> = (props) => {
   const { durationInFrames } = useVideoConfig()
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const BODY = timeline.body.durationInFrames
-  const FACTS_FRAMES = Math.min(FACTS, BODY - 1)
+  const FACTS_FRAMES = bodyTailFrames("JustListedReel", BODY)
   const IMAGES = BODY - FACTS_FRAMES
   // WAVE 92 (lane 92E): footage only in the plan's narration gaps inside the image tour; the
   // photos tile the frames the footage leaves (photoSpansAround — no photo repeats).

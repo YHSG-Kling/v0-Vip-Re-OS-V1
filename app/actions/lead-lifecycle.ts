@@ -51,7 +51,7 @@ async function requireLeadDesk(targetBrokerageId: string): Promise<LeadRowScope>
         : vis.reason,
     )
   }
-  if (vis.scope.kind !== 'platform' && vis.scope.brokerageId !== targetBrokerageId) {
+  if (vis.scope.kind !== 'platform' && (!targetBrokerageId || !decideClaimedTenant({ actingBrokerageId: vis.scope.brokerageId, claimedBrokerageId: targetBrokerageId }).ok)) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy. The target is REQUIRED here (the callers query by it), so an absent one refuses too.
     throw new Error('Forbidden — brokerage mismatch')
   }
   return vis.scope
@@ -246,3 +246,5 @@ export async function convertLeadToContact(params: {
   }
 }
 
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

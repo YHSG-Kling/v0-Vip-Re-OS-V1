@@ -185,7 +185,7 @@ export async function createCampaignSequence(params: {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.userId) return { sequence: null, error: "Not authenticated" }
   if (!ctx.brokerageId) return { sequence: null, error: "Your account is not linked to a brokerage yet." }
-  if (params.brokerageId && params.brokerageId !== ctx.brokerageId) {
+  if (!decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: params.brokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
     return { sequence: null, error: "Forbidden: that brokerage is not yours." }
   }
   const user = { id: ctx.userId }
@@ -785,3 +785,6 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
     return { success: false, error: e.message }
   }
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

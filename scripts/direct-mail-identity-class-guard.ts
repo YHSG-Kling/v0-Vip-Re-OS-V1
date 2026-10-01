@@ -228,7 +228,8 @@ for (const [file, fn] of CREATORS) {
   ok(`${fn}: ${sinks} identity sinks, 0 fed the wrong class or a raw params.* value`, v.length === 0,
     v.map((x) => `${x.sink} ← ${x.expr} (${x.got}, want ${x.want})`).join("; "))
   ok(`${fn}: the tenant is the SESSION's (a foreign brokerageId is refused)`,
-    /getAgentContext\(\)/.test(body) && /params\.brokerageId\s*(!==|&&)/.test(body))
+    // lane 93A re-anchor: the foreign claim is refused by the ONE decision table, not a hand-rolled `!==`
+    /getAgentContext\(\)/.test(body) && /!decideClaimedTenant\(\{\s*actingBrokerageId:\s*actor\.brokerageId,\s*claimedBrokerageId:\s*params\.brokerageId\s*\}\)\.ok/.test(body))
 }
 // R1k (wave 85D). The insert, gate, usage counter and QR mint MERGED onto the one creator,
 // lib/kernel/marketing.ts createDirectMailCampaign, which the voice webhook shares. Its body

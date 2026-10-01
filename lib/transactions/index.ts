@@ -9,10 +9,10 @@ export {
   MILESTONE_STATUS,
   CLIENT_VISIBLE_MILESTONES,
   ROLES,
-  STAGE_TRANSITION_ROLES,
+  // STAGE_TRANSITION_ROLES / MARK_LOST_ROLES removed (lane 93A) — survivor
+  // lib/transactions/role-guard.ts stageTransitionTier / canTransitionStage.
   MILESTONE_OVERRIDE_ROLES,
   MILESTONE_EDIT_ROLES,
-  MARK_LOST_ROLES,
 } from './transaction-stages'
 export type {
   TransactionStage,
@@ -37,9 +37,8 @@ export {
   canEditMilestoneDate,
   canViewFinancials,
   // canActAsExternalParty removed — see the tombstone at
-  // lib/transactions/role-guard.ts:112. The external-party gate is
+  // lib/transactions/role-guard.ts:145. The external-party gate is
   // lib/kernel/portal-auth.ts:61 requireLenderVendorActor / :111 requireTitleActor.
-  assertUserHasRole,
 } from './role-guard'
 export type { UserRole, RoleContext } from './role-guard'
 

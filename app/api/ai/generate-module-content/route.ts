@@ -67,7 +67,7 @@ export async function POST(request: NextRequest) {
   if (!caller?.brokerage_id) {
     return NextResponse.json({ error: "Your account has no brokerage yet" }, { status: 403 })
   }
-  if (brokerageId && brokerageId !== caller.brokerage_id) {
+  if (!decideClaimedTenant({ actingBrokerageId: caller.brokerage_id, claimedBrokerageId: brokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
     return NextResponse.json({ error: "Forbidden" }, { status: 403 })
   }
   if (!isAdminOrBroker({ user_type: caller.user_type ?? "" })) {
@@ -135,3 +135,6 @@ export async function POST(request: NextRequest) {
     )
   }
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

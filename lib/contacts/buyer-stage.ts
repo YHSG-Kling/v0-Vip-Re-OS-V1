@@ -71,7 +71,9 @@ export const BUYER_INACTIVE_STAGES = [
   "BUYER_ON_HOLD", "BUYER_DISENGAGED", ...BUYER_CONCLUDED_STAGES,
 ] as const satisfies readonly BuyerStage[]
 
-/** Actively working a purchase — the complement of inactive. */
+/** Actively working a purchase — the complement of inactive.
+ * @proofSeam kept exported for scripts/deconflict-channel-simulator.ts and scripts/fatigue-population-guard.ts, which assert the buyer-stage vocabulary partition (active + inactive = every stage); no runtime duplicate (lane 92A checked) (lane 93A).
+ */
 export const BUYER_ACTIVE_STAGES = BUYER_STAGES.filter(
   (s) => !(BUYER_INACTIVE_STAGES as readonly string[]).includes(s),
 ) as readonly BuyerStage[]

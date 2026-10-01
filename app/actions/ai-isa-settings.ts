@@ -169,7 +169,7 @@ export async function saveAIISASettings(
   if (!isPlatform && !TENANT_WRITE_ROLES.has(ctx.role)) {
     return { success: false, error: 'Insufficient permissions' }
   }
-  if (!isPlatform && ctx.brokerageId !== brokerageId) {
+  if (!brokerageId || (!isPlatform && !decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: brokerageId }).ok)) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy. The id is REQUIRED (the write below is keyed by it), so an absent one refuses too.
     return { success: false, error: 'Brokerage mismatch' }
   }
 
@@ -355,3 +355,6 @@ export async function getAIISAStats(_brokerageId: string): Promise<{
     negativeOutcomeLast30Days: negativeOutcomes.count ?? 0,
   }
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

@@ -152,7 +152,8 @@ export function assessMemoryVideoTenure(
 // returns is a concatenation of captured seller text and nothing else. There is
 // no model call in this module, and none in the assembly path.
 
-/** What the model MAY do with a memory video. Shown to agents; asserted by the proof. */
+/** What the model MAY do with a memory video. Shown to agents (memory-video-card.tsx,
+ *  lane 93A — before that only the proof read it); asserted by the proof. */
 export const MODEL_MAY: readonly string[] = [
   "order the captured answers into the canonical chapter sequence",
   "trim leading/trailing whitespace and drop an empty answer",
@@ -160,7 +161,8 @@ export const MODEL_MAY: readonly string[] = [
   "screen the seller's words against the fair-housing pattern bank and flag them for a human",
 ]
 
-/** What the model MAY NOT do. These are the product, not a style preference. */
+/** What the model MAY NOT do. These are the product, not a style preference.
+ *  Shown to agents on memory-video-card.tsx (lane 93A). */
 export const MODEL_MAY_NOT: readonly string[] = [
   "write, complete, embellish or 'improve' any sentence of the family's history",
   "invent a memory, a date, a name, a room or an event the seller did not say",

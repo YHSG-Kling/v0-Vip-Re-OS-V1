@@ -38,7 +38,7 @@
  * ─────────────────────────────────────────────────────────────────────────
  */
 
-import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
+import { resolveWriteContextForTenant, decideClaimedTenant } from "@/lib/platform/acting-context"
 // TOMBSTONE (§1.3) — the `createClient` import that stood here is removed. Its
 // capability is not lost: the act-as seam merge routed this file's writes through
 // `ctx.db` from resolveWriteContextForTenant (lib/platform/acting-context.ts:212),
@@ -268,7 +268,7 @@ export async function ingestInboundLeadSignalAction(input: {
   if (!isTrustedInternal) {
     const ctx = await resolveWriteContextForTenant()
     if (!ctx.ok) return { outcome: "skipped", reason: "unauthorized" }
-    if (ctx.brokerageId !== input.brokerageId) return { outcome: "skipped", reason: "forbidden" }
+    if (!decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: input.brokerageId }).ok) return { outcome: "skipped", reason: "forbidden" } // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy; kept beside the claim-less call so a foreign claim still reports "forbidden" and a missing session still reports "unauthorized".
 
     // Prove the lead is in the caller's tenant through the ACTING client (ctx.db):
     // the cookie/RLS client for a normal seat, the service client ONLY under an active

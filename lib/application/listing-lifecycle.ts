@@ -666,7 +666,7 @@ export async function advanceListingStageService(
       // handleSellerToLifetimeTransition above converts the seller record; this is
       // the SECOND half — handing the client to the manager who owns the ongoing
       // relationship. SAME signal vocabulary the transaction-close path already
-      // publishes (app/actions/transaction-stage-machine.ts:244, consumed by
+      // publishes (app/actions/transaction-stage-machine.ts:237, consumed by
       // "sphere_of_influence:deal_closed" in lib/kernel/manager-signals.ts) — not a
       // second spelling of "a deal closed" (§6). The back-on-market handoff below is
       // structurally unreachable from this stage (see isBackOnMarket's terminal-stage
@@ -676,7 +676,7 @@ export async function advanceListingStageService(
       // DEDUPE ACROSS THE TWO deal_closed PRODUCERS (this lane's item 3): once a
       // listing has a linked transaction, that transaction's OWN stage machine is
       // the richer producer (it also closes referrals and resolves consult
-      // outcomes — see transaction-stage-machine.ts:219-266) and owns this handoff
+      // outcomes — see transaction-stage-machine.ts:212-259) and owns this handoff
       // when the TRANSACTION reaches ITS OWN closed stage. Publishing here too would
       // hand the same client to Sphere twice for one deal. So this path publishes
       // ONLY when no transaction is linked to this listing — the one case the
@@ -715,7 +715,7 @@ export async function advanceListingStageService(
           }
         }
         // else: a transaction is already linked — its own stage machine owns the
-        // deal_closed handoff (app/actions/transaction-stage-machine.ts:219-266).
+        // deal_closed handoff (app/actions/transaction-stage-machine.ts:212-259).
       }
     } catch (err) {
       console.error("[advanceListingStageService] seller-to-lifetime transition threw:", err)

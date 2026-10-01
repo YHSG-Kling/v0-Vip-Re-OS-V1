@@ -299,6 +299,7 @@ export const CREATIVE_PLAYBOOKS: CreativePlaybook[] = [
  * scripts/estimate-comparison-guard.ts fails if either play is dropped or one
  * is folded into the other. A new estimate-type play is ADDED here, never
  * substituted for an existing one.
+ * @proofSeam kept exported for scripts/estimate-comparison-guard.ts, which fails if either estimate play is dropped or folded into the other (owner ruling recorded above) (lane 93A).
  */
 export const ESTIMATE_PLAY_KEYS = ["zestimate_challenge", "estimate_comparison"] as const
 

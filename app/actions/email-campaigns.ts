@@ -175,7 +175,7 @@ export async function createEmailCampaign(params: CreateEmailCampaignParams) {
   try {
     const auth = await requireCaller()
     if (!auth.ok) return { success: false, error: auth.error }
-    if (params.brokerageId && params.brokerageId !== auth.brokerageId) {
+    if (!decideClaimedTenant({ actingBrokerageId: auth.brokerageId, claimedBrokerageId: params.brokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
       return { success: false, error: "That brokerage is not yours — an email campaign is filed in your own brokerage." }
     }
     // IDENTITY CLASS (§3). The blog editor passes its USERS id as `agentId` (it wrote that into
@@ -922,3 +922,6 @@ function determineListingSegment(campaignType: string): string {
   }
   return segments[campaignType] || "all_database"
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

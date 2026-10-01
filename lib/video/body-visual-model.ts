@@ -156,7 +156,7 @@
  */
 import { computeAssemblyTimeline, weightedShotSlots, type AssemblySegment } from "./assembly-timeline"
 import {
-  COMPOSITION_DURATION_RULES, PURPOSE_DURATION_RULES, compositionBookends, planDurationForProps, spokenSecondsForWords,
+  COMPOSITION_DURATION_RULES, PURPOSE_DURATION_RULES, bodyTailFrames, compositionBookends, planDurationForProps, spokenSecondsForWords,
   type DurationPlan, type HostKind, type VideoPurpose,
 } from "./duration-model"
 import { spokenSentences, spokenWords } from "./script-structure"
@@ -681,6 +681,7 @@ export const COMPOSITION_BACKGROUNDS: Record<string, BackgroundKind[]> = {
  * `avatar_pip` is either the shared <AvatarPIP> ring or a composition that
  * switches its own presenter box on the plan's `avatar_pip` treatment
  * (AgentTalkingHeadReel's floating card over footage).
+ * @proofSeam kept exported for scripts/body-visual-model-guard.ts, which reads each composition's stripped source against these marks to prove it can render a planned treatment (lane 93A).
  */
 export const TREATMENT_MARKS: Record<BodyTreatment, RegExp> = {
   full_avatar:     /<Video[\s\S]{0,120}?src=\{avatarVideoUrl\}|src=\{avatarVideoUrl\}/,
@@ -701,7 +702,9 @@ export const TREATMENT_MARKS: Record<BodyTreatment, RegExp> = {
 /** A composition that mounts the ONE per-segment backdrop (wave 81C,
  *  remotion/components/SegmentBackdrop.tsx) can paint every kind the backdrop
  *  paints: a gradient and a slow drift always; a blurred photo only when it
- *  hands the backdrop a photo, so that mark stays the composition's own. */
+ *  hands the backdrop a photo, so that mark stays the composition's own.
+ * @proofSeam kept exported for scripts/body-visual-model-guard.ts and scripts/mls-ads-cuts-guard.ts, which prove a composition can paint every background kind the plan asks of it (lane 93A).
+ */
 export const BACKGROUND_MARKS: Record<BackgroundKind, RegExp> = {
   solid_brand:    /backgroundColor: brand(Colors)?\.primaryColor/,
   brand_gradient: /gradient\(|<SegmentBackdrop\b/,
@@ -835,6 +838,11 @@ export interface BodyVisualSegment {
   /** Index into the matching asset list (b-roll clip / photo / screenshot /
    *  stat card / footage clip) this segment starts on; the composition cycles from here. */
   assetIndex: number | null
+  /** WAVE 93 (lane 93A) — "body_tail": the composition's FIXED design beat at the
+   *  end of the body (duration-model CompositionDurationSpec.bodyTail — the
+   *  JustListedReel fact cards). Its frames are the registry's, not the
+   *  narration's; it carries no script and is never re-assigned a treatment. */
+  fixed?: "body_tail"
 }
 
 export interface BodyVisualPlan {
@@ -922,6 +930,14 @@ export function planBodyVisual(args: PlanBodyVisualArgs): BodyVisualPlan {
   const notes: string[] = []
   const t = computeAssemblyTimeline({ durationInFrames: duration.durationInFrames, introFrames: duration.introFrames, outroFrames: duration.outroFrames })
   const bodyFrames = t.body.durationInFrames
+  // 0. THE FIXED BODY TAIL (wave 93, lane 93A). A composition that paints a
+  //    design beat at the end of its body whatever is said (JustListedReel's
+  //    fact cards) registers it once (duration-model bodyTail); the narrated
+  //    beats tile only the frames BEFORE it, so no b-roll / photo beat is ever
+  //    planned onto a tile the composition will cover with the facts.
+  const tailSpec = COMPOSITION_DURATION_RULES[compositionId]?.bodyTail
+  const tailFrames = bodyTailFrames(compositionId, bodyFrames)
+  const narratedFrames = bodyFrames - tailFrames
 
   // 1. Segments — the producer's own, else the script cut to the arc, else the
   //    arc itself with equal weights (nothing staged: the visuals still tile).
@@ -933,8 +949,15 @@ export function planBodyVisual(args: PlanBodyVisualArgs): BodyVisualPlan {
   }
   // Measured frames weight the tiler when every segment carries them (the
   // memory render's chapters); otherwise the spoken words do.
+  // A narrated window shorter than one frame per beat (a fixed tile that leaves
+  // the image tour a sliver) cannot tile them — the 1-frame floor would run the
+  // beats into the tile. They fold into ONE beat (lane 93A).
+  if (tailFrames > 0 && segs.length > Math.max(1, narratedFrames)) {
+    segs = [{ kind: segs[0].kind, text: segs.map((s) => s.text).filter(Boolean).join(" "), words: segs.reduce((a, s) => a + s.words, 0) }]
+    notes.push(`${compositionId}: the image window before its ${tailSpec?.what ?? "fixed"} tile is ${narratedFrames} frame(s) — the narrated beats fold into one.`)
+  }
   const measured = segs.every((s) => typeof s.frames === "number" && s.frames > 0)
-  const slots = weightedShotSlots(bodyFrames, segs.map((s) => Math.max(1, measured ? (s.frames as number) : s.words)))
+  const slots = weightedShotSlots(narratedFrames, segs.map((s) => Math.max(1, measured ? (s.frames as number) : s.words)))
 
   // 2. Treatment per segment — preference ∩ allowed ∩ renderable ∩ host ∩ assets ∩ verdict.
   const assets: BodyVisualAssets = { chartData: renderable.includes("chart"), statCards: 0, clientFootage: 0, ...args.assets }
@@ -980,6 +1003,17 @@ export function planBodyVisual(args: PlanBodyVisualArgs): BodyVisualPlan {
     }
     return { index: i, kind: s.kind, treatment: candidates[0], background: backgroundFor(candidates[0]), presenter: presenterFor(candidates[0]), from: t.body.from + slots[i].from, durationInFrames: slots[i].durationInFrames, words: s.words, text: s.text, candidates, assetIndex: null }
   })
+  if (tailSpec && tailFrames > 0) {
+    if (!renderable.includes(tailSpec.treatment)) {
+      throw new Error(`body-visual-model: ${compositionId} registers a ${tailSpec.treatment} body tail (duration-model bodyTail) its COMPOSITION_TREATMENTS row does not list`)
+    }
+    segments.push({
+      index: segments.length, kind: "proof", treatment: tailSpec.treatment, background: backgroundFor(tailSpec.treatment),
+      presenter: presenterFor(tailSpec.treatment), from: t.body.from + narratedFrames, durationInFrames: tailFrames,
+      words: 0, text: "", candidates: [tailSpec.treatment], assetIndex: null, fixed: "body_tail",
+    })
+    notes.push(`${compositionId}: the last ${tailFrames} body frames are its fixed ${tailSpec.what} tile — planned as ${tailSpec.treatment}, no narrated beat lands on it.`)
+  }
 
   // 3. Avatar share inside the purpose's bounds (avatar host only). A
   //    voiceover/silent host — or an avatar host whose clip is not coming (an
@@ -1262,6 +1296,19 @@ export function photoSpansAround(span: number, around: readonly AssemblySegment[
   return out
 }
 
+/** Several narrated beats folded into ONE (the first beat's treatment and asset;
+ *  the words and frames summed, the text joined) — for a window too short to
+ *  give each beat a frame. PURE. */
+function collapseSegments(segs: BodyVisualSegment[]): BodyVisualSegment {
+  const first = segs[0]
+  return {
+    ...first,
+    durationInFrames: segs.reduce((a, s) => a + Math.max(1, s.durationInFrames), 0),
+    words: segs.reduce((a, s) => a + s.words, 0),
+    text: segs.map((s) => s.text).filter(Boolean).join(" "),
+  }
+}
+
 /** The windows every consumer reads — derived from the segments, one place. */
 function derivedWindows(segments: BodyVisualSegment[], compositionId: string, body: AssemblySegment) {
   const win = (pred: (s: BodyVisualSegment) => boolean): AssemblySegment[] => segments.filter(pred).map((s) => ({ from: s.from, durationInFrames: s.durationInFrames }))
@@ -1289,9 +1336,33 @@ export function fitBodyVisualPlan(plan: BodyVisualPlan | null | undefined, compo
   if (!plan || plan.compositionId !== compositionId || !Array.isArray(plan.segments) || plan.segments.length === 0) return null
   const { introFrames, outroFrames } = compositionBookends(compositionId)
   const t = computeAssemblyTimeline({ durationInFrames, introFrames, outroFrames })
-  if (plan.durationInFrames === t.totalFrames && plan.body.from === t.body.from && plan.body.durationInFrames === t.body.durationInFrames) return plan
-  const slots = weightedShotSlots(t.body.durationInFrames, plan.segments.map((s) => Math.max(1, s.durationInFrames)))
-  const segments = plan.segments.map((s, i) => ({ ...s, from: t.body.from + slots[i].from, durationInFrames: slots[i].durationInFrames }))
+  // The fixed body tail (lane 93A) keeps the registry's frames at the body's end;
+  // the narrated segments re-tile only what it leaves. A plan staged before the
+  // tail was registered (no fixed segment) gets it carved here too, so a stored
+  // plan can no longer put footage where the composition paints the facts.
+  const tail = bodyTailFrames(compositionId, t.body.durationInFrames)
+  const tailSpec = COMPOSITION_DURATION_RULES[compositionId]?.bodyTail
+  const staleTail = tail > 0 && !plan.segments.some((s) => s.fixed === "body_tail")
+  if (!staleTail && plan.durationInFrames === t.totalFrames && plan.body.from === t.body.from && plan.body.durationInFrames === t.body.durationInFrames) return plan
+  const narratedFrames = t.body.durationInFrames - tail
+  let narrated = plan.segments.filter((s) => s.fixed !== "body_tail")
+  // A window shorter than one frame per beat cannot tile them (the tiler's
+  // 1-frame floor would run into the tile): the beats collapse into one.
+  if (narrated.length > Math.max(1, narratedFrames)) narrated = [collapseSegments(narrated)]
+  const slots = weightedShotSlots(narratedFrames, narrated.map((s) => Math.max(1, s.durationInFrames)))
+  if (slots.length < narrated.length) return null // no body to tile (bookends only) — nothing to drive a layout
+  const tailFrom = t.body.from + narratedFrames
+  const tailSeg = plan.segments.find((s) => s.fixed === "body_tail")
+  const segments: BodyVisualSegment[] = [
+    ...narrated.map((s, k) => ({ ...s, from: t.body.from + slots[k].from, durationInFrames: slots[k].durationInFrames })),
+    ...(tailSeg && tail > 0 ? [{ ...tailSeg, index: narrated.length, from: tailFrom, durationInFrames: tail }] : []),
+  ]
+  if (staleTail && tailSpec) {
+    segments.push({
+      index: segments.length, kind: "proof", treatment: tailSpec.treatment, background: "none", presenter: "none",
+      from: tailFrom, durationInFrames: tail, words: 0, text: "", candidates: [tailSpec.treatment], assetIndex: null, fixed: "body_tail",
+    })
+  }
   return {
     ...plan, durationInFrames: t.totalFrames,
     intro: { ...t.intro, treatment: "brand_card" }, body: t.body, outro: { ...t.outro, treatment: "brand_card" },
@@ -1421,7 +1492,9 @@ export function gateVisualPlanForDispatch(plan: BodyVisualPlan | null | undefine
   const add = (m: string) => { if (!seen.has(m)) { seen.add(m); missing.push(m) } }
   for (const s of plan.segments) {
     if (!(BODY_TREATMENTS as readonly string[]).includes(s.treatment)) { add(`unknown_treatment:${s.treatment}`); continue }
-    if (!has(s.treatment)) add(`asset_missing:${s.treatment}`)
+    // A fixed body-tail tile (lane 93A) is the composition's own design beat,
+    // painted from its required props — it asks no staged asset.
+    if (!s.fixed && !has(s.treatment)) add(`asset_missing:${s.treatment}`)
     if (!rule.allowed.includes(s.treatment)) add(`treatment_not_allowed:${s.treatment}`)
     if (segmentUsesBroll(s, plan.compositionId)) {
       if (rule.broll.verdict === "never") add(`broll_forbidden:${plan.purpose}`)

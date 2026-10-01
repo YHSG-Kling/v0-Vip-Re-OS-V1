@@ -894,3 +894,40 @@ export async function resolveTenantPrincipalTeamLead(
   const isPrincipal = read.fromCache && (read.tier === "team" || read.tier === "solo_agent")
   return { ok: true, isPrincipal, tier: read.tier, teamId: isPrincipal ? live[0].id : null }
 }
+
+// ─── WHO MAY MOVE A DEAL (lane 93A) — appended at the foot, with its import, so the
+// `resolve-user-role.ts:<line>` references other files hold stay true. ─────────
+/**
+ * WHO MAY MOVE A DEAL, BY SEAT — pure (lane 93A).
+ *
+ *   "brokerage" — the tenant-admin roster (TENANT_ADMIN_USER_TYPES via
+ *                 isAdminOrBroker, never a retyped list) MINUS team_lead:
+ *                 broker / broker_owner / broker_admin / admin /
+ *                 compliance_officer. The same brokerage-wide tier
+ *                 lib/kernel/egress-scope.ts resolves for them.
+ *                 Plus `tc` — role-guard canTransitionStage's own rule since it was written:
+ *                 a coordinator works the brokerage's deals.
+ *   "deal"      — `agent` and `team_lead`: their OWN deals, and a team lead
+ *                 also the deals of the team they lead (egress-scope's TEAM
+ *                 tier; anchored on teams.team_lead_id, not the seat — §4).
+ *   "none"      — every other seat, and a missing user_type (FAILS CLOSED, §4:
+ *                 the retired stage-machine helper defaulted a null role to
+ *                 "agent", so a row with no seat was graded as a producer).
+ *
+ * Takes the RAW users.user_type; legacy spellings are canonicalised only to
+ * recognise `tc` / the roster's broker alias. Lives HERE, beside the roster it
+ * derives from; its gate is lib/transactions/role-guard.ts canTransitionStage.
+ */
+export function stageTransitionTier(userType: string | null | undefined): "brokerage" | "deal" | "none" {
+  const raw = String(userType ?? "").trim().toLowerCase()
+  if (!raw) return "none"
+  const canonical = toCanonicalRole(raw)
+  if (isAdminOrBroker({ user_type: raw }) || (canonical && isAdminOrBroker({ user_type: canonical }))) {
+    return raw === "team_lead" || canonical === "team_lead" ? "deal" : "brokerage"
+  }
+  if (canonical === "tc") return "brokerage"
+  if (canonical === "agent") return "deal"
+  return "none"
+}
+
+import { toCanonicalRole } from "@/lib/security/types"

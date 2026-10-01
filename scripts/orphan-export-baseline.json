@@ -511,7 +511,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10461,
+  "census": 10462,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2895,7 +2895,7 @@
     "lib/auth/require-admin-maintenance-access.ts": 1,
     "lib/auth/require-brokerage-admin.ts": 1,
     "lib/auth/require-caller.ts": 9,
-    "lib/auth/resolve-user-role.ts": 12,
+    "lib/auth/resolve-user-role.ts": 13,
     "lib/auth/role-grants.ts": 9,
     "lib/auth/useAuth.ts": 1,
     "lib/avm/provider-chain.ts": 6,
@@ -4317,7 +4317,7 @@
     "lib/transactions/offer-compliance-loop.ts": 1,
     "lib/transactions/offer-execution-state.ts": 3,
     "lib/transactions/participant-populator.ts": 1,
-    "lib/transactions/role-guard.ts": 5,
+    "lib/transactions/role-guard.ts": 4,
     "lib/transactions/stage-auto-tasks.ts": 1,
     "lib/transactions/stage-progression.ts": 2,
     "lib/transactions/stale-listing-sphere-sweep.ts": 1,
@@ -4383,7 +4383,7 @@
     "lib/video/custom-video-archetypes.ts": 7,
     "lib/video/director-content.ts": 18,
     "lib/video/director-eval-harness.ts": 5,
-    "lib/video/duration-model.ts": 23,
+    "lib/video/duration-model.ts": 24,
     "lib/video/finish-spec.ts": 1,
     "lib/video/format-learning.ts": 13,
     "lib/video/intro-video-reactor.ts": 2,
@@ -14499,7 +14499,8 @@
       "isTenantAdminOrPlatformStaff",
       "resolveTenantAdmin",
       "resolveBrokerageFinanceAdmin",
-      "resolveTenantPrincipalTeamLead"
+      "resolveTenantPrincipalTeamLead",
+      "stageTransitionTier"
     ],
     "lib/auth/role-grants.ts": [
       "readRoleGrants",
@@ -21841,8 +21842,7 @@
       "canTransitionStage",
       "canOverrideMilestone",
       "canEditMilestoneDate",
-      "canViewFinancials",
-      "assertUserHasRole"
+      "canViewFinancials"
     ],
     "lib/transactions/stage-auto-tasks.ts": [
       "seedStageAutoTasks"
@@ -22218,6 +22218,7 @@
       "purposeOpensOnHook",
       "compositionKeepsBrandIntro",
       "compositionBookends",
+      "bodyTailFrames",
       "narrationStartFrame",
       "compositionPurposes",
       "requiredCapFrames",

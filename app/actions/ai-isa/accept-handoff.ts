@@ -50,7 +50,7 @@ export async function acceptAIISAHandoff(params: {
     if (!ctx.isAuthenticated || !ctx.brokerageId) {
       return { success: false, error: 'Unauthorized' }
     }
-    if (ctx.brokerageId !== params.brokerageId) {
+    if (!params.brokerageId || !decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: params.brokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy. REQUIRED here (the lead read below is keyed by it): an absent one refuses too.
       return { success: false, error: 'Forbidden' }
     }
   }
@@ -150,3 +150,6 @@ export async function acceptAIISAHandoff(params: {
 
   return { success: true, contactId }
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

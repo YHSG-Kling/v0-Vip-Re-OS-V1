@@ -29,7 +29,7 @@ import React from "react"
 import { Audio } from "@remotion/media"
 import { AbsoluteFill, Sequence, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
-import { compositionBookends } from "../lib/video/duration-model"
+import { bodyTailFrames, compositionBookends } from "../lib/video/duration-model"
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { mlsNeutralTitle } from "../lib/video/render-cut"
@@ -84,14 +84,14 @@ export interface JustListedReelHorizontalProps {
   bodyVisualPlan?: BodyVisualPlan | null
 }
 
-const FPS    = 30
 // THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
 // `PHOTOS = 10 * FPS` stood here. Bookends come from the ONE registry; the
 // agent-facts tile is a fixed design beat INSIDE the body; the photo window
 // is whatever the render's durationInFrames leaves.
 const BOOKENDS = compositionBookends("JustListedReelHorizontal")
 const COVER  = BOOKENDS.introFrames
-const FACTS  = 4  * FPS               // 120
+// The agent-facts tile's length is REGISTERED (lane 93A): duration-model
+// bodyTail / bodyTailFrames — the number the visual plan carves out too.
 const CTA    = BOOKENDS.outroFrames
 
 // Wave 89 — the header sits inside the frame's safe insets (it was a typed 32 px
@@ -135,7 +135,7 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
   const { safe } = cinemaFrame(width, height)
   const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
   const BODY     = timeline.body.durationInFrames
-  const FACTS_FRAMES = Math.min(FACTS, BODY - 1)
+  const FACTS_FRAMES = bodyTailFrames("JustListedReelHorizontal", BODY)
   const PHOTOS   = BODY - FACTS_FRAMES
   const images   = imageUrls.slice(0, 2)
   // WAVE 92 (lane 92E): footage only in the plan's narration gaps inside the photo window;

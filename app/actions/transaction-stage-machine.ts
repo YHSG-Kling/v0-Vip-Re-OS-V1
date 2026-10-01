@@ -1,7 +1,8 @@
 "use server"
 
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
-import { createClient } from "@/lib/supabase/server"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
 import { TransactionOrchestrator } from "@/lib/transactions/transaction-orchestrator"
 import { TransactionStage, TRANSACTION_STAGES, STAGE_TO_STATUS_MAP } from "@/lib/transactions/transaction-stages"
@@ -11,33 +12,20 @@ import { requireOverrideActor, PortalAuthError } from "@/lib/kernel/portal-auth"
 import { revalidatePath } from "next/cache"
 import { isTransactionStatus } from "@/lib/transactions/transaction-status"
 
-// Helper: resolve session user + caller brokerage; verifies the
-// caller-supplied brokerageId matches the session brokerage. The
-// orchestrator uses brokerageId to find/update the transaction, so
-// without this check a caller could advance/lose/inspect any
-// brokerage's transactions by passing its id.
-async function requireCallerForBrokerage(
-  claimedBrokerageId: string,
-): Promise<
-  | { ok: true; userId: string; brokerageId: string; userRole: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Not authenticated" }
-  const { data: profile } = await supabase
-    .from("users").select("brokerage_id, user_type, role").eq("id", user.id).maybeSingle()
-  if (!profile?.brokerage_id) return { ok: false, error: "Not authenticated" }
-  if (profile.brokerage_id !== claimedBrokerageId) {
-    return { ok: false, error: "Cannot act on transactions outside your brokerage" }
-  }
-  return {
-    ok: true,
-    userId: user.id,
-    brokerageId: profile.brokerage_id,
-    userRole: profile.role ?? profile.user_type ?? "agent",
-  }
-}
+// TOMBSTONE (lane 93A, §1/§6): requireCallerForBrokerage — DELETED, MERGED ONTO
+// THE SURVIVOR lib/auth/require-caller.ts requireCallerTenant (the body-tenant
+// rule, which composes lib/platform/acting-context.ts decideClaimedTenant). It
+// was the THIRD file-local copy of the claimed-brokerage ≠ session comparison
+// (its twins in transaction-inspections / transaction-hazard-insurance merged in
+// lane 92A). What it carried beyond the survivor was its role: `users.role ??
+// users.user_type ?? "agent"` — the LEGACY free-form role column read first, and
+// a missing seat defaulted to "agent" (fail OPEN, §4). That role fed the
+// orchestrator's literal ["admin","broker","tc","agent"] gate, which refused
+// team_lead and compliance_officer and admitted any agent to any deal. Both are
+// replaced: the role is the session's users.user_type exactly as stored (null
+// stays null and is refused), and the gate is lib/transactions/role-guard.ts
+// canTransitionStage (tenant-admin roster via isAdminOrBroker; agents and team
+// leads on their own / their led team's deals — egress-scope's TEAM tier).
 
 // ─── THIN WRAPPERS AROUND TransactionOrchestrator ─────────────────────────────
 
@@ -50,14 +38,14 @@ export async function checkStageAdvancement(params: {
   brokerageId: string
   targetStage: TransactionStage
 }): Promise<{ allowed: boolean; blockers: string[] }> {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { allowed: false, blockers: [auth.error] }
 
   const orchestrator = new TransactionOrchestrator({
     transactionId: params.transactionId,
     brokerageId:   auth.brokerageId,
     userId:        auth.userId,
-    userRole:      auth.userRole,
+    userRole:      auth.userType ?? "",
   })
 
   return orchestrator.checkAdvancement(params.targetStage)
@@ -92,9 +80,14 @@ export async function advanceTransactionStage(params: {
       if (err instanceof PortalAuthError) return { success: false, error: err.message }
       throw err
     }
-    if (overrideCtx.brokerageId !== params.brokerageId) {
+    // The body tenant is checked by the ONE decision table (lane 93A — this was
+    // the file's second hand-rolled copy of it); every write below uses the
+    // SESSION's brokerage, never the parameter.
+    const claim = decideClaimedTenant({ actingBrokerageId: overrideCtx.brokerageId, claimedBrokerageId: params.brokerageId })
+    if (!claim.ok) {
       return { success: false, error: "Cannot override transaction outside your brokerage" }
     }
+    const brokerageId = claim.brokerageId
 
     const svc = createServiceClient()
 
@@ -103,7 +96,7 @@ export async function advanceTransactionStage(params: {
       .from("transactions")
       .select("stage")
       .eq("id", params.transactionId)
-      .eq("brokerage_id", params.brokerageId)
+      .eq("brokerage_id", brokerageId)
       .maybeSingle()
     if (!current) return { success: false, error: "Transaction not found in your brokerage" }
 
@@ -128,12 +121,12 @@ export async function advanceTransactionStage(params: {
         updated_at: new Date().toISOString(),
       })
       .eq("id", params.transactionId)
-      .eq("brokerage_id", params.brokerageId)
+      .eq("brokerage_id", brokerageId)
     if (updateErr) return { success: false, error: updateErr.message }
 
     // Audit trail — explicit override event with reason + actor role in metadata
     await sentinelWrite(svc, svc.from("lifecycle_events").insert({
-      brokerage_id:  params.brokerageId,
+      brokerage_id:  brokerageId,
       entity_type:   "transaction",
       entity_id:     params.transactionId,
       event_type:    "transaction.stage_overridden",
@@ -155,7 +148,7 @@ export async function advanceTransactionStage(params: {
 
     calculateDealHealth({
       transactionId: params.transactionId,
-      brokerageId:   params.brokerageId,
+      brokerageId:   brokerageId,
     }).catch((error) => {
       console.error("[transaction-stage-machine] calculateDealHealth failed:", error)
     })
@@ -164,17 +157,17 @@ export async function advanceTransactionStage(params: {
   }
 
   // ── Standard path ──────────────────────────────────────────────────────────
-  // Verify the caller actually belongs to params.brokerageId — without
-  // this the orchestrator would happily look up + advance a transaction
-  // in another tenant.
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  // The session's tenant, with a body brokerageId that names another one
+  // refused (requireCallerTenant). The orchestrator then asks
+  // canTransitionStage whether THIS seat may move THIS deal.
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   const orchestrator = new TransactionOrchestrator({
     transactionId: params.transactionId,
     brokerageId:   auth.brokerageId,
     userId:        auth.userId,
-    userRole:      auth.userRole,
+    userRole:      auth.userType ?? "",
   })
 
   const result = await orchestrator.advanceToStage(params.targetStage, params.reason)
@@ -186,7 +179,7 @@ export async function advanceTransactionStage(params: {
 
     calculateDealHealth({
       transactionId: params.transactionId,
-      brokerageId:   params.brokerageId,
+      brokerageId:   auth.brokerageId,
     }).catch((error) => {
       console.error("[transaction-stage-machine] calculateDealHealth failed:", error)
     })
@@ -316,14 +309,14 @@ export async function markTransactionLost(params: {
   category: string
   earnestMoneyOutcome: "returned" | "forfeited"
 }): Promise<{ success: boolean; error?: string }> {
-  const auth = await requireCallerForBrokerage(params.brokerageId)
+  const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
 
   const orchestrator = new TransactionOrchestrator({
     transactionId: params.transactionId,
     brokerageId:   auth.brokerageId,
     userId:        auth.userId,
-    userRole:      auth.userRole,
+    userRole:      auth.userType ?? "",
   })
 
   // First advance to LOST stage

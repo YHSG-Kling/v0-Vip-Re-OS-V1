@@ -120,7 +120,7 @@ export async function GET(
       }
       callerBrokerageId = (callerRow?.brokerage_id as string | undefined) ?? null
     }
-    if (callerBrokerageId !== brokerageId) {
+    if (!brokerageId || !decideClaimedTenant({ actingBrokerageId: callerBrokerageId, claimedBrokerageId: brokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy. The asked-about brokerage is REQUIRED here (it names the record), so an absent one refuses too.
       // Deliberately not 403-with-detail: the tracking outcome is reported
       // honestly, and nothing about another tenant's code is disclosed —
       // including whether one exists, which a 404-vs-200 split would leak.
@@ -170,3 +170,6 @@ export async function GET(
     )
   }
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

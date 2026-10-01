@@ -82,7 +82,7 @@ export async function POST(
     const targetBrokerageId = brokerageId || userData.brokerage_id
 
     // Verify user belongs to brokerage
-    if (targetBrokerageId !== userData.brokerage_id) {
+    if (!decideClaimedTenant({ actingBrokerageId: userData.brokerage_id, claimedBrokerageId: targetBrokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
       return NextResponse.json(
         { error: "Unauthorized: Brokerage mismatch" },
         { status: 403 }
@@ -167,3 +167,6 @@ export async function POST(
     )
   }
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

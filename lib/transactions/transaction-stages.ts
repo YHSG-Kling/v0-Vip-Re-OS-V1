@@ -131,13 +131,13 @@ export const ROLES = {
 
 export type Role = typeof ROLES[keyof typeof ROLES]
 
-// Roles that can transition stages
-export const STAGE_TRANSITION_ROLES: Role[] = [
-  ROLES.AGENT,
-  ROLES.TC,
-  ROLES.BROKER,
-  ROLES.ADMIN,
-]
+// TOMBSTONE (lane 93A, §6): STAGE_TRANSITION_ROLES and MARK_LOST_ROLES — DELETED.
+// Two retyped role lists ([agent, tc, broker, admin]) that nothing but the
+// lib/transactions barrel named, restating — wrongly, without team_lead,
+// broker_owner, broker_admin or compliance_officer — the rule the orchestrator
+// enforces. Marking a deal lost IS a stage move (advanceToStage(LOST)), so both
+// lists were the same idea. THE SURVIVOR: lib/transactions/role-guard.ts
+// stageTransitionTier / canTransitionStage, derived from TENANT_ADMIN_USER_TYPES.
 
 // Roles that can override critical milestones
 export const MILESTONE_OVERRIDE_ROLES: Role[] = [
@@ -153,13 +153,7 @@ export const MILESTONE_EDIT_ROLES: Role[] = [
   ROLES.ADMIN,
 ]
 
-// Roles that can mark lost
-export const MARK_LOST_ROLES: Role[] = [
-  ROLES.AGENT,
-  ROLES.TC,
-  ROLES.BROKER,
-  ROLES.ADMIN,
-]
+// (MARK_LOST_ROLES — see the lane-93A tombstone above STAGE_TRANSITION_ROLES' old site.)
 
 // Transaction type
 export interface Transaction {

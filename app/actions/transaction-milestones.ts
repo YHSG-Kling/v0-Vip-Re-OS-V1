@@ -93,14 +93,14 @@ export async function overrideMilestoneAction(
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Override authorization failed" }
   }
-  if (overrideCtx.brokerageId !== params.brokerageId) {
+  const claim = decideClaimedTenant({ actingBrokerageId: overrideCtx.brokerageId, claimedBrokerageId: params.brokerageId }); if (!claim.ok) { // lane 93A: the ONE claimed-tenant decision table (§6), not a hand-rolled copy; the write carries the SESSION's brokerage
     return { success: false, error: "Brokerage mismatch" }
   }
 
   try {
     await overrideMilestone({
       transactionId: params.transactionId,
-      brokerageId:   params.brokerageId,
+      brokerageId:   claim.brokerageId,
       milestoneName: params.milestoneName,
       overrideBy:    overrideCtx.userId,
       overrideReason: overrideCtx.reason,
@@ -657,3 +657,6 @@ export async function completeRepairAction(
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
   return { success: true }
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

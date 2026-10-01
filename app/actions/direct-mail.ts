@@ -134,7 +134,7 @@ export async function createMailCampaign(params: CreateMailCampaignParams) {
     if (!actor.isAuthenticated || !actor.userId || !actor.brokerageId) {
       return { success: false, error: "Not signed in to a brokerage — a direct mail campaign is filed by a signed-in brokerage user" }
     }
-    if (params.brokerageId !== actor.brokerageId) {
+    if (!decideClaimedTenant({ actingBrokerageId: actor.brokerageId, claimedBrokerageId: params.brokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
       return { success: false, error: "That brokerage is not yours — a direct mail campaign is filed in your own brokerage" }
     }
     if (params.createdBy !== actor.userId) {
@@ -1033,3 +1033,6 @@ export async function getCampaignQrScans(campaignId: string): Promise<{
     return handleError(error, "getCampaignQrScans")
   }
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

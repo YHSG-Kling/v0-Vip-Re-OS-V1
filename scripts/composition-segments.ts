@@ -226,9 +226,16 @@ export function buildScope(source: string, geometry: RegisteredGeometry, composi
     ;(scope as Record<string, unknown>).FRAMES = flat
   }
 
+  // THE REGISTERED BODY TAIL (lane 93A): `bodyTailFrames("X", BODY)` is a call
+  // with a string literal this evaluator refuses by design, so it is expanded
+  // HERE into the survivor's own arithmetic over the registry row
+  // (lib/video/duration-model.ts bodyTailFrames: min(frames, body − 1), ≥ 0).
+  const tailed = source.replace(/\bbodyTailFrames\(\s*["'](\w+)["']\s*,\s*([^)]+)\)/g, (_all, id: string, x: string) =>
+    `Math.max(0, Math.min(${compositionDurationSpec(id)?.bodyTail?.frames ?? 0}, Math.floor(${x}) - 1))`)
+
   CONST_DECL.lastIndex = 0
   let m: RegExpExecArray | null
-  while ((m = CONST_DECL.exec(source))) {
+  while ((m = CONST_DECL.exec(tailed))) {
     const [, name, expr] = m
     if (name === "FRAMES") continue // object form handled above
     try {

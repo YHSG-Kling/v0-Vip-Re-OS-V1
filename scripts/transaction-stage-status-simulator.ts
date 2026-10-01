@@ -22,6 +22,12 @@
 import { STAGE_TO_STATUS_MAP, TRANSACTION_STAGES } from "../lib/transactions/transaction-stages"
 import { TRANSACTION_STATUSES } from "../lib/transactions/transaction-status"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { stripComments } from "./strip-comments"
+import { TENANT_ADMIN_USER_TYPES, stageTransitionTier } from "../lib/auth/resolve-user-role"
+import { resolveEgressScope } from "../lib/kernel/egress-scope"
+import { toCanonicalRoleOrDefault } from "../lib/security"
 
 // DERIVED, never mirrored — the live CHECK vocabularies as generated from the database.
 const VALID_STATUS = new Set(CHECK_VOCABULARIES.transactions?.status ?? [])
@@ -30,6 +36,82 @@ const VALID_STAGE = new Set(CHECK_VOCABULARIES.transactions?.stage ?? [])
 let pass = 0, fail = 0
 const fails: string[] = []
 const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) } }
+
+/**
+ * WHO MAY MOVE A DEAL (lane 93A). The stage machine used to resolve its role as
+ * `users.role ?? users.user_type ?? "agent"` (legacy column first; a missing seat
+ * graded as an agent) and the orchestrator then admitted only the canonical set
+ * ["admin","broker","tc","agent"] — refusing team_lead and compliance_officer and
+ * letting any agent move any deal of the brokerage. The survivor is
+ * lib/transactions/role-guard.ts stageTransitionTier / canTransitionStage.
+ * Asserted as the RULE over every STORABLE users.user_type (derived from the live
+ * CHECK cache, never a list typed here), cross-checked against the egress-scope
+ * ladder, with positive controls that replay the retired shapes.
+ */
+function whoMayMoveADeal() {
+  const SEATS = [...(CHECK_VOCABULARIES.users?.user_type ?? [])]
+  console.log(`\n[Who may move a deal — every storable user_type (${SEATS.length}, live CHECK cache)]`)
+  check(`users.user_type vocabulary loaded (${SEATS.length} values)`, SEATS.length > 0)
+  const roster = [...TENANT_ADMIN_USER_TYPES]
+  check(`every tenant-admin roster seat is a storable user_type (${roster.join(", ")})`, roster.every((r) => SEATS.includes(r)))
+
+  for (const seat of SEATS) {
+    const tier = stageTransitionTier(seat)
+    if (TENANT_ADMIN_USER_TYPES.has(seat)) {
+      // The ladder lib/kernel/egress-scope.ts already decides for this seat.
+      const kind = resolveEgressScope({ userType: seat, userId: "u", brokerageId: "b", teamId: "t" }).kind
+      const expected = kind === "team" ? "deal" : "brokerage"
+      check(`roster seat ${seat}: admitted, tier '${tier}' matches egress-scope '${kind}'`, tier === expected)
+    } else if (seat === "agent") {
+      check(`agent: own deals only (tier 'deal')`, tier === "deal")
+    } else if (seat === "tc") {
+      check(`tc: the brokerage's deals (the survivor's own rule — a coordinator works every deal)`, tier === "brokerage")
+    } else {
+      check(`${seat}: may not move a deal`, tier === "none")
+    }
+  }
+  check("a null / empty seat may not move a deal (fail closed — no default to 'agent')",
+    stageTransitionTier(null) === "none" && stageTransitionTier(undefined) === "none" && stageTransitionTier("") === "none")
+  check("legacy spellings resolve, case-folded (TC / transaction_coordinator / Admin)",
+    stageTransitionTier("TC") === "brokerage" && stageTransitionTier("transaction_coordinator") === "brokerage" && stageTransitionTier("Admin") === "brokerage")
+
+  console.log("\n[POSITIVE CONTROL — the retired gate fails the same rule]")
+  const retiredTier = (seat: string | null) => {
+    const role = seat ?? "agent" // the retired `role ?? user_type ?? "agent"` default
+    return ["admin", "broker", "tc", "agent"].includes(toCanonicalRoleOrDefault(role, "contact")) ? "admitted" : "none"
+  }
+  const refusedRoster = roster.filter((r) => retiredTier(r) === "none")
+  check(`the retired ["admin","broker","tc","agent"] gate refuses roster seats (${refusedRoster.join(", ")}) — the rule above would go red on a revert`,
+    refusedRoster.includes("team_lead") && refusedRoster.includes("compliance_officer"))
+  check("the retired helper admitted a seat-less row as an agent — the null check above would go red on a revert",
+    retiredTier(null) === "admitted")
+
+  console.log("\n[Source — the stage machine, orchestrator and gate read the survivors (stripped source)]")
+  const read = (p: string) => stripComments(readFileSync(join(process.cwd(), p), "utf8"))
+  const sm = read("app/actions/transaction-stage-machine.ts")
+  const orch = read("lib/transactions/transaction-orchestrator.ts")
+  const guard = read("lib/transactions/role-guard.ts")
+  const handRolled = (src: string) => /function\s+requireCallerForBrokerage\b|\?\?\s*["']agent["']|(?:!==|===)\s*(?:params\.brokerageId|claimedBrokerageId)\b/.test(src)
+  const literalRoleList = (src: string) => /\[\s*["'](?:admin|broker|tc|agent)["']\s*,\s*["'](?:admin|broker|tc|agent)["']/.test(src)
+  check("stage machine: no private tenant helper, no role defaulted to 'agent', no hand-rolled claim comparison", !handRolled(sm))
+  check("stage machine: all three doors go through requireCallerTenant", (sm.match(/\brequireCallerTenant\(\s*params\.brokerageId\s*\)/g) ?? []).length === 3)
+  check("stage machine: the override path checks the claim through decideClaimedTenant", /decideClaimedTenant\(/.test(sm))
+  check("stage machine: the role handed on is the session's users.user_type", /userRole:\s*auth\.userType\b/.test(sm) && !/auth\.userRole\b/.test(sm))
+  check("orchestrator: advanceToStage AND checkAdvancement ask canTransitionStage", (orch.match(/\bcanTransitionStage\(/g) ?? []).length >= 2)
+  check("orchestrator: no literal role list", !literalRoleList(orch))
+  check("gate: the own-deal check crosses agents.user_id (agents.id ≠ users.id, §3)",
+    /from\(\s*["']agents["']\s*\)[\s\S]{0,120}\.eq\(\s*["']user_id["']\s*,\s*context\.userId\s*\)/.test(guard) && !/agent_id\s*===\s*context\.userId/.test(guard))
+  check("gate: the team half goes through the team-scope survivor (leadsAgentsTeam)", /\bleadsAgentsTeam\(/.test(guard))
+  // Controls: the finders recognise the pre-93A text.
+  const PRE = [
+    "async function requireCallerForBrokerage(claimedBrokerageId: string) {",
+    "  if (profile.brokerage_id !== claimedBrokerageId) return { ok: false }",
+    '  return { ok: true, userRole: profile.role ?? profile.user_type ?? "agent" }',
+    "}",
+  ].join("\n")
+  check("CONTROL: the pre-93A private helper IS recognised as hand-rolled", handRolled(PRE))
+  check('CONTROL: the pre-93A orchestrator list IS recognised as a literal role list', literalRoleList('await assertUserHasRole(ctx, ["admin", "broker", "tc", "agent"])'))
+}
 
 function main() {
   console.log("\n[The derived vocabularies are non-empty — a guard that sees nothing passes everything]")
@@ -73,6 +155,8 @@ function main() {
   check("a `closing` status re-introduced into the map IS rejected by the derived vocabulary", caught)
   const caughtUpper = !VALID_STATUS.has("CLOSING_PREP")
   check("the ORIGINAL bug (raw UPPERCASE stage as status) IS rejected by the derived vocabulary", caughtUpper)
+
+  whoMayMoveADeal()
 
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }

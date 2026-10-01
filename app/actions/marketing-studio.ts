@@ -41,7 +41,7 @@ import { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks, getQrCodePerformance
 // ★ ACT-AS SEAM ★ resolveWriteContext mints QR rows (createQrCodeAction). The
 // reader-seam import (resolveActingContext) left with renderQrImageAction —
 // see the tombstone below getMarketingStudioDashboard's predecessor block.
-import { resolveWriteContext } from "@/lib/platform/acting-context"
+import { resolveWriteContext, decideClaimedTenant } from "@/lib/platform/acting-context"
 import {
   mintTrackedQr,
   isQrDestinationType,
@@ -1188,7 +1188,7 @@ export async function createQrCodeAction(params: {
     const ctx = await resolveWriteContext()
     if (!ctx.ok) return { success: false, error: ctx.error }
     if (!ctx.brokerageId) return { success: false, error: "No brokerage on your account." }
-    if (params.brokerageId && params.brokerageId !== ctx.brokerageId) {
+    if (!decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: params.brokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
       return { success: false, error: "That QR code belongs to another brokerage." }
     }
 

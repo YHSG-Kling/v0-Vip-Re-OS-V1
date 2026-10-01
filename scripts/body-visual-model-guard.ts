@@ -215,8 +215,13 @@ console.log("\n── §host · voiceover/silent never gets an avatar and never 
     promo.segments.filter((s) => s.kind !== "cta").every((s) => s.treatment === "screenshot") && promo.segments.find((s) => s.kind === "cta")?.treatment === "brand_card"
     && promo.segments.filter((s) => s.treatment === "screenshot").map((s) => s.assetIndex).join(",") === "0,1,2,3,0")
   const listing = planFor("JustListedReel", FULL_ASSETS)
-  check("JustListedReel listing_promo: the house is the star — hook and beats are property photos, never a presenter",
-    listing.segments.filter((s) => s.kind !== "cta").every((s) => s.treatment === "property_photos"))
+  // Lane 93A re-anchor: the NARRATED beats are the rule ("the house is the star"); the reel's
+  // fixed fact-card tile (duration-model bodyTail) is a registered design beat at the body's end,
+  // planned as its own stat_card segment — asserted here rather than read as a violation.
+  check("JustListedReel listing_promo: the house is the star — every narrated non-CTA beat is property photos, never a presenter",
+    listing.segments.filter((s) => s.kind !== "cta" && !s.fixed).every((s) => s.treatment === "property_photos"))
+  check("JustListedReel listing_promo: the body ends on its fixed fact-card tile (stat_card), the only fixed segment",
+    listing.segments.filter((s) => s.fixed).length === 1 && listing.segments[listing.segments.length - 1]?.fixed === "body_tail" && listing.segments[listing.segments.length - 1]?.treatment === "stat_card")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

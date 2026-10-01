@@ -72,7 +72,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (!label) {
       return NextResponse.json({ success: false, error: 'Missing required fields' }, { status: 400 })
     }
-    if (brokerageId && brokerageId !== ctx.brokerageId) {
+    if (!decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: brokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
       return NextResponse.json({ success: false, error: 'Tenant mismatch' }, { status: 403 })
     }
 
@@ -282,3 +282,6 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ success: false, error: message }, { status: 500 })
   }
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

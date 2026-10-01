@@ -106,7 +106,7 @@ export async function disconnectProvider(data: {
   }
   // The finance admin acts on THEIR brokerage (lane 91D2): the body id used to go
   // straight to a service-client credential deactivation for any tenant.
-  if (!profile.brokerage_id || data.brokerageId !== profile.brokerage_id) {
+  if (!profile.brokerage_id || !decideClaimedTenant({ actingBrokerageId: profile.brokerage_id, claimedBrokerageId: data.brokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
     throw new Error("Forbidden: that brokerage is not yours.")
   }
   const brokerageId: string = profile.brokerage_id
@@ -611,3 +611,6 @@ export async function pushAgentCommissionToQuickBooksAction(commissionId: string
   revalidatePath("/dashboard/financials/agent")
   return { ok: true, ...outcome }
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

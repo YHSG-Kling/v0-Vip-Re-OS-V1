@@ -92,7 +92,9 @@ export const CINEMA_LOOKS: Record<CinemaLook["id"], CinemaLook> = {
   true_color: { id: "true_color", contrast: 1,    saturate: 1,    brightness: 1,    warmth: 0,    vignette: 0 },
 }
 
-/** The largest departure from identity any look may take (the proof holds every look to it). */
+/** The largest departure from identity any look may take (the proof holds every look to it).
+ * @proofSeam kept exported for scripts/cinema-finish-guard.ts, which holds every colour look to this bound (lane 93A).
+ */
 export const MAX_GRADE_DEPARTURE = 0.08
 
 /** Purposes whose picture is a SCREEN (UI colour must stay true) or a keepsake (warmed). */

@@ -14,7 +14,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
+import { resolveActingContext, resolveWriteContextForTenant, decideClaimedTenant } from "@/lib/platform/acting-context"
 import { KernelEvent } from "@/lib/kernel/events"
 
 /**
@@ -220,7 +220,7 @@ export async function getDefaultSequenceCatalog(brokerageId?: string): Promise<{
   // Same tenant boundary as seedDefaultSequences: a client-supplied brokerageId
   // must be the caller's own (service client bypasses RLS) — only superadmin may
   // read another tenant's install state.
-  if (brokerageId && brokerageId !== ctx.brokerageId && !(await callerIsSuperadmin(ctx.userId, ctx.userType))) {
+  if (!decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: brokerageId }).ok && !(await callerIsSuperadmin(ctx.userId, ctx.userType))) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
     return { success: false, error: "Cannot read another brokerage", items: [] }
   }
 
@@ -263,7 +263,7 @@ export async function seedDefaultSequences(
   if (!targetBrokerageId) {
     return { success: false, error: "No brokerage in scope", created: 0, skipped: 0 }
   }
-  if (brokerageId && brokerageId !== ctx.brokerageId && !(await callerIsSuperadmin(ctx.userId, ctx.userType))) {
+  if (!decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: brokerageId }).ok && !(await callerIsSuperadmin(ctx.userId, ctx.userType))) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
     return { success: false, error: "Cannot seed for another brokerage", created: 0, skipped: 0 }
   }
 

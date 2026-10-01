@@ -374,7 +374,9 @@ export const ELEVENLABS_PHONE_MODEL_ID = "eleven_flash_v2_5"
 /** The deprecated synonym some ElevenLabs/Twilio material still names.
  *  NEVER returned by elevenLabsModelForLane — documented only so a future
  *  reader who finds "Turbo v2.5" in older material does not reintroduce it
- *  believing it is still the modern real-time choice (see research above). */
+ *  believing it is still the modern real-time choice (see research above).
+ * @proofSeam kept exported for scripts/avatar-pipeline-hardening-simulator.ts, which asserts elevenLabsModelForLane never returns this deprecated id (lane 93A).
+ */
 export const ELEVENLABS_PHONE_MODEL_ID_DEPRECATED_SYNONYM = "eleven_turbo_v2_5"
 
 /**
@@ -644,6 +646,7 @@ export function enforceExpressiveAudioTagBudget(script: string | null | undefine
  * POSITIVE + NEGATIVE CONTROLS (§2) for withNaturalPauses /
  * stripNaturalPauseMarkup / alignmentWithoutPauseMarkup — asserted in
  * scripts/avatar-pipeline-hardening-simulator.ts's §v3 section.
+ * @proofSeam fixture kept exported for scripts/avatar-pipeline-hardening-simulator.ts, which runs the natural-pause markup over it (lane 93A).
  */
 export const NATURAL_PAUSES_FIXTURE_SCRIPT =
   "Three days on market, two offers already. The kitchen's been redone — quartz counters, new appliances.\n\n" +
@@ -665,7 +668,9 @@ export const PAUSE_MARKUP_ALIGNMENT_FIXTURE: PauseableAlignment = (() => {
 
 /** The SAME fixture text with the markup already removed — what
  *  alignmentWithoutPauseMarkup(PAUSE_MARKUP_ALIGNMENT_FIXTURE) must
- *  reconstruct (joining `characters` back together). */
+ *  reconstruct (joining `characters` back together).
+ * @proofSeam fixture kept exported for scripts/avatar-pipeline-hardening-simulator.ts, which checks caption alignment survives pause markup (lane 93A).
+ */
 export const PAUSE_MARKUP_ALIGNMENT_FIXTURE_EXPECTED_TEXT = "Nice.  Right there."
 
 /** NEGATIVE CONTROL — an alignment with no tag characters at all. Proves
@@ -1046,6 +1051,7 @@ export function scanForAiTells(script: string | null | undefined, language?: str
  * least one finding from scanForAiTells. The avatar-pipeline-hardening
  * simulator asserts this so a broken regex reporting "0 tells" everywhere
  * cannot pass as a clean bill of health.
+ * @proofSeam positive controls kept exported for scripts/avatar-pipeline-hardening-simulator.ts and scripts/did-live-agent-simulator.ts, which prove the AI-tell scanner still flags each (lane 93A).
  */
 export const AI_TELL_POSITIVE_CONTROLS: ReadonlyArray<{ label: string; text: string }> = [
   {
@@ -1107,6 +1113,7 @@ export const AI_TELL_POSITIVE_CONTROLS: ReadonlyArray<{ label: string; text: str
  * MUST produce zero findings. Proves the scanner does not simply flag every
  * script (the other half of a positive control's proof — a detector that
  * fires on everything is exactly as useless as one that fires on nothing).
+ * @proofSeam negative control kept exported for scripts/avatar-pipeline-hardening-simulator.ts and scripts/did-live-agent-simulator.ts, which prove the AI-tell scanner passes natural speech (lane 93A).
  */
 export const AI_TELL_NEGATIVE_CONTROL =
   "Three days on market, two offers already. Here's what buyers are responding to at 214 Maple. " +
@@ -1126,6 +1133,7 @@ export const AI_TELL_NEGATIVE_CONTROL =
  * formal transitions, no canned sign-off) and MUST produce zero findings —
  * asserted in scripts/avatar-pipeline-hardening-simulator.ts alongside the
  * single AI_TELL_NEGATIVE_CONTROL above.
+ * @proofSeam negative controls kept exported for scripts/avatar-pipeline-hardening-simulator.ts, which proves the AI-tell scanner passes each (lane 93A).
  */
 export const AI_TELL_ADDITIONAL_NEGATIVE_CONTROLS: ReadonlyArray<{ label: string; text: string }> = [
   {
@@ -1462,7 +1470,9 @@ export const IMAGE_SCENE_REALISM_PROMPT_BLOCK =
  *  here. Documented as a checklist — surfaced to a human reviewer / QA pass —
  *  rather than faked as an automated "0 tells found" that cannot see what it
  *  claims to have checked (§2 — a guard that cannot see the code/image it
- *  judges is worse than no guard). */
+ *  judges is worse than no guard).
+ * @proofSeam owner-ruling text kept exported for scripts/video-assembly-simulator.ts, which asserts the image-tell checklist is recorded (lane 93A).
+ */
 export const AI_IMAGE_TELL_CHECKLIST: readonly string[] = [
   "Does any text in the image look melted, duplicated, or nonsensical? (The #1 giveaway — real photos rarely have baked-in text at all.)",
   "Do the light direction and color temperature match the rest of the video's shots? (The #1 AI-image tell per the research above.)",
@@ -1512,7 +1522,9 @@ export const VIGNETTE_BACKGROUND_IMAGE =
  * gentler cousin of that same "modest, single-axis, no over-animation" rule,
  * and 12% zoom / 3% pan already sits at the conservative end of even the
  * generated-video range. No change made — recorded here so a future audit
- * does not re-open a bound that already matches the research. */
+ * does not re-open a bound that already matches the research.
+ * @proofSeam audit record kept exported for scripts/video-assembly-simulator.ts, which asserts the Ken Burns bound was audited against the research (lane 93A).
+ */
 export const KEN_BURNS_REALISM_AUDIT_NOTE =
   "lib/video/ken-burns-plan.ts scale<=1.12 (12% max zoom), pan<=3% of frame — already inside every researched " +
   "range for a subtle, non-fake-reading push/pan. AUDITED 2026-09-11, unchanged."
@@ -1533,7 +1545,9 @@ export const KEN_BURNS_REALISM_AUDIT_NOTE =
  * reading "$625K · 3bd · 2ba" or a QR code for 2-3 seconds is reading
  * information, not watching a canned intro; shortening it would cut the one
  * moment in the reel a muted viewer can actually read the facts. LEFT AS IS
- * — documented per LANE_RULES rather than re-timed. */
+ * — documented per LANE_RULES rather than re-timed.
+ * @proofSeam owner-ruling text kept exported for scripts/video-assembly-simulator.ts, which asserts the cover/CTA content-beat ruling is recorded (lane 93A).
+ */
 export const COVER_CTA_CONTENT_BEAT_RULING =
   "COVER/CTA tiles (2-3s) are CONTENT (price/address/agent/QR/compliance text), not a stock bookend — " +
   "MAX_BRAND_BOOKEND_SECONDS already caps the separate concern (a brokerage-uploaded stock intro/outro clip). Left as is."
@@ -1840,7 +1854,9 @@ export const SCRIPT_SENTIMENT_POSITIVE_CONTROLS: ReadonlyArray<{
 ]
 
 /** NEGATIVE CONTROL — an ordinary script with no band keywords at all. Must
- *  resolve to "neutral", proving the function does not fire on everything. */
+ *  resolve to "neutral", proving the function does not fire on everything.
+ * @proofSeam negative control kept exported for scripts/remotion-asset-math-simulator.ts, which proves the sentiment scan passes neutral copy (lane 93A).
+ */
 export const SCRIPT_SENTIMENT_NEGATIVE_CONTROL =
   "Here's what's happening in your neighborhood this month. Reach out if you have questions."
 
@@ -1927,6 +1943,7 @@ export function handheldDriftOffset(frame: number, fps: number, seed = 0): [numb
 // built, ken-burns-plan.ts) with extra arithmetic. Building it would require
 // a NEW upstream capability (a depth-estimation or subject-cutout pass on
 // listing photos) this wave has no budget or model call to add responsibly.
+/** @proofSeam deferral reason kept exported for scripts/video-assembly-simulator.ts, which asserts the parallax deferral is recorded (lane 93A). */
 export const PARALLAX_STILL_IMAGE_DEFERRAL_REASON =
   "listing_media carries flat photos with no depth/segmentation layer — a parallax effect needs 2+ " +
   "independently-movable layers, which this repo has no upstream pass to produce; would degrade to Ken Burns " +

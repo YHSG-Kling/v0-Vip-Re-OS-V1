@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { requireCaller } from "@/lib/auth/require-caller"
+import { requireCaller, requireCallerTenant } from "@/lib/auth/require-caller"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
@@ -371,10 +371,10 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
   //     only by the cookie client's RLS. It now has a SESSION gate: the tenant is the caller's,
   //     a foreign `brokerageId` is refused, and `agentUserId` must be a user with an agents row
   //     in the caller's tenant (the creator's resolve refuses anyone else).
-  const caller = await requireCaller()
-  if (!caller.ok) return { success: false, error: caller.error }
-  if (params.brokerageId && params.brokerageId !== caller.brokerageId) {
-    return { success: false, error: "That brokerage is not yours — a video project is filed in your own brokerage." }
+  // hand-rolled `params.brokerageId !== caller.brokerageId` copy).
+  const caller = await requireCallerTenant(params.brokerageId) // Session tenant + the body-tenant rule in one survivor (lane 93A — was a
+  if (!caller.ok) {
+    return { success: false, error: caller.reason === "tenant_mismatch" ? "That brokerage is not yours — a video project is filed in your own brokerage." : caller.error }
   }
   const { brokerageId: _ignoredTenant, agentUserId, ...fields } = params
   const { createVideoProject: fileVideoProject } = await import("@/lib/kernel/content-creators")

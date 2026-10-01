@@ -86,7 +86,8 @@ function sourceLayer() {
   check("tenant brand writers are impersonation-aware: acting context + read-only refusal + write THROUGH db",
     /resolveActingContext/.test(brand) && /READ_ONLY_ACTING_ERROR/.test(brand) && /const supabase = auth\.db|const supabase = adminAuth\.db/.test(brand))
   check("brand read (getBrandSetupStatus) lets staff see the TARGET tenant's brand",
-    /const ctx = await resolveActingContext\(\)[\s\S]*ctx\.brokerageId !== brokerageId/.test(brand))
+    // lane 93A re-anchor: the claim is decided by the ONE table (decideClaimedTenant) against the ACTING tenant
+    /const ctx = await resolveActingContext\(\)[\s\S]*decideClaimedTenant\(\{ actingBrokerageId: ctx\.brokerageId, claimedBrokerageId: brokerageId \}\)/.test(brand))
 
   console.log("\n[centralized platform-staff gate — no more drift]")
   const guard = src("lib/auth/platform-guard.ts")

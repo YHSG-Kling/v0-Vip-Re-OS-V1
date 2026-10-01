@@ -280,11 +280,11 @@ export async function markFinanciallyVerified(params: {
   // Auth: caller must be an authenticated agent/admin in the contact's brokerage.
   // Without this, service-client bypassed RLS and any caller could mark any
   // contact as financially verified.
-  const ctx = await resolveWriteContextForTenant()
-  if (!ctx.ok) return { success: false, error: "Not authenticated" }
-  if (ctx.brokerageId !== params.brokerageId) {
-    return { success: false, error: "Forbidden: brokerage mismatch" }
-  }
+  // The body brokerage is checked BY the seam (lane 93A — this was a hand-rolled
+  // `ctx.brokerageId !== params.brokerageId` beside a claim-less call); every
+  // write below carries the SESSION's brokerage (ctx.brokerageId), never the body's.
+  const ctx = await resolveWriteContextForTenant(params.brokerageId)
+  if (!ctx.ok) return { success: false, error: ctx.error }
 
   const supabase = createServiceClient()
 
@@ -315,7 +315,7 @@ export async function markFinanciallyVerified(params: {
   // 2. Emit lifecycle transition → BUYER_FINANCIALLY_VERIFIED
   const transitionResult = await emitLifecycleTransition({
     contactId:     params.contactId,
-    brokerageId:   params.brokerageId,
+    brokerageId:   ctx.brokerageId,
     fromState:     "BUYER_CONTACT_CREATED" as any,
     toState:       "BUYER_FINANCIALLY_VERIFIED" as any,
     triggeredBy:   "agent",
@@ -338,7 +338,7 @@ export async function markFinanciallyVerified(params: {
   // verification write above.
   void emitKernelEvent({
     event:       KernelEvent.BUYER_VERIFIED,
-    brokerageId: params.brokerageId,
+    brokerageId: ctx.brokerageId,
     entityType:  "contact",
     entityId:    params.contactId,
     contactId:   params.contactId,

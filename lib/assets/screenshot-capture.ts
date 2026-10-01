@@ -1430,7 +1430,7 @@ export async function setScreenshotUses(
 // a still reaches a composition as `screenshot`, staged under the key the composition
 // reads — lib/video/plan-asset-readiness.ts:311 screenshotPropKey (imageUrls for
 // ProductPromoReel, screenshotUrls elsewhere) and read back by
-// lib/video/body-visual-model.ts:788 assetsFromProps. Routing a still through the
+// lib/video/body-visual-model.ts:792 assetsFromProps. Routing a still through the
 // B-roll layer would plan `broll` while showing a still — and plan-asset-readiness's
 // b-roll rule ("licensed stock or the tenant's own footage") forbids exactly that.
 

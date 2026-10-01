@@ -14,7 +14,7 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
-import { resolveActingContext, READ_ONLY_ACTING_ERROR } from "@/lib/platform/acting-context"
+import { resolveActingContext, READ_ONLY_ACTING_ERROR, decideClaimedTenant } from "@/lib/platform/acting-context"
 import { sanitizeCssColor } from "@/lib/format/style"
 
 // TRUE ADMIN GATE (operational: branding/onboarding) — repointed to the ONE
@@ -125,7 +125,7 @@ export async function getBrandSetupStatus(
     // client that isn't blocked by the target's RLS).
     const ctx = await resolveActingContext()
     if (!ctx.ok || !ctx.userId) return { data: null, error: "Unauthorized" }
-    if (ctx.brokerageId !== brokerageId) return { data: null, error: "Unauthorized: Brokerage mismatch" }
+    if (!brokerageId || !decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: brokerageId }).ok) return { data: null, error: "Unauthorized: Brokerage mismatch" } // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
     const supabase = ctx.db
 
     // Get global settings
