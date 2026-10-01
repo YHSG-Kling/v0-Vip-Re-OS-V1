@@ -463,7 +463,7 @@ console.log("\n═══ 10. BUYER MATCH REEL — the second living kind ══�
   // for a tenant the owner has ruled RentCast out for. Pinning to the old call
   // text would have made a tightening look like a regression.
   ok("...resolving the PLATFORM key THROUGH THE GATE, with the tenant carried\n    (a lane can never resolve a key without a tenant to meter it against)",
-    rentcast.includes("gateRentcast(params)") && rentcast.includes("getApiKey(caller.brokerageId)"))
+    /\bgateRentcast\(\s*params\b/.test(rentcast) && rentcast.includes("getApiKey(caller.brokerageId)"))
   ok("...and a 404 means off_market, not sold — we do not invent which terminal state",
     rentcast.includes('if (res.status === 404) return "off_market"'))
   ok("...and the call is metered like every other vendor call",

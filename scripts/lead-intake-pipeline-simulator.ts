@@ -184,8 +184,15 @@ check("past_due is NOT eligible for scraping",
 
 const cronSrc = stripComments(readFileSync("app/api/cron/lead-scraping/route.ts", "utf8"))
 const kernelScrapingSrc = stripComments(readFileSync("lib/kernel/scraping.ts", "utf8"))
+// THE RULE (CLAUDE.md §2): the cron reaches the ONE subscription-gated resolver — directly, or through
+// wave 92's resolveActivePullGate, whose body must itself call it (one door, never a second ungated one).
+const territoriesSrc = stripComments(readFileSync("lib/lead-pipeline/scrape-territories.ts", "utf8"))
+const pullGateBody = /export async function resolveActivePullGate\([\s\S]*?\n\}/.exec(territoriesSrc)?.[0] ?? ""
 check("the lead-scraping cron resolves territory through the subscription-gated resolver before scraping",
-  cronSrc.includes("resolveActiveScrapeTerritories"))
+  cronSrc.includes("resolveActiveScrapeTerritories")
+    || (/resolveActivePullGate\(/.test(cronSrc) && /resolveActiveScrapeTerritories\(/.test(pullGateBody)))
+check("POSITIVE CONTROL: a pull gate that does NOT call the gated resolver is not accepted",
+  !/resolveActiveScrapeTerritories\(/.test("export async function resolveActivePullGate(s) {\n  return { allows: () => true }\n}"))
 check("the kernel scraping loop resolves territory through the SAME resolver (no second, ungated code path)",
   kernelScrapingSrc.includes("resolveScrapeTerritoriesFrom"))
 
