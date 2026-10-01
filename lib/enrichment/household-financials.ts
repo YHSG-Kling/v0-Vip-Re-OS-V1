@@ -47,7 +47,8 @@ import {
 } from "@/lib/external/versium-client"
 
 /** Provider order per field, cheapest first — documentation AS DATA, asserted by
- *  scripts/enrichment-one-rail-guard.ts (Layer 8). unitCostUsd is the MARGINAL cost of asking. */
+ *  scripts/enrichment-one-rail-guard.ts (Layer 8). unitCostUsd is the MARGINAL cost of asking.
+ *  @proofSeam kept exported for scripts/enrichment-one-rail-guard.ts, which asserts the household-financial source costs */
 export const HOUSEHOLD_FINANCIAL_SOURCES: Readonly<Record<HouseholdFinancialField, ReadonlyArray<{ provider: "batchdata" | "versium"; unitCostUsd: number; note: string }>>> = {
   marital_status: [
     { provider: "batchdata", unitCostUsd: 0, note: "demographic dataset on a lookup already bought (seller-signal probe / drain Step 6f / acquisition pull)" },

@@ -359,6 +359,38 @@ export async function runPooledBatchDataLane(
   return { byTerritory, ledger, errors }
 }
 
+// ─── POOLED SAVE — every paid record persisted BEFORE the per-territory loop (wave 93, 93B2) ──
+// A pooled pull is paid for EVERY territory at once, but the cron's per-territory loop can hit
+// maxDuration before it reaches the last territories — their pooled records were paid for and
+// lost. The fix: the pooled phase PERSISTS every territory's share (raw insert + source ledger +
+// territory spend) before the loop starts, and hands the loop EMPTY shares (it only reports). This
+// pure planner is the one place that decides what is persisted; it never drops a record or a cent:
+// one batch per (territory, lane) that received anything or was charged anything.
+
+export interface PooledPersistBatch<R> {
+  territoryId: string
+  lane: string
+  records: R[]
+  costUsd: number
+  staleDropped: number
+}
+
+/** PURE — every territory share of every pooled lane → the batches to persist. Σ records and Σ cost
+ *  over the batches equal Σ over the shares (scripts/one-pull-guard.ts asserts it, with a positive
+ *  control replaying the timeout that lost them). */
+export function planPooledPersistence<R>(
+  lanes: ReadonlyArray<{ lane: string; byTerritory: ReadonlyMap<string, PooledShare<R>> }>,
+): PooledPersistBatch<R>[] {
+  const out: PooledPersistBatch<R>[] = []
+  for (const { lane, byTerritory } of lanes) {
+    for (const [territoryId, share] of byTerritory) {
+      if (share.records.length === 0 && share.costUsd <= 0 && share.staleDropped === 0) continue
+      out.push({ territoryId, lane, records: [...share.records], costUsd: share.costUsd, staleDropped: share.staleDropped })
+    }
+  }
+  return out
+}
+
 // ─── RENTCAST — identical-area sweeps, swept once ────────────────────────────────────────
 
 /** PURE — group territories by the ONE area RentCast can sweep (city + state; RentCast has no list

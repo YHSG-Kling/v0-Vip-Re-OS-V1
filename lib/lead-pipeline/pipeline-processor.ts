@@ -946,7 +946,25 @@ async function enrichWithPeopleData(fields: {
   // name-only scraped row (the commonest shape the wave-84 gate strands) into a lead. The territory
   // city/state the record already carries is exactly that qualifier. PDL bills per MATCH only.
   const pdlLocation = [fields.city, fields.state].filter(Boolean).join(', ') || undefined
-  const enrichmentResult = skipPeopleData
+
+  // ── VERSIUM FIRST (wave 93, lane 93B2 — owner cost decision: "Versium first for owner/person
+  // email+phone append, People Data Labs only when Versium misses"). The SAME leg the queue drain
+  // runs (lib/ai-isa/property-lookup-rail.ts::runVersiumContactLeg — one route, no second chain): a
+  // raw row is a LEAD, so only a missing EMAIL is asked (leads get email + direct mail). A hit fills the
+  // email and PDL is NOT asked; a miss / unconfigured Versium / nothing missing → PDL exactly as before.
+  // Not asked for a vendor-delivered row (paidPersonData — the person was already bought).
+  const versium = !skipPeopleData && (fields.first_name || fields.last_name || fields.phone || fields.email)
+    ? await (await import('@/lib/ai-isa/property-lookup-rail')).runVersiumContactLeg({
+        brokerageId: fields.brokerageId ?? null, stage: 'lead',
+        identity: { firstName: fields.first_name, lastName: fields.last_name, email: fields.email, phone: fields.phone, city: fields.city ?? null, state: fields.state ?? null },
+        hasEmail: !!fields.email, hasPhone: !!fields.phone,
+        systemSource: 'lead_scraping',
+        metadata: { source: fields.source ?? null, path: 'raw_record_promotion' },
+        attribution: { rawRecordId: fields.rawRecordId ?? null },
+      })
+    : null
+  const versiumAnswered = !!versium?.answered && versium.emails.length > 0
+  const enrichmentResult = skipPeopleData || versiumAnswered
     ? { data: null }
     : await skipTraceWithPeopleData({
         name:  [fields.first_name, fields.last_name].filter(Boolean).join(' ') || undefined,
@@ -972,7 +990,7 @@ async function enrichWithPeopleData(fields: {
   // Lane 83A — EVERY PeopleData call from this path is booked, not only the profile-identify one:
   // the name/phone/email match (the common case) was unmetered here and nowhere else (82A's open
   // item: "booked by the CALLER" — no caller booked it). Platform-paid ledger, per MATCH ($0 miss).
-  if (!skipPeopleData && fields.brokerageId && (profileUrl || hasNamePhoneEmail)) {
+  if (!skipPeopleData && !versiumAnswered && fields.brokerageId && (profileUrl || hasNamePhoneEmail)) {
     const matched = !!enrichmentResult.data
     void meterVendorSpend({
       vendorName: 'peopledata',
@@ -1001,8 +1019,9 @@ async function enrichWithPeopleData(fields: {
     mailing_address?: string | null
     mailing_address_verified?: boolean
     mailing_address_source?: string | null
-    /** Lane 89B — 'vendor_delivered' when the acquisition vendor sold the contact points (PDL skipped). */
-    enrichmentSource?: 'vendor_delivered'
+    /** Lane 89B — 'vendor_delivered' when the acquisition vendor sold the contact points (PDL skipped).
+     *  Wave 93 (93B2) — 'versium_contact_append' when Versium answered first (PDL skipped). */
+    enrichmentSource?: 'vendor_delivered' | 'versium_contact_append'
     peopleDataSkipped?: boolean
   } = data
     ? {
@@ -1021,6 +1040,17 @@ async function enrichWithPeopleData(fields: {
         peopleDataResult:         data,
         // Lane 83A — the demographic profile the lead insert and the raw row carry forward.
         peopleDataProfile:        buildPeopleDataProfile(data as any),
+      }
+    : versiumAnswered && versium
+    ? {
+        first_name: fields.first_name,
+        last_name:  fields.last_name,
+        email:      fields.email || versium.emails[0],
+        phone:      fields.phone,
+        // A provider-matched email for the named person (Versium bills only a match).
+        enrichmentConfidence: 0.6,
+        enrichmentSource: 'versium_contact_append',
+        peopleDataSkipped: true,
       }
     : skipPeopleData
     ? {

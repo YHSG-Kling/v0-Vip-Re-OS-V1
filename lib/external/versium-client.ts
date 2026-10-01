@@ -186,3 +186,96 @@ export async function appendVersiumFinancial(id: VersiumIdentity): Promise<Versi
     return { data: null, cost: 0, error: e instanceof Error ? e.message : String(e) }
   }
 }
+
+// ─── CONTACT APPEND — owner/person EMAIL (+ PHONE) — wave 93, lane 93B2 ─────────────────────
+// Owner cost decision (2026-10-01, relayed by the coordinator; owner: "make sure our platform is
+// setup the most effective and cost effective"): VERSIUM FIRST for the owner/person email + phone
+// append, People Data Labs only when Versium misses (PDL stays the PERSON-PROFILE provider). Versium
+// is an EXISTING vendor (the financial append above), so this adds no vendor. Price
+// (versium.com/pricing, Exa 2026-10-01): Contact Append = 1 match credit per MATCHED output type
+// ($0.05 credit-package ceiling, $0.02 and lower at volume; a no-match is free) vs PDL $0.25/match.
+//   · GET /v2/contact?output[]=email | output[]=phone (+ the inputs versiumQueryFor builds). ONE
+//     output per request (the gateway query carries one value per key): a LEAD asks EMAIL only (leads
+//     are email + direct mail — no SMS/voice to a lead), a CONTACT asks email, then phone only when it
+//     has none. Each output is its own match credit either way.
+//   · UNRESOLVED (no live call this lane): the contact output's field names — read defensively
+//     ("Email Address" / "Email", "Phone" / "Mobile Phone" / "Phone Number"); match_counts[output] is
+//     what was billed, a match with no count is one credit.
+// FAIL CLOSED: no VERSIUM_API_KEY → { skipped: "unconfigured" } and the caller's chain runs as before.
+
+export type VersiumContactOutput = "email" | "phone"
+
+/** PURE — one Versium contact response → the contact points + the credits billed for this output. */
+function parseVersiumContactResponse(body: unknown, output: VersiumContactOutput): { values: string[]; credits: number } {
+  const v = (body && typeof body === "object" ? (body as Record<string, any>).versium : null) ?? {}
+  const results: Array<Record<string, unknown>> = Array.isArray(v.results)
+    ? v.results.filter((r: unknown): r is Record<string, unknown> => !!r && typeof r === "object")
+    : []
+  const keys = output === "email" ? ["Email Address", "Email", "email"] : ["Phone", "Mobile Phone", "Phone Number", "phone"]
+  const values: string[] = []
+  for (const r of results) for (const k of keys) {
+    const raw = r[k]
+    const s = typeof raw === "string" ? raw.trim() : typeof raw === "number" ? String(raw) : ""
+    const ok = output === "email" ? /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) : s.replace(/\D/g, "").length >= 10
+    if (ok && !values.includes(s)) values.push(s)
+  }
+  if (values.length === 0) return { values, credits: 0 }
+  const counted = Number(v.match_counts?.[output])
+  return { values, credits: Number.isFinite(counted) && counted >= 0 ? counted : 1 }
+}
+
+export interface VersiumContactResult {
+  emails: string[]
+  phones: string[]
+  matched: boolean
+  /** USD billed (credits × VERSIUM_MATCH_CREDIT_USD); a no-match is $0. */
+  cost: number
+  credits: number
+  skipped?: "unconfigured" | "no_identity"
+  error?: string
+}
+
+/** One Versium request (injectable so the proof runs with zero network). */
+export type VersiumContactCall = (output: VersiumContactOutput, query: Record<string, string>) =>
+  Promise<{ ok: boolean; status: number | null; data: unknown; error?: string | null }>
+
+/** Versium contact append for ONE person. Never throws. `outputs` asked in order. */
+export async function appendVersiumContact(
+  id: VersiumIdentity,
+  outputs: readonly VersiumContactOutput[],
+  deps: { call?: VersiumContactCall } = {},
+): Promise<VersiumContactResult> {
+  const out: VersiumContactResult = { emails: [], phones: [], matched: false, cost: 0, credits: 0 }
+  const apiKey = process.env.VERSIUM_API_KEY
+  if (!apiKey && !deps.call) return { ...out, skipped: "unconfigured" }
+  const query = versiumQueryFor(id)
+  if (!query) return { ...out, skipped: "no_identity" }
+  const call: VersiumContactCall = deps.call ?? (async (output, q) => {
+    const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+    return callConnector<any>({
+      connector: "versium",
+      baseUrl: VERSIUM_API_BASE,
+      path: "contact",
+      method: "GET",
+      query: { ...q, "output[]": output, cfg_maxrecs: "1", rcfg_max_time: VERSIUM_MAX_TIME_SECONDS },
+      auth: { style: "header", name: "x-versium-api-key", value: apiKey as string },
+      timeoutMs: 15_000,
+    })
+  })
+  for (const output of outputs) {
+    try {
+      const res = await call(output, query)
+      // A refused call bills nothing (402/401/403/429/4xx are refusals; a 5xx returns no result).
+      if (!res.ok) { out.error = `${versiumStatusProblem(res.status)}${res.error ? ` — ${res.error}` : ""}`; continue }
+      const parsed = parseVersiumContactResponse(res.data, output)
+      out.credits += parsed.credits
+      if (output === "email") out.emails.push(...parsed.values)
+      else out.phones.push(...parsed.values)
+    } catch (e) {
+      out.error = e instanceof Error ? e.message : String(e)
+    }
+  }
+  out.matched = out.emails.length > 0 || out.phones.length > 0
+  out.cost = out.credits > 0 ? Math.round(out.credits * VERSIUM_MATCH_CREDIT_USD * 100) / 100 : VERSIUM_NO_MATCH_COST_USD
+  return out
+}

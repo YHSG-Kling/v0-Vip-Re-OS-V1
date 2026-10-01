@@ -55,6 +55,7 @@ import {
   productionPooledBatchDataDeps,
   groupIdenticalAreas,
   splitPullCost,
+  planPooledPersistence,
   type PooledWant,
   type PooledShare,
   type PooledLaneLedger,
@@ -233,6 +234,12 @@ export async function GET(request: Request) {
     const pooled = await runPooledVendorPhase(supabase, markets)
     results.pooled_pulls = pooled.ledgers
     results.errors.push(...pooled.errors)
+    // The POOLED SAVE already wrote every territory's share — counted here ONCE, for every territory
+    // (reached by the loop or not); the loop's own counters below exclude what was pre-persisted.
+    for (const p of pooled.persisted.values()) {
+      results.total_leads_found += p.found
+      results.total_leads_created += p.inserted
+    }
 
     // Brokerage keyword rows (lane 83A). Each territory reads ONLY its own brokerage's rows, ON TOP of
     // the code defaults (scrape-keywords.ts::resolveSourceKeywords) — so a platform with zero rows
@@ -612,6 +619,7 @@ export async function GET(request: Request) {
           let sourceErr: Error | null = null
           let motivatedCostUsd = 0
           let expiredCostUsd = 0
+          let persistedCostUsd = 0
 
           try {
             await updateScrapingJobRow(supabase, job.job?.id, {
@@ -671,6 +679,12 @@ export async function GET(request: Request) {
               .map((r) => normalizeBatchDataRecord(r as Record<string, unknown>, market))
               .filter(isViableRecord)
             sourceItemsFound = rawSellers.length
+            // Wave 93 (93B2): the pooled save persisted this territory's BatchData share before the
+            // loop — reported on the execution row (results already counted it, once).
+            const prePersisted = pooled.persisted.get(market.id)?.byLane ?? {}
+            const preFound = (prePersisted.batchdata_motivated?.found ?? 0) + (prePersisted.expired_listing?.found ?? 0)
+            const preInserted = (prePersisted.batchdata_motivated?.inserted ?? 0) + (prePersisted.expired_listing?.inserted ?? 0)
+            persistedCostUsd = (prePersisted.batchdata_motivated?.costUsd ?? 0) + (prePersisted.expired_listing?.costUsd ?? 0)
 
             // All BatchData records were pulled by an EXPLICIT configured trigger (expired or a
             // mapped motivated-seller type), so they're all wanted — the signal_types filter is
@@ -702,6 +716,8 @@ export async function GET(request: Request) {
 
             results.total_leads_found += sourceItemsFound
             results.total_leads_created += leadsCreated
+            sourceItemsFound += preFound
+            leadsCreated += preInserted
 
             await updateScrapingJobRow(supabase, job.job?.id, {
               status: "completed",
@@ -725,7 +741,7 @@ export async function GET(request: Request) {
             completed_at: new Date().toISOString(),
             total_items_found: sourceItemsFound,
             leads_created: leadsCreated,
-            api_cost: motivatedCostUsd + expiredCostUsd,
+            api_cost: motivatedCostUsd + expiredCostUsd + persistedCostUsd,
             error_message: sourceErr?.message ?? null,
           }).eq("id", execRecord?.id), { table: "scraper_executions", flow: "scrape_execution_close", brokerageId: market.brokerage_id ?? null, reason: "execution bookkeeping; the source outcome is already in results and scraper-health" })
 
@@ -1729,11 +1745,13 @@ interface PooledVendorPhase {
   discovery: Awaited<ReturnType<typeof runActiveListingDiscoveryPooled>>["byMarket"]
   ledgers: PooledLaneLedger[]
   errors: string[]
+  /** Wave 93 (93B2) — what the POOLED SAVE persisted per territory before the loop (the loop reports it). */
+  persisted: Map<string, { found: number; inserted: number; costUsd: number; byLane: Record<string, { found: number; inserted: number; costUsd: number }> }>
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the SCRAPE_TERRITORY_SELECT rows the resolver returns
 async function runPooledVendorPhase(supabase: ReturnType<typeof createServiceClient>, markets: any[]): Promise<PooledVendorPhase> {
-  const out: PooledVendorPhase = { motivated: new Map(), cashBuyer: new Map(), expired: new Map(), fsbo: new Map(), discovery: new Map(), ledgers: [], errors: [] }
+  const out: PooledVendorPhase = { motivated: new Map(), cashBuyer: new Map(), expired: new Map(), fsbo: new Map(), discovery: new Map(), ledgers: [], errors: [], persisted: new Map() }
   // The SAME budget rule the loop's STEP 3 applies — a spent territory funds no pooled pull.
   const live = markets.filter((m) => (m.spend_this_month ?? 0) < (m.monthly_budget_usd ?? 100))
   const motivatedWants: PooledWant[] = []
@@ -1837,10 +1855,76 @@ async function runPooledVendorPhase(supabase: ReturnType<typeof createServiceCli
       out.errors.push(`pooled active-listing discovery failed: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
+  // ── POOLED SAVE (wave 93, lane 93B2) — persist EVERY paid pooled record BEFORE the loop ──
+  // If the tick hits maxDuration mid-loop, a territory the loop never reached would otherwise have
+  // its pooled records paid for and lost. Here each territory's share is written to raw (the kernel
+  // writer dedupes by source_record_id, so a re-run is idempotent), its cost is booked on the
+  // platform ledger per source, and its territory spend is counted — then the share handed to the
+  // loop is EMPTIED (records [], cost 0) so the loop reports it without inserting or booking twice.
+  await persistPooledShares(supabase, markets, out)
   for (const l of out.ledgers) {
     console.log(`[Lead Scraping Cron] Pooled ${l.lane} (${l.vendor}): ${l.requests} request(s) for ${l.territories} territor${l.territories === 1 ? "y" : "ies"} (per-territory loop: ${l.perTerritoryRequestsReplaced}) · charge $${l.chargeUsd} · split $${l.allocatedUsd} · unattributed rows ${l.unattributedRecords}`)
   }
   return out
+}
+
+/** The POOLED SAVE — see the call site in runPooledVendorPhase. Never throws: a refused write is
+ *  reported in `out.errors` (the records stay on the share then, so the loop still tries them). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the SCRAPE_TERRITORY_SELECT rows the resolver returns
+async function persistPooledShares(supabase: ReturnType<typeof createServiceClient>, markets: any[], out: PooledVendorPhase): Promise<void> {
+  const byId = new Map(markets.map((m) => [m.id as string, m]))
+  const batches = planPooledPersistence<BatchDataRecord | NormalizedScrapedRecord>([
+    { lane: "batchdata_motivated", byTerritory: out.motivated },
+    { lane: "expired_listing", byTerritory: out.expired },
+    { lane: "batchdata_cash_buyer", byTerritory: out.cashBuyer },
+    { lane: "fsbo_site_listing", byTerritory: out.fsbo },
+  ])
+  const spendByTerritory = new Map<string, number>()
+  for (const b of batches) {
+    const market = byId.get(b.territoryId)
+    if (!market) { out.errors.push(`pooled save: territory ${b.territoryId} not in this tick's markets — ${b.records.length} record(s) kept on the share`); continue }
+    const geo = { city: market.city, state: market.state, zip_codes: market.zip_codes }
+    let records: NormalizedScrapedRecord[]
+    let source: string, sourceFamily: string, sourceChannel: string
+    if (b.lane === "fsbo_site_listing") {
+      records = b.records as NormalizedScrapedRecord[]
+      source = "fsbo_site_listing"; sourceFamily = "social_intent"; sourceChannel = "fsbo_site_listing"
+    } else if (b.lane === "batchdata_cash_buyer") {
+      records = (b.records as BatchDataRecord[])
+        .map((raw) => ({ list: String(raw.motivationType), rec: normalizeBatchDataRecord(raw as Record<string, unknown>, market) }))
+        .map(({ list, rec }) => ({ ...rec, source: "batchdata_cash_buyer", intentType: "buyer" as const, behaviorType: "investor_cash_purchase", intentSignals: [list, "investor"] }))
+        .filter(isViableRecord)
+      source = "batchdata_cash_buyer"; sourceFamily = "investor_demand"; sourceChannel = "batchdata_cash_buyer"
+    } else {
+      records = (b.records as BatchDataRecord[]).map((r) => normalizeBatchDataRecord(r as Record<string, unknown>, market)).filter(isViableRecord)
+      source = "batchdata_motivated"; sourceFamily = "motivated_seller"; sourceChannel = "batchdata"
+    }
+    try {
+      const { inserted } = await insertRawBatch({ records, marketId: market.id, marketGeo: geo, executionId: null, source, sourceFamily, sourceChannel, batchCostUsd: b.costUsd })
+      await bookSourceSpend({ source: b.lane, cost: b.costUsd, brokerageId: market.brokerage_id, marketId: market.id })
+      spendByTerritory.set(market.id, (spendByTerritory.get(market.id) ?? 0) + b.costUsd)
+      const prev = out.persisted.get(market.id) ?? { found: 0, inserted: 0, costUsd: 0, byLane: {} }
+      prev.found += b.records.length; prev.inserted += inserted; prev.costUsd = Math.round((prev.costUsd + b.costUsd) * 100) / 100
+      prev.byLane[b.lane] = { found: b.records.length, inserted, costUsd: b.costUsd }
+      out.persisted.set(market.id, prev)
+      // Persisted → the loop reports it and never inserts or books it again.
+      const lanes: Record<string, Map<string, { records: unknown[]; costUsd: number }>> = {
+        batchdata_motivated: out.motivated, expired_listing: out.expired, batchdata_cash_buyer: out.cashBuyer, fsbo_site_listing: out.fsbo,
+      }
+      const share = lanes[b.lane]?.get(market.id)
+      if (share) { share.records = []; share.costUsd = 0 }
+    } catch (e) {
+      out.errors.push(`pooled save refused for ${market.name} (${b.lane}) — records kept on the share for the loop: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  // The territory budget counts the pooled spend NOW (the loop's STEP 6 adds its own on top of it).
+  for (const [id, spend] of spendByTerritory) {
+    const market = byId.get(id)
+    if (!market || spend <= 0) continue
+    market.spend_this_month = (market.spend_this_month ?? 0) + spend
+    const { error } = await supabase.from("lead_scraping_markets").update({ spend_this_month: market.spend_this_month }).eq("id", id)
+    if (error) out.errors.push(`pooled save: territory spend write refused for ${market.name} ($${spend.toFixed(2)} not counted): ${error.message}`)
+  }
 }
 
 async function insertRawBatch(params: InsertRawBatchParams): Promise<{ inserted: number; rawIds: string[] }> {

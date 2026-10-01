@@ -144,8 +144,10 @@ console.log("\n[C1 · PAID PERSON DATA — one vocabulary, PeopleData skipped on
   const skipAt = fn.indexOf("const skipPeopleData = fields.paidPersonData === true && !!(fields.phone || fields.email)")
   const pdlAt = fn.indexOf("skipTraceWithPeopleData(")
   check("enrichWithPeopleData: skipPeopleData = paid AND (phone OR email), decided BEFORE the PDL call", skipAt > 0 && pdlAt > skipAt)
-  check("the PDL call is guarded by the flag (`skipPeopleData ? { data: null } : await skipTraceWithPeopleData(`)", /skipPeopleData\s*\?\s*\{ data: null \}\s*:\s*await skipTraceWithPeopleData\(/.test(fn))
-  check("the PDL meter is guarded too (no $0.25 row for a call that never happened)", /if \(!skipPeopleData && fields\.brokerageId/.test(fn))
+  // Re-anchored (wave 93, lane 93B2): the SAME guard now also skips PDL after a Versium answer
+  // (Versium first, PDL only on a miss) — the rule held: no PDL call and no PDL meter for a paid row.
+  check("the PDL call is guarded by the flag (`skipPeopleData [|| versiumAnswered] ? { data: null } : await skipTraceWithPeopleData(`)", /skipPeopleData(?: \|\| versiumAnswered)?\s*\?\s*\{ data: null \}\s*:\s*await skipTraceWithPeopleData\(/.test(fn))
+  check("the PDL meter is guarded too (no $0.25 row for a call that never happened)", /if \(!skipPeopleData(?: && !versiumAnswered)? && fields\.brokerageId/.test(fn))
   check("a skipped row is stamped enrichmentSource 'vendor_delivered' + peopleDataSkipped with a vendor-match confidence", /enrichmentSource: 'vendor_delivered'/.test(fn) && /peopleDataSkipped: true/.test(fn) && /enrichmentConfidence: 0\.6/.test(fn))
   const seekAt = fn.indexOf("if (fields.rawRecordId) {")
   const seekBlock = fn.slice(seekAt, seekAt + 80)

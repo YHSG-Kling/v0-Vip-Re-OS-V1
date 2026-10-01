@@ -96,6 +96,7 @@ export const SOURCE_ACQUISITION: Record<SourceKey, AcquisitionCoverage> = {
  * SOURCE_ACQUISITION and (b) actually PRODUCED by the source's normalizer on a fixture carrying one
  * of that intent's default keywords (recordAcquisitionIntents) — a registry claim with no
  * classifier behind it reads as uncovered.
+ * @proofSeam kept exported for scripts/acquisition-coverage-guard.ts, which asserts the owner-required intents
  */
 export const OWNER_REQUIRED_INTENTS: Partial<Record<SourceKey, readonly AcquisitionIntent[]>> = {
   realty_site_chatter:  ["sell"],

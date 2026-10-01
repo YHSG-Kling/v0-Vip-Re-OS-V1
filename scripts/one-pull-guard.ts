@@ -264,6 +264,43 @@ async function main() {
   check("the per-ZIP market crons' dedupe is REAL: the /markets reader is fact-cached per ZIP",
     /`\/markets\|\$\{zip\}`, RENTCAST_CACHE_TTL_DAYS\.markets/.test(rc))
 
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[E · POOLED SAVE (wave 93, lane 93B2) — no paid pooled record can be dropped by a timeout]")
+  // The lanes executed in B are the shares a real tick would hand on. Plan their persistence.
+  const lanesForSave = [
+    { lane: "batchdata_motivated", byTerritory: lane.byTerritory },
+    { lane: "expired_listing", byTerritory: expired.byTerritory },
+    { lane: "fsbo_site_listing", byTerritory: fsbo.byTerritory },
+  ]
+  const sumShares = (k: "records" | "cost") => lanesForSave.reduce((s, l) => s + [...l.byTerritory.values()].reduce((t, sh) => t + (k === "records" ? sh.records.length : Math.round(sh.costUsd * 100)), 0), 0)
+  const plan2 = pp.planPooledPersistence<any>(lanesForSave)
+  const plannedRecords = plan2.reduce((s, b) => s + b.records.length, 0)
+  const plannedCents = plan2.reduce((s, b) => s + Math.round(b.costUsd * 100), 0)
+  check(`EXECUTED: the pooled save persists EVERY paid record and EVERY cent before the loop (${plannedRecords}/${sumShares("records")} records, ${plannedCents}/${sumShares("cost")}¢)`,
+    plannedRecords === sumShares("records") && plannedCents === sumShares("cost") && plannedRecords > 0)
+  check("EXECUTED: a territory that received only STALE (billed, window-dropped) rows still gets a batch — its share of the charge is booked, not lost",
+    plan2.some((b) => b.territoryId === "e1" && b.records.length === 0 && b.staleDropped === 1 && b.costUsd > 0))
+  // POSITIVE CONTROL — replay the pre-93B2 shape: the loop persists shares as it reaches them and the
+  // tick dies after the FIRST territory. Everything the loop did not reach was paid and lost.
+  const reachedBeforeTimeout = new Set([[...lane.byTerritory.keys()][0]])
+  const lostByLoop = lanesForSave.reduce((s, l) => s + [...l.byTerritory.entries()].filter(([id]) => !reachedBeforeTimeout.has(id)).reduce((t, [, sh]) => t + sh.records.length, 0), 0)
+  check(`POSITIVE CONTROL: the per-territory-loop save replayed with a timeout after one territory loses ${lostByLoop} paid record(s) — the pooled save loses 0`,
+    lostByLoop > 0)
+  const cronS = stripped(CRON)
+  const phaseBody = cronS.slice(cronS.indexOf("async function runPooledVendorPhase("), cronS.indexOf("async function persistPooledShares("))
+  check("the cron's pooled phase runs the save (persistPooledShares) before it returns — i.e. before the per-territory loop starts",
+    /await persistPooledShares\(supabase, markets, out\)[\s\S]{0,600}return out/.test(phaseBody)
+      && cronS.indexOf("await runPooledVendorPhase(supabase, markets)") < cronS.indexOf("for (const market of markets) {"))
+  const saveBody = cronS.slice(cronS.indexOf("async function persistPooledShares("), cronS.indexOf("async function insertRawBatch("))
+  check("the save covers all four pooled record lanes, inserts each batch to raw, books its cost per source, counts the territory spend, and EMPTIES the share it handed the loop",
+    ["batchdata_motivated", "expired_listing", "batchdata_cash_buyer", "fsbo_site_listing"].every((l) => saveBody.includes(`lane: "${l}"`))
+      && /await insertRawBatch\(\{ records, marketId: market\.id/.test(saveBody) && /await bookSourceSpend\(\{ source: b\.lane, cost: b\.costUsd/.test(saveBody)
+      && /spend_this_month: market\.spend_this_month/.test(saveBody) && /share\.records = \[\]; share\.costUsd = 0/.test(saveBody))
+  check("a refused save keeps the records ON the share (the loop still tries them) — the share is emptied only after the insert + booking succeeded",
+    saveBody.indexOf("share.records = []") > saveBody.indexOf("await bookSourceSpend(") && /records kept on the share for the loop/.test(saveBody))
+  check("the loop counts what the save persisted ONCE (results at the phase, execution rows per territory) and never re-inserts it",
+    /for \(const p of pooled\.persisted\.values\(\)\) \{\s*results\.total_leads_found \+= p\.found/.test(cronS) && /sourceItemsFound \+= preFound/.test(cronS))
+
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)

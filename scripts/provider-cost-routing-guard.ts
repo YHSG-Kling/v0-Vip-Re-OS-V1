@@ -86,19 +86,24 @@ const caps = Object.keys(CONTACT_PROVIDER_ROUTES) as Capability[]
 check("seven capabilities are routed (owner_contact, reverse_contact, person_profile, dnc_tcpa, email_validation, property_facts, motivated_seller_list)",
   caps.sort().join(",") === "dnc_tcpa,email_validation,motivated_seller_list,owner_contact,person_profile,property_facts,reverse_contact")
 const rc = CONTACT_PROVIDER_ROUTES.reverse_contact
-check("reverse_contact overlaps like owner_contact: BatchData FIRST at the SAME skip-trace constant (no second spelling), PeopleData on a miss",
-  rc.length === 2 && rc[0].provider === "batchdata" && rc[1].provider === "peopledata"
-  && rc[0].unitCostUsd === bd.BATCHDATA_SKIP_TRACE_COST_USD && rc[1].unitCostUsd === pdl.PEOPLEDATA_MATCH_COST_USD)
+// Re-anchored (wave 93, lane 93B2 — owner cost decision: "Versium first for owner/person email+phone
+// append, People Data Labs only when Versium misses"): Versium (an EXISTING vendor) leads both overlap
+// capabilities at its own transport constant; BatchData and PeopleData keep their constants and order.
+const vs = await import("../lib/external/versium-client")
+check("reverse_contact overlaps like owner_contact: VERSIUM FIRST, then BatchData at the SAME skip-trace constant (no second spelling), PeopleData on a miss",
+  rc.length === 3 && rc[0].provider === "versium" && rc[1].provider === "batchdata" && rc[2].provider === "peopledata"
+  && rc[0].unitCostUsd === vs.VERSIUM_MATCH_CREDIT_USD && rc[1].unitCostUsd === bd.BATCHDATA_SKIP_TRACE_COST_USD && rc[2].unitCostUsd === pdl.PEOPLEDATA_MATCH_COST_USD)
 for (const cap of caps) {
   const list = CONTACT_PROVIDER_ROUTES[cap]
   const sorted = list.every((e, i) => i === 0 || list[i - 1].unitCostUsd <= e.unitCostUsd)
   check(`${cap}: providers are ordered cheapest-first (${list.map((e) => `${e.provider} $${e.unitCostUsd}`).join(" → ")})`, list.length > 0 && sorted && list.every((e) => e.unitCostUsd > 0))
 }
 const oc = CONTACT_PROVIDER_ROUTES.owner_contact
-check("owner_contact is THE overlap: two providers, BatchData FIRST because $0.07/match < PeopleData $0.25/match",
-  oc.length === 2 && oc[0].provider === "batchdata" && oc[1].provider === "peopledata" && oc[0].unitCostUsd < oc[1].unitCostUsd)
-check("owner_contact costs ARE the transport constants (BATCHDATA_SKIP_TRACE_COST_USD, PEOPLEDATA_MATCH_COST_USD) — no second spelling",
-  oc[0].unitCostUsd === bd.BATCHDATA_SKIP_TRACE_COST_USD && oc[1].unitCostUsd === pdl.PEOPLEDATA_MATCH_COST_USD)
+check("owner_contact is THE overlap: three providers, VERSIUM FIRST ($0.05/matched output) < BatchData $0.07/match < PeopleData $0.25/match",
+  oc.length === 3 && oc[0].provider === "versium" && oc[1].provider === "batchdata" && oc[2].provider === "peopledata"
+  && oc[0].unitCostUsd < oc[1].unitCostUsd && oc[1].unitCostUsd < oc[2].unitCostUsd)
+check("owner_contact costs ARE the transport constants (VERSIUM_MATCH_CREDIT_USD, BATCHDATA_SKIP_TRACE_COST_USD, PEOPLEDATA_MATCH_COST_USD) — no second spelling",
+  oc[0].unitCostUsd === vs.VERSIUM_MATCH_CREDIT_USD && oc[1].unitCostUsd === bd.BATCHDATA_SKIP_TRACE_COST_USD && oc[2].unitCostUsd === pdl.PEOPLEDATA_MATCH_COST_USD)
 check("dnc_tcpa / property_facts book MCP_TOOL_CALL_COST_USD; email_validation books PEOPLEDATA_EMAIL_VALIDATE_COST_USD; motivated_seller_list books BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD",
   CONTACT_PROVIDER_ROUTES.dnc_tcpa[0].unitCostUsd === aiTools.MCP_TOOL_CALL_COST_USD
   && CONTACT_PROVIDER_ROUTES.property_facts[0].unitCostUsd === aiTools.MCP_TOOL_CALL_COST_USD
@@ -121,19 +126,72 @@ check("POSITIVE CONTROL: the ordering predicate DOES reject a dearer-first list"
 console.log("\n[Layer 2 · resolveContactProviderRoute — the order comes from the record]")
 const route = (i: Partial<Parameters<typeof resolveContactProviderRoute>[0]>) =>
   resolveContactProviderRoute({ hasName: false, hasPropertyAddress: false, hasEmailOrPhone: false, hasProfileUrl: false, ...i }).providers.join(",")
-check("name + property address → batchdata, then peopledata (fallback only)", route({ hasName: true, hasPropertyAddress: true }) === "batchdata,peopledata")
-check("property address alone → batchdata only (PeopleData has nothing to be asked with)", route({ hasPropertyAddress: true }) === "batchdata")
-check("email/phone without an address → BatchData REVERSE skip trace, then PeopleData (wave 82 lane A)",
-  route({ hasEmailOrPhone: true }) === "batchdata,peopledata"
+check("name + property address → versium, then batchdata, then peopledata (fallbacks only)", route({ hasName: true, hasPropertyAddress: true }) === "versium,batchdata,peopledata")
+check("property address alone → versium, then batchdata (PeopleData has nothing to be asked with)", route({ hasPropertyAddress: true }) === "versium,batchdata")
+check("email/phone without an address → Versium, then BatchData REVERSE skip trace, then PeopleData (wave 82 lane A + 93B2)",
+  route({ hasEmailOrPhone: true }) === "versium,batchdata,peopledata"
   && resolveContactProviderRoute({ hasName: true, hasPropertyAddress: false, hasEmailOrPhone: true, hasProfileUrl: false }).capability === "reverse_contact")
 check("a property address still routes the V3 (property-keyed) shape, even with a phone on the record",
   resolveContactProviderRoute({ hasName: true, hasPropertyAddress: true, hasEmailOrPhone: true, hasProfileUrl: false }).capability === "owner_contact")
-check("name alone (no phone/email/address) → peopledata only", route({ hasName: true }) === "peopledata")
+check("name alone (no phone/email/address/location) → peopledata only (a bare name is not a Versium input)", route({ hasName: true }) === "peopledata")
+check("name + location (city+state or ZIP) → versium, then peopledata (Versium's name + geography input)", route({ hasName: true, hasLocation: true }) === "versium,peopledata")
 check("social profile URL alone → peopledata", route({ hasProfileUrl: true }) === "peopledata")
 check("no identifier at all → refused (empty route, reason given)", route({}) === "" && /no identifier/.test(resolveContactProviderRoute({ hasName: false, hasPropertyAddress: false, hasEmailOrPhone: false, hasProfileUrl: false }).reason))
 check("the reason names the prices it chose between", /\$0\.07/.test(resolveContactProviderRoute({ hasName: true, hasPropertyAddress: true, hasEmailOrPhone: false, hasProfileUrl: false }).reason))
 
 // ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Layer 2b · VERSIUM FIRST — executed; PeopleData only after a Versium miss (wave 93, lane 93B2)]")
+{
+  const { runVersiumContactLeg } = rail
+  const asked: string[] = []
+  const booked: any[] = []
+  const hit = async (output: string) => { asked.push(output); return { ok: true, status: 200, data: { versium: { match_counts: { [output]: 1 }, results: [output === "email" ? { "Email Address": "owner@example.com" } : { Phone: "5125550142" }] } } } }
+  const miss = async (output: string) => { asked.push(output); return { ok: true, status: 200, data: { versium: { match_counts: {}, results: [] } } } }
+  const meter = async (m: any) => { booked.push(m) }
+  const id = { firstName: "Ana", lastName: "Owner", address: "1 Main St", city: "Austin", state: "TX", zip: "78701" }
+  const leadHit = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: hit as any, meter })
+  check("EXECUTED: a LEAD asks Versium for the EMAIL only (leads get email + direct mail — a phone is never bought for a lead)",
+    leadHit.answered && asked.join(",") === "email" && leadHit.emails[0] === "owner@example.com" && leadHit.phones.length === 0)
+  check("EXECUTED: the hit is booked as vendor versium, usage contact_append, answered_by versium, at the transport's credit price",
+    booked.length === 1 && booked[0].vendorName === "versium" && booked[0].usageType === "contact_append" && booked[0].metadata.answered_by === "versium" && booked[0].cost === vs.VERSIUM_MATCH_CREDIT_USD)
+  asked.length = 0; booked.length = 0
+  const contactHit = await runVersiumContactLeg({ brokerageId: "b-1", stage: "contact", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: hit as any, meter })
+  check("EXECUTED: a CONTACT asks email, then phone (two matched outputs, two credits)", contactHit.answered && asked.join(",") === "email,phone" && contactHit.cost === 2 * vs.VERSIUM_MATCH_CREDIT_USD)
+  asked.length = 0; booked.length = 0
+  const missed = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: miss as any, meter })
+  check("EXECUTED: a Versium MISS is free — not answered, $0, nothing booked (the chain continues)", !missed.answered && missed.cost === 0 && booked.length === 0)
+  const nothing = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: true, hasPhone: false, systemSource: "proof" }, { call: hit as any, meter })
+  check("EXECUTED: a lead that already HAS an email asks Versium nothing ($0)", nothing.skipped === "nothing_to_append" && nothing.cost === 0)
+  const prevKey = process.env.VERSIUM_API_KEY
+  delete process.env.VERSIUM_API_KEY
+  const unconfigured = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { meter })
+  if (prevKey !== undefined) process.env.VERSIUM_API_KEY = prevKey
+  check("EXECUTED: Versium UNCONFIGURED → skipped 'unconfigured', no request, and the chain runs as today", unconfigured.skipped === "unconfigured" && !unconfigured.answered)
+
+  // The two enrichment paths: PeopleData is reached ONLY after a Versium miss.
+  const orchS = stripped("lib/lead-pipeline/enrichment-orchestrator.ts")
+  const iV = orchS.indexOf("await runVersiumContactLeg("), iB = orchS.indexOf("skipTraceBatchDataV3Batch("), iP = orchS.indexOf("await skipTraceWithPeopleData(")
+  check("the drain runs the Versium leg FIRST (when the route names it), then BatchData, then PeopleData — source order",
+    iV > -1 && iB > iV && iP > iB && /if \(route\.providers\[0\] === 'versium'\) \{\s*const v = await runVersiumContactLeg\(/.test(orchS)
+    && /if \(v\.answered\) batchDataFallback = \{ phones: v\.phones, emails: v\.emails, via: 'versium' \}/.test(orchS))
+  const pp = stripped("lib/lead-pipeline/pipeline-processor.ts")
+  const iVr = pp.indexOf("runVersiumContactLeg("), iPr = pp.indexOf("await skipTraceWithPeopleData(")
+  check("the raw-record promotion runs the SAME Versium leg BEFORE PeopleData, and a Versium answer skips PeopleData and its meter",
+    iVr > -1 && iPr > iVr && /const enrichmentResult = skipPeopleData \|\| versiumAnswered\s*\?\s*\{ data: null \}/.test(pp)
+    && /if \(!skipPeopleData && !versiumAnswered && fields\.brokerageId/.test(pp))
+  // POSITIVE CONTROL — replay the decision on both outcomes: PeopleData is called only after a miss.
+  const pdlCalledAfter = (versiumAnswered: boolean, demographicsRuling: boolean) => {
+    const via = versiumAnswered ? "versium" : null
+    const batchDataFallback = via ? { via } : null
+    return !batchDataFallback || (demographicsRuling && batchDataFallback.via !== "versium")
+  }
+  check("POSITIVE CONTROL: PeopleData is called after a Versium MISS and NOT after a Versium HIT (even under the demographics ruling)",
+    pdlCalledAfter(false, true) === true && pdlCalledAfter(true, true) === false && pdlCalledAfter(true, false) === false)
+  const oldGuard = (versiumAnswered: boolean) => { const batchDataFallback = versiumAnswered ? { via: "versium" } : null; return !batchDataFallback || true }
+  check("POSITIVE CONTROL: the pre-93B2 guard (!match || DEMOGRAPHICS_AFTER_CONTACT_MATCH) WOULD call PeopleData after a Versium hit — the finder flags that shape",
+    oldGuard(true) === true && !/\(!batchDataFallback \|\| DEMOGRAPHICS_AFTER_CONTACT_MATCH\)/.test(orchS))
+}
+
 console.log("\n[Layer 3 · the enrichment drain obeys the route]")
 const ORCH = "lib/lead-pipeline/enrichment-orchestrator.ts"
 const orch = code(ORCH)
@@ -145,11 +203,14 @@ check("route resolved, then the gate, then the BatchData skip trace, then (and o
 // profile-skip is REVERSED: PeopleData is still asked only when the route names it, and on a
 // BatchData miss OR (DEMOGRAPHICS_AFTER_CONTACT_MATCH) for the demographic profile after a match.
 // The rule, not the old spelling: the call sits behind askPeopleData, which requires the route.
-check("the PeopleData call is guarded on the route naming it, and on a BatchData miss OR the demographics ruling (lane 83A)",
-  /const askPeopleData = route\.providers\.includes\('peopledata'\) && \(!batchDataFallback \|\| DEMOGRAPHICS_AFTER_CONTACT_MATCH\)/.test(orchStr)
+// Re-anchored (wave 93, lane 93B2): PeopleData is asked ONLY AFTER A VERSIUM MISS — never after a
+// Versium hit; the lane-83A demographics leg still follows a BatchData match (reached only after a
+// Versium miss). BatchData runs only when no earlier leg (Versium) answered.
+check("the PeopleData call is guarded on the route naming it, and on a contact-point miss OR the demographics ruling after a NON-Versium match (lane 83A + 93B2)",
+  /const askPeopleData = route\.providers\.includes\('peopledata'\)\s*&& \(!batchDataFallback \|\| \(DEMOGRAPHICS_AFTER_CONTACT_MATCH && batchDataFallback\.via !== 'versium'\)\)/.test(orchStr)
   && /askPeopleData\s*\?\s*await skipTraceWithPeopleData\(/.test(orchStr))
-check("the BatchData leg runs only when the route puts it FIRST (route.providers[0] === 'batchdata') and declares purpose 'skip_trace'",
-  /route\.providers\[0\] === 'batchdata'[\s\S]{0,120}resolveBatchDataAccess\(\{ brokerageId, purpose: 'skip_trace' \}\)/.test(orchStr))
+check("the BatchData leg runs only when no earlier leg answered and the route names it, and declares purpose 'skip_trace'",
+  /!batchDataFallback && route\.providers\.includes\('batchdata'\)[\s\S]{0,120}resolveBatchDataAccess\(\{ brokerageId, purpose: 'skip_trace' \}\)/.test(orchStr))
 const meterPdl = (orchStr.match(/vendorName: 'peopledata'/g) ?? []).length, meterBd = (orchStr.match(/vendorName: 'batchdata'/g) ?? []).length
 const trackCalls = (orch.match(/trackVendorUsageService\(\{/g) ?? []).length
 check(`both providers book through meterVendorSpend at the REPORTED cost (peopledata ×${meterPdl}, batchdata ×${meterBd}); the only trackVendorUsageService left is the $0 osint_free lane (×${trackCalls})`,

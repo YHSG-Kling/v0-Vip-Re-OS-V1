@@ -67,6 +67,11 @@ type EntityType = 'lead' | 'contact'
 /** Lane 87F — every paid enrichment booking names the person it was for (lead → vendor_usage_tracking.lead_id,
  *  contact → request_metadata.contactId), so lib/lead-intelligence/person-spend.ts can put it on that
  *  person's cost and lib/contact-promotion/acquisition-cost.ts can carry it through conversion. */
+/** The ONE spelling of "which leg produced the contact points" (profile, ledger note, provider column). */
+function contactLaneOf(via: 'v3' | 'reverse' | 'versium'): string {
+  return via === 'versium' ? 'versium_contact_append' : via === 'reverse' ? 'batchdata_reverse_skip_trace' : 'batchdata_skip_trace'
+}
+
 function personAttribution(entityType: EntityType, entityId: string): { leadId?: string; contactId?: string } {
   return entityType === 'lead' ? { leadId: entityId } : { contactId: entityId }
 }
@@ -530,24 +535,53 @@ export async function processEnrichmentQueue(
       // the persona builder without demographics for every address-bearing lead. REVERSED in lane
       // 83A (owner verbatim, wave 83: "we need the richer demographics for raw leads and leads,
       // etc") — see DEMOGRAPHICS_AFTER_CONTACT_MATCH at Step 5b below.
-      const { resolveBatchDataAccess, resolveContactProviderRoute } = await import('@/lib/ai-isa/property-lookup-rail')
+      const { resolveBatchDataAccess, resolveContactProviderRoute, runVersiumContactLeg } = await import('@/lib/ai-isa/property-lookup-rail')
       const propertyStreet = (entity.address as string | null) ?? (entity.mailing_address as string | null) ?? null
+      const entityCity = (entity.city as string | null) ?? (entity.mailing_city as string | null) ?? null
+      const entityState = (entity.state as string | null) ?? (entity.mailing_state as string | null) ?? null
+      const entityZip = (entity.zip_code as string | null) ?? (entity.mailing_zip as string | null) ?? null
       const route = resolveContactProviderRoute({
         hasName: !!(entity.first_name || entity.last_name),
         hasPropertyAddress: !!propertyStreet,
         hasEmailOrPhone: !!(entity.email || entity.phone),
         hasProfileUrl: false,
+        hasLocation: !!((entityCity && entityState) || entityZip),
       })
       console.info('[enrichment-orchestrator] owner-contact route:', route.providers.join(' → ') || 'none', '—', route.reason)
 
+      // The CONTACT-POINTS answer, whichever provider gave it (the name is historical — BatchData was
+      // the first provider before wave 93; `via` says which leg answered).
       let batchDataFallback: {
         phones: string[]
         emails: string[]
         /** Set on the REVERSE leg (person-keyed row): who the phone/email resolved to (name-checked). */
         person?: { firstName: string | null; lastName: string | null } | null
-        via: 'v3' | 'reverse'
+        via: 'v3' | 'reverse' | 'versium'
       } | null = null
       let batchDataFallbackCost = 0
+
+      // ── Step 5-pre: VERSIUM FIRST (wave 93, lane 93B2 — owner cost decision: "Versium first for
+      // owner/person email+phone append, People Data Labs only when Versium misses"). The route names
+      // Versium first whenever it can be asked; the leg asks only for what this person is missing (a
+      // lead: email only), books vendor "versium" with answered_by, and on a hit BatchData is not asked
+      // at all. Unconfigured → skipped, and the BatchData → PeopleData chain below runs as before.
+      if (route.providers[0] === 'versium') {
+        const v = await runVersiumContactLeg({
+          brokerageId, stage: entityType === 'lead' ? 'lead' : 'contact',
+          identity: {
+            firstName: (entity.first_name as string | null) ?? null, lastName: (entity.last_name as string | null) ?? null,
+            email: (entity.email as string | null) ?? null, phone: (entity.phone as string | null) ?? null,
+            address: propertyStreet, city: entityCity, state: entityState, zip: entityZip,
+          },
+          hasEmail: !!entity.email, hasPhone: !!entity.phone,
+          systemSource: 'skip_trace',
+          metadata: { entityType, entityId, queueEntryId: entry.id, route: route.providers.join('>') },
+          attribution: personAttribution(entityType, entityId),
+        })
+        batchDataFallbackCost += v.cost
+        if (v.answered) batchDataFallback = { phones: v.phones, emails: v.emails, via: 'versium' }
+        else if (v.skipped) console.info('[enrichment-orchestrator] versium contact append skipped:', v.skipped)
+      }
       // Captured (not just logged) so the Step 7 no-match path below can classify it
       // instead of always defaulting to "transient" — a BatchData token/provisioning
       // refusal here is the SAME config fault the top-level catch (~:1034) escalates.
@@ -557,7 +591,7 @@ export async function processEnrichmentQueue(
       // platform-wide monthly cap; the tenant on-market opt-in does not apply to a skip
       // trace). Refused → falls through to PeopleData (when the route admits it) or to
       // the Step 7 no-match handling below.
-      const skipTraceAccess = route.providers[0] === 'batchdata' && process.env.BATCHDATA_API_KEY
+      const skipTraceAccess = !batchDataFallback && route.providers.includes('batchdata') && process.env.BATCHDATA_API_KEY
         ? await resolveBatchDataAccess({ brokerageId, purpose: 'skip_trace' })
         : null
       if (skipTraceAccess && !skipTraceAccess.allowed) {
@@ -579,13 +613,14 @@ export async function processEnrichmentQueue(
           city: (entity.city as string | null) ?? (entity.mailing_city as string | null) ?? null,
           state: (entity.state as string | null) ?? (entity.mailing_state as string | null) ?? null,
         }, { access: skipTraceAccess, peopleData: null, metadata: { entityType, entityId, queueEntryId: entry.id }, attribution: personAttribution(entityType, entityId) })
-        batchDataFallbackCost = rev.costUsd
+        batchDataFallbackCost += rev.costUsd
         if (rev.status === 'matched' && rev.provider === 'batchdata') {
           batchDataFallback = { phones: rev.phones, emails: rev.emails, person: rev.person, via: 'reverse' }
         } else if (rev.status !== 'matched') {
           console.info('[enrichment-orchestrator] reverse skip trace miss:', rev.reason)
         }
       } else if (skipTraceAccess?.allowed) {
+        let v3Cost = 0
         try {
           const { skipTraceBatchDataV3Batch } = await import('@/lib/external/batchdata-client')
           const { matches, cost: btCost } = await skipTraceBatchDataV3Batch([{
@@ -597,21 +632,22 @@ export async function processEnrichmentQueue(
             state: (entity.state as string | null) ?? (entity.mailing_state as string | null) ?? undefined,
             zip: (entity.zip_code as string | null) ?? (entity.mailing_zip as string | null) ?? undefined,
           }])
-          batchDataFallbackCost = btCost
+          v3Cost = btCost
+          batchDataFallbackCost += btCost
           const m = matches[0]
           if (m?.matched) batchDataFallback = { phones: m.phones, emails: m.emails, via: 'v3' }
         } catch (e) {
           batchDataFallbackErrorMessage = e instanceof Error ? e.message : String(e)
           console.warn('[enrichment-orchestrator] batchdata skip trace failed (non-blocking):', e)
         }
-        if (batchDataFallbackCost > 0) {
+        if (v3Cost > 0) {
           // PLATFORM LEDGER (vendor_usage_tracking) at the REAL cost the client reported —
           // never a unitCount the normalizer prices at VENDOR_PRICING.batchdata's $0.50
           // motivated-seller rate (a 7× overstatement that tripped the platform cap early).
           await meterVendorSpend({
             vendorName: 'batchdata',
             usageType: 'skip_trace',
-            cost: batchDataFallbackCost,
+            cost: v3Cost,
             brokerageId,
             systemSource: 'skip_trace',
             metadata: { entityType, entityId, queueEntryId: entry.id, result: batchDataFallback ? 'matched' : 'no_match', route: route.providers.join('>') },
@@ -631,7 +667,13 @@ export async function processEnrichmentQueue(
       // $0.07 BatchData match (≈ $0.32 per fully-enriched person); a PDL no-match is $0. Booked on
       // vendor_usage_tracking at Step 6c (peopledata) beside the BatchData row booked above.
       const name = [entity.first_name, entity.last_name].filter(Boolean).join(' ') || undefined
-      const askPeopleData = route.providers.includes('peopledata') && (!batchDataFallback || DEMOGRAPHICS_AFTER_CONTACT_MATCH)
+      // Wave 93 (lane 93B2): PeopleData is asked ONLY AFTER A VERSIUM MISS. A Versium hit ends the
+      // chain (owner cost decision: "People Data Labs only when Versium misses"); the lane-83A
+      // demographics-after-match leg still follows a BatchData match, which itself is reached only after
+      // Versium missed (or could not be asked). PDL stays the person-profile provider for the explicit
+      // profile doors (quick actions, deal investigator, contact enrichment core).
+      const askPeopleData = route.providers.includes('peopledata')
+        && (!batchDataFallback || (DEMOGRAPHICS_AFTER_CONTACT_MATCH && batchDataFallback.via !== 'versium'))
       const { data: enriched, cost } = askPeopleData
         ? await skipTraceWithPeopleData({
             name,
@@ -657,9 +699,7 @@ export async function processEnrichmentQueue(
           ? Array.from(new Set([entity.email as string, ...(enriched.emails ?? [])]))
           : Array.from(new Set([...batchDataFallback.emails, ...(enriched.emails ?? [])]))
       }
-      const contactPointsProvider = batchDataFallback
-        ? (batchDataFallback.via === 'reverse' ? 'batchdata_reverse_skip_trace' : 'batchdata_skip_trace')
-        : null
+      const contactPointsProvider = batchDataFallback ? contactLaneOf(batchDataFallback.via) : null
 
       result.totalCost += cost + batchDataFallbackCost
 
@@ -1165,7 +1205,7 @@ export async function processEnrichmentQueue(
             // 'batchdata_skip_trace' (was 'batchdata_skip_trace_fallback' — it is the
             // FIRST provider now; no reader of the old spelling existed: grepped lane 81B).
             // 'batchdata_reverse_skip_trace' names the person-keyed leg (wave 82 lane A).
-            enrichment_provider: batchDataFallback.via === 'reverse' ? 'batchdata_reverse_skip_trace' : 'batchdata_skip_trace',
+            enrichment_provider: contactLaneOf(batchDataFallback.via),
             ...(entityType === 'lead' && { enrichment_status: 'complete' }),
           }
           const { error: fallbackWriteError } = await supabase.from(table).update(patch).eq('id', entityId)
@@ -1178,10 +1218,10 @@ export async function processEnrichmentQueue(
               status: 'completed',
               enrichment_cost: cost + batchDataFallbackCost,
               enrichment_results: {
-                lane: batchDataFallback.via === 'reverse' ? 'batchdata_reverse_skip_trace' : 'batchdata_skip_trace',
+                lane: contactLaneOf(batchDataFallback.via),
                 person_enrichment: 'batchdata_match',
                 free_osint: free ? freeLaneProfileBlock(free) : null,
-                note: `BatchData ${batchDataFallback.via === 'reverse' ? 'REVERSE' : 'V3'} skip trace (cheapest adequate provider, route ${route.providers.join('>')}) found a contact point; PeopleData ${askPeopleData ? 'demographics: no match ($0)' : 'not asked'}`,
+                note: `${batchDataFallback.via === 'versium' ? 'Versium contact append' : `BatchData ${batchDataFallback.via === 'reverse' ? 'REVERSE' : 'V3'} skip trace`} (cheapest adequate provider, route ${route.providers.join('>')}) found a contact point; PeopleData ${askPeopleData ? 'demographics: no match ($0)' : 'not asked'}`,
               },
               completed_at: new Date().toISOString(),
             })

@@ -84,8 +84,11 @@ check("POSITIVE CONTROL: the old inline builder shape IS recognised", /provider:
 // ── D3 ──────────────────────────────────────────────────────────────────────
 console.log("\n[D3 · drain: the 81B profile-skip is reversed]")
 check("DEMOGRAPHICS_AFTER_CONTACT_MATCH = true", /export const DEMOGRAPHICS_AFTER_CONTACT_MATCH = true\b/.test(orchSrc))
-const askRule = /const askPeopleData = route\.providers\.includes\('peopledata'\) && \(!batchDataFallback \|\| DEMOGRAPHICS_AFTER_CONTACT_MATCH\)/
-check("PeopleData asked when the route names it — on a BatchData miss OR for demographics after a match", askRule.test(orchSrc) && /askPeopleData\s*\?\s*await skipTraceWithPeopleData\(/.test(orchSrc))
+// Re-anchored (wave 93, lane 93B2 — owner cost decision: "Versium first … People Data Labs only when
+// Versium misses"): the demographics-after-match leg still follows a BatchData match (which is itself
+// reached only after a Versium miss); a VERSIUM hit ends the chain without PeopleData.
+const askRule = /const askPeopleData = route\.providers\.includes\('peopledata'\)\s*&& \(!batchDataFallback \|\| \(DEMOGRAPHICS_AFTER_CONTACT_MATCH && batchDataFallback\.via !== 'versium'\)\)/
+check("PeopleData asked when the route names it — on a contact-point miss OR for demographics after a BatchData (non-Versium) match", askRule.test(orchSrc) && /askPeopleData\s*\?\s*await skipTraceWithPeopleData\(/.test(orchSrc))
 check("POSITIVE CONTROL: the 81B skip shape is NOT the rule", !askRule.test(`const { data: enriched, cost } = !batchDataFallback && route.providers.includes('peopledata') ? await skipTraceWithPeopleData({`))
 check("PDL asked with BatchData's phone/email when the row had none (match rate)", /phone: \(entity\.phone \?\? batchDataFallback\?\.phones\[0\]\)/.test(orchSrc) && /email: \(entity\.email \?\? batchDataFallback\?\.emails\[0\]\)/.test(orchSrc))
 check("BatchData's DNC-flagged lines LEAD the merged contact points; a reverse-leg email is never replaced",
@@ -102,8 +105,9 @@ const pp = stripped("lib/lead-pipeline/pipeline-processor.ts")
 // term the meter may carry is the SAME `skipPeopleData` flag that guards the call itself (a paid
 // BatchData row skips both the call and its meter — a call that never happened books nothing).
 check("every raw-path PeopleData call is booked (name/phone/email was unmetered anywhere)",
-  /if \((?:!skipPeopleData && )?fields\.brokerageId && \(profileUrl \|\| hasNamePhoneEmail\)\)/.test(pp) && /usageType: profileUrl \? 'social_identity_resolve' : 'skip_trace'/.test(pp)
-  && (!/!skipPeopleData && fields\.brokerageId/.test(pp) || /skipPeopleData\s*\?\s*\{ data: null \}\s*:\s*await skipTraceWithPeopleData\(/.test(pp)))
+  // Wave 93 (93B2): the meter carries the SAME guard as the call — skipPeopleData and (new) versiumAnswered.
+  /if \((?:!skipPeopleData && )?(?:!versiumAnswered && )?fields\.brokerageId && \(profileUrl \|\| hasNamePhoneEmail\)\)/.test(pp) && /usageType: profileUrl \? 'social_identity_resolve' : 'skip_trace'/.test(pp)
+  && (!/!skipPeopleData && (?:!versiumAnswered && )?fields\.brokerageId/.test(pp) || /skipPeopleData(?: \|\| versiumAnswered)?\s*\?\s*\{ data: null \}\s*:\s*await skipTraceWithPeopleData\(/.test(pp)))
 check("POSITIVE CONTROL: the old profile-only booking condition is recognised as narrower", !/hasNamePhoneEmail/.test(`if (profileUrl && fields.brokerageId) {`))
 check("the enrichment result carries the built profile", /peopleDataProfile:\s*buildPeopleDataProfile\(data as any\)/.test(pp))
 const ins = pp.slice(pp.indexOf(".from('leads')\n    .insert({"), pp.indexOf("raw_record_id:         rawRecordId"))

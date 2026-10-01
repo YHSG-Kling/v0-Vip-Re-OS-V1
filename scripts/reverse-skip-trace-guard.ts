@@ -87,7 +87,9 @@ const IN = { brokerageId: "b-1", ref: "lead-1", firstName: "Maria", lastName: "L
   const h = harness([p("Maria", "Lopez")], true)
   const r = await reverseSkipTracePerson(IN, { ...h.deps, access: ALLOW })
   check("BatchData matches the named person → provider batchdata, PeopleData NEVER asked", r.status === "matched" && r.provider === "batchdata" && h.log.join(",") === "batchdata", h.log.join(","))
-  check("route is reverse_contact (BatchData first, PeopleData fallback)", r.route.capability === "reverse_contact" && r.route.providers.join(",") === "batchdata,peopledata")
+  // Re-anchored (wave 93, lane 93B2): the route names Versium FIRST (the drain runs that leg before
+  // this wrapper); within this wrapper BatchData still precedes PeopleData.
+  check("route is reverse_contact (Versium first in the drain, then BatchData, PeopleData fallback)", r.route.capability === "reverse_contact" && r.route.providers.join(",") === "versium,batchdata,peopledata")
   check("booked ONCE to the platform vendor ledger as batchdata at the $0.07 constant", h.booked.length === 1 && h.booked[0].vendorName === "batchdata" && h.booked[0].cost === bd.BATCHDATA_SKIP_TRACE_COST_USD && r.costUsd === 0.07, JSON.stringify(h.booked))
 }
 {
@@ -140,7 +142,7 @@ const tx = stripped("lib/external/batchdata-client.ts")
 check("the transport asks the MCP `reverse_skip_trace` tool FIRST (REST fallback) and bills per MATCHED input",
   /batchDataPreferMcp<unknown>\(\s*"reverse_skip_trace"/.test(tx) && /filter\(\(m\) => m\.matched\)\.length \* BATCHDATA_SKIP_TRACE_COST_USD/.test(tx))
 check("the price table carries reverse_contact at the SAME constant (no second spelling of $0.07)",
-  rail.CONTACT_PROVIDER_ROUTES.reverse_contact[0].unitCostUsd === bd.BATCHDATA_SKIP_TRACE_COST_USD)
+  rail.CONTACT_PROVIDER_ROUTES.reverse_contact.find((e) => e.provider === "batchdata")?.unitCostUsd === bd.BATCHDATA_SKIP_TRACE_COST_USD)
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 5 · 81B open item: pipeline-processor reads the provider constants]")

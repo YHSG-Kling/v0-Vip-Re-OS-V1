@@ -204,6 +204,7 @@ import type { BatchDataToolTier } from "@/lib/ai-isa/persona-tool-policy"
 import { BATCHDATA_SKIP_TRACE_COST_USD, BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD } from "@/lib/external/batchdata-client"
 import { PEOPLEDATA_MATCH_COST_USD, PEOPLEDATA_EMAIL_VALIDATE_COST_USD } from "@/lib/external/peopledata-client"
 import { MCP_TOOL_CALL_COST_USD } from "@/lib/external/batchdata-ai-tools"
+import { VERSIUM_MATCH_CREDIT_USD, type VersiumIdentity, type VersiumContactCall } from "@/lib/external/versium-client"
 import { BATCHDATA_BILLED_PULL_OPT_IN } from "@/lib/buyer-search/listing-source-order"
 
 /**
@@ -271,7 +272,10 @@ export const BATCHDATA_FALLBACK_MISS_REASONS: ReadonlySet<RentcastMissReason> = 
 
 // ─── PROVIDER CHOICE TABLE (data, cheapest first) ───────────────────────────
 
-export type ContactDataProvider = "batchdata" | "peopledata"
+// Wave 93 (lane 93B2): "versium" joins — the EXISTING vendor (household financials) now also sells
+// the owner/person email + phone append, cheapest per match (owner cost decision, header of
+// runVersiumContactLeg below).
+export type ContactDataProvider = "versium" | "batchdata" | "peopledata"
 
 /** The capabilities the two providers sell, named by the QUESTION a caller asks. */
 export type ProviderCapability =
@@ -300,6 +304,9 @@ export interface ProviderRouteEntry {
  */
 export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readonly ProviderRouteEntry[]>> = {
   owner_contact: [
+    // Wave 93 (lane 93B2): VERSIUM FIRST — 1 match credit per matched output (credit-package ceiling
+    // $0.05; a no-match is free), asked by name + geography / address / email / phone.
+    { provider: "versium", unitCostUsd: VERSIUM_MATCH_CREDIT_USD, keyedBy: "person_identifier" },
     { provider: "batchdata", unitCostUsd: BATCHDATA_SKIP_TRACE_COST_USD, keyedBy: "property_address" },
     { provider: "peopledata", unitCostUsd: PEOPLEDATA_MATCH_COST_USD, keyedBy: "person_identifier" },
   ],
@@ -308,6 +315,7 @@ export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readon
   // pay-per-match floor as the V3 skip trace — one constant, no second spelling (§6). PeopleData
   // stays the fallback on a miss. Wrapper: lib/enrichment/reverse-skip-trace.ts.
   reverse_contact: [
+    { provider: "versium", unitCostUsd: VERSIUM_MATCH_CREDIT_USD, keyedBy: "person_identifier" },
     { provider: "batchdata", unitCostUsd: BATCHDATA_SKIP_TRACE_COST_USD, keyedBy: "phone" },
     { provider: "peopledata", unitCostUsd: PEOPLEDATA_MATCH_COST_USD, keyedBy: "person_identifier" },
   ],
@@ -331,6 +339,8 @@ export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readon
 /** What ONE record carries — the resolver picks the provider order from this, never
  *  from a vendor preference. */
 export interface ContactRouteInput {
+  /** Wave 93: a city + state or ZIP beside the name (Versium's name + geography input). */
+  hasLocation?: boolean
   hasName: boolean
   hasPropertyAddress: boolean
   hasEmailOrPhone: boolean
@@ -361,20 +371,83 @@ export function resolveContactProviderRoute(input: ContactRouteInput): ContactPr
     return {
       capability: "reverse_contact",
       providers,
-      reason: `no property address but a phone/email → BatchData REVERSE skip trace first ($${BATCHDATA_SKIP_TRACE_COST_USD}/match); PeopleData ($${PEOPLEDATA_MATCH_COST_USD}/match) only when BatchData returns nothing`,
+      reason: `no property address but a phone/email → Versium first ($${VERSIUM_MATCH_CREDIT_USD}/matched output), then BatchData REVERSE skip trace ($${BATCHDATA_SKIP_TRACE_COST_USD}/match); PeopleData ($${PEOPLEDATA_MATCH_COST_USD}/match) only when both return nothing`,
     }
   }
   const bdUsable = input.hasPropertyAddress // V3 skip trace is property-keyed; owner name optional
+  // Versium is asked by an address, a name + geography, or an email/phone (versiumQueryFor); a bare
+  // name or a profile URL alone is not a Versium input.
+  const versiumUsable = input.hasPropertyAddress || input.hasEmailOrPhone || (input.hasName && input.hasLocation === true)
   const ordered = CONTACT_PROVIDER_ROUTES.owner_contact
-    .filter((e) => (e.provider === "batchdata" ? bdUsable : pdlUsable))
+    .filter((e) => (e.provider === "batchdata" ? bdUsable : e.provider === "versium" ? versiumUsable : pdlUsable))
     .map((e) => e.provider)
   if (ordered.length === 0) {
     return { capability: "owner_contact", providers: [], reason: "no identifier — neither a property address (BatchData) nor a name/email/phone/profile (PeopleData) to trace from" }
   }
-  const reason = ordered[0] === "batchdata"
-    ? `property address present → BatchData first ($${BATCHDATA_SKIP_TRACE_COST_USD}/match)${ordered.length > 1 ? `; PeopleData ($${PEOPLEDATA_MATCH_COST_USD}/match) only when BatchData returns nothing` : "; no PeopleData identifier"}`
-    : `no property address and no phone/email → BatchData cannot be asked (V3 is property-keyed, reverse is phone/email-keyed); PeopleData ($${PEOPLEDATA_MATCH_COST_USD}/match) is the only adequate provider`
+  const viaVersium = ordered[0] === "versium" ? `Versium first ($${VERSIUM_MATCH_CREDIT_USD}/matched output); ` : ""
+  const rest = ordered[0] === "versium" ? ordered.slice(1) : ordered
+  const reason = viaVersium + (rest[0] === "batchdata"
+    ? `property address present → BatchData first ($${BATCHDATA_SKIP_TRACE_COST_USD}/match)${rest.length > 1 ? `; PeopleData ($${PEOPLEDATA_MATCH_COST_USD}/match) only when BatchData returns nothing` : "; no PeopleData identifier"}`
+    : `no property address and no phone/email → BatchData cannot be asked (V3 is property-keyed, reverse is phone/email-keyed); PeopleData ($${PEOPLEDATA_MATCH_COST_USD}/match) is the ${viaVersium ? "fallback" : "only adequate provider"}`)
   return { capability: "owner_contact", providers: ordered, reason }
+}
+
+/**
+ * THE VERSIUM LEG of the owner-contact route (wave 93, lane 93B2) — the FIRST provider whenever the
+ * route names it. Owner cost decision (2026-10-01, relayed by the coordinator): "VERSIUM FIRST for
+ * owner/person email+phone append, People Data Labs only when Versium misses (and PDL stays for full
+ * person profiles)". ONE leg, used by BOTH enrichment paths that buy contact points — the queue drain
+ * (lib/lead-pipeline/enrichment-orchestrator.ts Step 5) and the raw-record promotion
+ * (lib/lead-pipeline/pipeline-processor.ts enrichWithPeopleData) — so there is no second chain.
+ *   · Asks ONLY for what the person is missing: a LEAD asks EMAIL only (leads get email + direct mail,
+ *     never SMS/voice — a phone would be paid for and never used); a CONTACT asks email, then phone.
+ *     Nothing missing → nothing asked, $0.
+ *   · Books the platform ledger as vendor "versium", usage "contact_append", with `answered_by`
+ *     ("versium" on a match, null on a miss) — a miss is free (cost 0 books no row).
+ *   · Unconfigured (no VERSIUM_API_KEY) → `skipped: "unconfigured"`, the caller's chain runs as before.
+ * Never throws.
+ */
+export async function runVersiumContactLeg(
+  req: {
+    brokerageId: string | null
+    stage: "lead" | "contact"
+    identity: VersiumIdentity
+    hasEmail: boolean
+    hasPhone: boolean
+    systemSource: string
+    metadata?: Record<string, unknown>
+    attribution?: { leadId?: string | null; contactId?: string | null; rawRecordId?: string | null }
+  },
+  deps: {
+    call?: VersiumContactCall
+    meter?: (input: { vendorName: string; usageType: string; cost: number; brokerageId?: string | null; systemSource?: string; metadata?: Record<string, unknown>; attribution?: { leadId?: string | null; contactId?: string | null; rawRecordId?: string | null } }) => Promise<unknown>
+  } = {},
+): Promise<{ answered: boolean; emails: string[]; phones: string[]; cost: number; skipped: string | null }> {
+  const outputs: Array<"email" | "phone"> = []
+  if (!req.hasEmail) outputs.push("email")
+  if (req.stage === "contact" && !req.hasPhone) outputs.push("phone")
+  if (outputs.length === 0) return { answered: false, emails: [], phones: [], cost: 0, skipped: "nothing_to_append" }
+  try {
+    const { appendVersiumContact } = await import("@/lib/external/versium-client")
+    const r = await appendVersiumContact(req.identity, outputs, { call: deps.call })
+    if (r.skipped) return { answered: false, emails: [], phones: [], cost: 0, skipped: r.skipped }
+    if (r.cost > 0) {
+      const meter = deps.meter
+        ?? ((m: import("@/lib/vendor-governance/meter-vendor").MeterVendorInput) => import("@/lib/vendor-governance/meter-vendor").then((v) => v.meterVendorSpend(m)))
+      await Promise.resolve(meter({
+        vendorName: "versium",
+        usageType: "contact_append",
+        cost: r.cost,
+        brokerageId: req.brokerageId,
+        systemSource: req.systemSource,
+        metadata: { ...(req.metadata ?? {}), answered_by: r.matched ? "versium" : null, outputs, credits: r.credits },
+        attribution: req.attribution,
+      })).catch(() => null)
+    }
+    return { answered: r.matched, emails: r.emails, phones: r.phones, cost: r.cost, skipped: r.error && !r.matched ? `error: ${r.error}` : null }
+  } catch (e) {
+    return { answered: false, emails: [], phones: [], cost: 0, skipped: `error: ${e instanceof Error ? e.message : String(e)}` }
+  }
 }
 
 /** "public" (wave 82 lane A) — an anonymous visitor on a public page (calculators, listing
@@ -408,6 +481,7 @@ export const PROPERTY_LOOKUP_RUNG_ORDER: readonly PropertyLookupRung[] = [
  * reason is now written down where the order is decided. The rule the proof holds
  * (test:persona-tool-realism): every rung that precedes a CHEAPER rung names why, in
  * `aheadOfCheaper`, and every other adjacent pair is non-decreasing.
+ * @proofSeam kept exported for scripts/enrichment-one-rail-guard.ts and scripts/persona-tool-realism-guard.ts, which assert the lookup rung costs
  */
 export const PROPERTY_LOOKUP_RUNG_COST_USD: Readonly<Record<PropertyLookupRung, { usd: number; aheadOfCheaper?: string }>> = {
   cache: { usd: 0 },
