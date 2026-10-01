@@ -336,7 +336,10 @@ function callKey(actor: AnyActor, sql: string, needsResult: boolean, index = -1)
   // within the last 30 days / next day are wall-clock values too.
   const normMs = msFrom !== undefined && index >= msFrom
     ? norm.replace(/("[a-z_]*_ms\\?"\s*:\s*)\d+/g, "$1N")
-        .replace(/\b\d{13}\b/g, (t) => { const n = Number(t); return n > now - 30 * 86_400_000 && n < now + 86_400_000 ? "EPOCHMS" : t })
+        // Digit-bounded, not \b-bounded (lane 93D2): the offer document door writes
+        // `${Date.now()}_${name}` and "_" is a word character, so \b never matched there and
+        // every rerun re-issued an already-applied INSERT.
+        .replace(/(?<!\d)\d{13}(?!\d)/g, (t) => { const n = Number(t); return n > now - 30 * 86_400_000 && n < now + 86_400_000 ? "EPOCHMS" : t })
     : norm
   return nodeCrypto.createHash("sha1").update(normMs).digest("hex")
 }

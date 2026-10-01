@@ -53,10 +53,13 @@ export async function resolveEventContacts(
         // no buyer_stage) must not put that buyer on OUR client rails (portal cards,
         // sequence enrollment). Only a buyer in our pipeline is "our buyer" here;
         // off-listing offers are inherently our-buyer and skip this check.
+        // The read lives in ONE place — lib/transactions/buyer-representation.ts ("buyer_stage is
+        // set" was always true: the column defaults to BUYER_CONTACT_CREATED).
         if (out.sellerContactId && out.buyerContactId) {
-          const { data: bc } = await svc
-            .from("contacts").select("buyer_stage").eq("id", out.buyerContactId).maybeSingle()
-          if (!(bc as { buyer_stage?: string | null } | null)?.buyer_stage) {
+          const { readBuyerRepresentation } = await import("@/lib/transactions/buyer-representation")
+          const rep = await readBuyerRepresentation(svc as any, { contactId: out.buyerContactId })
+          for (const r of rep.refusals) console.error(`[resolveEventContacts] offer ${entityId}: ${r}`)
+          if (!rep.ours) {
             out.buyerContactId = undefined
             out.contactId = out.sellerContactId
           }

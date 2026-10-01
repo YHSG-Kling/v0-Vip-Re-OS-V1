@@ -100,7 +100,39 @@ export async function acceptOffer(params: {
   listingId: string
   brokerageId?: string  // ignored — derived from session
   agentUserId?: string  // ignored — derived from session
-}) {
+  /**
+   * THE FULLY EXECUTED CONTRACT, for an offer from an OUTSIDE buyer's agent (wave
+   * 93, lane 93D2 — found live: such an offer could never become a transaction).
+   * Their buyer signed on their paperwork, so our e-sign webhook — the only other
+   * writer of the execution columns — never fires, and the transaction gate
+   * refused "buyer has not signed yet" forever.
+   *
+   * The signed PDF is filed FIRST through the offer document door
+   * (POST /api/offers/[offerId]/upload-document, docType 'signed_contract' — it is
+   * stored, linked to the offer and scanned there); its documents.id comes here.
+   * The execution is then recorded through the ONE seller-response door
+   * (app/actions/buyer-offer/record-seller-response.ts): seller accepted + contract
+   * on file, plus — when the buyer's signature is not yet established — a NAMED
+   * human's attestation of it against that document (never inferred, never an
+   * AI reading). Nothing about the gates changes: the readiness gate below and the
+   * bridge's transaction-creation gate still decide.
+   */
+  executedContract?: {
+    documentId: string
+    buyerSignature?: { signedAt: string; attestation: string }
+  }
+}): Promise<{
+  success: boolean
+  error?: string
+  /** The gate's refusal is "not fully executed" — the surface should ask for the executed contract. */
+  needs_executed_contract?: boolean
+  /** The buyer's signature is not established, and only an attestation can establish it. */
+  needs_buyer_signature_attestation?: boolean
+  /** Executed, but the compliance gate blocked (or could not run) — its reason is in `error`. */
+  needs_compliance?: boolean
+  /** The transaction the accept created (or that the compliance gate created for it). */
+  transactionId?: string
+}> {
   const { offerId, listingId } = params
 
   if (!isValidUUID(offerId) || !isValidUUID(listingId)) {
@@ -122,24 +154,129 @@ export async function acceptOffer(params: {
 
   const supabase = createServiceClient()
 
-  // Also verify the offer belongs to this listing AND this brokerage
-  const { data: offerRow } = await supabase
+  // Also verify the offer belongs to this listing AND this brokerage. The read's
+  // `error` is destructured (§3): a refused read used to render as "Forbidden".
+  const { data: offerRow, error: offerRowError } = await supabase
     .from("offers")
     .select("brokerage_id, listing_id")
     .eq("id", offerId)
     .maybeSingle()
+  if (offerRowError) return { success: false, error: `Could not read the offer: ${offerRowError.message}` }
   if (!offerRow || offerRow.brokerage_id !== brokerageId || offerRow.listing_id !== listingId) {
     return { success: false, error: "Forbidden" }
+  }
+
+  const { isOfferFullyExecuted } = await import("@/lib/transactions/offer-execution-state")
+
+  // ── THE EXECUTED CONTRACT, RECORDED THROUGH THE ONE DOOR (lane 93D2) ─────────
+  // FIRST, before compliance: the owner's ruling (2026-09-04) is that compliance
+  // runs ONCE THE OFFER IS FULLY EXECUTED BY BOTH BUYER AND SELLER — execution is
+  // the precondition of the gate, so the executed contract is recorded before the
+  // gate is asked. Only when it is not already on file: a re-accept after a later
+  // refusal must not re-stamp the execution time or attest twice. The predicate is
+  // the ONE definition (lib/transactions/offer-execution-state.ts), never re-spelled.
+  if (params.executedContract) {
+    if (!isValidUUID(params.executedContract.documentId)) {
+      return { success: false, error: "Invalid executed-contract document ID" }
+    }
+    const { data: execRow, error: execErr } = await supabase
+      .from("offers")
+      .select("buyer_signed_at, seller_response_type, seller_signed_at, fully_signed_contract_received_at, transaction_id")
+      .eq("id", offerId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (execErr) return { success: false, error: `Could not read the offer's execution state: ${execErr.message}` }
+    if (!execRow || !isOfferFullyExecuted(execRow as any)) {
+      const { recordSellerResponse } = await import("@/app/actions/buyer-offer/record-seller-response")
+      const recorded = await recordSellerResponse({
+        offerId,
+        responseType:   "accepted",
+        documentId:     params.executedContract.documentId,
+        buyerSignature: params.executedContract.buyerSignature,
+        notes:          "Fully executed contract filed by the listing side — seller accepted the outside buyer's offer.",
+        callerConverts: true,
+      })
+      if (!recorded.success) {
+        return {
+          success: false,
+          error: `The executed contract was not recorded, so the offer was not accepted: ${recorded.error}`,
+          needs_buyer_signature_attestation: recorded.needs_buyer_signature_attestation,
+        }
+      }
+    }
   }
 
   // ── COMPLIANCE GATE (System 7.1B — ABSOLUTE) ─────────────────────────────
   // No offer may be accepted without a prior buyer.offer.compliance.passed event.
   const { checkCompliancePassed } = await import("@/lib/buyer-offer/compliance-gate")
-  const complianceCheck = await checkCompliancePassed(offerId)
+  let complianceCheck = await checkCompliancePassed(offerId)
   if (!complianceCheck.passed) {
-    return {
-      success: false,
-      error: `Compliance gate: offer ${offerId} has not passed compliance review. ${complianceCheck.error ?? ""}`.trim(),
+    // ── EXECUTED BUT NOT YET THROUGH COMPLIANCE → RUN THE ONE GATE (lane 93D2) ──
+    // Refusing here sent a fully executed outside offer to a staff override. The
+    // gate exists: lib/transactions/offer-compliance-loop.ts → submitOfferToCompliance
+    // audits the brokerage checklist + the packet's signatures/initials and, on a
+    // pass, creates the transaction itself (the bridge's gates still run inside).
+    // Nothing is decided here: a block returns the gate's own reason.
+    const { data: gateRow, error: gateRowError } = await supabase
+      .from("offers")
+      .select("buyer_signed_at, seller_response_type, seller_signed_at, fully_signed_contract_received_at, transaction_id")
+      .eq("id", offerId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (gateRowError) return { success: false, error: `Could not read the offer's execution state: ${gateRowError.message}` }
+    if (!gateRow || !isOfferFullyExecuted(gateRow as any)) {
+      return {
+        success: false,
+        error: `Compliance gate: offer ${offerId} has not passed compliance review, and it cannot — the contract is not fully executed by both buyer and seller. File the executed contract first.`,
+        needs_executed_contract: true,
+        needs_buyer_signature_attestation: (gateRow && !gateRow.buyer_signed_at) || undefined,
+      }
+    }
+    const { runOfferComplianceLoop } = await import("@/lib/transactions/offer-compliance-loop")
+    const turn = await runOfferComplianceLoop(supabase as any, { brokerageId, offerId, trigger: "agreement_executed", actorUserId: agentUserId })
+    if (turn.outcome === "advanced" && turn.transactionId) {
+      // The gate created the transaction. What is left is the listing side's own
+      // bookkeeping — exactly what the bridge path below does after its creation.
+      const { error: winErr } = await supabase
+        .from("offers")
+        .update({ is_winning_offer: true, status: "accepted", responded_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq("id", offerId)
+        .eq("brokerage_id", brokerageId)
+      const { error: sibErr } = await supabase
+        .from("offers")
+        .update({ is_winning_offer: false, updated_at: new Date().toISOString() })
+        .eq("listing_id", listingId)
+        .eq("brokerage_id", brokerageId)
+        .neq("id", offerId)
+      await transitionLifecycle({
+        brokerageId,
+        entityType:  "listing_stage_machine",
+        entityId:    listingId,
+        fromState:   "",
+        toState:     "UNDER_CONTRACT",
+        actorUserId: agentUserId,
+        eventType:   "UNDER_CONTRACT",
+        metadata:    { winning_offer_id: offerId, transaction_id: turn.transactionId, via: "offer_compliance_gate" },
+      })
+      revalidatePath(`/dashboard/listings/${listingId}/offers`)
+      revalidatePath(`/dashboard/transactions`)
+      const flagRefused = [winErr, sibErr].filter(Boolean).map((e) => e!.message)
+      return flagRefused.length === 0
+        ? { success: true, transactionId: turn.transactionId }
+        : { success: false, transactionId: turn.transactionId, error: `The transaction was created, but the winning-offer flags were refused (${flagRefused.join(" | ")}) — correct them on the offers list.` }
+    }
+    if (turn.outcome === "blocked") {
+      return { success: false, error: `Executed contract on file. Compliance gate blocked the transaction: ${turn.reason ?? "missing required documents"}`, needs_compliance: true }
+    }
+    // "outside_window"/"unknown": the gate did not run. A staff-passed gate event
+    // could exist from a concurrent click — re-read once, then fail closed.
+    complianceCheck = await checkCompliancePassed(offerId)
+    if (!complianceCheck.passed) {
+      return {
+        success: false,
+        error: `Compliance gate: offer ${offerId} has not passed compliance review, and the gate could not run (${turn.reason ?? turn.outcome}).`,
+        needs_compliance: true,
+      }
     }
   }
 
@@ -155,7 +292,16 @@ export async function acceptOffer(params: {
   const { assertOfferReadyForTransaction } = await import("@/lib/transactions/offer-bridge")
   const readiness = await assertOfferReadyForTransaction({ offerId, brokerageId })
   if (!readiness.allowed) {
-    return { success: false, error: `Offer cannot be accepted yet: ${readiness.reason}` }
+    // Say which remedy applies, so the surface can ask for the executed contract
+    // (and the buyer-signature attestation) instead of showing a dead end.
+    // Read off the gate's own row through the ONE predicate — never off its prose.
+    const notExecuted = !!readiness.offer && !readiness.offer.transaction_id && !isOfferFullyExecuted(readiness.offer)
+    return {
+      success: false,
+      error: `Offer cannot be accepted yet: ${readiness.reason}`,
+      needs_executed_contract: notExecuted || undefined,
+      needs_buyer_signature_attestation: (readiness.offer && !readiness.offer.buyer_signed_at) || undefined,
+    }
   }
 
   // Mark this offer as winner; set all others to not winning — scoped

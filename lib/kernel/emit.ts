@@ -164,7 +164,12 @@ export async function emitKernelEvent(input: EmitKernelEventInput): Promise<Emit
       event_type:   input.event as string,
       metadata,
     }
-    if (input.actorUserId !== undefined) row.actor_user_id = input.actorUserId
+    // SYSTEM ACTOR → NULL, NEVER "". offer-bridge emits OFFER_ACCEPTED and BUYER_UNDER_CONTRACT with
+    // actorUserId: "" (no human actor); Postgres refuses "" as a uuid (22P02), the insert returned
+    // early above the fan-out, and so every offer-created transaction lost its staff notification,
+    // portal card and sequence enrollment — proven live in the wave-93c walk. Same normalisation
+    // as transitionLifecycle (lib/kernel/lifecycle.ts).
+    if (input.actorUserId !== undefined) row.actor_user_id = input.actorUserId?.trim() ? input.actorUserId : null
     if (input.agentId     !== undefined) row.agent_id      = input.agentId
     if (input.source      !== undefined) row.source        = input.source
     if (input.createdAt   !== undefined) row.created_at    = input.createdAt
@@ -204,7 +209,7 @@ export async function emitKernelEvent(input: EmitKernelEventInput): Promise<Emit
         sellerContactId:   input.sellerContactId,
         transactionId:     input.transactionId,
         listingId:         input.listingId,
-        agentUserId:       input.agentUserId ?? input.actorUserId ?? undefined,
+        agentUserId:       input.agentUserId?.trim() || input.actorUserId?.trim() || undefined,
         metadata,
         suppressEnrollment: input.suppressEnrollment,
       })

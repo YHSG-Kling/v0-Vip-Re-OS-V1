@@ -3,24 +3,36 @@
 /**
  * Record seller response on a buyer-signed offer.
  *
- * Called by the agent (or by an inbound-email parser, when wired up) AFTER
- * the seller has responded:
+ * Called by a signed-in agent AFTER the seller has responded:
  *   - accepted  : seller signed the contract back. Pass the signed-PDF URL
- *                 in documentUrl so the contract is on file.
+ *                 in documentUrl, or — when the executed contract was already
+ *                 filed through app/api/offers/[offerId]/upload-document — its
+ *                 documents.id in documentId, so the contract is on file.
  *   - countered : seller sent terms back. issueCounterOffer() is the right
  *                 path to capture the counter terms as a new offer row;
  *                 this action just marks the original offer 'countered'
  *                 and stores any uploaded counter PDF.
  *   - rejected  : seller declined. Terminal state for this offer.
  *
- * This action ONLY records the response. It does NOT trigger compliance
- * review or transaction creation — the agent must explicitly call
- * submitOfferToCompliance once they're satisfied the executed contract
- * is correct.
+ * On 'accepted' the offer is fully executed, and the autonomous offer
+ * compliance loop runs (lib/transactions/offer-compliance-loop.ts) — unless the
+ * caller is the listing-side accept, which converts in the same request
+ * (`callerConverts`). Either way the transaction is created only through the
+ * bridge's gates.
+ *
+ * The ONE door for recording an executed contract: the buyer-side agent button
+ * (app/components/offer/offer-agent-actions.tsx) and the listing-side accept
+ * (app/actions/seller-offers.ts acceptOffer, for an outside buyer's agent's offer
+ * on our listing) both come through here. The other writers of
+ * fully_signed_contract_received_at are the e-sign completion webhooks
+ * (lib/esign-webhooks/finalize-packet.ts, lib/forms/esign-execution-loop.ts) —
+ * for paperwork that went out on OUR envelope; this is the door for paper that
+ * did not.
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
+import { requireCaller } from "@/lib/auth/require-caller"
 import { OFFER_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 import {
   attestBuyerSignature,
@@ -30,10 +42,39 @@ import {
 
 export interface RecordSellerResponseParams {
   offerId:     string
-  userId:      string           // acting agent (for activity audit)
+  /**
+   * IGNORED — the acting user is the SESSION's (wave 93, lane 93D2). This is a
+   * "use server" export, so it is a public HTTP endpoint (CLAUDE.md §4): it used
+   * to take this id and the offer on faith, so any caller could record a seller
+   * acceptance — and attest a buyer signature, and set off the compliance loop
+   * that creates the transaction — on ANY tenant's offer under ANY user's name.
+   * Kept on the type so existing callers compile; never read.
+   */
+  userId?:     string
   responseType: "accepted" | "countered" | "rejected"
   /** Storage URL of the seller-signed contract or counter PDF (when known). */
   documentUrl?: string
+  /**
+   * documents.id of the executed contract ALREADY FILED against this offer through
+   * the offer document door (app/api/offers/[offerId]/upload-document — the signed
+   * PDF lands as a documents row linked to the offer and is scanned there). Named
+   * instead of `documentUrl` so the paperwork is not filed a second time: its
+   * storage URL is recorded as the seller-response document, and the buyer-signature
+   * attestation is made against exactly this document. Must be in the offer's
+   * brokerage and linked to this offer, or the response is refused.
+   */
+  documentId?: string
+  /**
+   * Set ONLY by the listing-side accept (app/actions/seller-offers.ts acceptOffer),
+   * which records the executed contract through this door and then creates the
+   * transaction ITSELF in the same request, inside its winner/rollback/listing-stage
+   * handling. Running the autonomous compliance loop here as well would create the
+   * transaction first and the accept would then refuse on "transaction already
+   * exists". Skipping the loop skips no gate: the bridge's offer gate and the
+   * transaction-creation gate (lib/transactions/transaction-creation-gate.ts) run on
+   * every creation regardless of door.
+   */
+  callerConverts?: boolean
   /** Optional free-form notes captured at response time. */
   notes?:       string
   /**
@@ -81,21 +122,34 @@ export interface RecordSellerResponseResult {
 export async function recordSellerResponse(
   params: RecordSellerResponseParams,
 ): Promise<RecordSellerResponseResult> {
-  const { offerId, userId, responseType, documentUrl, notes, buyerSignature } = params
+  const { offerId, responseType, notes, buyerSignature, documentId, callerConverts } = params
+  let documentUrl = params.documentUrl
 
-  if (!isValidUUID(offerId) || !isValidUUID(userId)) {
+  if (!isValidUUID(offerId)) {
     return { success: false, error: "Invalid IDs" }
   }
   if (!["accepted", "countered", "rejected"].includes(responseType)) {
     return { success: false, error: "Invalid responseType" }
   }
+  if (documentId !== undefined && !isValidUUID(documentId)) {
+    return { success: false, error: "Invalid document ID" }
+  }
+
+  // ── WHO IS CALLING — from the SESSION, never the body (CLAUDE.md §4) ───────
+  // Gate first, then the service client. The tenant comparison is against the
+  // OFFER's own brokerage_id below.
+  const caller = await requireCaller()
+  if (!caller.ok) return { success: false, error: caller.error }
+  const userId = caller.userId
 
   const supabase = createServiceClient()
 
-  // Resolve the offer + verify the actor is in the same brokerage. We use the
-  // service client so the action can also be called from an inbound-email
-  // webhook (no user session). The agent's user_id is still required for
-  // audit, but no RLS context is implied.
+  // Resolve the offer + verify it is in the CALLER's brokerage (the session gate
+  // above). The comment that stood here said "verify the actor is in the same
+  // brokerage" while nothing did — and a session-less inbound-email caller was
+  // never wired (no caller in the tree but the agent button). A webhook that
+  // needs this door must resolve its own tenant and call a server-only core, not
+  // this public endpoint (lane 93D2).
   // `error` is destructured: supabase-js RESOLVES a refused read, so `const
   // { data }` alone renders "the query was refused" and "there is no such offer"
   // identically — and a refused read here would send the caller down the
@@ -108,7 +162,30 @@ export async function recordSellerResponse(
     .eq("id", offerId)
     .maybeSingle()
   if (offerReadError) return { success: false, error: `Could not read the offer: ${offerReadError.message}` }
-  if (!offer) return { success: false, error: "Offer not found" }
+  // Another tenant's offer reads exactly like a missing one — nothing about it is
+  // confirmed to the caller (lane 93D2).
+  if (!offer || offer.brokerage_id !== caller.brokerageId) return { success: false, error: "Offer not found" }
+
+  // ── THE EXECUTED CONTRACT ALREADY FILED THROUGH THE OFFER DOCUMENT DOOR ────
+  // Resolved inside the offer's tenant and against THIS offer's link, read with
+  // its error (§3). Its storage URL becomes the seller-response document; it is
+  // NOT filed again below (the door already filed and scanned it).
+  if (documentId) {
+    const { data: filed, error: filedErr } = await supabase
+      .from("documents")
+      .select("id, storage_url, metadata")
+      .eq("id", documentId)
+      .eq("brokerage_id", offer.brokerage_id as string)
+      .maybeSingle()
+    if (filedErr) return { success: false, error: `Could not read the executed contract: ${filedErr.message}` }
+    if (!filed) return { success: false, error: "The named executed contract is not in this brokerage's deal file." }
+    const linkedOffer = ((filed.metadata as Record<string, unknown> | null) ?? {}).linked_offer_id
+    if (linkedOffer !== offerId) {
+      return { success: false, error: "The named document is not filed against this offer — upload the executed contract to this offer first." }
+    }
+    if (!filed.storage_url) return { success: false, error: "The named executed contract has no stored file." }
+    documentUrl = filed.storage_url as string
+  }
 
   // ── THE BUYER'S SIGNATURE — established, never assumed ────────────────────
   //
@@ -137,7 +214,8 @@ export async function recordSellerResponse(
       attestorUserId: buyerSignature.attestorUserId ?? userId,
       signedAt:       buyerSignature.signedAt,
       attestation:    buyerSignature.attestation,
-      documentId:     buyerSignature.documentId ?? null,
+      // The executed contract this response names (lane 93D2) is the one attested to.
+      documentId:     buyerSignature.documentId ?? documentId ?? null,
       client:         supabase,
     })
     if (!attested.success) {
@@ -188,7 +266,10 @@ export async function recordSellerResponse(
   // route it through the universal uploader so it lands as a documents
   // row with the classifier kicked off — gets organized into the right
   // deal-file bucket with a summary.
-  if (documentUrl) {
+  // A contract named by documentId was ALREADY filed (and scanned) by the offer
+  // document door — filing its URL again would put the same paper in the deal
+  // file twice (lane 93D2).
+  if (documentUrl && !documentId) {
     try {
       const { uploadDocument } = await import("@/lib/documents/upload-document")
       const docType =
@@ -281,7 +362,7 @@ export async function recordSellerResponse(
   // Entered through the offer compliance LOOP (lib/transactions/offer-compliance-loop.ts)
   // so this door records its verdict on offers.metadata.compliance_gate like every other
   // door; the loop calls the same autoExecuteFullySignedOffer this used to call directly.
-  if (responseType === "accepted") {
+  if (responseType === "accepted" && !callerConverts) {
     try {
       const { runOfferComplianceLoop } = await import("@/lib/transactions/offer-compliance-loop")
       await runOfferComplianceLoop(supabase as any, {

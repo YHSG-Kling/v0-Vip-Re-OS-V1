@@ -302,10 +302,17 @@ Return JSON only.`
     raw = ""
   }
 
-  // Meter BEFORE returning, on success and failure alike — a call that failed
-  // after the vendor accepted it still spent. Fire-and-forget so a ledger
-  // outage never becomes a CMA outage.
-  void logVendorUsage({
+  // Meter only a call that RETURNED (wave 93, lane 93D2 — found live). This booked
+  // $PERPLEXITY_COMP_SEARCH_COST_USD "on success and failure alike", reasoning that
+  // a call which failed after the vendor accepted it still spent. But
+  // generateTextRouted throws BEFORE any provider is reached as well — on the
+  // fair-use pre-flight refusal, on an unreachable gateway, on a missing key — and
+  // the walk saw exactly that: no request left the building and a Perplexity charge
+  // landed in the ledger that vendor-budget pre-flight and the overage projection
+  // read (§5: a wrong number there is a wrong invoice). Same rule as the dispatch
+  // fix (lib/providers/dispatch.ts — vendor usage only on an accepted send).
+  // Fire-and-forget so a ledger outage never becomes a CMA outage.
+  if (callOk) void logVendorUsage({
     vendorName: "perplexity",
     usageType: "api_call",
     unitCount: 1,

@@ -61,9 +61,9 @@ import { OSINTClient } from "@/lib/osint-client"
 import { validateEmail, validatePhone } from "@/lib/contact-validation"
 import { trackVendorUsageService } from "@/lib/vendor-governance"
 import { isContactInLiveDeal, contactsInLiveDeals } from "./deal-suppression"
-import { hasUsableIdentifier } from "./identifier-guard"
+import { hasUsableIdentifier, contactPointsToBuy } from "./identifier-guard"
 
-export { hasUsableIdentifier }
+export { hasUsableIdentifier, contactPointsToBuy }
 
 const peopleData = new PeopleDataClient()
 const osint = new OSINTClient()
@@ -300,9 +300,11 @@ export async function queueContactEnrichment(params: {
     return { queued: false, reason: "backlog" }
   }
 
-  const enrichments_needed: string[] = ["skip_trace"]
-  if (!contact.email) enrichments_needed.push("email_append")
-  if (!contact.phone) enrichments_needed.push("phone_append")
+  // The contact points worth buying, by the ONE rule (identifier-guard.ts
+  // contactPointsToBuy, lane 93D2): an email-bearing contact gets no phone
+  // lookup — it was queued `phone_append` here for every contact without a phone,
+  // and the drain asks the same rule before any contact-point provider is paid.
+  const enrichments_needed: string[] = ["skip_trace", ...contactPointsToBuy(contact)]
 
   const { error: insertError } = await supabase.from("lead_enrichment_queue").insert({
     contact_id: contactId,

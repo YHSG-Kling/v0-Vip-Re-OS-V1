@@ -982,19 +982,15 @@ export async function notifyAssignedAgentForNextAction(params: {
 
   if (!agent?.user_id) return { success: false, error: "Agent not found" }
 
-  await sentinelWrite(supabase, supabase.from("notifications").insert({
-    user_id:      agent.user_id,
-    brokerage_id: params.brokerageId,
-    type:         "new_contact",
-    title:        "New Contact Added",
-    body:         `${params.contactName} was added to your CRM. Review and set next action.`,
-    entity_type:  "contact",
-    entity_id:    params.contactId,
-    priority:     "medium",
-    channel:      "in_app",
-    is_read:      false,
-    created_at:   new Date().toISOString(),
-  }), { table: "notifications", flow: "crm_notify", brokerageId: params.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
+  // TOMBSTONE (lane 93D2, wave-93 walk finding "3+ alerts per manual contact"): the
+  // `notifications` insert that stood here ("New Contact Added — <name> was added to
+  // your CRM. Review and set next action.") was a SECOND alert to the same agent for
+  // the same contact: the CONTACT_CREATED emit above (step 3, emitKernelEvent →
+  // processKernelEvent) already notifies the assigned agent. What this copy had and
+  // the survivor lacked — the contact's NAME and the next-step wording — was merged
+  // onto the survivor first: lib/kernel/notification-engine.ts generateBody
+  // (KernelEvent.CONTACT_CREATED) + subjectDisplayName. One alert, human text.
+  // The CONTACT_AGENT_NOTIFIED echo below stays: the agent IS notified, by the survivor.
 
   await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
     entity_type:  "contact",

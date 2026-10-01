@@ -53,6 +53,16 @@ export interface PortalFirstAccessResult {
   refusals: string[]
 }
 
+/**
+ * Invite states a first sign-in consumes. 'sent' is the magic-link arrival; 'pending' is an invite
+ * granted WITHOUT a mail (grantPortalAccessForPromotedContact with sendMagicLink:false — the agent
+ * shares the link, or the client signs in by OTP on their own). Reading 'sent' alone left that
+ * client's first visit unrecorded: the invite never read accepted and the agent was never told —
+ * proven live in the wave-93c walk (step 8c, accepted:false with no refusal). 'accepted', 'expired'
+ * and 'revoked' are never consumed (portal_contact_invites status CHECK, live 2026-10-01).
+ */
+const FIRST_ACCESS_CONSUMABLE_STATUSES = ["sent", "pending"] as const
+
 export async function recordPortalFirstAccess(input: PortalFirstAccessInput): Promise<PortalFirstAccessResult> {
   const out: PortalFirstAccessResult = { accepted: false, languageCaptured: false, agentNotified: false, refusals: [] }
   const refuse = (why: string) => {
@@ -68,7 +78,7 @@ export async function recordPortalFirstAccess(input: PortalFirstAccessInput): Pr
     .select("id")
     .eq("contact_id", input.contactId)
     .eq("brokerage_id", input.brokerageId)
-    .eq("status", "sent")
+    .in("status", [...FIRST_ACCESS_CONSUMABLE_STATUSES])
     .limit(1)
     .maybeSingle()
   if (inviteError) return refuse(`invite read refused: ${inviteError.message}`)
@@ -79,7 +89,7 @@ export async function recordPortalFirstAccess(input: PortalFirstAccessInput): Pr
     .update({ status: "accepted", accepted_at: new Date().toISOString() })
     .eq("id", (invite as { id: string }).id)
     .eq("brokerage_id", input.brokerageId)
-    .eq("status", "sent")
+    .in("status", [...FIRST_ACCESS_CONSUMABLE_STATUSES])
     .select("id")
   if (consumeError) return refuse(`invite accept refused: ${consumeError.message}`)
   if ((consumed ?? []).length !== 1) return refuse("invite accept matched no row — already accepted or raced")

@@ -11,6 +11,10 @@ import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
 import { createTransactionMilestoneCalendarEvents } from "./milestone-calendar-bridge"
 import { statusForStage, isGatedStage, type ListingStatusGate } from "@/lib/listings/listing-status-sync"
+import { TXN_STAGES_ACTIVE, TXN_STAGES_AFTER } from "@/lib/enrichment/deal-vocabulary"
+
+/** The values transactions_stage_check admits — derived from the one stage vocabulary, never restated. */
+const TRANSACTION_STAGE_VOCABULARY: ReadonlySet<string> = new Set<string>([...TXN_STAGES_ACTIVE, ...TXN_STAGES_AFTER])
 
 // ─── LIFECYCLE → KERNEL EVENT MAP ────────────────────────────────────────────
 // Map lifecycle transitions to kernel events (explicit, not derived)
@@ -151,6 +155,12 @@ export async function transitionLifecycle(
     eventType,
     metadata = {},
   } = params
+  // SYSTEM ACTOR → NULL, NEVER "". lifecycle_events.actor_user_id is a NULLABLE uuid, and six system
+  // callers (offer-bridge ×3, deadline-monitor ×2, acting-context) pass actorUserId: "" to mean "no
+  // human actor". Postgres refuses "" as a uuid (22P02), so EVERY offer-created transaction's
+  // lifecycle.contract_date.set event was refused — proven live in the wave-93c walk (call 334) — and
+  // the bridge never read the refusal. One normalisation here covers every caller.
+  const actorId: string | null = typeof actorUserId === "string" && actorUserId.trim() ? actorUserId : null
 
   // 1. No-op guard — idempotent; caller doesn't need to special-case this.
   if (fromState === toState) {
@@ -165,7 +175,7 @@ export async function transitionLifecycle(
         entity_type:  entityType,
         entity_id:    entityId,
         event_type:   `lifecycle.${eventType}.noop`,
-        actor_user_id: actorUserId,
+        actor_user_id: actorId,
         metadata: {
           from_state: fromState,
           to_state:   toState,
@@ -237,10 +247,20 @@ export async function transitionLifecycle(
     const syncedStatus = statusForStage(toState, gate)
     if (syncedStatus) updatePayload.status = syncedStatus
   }
-  const { error: updateError } = await (supabase as any)
+  // AUDIT-ONLY TRANSITIONS ON A TRANSACTION. transactions.stage is CHECK-bound to the deal stages
+  // (TXN_STAGES_ACTIVE + TXN_STAGES_AFTER, lib/enrichment/deal-vocabulary.ts). Three callers pass a
+  // milestone sub-state as toState to RECORD the moment, not to move the deal — milestone-service
+  // completeMilestone ('milestone_completed') and deadline-monitor ×2 ('milestone_overdue',
+  // 'milestone_warning'). Writing that into stage was refused (23514) and the early return below
+  // dropped the lifecycle event with it, so no milestone completion was ever audited — proven live
+  // in the wave-93c walk. Such a transition now skips the stage write and keeps the event.
+  const auditOnly =
+    entityDef.table === "transactions" && !TRANSACTION_STAGE_VOCABULARY.has(toState)
+  const updateQuery = auditOnly ? null : (supabase as any)
     .from(entityDef.table)
     .update(updatePayload)
     .eq("id", entityId)
+  const { error: updateError } = updateQuery ? await updateQuery : { error: null }
 
   if (updateError) {
     const msg = `[lifecycle] Failed to update ${entityDef.table}.${entityDef.stateColumn} for entity ${entityId}: ${updateError.message}`
@@ -256,7 +276,7 @@ export async function transitionLifecycle(
       entity_type:   entityType,
       entity_id:     entityId,
       event_type:    `lifecycle.${eventType}`,
-      actor_user_id: actorUserId,
+      actor_user_id: actorId,
       metadata: {
         from_state: fromState,
         to_state:   toState,

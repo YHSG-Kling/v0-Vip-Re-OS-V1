@@ -28,18 +28,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ off
   const supabase = createServiceClient()
 
   // Verify offer belongs to actor's brokerage + the agent owns it (or is broker)
-  const { data: offer } = await supabase
+  // Both reads destructure `error` (CLAUDE.md §3): a REFUSED read resolved, and
+  // read as "offer not found" / "not authorized" — a database fault rendered as a
+  // permissions answer. Fail closed with the real reason (lane 93D2).
+  const { data: offer, error: offerErr } = await supabase
     .from("offers")
     .select("id, brokerage_id, contact_id, agent_id")
     .eq("id", offerId)
     .maybeSingle()
+  if (offerErr) return NextResponse.json({ error: `Could not read the offer: ${offerErr.message}` }, { status: 500 })
   if (!offer) return NextResponse.json({ error: "Offer not found" }, { status: 404 })
 
-  const { data: actor } = await supabase
+  const { data: actor, error: actorErr } = await supabase
     .from("users")
     .select("brokerage_id, user_type")
     .eq("id", user.id)
     .maybeSingle()
+  if (actorErr) return NextResponse.json({ error: `Could not resolve your profile: ${actorErr.message}` }, { status: 500 })
   if (!actor || actor.brokerage_id !== offer.brokerage_id) {
     return NextResponse.json({ error: "Not authorized for this offer" }, { status: 403 })
   }

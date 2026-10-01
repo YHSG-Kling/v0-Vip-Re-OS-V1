@@ -96,6 +96,54 @@ pattern in the lane-91D notes (per-table ROW_COUNT, passes until stable).
   per-group CTE deletes with `RETURNING` counts instead. Prove inserted = deleted, and
   prove 0 residual against every tag predicate and every `brokerage_id` table.
 
+### Wave 93 (lane 93D2) additions — `journey-wave93c.ts`, 574 calls, listing side to a lifetime customer
+- **A fresh tag set per walk.** Use a fresh name prefix, email suffix, notes tag and uuid
+  prefix (`Wave93c Demo%`, `@wave93c.test`, `wave93c-demo`, `BRIDGE_UUID_PREFIX=93dc`) so the
+  cleanup predicates cannot match an earlier walk's leftovers.
+- **The one-command loop.** A tiny wrapper (`go.mjs` in the lane scratchpad) does three things:
+  1. renames `answers/next.json` to the next `aNNNN.json`;
+  2. runs `run.ts <journey> --ingest` on it;
+  3. prints `NEED_SQL` plus `batch-current.sql`.
+
+  Run that batch VERBATIM through `execute_sql`, write the JSON result verbatim to
+  `answers/next.json`, then run the wrapper again. Running it with no `next.json` re-prints a
+  fresh batch and ingests nothing.
+- **Census answers.** Return `=` when nothing changed and `+a,b` for additions only. That
+  keeps the answer small.
+- **Volatile-key regex is digit-bounded.** Use `(?<!\d)\d{13}(?!\d)`. Without the bounds,
+  13-digit windows inside a longer number, such as a phone or an id, were normalised, so two
+  different statements collided on one key.
+- **Fixing app code mid-walk is safe when the fix only touches calls not yet executed.**
+  Identity-keyed replay re-issues only the keys that changed. Already-applied writes keep
+  their cached answers. If a fix changes an ALREADY-executed write, rewind to it instead.
+  When a background chain interleaves new reads at reused call numbers, answer the new
+  reads. Craft an answer by hand only for a read whose live answer drifted, and record that
+  you did.
+- **Cleanup that stays under 60 s:**
+  1. One EXISTS pass over every `brokerage_id` BASE TABLE (664 tables, ~0.3 s), written in
+     the `set_config` / `current_setting` form.
+  2. Delete only the tables that have hits, children first, with a `RETURNING` count each.
+  3. Delete the tagged non-tenant rows: prospects, `superadmin_audit_log` by `target_id`,
+     tenant-less `api_response_logs` by id, `public.users`, then `auth.users`.
+  4. Delete the brokerage.
+
+  Watch for these:
+  - `contact_lead_history` is a VIEW over `contacts` LEFT JOIN `leads`. Never delete from
+    it, and never add it to the tally.
+  - `offers` cascades from `transactions` (and from `contacts` and `listings`), so count
+    the cascade.
+  - Two probes that used `CREATE TEMP TABLE` for results timed out at 60 s, while the same
+    scan in `set_config` form ran in 0.27 s. The cause is unresolved. Prefer `set_config`.
+
+  Prove 0 residual with all of these:
+  - the EXISTS pass;
+  - an id pass over every uuid `id` table (the walk's uuid range plus the random-id rows
+    it created);
+  - every tag predicate.
+
+  Pair each pass with a positive control: the same finder run against the seed brokerage
+  and the seed id range must find rows.
+
 ## Run (UI / human path) — NOT available in the sandbox
 The app needs Supabase env. Fetch it with the Supabase MCP and write `.env.local`
 (gitignored):

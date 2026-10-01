@@ -60,10 +60,27 @@ export async function processKernelEvent(params: {
   // notification_rules yet — without this, no event ever notifies anyone).
   const effectiveRules: Array<{ recipient_role: string }> =
     rules && rules.length > 0 ? rules : defaultRulesForEvent(params.event)
+  // A silent event (DEFAULT_SILENT_EVENTS) or one with no rule notifies nobody — skip the
+  // recipient and subject-name reads, which cost two to four queries per event for no row
+  // (seen in the wave-93c walk on every CONTACT_ENRICHMENT_QUEUED / CONTACT_AGENT_NOTIFIED).
+  // NOT an early return: the agentic reactor below still receives the event.
+  const anyRule = effectiveRules.length > 0
 
   // 2. Resolve recipients based on entity type and assignment.
-  const recipients = await resolveRecipients(params)
+  const recipients = anyRule ? await resolveRecipients(params) : []
   console.log(`[NotificationEngine] Resolved ${recipients.length} recipients`)
+
+  // The words a person reads, computed ONCE per event (lane 93D2). The body used to
+  // fall back to the raw `${entityType}: ${event}` ("contact: contact_created",
+  // "listing_stage_machine: contract_signed") for every event without a hand-written
+  // line, and a new contact's alert carried no name at all — which is why
+  // lib/kernel/crm.ts wrote a SECOND, human-worded alert for the same contact.
+  const subjectName = anyRule ? await subjectDisplayName(supabase, params) : null
+  const title = generateTitle(params.event)
+  const body  = generateBody(params.event, params.entityType, subjectName)
+  // ONE alert per person per event: a user who matches two rules (e.g. a broker
+  // who is also the assigned agent) is told once.
+  const notified = new Set<string>()
 
   // 3. For each rule, filter recipients by role and create notifications.
   for (const rule of effectiveRules) {
@@ -75,6 +92,8 @@ export async function processKernelEvent(params: {
     }
 
     for (const recipient of matchingRecipients) {
+      if (notified.has(recipient.user_id)) continue
+      notified.add(recipient.user_id)
       try {
         // supabase-js RESOLVES a rejected write — an FK violation on
         // notifications.user_id comes back as `{ error }`, it does NOT throw. The
@@ -89,8 +108,8 @@ export async function processKernelEvent(params: {
           type:        params.event,
           entity_type: params.entityType,
           entity_id:   params.entityId,
-          title:       generateTitle(params.event),
-          body:        generateBody(params.event, params.entityType),
+          title,
+          body,
           is_read:     false,
         })
 
@@ -365,7 +384,21 @@ async function resolveRecipients(params: {
 // notification system functional out-of-the-box: the assigned agent is always
 // notified; the per-contact TC on transaction/closing-cycle events; compliance
 // officers on compliance events (they are also in the brokerage-level pool).
+//
+// BOOKKEEPING ECHOES DO NOT BELL ANYONE BY DEFAULT (wave 93, lane 93D2 — found live:
+// one manual contact rang the agent's bell three times — CONTACT_CREATED, the crm.ts
+// duplicate alert (now merged onto CONTACT_CREATED's body), and
+// "contact_enrichment_queued / contact: contact_enrichment_queued"). These events
+// record that the SYSTEM did something to a contact a human was already told about;
+// they carry no decision for a person. A brokerage that wants one can still configure
+// a notification_rules row for it — only the out-of-the-box default is silent.
+const DEFAULT_SILENT_EVENTS: ReadonlySet<string> = new Set<string>([
+  KernelEvent.CONTACT_ENRICHMENT_QUEUED,
+  KernelEvent.CONTACT_AGENT_NOTIFIED,
+])
+
 function defaultRulesForEvent(event: KernelEvent): Array<{ recipient_role: string }> {
+  if (DEFAULT_SILENT_EVENTS.has(event)) return []
   const e = String(event).toLowerCase()
   const roles = new Set<string>(["agent"])
   if (/(transaction|contract|closing|inspection|financing|appraisal|walkthrough|cd_|deal_closed|offer)/.test(e)) {
@@ -414,11 +447,56 @@ function generateTitle(event: KernelEvent): string {
     [KernelEvent.VENDOR_BOOKING_COMPLETED]:            "Vendor Job Completed",
   }
 
-  return titles[event] ?? event
+  return titles[event] ?? humanizeEventName(event)
 }
 
-function generateBody(event: KernelEvent, entityType: string): string {
+/** "contract_signed" / "buyer.offer.accepted" → "Contract signed" / "Buyer offer accepted". */
+function humanizeEventName(event: string): string {
+  const words = String(event).replace(/[._]+/g, " ").trim().toLowerCase()
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Update"
+}
+
+/** The entity a person would name — never the kernel's table/machine key. */
+const ENTITY_LABEL: Record<string, string> = {
+  contact: "contact", buyer: "buyer", seller: "seller", lead: "lead",
+  transaction: "transaction", listing: "listing", listing_stage_machine: "listing",
+  offer: "offer", task: "task", vendor_booking: "vendor booking",
+}
+
+/**
+ * The subject's name for the alert body — a contact's name on contact-type events.
+ * Tenant-pinned and error-read (§3); a refused or empty read yields null and the
+ * body says "A new contact" rather than inventing one.
+ */
+async function subjectDisplayName(
+  supabase: ReturnType<typeof createServiceClient>,
+  params: { brokerageId: string; entityType: string; entityId: string },
+): Promise<string | null> {
+  if (!["contact", "buyer", "seller"].includes(params.entityType)) return null
+  const { data, error } = await supabase
+    .from("contacts")
+    .select("first_name, last_name")
+    .eq("id", params.entityId)
+    .eq("brokerage_id", params.brokerageId)
+    .maybeSingle()
+  if (error) {
+    console.error(`[NotificationEngine] contact ${params.entityId} name lookup failed: ${error.message}`)
+    return null
+  }
+  const name = [data?.first_name, data?.last_name].map((v) => String(v ?? "").trim()).filter(Boolean).join(" ")
+  return name || null
+}
+
+function generateBody(event: KernelEvent, entityType: string, subjectName: string | null = null): string {
   const bodies: Partial<Record<KernelEvent, string>> = {
+    // The merged survivor of lib/kernel/crm.ts notifyAssignedAgentForNextAction's
+    // own alert (lane 93D2): the name and the next step, in one notification.
+    [KernelEvent.CONTACT_CREATED]:
+      `${subjectName ?? "A new contact"} was added to your CRM. Review them and set the next action.`,
+    [KernelEvent.CONTRACT_SIGNED]:
+      "The contract is signed. Check the deal file and the upcoming milestones.",
+    [KernelEvent.OFFER_RECEIVED]:
+      "A new offer arrived. Review the terms and the net to seller.",
     [KernelEvent.LISTING_MEDIA_SCHEDULED]:
       "Media capture has been scheduled. Approval may be required before publishing.",
     [KernelEvent.LISTING_REPAIR_REQUIRED]:
@@ -444,5 +522,7 @@ function generateBody(event: KernelEvent, entityType: string): string {
     [KernelEvent.VENDOR_BOOKING_COMPLETED]:
       "The vendor marked this job complete.",
   }
-  return bodies[event] ?? `${entityType}: ${event}`
+  // Never the raw `${entityType}: ${event}` key pair — a person reads this.
+  const label = ENTITY_LABEL[entityType] ?? String(entityType).replace(/[._]+/g, " ")
+  return bodies[event] ?? `${humanizeEventName(event)} on this ${label}${subjectName ? ` (${subjectName})` : ""}.`
 }

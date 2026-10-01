@@ -19,20 +19,22 @@ import { SupabaseClient } from "@supabase/supabase-js"
 
 /**
  * Resolve the full contact owner agent record.
- * 
- * Implementation:
- * 1. Query agents table where user_id = ownerUserId
- * 2. Query users table where id = ownerUserId
- * 3. Build full_name from first_name + last_name
- * 4. Return null if agent not found or either query fails
- * 
+ *
+ * THE ARGUMENT IS AN agents.id — `contacts.agent_id`, which is what all eleven callers pass
+ * (portal layout, buyer-home, lifetime-home via getLifetimeContext, portal-lifetime ×7). Until
+ * wave 93 lane 93D2 this function matched it against `agents.user_id` (a users.id — CLAUDE.md §3:
+ * agents.id and users.id are DISJOINT), so the lookup could never match and EVERY portal rendered
+ * without its agent card, phone or name; askHomeAssistant answered a client with no agent to
+ * route the follow-up to. Proven live in the wave-93c walk (call 550 read agents.user_id =
+ * the contact's agents.id and came back empty). The users row is reached through agents.user_id.
+ *
  * @param supabase - Supabase client
- * @param ownerUserId - The user ID of the owner (from contact.agent_id)
+ * @param ownerAgentId - contacts.agent_id (an agents.id)
  * @returns Agent record with full user details, or null if not found
  */
 export async function resolveContactOwnerAgent(
   supabase: SupabaseClient,
-  ownerUserId: string
+  ownerAgentId: string
 ): Promise<{
   id: string
   user_id: string
@@ -43,23 +45,22 @@ export async function resolveContactOwnerAgent(
   profile_image_url: string | null
 } | null> {
   try {
-    // Query agent by user_id
     const { data: agent, error: agentError } = await supabase
       .from("agents")
       .select("id, user_id, brokerage_id, phone_mobile, profile_image_url")
-      .eq("user_id", ownerUserId)
-      .single()
+      .eq("id", ownerAgentId)
+      .maybeSingle()
 
     if (agentError || !agent) {
       return null
     }
 
-    // Query user by id
+    if (!agent.user_id) return null
     const { data: user, error: userError } = await supabase
       .from("users")
       .select("first_name, last_name, email")
-      .eq("id", ownerUserId)
-      .single()
+      .eq("id", agent.user_id)
+      .maybeSingle()
 
     if (userError || !user) {
       return null

@@ -176,7 +176,24 @@ export async function createCampaignSequence(params: {
   description?: string
   sequence_type: string
   trigger_event?: string
+  /**
+   * WHO the sequence is for — campaign_sequences.contact_type (buyer | seller |
+   * both | lifetime_customer, lib/campaigns/contact-sources.ts CAMPAIGN_CONTACT_TYPES).
+   * Lane 93D2: the column existed and nothing wrote it, and the enroller never read
+   * it, so a "seller nurture" on contact_created enrolled every new BUYER too.
+   * Omitted = no audience restriction (unchanged behaviour). An unknown value is refused.
+   */
+  contact_type?: string | null
+  /** The persona axis (first_time, downsize, probate, …) — CAMPAIGN_PERSONAS. */
+  persona?: string | null
 }): Promise<{ sequence: CampaignSequence | null; error?: string }> {
+  const { isCampaignContactType, isCampaignPersona } = await import("@/lib/campaigns/contact-sources")
+  if (params.contact_type && !isCampaignContactType(params.contact_type)) {
+    return { sequence: null, error: `Unknown audience "${params.contact_type}" — use buyer, seller, both or lifetime_customer.` }
+  }
+  if (params.persona && !isCampaignPersona(params.persona)) {
+    return { sequence: null, error: `Unknown persona "${params.persona}".` }
+  }
   // TENANT FROM THE SESSION (lane 91D, CLAUDE.md §4). This insert runs on the
   // service client and used to write `brokerage_id: params.brokerageId` behind
   // only an "is anyone signed in" check — any signed-in user could plant a
@@ -199,6 +216,8 @@ export async function createCampaignSequence(params: {
       description: params.description ?? null,
       sequence_type: params.sequence_type,
       trigger_event: params.trigger_event ?? null,
+      contact_type: params.contact_type || null,
+      persona: params.persona || null,
       is_active: false,
       is_ab_test: false,
       // compliance_gated is ALWAYS true — the gate cannot be disabled

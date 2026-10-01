@@ -89,15 +89,33 @@ const DAY_MS = 24 * 60 * 60 * 1000
  * A sequence that names a DIFFERENT contact_type or persona is never selected —
  * enrolling a first-time buyer into a probate campaign is worse than not firing.
  */
+/**
+ * PURE — THE audience rule, spelled once: a sequence admits a contact when each of
+ * its two axes is either unset ("any") or names exactly the contact's value.
+ *
+ * Exported (lane 93D2) because the EVENT-triggered enroller
+ * (lib/kernel/event-fanout.ts enrollMatchingSequences) selected sequences by
+ * trigger_event alone and never read either axis — so a seller-only nurture on
+ * `contact_created` enrolled every new buyer as well. It now asks this rule, so
+ * the source-keyed and the event-keyed enrolment cannot disagree about who a
+ * campaign is for (CLAUDE.md §6).
+ */
+export function sequenceAdmitsAudience(
+  seq: { contact_type?: string | null; persona?: string | null },
+  contactType: CampaignContactType,
+  persona: CampaignPersona | null,
+): boolean {
+  return (seq.contact_type == null || seq.contact_type === contactType)
+    && (seq.persona == null || seq.persona === persona)
+}
+
 export function pickSequence<T extends { id: string; contact_type?: string | null; persona?: string | null }>(
   candidates: T[],
   contactType: CampaignContactType,
   persona: CampaignPersona | null,
 ): T | null {
   if (!candidates.length) return null
-  const typeOk = (c: T) => c.contact_type == null || c.contact_type === contactType
-  const personaOk = (c: T) => c.persona == null || c.persona === persona
-  const eligible = candidates.filter((c) => typeOk(c) && personaOk(c))
+  const eligible = candidates.filter((c) => sequenceAdmitsAudience(c, contactType, persona))
   if (!eligible.length) return null
   return (
     eligible.find((c) => c.contact_type === contactType && c.persona != null && c.persona === persona) ??

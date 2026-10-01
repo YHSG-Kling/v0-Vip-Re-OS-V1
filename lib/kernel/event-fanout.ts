@@ -71,17 +71,51 @@ export async function enrollMatchingSequences(
 ): Promise<void> {
   const supabase = createServiceClient()
 
-  const { data: sequences } = await supabase
+  // The two audience axes are read with the sequence (lane 93D2): this selected
+  // by trigger_event alone, so a seller-only campaign on contact_created enrolled
+  // every new buyer too. The refusal of a read is said out loud — an unread error
+  // was "no sequences", silently (§3).
+  const { data: sequences, error: seqErr } = await supabase
     .from("campaign_sequences")
-    .select("id, sequence_type, name")
+    .select("id, sequence_type, name, contact_type, persona")
     .eq("brokerage_id", brokerageId)
     .eq("trigger_event", event)
     .eq("is_active", true)
+  if (seqErr) {
+    console.error(`[event-fanout] sequences for ${event} could not be read — nobody enrolled: ${seqErr.message}`)
+    return
+  }
 
   if (!sequences || sequences.length === 0) return
 
+  // Who each contact is to us, read ONCE, inside the tenant. Only needed when some
+  // sequence restricts its audience; an unrestricted sequence admits everyone as before.
+  const { sequenceAdmitsAudience } = await import("@/lib/campaign-sequences/auto-enroll")
+  const { contactTypeForContact, normalizeContactPersona } = await import("@/lib/campaigns/contact-sources")
+  const audienceOf = new Map<string, { type: ReturnType<typeof contactTypeForContact>; persona: ReturnType<typeof normalizeContactPersona> }>()
+  if (sequences.some((s: any) => s.contact_type != null || s.persona != null) && contactIds.length > 0) {
+    const { data: who, error: whoErr } = await supabase
+      .from("contacts")
+      .select("id, contact_type, contact_persona")
+      .eq("brokerage_id", brokerageId)
+      .in("id", contactIds)
+    if (whoErr) {
+      // Fail closed for the RESTRICTED sequences only: an audience nobody could
+      // read is not "matches". Unrestricted sequences still enrol below.
+      console.error(`[event-fanout] contact audience could not be read — restricted sequences skipped: ${whoErr.message}`)
+    }
+    for (const c of (who ?? []) as Array<{ id: string; contact_type: string | null; contact_persona: string | null }>) {
+      audienceOf.set(c.id, { type: contactTypeForContact(c.contact_type), persona: normalizeContactPersona(c.contact_persona) })
+    }
+  }
+
   for (const seq of sequences) {
+    const restricted = (seq as any).contact_type != null || (seq as any).persona != null
     for (const contactId of contactIds) {
+      if (restricted) {
+        const who = audienceOf.get(contactId)
+        if (!who || !sequenceAdmitsAudience(seq as any, who.type, who.persona)) continue
+      }
       // Idempotency — skip if this contact already has an active enrollment
       // in this sequence (avoid double-enroll if event fires twice).
       const { data: existing } = await supabase

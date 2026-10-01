@@ -256,11 +256,21 @@ export async function createTransactionFromOffer(params: {
   // our buyer pipeline → buyer_stage set; an outside buyer's mail/upload-intake offer has none). 'dual'
   // = our listing + our buyer (covers BOTH two-agent and single-agent dual). Caller dealType overrides.
   // Drives compliance required-doc seeding + persona. Only check the buyer when the listing is ours.
+  // REPRESENTATION IS PROVEN, NOT DEFAULTED (wave 93 lane 93D2). contacts.buyer_stage carries a
+  // column DEFAULT of 'BUYER_CONTACT_CREATED' (live, 2026-10-01), so "buyer_stage is set" was true
+  // for EVERY contact — the seller included — and every outside buyer's offer on our listing was
+  // labelled 'dual' (dual agency: wrong disclosures, buyer-side portal cards and touchpoints sent to
+  // a buyer another brokerage represents). Proven live in the wave-93c walk (transaction fa61808f
+  // came out 'dual' for an uploaded outside offer). The buyer is ours when the buyer ladder has
+  // MOVED past the default, or when an ACTIVE buyer-broker agreement names them — the same
+  // agreement test lib/kernel/compliance/active-representation.ts:48 and lib/buyer-broker/gate.ts:57 use.
+  // The read itself lives in ONE place: lib/transactions/buyer-representation.ts.
   let ourBuyer = false
   if (sellerContactId && (offer as any).contact_id) {
-    const { data: buyerContact } = await supabase
-      .from("contacts").select("buyer_stage").eq("id", (offer as any).contact_id).maybeSingle()
-    ourBuyer = !!(buyerContact as { buyer_stage?: string | null } | null)?.buyer_stage
+    const { readBuyerRepresentation } = await import("./buyer-representation")
+    const rep = await readBuyerRepresentation(supabase as any, { contactId: (offer as any).contact_id, brokerageId: params.brokerageId })
+    for (const r of rep.refusals) console.error(`[offer-bridge] offer ${params.offerId}: ${r}`)
+    ourBuyer = rep.ours
   }
   const { resolveDealType } = await import("./deal-type-resolver")
   const dealType = params.dealType ?? resolveDealType({ ourListing: !!sellerContactId, ourBuyer })

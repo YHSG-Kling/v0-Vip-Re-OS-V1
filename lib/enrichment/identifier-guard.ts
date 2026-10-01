@@ -42,3 +42,26 @@ export function hasUsableIdentifier(contact: {
   return !PLACEHOLDER_NAMES.has(first) && !PLACEHOLDER_NAMES.has(last)
 }
 
+/**
+ * PURE. The contact points worth BUYING for a CONTACT (wave 93, lane 93D2 — found live).
+ *
+ * The walk filed an outside buyer by email and the contact lane queued
+ * `["skip_trace","phone_append"]`; the drain then asked Versium for a phone and,
+ * on a miss, BatchData's skip trace — a paid phone lookup on a person who had
+ * already given us the way to reach them. A contact with an email needs no bought
+ * contact point: the append exists to give the deal a channel it does not have,
+ * and an email-bearing contact has one. (Leads are email + direct mail only; their
+ * Versium leg already asks for the email alone — lane 93B2.)
+ *
+ * Email missing → ask for it (plus the phone when that is missing too: the same
+ * provider answer carries both). Email present → buy neither. Demographics are NOT
+ * contact points and are not governed here (PeopleData bills per match only).
+ */
+export function contactPointsToBuy(contact: {
+  email?: string | null
+  phone?: string | null
+}): Array<"email_append" | "phone_append"> {
+  if (contact.email?.trim()) return []
+  return contact.phone?.trim() ? ["email_append"] : ["email_append", "phone_append"]
+}
+

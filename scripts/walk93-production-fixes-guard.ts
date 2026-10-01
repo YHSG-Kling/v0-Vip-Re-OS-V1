@@ -28,6 +28,15 @@
  *   W8 the walk's metering / ledger fixes hold (vendor usage booked only on a successful send;
  *      lifecycle echoes skip a tenant-less raw row; sessionless AI books NULL ids, not sentinels).
  *   W9 the one migration (m684, both sections) states its status on line 1; registration.
+ *  LANE 93D2 — the walk continued to a lifetime customer (fresh tag set wave93c):
+ *   W10 an outside offer's EXECUTED CONTRACT is recorded on the listing side (acceptOffer →
+ *       recordSellerResponse, session caller, filed document) BEFORE the one compliance gate runs.
+ *   W11 one human-worded alert per person; no raw `entity: event` text; silent echoes cost no reads.
+ *   W12 a seller-only nurture never enrols a buyer.   W13 no phone purchase for an email-bearing
+ *       contact; a failed AI comp search books no cost.   W14 a system actor is NULL, never ''.
+ *   W15 a milestone moment never overwrites transactions.stage.   W16 the portal resolves the
+ *       client's agent by agents.id and records a first visit on a pending invite.   W17 an outside
+ *       buyer is not 'our' buyer (buyer_stage defaults; representation is proven).   W18 bridge key.
  *
  * Owner: data_steward (identity classes, generated columns, the ledgers). Prose co-owners: deal_coordinator
  * (the offer → transaction gate), ai_isa (the notification pool).
@@ -153,12 +162,25 @@ check("the listing fan-out's agentUserId is the agent's users.id (agents.user_id
 console.log("\n[W4 · accept asks the transaction gate first; the listing moves only after the transaction]")
 const so = code("app/actions/seller-offers.ts")
 const accept = so.slice(so.indexOf("export async function acceptOffer("), so.indexOf("export async function sendCounterOffer("))
-const iGate = accept.indexOf("assertOfferReadyForTransaction(")
-const iWinner = accept.indexOf("is_winning_offer: true")
-const iBridge = accept.indexOf("createTransactionFromOffer(")
-const iTransition = accept.indexOf("transitionLifecycle(")
-check("the bridge's own gate is asked before the offer is marked the winner", iGate > 0 && iWinner > 0 && iGate < iWinner)
-check("UNDER_CONTRACT is reached only after createTransactionFromOffer", iBridge > 0 && iTransition > iBridge)
+// Two doors reach a transaction (lane 93D2): the ONE compliance gate creates it (runOfferComplianceLoop
+// → submitOfferToCompliance → createTransactionFromOffer) and returns its id, or the already-passed
+// offer goes through the bridge below. The RULE in both: nothing marks the winner or moves the listing
+// until a transaction exists.
+const iLoop = accept.indexOf("runOfferComplianceLoop(")
+const iBridgeDoor = accept.indexOf("assertOfferReadyForTransaction(")
+const gatePath = iLoop > 0 && iBridgeDoor > iLoop ? accept.slice(iLoop, iBridgeDoor) : ""
+const bridgePath = iBridgeDoor > 0 ? accept.slice(iBridgeDoor) : ""
+const ADVANCED_GUARD = /if \(turn\.outcome === "advanced" && turn\.transactionId\)/
+const iAdvanced = gatePath.search(ADVANCED_GUARD)
+check("gate door: the winner flag and UNDER_CONTRACT sit under the gate's 'advanced with a transaction id' branch",
+  iAdvanced > 0 && gatePath.indexOf("is_winning_offer: true") > iAdvanced && gatePath.indexOf("transitionLifecycle(") > iAdvanced && !gatePath.includes("createTransactionFromOffer("))
+const iWinner = bridgePath.indexOf("is_winning_offer: true")
+const iBridge = bridgePath.indexOf("createTransactionFromOffer(")
+const iTransition = bridgePath.indexOf("transitionLifecycle(")
+check("bridge door: the bridge's own gate is asked before the offer is marked the winner", iWinner > 0)
+check("bridge door: UNDER_CONTRACT is reached only after createTransactionFromOffer", iBridge > 0 && iTransition > iBridge)
+check("POSITIVE CONTROL: a gate door that marks the winner before the advanced check would fail",
+  (() => { const pre = `const turn = await runOfferComplianceLoop(s, {}); await x.update({ is_winning_offer: true }); if (turn.outcome === "advanced" && turn.transactionId) {}`; const i = pre.search(ADVANCED_GUARD); return i > 0 && !(pre.indexOf("is_winning_offer: true") > i) })())
 check("POSITIVE CONTROL: the pre-93D order (transition before the bridge) would fail this check",
   (() => { const pre = `transitionLifecycle({}); await createTransactionFromOffer({})`; return pre.indexOf("transitionLifecycle(") < pre.indexOf("createTransactionFromOffer(") })())
 
@@ -197,6 +219,143 @@ const pipe = code("lib/ai/pipeline.ts")
 check("sessionless AI books NULL ids, never the 'anonymous'/'platform' sentinels (22P02 on uuid columns)",
   /user\?\.id \?\? null/.test(pipe) && /options\?\.brokerageId \?\? null/.test(pipe) && !/["']anonymous["']/.test(pipe.slice(pipe.indexOf("export async function runPipelineSimple"))))
 
+// ── W10 ───────────────────────────────────────────────────────────────────────
+console.log("\n[W10 · the listing side records the executed contract of an outside offer (lane 93D2)]")
+// Live 2026-10-01 (wave-93c walk): an uploaded outside offer could never be accepted — the executed
+// contract had no door on the listing side, so the gate refused and the deal went to a staff override.
+check("acceptOffer takes the executed contract (a filed document + optional buyer attestation)",
+  /executedContract\?:\s*\{\s*documentId:\s*string/.test(so) && /needs_executed_contract\?:\s*boolean/.test(so))
+const iExec = accept.indexOf("if (params.executedContract)")
+const iRecord = accept.indexOf("recordSellerResponse(")
+const iCheck = accept.indexOf("checkCompliancePassed(offerId)")
+check("the execution is recorded BEFORE the gate is asked (execution is the gate's precondition)", iExec > 0 && iRecord > iExec && iCheck > iRecord)
+check("…through the ONE seller-response survivor, with the filed document, converting itself (no second acceptance path)",
+  /recordSellerResponse\(\{[\s\S]{0,400}responseType:\s*"accepted"[\s\S]{0,200}documentId:\s*params\.executedContract\.documentId[\s\S]{0,300}callerConverts:\s*true/.test(accept)
+  && /isOfferFullyExecuted\(/.test(accept))
+check("the ONE compliance gate runs (runOfferComplianceLoop), a block returns its reason, and an unrun gate fails closed",
+  iLoop > 0 && /turn\.outcome === "blocked"/.test(gatePath) && /needs_compliance:\s*true/.test(gatePath) && /the gate could not run/.test(gatePath))
+check("POSITIVE CONTROL: the pre-93D2 accept (refuse on a missing compliance event, no executed-contract door) is flagged",
+  (() => { const pre = `export async function acceptOffer(p) { const c = await checkCompliancePassed(offerId); if (!c.passed) return { success: false } }`; return pre.indexOf("if (params.executedContract)") < 0 })())
+const rsr = code("app/actions/buyer-offer/record-seller-response.ts")
+check("recordSellerResponse resolves the caller from the SESSION and refuses another tenant's offer",
+  /const caller = await requireCaller\(\)/.test(rsr) && /offer\.brokerage_id !== caller\.brokerageId/.test(rsr))
+check("a filed executed-contract document must be this tenant's and linked to this offer",
+  /\.from\("documents"\)[\s\S]{0,300}\.eq\("brokerage_id", (?:caller\.brokerageId|offer\.brokerage_id as string)\)/.test(rsr)
+  && rsr.indexOf("offer.brokerage_id !== caller.brokerageId") < rsr.indexOf(`.from("documents")`)
+  && /linkedOffer !== offerId/.test(rsr))
+check("callerConverts skips the loop the caller is about to run itself (no double conversion)", /responseType === "accepted" && !callerConverts/.test(rsr))
+const omc = code("app/dashboard/listings/[id]/offers/offers-manager-client.tsx")
+check("the offers screen asks for the signed PDF through the offer document door, then accepts with it",
+  /needs_executed_contract/.test(omc) && /form\.append\("docType", "signed_contract"\)/.test(omc) && /upload-document/.test(omc) && /executedContract:\s*\{\s*documentId:/.test(omc))
+
+// ── W11 ───────────────────────────────────────────────────────────────────────
+console.log("\n[W11 · one human-worded alert per person, no raw event text (lane 93D2)]")
+const RAW_TEMPLATE = /`\$\{\s*(?:params\.)?entityType\s*\}:\s*\$\{\s*(?:params\.)?event\s*\}`/
+check("notification-engine renders no raw `${entityType}: ${event}` body", !RAW_TEMPLATE.test(ne))
+check("POSITIVE CONTROL: the pre-93D2 fallback is flagged", RAW_TEMPLATE.test("return bodies[event] ?? `${entityType}: ${event}`"))
+check("ONE alert per person per event (a per-user dedupe set guards the insert)", /const notified = new Set<string>\(\)/.test(ne) && /if \(notified\.has\(recipient\.user_id\)\) continue/.test(ne))
+check("the new-contact alert names the person (the subject name reaches the CONTACT_CREATED body)",
+  /\[KernelEvent\.CONTACT_CREATED\]:[\s\S]{0,200}was added to your CRM/.test(ne) && /subjectDisplayName\(supabase, params\)/.test(ne))
+check("the enrichment-queued and agent-notified echoes are silent by default", /DEFAULT_SILENT_EVENTS[\s\S]{0,200}CONTACT_ENRICHMENT_QUEUED[\s\S]{0,80}CONTACT_AGENT_NOTIFIED/.test(ne) && /if \(DEFAULT_SILENT_EVENTS\.has\(event\)\) return \[\]/.test(ne))
+check("a silent event costs no recipient reads, and the reactor still receives it",
+  /const recipients = anyRule \? await resolveRecipients\(params\) : \[\]/.test(ne) && ne.indexOf("dispatchKernelEvent") > ne.indexOf("const recipients = anyRule"))
+const crmSrc = code("lib/kernel/crm.ts")
+const iNotify = crmSrc.indexOf("function notifyAssignedAgentForNextAction")
+const notifyFn = iNotify >= 0 ? crmSrc.slice(iNotify, iNotify + 6000) : ""
+check("crm.ts writes no second 'new contact' notification (the engine's CONTACT_CREATED line is the one)",
+  iNotify >= 0 && !/\.from\("notifications"\)\s*\.insert/.test(notifyFn))
+
+// ── W12 ───────────────────────────────────────────────────────────────────────
+console.log("\n[W12 · a seller-only nurture never enrols a buyer (lane 93D2)]")
+const { sequenceAdmitsAudience } = await import("../lib/campaign-sequences/auto-enroll")
+check("RUN: a seller-audience sequence refuses a buyer, admits a seller; an unrestricted one admits both",
+  sequenceAdmitsAudience({ contact_type: "seller", persona: null } as any, "buyer" as any, null) === false
+  && sequenceAdmitsAudience({ contact_type: "seller", persona: null } as any, "seller" as any, null) === true
+  && sequenceAdmitsAudience({ contact_type: null, persona: null } as any, "buyer" as any, null) === true)
+const fan = code("lib/kernel/event-fanout.ts")
+check("the event fan-out applies the SAME audience predicate before enrolling", /sequenceAdmitsAudience\(seq as any, who\.type, who\.persona\)/.test(fan) && /contact_type[\s\S]{0,40}persona/.test(fan))
+const csq = code("app/actions/campaign-sequences.ts")
+check("createCampaignSequence stores the audience it was given, validated", /isCampaignContactType\(/.test(csq) && /contact_type:/.test(csq))
+
+// ── W13 ───────────────────────────────────────────────────────────────────────
+console.log("\n[W13 · no phone purchase for a contact that already has an email (lane 93D2, cost-down)]")
+const { contactPointsToBuy } = await import("../lib/enrichment/identifier-guard")
+check("RUN: email on file → buy nothing; phone only → email; neither → both",
+  contactPointsToBuy({ email: "a@b.c", phone: null }).length === 0
+  && JSON.stringify(contactPointsToBuy({ email: null, phone: "5551234567" })) === JSON.stringify(["email_append"])
+  && JSON.stringify(contactPointsToBuy({ email: " ", phone: null })) === JSON.stringify(["email_append", "phone_append"]))
+const QUEUE_RULE = /\["skip_trace", \.\.\.contactPointsToBuy\(contact\)\]/
+const orch = code("lib/lead-pipeline/enrichment-orchestrator.ts")
+check("the queue writer and the drain both ask it (no phone leg for an email-bearing contact)",
+  QUEUE_RULE.test(code("lib/enrichment/contact-enrichment-core.ts")) && /contactPointLegs && route\.providers\[0\] === 'versium'/.test(orch) && /!batchDataFallback && contactPointLegs/.test(orch))
+check("POSITIVE CONTROL: the pre-93D2 queue (phone_append always) is flagged", !QUEUE_RULE.test(`const enrichments_needed = ["skip_trace", "phone_append", "email_append"]`))
+const BOOK_ON_OK = /if \(callOk\) void logVendorUsage\(/
+check("a failed AI comp search books no cost", BOOK_ON_OK.test(code("lib/cma/perplexity-comp-finder.ts")))
+check("POSITIVE CONTROL: an unconditional booking is flagged", !BOOK_ON_OK.test(`void logVendorUsage({ vendor: "perplexity" })`))
+
+// ── W14 ───────────────────────────────────────────────────────────────────────
+console.log("\n[W14 · a system actor is NULL, never '' (lane 93D2)]")
+const lc = code("lib/kernel/lifecycle.ts")
+const em = code("lib/kernel/emit.ts")
+const EMPTY_ACTOR_WRITE = /actor_user_id:\s*actorUserId\b/
+check("transitionLifecycle writes the normalised actor in both inserts", !EMPTY_ACTOR_WRITE.test(lc) && (lc.match(/actor_user_id:\s*actorId\b/g) ?? []).length === 2 && /actorUserId\.trim\(\) \? actorUserId : null/.test(lc))
+check("emitKernelEvent normalises '' to NULL (offer-bridge's OFFER_ACCEPTED / BUYER_UNDER_CONTRACT were refused 22P02)", /row\.actor_user_id = input\.actorUserId\?\.trim\(\) \? input\.actorUserId : null/.test(em))
+check("POSITIVE CONTROL: the pre-93D2 write is flagged", EMPTY_ACTOR_WRITE.test(`actor_user_id: actorUserId,`))
+
+// ── W15 ───────────────────────────────────────────────────────────────────────
+console.log("\n[W15 · a milestone moment never overwrites the deal stage (lane 93D2)]")
+const { CHECK_VOCABULARIES } = await import("./check-vocabularies")
+const { TXN_STAGES_ACTIVE, TXN_STAGES_AFTER } = await import("../lib/enrichment/deal-vocabulary")
+const derivedStages: string[] = [...TXN_STAGES_ACTIVE, ...TXN_STAGES_AFTER].sort()
+check("the stage vocabulary lifecycle.ts derives from equals the live transactions_stage_check",
+  JSON.stringify(derivedStages) === JSON.stringify([...(CHECK_VOCABULARIES.transactions?.stage ?? [])].sort()))
+check("an off-vocabulary toState on a transaction is audit-only (no stage write, the event kept)",
+  /new Set<string>\(\[\.\.\.TXN_STAGES_ACTIVE, \.\.\.TXN_STAGES_AFTER\]\)/.test(lc) && /entityDef\.table === "transactions" && !TRANSACTION_STAGE_VOCABULARY\.has\(toState\)/.test(lc))
+check("POSITIVE CONTROL: the three callers' milestone sub-states are outside the vocabulary",
+  ["milestone_completed", "milestone_overdue", "milestone_warning"].every((x) => !derivedStages.includes(x)))
+
+// ── W16 ───────────────────────────────────────────────────────────────────────
+console.log("\n[W16 · the portal names the client's agent and records the first visit (lane 93D2)]")
+const rco = code("lib/identity/resolve-contact-owner.ts")
+const OLD_OWNER = /\.eq\("user_id", owner/
+check("resolveContactOwnerAgent reads agents by id (contacts.agent_id is an agents.id) and users by agents.user_id",
+  /\.from\("agents"\)[\s\S]{0,120}\.eq\("id", ownerAgentId\)/.test(rco) && /\.eq\("id", agent\.user_id\)/.test(rco) && !OLD_OWNER.test(rco))
+check("POSITIVE CONTROL: the pre-93D2 lookup (agents.user_id = an agents.id) is flagged", OLD_OWNER.test(`.from("agents").select("id").eq("user_id", ownerUserId)`))
+const pfa = code("lib/portal/portal-first-access.ts")
+const consumable = ((pfa.match(/FIRST_ACCESS_CONSUMABLE_STATUSES = \[([^\]]*)\]/)?.[1] ?? "").match(/"[a-z_]+"/g) ?? []).map((x) => x.slice(1, -1))
+const inviteVocab = CHECK_VOCABULARIES.portal_contact_invites?.status ?? []
+check("first access consumes 'sent' AND 'pending' invites — all in the live status CHECK, never a terminal one",
+  consumable.includes("sent") && consumable.includes("pending") && consumable.every((x) => inviteVocab.includes(x)) && !consumable.some((x) => ["accepted", "expired", "revoked"].includes(x))
+  && (pfa.match(/\.in\("status", \[\.\.\.FIRST_ACCESS_CONSUMABLE_STATUSES\]\)/g) ?? []).length === 2)
+const SENT_ONLY = /\.eq\("status", "sent"\)/
+check("POSITIVE CONTROL: the pre-93D2 'sent'-only read is flagged, and it is gone", SENT_ONLY.test(`.eq("status", "sent")`) && !SENT_ONLY.test(pfa))
+
+// ── W17 ───────────────────────────────────────────────────────────────────────
+console.log("\n[W17 · an outside buyer is not 'our' buyer — representation is proven (lane 93D2)]")
+const { buyerStageShowsRepresentation } = await import("../lib/transactions/deal-type-resolver")
+check("RUN: the column default and nulls are not representation; a moved ladder is; an unknown spelling is not",
+  buyerStageShowsRepresentation("BUYER_CONTACT_CREATED") === false && buyerStageShowsRepresentation(null) === false
+  && buyerStageShowsRepresentation("BUYER_TOURING") === true && buyerStageShowsRepresentation("touring") === false)
+const OLD_STAGE_GATE = /\.from\("contacts"\)\.select\("buyer_stage"\)\.eq\("id", [^\n]+?\)\.maybeSingle\(\)[\s\S]{0,200}?(?:!!\(?[\w\s]*\(?\w+ as \{ buyer_stage|if \(!\(\w+ as \{ buyer_stage)/
+const repSites = ["lib/transactions/offer-bridge.ts", "lib/kernel/offers.ts", "lib/kernel/resolve-event-contacts.ts"]
+check("the three representation gates all call the ONE read (lib/transactions/buyer-representation.ts)",
+  repSites.every((f) => /readBuyerRepresentation\(/.test(code(f))) && repSites.every((f) => !OLD_STAGE_GATE.test(code(f))),
+  repSites.filter((f) => !/readBuyerRepresentation\(/.test(code(f)) || OLD_STAGE_GATE.test(code(f))).join(","))
+check("POSITIVE CONTROL: both pre-93D2 one-liner shapes are flagged",
+  OLD_STAGE_GATE.test(`const { data: buyerContact } = await supabase\n      .from("contacts").select("buyer_stage").eq("id", (offer as any).contact_id).maybeSingle()\n    ourBuyer = !!(buyerContact as { buyer_stage?: string | null } | null)?.buyer_stage`)
+  && OLD_STAGE_GATE.test(`const { data: bc } = await svc.from("contacts").select("buyer_stage").eq("id", out.buyerContactId).maybeSingle()\n if (!(bc as { buyer_stage?: string | null } | null)?.buyer_stage) {`))
+const brep = code("lib/transactions/buyer-representation.ts")
+check("the one read also accepts an ACTIVE buyer-broker agreement and returns refusals instead of swallowing them",
+  /\.from\("buyer_broker_agreements"\)[\s\S]{0,200}\.eq\("status", "active"\)/.test(brep) && /refusals\.push\(/.test(brep)
+  && (CHECK_VOCABULARIES.buyer_broker_agreements?.status ?? []).includes("active"))
+
+// ── W18 ───────────────────────────────────────────────────────────────────────
+console.log("\n[W18 · the replay bridge normalises a Date.now() that follows an underscore (lane 93D2)]")
+const br = read(".claude/skills/run-vip-re-os/mcp-bridge/bridge.ts")
+check("callKey's epoch-ms normaliser is digit-bounded, not word-bounded", br.includes("(?<!\\d)\\d{13}(?!\\d)"))
+check("POSITIVE CONTROL: the word-bounded regex misses `_1790878524453_`, the digit-bounded one does not",
+  !/\b\d{13}\b/.test("x/_1790878524453_contract.pdf") && /(?<!\d)\d{13}(?!\d)/.test("x/_1790878524453_contract.pdf"))
+
 // ── W9 ────────────────────────────────────────────────────────────────────────
 console.log("\n[W9 · migrations + registration]")
 // The RULE, not the waypoint (CLAUDE.md §2): line 1 states the file's status once — written-not-applied
@@ -216,7 +375,8 @@ const { MAINTENANCE_DOMAINS } = await import("../lib/kernel/manager-registry")
 check("MAINTENANCE_DOMAINS owns it", Object.values(MAINTENANCE_DOMAINS).some((d: any) => d.proof === "test:walk93-production-fixes"))
 
 console.log(`\n  denominators: ${runtime.length} app/lib runtime files scanned for generated-column writes · ${Object.keys(GENERATED).length} generating tables · 2 listing writers · 1 upload door · 1 accept path · 1 compliance writer`)
-console.log("  blind spots: the GENERATED set is the live read of 2026-10-01 — a column made GENERATED later is not in it until added; a payload built far from its .from() (>2500 chars, or passed through another module) is not attributed to a table; the listing-side signature path (no manual executed-contract recorder for an uploaded outside offer) is a product gap this guard does NOT hold — see the lane 93D notes")
+console.log("  lane 93D2 denominators: 1 accept path (2 doors) · 1 seller-response survivor · 1 notification engine · 1 fan-out audience predicate · 2 enrichment legs · 2 lifecycle writers · 1 owner resolver (11 callers) · 1 first-access core · 3 representation gates → 1 read")
+console.log("  blind spots: the GENERATED set is the live read of 2026-10-01 — a column made GENERATED later is not in it until added; a payload built far from its .from() (>2500 chars, or passed through another module) is not attributed to a table; the listing-side executed-contract path is held statically (W10) — its live run is the wave-93c walk, not this script; W17 cannot see a FOURTH representation gate written with a different shape; W11 reads notification-engine only, not every direct notifications writer")
 console.log("\n" + "─".repeat(50))
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 console.log(failed === 0 ? " ✅ WALK93_PRODUCTION_FIXES_PASS" : " ❌ WALK93_PRODUCTION_FIXES_FAIL")

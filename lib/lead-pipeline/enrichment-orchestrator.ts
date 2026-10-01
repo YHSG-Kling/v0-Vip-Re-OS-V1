@@ -25,6 +25,8 @@ import {
 import { KernelEvent } from '@/lib/kernel/events'
 import { MAX_RETRIES, enrichmentRetryOutcome, classifyEnrichmentFault, escalateConfigFaultOnce } from './enrichment-retry'
 import { isContactInLiveDeal } from '@/lib/enrichment/deal-suppression'
+// PURE (no server-only) — the one "which contact points are worth buying" rule (lane 93D2).
+import { contactPointsToBuy } from '@/lib/enrichment/identifier-guard'
 import { PEOPLEDATA_MATCH_COST_USD } from '@/lib/external/peopledata-client'
 import {
   planEnrichmentLane,
@@ -561,13 +563,20 @@ export async function processEnrichmentQueue(
       let batchDataFallbackCost = 0
       // Wave 93 (93B3): the Versium demographic profile bought on a contact hit (PDL's vocabulary).
       let versiumDemographics: Record<string, any> | null = null
+      // Wave 93 (lane 93D2 — found live): a CONTACT that already carries an email buys no
+      // contact point — no Versium phone append, no BatchData skip/reverse trace. The walk saw an
+      // email-only buyer queued for a phone lookup. Same rule the queue writer records
+      // (contactPointsToBuy). Leads keep their own route (93B2: Versium asks a lead for email only).
+      // PeopleData demographics below are not contact points and are unaffected.
+      const contactPointLegs = entityType === 'lead' || contactPointsToBuy({ email: entity.email, phone: entity.phone }).length > 0
+      if (!contactPointLegs) console.info('[enrichment-orchestrator] contact already has an email — no contact-point purchase')
 
       // ── Step 5-pre: VERSIUM FIRST (wave 93, lane 93B2 — owner cost decision: "Versium first for
       // owner/person email+phone append, People Data Labs only when Versium misses"). The route names
       // Versium first whenever it can be asked; the leg asks only for what this person is missing (a
       // lead: email only), books vendor "versium" with answered_by, and on a hit BatchData is not asked
       // at all. Unconfigured → skipped, and the BatchData → PeopleData chain below runs as before.
-      if (route.providers[0] === 'versium') {
+      if (contactPointLegs && route.providers[0] === 'versium') {
         const v = await runVersiumContactLeg({
           brokerageId, stage: entityType === 'lead' ? 'lead' : 'contact',
           identity: {
@@ -596,7 +605,7 @@ export async function processEnrichmentQueue(
       // platform-wide monthly cap; the tenant on-market opt-in does not apply to a skip
       // trace). Refused → falls through to PeopleData (when the route admits it) or to
       // the Step 7 no-match handling below.
-      const skipTraceAccess = !batchDataFallback && route.providers.includes('batchdata') && process.env.BATCHDATA_API_KEY
+      const skipTraceAccess = !batchDataFallback && contactPointLegs && route.providers.includes('batchdata') && process.env.BATCHDATA_API_KEY
         ? await resolveBatchDataAccess({ brokerageId, purpose: 'skip_trace' })
         : null
       if (skipTraceAccess && !skipTraceAccess.allowed) {

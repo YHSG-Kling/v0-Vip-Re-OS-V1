@@ -85,7 +85,7 @@ export function normalizeContactSource(raw: string | null | undefined): Campaign
 export const CAMPAIGN_CONTACT_TYPES = ["buyer", "seller", "both", LIFETIME_CUSTOMER_TYPE] as const
 export type CampaignContactType = (typeof CAMPAIGN_CONTACT_TYPES)[number]
 
-/** @proofSeam callers normalize (contactTypeForContact/contactTypeForSource, both defaulting rather than validating) instead of rejecting; no live surface needs a strict admit/reject check yet */
+/** Strict admit/reject for an AUTHORED audience — app/actions/campaign-sequences.ts createCampaignSequence refuses an unknown value (lane 93D2). Readers of a stored contact still normalize via contactTypeForContact. */
 export function isCampaignContactType(v: string | null | undefined): v is CampaignContactType {
   return !!v && (CAMPAIGN_CONTACT_TYPES as readonly string[]).includes(v)
 }

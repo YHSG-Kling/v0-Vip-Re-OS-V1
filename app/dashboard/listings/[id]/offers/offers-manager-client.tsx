@@ -364,10 +364,65 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
       if (result.success) {
         await refreshOffers()
         toast({ title: "Offer accepted", description: "Listing moved to Under Contract" })
+      } else if (result.needs_executed_contract) {
+        // An outside buyer's agent's offer: the executed contract was signed on their
+        // paperwork, so it must be FILED before the deal can exist (lane 93D2). The
+        // refusal is answerable from here instead of a dead end.
+        await fileExecutedContractAndAccept(offerId, !!result.needs_buyer_signature_attestation, result.error)
       } else {
         toast({ title: "Accept failed", description: result.error, variant: "destructive" })
       }
     })
+  }
+
+  /** Browser file picker for the signed PDF. Resolves null when the agent cancels. */
+  function pickSignedContract(): Promise<File | null> {
+    return new Promise((resolve) => {
+      const input = document.createElement("input")
+      input.type = "file"
+      input.accept = "application/pdf,image/*"
+      input.onchange = () => resolve(input.files?.[0] ?? null)
+      input.click()
+    })
+  }
+
+  // The executed contract → the offer document door → the ONE seller-response door
+  // (inside acceptOffer) → the same gates. Nothing here decides anything.
+  async function fileExecutedContractAndAccept(offerId: string, needsAttestation: boolean, refusal?: string) {
+    if (!confirm(`${refusal ?? "This offer is not fully executed."}\n\nUpload the fully executed contract (signed by the buyer AND the seller) now?`)) return
+    const file = await pickSignedContract()
+    if (!file) return
+    const form = new FormData()
+    form.append("file", file)
+    form.append("docType", "signed_contract")
+    const res = await fetch(`/api/offers/${offerId}/upload-document`, { method: "POST", body: form })
+    const filed = (await res.json().catch(() => ({}))) as { document_id?: string; error?: string }
+    if (!res.ok || !filed.document_id) {
+      toast({ title: "Upload failed", description: filed.error ?? `HTTP ${res.status}`, variant: "destructive" })
+      return
+    }
+    let buyerSignature: { signedAt: string; attestation: string } | undefined
+    if (needsAttestation) {
+      const signedAt = prompt("The buyer signed on the outside agent's paperwork.\n\nWhat DATE does the buyer's signature on the executed contract bear? (YYYY-MM-DD)") ?? ""
+      const attestation = signedAt.trim()
+        ? prompt("In your own words: confirm you hold the executed contract and that it carries the buyer's signature.\n\nThis is recorded against your name as the attestor.") ?? ""
+        : ""
+      if (!signedAt.trim() || !attestation.trim()) {
+        toast({ title: "Contract filed, offer not accepted", description: "The buyer's signature must be attested before the offer can be accepted.", variant: "destructive" })
+        return
+      }
+      buyerSignature = { signedAt: signedAt.trim(), attestation: attestation.trim() }
+    }
+    const result = await acceptOffer({
+      offerId, listingId: listing.id,
+      executedContract: { documentId: filed.document_id, buyerSignature },
+    })
+    if (result.success) {
+      await refreshOffers()
+      toast({ title: "Offer accepted", description: "Executed contract on file — listing moved to Under Contract" })
+    } else {
+      toast({ title: "Accept failed", description: result.error, variant: "destructive" })
+    }
   }
 
   // Seller readiness gate — intercepts Accept button, runs AI eval first

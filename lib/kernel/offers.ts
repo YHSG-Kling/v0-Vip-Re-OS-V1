@@ -60,7 +60,8 @@ async function emitOfferEvent(params: {
   // (another brokerage's client, logged via mail/upload intake as a bare contact).
   // Buyer-side portal cards + sequence enrollment must only reach a buyer WE
   // represent — ground truth mirrors deal-type-resolver: on our listing, the buyer
-  // is ours only when they're in our buyer pipeline (contacts.buyer_stage set).
+  // is ours only when lib/transactions/buyer-representation.ts says so (ladder moved
+  // past its default, or an active buyer-broker agreement).
   // Off-listing (external/IDX target) offers are inherently our-buyer.
   let buyerContactId: string | undefined
   let sellerContactId: string | undefined
@@ -83,10 +84,12 @@ async function emitOfferEvent(params: {
         .maybeSingle()
       sellerContactId = l?.seller_contact_id ?? undefined
       if (sellerContactId && buyerContactId) {
-        const { data: buyerContact } = await supabase
-          .from("contacts").select("buyer_stage").eq("id", buyerContactId).maybeSingle()
-        const ourBuyer = !!(buyerContact as { buyer_stage?: string | null } | null)?.buyer_stage
-        if (!ourBuyer) buyerContactId = undefined  // outside buyer — no buyer-side client rail
+        // The one representation read (lib/transactions/buyer-representation.ts) — "buyer_stage is
+        // set" was always true (column DEFAULT), so outside buyers got our portal cards.
+        const { readBuyerRepresentation } = await import("@/lib/transactions/buyer-representation")
+        const rep = await readBuyerRepresentation(supabase as any, { contactId: buyerContactId, brokerageId })
+        for (const r of rep.refusals) console.error(`[emitOfferEvent] offer ${entityId}: ${r}`)
+        if (!rep.ours) buyerContactId = undefined  // outside buyer — no buyer-side client rail
       }
     }
   } catch { /* best-effort enrichment */ }
