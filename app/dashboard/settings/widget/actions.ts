@@ -6,6 +6,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { requireCallerTenant } from "@/lib/auth/require-caller"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { normalizeFormalityLevel } from "@/lib/branding/formality"
 
 // ── saveWidgetSettings ────────────────────────────────────────────────────────
 // Updates agents.widget_embed_enabled and agents.widget_position for the
@@ -102,6 +103,12 @@ export async function saveAIIdentity({
   const user = { id: caller.userId }
   const isAdmin = isAdminOrBroker({ user_type: caller.userType })
 
+  // ONE formality vocabulary (lib/branding/formality.ts): the widget offered "conversational" (its
+  // default) and "semi-formal", neither admitted by ai_identity_profiles_formality_level_check —
+  // a save on the default was refused outright. Normalize; refuse an unknown value out loud.
+  const formality = normalizeFormalityLevel(formalityLevel)
+  if (!formality) return { success: false, error: `Unknown formality level "${formalityLevel}" — use formal, semi-formal or casual.` }
+
   const service = createServiceClient()
 
   if (!agentId) {
@@ -123,7 +130,7 @@ export async function saveAIIdentity({
     assistant_name: assistantName.trim() || "Alex",
     persona_label: personaLabel.trim() || "Real Estate Assistant",
     tone,
-    formality_level: formalityLevel,
+    formality_level: formality,
     welcome_message: welcomeMessage.trim(),
     followup_style: followupStyle,
     active: true,
@@ -163,7 +170,7 @@ export async function saveAIIdentity({
     entity_type: agentId ? "agent" : "brokerage",
     entity_id: agentId ?? brokerageId,
     actor_user_id: user.id,
-    metadata: { assistant_name: assistantName, tone, formality_level: formalityLevel },
+    metadata: { assistant_name: assistantName, tone, formality_level: formality },
   }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   revalidatePath("/dashboard/settings/widget")

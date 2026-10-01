@@ -297,10 +297,41 @@ export async function ensureContactPortalUser(
     const svc = createServiceClient()
 
     // Idempotency gate: users.id === auth uid is the identity invariant.
-    const { data: existing } = await svc
-      .from("users").select("id").eq("id", authUserId).maybeSingle()
+    const { data: existing, error: existingError } = await svc
+      .from("users").select("id, user_type, brokerage_id, is_contact").eq("id", authUserId).maybeSingle()
+    if (existingError) return { ensured: false, created: false }
 
     let created = false
+    // THE TRIGGER GOT THERE FIRST (wave 93, lane 93D — found live). A portal client's
+    // first OTP sign-in fires on_auth_user_created → handle_new_auth_user, which —
+    // the OTP carrying no metadata — seats the new uid as user_type 'agent' with NO
+    // brokerage and is_contact false. This function then saw a row, skipped its own
+    // insert, and the client stayed an 'agent' nobody's brokerage owns. Adopt exactly
+    // that bare trigger-default shape (never a row with a brokerage, never a row
+    // already marked contact, never one that owns an agents row) as this contact.
+    if (existing && existing.user_type === "agent" && !existing.brokerage_id && existing.is_contact !== true) {
+      const { data: agentSeat, error: agentSeatError } = await svc
+        .from("agents").select("id").eq("user_id", authUserId).limit(1).maybeSingle()
+      if (!agentSeatError && !agentSeat) {
+        await sentinelWrite(
+          svc,
+          svc.from("users")
+            .update({
+              user_type:    "contact",
+              role:         "contact",
+              brokerage_id: contact.brokerage_id,
+              is_contact:   true,
+              status:       "active",
+              ...(contact.first_name ? { first_name: contact.first_name } : {}),
+              ...(contact.last_name ? { last_name: contact.last_name } : {}),
+              updated_at:   new Date().toISOString(),
+            })
+            .eq("id", authUserId)
+            .is("brokerage_id", null),
+          { table: "users", flow: "portal_contact_user_adopt", brokerageId: contact.brokerage_id },
+        )
+      }
+    }
     if (!existing) {
       const email = (contact.email ?? authEmail ?? "").trim().toLowerCase()
       // Checked insert (NOT upsert): existence was checked above, and an id
@@ -310,8 +341,9 @@ export async function ensureContactPortalUser(
         svc.from("users").insert({
           id:           authUserId,
           email:        email || null,
-          first_name:   contact.first_name ?? null,
-          last_name:    contact.last_name ?? null,
+          // users.first_name / last_name are NOT NULL (live): empty, never fabricated.
+          first_name:   contact.first_name ?? "",
+          last_name:    contact.last_name ?? "",
           user_type:    "contact",
           role:         "contact",
           brokerage_id: contact.brokerage_id,

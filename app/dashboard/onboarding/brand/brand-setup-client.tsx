@@ -42,6 +42,8 @@ import {
   type BrandSetupStatus,
 } from "@/app/actions/onboarding/brand"
 import confetti from "canvas-confetti"
+// One formality vocabulary (live CHECK: formal | semi_formal | casual) — wave 93, lane 93D.
+import { normalizeFormalityLevel, type FormalityLevel } from "@/lib/branding/formality"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -87,9 +89,9 @@ const TONE_OPTIONS = [
   { value: "luxury", label: "Luxury" },
 ]
 
-const FORMALITY_OPTIONS = [
+const FORMALITY_OPTIONS: { value: FormalityLevel; label: string; position: number }[] = [
   { value: "formal", label: "Formal", position: 0 },
-  { value: "semi-formal", label: "Semi-Formal", position: 50 },
+  { value: "semi_formal", label: "Semi-Formal", position: 50 },
   { value: "casual", label: "Casual", position: 100 },
 ]
 
@@ -134,7 +136,7 @@ export function BrandSetupClient({
   )
 
   const [tone, setTone] = useState(initialStatus?.brandVoice?.tone || "professional")
-  const [formalityLevel, setFormalityLevel] = useState(initialStatus?.brandVoice?.formality_level || "semi-formal")
+  const [formalityLevel, setFormalityLevel] = useState(normalizeFormalityLevel(initialStatus?.brandVoice?.formality_level) ?? "semi_formal")
   const [prohibitedWords, setProhibitedWords] = useState<string[]>(initialStatus?.brandVoice?.prohibited_words || [])
   const [signaturePhrases, setSignaturePhrases] = useState<string[]>(initialStatus?.brandVoice?.preferred_words || [])
   const [prohibitedInput, setProhibitedInput] = useState("")

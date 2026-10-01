@@ -141,7 +141,7 @@ export async function emitCompliancePassed(params: {
   source?: string
   /** Human-readable detail for the audit row. Defaults to a generic line. */
   description?: string
-}): Promise<{ success: boolean; error?: string }> {
+}): Promise<{ success: boolean; error?: string; alreadyStamped?: boolean }> {
   const { offerId, userId, scanResults, externalApprovalId, source, description } = params
 
   if (!isValidUUID(offerId) || !isValidUUID(userId)) {
@@ -201,7 +201,31 @@ export async function emitCompliancePassed(params: {
     return { success: false, error: error.message }
   }
 
-  return { success: true }
+  // ── THE COLUMN THE TRANSACTION GATE READS (wave 93, lane 93D — found live) ──
+  // The bridge gate (lib/transactions/offer-bridge.ts:assertOfferReadyForTransaction)
+  // refuses on `offers.compliance_passed_at IS NULL`, and the ONLY writer of that
+  // column was the buyer-side submit-to-compliance action. A listing-side offer
+  // passed here (seller-offers.ts acceptOffer reads THIS activity) therefore
+  // reached the bridge with the column still NULL, the transaction was refused,
+  // and acceptOffer reverted the acceptance — a seller deal could never become a
+  // transaction. Stamp it here, on the one writer of the gate event, only where
+  // it is still unset (the buyer path's own stamp is never overwritten). The
+  // update is COUNTED: an unmatched row is a refusal, not a success (CLAUDE.md §3).
+  const { data: stamped, error: stampError } = await supabase
+    .from("offers")
+    .update({ compliance_passed_at: now })
+    .eq("id", offerId)
+    .eq("brokerage_id", offer.brokerage_id)
+    .is("compliance_passed_at", null)
+    .select("id")
+  if (stampError) {
+    console.error("[System 7.1B] compliance_passed_at stamp refused:", stampError)
+    return { success: false, error: `Compliance recorded, but the offer could not be stamped: ${stampError.message}` }
+  }
+  // Zero rows stamped is the already-stamped case (the buyer-side submit path stamps
+  // first; the tenant and id both come from the offer row just read), so it is not
+  // an error — but it is reported, so a caller can tell the two apart.
+  return { success: true, ...((stamped ?? []).length === 0 ? { alreadyStamped: true } : {}) }
 }
 
 /**

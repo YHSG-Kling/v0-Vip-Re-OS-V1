@@ -511,6 +511,13 @@ async function scrapeEvent(
   supabase: ReturnType<typeof createServiceClient>,
   row: Record<string, unknown>,
 ): Promise<boolean> {
+  // Lane 93D live walk: lifecycle_events.brokerage_id is NOT NULL, so a PLATFORM-pool echo
+  // (brokerage_id null until the promotion gate resolves an owner) is refused 23502 EVERY time,
+  // and each refusal was ledgered to self_heal_events as a "repair" that no repair can make.
+  // The platform run's audit lives on scraper_executions + raw_scraped_leads (both admit a null
+  // brokerage); the tenant-owned echo resumes once the record has an owner. Not a write attempt,
+  // so nothing is lost and nothing is reported as fixed.
+  if (!row.brokerage_id) return false
   return sentinelWrite(supabase, supabase.from('lifecycle_events').insert(row), {
     table: 'lifecycle_events',
     flow: 'scraping_lifecycle_echo',

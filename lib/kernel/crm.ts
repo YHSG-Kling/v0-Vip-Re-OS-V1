@@ -215,9 +215,7 @@ export async function mergeOrUpdateContactIfDuplicate(params: {
     }
   }
 
-  if (params.updates.phone) {
-    mergeUpdates.phone_digits = normalizePhone(params.updates.phone)
-  }
+  // (phone_digits is derived by the database from phone — see createContactManually.)
 
   const { data, error } = await supabase
     .from("contacts")
@@ -315,7 +313,10 @@ export async function createOrUpdateContactFromDirectIntake(
   }
 
   // ── 2. Insert new contact ────────────────────────────────────────────────
-  const phone_digits = params.phone ? normalizePhone(params.phone) : null
+// phone_digits is GENERATED ALWAYS on contacts AND leads (regexp_replace of phone —
+// read live 2026-10-01, wave 93 lane 93D). Writing it, even as null, is refused 428C9
+// and PostgREST refuses the WHOLE row: every manual contact create and every direct
+// lead insert through this module failed. The database derives it from `phone`.
   const email_normalized = params.email ? normalizeEmail(params.email) : null
 
   const { data, error } = await supabase
@@ -328,7 +329,6 @@ export async function createOrUpdateContactFromDirectIntake(
       last_name:               params.last_name,
       email:                   email_normalized,
       phone:                   params.phone ?? null,
-      phone_digits:            phone_digits,
       city:                    params.city ?? null,
       state:                   params.state ?? null,
       zip_code:                params.zip_code ?? null,
@@ -497,8 +497,7 @@ export async function createLeadOnlyRecordForAcquisitionSource(params: {
   const supabase = createServiceClient()
   const now = new Date().toISOString()
 
-  const phone_digits = params.phone ? normalizePhone(params.phone) : null
-
+  // leads.phone_digits is GENERATED too — see createContactManually.
   const { data, error } = await supabase
     .from("leads")
     .insert({
@@ -509,7 +508,6 @@ export async function createLeadOnlyRecordForAcquisitionSource(params: {
       last_name:        params.last_name ?? null,
       email:            params.email ? normalizeEmail(params.email) : null,
       phone:            params.phone ?? null,
-      phone_digits:     phone_digits,
       lead_type:        params.lead_type ?? "buyer",
       source:           params.source ?? "scraper",
       source_family:    params.source_family ?? "acquisition",
@@ -1045,9 +1043,7 @@ export async function updateContactRecord(params: {
     updated_at: now,
   }
 
-  if (params.updates.phone) {
-    updatePayload.phone_digits = normalizePhone(params.updates.phone)
-  }
+  // (phone_digits is GENERATED — derived from phone by the database; see createContactManually.)
   if (params.updates.email) {
     updatePayload.email = normalizeEmail(params.updates.email)
   }

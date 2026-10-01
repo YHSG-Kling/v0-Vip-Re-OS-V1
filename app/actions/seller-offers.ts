@@ -143,6 +143,21 @@ export async function acceptOffer(params: {
     }
   }
 
+  // ── THE TRANSACTION GATE, BEFORE ANY WRITE (wave 93, lane 93D — found live) ──
+  // An accepted offer MUST produce a transaction (below), and the bridge refuses
+  // one unless the OFFER row carries buyer signature + executed contract +
+  // compliance_passed_at. Asked only AFTER the accept, a refusal left the agent
+  // with an accept-then-revert and — because the listing had already been moved
+  // to UNDER_CONTRACT and nothing moved it back — a draft listing reading
+  // "pending" with no accepted offer and no transaction. Ask the same gate the
+  // bridge asks (one function, lib/transactions/offer-bridge.ts) first, and
+  // refuse with its reason while nothing has been written.
+  const { assertOfferReadyForTransaction } = await import("@/lib/transactions/offer-bridge")
+  const readiness = await assertOfferReadyForTransaction({ offerId, brokerageId })
+  if (!readiness.allowed) {
+    return { success: false, error: `Offer cannot be accepted yet: ${readiness.reason}` }
+  }
+
   // Mark this offer as winner; set all others to not winning — scoped
   const { error: winnerError } = await supabase
     .from("offers")
@@ -199,17 +214,8 @@ export async function acceptOffer(params: {
   // proactive "under contract" card is date-specific. Emitting here too would write a date-less card
   // first and the portal writer's title-dedupe would then suppress the rich one — so we don't.
 
-  // transitionLifecycle — listing_stage_machine → UNDER_CONTRACT
-  await transitionLifecycle({
-    brokerageId,
-    entityType:  "listing_stage_machine",
-    entityId:    listingId,
-    fromState:   "",
-    toState:     "UNDER_CONTRACT",
-    actorUserId: agentUserId,
-    eventType:   "UNDER_CONTRACT",
-    metadata:    { winning_offer_id: offerId },
-  })
+  // (The listing's UNDER_CONTRACT transition now runs AFTER the transaction exists —
+  // see below. Here it stranded the listing whenever the transaction was refused.)
 
   // ── CREATE TRANSACTION SHELL (HARD-REQUIRED) ─────────────────────────────
   // Accepted offer MUST always produce a transaction record.
@@ -266,6 +272,19 @@ export async function acceptOffer(params: {
       error: `[acceptOffer] Transaction creation failed — ${rolledBack} ${err instanceof Error ? err.message : String(err)}`,
     }
   }
+
+  // transitionLifecycle — listing_stage_machine → UNDER_CONTRACT, only once the
+  // hard-required transaction exists (wave 93: moved below createTransactionFromOffer).
+  await transitionLifecycle({
+    brokerageId,
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "",
+    toState:     "UNDER_CONTRACT",
+    actorUserId: agentUserId,
+    eventType:   "UNDER_CONTRACT",
+    metadata:    { winning_offer_id: offerId },
+  })
 
   revalidatePath(`/dashboard/listings/${listingId}/offers`)
   revalidatePath(`/dashboard/transactions`)

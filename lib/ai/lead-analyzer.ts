@@ -17,6 +17,8 @@ export async function analyzeLead(params: {
   content: string
   authorName?: string
   authorProfile?: string
+  /** The tenant the pipeline resolved (server-side) — books the model call (lane 93D). */
+  brokerageId?: string | null
 }): Promise<{
   intent: string
   urgencyScore: number
@@ -45,6 +47,7 @@ Return JSON only, no markdown or preamble.`
 
   const text = await runPipelineSimple(prompt, {
     feature: "lead_analysis",
+    brokerageId: params.brokerageId ?? null,
   })
 
   const result = JSON.parse(text)

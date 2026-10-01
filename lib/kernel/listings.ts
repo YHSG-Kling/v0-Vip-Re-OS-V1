@@ -19,6 +19,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID, validateProperty } from "@/lib/validations"
+import { canonicalPropertyType, PROPERTY_TYPES } from "@/lib/constants"
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
 // `server-only` (it holds the service client and the paid PeopleData/OSINT
@@ -193,6 +194,19 @@ export async function createListingRecord(
   })
   if (!propertyFacts.valid) return { success: false, error: propertyFacts.errors.join("; ") }
 
+  // PROPERTY TYPE (wave 93, lane 93D — found live). The default here was
+  // "residential", which listings_property_type_check has never admitted
+  // (single_family|condo|townhouse|multi_family|land|commercial|other, or NULL),
+  // so every listing created WITHOUT a type was refused 23514 in its entirety,
+  // and any display spelling ("Single Family") was refused the same way. Absent
+  // now stores NULL (the CHECK admits it); a supplied value is folded through
+  // the one canonicalizer, and an unrecognised one is refused by name instead
+  // of by a constraint code nobody reads.
+  const propertyType = input.propertyType?.trim() ? canonicalPropertyType(input.propertyType) : null
+  if (input.propertyType?.trim() && !propertyType) {
+    return { success: false, error: `Unknown property type "${input.propertyType}" — expected one of ${PROPERTY_TYPES.join(", ")}` }
+  }
+
   try {
     const supabase = await createClient()
 
@@ -210,7 +224,7 @@ export async function createListingRecord(
         bedrooms:          input.bedrooms    ?? null,
         bathrooms:         input.bathrooms   ?? null,
         sqft:              input.sqft        ?? null,
-        property_type:     input.propertyType ?? "residential",
+        property_type:     propertyType,
         // A listing is created from a seller contact by an assigned agent who is
         // about to run the listing agreement — so it starts at agreement-initiation,
         // not LEAD (LEAD is the pre-assignment lead-pipeline stage on `leads`).
@@ -256,6 +270,21 @@ export async function createListingRecord(
 
     // Portal fan-out: the seller sees "Your listing is being prepared".
     // Row already written above → skipInsert (fan-out only).
+    //
+    // `agentUserId` is a USERS.id (event-fanout maps it back through agents.user_id);
+    // input.agentId is an AGENTS.id and the two are DISJOINT (CLAUDE.md §3). Passing
+    // the agents.id made the fan-out look up `agents.user_id = <agents.id>`, find no
+    // one, and attribute every listing-created portal row to nobody (found live,
+    // wave 93, lane 93D). Resolve the agent's login first; a miss stays unattributed
+    // (the column is nullable) but is no longer silent.
+    const { data: agentRow, error: agentRowError } = await supabase
+      .from("agents")
+      .select("user_id")
+      .eq("id", input.agentId)
+      .maybeSingle()
+    if (agentRowError || !agentRow?.user_id) {
+      console.error("[createListingRecord] agent login not resolved — listing fan-out is unattributed:", agentRowError?.message ?? `agents.id=${input.agentId} has no user_id`)
+    }
     const { emitKernelEvent } = await import("./emit")
     await emitKernelEvent({
       event:           KernelEvent.LISTING_CREATED,
@@ -264,7 +293,7 @@ export async function createListingRecord(
       entityId:        listing.id as string,
       sellerContactId: input.sellerContactId,
       listingId:       listing.id as string,
-      agentUserId:     input.agentId,
+      agentUserId:     (agentRow?.user_id as string | undefined) ?? undefined,
       metadata:        { stage: "LISTING_AGREEMENT_INITIATED" },
       skipInsert:      true,
     }).catch(() => {})

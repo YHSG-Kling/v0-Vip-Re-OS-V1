@@ -284,6 +284,12 @@ export interface SimplePipelineOptions {
   temperature?: number
   maxTokens?: number
   feature?: string
+  /**
+   * The tenant this call is booked to, for IN-PROCESS server callers that already hold it
+   * (e.g. the lead pipeline's effectiveBrokerageId). Never from a request body. A session
+   * agent's own brokerage still wins when there is one (CLAUDE.md §4).
+   */
+  brokerageId?: string | null
 }
 
 /**
@@ -302,9 +308,16 @@ export async function runPipelineSimple(
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
 
-    // Best-effort identity resolution — never throws
-    const userId = user?.id || "anonymous"
-    let brokerageId = "platform"
+    // Best-effort identity resolution — never throws.
+    // Lane 93D live walk: these were the sentinels "anonymous" / "platform". Both land in
+    // uuid columns — ai_quota_overrides.brokerage_id (fair-use pre-flight), then
+    // ai_tool_usage.user_id/brokerage_id, increment_ai_usage_monthly, usage_counters and
+    // billing_usage — and every one refused 22P02 into a console line. So every sessionless
+    // call (the lead pipeline's analyzeLead, the transaction AI helpers on a cron) reached
+    // NO cost ledger (§5: a wrong number there is a wrong invoice). null is what logAIUsage
+    // admits; with neither tenant nor user it now says "not booked" out loud.
+    const userId: string | null = user?.id ?? null
+    let brokerageId: string | null = options?.brokerageId ?? null
     let agentId: string | null = null
 
     if (user?.id) {

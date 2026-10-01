@@ -10,6 +10,7 @@ import { uploadDocument } from "@/lib/documents/upload-document"
 import { INBOUND_CONTRACT_DOCUMENT_TYPE } from "@/lib/inbound-mail/offer-detect"
 import { linkInboundDocumentsToOffer } from "@/lib/inbound-mail/offer-intake"
 import { checkUpload } from "@/lib/storage/file-limits"
+import { isValidUUID } from "@/lib/validations"
 
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
@@ -57,6 +58,40 @@ export async function POST(req: NextRequest) {
   // The "20 MB" this used to advertise was a fourth invented number and could
   // never have been reached: the PDF arrives in a Vercel Function request body,
   // capped at 4.5 MB ahead of this handler. One ceiling, from one place.
+  // ── TENANCY + ROLE (wave 93, lane 93D — found live) ───────────────────────
+  // listing_id and contact_id arrive in the FORM BODY. offers RLS only asks that
+  // agent_id be the caller's own agent row, so nothing tied either id to the
+  // caller's brokerage: an agent could hang an offer off another tenant's
+  // listing, and the service-client fan-out below then wrote portal cards to
+  // THAT tenant's seller. Both ids are now proved to be the caller's tenant
+  // before anything is stored (fail closed: a lookup that cannot run refuses).
+  // contact_id is the offer's BUYER (offers.contact_id; seller-offers.ts embeds
+  // it as `buyer:contacts`) — the listing's own seller was accepted there and
+  // received "Your offer was uploaded" on their own home.
+  if (!isValidUUID(listingId) || !isValidUUID(contactId)) {
+    return NextResponse.json({ error: "listing_id and contact_id must be ids" }, { status: 400 })
+  }
+  const tenantCheck = createServiceClient()
+  const { data: listingRow, error: listingRowError } = await tenantCheck
+    .from("listings").select("brokerage_id, seller_contact_id").eq("id", listingId).maybeSingle()
+  if (listingRowError) {
+    return NextResponse.json({ error: `Listing lookup failed: ${listingRowError.message}` }, { status: 500 })
+  }
+  if (!listingRow || listingRow.brokerage_id !== brokerageId) {
+    return NextResponse.json({ error: "Listing not found" }, { status: 404 })
+  }
+  const { data: buyerRow, error: buyerRowError } = await tenantCheck
+    .from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
+  if (buyerRowError) {
+    return NextResponse.json({ error: `Contact lookup failed: ${buyerRowError.message}` }, { status: 500 })
+  }
+  if (!buyerRow || buyerRow.brokerage_id !== brokerageId) {
+    return NextResponse.json({ error: "Contact not found" }, { status: 404 })
+  }
+  if (listingRow.seller_contact_id === contactId) {
+    return NextResponse.json({ error: "contact_id is the offer's BUYER — this contact is the listing's seller" }, { status: 400 })
+  }
+
   const gate = checkUpload({
     bucket: "offer-documents",
     transport: "route_handler",
@@ -102,7 +137,9 @@ export async function POST(req: NextRequest) {
       contact_id:           contactId,
       brokerage_id:         brokerageId,
       agent_id:             agentId,
-      uploaded_by:          agentId,
+      // offers.uploaded_by FKs users(id); agentId is an agents.id — DISJOINT
+      // (CLAUDE.md §3). Writing it refused the whole upload 23503 (wave 93, 93D).
+      uploaded_by:          user.id,
       offer_price:          0,               // placeholder until extraction completes
       offer_document_url:   publicUrl,
       offer_document_name:  file.name,

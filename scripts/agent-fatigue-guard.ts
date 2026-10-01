@@ -236,7 +236,10 @@ const evalFn = dc.slice(evalAt, dc.indexOf("\n}\n", evalAt))
 check("evaluateDeconflict reads the contact's fatigue TENANT-PINNED with its error READ (base policy on refusal — a guardrail, not a consent gate) and tempers BEFORE the window",
   /from\("buyer_fatigue_scores"\)\.select\("risk_level"\)\s*\.eq\("brokerage_id", input\.brokerageId\)\.eq\("contact_id", input\.contactId\)\.maybeSingle\(\)/.test(evalFn)
     && /if \(fatigueErr\) console\.error/.test(evalFn) && evalFn.indexOf("fatigueTemperedPolicy(policy, fatigueRisk)") < evalFn.indexOf("const since  = new Date("))
-check("the decision and the audit row say WHY (fatigueRisk / fatigueSteps; metadata on the suppression log)", /fatigueRisk,\s*fatigueSteps,/.test(evalFn) && /metadata:\s*fatigueSteps > 0 \? \{ fatigue_risk: fatigueRisk, fatigue_steps: fatigueSteps \} : null/.test(evalFn))
+check("the decision and the audit row say WHY (fatigueRisk / fatigueSteps; metadata on the suppression log)", /fatigueRisk,\s*fatigueSteps,/.test(evalFn) && /metadata:\s*fatigueSteps > 0 \? \{ fatigue_risk: fatigueRisk, fatigue_steps: fatigueSteps \} : \{\}/.test(evalFn)
+  // deconflict_suppression_log.metadata is NOT NULL DEFAULT '{}': an explicit null refused every non-fatigued
+  // decision 23502 (wave 93 live walk, lane 93D) — the empty branch must be {} and never null.
+  && !/metadata:\s*[^,\n]*:\s*null\b/.test(evalFn))
 check("the learned cadence still tightens by the same one-touch step (fatigue's step mirrors it)", /Math\.max\(1, base\.maxTouches - 1\)/.test(stripped("lib/kernel/deconflict/cadence-policy.ts")) && JSON.stringify(lc.tightenPolicyStep({ maxTouches: 3, windowDays: 14 })) === JSON.stringify({ maxTouches: 2, windowDays: 14 }))
 const cron = stripped("app/api/cron/lifetime-customer-touchpoints/route.ts")
 check("the lifetime cron tempers through the SAME engine (evaluateDeconflict on the contact) — no second rule", /evaluateDeconflict\(\{ brokerageId, contactId, channel, systemSource \}\)/.test(cron) && !/buyer_fatigue_scores/.test(cron))

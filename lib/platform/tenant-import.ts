@@ -216,7 +216,9 @@ export async function importParsedContacts(params: {
         last_name: r.lastName,
         email: r.email,
         phone: r.phone,
-        phone_digits: r.phoneDigits,
+        // NOT phone_digits: contacts.phone_digits is GENERATED ALWAYS from phone, and
+        // writing it refused every imported row 428C9 (wave 93, lane 93D; the
+        // same defect lib/kernel/crm.ts createContactManually carried).
         address: r.address,
         city: r.city,
         state: r.state,

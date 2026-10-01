@@ -7,6 +7,7 @@
 
 import { streamTextRouted, AIFairUseError } from "@/lib/ai/models"
 import { createClient } from "@/lib/supabase/server"
+import { normalizeFormalityLevel } from "@/lib/branding/formality"
 
 // TOMBSTONE — this handler took the framework's Request object and read NOTHING
 // from it: no query string, no body, no header. Every input it uses comes from the
@@ -106,10 +107,11 @@ function buildBrandVoiceSystemPrompt(brandVoice: {
     if (brandVoice.formality_level) {
       const formalityGuide: Record<string, string> = {
         formal: "Use formal, professional language. Avoid contractions and casual phrases.",
-        "semi-formal": "Use professional language but with a warm, approachable feel. Some contractions are acceptable.",
+        semi_formal: "Use professional language but with a warm, approachable feel. Some contractions are acceptable.",
         casual: "Use conversational, friendly language. Contractions and casual phrases are encouraged.",
       }
-      parts.push(formalityGuide[brandVoice.formality_level] || "")
+      // One vocabulary (lib/branding/formality.ts) — the key was "semi-formal", which the CHECK never stores.
+      parts.push(formalityGuide[normalizeFormalityLevel(brandVoice.formality_level) ?? ""] || "")
     }
 
     if (brandVoice.prohibited_words && brandVoice.prohibited_words.length > 0) {

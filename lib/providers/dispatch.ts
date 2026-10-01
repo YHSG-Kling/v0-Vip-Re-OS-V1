@@ -537,8 +537,12 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
     }
   }
 
-  // Record usage — fire and forget (non-blocking)
-  void logVendorUsage({
+  // Record usage — fire and forget (non-blocking) — ONLY for a send the provider ACCEPTED.
+  // Lane 93D live walk: a client-welcome refused `no_verified_sender` (nothing left the
+  // building) still booked a SendGrid email to vendor_usage_tracking — and that ledger feeds
+  // vendor-budget pre-flight and the cost/overage surfaces (§5: a wrong number there is a
+  // wrong invoice). A refused send spent nothing; it is not a cost row.
+  if (result.success) void logVendorUsage({
     vendorName: providerKey,
     usageType: "emails",
     unitCount: 1,
@@ -741,7 +745,9 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
     })().catch(() => {})
   }
 
-  void logVendorUsage({
+  // Accepted sends only (lane 93D, same defect as the email branch above: a refused
+  // or gate-blocked SMS was metered at $0.0075 as if Twilio had carried it).
+  if (raw.success) void logVendorUsage({
     vendorName: providerKey,
     usageType: "sms_messages",
     unitCount: 1,

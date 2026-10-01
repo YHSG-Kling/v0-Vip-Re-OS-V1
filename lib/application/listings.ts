@@ -6,6 +6,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { handleError } from "@/lib/errors"
+import { canonicalPropertyType, PROPERTY_TYPES } from "@/lib/constants"
 
 export async function getListingsService(params: {
   agentId?: string
@@ -129,6 +130,12 @@ export async function createListingService(params: {
   sqft?: number
   propertyType?: string
 }) {
+  // Same defect and same fix as createListingRecord (lib/kernel/listings.ts):
+  // the "residential" default was never admitted by listings_property_type_check.
+  const propertyType = params.propertyType?.trim() ? canonicalPropertyType(params.propertyType) : null
+  if (params.propertyType?.trim() && !propertyType) {
+    return { success: false, error: `Unknown property type "${params.propertyType}" — expected one of ${PROPERTY_TYPES.join(", ")}` }
+  }
   try {
     const supabase = await createClient()
 
@@ -146,7 +153,7 @@ export async function createListingService(params: {
         bedrooms:           params.bedrooms,
         bathrooms:          params.bathrooms,
         sqft:               params.sqft,              // correct column (not square_footage)
-        property_type:      params.propertyType || "residential",
+        property_type:      propertyType,
         lifecycle_stage:    "LISTING_AGREEMENT_INITIATED",
         // DRAFT, not active — same rule as the kernel's createListingRecord, which
         // carries the full note. A listing is only taken on once the agreement is

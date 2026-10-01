@@ -22,6 +22,7 @@ import { sanitizeCssColor } from "@/lib/format/style"
 // 0 live rows store either users.user_type spelling.
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { checkUpload } from "@/lib/storage/file-limits"
+import { normalizeFormalityLevel } from "@/lib/branding/formality"
 
 /**
  * Brand config is brokerage-wide + admin-gated. Now IMPERSONATION-AWARE: when a platform
@@ -320,6 +321,11 @@ export async function saveBrandVoice(
     const supabase = adminAuth.db
     const brokerageId = adminAuth.brokerageId
 
+    // ONE formality vocabulary (lib/branding/formality.ts). The wizard used to send "semi-formal",
+    // which the live CHECK refuses (23514) — every default save failed. Normalize; refuse unknown.
+    const formalityLevel = normalizeFormalityLevel(data.formalityLevel)
+    if (!formalityLevel) return { success: false, error: `Unknown formality level "${data.formalityLevel}" — use formal, semi-formal or casual.` }
+
     // Check for existing brand voice profile
     const { data: existing } = await supabase
       .from("brand_voice_profile")
@@ -335,7 +341,7 @@ export async function saveBrandVoice(
         .from("brand_voice_profile")
         .update({
           tone: data.tone,
-          formality_level: data.formalityLevel,
+          formality_level: formalityLevel,
           prohibited_words: data.prohibitedWords,
           preferred_words: data.signaturePhrases,
           updated_at: new Date().toISOString(),
@@ -353,7 +359,7 @@ export async function saveBrandVoice(
         .insert({
           brokerage_id: brokerageId,
           tone: data.tone,
-          formality_level: data.formalityLevel,
+          formality_level: formalityLevel,
           prohibited_words: data.prohibitedWords,
           preferred_words: data.signaturePhrases,
           is_active: true,
@@ -512,13 +518,19 @@ export async function publishBrand(
     }
 
     // Get agent's onboarding record
+    // A self-serve broker-owner seat has NO agents row (agentId null). `.eq("agent_id", null)` is not
+    // "IS NULL": PostgREST sends agent_id=eq.null, the uuid cast refuses it, and the refusal was
+    // swallowed (wave 93 live walk, lane 93D). No agent → no agent onboarding record to advance.
     const agentId = await resolveAgentId(supabase, adminAuth.userId)
-    const { data: onboarding } = await supabase
-      .from("agent_onboarding")
-      .select("id, status")
-      .eq("agent_id", agentId)
-      .eq("brokerage_id", brokerageId)
-      .maybeSingle()
+    const { data: onboarding, error: onboardingErr } = agentId
+      ? await supabase
+          .from("agent_onboarding")
+          .select("id, status")
+          .eq("agent_id", agentId)
+          .eq("brokerage_id", brokerageId)
+          .maybeSingle()
+      : { data: null, error: null }
+    if (onboardingErr) console.error("[L11-Brand] publishBrand onboarding read refused:", onboardingErr.message)
 
     // Fire kernel event
     await processKernelEvent({

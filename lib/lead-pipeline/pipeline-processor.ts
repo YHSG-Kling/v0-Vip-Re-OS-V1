@@ -638,7 +638,8 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   const recordContent = assembleRecordContent(rec)
   const aiIntent = await classifyRawRecordIntent(
     { content: recordContent, authorName: [promoFirst, promoLast].filter(Boolean).join(" ") || undefined },
-    analyzeLead,
+    // Booked to the tenant this pipeline already resolved (lane 93D: it was booked nowhere).
+    (p) => analyzeLead({ ...p, brokerageId: effectiveBrokerageId }),
   )
   // ── BATCHRANK PROPENSITY (BatchData-origin records only) — a DISTINCT capability
   // from the passive `intel.salePropensity` read in batchdata-seller-signals.ts (which

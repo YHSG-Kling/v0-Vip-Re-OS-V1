@@ -14,6 +14,7 @@
 
 import { KernelEvent } from "./events"
 import { createServiceClient } from "@/lib/supabase/service"
+import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 // ─── PUBLIC API ───────────────────────────────────────────────────────────────
 
@@ -340,7 +341,10 @@ async function resolveRecipients(params: {
     .from("users")
     .select("id, user_type")
     .eq("brokerage_id", params.brokerageId)
-    .in("user_type", ["admin", "broker", "compliance_officer", "team_lead"])
+    // The tenant roster, spread — never retyped (CLAUDE.md §4). The hand-typed
+    // ["admin","broker","compliance_officer","team_lead"] left broker_owner and
+    // broker_admin out of every brokerage-level notification (wave 93, lane 93D).
+    .in("user_type", [...TENANT_ADMIN_USER_TYPES])
 
   if (brokerageUsersError) {
     console.error(`[NotificationEngine] brokerage ${params.brokerageId} recipient pool lookup failed: ${brokerageUsersError.message}`)

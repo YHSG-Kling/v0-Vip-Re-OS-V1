@@ -387,7 +387,9 @@ export interface AIRequest {
   fallbackModel?: AIModel
   compliance?: ComplianceContext
   metadata: {
-    userId: string
+    /** null = no session (cron / pipeline). Never a sentinel string: user_id is a uuid
+     *  column on ai_tool_usage and a sentinel is refused 22P02 (lane 93D). */
+    userId: string | null
     brokerageId?: string | null
     teamId?: string | null
     agentId?: string | null

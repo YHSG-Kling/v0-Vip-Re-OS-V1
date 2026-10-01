@@ -44,6 +44,7 @@ import path from "node:path"
 import nodeCrypto from "node:crypto"
 import { syncBuiltinESMExports } from "node:module"
 import { SCHEMA_FK_MAP } from "../../../../scripts/schema-fk-map"
+import { SCHEMA_SNAPSHOT } from "../../../../scripts/schema-snapshot"
 
 // ── state ────────────────────────────────────────────────────────────────────
 /** Tables whose PK is `id uuid DEFAULT gen_random_uuid()` (live pg_catalog read, saved by the agent). */
@@ -55,8 +56,11 @@ const DEMO_EMAIL_SUFFIX = (process.env.BRIDGE_DEMO_EMAIL_SUFFIX || "@wave91.test
 const UUID_PREFIX = process.env.BRIDGE_UUID_PREFIX || "91d0"
 
 export interface BridgeError { message: string; code: string; details: string | null; hint: string | null }
-interface CacheEntry { sig: string; status: "done" | "pending"; result?: any; sql?: string; label?: string; key?: string }
-interface CacheFile { entries: CacheEntry[]; meta?: { nz?: string[]; nzAt?: number; scope?: string } }
+/** A plain single-table read's shape (no embeds/casts/json paths/count/head) — lets a later read of a
+ *  SUBSET of the columns, same table + same WHERE/ORDER/LIMIT + same role, be answered from it (wave 93). */
+interface ReadShape { t: string; w: string; o: string; l: string; a: string; c: string[] | null }
+interface CacheEntry { sig: string; status: "done" | "pending"; result?: any; sql?: string; label?: string; key?: string; shape?: ReadShape }
+interface CacheFile { entries: CacheEntry[]; meta?: { nz?: string[]; nzAt?: number; scope?: string; scopeIds?: Record<string, string[]>; scopeTextIds?: Record<string, string[]>; starFrom?: number; msFrom?: number } }
 
 let cache: CacheFile = { entries: [] }
 let callIndex = 0
@@ -143,7 +147,9 @@ function opSql(alias: string, col: string, op: string, raw: unknown, fromString:
   const c = colExpr(alias, col)
   const val = (v: unknown) => fromString ? q(unquote(String(v))) : lit(v)
   switch (op) {
-    case "eq": return `${c} = ${val(raw)}`
+    // supabase-js sends `.eq(col, null)` as `col=eq.null` — PostgREST compares to the STRING 'null'
+    // (a uuid/int column refuses it: 22P02). Rendering `= NULL` would hide that refusal (wave 93).
+    case "eq": return raw === null && !fromString ? `${c} = 'null'` : `${c} = ${val(raw)}`
     case "neq": return `${c} <> ${val(raw)}`
     case "gt": return `${c} > ${val(raw)}`
     case "gte": return `${c} >= ${val(raw)}`
@@ -312,11 +318,33 @@ function roleWrap(actor: AnyActor): string {
 }
 
 /** Identity of a call independent of wall-clock values (ISO timestamps normalised). */
-function callKey(actor: AnyActor, sql: string, needsResult: boolean): string {
-  const norm = `${roleWrap(actor)}|${needsResult ? "R" : "W"}|${sql}`.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?/g, "TS")
-  return nodeCrypto.createHash("sha1").update(norm).digest("hex")
+function callKey(actor: AnyActor, sql: string, needsResult: boolean, index = -1): string {
+  // Also base-36 Date.now() stamps (slug suffixes like "…-mupfj781", wave 93): any 8-char base-36
+  // token that decodes to a time within the last 30 days / next day is a wall-clock value.
+  const now = Date.now()
+  const norm = `${roleWrap(actor)}|${needsResult ? "R" : "W"}|${sql}`
+    .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?/g, "TS")
+    .replace(/\b[0-9a-z]{8}\b/g, (t) => { const n = parseInt(t, 36); return n > now - 30 * 86_400_000 && n < now + 86_400_000 ? "B36TS" : t })
+    // Countdowns derived from the wall clock (lib/kernel action plans: "47.8h left on the 48h SLA",
+    // "hoursUntilFirstContactSla":47.8) drift between runs exactly like a timestamp (wave 93).
+    .replace(/\d+(\.\d+)?h left/g, "Nh left").replace(/("hoursUntil[A-Za-z]*\\?"\s*:\s*)\d+(\.\d+)?/g, "$1N")
+  // Elapsed-time measurements (event_processing_log.processing_time_ms: 0 one run, 1 the next)
+  // drift like a timestamp (wave 93). Only from meta.msFrom on, so keys cached before the rule
+  // existed still match their own calls.
+  const msFrom = cache.meta?.msFrom
+  // Same gate: base-10 epoch-millisecond stamps (storage paths like ".../1790865246829-offer.pdf")
+  // within the last 30 days / next day are wall-clock values too.
+  const normMs = msFrom !== undefined && index >= msFrom
+    ? norm.replace(/("[a-z_]*_ms\\?"\s*:\s*)\d+/g, "$1N")
+        .replace(/\b\d{13}\b/g, (t) => { const n = Number(t); return n > now - 30 * 86_400_000 && n < now + 86_400_000 ? "EPOCHMS" : t })
+    : norm
+  return nodeCrypto.createHash("sha1").update(normMs).digest("hex")
 }
 
+/** Public tables the live auth.users trigger writes (on_auth_user_created → handle_new_auth_user:
+ *  `users` only — read from pg_proc 2026-10-01, lane 93D). An auth.* emulation therefore only
+ *  invalidates a repeat read of these; it used to invalidate every repeat read. */
+const AUTH_TRIGGER_TABLES = new Set(["users"])
 export let stopped = false
 let lastCallAt = Date.now()
 /** Let un-awaited background chains (fire-and-forget work a function started)
@@ -330,13 +358,13 @@ export async function quiesce(idleMs = 400): Promise<void> {
     if (Date.now() - lastCallAt >= idleMs) return
   }
 }
-async function call(sig: string, actor: AnyActor, sql: string, needsResult: boolean, label?: string, shadowEmpty = false): Promise<any> {
+async function call(sig: string, actor: AnyActor, sql: string, needsResult: boolean, label?: string, shadowEmpty = false, shape?: ReadShape): Promise<any> {
   // A stop may be swallowed by the caller's own try/catch; every later call
   // re-throws without recording, and the runner checks `stopped` itself.
   if (stopped) throw new BridgeStop()
   lastCallAt = Date.now()
   const i = callIndex++
-  const key = callKey(actor, sql, needsResult)
+  const key = callKey(actor, sql, needsResult, i)
   let hit: CacheEntry | undefined = cache.entries[i]
   // CONCURRENCY: an un-awaited background chain (e.g. the onboarding curriculum a
   // tenant creation starts) interleaves with the scenario, and module-load timing
@@ -352,6 +380,9 @@ async function call(sig: string, actor: AnyActor, sql: string, needsResult: bool
     if (hit.sig !== sig || (hit.key && hit.key !== key)) { cache.entries.splice(i, 0, undefined as unknown as CacheEntry); hit = undefined }
   }
   if (hit && hit.status === "pending" && (hit.sig !== sig || (hit.key && hit.key !== key))) { cache.entries.length = i; hit = undefined }
+  // A PENDING read recorded last run (before the answer that precedes it was ingested) gets a fresh
+  // chance at the repeat/subset reuse below — the earlier read it can be projected from may be done now.
+  if (hit && hit.status === "pending" && sig.startsWith("select:")) { cache.entries.length = i; hit = undefined }
   if (hit) {
     if (hit.sig !== sig) {
       console.error(`DIVERGED at call ${i}: cached ${hit.sig} vs now ${sig}`)
@@ -359,6 +390,7 @@ async function call(sig: string, actor: AnyActor, sql: string, needsResult: bool
     }
     if (hit.status === "done") {
       if (!hit.key) hit.key = key
+      if (!hit.shape && shape) hit.shape = shape
       return hit.result
     }
   }
@@ -368,12 +400,24 @@ async function call(sig: string, actor: AnyActor, sql: string, needsResult: bool
   // Writes in between are tolerated when they touched OTHER tables (published blind
   // spot: a cross-table trigger that rewrites the re-read row would be missed).
   const readTable = sig.slice("select:".length)
-  if (needsResult && sig.startsWith("select:") && !pending.some((p) => p.sig.endsWith(`:${readTable}`) || p.sig.startsWith("rpc:") || p.sig.startsWith("auth:"))) {
+  if (needsResult && sig.startsWith("select:") && !pending.some((p) => p.sig.endsWith(`:${readTable}`) || p.sig.startsWith("rpc:") || (p.sig.startsWith("auth:") && AUTH_TRIGGER_TABLES.has(readTable)))) {
     for (let j = i - 1; j >= 0; j--) {
       const e = cache.entries[j]
       if (!e) break
-      if (!e.sig.startsWith("select:")) { if (e.sig.endsWith(`:${readTable}`) || e.sig.startsWith("rpc:") || e.sig.startsWith("auth:")) break; continue }
-      if (e.key === key && e.status === "done" && !e.result?.error) { cache.entries[i] = { sig, status: "done", result: e.result, label: "repeat:read", key }; return e.result }
+      if (!e.sig.startsWith("select:")) { if (e.sig.endsWith(`:${readTable}`) || e.sig.startsWith("rpc:") || (e.sig.startsWith("auth:") && AUTH_TRIGGER_TABLES.has(readTable))) break; continue }
+      if (e.key === key && e.status === "done" && !e.result?.error) { cache.entries[i] = { sig, status: "done", result: e.result, label: "repeat:read", key, shape }; return e.result }
+      // SUBSET READ (wave 93): same table/WHERE/ORDER/LIMIT/role, and the earlier read returned every
+      // column this one asks for → project it. Same invalidation rule as the repeat read above.
+      const es = e.shape
+      // (a star-cached row must actually CARRY every requested column — a missing one is a 42703 the DB must raise)
+      const starRows0 = es?.c === null ? (e.result?.rows?.rows ?? []) : []
+      const starCovers = !starRows0.length || (shape?.c ?? []).every((c) => Object.prototype.hasOwnProperty.call(starRows0[0], c))
+      if (shape && shape.c && es && e.status === "done" && !e.result?.error && es.t === shape.t && es.w === shape.w && es.o === shape.o && es.l === shape.l && es.a === shape.a && (es.c === null ? starCovers : shape.c.every((c) => es.c!.includes(c)))) {
+        const rows = (e.result?.rows?.rows ?? []).map((r: any) => Object.fromEntries(shape.c!.map((c) => [c, r?.[c] ?? null])))
+        const result = { rows: { rows, count: null } }
+        cache.entries[i] = { sig, status: "done", result, label: "subset:read", key, shape }
+        return result
+      }
     }
   }
   if (shadowEmpty) {
@@ -387,18 +431,63 @@ async function call(sig: string, actor: AnyActor, sql: string, needsResult: bool
     return { rows: null, provisional: true }
   }
   pending.push({ index: i, sql: stmt + ` PERFORM set_config('w91.r', coalesce(v::text, 'null'), true);`, sig })
-  cache.entries[i] = { sig, status: "pending", label, key }
+  cache.entries[i] = { sig, status: "pending", label, key, shape }
   flushBatch()
   stopped = true
   throw new BridgeStop()
 }
 
+/** ID-SCOPED SHADOW CENSUS (wave 93): for each scoped column (agent_id, contact_id, lead_id …) every
+ *  public table/view carrying it reports whether ANY row holds one of the walk's own ids; a table that
+ *  does not is recorded absent as `col:table`. A later read filtered `col = <walk id>` on an absent
+ *  table is answered "no rows" locally — exact for the same reason the brokerage census is. A column
+ *  whose type refuses the uuid[] comparison is recorded PRESENT (never shadowed). */
+function idCensus(): string {
+  const ids = Object.fromEntries(Object.entries(cache.meta?.scopeIds ?? {}).filter(([, v]) => v.length))
+  const textIds = Object.fromEntries(Object.entries(cache.meta?.scopeTextIds ?? {}).filter(([, v]) => v.length))
+  const cols = [...new Set([...Object.keys(ids), ...Object.keys(textIds)])]
+  if (!cols.length) return ""
+  // ONE loop over every scoped column (compact: the batch is re-sent by hand each round trip).
+  // Every column is tested against the UNION of the walk's ids: a column holding ANY walk id is marked
+  // present (a superset of the exact per-column answer, so never a wrong "empty").
+  // A TEXT column (platform_credentials.owner_id) cannot be compared with uuid[] — that raised, and the
+  // handler marked the column present for good, so every read of it went live (wave 93). The handler
+  // now retries the comparison as text, with the non-uuid scope values (e.g. owner_id 'platform') too.
+  const all = [...new Set(Object.values(ids).flat())]
+  const allText = [...new Set([...all, ...Object.values(textIds).flat()])]
+  return ` FOR tn, cn IN SELECT c.table_name, c.column_name FROM information_schema.columns c WHERE c.table_schema = 'public' AND c.column_name = ANY(${q(`{${cols.join(",")}}`)}) LOOP BEGIN EXECUTE format('SELECT EXISTS (SELECT 1 FROM public.%I WHERE %I = ANY($1))', tn, cn) INTO ex USING ${q(`{${all.join(",")}}`)}::uuid[]; IF ex THEN acc := acc || cn || ':' || tn || ','; END IF; EXCEPTION WHEN others THEN BEGIN EXECUTE format('SELECT EXISTS (SELECT 1 FROM public.%I WHERE %I::text = ANY($1))', tn, cn) INTO ex USING ${q(`{${allText.join(",")}}`)}::text[]; IF ex THEN acc := acc || cn || ':' || tn || ','; END IF; EXCEPTION WHEN others THEN acc := acc || cn || ':' || tn || ','; END; END; END LOOP;`
+}
+/** uuid scope ids and text scope values, merged per column (the shadow checks consult both). */
+function allScopeIds(): Array<[string, string[]]> {
+  const out: Record<string, string[]> = {}
+  for (const src of [cache.meta?.scopeIds ?? {}, cache.meta?.scopeTextIds ?? {}]) for (const [c, v] of Object.entries(src)) out[c] = [...(out[c] ?? []), ...v]
+  return Object.entries(out)
+}
+/** Public tables carrying at least one non-internal trigger — read live from pg_trigger
+ *  2026-10-01 (lane 93D). A write to one of these may write ANY other table, so it is a barrier
+ *  for the shadow below; an INSERT/UPDATE to a trigger-free table can only change that table. */
+const TRIGGER_TABLES = new Set("activities,agent_chat_preferences,agent_credit_budgets,agent_fee_charges,agent_licenses,agent_metrics,agent_monthly_earnings,agent_notifications,agent_points_log,ai_autopilot_actions,ai_autopilot_plans,ai_generated_content,ai_identity_profiles,ai_listing_optimizations,ai_predictions,ai_suggestions,ai_video_projects,appointments,automation_logs,brokerage_fee_types,brokerage_required_documents,business_expenses,buyer_broker_agreements,calculator_history,calendar_blocks,chat_templates,closing_gifts,commission_splits,communications,compliance_alerts,compliance_checklists,contact_notes,contact_portal_preferences,contact_property_insights,contact_segments,contacts,content_generation_logs,conversation_insights,conversation_intelligence,conversation_logs,data_health_logs,data_subject_requests,document_folders,document_requests,email_sends,fair_housing_logs,generated_content,generated_documents,income_gap_recommended_actions,lead_conversation_history,lead_external_behavior,lead_scraping_jobs,lead_social_intelligence,lead_value_journey,listing_inquiries,listing_marketing_packages,listing_marketing_services,listing_syndication_tracking,listings,meeting_briefs,outside_agents,photo_enhancement_jobs,photo_ordering_rules,predictive_lead_scores,property_search_log,showing_communications,showing_routes,smart_showing_recommendations,social_media_analytics,transactions,trid_timeline,user_invitations,user_role_assignments,value_delivered_daily,vendor_bookings,vendor_communications,vendor_contact_assignments,vendor_invitations,vendor_invoices,vendor_marketplace_profiles,vendor_plans,vendor_subscriptions,weekly_plans,workflow_runs".split(","))
+/** A write that provably cannot have changed `readTable`'s emptiness: an insert/update/upsert on a
+ *  DIFFERENT, trigger-free table (deletes may cascade and rpc bodies are opaque — both barriers). */
+function writeLeavesTableAlone(sig: string, readTable: string): boolean {
+  const mt = /^(insert|update|upsert):([a-z0-9_]+)$/.exec(sig)
+  return !!mt && mt[2] !== readTable && !TRIGGER_TABLES.has(mt[2])
+}
 function shadowEmptyOk(table: string): boolean {
   const m = cache.meta
-  if (!m?.nz || m.nzAt === undefined || stopped || pending.length) return false
+  const readTable = table.includes(":") ? table.split(":")[1] : table
+  if (!m?.nz || m.nzAt === undefined || stopped) return false
+  // queued (deferred) writes in this batch are allowed when they cannot touch the read table (wave 93)
+  if (pending.some((p) => !p.sig.startsWith("select:") && !writeLeavesTableAlone(p.sig, readTable))) return false
   if (m.nz.includes(table)) return false
+  // The census only VISITS tables that carry the filtered column; a table without it is absent from nz
+  // too, yet the real statement would raise 42703. Shadow only when the generated schema cache says the
+  // column exists (wave 93; published blind spot: a column dropped after the cache's generated: date).
+  const [colPart, tablePart] = table.includes(":") ? table.split(":") : ["brokerage_id", table]
+  if (!(SCHEMA_SNAPSHOT[tablePart] ?? []).includes(colPart)) return false
   // only reads (or earlier shadow answers) between the snapshot and this call
-  for (let i = m.nzAt + 1; i < callIndex; i++) { const e = cache.entries[i]; if (!e || !e.sig.startsWith("select:")) return false }
+  // (a shadowed no-op write changed nothing, so it does not stale the census either)
+  for (let i = m.nzAt + 1; i < callIndex; i++) { const e = cache.entries[i]; if (!e || (!e.sig.startsWith("select:") && e.label !== "shadow:empty" && !writeLeavesTableAlone(e.sig, readTable))) return false }
   return true
 }
 function flushBatch() {
@@ -406,7 +495,17 @@ function flushBatch() {
   const blocks = pending.map((p) => `  IF current_setting('w91.e', true) IS NULL OR current_setting('w91.e', true) = '' THEN BEGIN ${p.sql} EXCEPTION WHEN others THEN PERFORM set_config('w91.e', ${p.index} || '|' || SQLSTATE || '|' || SQLERRM, true); END; END IF;`).join("\n")
   const scope = cache.meta?.scope
   const hasWrite = pending.some((x) => !x.sig.startsWith("select:"))
-  const nzBlock = scope && (hasWrite || cache.meta?.nzAt === undefined) ? `\n  DECLARE tn text; ex boolean; acc text := ''; BEGIN FOR tn IN SELECT c.table_name FROM information_schema.columns c WHERE c.table_schema = 'public' AND c.column_name = 'brokerage_id' LOOP BEGIN EXECUTE format('SELECT EXISTS (SELECT 1 FROM public.%I WHERE brokerage_id = $1)', tn) INTO ex USING ${q(scope)}::uuid; IF ex THEN acc := acc || tn || ','; END IF; EXCEPTION WHEN others THEN acc := acc || tn || ','; END; END LOOP; PERFORM set_config('w91.nz', acc, true); END;` : ""
+  // DELTA CENSUS (wave 93): the full non-empty list runs to ~130 names and was pasted back on
+  // every write batch. The batch carries only the md5 of the known list (sorted, C collation =
+  // JS code-unit order); an unchanged census answers "=" (already parsed below), any change
+  // still returns the full list.
+  const nzDelta = () => {
+    const known = cache.meta?.nz
+    if (!known || known.length === 0) return ""
+    const md5 = nodeCrypto.createHash("md5").update([...new Set(known)].sort().join(",")).digest("hex")
+    return ` IF (SELECT md5(coalesce(string_agg(x, ',' ORDER BY x COLLATE "C"), '')) FROM (SELECT DISTINCT x FROM unnest(array_remove(string_to_array(acc, ','), '')) x) d) = ${q(md5)} THEN acc := '='; END IF;`
+  }
+  const nzBlock = scope && (hasWrite || cache.meta?.nzAt === undefined) ? `\n  DECLARE tn text; cn text; ex boolean; acc text := ''; BEGIN FOR tn IN SELECT c.table_name FROM information_schema.columns c WHERE c.table_schema = 'public' AND c.column_name = 'brokerage_id' LOOP BEGIN EXECUTE format('SELECT EXISTS (SELECT 1 FROM public.%I WHERE brokerage_id = $1)', tn) INTO ex USING ${q(scope)}::uuid; IF ex THEN acc := acc || tn || ','; END IF; EXCEPTION WHEN others THEN acc := acc || tn || ','; END; END LOOP;${idCensus()}${nzDelta()} PERFORM set_config('w91.nz', acc, true); END;` : ""
   const sql = `DO $w91do$ DECLARE v jsonb; BEGIN\n  PERFORM set_config('w91.e', '', true); PERFORM set_config('w91.r', '', true); PERFORM set_config('w91.nz', '', true);\n${blocks}${nzBlock}\nEND $w91do$;\nSELECT jsonb_build_object('first', ${pending[0].index}, 'last', ${pending[pending.length - 1].index}, 'err', current_setting('w91.e', true), 'nz', nullif(current_setting('w91.nz', true), ''), 'r', nullif(current_setting('w91.r', true), '')::jsonb) AS r;`
   fs.writeFileSync(batchPath(), sql)
   saveCache()
@@ -422,6 +521,8 @@ export function ingest(file: string) {
   const first = parsed.first as number, last = parsed.last as number
   // "=" is the agent's shorthand for "the same list as the previous snapshot".
   if (parsed.nz === "=" && cache.meta?.nz) cache.meta = { ...cache.meta, nzAt: last }
+  // "+a,b" = the previous snapshot plus these (a superset is always safe: a listed table is never shadowed).
+  else if (typeof parsed.nz === "string" && parsed.nz.startsWith("+") && cache.meta?.nz) cache.meta = { ...cache.meta, nz: [...new Set([...cache.meta.nz, ...parsed.nz.slice(1).split(",").filter(Boolean)])], nzAt: last }
   else if (typeof parsed.nz === "string" && parsed.nz !== "=" && cache.meta?.scope) cache.meta = { ...cache.meta, nz: parsed.nz.split(",").filter(Boolean), nzAt: last }
   else if (cache.meta?.nz && cache.entries.slice(first, last + 1).every((e) => e?.sig.startsWith("select:"))) cache.meta.nzAt = last
   else if (cache.meta) { delete cache.meta.nz; delete cache.meta.nzAt }
@@ -555,8 +656,33 @@ class Builder implements PromiseLike<any> {
         const countSql = this.countMode ? `(SELECT count(*) FROM ${this.tbl()} t${where})` : "NULL"
         const rowsSql = this.head ? "NULL" : `(SELECT coalesce(jsonb_agg(to_jsonb(s)), '[]'::jsonb) FROM (${body}) s)`
         const scope = cache.meta?.scope
-        const shadow = !!scope && this.filters.includes(`t."brokerage_id" = ${q(scope)}`) && shadowEmptyOk(this.table)
-        const res = await call(sig, this.actor, `SELECT jsonb_build_object('rows', ${rowsSql}, 'count', ${countSql})`, true, undefined, shadow)
+        const idShadow = allScopeIds().some(([col, ids]) => ids.some((id) => this.filters.includes(`t.${ident(col)} = ${q(id)}`)) && shadowEmptyOk(`${col}:${this.table}`))
+        const shadow = !!scope && ((this.filters.includes(`t."brokerage_id" = ${q(scope)}`) && shadowEmptyOk(this.table)) || idShadow)
+        const plainCols = items.length > 0 && items.every((it) => it.kind === "star" || (it.kind === "col" && !it.cast && it.out === it.expr && /^[A-Za-z0-9_]+$/.test(it.expr)))
+        const shape: ReadShape | undefined = plainCols && !this.countMode && !this.head && !Object.keys(this.embedMods).length && this.off === undefined
+          ? { t: `${this.schema}.${this.table}`, w: this.filters.join(" AND "), o: this.orders.join(", "), l: String(lim ?? ""), a: roleWrap(this.actor), c: items.some((it) => it.kind === "star") ? null : items.map((it) => (it as ColItem).expr) }
+          : undefined
+        // STAR-BY-ID (wave 93): a service-role read of ONE row by id asks for the whole row (`t.*`) and
+        // projects the requested columns locally, so the next by-id read of other columns is a SUBSET
+        // READ (no round trip) until a write touches the table. Applied only from call index
+        // meta.starFrom on, so calls cached before the rule existed keep their exact SQL and keys.
+        const starFrom = cache.meta?.starFrom
+        if (shape && shape.c && starFrom !== undefined && callIndex >= starFrom && /SET LOCAL ROLE service_role/.test(shape.a)
+          && this.filters.some((f) => f.startsWith(`t."id" = `)) && lim !== undefined && lim <= 2 && !this.orders.length) {
+          const want = shape.c
+          const starSql = `SELECT t.* FROM ${this.tbl()} t${where} LIMIT ${lim}`
+          const starShape: ReadShape = { ...shape, c: null }
+          const sres = await call(sig, this.actor, `SELECT jsonb_build_object('rows', (SELECT coalesce(jsonb_agg(to_jsonb(s)), '[]'::jsonb) FROM (${starSql}) s), 'count', NULL)`, true, undefined, shadow, starShape)
+          if (sres.error) return this.shape(sres, null)
+          const starRows: any[] = sres.rows?.rows ?? []
+          // A requested column the row does not HAVE would be a 42703 refusal from the real narrow
+          // select — never a silent null. Fall through to the narrow statement so the DB says so.
+          if (!(starRows.length && want.some((c) => !Object.prototype.hasOwnProperty.call(starRows[0], c)))) {
+            const rows = starRows.map((r: any) => Object.fromEntries(want.map((c) => [c, r?.[c] ?? null])))
+            return this.shape({ rows: { rows, count: null } }, null)
+          }
+        }
+        const res = await call(sig, this.actor, `SELECT jsonb_build_object('rows', ${rowsSql}, 'count', ${countSql})`, true, undefined, shadow, shape)
         return this.shape(res, null)
       }
       if (this.verb === "rpc") {
@@ -602,6 +728,7 @@ class Builder implements PromiseLike<any> {
         const isql = `INSERT INTO ${this.tbl()} AS t (${keys.map(ident).join(", ")}) SELECT ${keys.map((k) => `p.${ident(k)}`).join(", ")} FROM jsonb_populate_recordset(NULL::${this.tbl()}, ${q(json)}::jsonb) p`
         const res = await call(sig, this.actor, isql, false, "synth:id")
         if (res.error) return { data: null, error: res.error, count: null, status: 400 }
+        autoScope(this.table, withIds)
         return this.shape({ rows: { rows: ids, count: ids.length } }, null)
       }
       if (this.verb === "insert" || this.verb === "upsert") {
@@ -635,7 +762,15 @@ class Builder implements PromiseLike<any> {
       const retItems = this.returning !== null ? parseSelect(this.returning) : []
       const plain = retItems.length > 0 && retItems.every((i) => i.kind === "col" && /^[A-Za-z0-9_]+$/.test((i as ColItem).expr))
       const rowJson = plain ? `jsonb_build_object(${retItems.map((i) => `${q((i as ColItem).out)}, w.${ident((i as ColItem).expr)}`).join(", ")})` : this.returning === null ? `jsonb_build_object('id', to_jsonb(w)->'id')` : "to_jsonb(w)"
-      const res = await call(sig, this.actor, `WITH w AS (${sql} RETURNING t.*) SELECT jsonb_build_object('rows', coalesce((SELECT jsonb_agg(${rowJson}) FROM w), '[]'::jsonb), 'count', (SELECT count(*) FROM w))`, true)
+      // SHADOWED NO-OP WRITE (wave 93): an UPDATE/DELETE … RETURNING scoped to the walk's brokerage (or a
+      // walk id) on a table the census measured EMPTY for that scope matches no row — byte-identical to
+      // running it (no row changed, no trigger fired). Answered locally under the same exactness rule as
+      // a shadowed read (shadowEmptyOk: a fresh census, nothing pending, only reads/no-ops since).
+      const scopeW = cache.meta?.scope
+      const idShadowW = allScopeIds().some(([col, ids]) => ids.some((id) => this.filters.includes(`t.${ident(col)} = ${q(id)}`)) && shadowEmptyOk(`${col}:${this.table}`))
+      const shadowW = (this.verb === "update" || this.verb === "delete") && !!scopeW && ((this.filters.includes(`t."brokerage_id" = ${q(scopeW)}`) && shadowEmptyOk(this.table)) || idShadowW)
+      const res = await call(sig, this.actor, `WITH w AS (${sql} RETURNING t.*) SELECT jsonb_build_object('rows', coalesce((SELECT jsonb_agg(${rowJson}) FROM w), '[]'::jsonb), 'count', (SELECT count(*) FROM w))`, true, undefined, shadowW)
+      if (this.verb === "insert" && !res.error) autoScope(this.table, res.rows?.rows)
       return this.shape(res, this.returning !== null ? parseSelect(this.returning) : [])
     } catch (e) {
       if (e instanceof BridgeStop) throw e
@@ -726,7 +861,13 @@ export function makeClient(actor: AnyActor): any {
     schema: (s: string) => ({ from: (t: string) => new Builder(t, actor, s), rpc: (fn: string, a: any, o: any) => new Builder(fn, actor, s).rpc(a, o) }),
     rpc: (fn: string, a: any, o: any) => new Builder(fn, actor).rpc(a, o),
     storage: { from: (b: string) => ({
-      upload: async () => ({ data: null, error: { message: `[mcp-bridge] storage '${b}' not reachable from the sandbox` } }),
+      // BRIDGE_STORAGE_EMULATE=1 (wave 93): the upload is ACKNOWLEDGED without bytes going anywhere
+      // (Storage is as unreachable as GoTrue) so a route whose real work is the DB rows after the
+      // upload can be walked. Logged in `emulations`; the object never exists (published blind spot).
+      upload: async (p: string) => {
+        if (process.env.BRIDGE_STORAGE_EMULATE === "1") { emulations.push(`storage.${b}.upload(${p}) → acknowledged, no bytes stored`); return { data: { path: p, fullPath: `${b}/${p}` }, error: null } }
+        return { data: null, error: { message: `[mcp-bridge] storage '${b}' not reachable from the sandbox` } }
+      },
       getPublicUrl: (p: string) => ({ data: { publicUrl: `https://demo.invalid/storage/${b}/${p}` } }),
       createSignedUrl: async (p: string) => ({ data: { signedUrl: `https://demo.invalid/storage/${b}/${p}?signed` }, error: null }),
       remove: async () => ({ data: [], error: null }),
@@ -763,5 +904,34 @@ export function start() { loadCache(); installDeterminism() }
  *  the DB state is known exactly, so no round trip is spent. Recorded in the
  *  cache as label "shadow:empty" so the audit shows which answers were local. */
 export function setScopeBrokerage(id: string | null) { cache.meta = { ...(cache.meta ?? {}), scope: id ?? undefined } }
+/** Add walk-owned ids for an id-scoped shadow census (see idCensus). A NEW id invalidates the current
+ *  census (nzAt cleared) so nothing is shadowed until the next batch has re-measured. */
+/** AUTO SCOPE (wave 93): a walk-created entity's id becomes an id-scoped census key the moment its
+ *  INSERT returns it, so the dozens of `contact_id = <new contact>` relink/side-table reads that follow
+ *  can be answered by the census instead of one round trip each. Same exactness rule as setScopeIds
+ *  (a new id clears nzAt: nothing is shadowed until the next batch has re-measured). */
+const AUTO_SCOPE_TABLES: Record<string, string> = { contacts: "contact_id", leads: "lead_id", listings: "listing_id", transactions: "transaction_id", offers: "offer_id", seller_offers: "offer_id" }
+function autoScope(table: string, rows: any[] | null | undefined) {
+  const col = AUTO_SCOPE_TABLES[table]
+  // …and as `entity_id` too: the manager-signal / notification dedup reads key on entity_id.
+  if (col && Array.isArray(rows)) { setScopeIds(col, rows.map((r) => r?.id)); setScopeIds("entity_id", rows.map((r) => r?.id)) }
+}
+export function setScopeIds(col: string, ids: (string | null | undefined)[]) {
+  const m = (cache.meta ??= {})
+  const cur = new Set(m.scopeIds?.[col] ?? [])
+  const add = ids.filter((x): x is string => !!x && /^[0-9a-f-]{36}$/i.test(x) && !cur.has(x))
+  if (!add.length) return
+  m.scopeIds = { ...(m.scopeIds ?? {}), [col]: [...cur, ...add] }
+  delete m.nzAt
+}
+/** Non-uuid scope values (e.g. platform_credentials.owner_id = 'platform'), censused as text. */
+export function setScopeTextIds(col: string, ids: string[]) {
+  const m = (cache.meta ??= {})
+  const cur = new Set(m.scopeTextIds?.[col] ?? [])
+  const add = ids.filter((x) => !!x && !cur.has(x) && /^[A-Za-z0-9_.:-]+$/.test(x))
+  if (!add.length) return
+  m.scopeTextIds = { ...(m.scopeTextIds ?? {}), [col]: [...cur, ...add] }
+  delete m.nzAt
+}
 export function isStopped() { return stopped }
 export function stats() { return { calls: callIndex, cached: cache.entries.filter((e) => e.status === "done").length } }

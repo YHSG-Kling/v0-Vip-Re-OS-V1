@@ -68,6 +68,34 @@ cache recorded before those existed must be discarded (never replay a stale writ
 all `fetch` is refused (no Stripe/AI/mail call). Cleanup: `cleanup-template.sql`
 pattern in the lane-91D notes (per-table ROW_COUNT, passes until stable).
 
+### Wave 93 (lane 93D) additions — `journey-wave93.ts`, 825 calls end to end
+- **Shadowed reads.** A read scoped to the walk's brokerage (`setScopeBrokerage`) or to a
+  walk-owned id (`setScopeIds(col, ids)`, `setScopeTextIds(col, values)` for text columns;
+  `autoScope` adds every id an INSERT returns) is answered EMPTY locally when the last id
+  census proved that table holds none of them and nothing pending can have changed it
+  (`shadowEmptyOk`). A write on a trigger-free table (`TRIGGER_TABLES`, read from pg_trigger
+  2026-10-01 — refresh it if triggers change) cannot stale another table's census. Shadowed
+  answers are cached with label `shadow:empty`, so the audit shows which ones were local.
+- **The census answer.** Return `=` when the table list is unchanged (md5 of the sorted list
+  is compared). Return `+a,b` for additions. Return the full list when anything was removed.
+- **Volatile keys.** From `meta.msFrom` on, `"…_ms":N` and 13-digit epoch-ms values within
+  30 days are normalised in the replay key, the same as wall-clock countdowns. Without this,
+  `processing_time_ms` drift re-issued an already-applied INSERT.
+- **Other cache fixes.** A pending READ from the last run is recomputed rather than replayed.
+  From `meta.starFrom` on, a `select("*")` by id records its shape.
+- **Run the batch exactly as printed.** Never hand-rewrite the DO-wrapper writes into CTEs.
+  You may change only the final SELECT, for a fingerprint, but if that SELECT errors the
+  whole request rolls back. Re-run it verbatim.
+- **Trap: reuse by call number.** After a rewind, the newest cached answer for call N can
+  belong to a DIFFERENT statement. Before copying an answer forward, check its sig/SQL.
+  The lane's `reuse.cjs` prints its source row for this reason.
+- **Trap: an app change mid-walk shifts every later call index.** For example, adding a read
+  in `notification-engine` broke replay at call 26. Defer such changes until the walk ends,
+  or rewind to the first call they touch.
+- **Cleanup.** A whole-schema DO-block delete timed out at 60 s and rolled back. Use explicit
+  per-group CTE deletes with `RETURNING` counts instead. Prove inserted = deleted, and
+  prove 0 residual against every tag predicate and every `brokerage_id` table.
+
 ## Run (UI / human path) — NOT available in the sandbox
 The app needs Supabase env. Fetch it with the Supabase MCP and write `.env.local`
 (gitignored):

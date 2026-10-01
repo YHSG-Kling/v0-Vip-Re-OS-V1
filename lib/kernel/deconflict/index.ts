@@ -400,7 +400,10 @@ export async function evaluateDeconflict(input: DeconflictInput): Promise<Deconf
         window_days:       policy.windowDays,
         policy_max:        policy.maxTouches,
         // The cockpit can tell "held by the base cap" from "held because this contact is fatigued".
-        metadata:          fatigueSteps > 0 ? { fatigue_risk: fatigueRisk, fatigue_steps: fatigueSteps } : null,
+        // `{}`, never null (lane 93D live walk): metadata is NOT NULL DEFAULT '{}' and an explicit
+        // null overrides the default — every non-fatigued decision (nearly all of them) was refused
+        // 23502, so the cockpit's de-conflict log held 0 rows live.
+        metadata:          fatigueSteps > 0 ? { fatigue_risk: fatigueRisk, fatigue_steps: fatigueSteps } : {},
       }), { table: "deconflict_suppression_log", flow: "deconflict_log", reason: "decision log; the allow/suppress decision is returned regardless" })
     } catch { /* never fail a send because the audit write hiccuped */ }
   }

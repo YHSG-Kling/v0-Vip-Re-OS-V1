@@ -275,6 +275,13 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // 'off_market' rows (beside m681, wave 91D, still waiting on the Supabase connector). Deliberate
 // bump, named; drops by one as the integrator applies each.
 // 2 → 0 (wave 93): m679, m680 and m681 applied live 2026-10-01 via the Supabase MCP.
+// 0 → 1 (wave 93, lane 93D — full-platform walk): m684-parked-platform-leads-and-name-less-sign-ups.sql,
+// WRITTEN NOT APPLIED — §1 leads.brokerage_id admits NULL for a platform-origin (parked) lead only
+// (CHECK); §2 handle_new_auth_user writes '' for an absent name so a metadata-less portal OTP
+// sign-in can create its users row. Deliberate bump, named per this guard's own instruction; drops
+// back to 0 once the integrator applies it and flips the header. Sibling wave-93 lanes bump this
+// line for their own files — the integrator sums them when merging.
+// 1 → 0 (wave 93 integrator): m684 applied live 2026-10-01 via the Supabase MCP.
 const NOT_APPLIED_BASELINE = 0
 console.log("\n[3 · the work-in-flight list only shrinks]")
 if (notApplied.length) for (const f of notApplied) console.log(`     · ${f}`)

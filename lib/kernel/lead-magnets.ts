@@ -772,8 +772,19 @@ export async function captureFormSubmission(
     "home_valuation" | "buyer_guide" | "seller_guide" | "market_report" | "listing_alert" | "open_house" | "generic_form"
   if (contactId) {
     try {
+      // lead_capture_forms.agent_id FKs agents(id); deliverMagnet's agentUserId is a USERS id (it lands
+      // on compliance_events.actor_user_id and activities.agent_user_id, both FK users). agents.id and
+      // users.id are DISJOINT (CLAUDE.md §3) — handing it the agents.id refused both writes with 23503
+      // on every submission (wave 93 live walk, lane 93D). Cross via agents.user_id.
+      let agentUserId: string | null = null
+      if (form.agent_id) {
+        const { data: formAgent, error: formAgentErr } = await supabase
+          .from("agents").select("user_id").eq("id", form.agent_id).eq("brokerage_id", input.brokerageId).maybeSingle()
+        if (formAgentErr) console.warn("[lead-magnets] form agent lookup refused:", formAgentErr.message)
+        agentUserId = (formAgent as { user_id?: string | null } | null)?.user_id ?? null
+      }
       const { deliverMagnet } = await import("@/lib/marketing/lead-magnet-delivery-runner")
-      await deliverMagnet({ brokerageId: input.brokerageId, contactId, agentUserId: form.agent_id, magnetType, ctx: { area: data.city ?? null } }, supabase)
+      await deliverMagnet({ brokerageId: input.brokerageId, contactId, agentUserId, magnetType, ctx: { area: data.city ?? null } }, supabase)
     } catch (err) {
       console.warn("[lead-magnets] deliverable failed:", err)
     }
@@ -806,7 +817,9 @@ export async function captureFormSubmission(
     entity_type: "form_submission",
     entity_id: submission.id,
     event_type: "form_submission_captured",
-    actor_user_id: contactId ?? null,
+    // The submitter is a public visitor, not a platform user: actor_user_id FKs users(id), so the
+    // contact id here refused every echo with 23503 (wave 93 live walk). The contact rides in metadata.
+    actor_user_id: null,
     brokerage_id: input.brokerageId,
     metadata: { formId: input.formId, contactId, source: input.source },
   }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
@@ -1067,7 +1080,9 @@ export async function trackMagnetEvent(
       entity_type: "lead_capture_form",
       entity_id: input.magnetId,
       event_type: `lead_magnet_${input.eventType}`,
-      actor_user_id: input.contactId ?? null,
+      // A contact is not a platform user (actor_user_id FKs users): a contact id here refused the
+      // event with 23503 every time a visitor submitted (wave 93 live walk). contactId rides in metadata.
+      actor_user_id: null,
       brokerage_id: tenantId,
       metadata: { ...input.metadata, contactId: input.contactId },
     })

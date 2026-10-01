@@ -148,8 +148,10 @@ export async function POST(req: NextRequest) {
       if (last_name && !existingContact.last_name) updatePayload.last_name = last_name
       if (email && !existingContact.email) updatePayload.email = email
       if (phoneDigits && !existingContact.phone_digits) {
+        // phone only: contacts.phone_digits is GENERATED ALWAYS from phone, and
+        // writing it refused the whole update (and the create below) 428C9 —
+        // every website-widget lead was lost (wave 93, lane 93D).
         updatePayload.phone = rawPhone
-        updatePayload.phone_digits = phoneDigits
       }
       if (tcpa_consent && !existingContact.tcpa_consent) {
         updatePayload.tcpa_consent = true
@@ -188,7 +190,6 @@ export async function POST(req: NextRequest) {
           last_name: last_name ?? null,
           email: email ?? null,
           phone: rawPhone ?? null,
-          phone_digits: phoneDigits ?? null,
           source,
           source_channel: 'widget',
           source_family: 'direct',
