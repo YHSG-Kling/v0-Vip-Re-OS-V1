@@ -31,15 +31,18 @@ export interface BuyerRepresentation {
 
 export async function readBuyerRepresentation(
   client: SupabaseClient,
-  params: { contactId: string; brokerageId?: string | null },
+  params: { contactId: string; brokerageId: string | null },
 ): Promise<BuyerRepresentation> {
   const refusals: string[] = []
-  let bbaQuery = client
+  // The tenant is MANDATORY (CLAUDE.md §4): an agreement is only "ours" inside the offer's own
+  // brokerage. With no brokerage the agreement arm cannot answer, so it asks for nothing (fail closed).
+  if (!params.brokerageId) refusals.push("no brokerage on the offer — buyer-broker agreements not consulted")
+  const bbaQuery = client
     .from("buyer_broker_agreements")
     .select("id")
     .eq("buyer_contact_id", params.contactId)
     .eq("status", "active")
-  if (params.brokerageId) bbaQuery = bbaQuery.eq("brokerage_id", params.brokerageId)
+    .eq("brokerage_id", params.brokerageId ?? "00000000-0000-0000-0000-000000000000")
   const [{ data: contact, error: contactErr }, { data: bba, error: bbaErr }] = await Promise.all([
     client.from("contacts").select("buyer_stage").eq("id", params.contactId).maybeSingle(),
     bbaQuery.limit(1),

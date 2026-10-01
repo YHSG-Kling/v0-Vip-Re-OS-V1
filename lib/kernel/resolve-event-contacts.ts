@@ -37,7 +37,7 @@ export async function resolveEventContacts(
     } else if (entityType === "offer") {
       const { data: o } = await svc
         .from("offers")
-        .select("contact_id, listing_id, transaction_id")
+        .select("contact_id, listing_id, transaction_id, brokerage_id")
         .eq("id", entityId)
         .maybeSingle()
       out.buyerContactId = o?.contact_id ?? undefined
@@ -57,7 +57,7 @@ export async function resolveEventContacts(
         // set" was always true: the column defaults to BUYER_CONTACT_CREATED).
         if (out.sellerContactId && out.buyerContactId) {
           const { readBuyerRepresentation } = await import("@/lib/transactions/buyer-representation")
-          const rep = await readBuyerRepresentation(svc as any, { contactId: out.buyerContactId })
+          const rep = await readBuyerRepresentation(svc as any, { contactId: out.buyerContactId, brokerageId: (o as any)?.brokerage_id ?? null })
           for (const r of rep.refusals) console.error(`[resolveEventContacts] offer ${entityId}: ${r}`)
           if (!rep.ours) {
             out.buyerContactId = undefined
