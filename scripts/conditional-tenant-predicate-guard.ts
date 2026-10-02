@@ -119,6 +119,10 @@ const SCAN_DIRS = ["app", "lib", "services", "components", "hooks", "contexts", 
 type Verdict = "platform" | "anchored" | "unresolved"
 export const CLASSIFICATION: Record<string, { verdict: Verdict; why: string }> = {
   // ── platform: only a platform-authorised caller can produce the null ────────
+  "lib/kernel/portal.ts :: brokerageId": {
+    verdict: "anchored",
+    why: "scopeToDealTenant (wave 96A): brokerageId is non-null ONLY when portalDealClient's gate (requireContactAccess) admitted the caller and elevated to the service client — then the read is pinned to that tenant. A null means the gate did NOT elevate: the client is the caller's own SESSION client, so RLS anchors the read and it can only show less. The null never reaches a service-client read.",
+  },
   "lib/marketing/tracked-qr.ts :: brokerageId": {
     verdict: "anchored",
     why: "the QR registry's owner model (wave 81D, m664): a brokerageId anchors the lookup to that tenant's codes; its absence anchors to brokerage_id IS NULL — the PLATFORM-owned codes (label platform:…) — never every tenant. Callers are the tenant mint (session tenant) and the platform mint (platform staff gate).",

@@ -20,6 +20,7 @@
   "lib/kernel/0.1-feature-access.ts :: brokerageId": 1,
   "lib/kernel/actor-attribution.ts :: brokerageId": 1,
   "lib/kernel/lender-linkage.ts :: brokerageId": 1,
+  "lib/kernel/portal.ts :: brokerageId": 1,
   "lib/kernel/scraping.ts :: params.brokerageId": 1,
   "lib/kernel/self-heal-ledger.ts :: brokerageId": 1,
   "lib/kernel/write-sentinel.ts :: brokerageId": 1,
