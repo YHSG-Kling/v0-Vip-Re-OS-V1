@@ -100,7 +100,6 @@
     "lib/campaign-sequences/sequence-counters.ts": 2,
     "lib/campaign-sequences/touchpoint-bridge.ts": 1,
     "lib/campaigns/channels.ts": 1,
-    "lib/campaigns/contact-sources.ts": 2,
     "lib/charts/cma-reel-data.ts": 1,
     "lib/charts/explainer-diagram.ts": 2,
     "lib/charts/geometry.ts": 3,
@@ -267,7 +266,7 @@
     "lib/kernel/outcome-learning.ts": 2,
     "lib/kernel/overnight-digest.ts": 1,
     "lib/kernel/portal-value.ts": 1,
-    "lib/kernel/portal.ts": 1,
+    "lib/kernel/portal.ts": 4,
     "lib/kernel/postclose-concierge.ts": 3,
     "lib/kernel/providers.ts": 1,
     "lib/kernel/referral-appreciation.ts": 6,
@@ -510,7 +509,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10469,
+  "census": 10485,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2986,7 +2985,7 @@
     "lib/campaign-readiness/readiness-evaluator.ts": 5,
     "lib/campaign-readiness/readiness-logger.ts": 6,
     "lib/campaign-sequences/ab-variant.ts": 2,
-    "lib/campaign-sequences/auto-enroll.ts": 2,
+    "lib/campaign-sequences/auto-enroll.ts": 3,
     "lib/campaign-sequences/channel-order-runner.ts": 1,
     "lib/campaign-sequences/channel-order.ts": 1,
     "lib/campaign-sequences/compliance-gate.ts": 1,
@@ -3233,7 +3232,7 @@
     "lib/enrichment/deal-suppression.ts": 3,
     "lib/enrichment/deal-vocabulary.ts": 3,
     "lib/enrichment/household-financials.ts": 3,
-    "lib/enrichment/identifier-guard.ts": 1,
+    "lib/enrichment/identifier-guard.ts": 2,
     "lib/enrichment/lead-enrichment-core.ts": 3,
     "lib/enrichment/lead-freshness.ts": 2,
     "lib/enrichment/reverse-skip-trace.ts": 2,
@@ -3321,7 +3320,7 @@
     "lib/format/dates.ts": 15,
     "lib/format/html.ts": 3,
     "lib/format/math.ts": 1,
-    "lib/format/money.ts": 12,
+    "lib/format/money.ts": 13,
     "lib/format/ordinal.ts": 2,
     "lib/format/stats.ts": 1,
     "lib/format/strings.ts": 2,
@@ -3646,7 +3645,7 @@
     "lib/kernel/portal-contracts.ts": 2,
     "lib/kernel/portal-template-render.ts": 1,
     "lib/kernel/portal-value.ts": 2,
-    "lib/kernel/portal.ts": 10,
+    "lib/kernel/portal.ts": 17,
     "lib/kernel/postclose-concierge.ts": 4,
     "lib/kernel/preview.ts": 2,
     "lib/kernel/priority-rank.ts": 2,
@@ -3956,6 +3955,7 @@
     "lib/newsletter/seo-score.ts": 2,
     "lib/notifications/brokerage-admins.ts": 1,
     "lib/notifications/buyer-preferences.ts": 3,
+    "lib/notifications/notification-moments.ts": 4,
     "lib/notifications/notify-helpers.ts": 3,
     "lib/notifications/platform-staff.ts": 1,
     "lib/notifications/recipient-tenant.ts": 3,
@@ -4283,6 +4283,7 @@
     "lib/training/objection-scenarios.ts": 1,
     "lib/transactions/auto-execute-offer.ts": 1,
     "lib/transactions/buyer-move.ts": 8,
+    "lib/transactions/buyer-representation.ts": 1,
     "lib/transactions/cda-delivery-policy.ts": 1,
     "lib/transactions/cda-delivery-reaper.ts": 1,
     "lib/transactions/cda-esign.ts": 2,
@@ -4299,7 +4300,7 @@
     "lib/transactions/contract-terms.ts": 1,
     "lib/transactions/coordination-status.ts": 3,
     "lib/transactions/deadline-monitor.ts": 1,
-    "lib/transactions/deal-type-resolver.ts": 1,
+    "lib/transactions/deal-type-resolver.ts": 2,
     "lib/transactions/deal-vendor-notify.ts": 3,
     "lib/transactions/deal-vendor-targets.ts": 1,
     "lib/transactions/dotloop-document-sync.ts": 1,
@@ -15069,6 +15070,7 @@
       "pickStepVariant"
     ],
     "lib/campaign-sequences/auto-enroll.ts": [
+      "sequenceAdmitsAudience",
       "pickSequence",
       "autoEnrollContact"
     ],
@@ -16203,7 +16205,8 @@
       "persistHouseholdFinancialCaptures"
     ],
     "lib/enrichment/identifier-guard.ts": [
-      "hasUsableIdentifier"
+      "hasUsableIdentifier",
+      "contactPointsToBuy"
     ],
     "lib/enrichment/lead-enrichment-core.ts": [
       "queueLeadEnrichment",
@@ -16703,6 +16706,7 @@
       "usd2OrNull",
       "usdOrNA",
       "usdOrNAOnNullish",
+      "priceOrPendingReview",
       "axisCompactDollars"
     ],
     "lib/format/ordinal.ts": [
@@ -18350,6 +18354,13 @@
     "lib/kernel/portal.ts": [
       "dualBannerPredicate",
       "resolveDualPortalView",
+      "portalLayoutsFor",
+      "resolvePortalLayouts",
+      "portalShowsLayout",
+      "buildPortalNavForLayouts",
+      "determinePortalModulesForLayouts",
+      "clientTransactionFilter",
+      "pickLifetimeHomeTransaction",
       "determinePortalView",
       "determinePortalModules",
       "logPortalAccess",
@@ -20029,6 +20040,12 @@
       "resolveBuyerNotificationPreferences",
       "buyerWantsNotification",
       "getBuyerNotificationPreferences"
+    ],
+    "lib/notifications/notification-moments.ts": [
+      "momentForType",
+      "resolveMomentDealKeys",
+      "findMomentAlert",
+      "alreadyAlerted"
     ],
     "lib/notifications/notify-helpers.ts": [
       "notifyEsignSigned",
@@ -21710,6 +21727,9 @@
       "updateMoveTask",
       "getBuyerMoveCase"
     ],
+    "lib/transactions/buyer-representation.ts": [
+      "readBuyerRepresentation"
+    ],
     "lib/transactions/cda-delivery-policy.ts": [
       "classifyUndeliveredCda"
     ],
@@ -21773,6 +21793,7 @@
       "checkTransactionDeadlines"
     ],
     "lib/transactions/deal-type-resolver.ts": [
+      "buyerStageShowsRepresentation",
       "resolveDealType"
     ],
     "lib/transactions/deal-vendor-notify.ts": [
