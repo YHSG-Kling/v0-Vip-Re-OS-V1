@@ -123,6 +123,10 @@ export const CLASSIFICATION: Record<string, { verdict: Verdict; why: string }> =
     verdict: "anchored",
     why: "scopeToDealTenant (wave 96A): brokerageId is non-null ONLY when portalDealClient's gate (requireContactAccess) admitted the caller and elevated to the service client — then the read is pinned to that tenant. A null means the gate did NOT elevate: the client is the caller's own SESSION client, so RLS anchors the read and it can only show less. The null never reaches a service-client read.",
   },
+  "lib/lead-intelligence/behavioral-summary.ts :: brokerageId": {
+    verdict: "anchored",
+    why: "lane 97B's dated intent reads (valuation_requests, ai_callback tasks, the contact's own row) are each pinned to ONE contact by `.eq(contact_id|id, contactId)` before the optional brokerage predicate — the tenant filter only NARROWS an already single-subject read, exactly like the osint/signals-log siblings beside it that carry no tenant filter at all. A null brokerageId cannot widen the read past that one contact.",
+  },
   "lib/marketing/tracked-qr.ts :: brokerageId": {
     verdict: "anchored",
     why: "the QR registry's owner model (wave 81D, m664): a brokerageId anchors the lookup to that tenant's codes; its absence anchors to brokerage_id IS NULL — the PLATFORM-owned codes (label platform:…) — never every tenant. Callers are the tenant mint (session tenant) and the platform mint (platform staff gate).",

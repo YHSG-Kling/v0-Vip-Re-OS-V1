@@ -24,6 +24,7 @@
   "lib/kernel/scraping.ts :: params.brokerageId": 1,
   "lib/kernel/self-heal-ledger.ts :: brokerageId": 1,
   "lib/kernel/write-sentinel.ts :: brokerageId": 1,
+  "lib/lead-intelligence/behavioral-summary.ts :: brokerageId": 3,
   "lib/lifetime-customer-npv/current.ts :: q.brokerageId": 1,
   "lib/marketing/tracked-qr.ts :: brokerageId": 1,
   "lib/remotion/render-cache.ts :: opts.brokerageId": 1,
