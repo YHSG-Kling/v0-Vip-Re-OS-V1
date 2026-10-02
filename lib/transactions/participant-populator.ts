@@ -29,6 +29,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { resolveOutsideAgentForDeal } from "@/lib/offers/outside-agent-record"
 
 export interface PopulateResult {
   inserted_count: number
@@ -125,10 +126,40 @@ export async function populateInitialParticipants(
   }
 
   // ── BUYER_AGENT ───────────────────────────────────────────────────────────
-  const buyerAgentId = (tx.agent_id as string | null) ?? (offer?.agent_id as string | null) ?? null
-  if (buyerAgentId) {
-    const buyerAgent = await resolveAgent(supabase, buyerAgentId)
-    if (buyerAgent) pending.push({ role: "buyer_agent", ...buyerAgent })
+  // THE COOPERATING AGENT FIRST (wave 94, lane 94B). An offer that arrived from
+  // an outside buyer's agent carries their outside_agents record
+  // (offers.metadata.outside_agent_id, walked up the counter chain). On such a
+  // deal `offers.agent_id` / `transactions.agent_id` is OUR listing agent — the
+  // old read put the listing agent on the roster TWICE (buyer_agent and
+  // seller_agent) and the real buyer's agent nowhere, so notifyTransactionParties
+  // could never email them the terms. A refused read is logged, never mistaken
+  // for "no outside agent": the in-house fallback below only runs when the
+  // chain genuinely names none.
+  let cooperating: Awaited<ReturnType<typeof resolveOutsideAgentForDeal>> = { agent: null, offerId: null, error: null }
+  if (tx.offer_id) {
+    cooperating = await resolveOutsideAgentForDeal(supabase, { brokerageId, offerId: tx.offer_id as string })
+    if (cooperating.error) console.error(`[participant-populator] cooperating agent lookup for ${transactionId}: ${cooperating.error}`)
+  }
+  const outsideAgent = cooperating.agent
+  const outsideName = outsideAgent
+    ? (outsideAgent.full_name ?? [outsideAgent.first_name, outsideAgent.last_name].filter(Boolean).join(" ")).trim() || outsideAgent.email
+    : null
+  if (outsideAgent && outsideName) {
+    pending.push({
+      role:           "buyer_agent",
+      name:           outsideName,
+      company:        outsideAgent.outside_brokerage_name ?? null,
+      email:          outsideAgent.email ?? null,
+      phone:          outsideAgent.phone ?? null,
+      license_number: outsideAgent.license_number ?? null,
+      notes:          "Cooperating buyer's agent (outside brokerage) — copied by email on deal activity.",
+    })
+  } else if (!cooperating.error) {
+    const buyerAgentId = (tx.agent_id as string | null) ?? (offer?.agent_id as string | null) ?? null
+    if (buyerAgentId) {
+      const buyerAgent = await resolveAgent(supabase, buyerAgentId)
+      if (buyerAgent) pending.push({ role: "buyer_agent", ...buyerAgent })
+    }
   }
 
   // ── SELLER ────────────────────────────────────────────────────────────────

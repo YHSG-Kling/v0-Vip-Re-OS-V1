@@ -534,6 +534,9 @@ export async function sendCounterOffer(params: {
       parent_offer_id: parentOfferId,
       counter_price:   counterPrice,
       round:           nextRound,
+      // The cooperating buyer's agent's copy names the deadline (wave 94 —
+      // lib/offers/outside-agent-record.ts composeCooperatingAgentCopy).
+      response_deadline: responseDeadline,
     },
   }).catch(() => {})
 

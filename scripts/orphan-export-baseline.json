@@ -172,6 +172,7 @@
     "lib/geo/citation-share.ts": 1,
     "lib/geo/publish-video-landing.ts": 1,
     "lib/geo/video-landing.ts": 1,
+    "lib/inbound-mail/offer-intake.ts": 1,
     "lib/intelligence/agent-registry.ts": 1,
     "lib/intelligence/appointment-whisper.ts": 1,
     "lib/intelligence/brokerage-pnl.ts": 2,
@@ -371,7 +372,9 @@
     "lib/newsletter/seo-score.ts": 1,
     "lib/offers/closing-cost-accuracy.ts": 5,
     "lib/offers/net-sheet-calc.ts": 1,
+    "lib/offers/offer-extractor.ts": 1,
     "lib/offers/offer-target.ts": 1,
+    "lib/offers/outside-agent-record.ts": 1,
     "lib/onboarding/certification-engine.ts": 1,
     "lib/onboarding/checkin-cadence.ts": 2,
     "lib/onboarding/critical-setup.ts": 1,
@@ -399,7 +402,7 @@
     "lib/platform/product-demo.ts": 1,
     "lib/platform/prospect-agent-tools.ts": 1,
     "lib/platform/prospect-capture.ts": 5,
-    "lib/platform/prospect-conversion.ts": 3,
+    "lib/platform/prospect-conversion.ts": 2,
     "lib/platform/prospect-sourcer.ts": 2,
     "lib/platform/provider-posture.ts": 1,
     "lib/platform/public-tiers.ts": 1,
@@ -509,7 +512,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10485,
+  "census": 10502,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -862,7 +865,7 @@
     "app/actions/observability/observability-actions.ts": 4,
     "app/actions/offer-intents.ts": 4,
     "app/actions/offer-kernel-actions.ts": 3,
-    "app/actions/offers/present-to-seller.ts": 3,
+    "app/actions/offers/present-to-seller.ts": 4,
     "app/actions/onboarding/agent-onboarding-actions.ts": 1,
     "app/actions/onboarding/brand.ts": 7,
     "app/actions/onboarding/daily-plan.ts": 1,
@@ -3356,8 +3359,8 @@
     "lib/inbound-mail/deal-doc-router.ts": 2,
     "lib/inbound-mail/oauth-fetchers.ts": 2,
     "lib/inbound-mail/offer-detect.ts": 6,
-    "lib/inbound-mail/offer-intake.ts": 3,
-    "lib/inbound-mail/providers.ts": 4,
+    "lib/inbound-mail/offer-intake.ts": 4,
+    "lib/inbound-mail/providers.ts": 5,
     "lib/inbound-mail/resolve-user-provider.ts": 2,
     "lib/inbox/smart-replies.ts": 1,
     "lib/income-engine/action-recommender.ts": 1,
@@ -3967,12 +3970,13 @@
     "lib/offers/multi-offer-rules.ts": 2,
     "lib/offers/net-sheet-calc.ts": 12,
     "lib/offers/offer-analyzer.ts": 1,
-    "lib/offers/offer-extractor.ts": 1,
+    "lib/offers/offer-extractor.ts": 2,
     "lib/offers/offer-math.ts": 1,
     "lib/offers/offer-strategy-advisor.ts": 1,
     "lib/offers/offer-strategy-types.ts": 1,
     "lib/offers/offer-strength.ts": 2,
     "lib/offers/offer-target.ts": 5,
+    "lib/offers/outside-agent-record.ts": 13,
     "lib/offers/public-record-preload.ts": 1,
     "lib/offers/regional-closing-costs.ts": 8,
     "lib/offers/seller-closing-costs.ts": 4,
@@ -6857,6 +6861,7 @@
     "app/actions/offers/present-to-seller.ts": [
       "presentOfferToSeller",
       "unpresentOfferFromSeller",
+      "getCooperatingAgentsForListing",
       "getOfferPresentationStates"
     ],
     "app/actions/onboarding/agent-onboarding-actions.ts": [
@@ -16868,10 +16873,12 @@
     ],
     "lib/inbound-mail/offer-intake.ts": [
       "tryIngestInboundOffer",
+      "afterInboundOfferRead",
       "tryRouteOutboundOfferReply",
       "linkInboundDocumentsToOffer"
     ],
     "lib/inbound-mail/providers.ts": [
+      "splitAddressHeader",
       "detectInboundProvider",
       "verifyInbound",
       "parseInbound",
@@ -20115,7 +20122,8 @@
       "analyzeAndCompareOffers"
     ],
     "lib/offers/offer-extractor.ts": [
-      "extractOfferFromPdf"
+      "extractOfferFromPdf",
+      "applyExtractedOfferData"
     ],
     "lib/offers/offer-math.ts": [
       "calcNetToSeller"
@@ -20136,6 +20144,21 @@
       "motivationFromBuyer",
       "marketConditionsFromDom",
       "resolveBuyerMaxBudget"
+    ],
+    "lib/offers/outside-agent-record.ts": [
+      "phoneDigits",
+      "parseOutsideAgentFromEmail",
+      "overlayOutsideAgentFields",
+      "outsideAgentFillPatch",
+      "parseBuyerNameFromEmail",
+      "buyerNamesAsOne",
+      "cooperatingAgentCopyPlan",
+      "composeCooperatingAgentCopy",
+      "upsertOutsideAgentRecord",
+      "linkOutsideAgentToBuyer",
+      "readOutsideRepresentation",
+      "resolveOutsideAgentForDeal",
+      "copyCooperatingAgentOnDealMoment"
     ],
     "lib/offers/public-record-preload.ts": [
       "preloadPublicRecordCosts"

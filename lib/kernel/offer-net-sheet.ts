@@ -94,8 +94,9 @@ export async function runOfferNetSheets(
     // Open offers on this listing.
     const { data: offers } = await supabase
       .from("offers")
-      .select("id, contact_id, offer_price, closing_cost_contribution, financing_type, status, submitted_at")
+      .select("id, contact_id, offer_price, closing_cost_contribution, financing_type, status, submitted_at, presented_to_seller_at, seller_net_estimate")
       .eq("listing_id", lst.id)
+      .eq("brokerage_id", brokerageId)
       .in("status", OPEN_OFFER_STATUSES)
       .order("offer_price", { ascending: false })
 
@@ -104,6 +105,18 @@ export async function runOfferNetSheets(
     result.listingsScanned += 1
 
     const signature = offerSetSignature(open.map((o) => o.id as string))
+    // THE RELEASE GATE REACHES THE CARD (wave 94, lane 94B). The seller portal card
+    // used to cover EVERY open offer, so an emailed offer the listing agent had not
+    // yet reviewed announced itself on the seller's portal ("Your offer: net
+    // proceeds summary") the moment it was read — the inverse of the owner's
+    // ruling that the agent DECIDES what the seller sees
+    // (app/actions/offers/present-to-seller.ts, offers.presented_to_seller_at).
+    // The agent summary still covers every open offer; the card covers only the
+    // RELEASED ones and is idempotent per released set, so the release itself
+    // (which calls this runner for its listing) produces the card even when the
+    // agent summary for the same offers already exists.
+    const released = open.filter((o) => !!o.presented_to_seller_at)
+    const releasedSignature = released.length > 0 ? offerSetSignature(released.map((o) => o.id as string)) : null
 
     // IDEMPOTENCY: one comparison per (listing, offer-set) per 24h. Keyed on the agent
     // summary's rationale prefix + the offer-set signature.
@@ -117,7 +130,24 @@ export async function runOfferNetSheets(
       .gte("created_at", sinceIso)
       .limit(1)
       .maybeSingle()
-    if (existing) continue
+    const needAgentSummary = !existing
+    let needCard = false
+    if (releasedSignature) {
+      const { data: cards, error: cardReadErr } = await supabase
+        .from("transparency_updates")
+        .select("id")
+        .eq("brokerage_id", brokerageId)
+        .eq("listing_id", lst.id)
+        .eq("update_type", "offer_net_sheet")
+        .filter("metadata->>offer_set_signature", "eq", releasedSignature)
+        .limit(1)
+      // FAIL CLOSED: a refused read is not "no card yet" — a duplicate card on the
+      // seller's portal is the failure this check exists to prevent.
+      if (cardReadErr) console.error(`[offer-net-sheet] listing ${lst.id}: card dedupe read refused (${cardReadErr.message}) — no card this run`)
+      needCard = !cardReadErr && (cards ?? []).length === 0
+    }
+    const needStamp = open.some((o) => o.seller_net_estimate == null)
+    if (!needAgentSummary && !needCard && !needStamp) continue
 
     // Resolve buyer names (best-effort).
     const buyerNameById = new Map<string, string | null>()
@@ -266,27 +296,59 @@ export async function runOfferNetSheets(
     const ranking = rankOffersByNet(inputs, costs)
     const fallback = composeComparisonFallback({ listingAddress: lst.address ?? "your listing", ranking })
 
+    // THE PER-OFFER NET (wave 94). offers.seller_net_estimate is what the seller
+    // portal's "most money in your pocket" line and the agent's offer cards read;
+    // for an emailed offer nothing wrote it until a paid AI comparison ran. Stamped
+    // here from the same ranking, ONLY where empty (an AI analysis or an agent's
+    // own figure is never overwritten) and ONLY when the policy is not red — a net
+    // computed on an unconfirmed default payoff overstates what the seller keeps,
+    // and red keeps dollar figures agent-only (decideNetSheetPolicy).
+    if (needStamp && netPolicy.decision !== "red") {
+      for (const line of ranking.lines) {
+        const row = open.find((o) => o.id === line.offerId)
+        if (!row || row.seller_net_estimate != null) continue
+        const { error: stampErr } = await supabase
+          .from("offers")
+          .update({ seller_net_estimate: Math.round(line.netProceeds) })
+          .eq("id", line.offerId)
+          .eq("brokerage_id", brokerageId)
+          .is("seller_net_estimate", null)
+        if (stampErr) console.error(`[offer-net-sheet] offer ${line.offerId}: seller_net_estimate not stamped: ${stampErr.message}`)
+      }
+    }
+
+    // The seller card ranks the RELEASED offers only (see the release gate above).
+    const releasedInputs = inputs.filter((i) => released.some((o) => o.id === i.offerId))
+    const releasedRanking = releasedInputs.length > 0 ? rankOffersByNet(releasedInputs, costs) : null
+    const releasedFallback = releasedRanking
+      ? composeComparisonFallback({ listingAddress: lst.address ?? "your listing", ranking: releasedRanking })
+      : null
+
     // PERSONA-AWARE COPY for the seller card (deterministic fallback = composeComparisonFallback).
-    const { generatePersonaCopy, loadContactPersona } = await import("@/lib/kernel/ai-copy")
-    const sellerPersona = await loadContactPersona(supabase, lst.seller_contact_id).catch(() => ({ audience: "seller" as const }))
-    const facts = [
-      `We compared ${inputs.length === 1 ? "your offer" : `${inputs.length} offers`} on your home by net proceeds (what you keep after costs)`,
-      ranking.netBeatsPrice
-        ? "The offer that nets you the most is not the highest-priced one"
-        : "The highest-priced offer also nets you the most",
-      "This is a read-only summary — your agent will walk you through every number",
-    ]
-    const sellerBody = (await generatePersonaCopy(
-      {
-        goal: "a short, warm portal update telling the seller their offer net-proceeds comparison is ready (read-only, no pressure)",
-        facts,
-        channel: "portal",
-        persona: { ...sellerPersona, audience: "seller", situation: "home seller weighing offers" },
-        words: 60,
-      },
-      { body: fallback.sellerCardBody },
-      { generator: opts.copyGenerator },
-    )).body
+    // Generated only when a card will be written — it is a model call.
+    let sellerBody = ""
+    if (needCard && releasedRanking && releasedFallback) {
+      const { generatePersonaCopy, loadContactPersona } = await import("@/lib/kernel/ai-copy")
+      const sellerPersona = await loadContactPersona(supabase, lst.seller_contact_id).catch(() => ({ audience: "seller" as const }))
+      const facts = [
+        `We compared ${releasedInputs.length === 1 ? "your offer" : `${releasedInputs.length} offers`} on your home by net proceeds (what you keep after costs)`,
+        releasedRanking.netBeatsPrice
+          ? "The offer that nets you the most is not the highest-priced one"
+          : "The highest-priced offer also nets you the most",
+        "This is a read-only summary — your agent will walk you through every number",
+      ]
+      sellerBody = (await generatePersonaCopy(
+        {
+          goal: "a short, warm portal update telling the seller their offer net-proceeds comparison is ready (read-only, no pressure)",
+          facts,
+          channel: "portal",
+          persona: { ...sellerPersona, audience: "seller", situation: "home seller weighing offers" },
+          words: 60,
+        },
+        { body: releasedFallback.sellerCardBody },
+        { generator: opts.copyGenerator },
+      )).body
+    }
 
     // (a) GATED agent-facing comparison summary — proposed, audience 'agent', never auto-sent.
     const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
@@ -296,7 +358,7 @@ export async function runOfferNetSheets(
       ranking.netBeatsPrice && winnerLine && priceLine
         ? ` nets ~${fmtUsd(winnerLine.netProceeds - priceLine.netProceeds)} more despite a lower price`
         : ""
-    const proposed = await proposeClientMessage(
+    const proposed = !needAgentSummary ? { ok: false, id: null as string | null } : await proposeClientMessage(
       {
         brokerageId,
         // Listing Concierge owns the seller side; Deal Coordinator is the other valid kind.
@@ -325,21 +387,22 @@ export async function runOfferNetSheets(
     // (b) PORTAL VALUE CARD — read-only, seller-safe, auto-pushed (the point: always
     // give the portal value to keep the seller engaged). transparency_updates is the
     // canonical "what's happening on my deal" card the portal reads.
+    if (!needCard || !releasedRanking) continue
     const { error: cardErr } = await supabase.from("transparency_updates").insert({
       brokerage_id: brokerageId,
       contact_id: lst.seller_contact_id,
       listing_id: lst.id,
-      title: inputs.length === 1 ? "Your offer: net proceeds summary" : "Your offers: side-by-side net comparison",
+      title: releasedInputs.length === 1 ? "Your offer: net proceeds summary" : "Your offers: side-by-side net comparison",
       plain_language_summary: sellerBody,
       message: sellerBody,
       update_type: "offer_net_sheet",
       is_visible_to_client: true,
       metadata: {
-        offer_set_signature: signature,
-        offer_count: inputs.length,
-        net_winner_offer_id: ranking.topByNet,
-        price_winner_offer_id: ranking.topByPrice,
-        net_beats_price: ranking.netBeatsPrice,
+        offer_set_signature: releasedSignature,
+        offer_count: releasedInputs.length,
+        net_winner_offer_id: releasedRanking.topByNet,
+        price_winner_offer_id: releasedRanking.topByPrice,
+        net_beats_price: releasedRanking.netBeatsPrice,
         agent_summary_id: proposed.id ?? null,
         seller_safe: true,
         net_policy: netPolicy.decision, // green/amber/red — the portal shows numbers only via the agent anyway
@@ -347,6 +410,7 @@ export async function runOfferNetSheets(
       created_at: now.toISOString(),
     })
     if (!cardErr) result.portalCardsPushed += 1
+    else console.error(`[offer-net-sheet] listing ${lst.id}: seller card refused: ${cardErr.message}`)
   }
 
   return result

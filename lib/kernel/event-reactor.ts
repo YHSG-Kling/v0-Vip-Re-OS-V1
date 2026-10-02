@@ -23,6 +23,7 @@ import { resolveEventContacts } from "@/lib/kernel/resolve-event-contacts"
 import { publishManagerSignal } from "@/lib/kernel/manager-signals"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
 import { KernelEvent } from "@/lib/kernel/events"
+import { cooperatingAgentCopyPlan, copyCooperatingAgentOnDealMoment } from "@/lib/offers/outside-agent-record"
 
 // Valid KernelEvent string values — used to gate sequence enrollment + portal so a non-KernelEvent
 // lifecycle string (e.g. "milestone.completed") never runs the campaign_sequences query or a portal
@@ -172,6 +173,30 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       } catch (err) {
         console.error("[event-reactor] portal update failed:", err)
       }
+    }
+  }
+
+  // (C-bis) THE COOPERATING BUYER'S AGENT IS COPIED (wave 94, lane 94B). Owner:
+  // the outside buyer's agent "will be copied on notifications of the
+  // accepted/counter offer and any activity on the transaction". Placed HERE,
+  // the one point every emitted deal event passes, so a new emitter is covered
+  // without a new call site. The plan is pure and decided before any read
+  // (cooperatingAgentCopyPlan), so a non-deal event costs nothing; the accept
+  // moment is owned by the parties packet (notifyTransactionParties) and is not
+  // copied twice. Email only — never SMS. Never throws into the reactor.
+  if (params.brokerageId && isKnownEvent && cooperatingAgentCopyPlan(params.event, (params.metadata ?? {}) as Record<string, unknown>, params.entityId)) {
+    try {
+      const copy = await copyCooperatingAgentOnDealMoment(svc as any, {
+        brokerageId:   params.brokerageId,
+        event:         params.event,
+        entityType:    params.entityType,
+        entityId:      params.entityId,
+        transactionId: params.transactionId ?? null,
+        metadata:      (params.metadata ?? {}) as Record<string, unknown>,
+      })
+      if (copy.error) console.error(`[event-reactor] cooperating agent copy (${params.event}): ${copy.error}`)
+    } catch (err) {
+      console.error("[event-reactor] cooperating agent copy failed:", err)
     }
   }
 

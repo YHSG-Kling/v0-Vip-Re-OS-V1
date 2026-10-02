@@ -67,6 +67,8 @@ let callIndex = 0
 const pending: { index: number; sql: string; sig: string }[] = []
 export const externalCalls: string[] = []
 export const emulations: string[] = []
+/** BRIDGE_EMAIL_EMULATE=1: every SendGrid send the governed egress let through (recipient + subject). */
+export const emailsEmulated: Array<{ to: string; subject: string }> = []
 
 export class BridgeStop extends Error { constructor() { super("BRIDGE_STOP") } }
 
@@ -91,8 +93,23 @@ export function installDeterminism() {
   Math.random = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646 }
   const realFetch = globalThis.fetch
   void realFetch
-  globalThis.fetch = (async (input: any) => {
+  globalThis.fetch = (async (input: any, init?: any) => {
     const url = typeof input === "string" ? input : input?.url ?? String(input)
+    // BRIDGE_EMAIL_EMULATE=1 (wave 94, lane 94B): the SendGrid send is ACKNOWLEDGED (202) without
+    // leaving the sandbox, and the recipient + subject are recorded in `emailsEmulated`, so a walk
+    // can prove WHO the governed egress (lib/providers/dispatch.ts) let through and the ledger rows
+    // the caller writes only after an accepted send. Nothing is delivered (published blind spot).
+    if (process.env.BRIDGE_EMAIL_EMULATE === "1" && url.startsWith("https://api.sendgrid.com/v3/mail/send")) {
+      let to = "?", subject = "?"
+      try {
+        const body = JSON.parse(typeof init?.body === "string" ? init.body : String(init?.body ?? "{}"))
+        to = (body.personalizations?.[0]?.to ?? []).map((t: any) => t.email).join(",")
+        subject = String(body.subject ?? "")
+      } catch { /* recorded as '?' */ }
+      emailsEmulated.push({ to, subject })
+      emulations.push(`sendgrid mail.send → ${to} "${subject.slice(0, 80)}" acknowledged 202, not delivered`)
+      return new Response(null, { status: 202, headers: { "x-message-id": `bridge-${emailsEmulated.length}` } })
+    }
     externalCalls.push(url)
     throw new Error(`[mcp-bridge] external call refused in the walkthrough: ${url}`)
   }) as typeof fetch

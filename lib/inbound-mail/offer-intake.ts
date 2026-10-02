@@ -77,6 +77,14 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { uploadDocument } from "@/lib/documents/upload-document"
 import { putAndSign, removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
+import type { ExtractedOfferData } from "@/lib/offers/offer-extractor"
+import {
+  parseOutsideAgentFromEmail, parseBuyerNameFromEmail, buyerNamesAsOne, overlayOutsideAgentFields,
+  outsideAgentFillPatch, upsertOutsideAgentRecord, linkOutsideAgentToBuyer,
+  OUTSIDE_AGENT_ID_KEY, OUTSIDE_AGENT_BUYER_LINK_ROLE, OUTSIDE_AGENT_SOURCE_INBOUND_EMAIL, OUTSIDE_BUYER_INTAKE_SOURCE,
+  REPRESENTED_BY_OUTSIDE_AGENT_KEY,
+} from "@/lib/offers/outside-agent-record"
+import { splitPersonName } from "@/lib/platform/prospect-conversion"
 import {
   looksLikeOffer, matchListingByAddress, assessOfferIntake, planInboundFiling,
   planInboundOfferLink,
@@ -108,7 +116,10 @@ export type OfferMatchKey = "listing_agent_mailbox" | "brokerage_wide_unkeyed"
 
 export interface OfferIntakeResult {
   handled: boolean
-  outcome?: "auto" | "confirm"
+  /** auto = known sender contact; outside_agent = an outside buyer's agent (record + intake buyer, wave 94); confirm = the fallback. */
+  outcome?: "auto" | "confirm" | "outside_agent"
+  /** outside_agents.id of the cooperating agent on an outside_agent intake. */
+  outsideAgentId?: string
   offerId?: string
   listingId?: string
   /** documents.id of every inbound PDF filed into the deal-file ledger. */
@@ -161,6 +172,8 @@ export async function tryIngestInboundOffer(
     subject: string | null
     bodyText: string | null
     fromEmail: string | null
+    /** The sender's display name, when the provider gave one (wave 94). */
+    fromName?: string | null
     /** The resolved buyer contact when the SENDER is a known contact (null for outside agents). */
     senderContactId: string | null
     /** WHOSE inbox this arrived in. The detection authority — see the header. */
@@ -170,7 +183,6 @@ export async function tryIngestInboundOffer(
   client?: Svc,
 ): Promise<OfferIntakeResult> {
   const svc = client ?? createServiceClient()
-  const errors: string[] = []
   const pdfs = input.attachments.filter((a) => a.mime === "application/pdf" && a.contentB64)
   if (pdfs.length === 0) return { handled: false }
 
@@ -265,14 +277,43 @@ export async function tryIngestInboundOffer(
     )
   }
 
-  // CONFIRM — the OUTSIDE BUYER'S AGENT path (they are not a known contact, so
-  // there is no buyer to fill the NOT-NULL offers.contact_id and we will not
-  // fabricate one). We still FILE THE PAPER: the contract is the whole point of
-  // the email, and the branch that used to discard it is the branch the owner's
-  // scenario actually takes. Filed against the LISTING (documents.listing_id),
-  // which is the link `auditListingDocuments` reads, and marked as awaiting the
-  // offer it will be linked to when the agent ingests it.
+  // THE OUTSIDE BUYER'S AGENT — WAVE 94 (lane 94B), owner verbatim: "an outside
+  // offer will most likely come into the listing agents email from an outside
+  // buyers agent who we need to create a record for this outside agent … once
+  // this email comes in, the automation of uploading to the listing and ai reads
+  // it to notify the listing agent and then they decide if the offer info and
+  // doc and automatic netsheet shows in the seller's portal".
+  //
+  // The sender is not a known contact — that is the DEFINITION of this case — so
+  // this branch used to stop at "confirm": file the paper and ask the listing
+  // agent to re-upload it with a buyer. The owner's flow has no such step; the
+  // agent's ONE action is the release to the seller
+  // (app/actions/offers/present-to-seller.ts). So the offer is now created here,
+  // through the SAME writer as the known-sender branch below
+  // (createOfferFromInboundEmail), with:
+  //   · the outside agent filed as an `outside_agents` RECORD (never a seat,
+  //     never a contact, never a lead) — lib/offers/outside-agent-record.ts;
+  //   · the buyer filed as an INTAKE record (contacts.source
+  //     'outside_offer_intake', status 'inactive', no agent) because
+  //     offers.contact_id is NOT NULL and the paperwork needs a party — the
+  //     same "intake record we logged for the paperwork" the offer→deal bridge
+  //     already treats as an OUTSIDE party (lib/transactions/offer-bridge.ts
+  //     representation block) — and linked to the agent through
+  //     outside_agent_contact_links (link_role cooperating_buyer_agent).
+  //
+  // The old confirm branch is KEPT as the fallback when the record cannot be
+  // made (no sender address, a refused write): the paper is still filed and the
+  // listing agent is still told, exactly as before.
   if (decision === "confirm") {
+    const outside = await intakeOutsideAgentOffer(svc, {
+      input, match, pdfs, provenance, matchKey, mailboxUserId,
+      sweepTruncated: sweep.truncated,
+    })
+    if (outside.handled) return outside
+    if (outside.errors?.length) {
+      console.error(`[offer-intake] the outside-agent offer for ${match.address} could not be created — falling back to confirm:`, outside.errors.join(" | "))
+    }
+
     const filed = await fileInboundPdfs(svc, {
       brokerageId: input.brokerageId,
       listingId:   match.id,
@@ -284,7 +325,7 @@ export async function tryIngestInboundOffer(
     try {
       const agentUserId = await resolveListingAgentUser(svc, match.agent_id ?? null)
       if (agentUserId) {
-        await svc.from("notifications").insert({
+        const { error: notifyErr } = await svc.from("notifications").insert({
           user_id: agentUserId, brokerage_id: input.brokerageId, type: "offer_intake_review",
           title: "📨 Possible offer received by email",
           body: `An email${input.fromEmail ? ` from ${input.fromEmail}` : ""} looks like an offer for ${match.address}. `
@@ -293,15 +334,119 @@ export async function tryIngestInboundOffer(
                  : `The attachment could NOT be filed (${filed.errors.join("; ") || "unknown error"}) — open the email and upload it manually.`),
           entity_type: "listing", entity_id: match.id, priority: "high", is_read: false,
         })
+        if (notifyErr) console.error("[offer-intake] confirm notice refused:", notifyErr.message)
       }
     } catch (e) { console.error("[offer-intake] confirm notify failed:", e) }
     return {
       handled: true, outcome: "confirm", listingId: match.id, documentIds: filed.documentIds,
-      matchKey, listingSweepTruncated: sweep.truncated, errors: filed.errors,
+      matchKey, listingSweepTruncated: sweep.truncated, errors: [...(outside.errors ?? []), ...filed.errors],
     }
   }
 
-  // AUTO — store the offer PDF, create the offer (buyer = known sender contact), kick extraction.
+  // AUTO — the buyer is a known sender contact.
+  return createOfferFromInboundEmail(svc, {
+    input, match, pdfs, provenance, matchKey, mailboxUserId,
+    sweepTruncated: sweep.truncated,
+    contactId: input.senderContactId as string,
+    outcome: "auto",
+  })
+}
+
+interface InboundOfferContext {
+  input: Parameters<typeof tryIngestInboundOffer>[0]
+  match: ListingLite
+  pdfs: InboundOfferAttachment[]
+  provenance: Record<string, unknown>
+  matchKey: OfferMatchKey
+  mailboxUserId: string | null
+  sweepTruncated: boolean
+}
+
+/**
+ * THE OUTSIDE-AGENT HALF (wave 94). Record the agent, file the intake buyer,
+ * link them, then create the offer through the one writer. Returns
+ * handled:false (with the reason) when any step that the offer depends on is
+ * refused, so the caller falls back to the confirm branch — never a half-made
+ * offer with no buyer.
+ */
+async function intakeOutsideAgentOffer(svc: Svc, ctx: InboundOfferContext): Promise<OfferIntakeResult> {
+  const { input, match } = ctx
+  const fields = parseOutsideAgentFromEmail({ fromEmail: input.fromEmail, fromName: input.fromName ?? null, bodyText: input.bodyText })
+  const record = await upsertOutsideAgentRecord(svc as unknown as SupabaseClient, {
+    brokerageId: input.brokerageId,
+    fields,
+    source: OUTSIDE_AGENT_SOURCE_INBOUND_EMAIL,
+    notes: `First seen on an emailed offer for ${match.address}.`,
+  })
+  if (!record.ok || !record.id) return { handled: false, errors: [record.error ?? "outside agent record not made"] }
+  if (record.error) console.warn(`[offer-intake] outside agent ${record.id}: ${record.error}`)
+
+  // The intake buyer: REUSED when this agent already has one on this listing
+  // (a revised offer from the same agent is the same buyer), else filed.
+  const { data: links, error: linkReadErr } = await svc
+    .from("outside_agent_contact_links")
+    .select("contact_id")
+    .eq("brokerage_id", input.brokerageId)
+    .eq("outside_agent_id", record.id)
+    .eq("listing_id", match.id)
+    .eq("link_role", OUTSIDE_AGENT_BUYER_LINK_ROLE)
+    .limit(1)
+  if (linkReadErr) return { handled: false, errors: [`buyer link lookup refused: ${linkReadErr.message}`] }
+  let buyerContactId = ((links ?? []) as Array<{ contact_id: string }>)[0]?.contact_id ?? null
+  if (!buyerContactId) {
+    const named = splitPersonName(parseBuyerNameFromEmail(input.bodyText))
+    const agentLabel = fields.fullName ?? fields.email ?? "outside agent"
+    const { data: buyer, error: buyerErr } = await svc.from("contacts").insert({
+      brokerage_id: input.brokerageId,
+      first_name:   named.first || "Buyer",
+      // '' not a "(via …)" label: the seller portal redacts a buyer to first
+      // name + last INITIAL, and a label's first character is not an initial.
+      last_name:    named.last,
+      contact_type: "other",
+      status:       "inactive",
+      source:       OUTSIDE_BUYER_INTAKE_SOURCE,
+      notes:        `Buyer on an emailed offer for ${match.address}, represented by ${agentLabel}${fields.brokerageName ? ` (${fields.brokerageName})` : ""}. Not our client — an intake record for the paperwork; contact goes through their agent.`,
+      metadata:     {
+        intake_source: "inbound_email",
+        [REPRESENTED_BY_OUTSIDE_AGENT_KEY]: record.id,
+        listing_id: match.id,
+        name_source: named.first ? "email_body" : "placeholder",
+      },
+    }).select("id").single()
+    if (buyerErr || !buyer) return { handled: false, errors: [`intake buyer not filed: ${buyerErr?.message ?? "no row"}`] }
+    buyerContactId = (buyer as { id: string }).id
+    const linked = await linkOutsideAgentToBuyer(svc as unknown as SupabaseClient, {
+      brokerageId: input.brokerageId, outsideAgentId: record.id, contactId: buyerContactId,
+      listingId: match.id,
+    })
+    if (!linked.ok) console.error(`[offer-intake] outside agent ${record.id} ↔ buyer ${buyerContactId}: ${linked.error}`)
+  }
+
+  return createOfferFromInboundEmail(svc, {
+    ...ctx,
+    contactId: buyerContactId,
+    outcome: "outside_agent",
+    outsideAgentId: record.id,
+    outsideAgentLabel: [fields.fullName, fields.brokerageName].filter(Boolean).join(", ") || fields.email,
+  })
+}
+
+/**
+ * THE ONE INBOUND OFFER WRITER — store the contract, create the offer, file
+ * every PDF, link the earlier paperwork of the conversation, and start the AI
+ * read. Both the known-sender branch and the outside-agent branch come here.
+ */
+async function createOfferFromInboundEmail(
+  svc: Svc,
+  ctx: InboundOfferContext & {
+    contactId: string
+    outcome: "auto" | "outside_agent"
+    outsideAgentId?: string
+    outsideAgentLabel?: string | null
+  },
+): Promise<OfferIntakeResult> {
+  const { input, match, pdfs, provenance, matchKey } = ctx
+  const errors: string[] = []
   try {
     const pdf = pdfs[0]
     const buf = Buffer.from(pdf.contentB64 as string, "base64")
@@ -320,14 +465,15 @@ export async function tryIngestInboundOffer(
     if (!stored.ok) {
       errors.push(`${pdf.fileName}: ${stored.error}${stored.orphanRecorded ? " (orphan recorded for sweep)" : ""}`)
       console.error(`[offer-intake] the inbound contract could not be stored: ${stored.error}`)
-      return { handled: false, matchKey, listingSweepTruncated: sweep.truncated, errors }
+      return { handled: false, matchKey, listingSweepTruncated: ctx.sweepTruncated, errors }
     }
     const publicUrl = stored.signedUrl
 
     const { data: offer, error: offerErr } = await svc.from("offers").insert({
-      listing_id: match.id, contact_id: input.senderContactId, brokerage_id: input.brokerageId,
+      listing_id: match.id, contact_id: ctx.contactId, brokerage_id: input.brokerageId,
       agent_id: match.agent_id ?? null,
       offer_price: 0, offer_document_url: publicUrl, offer_document_name: pdf.fileName,
+      property_address: match.address ?? null,
       ai_extraction_status: "pending", offer_type: "standard", current_round: 1,
       // THE ORIGIN, RECORDED. `form_source` is the column that already means
       // "where did this paperwork come from" (live CHECK: portal_upload |
@@ -340,7 +486,13 @@ export async function tryIngestInboundOffer(
       // answer honestly instead of guessing, and therefore what lets the
       // buyer-signature refusal name the evidence that CAN unblock this deal.
       form_source: "manual",
-      metadata: { ...provenance },
+      metadata: {
+        ...provenance,
+        // The cooperating agent on this offer — read by the participant
+        // populator (buyer_agent on the deal roster) and by every copy of a
+        // deal moment (lib/offers/outside-agent-record.ts).
+        ...(ctx.outsideAgentId ? { [OUTSIDE_AGENT_ID_KEY]: ctx.outsideAgentId, outside_buyer_intake: true } : {}),
+      },
       status: "submitted", submitted_at: new Date().toISOString(),
     }).select("id").maybeSingle()
     const offerId = (offer as { id: string } | null)?.id
@@ -360,7 +512,7 @@ export async function tryIngestInboundOffer(
       if (!undo.orphanRemoved && !undo.orphanRecorded) {
         errors.push(`the stored contract could not be removed OR recorded: ${undo.orphanUnrecordedReason ?? "unknown"}`)
       }
-      return { handled: false, matchKey, listingSweepTruncated: sweep.truncated, errors }
+      return { handled: false, matchKey, listingSweepTruncated: ctx.sweepTruncated, errors }
     }
 
     // THE PAPER REACHES THE COUNT. Every PDF in the email is filed into the
@@ -372,7 +524,7 @@ export async function tryIngestInboundOffer(
       brokerageId: input.brokerageId,
       listingId:   match.id,
       offerId,
-      contactId:   input.senderContactId,
+      contactId:   ctx.contactId,
       pdfs,
       provenance,
       primaryStorageUrl: publicUrl,
@@ -391,8 +543,8 @@ export async function tryIngestInboundOffer(
       brokerageId: input.brokerageId,
       listingId:   match.id,
       offerId,
-      contactId:   input.senderContactId,
-      mailboxKey:  mailboxUserId,
+      contactId:   ctx.contactId,
+      mailboxKey:  ctx.mailboxUserId,
       subject:     input.subject,
       fromEmail:   input.fromEmail,
     }, svc)
@@ -400,21 +552,124 @@ export async function tryIngestInboundOffer(
       console.error(`[offer-intake] offer ${offerId}: inbound link errors:`, relinked.errors.join(" | "))
     }
 
-    // Kick AI extraction — on completion it hands off (data_steward → listing_concierge) the
-    // comparison-ready offer for the net sheet.
+    // THE AI READ, THEN THE LISTING AGENT. Extraction fills the offer's terms
+    // and, on completion, hands the comparison-ready offer to the Listing
+    // Concierge for the net sheet (data_steward → listing_concierge). When it
+    // settles — read or not — the listing agent is told, with what the read
+    // found (the owner's order: "ai reads it to notify the listing agent").
+    // The service client (lane 86F): this runs from the inbound-mail webhook
+    // with no session, where the extractor's cookie client wrote nothing.
     const { extractOfferFromPdf } = await import("@/lib/offers/offer-extractor")
-    // The service client (lane 86F): this runs from the inbound-mail webhook with no
-    // session, where the extractor's cookie client wrote nothing.
-    void extractOfferFromPdf({ offerId, brokerageId: input.brokerageId, pdfUrl: publicUrl, listingId: match.id, client: svc }).catch(() => {})
+    void extractOfferFromPdf({ offerId, brokerageId: input.brokerageId, pdfUrl: publicUrl, listingId: match.id, client: svc })
+      .then((read) => afterInboundOfferRead(svc, {
+        brokerageId: input.brokerageId, offerId, listing: match, buyerContactId: ctx.contactId,
+        outsideAgentId: ctx.outsideAgentId ?? null, outsideAgentLabel: ctx.outsideAgentLabel ?? null,
+        fromEmail: input.fromEmail, documentCount: filed.documentIds.length, read,
+      }))
+      .catch((e) => console.error(`[offer-intake] offer ${offerId}: post-read step failed:`, e))
     return {
-      handled: true, outcome: "auto", offerId, listingId: match.id, documentIds: filed.documentIds,
-      matchKey, listingSweepTruncated: sweep.truncated,
+      handled: true, outcome: ctx.outcome, offerId, listingId: match.id, documentIds: filed.documentIds,
+      matchKey, listingSweepTruncated: ctx.sweepTruncated,
+      outsideAgentId: ctx.outsideAgentId,
       errors: [...errors, ...filed.errors, ...relinked.errors],
     }
   } catch (e) {
     console.error("[offer-intake] auto-create failed:", e)
     return { handled: false, matchKey, errors: [...errors, String((e as Error)?.message ?? e)] }
   }
+}
+
+/**
+ * After the AI read settles: complete what the email could not say (the
+ * buyer's name on the intake record, the cooperating agent's missing fields —
+ * FILL-ONLY, the email header outranks the model), then tell the listing agent
+ * the offer is in and what to do next. A failed read still notifies, honestly.
+ * @proofSeam exported so scripts/inbound-offer-lane-simulator.ts (W94·H4) drives both arms against a stub and the run-vip-re-os bridge walk applies a stubbed model read; used in-file by createOfferFromInboundEmail.
+ */
+export async function afterInboundOfferRead(
+  svc: Svc,
+  p: {
+    brokerageId: string
+    offerId: string
+    listing: ListingLite
+    buyerContactId: string
+    outsideAgentId: string | null
+    outsideAgentLabel: string | null
+    fromEmail: string | null
+    documentCount: number
+    read: { success: boolean; error?: string; data?: ExtractedOfferData }
+  },
+): Promise<{ notified: boolean; errors: string[] }> {
+  const errors: string[] = []
+  const x = p.read.success ? p.read.data : undefined
+
+  if (x && p.outsideAgentId) {
+    // The buyer named on the contract replaces a PLACEHOLDER intake name only.
+    const buyerName = buyerNamesAsOne(x.buyer_names)
+    if (buyerName) {
+      const named = splitPersonName(buyerName)
+      const { error } = await svc.from("contacts")
+        .update({ first_name: named.first || "Buyer", last_name: named.last, metadata: { intake_source: "inbound_email", [REPRESENTED_BY_OUTSIDE_AGENT_KEY]: p.outsideAgentId, listing_id: p.listing.id, name_source: "ai_contract_read" } })
+        .eq("id", p.buyerContactId).eq("brokerage_id", p.brokerageId)
+        .eq("source", OUTSIDE_BUYER_INTAKE_SOURCE)
+        .filter("metadata->>name_source", "eq", "placeholder")
+        .select("id")
+      if (error) errors.push(`intake buyer name not filled: ${error.message}`)
+    }
+    const extra = overlayOutsideAgentFields(
+      { fullName: null, firstName: null, lastName: null, email: null, phone: null, brokerageName: null, licenseNumber: null },
+      { fullName: x.buyer_agent_name ?? null, phone: x.buyer_agent_phone ?? null, brokerageName: x.buyer_agent_brokerage ?? null, licenseNumber: x.buyer_agent_license ?? null },
+    )
+    const { data: cur, error: curErr } = await svc.from("outside_agents")
+      .select("id, full_name, first_name, last_name, phone, phone_digits, outside_brokerage_name, license_number")
+      .eq("id", p.outsideAgentId).eq("brokerage_id", p.brokerageId).maybeSingle()
+    if (curErr) errors.push(`outside agent read refused: ${curErr.message}`)
+    const patch = cur ? outsideAgentFillPatch(cur as Record<string, unknown>, extra) : {}
+    if (Object.keys(patch).length > 0) {
+      const { error } = await svc.from("outside_agents").update({ ...patch, updated_at: new Date().toISOString() })
+        .eq("id", p.outsideAgentId).eq("brokerage_id", p.brokerageId)
+      if (error) errors.push(`outside agent fill-in refused: ${error.message}`)
+    }
+  }
+
+  const agentUserId = await resolveListingAgentUser(svc, p.listing.agent_id ?? null)
+  if (!agentUserId) {
+    errors.push("the listing has no agent with a user seat — nobody was told")
+    return { notified: false, errors }
+  }
+  const price = x?.offer_price ? `$${Math.round(x.offer_price).toLocaleString("en-US")}` : null
+  const terms = x
+    ? [price, x.financing_type && `${x.financing_type} financing`, x.closing_date && `closing ${x.closing_date}`,
+       x.closing_cost_contribution ? `$${Math.round(x.closing_cost_contribution).toLocaleString("en-US")} seller credit asked` : null]
+        .filter(Boolean).join(", ")
+    : ""
+  const who = p.outsideAgentLabel ?? p.fromEmail ?? "an outside agent"
+  const body = p.read.success
+    ? `${who} emailed an offer for ${p.listing.address}${terms ? ` — ${terms}` : ""}. It is on the listing with ${p.documentCount} document${p.documentCount === 1 ? "" : "s"} and the AI has read it. Review it, then present it to your seller: one click puts the offer, the document and the net sheet in their portal.`
+    : `${who} emailed an offer for ${p.listing.address}. It is on the listing with ${p.documentCount} document${p.documentCount === 1 ? "" : "s"}, but the AI could not read it (${p.read.error ?? "unknown error"}) — open it, check the terms, then present it to your seller.`
+  const title = p.read.success ? `📨 New offer on ${p.listing.address}${price ? ` — ${price}` : ""}` : `📨 New offer on ${p.listing.address} — needs a manual read`
+  const { error: nErr } = await svc.from("notifications").insert({
+    user_id: agentUserId, brokerage_id: p.brokerageId, type: "offer",
+    title, body, entity_type: "offer", entity_id: p.offerId, priority: "high", is_read: false,
+  })
+  if (nErr?.code === "23505") {
+    // idx_notification_dedupe (live): ONE unread (user_id, entity_id, type) notice. A later read
+    // of the SAME offer — a successful re-read after a failed one — would be refused, and the
+    // agent would keep reading "needs a manual read" about an offer the AI has since read. The
+    // later read REPLACES the unread notice's text instead. Counted: a no-match update resolves too.
+    const { data: upd, error: uErr } = await svc.from("notifications").update({ title, body, priority: "high" })
+      .eq("user_id", agentUserId).eq("brokerage_id", p.brokerageId).eq("entity_id", p.offerId)
+      .eq("type", "offer").eq("is_read", false)
+      .select("id")
+    if (!uErr && (upd ?? []).length > 0) return { notified: true, errors }
+    errors.push(`listing agent notice refused (dedupe) and not refreshed: ${uErr?.message ?? "no unread notice matched"}`)
+    return { notified: false, errors }
+  }
+  if (nErr) {
+    errors.push(`listing agent notice refused: ${nErr.message}`)
+    return { notified: false, errors }
+  }
+  return { notified: true, errors }
 }
 
 // ─── R2 — THE OUTBOUND RECIPROCAL, ON THE WAY BACK IN ───────────────────────

@@ -258,10 +258,20 @@ export function tierForProspect(roleInterest: string | null | undefined, sizeSea
   return tierForSeatCount(sizeSeats)
 }
 
-/** PURE: "Dana Lee" → { first: "Dana", last: "Lee" }; a single token has an empty last name. */
+/**
+ * PURE: "Dana Lee" → { first: "Dana", last: "Lee" }; a single token has an empty last name.
+ * THE ONE name splitter (§6) — lib/offers/outside-agent-record.ts reads it too (wave 94).
+ * A COUPLE shares the surname: "Nadia and Omar Park" / "Nadia & Omar Park" →
+ * { first: "Nadia and Omar", last: "Park" } — never last "and Omar Park".
+ */
 export function splitPersonName(name: string | null | undefined): { first: string; last: string } {
   const parts = (name ?? "").trim().split(/\s+/).filter(Boolean)
   if (parts.length === 0) return { first: "", last: "" }
+  // Only the "First and First Surname" shape: one given name before the joiner, at
+  // least a given name and a surname after it. "Ana Ruiz and Ben Cole" is two
+  // people with two surnames and is NOT re-shaped.
+  const joiner = parts.length >= 4 && /^(and|&)$/i.test(parts[1]!) ? 1 : -1
+  if (joiner > 0) return { first: parts.slice(0, -1).join(" "), last: parts[parts.length - 1]! }
   return { first: parts[0]!, last: parts.slice(1).join(" ") }
 }
 

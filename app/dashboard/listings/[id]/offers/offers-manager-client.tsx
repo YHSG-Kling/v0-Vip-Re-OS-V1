@@ -41,6 +41,8 @@ import {
   presentOfferToSeller,
   unpresentOfferFromSeller,
   getOfferPresentationStates,
+  getCooperatingAgentsForListing,
+  type CooperatingAgentCard,
 } from "@/app/actions/offers/present-to-seller"
 import { aiNegotiationAdvisor } from "@/app/actions/ai-predictions"
 import { negotiationCoPilot } from "@/app/actions/negotiation-copilot"
@@ -193,6 +195,18 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
 
   useEffect(() => { void refreshPresentation() }, [refreshPresentation])
 
+  // The cooperating buyer's agents on this listing (wave 94) — read through the
+  // same gate; a refused read is shown, never rendered as "none".
+  const [cooperating, setCooperating] = useState<CooperatingAgentCard[]>([])
+  const [cooperatingError, setCooperatingError] = useState<string | null>(null)
+  useEffect(() => {
+    void getCooperatingAgentsForListing(listing.id).then((res) => {
+      if (!res.success) { setCooperatingError(res.error ?? "unknown error"); return }
+      setCooperatingError(null)
+      setCooperating(res.agents)
+    })
+  }, [listing.id])
+
   function handleRelease(offerId: string) {
     setReleasingOfferId(offerId)
     startTransition(async () => {
@@ -206,7 +220,9 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
       const warning = (result.warnings ?? [])[0]
       toast({
         title: result.alreadyPresented ? "Already visible to your seller" : "Released to your seller",
-        description: warning ?? "It is on their portal now, with the interactive net sheet.",
+        description: warning ?? (result.alreadyPresented
+          ? "It is on their portal, with the interactive net sheet."
+          : `It is on their portal now — the offer, ${result.documentsShared ?? 0} document${result.documentsShared === 1 ? "" : "s"}${result.netSheet?.portalCardsPushed ? " and the net sheet summary" : " and the interactive net sheet"}.`),
         variant: warning ? "destructive" : undefined,
       })
     })
@@ -710,6 +726,29 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
         <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
           Could not read which of these offers your seller can see: {presentationError}. Treat the release state below as
           unknown until this loads.
+        </div>
+      )}
+
+      {/* THE COOPERATING BUYER'S AGENTS (wave 94) — the outside agents whose
+          emailed offers reached this listing. A record, not a contact: they are
+          copied by email on the counter, the accept and every deal moment. */}
+      {(cooperating.length > 0 || cooperatingError) && (
+        <div className="rounded-md border px-3 py-2 text-sm">
+          <p className="font-medium text-foreground">Cooperating buyer&apos;s agents</p>
+          {cooperatingError && <p className="text-red-700">Could not load them: {cooperatingError}</p>}
+          <ul className="mt-1 space-y-1">
+            {cooperating.map((a) => (
+              <li key={a.id} className="text-muted-foreground">
+                <span className="text-foreground">{a.name ?? a.email}</span>
+                {a.brokerageName ? ` · ${a.brokerageName}` : ""}
+                {a.email ? ` · ${a.email}` : ""}
+                {a.phone ? ` · ${a.phone}` : ""}
+                {a.licenseNumber ? ` · Lic ${a.licenseNumber}` : ""}
+                {a.source === "inbound_email" ? " · from their email" : a.source ? ` · ${a.source}` : ""}
+                {a.notes ? <span className="block text-xs">{a.notes}</span> : null}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

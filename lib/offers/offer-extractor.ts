@@ -24,6 +24,17 @@ export interface ExtractedOfferData {
   possession_terms: string | null
   contingencies: string[]
   buyer_notes: string | null
+  // ── WHO the offer is from (wave 94, lane 94B). Kept in ai_extracted_data ONLY —
+  //    none of these is an offers column, and naming an absent column in the
+  //    update below would refuse the WHOLE row (PGRST204). They complete the
+  //    outside agent's record and the intake buyer's name, FILL-ONLY
+  //    (lib/inbound-mail/offer-intake.ts:afterInboundOfferRead).
+  buyer_names?: string[]
+  buyer_agent_name?: string | null
+  buyer_agent_email?: string | null
+  buyer_agent_phone?: string | null
+  buyer_agent_brokerage?: string | null
+  buyer_agent_license?: string | null
 }
 
 // ── Main extractor — called after PDF is stored in Supabase Storage ───────────
@@ -80,7 +91,13 @@ Required JSON schema:
   "due_diligence_fee": number or null,
   "possession_terms": string or null,
   "contingencies": string[] (list all contingency names),
-  "buyer_notes": string or null
+  "buyer_notes": string or null,
+  "buyer_names": string[] (the buyer(s) named on the contract, as written),
+  "buyer_agent_name": string or null,
+  "buyer_agent_email": string or null,
+  "buyer_agent_phone": string or null,
+  "buyer_agent_brokerage": string or null,
+  "buyer_agent_license": string or null
 }`,
       messages: [
         {
@@ -109,6 +126,37 @@ Required JSON schema:
     const cleaned = response.text.trim().replace(/^```json\n?/, "").replace(/\n?```$/, "")
     const extracted: ExtractedOfferData = JSON.parse(cleaned)
 
+    await applyExtractedOfferData(supabase, { offerId, brokerageId, listingId, extracted })
+    return { success: true, data: extracted }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+
+    const { error: extractFailedErr } = await supabase
+      .from("offers")
+      .update({ ai_extraction_status: "failed" })
+      .eq("id", offerId)
+      .eq("brokerage_id", brokerageId)
+    if (extractFailedErr) console.error(`[offer-extractor] extraction failure NOT recorded on the offer (it will read as extracting): ${extractFailedErr.message}`)
+
+    return { success: false, error: message }
+  }
+}
+
+/**
+ * EVERYTHING AFTER THE MODEL — write the read onto the offer, record it, fan it
+ * out, and hand the comparison-ready offer to the Listing Concierge. Split out
+ * of extractOfferFromPdf (wave 94, lane 94B) so the half that touches the
+ * database is one function whatever produced the read; extractOfferFromPdf is
+ * still its only production caller. Throws on a refused offers update (the
+ * caller records the failure).
+ * @proofSeam exported so the run-vip-re-os bridge walk (journey-wave94.ts S6) applies a stubbed model read through the real write path; used in-file by extractOfferFromPdf.
+ */
+export async function applyExtractedOfferData(
+  supabase: any,
+  params: { offerId: string; brokerageId: string; listingId: string; extracted: ExtractedOfferData },
+): Promise<void> {
+  const { offerId, brokerageId, listingId, extracted } = params
+  {
     // UPDATE offers row with all extracted columns
     const extractedUpdate = {
       ai_extraction_status: "completed",
@@ -186,18 +234,5 @@ Required JSON schema:
         console.error("[offer-extractor] offers_compare_handoff failed (non-fatal):", e)
       }
     }
-
-    return { success: true, data: extracted }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-
-    const { error: extractFailedErr } = await supabase
-      .from("offers")
-      .update({ ai_extraction_status: "failed" })
-      .eq("id", offerId)
-      .eq("brokerage_id", brokerageId)
-    if (extractFailedErr) console.error(`[offer-extractor] extraction failure NOT recorded on the offer (it will read as extracting): ${extractFailedErr.message}`)
-
-    return { success: false, error: message }
   }
 }

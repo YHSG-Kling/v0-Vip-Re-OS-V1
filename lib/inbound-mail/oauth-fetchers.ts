@@ -42,7 +42,7 @@
 
 import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
-import type { ParsedInboundEmail, InboundAttachment } from "./providers"
+import { splitAddressHeader, type ParsedInboundEmail, type InboundAttachment } from "./providers"
 import type { ResolvedInboundProvider } from "./resolve-user-provider"
 import { googleOAuthClient, microsoftOAuthClient } from "@/lib/env/aliases"
 
@@ -140,6 +140,7 @@ export async function fetchGmailMessagesSinceHistory(params: {
       (msg.payload?.headers ?? []).map((h: any) => [String(h.name).toLowerCase(), String(h.value)]),
     )
     const fromEmail = extractEmail(headers.get("from") ?? "")
+    const fromName  = splitAddressHeader(headers.get("from") ?? "").name
     const toEmail   = extractEmail(headers.get("to")   ?? "")
     const subject   = headers.get("subject") ?? ""
 
@@ -169,6 +170,7 @@ export async function fetchGmailMessagesSinceHistory(params: {
     emails.push({
       provider:   "gmail",
       fromEmail,
+      fromName,
       toEmail,
       subject,
       bodyText:   (msg.snippet ?? "").toString(),
@@ -209,6 +211,7 @@ export async function fetchOutlookMessage(params: {
   return {
     provider:   "outlook",
     fromEmail,
+    fromName:   (msg.from?.emailAddress?.name ?? null) || null,
     toEmail,
     subject:    (msg.subject ?? "").toString().trim(),
     bodyText:   (msg.bodyPreview ?? "").toString(),
@@ -219,7 +222,7 @@ export async function fetchOutlookMessage(params: {
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 function extractEmail(raw: string): string {
-  // "Name <addr@host>" → "addr@host"; "addr@host" → "addr@host"
-  const m = raw.match(/<([^>]+)>/)
-  return (m ? m[1] : raw).toLowerCase().trim()
+  // "Name <addr@host>" → "addr@host"; "addr@host" → "addr@host" — the one
+  // splitter in ./providers (wave 94), not a second spelling of it.
+  return splitAddressHeader(raw).email
 }

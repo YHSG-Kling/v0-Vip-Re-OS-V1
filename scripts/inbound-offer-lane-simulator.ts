@@ -707,6 +707,386 @@ async function main() {
       /from\(\s*"notifications"\s*\)/.test(route.slice(route.indexOf(`${called![1]}.plan.ambiguous`))))
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // WAVE 94 (lane 94B) — THE OUTSIDE BUYER'S AGENT, END TO END.
+  // Owner: "an outside offer will most likely come into the listing agents email
+  // from an outside buyers agent who we need to create a record for this outside
+  // agent since they will be copied on notifications of the accepted/counter
+  // offer and any activity on the transaction etc. once this email comes in, the
+  // automation of uploading to the listing and ai reads it to notify the listing
+  // agent and then they decide if the offer info and doc and automatic netsheet
+  // shows in the seller's portal for discussion and deciding."
+  // Hops proven below, each with a positive control:
+  //   H1 the email → the agent's record fields (pure parse, nothing invented)
+  //   H2 create-or-reuse the record (fill-only, fail closed, address required)
+  //   H3 the inbound lane creates the offer for an outside sender (no confirm dead end)
+  //   H4 AI read → listing-agent notice (both arms) and fill-only completion
+  //   H5 the ONE release publishes offer + document + net sheet
+  //   H6 the cooperating agent is on the deal roster (accept moment → parties packet)
+  //   H7 counter + every transaction moment → ONE email per moment, never SMS
+  // ══════════════════════════════════════════════════════════════════════════
+  const W94 = await import("../lib/offers/outside-agent-record")
+  const { splitAddressHeader } = await import("../lib/inbound-mail/providers")
+  const { KernelEvent } = await import("../lib/kernel/events")
+
+  console.log("\n[W94·H1 the outside agent, read off the email — nothing invented]")
+  {
+    const body = [
+      "Hi Lucia,",
+      "",
+      "Attached is an offer from my buyers, Mia and Theo Park, on 2294 Wave Demo Lane.",
+      "Pre-approval letter attached as well.",
+      "",
+      "Best regards,",
+      "Dana Cole",
+      "Coastal Shores Realty",
+      "(561) 555-0142",
+      "Lic # SL3456789",
+    ].join("\n")
+    const a = W94.parseOutsideAgentFromEmail({ fromEmail: "Dana.Cole@CoastalShores.example", fromName: "Dana Cole", bodyText: body })
+    check("email is the sender address, lower-cased", a.email === "dana.cole@coastalshores.example", String(a.email))
+    check("name from the From display name, split first/last", a.fullName === "Dana Cole" && a.firstName === "Dana" && a.lastName === "Cole")
+    check("phone from the signature block, normalised", a.phone === "(561) 555-0142", String(a.phone))
+    check("brokerage from the signature block", a.brokerageName === "Coastal Shores Realty", String(a.brokerageName))
+    check("licence number from the signature block", a.licenseNumber === "SL3456789", String(a.licenseNumber))
+    check("phone_digits is ten digits", W94.phoneDigits(a.phone) === "5615550142")
+    check("the buyers the agent names in the body are read", W94.parseBuyerNameFromEmail(body) === "Mia and Theo Park", String(W94.parseBuyerNameFromEmail(body)))
+
+    const sigOnly = W94.parseOutsideAgentFromEmail({ fromEmail: "dana@x.example", fromName: null, bodyText: "Offer attached.\n\nThanks,\nDana Cole\nCoastal Shores Realty" })
+    check("no display name ⇒ the signature line names the agent", sigOnly.fullName === "Dana Cole", String(sigOnly.fullName))
+
+    // POSITIVE CONTROL for "nothing invented": a bare email yields nulls, not guesses.
+    const bare = W94.parseOutsideAgentFromEmail({ fromEmail: "agent@x.example", fromName: "agent@x.example", bodyText: "see attached" })
+    check("a bare email invents nothing (name/phone/brokerage/licence all null)",
+      bare.fullName === null && bare.phone === null && bare.brokerageName === null && bare.licenseNumber === null && bare.email === "agent@x.example")
+    check("no buyers named ⇒ null, not a guess", W94.parseBuyerNameFromEmail("Offer attached for your listing.") === null)
+
+    // The From header splitter every provider now shares.
+    const h = splitAddressHeader('"Dana Cole" <Dana.Cole@CoastalShores.example>')
+    check("a display-named From header splits into address + name", h.email === "dana.cole@coastalshores.example" && h.name === "Dana Cole")
+    // POSITIVE CONTROL: the old mailgun/resend expression lower-cased the WHOLE header,
+    // which can never match a contact or a record by address.
+    const oldShape = '"Dana Cole" <Dana.Cole@CoastalShores.example>'.toLowerCase().trim()
+    check("…and the shape it replaced was NOT an address (the defect, reproduced)", !/^[^\s<>"]+@[^\s<>"]+$/.test(oldShape))
+    const providers = src("lib/inbound-mail/providers.ts")
+    check("mailgun AND resend parse the From header through the splitter",
+      /provider:\s*"mailgun",[\s\S]{0,120}fromEmail:\s*splitAddressHeader\(/.test(providers) &&
+      /provider:\s*"resend",[\s\S]{0,120}fromEmail:\s*splitAddressHeader\(/.test(providers))
+    const route = src("app/api/webhooks/inbound-mail/route.ts")
+    check("the inbound-mail route hands the display name to the offer lane",
+      /tryIngestInboundOffer\(\{[\s\S]{0,500}fromName:\s*email\.fromName/.test(route))
+  }
+
+  // A stub over the W94 tables. Only the chain shapes the module uses.
+  type W94Store = Record<string, Row[]>
+  function w94Stub(store: W94Store, opts: { readError?: string; failTable?: string } = {}) {
+    let seq = 0
+    return {
+      from(table: string) {
+        const st: any = { op: "select", eq: {} as Record<string, any>, json: {} as Record<string, any>, isNull: [] as string[], payload: null, single: false, returning: false }
+        const rows = () => (store[table] ??= [])
+        const b: any = {
+          select() { if (st.op !== "select") st.returning = true; return b },
+          insert(p: any) { st.op = "insert"; st.payload = p; return b },
+          update(p: any) { st.op = "update"; st.payload = p; return b },
+          eq(c: string, v: any) { st.eq[c] = v; return b },
+          is(c: string, v: any) { if (v === null) st.isNull.push(c); return b },
+          filter(c: string, _o: string, v: any) { st.json[c] = v; return b },
+          order() { return b }, limit() { return b },
+          maybeSingle() { st.single = true; return b }, single() { st.single = true; return b },
+          then(res: any, rej: any) { return Promise.resolve(run()).then(res, rej) },
+        }
+        const match = (r: Row) => {
+          for (const [k, v] of Object.entries(st.eq)) if (r[k] !== v) return false
+          for (const c of st.isNull) if (r[c] !== null && r[c] !== undefined) return false
+          for (const [k, v] of Object.entries(st.json)) {
+            const m = /^metadata->>(.+)$/.exec(k)
+            if (m && String((r.metadata ?? {})[m[1]] ?? "") !== String(v)) return false
+          }
+          return true
+        }
+        function run() {
+          if (opts.failTable === table || (opts.readError && st.op === "select")) return { data: null, error: { message: opts.readError ?? "refused" } }
+          if (st.op === "select") { const hit = rows().filter(match); return { data: st.single ? (hit[0] ?? null) : hit, error: null } }
+          if (st.op === "update") { const hit = rows().filter(match); for (const r of hit) Object.assign(r, st.payload); return { data: hit.map((r) => ({ id: r.id })), error: null } }
+          if (st.op === "insert") {
+            const made = (Array.isArray(st.payload) ? st.payload : [st.payload]).map((p: any) => ({ id: `${table}-${++seq}`, ...p }))
+            rows().push(...made)
+            return { data: st.single ? { id: made[0].id } : made.map((r: Row) => ({ id: r.id })), error: null }
+          }
+          return { data: null, error: null }
+        }
+        return b
+      },
+    } as any
+  }
+
+  console.log("\n[W94·H2 the record: created once, reused, filled — never overwritten]")
+  {
+    const store: W94Store = { outside_agents: [] }
+    const fields = W94.parseOutsideAgentFromEmail({ fromEmail: "dana@coastal.example", fromName: "Dana Cole", bodyText: "Thanks,\nDana Cole\nCoastal Shores Realty" })
+    const a = await W94.upsertOutsideAgentRecord(w94Stub(store), { brokerageId: BROKERAGE, fields, source: W94.OUTSIDE_AGENT_SOURCE_INBOUND_EMAIL })
+    check("first email CREATES the record", a.ok && a.created && store.outside_agents.length === 1)
+    check("…in the tenant, keyed by the lower-cased address, source inbound_email",
+      store.outside_agents[0].brokerage_id === BROKERAGE && store.outside_agents[0].email === "dana@coastal.example" && store.outside_agents[0].source === "inbound_email")
+    const b = await W94.upsertOutsideAgentRecord(w94Stub(store), {
+      brokerageId: BROKERAGE, source: "inbound_email",
+      fields: { ...fields, fullName: "Someone Else", phone: "(561) 555-0199", licenseNumber: "BK99" },
+    })
+    check("the second email REUSES it (no duplicate)", b.ok && !b.created && b.id === a.id && store.outside_agents.length === 1)
+    check("…filling only what was blank (phone, licence) and never the name the email already gave",
+      store.outside_agents[0].full_name === "Dana Cole" && store.outside_agents[0].phone === "(561) 555-0199" && store.outside_agents[0].license_number === "BK99" && b.filled.includes("phone"))
+    const other = await W94.upsertOutsideAgentRecord(w94Stub(store), { brokerageId: OTHER_BROK, fields, source: "inbound_email" })
+    check("another tenant gets its OWN record (the tenant is part of the key)", other.created && store.outside_agents.length === 2)
+    const noAddr = await W94.upsertOutsideAgentRecord(w94Stub(store), { brokerageId: BROKERAGE, fields: { ...fields, email: null }, source: "inbound_email" })
+    check("no address ⇒ REFUSED (an agent we cannot email cannot be copied)", !noAddr.ok && /no email/.test(noAddr.error ?? ""))
+    const refused = await W94.upsertOutsideAgentRecord(w94Stub(store, { readError: "permission denied" }), { brokerageId: BROKERAGE, fields, source: "inbound_email" })
+    check("a REFUSED lookup fails closed — it does not create a second record", !refused.ok && /refused/.test(refused.error ?? "") && store.outside_agents.length === 2)
+
+    const patch = W94.outsideAgentFillPatch({ full_name: "Dana Cole", phone: null }, { ...fields, fullName: "Not Dana", phone: "(561) 555-0100" })
+    check("fill patch: blank columns only", !("full_name" in patch) && patch.phone === "(561) 555-0100" && patch.phone_digits === "5615550100")
+    const over = W94.overlayOutsideAgentFields(fields, { fullName: "AI Name", licenseNumber: "AI123" })
+    check("AI overlay never replaces the email's own name; fills the missing licence", over.fullName === "Dana Cole" && over.licenseNumber === "AI123")
+  }
+
+  console.log("\n[W94·H3 the inbound lane CREATES the offer for an outside sender]")
+  {
+    const intake = src("lib/inbound-mail/offer-intake.ts")
+    const confirmAt = intake.indexOf('if (decision === "confirm")')
+    const confirmBlock = intake.slice(confirmAt, intake.indexOf("createOfferFromInboundEmail(svc, {", confirmAt + 1) + 1 || undefined)
+    const outsideCall = confirmBlock.indexOf("intakeOutsideAgentOffer(")
+    const fallbackFile = confirmBlock.indexOf("fileInboundPdfs(")
+    check("the confirm branch tries the outside-agent intake FIRST and keeps confirm only as the fallback",
+      outsideCall > 0 && fallbackFile > outsideCall && /if \(outside\.handled\) return outside/.test(confirmBlock))
+    const fn = intake.slice(intake.indexOf("async function intakeOutsideAgentOffer"), intake.indexOf("async function createOfferFromInboundEmail"))
+    check("…which records the agent through the ONE writer (upsertOutsideAgentRecord)", /upsertOutsideAgentRecord\(/.test(fn))
+    check("…files the buyer as an INTAKE record (source constant, status inactive, no agent_id)",
+      /from\("contacts"\)\.insert\(\{[\s\S]{0,600}source:\s*OUTSIDE_BUYER_INTAKE_SOURCE/.test(fn) && /status:\s*"inactive"/.test(fn) && !/\bagent_id:/.test(fn.slice(fn.indexOf('from("contacts").insert'))))
+    check("…links agent ↔ buyer (outside_agent_contact_links)", /linkOutsideAgentToBuyer\(/.test(fn))
+    check("…and creates the offer through the SAME writer as a known sender",
+      /return createOfferFromInboundEmail\(svc,\s*\{[\s\S]{0,200}outcome:\s*"outside_agent"/.test(fn) && /return createOfferFromInboundEmail\(svc,\s*\{[\s\S]{0,300}outcome:\s*"auto"/.test(intake))
+    // NOT A SEAT, NOT A LEAD — the record never reaches users / leads / createContact.
+    const seatOrLead = (code: string) => /from\("users"\)\.insert|from\("leads"\)\.insert|createContact\(|createContactManually\(/.test(code)
+    check("the outside agent is never a user seat, a lead or a kernel contact", !seatOrLead(fn) && !seatOrLead(src("lib/offers/outside-agent-record.ts")))
+    check("…POSITIVE CONTROL: that finder recognises a seat insert", seatOrLead('svc.from("users").insert({ email })'))
+    const writer = intake.slice(intake.indexOf("async function createOfferFromInboundEmail"), intake.indexOf("export async function afterInboundOfferRead"))
+    check("the offer row carries the record id under the ONE metadata key", /\[OUTSIDE_AGENT_ID_KEY\]:\s*ctx\.outsideAgentId/.test(writer))
+  }
+
+  console.log("\n[W94·H4 AI read → the listing agent is told (both arms); fill-only completion]")
+  {
+    const intake = src("lib/inbound-mail/offer-intake.ts")
+    check("the notice runs when the AI read SETTLES (then-chained on the extraction)",
+      /extractOfferFromPdf\(\{[\s\S]{0,200}\}\)\s*\.then\(\(read\)\s*=>\s*afterInboundOfferRead\(/.test(intake))
+    const { afterInboundOfferRead } = await import("../lib/inbound-mail/offer-intake")
+    const base = () => ({
+      agents: [{ id: AGENT_ID, user_id: TC_USER }],
+      contacts: [{ id: CONTACT, brokerage_id: BROKERAGE, source: W94.OUTSIDE_BUYER_INTAKE_SOURCE, first_name: "Buyer", last_name: "", metadata: { name_source: "placeholder" } }],
+      outside_agents: [{ id: "oa-1", brokerage_id: BROKERAGE, full_name: "Dana Cole", phone: null, license_number: null, outside_brokerage_name: null }],
+      notifications: [] as Row[],
+    })
+    const okStore: W94Store = base()
+    const read = { success: true, data: { offer_price: 612000, financing_type: "conventional", closing_date: "2026-11-20", closing_cost_contribution: 5000, buyer_names: ["Mia Park", "Theo Park"], buyer_agent_name: "AI Wrong Name", buyer_agent_phone: "561-555-0142", buyer_agent_brokerage: "Coastal Shores Realty", buyer_agent_license: "SL3456789" } as any }
+    const r = await afterInboundOfferRead(w94Stub(okStore), {
+      brokerageId: BROKERAGE, offerId: OFFER, listing: { id: "L1", address: "2294 Wave Demo Lane", agent_id: AGENT_ID } as any,
+      buyerContactId: CONTACT, outsideAgentId: "oa-1", outsideAgentLabel: "Dana Cole, Coastal Shores Realty", fromEmail: "dana@coastal.example", documentCount: 2, read,
+    })
+    const n = okStore.notifications[0]
+    check("a read offer NOTIFIES the listing agent (users.id resolved from agents.id)", r.notified && n?.user_id === TC_USER && n?.entity_id === OFFER)
+    check("…with the terms the AI read and the one next step (present to the seller)", /\$612,000/.test(n?.title ?? "") && /present it to your seller/.test(n?.body ?? ""))
+    // A couple shares the surname: "Mia and Theo" / "Park" — never last "Park and Theo Park" (live walk 94, found and fixed).
+    check("…the placeholder buyer becomes the buyers named on the contract (a couple keeps ONE surname)", okStore.contacts[0].first_name === "Mia and Theo" && okStore.contacts[0].last_name === "Park")
+    const { buyerNamesAsOne } = W94
+    const { splitPersonName } = await import("../lib/platform/prospect-conversion")
+    check("…buyerNamesAsOne: shared surname → couple; two surnames → the primary buyer only",
+      buyerNamesAsOne(["Mia Park", "Theo Park"]) === "Mia and Theo Park" && buyerNamesAsOne(["Ana Ruiz", "Ben Cole"]) === "Ana Ruiz" && buyerNamesAsOne([]) === null)
+    check("…POSITIVE CONTROL: the ONE splitter (prospect-conversion) keeps 'Dana Lee Smith' → Dana / Lee Smith and splits the couple shape",
+      splitPersonName("Dana Lee Smith").last === "Lee Smith" && splitPersonName("Nadia and Omar Park").first === "Nadia and Omar" && splitPersonName("Ana Ruiz and Ben Cole").first === "Ana")
+    check("…the record's blanks are filled; the email's name is NOT replaced by the model's",
+      okStore.outside_agents[0].full_name === "Dana Cole" && okStore.outside_agents[0].license_number === "SL3456789" && okStore.outside_agents[0].outside_brokerage_name === "Coastal Shores Realty")
+    const failStore: W94Store = base()
+    const f = await afterInboundOfferRead(w94Stub(failStore), {
+      brokerageId: BROKERAGE, offerId: OFFER, listing: { id: "L1", address: "2294 Wave Demo Lane", agent_id: AGENT_ID } as any,
+      buyerContactId: CONTACT, outsideAgentId: "oa-1", outsideAgentLabel: null, fromEmail: "dana@coastal.example", documentCount: 1, read: { success: false, error: "PDF fetch failed: 403" },
+    })
+    check("a FAILED read still notifies — honestly ('could not read it')", f.notified && /could not read it \(PDF fetch failed: 403\)/.test(failStore.notifications[0]?.body ?? ""))
+    check("…and changes nothing on the record or the buyer", failStore.contacts[0].first_name === "Buyer" && failStore.outside_agents[0].license_number === null)
+    const nobody = await afterInboundOfferRead(w94Stub({ agents: [], notifications: [] }), {
+      brokerageId: BROKERAGE, offerId: OFFER, listing: { id: "L1", address: "x", agent_id: null } as any,
+      buyerContactId: CONTACT, outsideAgentId: null, outsideAgentLabel: null, fromEmail: null, documentCount: 0, read: { success: false },
+    })
+    check("POSITIVE CONTROL: no listing agent seat ⇒ notified:false with the reason, never a silent success", !nobody.notified && /nobody was told/.test(nobody.errors.join(" ")))
+    // Every column the notices write is a LIVE notifications column (PGRST204 refuses the whole row).
+    const { SCHEMA_SNAPSHOT } = await import("./schema-snapshot")
+    const live = new Set(SCHEMA_SNAPSHOT.notifications ?? [])
+    const keysOf = (code: string) => Array.from(code.matchAll(/from\("notifications"\)\.insert\(\{([\s\S]*?)\}\)/g))
+      .flatMap((m) => Array.from(m[1].matchAll(/(?:^|[,{\s])([a-z_]+):/g)).map((k) => k[1]))
+    const used = keysOf(intake)
+    const unknown = used.filter((k) => !live.has(k))
+    check(`every notifications column the lane writes is live (${used.length} keys checked)`, used.length >= 10 && unknown.length === 0, unknown.join(","))
+    check("…POSITIVE CONTROL: the column check catches a phantom column", keysOf('svc.from("notifications").insert({ user_id: u, action_url: x })').some((k) => !live.has(k)))
+  }
+
+  console.log("\n[W94·H5 the ONE release publishes offer + document + net sheet]")
+  {
+    const present = src("app/actions/offers/present-to-seller.ts")
+    const fn = present.slice(present.indexOf("export async function presentOfferToSeller"), present.indexOf("async function setOfferDocumentsSharedWithSeller"))
+    check("the release shares the offer's documents with the seller", /setOfferDocumentsSharedWithSeller\(svc,\s*\{[\s\S]{0,120}sharedAt:\s*now/.test(fn))
+    check("…and runs the Listing Concierge net sheet for THIS listing on the same click", /runOfferNetSheets\(auth\.brokerageId,\s*\{\s*listingId\s*\}/.test(fn))
+    const helper = present.slice(present.indexOf("async function setOfferDocumentsSharedWithSeller"))
+    check("…the share MERGES documents.metadata (never wholesale) and is tenant-filtered + counted",
+      /metadata:\s*merged/.test(helper) && /\.\.\.\(d\.metadata \?\? \{\}\)/.test(helper) && /\.eq\("brokerage_id"/.test(helper) && /\.select\("id"\)/.test(helper))
+    const retract = present.slice(present.indexOf("export async function unpresentOfferFromSeller"))
+    check("the retraction unshares them", /setOfferDocumentsSharedWithSeller\(svc,\s*\{[\s\S]{0,120}sharedAt:\s*null/.test(retract))
+    const seller = src("app/actions/portal-seller.ts")
+    const g = seller.slice(seller.indexOf("export async function getSellerOffers"), seller.indexOf("export async function getSellerNetSheetInputs"))
+    check("the seller's reader hands out ONLY released offers' SHARED documents",
+      /metadata->>shared_with_seller_at/.test(g) && /releasedIds\.includes\(offerId\)/.test(g) && /presented_to_seller_at/.test(g))
+    const page = src("app/portal/[contactId]/offers/page.tsx")
+    check("the seller's offers page renders those documents", /o\.documents/.test(page) && /Offer documents/.test(page))
+    // The net-sheet card honours the release gate.
+    const ns = src("lib/kernel/offer-net-sheet.ts")
+    const cardInsert = (code: string) => {
+      const at = code.indexOf('from("transparency_updates").insert(')
+      return at < 0 ? "" : code.slice(at, at + 1200)
+    }
+    const cardKeyedToRelease = (code: string) => /offer_set_signature:\s*releasedSignature/.test(cardInsert(code)) && /releasedInputs\.length/.test(cardInsert(code))
+    check("the seller net-sheet card covers RELEASED offers only, keyed per released set", cardKeyedToRelease(ns))
+    check("…POSITIVE CONTROL: the pre-wave-94 card (every open offer) is flagged",
+      !cardKeyedToRelease('const { error: cardErr } = await supabase.from("transparency_updates").insert({ title: inputs.length === 1 ? "a" : "b", metadata: { offer_set_signature: signature, offer_count: inputs.length } })'))
+    check("the per-offer net is stamped only where empty and never on a red (default-payoff) policy",
+      /needStamp && netPolicy\.decision !== "red"/.test(ns) && /\.is\("seller_net_estimate",\s*null\)/.test(ns))
+  }
+
+  console.log("\n[W94·H6 the cooperating agent is on the deal roster — the accept moment]")
+  {
+    const pop = src("lib/transactions/participant-populator.ts")
+    const at = pop.indexOf("resolveOutsideAgentForDeal(")
+    check("the populator resolves the record from the deal's offer chain", at > 0)
+    check("…and writes it as the buyer_agent with its brokerage + licence",
+      /role:\s*"buyer_agent",[\s\S]{0,200}company:\s*outsideAgent\.outside_brokerage_name/.test(pop) && /license_number:\s*outsideAgent\.license_number/.test(pop))
+    check("…the in-house agent read runs ONLY when the chain names no outside agent (no listing agent twice)",
+      /\} else if \(!cooperating\.error\) \{[\s\S]{0,200}resolveAgent\(supabase, buyerAgentId\)/.test(pop))
+    const helpers = src("lib/notifications/notify-helpers.ts")
+    check("notifyTransactionParties emails non-principal roster rows (buyer_agent) through the gate",
+      /isPrincipalRole\(party\.role\)/.test(helpers) && /dispatchEmail\(\{/.test(helpers))
+    // Chain walk: a counter (child) resolves the record from its parent.
+    const store: W94Store = {
+      offers: [
+        { id: "root", brokerage_id: BROKERAGE, parent_offer_id: null, metadata: { [W94.OUTSIDE_AGENT_ID_KEY]: "oa-1" } },
+        { id: "counter", brokerage_id: BROKERAGE, parent_offer_id: "root", metadata: {} },
+      ],
+      outside_agents: [{ id: "oa-1", brokerage_id: BROKERAGE, email: "dana@coastal.example", full_name: "Dana Cole" }],
+      transactions: [{ id: "tx-1", brokerage_id: BROKERAGE, offer_id: "counter" }],
+    }
+    const viaCounter = await W94.resolveOutsideAgentForDeal(w94Stub(store), { brokerageId: BROKERAGE, offerId: "counter" })
+    check("a COUNTER resolves the agent by walking up to the emailed offer", viaCounter.agent?.id === "oa-1" && viaCounter.offerId === "counter")
+    const viaTx = await W94.resolveOutsideAgentForDeal(w94Stub(store), { brokerageId: BROKERAGE, transactionId: "tx-1" })
+    check("a TRANSACTION resolves it through transactions.offer_id", viaTx.agent?.email === "dana@coastal.example")
+    const foreign = await W94.resolveOutsideAgentForDeal(w94Stub(store), { brokerageId: OTHER_BROK, offerId: "counter" })
+    check("another tenant resolves NOTHING (every hop is tenant-filtered)", foreign.agent === null)
+    const refused = await W94.resolveOutsideAgentForDeal(w94Stub(store, { readError: "denied" }), { brokerageId: BROKERAGE, offerId: "counter" })
+    check("a refused hop is an ERROR, never 'no outside agent'", refused.agent === null && /refused/.test(refused.error ?? ""))
+  }
+
+  console.log("\n[W94·H7 counter + every transaction moment → ONE email per moment, never SMS]")
+  {
+    const plan = (e: string, md: Record<string, unknown> = {}, id = "e1") => W94.cooperatingAgentCopyPlan(e, md, id)
+    check("a counter is a copy moment, keyed per counter", plan(KernelEvent.OFFER_COUNTER_SENT, {}, "c1")?.copyKey === "counter:c1")
+    // ONE moment vocabulary — lane 94A's (lib/notifications/notification-moments.ts), read, not restated.
+    const { NOTIFICATION_MOMENTS } = await import("../lib/notifications/notification-moments")
+    const kernelUnderContract = NOTIFICATION_MOMENTS.under_contract.filter((t) => (Object.values(KernelEvent) as string[]).includes(t))
+    check(`every UNDER-CONTRACT spelling (${kernelUnderContract.length}, from 94A's moment list) is NOT copied here — the parties packet owns it`,
+      kernelUnderContract.length >= 3 && kernelUnderContract.every((e) => plan(e) === null))
+    check("every CLOSED spelling in 94A's moment list is the one 'closed' copy",
+      NOTIFICATION_MOMENTS.closed.length >= 2 && NOTIFICATION_MOMENTS.closed.every((e) => plan(e)?.copyKey === "closed"))
+    const recordSrc = src("lib/offers/outside-agent-record.ts")
+    check("…and the record module reads that list (momentForType) instead of keeping a second one",
+      /momentForType\(event\)/.test(recordSrc) && !/ACCEPT_MOMENT_EVENTS|OFFER_ACCEPTED|CONTRACT_SIGNED|DEAL_CLOSED/.test(recordSrc))
+    check("TRANSACTION_CLOSED and DEAL_CLOSED are ONE moment (same key)",
+      plan(KernelEvent.TRANSACTION_CLOSED)?.copyKey === "closed" && plan(KernelEvent.DEAL_CLOSED)?.copyKey === "closed")
+    check("…and a stage change TO closed is that same moment", plan(KernelEvent.TRANSACTION_STAGE_CHANGED, { to_stage: "closed" })?.copyKey === "closed")
+    check("a stage change to under_contract is the accept moment (not copied here)", plan(KernelEvent.TRANSACTION_STAGE_CHANGED, { to_stage: "under_contract" }) === null)
+    check("two different milestones are two moments", plan(KernelEvent.MILESTONE_COMPLETED, { milestone_name: "Inspection" })?.copyKey !== plan(KernelEvent.MILESTONE_COMPLETED, { milestone_name: "Appraisal" })?.copyKey)
+    check("POSITIVE CONTROL: a non-deal event is not a copy moment", plan(KernelEvent.CONTACT_CREATED) === null)
+    // The RULE, derived: every copy key is a real kernel event and none is an accept spelling.
+    const kernelValues = new Set(Object.values(KernelEvent) as string[])
+    const keys = Object.keys(W94.COOPERATING_AGENT_COPY_EVENTS)
+    check(`every copy event is a live KernelEvent value (${keys.length})`, keys.length >= 8 && keys.every((k) => kernelValues.has(k)))
+    check("…and the copy set and 94A's moment lists are disjoint", keys.every((k) => !NOTIFICATION_MOMENTS.under_contract.includes(k) && !NOTIFICATION_MOMENTS.closed.includes(k)))
+
+    const reactor = src("lib/kernel/event-reactor.ts")
+    check("the kernel reactor copies the agent, gated by the pure plan BEFORE any read",
+      /cooperatingAgentCopyPlan\(params\.event,[\s\S]{0,200}\)\)\s*\{[\s\S]{0,300}copyCooperatingAgentOnDealMoment\(/.test(reactor))
+    const mod = src("lib/offers/outside-agent-record.ts")
+    const smsShape = (code: string) => /dispatchSms\(|sendSms\(|dispatchVoice\(|channelPurpose:\s*"sms"|channel:\s*"sms"/.test(code)
+    check("the copy is EMAIL through the governed egress (dispatchEmail, transactional)", /dispatchEmail\(\{[\s\S]{0,500}channelPurpose:\s*"transactional"/.test(mod))
+    check("…sent AS the listing agent (agentId → signature waterfall), not an unsigned brokerage notice",
+      /dispatchEmail\(\{[\s\S]{0,200}agentId:\s*listingAgentId/.test(mod))
+    check("…and never SMS or voice", !smsShape(mod))
+    check("…POSITIVE CONTROL: the SMS finder recognises an SMS send", smsShape('await dispatchSms({ to: phone })'))
+    const counterEmit = src("app/actions/seller-offers.ts")
+    check("the counter's event carries the response deadline the copy names",
+      /event:\s*KernelEvent\.OFFER_COUNTER_SENT,[\s\S]{0,500}response_deadline:\s*responseDeadline/.test(counterEmit))
+
+    // Dedupe + fail-closed, driven (both paths return before any send).
+    const store: W94Store = {
+      offers: [{ id: "root", brokerage_id: BROKERAGE, parent_offer_id: null, metadata: { [W94.OUTSIDE_AGENT_ID_KEY]: "oa-1" } }],
+      outside_agents: [{ id: "oa-1", brokerage_id: BROKERAGE, email: "dana@coastal.example", full_name: "Dana Cole" }],
+      transactions: [{ id: "tx-1", brokerage_id: BROKERAGE, offer_id: "root", property_address: "2294 Wave Demo Lane" }],
+      activities: [{ id: "a1", brokerage_id: BROKERAGE, activity_type: W94.OUTSIDE_AGENT_COPIED_ACTIVITY, entity_id: "tx-1", metadata: { copy_key: "closed", email: "dana@coastal.example" } }],
+    }
+    const dup = await W94.copyCooperatingAgentOnDealMoment(w94Stub(store), { brokerageId: BROKERAGE, event: KernelEvent.DEAL_CLOSED, entityType: "transaction", entityId: "tx-1" })
+    check("the SECOND spelling of the close moment is a no-op (already_copied)", !dup.copied && dup.skipped === "already_copied")
+    const refusedRead = await W94.copyCooperatingAgentOnDealMoment(w94Stub(store, { failTable: "activities" }), { brokerageId: BROKERAGE, event: KernelEvent.MILESTONE_COMPLETED, entityType: "transaction", entityId: "tx-1", metadata: { milestone_name: "Inspection" } })
+    check("a REFUSED dedupe read skips the send (fail closed — never risk telling them twice)", !refusedRead.copied && /dedupe read refused/.test(refusedRead.error ?? ""))
+    const none = await W94.copyCooperatingAgentOnDealMoment(w94Stub({ ...store, offers: [{ id: "root", brokerage_id: BROKERAGE, parent_offer_id: null, metadata: {} }] }), { brokerageId: BROKERAGE, event: KernelEvent.MILESTONE_COMPLETED, entityType: "transaction", entityId: "tx-1", metadata: { milestone_name: "X" } })
+    check("an in-house deal (no outside agent) copies nobody", !none.copied && none.skipped === "no_outside_agent")
+    const msg = W94.composeCooperatingAgentCopy({ moment: "counter", propertyAddress: "2294 Wave Demo Lane", agentName: "Dana Cole", metadata: { counter_price: 618000, response_deadline: "2026-10-05T17:00:00Z" } })
+    check("the counter copy names the price and the deadline, and no commission or seller net",
+      /\$618,000/.test(msg.text) && /2026-10-05 17:00/.test(msg.text) && !/commission|net to seller|payoff/i.test(msg.text))
+  }
+
+  console.log("\n[W94·H8 the outside buyer is the outside agent's client — no welcome, no portal invite]")
+  {
+    const store: W94Store = {
+      contacts: [
+        { id: "marked", brokerage_id: BROKERAGE, source: W94.OUTSIDE_BUYER_INTAKE_SOURCE, metadata: { [W94.REPRESENTED_BY_OUTSIDE_AGENT_KEY]: "oa-1" } },
+        { id: "linked", brokerage_id: BROKERAGE, source: "manual", metadata: {} },
+        { id: "ours", brokerage_id: BROKERAGE, source: "manual", metadata: {} },
+      ],
+      outside_agent_contact_links: [{ id: "l1", brokerage_id: BROKERAGE, outside_agent_id: "oa-1", contact_id: "linked", link_role: W94.OUTSIDE_AGENT_BUYER_LINK_ROLE }],
+    }
+    const marked = await W94.readOutsideRepresentation(w94Stub(store), { brokerageId: BROKERAGE, contactId: "marked" })
+    check("a contact the intake MARKED is represented by the outside agent", marked.represented && marked.outsideAgentId === "oa-1")
+    const linked = await W94.readOutsideRepresentation(w94Stub(store), { brokerageId: BROKERAGE, contactId: "linked" })
+    check("a contact LINKED as cooperating_buyer_agent is represented too", linked.represented && linked.outsideAgentId === "oa-1")
+    const ours = await W94.readOutsideRepresentation(w94Stub(store), { brokerageId: BROKERAGE, contactId: "ours" })
+    check("POSITIVE CONTROL: our own client is NOT represented (the invite still goes out)", !ours.represented && ours.reason === "ours")
+    const refused = await W94.readOutsideRepresentation(w94Stub(store, { readError: "denied" }), { brokerageId: BROKERAGE, contactId: "ours" })
+    check("a refused read FAILS CLOSED (treated as represented, with the reason)", refused.represented && /refused/.test(refused.reason))
+
+    const crm = src("lib/kernel/crm.ts")
+    const door = crm.slice(crm.indexOf("export async function createContactManually"))
+    const doorBody = door.slice(0, door.indexOf("\nexport ") > 0 ? door.indexOf("\nexport ") : undefined)
+    const skipsRepresented = (code: string) => {
+      const read = code.indexOf("readOutsideRepresentation(")
+      const welcome = code.indexOf("deliverConversionWelcome(")
+      return read > 0 && welcome > read && /if \(rep\.represented\)\s*\{[\s\S]{0,300}reason:\s*"represented_by_outside_agent"/.test(code)
+        && /\}\s*else if \(!params\.agent_id\)/.test(code)
+    }
+    check("94A's ONE invite step (createContactManually) reads the mark BEFORE the welcome and skips a represented contact", skipsRepresented(doorBody))
+    check("…POSITIVE CONTROL: 94A's step without the condition is flagged",
+      !skipsRepresented('if (result.success) { if (!params.agent_id) { x() } else { await deliverConversionWelcome(svc, {}) } }'))
+    check("…and no second invite path was added (one deliverConversionWelcome call in the door)",
+      (doorBody.match(/deliverConversionWelcome\(/g) ?? []).length === 1)
+    const intake = src("lib/inbound-mail/offer-intake.ts")
+    check("the outside path writes the mark on the intake buyer (the one key)",
+      /\[REPRESENTED_BY_OUTSIDE_AGENT_KEY\]:\s*record\.id/.test(intake))
+    check("…and files the intake buyer OUTSIDE the client door (no createContactManually → no CONTACT_CREATED rails)",
+      !/createContactManually\(|createContact\(/.test(intake))
+  }
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) {

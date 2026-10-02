@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 709 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 711 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-29
+ * generated: 2026-10-02
  * source: public.live_schema_json()
- * body-sha256: 19bd066e2fb8f1bd2234ffae13b6779a46a321acebddaac83daf97e94ceadc48
+ * body-sha256: d36c9b0dd88315caeece65a305d8d405c9a13368fbbf68de11ce7670f4e20bce
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -475,6 +475,8 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   orchestrator_tasks: ["attempts", "brokerage_id", "created_at", "executed_at", "id", "last_error", "payload", "scheduled_for", "status", "task_type", "updated_at"],
   outbound_message_compliance_log: ["block_reason", "brokerage_id", "channel", "contact_id", "created_at", "decision", "details", "email", "id", "initiated_by", "phone", "recipient_local_hour", "recipient_state"],
   outcome_reconciliations: ["brokerage_id", "channel", "claimed_at", "claimed_by_manager", "claimed_status", "contact_id", "created_at", "entity_id", "entity_type", "escalated_at", "explanation", "id", "lead_id", "provider_detail", "provider_ref", "provider_reported_at", "provider_status", "truth_source", "updated_at", "verdict"],
+  outside_agent_contact_links: ["brokerage_id", "contact_id", "created_at", "created_by_user_id", "id", "link_role", "listing_id", "outside_agent_id", "transaction_id"],
+  outside_agents: ["added_by_user_id", "brokerage_id", "city", "created_at", "email", "first_name", "full_name", "id", "last_name", "license_number", "license_state", "mls_agent_id", "notes", "outside_brokerage_name", "phone", "phone_digits", "source", "state", "updated_at", "zip_code"],
   pattern_adoptions: ["adopted_by", "agent_id", "applied_actions", "baseline_metric", "brokerage_id", "created_at", "followup_at", "followup_metric", "id", "insight_id", "notes", "observed_lift_pct", "status"],
   pattern_detections: ["acted_on_at", "agent_id", "agent_notified", "agent_notified_at", "ai_reasoning", "brokerage_id", "confidence", "created_at", "entity_id", "entity_type", "expires_at", "id", "pattern_id", "pattern_type", "status", "trigger_signals"],
   pattern_predictions: ["agent_id", "ai_reasoning", "brokerage_id", "created_at", "detection_id", "entity_id", "entity_type", "id", "outcome", "outcome_recorded_at", "predicted_date", "predicted_event", "predicted_within_days", "prediction_label", "probability", "recommended_action"],

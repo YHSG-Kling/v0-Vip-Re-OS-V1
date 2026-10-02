@@ -475,7 +475,21 @@ export async function createContactManually(
   // too: an invite must be authorized by a users.id, reached only via agents.user_id.
   // BEST EFFORT: the contact exists; a failed invite is reported, never a rollback.
   if (result.success && !result.isDuplicate && result.contactId) {
-    if (!params.agent_id) {
+    // ANOTHER BROKERAGE'S CLIENT GETS NO CLIENT RAILS (wave 94, lane 94B — owner: "the
+    // outside buyer is the outside agent's client, not ours"). A contact marked as
+    // represented by an outside agent (lib/offers/outside-agent-record.ts — the mark the
+    // emailed-offer intake writes, or a cooperating_buyer_agent link) gets no welcome and
+    // no portal invite: going around their agent is the breach. Read before the invite,
+    // never a second invite path; a refused read FAILS CLOSED (skip + reason).
+    const { readOutsideRepresentation } = await import("@/lib/offers/outside-agent-record")
+    const rep = await readOutsideRepresentation(createServiceClient() as any, { brokerageId: params.brokerage_id, contactId: result.contactId })
+    if (rep.represented) {
+      result.portalInvite = {
+        granted:  false,
+        reason:   "represented_by_outside_agent",
+        warnings: [`no welcome and no portal invite for contact ${result.contactId}: ${rep.reason} — they are another brokerage's client.`],
+      }
+    } else if (!params.agent_id) {
       result.portalInvite = {
         granted: false,
         reason:  "no_assigned_agent",

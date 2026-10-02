@@ -527,10 +527,38 @@ export async function getSellerOffers(contactId: string) {
     return o
   })
 
+  // THE OFFER'S DOCUMENTS (wave 94, lane 94B). The listing agent's one release
+  // (app/actions/offers/present-to-seller.ts) shares the documents filed to the
+  // offer — the emailed contract and whatever travelled with it — by stamping
+  // documents.metadata.shared_with_seller_at. Only a RELEASED offer's SHARED
+  // documents are handed out, tenant-filtered; a refused read is reported, not
+  // rendered as "no documents".
+  const releasedIds = scoped.filter((o: any) => !!o.presented_to_seller_at).map((o: any) => o.id as string)
+  let documentsError: string | null = null
+  const docsByOffer = new Map<string, Array<{ id: string; name: string; url: string; kind: string | null }>>()
+  if (releasedIds.length > 0) {
+    const { data: docs, error: docsErr } = await supabase
+      .from("documents")
+      .select("id, storage_url, classification, document_type, metadata")
+      .eq("brokerage_id", access.brokerageId)
+      .eq("listing_id", listing.id)
+      .not("metadata->>shared_with_seller_at", "is", null)
+    if (docsErr) documentsError = docsErr.message
+    for (const d of (docs ?? []) as any[]) {
+      const offerId = d.metadata?.linked_offer_id as string | undefined
+      if (!offerId || !releasedIds.includes(offerId) || !d.storage_url) continue
+      const list = docsByOffer.get(offerId) ?? []
+      list.push({ id: d.id, name: String(d.metadata?.file_name ?? d.document_type ?? "Offer document"), url: d.storage_url, kind: d.classification ?? null })
+      docsByOffer.set(offerId, list)
+    }
+  }
+
   return {
-    offers: scoped,
+    offers: scoped.map((o: any) => ({ ...o, documents: docsByOffer.get(o.id) ?? [] })),
     listPrice: listing.list_price,
     error: null as string | null,
+    /** A refused documents read — the offers still render; the page says the documents did not load. */
+    documentsError,
   }
 }
 

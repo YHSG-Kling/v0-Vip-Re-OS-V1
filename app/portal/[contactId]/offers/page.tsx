@@ -872,6 +872,40 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
         </Card>
       )}
 
+      {/* THE OFFER DOCUMENTS (wave 94) — what your agent released WITH the offer:
+          the contract the buyer's agent sent and anything that came with it. */}
+      {(offers.some((o: any) => (o.documents ?? []).length > 0) || sellerOfferResult.documentsError) && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Offer documents</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            {sellerOfferResult.documentsError && (
+              <p className="text-amber-800">
+                The documents your agent shared could not be loaded ({sellerOfferResult.documentsError}). That is a read
+                failure, not a missing document — ask your agent for a copy.
+              </p>
+            )}
+            {offers.filter((o: any) => (o.documents ?? []).length > 0).map((o: any) => (
+              <div key={o.id}>
+                <p className="font-medium">
+                  {o.buyer?.first_name ?? "Buyer"} {o.buyer?.last_name ?? ""} — {usdOrNAOnNullish(o.offer_price)}
+                </p>
+                <ul className="mt-1 list-disc pl-5">
+                  {(o.documents as Array<{ id: string; name: string; url: string }>).map((d) => (
+                    <li key={d.id}>
+                      <a href={d.url} target="_blank" rel="noopener noreferrer" className="text-blue-700 underline">
+                        {d.name}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Interactive net sheet — every released offer ranked by what you KEEP. */}
       {netSheetInputs && <SellerInteractiveNetSheet inputs={netSheetInputs} />}
 

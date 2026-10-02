@@ -275,6 +275,10 @@ export async function POST(request: NextRequest) {
           subject:         email.subject ?? null,
           bodyText:        email.bodyText ?? null,
           fromEmail:       email.fromEmail ?? null,
+          // The sender's display name — the outside buyer's agent's own header,
+          // the cheapest honest source of the name on their outside_agents
+          // record (wave 94, lib/offers/outside-agent-record.ts).
+          fromName:        email.fromName ?? null,
           senderContactId: contactId,
           mailbox,
           attachments:     email.attachments.map((a) => ({ fileName: a.fileName, mime: a.mime, contentB64: a.contentB64 ?? null })),

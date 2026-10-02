@@ -40,6 +40,9 @@ import { KernelEvent } from "@/lib/kernel/events"
 // written by our own offer wizard at submission and — since this wave — here, at
 // the moment the agent actually releases the offer.
 const PORTAL_OFFER_NOTIFICATION = "portal_offer_notification"
+// documents.metadata key: when the listing agent released this document to the
+// seller with its offer (null = not shared). Read by portal-seller.ts.
+const SHARED_WITH_SELLER_AT_KEY = "shared_with_seller_at"
 
 export interface PresentationState {
   offerId: string
@@ -136,6 +139,10 @@ export interface PresentResult {
   approverRecorded?: boolean
   /** Already-released offers report this instead of raising a second banner. */
   alreadyPresented?: boolean
+  /** Documents filed to the offer that are now (or no longer) shared with the seller. */
+  documentsShared?: number
+  /** The Listing Concierge net-sheet run the release triggered (null when it could not run). */
+  netSheet?: { listingsScanned: number; comparisonsProposed: number; portalCardsPushed: number } | null
   /** Non-fatal problems the caller must be shown rather than have swallowed. */
   warnings?: string[]
 }
@@ -274,6 +281,33 @@ export async function presentOfferToSeller(params: {
     console.error("[presentOfferToSeller] OFFER_RECEIVED emit failed:", e)
   })
 
+  // ── THE ONE ACTION PUBLISHES THE WHOLE PACKAGE (wave 94, lane 94B) ─────────
+  // Owner: "they decide if the offer info and doc and automatic netsheet shows
+  // in the seller's portal". The release above is the offer info; these are the
+  // other two halves, on the SAME click, so the agent never has a second step.
+  //   (1) THE DOCUMENT — every `documents` row filed to this offer
+  //       (metadata.linked_offer_id, the inbound lane's own key) is marked shared
+  //       with the seller; app/actions/portal-seller.ts:getSellerOffers hands a
+  //       released offer's shared documents to the portal and nothing else.
+  //   (2) THE NET SHEET — the Listing Concierge's runner is asked for THIS
+  //       listing now, instead of waiting on the */15 cron: it stamps the offer's
+  //       seller_net_estimate (the portal's "most money in your pocket") and
+  //       pushes the portal value card for the RELEASED offers only.
+  const shared = await setOfferDocumentsSharedWithSeller(svc, { brokerageId: auth.brokerageId, offerId, sharedAt: now })
+  if (shared.error) warnings.push(`The offer is released, but its documents were not shared: ${shared.error}`)
+  else if (shared.count === 0) warnings.push("The offer is released, but no document is filed to it yet — the seller sees the terms and the net sheet only.")
+
+  let netSheet: { listingsScanned: number; comparisonsProposed: number; portalCardsPushed: number } | null = null
+  try {
+    const { runOfferNetSheets } = await import("@/lib/kernel/offer-net-sheet")
+    netSheet = await runOfferNetSheets(auth.brokerageId, { listingId }, svc as any)
+    if (netSheet.listingsScanned === 0) {
+      warnings.push("The net sheet was not generated: this listing has no seller contact or listing agent on file, or the offer is no longer open.")
+    }
+  } catch (e) {
+    warnings.push(`The offer is released, but the net sheet could not be generated now (${(e as Error).message}); the scheduled run will retry.`)
+  }
+
   revalidatePath(`/dashboard/listings/${listingId}/offers`)
   if (sellerContactId) revalidatePath(`/portal/${sellerContactId}/offers`)
 
@@ -282,8 +316,41 @@ export async function presentOfferToSeller(params: {
     presentedAt: now,
     approverRecorded: !!approverAgentId,
     alreadyPresented: false,
+    documentsShared: shared.count,
+    netSheet,
     warnings,
   }
+}
+
+/**
+ * Mark (or unmark) every document filed to an offer as shared with the seller.
+ * `documents.metadata` is MERGED per row, never assigned wholesale (the
+ * load-bearing bug of wave 9 destroyed `linked_offer_id` exactly that way), and
+ * each write is tenant-filtered and counted.
+ */
+async function setOfferDocumentsSharedWithSeller(
+  svc: ReturnType<typeof createServiceClient>,
+  p: { brokerageId: string; offerId: string; sharedAt: string | null },
+): Promise<{ count: number; error: string | null }> {
+  const { data: docs, error } = await svc
+    .from("documents")
+    .select("id, metadata")
+    .eq("brokerage_id", p.brokerageId)
+    .filter("metadata->>linked_offer_id", "eq", p.offerId)
+  if (error) return { count: 0, error: error.message }
+  let count = 0
+  for (const d of (docs ?? []) as Array<{ id: string; metadata: Record<string, unknown> | null }>) {
+    const merged = { ...(d.metadata ?? {}), [SHARED_WITH_SELLER_AT_KEY]: p.sharedAt }
+    const { data: upd, error: updErr } = await svc
+      .from("documents")
+      .update({ metadata: merged, updated_at: new Date().toISOString() })
+      .eq("id", d.id)
+      .eq("brokerage_id", p.brokerageId)
+      .select("id")
+    if (updErr) return { count, error: updErr.message }
+    count += (upd ?? []).length
+  }
+  return { count, error: null }
 }
 
 // ─── RETRACT A RELEASE ───────────────────────────────────────────────────────
@@ -344,12 +411,77 @@ export async function unpresentOfferFromSeller(params: {
   if (sweepErr) {
     warnings.push(`The offer is hidden again, but the seller's portal alert could not be withdrawn: ${sweepErr.message}`)
   }
+  // The documents the release shared go back with it (wave 94).
+  const unshared = await setOfferDocumentsSharedWithSeller(svc, { brokerageId: auth.brokerageId, offerId, sharedAt: null })
+  if (unshared.error) warnings.push(`The offer is hidden again, but its documents could not be unshared: ${unshared.error}`)
 
   const sellerContactId = listing.seller_contact_id ?? listing.contact_id ?? null
   revalidatePath(`/dashboard/listings/${listingId}/offers`)
   if (sellerContactId) revalidatePath(`/portal/${sellerContactId}/offers`)
 
   return { success: true, presentedAt: null, warnings }
+}
+
+// ─── THE COOPERATING BUYER'S AGENTS ON A LISTING (wave 94, lane 94B) ─────────
+//
+// The reader of the outside_agents record the inbound lane creates
+// (lib/offers/outside-agent-record.ts). The listing agent sees WHO sent each
+// emailed offer — name, brokerage, address, phone, licence, where the record
+// came from and its notes — on the same offers screen they release from, behind
+// the same auth + tenant gate. Read-only: the record is completed by the email
+// and the AI read, never typed over here.
+
+export interface CooperatingAgentCard {
+  id: string
+  name: string | null
+  email: string | null
+  phone: string | null
+  brokerageName: string | null
+  licenseNumber: string | null
+  source: string | null
+  notes: string | null
+}
+
+export async function getCooperatingAgentsForListing(listingId: string): Promise<{
+  success: boolean
+  error?: string
+  agents: CooperatingAgentCard[]
+}> {
+  if (!isValidUUID(listingId)) return { success: false, error: "Invalid listing ID", agents: [] }
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error, agents: [] }
+  const listingResult = await loadListingInCallerBrokerage(listingId, auth.brokerageId)
+  if (!listingResult.ok) return { success: false, error: listingResult.error, agents: [] }
+
+  const svc = createServiceClient()
+  const { data: links, error: linkErr } = await svc
+    .from("outside_agent_contact_links")
+    .select("outside_agent_id")
+    .eq("brokerage_id", auth.brokerageId)
+    .eq("listing_id", listingId)
+  if (linkErr) return { success: false, error: linkErr.message, agents: [] }
+  const ids = [...new Set(((links ?? []) as Array<{ outside_agent_id: string }>).map((l) => l.outside_agent_id))]
+  if (ids.length === 0) return { success: true, agents: [] }
+
+  const { data: rows, error } = await svc
+    .from("outside_agents")
+    .select("id, full_name, first_name, last_name, email, phone, outside_brokerage_name, license_number, source, notes")
+    .eq("brokerage_id", auth.brokerageId)
+    .in("id", ids)
+  if (error) return { success: false, error: error.message, agents: [] }
+  return {
+    success: true,
+    agents: ((rows ?? []) as any[]).map((r) => ({
+      id: r.id,
+      name: r.full_name ?? ([r.first_name, r.last_name].filter(Boolean).join(" ") || null),
+      email: r.email ?? null,
+      phone: r.phone ?? null,
+      brokerageName: r.outside_brokerage_name ?? null,
+      licenseNumber: r.license_number ?? null,
+      source: r.source ?? null,
+      notes: r.notes ?? null,
+    })),
+  }
 }
 
 // ─── READ THE PRESENTATION STATE FOR AN AGENT'S OFFER SCREEN ─────────────────
