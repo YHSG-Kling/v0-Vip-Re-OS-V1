@@ -58,6 +58,14 @@ import { contentSafetyBackstop } from "@/lib/providers/content-safety"
 import { channelRefusalForRecipient } from "@/lib/ai-isa/lead-channel-policy"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
 import {
+  withActionLedger,
+  settleDispatchResult,
+  replayDispatchResult,
+  type ActionContext,
+  type ActionReasonCode,
+  type NonActingClaim,
+} from "@/lib/kernel/action-ledger"
+import {
   DID_TALK_REALISM_CONFIG,
   DID_NATURAL_DRIVER_URL,
   ELEVENLABS_REALISM_VOICE_SETTINGS,
@@ -120,6 +128,67 @@ interface DispatchActorContext {
   managerKey?: ManagerKey
   /** A human approved this send (approval queue). Bypasses the autonomy gate. */
   humanApproved?: boolean
+  /**
+   * ACTION LEDGER context (wave 97, lib/kernel/action-ledger.ts). Every send is recorded whether
+   * or not this is set; set it to say WHY (reasonCode) and to make the send at-most-once per
+   * cycle (`cycle` — e.g. a deadline id + day — or a precomputed idempotencyKey). `subject`
+   * points the row at a listing / transaction instead of the recipient. causationId defaults to
+   * the kernel event being processed (lib/kernel/causation.ts).
+   */
+  ledger?: {
+    reasonCode?: ActionReasonCode
+    reasonDetail?: string
+    cycle?: string
+    idempotencyKey?: string
+    causationId?: string
+    subject?: { type: "listing" | "transaction" | "contact" | "lead"; id: string }
+  }
+}
+
+// ─── ACTION LEDGER — the one record of every send (lib/kernel/action-ledger.ts) ─────────────
+// Wired HERE, at the egress chokepoint, so no caller changes: each exported dispatcher's body
+// runs inside withActionLedger. Costs are the same per-unit figures the vendor-usage meter books.
+const EMAIL_SEND_COST_USD = 0.001
+const SMS_SEND_COST_USD = 0.0075 // Twilio SMS ~$0.0075/segment
+const DIRECT_MAIL_PIECE_COST_USD: Record<DirectMailPieceType, number> = { letter: 1.2, postcard: 0.78, self_mailer: 1.05 }
+
+function ledgerContextFor(
+  action: string,
+  channel: string,
+  params: DispatchActorContext,
+  recipientRef: string | null,
+): ActionContext {
+  const managerKey = managerForDispatch(params.managerKey, params.systemSource)
+  const actor: ActionContext["actor"] = managerKey && !params.humanApproved
+    ? { type: "manager", managerKey, userId: params.userId ?? null }
+    : params.userId ? { type: "user", userId: params.userId, agentId: params.agentId ?? null }
+    : params.agentId ? { type: "agent", agentId: params.agentId }
+    : { type: "system" }
+  const subject = params.ledger?.subject
+    ?? (params.contactId ? { type: "contact", id: params.contactId }
+      : params.leadId ? { type: "lead", id: params.leadId }
+      : { type: "recipient", id: null, ref: recipientRef })
+  return {
+    brokerageId: params.brokerageId,
+    action,
+    channel,
+    actor,
+    subject,
+    reasonCode: params.ledger?.reasonCode ?? (params.humanApproved ? "HUMAN_REQUESTED" : null),
+    reasonDetail: params.ledger?.reasonDetail ?? null,
+    cycle: params.ledger?.cycle ?? null,
+    idempotencyKey: params.ledger?.idempotencyKey ?? null,
+    causationId: params.ledger?.causationId ?? null,
+    riskClass: "COMMUNICATION",
+    systemSource: params.systemSource ?? null,
+  }
+}
+
+function dispatchLedgerHooks(costUsd: number | null) {
+  return {
+    settle: (r: DispatchResult) => settleDispatchResult(r, costUsd),
+    replay: (claim: NonActingClaim): DispatchResult => replayDispatchResult(claim),
+  }
 }
 
 // ─── Autonomy gate — enforce the Manager Trust posture on AUTONOMOUS sends ──────
@@ -362,6 +431,8 @@ export interface DispatchEmailParams extends DispatchActorContext {
 }
 
 export async function dispatchEmail(params: DispatchEmailParams): Promise<DispatchResult> {
+  // The body below runs inside the action ledger (claim → gates + send → settle). Not re-indented on purpose.
+  return withActionLedger(ledgerContextFor("comms.email.send", "email", params, params.to), async () => {
   // ── AUTONOMY GATE: hold an autonomous send from a manager outside its trust boundary ──
   const autonomyHeld = await autonomyGate(params)
   if (autonomyHeld) return autonomyHeld
@@ -546,7 +617,7 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
     vendorName: providerKey,
     usageType: "emails",
     unitCount: 1,
-    estimatedCost: 0.001,
+    estimatedCost: EMAIL_SEND_COST_USD,
     systemSource: params.systemSource ?? "dispatch",
     brokerageId: params.brokerageId,
     agentId: params.agentId,
@@ -571,6 +642,7 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
   })
 
   return result
+  }, dispatchLedgerHooks(EMAIL_SEND_COST_USD))
 }
 
 // ─── SMS ──────────────────────────────────────────────────────────────────────
@@ -591,6 +663,8 @@ export interface DispatchSmsParams extends DispatchActorContext {
 }
 
 export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchResult> {
+  // The body below runs inside the action ledger (claim → gates + send → settle). Not re-indented on purpose.
+  return withActionLedger(ledgerContextFor("comms.sms.send", "sms", params, params.to), async () => {
   // ── LEAD-STAGE REFUSAL (wave 91, lane 91B) — owner: "Leads usually are non consenting so no
   //    sms or calls allowed only email and direct mail." A LEAD-keyed SMS (leadId, no contactId)
   //    used to reach evaluateOutboundCompliance on the LEAD row and then the TCPA gate with no
@@ -751,7 +825,7 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
     vendorName: providerKey,
     usageType: "sms_messages",
     unitCount: 1,
-    estimatedCost: 0.0075, // Twilio SMS ~$0.0075/segment
+    estimatedCost: SMS_SEND_COST_USD,
     systemSource: params.systemSource ?? "dispatch",
     brokerageId: params.brokerageId,
     agentId: params.agentId,
@@ -766,6 +840,7 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
   })
 
   return result
+  }, dispatchLedgerHooks(SMS_SEND_COST_USD))
 }
 
 // ─── PHONE (outbound call) — MERGED AWAY (wave 8) ─────────────────────────────
@@ -827,6 +902,9 @@ export interface DispatchDirectMailParams extends DispatchActorContext {
 export async function dispatchDirectMail(
   params: DispatchDirectMailParams
 ): Promise<DispatchResult> {
+  // The body below runs inside the action ledger (claim → gates + send → settle). Not re-indented on purpose.
+  const mailCost = DIRECT_MAIL_PIECE_COST_USD[params.pieceType ?? "letter"] ?? null
+  return withActionLedger(ledgerContextFor("comms.direct_mail.send", "direct_mail", params, `${params.mailingAddress}, ${params.zip}`), async () => {
   // ── AUTONOMY GATE: hold an autonomous send from a manager outside its trust boundary ──
   const autonomyHeld = await autonomyGate(params)
   if (autonomyHeld) return autonomyHeld
@@ -1072,7 +1150,7 @@ export async function dispatchDirectMail(
   const mergeVars = params.mergeVars ?? {}
 
   // Approx Lob per-piece cost by type (telemetry only; reconciled against Lob invoices).
-  const COST: Record<DirectMailPieceType, number> = { letter: 1.2, postcard: 0.78, self_mailer: 1.05 }
+  const COST: Record<DirectMailPieceType, number> = DIRECT_MAIL_PIECE_COST_USD
 
   // Budget gate — Lob is the priciest platform-paid vendor. The SAME shared
   // pre-flight the email/SMS/phone dispatchers run: month-to-date vendor-spend
@@ -1164,6 +1242,7 @@ export async function dispatchDirectMail(
   })().catch(() => {})
 
   return { success: true, providerKey, messageId: data.id, budgetWarning: mailBudget.warning }
+  }, dispatchLedgerHooks(mailCost))
 }
 
 // ─── VIDEO (superadmin-controlled, system-only) ───────────────────────────────

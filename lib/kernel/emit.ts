@@ -53,6 +53,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { processKernelEvent } from "./notification-engine"
 import { KernelEvent } from "./events"
+import { currentCausation } from "./causation"
 
 /** lifecycle_events.source — live CHECK `lifecycle_events_source_check`. */
 export type LifecycleEventSource = "ui" | "webhook" | "system" | "cron"
@@ -97,6 +98,13 @@ export interface EmitKernelEventInput {
    *  (lane L5, 2026-09-03). Capped at 7 days. Written to the `dedupe_key` column. */
   dedupeKey?:        string
   dedupeWindowSec?:  number
+  // ── Causation (wave 97, m687) ───────────────────────────────────────────────────────────────
+  /** The parent lifecycle_events.id that caused this event → lifecycle_events.causation_id.
+   *  Defaults to the event the kernel is processing right now (lib/kernel/causation.ts), so a
+   *  reactor that emits a child threads parent → child without passing anything. */
+  causationId?:      string | null
+  /** The chain root → lifecycle_events.correlation_id. Defaults to the enclosing scope's root. */
+  correlationId?:    string | null
   // ── Row-already-written entry point (the retired fanOutKernelEvent contract) ─────────────────
   /** The caller has ALREADY inserted its lifecycle_events row (a kernel command that writes the
    *  row inside a Promise.all, a wrapper that owns its own insert). Skip the insert and only fan
@@ -174,13 +182,29 @@ export async function emitKernelEvent(input: EmitKernelEventInput): Promise<Emit
     if (input.source      !== undefined) row.source        = input.source
     if (input.createdAt   !== undefined) row.created_at    = input.createdAt
     if (input.dedupeKey   !== undefined) row.dedupe_key    = input.dedupeKey
+    // Causation columns only when there IS a cause — a root event writes neither, so an
+    // unapplied m687 costs a root event nothing.
+    const scope = currentCausation()
+    const causationId = input.causationId ?? scope.causationId
+    const correlationId = input.correlationId ?? scope.correlationId
+    if (causationId)   row.causation_id   = causationId
+    if (correlationId) row.correlation_id = correlationId
 
     try {
-      const { data, error } = await svc
+      let { data, error } = await svc
         .from("lifecycle_events")
         .insert(row)
         .select("id")
         .single()
+      // DEGRADE, DO NOT DROP: before m687 is applied the causation columns are absent and
+      // PostgREST refuses the WHOLE row (PGRST204, CLAUDE.md §3). Losing the event to save its
+      // lineage is the wrong trade — say so, and write the event without the lineage.
+      if (error && (error.code === "PGRST204" || error.code === "42703") && ("causation_id" in row || "correlation_id" in row)) {
+        console.warn("[emitKernelEvent] causation columns absent (m687 not applied?) — writing the event without lineage:", error.message)
+        delete row.causation_id
+        delete row.correlation_id
+        ;({ data, error } = await svc.from("lifecycle_events").insert(row).select("id").single())
+      }
       if (error) {
         return { inserted: false, lifecycleEventId: null, fanOutOk: false, error: error.message }
       }

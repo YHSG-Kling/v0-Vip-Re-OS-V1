@@ -442,6 +442,25 @@ export async function deliverConversionWelcome(
         `(${timing.reason}). /api/cron/intro-video-email-backfill releases it when the render lands, ` +
         `or without the video after ${Math.round(WELCOME_VIDEO_WAIT_MS / 60000)} minutes.`,
     )
+    // "WAIT" IS AN ACTION (wave 97, lib/kernel/action-ledger.ts): the automation decided not to
+    // send yet, and why — recorded once per conversion (the cycle), never a send.
+    try {
+      const { recordNonAction } = await import("@/lib/kernel/action-ledger")
+      const rec = await recordNonAction({
+        brokerageId: params.brokerageId,
+        domain: "welcome",
+        decision: "wait",
+        actor: { type: "system" },
+        subject: { type: "contact", id: params.contactId },
+        reasonCode: "CONTACT_WELCOME",
+        reasonDetail: timing.reason,
+        cycle: "conversion",
+        until: new Date(Date.now() + WELCOME_VIDEO_WAIT_MS).toISOString(),
+      })
+      if (!rec.recorded && rec.error) warnings.push(`welcome wait not ledgered: ${rec.error}`)
+    } catch (e) {
+      warnings.push(`welcome wait not ledgered: ${(e as Error).message}`)
+    }
     return out
   }
 

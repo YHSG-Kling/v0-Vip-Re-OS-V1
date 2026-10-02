@@ -8,10 +8,11 @@ import { Sparkles, Eye, CheckCircle2, TrendingUp } from 'lucide-react'
 import Link from 'next/link'
 import { getAgentContext } from '@/lib/identity'
 import { toCanonicalRoleOrDefault } from '@/lib/security'
+import { getEntityCausalChain } from '@/app/actions/flight-recorder'
 
 export const dynamic = 'force-dynamic'
 
-export default async function AIAuditPage() {
+export default async function AIAuditPage({ searchParams }: { searchParams: Promise<{ entityType?: string; entityId?: string }> }) {
   // Kernel OS: getAgentContext — canonical identity, never raw auth.getUser()
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect('/login')
@@ -32,6 +33,13 @@ export default async function AIAuditPage() {
     .limit(50)
 
   const outputs = aiOutputs || []
+
+  // FLIGHT RECORDER (wave 97): "why did the AI send this?" for one contact / lead / listing /
+  // transaction. The action gates on the SESSION's tenant itself; this page only names the entity.
+  const sp = await searchParams
+  const flight = sp?.entityType && sp?.entityId
+    ? await getEntityCausalChain({ entityType: sp.entityType, entityId: sp.entityId })
+    : null
   const total = outputs.length
   const approved = outputs.filter((o: any) => o.compliance_approved).length
   const pending = outputs.filter((o: any) => !o.compliance_approved).length
@@ -143,6 +151,36 @@ export default async function AIAuditPage() {
           </Card>
         ))}
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Flight recorder</CardTitle>
+          <CardDescription>Why did the AI act? Events and actions for one record, in order, with reason codes.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <form className="flex flex-wrap gap-2 text-sm">
+            <select name="entityType" defaultValue={sp?.entityType ?? 'contact'} className="border rounded px-2 py-1">
+              {['contact', 'lead', 'listing', 'transaction'].map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <input name="entityId" defaultValue={sp?.entityId ?? ''} placeholder="record id (uuid)" className="border rounded px-2 py-1 flex-1 min-w-[16rem]" />
+            <Button type="submit" size="sm" variant="outline">Trace</Button>
+          </form>
+          {flight && !flight.ok && <p className="text-sm text-red-600">{flight.error}</p>}
+          {flight?.ok && (flight.chain.length === 0
+            ? <p className="text-sm text-gray-500">Nothing recorded for this record.</p>
+            : <ol className="space-y-1 text-sm">
+                {flight.chain.map((l) => (
+                  <li key={`${l.kind}-${l.id}`} className="flex flex-wrap gap-2">
+                    <span className="text-xs text-gray-500">{new Date(l.at).toLocaleString()}</span>
+                    <span className="font-medium">{l.name}</span>
+                    {l.kind === 'action' && <Badge variant="outline">{l.status} · {l.reasonCode}</Badge>}
+                    {l.because && l.because.length > 0 && <span className="text-xs text-gray-500">because {l.because.join(' → ')}</span>}
+                  </li>
+                ))}
+              </ol>)}
+          {flight?.ok && !flight.ledgerAvailable && <p className="text-xs text-amber-700">Action ledger not deployed yet — showing events only.</p>}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

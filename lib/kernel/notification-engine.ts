@@ -13,6 +13,7 @@
 // - TypeScript strict mode throughout.
 
 import { KernelEvent } from "./events"
+import { currentCausation, withCausationFrom } from "./causation"
 import { createServiceClient } from "@/lib/supabase/service"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import {
@@ -46,6 +47,13 @@ export async function processKernelEvent(params: {
   /** Set by the sequence engine's own emits so its events don't re-trigger enrollment (feedback loop). */
   suppressEnrollment?: boolean
 }): Promise<void> {
+
+  // CAUSATION (wave 97): everything this event sets off — child events (emitKernelEvent) and
+  // external sends (the action ledger at lib/providers/dispatch.ts) — runs with THIS event as its
+  // cause. Re-enters itself once inside the scope; the guard makes the second pass a no-op here.
+  if (params.lifecycleEventId && currentCausation().causationId !== params.lifecycleEventId) {
+    return withCausationFrom(params.lifecycleEventId, () => processKernelEvent(params))
+  }
 
   const supabase = createServiceClient()
 
