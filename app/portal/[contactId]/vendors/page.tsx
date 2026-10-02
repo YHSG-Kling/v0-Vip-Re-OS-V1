@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
-import { resolvePortalLayouts, clientTransactionFilter } from "@/lib/kernel/portal"
+import { resolvePortalLayouts, clientTransactionFilter, portalDealClient, scopeToDealTenant } from "@/lib/kernel/portal"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
@@ -64,15 +64,22 @@ export default async function ClientVendorsPage({
     redirect("/portal?error=contact_not_found")
   }
 
-  // Active transaction (used for both stage derivation + assignments list)
-  const { data: transaction } = await supabase
-    .from("transactions")
-    .select("id, contact_id, status, close_date")
-    .or(clientTransactionFilter(contactId))
-    .not("status", "in", "(cancelled)")
+  // Active transaction (used for both stage derivation + assignments list). Read
+  // through the kernel's gate-then-service deal client (lib/kernel/portal.ts
+  // portalDealClient): the client's own session sees none of its deals.
+  const { client: dealDb, brokerageId: dealTenant } = await portalDealClient(supabase, contactId)
+  const { data: transaction, error: txError } = await scopeToDealTenant(
+    dealDb
+      .from("transactions")
+      .select("id, contact_id, status, close_date")
+      .or(clientTransactionFilter(contactId))
+      .not("status", "in", "(cancelled)"),
+    dealTenant,
+  )
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
+  if (txError) console.error("[portal/vendors] deal read refused:", txError.message)
 
   // Build audience + stage tags for the resolver
   const { audienceTags, stage } = buildVendorAudienceTags({
@@ -93,7 +100,7 @@ export default async function ClientVendorsPage({
   // again (and the completed rows are where the client-rating door lives).
   const [assignedRes, curatedVendors, agentRes, bookingsRes] = await Promise.all([
     transaction
-      ? supabase
+      ? scopeToDealTenant(dealDb
           .from("vendor_assignments")
           .select(`
             id,
@@ -103,7 +110,7 @@ export default async function ClientVendorsPage({
             vendors:vendor_id(id, name, category, phone, email),
             vendor_jobs:vendor_jobs(id, status, cost_estimate, cost_actual)
           `)
-          .eq("transaction_id", transaction.id)
+          .eq("transaction_id", transaction.id), dealTenant)
           .order("scheduled_date", { ascending: false, nullsFirst: false })
       : Promise.resolve({ data: [] as never[] }),
     resolveContactVendors(supabase, {

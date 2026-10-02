@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { CONTRACT_ESIGN_AWAITING_STATUSES } from "@/lib/transactions/coordination-status"
-import { clientTransactionFilter } from "@/lib/kernel/portal"
+import { clientTransactionFilter, portalDealClient, scopeToDealTenant } from "@/lib/kernel/portal"
 import { redirect } from "next/navigation"
 import { DocumentsClient } from "./DocumentsClient"
 import { syncAllForContact } from "@/lib/transactions/sync-from-provider"
@@ -34,11 +34,22 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
     }
   }
 
-  // STEP 1 — Resolve transaction IDs (never use Supabase subquery in .in())
-  const { data: transactions } = await supabase
-    .from("transactions")
-    .select("id")
-    .or(clientTransactionFilter(contactId))
+  // STEP 1 — Resolve transaction IDs (never use Supabase subquery in .in()). The
+  // client's own session sees none of its deals, so the ids come through the kernel's
+  // gate-then-service deal client (lib/kernel/portal.ts portalDealClient), scoped to
+  // this contact + tenant. ONLY the ids are elevated: transaction_documents below stays
+  // on the session client on purpose — there is no client-visible document rule yet,
+  // and an elevated read would hand the client the brokerage's CDA and internal notes
+  // (CLAUDE.md §5). Owner item (wave 96 notes).
+  const { client: dealDb, brokerageId: dealTenant } = await portalDealClient(supabase, contactId)
+  const { data: transactions, error: txError } = await scopeToDealTenant(
+    dealDb
+      .from("transactions")
+      .select("id")
+      .or(clientTransactionFilter(contactId)),
+    dealTenant,
+  )
+  if (txError) console.error("[portal/documents] deal read refused:", txError.message)
 
   const transactionIds = transactions?.map(t => t.id) ?? []
 

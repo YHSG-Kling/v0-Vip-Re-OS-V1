@@ -23,7 +23,7 @@ import {
 import { computeHomeWealthStory } from "@/lib/portal/home-wealth"
 import { normalizeLifetimeSegment, type LifetimeSegment } from "@/lib/portal/lifetime-segment"
 import { requireContactAccess } from "@/lib/portal/require-contact-access"
-import { clientTransactionFilter, pickLifetimeHomeTransaction } from "@/lib/kernel/portal"
+import { clientTransactionFilter, excludeOwnHome, pickLifetimeHomeTransaction } from "@/lib/kernel/portal"
 
 // TOMBSTONE: local requireContactAccess merged onto
 // lib/portal/require-contact-access.ts:107 requireContactAccess (imported
@@ -588,7 +588,8 @@ export async function getLifetimeContext(contactId: string) {
       sale_price:purchase_price,
       offer_price:purchase_price,
       created_at,
-      buyer_contact_id
+      buyer_contact_id,
+      listing_id
     `)
     .or(clientTransactionFilter(contactId))
     .eq("brokerage_id", access.brokerageId)
@@ -681,10 +682,12 @@ export async function getLifetimeContext(contactId: string) {
         .eq("brokerage_id", access.brokerageId)
         .ilike("address", `%${cityState}%`)
         .in("status", ["active", "sold", "pending"])
-        .neq("id", (transaction as any).listing_id ?? "00000000-0000-0000-0000-000000000000")
         .order("created_at", { ascending: false })
-        .limit(5)
-      neighborhoodListings = nearby ?? []
+        .limit(6)
+      // The client's OWN home never counts as neighbourhood activity (wave 96 —
+      // listing_id is now selected above, and the street line catches a home with
+      // no listing id). One extra row is read so the list still shows five.
+      neighborhoodListings = excludeOwnHome(nearby ?? [], transaction).slice(0, 5)
     }
   }
 

@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
+import { clientTransactionFilter, portalDealClient, scopeToDealTenant } from "@/lib/kernel/portal"
 import { isPositiveShowingInterest } from "@/lib/behavior-learning/signal-mapping"
 import { redirect } from "next/navigation"
 import Link from "next/link"
@@ -282,13 +283,21 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
   const isUnderContract = listing.status === "pending" || listing.status === "under_contract"
 
   // Transaction close date
-  const { data: transaction } = context.transactionId
-    ? await supabase
-        .from("transactions")
-        .select("close_date")
-        .eq("id", context.transactionId)
-        .single()
-    : { data: null }
+  // Through the kernel's gate-then-service deal client (lib/kernel/portal.ts
+  // portalDealClient) — the seller's own session sees none of its deals — and pinned
+  // to THIS contact's deals + tenant, not just the id the context carried.
+  const { client: dealDb, brokerageId: dealTenant } = await portalDealClient(supabase, contactId)
+  const { data: transaction, error: txError } = context.transactionId
+    ? await scopeToDealTenant(
+        dealDb
+          .from("transactions")
+          .select("close_date")
+          .eq("id", context.transactionId)
+          .or(clientTransactionFilter(contactId)),
+        dealTenant,
+      ).maybeSingle()
+    : { data: null, error: null }
+  if (txError) console.error("[portal/listing] deal read refused:", txError.message)
 
   // Seller EQUITY & NET-PROCEEDS inputs — the estimated value is sourced from the MOST ACCURATE
   // valuation available, in order: a comps-adjusted CMA (runAiCma → cma_reports.recommended_price,

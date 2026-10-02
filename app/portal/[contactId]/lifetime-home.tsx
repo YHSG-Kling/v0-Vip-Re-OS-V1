@@ -17,6 +17,7 @@ import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorT
 import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { getLifetimeContext } from "@/app/actions/portal-lifetime"
 import { createClient } from "@/lib/supabase/server"
+import { portalDealClient, scopeToDealTenant } from "@/lib/kernel/portal"
 import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
 import { PortalLiveFeed } from "@/app/components/portal/PortalLiveFeed"
 import { MilestoneEducationPanel } from "@/app/components/portal/milestone-education-panel"
@@ -114,10 +115,18 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
   let dealTeamMembers: any[] = []
   let primaryAgent: any = null
   if (transaction?.id) {
-    const { data: dt } = await lifetimeSupabase
-      .from("deal_team_members")
-      .select("id, member_type, external_name:name, external_company:company, external_phone:phone, external_email:email")
-      .eq("transaction_id", transaction.id)
+    // The deal id came from getLifetimeContext's gated, contact+tenant-scoped read; the
+    // team row hangs its RLS off the deal, so it is read through the same kernel deal
+    // client (lib/kernel/portal.ts portalDealClient), pinned to the gate's tenant.
+    const { client: dealDb, brokerageId: dealTenant } = await portalDealClient(lifetimeSupabase, contactId)
+    const { data: dt, error: dtError } = await scopeToDealTenant(
+      dealDb
+        .from("deal_team_members")
+        .select("id, member_type, external_name:name, external_company:company, external_phone:phone, external_email:email")
+        .eq("transaction_id", transaction.id),
+      dealTenant,
+    )
+    if (dtError) console.error("[portal/lifetime] deal team read refused:", dtError.message)
     // deal_team_members has no agent_id/FK to agents — members render as external contacts.
     dealTeamMembers = (dt ?? []).map((m: any) => ({ ...m, agent: null }))
   }

@@ -14,7 +14,7 @@ import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { incrementUsage } from "@/lib/usage"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { ingestOfferLostSignalAction } from "@/app/actions/lead-signal-ingest"
-import { CONTRACT_TERM_COLUMNS, COUNTER_CARRIED_COLUMNS, carryCounterTerms } from "@/lib/transactions/contract-terms"
+import { CONTRACT_TERM_COLUMNS } from "@/lib/transactions/contract-terms"
 import { byPriorityDesc } from "@/lib/kernel/priority-rank"
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
@@ -470,96 +470,35 @@ export async function sendCounterOffer(params: {
     return { success: false, error: "Forbidden" }
   }
 
+  // TOMBSTONE (orphan doctrine §1.1, wave 96 lane 96A): this action's own counter
+  // INSERT, parent update and OFFER_COUNTER_SENT emit were a second writer of the
+  // counter row. Merged ONTO the survivor lib/kernel/offers.ts:326 issueCounterOffer
+  // (the listing check, earnest money, response deadline, uploaded_by, the
+  // tenant-scoped parent update and this fan-out all moved there first); what
+  // stays here is the slide-over's GATE — session caller, listing in the caller's
+  // brokerage — and then the service client, AFTER the gate (CLAUDE.md §4).
   const supabase = createServiceClient()
-
-  // Fetch parent offer to derive contact + current_round; verify ownership
-  const parentColumns = `contact_id, current_round, brokerage_id, listing_id, ${COUNTER_CARRIED_COLUMNS.join(", ")}`
-  const { data: parent, error: parentReadError } = await supabase
-    .from("offers")
-    .select(parentColumns)
-    .eq("id", parentOfferId)
-    .eq("brokerage_id", brokerageId)
-    .maybeSingle<Record<string, any>>()
-
-  if (parentReadError) return { success: false, error: `Parent offer could not be read: ${parentReadError.message}` }
-  if (!parent) return { success: false, error: "Parent offer not found" }
-  if (parent.brokerage_id !== brokerageId || parent.listing_id !== listingId) {
-    return { success: false, error: "Forbidden" }
-  }
-
-  const nextRound = (parent.current_round ?? 1) + 1
-
-  const { data: counter, error: insertError } = await supabase
-    .from("offers")
-    .insert({
-      // Unchanged terms carry forward; only what this counter changes replaces
-      // them — otherwise an accepted counter builds a deal with no close date.
-      ...carryCounterTerms(parent, {
-        contingencies: contingencyChanges,
-        closing_date:  closingDate,
-        earnest_money: earnestMoney,
-      }),
-      listing_id:        listingId,
-      contact_id:        parent.contact_id,
-      brokerage_id:      brokerageId,
-      agent_id:          await resolveAgentId(supabase as any, agentUserId),
-      uploaded_by:       agentUserId,
-      offer_price:       counterPrice,
-      offer_type:        "counter",
-      parent_offer_id:   parentOfferId,
-      current_round:     nextRound,
-      status:            "submitted",
-      response_deadline: responseDeadline,
-      notes:             notes ?? null,
-      ai_extraction_status: "manual",
-      submitted_at:      new Date().toISOString(),
-      created_at:        new Date().toISOString(),
-      updated_at:        new Date().toISOString(),
-    })
-    .select("id")
-    .single()
-
-  if (insertError || !counter) return { success: false, error: insertError?.message ?? "Insert failed" }
-
-  // Mark parent as countered — scoped. The counter row already exists, so a
-  // refusal here does not undo the send; it is READ and returned as a warning
-  // instead of leaving the parent reading "submitted" beside its own counter
-  // with nobody told (lane 87E, swallowed-refusal census).
-  const { error: parentStatusError } = await supabase
-    .from("offers")
-    .update({ status: "countered", updated_at: new Date().toISOString() })
-    .eq("id", parentOfferId)
-    .eq("brokerage_id", brokerageId)
-  if (parentStatusError) {
-    console.error(`[sendCounterOffer] parent ${parentOfferId} not marked countered:`, parentStatusError.message)
-  }
-
-  // Canonical fan-out: lifecycle event + staff notification + buyer/seller
-  // portal updates. The counter offer row is the entity.
-  await emitTransactionEvent({
-    event:       KernelEvent.OFFER_COUNTER_SENT,
-    entityType:  "offer",
+  const { issueCounterOffer } = await import("@/lib/kernel/offers")
+  const result = await issueCounterOffer({
+    offerId:          parentOfferId,
+    listingId,
     brokerageId,
-    entityId:    counter.id,
-    actorUserId: agentUserId,
-    metadata: {
-      listing_id:      listingId,
-      parent_offer_id: parentOfferId,
-      counter_price:   counterPrice,
-      round:           nextRound,
-      // The cooperating buyer's agent's copy names the deadline (wave 94 —
-      // lib/offers/outside-agent-record.ts composeCooperatingAgentCopy).
-      response_deadline: responseDeadline,
-    },
-  }).catch(() => {})
+    agentId:          (await resolveAgentId(supabase as any, agentUserId)) as string,
+    actorUserId:      agentUserId,
+    counterPrice,
+    closingDate,
+    earnestMoney,
+    contingencies:    contingencyChanges,
+    notes,
+    responseDeadline,
+  }, supabase as any)
+  if (!result.success || !result.data) return { success: false, error: result.error ?? "Insert failed" }
 
   revalidatePath(`/dashboard/listings/${listingId}/offers`)
   return {
     success: true,
-    counterId: counter.id,
-    warning: parentStatusError
-      ? `The counter was sent, but the original offer still reads its old status: ${parentStatusError.message}`
-      : undefined,
+    counterId: result.data.counterId,
+    warning: result.data.warning,
   }
 }
 

@@ -458,8 +458,8 @@ export interface OutsideAgentRow {
 
 /**
  * The cooperating agent on a deal, from ANY offer in its counter chain or from
- * the transaction. A counter is a new `offers` row (app/actions/seller-offers.ts
- * sendCounterOffer) that carries only `parent_offer_id`, so the record is found
+ * the transaction. A counter is a new `offers` row (lib/kernel/offers.ts
+ * issueCounterOffer, the one counter writer) that carries only `parent_offer_id`, so the record is found
  * by walking UP the chain to the offer the email created. Bounded walk; every
  * read is tenant-filtered and its refusal is reported, never read as "none".
  */

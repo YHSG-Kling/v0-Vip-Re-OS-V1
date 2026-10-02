@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { clientTransactionFilter } from "@/lib/kernel/portal"
+import { clientTransactionFilter, portalDealClient, scopeToDealTenant } from "@/lib/kernel/portal"
 import Link from "next/link"
 import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { Avatar, AvatarFallback, AvatarImage } from "@/app/components/ui/avatar"
@@ -29,14 +29,23 @@ export default async function TeamPage({
     redirect("/portal?error=contact_not_found")
   }
 
-  // Get active transaction
-  const { data: transactions } = await supabase
-    .from("transactions")
-    .select("id, property_address, status")
-    .or(clientTransactionFilter(contactId))
-    .not("status", "in", "(cancelled)")
+  // Get active transaction. The client cannot read its own deals through RLS (no
+  // contact-self SELECT on transactions), so the deal reads go through the kernel's
+  // gate-then-service client (lib/kernel/portal.ts portalDealClient), scoped to this
+  // contact's deals and the tenant the gate resolved. The deal-team tables below hang
+  // their RLS off transactions too: same client, by the deal id this read admitted.
+  const { client: dealDb, brokerageId: dealTenant } = await portalDealClient(supabase, contactId)
+  const { data: transactions, error: txError } = await scopeToDealTenant(
+    dealDb
+      .from("transactions")
+      .select("id, property_address, status")
+      .or(clientTransactionFilter(contactId))
+      .not("status", "in", "(cancelled)"),
+    dealTenant,
+  )
     .order("created_at", { ascending: false })
     .limit(1)
+  if (txError) console.error("[portal/team] deal read refused:", txError.message)
 
   const activeTransaction = transactions?.[0] ?? null
 
@@ -79,25 +88,25 @@ export default async function TeamPage({
       : Promise.resolve({ data: null, error: null }),
     // Deal team members
     activeTransaction
-      ? supabase
+      ? scopeToDealTenant(dealDb
           .from("deal_team_members")
           .select("id, member_type, external_name:name, external_company:company, external_phone:phone, external_email:email")
-          .eq("transaction_id", activeTransaction.id)
+          .eq("transaction_id", activeTransaction.id), dealTenant)
       : Promise.resolve({ data: [] }),
     // Transaction lenders
     activeTransaction
-      ? supabase
+      ? scopeToDealTenant(dealDb
           .from("transaction_lenders")
           .select("id, lender_name, loan_officer_name, loan_officer_phone, loan_officer_email, loan_status:underwriting_status, loan_amount, loan_type")
-          .eq("transaction_id", activeTransaction.id)
+          .eq("transaction_id", activeTransaction.id), dealTenant)
           .maybeSingle()
       : Promise.resolve({ data: null }),
     // Transaction title/escrow
     activeTransaction
-      ? supabase
+      ? scopeToDealTenant(dealDb
           .from("transaction_title_escrow")
           .select("id, company_name:title_company_name, officer_name:title_officer_name, officer_phone:title_officer_phone, officer_email:title_officer_email, closing_status:title_status")
-          .eq("transaction_id", activeTransaction.id)
+          .eq("transaction_id", activeTransaction.id), dealTenant)
           .maybeSingle()
       : Promise.resolve({ data: null }),
   ])

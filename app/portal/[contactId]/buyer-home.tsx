@@ -7,7 +7,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
-import { selectClientMilestones } from "@/lib/kernel/portal"
+import { portalDealClient, scopeToDealTenant, selectClientMilestones } from "@/lib/kernel/portal"
 import { getPersonaMessagingGuidelines } from "@/lib/buyer-search/persona-inference"
 import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { OfferStatusCard } from "@/app/components/portal/OfferStatusCard"
@@ -94,13 +94,24 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
   // Get active transaction for this buyer.
   // Schema: transactions has `contract_date` (not under_contract_date) and
   // `purchase_price` (list_price lives on listings, not on transactions).
-  const { data: transactions } = await supabase
-    .from("transactions")
-    .select("id, property_address, status, stage, close_date, contract_date, purchase_price")
-    .or(`buyer_contact_id.eq.${contactId},contact_id.eq.${contactId}`)
-    .not("status", "in", "(cancelled)")
+  //
+  // The client's own session sees none of its deals (no contact-self SELECT on
+  // transactions): the deal and the tables keyed off it are read through the kernel's
+  // gate-then-service deal client (lib/kernel/portal.ts portalDealClient), scoped to
+  // this contact's BUYER-side deals (the buyer filter is unchanged) and the tenant the
+  // gate resolved.
+  const { client: dealDb, brokerageId: dealTenant } = await portalDealClient(supabase, contactId)
+  const { data: transactions, error: txError } = await scopeToDealTenant(
+    dealDb
+      .from("transactions")
+      .select("id, property_address, status, stage, close_date, contract_date, purchase_price")
+      .or(`buyer_contact_id.eq.${contactId},contact_id.eq.${contactId}`)
+      .not("status", "in", "(cancelled)"),
+    dealTenant,
+  )
     .order("created_at", { ascending: false })
     .limit(1)
+  if (txError) console.error("[portal/buyer-home] deal read refused:", txError.message)
 
   const activeTransaction = transactions?.[0] ?? null
 
@@ -124,18 +135,18 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
     // completed_date — that variant doesn't exist; previous query silently
     // returned undefined for every milestone's completion date).
     activeTransaction
-      ? supabase
+      ? scopeToDealTenant(dealDb
           .from("transaction_milestones")
           .select("id, milestone_name, milestone_type, target_date, completed_at, status, is_client_visible")
-          .eq("transaction_id", activeTransaction.id)
+          .eq("transaction_id", activeTransaction.id), dealTenant)
           .order("target_date", { ascending: true, nullsFirst: false })
       : Promise.resolve({ data: [] }),
     // Deal team members
     activeTransaction
-      ? supabase
+      ? scopeToDealTenant(dealDb
           .from("deal_team_members")
           .select("id, member_type, external_name:name, external_company:company, external_phone:phone, external_email:email")
-          .eq("transaction_id", activeTransaction.id)
+          .eq("transaction_id", activeTransaction.id), dealTenant)
       : Promise.resolve({ data: [] }),
     // Primary agent - resolved outside Promise.all via kernel identity function
     Promise.resolve({ data: null }),
@@ -193,10 +204,10 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
     // app/actions/portal-seller.ts:getSellerVendors returns, so both portals
     // hand the render an identical vendor shape.
     activeTransaction
-      ? supabase
+      ? scopeToDealTenant(dealDb
           .from("vendor_assignments")
           .select("id, vendor_id, assignment_type, status, scheduled_date, vendor:vendors(id, business_name:name, vendor_type:category)")
-          .eq("transaction_id", activeTransaction.id)
+          .eq("transaction_id", activeTransaction.id), dealTenant)
           .limit(3)
       : Promise.resolve({ data: [] }),
     // Buyer financial profile

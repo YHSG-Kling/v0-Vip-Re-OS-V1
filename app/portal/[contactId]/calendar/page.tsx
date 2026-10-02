@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { Suspense } from "react"
-import { clientTransactionFilter } from "@/lib/kernel/portal"
+import { clientTransactionFilter, portalDealClient, scopeToDealTenant, selectClientMilestones } from "@/lib/kernel/portal"
 import PortalCalendarDashboard from "@/components/portal/PortalCalendarDashboard"
 
 export default async function CalendarPage({ params }: { params: Promise<{ contactId: string }> }) {
@@ -30,6 +30,13 @@ export default async function CalendarPage({ params }: { params: Promise<{ conta
     return <div>Contact not found</div>
   }
 
+  // The client's deals (and their milestones / deadlines) are invisible to its own
+  // session — read them through the kernel's gate-then-service deal client
+  // (lib/kernel/portal.ts portalDealClient), scoped to this contact + tenant. Only the
+  // columns this page renders are selected: the service client must not carry the
+  // deal's financials into a client surface (CLAUDE.md §5).
+  const { client: dealDb, brokerageId: dealTenant } = await portalDealClient(supabase, contactId)
+
   // Fetch all date-sensitive items for this contact
   const [showingsResult, transactionsResult, documentsResult] = await Promise.all([
     // Showings
@@ -39,11 +46,13 @@ export default async function CalendarPage({ params }: { params: Promise<{ conta
       .eq("contact_id", contactId)
       .order("requested_date", { ascending: true }),
 
-    supabase
-      .from("transactions")
-      .select("*, transaction_milestones(*), transaction_deadlines(*)")
-      .or(clientTransactionFilter(contactId))
-      .order("created_at", { ascending: false }),
+    scopeToDealTenant(
+      dealDb
+        .from("transactions")
+        .select("id, property_address, transaction_milestones(*), transaction_deadlines(*)")
+        .or(clientTransactionFilter(contactId)),
+      dealTenant,
+    ).order("created_at", { ascending: false }),
 
     // Documents needing signature/attention
     supabase
@@ -67,8 +76,9 @@ export default async function CalendarPage({ params }: { params: Promise<{ conta
   const transactions = transactionsResult.data || []
   const pendingDocuments = documentsResult.data || []
 
+  // The kernel decides which milestones a client sees (the service client reads them all).
   const milestones = transactions.flatMap((t: any) =>
-    (t.transaction_milestones || []).map((m: any) => ({
+    selectClientMilestones((t.transaction_milestones || []) as any[]).map((m: any) => ({
       ...m,
       transaction_address: t.property_address,
     })),

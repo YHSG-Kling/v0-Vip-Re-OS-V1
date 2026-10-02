@@ -260,6 +260,34 @@ async function portalLayoutClient(
   }
 }
 
+/**
+ * KERNEL CONTRACT: the client a portal SUB-PAGE reads this contact's deals with (wave 96).
+ * The same gate as the layout resolution — it IS portalLayoutClient, not a second gate —
+ * because every app/portal/[contactId] page that read `transactions` (and the deal tables
+ * whose RLS hangs off it) with the client's own session came back successfully EMPTY
+ * for the client themselves. Admitted → the service client plus the tenant the gate
+ * resolved; EVERY read through it must stay scoped to this contact's deals (via
+ * clientTransactionFilter / a deal id that came from such a read) AND, where the table
+ * carries it, `.eq("brokerage_id", brokerageId)`. Refused or failed → the caller's own
+ * session client and brokerageId null: RLS still applies, so it can only show less.
+ * The session client is PASSED IN — this module never builds the cookie client.
+ */
+export async function portalDealClient(
+  supabase: SupabaseClient,
+  contactId: string,
+): Promise<{ client: SupabaseClient; brokerageId: string | null }> {
+  return portalLayoutClient(supabase, { contactId })
+}
+
+/**
+ * Pin a query read through portalDealClient to the tenant its gate resolved. A null
+ * tenant means the gate did not elevate — the client is the caller's own session and
+ * RLS scopes the read — so the query is returned untouched (never `.eq(…, null)`).
+ */
+export function scopeToDealTenant<Q>(query: Q, brokerageId: string | null): Q {
+  return brokerageId ? ((query as unknown as { eq: (c: string, v: string) => Q }).eq("brokerage_id", brokerageId)) : query
+}
+
 /** KERNEL CONTRACT: the portal layouts for a contact — what every portal surface reads. */
 export async function resolvePortalLayouts(
   supabase: SupabaseClient,
@@ -362,6 +390,30 @@ export function pickLifetimeHomeTransaction<T extends { buyer_contact_id?: strin
   contactId: string,
 ): T | null {
   return rows.find((r) => r.buyer_contact_id === contactId) ?? rows[0] ?? null
+}
+
+/** The street line of an address, normalised for comparison ("12 Main St., Austin" → "12 main st"). */
+function streetKey(address: string | null | undefined): string {
+  return (address ?? "").split(",")[0].toLowerCase().replace(/[.#]/g, "").replace(/\s+/g, " ").trim()
+}
+
+/**
+ * PURE — the lifetime home's "neighborhood activity" WITHOUT the client's own home
+ * (wave 96). The read excluded `transaction.listing_id`, but the lifetime deal read
+ * never selected that column, so the exclusion was always the nil uuid and the
+ * client's own sold home led their neighbourhood list. Excludes by listing id when
+ * the deal has one AND by street line, because a deal on an off-market or outside
+ * listing has no listing id while the listings table can still hold that address.
+ */
+export function excludeOwnHome<T extends { id?: string | null; address?: string | null }>(
+  listings: readonly T[],
+  home: { listing_id?: string | null; property_address?: string | null } | null,
+): T[] {
+  if (!home) return [...listings]
+  const ownStreet = streetKey(home.property_address)
+  return listings.filter((l) =>
+    !(home.listing_id && l.id === home.listing_id) &&
+    !(ownStreet && streetKey(l.address) === ownStreet))
 }
 
 // ─── PORTAL SHELL KERNEL FUNCTIONS ────────────────────────────────────────────

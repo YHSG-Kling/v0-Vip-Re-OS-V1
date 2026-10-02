@@ -306,6 +306,22 @@ export async function recordOfferAiAnalysis(params: {
 // ─── 7. COUNTER OFFER ────────────────────────────────────────────────────────
 // Creates a new offers row with offer_type='counter' + parent_offer_id.
 // (offer_counters table does NOT exist — counter history lives in offers table.)
+//
+// THE ONE COUNTER WRITER (wave 96, lane 96A — CLAUDE.md §1 merge). The slide-over's
+// app/actions/seller-offers.ts sendCounterOffer was a second writer of the same row;
+// it is now a thin gate that delegates here. What it had and this lacked was merged
+// ONTO this survivor first: the listing check (a counter is refused unless the parent
+// sits on the listing the caller named), the earnest-money and response-deadline
+// terms, uploaded_by (users.id — the person who typed it), the tenant-scoped parent
+// update, ONE status for a freshly issued counter ("submitted" — the slide-over's,
+// which every open-offer reader already admits), and the OFFER_COUNTER_SENT fan-out:
+// the event the cooperating-agent copy keys on (lib/offers/outside-agent-record.ts
+// COOPERATING_AGENT_COPY_EVENTS), so a counter issued from the approvals queue, by
+// voice or from the signed-counter recorder now copies the outside buyer's agent
+// exactly as the slide-over's always did. OFFER_OS_COUNTERED still emits (its feed).
+
+/** The status a freshly issued counter is written with — one spelling (CLAUDE.md §6). */
+export const COUNTER_ISSUED_STATUS = "submitted"
 
 export async function issueCounterOffer(params: {
   offerId:         string
@@ -313,12 +329,20 @@ export async function issueCounterOffer(params: {
   brokerageId:     string
   counterPrice?:   number
   closingDate?:    string
+  earnestMoney?:   number
   contingencies?:  string[]
   possessionTerms?: string
   notes?:          string
-}, client?: SupabaseClient): Promise<KernelOfferResult<{ counterId: string; round: number }>> {
-  const { offerId, agentId, brokerageId, counterPrice, closingDate, contingencies, possessionTerms, notes } = params
+  /** ISO deadline for the other side's answer — the cooperating agent's copy names it. */
+  responseDeadline?: string
+  /** When set, the parent must sit on this listing (the slide-over's gate). */
+  listingId?:      string
+  /** users.id of the person issuing the counter (uploaded_by + the event actor). */
+  actorUserId?:    string
+}, client?: SupabaseClient): Promise<KernelOfferResult<{ counterId: string; round: number; warning?: string }>> {
+  const { offerId, agentId, brokerageId, counterPrice, closingDate, earnestMoney, contingencies, possessionTerms, notes, responseDeadline } = params
   if (!isValidUUID(offerId)) return { success: false, error: "Invalid offer ID" }
+  if (params.listingId !== undefined && !isValidUUID(params.listingId)) return { success: false, error: "Invalid ID" }
 
   // client-param overload: a caller-supplied client (e.g. the sessionless voice
   // webhook's service client, AFTER its own guard) runs the SAME transition;
@@ -335,8 +359,10 @@ export async function issueCounterOffer(params: {
 
   if (parentReadError) return { success: false, error: `Offer could not be read: ${parentReadError.message}` }
   if (!offer) return { success: false, error: "Offer not found" }
+  if (params.listingId !== undefined && (offer as any).listing_id !== params.listingId) return { success: false, error: "Forbidden" }
 
   const nextRound = ((offer as any).current_round ?? 1) + 1
+  const now = new Date().toISOString()
 
   const { data: counter, error } = await supabase
     .from("offers")
@@ -345,6 +371,7 @@ export async function issueCounterOffer(params: {
       // terms this counter names replace them (lib/transactions/contract-terms.ts).
       ...carryCounterTerms(offer, {
         closing_date:     closingDate,
+        earnest_money:    earnestMoney,
         contingencies:    contingencies,
         possession_terms: possessionTerms,
       }),
@@ -352,13 +379,18 @@ export async function issueCounterOffer(params: {
       contact_id:      (offer as any).contact_id,
       brokerage_id:    brokerageId,
       agent_id:        agentId,
+      uploaded_by:     params.actorUserId ?? null,
       parent_offer_id: offerId,
       offer_type:      "counter",
       current_round:   nextRound,
       offer_price:     counterPrice ?? (offer as any).offer_price,
       notes:           notes ?? null,
-      status:          "pending",
-      submitted_at:    new Date().toISOString(),
+      status:          COUNTER_ISSUED_STATUS,
+      response_deadline: responseDeadline ?? null,
+      ai_extraction_status: "manual",
+      submitted_at:    now,
+      created_at:      now,
+      updated_at:      now,
     })
     .select("id")
     .single()
@@ -369,22 +401,47 @@ export async function issueCounterOffer(params: {
   // executed contract — we do NOT mark it superseded when a counter is
   // issued. We DO set has_counter=true (the agent-UI checkbox signal that a
   // counter exists) and status='countered' so any "open offers" filter still
-  // sees that this offer received a counter.
+  // sees that this offer received a counter. The counter row already exists, so a
+  // refusal here does not undo the send: it is READ and returned as a warning.
   const { error: counteredFlagErr } = await supabase
     .from("offers")
-    .update({ status: "countered", has_counter: true })
+    .update({ status: "countered", has_counter: true, updated_at: now })
     .eq("id", offerId)
-  if (counteredFlagErr) return { success: false, error: `Counter created, but the original offer was not marked countered: ${counteredFlagErr.message}` }
+    .eq("brokerage_id", brokerageId)
+  if (counteredFlagErr) console.error(`[issueCounterOffer] parent ${offerId} not marked countered:`, counteredFlagErr.message)
 
+  const actor = params.actorUserId ?? agentId
   await emitOfferEvent({
     event:       KernelEvent.OFFER_OS_COUNTERED,
     brokerageId,
     entityId:    counter.id,
-    actorUserId: agentId,
+    actorUserId: actor,
     metadata:    { parent_offer_id: offerId, round: nextRound, counter_price: counterPrice },
   }).catch(() => {})
+  // Canonical fan-out: lifecycle event + staff notification + portal updates, and
+  // the cooperating buyer's agent's copy, which names the response deadline.
+  await emitOfferEvent({
+    event:       KernelEvent.OFFER_COUNTER_SENT,
+    brokerageId,
+    entityId:    counter.id,
+    actorUserId: actor,
+    metadata: {
+      listing_id:        (offer as any).listing_id ?? null,
+      parent_offer_id:   offerId,
+      counter_price:     counterPrice ?? (offer as any).offer_price,
+      round:             nextRound,
+      response_deadline: responseDeadline ?? null,
+    },
+  }).catch(() => {})
 
-  return { success: true, data: { counterId: counter.id, round: nextRound } }
+  return {
+    success: true,
+    data: {
+      counterId: counter.id,
+      round: nextRound,
+      ...(counteredFlagErr ? { warning: `The counter was sent, but the original offer still reads its old status: ${counteredFlagErr.message}` } : {}),
+    },
+  }
 }
 
 // ─── 8. RESPOND TO COUNTER (buyer-side) ──────────────────────────────────────

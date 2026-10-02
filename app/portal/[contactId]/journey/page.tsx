@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { resolvePortalLayouts, getPortalJourneyMilestones, clientTransactionFilter } from "@/lib/kernel/portal"
+import { resolvePortalLayouts, getPortalJourneyMilestones, clientTransactionFilter, portalDealClient, scopeToDealTenant } from "@/lib/kernel/portal"
 import type { PortalJourneyMilestone } from "@/lib/kernel/portal"
 import {
   BUYER_MILESTONE_LABELS,
@@ -77,14 +77,21 @@ export default async function PortalJourneyPage({
   // The KERNEL's layouts (wave 94); the journey timeline leads with the primary one.
   const portalLayouts = await resolvePortalLayouts(supabase, { contactId })
 
-  // Get active transaction for this contact
-  const { data: transactions } = await supabase
-    .from("transactions")
-    .select("id, property_address, status, list_price:purchase_price, offer_price:purchase_price, purchase_price, close_date, contract_date, deal_type")
-    .or(clientTransactionFilter(contactId))
-    .not("status", "in", "(cancelled)")
+  // Get active transaction for this contact — through the kernel's gate-then-service
+  // deal client (lib/kernel/portal.ts portalDealClient): the client's own session sees
+  // none of its deals. Scoped to this contact's deals + the tenant the gate resolved.
+  const { client: dealDb, brokerageId: dealTenant } = await portalDealClient(supabase, contactId)
+  const { data: transactions, error: txError } = await scopeToDealTenant(
+    dealDb
+      .from("transactions")
+      .select("id, property_address, status, list_price:purchase_price, offer_price:purchase_price, purchase_price, close_date, contract_date, deal_type")
+      .or(clientTransactionFilter(contactId))
+      .not("status", "in", "(cancelled)"),
+    dealTenant,
+  )
     .order("created_at", { ascending: false })
     .limit(1)
+  if (txError) console.error("[portal/journey] deal read refused:", txError.message)
 
   const transaction: TransactionData | null = transactions?.[0] ?? null
 
@@ -92,8 +99,9 @@ export default async function PortalJourneyPage({
   // with the agent's per-contact overrides applied) — the page does not read or filter
   // transaction_milestones itself. Single source of truth: lib/kernel/portal.ts.
   const milestones: TransactionMilestone[] = transaction
-    ? await getPortalJourneyMilestones(supabase, {
+    ? await getPortalJourneyMilestones(dealDb, {
         contactId,
+        // the deal id the scoped read above admitted — the milestones are read by it
         transactionId: transaction.id,
       })
     : []

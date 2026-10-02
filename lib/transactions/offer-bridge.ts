@@ -645,7 +645,10 @@ export async function createTransactionFromOffer(params: {
   // which we can resolve real names/emails. Idempotent (skips when the
   // transaction already has any participants).
   try {
-    await populateInitialParticipants(supabase as any, transaction.id, params.brokerageId)
+    const roster = await populateInitialParticipants(supabase as any, transaction.id, params.brokerageId)
+    // A refused roster read/insert is the accept email to the cooperating agent
+    // not happening — say so beside the deal, never as "nobody to tell".
+    if (roster.error) console.error(`[offer-bridge] participant roster for ${transaction.id} NOT written: ${roster.error}`)
   } catch (err: any) {
     // Failure here must not roll back the transaction. The agent can still
     // populate participants manually from the transaction UI.

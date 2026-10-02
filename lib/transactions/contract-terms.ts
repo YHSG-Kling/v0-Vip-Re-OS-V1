@@ -79,7 +79,8 @@ export function copyContractTerms(
 /**
  * THE TERMS A COUNTER CARRIES FORWARD (wave 95). A counter offer is the SAME
  * deal with some terms changed — it is not a blank offer with a new price. The
- * two counter writers (lib/kernel/offers.ts issueCounterOffer, the survivor the
+ * two counter writers — MERGED in wave 96 (lane 96A): sendCounterOffer is now a
+ * gate that delegates to issueCounterOffer, the one writer — (lib/kernel/offers.ts issueCounterOffer, the survivor the
  * approvals queue, voice and the signed-counter recorder call; and
  * app/actions/seller-offers.ts sendCounterOffer, the slide-over) used to insert
  * only the fields the counter named, so the counter row had no closing date and

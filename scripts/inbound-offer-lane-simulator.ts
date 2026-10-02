@@ -990,6 +990,51 @@ async function main() {
     check("a refused hop is an ERROR, never 'no outside agent'", refused.agent === null && /refused/.test(refused.error ?? ""))
   }
 
+  console.log("\n[W96·H10 the accept-time roster survives a row that landed first — the cooperating agent is still on it]")
+  {
+    // 95A: the cooperating agent was copied at CLOSE (reactor) but not at ACCEPT. The
+    // accept moment is owned by notifyTransactionParties, which emails the ROSTER; the
+    // populator skipped the WHOLE roster when the deal held ANY row (the document
+    // scanner lifts the title company off the executed contract uploaded right before
+    // the accept). Driven here, through the real populator.
+    const { populateInitialParticipants } = await import("../lib/transactions/participant-populator")
+    const seed = (): W94Store => ({
+      offers: [
+        { id: "root", brokerage_id: BROKERAGE, parent_offer_id: null, contact_id: null, agent_id: null, metadata: { [W94.OUTSIDE_AGENT_ID_KEY]: "oa-1" } },
+        { id: "counter", brokerage_id: BROKERAGE, parent_offer_id: "root", contact_id: null, agent_id: null, metadata: {} },
+      ],
+      outside_agents: [{ id: "oa-1", brokerage_id: BROKERAGE, email: "dana@coastal.example", full_name: "Dana Cole", outside_brokerage_name: "Coastal Shores Realty", license_number: "SL1" }],
+      transactions: [{ id: "tx-1", brokerage_id: BROKERAGE, offer_id: "counter", listing_id: null, buyer_contact_id: null, seller_contact_id: null, agent_id: "our-agent" }],
+      transaction_participants: [{ id: "tp-title", transaction_id: "tx-1", brokerage_id: BROKERAGE, role: "title_company", name: "Gulf Title" }],
+    })
+    const store = seed()
+    const res = await populateInitialParticipants(w94Stub(store) as any, "tx-1", BROKERAGE)
+    const agentRows = (store.transaction_participants ?? []).filter((r) => r.role === "buyer_agent")
+    check("a title row that landed FIRST no longer keeps the cooperating agent off the accept roster",
+      agentRows.length === 1 && agentRows[0].email === "dana@coastal.example" && res.inserted_count === 1,
+      JSON.stringify(res))
+    check("…and the row already there is not duplicated",
+      (store.transaction_participants ?? []).filter((r) => r.role === "title_company").length === 1)
+    const again = await populateInitialParticipants(w94Stub(store) as any, "tx-1", BROKERAGE)
+    check("…a retry adds nothing (idempotent per role)", again.inserted_count === 0 && (store.transaction_participants ?? []).length === 2)
+    const refusedStore = seed()
+    const refusedRun = await populateInitialParticipants(w94Stub(refusedStore, { failTable: "transaction_participants" }) as any, "tx-1", BROKERAGE)
+    check("…a refused roster read inserts NOTHING and says so (never read as 'nobody to add')",
+      refusedRun.inserted_count === 0 && /refused/.test(refusedRun.error ?? "") && (refusedStore.transaction_participants ?? []).length === 1)
+    // POSITIVE CONTROL: the pre-wave-96 any-row skip is what this block calls broken —
+    // under it, the same seeded deal gets no buyer_agent row.
+    const anyRowSkip = (rows: Row[]) => rows.length > 0 ? 0 : 1
+    check("…POSITIVE CONTROL: the old any-row skip would have written no cooperating agent onto this deal",
+      anyRowSkip(seed().transaction_participants!) === 0)
+    const popSrc = stripComments(src("lib/transactions/participant-populator.ts"))
+    const wholeRosterSkip = (code: string) => /if\s*\(\(existingCount \?\? 0\) > 0\)\s*\{?\s*return/.test(code)
+    check("…and the whole-roster skip is gone from the populator", !wholeRosterSkip(popSrc))
+    check("…POSITIVE CONTROL: the finder recognises the whole-roster skip",
+      wholeRosterSkip('if ((existingCount ?? 0) > 0) {\n    return { inserted_count: 0 }'))
+    check("the bridge reports a refused roster beside the deal",
+      /const roster = await populateInitialParticipants\([\s\S]{0,300}if \(roster\.error\) console\.error/.test(stripComments(src("lib/transactions/offer-bridge.ts"))))
+  }
+
   console.log("\n[W94·H7 counter + every transaction moment → ONE email per moment, never SMS]")
   {
     const plan = (e: string, md: Record<string, unknown> = {}, id = "e1") => W94.cooperatingAgentCopyPlan(e, md, id)
@@ -1026,7 +1071,10 @@ async function main() {
       /dispatchEmail\(\{[\s\S]{0,200}agentId:\s*listingAgentId/.test(mod))
     check("…and never SMS or voice", !smsShape(mod))
     check("…POSITIVE CONTROL: the SMS finder recognises an SMS send", smsShape('await dispatchSms({ to: phone })'))
-    const counterEmit = src("app/actions/seller-offers.ts")
+    // Wave 96: the counter's event lives on the ONE counter writer (lib/kernel/offers.ts
+    // issueCounterOffer) — so every counter door (slide-over, approvals, voice, signed
+    // counter) emits the event the copy keys on, not only the slide-over.
+    const counterEmit = stripComments(src("lib/kernel/offers.ts"))
     check("the counter's event carries the response deadline the copy names",
       /event:\s*KernelEvent\.OFFER_COUNTER_SENT,[\s\S]{0,500}response_deadline:\s*responseDeadline/.test(counterEmit))
 
@@ -1124,8 +1172,32 @@ async function main() {
     }
     check("the kernel counter survivor (issueCounterOffer) carries the parent's terms",
       spreadsHelper(src("lib/kernel/offers.ts"), "issueCounterOffer"))
-    check("the slide-over counter (sendCounterOffer) carries the parent's terms",
-      spreadsHelper(src("app/actions/seller-offers.ts"), "sendCounterOffer"))
+    // WAVE 96 — ONE COUNTER WRITER (CLAUDE.md §1). sendCounterOffer is the slide-over's
+    // gate and DELEGATES; it inserts no offers row of its own.
+    const fnBody = (code: string, fn: string) => {
+      const at = code.indexOf(`function ${fn}(`)
+      if (at < 0) return ""
+      const next = code.indexOf("\nexport ", at + 10)
+      return code.slice(at, next < 0 ? undefined : next)
+    }
+    const isThinCounterDelegate = (code: string, fn: string) => {
+      const body = fnBody(code, fn)
+      return /issueCounterOffer\(/.test(body) && !/\.from\(\s*"offers"\s*\)[\s\S]{0,80}\.insert\(/.test(body)
+    }
+    const sellerOffers = stripComments(src("app/actions/seller-offers.ts"))
+    check("the slide-over counter (sendCounterOffer) delegates to issueCounterOffer and writes no counter row itself",
+      isThinCounterDelegate(sellerOffers, "sendCounterOffer"))
+    check("…and passes the slide-over's listing, earnest money and response deadline through to the survivor",
+      /issueCounterOffer\(\{[\s\S]{0,600}listingId,[\s\S]{0,600}earnestMoney,[\s\S]{0,300}responseDeadline,/.test(fnBody(sellerOffers, "sendCounterOffer")))
+    check("…POSITIVE CONTROL: a second writer (its own offers insert) is flagged",
+      !isThinCounterDelegate('export async function sendCounterOffer() { await s.from("offers").insert({ ...carryCounterTerms(p, {}) }); await issueCounterOffer({}) }', "sendCounterOffer"))
+    const kernelOffers = stripComments(src("lib/kernel/offers.ts"))
+    check("the survivor refuses a parent that is not on the named listing (the slide-over's gate, merged)",
+      /params\.listingId !== undefined && \(offer as any\)\.listing_id !== params\.listingId\) return \{ success: false, error: "Forbidden" \}/.test(kernelOffers))
+    check("the survivor writes ONE status for a fresh counter (COUNTER_ISSUED_STATUS), not a literal per writer",
+      /status:\s*COUNTER_ISSUED_STATUS/.test(fnBody(kernelOffers, "issueCounterOffer")) && !/status:\s*"pending"/.test(fnBody(kernelOffers, "issueCounterOffer")))
+    check("the survivor's parent update is tenant-scoped",
+      /update\(\{ status: "countered"[\s\S]{0,120}\.eq\("id", offerId\)\s*\.eq\("brokerage_id", brokerageId\)/.test(fnBody(kernelOffers, "issueCounterOffer")))
     check("…POSITIVE CONTROL: a counter insert without the helper is flagged",
       !spreadsHelper('export async function issueCounterOffer() { await s.from("offers").insert({ offer_price: 1, closing_date: closingDate ?? null }) }', "issueCounterOffer"))
     check("the transaction bridge reads the accepted row's closing_date + earnest_money (what the carry feeds)",

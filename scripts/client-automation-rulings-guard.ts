@@ -478,7 +478,65 @@ async function main() {
       (offers.match(/priceOrPendingReview\(/g) ?? []).length >= 5 && !/\(offer\.offer_price \|\| 0\)\.toLocaleString/.test(offers))
   }
 
+  // ════ R5 — wave 96: portal sub-pages read the client's deals through the ONE gate ═══
+  console.log("\n[R5 · a portal client's deals are read through the kernel gate, never its own session]")
+  {
+    const portalSrc = code("lib/kernel/portal.ts")
+    const dealFn = portalSrc.slice(portalSrc.indexOf("export async function portalDealClient("), portalSrc.indexOf("export function scopeToDealTenant("))
+    check("portalDealClient IS the layout gate (returns portalLayoutClient), not a second gate",
+      /return portalLayoutClient\(supabase, \{ contactId \}\)/.test(dealFn) && !/requireContactAccess\(/.test(dealFn))
+    check("...and the kernel still calls requireContactAccess exactly once", (portalSrc.match(/requireContactAccess\(/g) ?? []).length === 1)
+    // Every transactions read under app/portal/[contactId] goes through the deal client.
+    const dir = join(ROOT, "app/portal/[contactId]")
+    const files: string[] = []
+    const walk = (d: string) => { for (const f of readdirSync(d)) { const p = join(d, f); if (statSync(p).isDirectory()) walk(p); else if (/\.tsx?$/.test(f)) files.push(p) } }
+    walk(dir)
+    // The session-client shape: `supabase` (the cookie client every page builds) chained
+    // straight into a transactions read.
+    const SESSION_DEAL_READ = /\bsupabase\s*\.from\(\s*"transactions"\s*\)/
+    check("CONTROL: the finder recognises a session-client deal read",
+      SESSION_DEAL_READ.test('const { data } = await supabase\n    .from("transactions")\n    .select("id")'))
+    const readers = files.filter((f) => /\.from\(\s*"transactions"\s*\)/.test(code(relative(ROOT, f))))
+    const offenders = readers.filter((f) => SESSION_DEAL_READ.test(code(relative(ROOT, f)))).map((f) => relative(ROOT, f))
+    check(`no portal page reads transactions with the client's own session (${readers.length} deal-reading files scanned)`,
+      offenders.length === 0, offenders.join(", "))
+    const ungated = readers
+      .filter((f) => !/\bportalDealClient\(/.test(code(relative(ROOT, f))) && !/\bcreateServiceClient\(/.test(code(relative(ROOT, f))))
+      .map((f) => relative(ROOT, f))
+    check("...and every deal-reading page asks portalDealClient (or already holds its own gate + service client)", ungated.length === 0, ungated.join(", "))
+    check("...the files that read deals are found at all (positive count)", readers.length >= 8, String(readers.length))
+    // The tenant pin: elevated → .eq("brokerage_id", tenant); not elevated → untouched.
+    const seen: Array<[string, string]> = []
+    const q = { eq(c: string, v: string) { seen.push([c, v]); return q } }
+    check("scopeToDealTenant pins an elevated read to the gate's tenant", portal.scopeToDealTenant(q, BRK) === q && seen.length === 1 && seen[0][0] === "brokerage_id" && seen[0][1] === BRK)
+    check("...and leaves a session read untouched (never .eq(brokerage_id, null))", portal.scopeToDealTenant(q, null) === q && seen.length === 1)
+  }
+  {
+    console.log("\n[R6 · the lifetime client's OWN home is not neighbourhood activity]")
+    const home = { listing_id: "L-own", property_address: "12 Harbor View Dr, Austin, TX 78701" }
+    const nearby = [
+      { id: "L-own", address: "12 Harbor View Dr, Austin, TX" },
+      { id: "L-twin", address: "12 Harbor View Dr., Austin" },
+      { id: "L-1", address: "14 Harbor View Dr, Austin, TX" },
+      { id: "L-2", address: "9 Oak St, Austin, TX" },
+    ]
+    const kept = portal.excludeOwnHome(nearby, home).map((l) => l.id)
+    check("the client's own listing (by id) is excluded", !kept.includes("L-own"), kept.join(","))
+    check("...and the same street line on another listing row is excluded", !kept.includes("L-twin"), kept.join(","))
+    check("...the neighbours stay", kept.includes("L-1") && kept.includes("L-2"), kept.join(","))
+    check("a home with no listing id is still excluded by address", !portal.excludeOwnHome(nearby, { listing_id: null, property_address: home.property_address }).some((l) => l.id === "L-twin"))
+    // POSITIVE CONTROL: the pre-wave-96 read never selected listing_id, so its exclusion
+    // compared against the nil uuid and kept the client's own home.
+    const oldKept = nearby.filter((l) => l.id !== ((({} as { listing_id?: string }).listing_id) ?? "00000000-0000-0000-0000-000000000000"))
+    check("CONTROL: the old nil-uuid exclusion kept the client's own home", oldKept.some((l) => l.id === "L-own"))
+    const lifetime = code("app/actions/portal-lifetime.ts")
+    const homeRead = lifetime.slice(lifetime.indexOf("export async function getLifetimeContext("))
+    check("getLifetimeContext's home read now selects listing_id", /buyer_contact_id,\s*listing_id\s*`/.test(homeRead))
+    check("...and the neighbourhood list goes through excludeOwnHome", /excludeOwnHome\(nearby \?\? \[\], transaction\)/.test(homeRead))
+  }
+
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
+  console.log("  blind spots (R5/R6): R5 scans app/portal/[contactId] only and recognises the `supabase.from(\"transactions\")` chain — a deal read through a differently named session variable, or a portal read inside an app/actions module, is not seen; the deal-derived tables are pinned by review, not by this scan; transaction_documents on the documents page stays on the session client deliberately (no client-visible document rule). R6 matches the street line only (unit numbers after a comma are ignored)")
   console.log("  blind spots: R1's welcome EMAIL and video are module edges here (the grant under test precedes them; the email itself is held by test:conversion-welcome); R2 replays the four writers this lane owns (engine, fan-out bell, parties packet) — a fifth direct notifications writer on the accept/close path would not be counted; portal CARDS (transparency_updates, the feed) are not alerts and keep one per event; R3's surface scan is app/portal/[contactId] + the education resolver — a portal surface outside that tree is not scanned; R4's '|| 0' finder sees the inline shape only — the net-sheet table (lane 94B) is not in scope")
   if (fail > 0) { console.log(" ❌ CLIENT_AUTOMATION_RULINGS_FAIL"); process.exit(1) }
   console.log(" ✅ CLIENT_AUTOMATION_RULINGS_PASS — one automatic portal invite per contact on both doors (no email → nothing queued, reported); one alert per person per accept/close moment; every portal surface asks the kernel's layouts (dual → seller + buyer); a price nobody read says 'price pending review'")
