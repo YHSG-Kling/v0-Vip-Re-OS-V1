@@ -512,7 +512,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10502,
+  "census": 10503,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -4301,7 +4301,7 @@
     "lib/transactions/compliance-checks-seeder.ts": 1,
     "lib/transactions/contingency-deadlines.ts": 3,
     "lib/transactions/contract-governance.ts": 2,
-    "lib/transactions/contract-terms.ts": 1,
+    "lib/transactions/contract-terms.ts": 2,
     "lib/transactions/coordination-status.ts": 3,
     "lib/transactions/deadline-monitor.ts": 1,
     "lib/transactions/deal-type-resolver.ts": 2,
@@ -21805,7 +21805,8 @@
       "assertAdjustmentsUnlocked"
     ],
     "lib/transactions/contract-terms.ts": [
-      "copyContractTerms"
+      "copyContractTerms",
+      "carryCounterTerms"
     ],
     "lib/transactions/coordination-status.ts": [
       "isMilestoneStatus",
