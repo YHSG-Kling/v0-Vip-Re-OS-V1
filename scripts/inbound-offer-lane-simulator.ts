@@ -50,6 +50,7 @@ import {
   STAGED_PACKET_DOCUMENT_TYPE,
 } from "../lib/inbound-mail/offer-detect"
 import { linkInboundDocumentsToOffer } from "../lib/inbound-mail/offer-intake"
+import { carryCounterTerms, COUNTER_CARRIED_COLUMNS, CONTRACT_TERM_COLUMNS } from "../lib/transactions/contract-terms"
 import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
@@ -1085,6 +1086,50 @@ async function main() {
       /\[REPRESENTED_BY_OUTSIDE_AGENT_KEY\]:\s*record\.id/.test(intake))
     check("…and files the intake buyer OUTSIDE the client door (no createContactManually → no CONTACT_CREATED rails)",
       !/createContactManually\(|createContact\(/.test(intake))
+  }
+
+  console.log("\n[W95·H9 a counter carries the unchanged terms — the accepted counter's deal has a close date]")
+  {
+    const parent = {
+      closing_date: "2026-11-20", earnest_money: 15000, earnest_money_due_days: 3,
+      contingencies: ["inspection", "financing"], property_address: "1 Demo Ln",
+      form_source: "manual", financing_type: "conventional", inspection_period_days: 10,
+      offer_price: 500000, buyer_signed_at: "2026-10-01T00:00:00Z", status: "submitted",
+    }
+    const counter = carryCounterTerms(parent, { earnest_money: 20000 })
+    check("the counter keeps the parent's closing date (the term the counter did not change)",
+      counter.closing_date === "2026-11-20", `got ${String(counter.closing_date)}`)
+    check("…and replaces ONLY the term the counter changes (earnest 15000 → 20000)",
+      counter.earnest_money === 20000, `got ${String(counter.earnest_money)}`)
+    check("…and keeps form_source, so an outside agent's deal stays outside-originated through a counter",
+      isOutsideOriginated(counter as any) === true && isOutsideOriginated(parent as any) === true)
+    check("…and carries every CONTRACT_TERM_COLUMNS term (one definition, not a hand-typed subset)",
+      CONTRACT_TERM_COLUMNS.every(c => (COUNTER_CARRIED_COLUMNS as readonly string[]).includes(c)))
+    check("…and does NOT carry signatures, status or price (the counter is a new round, not a copy)",
+      !("buyer_signed_at" in counter) && !("status" in counter) && !("offer_price" in counter))
+    check("…an explicit null strikes a term (undefined = unchanged, null = removed)",
+      carryCounterTerms(parent, { closing_date: null }).closing_date === null)
+    // POSITIVE CONTROL: the old writer shape (only the counter's own fields)
+    // must be what this block calls broken — no close date reaches the deal.
+    const oldShape: Record<string, unknown> = { offer_price: 495000, contingencies: parent.contingencies }
+    check("…POSITIVE CONTROL: the pre-wave-95 counter row (changes only) has no close date",
+      oldShape.closing_date === undefined && carryCounterTerms(null, {}).closing_date === null)
+
+    // Both counter writers spread the one helper INTO their insert.
+    const spreadsHelper = (code: string, fn: string) => {
+      const at = code.indexOf(`function ${fn}(`)
+      if (at < 0) return false
+      const body = code.slice(at, at + 4000)
+      return /\.insert\(\{\s*\.\.\.carryCounterTerms\(/.test(body)
+    }
+    check("the kernel counter survivor (issueCounterOffer) carries the parent's terms",
+      spreadsHelper(src("lib/kernel/offers.ts"), "issueCounterOffer"))
+    check("the slide-over counter (sendCounterOffer) carries the parent's terms",
+      spreadsHelper(src("app/actions/seller-offers.ts"), "sendCounterOffer"))
+    check("…POSITIVE CONTROL: a counter insert without the helper is flagged",
+      !spreadsHelper('export async function issueCounterOffer() { await s.from("offers").insert({ offer_price: 1, closing_date: closingDate ?? null }) }', "issueCounterOffer"))
+    check("the transaction bridge reads the accepted row's closing_date + earnest_money (what the carry feeds)",
+      /"closing_date"/.test(src("lib/transactions/offer-bridge.ts")) && /"earnest_money"/.test(src("lib/transactions/offer-bridge.ts")))
   }
 
   console.log("\n──────────────────────────────────────────────────")

@@ -24,6 +24,16 @@ export default async function PortalHomePage({
   // layouts this contact sees ("the kernel determines the portal layout").
   const dual = await resolvePortalLayouts(supabase, { contactId })
 
+  // Wave 95: a client who CLOSED a deal with us and is on a live one (sold, now buying)
+  // keeps the lifetime home beside the live journey — the kernel lists "lifetime" after
+  // the live layout(s). The live journey still leads; the home they closed follows it.
+  const alsoLifetime = dual.primary !== "lifetime" && portalShowsLayout(dual, "lifetime")
+  const lifetimeBelow = alsoLifetime ? (
+    <div className="max-w-2xl mx-auto px-4 pb-12">
+      <LifetimeHome contactId={contactId} />
+    </div>
+  ) : null
+
   // DUAL-JOURNEY PORTAL — a "must sell to buy" contact sees BOTH journeys in a
   // tabbed Buy | Sell portal instead of being collapsed to one side. The tabs
   // reuse the EXISTING BuyerHome and SellerHome server components verbatim, and
@@ -47,15 +57,17 @@ export default async function PortalHomePage({
             sell={<SellerHome contactId={contactId} />}
           />
         </div>
+        {lifetimeBelow}
       </div>
     )
   }
 
-  // ── Non-dual: byte-for-byte the previous single-journey behavior ────────────
+  // ── Non-dual: the previous single-journey behavior, plus the lifetime home below
+  //    when the kernel also lists it (wave 95) ─────────────────────────────────
 
   // Render seller home if seller view
   if (dual.primary === "seller") {
-    return <SellerHome contactId={contactId} />
+    return <><SellerHome contactId={contactId} />{lifetimeBelow}</>
   }
 
   // Render lifetime home if lifetime view
@@ -64,5 +76,5 @@ export default async function PortalHomePage({
   }
 
   // Default buyer view
-  return <BuyerHome contactId={contactId} />
+  return <><BuyerHome contactId={contactId} />{lifetimeBelow}</>
 }

@@ -216,11 +216,48 @@ export interface PortalLayoutResolution extends DualPortalResolution {
   primary: PortalView
 }
 
-/** PURE — the layouts for a dual resolution. Exported so the proof drives every arm. */
-export function portalLayoutsFor(res: Pick<DualPortalResolution, "isDual" | "baseView">): PortalView[] {
+/**
+ * PURE — the layouts for a dual resolution. Exported so the proof drives every arm.
+ *
+ * `hasClosedDeal` (wave 95): a client who CLOSED a deal with us and is ALSO on a live
+ * one — the seller who sold and is now buying their next home — keeps the LIFETIME
+ * layout (their sold/owned home, value, touchpoints) beside the live journey's
+ * layout(s), lifetime LAST so the live deal still leads. Omitted / false → the
+ * wave-94 answer, byte for byte.
+ */
+export function portalLayoutsFor(
+  res: Pick<DualPortalResolution, "isDual" | "baseView"> & { hasClosedDeal?: boolean },
+): PortalView[] {
   if (res.baseView === "lifetime") return ["lifetime"]
-  if (res.isDual) return ["seller", "buyer"]
-  return [res.baseView]
+  const live: PortalView[] = res.isDual ? ["seller", "buyer"] : [res.baseView]
+  return res.hasClosedDeal ? [...live, "lifetime"] : live
+}
+
+/**
+ * The client the layout resolution reads deals with. A PORTAL CLIENT CANNOT SEE ITS OWN
+ * DEALS through its session: public.transactions' SELECT policies admit agents, team
+ * leads, brokerage staff, vendors and platform admins — no contact-self policy — so every
+ * deal read below came back successfully EMPTY for the client themselves (live walk,
+ * wave 95: a seller whose sale had CLOSED resolved to ["buyer"], reason SINGLE_JOURNEY,
+ * and never saw the lifetime home). Gate first, then the service client (CLAUDE.md §4):
+ * requireContactAccess admits the contact themselves or same-brokerage staff. A refused
+ * or failed gate elevates NOTHING — the caller's own (RLS) client is used, which can
+ * only show less, never another tenant's deals.
+ */
+async function portalLayoutClient(
+  supabase: SupabaseClient,
+  input: PortalViewInput,
+): Promise<{ client: SupabaseClient; brokerageId: string | null }> {
+  if (input.overrideView) return { client: supabase, brokerageId: null }
+  try {
+    const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
+    const access = await requireContactAccess(input.contactId)
+    if (!access.ok) return { client: supabase, brokerageId: null }
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    return { client: createServiceClient() as unknown as SupabaseClient, brokerageId: access.brokerageId }
+  } catch {
+    return { client: supabase, brokerageId: null }
+  }
 }
 
 /** KERNEL CONTRACT: the portal layouts for a contact — what every portal surface reads. */
@@ -228,8 +265,24 @@ export async function resolvePortalLayouts(
   supabase: SupabaseClient,
   input: PortalViewInput,
 ): Promise<PortalLayoutResolution> {
-  const dual = await resolveDualPortalView(supabase, input)
-  const layouts = portalLayoutsFor(dual)
+  const { client, brokerageId } = await portalLayoutClient(supabase, input)
+  const dual = await resolveDualPortalView(client, input)
+  // Has this client CLOSED a deal with us (any side)? Only asked when the base view is a
+  // live journey — a lifetime base already shows the home — and only on the gated,
+  // tenant-scoped path. A refused read adds nothing.
+  let hasClosedDeal = false
+  if (dual.baseView !== "lifetime" && brokerageId) {
+    const { data: closed, error: closedErr } = await client
+      .from("transactions")
+      .select("id")
+      .eq("brokerage_id", brokerageId)
+      .or(clientTransactionFilter(input.contactId))
+      .in("status", ["closed", "completed"])
+      .limit(1)
+    if (closedErr) console.warn("[Portal] resolvePortalLayouts closed-deal read refused:", closedErr.message)
+    hasClosedDeal = !closedErr && (closed ?? []).length > 0
+  }
+  const layouts = portalLayoutsFor({ ...dual, hasClosedDeal })
   return { ...dual, layouts, primary: layouts[0] }
 }
 

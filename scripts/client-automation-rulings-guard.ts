@@ -345,6 +345,36 @@ async function main() {
     JSON.stringify(portal.portalLayoutsFor({ isDual: false, baseView: "seller" })) === '["seller"]'
     && JSON.stringify(portal.portalLayoutsFor({ isDual: false, baseView: "buyer" })) === '["buyer"]'
     && JSON.stringify(portal.portalLayoutsFor({ isDual: true, baseView: "lifetime" })) === '["lifetime"]')
+  // Wave 95: a client who CLOSED a deal and is on a live one keeps the lifetime layout,
+  // live journey first. The rule, not a waypoint: every live arm gains "lifetime" last.
+  check("PURE (w95): sold here + buying elsewhere → buyer + lifetime; dual + closed → seller + buyer + lifetime",
+    JSON.stringify(portal.portalLayoutsFor({ isDual: false, baseView: "buyer", hasClosedDeal: true })) === '["buyer","lifetime"]'
+    && JSON.stringify(portal.portalLayoutsFor({ isDual: true, baseView: "seller", hasClosedDeal: true })) === '["seller","buyer","lifetime"]'
+    && JSON.stringify(portal.portalLayoutsFor({ isDual: false, baseView: "lifetime", hasClosedDeal: true })) === '["lifetime"]')
+  check("…POSITIVE CONTROL: no closed deal → the wave-94 answer, unchanged",
+    JSON.stringify(portal.portalLayoutsFor({ isDual: false, baseView: "buyer", hasClosedDeal: false })) === '["buyer"]')
+  {
+    // public.transactions has NO contact-self SELECT policy, so the client's own session
+    // reads its deals successfully EMPTY (live walk w95: a closed seller resolved ["buyer"]).
+    // The kernel must gate (requireContactAccess) BEFORE it elevates to the service client.
+    const k = code("lib/kernel/portal.ts")
+    const body = k.slice(k.indexOf("async function portalLayoutClient("), k.indexOf("export async function resolvePortalLayouts("))
+    const gatesThenElevates = (b: string) => {
+      const gate = b.indexOf("requireContactAccess(")
+      const refuse = b.search(/if \(!access\.ok\) return \{ client: supabase/)
+      const svc = b.indexOf("createServiceClient(")
+      return gate > 0 && refuse > gate && svc > refuse
+    }
+    check("the layout resolver gates the contact BEFORE it reads deals with the service client (refused gate = no elevation)", gatesThenElevates(body))
+    check("…POSITIVE CONTROL: elevation without the gate is flagged",
+      !gatesThenElevates("async function portalLayoutClient() { return { client: createServiceClient() } }"))
+    const r = k.slice(k.indexOf("export async function resolvePortalLayouts("), k.indexOf("export function portalShowsLayout("))
+    check("resolvePortalLayouts reads through the gated client and passes hasClosedDeal to the pure rule",
+      /portalLayoutClient\(supabase, input\)/.test(r) && /resolveDualPortalView\(client, input\)/.test(r) && /hasClosedDeal/.test(r) && /\.eq\("brokerage_id", brokerageId\)/.test(r))
+    const home = code("app/portal/[contactId]/page.tsx")
+    check("the portal home renders the lifetime home beside a live journey when the kernel lists it",
+      /portalShowsLayout\(dual, "lifetime"\)/.test(home) && (home.match(/\{lifetimeBelow\}/g) ?? []).length >= 3)
+  }
   {
     const T2 = "d0000000-0000-4000-8000-000000000002"
     const svc = world({

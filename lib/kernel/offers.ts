@@ -22,6 +22,7 @@ import { createServiceClient }   from "@/lib/supabase/service"
 import { KernelEvent }           from "@/lib/kernel/events"
 import { isValidUUID }           from "@/lib/validations"
 import { recordOutcomeForOfferSafe } from "@/lib/negotiation/auto-trigger"
+import { COUNTER_CARRIED_COLUMNS, carryCounterTerms } from "@/lib/transactions/contract-terms"
 
 // ─── SHARED TYPES ─────────────────────────────────────────────────────────────
 // Types live in ./offer-types.ts (no side-effect imports) so client components
@@ -324,12 +325,15 @@ export async function issueCounterOffer(params: {
   // every existing caller keeps the auth-cookie client + RLS unchanged.
   const supabase = client ?? await createClient()
 
-  const { data: offer } = await supabase
+  const parentColumns = `id, offer_price, current_round, listing_id, contact_id, brokerage_id, ${COUNTER_CARRIED_COLUMNS.join(", ")}`
+  const { data: offer, error: parentReadError } = await supabase
     .from("offers")
-    .select("id, offer_price, current_round, listing_id, contact_id, brokerage_id")
+    .select(parentColumns)
     .eq("id", offerId)
-    .single()
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle<Record<string, any>>()
 
+  if (parentReadError) return { success: false, error: `Offer could not be read: ${parentReadError.message}` }
   if (!offer) return { success: false, error: "Offer not found" }
 
   const nextRound = ((offer as any).current_round ?? 1) + 1
@@ -337,6 +341,13 @@ export async function issueCounterOffer(params: {
   const { data: counter, error } = await supabase
     .from("offers")
     .insert({
+      // Unchanged terms carry forward from the offer being countered; only the
+      // terms this counter names replace them (lib/transactions/contract-terms.ts).
+      ...carryCounterTerms(offer, {
+        closing_date:     closingDate,
+        contingencies:    contingencies,
+        possession_terms: possessionTerms,
+      }),
       listing_id:      (offer as any).listing_id,
       contact_id:      (offer as any).contact_id,
       brokerage_id:    brokerageId,
@@ -345,9 +356,6 @@ export async function issueCounterOffer(params: {
       offer_type:      "counter",
       current_round:   nextRound,
       offer_price:     counterPrice ?? (offer as any).offer_price,
-      closing_date:    closingDate ?? null,
-      contingencies:   contingencies ?? [],
-      possession_terms: possessionTerms ?? null,
       notes:           notes ?? null,
       status:          "pending",
       submitted_at:    new Date().toISOString(),

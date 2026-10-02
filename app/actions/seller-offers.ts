@@ -14,7 +14,7 @@ import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { incrementUsage } from "@/lib/usage"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { ingestOfferLostSignalAction } from "@/app/actions/lead-signal-ingest"
-import { CONTRACT_TERM_COLUMNS } from "@/lib/transactions/contract-terms"
+import { CONTRACT_TERM_COLUMNS, COUNTER_CARRIED_COLUMNS, carryCounterTerms } from "@/lib/transactions/contract-terms"
 import { byPriorityDesc } from "@/lib/kernel/priority-rank"
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
@@ -447,10 +447,14 @@ export async function sendCounterOffer(params: {
   responseDeadline: string            // ISO string
   notes?: string
   contingencyChanges?: string[]
+  // Optional term changes. Omitted = unchanged: the parent's term carries
+  // forward (lib/transactions/contract-terms.ts carryCounterTerms).
+  closingDate?: string
+  earnestMoney?: number
 }) {
   const {
     parentOfferId, listingId,
-    counterPrice, responseDeadline, notes, contingencyChanges,
+    counterPrice, responseDeadline, notes, contingencyChanges, closingDate, earnestMoney,
   } = params
 
   if (!isValidUUID(parentOfferId) || !isValidUUID(listingId)) {
@@ -469,12 +473,15 @@ export async function sendCounterOffer(params: {
   const supabase = createServiceClient()
 
   // Fetch parent offer to derive contact + current_round; verify ownership
-  const { data: parent } = await supabase
+  const parentColumns = `contact_id, current_round, brokerage_id, listing_id, ${COUNTER_CARRIED_COLUMNS.join(", ")}`
+  const { data: parent, error: parentReadError } = await supabase
     .from("offers")
-    .select("contact_id, current_round, contingencies, brokerage_id, listing_id")
+    .select(parentColumns)
     .eq("id", parentOfferId)
-    .single()
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle<Record<string, any>>()
 
+  if (parentReadError) return { success: false, error: `Parent offer could not be read: ${parentReadError.message}` }
   if (!parent) return { success: false, error: "Parent offer not found" }
   if (parent.brokerage_id !== brokerageId || parent.listing_id !== listingId) {
     return { success: false, error: "Forbidden" }
@@ -485,6 +492,13 @@ export async function sendCounterOffer(params: {
   const { data: counter, error: insertError } = await supabase
     .from("offers")
     .insert({
+      // Unchanged terms carry forward; only what this counter changes replaces
+      // them — otherwise an accepted counter builds a deal with no close date.
+      ...carryCounterTerms(parent, {
+        contingencies: contingencyChanges,
+        closing_date:  closingDate,
+        earnest_money: earnestMoney,
+      }),
       listing_id:        listingId,
       contact_id:        parent.contact_id,
       brokerage_id:      brokerageId,
@@ -497,7 +511,6 @@ export async function sendCounterOffer(params: {
       status:            "submitted",
       response_deadline: responseDeadline,
       notes:             notes ?? null,
-      contingencies:     contingencyChanges ?? parent.contingencies,
       ai_extraction_status: "manual",
       submitted_at:      new Date().toISOString(),
       created_at:        new Date().toISOString(),

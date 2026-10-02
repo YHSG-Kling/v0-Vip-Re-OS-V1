@@ -75,3 +75,52 @@ export function copyContractTerms(
   return out
 }
 
+
+/**
+ * THE TERMS A COUNTER CARRIES FORWARD (wave 95). A counter offer is the SAME
+ * deal with some terms changed — it is not a blank offer with a new price. The
+ * two counter writers (lib/kernel/offers.ts issueCounterOffer, the survivor the
+ * approvals queue, voice and the signed-counter recorder call; and
+ * app/actions/seller-offers.ts sendCounterOffer, the slide-over) used to insert
+ * only the fields the counter named, so the counter row had no closing date and
+ * no earnest money, and the transaction built from an ACCEPTED counter
+ * (lib/transactions/offer-bridge.ts reads the accepted row) had no close date.
+ *
+ * Carried: the closing date, the earnest deposit and its due-days term, the
+ * contingency list, the property address, the paperwork's origin
+ * (`form_source` — what lib/buyer-offer/buyer-signature-evidence.ts
+ * isOutsideOriginated reads, so an outside agent's deal stays outside-originated
+ * through a counter), and every CONTRACT_TERM_COLUMNS term. NOT carried:
+ * `earnest_money_due_at` (a calendar date derived from the EXECUTED contract's
+ * date — the parent never executed), signatures, documents, statuses.
+ */
+export const COUNTER_CARRIED_COLUMNS = [
+  "closing_date",
+  "earnest_money",
+  "earnest_money_due_days",
+  "contingencies",
+  "property_address",
+  "form_source",
+  ...CONTRACT_TERM_COLUMNS,
+] as const
+
+export type CounterCarriedColumn = (typeof COUNTER_CARRIED_COLUMNS)[number]
+
+/**
+ * PURE. The counter row's terms: every carried term from the parent offer, with
+ * ONLY the terms the counter changes replaced. `undefined` in `changes` means
+ * "the counter did not touch this term" and keeps the parent's value; any other
+ * value (including an explicit null — "strike this term") replaces it.
+ */
+export function carryCounterTerms(
+  parent: Record<string, unknown> | null | undefined,
+  changes: Partial<Record<CounterCarriedColumn, unknown>> = {},
+): Record<CounterCarriedColumn, unknown> {
+  const out = {} as Record<CounterCarriedColumn, unknown>
+  for (const column of COUNTER_CARRIED_COLUMNS) {
+    const changed = changes[column]
+    const inherited = (parent as Record<string, unknown> | null | undefined)?.[column]
+    out[column] = changed !== undefined ? changed : inherited === undefined ? null : inherited
+  }
+  return out
+}
