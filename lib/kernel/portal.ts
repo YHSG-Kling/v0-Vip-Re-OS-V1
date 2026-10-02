@@ -251,7 +251,7 @@ async function portalLayoutClient(
   if (input.overrideView) return { client: supabase, brokerageId: null }
   try {
     const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
-    const access = await requireContactAccess(input.contactId)
+    const access = await requireContactAccess(input.contactId, { client: supabase })
     if (!access.ok) return { client: supabase, brokerageId: null }
     const { createServiceClient } = await import("@/lib/supabase/service")
     return { client: createServiceClient() as unknown as SupabaseClient, brokerageId: access.brokerageId }

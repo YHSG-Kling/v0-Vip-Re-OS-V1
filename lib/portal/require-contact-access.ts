@@ -104,8 +104,18 @@ export type ContactAccess =
     }
   | { ok: false; error: "Unauthorized" | "Contact not found" | "Forbidden" | "Access check failed" }
 
-export async function requireContactAccess(contactId: string): Promise<ContactAccess> {
-  const authClient = await createClient()
+/**
+ * `opts.client` is a CLIENT SEAM: a caller already holding the request's session client
+ * (lib/kernel/portal.ts resolvePortalLayouts) passes it, so this module never builds a
+ * second cookie client — and a kernel path reached through the lib/kernel barrel does not
+ * drag a cookie read onto a cron's import graph. It must be a SESSION client: the gate
+ * reads auth.getUser() from it, and a service client has no user, so it refuses.
+ */
+export async function requireContactAccess(
+  contactId: string,
+  opts?: { client?: { auth: { getUser: () => Promise<{ data: { user: { id: string; email?: string } | null } }> } } },
+): Promise<ContactAccess> {
+  const authClient = opts?.client ?? await createClient()
   const { data: { user: authUser } } = await authClient.auth.getUser()
   if (!authUser) return { ok: false, error: "Unauthorized" }
 

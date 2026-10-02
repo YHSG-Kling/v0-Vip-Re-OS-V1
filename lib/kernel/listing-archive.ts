@@ -243,6 +243,9 @@ export const LISTING_CHILD_RULES: readonly ChildRule[] = [
   // m619 (wave 51): the buyer's portal "submit an offer" INTENT — owned by the contact, the
   // listing pointer is a snapshot of which of OUR listings they asked about (SET NULL live).
   { table: "offer_intents", column: "listing_id", disposition: "detach", why: "owned by the buyer contact; the listing pointer is only which in-house listing the ask was about" },
+  // m686 (wave 95): the outside agent's link to our contact names which listing their offer
+  // was on (SET NULL live). The link is the outside-agent record's history, not the listing's.
+  { table: "outside_agent_contact_links", column: "listing_id", disposition: "detach", why: "owned by the outside-agent record; the listing pointer is which of our listings the offer was on" },
   // m608 (2026-09-07) gave these three columns the FK the schema never had, so
   // they entered SCHEMA_FK_MAP and this ledger's denominator. Each is a record
   // that outlives the listing: the activity feed is the agent's own history,
