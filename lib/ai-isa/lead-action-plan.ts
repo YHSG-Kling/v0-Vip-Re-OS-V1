@@ -97,6 +97,7 @@ import { DEFAULT_AISA_SETTINGS } from "./settings-types"
 import { pickLeadOutreachChannel } from "./lead-channel-policy"
 import { permittedLeadChannels, decideNextChannel } from "./next-best-touch"
 import type { GenerationalCohort } from "@/lib/kernel/education"
+import type { DecayedIntent } from "@/lib/lead-intelligence/behavioral-summary"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE PLAN'S VOCABULARY
@@ -334,6 +335,76 @@ export type LeadTouchPlanCode =
   | "interval_not_elapsed"
   | "no_permitted_channel"
   | "plan_complete"
+  // Lane 97B — the next-best-action checks (NBA_CHECKS below).
+  | "convert_on_callback"
+  | "duplicate"
+  | "outreach_paused"
+  | "appointment_scheduled"
+  | "agent_handling"
+  | "recently_contacted"
+  | "quiet_hours"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NEXT-BEST-ACTION (lane 97B, blueprint row 13): WAIT and DO_NOTHING are real
+// actions, and every decision carries the REASONS NOT TO ACT it weighed. Policy
+// lives here, in code — never in a prompt. The LLM may write the touch; it never
+// decides whether one goes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** send_touch = run the plan step · convert = hand to the human/contact rail
+ *  (owner ruling: a callback is positive intent → convert) · wait = not now, a
+ *  time is known · do_nothing = no touch from this plan, with the reason. */
+export type NextBestAction = "send_touch" | "convert" | "wait" | "do_nothing"
+
+export type ReasonNotToActCode =
+  | "duplicate"
+  | "outreach_paused"
+  | "appointment_scheduled"
+  | "agent_handling"
+  | "recently_contacted"
+  | "quiet_hours"
+  | "channel_restricted_no_consent"
+  | "low_confidence"
+  | "intent_declining"
+
+export interface ReasonNotToAct {
+  code: ReasonNotToActCode
+  /** true = this check alone stops the touch; false = recorded, weighed, not decisive. */
+  blocking: boolean
+  detail: string
+}
+
+/** Fatigue scope: no new ISA touch within this many hours of ANY touch (agent, ISA,
+ *  campaign) — the ISA's own interval governs only its own sends. */
+export const NBA_FATIGUE_HOURS = 48
+/** Local-hour window a staged touch may be released in (same 8am-9pm window the
+ *  TCPA call gate uses — lib/communication/call-compliance.ts checkQuietHours). */
+export const NBA_QUIET_HOURS = Object.freeze({ startHour: 8, endHour: 21 })
+/** An agent touch inside this many days means a human is actively handling it. */
+export const NBA_AGENT_ACTIVE_DAYS = 7
+
+export interface NextBestActionContext {
+  /** The decayed intent (lib/lead-intelligence/behavioral-summary.ts scoreDecayedIntent). */
+  intent?: DecayedIntent | null
+  /** Positive intent: the person asked to be called back. */
+  callbackRequested?: boolean
+  /** The survivor this row duplicates (leads.duplicate_of_lead_id / duplicate_of_contact_id). */
+  duplicateOf?: string | null
+  /** ai_outreach_paused — a human paused the ISA on this person. */
+  outreachPaused?: boolean
+  /** An appointment already on the calendar — no touch until it has happened. */
+  appointmentAt?: Date | null
+  /** The last touch by a human agent — inside NBA_AGENT_ACTIVE_DAYS they own it. */
+  lastAgentTouchAt?: Date | null
+  /** The last touch from ANY sender (fatigue scope). */
+  lastAnyTouchAt?: Date | null
+  /** On the DNC registry, or no TCPA consent — channel narrows to email + direct mail. */
+  dncOrNoConsent?: boolean
+  /** The recipient's local hour, when resolvable; null = not evaluated. */
+  recipientLocalHour?: number | null
+}
+
+export interface NbaEvidence { kind: string; detail: string }
 
 export interface LeadTouchPlan {
   code: LeadTouchPlanCode
@@ -344,6 +415,83 @@ export interface LeadTouchPlan {
   reason: string
   /** When the next touch becomes due, when it is not due yet. */
   dueAt: Date | null
+  /** Lane 97B: the next-best-action verdict. */
+  action: NextBestAction
+  /** Machine-readable reason (=== code). */
+  reasonCode: LeadTouchPlanCode
+  /** What the decision read (intent, its trend, the signals behind it). */
+  evidence: NbaEvidence[]
+  /** EVERY check that argued against acting — the decisive one and the weighed ones. */
+  reasonsNotToAct: ReasonNotToAct[]
+  /** Ordering key across people: the intent momentum rank (rising moderate intent
+   *  outranks high-but-declining intent); 0 when no intent was supplied. */
+  priority: number
+}
+
+type CorePlan = Pick<LeadTouchPlan, "code" | "step" | "channel" | "reason" | "dueAt">
+
+const ACTION_FOR_CODE: Readonly<Record<LeadTouchPlanCode, NextBestAction>> = Object.freeze({
+  due: "send_touch",
+  convert_on_callback: "convert",
+  interval_not_elapsed: "wait",
+  appointment_scheduled: "wait",
+  recently_contacted: "wait",
+  quiet_hours: "wait",
+  blocked_lifecycle: "do_nothing",
+  max_touches_reached: "do_nothing",
+  no_permitted_channel: "do_nothing",
+  plan_complete: "do_nothing",
+  duplicate: "do_nothing",
+  outreach_paused: "do_nothing",
+  agent_handling: "do_nothing",
+})
+
+/** PURE. Every reason-not-to-act check, in precedence order. */
+export function reasonsNotToAct(ctx: NextBestActionContext | undefined, now: Date): ReasonNotToAct[] {
+  const out: ReasonNotToAct[] = []
+  if (!ctx) return out
+  const H = 3_600_000
+  if (ctx.duplicateOf) out.push({ code: "duplicate", blocking: true, detail: `duplicate of ${ctx.duplicateOf} — act on the survivor` })
+  if (ctx.outreachPaused) out.push({ code: "outreach_paused", blocking: true, detail: "a human paused the AI on this person" })
+  if (ctx.appointmentAt && ctx.appointmentAt.getTime() > now.getTime()) {
+    out.push({ code: "appointment_scheduled", blocking: true, detail: `appointment on the calendar ${ctx.appointmentAt.toISOString()}` })
+  }
+  if (ctx.lastAgentTouchAt && now.getTime() - ctx.lastAgentTouchAt.getTime() < NBA_AGENT_ACTIVE_DAYS * 24 * H) {
+    out.push({ code: "agent_handling", blocking: true, detail: `an agent touched this person ${ctx.lastAgentTouchAt.toISOString()} (inside ${NBA_AGENT_ACTIVE_DAYS}d)` })
+  }
+  if (ctx.lastAnyTouchAt && now.getTime() - ctx.lastAnyTouchAt.getTime() < NBA_FATIGUE_HOURS * H) {
+    out.push({ code: "recently_contacted", blocking: true, detail: `touched ${ctx.lastAnyTouchAt.toISOString()} — inside the ${NBA_FATIGUE_HOURS}h fatigue window` })
+  }
+  if (typeof ctx.recipientLocalHour === "number" && (ctx.recipientLocalHour < NBA_QUIET_HOURS.startHour || ctx.recipientLocalHour >= NBA_QUIET_HOURS.endHour)) {
+    out.push({ code: "quiet_hours", blocking: true, detail: `recipient local hour ${ctx.recipientLocalHour} is outside ${NBA_QUIET_HOURS.startHour}:00-${NBA_QUIET_HOURS.endHour}:00` })
+  }
+  if (ctx.dncOrNoConsent) {
+    out.push({ code: "channel_restricted_no_consent", blocking: false, detail: "DNC or no TCPA consent — email and direct mail only, never SMS/phone/voicedrop" })
+  }
+  if (ctx.intent && (ctx.intent.confidence === "low" || ctx.intent.confidence === "none")) {
+    out.push({ code: "low_confidence", blocking: false, detail: `intent ${ctx.intent.score}/100 rests on ${ctx.intent.independentSources} independent source(s)` })
+  }
+  if (ctx.intent && ctx.intent.trend === "falling") {
+    out.push({ code: "intent_declining", blocking: false, detail: `intent falling ${ctx.intent.velocityPerDay}/day` })
+  }
+  return out
+}
+
+/** The plan code a blocking reason maps to (same spelling — one vocabulary). */
+const CODE_FOR_BLOCKING: Partial<Record<ReasonNotToActCode, LeadTouchPlanCode>> = {
+  duplicate: "duplicate", outreach_paused: "outreach_paused", appointment_scheduled: "appointment_scheduled",
+  agent_handling: "agent_handling", recently_contacted: "recently_contacted", quiet_hours: "quiet_hours",
+}
+
+function intentEvidence(intent: DecayedIntent | null | undefined): NbaEvidence[] {
+  if (!intent) return []
+  return [
+    { kind: "intent", detail: `${intent.score}/100, ${intent.trend} ${intent.velocityPerDay}/day (accel ${intent.accelerationPerDay2}/day²), ${intent.confidence} confidence from ${intent.independentSources} source(s)` },
+    ...intent.evidence.slice(0, 5).map((e) => ({
+      kind: `signal:${e.type}`,
+      detail: `${e.source} ${e.ageUnknown ? "age unknown" : `${e.ageDays}d old`} (half-life ${e.halfLifeDays}d) → +${e.contribution}`,
+    })),
+  ]
 }
 
 /**
@@ -360,7 +508,34 @@ export interface LeadTouchPlan {
  * possible, and the plan picks within that. A step whose channel is not permitted
  * is SKIPPED, not downgraded into a channel the lead never allowed.
  */
-export function planNextLeadTouch(input: {
+export function planNextLeadTouch(input: PlanNextLeadTouchInput): LeadTouchPlan {
+  const ctx = input.context
+  const reasons = reasonsNotToAct(ctx, input.now)
+  const evidence = intentEvidence(ctx?.intent)
+  const priority = ctx?.intent ? ctx.intent.momentumRank : 0
+  const finish = (core: CorePlan): LeadTouchPlan =>
+    ({ ...core, action: ACTION_FOR_CODE[core.code], reasonCode: core.code, evidence, reasonsNotToAct: reasons, priority })
+
+  // A duplicate is never worked — not even converted; the survivor is.
+  const dup = reasons.find((r) => r.code === "duplicate")
+  if (dup) return finish({ code: "duplicate", step: null, channel: null, reason: dup.detail, dueAt: null })
+  // OWNER RULING: a callback is positive intent → convert. It outranks cadence,
+  // fatigue and the plan itself (the conversion rail books the call).
+  if (ctx?.callbackRequested && !reasons.some((r) => r.code === "outreach_paused")) {
+    return finish({ code: "convert_on_callback", step: null, channel: null, reason: "callback requested — positive intent; convert and book the call", dueAt: input.now })
+  }
+  const blocking = reasons.find((r) => r.blocking)
+  if (blocking) {
+    const code = CODE_FOR_BLOCKING[blocking.code] ?? "blocked_lifecycle"
+    const dueAt = code === "appointment_scheduled" ? (ctx?.appointmentAt ?? null)
+      : code === "recently_contacted" && ctx?.lastAnyTouchAt ? new Date(ctx.lastAnyTouchAt.getTime() + NBA_FATIGUE_HOURS * 3_600_000)
+      : null
+    return finish({ code, step: null, channel: null, reason: blocking.detail, dueAt })
+  }
+  return finish(planLeadTouchCore(input))
+}
+
+export interface PlanNextLeadTouchInput {
   now: Date
   settings: AIISASettings
   /** Touches already delivered on this lead, from isa_outreach_log. */
@@ -377,7 +552,11 @@ export function planNextLeadTouch(input: {
   reelReady: boolean
   lifecycleState: string | null
   cohort?: GenerationalCohort
-}): LeadTouchPlan {
+  /** Lane 97B: the next-best-action context. Omitted = the plan alone decides. */
+  context?: NextBestActionContext
+}
+
+function planLeadTouchCore(input: PlanNextLeadTouchInput): CorePlan {
   const s = input.settings
 
   // HARD LIFECYCLE STOP, from the broker's own list. Note for whoever reads this
@@ -902,7 +1081,8 @@ export async function advanceLeadActionPlans(input: {
     .select(
       "id, brokerage_id, first_touched_at, first_touch_channel, lifecycle_state, is_active, agent_id, contact_id, " +
       "ai_outreach_paused, dnc_status, email, email_verified, email_opt_out, direct_mail_opt_out, " +
-      "mailing_address, mailing_address_verified, mailing_city, mailing_state, mailing_zip, enrichment_profile",
+      "mailing_address, mailing_address_verified, mailing_city, mailing_state, mailing_zip, enrichment_profile, " +
+      "duplicate_of_lead_id, duplicate_of_contact_id",
     )
     .eq("brokerage_id", input.brokerageId)
     .eq("ai_isa_owner", true)
@@ -925,10 +1105,11 @@ export async function advanceLeadActionPlans(input: {
     out.examined++
     const leadId = lead.id as string
 
-    if (lead.ai_outreach_paused === true || lead.dnc_status === true) {
-      out.skipped.push({ leadId, code: "blocked_lifecycle", reason: "ai_outreach_paused or dnc_status is set" })
-      continue
-    }
+    // TOMBSTONE (lane 97B): `ai_outreach_paused || dnc_status` used to skip the lead
+    // outright here. DNC is a PHONE registry; the ruling is "non-consenting leads get
+    // email + direct mail only", and a lead plan never rides anything else — so DNC
+    // now NARROWS (recorded as channel_restricted_no_consent) and the pause is a
+    // blocking reason-not-to-act. Survivor: planNextLeadTouch's context (this file).
 
     // Touches DELIVERED, from the ISA's own record of truth.
     const { count: touchCount, error: touchError } = await supabase
@@ -958,7 +1139,7 @@ export async function advanceLeadActionPlans(input: {
     // asks for a second copy of a touch that is already waiting on a human.
     const { data: staged, error: stagedError } = await supabase
       .from("agent_client_messages")
-      .select("channel, status")
+      .select("channel, status, sent_at")
       .eq("brokerage_id", input.brokerageId)
       .eq("recipient_lead_id", leadId)
       .in("status", ["proposed", "approved", "sent"])
@@ -977,6 +1158,10 @@ export async function advanceLeadActionPlans(input: {
     }
     // Step 1 already went out — speed-to-lead stamped first_touched_at for it.
     if (lead.first_touched_at) stagedChannels.push("email")
+    // FATIGUE SCOPE (lane 97B): the newest SENT touch from any producer, not only the ISA log.
+    const sentTimes = ((staged ?? []) as Array<{ sent_at?: string | null }>)
+      .map((r) => (r.sent_at ? new Date(r.sent_at).getTime() : NaN)).filter((t) => Number.isFinite(t))
+    const lastSentAt = sentTimes.length > 0 ? new Date(Math.max(...sentTimes)) : null
 
     // THE REEL IS KEYED INSIDE THE JSONB, NOT IN A COLUMN. `ai_video_projects`
     // has NO `lead_id` column (live information_schema, 2026-08-25) — the lead
@@ -1009,6 +1194,12 @@ export async function advanceLeadActionPlans(input: {
       reelReady: (reelCount ?? 0) > 0,
       lifecycleState: (lead.lifecycle_state as string | null) ?? null,
       cohort: cohortFromEnrichment(lead.enrichment_profile as { age?: number | null; age_range?: string | null } | null),
+      context: {
+        duplicateOf: (lead.duplicate_of_lead_id as string | null) ?? (lead.duplicate_of_contact_id as string | null) ?? null,
+        outreachPaused: lead.ai_outreach_paused === true,
+        dncOrNoConsent: true, // a lead is pre-consent by definition; dnc_status only confirms it
+        lastAnyTouchAt: lastSentAt,
+      },
     })
 
     if (plan.code !== "due" || !plan.step) {

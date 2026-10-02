@@ -82,6 +82,10 @@ async function main() {
         scraped_at: iso(20), search_criteria_json: null,
       }], error: null },
       lead_idx_property_interactions: { data: [], error: null },
+      // Lane 97B: behavioral-summary's score DECAYS — the 20-day-old property view
+      // above (3-day half-life) is now worth ~nothing, as it should be. A fresh dated
+      // first-party signal keeps this assertion about the WIRING, not about age.
+      valuation_requests: { data: [{ submitted_at: iso(2), appointment_scheduled: false, appointment_at: null }], error: null },
       nextdoor_activity: { data: [], error: null },
       google_search_activity: { data: [], error: null },
       google_search_intelligence: { data: [], error: null },

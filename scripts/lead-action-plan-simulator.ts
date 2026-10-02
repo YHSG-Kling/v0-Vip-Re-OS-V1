@@ -75,6 +75,10 @@ import {
 import { DEFAULT_AISA_SETTINGS, type AIISASettings } from "../lib/ai-isa/settings-types"
 import { pickLeadOutreachChannel, LEAD_ALLOWED_CHANNELS } from "../lib/ai-isa/lead-channel-policy"
 import { CRON_REGISTRY } from "../lib/kernel/cron-dispatch"
+import {
+  scoreDecayedIntent, decayFactor, byIntentMomentumDesc, INTENT_SIGNAL_POLICY, STATED_TIMELINE_POLICY,
+  type IntentObservation,
+} from "../lib/lead-intelligence/behavioral-summary"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -445,6 +449,117 @@ check("VIDEO-COPY-CONTROL (positive control): the same prompt forbids fabricatin
   /invent nothing/i.test(aiCopy))
 
 // ─────────────────────────────────────────────────────────────────────────────
+console.log("\n── 7b. LANE 97B: signal decay, intent velocity, next-best-action incl. WAIT / DO_NOTHING ──")
+{
+  const NOW = new Date("2026-10-02T12:00:00Z")
+  const ago = (d: number) => new Date(NOW.getTime() - d * 86_400_000).toISOString()
+  const val = (d: number): IntentObservation => ({ type: "valuation_request", source: "valuation_requests", observedAt: ago(d) })
+
+  // DECAY — an old valuation request decays below a fresh one; the half-life table is the rule.
+  const fresh = scoreDecayedIntent([val(0)], NOW)
+  const old = scoreDecayedIntent([val(21)], NOW)
+  check("DECAY-OLD-BELOW-FRESH: a 21-day-old valuation request scores below a fresh one",
+    old.score < fresh.score, `old=${old.score} fresh=${fresh.score}`)
+  check("DECAY-HALF-LIFE-IS-THE-RULE: one half-life halves the factor (derived from the table, not pinned)",
+    Math.abs(decayFactor(INTENT_SIGNAL_POLICY.valuation_request.halfLifeDays, INTENT_SIGNAL_POLICY.valuation_request.halfLifeDays) - 0.5) < 1e-9)
+  check("DECAY-CONTROL (positive control): two equally fresh requests score EQUAL — the age is what moved it",
+    scoreDecayedIntent([val(0)], NOW).score === fresh.score)
+  check("DECAY-TIMELINE-BUCKETS-ONLY: the stated-timeline table is keyed by the live CHECK vocabulary, never 30/60/90",
+    ["1-3_months", "3-6_months", "6-12_months"].every((k) => k in STATED_TIMELINE_POLICY)
+      && !Object.keys(STATED_TIMELINE_POLICY).some((k) => /\b(30|60|90)\b/.test(k)))
+  check("DECAY-EVIDENCE: the score lists which signal, its age and its contribution",
+    fresh.evidence.length === 1 && fresh.evidence[0].type === "valuation_request" && fresh.evidence[0].ageDays === 0 && fresh.evidence[0].contribution > 0)
+
+  // CORROBORATION — two independent sources lift confidence; two rows of one table do not.
+  const oneSource = scoreDecayedIntent([val(0), val(1)], NOW)
+  const twoSources = scoreDecayedIntent([val(0), { type: "listing_view", source: "lead_idx_property_interactions", observedAt: ago(0) }], NOW)
+  check("CORROBORATION: ≥2 independent sources → medium confidence; two rows of ONE table stay low",
+    twoSources.confidence === "medium" && oneSource.confidence === "low", `${twoSources.confidence}/${oneSource.confidence}`)
+
+  // VELOCITY — accelerating moderate intent outranks declining high intent.
+  const declining = scoreDecayedIntent([
+    { type: "appointment_request", source: "valuation_requests", observedAt: ago(12) },
+    { type: "valuation_request", source: "valuation_requests", observedAt: ago(9) },
+    { type: "showing_request", source: "lead_idx_property_interactions", observedAt: ago(8) },
+  ], NOW)
+  const accelerating = scoreDecayedIntent([
+    { type: "listing_view", source: "lead_idx_property_interactions", observedAt: ago(2) },
+    { type: "saved_listing", source: "lead_idx_property_interactions", observedAt: ago(1) },
+    { type: "listing_view", source: "external_behavior", observedAt: ago(0) },
+    { type: "inbound_reply", source: "conversations", observedAt: ago(0) },
+  ], NOW)
+  check("VELOCITY-SIGNS: the high profile is falling, the moderate one rising",
+    declining.trend === "falling" && accelerating.trend === "rising",
+    `declining ${declining.score} v=${declining.velocityPerDay}; accelerating ${accelerating.score} v=${accelerating.velocityPerDay}`)
+  check("VELOCITY-OUTRANKS: rising moderate intent outranks high-but-declining intent (current score alone would not)",
+    declining.score > accelerating.score && [declining, accelerating].sort(byIntentMomentumDesc)[0] === accelerating,
+    `scores ${declining.score}>${accelerating.score}; ranks ${declining.momentumRank} vs ${accelerating.momentumRank}`)
+  {
+    // POSITIVE CONTROL: the same high profile, FRESH, is not declining and wins.
+    const freshHigh = scoreDecayedIntent([
+      { type: "appointment_request", source: "valuation_requests", observedAt: ago(0) },
+      { type: "valuation_request", source: "valuation_requests", observedAt: ago(0) },
+      { type: "showing_request", source: "lead_idx_property_interactions", observedAt: ago(0) },
+    ], NOW)
+    check("VELOCITY-CONTROL (positive control): the same high profile when fresh outranks the moderate one",
+      [freshHigh, accelerating].sort(byIntentMomentumDesc)[0] === freshHigh, `${freshHigh.momentumRank} vs ${accelerating.momentumRank}`)
+  }
+
+  // NEXT-BEST-ACTION — wait / do_nothing / reasons-not-to-act, policy in code.
+  const nbaBase = { ...planBase, now: NOW, lastTouchAt: new Date("2026-09-01T12:00:00Z") }
+  const due = planNextLeadTouch({ ...nbaBase, context: { intent: accelerating } })
+  check("NBA-DUE-CONTROL (positive control): with nothing against it the plan SENDS, carrying intent evidence",
+    due.action === "send_touch" && due.evidence.some((e) => e.kind === "intent") && due.priority === accelerating.momentumRank,
+    `${due.action}/${due.reasonCode}`)
+  const dnc = planNextLeadTouch({ ...nbaBase, context: { dncOrNoConsent: true } })
+  check("NBA-DNC-EMAIL-MAIL-ONLY: DNC / no consent restricts the channel to email or direct mail, with its reason",
+    dnc.reasonsNotToAct.some((r) => r.code === "channel_restricted_no_consent" && !r.blocking)
+      && (dnc.action === "do_nothing" || (dnc.channel !== null && ["email", "direct_mail"].includes(wireChannelFor(dnc.channel)))),
+    `${dnc.action}/${dnc.channel}`)
+  const dncNoChannel = planNextLeadTouch({ ...nbaBase, emailUsable: false, mailingVerified: false, context: { dncOrNoConsent: true } })
+  check("NBA-DNC-NO-CHANNEL: DNC with neither email nor mail verified → DO_NOTHING with its reason",
+    dncNoChannel.action === "do_nothing" && dncNoChannel.reasonCode === "no_permitted_channel"
+      && dncNoChannel.reasonsNotToAct.some((r) => r.code === "channel_restricted_no_consent"))
+  const waitInterval = planNextLeadTouch({ ...nbaBase, lastTouchAt: new Date("2026-10-01T12:00:00Z") })
+  check("NBA-WAIT: inside the cadence interval the action is WAIT with a due time",
+    waitInterval.action === "wait" && waitInterval.dueAt !== null, waitInterval.reasonCode)
+  const appt = planNextLeadTouch({ ...nbaBase, context: { appointmentAt: new Date("2026-10-04T15:00:00Z") } })
+  check("NBA-APPOINTMENT: an appointment on the calendar → WAIT until it",
+    appt.action === "wait" && appt.reasonCode === "appointment_scheduled" && appt.dueAt?.toISOString() === "2026-10-04T15:00:00.000Z")
+  const agent = planNextLeadTouch({ ...nbaBase, context: { lastAgentTouchAt: new Date("2026-09-30T12:00:00Z") } })
+  check("NBA-AGENT-HANDLING: an agent touch inside the window → DO_NOTHING (the human owns it)",
+    agent.action === "do_nothing" && agent.reasonCode === "agent_handling")
+  const fatigue = planNextLeadTouch({ ...nbaBase, context: { lastAnyTouchAt: new Date("2026-10-02T00:00:00Z") } })
+  check("NBA-FATIGUE: any touch inside the fatigue window → WAIT", fatigue.action === "wait" && fatigue.reasonCode === "recently_contacted")
+  const quiet = planNextLeadTouch({ ...nbaBase, context: { recipientLocalHour: 22 } })
+  const quietOk = planNextLeadTouch({ ...nbaBase, context: { recipientLocalHour: 10 } })
+  check("NBA-QUIET-HOURS: 22:00 local → WAIT; 10:00 local (positive control) → SEND",
+    quiet.action === "wait" && quiet.reasonCode === "quiet_hours" && quietOk.action === "send_touch")
+  const dup = planNextLeadTouch({ ...nbaBase, context: { duplicateOf: "lead-survivor", callbackRequested: true } })
+  check("NBA-DUPLICATE: a duplicate is DO_NOTHING even when it asked for a callback — the survivor is worked",
+    dup.action === "do_nothing" && dup.reasonCode === "duplicate")
+  const cb = planNextLeadTouch({ ...nbaBase, lastTouchAt: new Date("2026-10-02T10:00:00Z"), context: { callbackRequested: true, lastAnyTouchAt: new Date("2026-10-02T10:00:00Z") } })
+  check("NBA-CALLBACK-CONVERTS: a callback is positive intent → CONVERT, outranking cadence and fatigue (owner ruling)",
+    cb.action === "convert" && cb.reasonCode === "convert_on_callback")
+  const low = planNextLeadTouch({ ...nbaBase, context: { intent: oneSource } })
+  check("NBA-LOW-CONFIDENCE-RECORDED: low confidence is weighed and recorded but does not by itself stop a due nurture touch",
+    low.action === "send_touch" && low.reasonsNotToAct.some((r) => r.code === "low_confidence" && !r.blocking))
+  const paused = planNextLeadTouch({ ...nbaBase, context: { outreachPaused: true, callbackRequested: true } })
+  check("NBA-PAUSED: a human pause → DO_NOTHING (the AI never overrides the human)", paused.action === "do_nothing" && paused.reasonCode === "outreach_paused")
+
+  // WIRING — the sweep passes the context, and DNC no longer silently skips the lead.
+  const lap = code("lib/ai-isa/lead-action-plan.ts")
+  check("NBA-WIRED: advanceLeadActionPlans passes a NextBestAction context to the plan",
+    /planNextLeadTouch\(\{[\s\S]{0,1600}context:\s*\{[\s\S]{0,400}duplicateOf[\s\S]{0,200}outreachPaused[\s\S]{0,200}dncOrNoConsent/.test(lap))
+  check("NBA-DNC-NOT-A-SILENT-SKIP: the sweep no longer drops a DNC lead before the plan sees it",
+    !/dnc_status\s*===\s*true\)\s*\{[\s\S]{0,120}continue/.test(lap))
+  check("NBA-DNC-SCAN-CONTROL (positive control): the skip regex recognises the retired shape",
+    /dnc_status\s*===\s*true\)\s*\{[\s\S]{0,120}continue/.test("if (lead.ai_outreach_paused === true || lead.dnc_status === true) { out.skipped.push(x); continue }"))
+  const bs = code("lib/lead-intelligence/behavioral-summary.ts")
+  check("DECAY-WIRED: the behavioural fold IS the decayed score (one number, not two)",
+    /behavioralIntentScore\s*=\s*decayedIntent\.score/.test(bs) && !/perSourceMax/.test(bs))
+}
+
 console.log("\n── 8. LIVE LAYER (creds-gated): the gate opens and closes, with ZERO spend ──")
 
 const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&

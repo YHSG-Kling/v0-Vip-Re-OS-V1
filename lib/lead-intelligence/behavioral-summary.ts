@@ -58,8 +58,206 @@
 // directly.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { currentMemoryFacts } from "@/lib/kernel/conversation-memory"
 
 type Svc = ReturnType<typeof createServiceClient>
+
+// ─── SIGNAL DECAY + INTENT VELOCITY (lane 97B, blueprint row 14) ─────────────
+//
+// WHAT EXISTED: the fold below took the STRONGEST reading per source plus +5 per
+// extra source — AGELESS. A valuation request from last spring scored the same as
+// one from this morning, and nothing could say whether a person was warming or
+// cooling. signal-reaper-policy.ts's TTL is decay-by-deletion (a row is there or it
+// is not), not a half-life. This section is the missing half, ON this survivor (the
+// fold now calls it — there is still ONE behavioural intent number, not two).
+//
+// THE RULE (deterministic, in code, never in a prompt):
+//   contribution_i = strength(type_i) × 0.5^(age_i / halfLife(type_i))
+//   intent         = 100 × (1 − Π(1 − contribution_i/100)^corroboration), 0-100
+// — a Σ bounded by probabilistic-OR saturation, so ten page views never equal one
+// callback request. corroboration lifts only when ≥2 INDEPENDENT sources (distinct
+// source tables/providers, not two rows of one table) contribute.
+// VELOCITY = (intent(now) − intent(now−7d)) / 7, recomputed from the SAME
+// observations filtered to those already seen at the earlier instant (no snapshot
+// table needed — computed on read). ACCELERATION = Δvelocity between the last two
+// 7-day windows / 7.
+//
+// Timeline is the live `contacts_timeline_check` / `leads_timeline_check`
+// vocabulary — buckets only (CLAUDE.md §5), never 30/60/90.
+
+export type IntentSignalType =
+  | "callback_request"     // owner ruling: a callback is positive intent → convert
+  | "appointment_request"
+  | "showing_request"
+  | "valuation_request"
+  | "saved_listing"
+  | "listing_view"
+  | "page_view"
+  | "search_intent"
+  | "forum_activity"
+  | "inbound_reply"
+  | "logged_signal"
+  | "stated_timeline"
+
+export interface IntentSignalPolicy {
+  /** Days for a signal's contribution to halve. */
+  halfLifeDays: number
+  /** 0-100 strength of a fresh signal of this type. */
+  strength: number
+}
+
+/** The half-life table. A valuation request is a narrow window (~1 week); a page view
+ *  is noise within days; a callback / appointment request is a long-lived commitment. */
+export const INTENT_SIGNAL_POLICY: Readonly<Record<Exclude<IntentSignalType, "stated_timeline">, IntentSignalPolicy>> = Object.freeze({
+  callback_request:    { halfLifeDays: 60, strength: 90 },
+  appointment_request: { halfLifeDays: 45, strength: 85 },
+  showing_request:     { halfLifeDays: 14, strength: 75 },
+  valuation_request:   { halfLifeDays: 7,  strength: 70 },
+  saved_listing:       { halfLifeDays: 10, strength: 30 },
+  listing_view:        { halfLifeDays: 3,  strength: 15 },
+  page_view:           { halfLifeDays: 3,  strength: 10 },
+  search_intent:       { halfLifeDays: 10, strength: 25 },
+  forum_activity:      { halfLifeDays: 14, strength: 20 },
+  inbound_reply:       { halfLifeDays: 21, strength: 50 },
+  logged_signal:       { halfLifeDays: 14, strength: 30 },
+})
+
+/** A STATED timeline decays on a months scale, per bucket. Keyed by the live CHECK. */
+export const STATED_TIMELINE_POLICY: Readonly<Record<string, IntentSignalPolicy>> = Object.freeze({
+  immediate:     { halfLifeDays: 30,  strength: 75 },
+  "1-3_months":  { halfLifeDays: 45,  strength: 60 },
+  "3-6_months":  { halfLifeDays: 90,  strength: 40 },
+  "6-12_months": { halfLifeDays: 180, strength: 25 },
+  "12+_months":  { halfLifeDays: 270, strength: 10 },
+  researching:   { halfLifeDays: 120, strength: 5 },
+})
+
+/** An observation with no timestamp cannot be aged; it counts at this fixed fraction
+ *  (conservative) and is flagged `ageUnknown` in the evidence. It never moves velocity. */
+export const UNKNOWN_AGE_DECAY = 0.25
+/** Corroboration lift by count of independent contributing sources. */
+export const CORROBORATION_LIFT: Readonly<{ two: number; threePlus: number }> = Object.freeze({ two: 1.15, threePlus: 1.25 })
+/** A contribution below this is noise — it neither counts as a source nor lists as evidence. */
+const MIN_CONTRIBUTION = 1
+const DAY_MS = 86_400_000
+
+export interface IntentObservation {
+  type: IntentSignalType
+  /** ISO timestamp the signal was observed; null = age unknown. */
+  observedAt: string | null
+  /** The table/provider the row came from — the independence key for corroboration. */
+  source: string
+  /** Optional 0-100 per-row strength (e.g. intelligence_signals_log.signal_strength). */
+  strength?: number | null
+  /** stated_timeline only: the CHECK bucket. */
+  timelineBucket?: string | null
+}
+
+export interface IntentEvidence {
+  type: IntentSignalType
+  source: string
+  observedAt: string | null
+  ageDays: number | null
+  ageUnknown: boolean
+  halfLifeDays: number
+  strength: number
+  decay: number
+  contribution: number
+  timelineBucket?: string | null
+}
+
+export interface DecayedIntent {
+  /** Current intent 0-100. */
+  score: number
+  confidence: "none" | "low" | "medium" | "high"
+  independentSources: number
+  corroboration: number
+  /** Δintent per day over the last 7 days. */
+  velocityPerDay: number
+  /** Δvelocity per day between the last two 7-day windows. */
+  accelerationPerDay2: number
+  trend: "rising" | "flat" | "falling"
+  /** Sort key for "who needs us next": score + 7×velocity + 24.5×acceleration (unclamped).
+   *  Rising moderate intent outranks high-but-declining intent. */
+  momentumRank: number
+  /** Contributing signals, strongest first. */
+  evidence: IntentEvidence[]
+}
+
+/** PURE. 0.5^(age/halfLife); future-dated rows count as fresh; unknown age → UNKNOWN_AGE_DECAY. */
+export function decayFactor(ageDays: number | null, halfLifeDays: number): number {
+  if (ageDays === null || !Number.isFinite(ageDays)) return UNKNOWN_AGE_DECAY
+  if (ageDays <= 0) return 1
+  if (!(halfLifeDays > 0)) return 0
+  return Math.pow(0.5, ageDays / halfLifeDays)
+}
+
+function policyFor(o: IntentObservation): IntentSignalPolicy | null {
+  if (o.type === "stated_timeline") return STATED_TIMELINE_POLICY[o.timelineBucket ?? ""] ?? null
+  return INTENT_SIGNAL_POLICY[o.type] ?? null
+}
+
+function intentAt(observations: readonly IntentObservation[], at: Date): { score: number; evidence: IntentEvidence[]; sources: number; corroboration: number } {
+  const evidence: IntentEvidence[] = []
+  for (const o of observations) {
+    const policy = policyFor(o)
+    if (!policy) continue
+    const t = o.observedAt ? new Date(o.observedAt).getTime() : NaN
+    const dated = Number.isFinite(t)
+    if (dated && t > at.getTime()) continue // not yet observed at this instant
+    const ageDays = dated ? (at.getTime() - t) / DAY_MS : null
+    const strength = Math.max(0, Math.min(100, typeof o.strength === "number" && Number.isFinite(o.strength) ? o.strength : policy.strength))
+    const decay = decayFactor(ageDays, policy.halfLifeDays)
+    const contribution = strength * decay
+    if (contribution < MIN_CONTRIBUTION) continue
+    evidence.push({
+      type: o.type, source: o.source, observedAt: dated ? o.observedAt : null,
+      ageDays: ageDays === null ? null : Math.round(ageDays * 10) / 10, ageUnknown: !dated,
+      halfLifeDays: policy.halfLifeDays, strength, decay: Math.round(decay * 1000) / 1000,
+      contribution: Math.round(contribution * 10) / 10,
+      ...(o.type === "stated_timeline" ? { timelineBucket: o.timelineBucket ?? null } : {}),
+    })
+  }
+  const sources = new Set(evidence.map((e) => e.source)).size
+  const corroboration = sources >= 3 ? CORROBORATION_LIFT.threePlus : sources === 2 ? CORROBORATION_LIFT.two : 1
+  const remaining = evidence.reduce((acc, e) => acc * (1 - Math.min(100, e.contribution) / 100), 1)
+  // Corroboration shrinks the REMAINING headroom (remaining^lift) instead of
+  // multiplying the score: a multiplier clamps strong profiles at 100 at every
+  // instant, which reads as velocity 0 while the person is actually cooling
+  // (caught by VELOCITY-SIGNS in test:lead-action-plan).
+  const score = Math.max(0, Math.min(100, 100 * (1 - Math.pow(remaining, corroboration))))
+  evidence.sort((a, b) => b.contribution - a.contribution)
+  return { score, evidence, sources, corroboration }
+}
+
+/** PURE. Current decayed intent + velocity + acceleration + the evidence list. */
+export function scoreDecayedIntent(observations: readonly IntentObservation[], now: Date = new Date()): DecayedIntent {
+  const cur = intentAt(observations, now)
+  const prev = intentAt(observations, new Date(now.getTime() - 7 * DAY_MS)).score
+  const prev2 = intentAt(observations, new Date(now.getTime() - 14 * DAY_MS)).score
+  const velocity = (cur.score - prev) / 7
+  const priorVelocity = (prev - prev2) / 7
+  const acceleration = (velocity - priorVelocity) / 7
+  const round2 = (n: number) => Math.round(n * 100) / 100
+  const confidence: DecayedIntent["confidence"] = cur.evidence.length === 0 ? "none"
+    : cur.sources >= 3 ? "high" : cur.sources === 2 ? "medium" : "low"
+  return {
+    score: Math.round(cur.score),
+    confidence,
+    independentSources: cur.sources,
+    corroboration: cur.corroboration,
+    velocityPerDay: round2(velocity),
+    accelerationPerDay2: round2(acceleration),
+    trend: velocity > 0.5 ? "rising" : velocity < -0.5 ? "falling" : "flat",
+    momentumRank: round2(cur.score + 7 * velocity + 24.5 * acceleration),
+    evidence: cur.evidence,
+  }
+}
+
+/** Comparator: who needs us next — momentum first, current score as the tie-break. */
+export function byIntentMomentumDesc(a: DecayedIntent, b: DecayedIntent): number {
+  return (b.momentumRank - a.momentumRank) || (b.score - a.score)
+}
 
 export interface BehavioralIntentSummary {
   contactId: string
@@ -130,6 +328,10 @@ export interface BehavioralIntentSummary {
    *  0-100 scale as lib/lead-pipeline/pipeline-processor.ts's scoreToUrgencyLevel
    *  input (that file is frozen this wave — see header). */
   behavioralIntentScore: number
+  /** Lane 97B: the decayed intent behind behavioralIntentScore — confidence,
+   *  velocity, acceleration and the evidence list (which signal, its age, its
+   *  contribution). behavioralIntentScore === decayedIntent.score. */
+  decayedIntent: DecayedIntent
   /** Plain-English rollup for the lead-desk panel / ISA brief. Deliberately
    *  factual and source-count based — no demographic or protected-class
    *  inference (see FAIR HOUSING note above). */
@@ -147,6 +349,7 @@ const EMPTY_SUMMARY = (contactId: string): BehavioralIntentSummary => ({
   loggedSignalCount: 0, topSignalStrength: null,
   outreachAttemptCount: 0,
   behavioralIntentScore: 0,
+  decayedIntent: scoreDecayedIntent([]),
   narrative: "No external behavioral or search signals collected yet.",
 })
 
@@ -160,9 +363,11 @@ export async function buildBehavioralIntentSummary(
   contactId: string,
   brokerageId: string | null,
   client?: Svc,
+  opts: { now?: Date } = {},
 ): Promise<BehavioralIntentSummary> {
   if (!contactId) return EMPTY_SUMMARY(contactId)
   const supabase = client ?? createServiceClient()
+  const now = opts.now ?? new Date()
 
   // external_behavior keys off behavioral_signal_id, not the contact directly —
   // resolve this contact's signal id(s) first (identifyVisitor / trackBehavior
@@ -194,6 +399,21 @@ export async function buildBehavioralIntentSummary(
   const outreachQuery = supabase.from("intelligent_outreach_log")
     .select("outreach_type, channel, content")
     .eq("contact_id", contactId)
+  // Lane 97B — the DATED first-party intent rows the decay needs. Tenant-scoped when
+  // the caller knows the brokerage (the contact id is the row key either way).
+  let valuationQuery = supabase.from("valuation_requests")
+    .select("submitted_at, appointment_scheduled, appointment_at")
+    .eq("contact_id", contactId)
+  if (brokerageId) valuationQuery = valuationQuery.eq("brokerage_id", brokerageId)
+  let callbackQuery = supabase.from("tasks")
+    .select("created_at, status")
+    .eq("contact_id", contactId)
+    .eq("source", "ai_callback")
+  if (brokerageId) callbackQuery = callbackQuery.eq("brokerage_id", brokerageId)
+  let contactQuery = supabase.from("contacts")
+    .select("timeline, metadata")
+    .eq("id", contactId)
+  if (brokerageId) contactQuery = contactQuery.eq("brokerage_id", brokerageId)
 
   const [
     { data: signals, error: signalsError },
@@ -202,7 +422,14 @@ export async function buildBehavioralIntentSummary(
     { data: osint, error: osintError },
     { data: signalsLog, error: signalsLogError },
     { data: outreach, error: outreachError },
-  ] = await Promise.all([signalsQuery, nextdoorQuery, googleActivityQuery, osintQuery, signalsLogQuery, outreachQuery])
+    { data: valuations, error: valuationError },
+    { data: callbacks, error: callbackError },
+    { data: contactRow, error: contactError },
+  ] = await Promise.all([signalsQuery, nextdoorQuery, googleActivityQuery, osintQuery, signalsLogQuery, outreachQuery,
+    valuationQuery.limit(20), callbackQuery.limit(20), contactQuery.maybeSingle()])
+  if (valuationError) console.error("[behavioral-summary] valuation_requests read refused:", valuationError.message)
+  if (callbackError) console.error("[behavioral-summary] tasks(ai_callback) read refused:", callbackError.message)
+  if (contactError) console.error("[behavioral-summary] contacts(timeline) read refused:", contactError.message)
   const googleIntelResult = googleIntelQuery ? await googleIntelQuery : null
 
   if (signalsError) console.error("[behavioral-summary] behavioral_signals read refused:", signalsError.message)
@@ -217,7 +444,7 @@ export async function buildBehavioralIntentSummary(
   let externalBehaviorRows: Array<Record<string, unknown>> = []
   if (signalIds.length > 0) {
     const { data: ext, error: extError } = await supabase.from("external_behavior")
-      .select("source, activity_type, detected_interest_level, property_addresses_viewed, location, detected_via_zenrows, scraped_at, search_criteria_json")
+      .select("source, activity_type, detected_interest_level, property_addresses_viewed, location, detected_via_zenrows, scraped_at, occurred_at, search_criteria_json")
       .in("behavioral_signal_id", signalIds)
     if (extError) console.error("[behavioral-summary] external_behavior read refused:", extError.message)
     else externalBehaviorRows = ext ?? []
@@ -227,7 +454,7 @@ export async function buildBehavioralIntentSummary(
   let idxRows: Array<Record<string, unknown>> = []
   {
     const { data: idx, error: idxError } = await supabase.from("lead_idx_property_interactions")
-      .select("interaction_type, property_address, mls_number, property_details, interaction_metadata, occurred_at, view_duration_seconds")
+      .select("interaction_type, property_address, mls_number, property_details, interaction_metadata, occurred_at, view_duration_seconds, requested_showing, saved")
       .eq("contact_id", contactId)
       .order("occurred_at", { ascending: false })
       .limit(50)
@@ -245,23 +472,55 @@ export async function buildBehavioralIntentSummary(
   const topSignalStrength = signalsLogRows.length > 0
     ? Math.max(...signalsLogRows.map((r) => r.signal_strength ?? 0))
     : null
-  const topOsintConfidence = Math.max(0, ...osintRows.map((r) => Math.round((r.confidence_score ?? 0) * 100)))
 
-  // Fold: strongest single reading across sources, plus a small bump per extra
-  // corroborating source (capped). Deterministic, auditable, no model call.
-  const perSourceMax = Math.max(
-    topRelevance,
-    topSignalStrength ?? 0,
-    topOsintConfidence,
-    externalBehaviorRows.length > 0 ? 60 : 0,
-    googleActivityRows.length > 0 ? 55 : 0,
-  )
-  const activeSourceCount = [
-    externalBehaviorRows.length > 0, nextdoorRows.length > 0, googleActivityRows.length > 0,
-    osintRows.length > 0, outreachRows.length > 0,
-  ].filter(Boolean).length
-  const behavioralIntentScore = Math.max(0, Math.min(100,
-    Math.round(perSourceMax + Math.max(0, activeSourceCount - 1) * 5)))
+  // TOMBSTONE (lane 97B): the AGELESS fold lived here — max(per-source reading)
+  // + 5 per extra active source, which also counted lead_osint_data's identity-
+  // match confidence and OUR OWN intelligent_outreach_log attempts as the person's
+  // intent. Survivor: scoreDecayedIntent (this file, above) — every DATED row is
+  // aged on its type's half-life; undated rows count at UNKNOWN_AGE_DECAY; OSINT
+  // and our outreach are not the person's intent and no longer score.
+  const observations: IntentObservation[] = []
+  for (const r of externalBehaviorRows) {
+    const lvl = String(r.detected_interest_level ?? "").toLowerCase()
+    observations.push({
+      type: "listing_view", source: "external_behavior",
+      observedAt: ((r.occurred_at ?? r.scraped_at) as string | null) ?? null,
+      strength: lvl === "high" ? 45 : lvl === "medium" ? 25 : null,
+    })
+  }
+  for (const r of idxRows) {
+    const type: IntentSignalType = r.requested_showing === true ? "showing_request" : r.saved === true ? "saved_listing" : "listing_view"
+    observations.push({ type, source: "lead_idx_property_interactions", observedAt: (r.occurred_at as string | null) ?? null })
+  }
+  for (const r of signalsLogRows) {
+    observations.push({ type: "logged_signal", source: "intelligence_signals_log", observedAt: r.detected_at, strength: r.signal_strength })
+  }
+  for (const r of nextdoorRows) {
+    observations.push({ type: "forum_activity", source: "nextdoor_activity", observedAt: null, strength: r.relevance_score })
+  }
+  for (let i = 0; i < googleActivityRows.length; i++) {
+    observations.push({ type: "search_intent", source: "google_search_activity", observedAt: null })
+  }
+  for (const r of (valuations ?? []) as Array<{ submitted_at: string | null; appointment_scheduled: boolean | null }>) {
+    observations.push({ type: "valuation_request", source: "valuation_requests", observedAt: r.submitted_at })
+    if (r.appointment_scheduled === true) {
+      observations.push({ type: "appointment_request", source: "valuation_requests", observedAt: r.submitted_at })
+    }
+  }
+  for (const r of (callbacks ?? []) as Array<{ created_at: string | null }>) {
+    observations.push({ type: "callback_request", source: "tasks.ai_callback", observedAt: r.created_at })
+  }
+  // STATED TIMELINE: aged from the memory fact's observed_at when the context spine
+  // holds a current one (lane 97B memory compiler); otherwise the column alone, age unknown.
+  const contact = (contactRow ?? null) as { timeline?: string | null; metadata?: Record<string, unknown> | null } | null
+  const timelineFact = currentMemoryFacts(contact?.metadata?.context_spine, now).find((f) => f.key === "timeline")
+  if (timelineFact) {
+    observations.push({ type: "stated_timeline", source: `memory.${timelineFact.source}`, observedAt: timelineFact.observedAt, timelineBucket: timelineFact.value })
+  } else if (contact?.timeline) {
+    observations.push({ type: "stated_timeline", source: "contacts.timeline", observedAt: null, timelineBucket: contact.timeline })
+  }
+  const decayedIntent = scoreDecayedIntent(observations, now)
+  const behavioralIntentScore = decayedIntent.score
 
   const osintSources = [...new Set(osintRows.map((r) => r.data_source).filter((s): s is string => !!s))]
 
@@ -284,9 +543,11 @@ export async function buildBehavioralIntentSummary(
     }
     if (contentKeys.size > 0) narrativeParts.push(`captured fields: ${[...contentKeys].join(", ")}`)
   }
+  if ((valuations ?? []).length > 0) narrativeParts.push(`${(valuations ?? []).length} home-valuation request(s)`)
+  if ((callbacks ?? []).length > 0) narrativeParts.push(`${(callbacks ?? []).length} callback request(s)`)
   if (outreachRows.length > 0) narrativeParts.push(`${outreachRows.length} prior intelligent-outreach attempt(s)`)
   const narrative = narrativeParts.length > 0
-    ? `${narrativeParts.join("; ")}. Behavioral intent score ${behavioralIntentScore}/100.`
+    ? `${narrativeParts.join("; ")}. Behavioral intent score ${behavioralIntentScore}/100 (${decayedIntent.trend}, ${decayedIntent.velocityPerDay}/day, ${decayedIntent.confidence} confidence).`
     : EMPTY_SUMMARY(contactId).narrative
 
   return {
@@ -337,6 +598,7 @@ export async function buildBehavioralIntentSummary(
     topSignalStrength,
     outreachAttemptCount: outreachRows.length,
     behavioralIntentScore,
+    decayedIntent,
     narrative,
   }
 }

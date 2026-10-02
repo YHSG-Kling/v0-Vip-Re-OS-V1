@@ -23,8 +23,18 @@ import {
   composeContextSummary,
   updateContactContext,
   loadContactContext,
+  recordMemoryFact,
+  currentMemoryFacts,
+  factsDueForReview,
+  memoryContextBlock,
+  compileObservedFacts,
+  MEMORY_FACT_REVIEW_DAYS,
   type InteractionRow,
+  type MemoryFact,
 } from "../lib/kernel/conversation-memory"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { stripComments, blankStrings } from "./strip-comments"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -45,6 +55,65 @@ async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" Context spine (conversation memory) simulator")
   console.log("══════════════════════════════════════════════════")
+
+  console.log("\n[Layer 0 · lane 97B memory compiler — facts with confidence + expiry]")
+  {
+    const T0 = new Date("2026-09-01T12:00:00Z")
+    const day = (d: number) => new Date(T0.getTime() + d * 86_400_000)
+    let ledger: MemoryFact[] = []
+    ledger = recordMemoryFact(ledger, { key: "price_expectation", value: "$550,000", observedAt: day(0).toISOString(), confidence: 0.7, source: "conversation" })
+    ledger = recordMemoryFact(ledger, { key: "price_expectation", value: "$600,000", observedAt: day(10).toISOString(), confidence: 0.8, source: "conversation" })
+    const cur = currentMemoryFacts(ledger, day(11))
+    const old = ledger.find((f) => f.value === "$550,000")
+    check("SUPERSEDE: a newer price fact supersedes the old one (the new one is current)",
+      cur.length === 1 && cur[0].value === "$600,000", JSON.stringify(cur))
+    check("SUPERSEDE-KEEPS-HISTORY: the old fact is KEPT, marked superseded, not overwritten",
+      !!old && old.supersededAt === day(10).toISOString() && old.supersededBy === "$600,000")
+    check("FACT-SHAPE: observed_at, confidence and review_by ride on every fact (review_by derived from the per-key table)",
+      cur[0].confidence === 0.8 && cur[0].reviewBy === new Date(day(10).getTime() + MEMORY_FACT_REVIEW_DAYS.price_expectation * 86_400_000).toISOString())
+    // A late-arriving OLDER statement never displaces a newer one.
+    const late = recordMemoryFact(ledger, { key: "price_expectation", value: "$500,000", observedAt: day(5).toISOString(), confidence: 0.9, source: "conversation" })
+    check("SUPERSEDE-ORDER: an older statement arriving late is history, not the current fact",
+      currentMemoryFacts(late, day(11))[0]?.value === "$600,000" && late.some((f) => f.value === "$500,000" && !!f.supersededAt))
+    // Same value re-stated → re-confirmed in place (no new row).
+    const reconf = recordMemoryFact(ledger, { key: "price_expectation", value: "$600,000 ", observedAt: day(20).toISOString(), confidence: 0.6, source: "call" })
+    check("RECONFIRM: restating the same value moves observed_at/review_by forward without a new row",
+      reconf.filter((f) => f.key === "price_expectation").length === 2 && currentMemoryFacts(reconf, day(21))[0].observedAt === day(20).toISOString())
+
+    // EXPIRY: past review_by the fact leaves the AI context.
+    ledger = recordMemoryFact(ledger, { key: "timeline", value: "1-3_months", observedAt: day(0).toISOString(), confidence: 0.8, source: "contacts.timeline" })
+    const spine = { summary: "Last touch today.", facts: ledger }
+    const inside = memoryContextBlock(spine, day(30))
+    const after = memoryContextBlock(spine, day(MEMORY_FACT_REVIEW_DAYS.timeline + 1))
+    check("EXPIRY-CONTROL (positive control): inside review_by the timeline IS in the AI context",
+      inside.includes("timeline: 1-3_months"), inside)
+    check("EXPIRY: past review_by the timeline leaves the AI context (only a re-confirm cue remains)",
+      !after.includes("1-3_months") && /re-confirming[^\n]*timeline/.test(after), after)
+    check("EXPIRY-SUPERSEDED-NEVER-IN-CONTEXT: a superseded value never reaches the context",
+      !inside.includes("$550,000") && inside.includes("$600,000"))
+    check("DUE-FOR-REVIEW: the expired key is listed for re-confirmation", factsDueForReview(spine, day(70)).some((f) => f.key === "timeline"))
+
+    // The column observer: an UNCHANGED column is not a re-statement; a CHANGED one supersedes.
+    const same = compileObservedFacts({ facts: ledger }, [{ key: "timeline", value: "1-3_months", confidence: 0.8, source: "contacts.timeline" }], day(40))
+    check("OBSERVER-UNCHANGED: re-reading an unchanged column does not refresh observed_at",
+      currentMemoryFacts(same, day(41)).find((f) => f.key === "timeline")?.observedAt === day(0).toISOString())
+    const changed = compileObservedFacts({ facts: ledger }, [{ key: "timeline", value: "3-6_months", confidence: 0.8, source: "contacts.timeline" }], day(40))
+    check("OBSERVER-CHANGED: a changed column supersedes the old timeline",
+      currentMemoryFacts(changed, day(41)).find((f) => f.key === "timeline")?.value === "3-6_months"
+        && changed.some((f) => f.value === "1-3_months" && !!f.supersededAt))
+
+    // WIRING (stripped source — a tombstone is not a call site).
+    const root = join(import.meta.dirname, "..")
+    const code = (rel: string) => blankStrings(stripComments(readFileSync(join(root, rel), "utf8")))
+    check("WIRED-WRITER: updateContactContext carries the ledger forward through compileObservedFacts",
+      /spine\.facts\s*=\s*compileObservedFacts\(/.test(code("lib/kernel/conversation-memory.ts")))
+    check("WIRED-READER: the portal AI chat reads the compiled block, not the raw spine summary",
+      /memoryContextBlock\(/.test(code("app/api/portal/ai-chat/route.ts")))
+    check("WIRED-DECAY: the decayed intent ages the stated timeline from the memory fact",
+      /currentMemoryFacts\(/.test(code("lib/lead-intelligence/behavioral-summary.ts")))
+    check("WIRED-SCAN-CONTROL (positive control): the writer regex matches the shape it guards",
+      /spine\.facts\s*=\s*compileObservedFacts\(/.test("spine.facts = compileObservedFacts(prior, x, now)"))
+  }
 
   console.log("\n[Layer 1 · pure compose]")
   const rows: InteractionRow[] = [

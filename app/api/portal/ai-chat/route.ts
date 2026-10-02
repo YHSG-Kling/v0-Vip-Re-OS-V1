@@ -208,7 +208,12 @@ export async function POST(request: Request) {
       const { data: cmeta } = await supabase.from('contacts')
         .select('metadata').eq('id', contactId).maybeSingle()
       const spine = (cmeta as any)?.metadata?.context_spine
-      if (spine?.summary) contextSpine = String(spine.summary).slice(0, 1200)
+      // Lane 97B memory compiler: the summary + ONLY current, unexpired facts
+      // (superseded and past-review facts never reach the prompt).
+      if (spine?.summary) {
+        const { memoryContextBlock } = await import('@/lib/kernel/conversation-memory')
+        contextSpine = memoryContextBlock(spine, new Date()).slice(0, 1600) || null
+      }
     } catch { /* continuity is additive */ }
 
     // ── Load AI identity profile ────────────────────────────────────────────────
