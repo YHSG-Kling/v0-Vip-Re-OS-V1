@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/server"
-import { determinePortalView } from "@/lib/kernel/portal"
+import { resolvePortalLayouts } from "@/lib/kernel/portal"
 import { getAlertResults } from "@/app/actions/property-alerts/alert-actions"
 import { AlertMatchList } from "./alert-match-list"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
@@ -22,7 +22,7 @@ import { ArrowLeft, BellRing } from "lucide-react"
  * AGENT-ONLY CRM route. Both are corrected in the notifier to contact-scoped
  * portal paths, and this is the page the first one now lands on.
  *
- * Auth is the portal's own model — determinePortalView resolves the session
+ * Auth is the portal's own model — resolvePortalLayouts resolves the session
  * against the contact — and the alert is then re-checked to belong to THIS
  * contact, so a valid portal session for one buyer cannot read another's alert
  * by swapping the id in the URL.
@@ -38,7 +38,7 @@ export default async function PortalAlertPage({
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/portal/login")
 
-  const view = await determinePortalView(supabase, { contactId })
+  const view = await resolvePortalLayouts(supabase, { contactId })
   if (!view) redirect("/portal/login")
 
   // The alert must belong to THIS contact. Without this, a buyer with a valid

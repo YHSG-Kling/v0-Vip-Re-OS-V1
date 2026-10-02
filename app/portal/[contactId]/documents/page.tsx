@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { CONTRACT_ESIGN_AWAITING_STATUSES } from "@/lib/transactions/coordination-status"
+import { clientTransactionFilter } from "@/lib/kernel/portal"
 import { redirect } from "next/navigation"
 import { DocumentsClient } from "./DocumentsClient"
 import { syncAllForContact } from "@/lib/transactions/sync-from-provider"
@@ -37,7 +38,7 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
   const { data: transactions } = await supabase
     .from("transactions")
     .select("id")
-    .or(`buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`)
+    .or(clientTransactionFilter(contactId))
 
   const transactionIds = transactions?.map(t => t.id) ?? []
 

@@ -2,7 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import PersonaPropertiesDashboard from "@/app/components/portal/PersonaPropertiesDashboard"
 import { getPersonaConfig } from "@/lib/portal"
-import { determinePortalView } from "@/lib/kernel/portal"
+import { resolvePortalLayouts, portalShowsLayout } from "@/lib/kernel/portal"
 import { getRecommendedProperties } from "@/app/actions/ai-client-portal"
 import { getBuyerPortalMatches } from "@/app/actions/buyer-portal-matches"
 import { CompareHomesCard } from "./CompareHomesCard"
@@ -77,7 +77,10 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
     : { data: [] }
 
   // Determine portal view via kernel gate — buyer vs seller vs lifetime
-  const portalView = await determinePortalView(supabase, { contactId })
+  // The KERNEL's layouts (wave 94): a dual client gets BOTH the buyer half (searches,
+  // matches) and the seller half (their listing) of this page.
+  const portalLayouts = await resolvePortalLayouts(supabase, { contactId })
+  const showsBuyer = portalShowsLayout(portalLayouts, "buyer")
 
   // BUYER PATH: Surface the buyer's own smart searches (property_alerts) and
   // inferred preferences (property_preferences). Buyers own their searches —
@@ -128,7 +131,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
     listing_date: string | null
   } | null = null
 
-  if (portalView.view === "buyer") {
+  if (showsBuyer) {
     // Fetch all active smart searches (property_alerts) for this buyer
     const { data: alerts } = await supabase
       .from("property_alerts")
@@ -155,7 +158,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
     buyerInferredPrefs = prefs ?? null
   }
 
-  if (portalView.view === "seller" || contact.contact_type === "seller") {
+  if (portalShowsLayout(portalLayouts, "seller") || contact.contact_type === "seller") {
     // Resolve brokerage-represented listing for this seller
     const { data: listing } = await supabase
       .from("listings")
@@ -210,7 +213,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
 
   // Load AI-recommended properties for buyers only — uses buyer preferences
   // and budget from contacts table to surface matched active listings.
-  const recommendedResult = portalView.view === "buyer"
+  const recommendedResult = showsBuyer
     ? await getRecommendedProperties({ contactId, limit: 6 }).catch(() => ({ success: false, properties: [] }))
     : { success: false, properties: [] }
   const recommendedProperties = recommendedResult.properties ?? []
@@ -218,7 +221,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
   // Buyer's cached AI property matches (property_matches upserts). Resolved via
   // the unified property-facts resolver so external-MLS matches surface too.
   // Buyer-only; auth + brokerage ownership are enforced inside the action.
-  const topMatchesResult = portalView.view === "buyer"
+  const topMatchesResult = showsBuyer
     ? await getBuyerPortalMatches(contactId, 6).catch(() => ({ success: false, matches: [] }))
     : { success: false, matches: [] }
   const topMatches = topMatchesResult.matches ?? []
@@ -237,7 +240,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
           <TopMatchesPanel contactId={contactId} matches={topMatches} />
         </div>
       )}
-      {portalView.view === "buyer" && (savedProperties?.length ?? 0) >= 2 && (
+      {showsBuyer && (savedProperties?.length ?? 0) >= 2 && (
         <div className="max-w-6xl mx-auto px-4 pt-6">
           <CompareHomesCard contactId={contactId} savedHomes={(savedProperties || []) as any} />
         </div>
@@ -255,7 +258,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
       contactId={contactId}
       comingSoonListings={comingSoonAlertResults || []}
       recommendedProperties={recommendedProperties}
-      portalView={portalView.view}
+      portalView={portalLayouts.primary}
       buyerSmartSearches={buyerSmartSearches}
       buyerInferredPrefs={buyerInferredPrefs}
       sellerListing={sellerListing}

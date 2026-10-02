@@ -6,7 +6,7 @@ import { Button } from "@/app/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { FileText, ArrowRight, PartyPopper, HelpCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { usdOrNAOnNullish } from "@/lib/format/money"
+import { priceOrPendingReview } from "@/lib/format/money"
 import { formatMonthDay } from "@/lib/format/dates"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -128,7 +128,7 @@ export function OfferStatusCard({ offers, contactId, className }: OfferStatusCar
                   Congratulations! Your offer was accepted!
                 </p>
                 <p className="text-sm text-green-700">
-                  {getOfferAddress(acceptedOffer)} - {usdOrNAOnNullish(acceptedOffer.offer_amount)}
+                  {getOfferAddress(acceptedOffer)} - {priceOrPendingReview(acceptedOffer.offer_amount)}
                 </p>
                 <Button
                   variant="outline"
@@ -161,7 +161,7 @@ export function OfferStatusCard({ offers, contactId, className }: OfferStatusCar
                       {getOfferAddress(offer)}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {usdOrNAOnNullish(offer.offer_amount)} - {formatMonthDay(offer.created_at)}
+                      {priceOrPendingReview(offer.offer_amount)} - {formatMonthDay(offer.created_at)}
                     </p>
                   </div>
                   <Badge

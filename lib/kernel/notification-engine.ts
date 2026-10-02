@@ -15,6 +15,14 @@
 import { KernelEvent } from "./events"
 import { createServiceClient } from "@/lib/supabase/service"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
+import {
+  momentForType,
+  resolveMomentDealKeys,
+  findMomentAlert,
+  alreadyAlerted,
+  MOMENT_TITLES,
+  MOMENT_BODIES,
+} from "@/lib/notifications/notification-moments"
 
 // ─── PUBLIC API ───────────────────────────────────────────────────────────────
 
@@ -76,8 +84,16 @@ export async function processKernelEvent(params: {
   // line, and a new contact's alert carried no name at all — which is why
   // lib/kernel/crm.ts wrote a SECOND, human-worded alert for the same contact.
   const subjectName = anyRule ? await subjectDisplayName(supabase, params) : null
-  const title = generateTitle(params.event)
-  const body  = generateBody(params.event, params.entityType, subjectName)
+  // ONE ALERT PER PERSON PER DEAL MOMENT (wave 94). Accepting an offer and closing a
+  // deal each emit several kernel events (lib/notifications/notification-moments.ts
+  // names them); each still reaches the reactor below, but a person who already holds
+  // an alert for that moment of that deal is not alerted again. The moment's words
+  // are one per moment, so the surviving alert reads the same whichever event landed
+  // first.
+  const moment = anyRule ? momentForType(params.event) : null
+  const dealKeys = moment ? await resolveMomentDealKeys(supabase, params) : []
+  const title = moment ? MOMENT_TITLES[moment] : generateTitle(params.event)
+  const body  = moment ? MOMENT_BODIES[moment] : generateBody(params.event, params.entityType, subjectName)
   // ONE alert per person per event: a user who matches two rules (e.g. a broker
   // who is also the assigned agent) is told once.
   const notified = new Set<string>()
@@ -94,6 +110,15 @@ export async function processKernelEvent(params: {
     for (const recipient of matchingRecipients) {
       if (notified.has(recipient.user_id)) continue
       notified.add(recipient.user_id)
+      if (moment) {
+        const prior = await findMomentAlert(supabase, {
+          brokerageId: params.brokerageId, moment, dealKeys, recipient: { userId: recipient.user_id },
+        })
+        if (alreadyAlerted(prior)) {
+          console.log(`[NotificationEngine] ${params.event}: user ${recipient.user_id} already holds the ${moment} alert (${prior.type}) — not alerted twice`)
+          continue
+        }
+      }
       try {
         // supabase-js RESOLVES a rejected write — an FK violation on
         // notifications.user_id comes back as `{ error }`, it does NOT throw. The

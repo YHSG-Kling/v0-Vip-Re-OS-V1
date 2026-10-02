@@ -6,7 +6,6 @@ import {
   applyLeadRowScope,
   type LeadRowScope,
 } from '@/lib/auth/lead-visibility'
-import { createPortalInviteForContact } from './portal-invites'
 import { syncContactToCRM } from '@/lib/crm/sync'
 import { convertLeadToContact as kernelConvertLeadToContact } from '@/lib/kernel'
 
@@ -216,26 +215,24 @@ export async function convertLeadToContact(params: {
     agentId,
   })
 
-  // Resolve users.id from agents.id for the invite (non-blocking)
+  // TOMBSTONE (§1, wave 94) — a SECOND invite stood here: createPortalInviteForContact
+  // ({ sendMagicLink: false }) after kernelConvertLeadToContact. SURVIVOR:
+  // lib/kernel/crm.ts convertLeadToContact → lib/contact-promotion/conversion-welcome.ts
+  // deliverConversionWelcome, which already granted the invite (and carries it on the one
+  // welcome email) before this line runs. The copy also bypassed the automatic door's
+  // rule — it wrote an invite row for a contact with NO email, which nobody can accept.
+  // What it contributed — the `portalInviteCreated` flag app/leads/page.tsx toasts — is
+  // now READ from the one row the conversion wrote, so it reports what actually happened.
   let portalInviteCreated = false
-  try {
-    const { data: agentRow } = await supabase
-      .from('agents')
-      .select('user_id')
-      .eq('id', agentId)
+  {
+    const { data: inviteRow, error: inviteReadErr } = await supabase
+      .from('portal_contact_invites')
+      .select('id')
+      .eq('contact_id', contact.id)
+      .eq('brokerage_id', brokerageId)
       .maybeSingle()
-
-    if (agentRow?.user_id) {
-      const inviteResult = await createPortalInviteForContact({
-        contactId: contact.id,
-        brokerageId,
-        invitedByUserId: agentRow.user_id,
-        sendMagicLink: false,
-      })
-      portalInviteCreated = inviteResult.success
-    }
-  } catch {
-    // Non-blocking — do not fail the conversion if the invite fails
+    if (inviteReadErr) console.error(`[lead-lifecycle] could not read the conversion's portal invite: ${inviteReadErr.message}`)
+    portalInviteCreated = !!inviteRow
   }
 
   return {

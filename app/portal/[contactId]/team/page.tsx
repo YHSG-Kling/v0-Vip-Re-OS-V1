@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
+import { clientTransactionFilter } from "@/lib/kernel/portal"
 import Link from "next/link"
 import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { Avatar, AvatarFallback, AvatarImage } from "@/app/components/ui/avatar"
@@ -32,7 +33,7 @@ export default async function TeamPage({
   const { data: transactions } = await supabase
     .from("transactions")
     .select("id, property_address, status")
-    .or(`buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`)
+    .or(clientTransactionFilter(contactId))
     .not("status", "in", "(cancelled)")
     .order("created_at", { ascending: false })
     .limit(1)

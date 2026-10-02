@@ -2,7 +2,7 @@ import { PortalNlSearch } from "./PortalNlSearch"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
-import { determinePortalView } from "@/lib/kernel/portal"
+import { resolvePortalLayouts, portalShowsLayout } from "@/lib/kernel/portal"
 import { CollaborativeSearchDashboard } from "@/components/portal/CollaborativeSearchDashboard"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
@@ -31,8 +31,9 @@ export default async function SearchPage({
   const supabase = await createClient()
 
   // Verify buyer portal view
-  const portalView = await determinePortalView(supabase, { contactId })
-  if (portalView.view !== "buyer") {
+  // The KERNEL's layouts (wave 94) — a dual client's portal shows every layout it carries.
+  const portalLayouts = await resolvePortalLayouts(supabase, { contactId })
+  if (!portalShowsLayout(portalLayouts, "buyer")) {
     redirect(`/portal/${contactId}`)
   }
 

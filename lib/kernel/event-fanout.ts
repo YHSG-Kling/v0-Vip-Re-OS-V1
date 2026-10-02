@@ -32,6 +32,7 @@ import { renderTemplateText } from "./portal-template-render"
 import { sentinelWrite } from "./write-sentinel"
 import { resolveUserIdToAgentRecord } from "./agent-identity-resolver"
 import { isLifetimeCustomerType } from "@/lib/contact-types"
+import { momentForType, resolveMomentDealKeys, findMomentAlert, alreadyAlerted } from "@/lib/notifications/notification-moments"
 
 export interface KernelEventContext {
   event:          KernelEvent
@@ -910,6 +911,22 @@ export async function writePortalUpdate(
         read:           false,
         created_at:     new Date().toISOString(),
       }), { table: "client_portal_messages", flow: "deal_transparency_chat", brokerageId: ctx.brokerageId })
+    }
+
+    // 3c-pre. ONE BELL PER CLIENT PER DEAL MOMENT (wave 94 — lib/notifications/notification-moments.ts).
+    //     The card above is the feed; the bell is the alert. A client who already holds the
+    //     under-contract (or closed) bell for this deal is not rung again by the next event of
+    //     the same moment.
+    const bellMoment = momentForType(ctx.event)
+    if (bellMoment) {
+      const dealKeys = await resolveMomentDealKeys(supabase, {
+        brokerageId: ctx.brokerageId, entityType: ctx.entityType, entityId: ctx.entityId,
+        transactionId: ctx.transactionId ?? null, listingId: ctx.listingId ?? null,
+      })
+      const prior = await findMomentAlert(supabase, {
+        brokerageId: ctx.brokerageId, moment: bellMoment, dealKeys, recipient: { contactId },
+      })
+      if (alreadyAlerted(prior)) continue
     }
 
     // 3c. Notification on the contact's portal bell. entity_id is a uuid column — only set it when

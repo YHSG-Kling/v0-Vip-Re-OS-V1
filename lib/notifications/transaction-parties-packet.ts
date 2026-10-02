@@ -31,6 +31,7 @@
  */
 
 // ─── Types ──────────────────────────────────────────────────────────────────
+import { priceOrPendingReview } from "@/lib/format/money"
 
 export interface PartyContact {
   /** transaction_participants.role — buyer, seller, buyer_agent, seller_agent,
@@ -137,7 +138,7 @@ function formatDate(d: string | null | undefined): string {
  */
 function composeTermsLines(t: TransactionTerms): string[] {
   const lines: string[] = [
-    `Purchase price: ${formatMoney(t.purchasePrice)}`,
+    `Purchase price: ${priceOrPendingReview(t.purchasePrice)}`,
     `Earnest deposit: ${formatMoney(t.earnestMoney)} — due ${formatDate(t.earnestMoneyDue)}`,
     `Contract date: ${formatDate(t.contractDate)}`,
     `Closing date: ${formatDate(t.closingDate)}`,

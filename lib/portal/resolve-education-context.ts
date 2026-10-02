@@ -3,7 +3,7 @@
 // Uses kernel functions for portal view determination.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { determinePortalView, type PortalView } from "@/lib/kernel/portal"
+import { resolvePortalLayouts, type PortalView, clientTransactionFilter } from "@/lib/kernel/portal"
 import {
   generationalCohortFromAge,
   ageFromBirthday,
@@ -208,8 +208,8 @@ export async function resolveEducationContext(
   contactId: string
 ): Promise<EducationContext> {
   // Get portal view from kernel
-  const portalViewOutput = await determinePortalView(supabase, { contactId })
-  const portalView: PortalView = portalViewOutput.view
+  // (wave 94: the kernel's LAYOUTS — education follows the PRIMARY layout of the portal.)
+  const portalView: PortalView = (await resolvePortalLayouts(supabase, { contactId })).primary
 
   // Get contact details
   // `age_range` joins the select under the wave-15 owner ruling. It is the column
@@ -286,7 +286,7 @@ export async function resolveEducationContext(
   const { data: transactions } = await supabase
     .from("transactions")
     .select("id, status")
-    .or(`buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`)
+    .or(clientTransactionFilter(contactId))
     .not("status", "in", "(closed,completed,cancelled)")
     .order("created_at", { ascending: false })
     .limit(1)

@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { determinePortalView, getPortalJourneyMilestones } from "@/lib/kernel/portal"
+import { resolvePortalLayouts, getPortalJourneyMilestones, clientTransactionFilter } from "@/lib/kernel/portal"
 import type { PortalJourneyMilestone } from "@/lib/kernel/portal"
 import {
   BUYER_MILESTONE_LABELS,
@@ -74,13 +74,14 @@ export default async function PortalJourneyPage({
   const personaFraming = cohortFraming(cohort)
 
   // Determine portal view from kernel
-  const portalView = await determinePortalView(supabase, { contactId })
+  // The KERNEL's layouts (wave 94); the journey timeline leads with the primary one.
+  const portalLayouts = await resolvePortalLayouts(supabase, { contactId })
 
   // Get active transaction for this contact
   const { data: transactions } = await supabase
     .from("transactions")
     .select("id, property_address, status, list_price:purchase_price, offer_price:purchase_price, purchase_price, close_date, contract_date, deal_type")
-    .or(`buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`)
+    .or(clientTransactionFilter(contactId))
     .not("status", "in", "(cancelled)")
     .order("created_at", { ascending: false })
     .limit(1)
@@ -98,7 +99,7 @@ export default async function PortalJourneyPage({
     : []
 
   // Get label map based on portal view
-  const labelMap = portalView.view === "seller" ? SELLER_MILESTONE_LABELS : BUYER_MILESTONE_LABELS
+  const labelMap = portalLayouts.primary === "seller" ? SELLER_MILESTONE_LABELS : BUYER_MILESTONE_LABELS
 
   // Get contact display name
   const contactName = contact.first_name || "there"
@@ -187,7 +188,7 @@ export default async function PortalJourneyPage({
       <JourneyClient
         contactId={contactId}
         contactName={contactName}
-        portalView={portalView.view}
+        portalView={portalLayouts.primary}
         transaction={transaction}
         milestones={milestones}
         labelMap={labelMap}

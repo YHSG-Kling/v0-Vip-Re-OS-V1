@@ -1,5 +1,6 @@
 import { Suspense } from "react"
 import { createClient } from "@/lib/supabase/server"
+import { clientTransactionFilter } from "@/lib/kernel/portal"
 import { redirect, notFound } from "next/navigation"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { markMessagesRead } from "@/app/actions/portal-messages"
@@ -110,7 +111,7 @@ export default async function PortalMessagesPage({ params }: PageProps) {
   const { data: transactions } = await supabase
     .from("transactions")
     .select("id, property_address, stage")
-    .or(`contact_id.eq.${contactId},buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`)
+    .or(clientTransactionFilter(contactId))
     .in("status", ["active", "under_contract"])
     .limit(1)
 

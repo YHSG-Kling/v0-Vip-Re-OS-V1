@@ -2,6 +2,7 @@ import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Home, TrendingUp, TrendingDown, Minus, ArrowRight } from "lucide-react"
+import { priceOrPendingReview } from "@/lib/format/money"
 
 interface MyHomeCardProps {
   contactId: string
@@ -26,14 +27,12 @@ export function MyHomeCard({
     year: "numeric",
   })
 
-  const formattedClosePrice = new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(closePrice)
+  // Never "$0" (wave 94): a deal whose price was never read says so, and no change
+  // against a zero baseline is computed (it would read +Infinity%).
+  const formattedClosePrice = priceOrPendingReview(closePrice)
 
-  const hasEstimate = currentEstimate && currentEstimate > 0
-  const valueChange = hasEstimate ? currentEstimate - closePrice : 0
+  const hasEstimate = !!currentEstimate && currentEstimate > 0 && closePrice > 0
+  const valueChange = hasEstimate ? (currentEstimate as number) - closePrice : 0
   const percentChange = hasEstimate ? ((valueChange / closePrice) * 100) : 0
 
   const formattedCurrentValue = hasEstimate

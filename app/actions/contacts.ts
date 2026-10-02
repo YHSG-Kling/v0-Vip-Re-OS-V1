@@ -57,8 +57,8 @@ import { isValidEmail, isValidPhone } from "@/lib/validations"
  *     NotFoundError before reaching its login-provisioning branch. That branch
  *     (auth.admin.createUser on qualification) was also written against the
  *     COOKIE client, which has no admin rights. Contact-login provisioning lives
- *     in app/actions/portal-invites.ts:createPortalInviteForContact, already
- *     fired from createContact() below.
+ *     in the invite core (lib/portal/portal-invite-core.ts), reached automatically
+ *     for every new contact by lib/kernel/crm.ts createContactManually (wave 94).
  *   · /api/contacts/list scoped `.eq("agent_id", …)` unconditionally, so a broker
  *     saw only their own contacts through it. getContacts() applies the agent
  *     predicate only for userType "agent", and adds search + pagination.
@@ -337,20 +337,21 @@ export async function createContact(contactData: {
       agentId,
     }).catch(() => {})
 
-    // Non-blocking portal invite creation — contact gets a portal slot immediately
-    if (data.id && data.email) {
-      void (async () => {
-        const { createPortalInviteForContact } = await import("@/app/actions/portal-invites")
-        await createPortalInviteForContact({
-          contactId: data.id as string,
-          brokerageId,
-          invitedByUserId: userId,
-          sendMagicLink: false,
-        }).catch(() => {})
-      })()
+    // TOMBSTONE (§1, wave 94) — the voided `createPortalInviteForContact({ sendMagicLink:
+    // false })` call that stood here is DELETED. It wrote an invite ROW that nothing ever
+    // told the contact about (no welcome, no magic link), it only ran when an email
+    // existed and said nothing when one did not, and as a `void` promise it could be cut
+    // off when the action returned. SURVIVOR: lib/kernel/crm.ts createContactManually —
+    // the new-contact door's ONE automatic invite, through the same
+    // deliverConversionWelcome the converters use. Its outcome (including a contact with
+    // no email, which queues nothing) is returned below as `portalInvite` so the CRM can
+    // report it.
+    return {
+      success: true,
+      contact: data,
+      isDuplicate: result.isDuplicate ?? false,
+      portalInvite: result.portalInvite ?? null,
     }
-
-    return { success: true, contact: data, isDuplicate: result.isDuplicate ?? false }
   } catch (error: any) {
     return { success: false, error: error.message }
   }

@@ -57,6 +57,14 @@ const SCOPE_EVIDENCE = [
   // webhook/reconciler probes match on them with no session to scope by):
   "provider_envelope_id", "signature_request_id",
   "contact_id", "conversation_id", "event_id", "listing_id", "transaction_id", "agent_id",
+  // THE SAME EVIDENCE CLASS AS "contact_id", SPELLED ONCE (wave 94, lane 94A). The portal's
+  // "every transaction this client is on" filter used to be written inline at seven sites as
+  // `.or(\`contact_id.eq.${id},buyer_contact_id.eq.${id},…\`)`, which this list accepted on the
+  // literal "contact_id". It is now ONE helper (lib/kernel/portal.ts clientTransactionFilter)
+  // that expands to exactly those contact-keyed equalities — and is STRICTER than the inline
+  // copies: a non-uuid id becomes a filter that matches nothing. Accepting the helper name is
+  // not a widening; a bare unscoped `.from("transactions")` is still reported (controls above).
+  "clientTransactionFilter",
 ]
 
 const WINDOW = 500 // chars of chain examined after .from("table")

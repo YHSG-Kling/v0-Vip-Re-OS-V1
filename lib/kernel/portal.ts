@@ -54,6 +54,7 @@ export interface NavItem {
 
 import type { SaleBeforeBuyDependency } from "./dual-intent-linker"
 import { journeyUserKey } from "./dual-intent-linker"
+import { TXN_STATUSES_ACTIVE } from "@/lib/enrichment/deal-vocabulary"
 
 /**
  * The dual-journey resolution that sits ON TOP of determinePortalView — it does
@@ -137,7 +138,26 @@ export async function resolveDualPortalView(
     const hasSellerSide = jList.some(j => j.user_id === sellerKey)
     const hasBothSides = hasBuyerSide && hasSellerSide
 
-    const isDual = contactTypeIsBoth || hasBothSides
+    // Signal 3 (wave 94) — the DEALS say so: this one contact is the buyer on one live
+    // transaction and the seller on another (the "sell one, buy one" client whose
+    // contact_type was never changed to 'both' and whom the linker never saw). Statuses
+    // are the deal vocabulary's ACTIVE set — never a hand-typed list (§6).
+    let activeDealsBothSides = false
+    if (!contactTypeIsBoth && !hasBothSides) {
+      const { data: deals, error: dealsErr } = await supabase
+        .from("transactions")
+        .select("buyer_contact_id, seller_contact_id, status")
+        .or(`buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`)
+        .in("status", [...TXN_STATUSES_ACTIVE])
+      if (dealsErr) console.warn("[Portal] resolveDualPortalView deal-side read refused:", dealsErr.message)
+      const dl = (deals ?? []) as Array<{ buyer_contact_id: string | null; seller_contact_id: string | null }>
+      // A dual-AGENCY deal (one contact on both sides of ONE row) is not a dual client.
+      const buys = dl.some(d => d.buyer_contact_id === contactId && d.seller_contact_id !== contactId)
+      const sells = dl.some(d => d.seller_contact_id === contactId && d.buyer_contact_id !== contactId)
+      activeDealsBothSides = buys && sells
+    }
+
+    const isDual = contactTypeIsBoth || hasBothSides || activeDealsBothSides
     if (!isDual) {
       return { isDual: false, baseView: base.view, reason: 'SINGLE_JOURNEY', dependency: null }
     }
@@ -158,7 +178,7 @@ export async function resolveDualPortalView(
     return {
       isDual: true,
       baseView: base.view,
-      reason: contactTypeIsBoth ? 'CONTACT_TYPE_BOTH' : 'BOTH_JOURNEY_STATES',
+      reason: contactTypeIsBoth ? 'CONTACT_TYPE_BOTH' : hasBothSides ? 'BOTH_JOURNEY_STATES' : 'ACTIVE_DEALS_BOTH_SIDES',
       dependency,
     }
   } catch (error) {
@@ -166,6 +186,129 @@ export async function resolveDualPortalView(
     console.warn("[Portal] resolveDualPortalView fell back to single view:", error)
     return { isDual: false, baseView: base.view, reason: 'DUAL_RESOLVE_ERROR', dependency: null }
   }
+}
+
+// ─── THE PORTAL LAYOUTS — ONE KERNEL ANSWER FOR EVERY SURFACE (wave 94) ───────
+//
+// OWNER RULING, verbatim: "on a dual, the seller should see both the seller and buyer
+// layout and seller sees the seller's layout which the kernel determines the portal
+// layout which is built."
+//
+// The kernel already decided this — resolveDualPortalView above — but only the portal
+// HOME asked it. The shell (layout.tsx: nav + modules) and every sub-page asked the
+// single-view determinePortalView instead, so a dual client saw both journeys on the
+// home tab and then a seller-only (or buyer-only) nav, and was bounced off Smart
+// Search / Showings / Properties for the half of their move the home had just shown
+// them. This is the ONE question every surface now asks: WHICH LAYOUTS does this
+// contact's portal show? Built on resolveDualPortalView (no second resolver), so the
+// single-journey answer for everyone else is byte-for-byte what it was.
+//
+//   dual client      → ["seller", "buyer"]   (seller first: a "must sell to buy" move
+//                                              starts with the home they own)
+//   seller only      → ["seller"]
+//   buyer only       → ["buyer"]
+//   lifetime         → ["lifetime"]           (a closed client with no live deal)
+
+export interface PortalLayoutResolution extends DualPortalResolution {
+  /** Every layout this contact's portal shows, primary first. Never empty. */
+  layouts: PortalView[]
+  /** The layout the shell, labels and default tab lead with. */
+  primary: PortalView
+}
+
+/** PURE — the layouts for a dual resolution. Exported so the proof drives every arm. */
+export function portalLayoutsFor(res: Pick<DualPortalResolution, "isDual" | "baseView">): PortalView[] {
+  if (res.baseView === "lifetime") return ["lifetime"]
+  if (res.isDual) return ["seller", "buyer"]
+  return [res.baseView]
+}
+
+/** KERNEL CONTRACT: the portal layouts for a contact — what every portal surface reads. */
+export async function resolvePortalLayouts(
+  supabase: SupabaseClient,
+  input: PortalViewInput,
+): Promise<PortalLayoutResolution> {
+  const dual = await resolveDualPortalView(supabase, input)
+  const layouts = portalLayoutsFor(dual)
+  return { ...dual, layouts, primary: layouts[0] }
+}
+
+/** Does this contact's portal show `view`? The gate every sub-page uses. */
+export function portalShowsLayout(res: { layouts: readonly PortalView[] }, view: PortalView): boolean {
+  return res.layouts.includes(view)
+}
+
+/**
+ * The shell nav for every layout the contact sees, primary layout's order first, one
+ * entry per destination. A single-layout portal gets exactly buildPortalNav's list.
+ */
+export function buildPortalNavForLayouts(
+  layouts: readonly PortalView[],
+  modules: Record<string, boolean>,
+  contactId: string,
+): NavItem[] {
+  const seen = new Set<string>()
+  const out: NavItem[] = []
+  for (const view of layouts) {
+    for (const item of buildPortalNav(view, modules, contactId)) {
+      if (seen.has(item.href)) continue
+      seen.add(item.href)
+      out.push(item)
+    }
+  }
+  return out
+}
+
+/**
+ * The module map for every layout the contact sees: a module is on when ANY of the
+ * layouts turns it on by default — and an agent's explicit contact_portal_modules
+ * override (read inside determinePortalModules) still wins, because it is applied
+ * identically in each per-layout read.
+ */
+export async function determinePortalModulesForLayouts(
+  supabase: SupabaseClient,
+  input: { contactId: string; layouts: readonly PortalView[] },
+): Promise<Record<string, boolean>> {
+  const merged: Record<string, boolean> = {}
+  for (const view of input.layouts) {
+    const out = await determinePortalModules(supabase, { contactId: input.contactId, view })
+    for (const [key, on] of Object.entries(out.modules)) merged[key] = (merged[key] ?? false) || on
+  }
+  return merged
+}
+
+// ─── THE LIFETIME HOME — EVERY SIDE THE CLIENT WAS ON (wave 94) ───────────────
+//
+// The lifetime view read `transactions.contact_id` ONLY — the deal's MAIN contact. On a
+// dual deal, or for our seller on any deal where contact_id names the buyer, the client
+// was on the deal (buyer_contact_id / seller_contact_id) and still saw NO home, no
+// closing documents, and their testimonial carried no transaction. determinePortalView
+// already reads both side columns to decide "lifetime"; the lifetime reads now ask the
+// same question it asked.
+
+const PORTAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * The PostgREST `.or()` filter for every transaction this contact is a CLIENT on —
+ * main contact, buyer side or seller side. A non-uuid id matches nothing (it is
+ * interpolated into a filter string, so it is validated, never passed through).
+ */
+export function clientTransactionFilter(contactId: string): string {
+  if (!PORTAL_UUID_RE.test(contactId)) return "id.is.null"
+  return `contact_id.eq.${contactId},buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`
+}
+
+/**
+ * PURE — which closed deal is this lifetime client's HOME? The newest deal where they
+ * BOUGHT (that is the house they own now); failing that, the newest deal they were on
+ * at all (a seller-only client still sees the deal they closed with us). Rows are
+ * expected newest-first, as the reads order them.
+ */
+export function pickLifetimeHomeTransaction<T extends { buyer_contact_id?: string | null }>(
+  rows: readonly T[],
+  contactId: string,
+): T | null {
+  return rows.find((r) => r.buyer_contact_id === contactId) ?? rows[0] ?? null
 }
 
 // ─── PORTAL SHELL KERNEL FUNCTIONS ────────────────────────────────────────────

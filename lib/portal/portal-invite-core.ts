@@ -32,7 +32,21 @@ export interface IssuePortalInviteParams {
   /** Authorized actor (users.id). Caller is responsible for having verified this actor. */
   invitedByUserId:  string
   sendMagicLink?:   boolean
+  /**
+   * THE AUTOMATIC DOOR'S RULE (owner, wave 94: "a portal invite is all part of the
+   * automation when a new contact or a converted contact is added"). Set by
+   * createSystemPortalInvite — every automated caller — and NOT by the agent's own
+   * CRM button. A contact with no email on file cannot sign in at all (the portal
+   * door is an emailed one-time code), so an automatic invite for them would be a
+   * row nobody can ever accept: it queues NOTHING and comes back as
+   * `reason: "no_email_on_file"` for the caller to REPORT. The agent can still add
+   * an email and press the CRM button, which is a person's deliberate choice.
+   */
+  requireEmail?:    boolean
 }
+
+/** Why an invite was not issued, machine-readable for the caller's report. */
+export type PortalInviteRefusal = "no_email_on_file"
 
 // ─── QUALIFICATION — MERGED HERE FROM app/api/contacts/qualify/route.ts ───────
 //
@@ -130,10 +144,13 @@ async function stampQualifiedIfLeadConverted(
 
 export async function issuePortalInvite(
   params: IssuePortalInviteParams,
-): Promise<{ success: boolean; inviteId?: string; emailSent?: boolean; error?: string }> {
-  const { contactId, invitedByUserId, sendMagicLink = false } = params
+): Promise<{ success: boolean; inviteId?: string; emailSent?: boolean; error?: string; reason?: PortalInviteRefusal }> {
+  const { contactId, invitedByUserId, sendMagicLink = false, requireEmail = false } = params
   const supabase = createServiceClient()
 
+  // A CONTACT, NEVER A LEAD. The read is on `contacts` by its PRIMARY key, and
+  // portal_contact_invites.contact_id FKs contacts(id) (verified live) — a leads.id
+  // resolves to no row here and is refused before anything is written.
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
     .select("id, email, first_name, contact_type, brokerage_id, agent_id, email_opt_out, email_unsubscribed")
@@ -141,6 +158,13 @@ export async function issuePortalInvite(
     .maybeSingle()
   if (contactError || !contact) return { success: false, error: "Contact not found" }
   if (!contact.brokerage_id)    return { success: false, error: "Contact has no brokerage" }
+  if (requireEmail && !String(contact.email ?? "").trim()) {
+    return {
+      success: false,
+      reason:  "no_email_on_file",
+      error:   "Contact has no email on file — no portal invite was queued (the portal door is an emailed code). Add an email, then invite from the CRM.",
+    }
+  }
 
   // Defense-in-depth tenant check: the actor must belong to the contact's brokerage. Resolve the
   // actor's brokerage from users.brokerage_id, falling back to agents.brokerage_id (some agent users
@@ -168,11 +192,14 @@ export async function issuePortalInvite(
 
   // Upsert the invite row (reuse/reset existing; revoked stays blocked).
   let inviteId: string
-  const { data: existing } = await supabase
+  const { data: existing, error: existingError } = await supabase
     .from("portal_contact_invites")
     .select("id, status, expires_at")
     .eq("contact_id", contactId)
     .maybeSingle()
+  // A refused read is not "no invite yet" (§3): reading it as absent would try a
+  // second insert the UNIQUE(contact_id) constraint refuses anyway.
+  if (existingError) return { success: false, error: `Could not read the existing invite: ${existingError.message}` }
   if (existing) {
     if (existing.status === "revoked") return { success: false, error: "Invite revoked for this contact" }
     if (new Date(existing.expires_at) < now) {
@@ -190,8 +217,22 @@ export async function issuePortalInvite(
         status: "pending", expires_at: newExpiry, invited_at: now.toISOString(),
       })
       .select("id").single()
-    if (insErr || !created) return { success: false, error: insErr?.message ?? "Failed to create invite" }
-    inviteId = created.id
+    if ((insErr as { code?: string } | null)?.code === "23505") {
+      // ONE INVITE PER CONTACT, ENFORCED BY THE DATABASE (portal_contact_invites_contact_unique,
+      // UNIQUE(contact_id), verified live). Two automatic doors firing for the same contact
+      // at once — the new-contact command and a conversion — both miss the read above; the
+      // loser's insert is refused 23505. That is the idempotency WORKING, not a failure:
+      // re-read the winner's row and carry on with it.
+      const { data: winner, error: winnerError } = await supabase
+        .from("portal_contact_invites").select("id, status").eq("contact_id", contactId).maybeSingle()
+      if (winnerError || !winner) return { success: false, error: winnerError?.message ?? "Invite raced and could not be re-read" }
+      if (winner.status === "revoked") return { success: false, error: "Invite revoked for this contact" }
+      inviteId = winner.id
+    } else if (insErr || !created) {
+      return { success: false, error: insErr?.message ?? "Failed to create invite" }
+    } else {
+      inviteId = created.id
+    }
   }
 
   // Qualification (owner ruling — see stampQualifiedIfLeadConverted above). AFTER
@@ -404,12 +445,15 @@ export async function createSystemPortalInvite(params: {
   contactId:   string
   agentUserId: string
   sendMagicLink?: boolean
-}): Promise<{ success: boolean; inviteId?: string; emailSent?: boolean; error?: string }> {
+}): Promise<{ success: boolean; inviteId?: string; emailSent?: boolean; error?: string; reason?: PortalInviteRefusal }> {
   if (!params.agentUserId) return { success: false, error: "agentUserId required" }
   return issuePortalInvite({
     contactId:       params.contactId,
     invitedByUserId: params.agentUserId,
     sendMagicLink:   params.sendMagicLink ?? true,
+    // Every caller of THIS function is automation (conversion, new-contact command,
+    // warm capture, the welcome package, home-value) — the wave-94 rule applies.
+    requireEmail:    true,
   })
 }
 

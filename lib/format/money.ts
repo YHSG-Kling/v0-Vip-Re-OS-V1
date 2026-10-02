@@ -150,6 +150,24 @@ export function usdOrNAOnNullish(amount: number | null | undefined): string {
   return usd(amount)
 }
 
+/**
+ * THE ONE WORDING FOR A PRICE WE DO NOT HAVE YET (wave 94).
+ *
+ * An offer uploaded as a PDF whose price the AI read did not extract is stored with
+ * `offer_price = 0` (or null), and that 0 flowed into the deal's `purchase_price`. Client
+ * copy then said "Purchase price: $0" — or "TBD" where a template filled a blank — on
+ * the most important number of the client's year. Zero is never a real purchase or
+ * offer price, so a missing, zero, negative or non-finite price renders this phrase
+ * instead, everywhere a client (or a party) reads it.
+ */
+export const PRICE_PENDING_REVIEW = "price pending review"
+
+/** A purchase/offer price for people to read: whole-dollar USD, or PRICE_PENDING_REVIEW. Never "$0". */
+export function priceOrPendingReview(amount: number | string | null | undefined): string {
+  const n = typeof amount === "string" ? Number(amount.replace(/[$,\s]/g, "")) : amount
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? usd(n) : PRICE_PENDING_REVIEW
+}
+
 /** Dollars → compact CHART-AXIS tick label: "$1.2M" / "$45K" / "$180" — no
  *  Intl, no thousands separator below $1K, and (unlike `compactDollarsMoney`)
  *  the "M" branch keeps a trailing ".0" and the "K" branch's threshold is

@@ -327,6 +327,13 @@ export interface ConversionWelcomeParams {
 export interface ConversionWelcomeResult {
   /** A portal_contact_invites row exists for this contact. The access, not the email. */
   portalGranted: boolean
+  /**
+   * WHY the grant did or did not happen — portal-access.ts's machine-readable reason
+   * (`granted`, `no_email_on_file`, `excluded_contact_type`, …). Carried so the door
+   * that added the contact can REPORT a contact who got no invite (wave 94), rather
+   * than reading `portalGranted: false` as one undifferentiated failure.
+   */
+  portalReason: string
   /** Was the invite core's own OTP mail used as the delivery (no agent welcome due)? */
   magicLinkSent: boolean
   /**
@@ -407,6 +414,7 @@ export async function deliverConversionWelcome(
 
   const out: ConversionWelcomeResult = {
     portalGranted: portal.granted,
+    portalReason: portal.reason,
     magicLinkSent: portal.emailSent,
     welcomeManagers: [...welcomeManagers],
     welcomeJourney,

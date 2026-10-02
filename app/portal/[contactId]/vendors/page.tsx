@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
-import { determinePortalView } from "@/lib/kernel/portal"
+import { resolvePortalLayouts, clientTransactionFilter } from "@/lib/kernel/portal"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
@@ -45,8 +45,8 @@ export default async function ClientVendorsPage({
 
   // Kernel decides the portal view (buyer / seller / lifetime). All three
   // get the marketplace — the resolver below filters per view.
-  const portalViewOutput = await determinePortalView(supabase, { contactId })
-  const portalView = portalViewOutput.view
+  // (wave 94: the kernel's layouts — the marketplace is headed by the PRIMARY layout.)
+  const portalView = (await resolvePortalLayouts(supabase, { contactId })).primary
 
   // Hard guard: if the kernel can't decide a view at all, bounce back.
   if (!portalView) {
@@ -68,7 +68,7 @@ export default async function ClientVendorsPage({
   const { data: transaction } = await supabase
     .from("transactions")
     .select("id, contact_id, status, close_date")
-    .or(`buyer_contact_id.eq.${contactId},contact_id.eq.${contactId}`)
+    .or(clientTransactionFilter(contactId))
     .not("status", "in", "(cancelled)")
     .order("created_at", { ascending: false })
     .limit(1)

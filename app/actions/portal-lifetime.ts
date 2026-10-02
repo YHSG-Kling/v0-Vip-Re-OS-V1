@@ -23,6 +23,7 @@ import {
 import { computeHomeWealthStory } from "@/lib/portal/home-wealth"
 import { normalizeLifetimeSegment, type LifetimeSegment } from "@/lib/portal/lifetime-segment"
 import { requireContactAccess } from "@/lib/portal/require-contact-access"
+import { clientTransactionFilter, pickLifetimeHomeTransaction } from "@/lib/kernel/portal"
 
 // TOMBSTONE: local requireContactAccess merged onto
 // lib/portal/require-contact-access.ts:107 requireContactAccess (imported
@@ -54,11 +55,14 @@ export async function submitClientTestimonial(params: {
   if (!contact) return { ok: false, error: "Contact not found" }
 
   const reviewerName = [contact.first_name, contact.last_name].filter(Boolean).join(" ").trim() || "A client"
-  // Most-recent closed transaction (attribution; best-effort).
-  const { data: txn } = await svc
-    .from("transactions").select("id")
-    .eq("contact_id", params.contactId).eq("brokerage_id", access.brokerageId).eq("status", "closed")
-    .order("close_date", { ascending: false }).limit(1).maybeSingle()
+  // Most-recent closed transaction (attribution; best-effort) — on ANY side the client
+  // was on, not only the deal's main contact (wave 94, lib/kernel/portal.ts clientTransactionFilter).
+  const { data: closedDeals, error: closedDealsError } = await svc
+    .from("transactions").select("id, buyer_contact_id")
+    .or(clientTransactionFilter(params.contactId)).eq("brokerage_id", access.brokerageId).eq("status", "closed")
+    .order("close_date", { ascending: false }).limit(10)
+  if (closedDealsError) console.error(`[portal-lifetime] testimonial deal read refused: ${closedDealsError.message}`)
+  const txn = pickLifetimeHomeTransaction(closedDeals ?? [], params.contactId)
 
   const { data: insertedReview, error: insErr } = await svc.from("agent_reviews").insert({
     brokerage_id:   access.brokerageId,
@@ -572,7 +576,9 @@ export async function getLifetimeContext(contactId: string) {
     : null
 
   // Get closed transaction — scoped to brokerage
-  const { data: transaction } = await supabase
+  // Every side the client was on (wave 94) — a dual or seller client's deal is found
+  // through buyer_contact_id / seller_contact_id, not only the main contact_id.
+  const { data: closedDeals, error: closedDealsError } = await supabase
     .from("transactions")
     .select(`
       id,
@@ -581,14 +587,16 @@ export async function getLifetimeContext(contactId: string) {
       close_date,
       sale_price:purchase_price,
       offer_price:purchase_price,
-      created_at
+      created_at,
+      buyer_contact_id
     `)
-    .eq("contact_id", contactId)
+    .or(clientTransactionFilter(contactId))
     .eq("brokerage_id", access.brokerageId)
     .eq("status", "closed")
     .order("close_date", { ascending: false })
-    .limit(1)
-    .maybeSingle()
+    .limit(10)
+  if (closedDealsError) console.error(`[portal-lifetime] lifetime home read refused: ${closedDealsError.message}`)
+  const transaction = pickLifetimeHomeTransaction(closedDeals ?? [], contactId)
 
   // Get latest home value estimate — scoped
   const { data: homeValueEstimate } = await supabase
@@ -835,7 +843,8 @@ export async function getTransactionHistory(contactId: string) {
   const supabase = createServiceClient()
 
   // Get closed transaction with milestones — scoped
-  const { data: transaction } = await supabase
+  // Every side the client was on (wave 94 — see clientTransactionFilter).
+  const { data: closedDeals, error: closedDealsError } = await supabase
     .from("transactions")
     .select(`
       id,
@@ -846,6 +855,7 @@ export async function getTransactionHistory(contactId: string) {
       offer_price:purchase_price,
       offer_date:contract_date,
       created_at,
+      buyer_contact_id,
       transaction_milestones(
         id,
         milestone_name,
@@ -854,12 +864,13 @@ export async function getTransactionHistory(contactId: string) {
         target_date
       )
     `)
-    .eq("contact_id", contactId)
+    .or(clientTransactionFilter(contactId))
     .eq("brokerage_id", access.brokerageId)
     .eq("status", "closed")
     .order("close_date", { ascending: false })
-    .limit(1)
-    .maybeSingle()
+    .limit(10)
+  if (closedDealsError) console.error(`[portal-lifetime] transaction history read refused: ${closedDealsError.message}`)
+  const transaction = pickLifetimeHomeTransaction(closedDeals ?? [], contactId)
 
   if (!transaction) return null
 

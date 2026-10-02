@@ -1014,6 +1014,16 @@ export default function CRMPage() {
       }
       setAddDialogOpen(false)
       toast.success(`${addForm.first_name} ${addForm.last_name} added`)
+      // The automatic portal invite's outcome (wave 94) — a contact the automation could
+      // not invite is REPORTED to the person who added them, never silently skipped.
+      const portalInvite = "portalInvite" in result ? result.portalInvite : null
+      if (portalInvite && !portalInvite.granted) {
+        toast.info(
+          portalInvite.reason === "no_email_on_file"
+            ? "No portal invite was sent — add an email address and invite them from their record."
+            : "The portal invite could not go out automatically — invite them from their record.",
+        )
+      }
       await loadContacts()
       if (result.contact?.id) handleSelectContact(result.contact.id as string)
     } catch {

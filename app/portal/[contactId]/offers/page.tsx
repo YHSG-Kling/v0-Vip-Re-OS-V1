@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
-import { determinePortalView } from "@/lib/kernel/portal"
+import { resolvePortalLayouts } from "@/lib/kernel/portal"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
@@ -12,7 +12,7 @@ import { recordSellerView } from "@/app/actions/seller-offers"
 import { getSellerOffers, getSellerNetSheetInputs, getSellerOfferComparison } from "@/app/actions/portal-seller"
 import { CheckCircle2, Clock, FileText, ArrowLeft, PartyPopper, DollarSign, Calendar, Home } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { usdOrNAOnNullish } from "@/lib/format/money"
+import { usdOrNAOnNullish, priceOrPendingReview } from "@/lib/format/money"
 // ONE earnest-AMOUNT formatter (wave 26). lib/transactions/earnest-terms.ts exists
 // to keep the earnest DEPOSIT (currency) and the earnest DUE DATE (a calendar
 // date) typed apart after the round-28 correction where the amount was fed into
@@ -44,7 +44,7 @@ function OfferCard({ offer, contactId }: { offer: any; contactId: string }) {
               <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
                 <span className="flex items-center gap-1">
                   <DollarSign className="h-3.5 w-3.5" />
-                  {usdOrNAOnNullish(offer.offer_price)}
+                  {priceOrPendingReview(offer.offer_price)}
                 </span>
                 {listPrice && offer.offer_price && (
                   <span className={cn(
@@ -171,7 +171,9 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
   const supabase = await createClient()
 
   // Check portal view
-  const portalView = await determinePortalView(supabase, { contactId })
+  // The KERNEL's layouts (wave 94). A dual client's PRIMARY layout is seller, so this page
+  // shows the offers on their home; their own buyer offers are on the Buy tab of the home.
+  const portalLayouts = await resolvePortalLayouts(supabase, { contactId })
 
   // Get contact
   const { data: contact, error: contactError } = await supabase
@@ -185,7 +187,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
   }
 
   // BUYER VIEW: Show offers the buyer has submitted (using canonical offer_price)
-  if (portalView.view === "buyer") {
+  if (portalLayouts.primary === "buyer") {
     // offers → listings carries a SINGLE FK (offers_listing_id_fkey), so this embed is
     // unambiguous and needs no hint — but the error still has to be checked, because
     // supabase-js resolves a failure and an unchecked read shows a buyer "no offers".
@@ -240,7 +242,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
                     Congratulations! Your offer was accepted!
                   </h3>
                   <p className="text-green-700">
-                    {((acceptedOffer.listing as any)?.address || (acceptedOffer.listing as any)?.property_address) || "Property"} - {usdOrNAOnNullish(acceptedOffer.offer_price)}
+                    {((acceptedOffer.listing as any)?.address || (acceptedOffer.listing as any)?.property_address) || "Property"} - {priceOrPendingReview(acceptedOffer.offer_price)}
                   </p>
                   <Button className="bg-green-600 hover:bg-green-700" asChild>
                     <Link href={`/portal/${contactId}/journey`}>
@@ -546,7 +548,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
               </div>
               <div>
                 <p className="text-2xl font-bold text-green-700">
-                  {(offer.offer_price || 0).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}
+                  {priceOrPendingReview(offer.offer_price)}
                 </p>
                 <p className="text-xs text-blue-700">Highest Offer</p>
               </div>
@@ -581,7 +583,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
             <CardContent className="space-y-4">
               <div>
                 <div className="text-4xl font-bold text-green-600 mb-1">
-                  ${(offer.offer_price || 0).toLocaleString()}
+                  {priceOrPendingReview(offer.offer_price)}
                 </div>
                 <div className="text-sm text-muted-foreground">
                   {priceVsList === null
@@ -752,7 +754,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
                 </p>
                 {netBeatsPrice && (
                   <p className="text-xs text-green-700 mt-1">
-                    💡 The highest offer ({usdOrNAOnNullish(topPriceOffer.offer_price)}) isn&apos;t the most you&apos;d keep — a different offer nets you more after commission, payoff, and fees. Your agent will walk you through why.
+                    💡 The highest offer ({priceOrPendingReview(topPriceOffer.offer_price)}) isn&apos;t the most you&apos;d keep — a different offer nets you more after commission, payoff, and fees. Your agent will walk you through why.
                   </p>
                 )}
               </div>
@@ -899,7 +901,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
                 <td className="py-3">Offer Price</td>
                 {offers.map((offer) => (
                   <td key={offer.id} className="text-center py-3">
-                    ${(offer.offer_price || 0).toLocaleString()}
+                    {priceOrPendingReview(offer.offer_price)}
                     {offer.offer_price === Math.max(...offers.map((o: any) => o.offer_price || 0)) && " ⭐"}
                   </td>
                 ))}

@@ -11,7 +11,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { determinePortalView, determinePortalModules } from '@/lib/kernel/portal'
+import { determinePortalView, determinePortalModules, resolvePortalLayouts, determinePortalModulesForLayouts } from '@/lib/kernel/portal'
 import { requireContactAccess } from '@/lib/portal/require-contact-access'
 import { isValidUUID } from '@/lib/validations'
 import {
@@ -84,9 +84,13 @@ export async function GET(
       isPropertyOwner: viewOutput.isPropertyOwner,
     }
     const modulesOutput = await determinePortalModules(supabase, modulesInput)
+    // Wave 94: a dual client's modules are the union across the kernel's layouts — the
+    // same map the portal shell renders its nav from.
+    const portalLayouts = await resolvePortalLayouts(supabase, { contactId })
+    const layoutModules = await determinePortalModulesForLayouts(supabase, { contactId, layouts: portalLayouts.layouts })
 
     // Return success response with output contract
-    return NextResponse.json(createPortalSuccess(modulesOutput), { status: 200 })
+    return NextResponse.json(createPortalSuccess({ ...modulesOutput, ...layoutModules, modules: layoutModules, layouts: portalLayouts.layouts }), { status: 200 })
   } catch (error) {
     console.error('[Portal API] Error determining portal modules:', error)
     return NextResponse.json(

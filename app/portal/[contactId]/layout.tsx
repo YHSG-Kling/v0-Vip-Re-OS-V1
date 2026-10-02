@@ -3,10 +3,11 @@ import { Suspense } from "react"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import {
-  determinePortalView,
-  determinePortalModules,
+  resolvePortalLayouts,
+  determinePortalModulesForLayouts,
+  portalShowsLayout,
   logPortalAccess,
-  buildPortalNav,
+  buildPortalNavForLayouts,
   type PortalView,
 } from "@/lib/kernel/portal"
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
@@ -262,30 +263,33 @@ export default async function PortalLayout({
     .eq("contact_id", contactId)
     .eq("is_read", false)
 
-  // Kernel-driven portal view determination — use normalized contract objects
-  const viewOutput = await determinePortalView(supabase, { contactId })
-  const modulesOutput = await determinePortalModules(supabase, { contactId, view: viewOutput.view })
+  // Kernel-driven portal LAYOUTS (wave 94 — "the kernel determines the portal layout").
+  // A dual client's shell carries BOTH journeys' modules and nav, seller first; a
+  // single-journey client's shell is exactly the one layout it always was.
+  const portalLayouts = await resolvePortalLayouts(supabase, { contactId })
+  const modules = await determinePortalModulesForLayouts(supabase, { contactId, layouts: portalLayouts.layouts })
 
-  // Extract canonical PortalView string from contract output
-  const view = viewOutput.view
-  const modules = modulesOutput.modules
+  // The primary layout leads the label, the badge and the chat persona.
+  const view = portalLayouts.primary
 
-  // Build nav from kernel function
-  const navItems = buildPortalNav(view, modules, contactId)
+  // Build nav from kernel function — every layout's destinations, one entry each.
+  const navItems = buildPortalNavForLayouts(portalLayouts.layouts, modules, contactId)
 
   // Portal access logged below after view is derived
 
   // Derive display values
   const contactName = contact.first_name || "Guest"
   const agentName = agentData?.full_name || "Your Agent"
-  const isBuyer = view === "buyer"
-  const isSeller = view === "seller"
+  const isBuyer = portalShowsLayout(portalLayouts, "buyer")
+  const isSeller = portalShowsLayout(portalLayouts, "seller")
   const persona = contact.contact_persona || "other"
   // Lane 90D (89D P2-9): an INVESTOR is a contact_persona riding the buyer VIEW
   // (determinePortalView returns buyer/seller/lifetime only — correct per the
   // rulings), so the badge said "Buyer" to an investor. The label reads the
   // persona; the view, the nav and every gate are unchanged.
-  const viewLabel = view === "buyer" && persona === "investor" ? "Investor" : VIEW_LABELS[view]
+  const viewLabel = portalLayouts.layouts.length > 1
+    ? portalLayouts.layouts.map((v) => VIEW_LABELS[v]).join(" + ")
+    : view === "buyer" && persona === "investor" ? "Investor" : VIEW_LABELS[view]
   // Log access with resolved view for tracing
   logPortalAccess(supabase, contactId, "layout", `view:${view}`, agentData?.id).catch(() => {})
 

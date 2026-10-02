@@ -104,6 +104,12 @@ export interface CRMContactResult {
   isDuplicate?: boolean
   mergedIntoId?: string
   error?: string
+  /**
+   * The automatic portal invite's outcome on the NEW-contact door (createContactManually,
+   * wave 94). `granted:false` with a reason ("no_email_on_file", "no_assigned_agent", …)
+   * is the REPORT the ruling asks for — the caller surfaces it, nothing is hidden.
+   */
+  portalInvite?: { granted: boolean; reason: string; warnings: string[] }
 }
 
 export interface DeduplicateResult {
@@ -432,7 +438,7 @@ export async function createContactManually(
     source_label?: string
   }
 ): Promise<CRMContactResult> {
-  return createOrUpdateContactFromDirectIntake({
+  const result = await createOrUpdateContactFromDirectIntake({
     ...params,
     source: {
       source:          params.source_label ?? "manual",
@@ -441,6 +447,63 @@ export async function createContactManually(
       source_subtype:  "agent_entry",
     },
   })
+
+  // ── THE NEW-CONTACT DOOR'S PORTAL INVITE (wave 94) ─────────────────────────
+  // OWNER RULING, verbatim: "a portal invite is all part of the automation when a
+  // new contact or a converted contact is added."
+  //
+  // The CONVERTED door already had it: all four converters reach
+  // lib/contact-promotion/conversion-welcome.ts deliverConversionWelcome, which grants
+  // the invite FIRST and carries it on the ONE welcome email (or the magic link when
+  // no manager picks the welcome up). The NEW-contact door did not — the CRM action
+  // (app/actions/contacts.ts) wrote an invite ROW with `sendMagicLink: false` and no
+  // welcome, so the contact was never told; the transaction sheet
+  // (app/actions/transactions.ts) and the widget callback
+  // (app/api/widget/live-agent-request/route.ts), which reach this same command, wrote
+  // nothing at all. This command is the chokepoint all three share, so the ONE
+  // automatic invite lives here and calls the SAME function the converters call — one
+  // email channel, one idempotency (UNIQUE(contact_id) + the welcome ledger tag), no
+  // copy (§6). It is NOT placed in createOrUpdateContactFromDirectIntake: the manual
+  // lead-desk converter (convertLeadToContact, below) also creates through that, and
+  // calls deliverConversionWelcome itself after linking the lead.
+  //
+  // ONLY A NEW ROW: a dedup merge onto an existing contact is not "a new contact", and
+  // that contact already went through a door. NEVER FOR A LEAD: this command writes
+  // `contacts`, and the invite core reads `contacts` by primary key (portal_contact_invites
+  // FKs contacts.id). NO EMAIL → NOTHING QUEUED, REPORTED (createSystemPortalInvite's
+  // `no_email_on_file`, surfaced here on `portalInvite`). NO ASSIGNED AGENT → reported
+  // too: an invite must be authorized by a users.id, reached only via agents.user_id.
+  // BEST EFFORT: the contact exists; a failed invite is reported, never a rollback.
+  if (result.success && !result.isDuplicate && result.contactId) {
+    if (!params.agent_id) {
+      result.portalInvite = {
+        granted: false,
+        reason:  "no_assigned_agent",
+        warnings: [`no portal invite for contact ${result.contactId}: it has no assigned agent to authorize one.`],
+      }
+    } else {
+      try {
+        const { deliverConversionWelcome } = await import("@/lib/contact-promotion/conversion-welcome")
+        const welcome = await deliverConversionWelcome(createServiceClient(), {
+          contactId:   result.contactId,
+          agentId:     params.agent_id,
+          brokerageId: params.brokerage_id,
+          contactType: params.contact_type ?? "buyer",
+          firstName:   params.first_name ?? null,
+          lastName:    params.last_name ?? null,
+        })
+        result.portalInvite = { granted: welcome.portalGranted, reason: welcome.portalReason, warnings: welcome.warnings }
+        for (const w of welcome.warnings) console.warn(`[kernel/crm] new-contact portal invite: ${w}`)
+      } catch (e: any) {
+        result.portalInvite = {
+          granted: false,
+          reason:  "unavailable",
+          warnings: [`portal invite NOT attempted for contact ${result.contactId}: ${e?.message ?? "conversion-welcome unavailable"}`],
+        }
+      }
+    }
+  }
+  return result
 }
 
 // ─── COMMAND 5: createLeadOnlyRecordForAcquisitionSource ─────────────────────

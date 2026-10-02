@@ -21,9 +21,15 @@
  * WHAT "ACCESS" MEANS, precisely: issuePortalInvite creates (or reuses) the
  * `portal_contact_invites` row — that row IS the access grant, and it is reachable
  * through a link the agent can share. The magic-link EMAIL is delivery, and it is
- * compliance-gated inside the core (no email, opted out, or unsubscribed → no send).
- * So a contact with no email still GETS a portal; what they don't get is the email.
- * That distinction is reported, never papered over.
+ * compliance-gated inside the core (opted out or unsubscribed → no send; the row still
+ * exists because they can still sign in with the address on file).
+ *
+ * NO EMAIL ON FILE → NOTHING QUEUED (wave 94, owner: "a portal invite is all part of
+ * the automation when a new contact or a converted contact is added"). The portal door
+ * is an emailed one-time code, so an automatic invite for a contact without an address
+ * is a row nobody can accept. createSystemPortalInvite refuses it with
+ * `no_email_on_file` and this function REPORTS it as a warning — never papered over.
+ * The grant still precedes the video, so a render can never cost a contact their portal.
  *
  * IMPORT IS DYNAMIC ON PURPOSE. portal-invite-core.ts is `server-only`; a static
  * import would drag it into every module graph reaching the converter — including
@@ -49,6 +55,8 @@ export interface PortalAccessResult {
     | "granted"
     | "excluded_contact_type"
     | "no_authorizing_agent_user"
+    /** Wave 94: no email on file — the automatic invite queued NOTHING (see the core). */
+    | "no_email_on_file"
     | "invite_refused"
     | "unavailable"
   /** Human-readable notes the caller surfaces as WARNINGS, never as a failure. */
@@ -147,6 +155,15 @@ export async function grantPortalAccessForPromotedContact(
       sendMagicLink,
     })
 
+    if (!invite.success && invite.reason === "no_email_on_file") {
+      // REPORTED, NOT HIDDEN (wave 94). Nothing was queued: no invite row, no mail.
+      out.reason = "no_email_on_file"
+      out.warnings.push(
+        `no portal invite queued for contact ${params.contactId}: there is no email on file, and the portal ` +
+          `door is an emailed sign-in code. Add an email to the contact and the invite can go out from the CRM.`,
+      )
+      return out
+    }
     if (!invite.success) {
       out.reason = "invite_refused"
       out.warnings.push(
@@ -160,8 +177,8 @@ export async function grantPortalAccessForPromotedContact(
     out.reason = "granted"
 
     // Access exists; delivery did not. The contact has a portal, but no email left
-    // the building — because they have no email address, or because they opted out
-    // and the core (correctly) refused to mail them. The agent has to share the link.
+    // the building — because they opted out and the core (correctly) refused to mail
+    // them (a contact with NO address never reaches here — see no_email_on_file).
     //
     // NOT a warning when the caller ASKED for no magic link: there the agent's own
     // welcome email is the delivery, and reporting "no invite email was sent" would
@@ -169,7 +186,7 @@ export async function grantPortalAccessForPromotedContact(
     if (!out.emailSent && sendMagicLink) {
       out.warnings.push(
         `portal created for contact ${params.contactId} but NO invite email was sent ` +
-          `(no email address, or the contact has opted out / unsubscribed). The agent must share the portal link.`,
+          `(the contact has opted out / unsubscribed from email). The agent must share the portal link.`,
       )
     }
     return out

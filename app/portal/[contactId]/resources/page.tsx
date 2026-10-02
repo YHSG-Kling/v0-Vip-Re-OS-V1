@@ -1,7 +1,7 @@
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { determinePortalView } from "@/lib/kernel/portal"
+import { resolvePortalLayouts, portalShowsLayout } from "@/lib/kernel/portal"
 import { getVendorResources } from "@/app/actions/portal-lifetime"
 import { getCalculatorHistory } from "@/app/actions/calculators"
 import { PortalFinancialTools } from "./portal-financial-tools"
@@ -93,8 +93,9 @@ export default async function ResourcesPage({
   const supabase = await createClient()
 
   // Verify lifetime portal access
-  const portalView = await determinePortalView(supabase, { contactId })
-  if (portalView.view !== "lifetime") {
+  // The KERNEL's layouts (wave 94) — a dual client's portal shows every layout it carries.
+  const portalLayouts = await resolvePortalLayouts(supabase, { contactId })
+  if (!portalShowsLayout(portalLayouts, "lifetime")) {
     redirect(`/portal/${contactId}`)
   }
 

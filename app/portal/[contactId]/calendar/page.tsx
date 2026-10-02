@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { Suspense } from "react"
+import { clientTransactionFilter } from "@/lib/kernel/portal"
 import PortalCalendarDashboard from "@/components/portal/PortalCalendarDashboard"
 
 export default async function CalendarPage({ params }: { params: Promise<{ contactId: string }> }) {
@@ -41,7 +42,7 @@ export default async function CalendarPage({ params }: { params: Promise<{ conta
     supabase
       .from("transactions")
       .select("*, transaction_milestones(*), transaction_deadlines(*)")
-      .eq("contact_id", contactId)
+      .or(clientTransactionFilter(contactId))
       .order("created_at", { ascending: false }),
 
     // Documents needing signature/attention

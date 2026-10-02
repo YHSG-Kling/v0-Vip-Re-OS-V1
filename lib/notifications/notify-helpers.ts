@@ -47,6 +47,7 @@ import {
   type TransactionTerms,
   type ViewerRole,
 } from "./transaction-parties-packet"
+import { resolveMomentDealKeys, findMomentAlert, alreadyAlerted } from "./notification-moments"
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -529,6 +530,8 @@ export async function notifyTransactionParties(
 
   // ── 6. Staff in-app fan-out (per-recipient idempotent).
   const staffIds = Array.from(staff)
+  // Every entity id an alert of this deal's under-contract moment may carry (wave 94).
+  const dealKeys = await resolveMomentDealKeys(supabase, { brokerageId, entityType: "transaction", entityId: transactionId })
   if (staffIds.length > 0) {
     const { data: existing, error: existingError } = await supabase
       .from("notifications")
@@ -539,9 +542,25 @@ export async function notifyTransactionParties(
       .in("user_id", staffIds)
     if (existingError) result.errors.push(`duplicate-notification check failed: ${existingError.message}`)
     const already = new Set(((existing ?? []) as any[]).map(r => r.user_id as string))
-    const targets = staffIds.filter(id => !already.has(id))
+    const staffBody = composeStaffMessage(packet)
+    // ONE ALERT PER PERSON PER DEAL MOMENT (wave 94, lib/notifications/notification-moments.ts).
+    // OFFER_ACCEPTED / BUYER_UNDER_CONTRACT are emitted a few lines earlier in the same
+    // request, so the deal's agent usually already holds an "Under contract" bell. This
+    // packet carries what that bell does not — the terms, the dates and the deal team —
+    // so it REWRITES that one alert instead of adding a second. Counted with .select().
+    const upgradedStaff: string[] = []
+    for (const uid of staffIds.filter(id => !already.has(id))) {
+      const prior = await findMomentAlert(supabase, { brokerageId, moment: "under_contract", dealKeys, recipient: { userId: uid } })
+      if (!alreadyAlerted(prior)) continue
+      const { data: upgraded, error: upgradeError } = await supabase.from("notifications")
+        .update({ type: PARTIES_NOTIFIED_NOTIFICATION_TYPE, title: subject, body: staffBody, entity_type: "transaction", entity_id: transactionId, priority: "high" })
+        .eq("id", prior.id).eq("brokerage_id", brokerageId).select("id")
+      if (upgradeError) result.errors.push(`staff alert upgrade failed for ${uid}: ${upgradeError.message}`)
+      else if ((upgraded ?? []).length > 0) upgradedStaff.push(uid)
+    }
+    const targets = staffIds.filter(id => !already.has(id) && !upgradedStaff.includes(id))
+    if (upgradedStaff.length > 0) result.staff_user_ids = [...upgradedStaff]
     if (targets.length > 0) {
-      const staffBody = composeStaffMessage(packet)
       const { error: insertError } = await supabase.from("notifications").insert(
         targets.map(uid => ({
           user_id:      uid,
@@ -557,7 +576,7 @@ export async function notifyTransactionParties(
         })),
       )
       if (insertError) result.errors.push(`staff notification insert failed: ${insertError.message}`)
-      else result.staff_user_ids = targets
+      else result.staff_user_ids = [...upgradedStaff, ...targets]
     }
   } else {
     result.errors.push("no staff recipient resolved (no deal agent, listing agent, coordinator or TC)")
@@ -613,7 +632,19 @@ export async function notifyTransactionParties(
       .maybeSingle()
     if (bellDupeError) result.errors.push(`client bell dedupe check failed: ${bellDupeError.message}`)
     let bellOk = !!bellDupe
+    // Same moment rule for the client (wave 94): the OFFER_ACCEPTED fan-out already rang
+    // "You're under contract!" — rewrite that one bell with the terms instead of a second.
     if (!bellDupe) {
+      const prior = await findMomentAlert(supabase, { brokerageId, moment: "under_contract", dealKeys, recipient: { contactId: target.contactId } })
+      if (alreadyAlerted(prior)) {
+        const { data: upgradedBell, error: upgradeBellError } = await supabase.from("notifications")
+          .update({ type: PARTIES_NOTIFIED_NOTIFICATION_TYPE, title: subject, body, entity_type: "transaction", entity_id: transactionId, priority: "high" })
+          .eq("id", prior.id).eq("brokerage_id", brokerageId).select("id")
+        if (upgradeBellError) result.errors.push(`client bell upgrade failed for contact ${target.contactId}: ${upgradeBellError.message}`)
+        else bellOk = (upgradedBell ?? []).length > 0
+      }
+    }
+    if (!bellDupe && !bellOk) {
       const { error: bellError } = await supabase.from("notifications").insert({
         contact_id:   target.contactId,
         brokerage_id: brokerageId,

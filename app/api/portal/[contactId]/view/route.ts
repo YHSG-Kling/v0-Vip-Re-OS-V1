@@ -11,7 +11,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { determinePortalView } from '@/lib/kernel/portal'
+import { determinePortalView, resolvePortalLayouts } from '@/lib/kernel/portal'
 import { requireContactAccess } from '@/lib/portal/require-contact-access'
 import { isValidUUID } from '@/lib/validations'
 import {
@@ -77,9 +77,12 @@ export async function GET(
     // Call kernel function with input contract
     const input: PortalViewInput = { contactId }
     const output = await determinePortalView(supabase, input)
+    // Wave 94: the kernel's LAYOUTS ride beside the single view, so an API reader sees
+    // a dual client's seller + buyer layouts exactly as the portal renders them.
+    const { layouts, primary, isDual } = await resolvePortalLayouts(supabase, input)
 
     // Return success response with output contract
-    return NextResponse.json(createPortalSuccess(output), { status: 200 })
+    return NextResponse.json(createPortalSuccess({ ...output, layouts, primary, isDual }), { status: 200 })
   } catch (error) {
     console.error('[Portal API] Error determining portal view:', error)
     return NextResponse.json(

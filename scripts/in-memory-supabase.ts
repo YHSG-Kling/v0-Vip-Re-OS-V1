@@ -29,6 +29,12 @@ export interface MemOptions {
   missingColumns?: Record<string, string[]>
   /** Tables whose every access is refused with this message (RLS-shaped). */
   refuse?: Record<string, string>
+  /**
+   * Stamp `created_at` (ISO now) on inserted rows that carry none — the column DEFAULT
+   * now() the live tables have. Off by default so existing proofs see the rows they wrote
+   * byte-for-byte (wave 94: the moment dedupe reads `created_at >= since`).
+   */
+  stampCreatedAt?: boolean
 }
 
 type Filter = (row: Row) => boolean
@@ -95,7 +101,8 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
       if (op === "insert") {
         const made: Row[] = []
         for (const r of inserted ?? []) {
-          const row = { id: r.id ?? `${table}-${++seq}`, ...r }
+          const row: Row = { id: r.id ?? `${table}-${++seq}`, ...r }
+          if (opts.stampCreatedAt && row.created_at === undefined) row.created_at = new Date().toISOString()
           rows.push(row); made.push(row)
         }
         writes.push({ table, op: "insert", payload: inserted?.[0] ?? {}, matched: made.length })
@@ -137,6 +144,22 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
         else if (operator === "is") filters.push((r) => (v === null ? !(val(r, col) === null || val(r, col) === undefined) : val(r, col) !== v))
         else if (operator === "eq") filters.push((r) => val(r, col) !== v)
         else throw new Error(`memSupabase: unsupported not(${operator})`)
+        return b
+      },
+      // PostgREST `.or("a.eq.x,b.eq.y,c.is.null")` — the comma grammar the portal reads use
+      // (wave 94). Only `eq` and `is.null` are honoured; anything else THROWS, so a proof can
+      // never silently match a filter this fake does not understand.
+      or(expr: string) {
+        const terms = expr.split(",").map((t) => {
+          const m = /^([\w]+)\.(eq|is)\.(.*)$/.exec(t.trim())
+          if (!m) throw new Error(`memSupabase: unsupported or() term "${t}"`)
+          filterCols.push(m[1])
+          return m
+        })
+        filters.push((r) => terms.some(([, col, op, v]) =>
+          op === "eq" ? String(val(r, col)) === v
+          : v === "null" ? val(r, col) === null || val(r, col) === undefined
+          : (() => { throw new Error(`memSupabase: unsupported or() is.${v}`) })()))
         return b
       },
       gte(col: string, v: any) { filterCols.push(col); filters.push((r) => val(r, col) !== null && val(r, col) !== undefined && val(r, col) >= v); return b },
