@@ -136,7 +136,7 @@ export const STATED_TIMELINE_POLICY: Readonly<Record<string, IntentSignalPolicy>
  *  (conservative) and is flagged `ageUnknown` in the evidence. It never moves velocity. */
 export const UNKNOWN_AGE_DECAY = 0.25
 /** Corroboration lift by count of independent contributing sources. */
-export const CORROBORATION_LIFT: Readonly<{ two: number; threePlus: number }> = Object.freeze({ two: 1.15, threePlus: 1.25 })
+const CORROBORATION_LIFT: Readonly<{ two: number; threePlus: number }> = Object.freeze({ two: 1.15, threePlus: 1.25 })
 /** A contribution below this is noise — it neither counts as a source nor lists as evidence. */
 const MIN_CONTRIBUTION = 1
 const DAY_MS = 86_400_000
@@ -185,6 +185,7 @@ export interface DecayedIntent {
 }
 
 /** PURE. 0.5^(age/halfLife); future-dated rows count as fresh; unknown age → UNKNOWN_AGE_DECAY. */
+/** @proofSeam exported so scripts/lead-action-plan-simulator.ts asserts the decay / velocity / momentum ordering rules on the pure function directly. */
 export function decayFactor(ageDays: number | null, halfLifeDays: number): number {
   if (ageDays === null || !Number.isFinite(ageDays)) return UNKNOWN_AGE_DECAY
   if (ageDays <= 0) return 1
@@ -231,6 +232,7 @@ function intentAt(observations: readonly IntentObservation[], at: Date): { score
 }
 
 /** PURE. Current decayed intent + velocity + acceleration + the evidence list. */
+/** @proofSeam exported so scripts/lead-action-plan-simulator.ts asserts the decay / velocity / momentum ordering rules on the pure function directly. */
 export function scoreDecayedIntent(observations: readonly IntentObservation[], now: Date = new Date()): DecayedIntent {
   const cur = intentAt(observations, now)
   const prev = intentAt(observations, new Date(now.getTime() - 7 * DAY_MS)).score
@@ -255,6 +257,7 @@ export function scoreDecayedIntent(observations: readonly IntentObservation[], n
 }
 
 /** Comparator: who needs us next — momentum first, current score as the tie-break. */
+/** @proofSeam exported so scripts/lead-action-plan-simulator.ts asserts the decay / velocity / momentum ordering rules on the pure function directly. */
 export function byIntentMomentumDesc(a: DecayedIntent, b: DecayedIntent): number {
   return (b.momentumRank - a.momentumRank) || (b.score - a.score)
 }

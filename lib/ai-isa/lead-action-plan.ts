@@ -447,6 +447,7 @@ const ACTION_FOR_CODE: Readonly<Record<LeadTouchPlanCode, NextBestAction>> = Obj
 })
 
 /** PURE. Every reason-not-to-act check, in precedence order. */
+/** @proofSeam exported so scripts/lead-action-plan-simulator.ts asserts every reason-not-to-act check on the pure function directly. */
 export function reasonsNotToAct(ctx: NextBestActionContext | undefined, now: Date): ReasonNotToAct[] {
   const out: ReasonNotToAct[] = []
   if (!ctx) return out

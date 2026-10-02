@@ -153,6 +153,7 @@ function readFactsLedger(spineOrFacts: unknown): MemoryFact[] {
  *   · different value observed BEFORE the current one → kept as history, already
  *     superseded — an old statement arriving late never displaces a newer one.
  */
+/** @proofSeam exported so scripts/conversation-memory-simulator.ts asserts the fact rules (supersede, expiry, review) on the pure function directly. */
 export function recordMemoryFact(
   ledgerIn: readonly MemoryFact[],
   incoming: { key: MemoryFactKey; value: string; observedAt: string; confidence: number; source: string; reviewDays?: number },
@@ -200,6 +201,7 @@ export function currentMemoryFacts(spineOrFacts: unknown, now: Date = new Date()
 }
 
 /** PURE. The facts that EXPIRED (still current, but past review_by) — what to re-confirm. */
+/** @proofSeam exported so scripts/conversation-memory-simulator.ts asserts the fact rules (supersede, expiry, review) on the pure function directly. */
 export function factsDueForReview(spineOrFacts: unknown, now: Date = new Date()): MemoryFact[] {
   return readFactsLedger(spineOrFacts)
     .filter((f) => !f.supersededAt && new Date(f.reviewBy).getTime() <= now.getTime())
@@ -502,6 +504,7 @@ export async function updateContactContext(
  * observed_at / review_by — only a changed value (which supersedes) or an explicit
  * recordMemoryFact from a conversation does.
  */
+/** @proofSeam exported so scripts/conversation-memory-simulator.ts asserts the fact rules (supersede, expiry, review) on the pure function directly. */
 export function compileObservedFacts(
   priorSpine: unknown,
   observed: ReadonlyArray<{ key: MemoryFactKey; value: string; confidence: number; source: string }>,

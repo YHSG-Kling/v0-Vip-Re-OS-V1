@@ -1425,6 +1425,11 @@ async function syncIDXBrokerActivity(
         bathrooms: activity.bathrooms, sqft: activity.sqft, propType: activity.propType,
       },
       interaction_type: activity.type ?? "viewed",
+      // Wave 97: the two intent flags the decayed-intent reader (lib/lead-intelligence/
+      // behavioral-summary.ts — showing_request / saved_listing signals) keys on. They had a
+      // reader and no writer; the IDX activity type is the only thing that knows them.
+      requested_showing: /showing|tour/i.test(activity.type ?? ""),
+      saved: /save|favorite|favourite/i.test(activity.type ?? ""),
       view_duration_seconds: activity.timeSpent ?? null,
       interaction_metadata: activity.metadata ?? null,
       occurred_at: activity.timestamp ?? new Date().toISOString(),

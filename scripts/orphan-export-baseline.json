@@ -63,6 +63,7 @@
     "lib/ai-isa/ghost-reengagement.ts": 1,
     "lib/ai-isa/inbound-intent-classifier.ts": 1,
     "lib/ai-isa/isa-acting-scope.ts": 1,
+    "lib/ai-isa/lead-action-plan.ts": 1,
     "lib/ai-isa/lead-nurture.ts": 1,
     "lib/ai-isa/listing-appointment.ts": 6,
     "lib/ai-isa/meeting-followthrough.ts": 2,
@@ -224,7 +225,7 @@
     "lib/kernel/consistency-guardian.ts": 2,
     "lib/kernel/content-studio.ts": 5,
     "lib/kernel/continuity-receipt.ts": 2,
-    "lib/kernel/conversation-memory.ts": 2,
+    "lib/kernel/conversation-memory.ts": 5,
     "lib/kernel/cron-dispatch.ts": 3,
     "lib/kernel/deal-autopsy.ts": 2,
     "lib/kernel/deal-play-outcomes.ts": 1,
@@ -307,6 +308,7 @@
     "lib/lead-assignment/rule-matcher.ts": 2,
     "lib/lead-governance/protected-class-signals.ts": 4,
     "lib/lead-governance/seller-signal-strength.ts": 4,
+    "lib/lead-intelligence/behavioral-summary.ts": 3,
     "lib/lead-magnets/embed-snippet.ts": 1,
     "lib/lead-pipeline/ai-intent-classifier.ts": 3,
     "lib/lead-pipeline/email-engagement-sourcer.ts": 1,
@@ -512,7 +514,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10503,
+  "census": 10527,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -768,6 +770,7 @@
     "app/actions/fb-audience-templates.ts": 1,
     "app/actions/financial-kernel.ts": 19,
     "app/actions/financials.ts": 7,
+    "app/actions/flight-recorder.ts": 1,
     "app/actions/forms-kernel.ts": 10,
     "app/actions/gamification.ts": 7,
     "app/actions/generate-marketing-image.ts": 1,
@@ -2824,7 +2827,7 @@
     "lib/ai-isa/inbound-intent-classifier.ts": 3,
     "lib/ai-isa/isa-acting-scope.ts": 2,
     "lib/ai-isa/isa-outreach-logger.ts": 4,
-    "lib/ai-isa/lead-action-plan.ts": 7,
+    "lib/ai-isa/lead-action-plan.ts": 8,
     "lib/ai-isa/lead-call-intent.ts": 1,
     "lib/ai-isa/lead-channel-policy.ts": 3,
     "lib/ai-isa/lead-nurture.ts": 2,
@@ -2836,7 +2839,7 @@
     "lib/ai-isa/next-best-touch.ts": 4,
     "lib/ai-isa/opt-out-utils.ts": 1,
     "lib/ai-isa/outreach-identity.ts": 2,
-    "lib/ai-isa/persona-tool-policy.ts": 13,
+    "lib/ai-isa/persona-tool-policy.ts": 15,
     "lib/ai-isa/personalize-outreach.ts": 4,
     "lib/ai-isa/portal-link.ts": 3,
     "lib/ai-isa/post-call-outcome.ts": 3,
@@ -3288,7 +3291,7 @@
     "lib/external/socrata-client.ts": 4,
     "lib/external/socrata-market-registry.ts": 7,
     "lib/external/tavily-client.ts": 2,
-    "lib/external/versium-client.ts": 6,
+    "lib/external/versium-client.ts": 7,
     "lib/external/vision-property.ts": 1,
     "lib/external/zenrows-client.ts": 5,
     "lib/external/zenrows-normalizer.ts": 1,
@@ -3479,6 +3482,7 @@
     "lib/journey-conformance/conformance-checker.ts": 1,
     "lib/journey-conformance/conformance-runner.ts": 1,
     "lib/kernel/0.1-feature-access.ts": 5,
+    "lib/kernel/action-ledger.ts": 5,
     "lib/kernel/actor-attribution.ts": 2,
     "lib/kernel/actor-context.ts": 1,
     "lib/kernel/adapters/brand-voice.ts": 2,
@@ -3523,6 +3527,7 @@
     "lib/kernel/capability-radar.ts": 1,
     "lib/kernel/capacity-guardian-runner.ts": 1,
     "lib/kernel/capacity-guardian.ts": 4,
+    "lib/kernel/causation.ts": 2,
     "lib/kernel/child-safe-delete.ts": 2,
     "lib/kernel/client-framing.ts": 2,
     "lib/kernel/client-pulse.ts": 3,
@@ -3551,7 +3556,7 @@
     "lib/kernel/content-studio.ts": 7,
     "lib/kernel/continuity-receipt.ts": 3,
     "lib/kernel/contracts.ts": 2,
-    "lib/kernel/conversation-memory.ts": 5,
+    "lib/kernel/conversation-memory.ts": 10,
     "lib/kernel/conversation-thread.ts": 2,
     "lib/kernel/coordination-kind.ts": 1,
     "lib/kernel/crm.ts": 13,
@@ -3648,7 +3653,7 @@
     "lib/kernel/portal-contracts.ts": 2,
     "lib/kernel/portal-template-render.ts": 1,
     "lib/kernel/portal-value.ts": 2,
-    "lib/kernel/portal.ts": 17,
+    "lib/kernel/portal.ts": 20,
     "lib/kernel/postclose-concierge.ts": 4,
     "lib/kernel/preview.ts": 2,
     "lib/kernel/priority-rank.ts": 2,
@@ -3751,7 +3756,7 @@
     "lib/lead-governance/sla-monitor.ts": 2,
     "lib/lead-governance/stale-lead-processor.ts": 1,
     "lib/lead-import/list-cost-stamp.ts": 2,
-    "lib/lead-intelligence/behavioral-summary.ts": 1,
+    "lib/lead-intelligence/behavioral-summary.ts": 4,
     "lib/lead-intelligence/interest-level.ts": 1,
     "lib/lead-intelligence/person-spend.ts": 3,
     "lib/lead-intelligence/person-timeline.ts": 3,
@@ -3765,7 +3770,7 @@
     "lib/lead-pipeline/contact-signal-rescrape.ts": 1,
     "lib/lead-pipeline/email-engagement-sourcer.ts": 2,
     "lib/lead-pipeline/email-seek.ts": 2,
-    "lib/lead-pipeline/enrichment-column-map.ts": 21,
+    "lib/lead-pipeline/enrichment-column-map.ts": 22,
     "lib/lead-pipeline/enrichment-merge.ts": 2,
     "lib/lead-pipeline/enrichment-orchestrator.ts": 1,
     "lib/lead-pipeline/enrichment-retry.ts": 3,
@@ -6212,6 +6217,9 @@
       "deleteExpense",
       "attachExpenseReceipt",
       "logScopedExpense"
+    ],
+    "app/actions/flight-recorder.ts": [
+      "getEntityCausalChain"
     ],
     "app/actions/forms-kernel.ts": [
       "resolveFormsProviderAction",
@@ -13988,6 +13996,7 @@
       "wireChannelFor",
       "leadAutoSendVerdict",
       "isPersonalizedForLead",
+      "reasonsNotToAct",
       "planNextLeadTouch",
       "releaseDueLeadTouches",
       "resolveLeadSettingsResolution",
@@ -14071,7 +14080,9 @@
       "filterToolsByTier",
       "filterRentCastToolsForPersona",
       "costRankForTool",
-      "selectToolsForPersona"
+      "selectToolsForPersona",
+      "refuseUnmountableTools",
+      "riskClassForTool"
     ],
     "lib/ai-isa/personalize-outreach.ts": [
       "buildPersonalizationFacts",
@@ -16533,6 +16544,7 @@
       "normalizeTavilyRow"
     ],
     "lib/external/versium-client.ts": [
+      "isVersiumConfigured",
       "versiumQueryFor",
       "versiumStatusProblem",
       "parseVersiumFinancialResponse",
@@ -17364,6 +17376,13 @@
       "grantFeatureTrial",
       "disableFeatureFor"
     ],
+    "lib/kernel/action-ledger.ts": [
+      "recordNonAction",
+      "withActionLedger",
+      "settleDispatchResult",
+      "replayDispatchResult",
+      "assembleCausalChain"
+    ],
     "lib/kernel/actor-attribution.ts": [
       "resolveActorNames",
       "resolveActorNamesEitherClass"
@@ -17607,6 +17626,10 @@
       "computeAgentWorkloadIndex",
       "detectOverload"
     ],
+    "lib/kernel/causation.ts": [
+      "currentCausation",
+      "withCausationFrom"
+    ],
     "lib/kernel/child-safe-delete.ts": [
       "deleteParentWithChildren",
       "describeDeleteFailure"
@@ -17765,8 +17788,13 @@
       "buildIntegrityReport"
     ],
     "lib/kernel/conversation-memory.ts": [
+      "recordMemoryFact",
+      "currentMemoryFacts",
+      "factsDueForReview",
+      "memoryContextBlock",
       "composeContextSummary",
       "updateContactContext",
+      "compileObservedFacts",
       "loadContactContext",
       "refreshRecentContactSpines",
       "realSummaryRewriter"
@@ -18362,12 +18390,15 @@
       "dualBannerPredicate",
       "resolveDualPortalView",
       "portalLayoutsFor",
+      "portalDealClient",
+      "scopeToDealTenant",
       "resolvePortalLayouts",
       "portalShowsLayout",
       "buildPortalNavForLayouts",
       "determinePortalModulesForLayouts",
       "clientTransactionFilter",
       "pickLifetimeHomeTransaction",
+      "excludeOwnHome",
       "determinePortalView",
       "determinePortalModules",
       "logPortalAccess",
@@ -18999,6 +19030,9 @@
       "stampPurchasedListCost"
     ],
     "lib/lead-intelligence/behavioral-summary.ts": [
+      "decayFactor",
+      "scoreDecayedIntent",
+      "byIntentMomentumDesc",
       "buildBehavioralIntentSummary"
     ],
     "lib/lead-intelligence/interest-level.ts": [
@@ -19082,7 +19116,8 @@
       "missingHouseholdFinancials",
       "mergeHouseholdFinancials",
       "carryForwardHouseholdFinancials",
-      "householdFinancialContactColumns"
+      "householdFinancialContactColumns",
+      "fieldProvenanceForDisplay"
     ],
     "lib/lead-pipeline/enrichment-merge.ts": [
       "mergeEnrichment",
