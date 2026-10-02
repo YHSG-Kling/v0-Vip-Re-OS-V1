@@ -1,8 +1,9 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// Wave 97 (lane 97C): every model call here rides the ROUTED lane (books ai_tool_usage under the
+// session's tenant + user; intent_classification routes to gpt-4o-mini, the model each call pinned).
+import { generateTextRouted } from "@/lib/ai/models"
 import { createTenantUserAction } from "@/app/actions/superadmin/tenant-users"
 import { NextRequest, NextResponse } from "next/server"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
@@ -117,8 +118,8 @@ export async function POST(req: NextRequest) {
   const startOfWeek = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
   // ── Classify intent using AI ──────────────────────────────────────────────
-  const classifyResult = await generateText({
-      model: resolveModel("openai/gpt-4o-mini"),
+  const classifyResult = await generateTextRouted({
+      feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
     system: `Classify the real estate assistant voice command into one of these intents:
 - query_showings: asking about today's or upcoming showings
 - query_hot_contacts: asking about hot leads, top contacts, who to call
@@ -153,7 +154,7 @@ export async function POST(req: NextRequest) {
 
 Respond with ONLY the intent string, nothing else.`,
     messages: [{ role: "user", content: transcript }],
-    maxOutputTokens: 20,
+    maxTokens: 20,
   })
 
   const intent = (classifyResult.text.trim().toLowerCase() as VoiceIntent) ?? "general_query"
@@ -297,11 +298,11 @@ Respond with ONLY the intent string, nothing else.`,
       // "HEY TEAM—" — the bullpen question: every manager contributes what its own
       // tables know about the named person; one manager-attributed spoken answer.
       // Read-only: the team reports, acting still goes through the gate.
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `Extract the person/family name the user is asking about. Respond with ONLY the name (e.g. "Henderson" or "Jordan Henderson"). If no name is present, respond with NONE.`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 12,
+        maxTokens: 12,
       })
       const personQuery = extract.text.trim()
       if (!personQuery || personQuery.toUpperCase() === "NONE" || !brokerageId) {
@@ -346,11 +347,11 @@ Respond with ONLY the intent string, nothing else.`,
       // learning stores it so the team drafts it better next time.
       const { parseOrdinal, runStandupReject } = await import("@/lib/kernel/standup-action")
       const ordinal = parseOrdinal(transcript)
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `Extract WHY the user is rejecting (the reason after the rank, e.g. "too pushy", "wrong tone"). Respond with ONLY the reason, or NONE.`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 30,
+        maxTokens: 30,
       })
       const reasonRaw = extract.text.trim()
       const reason = reasonRaw && reasonRaw.toUpperCase() !== "NONE" ? reasonRaw : null
@@ -365,11 +366,11 @@ Respond with ONLY the intent string, nothing else.`,
     } else if (intent === "area_query") {
       // "Anything happening near 44 Birch?" — the marketing bench reports listings,
       // reels, and live ads in the area. Read-only.
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `Extract the area, neighborhood, city, or street the user is asking about. Respond with ONLY that place (e.g. "44 Birch" or "Springfield"). If none, respond NONE.`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 16,
+        maxTokens: 16,
       })
       const areaQuery = extract.text.trim()
       if (!areaQuery || areaQuery.toUpperCase() === "NONE" || !brokerageId) {
@@ -385,11 +386,11 @@ Respond with ONLY the intent string, nothing else.`,
       // VOICE DELEGATION — the spoken instruction is the human decision. Follow-ups
       // run propose→approve(as the agent) through the SAME gate (consent re-checked);
       // marketing enrolls in a sequence whose steps clear the compliance gate.
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `From the voice command, extract:\nNAME: the person/family name\nDICTATION: the exact message content the user dictated, if any (the words after "saying"/"tell them"), else NONE\nFormat exactly:\nNAME: <name or NONE>\nDICTATION: <text or NONE>`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 120,
+        maxTokens: 120,
       })
       const nameMatch = extract.text.match(/NAME:\s*(.+)/)?.[1]?.trim()
       const dictMatch = extract.text.match(/DICTATION:\s*([\s\S]+)/)?.[1]?.trim()
@@ -409,11 +410,11 @@ Respond with ONLY the intent string, nothing else.`,
       // "Cut a promo reel for 44 Birch" — the voice command is a manual trigger on the
       // CANONICAL Remotion + D-ID promo rail (compliance pre-flight, cooldown debounce,
       // social drafts still human-approved).
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `Extract the listing street address the user wants a promo video for. Respond with ONLY the address fragment (e.g. "44 Birch Lane"). If none, respond NONE.`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 20,
+        maxTokens: 20,
       })
       const addressQuery = extract.text.trim()
       if (!addressQuery || addressQuery.toUpperCase() === "NONE" || !brokerageId) {
@@ -477,11 +478,11 @@ Respond with ONLY the intent string, nothing else.`,
       // "Optimize the Henderson tour" — resolve the buyer → their latest planned tour →
       // run the REAL optimizer (tour-optimizer.ts) → speak the new order + honest geocoding
       // note. Read+write on the buyer's own tour rows only; nothing client-facing is sent.
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `Extract the buyer/person/family name whose tour to optimize. Respond with ONLY the name (e.g. "Henderson" or "Jordan Henderson"). If none, respond NONE.`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 12,
+        maxTokens: 12,
       })
       const personQuery = extract.text.trim()
       if (!personQuery || personQuery.toUpperCase() === "NONE" || !brokerageId) {
@@ -516,11 +517,11 @@ Respond with ONLY the intent string, nothing else.`,
       // "Send the Garcias their anniversary equity report" — resolve the contact → run the
       // REAL anniversary-equity play scoped to that ONE contact → the client-facing note
       // lands in the GATE (approval queue), exactly like voiceFollowUp. Never autonomous.
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `Extract the person/family name whose anniversary equity report to send. Respond with ONLY the name (e.g. "Garcia" or "Maria Garcia"). If none, respond NONE.`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 12,
+        maxTokens: 12,
       })
       const personQuery = extract.text.trim()
       if (!personQuery || personQuery.toUpperCase() === "NONE" || !brokerageId) {
@@ -542,11 +543,11 @@ Respond with ONLY the intent string, nothing else.`,
       // "Launch the campaign for 123 Oak Street" — resolve the listing by address → pick the
       // most launch-ready campaign for it → launch via the existing admin-gated executor
       // (it enforces role + tenant + compliance; a non-admin speaker is refused honestly).
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `Extract the LISTING street address whose marketing campaign to launch. Respond with ONLY the address or street (e.g. "123 Oak Street" or "Maple"). If none, respond NONE.`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 16,
+        maxTokens: 16,
       })
       const addr = extract.text.trim()
       if (!addr || addr.toUpperCase() === "NONE" || !brokerageId) {
@@ -592,11 +593,11 @@ Respond with ONLY the intent string, nothing else.`,
       // through to the chat deflection (no task created). Now: extract title + due phrase
       // + optional person, resolve the date deterministically, create the real task.
       const isFollowUp = intent === "schedule_followup"
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `Extract a task from a real-estate agent's spoken command. Respond with ONLY compact JSON: {"title":"<short imperative task, no date>","due":"<relative date phrase like today/tomorrow/friday/in 3 days/next week, or NONE>","person":"<client/family name if one is named, or NONE>"}. Keep the title under 8 words. Do not invent a person or date that wasn't said.`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 60,
+        maxTokens: 60,
       })
       let title = "", duePhrase: string | null = null, personQuery = ""
       try {
@@ -734,11 +735,11 @@ Respond with ONLY the intent string, nothing else.`,
       if (!isSuperadmin) {
         spokenResponse = "Creating platform users is a superadmin-only command — I can't run that for your role."
       } else {
-        const extract = await generateText({
-          model: resolveModel("openai/gpt-4o-mini"),
+        const extract = await generateTextRouted({
+          feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
           system: `Extract from the command a JSON object: {"email": string, "firstName": string, "lastName": string, "role": one of ["agent","admin","broker","team_lead","tc","compliance_officer","vendor"] (default "agent"), "brokerageName": string or null (the brokerage/company named, else null)}. Respond with ONLY the JSON.`,
           messages: [{ role: "user", content: transcript }],
-          maxOutputTokens: 200,
+          maxTokens: 200,
         })
         let ex: { email?: string; firstName?: string; lastName?: string; role?: string; brokerageName?: string | null } = {}
         try { ex = JSON.parse(extract.text.trim().replace(/^```json\s*|\s*```$/g, "")) } catch { /* leave empty */ }
@@ -775,11 +776,11 @@ Respond with ONLY the intent string, nothing else.`,
       // premium voice cockpit uses. Resolves the buyer, runs the NL match
       // (inventory + IDX, Fair-Housing-sanitized), reads back the top matches.
       // Read-only. Folded here so the always-on assistant shares one search brain.
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `From the property-search command extract two lines exactly:\nNAME: the buyer/person/family the search is for (or NONE)\nCRITERIA: the search criteria phrase — beds, baths, price, area, features (or NONE)`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 80,
+        maxTokens: 80,
       })
       const nameMatch = extract.text.match(/NAME:\s*(.+)/)?.[1]?.trim()
       const critMatch = extract.text.match(/CRITERIA:\s*([\s\S]+)/)?.[1]?.trim()

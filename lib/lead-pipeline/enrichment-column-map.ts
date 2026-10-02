@@ -684,3 +684,51 @@ export function householdFinancialContactColumns(source: Record<string, unknown>
   }
   return out
 }
+
+// ─── FIELD PROVENANCE READER (wave 97, lane 97C) ──────────────────────────────────────────────────
+// Wave 96B wrote `enrichment_profile.field_provenance` (Versium email / phone / demographics, each
+// { source, capability, retrievedAt, matchConfidence }) and lanes 85C/86 wrote
+// `household_financials.{sources, captured_at}` — and NOTHING read either back (96B open item:
+// "field_provenance has no reader yet"). This is the ONE reader; the contact card
+// (app/actions/contact-enrichment.ts::getContactInsights → app/crm/contacts/[contactId]/components/
+// enrichment-panel.tsx) shows it beside the enriched value. Keys are the CONTACT COLUMN the value is
+// displayed under, plus `email` / `phone` / `demographics` for the Versium contact + demographic appends.
+export interface FieldProvenanceLine {
+  source: string
+  retrievedAt: string | null
+  matchConfidence: string | null
+}
+
+/** PURE — provenance per displayed field. `includeFinancials: false` drops income / net worth / credit
+ *  band (CLAUDE.md §5: contacts, lenders and vendors see no financials). Never throws on a malformed blob. */
+export function fieldProvenanceForDisplay(
+  profile: Record<string, unknown> | null | undefined,
+  opts: { includeFinancials: boolean },
+): Record<string, FieldProvenanceLine> {
+  const out: Record<string, FieldProvenanceLine> = {}
+  if (!profile || typeof profile !== 'object') return out
+  const hf = profile.household_financials
+  if (hf && typeof hf === 'object') {
+    const block = hf as { sources?: Record<string, unknown>; captured_at?: unknown }
+    const at = nonEmpty(block.captured_at) ? block.captured_at : null
+    for (const f of HOUSEHOLD_FINANCIAL_FIELDS) {
+      if (f !== 'marital_status' && !opts.includeFinancials) continue
+      const src = block.sources?.[f]
+      if (nonEmpty(src)) out[HOUSEHOLD_FINANCIAL_CONTACT_COLUMN[f]] = { source: src, retrievedAt: at, matchConfidence: null }
+    }
+  }
+  const fp = profile.field_provenance
+  if (fp && typeof fp === 'object') {
+    for (const [key, raw] of Object.entries(fp as Record<string, unknown>)) {
+      if (!raw || typeof raw !== 'object') continue
+      const p = raw as { source?: unknown; retrievedAt?: unknown; matchConfidence?: unknown }
+      if (!nonEmpty(p.source)) continue
+      out[key] = {
+        source: p.source,
+        retrievedAt: nonEmpty(p.retrievedAt) ? p.retrievedAt : null,
+        matchConfidence: nonEmpty(p.matchConfidence) ? p.matchConfidence : null,
+      }
+    }
+  }
+  return out
+}

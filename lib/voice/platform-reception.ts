@@ -210,7 +210,12 @@ export async function platformFaqTools(): Promise<Record<string, unknown>> {
  *  chat, app/api/platform/prospect-chat/route.ts). */
 export async function platformReceptionTools(ctx: PlatformProspectToolContext): Promise<Record<string, unknown>> {
   const [faq, prospect] = await Promise.all([platformFaqTools(), buildPlatformProspectTools(ctx)])
-  return { ...faq, ...prospect }
+  // Wave 97 (lane 97C): the prospect agent's ONE mount runs the same risk check every other surface
+  // runs (lib/ai-isa/persona-tool-policy.ts::refuseUnmountableTools — LEGAL / IRREVERSIBLE / unclassified
+  // never mount). start_subscription is FINANCIAL and send_signup_link COMMUNICATION — both mount, each
+  // behind the gate TOOL_APPROVAL_GATE names.
+  const { refuseUnmountableTools } = await import("@/lib/ai-isa/persona-tool-policy")
+  return refuseUnmountableTools({ ...faq, ...prospect }, "platform prospect agent") as Record<string, unknown>
 }
 
 // TOMBSTONE (2026-08-27, §6 one-vocabulary): PROSPECT_ROLE_INTERESTS was a

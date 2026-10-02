@@ -18,12 +18,12 @@
  * credentials, so without the cache the identity-class guard goes blind — that is the only reason
  * it is committed.
  *
- * MEASURED AT GENERATION: 234 agents(id) columns across 225 tables, 38 agent-ish users(id) columns across 36 tables, 171 contact_id tables.
+ * MEASURED AT GENERATION: 237 agents(id) columns across 227 tables, 38 agent-ish users(id) columns across 36 tables, 171 contact_id tables.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-16
+ * generated: 2026-10-02
  * source: public.live_foreign_keys_json()
- * body-sha256: c59645112263f7765dd455faa5543f20a97ffdb24f1aff1789f8cbf4fd6b3dc3
+ * body-sha256: 5f85a5d5a96fd59cc0cf5e336f8a0a24c62a22037556e92094b7ab55345c446e
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -37,10 +37,12 @@
  *  Anything else named `agent_id` is a different animal; check the map below before assuming. */
 export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   activities: ["agent_id"],
+  agent_action_ledger: ["actor_agent_id"],
   agent_api_credentials: ["agent_id"],
   agent_assistant_sessions: ["agent_id"],
   agent_avatar_assets: ["agent_id"],
   agent_badges: ["agent_id"],
+  agent_book_transfers: ["from_agent_id", "to_agent_id"],
   agent_cap_tracking: ["agent_id"],
   agent_ce_completions: ["agent_id"],
   agent_certifications: ["agent_id"],

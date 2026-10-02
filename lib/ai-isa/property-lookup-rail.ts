@@ -429,6 +429,8 @@ export async function runVersiumContactLeg(
     call?: VersiumContactCall
     demographicCall?: VersiumDemographicCall
     meter?: (input: { vendorName: string; usageType: string; cost: number; brokerageId?: string | null; systemSource?: string; metadata?: Record<string, unknown>; attribution?: { leadId?: string | null; contactId?: string | null; rawRecordId?: string | null } }) => Promise<unknown>
+    /** Test seam — defaults to lib/vendor-governance/budget-gate.ts::checkVendorBudget (the financial rung's gate). */
+    checkBudget?: (p: { brokerageId: string; addCost: number }) => Promise<{ allowed: boolean }>
   } = {},
 ): Promise<{ answered: boolean; emails: string[]; phones: string[]; cost: number; skipped: string | null; demographicsProfile: Record<string, any> | null; demographicCategories: string[]; fieldProvenance: Record<string, VersiumProvenance> }> {
   const outputs: Array<"email" | "phone"> = []
@@ -436,6 +438,26 @@ export async function runVersiumContactLeg(
   if (req.stage === "contact" && !req.hasPhone) outputs.push("phone")
   const none = { demographicsProfile: null, demographicCategories: [] as string[], fieldProvenance: {} as Record<string, VersiumProvenance> }
   if (outputs.length === 0) return { answered: false, emails: [], phones: [], cost: 0, skipped: "nothing_to_append", ...none }
+  // Wave 97 (lane 97C): THE SAME vendor budget gate the Versium financial rung runs
+  // (lib/enrichment/household-financials.ts::appendModeledCreditForProfile → checkVendorBudget), asked
+  // BEFORE the paid call with the worst-case bill (one match credit per output asked). Tenant-attributed
+  // spend only — a null tenant has no budget to check and no ledger row to book (meterVendorSpend
+  // resolves false), so it is refused like the financial rung's `no_brokerage` (fail closed, §4); the
+  // caller's chain (PeopleData) runs as it does on any skip.
+  if (!req.brokerageId) return { answered: false, emails: [], phones: [], cost: 0, skipped: "no_brokerage", ...none }
+  // Unconfigured Versium spends nothing — answer that before paying for a budget read.
+  if (!deps.call && !(await import("@/lib/external/versium-client")).isVersiumConfigured()) {
+    return { answered: false, emails: [], phones: [], cost: 0, skipped: "unconfigured", ...none }
+  }
+  try {
+    const checkBudget = deps.checkBudget
+      ?? (async (p: { brokerageId: string; addCost: number }) => (await import("@/lib/vendor-governance/budget-gate")).checkVendorBudget(p))
+    const budget = await checkBudget({ brokerageId: req.brokerageId, addCost: Math.round(VERSIUM_MATCH_CREDIT_USD * outputs.length * 100) / 100 })
+    if (!budget.allowed) return { answered: false, emails: [], phones: [], cost: 0, skipped: "budget", ...none }
+  } catch (e) {
+    // A gate that cannot run refuses (CLAUDE.md §4) — never "nobody checked" read as "checked and fine".
+    return { answered: false, emails: [], phones: [], cost: 0, skipped: `budget_unavailable: ${e instanceof Error ? e.message : String(e)}`, ...none }
+  }
   try {
     const { appendVersiumContact, appendVersiumDemographics } = await import("@/lib/external/versium-client")
     const r = await appendVersiumContact(req.identity, outputs, { call: deps.call })

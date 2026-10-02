@@ -148,25 +148,50 @@ console.log("\n[Layer 2b · VERSIUM FIRST — executed; PeopleData only after a 
   const hit = async (output: string) => { asked.push(output); return { ok: true, status: 200, data: { versium: { match_counts: { [output]: 1 }, results: [output === "email" ? { "Email Address": "owner@example.com" } : { Phone: "5125550142" }] } } } }
   const miss = async (output: string) => { asked.push(output); return { ok: true, status: 200, data: { versium: { match_counts: {}, results: [] } } } }
   const meter = async (m: any) => { booked.push(m) }
+  // Wave 97 (97C): the leg now asks the vendor budget gate first — a stub that allows, so these
+  // executions never reach the live ledger (the gate's own refusals are proved below).
+  const allowBudget = async () => ({ allowed: true })
   const id = { firstName: "Ana", lastName: "Owner", address: "1 Main St", city: "Austin", state: "TX", zip: "78701" }
-  const leadHit = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: hit as any, meter })
+  const leadHit = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: hit as any, meter, checkBudget: allowBudget })
   check("EXECUTED: a LEAD asks Versium for the EMAIL only (leads get email + direct mail — a phone is never bought for a lead)",
     leadHit.answered && asked.join(",") === "email" && leadHit.emails[0] === "owner@example.com" && leadHit.phones.length === 0)
   check("EXECUTED: the hit is booked as vendor versium, usage contact_append, answered_by versium, at the transport's credit price",
     booked.length === 1 && booked[0].vendorName === "versium" && booked[0].usageType === "contact_append" && booked[0].metadata.answered_by === "versium" && booked[0].cost === vs.VERSIUM_MATCH_CREDIT_USD)
   asked.length = 0; booked.length = 0
-  const contactHit = await runVersiumContactLeg({ brokerageId: "b-1", stage: "contact", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: hit as any, meter })
+  const contactHit = await runVersiumContactLeg({ brokerageId: "b-1", stage: "contact", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: hit as any, meter, checkBudget: allowBudget })
   check("EXECUTED: a CONTACT asks email, then phone (two matched outputs, two credits)", contactHit.answered && asked.join(",") === "email,phone" && contactHit.cost === 2 * vs.VERSIUM_MATCH_CREDIT_USD)
   asked.length = 0; booked.length = 0
-  const missed = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: miss as any, meter })
+  const missed = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: miss as any, meter, checkBudget: allowBudget })
   check("EXECUTED: a Versium MISS is free — not answered, $0, nothing booked (the chain continues)", !missed.answered && missed.cost === 0 && booked.length === 0)
-  const nothing = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: true, hasPhone: false, systemSource: "proof" }, { call: hit as any, meter })
+  const nothing = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: true, hasPhone: false, systemSource: "proof" }, { call: hit as any, meter, checkBudget: allowBudget })
   check("EXECUTED: a lead that already HAS an email asks Versium nothing ($0)", nothing.skipped === "nothing_to_append" && nothing.cost === 0)
   const prevKey = process.env.VERSIUM_API_KEY
   delete process.env.VERSIUM_API_KEY
-  const unconfigured = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { meter })
+  const unconfigured = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { meter, checkBudget: allowBudget })
   if (prevKey !== undefined) process.env.VERSIUM_API_KEY = prevKey
   check("EXECUTED: Versium UNCONFIGURED → skipped 'unconfigured', no request, and the chain runs as today", unconfigured.skipped === "unconfigured" && !unconfigured.answered)
+
+  // Wave 97 (lane 97C): the contact leg runs THE SAME vendor budget gate the financial rung runs
+  // (checkVendorBudget), BEFORE the paid call, with the worst-case bill; a null tenant is refused.
+  asked.length = 0; booked.length = 0
+  const budgetAsks: any[] = []
+  const deny = async (p: any) => { budgetAsks.push(p); return { allowed: false } }
+  const allowB = async (p: any) => { budgetAsks.push(p); return { allowed: true } }
+  const overBudget = await runVersiumContactLeg({ brokerageId: "b-1", stage: "contact", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: hit as any, meter, checkBudget: deny })
+  check("EXECUTED: an over-budget tenant → skipped 'budget', Versium NOT asked, nothing booked, and the gate was asked for the worst case (2 outputs × one credit)",
+    overBudget.skipped === "budget" && asked.length === 0 && booked.length === 0 && budgetAsks[0]?.brokerageId === "b-1" && budgetAsks[0]?.addCost === 2 * vs.VERSIUM_MATCH_CREDIT_USD)
+  const noTenant = await runVersiumContactLeg({ brokerageId: null, stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: hit as any, meter, checkBudget: allowB })
+  check("EXECUTED: a null tenant → skipped 'no_brokerage' (no budget to check, no ledger row to book — fail closed), Versium NOT asked",
+    noTenant.skipped === "no_brokerage" && asked.length === 0)
+  const throwing = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: hit as any, meter, checkBudget: async () => { throw new Error("gate down") } })
+  check("EXECUTED: a budget gate that cannot run REFUSES (budget_unavailable), Versium NOT asked", /^budget_unavailable/.test(throwing.skipped ?? "") && asked.length === 0)
+  const allowedLeg = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: hit as any, meter, checkBudget: allowB })
+  check("POSITIVE CONTROL: the same call with the gate ALLOWING asks Versium and answers (the gate discriminates, it does not strip)",
+    allowedLeg.answered && asked.join(",") === "email")
+  const railSrc = stripped("lib/ai-isa/property-lookup-rail.ts"), hfSrc = stripped("lib/enrichment/household-financials.ts")
+  const GATE = /import\("@\/lib\/vendor-governance\/budget-gate"\)\)\.checkVendorBudget\(p\)/
+  check("the contact leg and the financial rung default to the SAME gate function (budget-gate.ts::checkVendorBudget), asked before appendVersiumContact",
+    GATE.test(railSrc) && GATE.test(hfSrc) && railSrc.indexOf("checkVendorBudget(p)") < railSrc.indexOf("await appendVersiumContact("))
 
   // The two enrichment paths: PeopleData is reached ONLY after a Versium miss.
   const orchS = stripped("lib/lead-pipeline/enrichment-orchestrator.ts")
@@ -229,7 +254,7 @@ console.log("\n[Layer 2c · VERSIUM CONTRACT — normalized results, provenance,
   console.warn = (...a: unknown[]) => { warned.push(a.map(String).join(" ")) }
   const leg = await rail.runVersiumContactLeg(
     { brokerageId: "b-1", stage: "lead", identity: { firstName: "Ana", lastName: "Owner", zip: "78701" }, hasEmail: false, hasPhone: false, systemSource: "proof" },
-    { call: contactCall as any, demographicCall: demoCall as any, meter: async (m: any) => { booked2.push(m); return false } },
+    { call: contactCall as any, demographicCall: demoCall as any, meter: async (m: any) => { booked2.push(m); return false }, checkBudget: async () => ({ allowed: true }) },
   )
   console.warn = origWarn
   check("EXECUTED: the leg returns fieldProvenance (email + demographics) and writes it INTO the profile as field_provenance; no raw key leaks",

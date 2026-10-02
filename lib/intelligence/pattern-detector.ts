@@ -15,8 +15,7 @@ import "server-only"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateTextRouted } from "@/lib/ai/models"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 import { computeDaysOnMarketOrZero } from "@/lib/listings/compute-dom"
@@ -203,7 +202,7 @@ export async function scanEntityForPatterns(
     }
 
     // Evaluate pattern
-    const evaluation = await evaluatePattern(pattern, signals, entityType)
+    const evaluation = await evaluatePattern(pattern, signals, entityType, brokerageId)
 
     if (
       evaluation.matches &&
@@ -453,7 +452,8 @@ async function fetchEntitySignals(
 async function evaluatePattern(
   pattern: BehavioralPattern,
   signals: EntitySignals,
-  entityType: "contact" | "listing"
+  entityType: "contact" | "listing",
+  brokerageId: string,
 ): Promise<{
   matches: boolean
   confidence: number
@@ -592,7 +592,7 @@ async function evaluatePattern(
     default:
       // For complex patterns, use AI evaluation
       if (COMPLEX_PATTERNS.includes(pattern.pattern_slug)) {
-        return evaluateWithAI(pattern, signals, entityType)
+        return evaluateWithAI(pattern, signals, entityType, brokerageId)
       }
 
       // Default rule-based fallback
@@ -604,7 +604,8 @@ async function evaluatePattern(
 async function evaluateWithAI(
   pattern: BehavioralPattern,
   signals: EntitySignals,
-  entityType: "contact" | "listing"
+  entityType: "contact" | "listing",
+  brokerageId: string,
 ): Promise<{
   matches: boolean
   confidence: number
@@ -612,8 +613,12 @@ async function evaluateWithAI(
   triggerSignals: Record<string, unknown>
 }> {
   try {
-    const { text } = await generateText({
-      model: resolveModel("claude-sonnet"),
+    // Wave 97 (lane 97C): the ROUTED lane (lib/ai/models.ts::generateTextRouted) — books ai_tool_usage
+    // under the scanned entity's tenant, runs the fair-use pre-flight + Data Guard, and routes by task
+    // (behavioral_pattern_detect) instead of a hardcoded Sonnet call that booked nothing.
+    const { text } = await generateTextRouted({
+      feature: "behavioral_pattern_detect",
+      brokerageId,
       system: `You are a real estate behavioral pattern analyzer. Evaluate if the given pattern matches the entity signals.
 Return ONLY valid JSON: {"matches": boolean, "confidence": number (0-1), "reasoning": string}`,
       prompt: `Pattern to detect: ${pattern.pattern_name}
@@ -624,7 +629,7 @@ Entity type: ${entityType}
 Entity signals: ${JSON.stringify(signals, null, 2)}
 
 Does this pattern match? Evaluate and return JSON.`,
-      maxOutputTokens: 200,
+      maxTokens: 200,
     })
 
     // Parse AI response

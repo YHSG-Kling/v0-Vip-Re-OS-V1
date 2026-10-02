@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-02
  * source: public.live_schema_json()
- * body-sha256: d36c9b0dd88315caeece65a305d8d405c9a13368fbbf68de11ce7670f4e20bce
+ * body-sha256: fcf947d44e2924e129d8968b2c16dc5b1e4cdeefa4586367c09c06df1c63d267
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -376,7 +376,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   learning_modules: ["approved_at", "approved_by", "audience_age_segs", "audience_generations", "audience_personas", "audience_roles", "authored_by", "body", "brokerage_id", "channels", "cover_image_url", "created_at", "display_priority", "estimated_minutes", "gap_tags", "gated_until_milestone", "id", "is_ai_generated", "milestone_key", "prerequisite_module_ids", "published_at", "quiz_questions", "rejected_at", "rejected_by", "rejection_reason", "required", "stage_tags", "status", "summary", "team_id", "title", "updated_at", "view_count"],
   lender_applications: ["application_url", "approved_at", "brokerage_id", "contact_id", "created_at", "id", "lender_id", "loan_amount", "status", "transaction_id", "updated_at"],
   license_verifications: ["brokerage_id", "confidence_score", "created_at", "failure_reasons", "id", "license_id", "raw_response", "verification_method", "verification_result", "verified_by_user_id"],
-  lifecycle_events: ["actor_user_id", "agent_id", "brokerage_id", "created_at", "dedupe_key", "entity_id", "entity_type", "error", "event_type", "id", "metadata", "payload", "processed", "processed_at", "source", "user_id"],
+  lifecycle_events: ["actor_user_id", "agent_id", "brokerage_id", "causation_id", "correlation_id", "created_at", "dedupe_key", "entity_id", "entity_type", "error", "event_type", "id", "metadata", "payload", "processed", "processed_at", "source", "user_id"],
   lifecycle_promo_policy: ["auto_spawn", "cooldown_hours", "event_type", "id", "mail_enabled", "mail_max_recipients", "mail_postcard_size", "mail_target_audience", "mail_template_id", "scope_id", "scope_type", "updated_at", "updated_by"],
   lifetime_customer_npv_scores: ["agent_id", "brokerage_id", "computed_at", "contact_id", "engagement_score", "id", "next_touchpoint_due", "npv_dollars", "npv_score", "previous_score", "recency_score", "recommended_action", "recommended_cadence", "referral_history_score", "score_delta", "signals", "tier", "transaction_history_score", "wealth_score"],
   lifetime_customer_touchpoints: ["agent_id", "brokerage_id", "channel", "contact_id", "created_at", "engagement_data", "id", "related_transaction_id", "scheduled_date", "sent_date", "status", "touchpoint_type", "updated_at"],

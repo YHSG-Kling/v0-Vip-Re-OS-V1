@@ -282,6 +282,13 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // back to 0 once the integrator applies it and flips the header. Sibling wave-93 lanes bump this
 // line for their own files — the integrator sums them when merging.
 // 1 → 0 (wave 93 integrator): m684 applied live 2026-10-01 via the Supabase MCP.
+// 0 → 1 (wave 97, lane 97C — commission ledger append-only):
+// m689-a-posted-commission-entry-is-corrected-by-a-new-row-never-edited.sql, WRITTEN NOT APPLIED —
+// BEFORE UPDATE OR DELETE trigger on commission_distributions refusing a direct edit of a POSTED
+// (paid) entry. Deliberate bump, named per this guard's own instruction; drops back to 0 once the
+// integrator applies it and flips the header. Sibling wave-97 lanes (97A m687, 97B m688) bump this
+// line for their own files — the integrator sums them when merging.
+// 1 → 0 (wave 97 integrator): m687 (97A) and m689 applied live 2026-10-02 via the Supabase MCP; 97B wrote none.
 const NOT_APPLIED_BASELINE = 0
 console.log("\n[3 · the work-in-flight list only shrinks]")
 if (notApplied.length) for (const f of notApplied) console.log(`     · ${f}`)

@@ -602,9 +602,8 @@ export function selectToolsForPersona<T extends Record<string, unknown>>(registr
   const survivors = names.filter((n) => {
     // Wave 96 (lane 96B): a tool the risk registry below cannot classify — or one that signs, files
     // or cannot be undone — is never mounted on a persona surface (fail closed; humans own those).
-    const risk = riskClassForTool(n)
-    if (risk === "IRREVERSIBLE" || risk === "LEGAL") {
-      console.warn(`[persona-tool-policy] tool "${n}" not mounted: risk class ${risk} (classify it in TOOL_RISK_CLASS)`)
+    if (!isToolMountableByRisk(n)) {
+      console.warn(`[persona-tool-policy] tool "${n}" not mounted: risk class ${riskClassForTool(n)} (classify it in TOOL_RISK_CLASS)`)
       return false
     }
     const need = BATCHDATA_TOOL_NEED[n]
@@ -677,6 +676,54 @@ const TOOL_RISK_CLASS: Readonly<Record<string, ToolRiskClass>> = {
   send_matching_listings: "COMMUNICATION",
   // Obligates money.
   start_subscription: "FINANCIAL",
+  // ── Wave 97 (lane 97C): the STAFF TOOLKIT (app/api/internal/ai-chat/route.ts agentTools), mounted
+  // through selectToolsForSeat, which now runs this check over EVERY tool it mounts. Staff-session
+  // tools on OUR records (tenant-checked by the route) — reversible by staff.
+  create_task: "LOW_RISK_WRITE",
+  schedule_follow_up: "LOW_RISK_WRITE",
+  update_contact_status: "LOW_RISK_WRITE",
+  log_activity: "LOW_RISK_WRITE",
+  // A DRAFT for the agent's review — "Does NOT auto-send".
+  draft_ai_reply: "LOW_RISK_WRITE",
+  draft_listing_description: "LOW_RISK_WRITE",
+  // Stage machines validate prerequisites/blockers in the kernel before a move; staff can move back.
+  advance_listing_stage: "LOW_RISK_WRITE",
+  advance_transaction_stage: "LOW_RISK_WRITE",
+  // STAGED drafts (lib/wizard-staging/content-staging.ts): nothing sends, mails or spends until a human
+  // opens the returned open_url and launches it — the ad/direct-mail budget is a draft field, not a charge.
+  stage_listing_packet: "LOW_RISK_WRITE",
+  stage_offer_packet: "LOW_RISK_WRITE",
+  stage_newsletter_draft: "LOW_RISK_WRITE",
+  stage_email_campaign: "LOW_RISK_WRITE",
+  stage_open_house: "LOW_RISK_WRITE",
+  stage_blog_draft: "LOW_RISK_WRITE",
+  stage_podcast_episode: "LOW_RISK_WRITE",
+  stage_video_project: "LOW_RISK_WRITE",
+  stage_direct_mail_campaign: "LOW_RISK_WRITE",
+  stage_ad_campaign: "LOW_RISK_WRITE",
+  // Reaches the client (in their portal inbox).
+  send_portal_message: "COMMUNICATION",
+}
+
+/**
+ * PURE — the ONE mount-time risk check (wave 96 persona surfaces; wave 97 every mount point:
+ * selectToolsForPersona, selectToolsForSeat over the WHOLE seat map incl. the staff toolkit, and
+ * lib/voice/platform-reception.ts::platformReceptionTools — the prospect agent's only mount).
+ * A tool whose class is LEGAL or IRREVERSIBLE (which an UNCLASSIFIED name resolves to) never mounts.
+ */
+function isToolMountableByRisk(toolName: string): boolean {
+  const risk = riskClassForTool(toolName)
+  return risk !== "IRREVERSIBLE" && risk !== "LEGAL"
+}
+
+/** PURE — `registry` minus every tool isToolMountableByRisk refuses, warning once per refused name. */
+export function refuseUnmountableTools<T extends Record<string, unknown>>(registry: T, surface: string): Partial<T> {
+  const out: Record<string, unknown> = {}
+  for (const [name, t] of Object.entries(registry)) {
+    if (isToolMountableByRisk(name)) out[name] = t
+    else console.warn(`[persona-tool-policy] ${surface}: tool "${name}" not mounted: risk class ${riskClassForTool(name)} (classify it in TOOL_RISK_CLASS)`)
+  }
+  return out as Partial<T>
 }
 
 /**
@@ -687,11 +734,13 @@ const TOOL_RISK_CLASS: Readonly<Record<string, ToolRiskClass>> = {
  */
 export const TOOL_APPROVAL_GATE: Readonly<Record<string, string>> = {
   send_signup_link: "lib/providers/dispatch.ts — dispatchEmail/dispatchSms run the outbound policy chain (autonomy, consent, suppression, DNC, quiet hours, de-confliction, budget) outside the model; addressed only to the prospect's own email/phone",
-  send_newsletter: "lib/content/newsletter-enrollment.ts — enrolment only, refused on opt-out / unsubscribed / unverified email; the send itself rides the campaign dispatch (delivery gate not traced: unresolved)",
-  send_market_report: "lib/content/newsletter-enrollment.ts — same enrolment gate as send_newsletter (delivery gate unresolved)",
-  send_explainer_video: "lib/video/avatar-explainer.ts — compliance + AI-tell scan before render; the brokerage ai_agent_capabilities toggle mounts it; delivery gate unresolved",
-  send_matching_listings: "lib/ai-isa/customer-context-tools.ts — writes a property_alerts row for the person who asked; the alert sends ride the listing-alert pipeline (delivery gate unresolved)",
+  // Wave 97 (lane 97C) — the four delivery gates 96B left unresolved, TRACED (no new gate):
+  send_newsletter: "lib/content/newsletter-enrollment.ts — enrolment only, refused on opt-out / unsubscribed / unverified email; DELIVERY: app/api/cron/publish-newsletters/route.ts sends each issue through lib/providers/dispatch.ts::dispatchEmail (autonomy, consent, suppression, de-confliction, budget) after evaluateBroadcastDeconflict + evaluateTenantOutbound",
+  send_market_report: "lib/content/newsletter-enrollment.ts — the tool answers condition/trend in-conversation (no dollar figure) and enrols the newsletter; DELIVERY of the ongoing market_update sections is the same publish-newsletters → lib/providers/dispatch.ts::dispatchEmail path as send_newsletter",
+  send_explainer_video: "lib/video/avatar-explainer.ts — compliance + AI-tell redraft before render, and the row is inserted approval_status 'pending_review' in the unified approval queue (a human approves); the row is addressed to NO contact (contact_id null), so NO automated delivery exists — nothing reaches the person without the agent",
+  send_matching_listings: "lib/ai-isa/customer-context-tools.ts — writes a property_alerts row for the person who asked; DELIVERY: lib/property-alerts/alert-engine.ts → alert-notifier.ts sends through lib/providers/dispatch.ts::dispatchEmail / dispatchSms (consent, suppression, DNC, quiet hours, de-confliction)",
   start_subscription: "lib/platform/prospect-agent-tools.ts — 'trial' moves no money; 'paid' emails a checkout the PROSPECT completes (the human approves by paying); enterprise/custom → needsHuman handoff",
+  send_portal_message: "app/api/internal/ai-chat/route.ts — staff session only (COPILOT_ADMITTED_ROLES seat resolution), the contact is re-read under the session's brokerage predicate before the insert; it lands in the client's authenticated portal inbox (client_portal_messages) — no email / SMS leaves from this tool",
 }
 
 /** PURE — the risk class for one tool NAME. Unclassified → IRREVERSIBLE (fail closed). Read by

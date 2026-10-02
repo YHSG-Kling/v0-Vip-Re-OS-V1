@@ -162,7 +162,7 @@ console.log("\n[D7 · Versium hit → demographics filled on PDL's vocabulary, P
   }
   const meter = async (row: any) => { booked.push(row) }
   const id = { firstName: "Ana", lastName: "Owner", city: "Austin", state: "TX" }
-  const v = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: contactHit as any, demographicCall: demoCall, meter })
+  const v = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: contactHit as any, demographicCall: demoCall, meter, checkBudget: async () => ({ allowed: true }) })
   const p = v.demographicsProfile ?? {}
   // What the drain / raw path would do next: PeopleData is asked only on a contact-point MISS.
   if (!v.answered) pdlCalls++
@@ -188,7 +188,7 @@ console.log("\n[D7 · Versium hit → demographics filled on PDL's vocabulary, P
   // Skip categories already filled.
   asked.length = 0; booked.length = 0
   const filled = { household_income: "$75,000", net_worth: "$100,000", credit_score_range: "650-699" }
-  const v2 = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof", existingProfile: filled }, { call: contactHit as any, demographicCall: demoCall, meter })
+  const v2 = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof", existingProfile: filled }, { call: contactHit as any, demographicCall: demoCall, meter, checkBudget: async () => ({ allowed: true }) })
   check("EXECUTED: a category whose fields are ALREADY filled is not re-bought (financial skipped; only the basic demographic credit is booked)",
     asked.join(",") === "contact:email,demographic:demographic" && booked.filter((b) => b.usageType.startsWith("demographic_append_")).length === 1
       && versiumDemographicCategoriesNeeded({ ...filled, ...Object.fromEntries(VERSIUM_DEMOGRAPHIC_CATEGORY_FIELDS.demographic.map((k) => [k, "x"])) }).length === 0 && v2.answered)
@@ -196,11 +196,11 @@ console.log("\n[D7 · Versium hit → demographics filled on PDL's vocabulary, P
   // A miss buys no demographics (the chain continues to BatchData → PeopleData).
   asked.length = 0; booked.length = 0
   const miss = async (output: string) => { asked.push(`contact:${output}`); return { ok: true, status: 200, data: { versium: { match_counts: {}, results: [] } } } }
-  const v3 = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: miss as any, demographicCall: demoCall, meter })
+  const v3 = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof" }, { call: miss as any, demographicCall: demoCall, meter, checkBudget: async () => ({ allowed: true }) })
   check("EXECUTED: a Versium MISS buys no demographics ($0, no ledger row) — PeopleData's profile leg follows downstream as before",
     !v3.answered && v3.demographicsProfile === null && asked.join(",") === "contact:email" && booked.length === 0)
   // POSITIVE CONTROL: the 93B2 shape (hit, no demographic step) leaves the profile empty — the loss this fixes.
-  const v4 = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof", existingProfile: Object.fromEntries([...VERSIUM_DEMOGRAPHIC_CATEGORY_FIELDS.demographic, ...VERSIUM_DEMOGRAPHIC_CATEGORY_FIELDS.financial].map((k) => [k, "known"])) }, { call: contactHit as any, demographicCall: demoCall, meter })
+  const v4 = await runVersiumContactLeg({ brokerageId: "b-1", stage: "lead", identity: id, hasEmail: false, hasPhone: false, systemSource: "proof", existingProfile: Object.fromEntries([...VERSIUM_DEMOGRAPHIC_CATEGORY_FIELDS.demographic, ...VERSIUM_DEMOGRAPHIC_CATEGORY_FIELDS.financial].map((k) => [k, "known"])) }, { call: contactHit as any, demographicCall: demoCall, meter, checkBudget: async () => ({ allowed: true }) })
   check("POSITIVE CONTROL: with nothing left to buy the step returns NO profile — so the D7 fills above came from the Versium demographic step, not from the contact hit",
     v4.answered && v4.demographicsProfile === null)
 
@@ -214,6 +214,39 @@ console.log("\n[D7 · Versium hit → demographics filled on PDL's vocabulary, P
   check("the raw path carries the Versium profile as peopleDataProfile (the field the lead insert + raw row read) and skips categories BatchData already sold",
     /\.\.\.\(versium\.demographicsProfile \? \{ peopleDataProfile: versium\.demographicsProfile \} : \{\}\)/.test(ppD7)
       && /knownDemographics: householdFinancialsFromBatchData\(rec\.raw_data\)/.test(ppD7) && /existingProfile: fields\.knownDemographics \?\? null/.test(ppD7))
+  // Wave 97 (lane 97C — 96B open item): an EMAIL-ONLY Versium hit on the raw path still carries its
+  // provenance (no demographic profile bought → a provenance-only profile), and the lead row names Versium.
+  check("the raw path writes field_provenance on an EMAIL-ONLY hit too (provenance-only profile when no demographics were bought) and names Versium as enrichment_provider",
+    /!versium\.demographicsProfile && Object\.keys\(versium\.fieldProvenance\)\.length > 0\s*\?\s*\{ peopleDataProfile: \{ provider: 'versium', field_provenance: versium\.fieldProvenance \} \}/.test(ppD7)
+      && /enrichment_provider: enriched\.peopleDataProfile\.provider === 'versium' \? 'versium' : 'peopledata'/.test(ppD7))
+  check("POSITIVE CONTROL: the email-only finder rejects the 96B shape (provenance only when demographics were bought)",
+    !/!versium\.demographicsProfile && Object\.keys\(versium\.fieldProvenance\)/.test("...(versium.demographicsProfile ? { peopleDataProfile: versium.demographicsProfile } : {}),"))
+}
+
+// ── field_provenance READER (wave 97, lane 97C) ─────────────────────────────
+console.log("\n[provenance reader — field_provenance + household_financials.sources read back for the contact card]")
+{
+  const { fieldProvenanceForDisplay } = await import("../lib/lead-pipeline/enrichment-column-map")
+  const profile = {
+    provider: "versium",
+    household_financials: { sources: { marital_status: "batchdata", household_income: "batchdata", net_worth: "versium", credit_score_range: "versium" }, captured_at: "2026-10-01T12:00:00.000Z" },
+    field_provenance: { email: { source: "versium", capability: "person.enrich_contact", retrievedAt: "2026-10-01T12:00:00.000Z", matchConfidence: null }, demographics: { source: "versium", capability: "person.enrich_demographics", retrievedAt: "2026-10-02T08:00:00.000Z", matchConfidence: "individual" } },
+  }
+  const staff = fieldProvenanceForDisplay(profile, { includeFinancials: true })
+  const nonStaff = fieldProvenanceForDisplay(profile, { includeFinancials: false })
+  check("EXECUTED: staff read source + retrieved date per field — email, demographics, and the four household fields under their CONTACT column names",
+    staff.email?.source === "versium" && staff.email?.retrievedAt === "2026-10-01T12:00:00.000Z" && staff.demographics?.matchConfidence === "individual"
+      && staff.net_worth_range?.source === "versium" && staff.household_income?.source === "batchdata" && staff.marital_status?.retrievedAt === "2026-10-01T12:00:00.000Z")
+  check("EXECUTED: includeFinancials:false drops income / net worth / credit-band provenance (§5) and keeps the rest (positive control: the staff call above keeps them)",
+    !nonStaff.household_income && !nonStaff.net_worth_range && !nonStaff.credit_score_range && nonStaff.marital_status?.source === "batchdata" && nonStaff.email?.source === "versium")
+  check("EXECUTED: a malformed or empty blob reads as no provenance, never a throw",
+    Object.keys(fieldProvenanceForDisplay(null, { includeFinancials: true })).length === 0
+      && Object.keys(fieldProvenanceForDisplay({ field_provenance: { email: "versium", phone: { retrievedAt: "x" } } } as any, { includeFinancials: true })).length === 0)
+  const act = stripped("app/actions/contact-enrichment.ts")
+  const panel = stripped("app/crm/contacts/[contactId]/components/enrichment-panel.tsx")
+  check("the contact card reads it: getContactInsights selects enrichment_profile, returns provenance for CRM staff only, and the panel renders source + date beside the value",
+    /property_records, enrichment_profile"/.test(act) && /const provenance = contact && staff\s*\?\s*fieldProvenanceForDisplay\(/.test(act)
+      && /setProvenance\(res\.provenance \?\? \{\}\)/.test(panel) && /fieldProvenance\(key\)/.test(panel) && /via \$\{p\.source\} · \$\{when\}/.test(panel))
 }
 
 // ── cost ────────────────────────────────────────────────────────────────────

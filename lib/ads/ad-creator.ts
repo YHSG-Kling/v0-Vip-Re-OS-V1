@@ -11,8 +11,7 @@ import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-featur
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import type { KernelContact } from "@/lib/kernel/types"
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateTextRouted } from "@/lib/ai/models"
 // THE EXCLUSION SLOT GATE. Not a second fair-housing classifier (CLAUDE.md §6):
 // it calls the persona gate's exclusion arm and the token gate, both of which
 // already own their answers. See lib/ads/audience-exclusion.ts's header for why
@@ -276,10 +275,14 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
 
   // ── 5. Generate variations via AI ───────────────────────────────────────────
   try {
-    const { text } = await generateText({
-      model: resolveModel("anthropic/claude-sonnet-4-20250514" as Parameters<typeof resolveModel>[0]),
+    // Wave 97 (lane 97C): the ROUTED lane books ai_tool_usage under the SESSION's tenant + user
+    // (was a raw pinned-Sonnet call that booked nothing), with fair-use pre-flight + Data Guard.
+    const { text } = await generateTextRouted({
+      feature: "marketing_script_generation",
+      brokerageId,
+      userId,
       prompt,
-      maxOutputTokens: 1500,
+      maxTokens: 1500,
     })
 
     // Parse JSON from response

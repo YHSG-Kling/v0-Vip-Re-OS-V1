@@ -96,7 +96,7 @@
 import { TENANT_ADMIN_USER_TYPES, isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 import { isLenderVendorCategory } from "@/lib/kernel/lender-linkage"
 import { VENDOR_CATEGORY_TITLE } from "@/lib/kernel/vendor-categories"
-import { riskClassForTool } from "@/lib/ai-isa/persona-tool-policy"
+import { riskClassForTool, refuseUnmountableTools } from "@/lib/ai-isa/persona-tool-policy"
 
 // ─── THE SEAT VOCABULARY ────────────────────────────────────────────────────
 
@@ -479,7 +479,10 @@ export function selectToolsForSeat(seat: UserTypeSeat, parts: SeatToolParts): Re
   for (const [batchDataTool, railTool] of Object.entries(BATCHDATA_SUPERSEDED_BY_RAIL)) {
     if (railTool in out && batchDataTool in out && batchDataTool in parts.batchDataTools) delete out[batchDataTool]
   }
-  return out
+  // Wave 97 (lane 97C): the SAME mount-time risk check over EVERYTHING this seat mounts — the staff
+  // toolkit (agentTools), RentCast / BatchData and the customer bundle, not only the seat's own tools
+  // (lib/ai-isa/persona-tool-policy.ts::refuseUnmountableTools — unclassified → IRREVERSIBLE → refused).
+  return refuseUnmountableTools(out, `seat ${seat}`) as Record<string, unknown>
 }
 
 // ─── PROMPT (pure) ──────────────────────────────────────────────────────────

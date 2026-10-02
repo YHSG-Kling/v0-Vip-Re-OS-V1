@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1796 of 1859 pairs) — storing them would be
+ * overwhelming majority (1799 of 1862 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1940 edges across 714 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1859 unordered
+ * MEASURED AT GENERATION: 1943 edges across 715 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1862 unordered
  * table pairs carry at least one FK; 63
  * carry more than one and are listed below. 12 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-02
  * source: public.live_foreign_keys_json()
- * body-sha256: 1c329923212933f8b080eea8fbf9491f941ff1c23294e81732e67effcfaf0dde
+ * body-sha256: b9a9905c4c5774fb5e126329de231e147fb3b0fcc8ff8d48c51589c86d3f0660
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -109,6 +109,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "ad_retarget_presets": { "brokerage_id": "brokerages", "compliance_event_id": "compliance_events", "created_by": "users", "facebook_audience_id": "facebook_custom_audiences" },
   "affiliate_commission_events": { "affiliate_id": "platform_affiliates", "brokerage_id": "brokerages", "referral_id": "affiliate_referrals" },
   "affiliate_referrals": { "affiliate_id": "platform_affiliates", "brokerage_id": "brokerages" },
+  "agent_action_ledger": { "actor_agent_id": "agents", "actor_user_id": "users", "brokerage_id": "brokerages" },
   "agent_api_credentials": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "agent_assistant_sessions": { "agent_id": "agents", "brokerage_id": "brokerages", "context_contact_id": "contacts", "context_listing_id": "listings", "context_transaction_id": "transactions", "user_id": "users" },
   "agent_assistant_tool_calls": { "brokerage_id": "brokerages", "session_id": "agent_assistant_sessions" },

@@ -3,11 +3,10 @@
 // ============================================================
 // AD OS – Shared Server Actions
 // Scoped to the Ad OS panels inside Marketing Studio.
-// Uses AI SDK generateText directly (no contact context required).
+// Model calls ride the routed lane (lib/ai/models.ts) under the session's tenant (no contact context required).
 // ============================================================
 
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateTextRouted } from "@/lib/ai/models"
 import { createClient } from "@/lib/supabase/server"
 import { predictPerformanceAction, getUserContextForPrediction } from "@/app/actions/content-prediction"
 // Type-only (erased at compile time): the real shape the predictor returns, so the
@@ -131,9 +130,19 @@ export async function generateMarketingInsight(
   prompt: string,
   systemPrompt?: string
 ): Promise<{ success: boolean; text?: string; error?: string }> {
+  // Wave 97 (lane 97C): this "use server" export is a PUBLIC endpoint (CLAUDE.md §4) and ran a model
+  // for ANY caller with no session at all — an open, unbooked AI proxy. Gate on the session first
+  // (the same resolver runPrelaunchCheck below uses; fail closed), then book the spend on the routed
+  // lane under that tenant + user (social_content_draft = the gpt-4o-mini this call pinned).
+  const userCtx = await getUserContextForPrediction()
+  if (!userCtx.success || !userCtx.userId || !userCtx.brokerageId) {
+    return { success: false, error: "Not authenticated or no brokerage found" }
+  }
   try {
-    const { text } = await generateText({
-      model: resolveModel("openai/gpt-4o-mini"),
+    const { text } = await generateTextRouted({
+      feature: "social_content_draft",
+      brokerageId: userCtx.brokerageId,
+      userId: userCtx.userId,
       system:
         systemPrompt ??
         "You are a real estate marketing expert helping agents create compelling, compliant marketing content. Be concise, actionable, and specific.",

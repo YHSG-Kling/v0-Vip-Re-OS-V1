@@ -75,6 +75,16 @@ const FIELD_LABELS: Array<[string, string]> = [
 /** The fields that are MODELED estimates — the disclaimer renders whenever one is on screen. */
 const MODELED_FIELDS = new Set(["net_worth_range", "credit_score_range"])
 
+/** Fields a Versium DEMOGRAPHIC append fills (field_provenance.demographics covers them as a block). */
+const DEMOGRAPHIC_FIELDS = new Set(["age_range", "gender", "home_owner_status", "length_of_residence", "occupation", "education_level", "home_value_estimate"])
+
+/** "via versium · Oct 1, 2026" — source + retrieved date beside an enriched value. */
+function provenanceLabel(p: { source: string; retrievedAt: string | null; matchConfidence: string | null } | undefined): string | null {
+  if (!p) return null
+  const when = p.retrievedAt ? new Date(p.retrievedAt).toLocaleDateString() : "date unknown"
+  return `via ${p.source} · ${when}${p.matchConfidence ? ` · ${p.matchConfidence} match` : ""}`
+}
+
 const SOCIAL_FIELDS: Array<[string, string]> = [
   ["linkedin_url", "LinkedIn"],
   ["facebook_url", "Facebook"],
@@ -86,6 +96,9 @@ export function EnrichmentPanel({ contactId }: Props) {
   const [enrichment, setEnrichment] = useState<Record<string, any> | null>(null)
   const [lifeChanges, setLifeChanges] = useState<LifeEvent[]>([])
   const [lastEnriched, setLastEnriched] = useState<string | null>(null)
+  // Wave 97 (lane 97C): where each enriched value came from and when (staff only — the action
+  // returns an empty map to anyone else).
+  const [provenance, setProvenance] = useState<Record<string, { source: string; retrievedAt: string | null; matchConfidence: string | null }>>({})
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
@@ -101,6 +114,7 @@ export function EnrichmentPanel({ contactId }: Props) {
       setEnrichment(res.enrichment)
       setLifeChanges(Array.isArray(res.lifeChanges) ? res.lifeChanges : [])
       setLastEnriched(res.lastEnriched)
+      setProvenance(res.provenance ?? {})
     }
     setLoading(false)
   }, [contactId])
@@ -159,6 +173,8 @@ export function EnrichmentPanel({ contactId }: Props) {
     : []
   const socials = enrichment ? SOCIAL_FIELDS.filter(([k]) => Boolean(enrichment[k])) : []
   const showsModeled = populated.some(([k]) => MODELED_FIELDS.has(k))
+  const fieldProvenance = (key: string) =>
+    provenanceLabel(provenance[key] ?? (DEMOGRAPHIC_FIELDS.has(key) ? provenance.demographics : undefined))
 
   return (
     <Card>
@@ -212,10 +228,23 @@ export function EnrichmentPanel({ contactId }: Props) {
                 {populated.map(([key, label]) => (
                   <div key={key} className="contents">
                     <dt className="text-xs text-muted-foreground">{label}</dt>
-                    <dd className="text-xs font-medium">{String(enrichment?.[key])}</dd>
+                    <dd className="text-xs font-medium">
+                      {String(enrichment?.[key])}
+                      {fieldProvenance(key) && (
+                        <span className="ml-1 font-normal text-[10px] text-muted-foreground">{fieldProvenance(key)}</span>
+                      )}
+                    </dd>
                   </div>
                 ))}
               </dl>
+            )}
+
+            {(provenance.email || provenance.phone) && (
+              <p className="text-[11px] text-muted-foreground">
+                {provenance.email && `Email ${provenanceLabel(provenance.email)}`}
+                {provenance.email && provenance.phone && " · "}
+                {provenance.phone && `Phone ${provenanceLabel(provenance.phone)}`}
+              </p>
             )}
 
             {showsModeled && (

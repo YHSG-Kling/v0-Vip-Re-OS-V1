@@ -31,6 +31,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { isCrmContactStaff } from "@/lib/auth/crm-contact-staff"
+import { fieldProvenanceForDisplay, type FieldProvenanceLine } from "@/lib/lead-pipeline/enrichment-column-map"
 import {
   enrichContactRecord,
   runLifeChangeCheck,
@@ -482,6 +483,7 @@ export async function getContactInsights(contactId: string): Promise<{
   enrichment: any | null
   lifeChanges: any[]
   lastEnriched: string | null
+  provenance?: Record<string, FieldProvenanceLine>
   error?: string
 }> {
   const ctx = await getAgentContext()
@@ -496,7 +498,7 @@ export async function getContactInsights(contactId: string): Promise<{
     "age_range, gender, marital_status, household_income, net_worth_range, credit_score_range, home_owner_status, " +
     "home_value_estimate, length_of_residence, occupation, education_level, " +
     "linkedin_url, facebook_url, twitter_url, instagram_url, life_events, " +
-    "last_life_event_detected, public_records, court_records, property_records"
+    "last_life_event_detected, public_records, court_records, property_records, enrichment_profile"
 
   const supabase = await createClient()
 
@@ -550,5 +552,14 @@ export async function getContactInsights(contactId: string): Promise<{
       }
     : null
 
-  return { enrichment, lifeChanges, lastEnriched: contact?.enriched_at || null }
+  // Wave 97 (lane 97C): field provenance — source + retrieved date beside each enriched value
+  // (enrichment_profile.field_provenance + household_financials.sources, read through the ONE reader
+  // lib/lead-pipeline/enrichment-column-map.ts::fieldProvenanceForDisplay). Back-office staff only;
+  // financial provenance follows the same isCrmContactStaff gate as the values above (§5).
+  const staff = isCrmContactStaff(ctx.userType)
+  const provenance = contact && staff
+    ? fieldProvenanceForDisplay(contact.enrichment_profile as Record<string, unknown> | null, { includeFinancials: staff })
+    : {}
+
+  return { enrichment, lifeChanges, lastEnriched: contact?.enriched_at || null, provenance }
 }

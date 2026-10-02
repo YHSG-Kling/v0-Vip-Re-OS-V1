@@ -117,6 +117,9 @@ export async function markCommissionPaid(
       })
       .eq('commission_id', params.commissionId)
       .eq('brokerage_id', params.brokerageId)
+      // Wave 97 (97C, m689): a POSTED entry (paid) is append-only — the trigger refuses any UPDATE of
+      // it, and voided is terminal. Post only the open entries; a correction is a NEW row.
+      .not('status', 'in', '("paid","voided")')
 
     if (distributionsError) {
       return { success: false, error: distributionsError.message }
@@ -170,7 +173,7 @@ export async function markDistributionPaid(
 
   try {
     // Update distribution record
-    const { error: distributionError } = await supabase
+    const { data: posted, error: distributionError } = await supabase
       .from('commission_distributions')
       .update({
         status: 'paid',
@@ -178,9 +181,16 @@ export async function markDistributionPaid(
       })
       .eq('id', params.distributionId)
       .eq('brokerage_id', params.brokerageId)
+      // Wave 97 (97C, m689): never re-post a posted (paid) or voided entry — append-only ledger.
+      .not('status', 'in', '("paid","voided")')
+      .select('id')
 
     if (distributionError) {
       return { success: false, error: distributionError.message }
+    }
+    // An UPDATE matching nothing also resolves (CLAUDE.md §3): wrong tenant, gone, or already posted.
+    if (!posted || posted.length === 0) {
+      return { success: false, error: 'Distribution not found in this brokerage, or already paid / voided (a posted entry is corrected by a new adjustment row, never edited)' }
     }
 
     // Log payment event

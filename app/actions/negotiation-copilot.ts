@@ -21,9 +21,8 @@ import { createClient } from "@/lib/supabase/server"
 import { aiCounterOfferStrategy, aiCalculateEscalation } from "./ai-offer-creation"
 import { buildMultiOfferMatrix } from "@/lib/workflow/intelligence/multi-offer-matrix"
 import { isValidUUID } from "@/lib/validations"
-import { generateText } from "ai"
-import { generateObjectRouted } from "@/lib/ai/models"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// Wave 97 (97C): the reply draft rides the routed lane too (books ai_tool_usage; negotiation_reply_draft = gpt-4o-mini).
+import { generateObjectRouted, generateTextRouted } from "@/lib/ai/models"
 import { z } from "zod"
 
 export interface NegotiationStrategy {
@@ -317,6 +316,9 @@ export async function negotiationCoPilot(params: {
   const buyerName = buyer ? `${buyer.first_name ?? ""} ${buyer.last_name ?? ""}`.trim() || "the buyer" : "the buyer"
   const draftResponse = strategy
     ? await draftCounterResponse({
+        // Wave 97 (97C): the booking tenant + actor — same §4 sources as the concession matrix above.
+        brokerageId: (listing as { brokerage_id?: string | null } | null)?.brokerage_id ?? null,
+        userId: user.id,
         side,
         recommendedResponse: strategy.recommendedResponse,
         suggestedCounterPrice: strategy.suggestedCounterPrice ?? null,
@@ -420,6 +422,8 @@ async function summarizeComparables(input: {
 }
 
 async function draftCounterResponse(input: {
+  brokerageId: string | null
+  userId: string
   side: "seller" | "buyer"
   recommendedResponse: string
   suggestedCounterPrice: number | null
@@ -463,10 +467,10 @@ Audience: LISTING agent. Tone: professional, them-first, collaborative, no high-
 Respond with JSON only: { "subject": "<email subject ≤ 60 chars>", "body": "<message body>" }`
 
   try {
-    const result = await generateText({
-      model: resolveModel("openai/gpt-4o-mini"),
+    const result = await generateTextRouted({
+      feature: "negotiation_reply_draft", brokerageId: input.brokerageId, userId: input.userId,
       prompt: input.side === "buyer" ? buyerSidePrompt : sellerSidePrompt,
-      maxOutputTokens: 400,
+      maxTokens: 400,
     })
     const jsonMatch = result.text.match(/\{[\s\S]*\}/)
     if (!jsonMatch) return undefined

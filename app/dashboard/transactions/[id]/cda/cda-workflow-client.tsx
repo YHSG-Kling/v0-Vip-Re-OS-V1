@@ -747,6 +747,8 @@ export function CDAWorkflowClient({
                             .update({ status: "paid", paid_at: new Date().toISOString() })
                             .eq("transaction_id", transaction.id)
                             .eq("distribution_type", "agent")
+                            // Wave 97 (97C, m689): posted (paid) / voided entries are append-only.
+                            .not("status", "in", '("paid","voided")')
                           if (!error) {
                             setDistributions(prev =>
                               prev.map(d =>

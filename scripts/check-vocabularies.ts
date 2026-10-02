@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 440 tables, 779 columns.
+ * MEASURED AT GENERATION: 441 tables, 782 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-01
+ * generated: 2026-10-02
  * source: public.live_check_constraints_json()
- * body-sha256: 5399652db448e3dad2d45e214115b8f33fadb3f60e8a2aa52a37f285b2c1ddbb
+ * body-sha256: bb5d53e5f37531d791ee17518fc0aaf744fb1abe8f99bf14802639a0ce119660
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -56,6 +56,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   affiliate_commission_events: {
     status: ["accrued", "paid", "void"],
+  },
+  agent_action_ledger: {
+    actor_type: ["agent", "manager", "system", "user"],
+    reason_code: ["AGENT_SLA_BREACH", "BUYER_PROPERTY_MATCH", "CAMPAIGN_STEP", "COMPLIANCE_NOTICE", "CONTACT_WELCOME", "HUMAN_REQUESTED", "LEAD_FIRST_RESPONSE", "LIFETIME_TOUCH", "NO_ACTION_NEEDED", "PROPERTY_VALUE_CHANGE", "SELLER_FOLLOWUP_INTENT_INCREASE", "TRANSACTION_DEADLINE", "TRANSACTION_MILESTONE", "UNSPECIFIED", "WAIT_COOLDOWN"],
+    status: ["executed", "failed", "proposed", "skipped", "unknown"],
   },
   agent_assistant_sessions: {
     ended_reason: ["cap_reached", "disconnected", "error", "timeout", "user_ended"],

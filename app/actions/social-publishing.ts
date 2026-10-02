@@ -3,8 +3,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// Wave 97 (lane 97C): routed lane — books ai_tool_usage under the caller's tenant + user.
+import { generateTextRouted } from "@/lib/ai/models"
 import { runComplianceGate } from "@/lib/kernel/marketing/real-estate-compliance-gate"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 // resolveRecipientBrokerageId (the recipient-tenant rule for notifications) is
@@ -510,8 +510,8 @@ export async function generateSocialContent(params: {
     `Generate a social media post for ${params.contentType}. ${listingContext} Target persona: ${params.personaTarget || "general"}. Use the "Them First" approach: 40% feelings/empathy, 25% trust-building, 25% value, 10% solution. Include relevant hashtags.`
 
   try {
-    const { text } = await generateText({
-      model: resolveModel("openai/gpt-4o-mini"),
+    const { text } = await generateTextRouted({
+      feature: "social_content_draft", brokerageId: caller.brokerageId, userId: caller.userId,
       prompt,
     })
 

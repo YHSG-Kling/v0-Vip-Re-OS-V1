@@ -335,6 +335,8 @@ console.log("\n[Layer R · every AI tool is risk-classed; every consequential to
   const TOOL_FILES = [
     ...readdirSync("lib/ai-isa").filter((f) => f.endsWith(".ts")).map((f) => `lib/ai-isa/${f}`),
     "lib/platform/prospect-agent-tools.ts", "lib/voice/platform-reception.ts",
+    // Wave 97 (lane 97C): the staff toolkit (agentTools) — mounted through selectToolsForSeat.
+    "app/api/internal/ai-chat/route.ts",
   ]
   // A tool NAME is a key bound to tool({...}) or to a build*Tool builder (stripped source — a tombstone
   // naming a retired tool is not a mount).
@@ -354,7 +356,7 @@ console.log("\n[Layer R · every AI tool is risk-classed; every consequential to
   const consequential = [...names].filter((n) => ["COMMUNICATION", "FINANCIAL", "LEGAL", "IRREVERSIBLE"].includes(riskClassForTool(n)))
   const ungated = consequential.filter((n) => {
     const gate = TOOL_APPROVAL_GATE[n]
-    const file = gate?.match(/^(lib\/[\w./-]+\.ts)/)?.[1]
+    const file = gate?.match(/^((?:lib|app)\/[\w./-]+\.ts)/)?.[1]
     return !file || !existsSync(file)
   })
   check(`every consequential tool (${consequential.length}: ${consequential.join(", ")}) names an EXISTING gate file`, consequential.length > 0 && ungated.length === 0, `ungated: ${ungated.join(", ")}`)
@@ -365,7 +367,33 @@ console.log("\n[Layer R · every AI tool is risk-classed; every consequential to
   console.warn = origWarn
   check("EXECUTED: selectToolsForPersona refuses an unclassified (fail-closed IRREVERSIBLE) tool and keeps classified READ / COMMUNICATION tools (positive control: the same call keeps 3 of 4)",
     !mounted.includes("wire_funds_now") && mounted.length === 3 && mounted.includes("send_newsletter"), mounted.join(","))
-  console.log("  blind spots: rentcast_* / batchdata_* tools are built from vendor MCP catalogues at runtime (named by prefix → READ; their spend is gated by costRankForTool + resolveBatchDataAccess); tools mounted outside lib/ai-isa + the two platform files are not in the census; the DELIVERY gate behind send_newsletter / send_market_report / send_explainer_video / send_matching_listings is named as unresolved in TOOL_APPROVAL_GATE.")
+  // Wave 97 (lane 97C): the check runs at EVERY mount point — the prospect agent and the staff toolkit too.
+  const { selectToolsForSeat } = await import("../lib/ai-isa/user-type-tool-policy")
+  const { refuseUnmountableTools } = await import("../lib/ai-isa/persona-tool-policy")
+  console.warn = () => {}
+  const seatMounted = Object.keys(selectToolsForSeat("staff", {
+    staffTools: { create_task: {}, send_portal_message: {}, wire_funds_now: {} }, seatTools: {}, batchDataTools: {}, rentCastTools: { rentcast_value_lookup: {} }, customerTools: { e_sign_offer: {} },
+  }))
+  const prospectMounted = Object.keys(refuseUnmountableTools({ platform_faq_lookup: {}, start_subscription: {}, send_signup_link: {}, file_lawsuit: {} }, "proof"))
+  console.warn = origWarn
+  check("EXECUTED: selectToolsForSeat refuses an unclassified STAFF-TOOLKIT tool and an unclassified customer-bundle tool, keeping the classified ones (positive control: 3 of 5 survive)",
+    !seatMounted.includes("wire_funds_now") && !seatMounted.includes("e_sign_offer") && ["create_task", "send_portal_message", "rentcast_value_lookup"].every((n) => seatMounted.includes(n)) && seatMounted.length === 3, seatMounted.join(","))
+  check("EXECUTED: the prospect-agent filter keeps FINANCIAL start_subscription + COMMUNICATION send_signup_link + READ FAQ and refuses an unclassified tool (positive control: 3 of 4 survive)",
+    prospectMounted.length === 3 && !prospectMounted.includes("file_lawsuit") && prospectMounted.includes("start_subscription"), prospectMounted.join(","))
+  const recSrc = stripped("lib/voice/platform-reception.ts"), seatSrc = stripped("lib/ai-isa/user-type-tool-policy.ts"), personaSrc = stripped("lib/ai-isa/persona-tool-policy.ts")
+  check("WIRED: platformReceptionTools (the prospect agent's ONE mount — voice, /get-started chat, live agent) returns refuseUnmountableTools(...); selectToolsForSeat returns refuseUnmountableTools(out, …); selectToolsForPersona asks isToolMountableByRisk",
+    /return refuseUnmountableTools\(\{ \.\.\.faq, \.\.\.prospect \}/.test(recSrc) && /return refuseUnmountableTools\(out,/.test(seatSrc) && /if \(!isToolMountableByRisk\(n\)\)/.test(personaSrc))
+  check("POSITIVE CONTROL: the wiring finder rejects the pre-97 unfiltered mount shape", !/return refuseUnmountableTools\(\{ \.\.\.faq, \.\.\.prospect \}/.test("  return { ...faq, ...prospect }"))
+  const census97 = census(stripped("app/api/internal/ai-chat/route.ts"))
+  check(`the staff toolkit census reads the route (${census97.length} tool names; ≥ 20) and every one is classified`,
+    census97.length >= 20 && census97.every((n) => riskClassForTool(n) !== "IRREVERSIBLE"), census97.filter((n) => riskClassForTool(n) === "IRREVERSIBLE").join(","))
+  const UNRESOLVED = /unresolved|not traced/i
+  const stillUnresolved = consequential.filter((n) => UNRESOLVED.test(TOOL_APPROVAL_GATE[n] ?? ""))
+  check(`every consequential tool's gate is TRACED, none says unresolved (${stillUnresolved.join(", ") || "none"})`, stillUnresolved.length === 0)
+  check("POSITIVE CONTROL: the unresolved-gate finder flags the 96B wording", UNRESOLVED.test("the alert sends ride the listing-alert pipeline (delivery gate unresolved)"))
+  check("the traced delivery gates name lib/providers/dispatch.ts for the three that send (newsletter, market report, matching listings)",
+    ["send_newsletter", "send_market_report", "send_matching_listings"].every((n) => /lib\/providers\/dispatch\.ts::dispatchEmail/.test(TOOL_APPROVAL_GATE[n] ?? "")))
+  console.log("  blind spots: rentcast_* / batchdata_* tools are built from vendor MCP catalogues at runtime (named by prefix → READ; their spend is gated by costRankForTool + resolveBatchDataAccess); tools mounted outside lib/ai-isa, the two platform files and the staff route are not in the census (lib/voice/twilio-voice.ts VOICE_TOOL_ALLOWLIST builds from these same builders); send_explainer_video has NO automated delivery (contact_id null on the project) — its gate is the approval queue, recorded in TOOL_APPROVAL_GATE.")
 }
 
 console.log("\n" + "─".repeat(60))

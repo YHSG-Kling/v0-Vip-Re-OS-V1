@@ -308,6 +308,10 @@ export const AI_TASK_ROUTING: Record<string, {
   // compliance_check row; the open-house draft gets the row below, honouring
   // the pin its author wrote. The ignored `model:` argument is gone from both.
   open_house_followup_draft: { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "Sub-100-word open-house follow-up DRAFT staged for the agent (lib/kernel/open-house.ts) with a generic fallback; honours the gpt-4o-mini the call site always intended" },
+  // Wave 97 (lane 97C) — booked onto the routed lane at the SAME model each call site pinned, so the
+  // ledger changes and the cost does not (cost discipline: routing never silently upgrades a draft).
+  social_content_draft:      { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "Agent-reviewed social post DRAFT (app/actions/social-publishing.ts generateSocialContent); honours the gpt-4o-mini the call site pinned" },
+  negotiation_reply_draft:   { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "Counter / repair response DRAFT the agent edits before anything sends (app/actions/negotiation-copilot.ts, repair-negotiation-copilot.ts); honours the gpt-4o-mini the call sites pinned" },
 
   unspecified:               { model: "claude-sonnet", fallback: "gpt-4o",     reason: "Unknown feature — default to best general model" },
 }

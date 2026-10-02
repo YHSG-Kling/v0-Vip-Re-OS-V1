@@ -41,6 +41,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateObject } from "@/lib/ai/generate"
+import { logAIUsage } from "@/lib/ai/cost-tracking"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { isValidUUID } from "@/lib/validations"
 import { z } from "zod"
@@ -244,7 +245,7 @@ export async function generateAiListingPresentation(
       .limit(5)
     if (marketErr) console.error("[ai-listing-presentation] market_data read refused:", marketErr.message)
 
-    const { object: presentation } = await generateObject({
+    const { object: presentation, usage: presentationUsage } = await generateObject({
       model: resolveModel("openai/gpt-4o"),
       schema: presentationSchema,
       prompt: `Create a compelling listing presentation:
@@ -278,6 +279,23 @@ Create:
 7. Powerful closing with clear next steps
 8. Supporting appendix materials`,
     })
+
+    // Wave 97 (lane 97C): BOOK the spend — the generateObject shim books nothing (lib/ai/generate.ts
+    // GeneratedUsage). This path also runs AUTONOMOUSLY from the listing-appointment prep chain
+    // (lib/workflow-orchestrator/chains/listing-appt-prep.ts) — spend the tenant's overage never saw. Tenant from the run-derived anchor; a shim that
+    // cannot name the served model books nothing rather than a guessed identity (m508).
+    if (presentationUsage?.model) {
+      await logAIUsage({
+        userId: null,
+        brokerageId: input.brokerageId,
+        model: presentationUsage.model,
+        inputTokens: presentationUsage.inputTokens,
+        outputTokens: presentationUsage.outputTokens,
+        feature: "listing_presentation",
+      })
+    } else {
+      console.warn("[ai-listing-presentation] model usage not booked: the shim could not name the served model")
+    }
 
     // `presentation` is a TEXT column, not jsonb — stringify explicitly rather
     // than relying on how the transport happens to coerce an object.

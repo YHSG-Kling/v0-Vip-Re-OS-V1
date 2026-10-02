@@ -24,9 +24,8 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
-import { generateObjectRouted } from "@/lib/ai/models"
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// Wave 97 (97C): the reply draft rides the routed lane too (books ai_tool_usage; negotiation_reply_draft = gpt-4o-mini).
+import { generateObjectRouted, generateTextRouted } from "@/lib/ai/models"
 import { z } from "zod"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -319,6 +318,9 @@ Return strictly the items array with one entry per id.`,
 
   // ─── AI: draft response message ─────────────────────────────────────────
   const draftResponse = await draftRepairResponse({
+    // Wave 97 (97C): the booking tenant + actor — the same §4 sources the strategy call above uses.
+    brokerageId: (tx as { brokerage_id?: string | null } | null)?.brokerage_id ?? null,
+    userId: user.id,
     side: params.side,
     propertyAddress: tx.property_address ?? "the property",
     strategy,
@@ -350,6 +352,8 @@ function daysFromNowTo(date: string | null | undefined): number | null {
 }
 
 async function draftRepairResponse(input: {
+  brokerageId:     string | null
+  userId:          string
   side:            "buyer" | "seller"
   propertyAddress: string
   strategy:        RepairStrategy | undefined
@@ -399,10 +403,10 @@ Audience: LISTING agent. Tone: professional, collaborative, them-first, no high-
 Respond with JSON only: { "subject": "<email subject ≤ 60 chars>", "body": "<message body>" }`
 
   try {
-    const result = await generateText({
-      model: resolveModel("openai/gpt-4o-mini"),
+    const result = await generateTextRouted({
+      feature: "negotiation_reply_draft", brokerageId: input.brokerageId, userId: input.userId,
       prompt: input.side === "buyer" ? buyerSidePrompt : sellerSidePrompt,
-      maxOutputTokens: 500,
+      maxTokens: 500,
     })
     const jsonMatch = result.text.match(/\{[\s\S]*\}/)
     if (!jsonMatch) return undefined

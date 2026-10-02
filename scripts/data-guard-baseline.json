@@ -1,14 +1,4 @@
 [
   "app/actions/buyer-coaching.ts",
-  "app/actions/negotiation-copilot.ts",
-  "app/actions/repair-negotiation-copilot.ts",
-  "app/actions/social-publishing.ts",
-  "app/api/internal/ai-note/route.ts",
-  "app/api/internal/voice-command/route.ts",
-  "app/api/referrals/thank-you-draft/route.ts",
-  "app/dashboard/marketing/studio/components/ad-os/ad-os-actions.ts",
-  "lib/ads/ad-creator.ts",
-  "lib/ads/ad-monitor.ts",
-  "lib/application/compliance-monitoring.ts",
-  "lib/intelligence/pattern-detector.ts"
+  "lib/ads/ad-monitor.ts"
 ]

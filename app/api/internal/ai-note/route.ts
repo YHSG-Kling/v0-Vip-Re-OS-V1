@@ -3,8 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { readRoleGrants, selectPrimaryRole, selectTenantBrokerageId, selectVendorId } from "@/lib/auth/role-grants"
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateTextRouted } from "@/lib/ai/models"
 import { NextRequest, NextResponse } from "next/server"
 
 /**
@@ -105,11 +104,15 @@ Rules:
 - hasActionItem=true when note contains a follow-up promise or action to complete`
 
     try {
-      const { text } = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      // Wave 97 (lane 97C): routed lane — books ai_tool_usage under the session's tenant + user
+      // (intent_classification routes to gpt-4o-mini, the model this call already pinned).
+      const { text } = await generateTextRouted({
+        feature: "intent_classification",
+        brokerageId: brokerageId ?? null,
+        userId: user.id,
         system: systemPrompt,
         prompt: `Raw note: "${rawText}"\n\nConversation context:\n${conversationContext}`,
-        maxOutputTokens: 512,
+        maxTokens: 512,
       })
 
       const result = JSON.parse(text.trim().replace(/^```json\n?/, "").replace(/\n?```$/, ""))

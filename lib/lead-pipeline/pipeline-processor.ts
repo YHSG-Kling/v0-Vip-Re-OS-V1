@@ -748,7 +748,9 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       ...(enriched.peopleDataProfile ? {
         ...peopleDataProfileToLeadColumns(enriched.peopleDataProfile),
         enrichment_profile:  enriched.peopleDataProfile,
-        enrichment_provider: 'peopledata',
+        // Wave 97 (97C): a Versium-built profile (93B3 demographics / 97C email-only provenance) names
+        // Versium — the lineage page displays this value; it was 'peopledata' for every profile.
+        enrichment_provider: enriched.peopleDataProfile.provider === 'versium' ? 'versium' : 'peopledata',
       } : {}),
       lead_stage:            'new',
       source_raw_ids:        [rawRecordId],
@@ -1063,6 +1065,13 @@ async function enrichWithPeopleData(fields: {
         // and built on PDL's vocabulary — the lead insert and the raw row carry it exactly as they
         // carry a PDL profile (peopleDataProfile is the field both read).
         ...(versium.demographicsProfile ? { peopleDataProfile: versium.demographicsProfile } : {}),
+        // Wave 97 (lane 97C — 96B open item): an EMAIL-ONLY hit (no demographic category bought) still
+        // says where the email came from and when — the same enrichment_profile.field_provenance the
+        // queue drain writes (enrichment-orchestrator.ts provenanceProfile), read back on the contact
+        // card through enrichment-column-map.ts::fieldProvenanceForDisplay.
+        ...(!versium.demographicsProfile && Object.keys(versium.fieldProvenance).length > 0
+          ? { peopleDataProfile: { provider: 'versium', field_provenance: versium.fieldProvenance } }
+          : {}),
       }
     : skipPeopleData
     ? {
