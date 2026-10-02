@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1794 of 1857 pairs) — storing them would be
+ * overwhelming majority (1796 of 1859 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1938 edges across 714 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1857 unordered
+ * MEASURED AT GENERATION: 1940 edges across 714 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1859 unordered
  * table pairs carry at least one FK; 63
  * carry more than one and are listed below. 12 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -84,9 +84,9 @@
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-24
+ * generated: 2026-10-02
  * source: public.live_foreign_keys_json()
- * body-sha256: 04b98dd179c46def090b43c3290806533e2dcf3664e14e5a7c2c3deaebf5fc41
+ * body-sha256: 1c329923212933f8b080eea8fbf9491f941ff1c23294e81732e67effcfaf0dde
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -553,7 +553,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "organization_members": { "brokerage_id": "brokerages", "team_id": "teams", "user_id": "users" },
   "outbound_message_compliance_log": { "brokerage_id": "brokerages", "contact_id": "contacts", "initiated_by": "users" },
   "outcome_reconciliations": { "brokerage_id": "brokerages", "contact_id": "contacts", "lead_id": "leads" },
-  "outside_agent_contact_links": { "brokerage_id": "brokerages", "contact_id": "contacts", "outside_agent_id": "outside_agents" },
+  "outside_agent_contact_links": { "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "outside_agent_id": "outside_agents", "transaction_id": "transactions" },
   "outside_agents": { "brokerage_id": "brokerages" },
   "pattern_adoptions": { "adopted_by": "users", "agent_id": "agents", "brokerage_id": "brokerages", "insight_id": "brokerage_intelligence_insights" },
   "pattern_detections": { "agent_id": "agents", "brokerage_id": "brokerages", "pattern_id": "behavioral_patterns" },
