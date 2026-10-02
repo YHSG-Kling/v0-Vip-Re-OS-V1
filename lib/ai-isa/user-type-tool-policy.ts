@@ -96,6 +96,7 @@
 import { TENANT_ADMIN_USER_TYPES, isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 import { isLenderVendorCategory } from "@/lib/kernel/lender-linkage"
 import { VENDOR_CATEGORY_TITLE } from "@/lib/kernel/vendor-categories"
+import { riskClassForTool } from "@/lib/ai-isa/persona-tool-policy"
 
 // ─── THE SEAT VOCABULARY ────────────────────────────────────────────────────
 
@@ -465,6 +466,11 @@ export function selectToolsForSeat(seat: UserTypeSeat, parts: SeatToolParts): Re
   if (!partner && policy.batchData) Object.assign(out, parts.batchDataTools)
   if (policy.customerPersonaToolsForContact) Object.assign(out, parts.customerTools)
   for (const name of policy.seatToolNames) {
+    // Wave 96 (lane 96B): the seat's OWN tools pass the same risk registry the persona surfaces do
+    // (lib/ai-isa/persona-tool-policy.ts::riskClassForTool) — an unclassified, LEGAL or IRREVERSIBLE
+    // seat tool never mounts (fail closed). Every seat tool is classified today, so none is dropped.
+    const risk = riskClassForTool(name)
+    if (risk === "IRREVERSIBLE" || risk === "LEGAL") continue
     if (name in parts.seatTools) out[name] = parts.seatTools[name]
   }
   // Cheaper rail first: a BatchData tool whose rail twin mounted is dropped (see

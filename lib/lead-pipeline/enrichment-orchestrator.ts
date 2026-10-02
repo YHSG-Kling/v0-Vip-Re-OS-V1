@@ -563,6 +563,9 @@ export async function processEnrichmentQueue(
       let batchDataFallbackCost = 0
       // Wave 93 (93B3): the Versium demographic profile bought on a contact hit (PDL's vocabulary).
       let versiumDemographics: Record<string, any> | null = null
+      // Wave 96 (lane 96B): provenance per field the Versium leg returned (source, retrievedAt,
+      // matchConfidence) — written into enrichment_profile.field_provenance beside the values.
+      let versiumFieldProvenance: Record<string, unknown> = {}
       // Wave 93 (lane 93D2 — found live): a CONTACT that already carries an email buys no
       // contact point — no Versium phone append, no BatchData skip/reverse trace. The walk saw an
       // email-only buyer queued for a phone lookup. Same rule the queue writer records
@@ -593,6 +596,7 @@ export async function processEnrichmentQueue(
         })
         batchDataFallbackCost += v.cost
         versiumDemographics = v.demographicsProfile
+        versiumFieldProvenance = v.fieldProvenance
         if (v.answered) batchDataFallback = { phones: v.phones, emails: v.emails, via: 'versium' }
         else if (v.skipped) console.info('[enrichment-orchestrator] versium contact append skipped:', v.skipped)
       }
@@ -1219,6 +1223,13 @@ export async function processEnrichmentQueue(
                 entity.enrichment_profile as Record<string, any> | null,
               )
             : null
+          // Wave 96 (lane 96B): provenance per field — merged onto any provenance already held, and
+          // written even when no demographic category was bought (an email-only hit still says where
+          // the email came from and when).
+          const priorProfile = (demographicProfile ?? (entity.enrichment_profile as Record<string, any> | null) ?? {}) as Record<string, any>
+          const provenanceProfile: Record<string, any> | null = batchDataFallback.via === 'versium' && Object.keys(versiumFieldProvenance).length > 0
+            ? { ...priorProfile, field_provenance: { ...(((entity.enrichment_profile as Record<string, any> | null) ?? {}).field_provenance ?? {}), ...versiumFieldProvenance } }
+            : null
           const demographicColumns: Record<string, unknown> = demographicProfile
             ? (entityType === 'lead'
                 ? { ...peopleDataProfileToLeadColumns(demographicProfile), enrichment_profile: demographicProfile }
@@ -1226,6 +1237,7 @@ export async function processEnrichmentQueue(
             : {}
           const patch: Record<string, unknown> = {
             ...demographicColumns,
+            ...(provenanceProfile ? { enrichment_profile: provenanceProfile } : {}),
             ...phonePatch,
             // The reverse leg was ASKED with the row's own email — never replace it with another.
             ...(batchDataFallback.emails[0] && !(batchDataFallback.via === 'reverse' && entity.email) && { email: batchDataFallback.emails[0] }),

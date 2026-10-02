@@ -41,6 +41,7 @@ import {
 } from "@/lib/lead-pipeline/enrichment-column-map"
 import {
   appendVersiumFinancial,
+  isVersiumConfigured,
   VERSIUM_FINANCIAL_MATCH_COST_USD,
   type VersiumFinancialResult,
   type VersiumIdentity,
@@ -108,7 +109,7 @@ export async function appendModeledCredit(params: {
   // Tenant-attributed spend only (§4: the tenant comes from the caller's own scope; a platform-anonymous
   // record is never charged to nobody).
   if (!params.brokerageId) return { profile, asked: false, cost: 0, filled: [], skipped: "no_brokerage" }
-  if (!params.deps?.append && !process.env.VERSIUM_API_KEY) return { profile, asked: false, cost: 0, filled: [], skipped: "unconfigured" }
+  if (!params.deps?.append && !isVersiumConfigured()) return { profile, asked: false, cost: 0, filled: [], skipped: "unconfigured" }
   try {
     const checkBudget = params.deps?.checkBudget
       ?? (async (p: { brokerageId: string; addCost: number }) => (await import("@/lib/vendor-governance/budget-gate")).checkVendorBudget(p))
@@ -122,15 +123,17 @@ export async function appendModeledCredit(params: {
     const meter = params.deps?.meter
       ?? (async (p: Parameters<NonNullable<AppendModeledCreditDeps["meter"]>>[0]) => (await import("@/lib/vendor-governance/meter-vendor")).meterVendorSpend(p))
     if (res.cost > 0) {
-      await meter({
+      const booked = await meter({
         vendorName: "versium",
         usageType: "household_financials",
         cost: res.cost,
         brokerageId: params.brokerageId,
         systemSource: "skip_trace",
-        metadata: { lane: params.lane, matched: res.credits != null ? res.credits > 0 : !!res.data, credits: res.credits ?? null, match_level: res.matchLevel ?? null },
+        metadata: { lane: params.lane, capability: "person.enrich_financial", matched: res.credits != null ? res.credits > 0 : !!res.data, credits: res.credits ?? null, match_level: res.matchLevel ?? null },
         attribution: params.attribution,
       })
+      // Wave 96: meterVendorSpend resolves false when no row was written — spend the ledger never saw.
+      if (booked === false) console.warn(`[versium] $${res.cost} household_financials NOT booked to the vendor ledger (brokerage ${params.brokerageId})`)
     }
     if (res.error) return { profile, asked: true, cost: res.cost, filled: [], skipped: "error", error: res.error }
     if (!res.data) return { profile, asked: true, cost: res.cost, filled: [], skipped: "no_match" }

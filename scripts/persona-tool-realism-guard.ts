@@ -324,6 +324,50 @@ check("MAINTENANCE_DOMAINS.persona_tool_realism names this proof under ai_isa",
   MAINTENANCE_DOMAINS.persona_tool_realism?.proof === "test:persona-tool-realism" && MAINTENANCE_DOMAINS.persona_tool_realism?.manager === "ai_isa")
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 96 (lane 96B — owner blueprint: "tools small + risk-classed (READ / LOW_RISK_WRITE /
+// COMMUNICATION / FINANCIAL / LEGAL / IRREVERSIBLE) with approval by class; humans own consequential
+// actions"). The classification rides THIS registry (persona-tool-policy.ts, beside costRankForTool).
+console.log("\n[Layer R · every AI tool is risk-classed; every consequential tool names an existing gate (wave 96)]")
+{
+  const { riskClassForTool, TOOL_APPROVAL_GATE } = await import("../lib/ai-isa/persona-tool-policy")
+  const { readdirSync, existsSync } = await import("node:fs")
+  const TOOL_FILES = [
+    ...readdirSync("lib/ai-isa").filter((f) => f.endsWith(".ts")).map((f) => `lib/ai-isa/${f}`),
+    "lib/platform/prospect-agent-tools.ts", "lib/voice/platform-reception.ts",
+  ]
+  // A tool NAME is a key bound to tool({...}) or to a build*Tool builder (stripped source — a tombstone
+  // naming a retired tool is not a mount).
+  const TOOL_KEY = /\b([a-z][a-z0-9_]+)\s*(?::|=)\s*(?:tool\(|build[A-Za-z]+Tool\b)/g
+  const census = (src: string) => [...src.matchAll(TOOL_KEY)].map((m) => m[1])
+  const names = new Set<string>()
+  for (const f of TOOL_FILES) for (const n of census(stripped(f))) names.add(n)
+  const byClass: Record<string, string[]> = {}
+  for (const n of names) (byClass[riskClassForTool(n)] ??= []).push(n)
+  console.log(`  census: ${names.size} tool names across ${TOOL_FILES.length} files — ${Object.entries(byClass).map(([k, v]) => `${k} ${v.length}`).join(" · ")}`)
+  check("POSITIVE CONTROL: the census finds a tool bound with tool({ and one bound to a builder; an unclassified name fails CLOSED (IRREVERSIBLE)",
+    census("const r = { wire_funds_now: tool({ execute }) , e_sign_offer: buildESignTool }").join(",") === "wire_funds_now,e_sign_offer"
+      && riskClassForTool("wire_funds_now") === "IRREVERSIBLE" && riskClassForTool("get_my_context") === "READ")
+  const unclassified = [...names].filter((n) => riskClassForTool(n) === "IRREVERSIBLE")
+  check(`every mounted AI tool name is classified (none falls through to the fail-closed default)${unclassified.length ? ` — unclassified: ${unclassified.join(", ")}` : ""}`,
+    names.size >= 40 && unclassified.length === 0)
+  const consequential = [...names].filter((n) => ["COMMUNICATION", "FINANCIAL", "LEGAL", "IRREVERSIBLE"].includes(riskClassForTool(n)))
+  const ungated = consequential.filter((n) => {
+    const gate = TOOL_APPROVAL_GATE[n]
+    const file = gate?.match(/^(lib\/[\w./-]+\.ts)/)?.[1]
+    return !file || !existsSync(file)
+  })
+  check(`every consequential tool (${consequential.length}: ${consequential.join(", ")}) names an EXISTING gate file`, consequential.length > 0 && ungated.length === 0, `ungated: ${ungated.join(", ")}`)
+  check("no LEGAL or IRREVERSIBLE tool is mounted on any AI surface (signing / filing stays with humans)", !(byClass.LEGAL?.length) && !(byClass.IRREVERSIBLE?.length))
+  const { selectToolsForPersona } = await import("../lib/ai-isa/persona-tool-policy")
+  const origWarn = console.warn; console.warn = () => {}
+  const mounted = Object.keys(selectToolsForPersona({ wire_funds_now: {}, get_my_context: {}, send_newsletter: {}, rentcast_value_lookup: {} }))
+  console.warn = origWarn
+  check("EXECUTED: selectToolsForPersona refuses an unclassified (fail-closed IRREVERSIBLE) tool and keeps classified READ / COMMUNICATION tools (positive control: the same call keeps 3 of 4)",
+    !mounted.includes("wire_funds_now") && mounted.length === 3 && mounted.includes("send_newsletter"), mounted.join(","))
+  console.log("  blind spots: rentcast_* / batchdata_* tools are built from vendor MCP catalogues at runtime (named by prefix → READ; their spend is gated by costRankForTool + resolveBatchDataAccess); tools mounted outside lib/ai-isa + the two platform files are not in the census; the DELIVERY gate behind send_newsletter / send_market_report / send_explainer_video / send_matching_listings is named as unresolved in TOOL_APPROVAL_GATE.")
+}
+
 console.log("\n" + "─".repeat(60))
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) {

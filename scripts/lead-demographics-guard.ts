@@ -174,7 +174,7 @@ console.log("\n[D7 · Versium hit → demographics filled on PDL's vocabulary, P
       && p.net_worth === "$250,000 - $499,999" && p.credit_score_range === "700-749" && p.household_financials?.sources?.credit_score_range === "versium"
       && p.household_financials?.credit_basis === "modeled_marketing_estimate", JSON.stringify(p))
   check("EXECUTED: every key it writes is a DEMOGRAPHIC_PROFILE_FIELDS key (no second vocabulary, §6) and the subset readers see it",
-    Object.keys(p).filter((k) => !["provider", "captured_at", "household_financials"].includes(k)).every((k) => (DEMOGRAPHIC_PROFILE_FIELDS as readonly string[]).includes(k))
+    Object.keys(p).filter((k) => !["provider", "captured_at", "household_financials", "field_provenance" /* provenance metadata (wave 96), not a demographic field */].includes(k)).every((k) => (DEMOGRAPHIC_PROFILE_FIELDS as readonly string[]).includes(k))
       && Object.keys(demographicsFromProfile(p)).length >= 10)
   const cols = peopleDataProfileToContactColumns(p, {})
   check("EXECUTED: the SAME contact-column mapper PDL uses writes it (age_range, gender, home_owner_status, marital_status, household_income, net_worth_range, credit_score_range) and stamps enrichment_source 'versium'",

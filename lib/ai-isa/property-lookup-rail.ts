@@ -204,7 +204,7 @@ import type { BatchDataToolTier } from "@/lib/ai-isa/persona-tool-policy"
 import { BATCHDATA_SKIP_TRACE_COST_USD, BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD } from "@/lib/external/batchdata-client"
 import { PEOPLEDATA_MATCH_COST_USD, PEOPLEDATA_EMAIL_VALIDATE_COST_USD } from "@/lib/external/peopledata-client"
 import { MCP_TOOL_CALL_COST_USD } from "@/lib/external/batchdata-ai-tools"
-import { VERSIUM_MATCH_CREDIT_USD, type VersiumIdentity, type VersiumContactCall, type VersiumDemographicCall } from "@/lib/external/versium-client"
+import { VERSIUM_MATCH_CREDIT_USD, type VersiumIdentity, type VersiumContactCall, type VersiumDemographicCall, type VersiumProvenance } from "@/lib/external/versium-client"
 import { BATCHDATA_BILLED_PULL_OPT_IN } from "@/lib/buyer-search/listing-source-order"
 
 /**
@@ -430,29 +430,40 @@ export async function runVersiumContactLeg(
     demographicCall?: VersiumDemographicCall
     meter?: (input: { vendorName: string; usageType: string; cost: number; brokerageId?: string | null; systemSource?: string; metadata?: Record<string, unknown>; attribution?: { leadId?: string | null; contactId?: string | null; rawRecordId?: string | null } }) => Promise<unknown>
   } = {},
-): Promise<{ answered: boolean; emails: string[]; phones: string[]; cost: number; skipped: string | null; demographicsProfile: Record<string, any> | null; demographicCategories: string[] }> {
+): Promise<{ answered: boolean; emails: string[]; phones: string[]; cost: number; skipped: string | null; demographicsProfile: Record<string, any> | null; demographicCategories: string[]; fieldProvenance: Record<string, VersiumProvenance> }> {
   const outputs: Array<"email" | "phone"> = []
   if (!req.hasEmail) outputs.push("email")
   if (req.stage === "contact" && !req.hasPhone) outputs.push("phone")
-  const none = { demographicsProfile: null, demographicCategories: [] as string[] }
+  const none = { demographicsProfile: null, demographicCategories: [] as string[], fieldProvenance: {} as Record<string, VersiumProvenance> }
   if (outputs.length === 0) return { answered: false, emails: [], phones: [], cost: 0, skipped: "nothing_to_append", ...none }
   try {
     const { appendVersiumContact, appendVersiumDemographics } = await import("@/lib/external/versium-client")
     const r = await appendVersiumContact(req.identity, outputs, { call: deps.call })
     if (r.skipped) return { answered: false, emails: [], phones: [], cost: 0, skipped: r.skipped, ...none }
-    const meter = deps.meter
+    const meterFn = deps.meter
       ?? ((m: import("@/lib/vendor-governance/meter-vendor").MeterVendorInput) => import("@/lib/vendor-governance/meter-vendor").then((v) => v.meterVendorSpend(m)))
+    // Wave 96 (lane 96B): the booking's answer is READ. meterVendorSpend resolves `false` when the row
+    // was not written (no brokerage, a refused insert) — that is spend the ledger never saw, so it is
+    // reported, never swallowed (CLAUDE.md §3: supabase-js resolves refusals). Never throws.
+    const meter = async (m: Parameters<typeof meterFn>[0]): Promise<void> => {
+      let booked: unknown
+      try { booked = await Promise.resolve(meterFn(m)) } catch (e) { booked = e instanceof Error ? e.message : String(e) }
+      if (booked === false || typeof booked === "string") {
+        console.warn(`[versium] $${m.cost} ${m.usageType} NOT booked to the vendor ledger (brokerage ${m.brokerageId ?? "none"})${typeof booked === "string" ? `: ${booked}` : ""}`)
+      }
+    }
     if (r.cost > 0) {
-      await Promise.resolve(meter({
+      await meter({
         vendorName: "versium",
         usageType: "contact_append",
         cost: r.cost,
         brokerageId: req.brokerageId,
         systemSource: req.systemSource,
-        metadata: { ...(req.metadata ?? {}), answered_by: r.matched ? "versium" : null, outputs, credits: r.credits },
+        metadata: { ...(req.metadata ?? {}), capability: "person.enrich_contact", answered_by: r.matched ? "versium" : null, outputs, credits: r.credits },
         attribution: req.attribution,
-      })).catch(() => null)
+      })
     }
+    const fieldProvenance: Record<string, VersiumProvenance> = { ...r.provenance }
     // ── Wave 93 (lane 93B3): DEMOGRAPHICS on a contact HIT ─────────────────────────────────────
     // A Versium hit ends the chain without People Data Labs (93B2), which used to supply the
     // demographic profile. The SAME step now buys Versium's demographic categories — only those the
@@ -463,7 +474,7 @@ export async function runVersiumContactLeg(
     let demographicCategories: string[] = []
     let demographicCost = 0
     if (r.matched) {
-      const { versiumDemographicCategoriesNeeded, buildVersiumDemographicProfile } = await import("@/lib/lead-pipeline/enrichment-column-map")
+      const { versiumDemographicCategoriesNeeded } = await import("@/lib/lead-pipeline/enrichment-column-map")
       const wanted = versiumDemographicCategoriesNeeded(req.existingProfile ?? null)
       if (wanted.length > 0) {
         // Ask with the email Versium just found — the strongest key for the same person.
@@ -472,26 +483,31 @@ export async function runVersiumContactLeg(
         for (const [category, credits] of Object.entries(demo.creditsByCategory)) {
           const cost = Math.round((credits ?? 0) * VERSIUM_MATCH_CREDIT_USD * 100) / 100
           if (cost <= 0) continue
-          await Promise.resolve(meter({
+          await meter({
             vendorName: "versium",
             usageType: `demographic_append_${category}`,
             cost,
             brokerageId: req.brokerageId,
             systemSource: req.systemSource,
-            metadata: { ...(req.metadata ?? {}), answered_by: "versium", category, credits },
+            metadata: { ...(req.metadata ?? {}), capability: "person.enrich_demographics", answered_by: "versium", category, credits },
             attribution: req.attribution,
-          })).catch(() => null)
+          })
         }
         demographicCost = demo.cost
-        demographicCategories = Object.keys(demo.results)
-        if (demographicCategories.length > 0) demographicsProfile = buildVersiumDemographicProfile(demo.results)
+        // OUR profile, mapped inside the adapter (wave 96) — no raw Versium row reaches this leg.
+        demographicCategories = demo.categories
+        demographicsProfile = demo.profile
+        if (demo.provenance) fieldProvenance.demographics = demo.provenance
       }
     }
+    // Provenance per field rides the profile it describes (enrichment_profile.field_provenance — the
+    // existing enrichment metadata JSON; no provenance table exists, gap noted in the OS gap map).
+    if (demographicsProfile && Object.keys(fieldProvenance).length > 0) demographicsProfile = { ...demographicsProfile, field_provenance: fieldProvenance }
     return {
       answered: r.matched, emails: r.emails, phones: r.phones,
       cost: Math.round((r.cost + demographicCost) * 100) / 100,
       skipped: r.error && !r.matched ? `error: ${r.error}` : null,
-      demographicsProfile, demographicCategories,
+      demographicsProfile, demographicCategories, fieldProvenance,
     }
   } catch (e) {
     return { answered: false, emails: [], phones: [], cost: 0, skipped: `error: ${e instanceof Error ? e.message : String(e)}`, ...none }

@@ -648,6 +648,41 @@ function assertTranscriptionIsOnTheGateway(): boolean {
   )
 }
 
+/**
+ * A9 (wave 96, lane 96B — owner blueprint: "model routing by task complexity through the AI Gateway";
+ * ecc agentic-engineering Model Routing: cheap tier for classification, the reasoning tier only where a
+ * lower tier fails with a clear reasoning gap). THE ROUTER is lib/ai/models.ts AI_TASK_ROUTING (per
+ * feature — finer than a tier). The TIER is derived from the model's own name, never a hand list:
+ * haiku / mini / flash → cheap, opus → reasoning, everything else → standard. Rules held:
+ *   · every classify-shaped feature (classif / sentiment / tag / label / detect / triage / categori)
+ *     routes its PRIMARY model to the cheap tier;
+ *   · any route to the reasoning tier states why in its own `reason` (reason / complex / multi-step).
+ */
+function routingTable(): Array<{ feature: string; model: string; reason: string }> {
+  const table = assignedObjectLiteral(blankComments(raw(MODELS)), "export const AI_TASK_ROUTING")
+  return [...table.matchAll(/\b([a-z][a-z0-9_]*)\s*:\s*\{\s*model:\s*"([^"]+)"[^}]*?reason:\s*"([^"]*)"/g)]
+    .map((m) => ({ feature: m[1], model: m[2], reason: m[3] }))
+}
+function tierOfModel(model: string): "cheap" | "standard" | "reasoning" {
+  if (/haiku|mini|flash/i.test(model)) return "cheap"
+  if (/opus/i.test(model)) return "reasoning"
+  return "standard"
+}
+function assertRoutingByTier(): boolean {
+  const routes = routingTable()
+  const tally = { cheap: 0, standard: 0, reasoning: 0 }
+  for (const r of routes) tally[tierOfModel(r.model)] += 1
+  console.log(`    routes parsed: ${routes.length} (cheap ${tally.cheap} · standard ${tally.standard} · reasoning ${tally.reasoning})`)
+  const classify = routes.filter((r) => /classif|sentiment|(^|_)tags?(_|$)|label|detect|triage|categori/.test(r.feature))
+  const pricey = classify.filter((r) => tierOfModel(r.model) !== "cheap").map((r) => `${r.feature}→${r.model}`)
+  const unexplained = routes.filter((r) => tierOfModel(r.model) === "reasoning" && !/reason|complex|multi-step/i.test(r.reason)).map((r) => r.feature)
+  return check(
+    "A9 the router sends every classify-shaped task to the cheap tier, and the reasoning tier only with a stated reason",
+    routes.length > 50 && classify.length > 0 && pricey.length === 0 && unexplained.length === 0,
+    `routes:${routes.length} classify:${classify.length} classify-not-cheap:[${pricey.join(", ")}] reasoning-unexplained:[${unexplained.join(", ")}]`,
+  )
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // CONTROLS
 // ═════════════════════════════════════════════════════════════════════════════
@@ -754,9 +789,23 @@ async function main(): Promise<void> {
   assertGatewayCallsAreCanonical()
   assertGatewayWrappersCheckTheKey()
   assertTranscriptionIsOnTheGateway()
+  assertRoutingByTier()
 
   if (RUN_NEGATIVE) {
     console.log("\nNEGATIVE CONTROLS (each must go RED)")
+
+    // A9 controls (wave 96): a classify task moved to the reasoning tier, and a reasoning route with
+    // no stated reason — each must go RED.
+    await controlled(
+      "a classification task is routed to the reasoning tier",
+      { file: MODELS, find: `tag_classification:        { model: "claude-haiku"`, replace: `tag_classification:        { model: "claude-opus"` },
+      assertRoutingByTier,
+    )
+    await controlled(
+      "a non-classify task is routed to the reasoning tier with no stated reason",
+      { file: MODELS, find: `unspecified:               { model: "claude-sonnet"`, replace: `unspecified:               { model: "claude-opus"` },
+      assertRoutingByTier,
+    )
 
     // C1 (A1): a provider SDK comes back as a DYNAMIC import inside a function
     //          body — the exact shape both real defects had, and the shape a

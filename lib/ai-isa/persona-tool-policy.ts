@@ -600,6 +600,13 @@ export function selectToolsForPersona<T extends Record<string, unknown>>(registr
   if (rentcastNames.some((n) => /comp/i.test(n))) coveredNeeds.add("comps")
 
   const survivors = names.filter((n) => {
+    // Wave 96 (lane 96B): a tool the risk registry below cannot classify — or one that signs, files
+    // or cannot be undone — is never mounted on a persona surface (fail closed; humans own those).
+    const risk = riskClassForTool(n)
+    if (risk === "IRREVERSIBLE" || risk === "LEGAL") {
+      console.warn(`[persona-tool-policy] tool "${n}" not mounted: risk class ${risk} (classify it in TOOL_RISK_CLASS)`)
+      return false
+    }
     const need = BATCHDATA_TOOL_NEED[n]
     return !(need && coveredNeeds.has(need))
   })
@@ -608,4 +615,90 @@ export function selectToolsForPersona<T extends Record<string, unknown>>(registr
   const out: Record<string, unknown> = {}
   for (const n of survivors) out[n] = registry[n]
   return out as Partial<T>
+}
+
+// ─── TOOL RISK CLASSES (wave 96, lane 96B — owner blueprint: "tools small + risk-classed (READ /
+// LOW_RISK_WRITE / COMMUNICATION / FINANCIAL / LEGAL / IRREVERSIBLE) with approval by class") ────
+// The SAME registry as the cost rank above (one table per tool NAME, generic over every surface —
+// persona chat/voice, seat copilots, the platform prospect agent, platform reception). The cost rank
+// answers "how much may this spend"; the risk class answers "what can this do to the world, and which
+// gate stands in front of it". The gates named below ALREADY exist (mapped wave 96; see
+// docs/architecture/OS-BLUEPRINT-GAP-MAP.md). Enforcement added here is fail-closed only:
+// selectToolsForPersona refuses an UNCLASSIFIED / LEGAL / IRREVERSIBLE name (none is mounted today —
+// the persona-tool-realism census holds 0 unclassified), so no current surface changes.
+//   READ           — answers from data; no side effect (a paid vendor read is still READ — its spend
+//                    is ranked by costRankForTool and gated by resolveBatchDataAccess / RentCast eligibility).
+//   LOW_RISK_WRITE — writes OUR records (a callback, an appointment request, a qualification note, an
+//                    opt-out) or messages the person's OWN assigned agent internally. Reversible by staff.
+//   COMMUNICATION  — reaches a person outside the platform (email / SMS / enrolment in a send).
+//   FINANCIAL      — obligates or moves money.
+//   LEGAL / IRREVERSIBLE — signs, files, or cannot be undone. NO AI tool carries either today; an
+//                    UNCLASSIFIED name resolves to IRREVERSIBLE (fail closed) until it is classified here.
+type ToolRiskClass = "READ" | "LOW_RISK_WRITE" | "COMMUNICATION" | "FINANCIAL" | "LEGAL" | "IRREVERSIBLE"
+
+/** Names whose prefix states a pure read. Writes are never inferred from a prefix — they are listed. */
+const READ_TOOL_PREFIX = /^(get_|list_|search_|lookup_|find_|check_|verify_|show_|comparable_|investor_buybox_|geocode|reverse_geocode|platform_faq_|rentcast_|batchdata_)/
+
+const TOOL_RISK_CLASS: Readonly<Record<string, ToolRiskClass>> = {
+  // Paid person reads (BatchData skip trace) — READ; spend gated by resolveBatchDataAccess, rank 3.
+  skip_trace_property: "READ",
+  reverse_skip_trace: "READ",
+  // Our own records / internal handoffs.
+  save_prospect: "LOW_RISK_WRITE",
+  mark_qualification: "LOW_RISK_WRITE",
+  record_qualification: "LOW_RISK_WRITE",
+  // An opt-out is PROTECTIVE: honoured at once, never held for approval (TCPA / CAN-SPAM).
+  mark_do_not_contact: "LOW_RISK_WRITE",
+  request_appointment: "LOW_RISK_WRITE",
+  request_showing: "LOW_RISK_WRITE",
+  schedule_callback: "LOW_RISK_WRITE",
+  schedule_prospect_callback: "LOW_RISK_WRITE",
+  schedule_home_value_review: "LOW_RISK_WRITE",
+  book_listing_appointment: "LOW_RISK_WRITE",
+  book_demo_appointment: "LOW_RISK_WRITE",
+  escalate_to_agent: "LOW_RISK_WRITE",
+  request_human_handoff: "LOW_RISK_WRITE",
+  request_vendor_referral: "LOW_RISK_WRITE",
+  capture_referral: "LOW_RISK_WRITE",
+  respond_to_booking: "LOW_RISK_WRITE",
+  update_my_service_area: "LOW_RISK_WRITE",
+  update_my_availability: "LOW_RISK_WRITE",
+  update_loan_status: "LOW_RISK_WRITE",
+  update_title_status: "LOW_RISK_WRITE",
+  flag_loan_issue: "LOW_RISK_WRITE",
+  send_vendor_message_to_agent: "LOW_RISK_WRITE",
+  send_lender_message_to_agent: "LOW_RISK_WRITE",
+  send_title_message_to_agent: "LOW_RISK_WRITE",
+  // Reaches a person outside the platform.
+  send_signup_link: "COMMUNICATION",
+  send_newsletter: "COMMUNICATION",
+  send_market_report: "COMMUNICATION",
+  send_explainer_video: "COMMUNICATION",
+  send_matching_listings: "COMMUNICATION",
+  // Obligates money.
+  start_subscription: "FINANCIAL",
+}
+
+/**
+ * The gate that ALREADY stands in front of every consequential tool (COMMUNICATION and above) —
+ * "approval by class" mapped onto what exists, never a second mechanism. A consequential tool with no
+ * entry here is a defect the persona-tool-realism proof reports.
+ * @proofSeam read by scripts/persona-tool-realism-guard.ts, which holds every consequential tool to a named, existing gate file
+ */
+export const TOOL_APPROVAL_GATE: Readonly<Record<string, string>> = {
+  send_signup_link: "lib/providers/dispatch.ts — dispatchEmail/dispatchSms run the outbound policy chain (autonomy, consent, suppression, DNC, quiet hours, de-confliction, budget) outside the model; addressed only to the prospect's own email/phone",
+  send_newsletter: "lib/content/newsletter-enrollment.ts — enrolment only, refused on opt-out / unsubscribed / unverified email; the send itself rides the campaign dispatch (delivery gate not traced: unresolved)",
+  send_market_report: "lib/content/newsletter-enrollment.ts — same enrolment gate as send_newsletter (delivery gate unresolved)",
+  send_explainer_video: "lib/video/avatar-explainer.ts — compliance + AI-tell scan before render; the brokerage ai_agent_capabilities toggle mounts it; delivery gate unresolved",
+  send_matching_listings: "lib/ai-isa/customer-context-tools.ts — writes a property_alerts row for the person who asked; the alert sends ride the listing-alert pipeline (delivery gate unresolved)",
+  start_subscription: "lib/platform/prospect-agent-tools.ts — 'trial' moves no money; 'paid' emails a checkout the PROSPECT completes (the human approves by paying); enterprise/custom → needsHuman handoff",
+}
+
+/** PURE — the risk class for one tool NAME. Unclassified → IRREVERSIBLE (fail closed). Read by
+ *  selectToolsForPersona above (every persona chat / voice / email / widget / portal surface). */
+export function riskClassForTool(toolName: string): ToolRiskClass {
+  const listed = TOOL_RISK_CLASS[toolName]
+  if (listed) return listed
+  if (READ_TOOL_PREFIX.test(toolName)) return "READ"
+  return "IRREVERSIBLE"
 }

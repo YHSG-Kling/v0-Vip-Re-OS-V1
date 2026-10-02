@@ -59,7 +59,48 @@
 //   4. Set VERSIUM_API_KEY in Vercel (Production + Preview). Nothing else: the budget gate, the
 //      ledger booking and the provider order are already wired.
 
-import { householdFinancialsFromVersium, type HouseholdFinancials } from "@/lib/lead-pipeline/enrichment-column-map"
+import { householdFinancialsFromVersium, buildVersiumDemographicProfile, type HouseholdFinancials } from "@/lib/lead-pipeline/enrichment-column-map"
+
+// ─── OUR CAPABILITY CONTRACT (wave 96, lane 96B — owner blueprint: "Versium behind OUR normalized
+// capability contract, never raw vendor shapes leaking; provenance per field") ──────────────────
+// Every public result below is OUR shape: normalized values + a provenance stamp. The raw Versium
+// response body never leaves this file (appendVersiumDemographics used to hand its caller the raw
+// result rows; it now maps them here through enrichment-column-map.ts::buildVersiumDemographicProfile,
+// the ONE vocabulary, and returns the profile). Credentials are read HERE only (process.env.
+// VERSIUM_API_KEY) — never a parameter, never in agent/tool context.
+
+/** The capabilities this adapter serves, named as the platform asks for them (not as Versium's
+ *  endpoints are named). The ledger rows a caller books carry the same name in metadata.capability. */
+type VersiumCapability = "person.enrich_contact" | "person.enrich_demographics" | "person.enrich_financial"
+
+/** Provenance for a value this adapter returned — written beside the value where it is stored. */
+export interface VersiumProvenance {
+  source: "versium"
+  capability: VersiumCapability
+  /** ISO time the vendor answered. */
+  retrievedAt: string
+  /** "individual" = Versium matched the named person; "household" = only the household at the input's
+   *  phone / email / address; null = Versium did not say (the contact output carries no level). */
+  matchConfidence: "individual" | "household" | null
+}
+
+/** Whether the platform Versium credential is set — the ONE place outside a call that may look at it
+ *  (callers skip a budget read when the rung cannot run). Never returns or forwards the key. */
+export function isVersiumConfigured(): boolean {
+  return !!process.env.VERSIUM_API_KEY
+}
+
+/** PURE — Versium's "Individual Level Match" flag → our match confidence (null when absent). */
+function matchConfidenceOf(row: unknown): VersiumProvenance["matchConfidence"] {
+  if (!row || typeof row !== "object") return null
+  const raw = (row as Record<string, unknown>)["Individual Level Match"]
+  if (raw === undefined || raw === null || String(raw).trim() === "") return null
+  return String(raw).trim().toLowerCase() === "yes" ? "individual" : "household"
+}
+
+function provenance(capability: VersiumCapability, retrievedAt: string, row: unknown): VersiumProvenance {
+  return { source: "versium", capability, retrievedAt, matchConfidence: matchConfidenceOf(row) }
+}
 
 /** One match credit — the credit-package ceiling (don't understate a bill). A no-match is free. */
 export const VERSIUM_MATCH_CREDIT_USD = 0.05
@@ -152,6 +193,8 @@ export interface VersiumFinancialResult {
   /** Credits charged (cost = credits × VERSIUM_MATCH_CREDIT_USD). */
   credits?: number
   matchLevel?: "individual" | "household" | null
+  /** Set when Versium returned mapped values (wave 96 — provenance per field). */
+  provenance?: VersiumProvenance
   skipped?: "unconfigured" | "no_identity"
   error?: string
 }
@@ -181,6 +224,7 @@ export async function appendVersiumFinancial(id: VersiumIdentity): Promise<Versi
       cost: parsed.credits > 0 ? parsed.credits * VERSIUM_MATCH_CREDIT_USD : VERSIUM_NO_MATCH_COST_USD,
       credits: parsed.credits,
       matchLevel: parsed.matchLevel,
+      ...(parsed.data ? { provenance: { source: "versium" as const, capability: "person.enrich_financial" as const, retrievedAt: new Date().toISOString(), matchConfidence: parsed.matchLevel } } : {}),
     }
   } catch (e) {
     return { data: null, cost: 0, error: e instanceof Error ? e.message : String(e) }
@@ -206,22 +250,23 @@ export async function appendVersiumFinancial(id: VersiumIdentity): Promise<Versi
 export type VersiumContactOutput = "email" | "phone"
 
 /** PURE — one Versium contact response → the contact points + the credits billed for this output. */
-function parseVersiumContactResponse(body: unknown, output: VersiumContactOutput): { values: string[]; credits: number } {
+function parseVersiumContactResponse(body: unknown, output: VersiumContactOutput): { values: string[]; credits: number; firstRow: Record<string, unknown> | null } {
   const v = (body && typeof body === "object" ? (body as Record<string, any>).versium : null) ?? {}
   const results: Array<Record<string, unknown>> = Array.isArray(v.results)
     ? v.results.filter((r: unknown): r is Record<string, unknown> => !!r && typeof r === "object")
     : []
   const keys = output === "email" ? ["Email Address", "Email", "email"] : ["Phone", "Mobile Phone", "Phone Number", "phone"]
   const values: string[] = []
+  let firstRow: Record<string, unknown> | null = null
   for (const r of results) for (const k of keys) {
     const raw = r[k]
     const s = typeof raw === "string" ? raw.trim() : typeof raw === "number" ? String(raw) : ""
     const ok = output === "email" ? /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s) : s.replace(/\D/g, "").length >= 10
-    if (ok && !values.includes(s)) values.push(s)
+    if (ok && !values.includes(s)) { values.push(s); firstRow ??= r }
   }
-  if (values.length === 0) return { values, credits: 0 }
+  if (values.length === 0) return { values, credits: 0, firstRow: null }
   const counted = Number(v.match_counts?.[output])
-  return { values, credits: Number.isFinite(counted) && counted >= 0 ? counted : 1 }
+  return { values, credits: Number.isFinite(counted) && counted >= 0 ? counted : 1, firstRow }
 }
 
 export interface VersiumContactResult {
@@ -231,6 +276,8 @@ export interface VersiumContactResult {
   /** USD billed (credits × VERSIUM_MATCH_CREDIT_USD); a no-match is $0. */
   cost: number
   credits: number
+  /** Wave 96 — provenance per contact-point field that came back (email / phone). */
+  provenance: Partial<Record<VersiumContactOutput, VersiumProvenance>>
   skipped?: "unconfigured" | "no_identity"
   error?: string
 }
@@ -245,7 +292,7 @@ export async function appendVersiumContact(
   outputs: readonly VersiumContactOutput[],
   deps: { call?: VersiumContactCall } = {},
 ): Promise<VersiumContactResult> {
-  const out: VersiumContactResult = { emails: [], phones: [], matched: false, cost: 0, credits: 0 }
+  const out: VersiumContactResult = { emails: [], phones: [], matched: false, cost: 0, credits: 0, provenance: {} }
   const apiKey = process.env.VERSIUM_API_KEY
   if (!apiKey && !deps.call) return { ...out, skipped: "unconfigured" }
   const query = versiumQueryFor(id)
@@ -271,6 +318,7 @@ export async function appendVersiumContact(
       out.credits += parsed.credits
       if (output === "email") out.emails.push(...parsed.values)
       else out.phones.push(...parsed.values)
+      if (parsed.values.length > 0) out.provenance[output] = provenance("person.enrich_contact", new Date().toISOString(), parsed.firstRow)
     } catch (e) {
       out.error = e instanceof Error ? e.message : String(e)
     }
@@ -285,15 +333,23 @@ export async function appendVersiumContact(
 // output, a no-match is free): GET /v2/demographic?output[]=demographic | output[]=financial. One
 // request per category (one value per gateway query key), so each category is billed — and booked by
 // the caller — on its own. The financial category is the SAME output appendVersiumFinancial buys for
-// the household-financials rung; this returns the RAW result so the caller maps every category through
-// enrichment-column-map.ts::buildVersiumDemographicProfile (one vocabulary).
+// the household-financials rung. Every category is mapped HERE through
+// enrichment-column-map.ts::buildVersiumDemographicProfile (one vocabulary) — wave 96 moved that map
+// inside the adapter so no raw Versium row reaches a caller.
 
 /** One Versium demographic request (injectable so the proof runs with zero network). */
 export type VersiumDemographicCall = (output: "demographic" | "financial", query: Record<string, string>) =>
   Promise<{ ok: boolean; status: number | null; data: unknown; error?: string | null }>
 
 export interface VersiumDemographicsResult {
-  results: Partial<Record<"demographic" | "financial", Record<string, unknown>>>
+  /** OUR profile (enrichment_profile vocabulary, provider 'versium', captured_at = retrievedAt) mapped
+   *  from every category that matched — null when none did. Wave 96: this replaced the raw `results`
+   *  rows the adapter used to return (the vendor's own field names leaked to the caller, which then
+   *  mapped them itself). */
+  profile: Record<string, any> | null
+  /** The categories that matched (and were billed). */
+  categories: Array<"demographic" | "financial">
+  provenance: VersiumProvenance | null
   /** Credits charged per category (the response's own match_counts; a result with no count is one). */
   creditsByCategory: Partial<Record<"demographic" | "financial", number>>
   cost: number
@@ -307,7 +363,9 @@ export async function appendVersiumDemographics(
   categories: ReadonlyArray<"demographic" | "financial">,
   deps: { call?: VersiumDemographicCall } = {},
 ): Promise<VersiumDemographicsResult> {
-  const out: VersiumDemographicsResult = { results: {}, creditsByCategory: {}, cost: 0 }
+  const out: VersiumDemographicsResult = { profile: null, categories: [], provenance: null, creditsByCategory: {}, cost: 0 }
+  // The raw rows stay inside this function: mapped below, never returned.
+  const rows: Partial<Record<"demographic" | "financial", Record<string, unknown>>> = {}
   if (categories.length === 0) return { ...out, skipped: "nothing_to_buy" }
   const apiKey = process.env.VERSIUM_API_KEY
   if (!apiKey && !deps.call) return { ...out, skipped: "unconfigured" }
@@ -335,12 +393,18 @@ export async function appendVersiumDemographics(
       if (!first) continue
       const counted = Number(v.match_counts?.[category])
       const c = Number.isFinite(counted) && counted >= 0 ? counted : 1
-      out.results[category] = first as Record<string, unknown>
+      rows[category] = first as Record<string, unknown>
       out.creditsByCategory[category] = c
       credits += c
     } catch (e) {
       out.error = e instanceof Error ? e.message : String(e)
     }
+  }
+  out.categories = Object.keys(rows) as Array<"demographic" | "financial">
+  if (out.categories.length > 0) {
+    const retrievedAt = new Date().toISOString()
+    out.profile = buildVersiumDemographicProfile(rows, retrievedAt)
+    out.provenance = provenance("person.enrich_demographics", retrievedAt, rows.demographic ?? rows.financial)
   }
   out.cost = credits > 0 ? Math.round(credits * VERSIUM_MATCH_CREDIT_USD * 100) / 100 : VERSIUM_NO_MATCH_COST_USD
   return out

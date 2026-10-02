@@ -192,6 +192,68 @@ console.log("\n[Layer 2b · VERSIUM FIRST — executed; PeopleData only after a 
     oldGuard(true) === true && !/\(!batchDataFallback \|\| DEMOGRAPHICS_AFTER_CONTACT_MATCH\)/.test(orchS))
 }
 
+// Wave 96 (lane 96B — owner blueprint: "Versium behind OUR normalized capability contract, never raw
+// vendor shapes leaking; provenance per field; credentials centralized, never in agent context").
+console.log("\n[Layer 2c · VERSIUM CONTRACT — normalized results, provenance, credentials in the adapter only, refusals reported (wave 96, lane 96B)]")
+{
+  // The vendor's own field names: a returned object carrying any of these is a raw-shape leak.
+  const RAW_VERSIUM_KEY = /"(Individual Level Match|Age Range|Household Income|Estimated Net Worth|Credit Rating|Email Address|Home Own\/Rent|match_counts|num_matches)"|"versium"\s*:\s*\{/
+  const leaks = (o: unknown) => RAW_VERSIUM_KEY.test(JSON.stringify(o ?? null))
+  const demoRow = { "Individual Level Match": "Yes", "Age Range": "35-44", Gender: "Female", "Household Income": "$100,000 - $149,999" }
+  const demoCall = async (output: string) => ({ ok: true, status: 200, data: { versium: { match_counts: { [output]: 1 }, results: [demoRow] } } })
+  check("POSITIVE CONTROL: the raw-shape finder flags a raw Versium row and a raw response body", leaks(demoRow) && leaks({ versium: { results: [] } }))
+  const demo = await vs.appendVersiumDemographics({ email: "ana@example.com" }, ["demographic"], { call: demoCall as any })
+  check("EXECUTED: the demographic append returns OUR profile (provider versium, captured_at), not the vendor's rows — no raw key, no `results` field",
+    demo.profile?.provider === "versium" && typeof demo.profile?.captured_at === "string" && demo.profile?.age_range === "35-44" && !("results" in demo) && !leaks(demo),
+    JSON.stringify(demo).slice(0, 200))
+  check("EXECUTED: the demographic result carries provenance (source versium, capability person.enrich_demographics, retrievedAt, matchConfidence individual)",
+    demo.provenance?.source === "versium" && demo.provenance?.capability === "person.enrich_demographics" && !Number.isNaN(Date.parse(demo.provenance?.retrievedAt ?? "")) && demo.provenance?.matchConfidence === "individual")
+  const contactCall = async (output: string) => ({ ok: true, status: 200, data: { versium: { match_counts: { [output]: 1 }, results: [output === "email" ? { "Email Address": "ana@example.com" } : { Phone: "5125550100" }] } } })
+  const c = await vs.appendVersiumContact({ email: null, firstName: "Ana", lastName: "Owner", zip: "78701" }, ["email", "phone"], { call: contactCall as any })
+  check("EXECUTED: the contact append returns normalized points + provenance per field (no level in the contact output → matchConfidence null, never invented)",
+    c.emails[0] === "ana@example.com" && c.phones[0] === "5125550100" && c.provenance.email?.capability === "person.enrich_contact" && c.provenance.phone?.source === "versium"
+      && c.provenance.email?.matchConfidence === null && !leaks(c))
+  // Refusals: a 429 / timeout is READ and reported, books nothing, and is never a match.
+  const refused = await vs.appendVersiumContact({ email: null, firstName: "Ana", lastName: "Owner", zip: "78701" }, ["email"], { call: (async () => ({ ok: false, status: 429, data: null, error: "rate limited" })) as any })
+  const timedOut = await vs.appendVersiumContact({ email: null, firstName: "Ana", lastName: "Owner", zip: "78701" }, ["email"], { call: (async () => ({ ok: false, status: null, data: null })) as any })
+  check("EXECUTED: a 429 and a timeout are reported by name, cost $0, no match",
+    /429/.test(refused.error ?? "") && refused.cost === 0 && !refused.matched && /timeout/.test(timedOut.error ?? "") && timedOut.cost === 0)
+  // Retry only where idempotent: Versium is GET-only and the connector gateway retries GET alone.
+  const gw = stripped("lib/agentic-os/connector-gateway.ts")
+  const methods = stripped("lib/external/versium-client.ts").match(/method: "(\w+)"/g) ?? []
+  check(`retry is bounded and GET-only (idempotent) in the ONE egress the adapter uses; the adapter issues GETs only (${methods.length} request sites)`,
+    /if \(method !== "GET"\) return attempt\(\)/.test(gw) && methods.length >= 3 && methods.every((m) => m === 'method: "GET"'))
+  // The leg: provenance rides the profile; every booking names the capability; an unbooked spend is reported.
+  const booked2: any[] = [], warned: string[] = []
+  const origWarn = console.warn
+  console.warn = (...a: unknown[]) => { warned.push(a.map(String).join(" ")) }
+  const leg = await rail.runVersiumContactLeg(
+    { brokerageId: "b-1", stage: "lead", identity: { firstName: "Ana", lastName: "Owner", zip: "78701" }, hasEmail: false, hasPhone: false, systemSource: "proof" },
+    { call: contactCall as any, demographicCall: demoCall as any, meter: async (m: any) => { booked2.push(m); return false } },
+  )
+  console.warn = origWarn
+  check("EXECUTED: the leg returns fieldProvenance (email + demographics) and writes it INTO the profile as field_provenance; no raw key leaks",
+    leg.fieldProvenance.email?.source === "versium" && leg.fieldProvenance.demographics?.capability === "person.enrich_demographics"
+      && leg.demographicsProfile?.field_provenance?.email?.source === "versium" && !leaks(leg))
+  check("EXECUTED: every Versium ledger booking names provider + capability + cost",
+    booked2.length >= 2 && booked2.every((b) => b.vendorName === "versium" && typeof b.metadata?.capability === "string" && b.metadata.capability.startsWith("person.") && b.cost > 0))
+  check("EXECUTED: a booking the ledger REFUSED (meter → false) is reported, not swallowed", warned.some((w) => /NOT booked/.test(w)), `warnings: ${warned.length}`)
+  check("the leg reads OUR profile from the adapter (demo.profile), never the vendor rows (demo.results / buildVersiumDemographicProfile in the rail)",
+    /demographicsProfile = demo\.profile/.test(code("lib/ai-isa/property-lookup-rail.ts")) && !/demo\.results|buildVersiumDemographicProfile\(/.test(code("lib/ai-isa/property-lookup-rail.ts")))
+  check("POSITIVE CONTROL: the raw-read finder flags the pre-96 rail shape", /demo\.results|buildVersiumDemographicProfile\(/.test("demographicsProfile = buildVersiumDemographicProfile(demo.results)"))
+  // Credentials: read in the adapter only — never in a tool, an agent prompt, or another module.
+  const KEY_READ = /process\.env\.VERSIUM_API_KEY|process\.env\[\s*["']VERSIUM_API_KEY["']\s*\]/
+  const keyReaders = CORPUS.filter((p) => KEY_READ.test(stripped(p)))
+  check(`VERSIUM_API_KEY is read in exactly one module — the adapter (readers: ${keyReaders.join(", ") || "none"}; corpus ${CORPUS.length} app/lib files)`,
+    keyReaders.length === 1 && keyReaders[0].endsWith("lib/external/versium-client.ts"))
+  check("POSITIVE CONTROL: the key-read finder flags a non-adapter read", KEY_READ.test("if (!params.deps?.append && !process.env.VERSIUM_API_KEY) return"))
+  // Gap-only: the drain passes what is held; the orchestrator writes provenance where the value lands.
+  const orchP = code("lib/lead-pipeline/enrichment-orchestrator.ts")
+  check("the drain writes the Versium provenance into enrichment_profile.field_provenance beside the stored values",
+    /versiumFieldProvenance = v\.fieldProvenance/.test(orchP) && /field_provenance: \{/.test(orchP) && /enrichment_profile: provenanceProfile/.test(orchP))
+  console.log("  blind spots: Versium's live contact-output field names are UNRESOLVED (no paid call); the raw-key list is the documented API's names; enrichment_profile.field_provenance has no reader yet (the contact card does not show it); demographics are not refreshed by age (wave 92: recency only where data is time-sensitive).")
+}
+
 console.log("\n[Layer 3 · the enrichment drain obeys the route]")
 const ORCH = "lib/lead-pipeline/enrichment-orchestrator.ts"
 const orch = code(ORCH)
