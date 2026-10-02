@@ -277,7 +277,7 @@ export async function resolvePortalLayouts(
       .select("id")
       .eq("brokerage_id", brokerageId)
       .or(clientTransactionFilter(input.contactId))
-      .in("status", ["closed", "completed"])
+      .eq("status", "closed")
       .limit(1)
     if (closedErr) console.warn("[Portal] resolvePortalLayouts closed-deal read refused:", closedErr.message)
     hasClosedDeal = !closedErr && (closed ?? []).length > 0
