@@ -174,6 +174,7 @@ export default async function AIAuditPage({ searchParams }: { searchParams: Prom
                     <span className="text-xs text-gray-500">{new Date(l.at).toLocaleString()}</span>
                     <span className="font-medium">{l.name}</span>
                     {l.kind === 'action' && <Badge variant="outline">{l.status} · {l.reasonCode}{l.settledAt ? ` · settled ${new Date(l.settledAt).toLocaleString()}` : ''}{l.error ? ` · ${l.error}` : ''}</Badge>}
+                    {l.kind === 'action' && (l.actor || l.costUsd != null || l.riskClass || l.source || l.subjectRef) && <span className="text-xs text-muted-foreground" title={l.detail ? JSON.stringify(l.detail) : undefined}>{[l.actor && `by ${l.actor}`, l.riskClass, l.source, l.subjectRef, l.costUsd != null && `$${l.costUsd.toFixed(4)}`].filter(Boolean).join(' · ')}</span>}
                     {l.because && l.because.length > 0 && <span className="text-xs text-gray-500">because {l.because.join(' → ')}</span>}
                   </li>
                 ))}

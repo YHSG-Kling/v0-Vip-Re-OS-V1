@@ -35,7 +35,7 @@ const LIMIT = 200
 const EVENT_BASE = "id, event_type, entity_type, entity_id, created_at"
 const EVENT_LINEAGE = `${EVENT_BASE}, causation_id, correlation_id`
 const ACTION_COLS =
-  "id, action, status, reason_code, reason_detail, outcome, subject_type, subject_id, actor_type, actor_manager_key, created_at, settled_at, error, causation_id, correlation_id"
+  "id, action, status, reason_code, reason_detail, outcome, subject_type, subject_id, actor_type, actor_manager_key, actor_user_id, actor_agent_id, subject_ref, risk_class, system_source, cost_usd, detail, created_at, settled_at, error, causation_id, correlation_id"
 
 function schemaAbsent(code: string | undefined): boolean {
   return code === "42P01" || code === "PGRST205" || code === "42703" || code === "PGRST204"

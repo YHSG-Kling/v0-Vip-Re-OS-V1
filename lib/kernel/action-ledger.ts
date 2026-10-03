@@ -38,7 +38,6 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { currentCausation } from "@/lib/kernel/causation"
 
-export const ACTION_LEDGER_TABLE = "agent_action_ledger"
 
 /** agent_action_ledger.status — m687 CHECK agent_action_ledger_status_check. */
 const ACTION_STATUSES = ["proposed", "executed", "failed", "unknown", "skipped"] as const
@@ -182,9 +181,14 @@ function resolveIdempotencyKey(ctx: ActionContext): string | null {
   return null
 }
 
-function rowFor(ctx: ActionContext, status: ActionStatus, key: string | null): Record<string, unknown> {
+/**
+ * The ONE insert into agent_action_ledger. The row literal sits inside the `.insert({...})` call so the
+ * column censuses (opposite-missing, readerless-writes) can see every column this module writes —
+ * a builder that RETURNED the object hid them, and the ledger read as written-by-nobody.
+ */
+function insertLedgerRow(svc: LedgerClient, ctx: ActionContext, status: ActionStatus, key: string | null, extra: Record<string, unknown> = {}) {
   const scope = currentCausation()
-  return {
+  return svc.from("agent_action_ledger").insert({
     brokerage_id: ctx.brokerageId,
     action: ctx.action,
     channel: ctx.channel ?? null,
@@ -204,7 +208,8 @@ function rowFor(ctx: ActionContext, status: ActionStatus, key: string | null): R
     causation_id: ctx.causationId ?? scope.causationId,
     correlation_id: ctx.correlationId ?? scope.correlationId,
     detail: ctx.detail ?? {},
-  }
+    ...extra,
+  }).select("id").single()
 }
 
 // ─── claim / settle ───────────────────────────────────────────────────────────
@@ -220,7 +225,7 @@ async function claimAction(ctx: ActionContext, opts?: { client?: LedgerClient })
   }
   try {
     const svc = opts?.client ?? createServiceClient()
-    const { data, error } = await svc.from(ACTION_LEDGER_TABLE).insert(rowFor(ctx, "proposed", key)).select("id").single()
+    const { data, error } = await insertLedgerRow(svc, ctx, "proposed", key)
     if (!error && data?.id) return { kind: "claimed", id: data.id as string, idempotencyKey: key }
     if (isSchemaAbsent(error)) {
       warnAbsentOnce("claim", error)
@@ -242,7 +247,7 @@ async function claimAction(ctx: ActionContext, opts?: { client?: LedgerClient })
 
 /** The 23505 loser: re-read the WINNER and decide from its status. */
 async function rereadWinner(svc: LedgerClient, key: string): Promise<ClaimResult> {
-  const { data: winner, error } = await svc.from(ACTION_LEDGER_TABLE).select(ENTRY_COLS).eq("idempotency_key", key).maybeSingle()
+  const { data: winner, error } = await svc.from("agent_action_ledger").select(ENTRY_COLS).eq("idempotency_key", key).maybeSingle()
   if (error || !winner) return { kind: "refused", error: `Idempotency key raced and the winner could not be re-read: ${error?.message ?? "no row"}` }
   const entry = winner as LedgerEntry
   if (entry.status === "executed") return { kind: "replay", entry }
@@ -251,7 +256,7 @@ async function rereadWinner(svc: LedgerClient, key: string): Promise<ClaimResult
   // failed / skipped: nothing left the building — re-claim, guarded on the status+attempts we
   // read so two retries cannot both win. COUNT the rows (an UPDATE matching nothing resolves too).
   const { data: reclaimed, error: upErr } = await svc
-    .from(ACTION_LEDGER_TABLE)
+    .from("agent_action_ledger")
     .update({ status: "proposed", attempts: (entry.attempts ?? 1) + 1, updated_at: new Date().toISOString(), settled_at: null })
     .eq("idempotency_key", key)
     .eq("status", entry.status)
@@ -268,7 +273,7 @@ async function settleAction(id: string, s: Settlement, opts?: { client?: LedgerC
     const svc = opts?.client ?? createServiceClient()
     const now = new Date().toISOString()
     const { data, error } = await svc
-      .from(ACTION_LEDGER_TABLE)
+      .from("agent_action_ledger")
       .update({
         status: s.status,
         outcome: s.outcome,
@@ -308,8 +313,7 @@ export async function recordNonAction(
   const full: ActionContext = { ...ctx, action, detail: { ...(ctx.detail ?? {}), ...(ctx.until ? { until: ctx.until } : {}) } }
   try {
     const svc = opts?.client ?? createServiceClient()
-    const row = { ...rowFor(full, "skipped", resolveIdempotencyKey(full)), outcome: ctx.decision, settled_at: new Date().toISOString() }
-    const { data, error } = await svc.from(ACTION_LEDGER_TABLE).insert(row).select("id").single()
+    const { data, error } = await insertLedgerRow(svc, full, "skipped", resolveIdempotencyKey(full), { outcome: ctx.decision, settled_at: new Date().toISOString() })
     if (error) {
       if (isSchemaAbsent(error)) {
         warnAbsentOnce("non-action", error)
@@ -491,6 +495,13 @@ export interface ChainAction {
   created_at: string
   settled_at?: string | null
   error?: string | null
+  actor_user_id?: string | null
+  actor_agent_id?: string | null
+  subject_ref?: string | null
+  risk_class?: string | null
+  system_source?: string | null
+  cost_usd?: number | string | null
+  detail?: Record<string, unknown> | null
   causation_id?: string | null
   correlation_id?: string | null
 }
@@ -507,6 +518,13 @@ export interface ChainLink {
   /** When the provider's result settled the row (the unknown-settler or the send itself), and why it failed. */
   settledAt?: string | null
   error?: string | null
+  /** Who acted (manager key, else user/agent id), what it cost, its risk class and where it came from. */
+  actor?: string | null
+  costUsd?: number | null
+  riskClass?: string | null
+  source?: string | null
+  subjectRef?: string | null
+  detail?: Record<string, unknown> | null
   /** For an action: the event chain that caused it, ROOT first ("why did the AI send this?"). */
   because?: string[]
 }
@@ -540,6 +558,9 @@ export function assembleCausalChain(events: ChainEvent[], actions: ChainAction[]
       causationId: a.causation_id ?? null, correlationId: a.correlation_id ?? null,
       status: a.status, reasonCode: a.reason_code, outcome: a.outcome ?? null,
       settledAt: a.settled_at ?? null, error: a.error ?? null,
+      actor: a.actor_manager_key ?? a.actor_agent_id ?? a.actor_user_id ?? null,
+      costUsd: a.cost_usd == null ? null : Number(a.cost_usd), riskClass: a.risk_class ?? null,
+      source: a.system_source ?? null, subjectRef: a.subject_ref ?? null, detail: a.detail ?? null,
       because: ancestry(a.causation_id),
     })),
   ]
