@@ -554,7 +554,7 @@ console.log("\n── SOURCE: wiring ──")
   check("platform-reception.ts mounts the SAME shared builder (conversational-rules-only variant — a platform prospect is not a real-estate buyer/seller)",
     src("lib/voice/platform-reception.ts").includes("buildQualificationPrompt("))
   check("twilio-voice.ts routes the voice tool allowlist + free capture bundle through selectToolsForPersona (cost-ranked order, same rule as chat surfaces — CLAUDE.md §6)",
-    voiceLib.includes("selectToolsForPersona(merged)"))
+    /selectToolsForPersona\(merged\s*[,)]/.test(voiceLib))
 }
 
 console.log(`\n RESULT: ${passed} passed, ${failed} failed`)
