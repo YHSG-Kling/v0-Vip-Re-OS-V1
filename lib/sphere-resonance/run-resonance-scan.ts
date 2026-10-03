@@ -17,9 +17,18 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
-import { aiGenerateTouchpoint } from "@/app/actions/ai-sphere-management"
-import { isCapabilityEnabled } from "@/app/actions/ai-isa-settings"
+// Lane 86E: this imported the "use server" aiGenerateTouchpoint, which read the
+// contact through the COOKIE client — this cron has none, so every draft came
+// back "Contact not found" and the follow-up was queued with an empty body. The
+// body is now the server-only core, handed the brokerage this scan is walking.
+import { draftSphereTouchpoint } from "@/lib/sphere-resonance/touchpoint-draft"
+// THE RESOLVER, not the server action: this is a cron path with no session, so
+// the action's session-derived per-user tier would always be empty here. Calling
+// the resolver directly lets each contact's OWN agent govern their auto-touch
+// (owner ruling: "ai customizations are also per user").
+import { isIsaCapabilityEnabledForScope } from "@/lib/ai-isa/resolve-isa-settings"
 
 type LifeEventType =
   | "job_change"
@@ -34,13 +43,9 @@ type LifeEventType =
   | "death_in_household"
   | "inheritance"
 
-type TouchpointType =
-  | "anniversary"
-  | "birthday"
-  | "check_in"
-  | "market_update"
-  | "holiday"
-  | "referral_ask"
+// TouchpointType — the local restatement is retired onto the drafter's own
+// vocabulary (§6: one spelling), lib/sphere-resonance/touchpoint-draft.ts.
+type TouchpointType = import("@/lib/sphere-resonance/touchpoint-draft").TouchpointType
 
 const SENSITIVE_EVENTS = new Set<LifeEventType>([
   "divorce_filing",
@@ -49,7 +54,7 @@ const SENSITIVE_EVENTS = new Set<LifeEventType>([
   "inheritance",
 ])
 
-/** Map detected life event → appropriate touchpoint type for aiGenerateTouchpoint. */
+/** Map detected life event → appropriate touchpoint type for draftSphereTouchpoint. */
 const EVENT_TO_TOUCHPOINT: Partial<Record<LifeEventType, TouchpointType>> = {
   job_change: "check_in",
   job_change_to_non_local: "check_in",
@@ -134,7 +139,26 @@ async function processBrokerageResonance(
     return { contactsScanned: 0, eventsResonated: 0, autoQueued: 0, surfacedOnly: 0, sensitiveSkipped: 0 }
   }
 
-  const autoTouchEnabled = await isCapabilityEnabled(brokerageId, "predictive_listing_auto_touch")
+  // PER AGENT, not per brokerage. This was one brokerage-wide answer applied to
+  // every contact in the batch, which is precisely the grain the owner's ruling
+  // says is wrong: an agent who turned auto-touch off still had it run for their
+  // own sphere. Memoized per agent so a 500-contact batch costs one resolution
+  // per distinct agent, not one per contact.
+  const autoTouchByAgent = new Map<string, boolean>()
+  const autoTouchAllowed = async (agentId: string | null): Promise<boolean> => {
+    const key = agentId ?? ""
+    const cached = autoTouchByAgent.get(key)
+    if (cached !== undefined) return cached
+    // `contacts.agent_id` is agents.id — the id class ai_isa_settings.agent_id
+    // stores. A null agent falls to the brokerage tier, which is the correct
+    // owner for an unassigned contact.
+    const allowed = await isIsaCapabilityEnabledForScope(
+      { agentId, brokerageId },
+      "predictive_listing_auto_touch",
+    )
+    autoTouchByAgent.set(key, allowed)
+    return allowed
+  }
 
   let eventsResonated = 0
   let autoQueued = 0
@@ -179,7 +203,7 @@ async function processBrokerageResonance(
       // Sensitive events — surface for human review only, never auto-touch
       if (SENSITIVE_EVENTS.has(eventTypeKey)) {
         sensitiveSkipped++
-        await supabase.from("predictive_listing_actions").insert({
+        await sentinelWrite(supabase, supabase.from("predictive_listing_actions").insert({
           contact_id: c.id,
           agent_id: c.agent_id,
           brokerage_id: brokerageId,
@@ -190,30 +214,36 @@ async function processBrokerageResonance(
           status: "pending_review",
           // No scheduled_send_at — agent must take action
           cancel_reason: evidenceKey,  // used for idempotency lookup
-        })
+        }), { table: "predictive_listing_actions", flow: "predictive_listing_actions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
         surfacedOnly++
         continue
       }
 
       // Non-sensitive event — generate AI touchpoint
       const touchpointType = EVENT_TO_TOUCHPOINT[eventTypeKey] ?? "check_in"
+      const fallbackBody = `Hi — saw the ${humanizeEvent(eventTypeKey).toLowerCase()} news. Just thinking of you. If there's anything I can help with, let me know.`
       let messageBody = ""
       try {
         if (c.agent_id) {
-          const result = await aiGenerateTouchpoint({
+          const result = await draftSphereTouchpoint(supabase, {
+            brokerageId,
             agentId: c.agent_id,
             contactId: c.id,
             touchpointType,
           })
-          if ((result as { success?: boolean; message?: string }).success) {
-            messageBody = (result as { message?: string }).message ?? ""
+          if (result.success) messageBody = result.message
+          else {
+            // A refused draft is REPORTED and falls to the same plain check-in a
+            // thrown draft gets — never an empty body queued as a touch.
+            console.warn(`[sphere-resonance] touchpoint not drafted for contact ${c.id}:`, result.error)
+            messageBody = fallbackBody
           }
         }
       } catch {
-        messageBody = `Hi — saw the ${humanizeEvent(eventTypeKey).toLowerCase()} news. Just thinking of you. If there's anything I can help with, let me know.`
+        messageBody = fallbackBody
       }
 
-      const queueAuto = autoTouchEnabled
+      const queueAuto = await autoTouchAllowed(c.agent_id)
       await supabase.from("predictive_listing_actions").insert({
         contact_id: c.id,
         agent_id: c.agent_id,

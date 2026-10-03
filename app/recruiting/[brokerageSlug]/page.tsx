@@ -42,7 +42,7 @@ export default async function RecruitingLandingPage({ params, searchParams }: Pa
   const svc = createServiceClient()
   const { data: brokerage } = await svc
     .from("brokerages")
-    .select("id, name, slug, logo_url, primary_color, license_number, license_state, website, about_text, recruiting_pitch, recruiting_split_to_agent, recruiting_monthly_fee, recruiting_value_props")
+    .select("id, name, slug, logo_url, primary_color, license_number, license_state, website, about_text, recruiting_pitch, recruiting_split_to_agent, recruiting_monthly_fee, recruiting_value_props, revenue_share_enabled, offers_medical_benefits, offers_retirement_benefits")
     .eq("slug", brokerageSlug)
     .maybeSingle()
   if (!brokerage) notFound()
@@ -80,6 +80,11 @@ export default async function RecruitingLandingPage({ params, searchParams }: Pa
         splitToAgent:            brokerage.recruiting_split_to_agent ?? null,
         monthlyFee:              brokerage.recruiting_monthly_fee ?? null,
         valueProps:              (brokerage.recruiting_value_props ?? []) as string[],
+        // Benefit offerings (m574 + m264): FAIL-CLOSED `=== true` — an unset or
+        // missing mark renders as not offered, and no benefits section appears.
+        offersRevenueShare:      brokerage.revenue_share_enabled === true,
+        offersMedical:           brokerage.offers_medical_benefits === true,
+        offersRetirement:        brokerage.offers_retirement_benefits === true,
       }}
       referringAgent={referringAgent}
     />

@@ -80,8 +80,23 @@ export async function GET(request: Request) {
       console.error("[OnboardingReminders] fall-behind:", e)
     }
 
-    await recordCronSuccessAction({ context_id: contextId, records_processed: mentorship.graduated + mentorship.nudged + skillRefreshers + fallBehindInterventions + tenantCheckIns.sent, metadata: { mentorship, skillRefreshers, fallBehindInterventions, tenantCheckIns } })
-    return NextResponse.json({ ok: true, mentorship, skillRefreshers, fallBehindInterventions, tenantCheckIns }, { status: 200 })
+    // SUBSCRIBER STALL LOOP (lane 79D) — a NEW subscriber who never crossed the
+    // threshold (paid checkout never cleared / never signed in): one email +
+    // bell at day 3, one platform-staff escalation at day 7, each once
+    // (stamped in billing_metadata.subscriber_stall). The check-ins above
+    // only reach owners already inside the product.
+    let subscriberStall = { scanned: 0, pending: 0, nudged: 0, escalated: 0, skipped: 0, errors: [] as string[] }
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const { runSubscriberStallSweep } = await import("@/lib/onboarding/subscriber-stall")
+      subscriberStall = await runSubscriberStallSweep(createServiceClient())
+      if (subscriberStall.errors.length > 0) console.error("[OnboardingReminders] subscriber stall sweep incomplete:", subscriberStall.errors.join("; "))
+    } catch (e) {
+      console.error("[OnboardingReminders] subscriber stall:", e)
+    }
+
+    await recordCronSuccessAction({ context_id: contextId, records_processed: mentorship.graduated + mentorship.nudged + skillRefreshers + fallBehindInterventions + tenantCheckIns.sent + subscriberStall.nudged + subscriberStall.escalated, metadata: { mentorship, skillRefreshers, fallBehindInterventions, tenantCheckIns, subscriberStall } })
+    return NextResponse.json({ ok: true, mentorship, skillRefreshers, fallBehindInterventions, tenantCheckIns, subscriberStall }, { status: 200 })
   } catch (err) {
     console.error("[cron/onboarding-reminders] Failed:", err)
     await recordCronFailureAction({ context_id: contextId, error: err as Error | string, stage: "main-processing" })

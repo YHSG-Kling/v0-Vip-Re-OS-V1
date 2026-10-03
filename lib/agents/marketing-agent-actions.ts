@@ -19,6 +19,7 @@
  * on m143's action_type column must be widened in the same migration.
  */
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export type MarketingActionType =
@@ -93,7 +94,7 @@ export async function executeAction(actionId: string, approverUserId: string): P
 
   // Claim the row — flip proposed/approved → executing atomically so
   // concurrent approve clicks don't double-fire.
-  const { data: claimed } = await svc.from("marketing_agent_actions")
+  const { data: claimed, error: actionClaimErr } = await svc.from("marketing_agent_actions")
     .update({
       status:      "executing",
       approved_at: new Date().toISOString(),
@@ -104,6 +105,7 @@ export async function executeAction(actionId: string, approverUserId: string): P
     .in("status", ["proposed", "approved"])
     .select("brokerage_id, action_type, action_input")
     .single()
+  if (actionClaimErr) console.error(`[marketing-agent] action claim refused: ${actionClaimErr.message}`)
   if (!claimed) {
     return { status: "skipped", result: { reason: "row not in proposed/approved state" } }
   }
@@ -115,9 +117,10 @@ export async function executeAction(actionId: string, approverUserId: string): P
   } catch (e) {
     outcome = { status: "failed", result: { error: (e as Error).message } }
   }
-  await svc.from("marketing_agent_actions")
+  const { error: actionOutcomeErr } = await svc.from("marketing_agent_actions")
     .update({ status: outcome.status, result: outcome.result })
     .eq("id", actionId)
+  if (actionOutcomeErr) console.error(`[marketing-agent] action outcome NOT recorded: ${actionOutcomeErr.message}`)
   return outcome
 }
 
@@ -367,7 +370,8 @@ async function runHandler(
       if (result.standardized.city)     update.mailing_city  = result.standardized.city
       if (result.standardized.state)    update.mailing_state = result.standardized.state
       if (result.standardized.zip_code) update.mailing_zip   = result.standardized.zip_code
-      await svc.from("leads").update(update).eq("id", leadId)
+      const { error: mailingAddrErr } = await svc.from("leads").update(update).eq("id", leadId)
+      if (mailingAddrErr) console.error(`[marketing-agent] standardized mailing address NOT saved on the lead: ${mailingAddrErr.message}`)
 
       return {
         status: result.verified ? "succeeded" : "skipped",
@@ -392,21 +396,24 @@ async function runHandler(
         .update({ status: "cancelled" }, { count: "exact" })
         .eq("id", campaignId)
         .eq("brokerage_id", brokerageId)
-        .in("status", ["pending", "queued", "draft"])
+        // The cancellable states: a printed or mailed piece cannot be recalled.
+        // All three values this used are absent from the CHECK, so the bulk
+        // cancel matched nothing and cancelled nothing.
+        .in("status", ["planning", "approved"])
       if (error) return { status: "failed", result: { error: error.message } }
       if ((count ?? 0) === 0) {
         return { status: "skipped", result: { reason: "row not in pending/queued/draft or tenant mismatch" } }
       }
       // Log the structured reason so the admin sees WHY the agent
       // cancelled it (not just a status flip).
-      await svc.from("automation_errors").insert({
+      await sentinelWrite(svc, svc.from("automation_errors").insert({
         brokerage_id:  brokerageId,
         workflow_name: "marketing_agent_direct_mail_cancel",
         error_message: `Marketing agent cancelled direct-mail send: ${reason.slice(0, 200)}`,
         severity:      "info",
         status:        "resolved",
         context_json:  { campaign_id: campaignId, agent_reason: reason },
-      })
+      }), { table: "automation_errors", flow: "automation_errors_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
       return { status: "succeeded", result: { campaign_id: campaignId, cancelled: true } }
     }
 
@@ -495,13 +502,14 @@ async function runHandler(
         systemSource:   "marketing_agent_retry",
       })
 
-      await svc.from("direct_mail_campaigns")
+      const { error: retryStampErr } = await svc.from("direct_mail_campaigns")
         .update({
           status:        dispatch.success ? "sent" : "failed",
           lob_order_id:  dispatch.messageId ?? null,
           mailing_date:  dispatch.success ? new Date().toISOString().slice(0, 10) : null,
         })
         .eq("id", campaignId)
+      if (retryStampErr) console.error(`[marketing-agent] mail retry outcome NOT recorded (the campaign may be retried again): ${retryStampErr.message}`)
 
       return {
         status: dispatch.success ? "succeeded" : "failed",
@@ -639,13 +647,13 @@ async function runHandler(
           // to. This keeps the fanout deterministic without spawning
           // ad-hoc Lob spend that wasn't budgeted.
           try {
-            await svc.from("content_topic_uses").insert({
+            await sentinelWrite(svc, svc.from("content_topic_uses").insert({
               topic_id:     topicId,
               brokerage_id: brokerageId,
               asset_type:   "direct_mail_postcard",
               asset_id:     null,
               used_at:      new Date().toISOString(),
-            })
+            }), { table: "content_topic_uses", flow: "content_topic_uses_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
             fanout.direct_mail_postcard = {
               ok: true,
               ref: "queued_for_next_farm_cycle",
@@ -702,9 +710,10 @@ async function runHandler(
       }
       if (p.delivery_approved_at) return { status: "skipped", result: { reason: "already released" } }
 
-      await svc.from("listing_presentations")
+      const { error: releaseErr } = await svc.from("listing_presentations")
         .update({ delivery_approved_at: new Date().toISOString(), delivery_approved_by: approverUserId ?? null })
         .eq("id", presentationId)
+      if (releaseErr) console.error(`[marketing-agent] presentation delivery approval NOT recorded: ${releaseErr.message}`)
 
       // Send the announcement email now (the drip then reveals the portal
       // sections on schedule). Best-effort — a send failure must not un-release.

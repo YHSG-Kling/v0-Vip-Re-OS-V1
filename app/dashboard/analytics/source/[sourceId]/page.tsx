@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { createClient } from "@/lib/supabase/server"
+import { resolveReportScope } from "@/lib/kernel/reporting-scope"
 import { getSourceDrilldown } from "@/app/actions/source-analytics"
 import { SourceDetailClient } from "./source-detail-client"
 import type { SourceFamily } from "@/app/actions/source-analytics"
@@ -12,8 +14,13 @@ interface Props {
 }
 
 export default async function SourceDetailPage({ params, searchParams }: Props) {
+  // Self-healing identity: an agent who reached this page without a brokerage/agents row is
+  // PROVISIONED in place rather than bounced to onboarding (the "bounce" class in the live
+  // walkthrough). The redirect below now only fires for an account that genuinely cannot
+  // self-provision — a pending brokerage invite, or a staff user whose brokerage comes from
+  // their org. Idempotent: a no-op for an already-anchored user.
   const [ctx, resolvedParams, resolvedSearch] = await Promise.all([
-    getAgentContext(),
+    ensureAgentContextInPlace(),
     params,
     searchParams,
   ])
@@ -23,12 +30,21 @@ export default async function SourceDetailPage({ params, searchParams }: Props) 
 
   const sourceName = decodeURIComponent(resolvedParams.sourceId)
   const family = (resolvedSearch.family ?? "contact_direct") as SourceFamily
-  const isBrokerOrAdmin = ctx.userType === "broker" || ctx.userType === "admin" || ctx.userType === "superadmin"
+  // Lane 90A (89D P1-5): the ONE scope resolver — see app/dashboard/analytics/source/page.tsx.
+  const supabase = await createClient()
+  const scope = await resolveReportScope(supabase, {
+    userType: ctx.userType,
+    userId: ctx.userId,
+    agentId: ctx.agentId ?? "",
+    brokerageId: ctx.brokerageId,
+    teamId: ctx.teamId,
+  })
+  const scopeAgentIds = scope.agentIds ? scope.agentIds.filter(Boolean) : null
 
   const result = await getSourceDrilldown(
     ctx.brokerageId,
     `${sourceName}::${family}`,
-    isBrokerOrAdmin ? undefined : ctx.userId,
+    scopeAgentIds,
     resolvedSearch.dateFrom,
     resolvedSearch.dateTo
   )
@@ -51,8 +67,7 @@ export default async function SourceDetailPage({ params, searchParams }: Props) 
         sourceName={sourceName}
         sourceFamily={family}
         brokerageId={ctx.brokerageId}
-        userId={ctx.userId}
-        userType={ctx.userType}
+        scopeAgentIds={scopeAgentIds}
         initialData={result}
       />
     </div>

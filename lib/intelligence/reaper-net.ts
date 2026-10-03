@@ -13,6 +13,7 @@
 // one registry, one runner, one ledger — instead of five copies hand-wired into
 // two crons. The crons now call runReaperNet() by lane.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 
@@ -145,7 +146,7 @@ export const REAPER_NET: ReaperEntry[] = [
   },
   {
     domain: "stuck_social_posts",
-    manager: "marketing_agent",
+    manager: "campaign_orchestrator", // m618: survivor of the retired marketing_agent seat
     lane: "proactive",
     protects: "scheduled posts that hung publishing or missed their slot",
     run: async (b, svc) => {
@@ -193,6 +194,22 @@ export const REAPER_NET: ReaperEntry[] = [
       return norm(await reapStuckManagerSignals(b, svc))
     },
   },
+  {
+    // Wave 98 (lane 98B): agent_action_ledger rows stuck at 'unknown' (the provider never
+    // answered) are settled against outcome_reconciliations — the reconciler survivor
+    // (lib/outcomes/reconciliation-ledger.ts settleUnknownActions). data_steward observes
+    // provider truth. Signals lane = the 30-minute manager-signals cron; no new cron.
+    domain: "unknown_action_outcomes",
+    manager: "data_steward",
+    lane: "signals",
+    protects: "AI actions whose provider never answered, settled against the provider's own record",
+    run: async (b, svc) => {
+      const { settleUnknownActions } = await import("@/lib/outcomes/reconciliation-ledger")
+      const r = await settleUnknownActions(b, svc)
+      if (r.errors.length > 0) console.error(`[reaper-net] unknown_action_outcomes ${b}:`, r.errors.join("; "))
+      return norm(r)
+    },
+  },
 ]
 
 /** Persist one reaper's sweep to the accountability ledger (best-effort). */
@@ -201,7 +218,7 @@ export async function recordReaperRun(
   client?: Svc,
 ): Promise<void> {
   const svc = client ?? createServiceClient()
-  await svc.from("reaper_runs").insert({
+  await sentinelWrite(svc, svc.from("reaper_runs").insert({
     brokerage_id: row.brokerageId,
     domain: row.domain,
     manager: row.manager,
@@ -209,7 +226,7 @@ export async function recordReaperRun(
     escalated: row.escalated,
     reaped: row.reaped,
     detail: row.detail ?? null,
-  }).then(() => {}, () => {})
+  }), { table: "reaper_runs", flow: "reaper_runs_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 }
 
 export interface ReaperNetReport {
@@ -266,7 +283,9 @@ export async function runReaperNet(
 }
 
 // ── COVERAGE MAP — honest "how much of the team is reaped" ────────────────────
-/** Managers that have at least one registered reaper in the net. */
+// Product reader: app/dashboard/admin/manager-trust/page.tsx (reaperCoverage → the
+// "Nothing falls through — reaper coverage" card). Proof: scripts/reaper-net-simulator.ts.
+/** Managers that have at least one registered reaper in the net (internal-live: reaperCoverage). */
 export function managersUnderReaperCoverage(): ManagerKey[] {
   return Array.from(new Set(REAPER_NET.map((e) => e.manager)))
 }

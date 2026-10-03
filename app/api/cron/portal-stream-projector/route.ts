@@ -1,8 +1,10 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import {
 NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   translateEvent,
+  canonicalPortalEventType,
   PROJECTABLE_EVENT_TYPES,
 } from "@/lib/portal-stream/event-translator"
 import { verifyCronAuth } from "@/lib/cron-auth"
@@ -107,7 +109,10 @@ export async function GET(request: NextRequest) {
         //   1) MILESTONE_LESSON_MAP (curated static portal lesson_key)
         //   2) learning_modules tagged with the event's stage (channel
         //      includes 'portal_lesson' and published)
-        const stageTags = eventTypeToStageTags(ev.event_type)
+        // Kernel-spelled rows (offer_submitted …) project as their portal kind
+        // (offer.submitted) — one vocabulary in the stream (event-translator.ts).
+        const portalEventType = canonicalPortalEventType(ev.event_type)
+        const stageTags = eventTypeToStageTags(portalEventType)
         const educationLessonKey = staticLessonKeyFor(stageTags)
         const learningModuleId = await pickPortalLessonModule(
           svc, ev.brokerage_id, stageTags, persona,
@@ -117,14 +122,14 @@ export async function GET(request: NextRequest) {
         if (educationLessonKey) enrichedMetadata.education_lesson_key = educationLessonKey
         if (learningModuleId)   enrichedMetadata.learning_module_id   = learningModuleId
 
-        await svc.from("portal_event_stream").insert({
+        await sentinelWrite(svc, svc.from("portal_event_stream").insert({
           brokerage_id:          ev.brokerage_id,
           contact_id:            resolved.contactId,
           agent_user_id:         resolved.agentUserId,
           transaction_id:        resolved.transactionId,
           listing_id:            resolved.listingId,
           source_event_id:       ev.id,
-          event_type:            ev.event_type,
+          event_type:            portalEventType,
           customer_copy:         translation.customerCopy,
           customer_icon:         translation.customerIcon,
           agent_copy:            translation.agentCopy,
@@ -133,7 +138,7 @@ export async function GET(request: NextRequest) {
           severity:              translation.severity,
           metadata:              enrichedMetadata,
           occurred_at:           ev.created_at,
-        })
+        }), { table: "portal_event_stream", flow: "portal_event_stream_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
         summary.inserted++
       } catch (e) {
         console.error(`[portal-stream-projector] event ${ev.id}:`, e)

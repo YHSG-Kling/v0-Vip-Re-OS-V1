@@ -1,3 +1,12 @@
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║ DEAD — DO NOT RE-RUN. The `vendor_directory` table this file touches no   ║
+-- ║ longer exists: m355 folded its curation columns onto `vendors` and        ║
+-- ║ dropped it (one vendor system, per the owner's ruling on drift).          ║
+-- ║ Re-running would recreate it AND point vendor_jobs.vendor_id at it — that ║
+-- ║ FK targets vendors(id) in production.                                    ║
+-- ║ Kept only as the historical record of how the schema got here.           ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+
 -- ============================================================================
 -- EXTENDED AI SYSTEMS SCHEMA
 -- Tables for: Property Matching, Contract Review, Communication Hub, 

@@ -10,17 +10,18 @@
 
 import { NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { calculateDealHealth } from "@/lib/deal-health/health-scorer"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
 
 export async function GET(request: Request) {
-  // Verify cron secret
-  const authHeader = request.headers.get("authorization")
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Fail closed (lane 86G): this compared against `Bearer ${process.env.CRON_SECRET}`,
+  // which is the literal "Bearer undefined" when the secret is unset — a
+  // guessable credential. Survivor: lib/cron-auth.ts verifyCronAuth.
+  const denied = verifyCronAuth(request)
+  if (denied) return denied
 
   const supabase = createServiceClient()
   const twentyHoursAgo = new Date()

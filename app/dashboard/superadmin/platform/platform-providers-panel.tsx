@@ -7,7 +7,7 @@
 import { useState, useTransition } from "react"
 import { Switch } from "@/app/components/ui/switch"
 import { Plug } from "lucide-react"
-import { setPlatformProviderAction } from "@/app/actions/superadmin/platform-providers"
+import { setPlatformProviderAction, getPlatformProvidersAction } from "@/app/actions/superadmin/platform-providers"
 import type { PlatformProviderSpec, PlatformProviderState } from "@/lib/platform/platform-providers"
 
 export function PlatformProvidersPanel({ spec, initial }: { spec: PlatformProviderSpec[]; initial: PlatformProviderState[] }) {
@@ -21,7 +21,20 @@ export function PlatformProvidersPanel({ spec, initial }: { spec: PlatformProvid
     setErr(null)
     start(async () => {
       const r = await setPlatformProviderAction({ providerType, enabled })
-      if (!r.ok) { setState((s) => ({ ...s, [providerType]: prev })); setErr(r.error ?? "Failed") }
+      if (!r.ok) { setState((s) => ({ ...s, [providerType]: prev })); setErr(r.error ?? "Failed"); return }
+      // Re-read the REAL platform provider state (wave 4 slice 2 — this is what
+      // getPlatformProvidersAction is for). These switches decide whether the
+      // platform-funded channels run for EVERY tenant, so leaving the UI on an
+      // optimistic value means a superadmin can walk away believing direct mail
+      // is off across the platform when the override never landed the way they
+      // expected. A refused re-read leaves the optimistic value and says so
+      // rather than silently reverting to a value we cannot confirm either.
+      const fresh = await getPlatformProvidersAction().catch(() => null)
+      if (fresh?.ok) {
+        setState(Object.fromEntries(fresh.state.map((x) => [x.providerType, x.enabled])))
+      } else if (fresh && !fresh.ok) {
+        setErr(`Saved, but the current platform state could not be re-read: ${fresh.error}`)
+      }
     })
   }
 

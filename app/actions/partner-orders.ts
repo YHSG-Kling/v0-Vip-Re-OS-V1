@@ -51,8 +51,8 @@ export async function createLenderApplication(input: {
     application_url: input.applicationUrl.trim(), // the lender's own application link (l72_s12)
   }).select("id").single()
   if (error) return { success: false, error: error.message }
-  revalidatePath("/lender")
-  revalidatePath("/dashboard/partners")
+  revalidatePath("/lender/dashboard")
+  revalidatePath("/dashboard/vendors")
   return { success: true, applicationId: data.id as string }
 }
 
@@ -64,7 +64,11 @@ export async function updateLenderApplicationStatus(
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   if (!LENDER_APP_STATUSES.includes(status)) return { success: false, error: "invalid_status" }
   const svc = createServiceClient()
-  const { error } = await svc.from("lender_applications")
+  // `.select("id")` PROVES the row moved. Without it a status change aimed at an
+  // application in another brokerage matched zero rows and still returned
+  // { success: true } — the caller was told the lender application had advanced
+  // when nothing had been written.
+  const { data, error } = await svc.from("lender_applications")
     .update({
       status,
       updated_at: new Date().toISOString(),
@@ -72,8 +76,10 @@ export async function updateLenderApplicationStatus(
     })
     .eq("id", applicationId)
     .eq("brokerage_id", ctx.brokerageId)
+    .select("id")
   if (error) return { success: false, error: error.message }
-  revalidatePath("/lender")
+  if (!data || data.length === 0) return { success: false, error: "application_not_found_in_brokerage" }
+  revalidatePath("/lender/dashboard")
   return { success: true }
 }
 
@@ -104,7 +110,7 @@ export async function createTitleOrder(input: {
   }).select("id").single()
   if (error) return { success: false, error: error.message }
   revalidatePath("/title/orders")
-  revalidatePath("/dashboard/partners")
+  revalidatePath("/dashboard/vendors")
   return { success: true, orderId: data.id as string }
 }
 
@@ -116,8 +122,14 @@ export async function updateTitleOrderStatus(
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   if (!TITLE_ORDER_STATUSES.includes(status)) return { success: false, error: "invalid_status" }
+  if (!orderId) return { success: false, error: "order_id_required" }
   const svc = createServiceClient()
-  const { error } = await svc.from("title_orders")
+  // `.select("id")` PROVES the row moved. Without it, an order id belonging to a
+  // different brokerage matched zero rows and this still returned { success: true },
+  // telling a closing team the title search had been marked clear when nothing was
+  // written. `completed_at` is stamped only for 'completed' — the terminal state —
+  // so turnaround maths in title-operations-panel is not fed an optimistic timestamp.
+  const { data, error } = await svc.from("title_orders")
     .update({
       status,
       updated_at: new Date().toISOString(),
@@ -126,7 +138,9 @@ export async function updateTitleOrderStatus(
     })
     .eq("id", orderId)
     .eq("brokerage_id", ctx.brokerageId)
+    .select("id")
   if (error) return { success: false, error: error.message }
+  if (!data || data.length === 0) return { success: false, error: "order_not_found_in_brokerage" }
   revalidatePath("/title/orders")
   return { success: true }
 }

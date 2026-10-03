@@ -16,14 +16,14 @@ import {
 } from "@/components/ui/select"
 import { useToast } from "@/hooks/use-toast"
 import { createContact } from "@/app/actions/contacts"
+import { LEAD_SOURCES, LEAD_SOURCE_LABELS } from "@/lib/constants"
 
-const SOURCES = [
-  { value: "business_card", label: "Business Card" },
-  { value: "open_house", label: "Open House" },
-  { value: "referral", label: "Referral" },
-  { value: "event", label: "Event" },
-  { value: "other", label: "Other" },
-]
+// TOMBSTONE (§1.1 / §6): the private `SOURCES` array that stood here — a THIRD
+// spelling of the lead-source vocabulary — is DELETED. SURVIVOR:
+// lib/constants/index.ts:101 LEAD_SOURCES + LEAD_SOURCE_LABELS. Its two values
+// that existed nowhere else, "business_card" and "event", were merged ONTO the
+// survivor before this was removed, so the pick list loses nothing.
+const SOURCES = LEAD_SOURCES.map((value) => ({ value, label: LEAD_SOURCE_LABELS[value] }))
 
 export function AcquisitionQuickCapture() {
   const [open, setOpen] = useState(false)
@@ -57,9 +57,14 @@ export function AcquisitionQuickCapture() {
         last_name: lastName.trim(),
         email: email.trim(),
         phone: phone.trim(),
-        lead_source: source,
+        // 🚨 WAS `lead_source: source` behind an `as any`. createContact takes
+        // `source`, never `lead_source`, so the agent's pick was SILENTLY
+        // DROPPED on every capture and the contact was filed as "manual" — the
+        // Source select on this form has never once been recorded. The cast is
+        // what hid it; it is gone, so the compiler now owns this contract.
+        source,
         status: "active",
-      } as any)
+      })
       if (result.success && result.contact) {
         setCreatedContactId(result.contact.id as string | null)
         toast({ title: "Contact added", description: `${firstName} ${lastName}`.trim() })

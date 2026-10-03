@@ -7,14 +7,14 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 
 async function requirePlatformStaff(): Promise<{ ok: true } | { ok: false; error: string }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
   const { data } = await supabase.from("users").select("user_type, platform_role").eq("id", user.id).maybeSingle()
-  if (data?.user_type === "superadmin" || isPlatformStaff(data?.platform_role)) return { ok: true }
+  if (isPlatformStaffIdentity(data?.user_type, data?.platform_role)) return { ok: true }
   return { ok: false, error: "Platform staff access required" }
 }
 

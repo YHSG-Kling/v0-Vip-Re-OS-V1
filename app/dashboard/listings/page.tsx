@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { MarketIntelligencePanel } from "@/app/components/dashboard/listings/market-intelligence-panel"
 import { CmaHistorySheet } from "@/app/components/dashboard/listings/cma-history-sheet"
 import { ListingsNewButton } from "@/app/dashboard/listings/listings-new-button"
+import { resolveUserTeam } from "@/lib/kernel/resolve-user-team"
 import { ListingStatusSelect } from "@/app/components/dashboard/listings/listing-status-select"
 import { MassCMAButton } from "@/app/components/dashboard/listings/mass-cma-button"
 import {
@@ -50,14 +51,37 @@ export default async function ListingsPage() {
   ])
 
   // Build query — if no agent record found, fall back to user.id for brokers/admins
-  const agentId = agentRecord?.id ?? user.id
+  // NOT `?? user.id` (m348) — listings.agent_id FKs agents, so the users id
+  // matched nothing and the page showed an empty inventory as if that were real.
+  const agentId = agentRecord?.id ?? ""
+  if (!agentId) {
+    return (
+      <div className="p-8 text-center text-muted-foreground">
+        Finishing your account setup — refresh in a moment to view your listings.
+      </div>
+    )
+  }
   const brokerageId = userProfile?.brokerage_id ?? ""
+  // ONE ANSWER for "which team is this agent on" (lib/kernel/resolve-user-team.ts)
+  // — threaded to FormWizard.teamId (via ListingsNewButton), which scopes
+  // e-sign template/provider resolution to the agent's team.
+  const { teamId } = await resolveUserTeam(supabase, user.id, agentId)
 
   // Fetch listings with correct schema columns
   const { data: listings } = await supabase
     .from("listings")
     .select("id, address, city, state, list_price, status, lifecycle_stage, bedrooms, bathrooms, sqft, created_at, stage_updated_at, showing_count")
     .eq("agent_id", agentId)
+    // ARCHIVE FILTER. This is the agent's listings BOARD — the working surface a
+    // broker means when they ask for a listing to be removed. A listing is
+    // RETAINED, never deleted (owner's ruling: "listing shouldn't be deleted
+    // because of rules of needing to keep real estate records"), and
+    // `listings.deleted_at` carries that state; see lib/kernel/listing-archive.ts
+    // for why that column and not `status`. Without this predicate the archive is
+    // a no-op here and the archived listing keeps counting toward the active
+    // volume and DOM stats computed below. Pinned by
+    // scripts/listing-archive-simulator.ts section 3.
+    .is("deleted_at", null)
     .order("created_at", { ascending: false })
     .limit(50)
 
@@ -98,7 +122,7 @@ export default async function ListingsPage() {
     <div className="space-y-6">
       {/* Command Strip — wraps cleanly on mobile */}
       <div className="flex flex-wrap items-center gap-2 px-4 sm:px-6 py-3 border-b border-border bg-muted/30">
-        <ListingsNewButton brokerageId={brokerageId} agentUserId={user.id} />
+        <ListingsNewButton brokerageId={brokerageId} agentUserId={user.id} teamId={teamId} />
         <Link href="/dashboard/listings/analytics">
           <Button variant="outline" size="sm" className="gap-2 min-h-[44px] sm:min-h-0">
             <BarChart3 className="h-4 w-4" />
@@ -289,6 +313,12 @@ export default async function ListingsPage() {
                             listingId={listing.id}
                             agentId={agentId}
                             listingAddress={listing.address}
+                            /* The three live performance facts the price-adjustment
+                               reader needs. Already on this row and already rendered
+                               above — passed rather than re-typed by the agent. */
+                            listPrice={listing.list_price}
+                            daysOnMarket={dom}
+                            showingCount={listing.showing_count}
                           />
                         </div>
                       </div>

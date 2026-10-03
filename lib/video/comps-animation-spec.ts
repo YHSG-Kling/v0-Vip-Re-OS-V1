@@ -9,6 +9,14 @@
 //
 // Row shape mirrors remotion/charts/CompsBar.tsx CompRow ({label, value, isSubject?}) WITHOUT
 // importing Remotion into lib — structural compatibility, not a coupling.
+//
+// WHO CONSUMES WHAT (wired 2026-09-03, wave 26 lane L3):
+//   · The CMAReel's comps bars are built by lib/charts/cma-reel-data.ts (:100-102), NOT here —
+//     that builder gates the SUBJECT bar on audience === "agent", because the seller's own price
+//     is off client display (CLAUDE.md §5). Do not route the seller-facing reel through this
+//     module; `includeSubject: false` exists so an agent-only caller can still share the read.
+//   · The fair-value READ (fairValue / confidence / agentRead) is consumed by
+//     lib/agents/offer-strategy-producer.ts, where it grounds the AGENT-facing offer brief.
 
 /** A single comparable sale (real data from the comps engine). */
 export interface CompInput {
@@ -67,10 +75,13 @@ export function buildCompsAnimationSpec(input: {
   subjectLabel: string
   subjectPrice: number
   comps: CompInput[]
+  /** false → rows carry the comps ONLY (a customer-facing surface must not print the subject's
+   *  price, §5). The read (fairValue/deltaPct/agentRead) is computed either way — it is agent copy. */
+  includeSubject?: boolean
 }): CompsAnimationSpec {
   const comps = (input.comps ?? []).filter((c) => c && typeof c.soldPrice === "number" && c.soldPrice > 0)
   const rows: CompBarRow[] = [
-    { label: "This home", value: input.subjectPrice, isSubject: true },
+    ...(input.includeSubject === false ? [] : [{ label: "This home", value: input.subjectPrice, isSubject: true }]),
     ...comps.map((c) => ({ label: c.label, value: c.soldPrice })),
   ]
   const compMedian = median(comps.map((c) => c.soldPrice))

@@ -1,7 +1,11 @@
 // lib/connections/vendor-stripe.ts
 // Single source of truth for a vendor's Stripe Connect account, on the unified owner model.
 // A vendor's Connect account lives in platform_credentials keyed by
-// (owner_type="vendor", owner_id=<vendor_marketplace_profiles.id>, platform="stripe"):
+// (owner_type="vendor", owner_id=<vendors.id>, platform="stripe"):
+// NOTE: owner_id is a `vendors.id`, NOT a vendor_marketplace_profiles.id — those are
+// disjoint id spaces (vendor_earnings/_invoices/_payouts and user_role_assignments.vendor_id
+// all FK to `vendors`). This comment previously named the marketplace-profile id and
+// app/vendor/earnings/page.tsx acted on it, which made that whole surface inert.
 //   - account_id                       → the acct_… Connect id
 //   - config.stripe_onboarding_complete → details_submitted && charges_enabled
 // This is the same row the Connection Center's startStripeConnect writes, so onboarding via either
@@ -114,14 +118,27 @@ export async function setStripeOnboardingByAccount(
     .eq("platform", "stripe")
     .eq("account_id", accountId)
 
+  // `stripe_onboarding_complete` hard-gates initiateVendorPayout immediately
+  // before stripe.transfers.create(). A silently refused DEMOTE (true → false)
+  // keeps the payout lane transferring to a destination that can no longer
+  // receive — the exact money defect the caller's comment describes. Throwing
+  // makes the billing webhook return 500 so Stripe redelivers the event, which
+  // is the behaviour a lost account.updated needs.
+  const failures: string[] = []
   for (const r of rows ?? []) {
     const config = {
       ...((r.config ?? {}) as Record<string, unknown>),
       stripe_onboarding_complete: complete,
     }
-    await svc
+    const { error } = await svc
       .from("platform_credentials")
       .update({ config, updated_at: new Date().toISOString() })
       .eq("id", r.id)
+    if (error) failures.push(`${r.id}: ${error.message}`)
+  }
+  if (failures.length > 0) {
+    throw new Error(
+      `stripe_onboarding_complete=${complete} could not be written for account ${accountId} (${failures.length} credential row(s)): ${failures.join("; ")}`,
+    )
   }
 }

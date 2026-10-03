@@ -12,9 +12,11 @@ export function ApprovalsBanner() {
   const fetchPendingCount = async () => {
     try {
       const response = await fetch("/api/approvals/pending")
+      const data = await response.json().catch(() => ({}))
       if (response.ok) {
-        const data = await response.json()
         setCount(data.total || 0)
+      } else {
+        console.error("[v0] Failed to fetch approval count:", data.error)
       }
     } catch (error) {
       console.error("[v0] Failed to fetch approval count:", error)

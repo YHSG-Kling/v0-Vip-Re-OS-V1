@@ -151,7 +151,7 @@ const DAY_MS = 86_400_000
  * Weekly, not daily, so a persistent condition proposes at most once a week
  * while the unacted row itself keeps sitting in the queue.
  */
-export function sentinelBucket(now: Date): string {
+function sentinelBucket(now: Date): string {
   const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
   const dow = d.getUTCDay() // 0=Sun … 6=Sat
   d.setUTCDate(d.getUTCDate() - ((dow + 6) % 7)) // back to Monday
@@ -381,7 +381,7 @@ function composeA2pStall(f: A2pStallFact, bucket: string): ProposedSentinelActio
     severity: f.failed ? "critical" : "warn",
     brokerageId: f.brokerageId,
     title: `A2P stalled: ${f.brokerageName} — ${f.reason}`,
-    detail: `A2P board stall detection (assessA2pStall over the persisted twilio_a2p state): ${f.reason}. Until brand and campaign clear carrier review this tenant's texting is filtered or blocked — and nothing advances on its own.`,
+    detail: `A2P board stall detection (assessA2pStall over the persisted twilio_a2p state): ${f.reason}. Until brand and campaign clear carrier review this tenant's texting is filtered or blocked. The hourly carrier-registration tick (lib/voice/carrier-registration-loop.ts) already re-runs the machine, so a stall that survives it is a profile or carrier problem, not a missed button.`,
     // No outreach draft — a stuck carrier registration is STAFF work (re-run
     // the runner, fix the profile, open a Twilio ticket), not tenant outreach.
     draftChannel: "none",
@@ -466,7 +466,7 @@ export interface SentinelVerdictSummary {
   byKind: Record<string, SentinelVerdictStats>
 }
 
-export function sentinelKindTenantKey(kind: string, brokerageId: string | null): string {
+function sentinelKindTenantKey(kind: string, brokerageId: string | null): string {
   return `${kind}:${brokerageId ?? "none"}`
 }
 

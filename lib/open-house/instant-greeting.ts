@@ -14,6 +14,7 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export interface InstantGreetingInput {
@@ -90,7 +91,7 @@ export async function sendInstantOpenHouseGreeting(
         dnc_status:    false,
         isa_reengage_allowed: false,
       } as never,
-    })
+    }, { client: svc })
 
     if (!result.allowed) {
       return {
@@ -157,15 +158,14 @@ export async function sendInstantOpenHouseGreeting(
   }
 
   // Stamp the attendee row so the agent dashboard shows it fired
-  await svc
+  await sentinelWrite(svc, svc
     .from("open_house_attendees")
     .update({
       instant_greeting_sent_at: now,
       instant_greeting_channel: channel,
       instant_greeting_message_id: msg.id,
     })
-    .eq("id", input.attendeeId)
-    .then(() => null, () => null)
+    .eq("id", input.attendeeId), { table: "open_house_attendees", flow: "open_house_attendees_write", reason: "greeting-sent stamp; the greeting already went out" })
 
   return { success: true, messageId: msg.id, channel }
 }

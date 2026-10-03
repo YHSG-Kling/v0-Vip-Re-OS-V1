@@ -5,13 +5,35 @@ import { listLeadMagnetsAction, updateMagnetSettingsAction } from "@/app/actions
 import type { ListLeadMagnetsOutput } from "@/lib/kernel/lead-magnets"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+// TOMBSTONE (orphan doctrine §1.3): `CardHeader` and `CardTitle` were imported here
+// and rendered NOWHERE — this library lays each magnet out as a bare
+// <Card><CardContent> (MagnetLibrary.tsx:103/:111/:115/:165), with the heading text
+// carried inline. The SURVIVORS of the header vocabulary are the CardHeader/CardTitle
+// exports of components/ui/card.tsx themselves, used by the surfaces that render a
+// titled card; nothing was moved out of this file and nothing was lost.
+import { Card, CardContent } from "@/components/ui/card"
 import { Switch } from "@/components/ui/switch"
-import { FileText, QrCode, BarChart2, Link2, Users } from "lucide-react"
+import { FileText, QrCode, BarChart2, Link2, Users, Code2 } from "lucide-react"
+// THE EMBED (lane 85E, census 6d — the missing half of POST
+// /api/lead-magnets/submissions): a tenant can put this magnet's form on their
+// OWN website; the snippet posts into the same kernel command the hosted
+// /lm/[slug] page uses (consent + provenance + the lead pipeline).
+import { buildLeadMagnetEmbedSnippet } from "@/lib/lead-magnets/embed-snippet"
 
 interface Props {
+  /** The reload key, and the brokerage the embed snippet names (the session
+   *  tenant from the page's getAgentContext — the kernel re-verifies the
+   *  form/brokerage pair on every submission). The LIST scope is resolved
+   *  server-side. */
   brokerageId: string
-  agentId?: string
+  /**
+   * "mine" forces the own-magnets list even for a broker/admin. Omit to let
+   * listLeadMagnetsAction decide from the session role (broker/admin/superadmin
+   * → brokerage-wide, everyone else → their own). Never pass an agent id from
+   * the client: agent_id is a FK to agents(id) and the client only has the auth
+   * user id, which is what silently emptied this list before.
+   */
+  scope?: "mine" | "brokerage"
   onSelectMagnet?: (magnetId: string) => void
   onCreateNew?: () => void
 }
@@ -28,20 +50,37 @@ const TYPE_LABELS: Record<string, string> = {
   generic_form: "Generic Form",
 }
 
-export function MagnetLibrary({ brokerageId, agentId, onSelectMagnet, onCreateNew }: Props) {
+export function MagnetLibrary({ brokerageId, scope, onSelectMagnet, onCreateNew }: Props) {
   const [magnets, setMagnets] = useState<Magnet[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  async function copyEmbed(magnet: Magnet) {
+    const snippet = buildLeadMagnetEmbedSnippet({
+      origin: window.location.origin,
+      formId: magnet.formId,
+      brokerageId,
+      magnetName: magnet.name,
+      magnetType: magnet.magnetType,
+    })
+    try {
+      await navigator.clipboard.writeText(snippet)
+      setCopiedId(magnet.id)
+    } catch {
+      setError("Could not copy the embed code — your browser blocked clipboard access.")
+    }
+  }
 
   useEffect(() => {
     load()
-  }, [brokerageId, agentId])
+  }, [brokerageId, scope])
 
   async function load() {
     setLoading(true)
     setError(null)
-    const result = await listLeadMagnetsAction({ brokerageId, agentId })
+    const result = await listLeadMagnetsAction({ scope })
     if (result.success) {
       setMagnets(result.magnets ?? [])
     } else {
@@ -139,6 +178,16 @@ export function MagnetLibrary({ brokerageId, agentId, onSelectMagnet, onCreateNe
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    title="Copy an embed code to put this form on your own website"
+                    aria-label={`Copy embed code for ${magnet.name}`}
+                    onClick={(e) => { e.stopPropagation(); void copyEmbed(magnet) }}
+                  >
+                    <Code2 className="h-4 w-4" />
+                    {copiedId === magnet.id && <span className="ml-1 text-xs">Copied</span>}
+                  </Button>
                   <Switch
                     checked={magnet.isActive}
                     onCheckedChange={() => handleToggleActive(magnet)}

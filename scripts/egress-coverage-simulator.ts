@@ -93,7 +93,7 @@ check("every domain proof string is well-formed (test:*)", domains.every(([, d])
 console.log("\n[6 · Compliance Officer pre-flights every outbound-copy queue]")
 const emptyCtx = { recipientWithdrawn: false, emailRevoked: false, smsRevoked: false, hoursSinceLastSend: null, openFireDrill: false }
 const preflight = (input: Record<string, unknown>) =>
-  compliancePreflight({ proposer: "marketing_agent", channel: "content", subject: null, body: extractProposalCopy(input) }, emptyCtx)
+  compliancePreflight({ proposer: "campaign_orchestrator", channel: "content", subject: null, body: extractProposalCopy(input) }, emptyCtx) // m618: was "marketing_agent" (retired seat)
 // Each content source stores its copy under a different key — the scan must read them all.
 const FH = "This home is perfect for families in a safe neighborhood."
 const COPY_BY_QUEUE: Record<string, Record<string, unknown>> = {

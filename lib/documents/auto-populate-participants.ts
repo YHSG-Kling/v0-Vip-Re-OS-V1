@@ -133,7 +133,7 @@ export async function autoPopulateFromScannedDocument(
         const anchor = new Date(anchorIso)
         const due    = new Date(anchor.getTime() + dueDays * 24 * 3600 * 1000)
         const emAmount = (extractedFields?.earnest_money_amount ?? null) as number | null
-        await supabase
+        const { error: earnestDueErr } = await supabase
           .from("offers")
           .update({
             earnest_money_due_days: dueDays,
@@ -142,6 +142,7 @@ export async function autoPopulateFromScannedDocument(
               ? { earnest_money: emAmount } : {}),
           })
           .eq("id", offerId)
+        if (earnestDueErr) console.error(`[auto-populate] earnest-money due date not stamped on the offer: ${earnestDueErr.message}`)
       }
     }
   }

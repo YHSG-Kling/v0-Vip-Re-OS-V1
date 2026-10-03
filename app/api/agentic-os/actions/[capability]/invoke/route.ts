@@ -25,7 +25,8 @@ const EXECUTORS: Partial<Record<VendorCapability, (inputs: any, ctx: { brokerage
   property_valuation: async (inputs, ctx) => {
     const { getCurrentAvm } = await import("@/lib/avm/provider-chain")
     // Generic agent invoke uses the FREE tier (Perplexity/OSINT) — no surprise spend.
-    return getCurrentAvm({ address: String(inputs.address), zipCode: inputs.zipCode ?? null, brokerageId: ctx.brokerageId, usePaidProviders: false })
+    // Wave 93 (lane 93B): an AI AGENT invoke surface — the BatchData backup is skipped here.
+    return getCurrentAvm({ address: String(inputs.address), zipCode: inputs.zipCode ?? null, brokerageId: ctx.brokerageId, usePaidProviders: false, skipProviders: ["batchdata"] })
   },
 }
 

@@ -10,7 +10,9 @@
  *
  * Auth: CRON_SECRET.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 import { fetchTopThreads, type RedditWindow } from "@/lib/content-intel/reddit-scraper"
 
@@ -26,11 +28,8 @@ interface SourceRow {
 }
 
 export async function GET(req: NextRequest) {
-  const auth = req.headers.get("authorization")?.replace("Bearer ", "")
-  const qs   = new URL(req.url).searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
 
   const svc = createServiceClient()
   const { data: sources, error } = await svc
@@ -42,7 +41,13 @@ export async function GET(req: NextRequest) {
 
   const results: Array<{ source_id: string; subreddit: string; fetched: number; inserted: number; updated: number }> = []
 
+  // ACTIVE-TERRITORY PRE-CHECK (wave 92, lane 92B — owner: "checking the active territories before
+  // scrapping and pulling data will cutdown on runs"): a tenant's own topic source runs only for a
+  // live tenant; a PLATFORM source (brokerage_id null) is not tenant-bound and always runs.
+  const { resolveActivePullGate } = await import("@/lib/lead-pipeline/scrape-territories")
+  const pullGate = await resolveActivePullGate(svc)
   for (const s of (sources ?? []) as SourceRow[]) {
+    if (s.brokerage_id && !pullGate.check({ brokerageId: s.brokerage_id }).allowed) continue
     const sub = s.source_config?.subreddit ?? null
     const win: RedditWindow = (s.source_config?.window as RedditWindow) ?? "week"
     if (!sub) continue
@@ -83,14 +88,14 @@ export async function GET(req: NextRequest) {
         if (existing.data) {
           // Refresh score + raw_data; preserve current status (so an
           // already-used topic stays used).
-          await svc.from("content_topic_bank")
+          await sentinelWrite(svc, svc.from("content_topic_bank")
             .update({
               engagement_score: row.engagement_score,
               raw_data:         row.raw_data,
               scraped_at:       row.scraped_at,
               categories:       row.categories,
             })
-            .eq("id", (existing.data as { id: string }).id)
+            .eq("id", (existing.data as { id: string }).id), { table: "content_topic_bank", flow: "content_topic_bank_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
           updated++
         } else {
           const ins = await svc.from("content_topic_bank").insert(row)
@@ -106,12 +111,13 @@ export async function GET(req: NextRequest) {
   }
 
   // Stale sweep — flip topics past expires_at to 'stale' so the picker stops returning them.
-  await svc.from("content_topic_bank")
+  await sentinelWrite(svc, svc.from("content_topic_bank")
     .update({ status: "stale" })
     .eq("status", "fresh")
-    .lt("expires_at", new Date().toISOString())
+    .lt("expires_at", new Date().toISOString()), { table: "content_topic_bank", flow: "content_topic_bank_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   return NextResponse.json({
+    territory_gate: pullGate.tally,
     ran_at: new Date().toISOString(),
     sources_processed: results.length,
     results,

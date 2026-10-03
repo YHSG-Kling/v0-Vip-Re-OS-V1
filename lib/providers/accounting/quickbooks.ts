@@ -11,7 +11,13 @@
 import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
-const INTUIT_TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
+// KEPT ON REST (wave 71A): no official Intuit Node SDK exists for the QBO
+// business-object surface (customer/invoice/purchase/journal-entry/company
+// info) — `node-quickbooks` was verified (npm view) and its API shape
+// inspected, but it is a COMMUNITY package (Michael Cohen), not published by
+// Intuit, so it is declined under the official-SDK ruling. `intuit-oauth`
+// (Intuit's only official package) is adopted for the token-lifecycle call
+// above; these business-object calls stay on the connector gateway.
 const QBO_API_BASE = "https://quickbooks.api.intuit.com/v3/company"
 
 export interface QuickBooksCredentials {
@@ -71,28 +77,23 @@ export class QuickBooksProvider implements IAccountingProvider {
     this.creds = creds
   }
 
-  /** Exchange the refresh token for a fresh access token. Intuit uses HTTP Basic auth with
-   *  the app's client id/secret + grant_type=refresh_token. Returns the new token set. */
+  /** Exchange the refresh token for a fresh access token. Wave 71A: routes through the
+   *  official `intuit-oauth` SDK adapter (lib/providers/quickbooks/client.ts) instead of a
+   *  hand-built Basic-auth form POST — see that file's header for the official-SDK reasoning
+   *  (node-quickbooks was verified and declined; intuit-oauth is Intuit's only official
+   *  package, and it covers exactly this token-lifecycle call). */
   async refreshAccessToken(): Promise<RefreshedTokens> {
     if (!this.creds.refreshToken) throw new Error("QuickBooks: refreshToken required to refresh")
-    const tokenUrl = new URL(INTUIT_TOKEN_URL)
-    const res = await callConnector<{ access_token: string; refresh_token: string; expires_in: number }>({
-      connector: "quickbooks-oauth",
-      baseUrl: tokenUrl.origin,
-      path: tokenUrl.pathname,
-      method: "POST",
-      auth: { style: "basic", username: this.creds.clientId, password: this.creds.clientSecret },
-      bodyType: "form",
-      body: { grant_type: "refresh_token", refresh_token: this.creds.refreshToken },
-    })
+    const { refreshQuickBooksToken } = await import("@/lib/providers/quickbooks/client")
+    const res = await refreshQuickBooksToken(this.creds.clientId, this.creds.clientSecret, this.creds.refreshToken)
     if (!res.ok || !res.data) {
-      throw new Error(`QuickBooks token refresh failed (${res.status}): ${res.error ?? ""}`)
+      throw new Error(`QuickBooks token refresh failed (${res.status ?? "—"}): ${res.error ?? ""}`)
     }
     const json = res.data
-    const tokenExpiresAt = new Date(Date.now() + (json.expires_in ?? 3600) * 1000).toISOString()
+    const tokenExpiresAt = new Date(Date.now() + json.expiresIn * 1000).toISOString()
     // Keep the in-memory creds current so subsequent calls on this instance use the new token.
-    this.creds = { ...this.creds, accessToken: json.access_token, refreshToken: json.refresh_token, tokenExpiresAt }
-    return { accessToken: json.access_token, refreshToken: json.refresh_token, tokenExpiresAt }
+    this.creds = { ...this.creds, accessToken: json.accessToken, refreshToken: json.refreshToken, tokenExpiresAt }
+    return { accessToken: json.accessToken, refreshToken: json.refreshToken, tokenExpiresAt }
   }
 
   /** Single egress choke point — every QBO call (API + OAuth token refresh) leaves through the

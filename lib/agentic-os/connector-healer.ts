@@ -64,12 +64,13 @@ export async function proposeConnectorHealing(
 
   // Always write at least a 'no_evidence' placeholder so the failure is auditable, then refine.
   const writeRow = async (row: Record<string, any>): Promise<ProposalRow | null> => {
-    const { data } = await supabase.from("connector_healing_proposals").insert({
+    const { data, error: proposalInsErr } = await supabase.from("connector_healing_proposals").insert({
       connector:        params.connector,
       failure_signature: signature,
       failure_sample:   sample,
       ...row,
     }).select("id, connector, proposal_kind, proposal_summary, confidence, status").maybeSingle()
+    if (proposalInsErr) console.error(`[connector-healer] healing proposal NOT recorded: ${proposalInsErr.message}`)
     return (data as any) ?? null
   }
 

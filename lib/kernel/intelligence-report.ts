@@ -32,6 +32,8 @@
 
 import { rollupDraftQuality, type DraftQuality, type DraftRow } from "./draft-quality"
 import { loadDocKernelGrants, loadMarketingGrants } from "@/lib/documents/autonomy-ratchet"
+import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
+import { compactCentsMoney } from "@/lib/format/money"
 
 // ─── Month windows (pure) ────────────────────────────────────────────────────
 
@@ -182,14 +184,14 @@ export interface IntelligenceReport {
 
 // ─── Pure formatting helpers ─────────────────────────────────────────────────
 
-const money = (cents: number) => {
-  const v = Math.round(Math.max(0, cents) / 100)
-  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
-  if (v >= 10_000) return `$${Math.round(v / 1000).toLocaleString("en-US")}K`
-  return `$${v.toLocaleString("en-US")}`
-}
+// TOMBSTONE (§1.1, 2026-09-08): the local `money` (cents → "$1.2M"/"$45K"/"$900")
+// lived here; survivor lib/format/money.ts:compactCentsMoney.
 
 const plural = (n: number, s: string, p?: string) => (n === 1 ? s : (p ?? `${s}s`))
+
+// CENSUS NOTE: countDelta / approvalRatePct / describeGrantShape are INTERNAL-LIVE — called by
+// the section composers below, whose lines app/dashboard/intelligence-report/page.tsx:134 renders
+// (`l.delta`). Exported for scripts/intelligence-report-simulator.ts.
 
 /** PURE: "↑ 4 vs last month" / "↓ 2" / null when prior is no baseline. */
 export function countDelta(current: number, prior: number): string | null {
@@ -276,13 +278,13 @@ function composeAttributionSection(f: IntelligenceFacts): IntelligenceSection | 
   const { current, prior } = f.attribution
   if (current.attributedGciCents <= 0 && current.attributedDeals <= 0) return null
 
-  const headline = `${money(current.attributedGciCents)} closed volume attributed to AI marketing across ${current.attributedDeals} ${plural(current.attributedDeals, "deal")} — measured by the attribution engine, not claimed.`
+  const headline = `${compactCentsMoney(current.attributedGciCents)} closed volume attributed to AI marketing across ${current.attributedDeals} ${plural(current.attributedDeals, "deal")} — measured by the attribution engine, not claimed.`
   const lines: ReportMetricLine[] = [
     {
       label: "Attributed closed volume",
-      value: money(current.attributedGciCents),
+      value: compactCentsMoney(current.attributedGciCents),
       delta: prior.attributedGciCents > 0
-        ? `${current.attributedGciCents >= prior.attributedGciCents ? "↑" : "↓"} from ${money(prior.attributedGciCents)} last month`
+        ? `${current.attributedGciCents >= prior.attributedGciCents ? "↑" : "↓"} from ${compactCentsMoney(prior.attributedGciCents)} last month`
         : null,
     },
     { label: "Deals carrying attribution credits", value: String(current.attributedDeals), delta: countDelta(current.attributedDeals, prior.attributedDeals) },
@@ -416,7 +418,7 @@ export async function loadIntelligenceFacts(svc: any, brokerageId: string, month
     .gte("created_at", w.startIso).lt("created_at", w.endIso))
   const dealsIn = (w: MonthWindow) => cnt(svc.from("transactions").select("id", { count: "exact", head: true })
     .eq("brokerage_id", brokerageId)
-    .in("status", ["under_contract", "closing", "closed"])
+    .in("status", [...TRANSACTION_STATUSES_IN_ESCROW, "closed"])
     .gte("contract_date", w.startIso.slice(0, 10)).lt("contract_date", w.endIso.slice(0, 10)))
   const signalsIn = (w: MonthWindow) => cnt(svc.from("manager_signals").select("id", { count: "exact", head: true })
     .eq("brokerage_id", brokerageId)

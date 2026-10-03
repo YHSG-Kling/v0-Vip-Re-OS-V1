@@ -11,16 +11,17 @@
  *                          lender then uploads on the buyer's behalf when
  *                          the buyer is approved.
  *
- * 100% wraps EXISTING service-role actions (recordDocumentUpload,
+ * 100% wraps EXISTING service-role actions (uploadFinancialVerificationDocument,
  * connectBuyerToLender, loadFinancialProfile, getBrokerageLenders) via
  * the auth-gated portal wrappers in app/actions/portal-buyer-financial.ts.
+ * The file BYTES go to the server; the private-bucket storage and the
+ * time-limited signed URL are the server's job, never the browser's.
  *
  * Slot into /portal/[contactId]/page.tsx (buyer mode) alongside the
  * existing FinancialMeaningCard.
  */
 
 import { useEffect, useState } from "react"
-import { upload } from "@vercel/blob/client"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -31,7 +32,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Upload, FileText, CheckCircle2, Loader2, ShieldCheck, Mail } from "lucide-react"
 import { toast } from "sonner"
 import {
-  submitBuyerFinancialFromPortalAction,
+  uploadBuyerFinancialFromPortalAction,
   connectBuyerToLenderFromPortalAction,
   loadFinancialProfileFromPortalAction,
   getBrokerageLendersFromPortalAction,
@@ -89,14 +90,21 @@ export function BuyerFinancialUploadCard({ contactId }: Props) {
   async function handleUpload(file: File) {
     setBusy(true)
     try {
-      // Use the existing auth-gated /api/blob/upload route
-      const blob = await upload(`buyer-financial/${contactId}/${file.name}`, file, {
-        access: "public",
-        handleUploadUrl: "/api/blob/upload",
-      })
-      const res = await submitBuyerFinancialFromPortalAction({
+      // The BYTES go to the server, which stores them in the PRIVATE
+      // client-documents bucket and records a time-limited signed URL. This used
+      // to be a @vercel/blob client upload with access:"public" — a buyer's
+      // pre-approval / proof-of-funds at a permanent unauthenticated URL, and
+      // that URL then persisted onto the document row.
+      const buf = await file.arrayBuffer()
+      let binary = ""
+      const bytes = new Uint8Array(buf)
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+      }
+      const res = await uploadBuyerFinancialFromPortalAction({
         contactId,
-        blobUrl:     blob.url,
+        base64:      btoa(binary),
+        contentType: file.type || "application/octet-stream",
         fileName:    file.name,
         docCategory,
         verificationAmount: verificationAmount ? Number(verificationAmount) : undefined,

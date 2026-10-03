@@ -13,16 +13,42 @@ export type VideoReapAction = "keep" | "escalate"
 // Tuned to the crons: director-reel-render + composition-render-queue run every 5m; poll-did-videos
 // every 2m; a healthy D-ID talk finishes in ~3-5m.
 export const VIDEO_STALE_HOURS: Record<string, number> = {
-  remotion_pending: 2,   // Director staged it but the render worker never executed it
-  generating: 3,         // D-ID job submitted but poll-did-videos never saw it complete
-  rendering: 2,          // composite enqueued but render-composition never finished it
+  // m374 renamed these onto the canonical vocabulary. The two thresholds are
+  // kept apart on purpose: `queued` means the Director staged it and no worker
+  // ever picked it up, `generating` means a provider has it and never finished.
+  // Collapsing them would lose the reaper's ability to say which half broke —
+  // which is the whole reason it escalates to a named manager.
+  queued: 2,      // staged, but no render worker ever executed it (was remotion_pending)
+  generating: 3,  // the job is in flight and never reported completion (was
+                  // rendering too, which carried a 2h threshold — folding it in
+                  // here costs that lane an hour before it escalates, and says
+                  // "in flight" rather than "never picked up". Accepted and
+                  // recorded rather than papered over.)
 }
 
 /** Non-terminal states that are BLOCKED on a human, not stalled — never reaped (already actioned). */
 const BLOCKED_STATES = new Set(["awaiting_presenter_setup"])
 
-/** Terminal states — never reaped. */
-const TERMINAL_STATES = new Set(["completed", "failed", "ready", "published", "distributed", "cancelled"])
+/**
+ * Re-exported so the many readers that already import it from this module keep
+ * working. THE LIST ITSELF LIVES IN lib/video/video-status.ts — a second copy
+ * here is precisely the drift m374 removed, and the reaper is a CONSUMER of the
+ * vocabulary, not its owner.
+ *
+ * It is now ["completed","published"] rather than five tokens: ready,
+ * video_ready and uploaded all collapsed into `completed`, and `distributed`
+ * into `published`.
+ */
+export { VIDEO_FINISHED_STATUSES } from "./video-status"
+import { VIDEO_FINISHED_STATUSES as FINISHED } from "./video-status"
+
+/** Terminal states — never reaped. `error` is included because one writer
+ *  (listing-promo-hybrid-composite) used to emit it instead of `failed`; it is
+ *  kept here so any pre-existing row is not reaped as if it were still running. */
+// `error` and `cancelled` were listed here because one writer emitted them
+// instead of `failed`. m374 retired both spellings and the CHECK now refuses
+// them, so the only terminal failure token is `failed`.
+const TERMINAL_STATES = new Set<string>([...FINISHED, "failed"])
 
 export interface VideoReapInput {
   status: string

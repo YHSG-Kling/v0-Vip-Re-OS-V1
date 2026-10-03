@@ -3,6 +3,8 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { listPendingMarketingAssetsAction } from "@/app/actions/marketing-ai-approvals"
 import { MarketingApprovalsClient } from "./marketing-approvals-client"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export const dynamic = "force-dynamic"
 
@@ -31,8 +33,8 @@ export default async function MarketingApprovalsPage() {
   const { data: row } = await supabase
     .from("users").select("user_type").eq("id", user.id).maybeSingle()
   const t = (row?.user_type as string | undefined) ?? ""
-  if (!["broker", "broker_admin", "admin", "superadmin", "team_lead"].includes(t)) {
-    redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: t })) {
+    return <RoleGateNotice surface="Marketing approvals" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   return (

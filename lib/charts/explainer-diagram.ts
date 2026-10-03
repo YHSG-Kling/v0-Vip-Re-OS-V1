@@ -10,6 +10,18 @@
  * engine is unit-testable in scripts/explainer-anim-simulator.ts before a
  * single frame renders.
  *
+ * MANIM RULING (2026-09-07, owner: "manim video (if not built, build it if
+ * capability enhances)"): NOT BUILT, deliberately. Manim needs a Python +
+ * manim + ffmpeg runtime at render time, which the OS's render path (Remotion,
+ * pinned in scripts/remotion-setup-guard.ts) does not carry on Vercel; the
+ * plugins/ecc/skills/manim-video skill's own hand-off for compositing, captions
+ * and motion layers is remotion-best-practices; and every explainer shape the
+ * skill lists (graph, workflow, architecture, metric progression, system
+ * diagram) is what THIS spec + remotion/ExplainerAnimReel.tsx already render.
+ * A second engine would be a second spelling of "explainer" (§6). Revisit only
+ * if a concept needs Manim's mathematical primitives (LaTeX, 3-D) that no
+ * Remotion composition here draws.
+ *
  * Why native (not live Manim): there is no Python render service in this repo
  * (manim exists only as a Claude *skill*, never in the request path). Manim
  * needs Python+LaTeX+cairo — not serverless-friendly on Vercel. The existing

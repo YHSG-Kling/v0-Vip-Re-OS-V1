@@ -19,11 +19,28 @@
  *   - on-demand action (agent presses "Prepare for appointment now")
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 import { runAiCma } from "@/lib/cma/ai-cma-orchestrator"
 import { getStateForms } from "@/lib/state-forms/registry"
+import { generateListingDescriptions, DEFAULT_LISTING_DESCRIPTION_STYLE, type ListingDescriptionStyle } from "@/lib/listings/listing-description-core"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
+
+/**
+ * THE DECK'S DESCRIPTION STYLE IS THE AGENT'S PICK (owner, wave 87: "listing
+ * description can be an ai tool for agents" — the agent picks the style; no hard
+ * $1M rule). Lane 86F derived it from the CMA mid-value ("luxury" at ≥ $1M,
+ * otherwise "first_time_buyer") — a stated assumption the owner has now ruled
+ * out. An unattended build has no agent at the keyboard, so it writes the
+ * NEUTRAL house style (DEFAULT_LISTING_DESCRIPTION_STYLE, "standard") unless its
+ * caller hands one; the agent restyles from the listing description tool
+ * (app/actions/listings-kernel.ts generateListingDescriptionAction).
+ */
+function deckDescriptionStyle(picked: ListingDescriptionStyle | null | undefined): ListingDescriptionStyle {
+  return picked ?? DEFAULT_LISTING_DESCRIPTION_STYLE
+}
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -64,6 +81,13 @@ export interface ListingPresentationInput {
   contactId:       string | null
   appointmentId?:  string | null
   appointmentAt?:  string | null
+  /**
+   * The listing this appointment is for, when there is one. Used to load the
+   * seller's recorded improvements (property_upgrades) so the CMA narrative
+   * accounts for what the seller has done to the home since buying it — the
+   * last clause of the owner's CMA ruling. Tenant-anchored on read.
+   */
+  listingId?:      string | null
   propertyAddress: string
   state:           string                                    // 2-letter
   city?:           string | null
@@ -73,6 +97,39 @@ export interface ListingPresentationInput {
   bathrooms?:      number | null
   sqft?:           number | null
   yearBuilt?:      number | null
+  /**
+   * A CMA THE CALLER HAS ALREADY PAID FOR. Supply it and this builder will NOT run
+   * its own — the one lever that stops the same property being valued twice.
+   *
+   * WHY THIS EXISTS. lib/workflow-orchestrator/chains/listing-appt-prep.ts runs
+   * generate_cma as step 1 (writing a cma_reports row) and then builds the
+   * presentation as step 2. Both call the SAME engine, lib/cma/ai-cma-orchestrator
+   * ::runAiCma, and each sources comps from a PAID provider — so every autonomous
+   * appointment bought two valuations of one house. Worse than the spend: the two
+   * runs are independent, so the number in the agent's CMA report could disagree
+   * with the number in the seller's presentation and in the pricing chapter reel,
+   * for the same home on the same day.
+   *
+   * IT IS A NARROW STRUCTURAL TYPE, NOT AiCmaResult, on purpose. These five fields
+   * are exactly what this builder reads. Accepting the full result would invite a
+   * caller to hand over a partially-built one and would couple this file to the
+   * whole orchestrator surface; naming the five keeps the contract honest and lets
+   * the compiler refuse anything short.
+   *
+   * UNITS: confidenceScore is the engine's native 0..1, NOT the 0..100
+   * `confidenceLevel` that generateAICMA also returns for display. Passing the
+   * percentage here would render a confidence of 8500% and would look right in
+   * every type check — which is why generateAICMA now returns both.
+   */
+  cma?: {
+    estimatedValueLow:  number
+    estimatedValueMid:  number
+    estimatedValueHigh: number
+    confidenceScore:    number
+    aiNarrative:        string
+  }
+  /** The agent's picked description style; the neutral house style when absent. */
+  descriptionStyle?: ListingDescriptionStyle | null
 }
 
 export interface ListingPresentationResult {
@@ -89,9 +146,12 @@ export interface ListingPresentationResult {
   slideDeck:      SlideDeckSlide[]
   packetDocumentId: string | null
   // ── 3 appointment-prep additions ─────────────────────────────────────
-  /** Real property data pulled from OSINT/BatchData (or AI estimate when both miss). */
+  /** Real property facts from the ONE property rail (lib/ai-isa/property-lookup-rail.ts,
+   *  purpose listing_intake — cache → tenant IDX → RentCast → public records; never
+   *  BatchData), or its labelled AI estimate when every rung misses. `source` is the
+   *  rail's own vocabulary (§6) — the old "osint" spelling is gone with enrichment-chain.ts. */
   propertyEnrichment?: {
-    source:        "osint" | "batchdata" | "ai_estimate"
+    source:        import("@/lib/ai-isa/property-lookup-rail").PropertyLookupSource
     isEstimate:    boolean
     sourceNote:    string
     beds?:         number | null
@@ -155,6 +215,10 @@ async function buildMarketingPlan(input: {
   bedrooms?:       number | null
   bathrooms?:      number | null
   sqft?:           number | null
+  /** Tenant + actor for the AI cost ledger, from ListingPresentationInput —
+   *  resolved server-side by the cron and the workflow route (§4). */
+  brokerageId?:    string | null
+  agentUserId?:    string | null
 }): Promise<MarketingPlan> {
   // Recommend tier from value
   const tier: MarketingPlan["recommendedTier"] =
@@ -180,6 +244,8 @@ Return ONLY JSON matching this shape (no prose, no markdown):
   let parsed: Partial<Omit<MarketingPlan, "recommendedTier">> = {}
   try {
     const { text } = await generateTextRouted({
+      brokerageId: input.brokerageId ?? null,
+      userId: input.agentUserId ?? null,
       feature: "listing_marketing_plan",
       messages: [{ role: "user", content: prompt }],
     })
@@ -260,16 +326,73 @@ function buildSlideDeck(input: {
   ]
 }
 
+// ─── One presentation per appointment ──────────────────────────────────────
+
+/**
+ * The presentation already built for this appointment, in the builder's own
+ * result shape — or null. ONE PER APPOINTMENT (lane 87B): the booking now starts
+ * the prep chain AND the cron is its safety net, so two producers can reach the
+ * same appointment. Whichever arrives second returns the first one's row instead
+ * of buying a second CMA and materialising a second seller drip. m667 adds the
+ * partial UNIQUE index on listing_presentations(appointment_id) that makes the
+ * race loser's insert refuse (23505) rather than land; the insert below re-reads
+ * on that code. Tenant-pinned — the service client bypasses RLS.
+ */
+async function loadPresentationForAppointment(
+  svc: ReturnType<typeof createServiceClient>,
+  brokerageId: string,
+  appointmentId: string,
+): Promise<{ ok: true; result: ListingPresentationResult | null } | { ok: false; error: string }> {
+  const { data, error } = await svc
+    .from("listing_presentations")
+    .select("id, cma_low_value, cma_mid_value, cma_high_value, cma_confidence, cma_narrative, net_sheet, marketing_plan, slide_deck, packet_document_id")
+    .eq("appointment_id", appointmentId)
+    .eq("brokerage_id", brokerageId)
+    .limit(1)
+    .maybeSingle()
+  if (error) return { ok: false, error: `presentation idempotency read refused: ${error.message}` }
+  if (!data) return { ok: true, result: null }
+  const row = data as Record<string, any>
+  return {
+    ok: true,
+    result: {
+      presentationId: row.id,
+      cmaSnapshot: {
+        low: Number(row.cma_low_value ?? 0), mid: Number(row.cma_mid_value ?? 0), high: Number(row.cma_high_value ?? 0),
+        confidence: Number(row.cma_confidence ?? 0), narrative: row.cma_narrative ?? "",
+      },
+      netSheet: (row.net_sheet as NetSheetRow[] | null) ?? [],
+      marketingPlan: row.marketing_plan as MarketingPlan,
+      slideDeck: (row.slide_deck as SlideDeckSlide[] | null) ?? [],
+      packetDocumentId: row.packet_document_id ?? null,
+    },
+  }
+}
+
 // ─── Main builder ──────────────────────────────────────────────────────────
 
 export async function buildListingPresentation(
   input: ListingPresentationInput
-): Promise<{ success: boolean; result?: ListingPresentationResult; error?: string }> {
+): Promise<{ success: boolean; result?: ListingPresentationResult; error?: string; reused?: boolean }> {
   try {
     const svc = createServiceClient()
 
-    // 0a. APPOINTMENT-PREP ADDITION: property enrichment chain.
-    //     OSINT (free) → BatchData (paid) → AI estimate (last resort).
+    // Idempotent per appointment — BEFORE any paid step (enrichment, CMA, copy).
+    // A refused read is not "absent": building on it could double the seller's drip.
+    if (input.appointmentId) {
+      const prior = await loadPresentationForAppointment(svc, input.brokerageId, input.appointmentId)
+      if (!prior.ok) return { success: false, error: prior.error }
+      if (prior.result) return { success: true, result: prior.result, reused: true }
+    }
+
+    // 0a. APPOINTMENT-PREP ADDITION: property facts through THE ONE property
+    //     rail (lib/ai-isa/property-lookup-rail.ts) with purpose "listing_intake":
+    //     own DB → tenant IDX → RentCast → public records, NEVER BatchData; the
+    //     free geocode fills lat/lon; a facts-only AI estimate (flagged
+    //     isEstimate) is the last resort. Replaces the deleted
+    //     lib/property/enrichment-chain.ts ladder (wave 80 lane B — survivor
+    //     named in the rail's header). Tenant from the caller's session context
+    //     (input.brokerageId), audience "staff" (the agent's own prep deck).
     //     Best-effort: if every source misses, we still proceed using
     //     whatever the agent passed in (bedrooms/bathrooms/sqft/yearBuilt).
     //     This does NOT replace manual entry at MLS go-live — that path
@@ -278,23 +401,32 @@ export async function buildListingPresentation(
     let lat: number | null = null
     let lon: number | null = null
     try {
-      const { enrichPropertyChain } = await import("@/lib/property/enrichment-chain")
-      const enriched = await enrichPropertyChain(input.propertyAddress)
-      propertyEnrichment = {
-        source:        enriched.source,
-        isEstimate:    enriched.isEstimate,
-        sourceNote:    enriched.sourceNote,
-        beds:          enriched.beds          ?? input.bedrooms  ?? null,
-        baths:         enriched.baths         ?? input.bathrooms ?? null,
-        sqft:          enriched.sqft          ?? input.sqft      ?? null,
-        yearBuilt:     enriched.yearBuilt     ?? input.yearBuilt ?? null,
-        lotSize:       enriched.lotSize       ?? null,
-        propertyType:  enriched.propertyType  ?? null,
-        lat:           enriched.lat ?? null,
-        lon:           enriched.lon ?? null,
+      const { lookupPropertyForConversation, splitOneLineAddress } = await import("@/lib/ai-isa/property-lookup-rail")
+      const r = await lookupPropertyForConversation({
+        brokerageId: input.brokerageId,
+        purpose: "listing_intake",
+        audience: "staff",
+        address: splitOneLineAddress(input.propertyAddress),
+        userId: input.agentUserId ?? null,
+      })
+      if (r.found && r.facts) {
+        const enriched = r.facts
+        propertyEnrichment = {
+          source:        enriched.source,
+          isEstimate:    enriched.isEstimate,
+          sourceNote:    enriched.sourceNote,
+          beds:          enriched.beds          ?? input.bedrooms  ?? null,
+          baths:         enriched.baths         ?? input.bathrooms ?? null,
+          sqft:          enriched.sqft          ?? input.sqft      ?? null,
+          yearBuilt:     enriched.yearBuilt     ?? input.yearBuilt ?? null,
+          lotSize:       enriched.lotSize       ?? null,
+          propertyType:  enriched.propertyType  ?? null,
+          lat:           enriched.lat ?? null,
+          lon:           enriched.lon ?? null,
+        }
+        lat = enriched.lat ?? null
+        lon = enriched.lon ?? null
       }
-      lat = enriched.lat ?? null
-      lon = enriched.lon ?? null
     } catch { /* enrichment is best-effort */ }
 
     // 0b. APPOINTMENT-PREP ADDITION: cover photo via Google Street View.
@@ -302,7 +434,7 @@ export async function buildListingPresentation(
     let coverPhotoUrl: string | null = null
     try {
       const { getStreetViewImageUrl, getStaticMapImageUrl } =
-        await import("@/lib/property/enrichment-chain")
+        await import("@/lib/property/street-view")
       const street = getStreetViewImageUrl({
         address: input.propertyAddress,
         lat:     lat ?? undefined,
@@ -320,8 +452,24 @@ export async function buildListingPresentation(
     const effectiveSqft      = input.sqft      ?? propertyEnrichment?.sqft      ?? null
     const effectiveYearBuilt = input.yearBuilt ?? propertyEnrichment?.yearBuilt ?? null
 
-    // 1. Run CMA (existing infrastructure) — now feeds enriched fields when available
-    const cma = await runAiCma({
+    // 0c. Seller-reported improvements since purchase — the last clause of the
+    //     CMA ruling. Already stored on property_upgrades; loaded here so the CMA
+    //     narrative and the appraiser packet describe the SAME upgrade list.
+    const sellerUpgrades = input.listingId
+      ? await (async () => {
+          const { loadSellerUpgradesForListing } = await import("@/lib/cma/seller-upgrades")
+          return loadSellerUpgradesForListing({
+            listingId: input.listingId as string,
+            brokerageId: input.brokerageId,
+          })
+        })()
+      : []
+
+    // 1. THE CMA. Reuse the caller's when it supplied one — see ListingPresentationInput.cma
+    //    — otherwise run the engine here as before. `??` and not `||`: a caller
+    //    passing a legitimately zero-valued field must not fall through to a second
+    //    paid run.
+    const cma = input.cma ?? await runAiCma({
       mode: "standard",
       brokerageId: input.brokerageId,
       agentUserId: input.agentUserId ?? null,
@@ -336,6 +484,7 @@ export async function buildListingPresentation(
         sqftLiving: effectiveSqft,
         yearBuilt:  effectiveYearBuilt,
         propertyType: "single_family",
+        sellerUpgrades,
       } as any,
     })
 
@@ -350,21 +499,44 @@ export async function buildListingPresentation(
       bedrooms:        input.bedrooms,
       bathrooms:       input.bathrooms,
       sqft:            input.sqft,
+      // §4 — resolved server-side by both callers (the prep cron and the
+      // workflow route), carried on ListingPresentationInput.
+      brokerageId:     input.brokerageId,
+      agentUserId:     input.agentUserId,
     })
 
     // 4. State forms (used in the deck + linked packet)
     const stateForms = getStateForms(input.state, "listing")
 
     // 4b. APPOINTMENT-PREP ADDITION: AI property description for the deck.
-    //     Calls the existing aiGenerateListingDescription if it's exported;
-    //     graceful fallback to a brief auto-summary on failure.
+    //
+    //     THE SERVER-ONLY CORE (lane 86F), not the "use server" action. This used
+    //     to dynamic-import app/actions/ai-listing-intake.ts::aiGenerateListingDescription,
+    //     whose first line is getAgentContext() — this builder runs from the
+    //     listing-presentation-prep cron with no cookie, so it was refused
+    //     "Unauthorized" on every run. It also read `descRes.description` /
+    //     `.descriptions.long` / `.descriptions.standard`, keys that action never
+    //     returned, and passed no `style` (a required field). Now: the tenant is
+    //     input.brokerageId, the agents.id is RESOLVED from input.agentUserId inside
+    //     it (users.id and agents.id are disjoint, §3), and the deck reads the REAL
+    //     keys — descriptions.mlsDescription (the compliance-graded channel), with
+    //     marketingDescription second. A description guardContent FLAGGED (or that
+    //     postcheckScript hard-flags for Fair Housing) is not put on a seller-facing
+    //     slide: it is in the approval queue for a human, and the deck falls back to
+    //     the fact summary below.
     let propertyDescription: string | undefined
     try {
-      const intakeMod = await import("@/app/actions/ai-listing-intake")
-      const fn = (intakeMod as any).aiGenerateListingDescription
-      if (typeof fn === "function" && input.agentUserId) {
-        const descRes = await fn({
-          agentId:      input.agentUserId,
+      const agentRecordId = input.agentUserId
+        ? await resolveAgentIdInBrokerage(svc, input.agentUserId, input.brokerageId)
+        : null
+      if (agentRecordId) {
+        const descRes = await generateListingDescriptions(svc, {
+          brokerageId: input.brokerageId,
+          agentId:     agentRecordId,
+          userId:      input.agentUserId ?? null,
+          listingId:   input.listingId ?? null,
+          style:       deckDescriptionStyle(input.descriptionStyle),
+          source:      "listing_presentation",
           propertyData: {
             address:  input.propertyAddress,
             city:     input.city ?? null,
@@ -377,14 +549,18 @@ export async function buildListingPresentation(
             estimatedValue: cma.estimatedValueMid,
           },
         })
-        if (descRes?.success) {
-          propertyDescription = descRes.description
-                              ?? descRes.descriptions?.long
-                              ?? descRes.descriptions?.standard
-                              ?? undefined
+        if (descRes.success && !descRes.hardFairHousingFlag && !descRes.guardResult.flagged && !descRes.guardResult.guardFailed) {
+          propertyDescription = descRes.descriptions.mlsDescription?.trim()
+                              || descRes.descriptions.marketingDescription?.trim()
+                              || undefined
+        } else if (!descRes.success) {
+          console.error("[listing-presentation-builder] description core refused:", descRes.error)
         }
       }
-    } catch { /* description is best-effort */ }
+    } catch (err) {
+      /* description is best-effort — the fact summary below stands in */
+      console.error("[listing-presentation-builder] description core threw:", err)
+    }
     if (!propertyDescription) {
       const parts: string[] = []
       if (effectiveBeds && effectiveBaths) parts.push(`${effectiveBeds}-bed, ${effectiveBaths}-bath`)
@@ -433,7 +609,7 @@ export async function buildListingPresentation(
     // 6. Stage the listing-agreement packet (so the agent can sign at the table)
     let packetDocumentId: string | null = null
     try {
-      const { data: packetDoc } = await svc.from("documents").insert({
+      const { data: packetDoc, error: packetDocErr } = await svc.from("documents").insert({
         brokerage_id:  input.brokerageId,
         contact_id:    input.contactId,
         document_type: "listing_agreement",
@@ -457,6 +633,7 @@ export async function buildListingPresentation(
         }, null, 2),
         created_at: new Date().toISOString(),
       }).select("id").single()
+      if (packetDocErr) console.error(`[listing-presentation] listing-agreement packet NOT staged: ${packetDocErr.message}`)
       packetDocumentId = packetDoc?.id ?? null
     } catch { /* packet creation is best-effort */ }
 
@@ -483,6 +660,12 @@ export async function buildListingPresentation(
     }).select("id").single()
 
     if (presErr || !pres) {
+      // Lost the one-per-appointment race (m667's partial unique index): the
+      // other producer's row IS this appointment's presentation — return it.
+      if ((presErr as { code?: string } | null)?.code === "23505" && input.appointmentId) {
+        const winner = await loadPresentationForAppointment(svc, input.brokerageId, input.appointmentId)
+        if (winner.ok && winner.result) return { success: true, result: winner.result, reused: true }
+      }
       return { success: false, error: presErr?.message ?? "Could not save presentation" }
     }
 
@@ -539,7 +722,9 @@ export async function buildListingPresentation(
 
     // 8. Notify agent
     if (input.agentUserId) {
-      void Promise.resolve(svc.from("notifications").insert({
+      // Ledgered, not swallowed (lane 76C): the fire-and-forget `.catch(() => {})`
+      // hid a refused insert; sentinelWrite reads the error and records the loss.
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id:      input.agentUserId,
         brokerage_id: input.brokerageId,
         type:         "listing_presentation_ready",
@@ -549,7 +734,7 @@ export async function buildListingPresentation(
         entity_type:  "listing_presentation",
         entity_id:    pres.id,
         channel:      "in_app",
-      })).catch(() => {})
+      }), { table: "notifications", flow: "listing_presentation_builder_notify", brokerageId: input.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the presentation it follows" })
     }
 
     return {

@@ -39,6 +39,14 @@ export interface InboundAttachment {
 export interface ParsedInboundEmail {
   provider:    InboundEmailProvider
   fromEmail:   string
+  /**
+   * The sender's DISPLAY NAME when the provider hands us one ("Dana Cole" of
+   * `Dana Cole <dana@coastal.example>`). Wave 94 (lane 94B): an outside buyer's
+   * agent is filed as an `outside_agents` record from the email itself, and the
+   * display name is the cheapest honest source of their name. Optional — absent
+   * is "the provider did not say", never a guess.
+   */
+  fromName?:   string | null
   toEmail:     string
   subject:     string
   bodyText?:   string
@@ -57,6 +65,24 @@ export interface OAuthFetchInstruction {
   outlookResource?: string        // Outlook: Graph resource path (e.g. "Users('uid')/Messages('mid')")
   outlookSubscriptionId?: string  // Outlook: subscription id (for refresh)
   outlookClientState?: string     // Outlook: client state we set at sub-create
+}
+
+// ─── Address headers ────────────────────────────────────────────────────────
+
+/**
+ * `"Dana Cole" <Dana@Coastal.example>` → { email: "dana@coastal.example", name: "Dana Cole" }.
+ * A bare address yields name null. Mailgun and Resend hand the raw From HEADER,
+ * and both parsers used to lowercase the whole header into `fromEmail` — so a
+ * display-named sender could never match a contact or an outside-agent record by
+ * address. One splitter for every provider (the Gmail fetcher's extractEmail is
+ * this same rule and now delegates here).
+ */
+export function splitAddressHeader(raw: unknown): { email: string; name: string | null } {
+  const text = (raw ?? "").toString().trim()
+  const m = text.match(/^(.*?)<([^>]+)>\s*$/)
+  if (!m) return { email: text.toLowerCase(), name: null }
+  const name = m[1].trim().replace(/^"(.*)"$/, "$1").trim()
+  return { email: m[2].toLowerCase().trim(), name: name || null }
 }
 
 // ─── Detection ──────────────────────────────────────────────────────────────
@@ -91,11 +117,13 @@ function verifyPostmark(rawBody: string, headers: Headers): boolean {
 function parsePostmark(rawBody: string): ParsedInboundEmail | null {
   try {
     const body = JSON.parse(rawBody)
-    const fromEmail = (body.FromFull?.Email ?? body.From ?? "").toString().toLowerCase().trim()
+    const fromHeader = splitAddressHeader(body.From)
+    const fromEmail = (body.FromFull?.Email ?? fromHeader.email ?? "").toString().toLowerCase().trim()
     const toEmail   = (body.ToFull?.[0]?.Email ?? body.To ?? "").toString().toLowerCase().trim()
     return {
       provider:    "postmark",
       fromEmail,
+      fromName:    (body.FromFull?.Name ?? body.FromName ?? fromHeader.name ?? null) || null,
       toEmail,
       subject:     (body.Subject ?? "").toString().trim(),
       bodyText:    (body.TextBody ?? "").toString(),
@@ -135,7 +163,8 @@ function parseSendgrid(rawBody: string): ParsedInboundEmail | null {
     const body = JSON.parse(rawBody)
     return {
       provider:    "sendgrid",
-      fromEmail:   (body.from?.email ?? body.from ?? "").toString().toLowerCase().trim(),
+      fromEmail:   body.from?.email ? body.from.email.toString().toLowerCase().trim() : splitAddressHeader(body.from).email,
+      fromName:    (body.from?.name ?? (typeof body.from === "string" ? splitAddressHeader(body.from).name : null)) || null,
       toEmail:     (body.to?.[0]?.email ?? body.to ?? "").toString().toLowerCase().trim(),
       subject:     (body.subject ?? "").toString().trim(),
       bodyText:    (body.text ?? "").toString(),
@@ -185,7 +214,8 @@ function parseMailgun(rawBody: string): ParsedInboundEmail | null {
     const msg  = ev?.message ?? {}
     return {
       provider:    "mailgun",
-      fromEmail:   (msg?.headers?.from ?? body?.sender ?? "").toString().toLowerCase().trim(),
+      fromEmail:   splitAddressHeader(msg?.headers?.from ?? body?.sender ?? "").email,
+      fromName:    splitAddressHeader(msg?.headers?.from ?? body?.from ?? "").name,
       toEmail:     (msg?.headers?.to   ?? body?.recipient ?? "").toString().toLowerCase().trim(),
       subject:     (msg?.headers?.subject ?? body?.subject ?? "").toString().trim(),
       bodyText:    (body?.["body-plain"] ?? body?.text ?? "").toString(),
@@ -228,7 +258,8 @@ function parseResend(rawBody: string): ParsedInboundEmail | null {
     const data = body.data ?? body
     return {
       provider:    "resend",
-      fromEmail:   (data.from ?? "").toString().toLowerCase().trim(),
+      fromEmail:   splitAddressHeader(data.from).email,
+      fromName:    splitAddressHeader(data.from).name,
       toEmail:     (Array.isArray(data.to) ? data.to[0] : data.to ?? "").toString().toLowerCase().trim(),
       subject:     (data.subject ?? "").toString().trim(),
       bodyText:    (data.text ?? "").toString(),

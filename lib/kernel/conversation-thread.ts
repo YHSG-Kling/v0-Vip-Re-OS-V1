@@ -9,6 +9,8 @@
 // live-proof seed caught it). Keep-one: every messages writer resolves the
 // thread here first.
 
+import { bestEffort } from "@/lib/db/best-effort"
+
 /** Find or create the contact's conversation thread; returns its id.
  *  Works with both service and user-scoped clients. conversations.agent_id is
  *  NOT NULL (live schema), so a missing agent resolves through the cascade:
@@ -60,11 +62,11 @@ export async function touchConversation(client: any, conversationId: string, opt
   try {
     const { data: conv } = await client.from("conversations")
       .select("message_count, unread_count").eq("id", conversationId).maybeSingle()
-    await client.from("conversations").update({
+    await bestEffort(client.from("conversations").update({
       last_message_at: new Date().toISOString(),
       message_count: ((conv as any)?.message_count ?? 0) + 1,
       ...(opts.inbound ? { unread_count: ((conv as any)?.unread_count ?? 0) + 1 } : {}),
       updated_at: new Date().toISOString(),
-    }).eq("id", conversationId)
+    }).eq("id", conversationId), "thread counters; the message itself already landed")
   } catch { /* stats are cosmetic; the message row is the record */ }
 }

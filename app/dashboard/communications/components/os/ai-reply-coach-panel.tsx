@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -19,14 +19,20 @@ import {
   Edit2, 
   RefreshCw,
   ThumbsUp,
-  ThumbsDown,
   Thermometer,
   AlertTriangle,
   Zap,
   Send
 } from "lucide-react"
-import { getAiSuggestions, acceptAiSuggestion } from "@/app/actions/ai-chat"
+import {
+  getAiSuggestions,
+  acceptAiSuggestion,
+  getChatTemplates,
+  applyChatTemplate,
+  searchConversationHistory,
+} from "@/app/actions/ai-chat"
 import { generateSmartResponse } from "@/app/actions/ai-communication-hub"
+import { Input } from "@/components/ui/input"
 
 interface AiSuggestion {
   id: string
@@ -37,6 +43,22 @@ interface AiSuggestion {
   }
   confidence_score: number
   was_accepted: boolean
+}
+
+interface ChatTemplateRow {
+  id: string
+  template_name: string
+  template_category: string | null
+  compliance_approved: boolean
+  is_active: boolean
+}
+
+interface HistoryRow {
+  id: string
+  body: string | null
+  direction: string | null
+  type: string | null
+  created_at: string
 }
 
 interface AiReplyCoachPanelProps {
@@ -73,6 +95,11 @@ export function AiReplyCoachPanel({
   const [isSending, setIsSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [draftSentiment, setDraftSentiment] = useState<any>(null)
+  const [templates, setTemplates] = useState<ChatTemplateRow[]>([])
+  const [applyingTemplateId, setApplyingTemplateId] = useState<string | null>(null)
+  const [historyQuery, setHistoryQuery] = useState("")
+  const [history, setHistory] = useState<HistoryRow[] | null>(null)
+  const [isSearchingHistory, setIsSearchingHistory] = useState(false)
 
   // Load existing suggestions from the session
   const loadSuggestions = async () => {
@@ -81,6 +108,70 @@ export function AiReplyCoachPanel({
       setSuggestions(data || [])
     } catch (err) {
       console.error("Failed to load suggestions:", err)
+    }
+  }
+
+  /**
+   * COMPLIANCE-APPROVED CHAT TEMPLATES — a table with a usage counter that
+   * nothing had ever incremented, because nothing applied a template. The
+   * picker below is the first caller: applyChatTemplate personalises the body
+   * against THIS conversation's contact ({first_name}/{last_name}/{city}) and
+   * bumps chat_templates.usage_count, which is what the "most used first"
+   * ordering has always sorted on.
+   */
+  useEffect(() => {
+    let cancelled = false
+    const loadTemplates = async () => {
+      try {
+        const rows = await getChatTemplates({ complianceApproved: true })
+        if (!cancelled && Array.isArray(rows)) {
+          setTemplates((rows as ChatTemplateRow[]).filter((t) => t.is_active !== false))
+        }
+      } catch (err) {
+        console.error("Failed to load chat templates:", err)
+      }
+    }
+    loadTemplates()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const handleApplyTemplate = async (templateId: string) => {
+    setApplyingTemplateId(templateId)
+    setError(null)
+    try {
+      const { personalizedContent: templateBody } = await applyChatTemplate(templateId, sessionId)
+      if (!templateBody) {
+        setError("That template has no body saved.")
+        return
+      }
+      setGeneratedDraft(templateBody)
+      setEditedDraft(templateBody)
+      setIsEditing(false)
+    } catch (err) {
+      setError("Failed to apply template")
+    } finally {
+      setApplyingTemplateId(null)
+    }
+  }
+
+  /**
+   * "What did we already say about this?" — searchConversationHistory reads the
+   * contact's own message history (messages, newest first, optional ILIKE on the
+   * body). Drafting a reply without it is how agents repeat a promise they
+   * already made.
+   */
+  const handleSearchHistory = async () => {
+    setIsSearchingHistory(true)
+    try {
+      const rows = await searchConversationHistory(contactId, historyQuery.trim() || undefined)
+      setHistory((rows ?? []) as HistoryRow[])
+    } catch (err) {
+      console.error("History search failed:", err)
+      setError("Could not search this contact's history")
+    } finally {
+      setIsSearchingHistory(false)
     }
   }
 
@@ -249,6 +340,30 @@ export function AiReplyCoachPanel({
           )}
         </Button>
 
+        {/* Compliance-approved templates */}
+        {templates.length > 0 && (
+          <div className="space-y-2">
+            <span className="text-sm font-medium">Approved Templates</span>
+            <div className="flex flex-wrap gap-1">
+              {templates.slice(0, 8).map((t) => (
+                <Button
+                  key={t.id}
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  disabled={applyingTemplateId === t.id}
+                  onClick={() => handleApplyTemplate(t.id)}
+                >
+                  {applyingTemplateId === t.id && (
+                    <RefreshCw className="h-3 w-3 mr-1 animate-spin" />
+                  )}
+                  {t.template_name}
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Error */}
         {error && (
           <div className="p-3 bg-destructive/10 text-destructive rounded-lg text-sm">
@@ -401,15 +516,75 @@ export function AiReplyCoachPanel({
 
         {/* Load Suggestions Button */}
         {suggestions.length === 0 && !generatedDraft && (
-          <Button 
-            variant="outline" 
-            size="sm" 
+          <Button
+            variant="outline"
+            size="sm"
             onClick={loadSuggestions}
             className="w-full"
           >
             Load Previous Suggestions
           </Button>
         )}
+
+        {/* Conversation history — what has already been said to this contact */}
+        <div className="space-y-2 border-t pt-3">
+          <span className="text-sm font-medium">Search this contact&apos;s history</span>
+          <div className="flex gap-2">
+            <Input
+              placeholder="e.g. inspection, closing date…"
+              value={historyQuery}
+              onChange={(e) => setHistoryQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault()
+                  handleSearchHistory()
+                }
+              }}
+              className="h-8 text-sm"
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSearchHistory}
+              disabled={isSearchingHistory}
+              className="h-8"
+            >
+              {isSearchingHistory ? (
+                <RefreshCw className="h-3 w-3 animate-spin" />
+              ) : (
+                "Search"
+              )}
+            </Button>
+          </div>
+          {history !== null && (
+            history.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No earlier messages match that.
+              </p>
+            ) : (
+              <ScrollArea className="h-[140px]">
+                <div className="space-y-2 pr-2">
+                  {history.slice(0, 20).map((m) => (
+                    <div key={m.id} className="rounded-lg border bg-muted/20 p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <Badge variant="outline" className="text-[10px]">
+                          {m.direction === "inbound" ? "From client" : "From us"}
+                          {m.type ? ` · ${m.type}` : ""}
+                        </Badge>
+                        <span className="text-[10px] text-muted-foreground">
+                          {new Date(m.created_at).toLocaleDateString()}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground line-clamp-3">
+                        {m.body || "(no body)"}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            )
+          )}
+        </div>
       </CardContent>
     </Card>
   )

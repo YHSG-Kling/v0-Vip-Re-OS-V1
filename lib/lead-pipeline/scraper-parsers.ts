@@ -8,6 +8,7 @@
 
 import * as cheerio from "cheerio"
 import { isViableRecord, type NormalizedScrapedRecord } from "./raw-record-types"
+import { triggerForQuickListSlug, isInvestorBuyerTrigger } from "@/lib/external/batchdata-client"
 
 export interface MarketGeo {
   city: string | null
@@ -259,12 +260,27 @@ export function normalizeBatchDataRecord(
     motivation === 'expired' ||
     quickLists.some((q) => /(expired|canceled|cancelled|failed)-listing/i.test(String(q)))
 
+  // Lane 88G — THE STACK A PULL ALREADY BOUGHT. Every quickList the parcel is on becomes its canonical
+  // trigger signal (triggerForQuickListSlug — the SAME trigger vocabulary the pull uses), so one
+  // tax-default pull that is also vacant + absentee reads as three families to calculateSourceScore
+  // (+5 per boost signal) and to lib/lead-pipeline/signal-stacking.ts. Was ONE signal: the trigger.
+  // A listing whose current price sits below its own max list price carries `price_reduced`.
+  // Lane 89B — every BUYER-side investor list (cash_buyer, fix_and_flip) stays out of a SELLER stack.
+  const stacked = quickLists.map((q) => triggerForQuickListSlug(String(q))).filter((t): t is string => !!t && !isInvestorBuyerTrigger(t))
+  const listing = (record.listing ?? {}) as { price?: number; maxListPrice?: number }
+  const priceCut = typeof listing.price === "number" && typeof listing.maxListPrice === "number" && listing.price > 0 && listing.price < listing.maxListPrice
+  const intentSignals = Array.from(new Set([
+    ...(isExpired ? ["expired_listing"] : [motivation]),
+    ...stacked,
+    ...(priceCut ? ["price_reduced"] : []),
+  ]))
+
   return {
     sourceRecordId: `batchdata-${idSlug || Date.now()}`,
     source: isExpired ? "expired_listing" : "batchdata_motivated",
     behaviorType: isExpired ? "expired_listing" : "motivated_seller",
     intentType: "seller",
-    intentSignals: isExpired ? ["expired_listing"] : [motivation],
+    intentSignals,
     firstName:       firstName || null,
     lastName:        lastName  || null,
     email:           (record.email  as string | null | undefined) ?? null,
@@ -275,6 +291,9 @@ export function normalizeBatchDataRecord(
     mailingAddress:  (record.address as string | null | undefined) ?? null,
     propertyAddress: (record.propertyAddress ?? record.property_address) as string | null | undefined ?? null,
     motivationScore: score,
+    // Lane 89B — the provider sold the person with the record (BatchData `contact` dataset); the raw
+    // writer stamps normalized_preview.paid_person_data and PeopleData is not asked again.
+    paidPersonData: record.paidPersonData === true,
     rawPayload: record,
   }
 }
@@ -332,6 +351,131 @@ export function parseBuyerSavedSearches(
     })
   })
 
+  return records.filter(isViableRecord)
+}
+
+/**
+ * Build the URL for the realty_site_chatter lane (Zillow/Realtor/Homes.com saved-search +
+ * "contact agent" chatter — owner ruling wave 65, distinct from buildPropertySearchUrl's
+ * FSBO-only search above). Territory-centric: general market search results, which is where a
+ * portal renders its "contact agent" / "request a tour" / "save this search" CTAs across many
+ * listings at once, rather than the fsbo:true-filtered page zillow_behavior targets. Homes.com is
+ * NEW coverage this wave — it was never wired into buildPropertySearchUrl's switch.
+ */
+export function buildRealtySiteChatterUrl(site: "zillow" | "realtor" | "homes", market: { city: string; state: string }): string {
+  const citySlug = market.city.toLowerCase().replace(/ /g, "-")
+  switch (site) {
+    case "zillow":
+      return `https://www.zillow.com/${citySlug}-${market.state.toLowerCase()}/`
+    case "realtor":
+      return `https://www.realtor.com/realestateandhomes-search/${market.city.replace(/ /g, "_")}_${market.state}`
+    case "homes":
+      return `https://www.homes.com/${citySlug}-${market.state.toLowerCase()}/homes-for-sale/`
+  }
+}
+
+/**
+ * Parse "contact agent" / "request info" / "schedule a tour" chatter blocks — a DISTINCT DOM
+ * signal from parseBuyerSavedSearches above (which reads saved-search/favorited/watching
+ * markers). Same defensive posture: a record is emitted only when the block carries a usable
+ * handle/name (never fabricated), and never when the page doesn't expose this UI publicly — an
+ * honest zero is the correct answer for a page that keeps this data behind a login wall.
+ */
+export function parseContactAgentChatter(html: string, site: string, market: MarketGeo): NormalizedScrapedRecord[] {
+  const $ = cheerio.load(html)
+  const records: NormalizedScrapedRecord[] = []
+
+  $(
+    '[class*="contact-agent"], [class*="contactAgent"], [class*="request-info"], ' +
+    '[class*="request-tour"], [class*="schedule-tour"], [class*="inquiry"], [data-testid*="contact-agent"]',
+  ).each((i, el) => {
+    const block = $(el)
+    const handle =
+      block.attr("data-user") ||
+      block.find('[class*="user"], [class*="member"], [class*="author"], [class*="name"]').first().text().trim() ||
+      ""
+    const propertyAddress =
+      block.find('[class*="address"], [class*="home-address"]').first().text().trim() || null
+
+    // Need a usable identity (handle) to anchor the lead — an anonymous CTA block is noise.
+    if (!handle) return
+
+    const nameParts = handle.split(/\s+/).filter(Boolean)
+    records.push({
+      sourceRecordId: `${site}-contact-agent-${block.attr("data-id") ?? block.attr("id") ?? `${i}-${Date.now()}`}`,
+      source: site,
+      behaviorType: "contact_agent_chatter",
+      intentType: "buyer",
+      intentSignals: ["contact_agent", "request_info"],
+      firstName: nameParts.length >= 2 ? nameParts[0] : null,
+      lastName: nameParts.length >= 2 ? nameParts.slice(1).join(" ") : null,
+      username: handle || undefined,
+      propertyAddress,
+      city: market.city,
+      state: market.state,
+      motivationScore: 58, // an active contact-agent inquiry outranks a passive saved search
+      sourceUrl: null,
+      rawPayload: { handle, propertyAddress },
+    })
+  })
+
+  return records.filter(isViableRecord)
+}
+
+/**
+ * Lane 83A (owner verbatim: "on the acquisition coverage.ts site chatter includes intent seller") —
+ * the SELL-side chatter the same portal market page exposes, a DISTINCT DOM signal from the buyer
+ * CTAs above: Zillow "Make Me Move" / owner-claimed ("owner updated") homes, "what's my home worth"
+ * valuation requests, "sell with an agent" / seller-consult forms, and owner-posted "coming soon"
+ * cards. Same honesty rule: a block is a record only when it carries a usable handle or an owner
+ * name; an anonymous CTA is page furniture, never a person.
+ */
+const SELLER_CHATTER_SIGNAL: Array<[RegExp, string]> = [
+  [/make[- ]?me[- ]?move|makeMeMove/i, "make_me_move"],
+  [/home[- ]?value|home[- ]?valuation|zestimate[- ]?request|what'?s[- ]my[- ]home[- ]worth/i, "home_valuation_request"],
+  [/owner[- ]?(claimed|updated|dashboard)|claim[- ]?(your|this)?[- ]?home/i, "owner_claimed_home"],
+  [/sell[- ]?(with|your)[- ]?(an[- ]?agent|home)|seller[- ]?(consult|lead|form)/i, "sell_with_agent"],
+  [/coming[- ]?soon/i, "coming_soon"],
+]
+
+export function parseSellerChatter(html: string, site: string, market: MarketGeo): NormalizedScrapedRecord[] {
+  const $ = cheerio.load(html)
+  const records: NormalizedScrapedRecord[] = []
+  $(
+    '[class*="make-me-move"], [class*="makeMeMove"], [class*="home-value"], [class*="homeValue"], ' +
+    '[class*="home-valuation"], [class*="owner-claimed"], [class*="owner-updated"], [class*="claim-home"], ' +
+    '[class*="sell-with"], [class*="seller-consult"], [class*="seller-lead"], [class*="coming-soon"], ' +
+    '[data-testid*="make-me-move"], [data-testid*="home-value"], [data-testid*="owner"]',
+  ).each((i, el) => {
+    const block = $(el)
+    const marker = `${block.attr("class") ?? ""} ${block.attr("data-testid") ?? ""} ${block.text().slice(0, 200)}`
+    const signals = SELLER_CHATTER_SIGNAL.filter(([re]) => re.test(marker)).map(([, s]) => s)
+    if (signals.length === 0) return
+    const handle =
+      block.attr("data-user") ||
+      block.attr("data-owner") ||
+      block.find('[class*="owner"], [class*="user"], [class*="member"], [class*="author"], [class*="name"]').first().text().trim() ||
+      ""
+    if (!handle) return
+    const propertyAddress = block.find('[class*="address"], [class*="home-address"]').first().text().trim() || null
+    const nameParts = handle.split(/\s+/).filter(Boolean)
+    records.push({
+      sourceRecordId: `${site}-seller-chatter-${block.attr("data-id") ?? block.attr("id") ?? `${i}-${Date.now()}`}`,
+      source: site,
+      behaviorType: "seller_chatter",
+      intentType: "seller",
+      intentSignals: ["selling", ...signals],
+      firstName: nameParts.length >= 2 ? nameParts[0] : null,
+      lastName: nameParts.length >= 2 ? nameParts.slice(1).join(" ") : null,
+      username: handle || undefined,
+      propertyAddress,
+      city: market.city,
+      state: market.state,
+      motivationScore: signals.includes("make_me_move") ? 62 : 55,
+      sourceUrl: null,
+      rawPayload: { handle, propertyAddress, signals },
+    })
+  })
   return records.filter(isViableRecord)
 }
 

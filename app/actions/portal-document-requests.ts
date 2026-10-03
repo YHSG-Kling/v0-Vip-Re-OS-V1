@@ -17,11 +17,28 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 
+/** all_parties is written as data.signers (Array<{email,name,role}>) — strip
+ *  the email before it ever reaches a client render. */
+function parseSigners(allParties: unknown): Array<{ name: string; role: string }> {
+  if (!Array.isArray(allParties)) return []
+  return allParties
+    .filter((p): p is { name?: string; role?: string } => !!p && typeof p === "object")
+    .map((p) => ({ name: p.name?.trim() || "Signer", role: p.role?.trim() || "party" }))
+}
+
 export interface ActiveSignaturePacket {
   requestId: string
   signingUrl: string | null
   sentAt: string | null
   expiresAt: string | null
+  /** Every party on this packet (signature_requests.all_parties) — never the
+   *  raw email, only name + role, so a multi-party signer can see who else
+   *  is on the same document. */
+  signers: Array<{ name: string; role: string }>
+  /** The SEQUENCE parties must sign in (signature_requests.signing_order) —
+   *  distinct from `signers` above (the roster): this is order, that is
+   *  membership. Empty when the packet carries no explicit sequence. */
+  signingOrder: Array<{ name: string; role: string }>
 }
 
 export async function loadActiveSignaturePacket(input: {
@@ -31,7 +48,7 @@ export async function loadActiveSignaturePacket(input: {
   const svc = createServiceClient()
 
   const { data: rows } = await svc.from("signature_requests")
-    .select("id, document_id, contact_id, transaction_id, request_status, completed_at, expires_at, sent_at, signing_url")
+    .select("id, document_id, contact_id, transaction_id, request_status, completed_at, expires_at, sent_at, signing_url, all_parties, signing_order")
     .or(`document_id.eq.${input.documentId},and(document_id.is.null,contact_id.eq.${input.contactId})`)
     .in("request_status", ["pending", "sent"])
     .is("completed_at", null)
@@ -54,13 +71,13 @@ export async function loadActiveSignaturePacket(input: {
   // on the packet's transaction.
   for (const r of candidates) {
     if (r.contact_id === input.contactId) {
-      return { requestId: r.id, signingUrl: r.signing_url ?? null, sentAt: r.sent_at ?? null, expiresAt: r.expires_at ?? null }
+      return { requestId: r.id, signingUrl: r.signing_url ?? null, sentAt: r.sent_at ?? null, expiresAt: r.expires_at ?? null, signers: parseSigners(r.all_parties), signingOrder: parseSigners(r.signing_order) }
     }
     if (r.transaction_id) {
       const { data: tx } = await svc.from("transactions")
         .select("contact_id, buyer_contact_id").eq("id", r.transaction_id).maybeSingle()
       if (tx && ((tx as any).contact_id === input.contactId || (tx as any).buyer_contact_id === input.contactId)) {
-        return { requestId: r.id, signingUrl: r.signing_url ?? null, sentAt: r.sent_at ?? null, expiresAt: r.expires_at ?? null }
+        return { requestId: r.id, signingUrl: r.signing_url ?? null, sentAt: r.sent_at ?? null, expiresAt: r.expires_at ?? null, signers: parseSigners(r.all_parties), signingOrder: parseSigners(r.signing_order) }
       }
     }
   }

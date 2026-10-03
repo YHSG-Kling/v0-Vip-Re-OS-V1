@@ -11,9 +11,28 @@ contributors don't add a fifth or bypass a layer.
 | `lead_score` | **Multi-Factor (Layer 1)** — sole writer | numeric 0-100, deterministic |
 | `engagement_score` | AI Scoring (Layer 2) — primary; multi-factor may seed | numeric 0-100 |
 | `intent_score` | AI Scoring (Layer 2) — primary; multi-factor may seed | numeric 0-100 |
-| `motivation_score` | AI Scoring (Layer 2) — primary | numeric 0-100 |
-| `qualification_score` | AI Scoring (Layer 2) — primary | numeric 0-100 |
-| `readiness_level` | AI Scoring (Layer 2) — primary | enum `cold` `warm` `hot` `ready_now` |
+| `motivation_score` | AI Scoring (Layer 2) — **`lead_score_history` only** | numeric 0-100 |
+| `qualification_score` | AI Scoring (Layer 2) — **`lead_score_history` only** | numeric 0-100 |
+| `readiness_level` | AI Scoring (Layer 2) — **`factors` blob only, NO column** | enum `cold` `warm` `hot` `ready_now` |
+
+> **THIS TABLE WAS THE ROOT CAUSE OF A LIVE BUG — read the middle column.**
+> The three rows above are NOT columns on `contacts`. `contacts` has 177 columns
+> and the score-ish ones are exactly: `confidence_score`, `engagement_score`,
+> `intent_score`, `isa_qualification_score`, `lead_score`, `referral_score`.
+> There is no readiness column at all.
+>
+> This table previously listed all three as `contacts` columns, and
+> `scoreLeadWithAI` believed it. PostgREST refuses an UPDATE naming an absent
+> column **entirely** (PGRST204), so the statement also discarded the
+> `engagement_score` / `intent_score` writes that *were* valid, and the CRM's
+> "Run AI Score" button failed 100% of the time from the day it was wired.
+>
+> `qualification_score` and `motivation_score` are real columns on
+> **`lead_score_history`**, which is where they persist. Readiness lives in that
+> row's `factors` blob — the convention Layer 3 already documents
+> (`signal-extensions.ts`: *"Readiness lives in factors only (no column on
+> contacts)"*). A doc that describes a schema the database does not have is a
+> defect with a blast radius, not a stale comment.
 
 ## The four scoring systems
 
@@ -29,7 +48,16 @@ contributors don't add a fifth or bypass a layer.
 - **File:** `app/actions/ai-lead-scoring.ts`
 - **Function:** `scoreLeadWithAI({ contactId, agentId })`
 - **Output:** five-dimensional AI judgement (overall, engagement, intent, qualification, motivation, readiness)
-- **Writes:** persists to `engagement_score`, `intent_score`, `qualification_score`, `motivation_score`, `readiness_level` on `contacts`. **MAY also write `lead_score`** when called explicitly from agent UI ("Run AI Score" button) — this is an OVERRIDE, not the default baseline.
+- **Writes, split across TWO tables because that is where the columns actually are:**
+  - `contacts` — `engagement_score`, `intent_score`, `last_scored_at`. These columns
+    are `INTEGER`, so the model's number is clamped to an integer before the write;
+    a `72.5` out of a free-text parse would refuse the whole statement the same way
+    a phantom column does.
+  - `lead_score_history` — `qualification_score`, `motivation_score`, with readiness
+    in the `factors` blob. **Not** on `contacts`; see the warning under the column
+    table above.
+  - **MAY also write `lead_score`** on `contacts` when called explicitly from the
+    agent UI ("Run AI Score" button) — this is an OVERRIDE, not the default baseline.
 - **Cadence:** on-demand via agent click + nightly cron for hot contacts
 - **Role:** **nuance refinement** of conversational/behavioral signals that the deterministic scorer can't capture
 

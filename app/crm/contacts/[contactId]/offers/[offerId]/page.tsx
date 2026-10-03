@@ -3,10 +3,12 @@ import Link                   from "next/link"
 import { createClient }       from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { loadOfferWorkspace }  from "@/lib/kernel/offers"
+import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
 import { OfferWorkspace }      from "@/app/components/features/offers/offer-workspace"
 import { OfferActionsBar }     from "./offer-actions-bar"
 import { offerRowToActionsState } from "@/app/components/offer/offer-agent-actions"
 import { ChevronLeft }         from "lucide-react"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 /**
  * /crm/contacts/[contactId]/offers/[offerId]
@@ -57,7 +59,7 @@ export default async function OfferDetailPage({ params }: PageProps) {
   }
 
   const isOwner  = offer.agent_id === user.id
-  const isBroker = ["broker", "broker_owner", "admin", "superadmin"].includes(agentProfile.user_type ?? "") &&
+  const isBroker = isAdminOrBroker({ user_type: agentProfile.user_type ?? "" }) &&
     agentProfile.brokerage_id === offer.brokerage_id
 
   if (!isOwner && !isBroker) {
@@ -73,6 +75,24 @@ export default async function OfferDetailPage({ params }: PageProps) {
 
   // ── State the action toolbar needs (mapped from offer columns) ──
   const actionsState = offerRowToActionsState(offer as any)
+
+  // BUILT (wave 53, hidden-wire-census category c: NetSheetView.commissionRate
+  // was declared with a hardcoded-6% comment and no caller ever resolved the
+  // brokerage's REAL commission structure — every net sheet silently used a
+  // placeholder rate instead of the brokerage's configured one. lib/brokerage/
+  // get-default-commission-structure.ts::getDefaultCommissionStructure is the
+  // one resolver (CLAUDE.md — "No hardcoded commission rates — commission_
+  // structures table owns those"); it throws when the brokerage has not
+  // configured a default structure yet, which is a real, expected state for a
+  // brand-new tenant — caught so the offer page still renders with the
+  // component's own 6% fallback rather than failing the whole page.
+  let commissionRatePct: number | undefined
+  try {
+    const structure = await getDefaultCommissionStructure(agentProfile.brokerage_id ?? "")
+    commissionRatePct = structure.grossRateDecimal * 100
+  } catch {
+    commissionRatePct = undefined
+  }
 
   return (
     <div className="flex flex-col h-full overflow-auto">
@@ -113,6 +133,7 @@ export default async function OfferDetailPage({ params }: PageProps) {
           agentId={agentProfile.id}
           brokerageId={agentProfile.brokerage_id ?? ""}
           buyerPath={`/crm/contacts/${contactId}/offers`}
+          commissionRate={commissionRatePct}
         />
       </div>
     </div>

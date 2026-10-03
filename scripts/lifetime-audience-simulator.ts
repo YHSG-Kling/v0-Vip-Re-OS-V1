@@ -54,13 +54,13 @@ async function main() {
 
     // A consented lifetime contact (a real past client) + a DNC one (must be skipped).
     const { data: good } = await svc.from("contacts").insert({
-      brokerage_id: brokerageId, first_name: TAG, last_name: "Lifetime", contact_type: "lifetime",
+      brokerage_id: brokerageId, first_name: TAG, last_name: "Lifetime", contact_type: "lifetime_customer",
       tcpa_consent: true, dnc_status: false,
     }).select("id").single()
     const goodId = (good as any).id as string
     cleanup.push({ table: "contacts", id: goodId })
     const { data: dnc } = await svc.from("contacts").insert({
-      brokerage_id: brokerageId, first_name: TAG, last_name: "DNC", contact_type: "lifetime",
+      brokerage_id: brokerageId, first_name: TAG, last_name: "DNC", contact_type: "lifetime_customer",
       tcpa_consent: true, dnc_status: true,
     }).select("id").single()
     const dncId = (dnc as any).id as string

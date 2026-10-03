@@ -8,7 +8,7 @@
 import { logVendorUsage, normalizeVendorCost, validateAttribution } from '@/lib/vendor-governance'
 
 export interface VoiceUsageParams {
-  vendor: 'twilio' | 'bland_ai' | 'retell_ai' | 'vapi' | string
+  vendor: 'twilio' | 'bland_ai' | 'retell_ai' | string
   callDurationSeconds: number
   transcriptionWordCount?: number
   contactId: string
@@ -118,7 +118,6 @@ function inferBillingModel(vendor: string): string {
   if (vendor.includes('retell')) return 'per_minute'
 
   // Vapi: per-minute
-  if (vendor.includes('vapi')) return 'per_minute'
 
   // Default
   return 'per_minute'

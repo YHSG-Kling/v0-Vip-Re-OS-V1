@@ -1,17 +1,39 @@
-'use server'
+import "server-only"
+// ── Was 'use server' until wave 85 (integrator): every export of a "use server"
+// file is a PUBLIC HTTP endpoint (CLAUDE.md §4), so processRawRecord(rawRecordId,
+// brokerageId) was callable by anyone with a caller-chosen brokerage. It is a
+// server library: its callers (lead-scraping cron, unknown-sender webhook,
+// listing radar, deal-room demo, the gated scrape-social-media action) resolve
+// the tenant themselves. It also read raw_scraped_leads on the cookie client,
+// whose RLS admits only a logged-in platform admin / AI-ISA seat — the cron and
+// webhooks run with no session, so every read came back "Raw record not found".
+// Raw rows are platform-owned until promotion, so it reads on the service client.
 
-import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
+import { isTerminalRawProcessingStatus, type RawProcessingStatus, type DedupeStatus } from "./processing-status"
 import { calculateFuzzyMatch, isConfidentMatch } from './fuzzy-matcher'
-import { extractPropertySpecs, leadSpecPatch } from '@/lib/data-steward/property-spec-extractor'
+import { extractPropertySpecs, leadSpecPatch, contactSpecPatch } from '@/lib/data-steward/property-spec-extractor'
 import { skipTraceWithPeopleData } from '@/lib/external'
+import { PEOPLEDATA_MATCH_COST_USD, PEOPLEDATA_NO_MATCH_COST_USD } from '@/lib/external/peopledata-client'
+import { deriveSocialProfileUrl } from './social-identity-resolve'
+import { meterVendorSpend } from '@/lib/vendor-governance/meter-vendor'
+// Lane 83A — THE ONE PeopleData profile builder (also used by the enrichment drain), so a lead born
+// from a scrape carries the same demographics blob as a drained one.
+import { buildPeopleDataProfile, demographicsFromProfile, peopleDataProfileToLeadColumns, householdFinancialsFromBatchData, mergeHouseholdFinancials, stampFieldProvenance, withFieldProvenance, fieldProvenanceOf, peopleDataContactPointProvenance, enrichmentProviderOf } from './enrichment-column-map'
 import { mergeEnrichment, shouldGapFill, enrichViaPerplexity, type BaseEnrichment } from './perplexity-enrichment'
+import { recordAcquisitionIntents } from './acquisition-coverage'
+// Lane 90B — THE email rule (pure, no I/O) decides what is an enrichment anchor before any spend.
+import { leadEmailProblem as leadEmailProblemPure } from './canonical-lead-eligibility'
 import { KernelEvent } from '@/lib/kernel/events'
+import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 import { emitKernelEvent } from '@/lib/kernel/emit'
 import {
   calculateSourceScore,
   getSourceSemantics,
   scoreToUrgencyLevel,
   recordMatchesTerritory,
+  hasScoringEntry,
+  deliversPaidPersonData,
 } from './source-intent-map'
 
 // ─── Processing status state machine ─────────────────────────────────────────
@@ -21,20 +43,10 @@ import {
 //   | insufficient_identity_for_promotion → promoted | error
 // ─────────────────────────────────────────────────────────────────────────────
 
-type ProcessingStatus =
-  | 'pending'
-  | 'processing'
-  | 'queued_for_enrichment'
-  | 'duplicate_pre_enrich'
-  | 'enriching'
-  | 'duplicate_post_enrich'
-  | 'territory_mismatch'
-  | 'insufficient_contact_data'
-  | 'insufficient_identity'
-  | 'insufficient_identity_for_promotion'
-  | 'unassigned_no_market'
-  | 'promoted'
-  | 'error'
+// The vocabulary moved to lib/lead-pipeline/processing-status.ts so the cockpit
+// and the database CHECK are generated from the SAME list. It used to be
+// declared here and hand-copied into lead-intake-cockpit's REJECTION_STATUSES.
+type ProcessingStatus = RawProcessingStatus
 
 // RawRecord shape after reading from raw_scraped_leads
 interface RawRecord {
@@ -55,11 +67,20 @@ interface RawRecord {
   city?: string | null
   state?: string | null
   zip_code?: string | null
+  /** The PLATFORM-paid per-record scrape cost lib/kernel/scraping.ts stamped at ingest (lane 90B:
+   *  carried onto leads.cost_per_record at promotion — no door wrote that column before). */
+  cost_per_record?: number | null
   normalized_preview: {
     firstName?: string | null
     lastName?: string | null
     email?: string | null
     phone?: string | null
+    /** lane 72B — the scraped post-author/handle, when the source is a
+     *  social_intent lane and no name/email/phone was on the post. Written by
+     *  lib/kernel/scraping.ts's ingestRawSourceBatch/normalizeRawSourceRecord;
+     *  read below to resolve identity via PeopleData when it is the ONLY
+     *  identity signal this record carries. */
+    username?: string | null
     city?: string | null
     state?: string | null
     zip?: string | null
@@ -71,6 +92,9 @@ interface RawRecord {
     mailingAddress?: string | null
     sourceUrl?: string | null
     leadIdentityKey?: string | null
+    /** Lane 89B — the vendor sold the person's contact points with this record (BatchData
+     *  contact dataset). Stamped by lib/kernel/scraping.ts; read below to skip PeopleData. */
+    paid_person_data?: boolean | null
   } | null
   // First-class mailing breakdown columns on raw_scraped_leads (populated at
   // ingestion / enrichment). Kept distinct from the physical address because a
@@ -83,6 +107,10 @@ interface RawRecord {
   mailing_zip?: string | null
   /** 'platform' (platform-scraped inventory, Engine 1 distributes) | 'brokerage'. */
   source_origin?: 'platform' | 'brokerage' | null
+  /** Wave 66 lanes tag the channel here (e.g. "batchdata_smart_search", "nextdoor_chatter")
+   *  even when `source` itself carries a more generic/legacy value — see the scoring
+   *  fallback below. */
+  source_channel?: string | null
   lead_id: string | null
   error_message: string | null
 }
@@ -97,23 +125,44 @@ export interface PipelineResult {
 
 // Helper — update processing_status on raw_scraped_leads
 async function setStatus(
-  supabase: Awaited<ReturnType<typeof createClient>>,
+  supabase: ReturnType<typeof createServiceClient>,
   rawRecordId: string,
   status: ProcessingStatus,
   errorMessage?: string,
-) {
-  await supabase
+  // dedupeComplete — pass true from every call site that is reached ONLY after
+  // both dedupe passes have run (a verdict was reached, whether duplicate or
+  // clear). See processing-status.ts's DEDUPE_STATUSES header for the full story:
+  // this is the writer the raw-lead admin bench's reader
+  // (app/actions/lead-promotion/promote-lead.ts:101,124) never had.
+  opts?: { dedupeComplete?: boolean },
+): Promise<boolean> {
+  // READ (lane 88F). Every gate verdict in this file lands here; a refused status write
+  // left the raw row 'pending' and the next sweep re-ran (and re-billed) it silently.
+  const { error } = await supabase
     .from('raw_scraped_leads')
     .update({
       processing_status: status,
       ...(errorMessage ? { error_message: errorMessage } : {}),
-      ...(status === 'promoted' || status === 'error' ? { processed_at: new Date().toISOString() } : {}),
+      // TERMINAL = every status outside IN_FLIGHT_STATUSES (processing-status.ts,
+      // derived — not a hand-picked 'promoted' | 'error' list, which used to leave
+      // duplicate_pre_enrich / duplicate_post_enrich / territory_mismatch /
+      // insufficient_identity / insufficient_identity_for_promotion /
+      // unassigned_no_market with no processed_at, even though every one of them
+      // stops the record for this attempt. relisting-detector.ts:46,55 reads this
+      // column and falls back to created_at when it's null.
+      ...(isTerminalRawProcessingStatus(status) ? { processed_at: new Date().toISOString() } : {}),
+      ...(opts?.dedupeComplete ? { dedupe_status: 'complete' satisfies DedupeStatus } : {}),
     })
     .eq('id', rawRecordId)
+  if (error) {
+    console.error(`[pipeline-processor] raw ${rawRecordId} status '${status}' write refused:`, error.message)
+    return false
+  }
+  return true
 }
 
 export async function processRawRecord(rawRecordId: string, brokerageId?: string | null): Promise<PipelineResult> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   // ── STEP 3: Read from raw_scraped_leads (not batchdata_motivated_sellers_raw) ──
   await setStatus(supabase, rawRecordId, 'processing')
@@ -142,6 +191,8 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   const phone      = rec.phone      ?? rec.normalized_preview?.phone      ?? (rec.raw_data?.phone      as string | undefined) ?? null
   const city       = rec.city       ?? rec.normalized_preview?.city       ?? (rec.raw_data?.city       as string | undefined) ?? null
   const state      = rec.state      ?? rec.normalized_preview?.state      ?? (rec.raw_data?.state      as string | undefined) ?? null
+  // lane 72B — see the RawRecord.normalized_preview.username doc comment above.
+  const username   = rec.normalized_preview?.username ?? null
 
   // ── Territory gate — block before enrichment spend ────────────────────────
   // Load the market this record was scraped for and check city/state/zip match.
@@ -191,7 +242,16 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   // back to the brokerage that owns the scraped market (scheduled platform
   // scraping leaves raw_scraped_leads.brokerage_id NULL). Without either, the
   // record cannot be promoted to a tenant-scoped lead.
-  const effectiveBrokerageId = brokerageId ?? marketBrokerageId
+  //
+  // Lane 85B — a BROKERAGE-origin raw row with no market (a first-party, non-territory source: the
+  // unknown inbound-email sender, owner wave 85 "an unknown sender needs to go through enrichment
+  // before lead gate") carries its owner on its own brokerage_id, stamped server-side at ingest from
+  // the route's VERIFIED mailbox binding (never a body, §4). The stranded sweep calls
+  // processRawRecord(id) with no brokerageId, so without this fallback such a row could never be
+  // re-gated — it would fall to unassigned_no_market on its first retry. Platform-origin rows are
+  // unaffected (their brokerage_id is NULL until Engine 1 distributes them).
+  const rowBrokerageId = (rec.source_origin ?? 'brokerage') === 'brokerage' ? (rec.brokerage_id ?? null) : null
+  const effectiveBrokerageId = brokerageId ?? marketBrokerageId ?? rowBrokerageId
   if (!effectiveBrokerageId) {
     await setStatus(supabase, rawRecordId, 'unassigned_no_market')
     return {
@@ -204,21 +264,52 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
 
   // ── Source semantics — score and derive intent fields ─────────────────────
   // Computed once before the identity gate; used on promotion.
-  const sourceSemantics = getSourceSemantics(rec.source)
+  //
+  // WAVE 66 HARDENING: a wave-65/66 ingest lane can tag a record's `source_channel`
+  // with a distinct, more specific channel (e.g. "batchdata_smart_search",
+  // "nextdoor_chatter") than whatever ended up in the per-record `source` column.
+  // Prefer `source` when it resolves to a REAL scoring entry (the common case —
+  // most sources are already this specific); fall back to `source_channel` only
+  // when `source` does NOT (hasScoringEntry, never the silent FALLBACK_DEFINITION),
+  // so a channel with no scoring entry of its own is never scored as a stranger by
+  // accident. This never overrides an already-correct, more specific `source`.
+  const scoringSource =
+    hasScoringEntry(rec.source) ? rec.source
+    : (rec.source_channel && hasScoringEntry(rec.source_channel)) ? rec.source_channel
+    : rec.source
+  const sourceSemantics = getSourceSemantics(scoringSource)
   const computedScore   = calculateSourceScore(
-    rec.source,
+    scoringSource,
     rec.normalized_preview?.intentSignals ?? [],
   )
   // urgency_level is derived from the FUSED score at promotion (scoreToUrgencyLevel below),
   // so the deterministic source baseline alone is no longer used for it here.
 
   // ── STEP 4B: Identity gate — require at least one usable anchor ────────────
-  // Anchors: email, phone, full name + location, or property address.
-  const hasEmail           = !!email?.trim()
+  // Anchors: email, phone, full name + location, property address, or (lane
+  // 72B) a scraped social HANDLE — the shape a post-author/behavioral-intent
+  // signal actually arrives in (owner: "raw leads that may come in from the
+  // scrapers especially from posts or behavioral signal intent online"). This
+  // is the SAME bar isViableRecord() (lib/lead-pipeline/raw-record-types.ts)
+  // already cleared to let the row exist as a raw_scraped_leads record in the
+  // first place — a username-only record used to pass THAT gate and then die
+  // here, one step later, never having reached PeopleData at all.
+  // Lane 90B — an email THE gate would refuse (invalid / disposable / automated mailbox — the one rule,
+  // canonical-lead-eligibility.ts::leadEmailProblem) is not an identity anchor and buys nothing from
+  // PeopleData: `noreply@forsalebyowner.com` on a scraped FSBO card, or a portal's relay address, used
+  // to clear this gate as "an email", be handed to PDL ($0.25/match) and then be refused at the
+  // promotion gate as an automated mailbox. It is also not a DEDUP key (every card from that site
+  // would otherwise merge onto one person). The address still reaches the promotion gate below
+  // (`enriched.email ?? email`) so the refusal reason stays honest; a usable email enrichment finds
+  // (PDL / the email-seek hook) replaces it. Nothing is deleted: the row stays raw and retryable.
+  const emailProblem       = leadEmailProblemPure(email)
+  const usableEmail        = emailProblem === null ? email : null
+  const hasEmail           = !!usableEmail?.trim()
   const hasPhone           = !!phone?.trim()
   const hasFullNameAndLoc  = !!(firstName && lastName && (city || state))
   const hasPropertyAddress = !!(rec.normalized_preview?.propertyAddress ?? rec.raw_data?.propertyAddress)
-  const passesIdentityGate = hasEmail || hasPhone || hasFullNameAndLoc || hasPropertyAddress
+  const hasUsername        = !!username?.trim()
+  const passesIdentityGate = hasEmail || hasPhone || hasFullNameAndLoc || hasPropertyAddress || hasUsername
 
   if (!passesIdentityGate) {
     await setStatus(supabase, rawRecordId, 'insufficient_identity')
@@ -245,18 +336,21 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   await setStatus(supabase, rawRecordId, 'queued_for_enrichment')
 
   const dedupScope = { excludeRawId: rawRecordId, rawCreatedAt: (rawRecord as { created_at?: string | null }).created_at ?? null, marketId: rec.market_id }
-  const preEnrichLookup = { first_name: firstName, last_name: lastName, email, phone }
+  const preEnrichLookup = { first_name: firstName, last_name: lastName, email: usableEmail, phone }
   const preEnrichDuplicate = await findBestMatch(preEnrichLookup, 'pre_enrichment', effectiveBrokerageId, supabase, dedupScope)
 
   if (preEnrichDuplicate) {
-    await setStatus(supabase, rawRecordId, 'duplicate_pre_enrich')
+    await setStatus(supabase, rawRecordId, 'duplicate_pre_enrich', undefined, { dedupeComplete: true })
+    // Lane 88G — the verdict is unchanged (still a duplicate, still skipped); its SIGNALS now join the
+    // existing lead's stack instead of being dropped with the row.
+    const preStack = await stackOntoDuplicateLead(supabase, preEnrichDuplicate, rawRecordId, rec)
     await logDeduplication({
       raw_record_id:             rawRecordId,
       duplicate_of_lead_id:      preEnrichDuplicate.type === 'lead'    ? preEnrichDuplicate.id : null,
       duplicate_of_contact_id:   preEnrichDuplicate.type === 'contact' ? preEnrichDuplicate.id : null,
       stage:                     'pre_enrichment',
       match_score:               preEnrichDuplicate.score,
-      match_details:             { ...preEnrichDuplicate.details, match_table: preEnrichDuplicate.type, ...(preEnrichDuplicate.type === 'raw' ? { duplicate_of_raw_id: preEnrichDuplicate.id } : {}) },
+      match_details:             { ...preEnrichDuplicate.details, match_table: preEnrichDuplicate.type, ...(preEnrichDuplicate.type === 'raw' ? { duplicate_of_raw_id: preEnrichDuplicate.id } : {}), ...(preStack ? { signal_stack: preStack } : {}) },
       action_taken:              'skipped',
       skip_reason:               'Pre-enrichment duplicate found',
       old_enrichment_confidence: preEnrichDuplicate.enrichment_confidence,
@@ -273,7 +367,63 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   // ── Enrichment ──────────────────────────────────────────────────────────────
   await setStatus(supabase, rawRecordId, 'enriching')
 
-  const enriched = await enrichWithPeopleData({ first_name: firstName, last_name: lastName, email, phone, city, state, brokerageId: effectiveBrokerageId })
+  const enriched = await enrichWithPeopleData({
+    // Lane 90B — only a gate-usable email is an enrichment anchor (see usableEmail above).
+    first_name: firstName, last_name: lastName, email: usableEmail, phone, city, state,
+    brokerageId: effectiveBrokerageId,
+    // lane 72B — carried only so enrichWithPeopleData can resolve identity by
+    // social profile when name/email/phone are all absent; never used for
+    // anything else.
+    username, source: rec.source,
+    // Lane 85B — the email-seek hook's correlation ref + its no-rebill stamp from an earlier pass.
+    rawRecordId, priorEmailSeek: (rec.normalized_preview as any)?.email_seek ?? null,
+    // Lane 89B — the vendor already sold this person with the record (normalized_preview.
+    // paid_person_data, one spelling); the contract map bounds which sources may say so.
+    paidPersonData: rec.normalized_preview?.paid_person_data === true && deliversPaidPersonData(scoringSource),
+    knownDemographics: householdFinancialsFromBatchData(rec.raw_data),
+  })
+
+  // ── Raw-lead HOUSEHOLD FINANCIALS (lane 85C) — a BatchData-sourced raw row arrives carrying the
+  // property row's `demographic` dataset (marital status / household income / net worth), mapped at
+  // ingest by normalizeBatchDataProperty and kept on raw_data. PeopleData sells none of the four, so
+  // they merge onto the same demographic profile through the ONE mapper (a PDL value, were one ever
+  // returned, wins: prefer 'existing'). $0 — bought with the acquisition pull. The raw row's
+  // normalized_preview.demographics and the lead's enrichment_profile below both carry the result.
+  const rawHousehold = householdFinancialsFromBatchData(rec.raw_data)
+  if (Object.keys(rawHousehold).length > 0) {
+    enriched.peopleDataProfile = mergeHouseholdFinancials(
+      enriched.peopleDataProfile?.provider ? enriched.peopleDataProfile : { ...(enriched.peopleDataProfile ?? {}), provider: 'batchdata' },
+      rawHousehold, 'batchdata', { prefer: 'existing' },
+    )
+  }
+
+  // ── Raw-lead demographics (lane 83A) — the PDL match lands on the RAW row too, so a record that
+  // stops at a gate (duplicate / identity) still carries who the person is for the next sweep and
+  // for lead intelligence. normalized_preview is the raw layer's jsonb (no new column).
+  // (Wave 100: a PROVENANCE-ONLY profile — no provider, the record's own fields stamped — is not an
+  // enrichment and does not mark the raw row enriched; every provider-built profile names its provider.)
+  if (enriched.peopleDataProfile?.provider) {
+    const { error: rawDemoError } = await supabase.from('raw_scraped_leads').update({
+      normalized_preview: { ...(rec.normalized_preview ?? {}), demographics: demographicsFromProfile(enriched.peopleDataProfile) },
+      enriched_at: new Date().toISOString(),
+    }).eq('id', rawRecordId)
+    if (rawDemoError) console.warn('[pipeline-processor] raw demographics write refused:', rawDemoError.message)
+  }
+
+  // ── Email-seek stamp (lane 85B) — a BILLED reverse-trace attempt is recorded on the raw row so the
+  // stranded sweep never re-bills the same phone (lib/lead-pipeline/email-seek.ts). The preview is
+  // rebuilt with the demographics above so neither write clobbers the other, and the in-memory row
+  // is updated so every later normalized_preview spread in this pass (BatchRank) carries both.
+  if (enriched.emailSeek?.stamp) {
+    const nextPreview = {
+      ...(rec.normalized_preview ?? {}),
+      ...(enriched.peopleDataProfile ? { demographics: demographicsFromProfile(enriched.peopleDataProfile) } : {}),
+      email_seek: enriched.emailSeek.stamp,
+    }
+    const { error: seekStampError } = await supabase.from('raw_scraped_leads').update({ normalized_preview: nextPreview }).eq('id', rawRecordId)
+    if (seekStampError) console.warn('[pipeline-processor] raw email-seek stamp refused:', seekStampError.message)
+    else rec.normalized_preview = nextPreview as RawRecord['normalized_preview']
+  }
 
   // ── Post-enrichment deduplication — same THREE tables as the pre-enrich pass
   // (raw_scraped_leads + leads + contacts), now with enrichment-filled identity.
@@ -283,7 +433,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     // Duplicate of another (older / already-promoted) RAW record that hasn't
     // become a lead/contact yet — skip this row; the earlier raw row owns the
     // identity and will promote (or already failed a gate honestly).
-    await setStatus(supabase, rawRecordId, 'duplicate_post_enrich')
+    await setStatus(supabase, rawRecordId, 'duplicate_post_enrich', undefined, { dedupeComplete: true })
     await logDeduplication({
       raw_record_id:             rawRecordId,
       stage:                     'post_enrichment',
@@ -308,8 +458,34 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     if (newConfidence > oldConfidence * 1.1) {
       const targetTable = postEnrichDuplicate.type === 'lead' ? 'leads' : 'contacts'
 
+      // LOSSLESS ON THE MERGE PATH TOO — THE CONTACT-SIDE TWIN THAT WAS MISSING.
+      //
+      // `leadSpecPatch` runs on the INSERT path below (:512) and on the manual
+      // promoter, so a raw record that becomes a NEW lead carries its scraped
+      // beds/baths/sqft/type/value. A raw record that lands here instead —
+      // higher-confidence duplicate of a record we already hold — carried only
+      // email/phone/confidence, so exactly the specs the extractor exists to
+      // rescue were dropped, and dropped SILENTLY, on the branch that has already
+      // decided this record is the better one.
+      //
+      // `contactSpecPatch` is the contacts-side patch and it is not the same
+      // patch: contacts store the property value in `home_value_estimate` while
+      // leads use `estimated_value`, and naming the wrong one is a PGRST204 that
+      // refuses the WHOLE update, not just that field. Choosing by target table
+      // is the only correct form, and it is why two patch builders exist.
+      //
+      // ADDITIVE BY CONSTRUCTION: both builders emit only the keys the raw jsonb
+      // actually produced, so a spec we did not scrape can never null out one the
+      // existing record already has.
+      // Same two jsonb sources, in the same order, as the insert path at :535 —
+      // so the merged record and the inserted one can never carry different
+      // specs for the same raw row.
+      const mergeSpecs = extractPropertySpecs([rec.raw_data as any, rec.normalized_preview as any])
+      const specPatch = targetTable === 'leads' ? leadSpecPatch(mergeSpecs) : contactSpecPatch(mergeSpecs)
+
       // enrichment_status exists only on leads; contacts tracks confidence only.
       const mergeUpdate: Record<string, unknown> = {
+        ...specPatch,
         email:                 enriched.email || postEnrichDuplicate.email,
         phone:                 enriched.phone || postEnrichDuplicate.phone,
         enrichment_confidence: newConfidence,
@@ -324,7 +500,8 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
         .update(mergeUpdate)
         .eq('id', postEnrichDuplicate.id)
 
-      await setStatus(supabase, rawRecordId, 'duplicate_post_enrich')
+      await setStatus(supabase, rawRecordId, 'duplicate_post_enrich', undefined, { dedupeComplete: true })
+      const mergeStack = await stackOntoDuplicateLead(supabase, postEnrichDuplicate, rawRecordId, rec)
       await logDeduplication({
         raw_record_id:             rawRecordId,
         lead_id:                   postEnrichDuplicate.type === 'lead'    ? postEnrichDuplicate.id : null,
@@ -332,7 +509,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
         duplicate_of_contact_id:   postEnrichDuplicate.type === 'contact' ? postEnrichDuplicate.id : null,
         stage:                     'post_enrichment',
         match_score:               postEnrichDuplicate.score,
-        match_details:             postEnrichDuplicate.details,
+        match_details:             { ...postEnrichDuplicate.details, ...(mergeStack ? { signal_stack: mergeStack } : {}) },
         action_taken:              'merged',
         skip_reason:               null,
         old_enrichment_confidence: oldConfidence,
@@ -361,14 +538,15 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
           .eq('id', postEnrichDuplicate.id)
       }
 
-      await setStatus(supabase, rawRecordId, 'duplicate_post_enrich')
+      await setStatus(supabase, rawRecordId, 'duplicate_post_enrich', undefined, { dedupeComplete: true })
+      const keepStack = await stackOntoDuplicateLead(supabase, postEnrichDuplicate, rawRecordId, rec)
       await logDeduplication({
         raw_record_id:             rawRecordId,
         duplicate_of_lead_id:      postEnrichDuplicate.type === 'lead'    ? postEnrichDuplicate.id : null,
         duplicate_of_contact_id:   postEnrichDuplicate.type === 'contact' ? postEnrichDuplicate.id : null,
         stage:                     'post_enrichment',
         match_score:               postEnrichDuplicate.score,
-        match_details:             postEnrichDuplicate.details,
+        match_details:             { ...postEnrichDuplicate.details, ...(keepStack ? { signal_stack: keepStack } : {}) },
         action_taken:              Object.keys(fillEmpty).length > 0 ? 'merged' : 'skipped',
         skip_reason:               'Existing record has equal or better confidence (empties filled)',
         old_enrichment_confidence: oldConfidence,
@@ -385,37 +563,54 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     }
   }
 
-  // ── STEP 4B: Promotion eligibility gate (CANONICAL — shared with lead-promoter) ─
-  // Owner's canonical rule (round 39): after enrichment + second dedup, promote when the
-  // record carries a FIRST NAME and LAST NAME plus at least an EMAIL ADDRESS and/or a
-  // MAILING ADDRESS (phone is not an anchor). Names are fed post-enrichment
-  // (enriched.first_name ?? firstName) so enrichWithPeopleData can SUPPLY a missing name
-  // before this pass. Single source of truth in canonical-lead-eligibility so the two
-  // historical paths can never drift apart.
+  // ── STEP 4B: Promotion eligibility gate (CANONICAL — shared with every promotion door) ─
+  // Owner (wave 85, 2026-09-26): "change in what is needed to become a lead it should be email
+  // required so email and/or phone." → first + last NAME (a person's, not a placeholder or an entity)
+  // AND a usable EMAIL; the phone is optional (wave 84 admitted phone-only — no longer). Names and the
+  // email are fed post-enrichment (enriched.* ?? raw) so enrichWithPeopleData — PeopleData, then the
+  // email-seek hook (reverse skip trace by phone), then the Perplexity gap-fill — can SUPPLY them
+  // before this pass. THE predicate lives in canonical-lead-eligibility.ts
+  // (isLeadEligibleIdentity / evaluateCanonicalLeadEligibility).
+  //
+  // TOMBSTONE — the wave-14 VERIFIED-MAILING-ADDRESS arm and its gate-side Lob call
+  // (promotion-address-verification.ts::verifyMailingAddressForPromotion) are removed: the wave-84
+  // ruling names phone and/or email only, so an address can no longer make a lead and spending on it
+  // here rescued nothing. Direct-mail address verification stays at the send
+  // (lib/providers/dispatch.ts needsCassCheck → lib/providers/mailing-cass-gate.ts).
   const { evaluateCanonicalLeadEligibility } =
     await import("@/lib/lead-pipeline/canonical-lead-eligibility")
   const rawAddrVerified = (rawRecord as any)?.mailing_address_verified
                         ?? (rawRecord.raw_data as any)?.mailing_address_verified
                         ?? false
-  // Resolution order for the mailing address (same chain the lead insert uses):
-  // enrichment result → raw first-class column → preview/raw_data jsonb.
+  // The mailing address is still CARRIED onto the lead (direct mail reads it) — it is data, not an
+  // anchor. Resolution order: enrichment result → raw first-class column → preview/raw_data jsonb.
   const resolvedMailingAddress =
     (enriched as any).mailing_address
     ?? rec.mailing_address
     ?? rec.normalized_preview?.mailingAddress
     ?? (rec.raw_data as any)?.mailing_address
     ?? null
+  const resolvedMailingCity  = (enriched as any).mailing_city  ?? rec.mailing_city  ?? (rec.raw_data as any)?.mailing_city  ?? null
+  const resolvedMailingState = (enriched as any).mailing_state ?? rec.mailing_state ?? (rec.raw_data as any)?.mailing_state ?? null
+  const resolvedMailingZip   = (enriched as any).mailing_zip   ?? rec.mailing_zip   ?? (rec.raw_data as any)?.mailing_zip   ?? null
   const resolvedMailingVerified = !!((enriched as any).mailing_address_verified ?? rawAddrVerified)
+  const resolvedMailingSource: string | null =
+    (enriched as any).mailing_address_source
+    ?? rec.mailing_address_source
+    ?? (rec.raw_data as any)?.mailing_address_source
+    ?? null
+
   const promoEligibility = evaluateCanonicalLeadEligibility({
-    first_name:               enriched.first_name ?? firstName,
-    last_name:                enriched.last_name  ?? lastName,
-    email:                    enriched.email,
-    phone:                    enriched.phone ?? phone,
-    mailing_address:          resolvedMailingAddress,
-    mailing_address_verified: resolvedMailingVerified,
+    first_name: enriched.first_name ?? firstName,
+    last_name:  enriched.last_name  ?? lastName,
+    // Lane 90B — enrichment was handed only a gate-usable email; the raw address (possibly an
+    // automated mailbox) falls through here so the gate names the real reason, never "missing".
+    email:      enriched.email ?? email,
+    phone:      enriched.phone ?? phone,
   })
+
   if (!promoEligibility.eligible) {
-    await setStatus(supabase, rawRecordId, 'insufficient_identity_for_promotion')
+    await setStatus(supabase, rawRecordId, 'insufficient_identity_for_promotion', undefined, { dedupeComplete: true })
     await logDeduplication({
       raw_record_id:             rawRecordId,
       stage:                     'promotion_identity_gate',
@@ -446,13 +641,68 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   const recordContent = assembleRecordContent(rec)
   const aiIntent = await classifyRawRecordIntent(
     { content: recordContent, authorName: [promoFirst, promoLast].filter(Boolean).join(" ") || undefined },
-    analyzeLead,
+    // Booked to the tenant this pipeline already resolved (lane 93D: it was booked nowhere).
+    (p) => analyzeLead({ ...p, brokerageId: effectiveBrokerageId }),
   )
+  // ── BATCHRANK PROPENSITY (BatchData-origin records only) — a DISTINCT capability
+  // from the passive `intel.salePropensity` read in batchdata-seller-signals.ts (which
+  // reads whatever a regular Property Search response happens to include). This is an
+  // explicit premium BatchRank fetch, behind the SAME BatchData credential gate every
+  // other BatchData call uses, fail-closed when the account/response has no BatchRank
+  // (lib/external/batchdata-client.ts::fetchBatchRankPropensity never fabricates a
+  // score). Bounded to records that already cleared the promotion-identity gate above —
+  // never spent on a raw record that fails eligibility anyway. Stamped onto
+  // normalized_preview.batchrank_propensity (audit trail + the writerless-read this
+  // wave found: pipeline-processor already had a place to consume it, nothing wrote it).
+  let batchRankPropensity: number | null = null
+  if (rec.source === "batchdata_motivated" || rec.source === "expired_listing") {
+    const lookupAddress = rec.address ?? (rec.normalized_preview?.propertyAddress as string | null) ?? (rec.raw_data?.propertyAddress as string | null) ?? null
+    if (lookupAddress) {
+      try {
+        const { fetchBatchRankPropensity } = await import("@/lib/external/batchdata-client")
+        const br = await fetchBatchRankPropensity(lookupAddress)
+        if (br.available && br.score !== null) {
+          batchRankPropensity = br.score
+          await sentinelWrite(supabase, supabase.from('raw_scraped_leads').update({
+            normalized_preview: { ...(rec.normalized_preview ?? {}), batchrank_propensity: br.score, batchrank_category: br.category },
+          }).eq('id', rawRecordId), { table: 'raw_scraped_leads', flow: 'batchrank_propensity_stamp', brokerageId: effectiveBrokerageId ?? null, reason: 'audit copy of the score; the score itself is used in-memory for this promotion' })
+        }
+      } catch { /* fail closed — no score, no block on promotion */ }
+    }
+  }
+
   const fusedScore = fuseLeadScore(computedScore, aiIntent)
-  const fusedUrgency = scoreToUrgencyLevel(fusedScore)
+  // BatchRank is one more signal nudging the fused score (weighted average), never the
+  // sole determinant — the AI-fused source score still anchors the number.
+  const batchRankAdjustedScore = batchRankPropensity !== null
+    ? Math.round(fusedScore * 0.7 + batchRankPropensity * 0.3)
+    : fusedScore
+  // ── MULTI-SIGNAL STACK (lane 88G) — this row's own distress signals plus every raw row the dedup
+  // passes logged as ITS duplicate (the same person from another source) → distinct families →
+  // a cross-source boost on top of the fused score. $0 (no vendor call); a refused read stacks only
+  // the row's own signals (measured:false), never a fabricated family. lib/lead-pipeline/signal-stacking.ts.
+  const { readRawSignalStack, applyStackBoost } = await import("@/lib/lead-pipeline/signal-stacking")
+  const signalStack = await readRawSignalStack(supabase, rawRecordId, rec.normalized_preview?.intentSignals ?? [])
+  const stackedScore = applyStackBoost(batchRankAdjustedScore, signalStack.stack)
+  const fusedUrgency = scoreToUrgencyLevel(stackedScore)
+  // THE RECORD'S OWN SIGNALS, read by the one classifier the coverage guard derives
+  // per-source coverage from (acquisition-coverage.ts::recordAcquisitionIntents — lane
+  // 88F wired it here; it was an export only proofs called). The old fallback read
+  // normalized_preview.intentType alone, so a record whose normalizer emitted a
+  // `selling` / `looking_to_buy` SIGNAL without an intentType promoted as 'unknown' and
+  // paid for the AI read to guess what the scraper had already said. One-sided evidence
+  // only: a record evidencing BOTH sell and buy stays 'unknown' for the AI read.
+  const signalIntents = recordAcquisitionIntents({
+    intentType:    rec.normalized_preview?.intentType ?? null,
+    intentSignals: rec.normalized_preview?.intentSignals ?? null,
+  })
+  const signalLeadType: 'buyer' | 'seller' | 'unknown' =
+    signalIntents.includes('sell') && !signalIntents.includes('buy') ? 'seller'
+    : signalIntents.includes('buy') && !signalIntents.includes('sell') ? 'buyer'
+    : 'unknown'
   const sourceLeadType = sourceSemantics.leadType !== 'unknown'
     ? sourceSemantics.leadType
-    : (rec.normalized_preview?.intentType as 'buyer' | 'seller' | 'unknown' | undefined ?? 'unknown')
+    : signalLeadType
   const fusedLeadType = aiIntent ? resolveLeadType(sourceLeadType, aiIntent.intentType) : sourceLeadType
   const fusedMotivationConfidence = aiIntent
     ? Math.max((rec.raw_data?.motivation_confidence as number | null) ?? (computedScore / 100), aiIntent.confidence * (aiIntent.score / 100))
@@ -491,18 +741,34 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       motivation_type:       (rec.raw_data?.motivation_type as string | null) ?? sourceSemantics.motivationType,
       motivation_confidence: fusedMotivationConfidence,
       urgency_level:         fusedUrgency,
-      lead_score:            fusedScore,
+      lead_score:            stackedScore,
       enrichment_status:     'completed',
       enrichment_confidence: enriched.enrichmentConfidence,
       last_enriched_at:      new Date().toISOString(),
+      // Lane 83A — the PDL demographics this path already paid for (was dropped here): the
+      // enrichment_profile blob lead-action-plan / ghost-reengagement / personalize-outreach read,
+      // plus the first-class lead columns (home_owner_status, life_events).
+      ...(enriched.peopleDataProfile ? {
+        ...peopleDataProfileToLeadColumns(enriched.peopleDataProfile),
+        enrichment_profile:  enriched.peopleDataProfile,
+        // Wave 97 (97C): a Versium-built profile (93B3 demographics / 97C email-only provenance) names
+        // Versium — the lineage page displays this value; it was 'peopledata' for every profile.
+        // Wave 100 (lane 100C): through THE provider vocabulary (enrichmentProviderOf) — a profile that
+        // carries only provenance (a scraped record no provider enriched) or only BatchData household
+        // values no longer reads as 'peopledata'; with no provider the column is left unset.
+        ...(enrichmentProviderOf(enriched.peopleDataProfile.provider)
+          ? { enrichment_provider: enrichmentProviderOf(enriched.peopleDataProfile.provider) }
+          : {}),
+      } : {}),
       lead_stage:            'new',
       source_raw_ids:        [rawRecordId],
       // STEP 5 — Kernel OS ISA ownership fields
       lifecycle_state:       'unconsented',
       ai_isa_owner:          true,
       minimum_viable_for_isa: !!(enriched.email),
-      // HONEST flag: eligibility can now pass on email alone (owner canonical rule), so the
-      // verified flag carries what enrichment/raw actually determined — never a blanket true.
+      // HONEST flag: eligibility passes on name + phone/email (owner wave 84) and never on the
+      // address, so the verified flag carries what enrichment/raw actually determined — never a
+      // blanket true.
       // email_verified propagates whatever the enrichment determined (PeopleData / verification
       // step); when false the ISA email channel is blocked until a verification step lifts it.
       mailing_address_verified: resolvedMailingVerified,
@@ -512,43 +778,61 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       // column → preview/raw_data jsonb. The raw layer keeps mailing_* as first-class
       // columns, so they must be in the fallback chain or the breakdown is silently lost.
       mailing_address:       resolvedMailingAddress,
-      mailing_address_source:(enriched as any).mailing_address_source ?? rec.mailing_address_source ?? (rec.raw_data as any)?.mailing_address_source ?? null,
+      // Carries 'lob_cass' when a prior verification (an operator's verify action or the
+      // direct-mail CASS gate) already ruled on this address, so the send does not re-buy it.
+      mailing_address_source: resolvedMailingSource,
       // Carry the FULL address fidelity into leads (was dropping these → enrichment looked
       // incomplete and they never reached the contact): physical address + mailing breakdown.
       address:               rec.address ?? (rec.normalized_preview?.propertyAddress as string | null) ?? (rec.raw_data?.propertyAddress as string | null) ?? null,
       city:                  city,
       state:                 state,
       zip_code:              rec.zip_code ?? rec.normalized_preview?.zip ?? (rec.raw_data?.zip as string | null) ?? null,
-      mailing_city:          (enriched as any).mailing_city  ?? rec.mailing_city  ?? (rec.raw_data as any)?.mailing_city  ?? null,
-      mailing_state:         (enriched as any).mailing_state ?? rec.mailing_state ?? (rec.raw_data as any)?.mailing_state ?? null,
-      mailing_zip:           (enriched as any).mailing_zip   ?? rec.mailing_zip   ?? (rec.raw_data as any)?.mailing_zip   ?? null,
+      mailing_city:          resolvedMailingCity,
+      mailing_state:         resolvedMailingState,
+      mailing_zip:           resolvedMailingZip,
       email_verified:        (enriched as any).email_verified        ?? (rec as any).email_verified                  ?? (rec.raw_data as any)?.email_verified ?? false,
       raw_record_id:         rawRecordId,
+      // Lane 90B — the PLATFORM-paid scrape cost follows the person raw → lead → contact. The column
+      // existed and was READ (contact-creator.ts → contacts.cost_per_record; person-timeline.ts →
+      // platformPaidAcquisitionCost; acquisition-cost.ts costPerRecord) but NO door wrote it, so every
+      // promoted lead's platform cost read $0 and the raw row's stamp died at this hop.
+      cost_per_record:       rec.cost_per_record ?? null,
     })
     .select()
     .single()
 
   if (createError || !newLead) {
-    await setStatus(supabase, rawRecordId, 'error', createError?.message)
+    await setStatus(supabase, rawRecordId, 'error', createError?.message, { dedupeComplete: true })
     throw new Error(`Failed to create lead: ${createError?.message}`)
   }
 
   // ── STEP 3: Update raw_scraped_leads with lead_id and promoted status ───────
-  await supabase
+  // READ (lane 88F): the lead now exists, so a refused link leaves the raw row in flight
+  // and the next sweep would re-run it against its own lead (dedup catches it, after a
+  // paid enrichment). Stated on the result instead of reported as a clean promotion.
+  const { error: linkErr } = await supabase
     .from('raw_scraped_leads')
     .update({
       lead_id:           newLead.id,
       processing_status: 'promoted' as ProcessingStatus,
       processed_at:      new Date().toISOString(),
+      // Both dedupe passes cleared to reach here — see processing-status.ts's
+      // DEDUPE_STATUSES header.
+      dedupe_status:     'complete' satisfies DedupeStatus,
     })
     .eq('id', rawRecordId)
+  if (linkErr) console.error(`[pipeline-processor] raw ${rawRecordId} → lead ${newLead.id} link refused:`, linkErr.message)
 
   await logDeduplication({
     raw_record_id:             rawRecordId,
     lead_id:                   newLead.id,
     stage:                     'lead_creation',
     match_score:               0,
-    match_details:             {},
+    // Lane 88G — the stack the lead was born with, so the timeline's dedup_decision event shows WHY
+    // the score is what it is (families, boost, and the sibling raw rows that contributed).
+    match_details:             signalStack.stack.count > 0
+      ? { promotion_stack: { families: signalStack.stack.families, boost: signalStack.stack.boost, sibling_raw_ids: signalStack.siblingRawIds, measured: signalStack.measured } }
+      : {},
     action_taken:              'created',
     skip_reason:               null,
     new_enrichment_confidence: enriched.enrichmentConfidence,
@@ -576,7 +860,26 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       const { distributePlatformLead } = await import('@/lib/platform/distribution-engine')
       const distResult = await distributePlatformLead({ leadId: newLead.id })
       if (!distResult.success && distResult.reason !== 'skip_non_platform_origin') {
-        await supabase.from('automation_errors').insert({
+        // WRITTEN DELIBERATELY UNTENANTED, and it is the same defended case as
+        // the platform-wide cron sweeps — not an oversight.
+        //
+        // This branch only runs for a PLATFORM-ORIGIN lead, which is created with
+        // `brokerage_id: null` on purpose (the parked-until-distributed rule two
+        // hundred lines above: "no tenant sees it"). What failed is Engine 1's
+        // zip rotation deciding WHICH subscriber should get it — a platform
+        // decision about a lead no brokerage owns yet.
+        //
+        // `effectiveBrokerageId` is in scope and is deliberately NOT used: it is
+        // the market-territory owner, and stamping it would surface a platform
+        // rotation failure inside one tenant's automations console, about a lead
+        // that tenant is explicitly not permitted to see. The row is instead left
+        // for the audience it belongs to — `lib/platform/ai-ops.ts:73` reads
+        // `automation_errors` cross-tenant with NO brokerage predicate and its row
+        // type carries `brokerageId: string | null`, and
+        // `resolveAutomationErrorAction` resolves by id alone, so it is both
+        // visible and resolvable there.
+        const { error: distributionLogError } = await supabase.from('automation_errors').insert({
+          brokerage_id: null,
           workflow_name: 'platform_lead_distribution',
           error_message: distResult.reason,
           context_json: JSON.stringify({ leadId: newLead.id, rawRecordId }),
@@ -584,6 +887,9 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
           status: 'open',
           created_at: new Date().toISOString(),
         })
+        if (distributionLogError) {
+          console.error('[pipeline-processor] automation_errors insert refused:', distributionLogError.message)
+        }
       }
     } catch (err: any) {
       console.error(`[v0] Distribution engine failed for ${newLead.id}:`, err)
@@ -594,7 +900,9 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     success: true,
     action: 'created',
     leadId: newLead.id,
-    reason: 'New lead created successfully',
+    reason: linkErr
+      ? `New lead created; its raw row could not be linked (${linkErr.message}) — the sweep's dedup will match it to this lead`
+      : 'New lead created successfully',
     stage: 'lead_creation',
   }
 }
@@ -609,21 +917,130 @@ async function enrichWithPeopleData(fields: {
   city?:      string | null
   state?:     string | null
   brokerageId?: string | null
+  /** lane 72B — the record's scraped social handle + source, when it has one.
+   *  Used ONLY to derive a `profileUrl` when name/email/phone are all absent
+   *  (the post-author / behavioral-signal case) — never overrides a real
+   *  name/email/phone identifier when one is present. */
+  username?: string | null
+  source?:   string | null
+  /** Lane 85B — email-seek hook inputs (see lib/lead-pipeline/email-seek.ts). */
+  rawRecordId?: string | null
+  priorEmailSeek?: import('./email-seek').EmailSeekStamp | null
+  /** Lane 89B — the vendor sold the person's contact points with the record. */
+  paidPersonData?: boolean | null
+  /** Wave 93 (93B3) — demographic values already on the row (BatchData's demographic dataset), so the
+   *  Versium demographic append skips the categories they fill. */
+  knownDemographics?: Record<string, unknown> | null
 }): Promise<any> {
-  const enrichmentResult = await skipTraceWithPeopleData({
-    name:  [fields.first_name, fields.last_name].filter(Boolean).join(' ') || undefined,
-    phone: fields.phone   || undefined,
-    email: fields.email   || undefined,
-  }).catch(() => ({ data: null }))
+  const hasNamePhoneEmail = !!(fields.first_name || fields.last_name || fields.phone || fields.email)
+
+  // ── PAID PERSON DATA — skip PeopleData (lane 89B; owner 2026-09-29, verbatim: "…enriched by
+  // people data lab along with the rest scraped leads unless we already paid for that lead data
+  // with the lead"). A BatchData row that arrived WITH the owner's phone or email (its `contact`
+  // dataset, bought on the pull) already carries the identity this call exists to buy; asking PDL
+  // again is a second bill for the same person. ONLY the PDL call (and its meter) is skipped: the
+  // email-seek hook below still turns a phone-only row into an email-bearing one ($0.07 BatchData
+  // reverse trace — the gate wants an email), the gap-fill still runs on its own rule, and the
+  // post-enrich dedup + lead gate run unchanged. A paid row that somehow carries NEITHER a phone nor
+  // an email is not "already bought" and goes through PDL like any other row (fail toward enrichment).
+  const skipPeopleData = fields.paidPersonData === true && !!(fields.phone || fields.email)
+  // lane 72B — the record carries NOTHING PeopleData's name/phone/email params
+  // can use, but it DOES carry a scraped social handle: derive the profile URL
+  // (pure, no network) and let PDL identify by `profile` instead of refusing
+  // the record outright. `skipTraceWithPeopleData`'s own guard still refuses
+  // when neither this nor a name/phone/email resolves to anything (fail
+  // closed — see its own throw).
+  const profileUrl = !hasNamePhoneEmail
+    ? deriveSocialProfileUrl(fields.source ?? null, fields.username ?? null)
+    : null
+
+  // Lane 84C — LOCATION rides with a NAME. PDL's Person Enrichment input rule
+  // (docs.peopledatalabs.com "Input Parameters"): profile OR email OR phone OR … OR
+  // ((first_name AND last_name) OR name) AND (… locality OR region OR location …). A name with no
+  // location is not a valid query, so the owner's "dedup/enrich/dedup" loop could never turn a
+  // name-only scraped row (the commonest shape the wave-84 gate strands) into a lead. The territory
+  // city/state the record already carries is exactly that qualifier. PDL bills per MATCH only.
+  const pdlLocation = [fields.city, fields.state].filter(Boolean).join(', ') || undefined
+
+  // ── VERSIUM FIRST (wave 93, lane 93B2 — owner cost decision: "Versium first for owner/person
+  // email+phone append, People Data Labs only when Versium misses"). The SAME leg the queue drain
+  // runs (lib/ai-isa/property-lookup-rail.ts::runVersiumContactLeg — one route, no second chain): a
+  // raw row is a LEAD, so only a missing EMAIL is asked (leads get email + direct mail). A hit fills the
+  // email and PDL is NOT asked; a miss / unconfigured Versium / nothing missing → PDL exactly as before.
+  // Not asked for a vendor-delivered row (paidPersonData — the person was already bought).
+  const versium = !skipPeopleData && (fields.first_name || fields.last_name || fields.phone || fields.email)
+    ? await (await import('@/lib/ai-isa/property-lookup-rail')).runVersiumContactLeg({
+        brokerageId: fields.brokerageId ?? null, stage: 'lead',
+        identity: { firstName: fields.first_name, lastName: fields.last_name, email: fields.email, phone: fields.phone, city: fields.city ?? null, state: fields.state ?? null },
+        hasEmail: !!fields.email, hasPhone: !!fields.phone,
+        systemSource: 'lead_scraping',
+        metadata: { source: fields.source ?? null, path: 'raw_record_promotion' },
+        attribution: { rawRecordId: fields.rawRecordId ?? null },
+        // Wave 93 (93B3): demographics the acquisition vendor already sold with the row (BatchData's
+        // demographic dataset) are not re-bought from Versium.
+        existingProfile: fields.knownDemographics ?? null,
+      })
+    : null
+  const versiumAnswered = !!versium?.answered && versium.emails.length > 0
+  const enrichmentResult = skipPeopleData || versiumAnswered
+    ? { data: null }
+    : await skipTraceWithPeopleData({
+        name:  [fields.first_name, fields.last_name].filter(Boolean).join(' ') || undefined,
+        phone: fields.phone   || undefined,
+        email: fields.email   || undefined,
+        address: pdlLocation,
+        profileUrl: profileUrl ?? undefined,
+      }).catch(() => ({ data: null }))
+
+  // METERING (lane 72B, CLAUDE.md §5 — "a wrong number [in the cost ledger] is
+  // a wrong invoice"). The pre-existing name/phone/email enrichment path above
+  // was never metered from THIS call site at all (trackVendorUsageService for
+  // 'peopledata' is booked by the CALLER — see pipeline-processor.ts's own
+  // history — this file books nothing here today); left unchanged rather than
+  // widened, to keep this lane's blast radius to the NEW capability it adds.
+  // The profile-identify path is new spend this lane introduces, so it is
+  // metered here, at its own point of cost, using the SAME $0.25-per-match
+  // constant lib/external/peopledata-client.ts's own matched-path return
+  // already prices this endpoint at (PDL's official per-match price is not
+  // published in this repo or in docs/real-estate-data-providers-2026-09.md —
+  // recorded there as "unpublished" — so this reuses the existing constant
+  // rather than inventing a second number for the same endpoint).
+  // Lane 83A — EVERY PeopleData call from this path is booked, not only the profile-identify one:
+  // the name/phone/email match (the common case) was unmetered here and nowhere else (82A's open
+  // item: "booked by the CALLER" — no caller booked it). Platform-paid ledger, per MATCH ($0 miss).
+  if (!skipPeopleData && !versiumAnswered && fields.brokerageId && (profileUrl || hasNamePhoneEmail)) {
+    const matched = !!enrichmentResult.data
+    void meterVendorSpend({
+      vendorName: 'peopledata',
+      usageType: profileUrl ? 'social_identity_resolve' : 'skip_trace',
+      // Wave 82 lane A (scraping unfrozen): the transport's constants, never literals — the old
+      // `0.25 : 0.10` billed a MISS at $0.10 while PDL charges nothing for a 404 no-match
+      // (support.peopledatalabs.com Pricing & credits; lane 81B). A $0 miss books no row
+      // (meterVendorSpend skips cost <= 0), which is the truth.
+      cost: matched ? PEOPLEDATA_MATCH_COST_USD : PEOPLEDATA_NO_MATCH_COST_USD,
+      brokerageId: fields.brokerageId,
+      systemSource: 'lead_scraping',
+      metadata: { profileUrl, source: fields.source ?? null, matched, path: 'raw_record_promotion' },
+      // Lane 87F — raw-stage spend names the raw row, so it follows the person onto the lead it becomes
+      // (leads.raw_record_id / source_raw_ids) and into acquisition_cost at conversion.
+      attribution: { rawRecordId: fields.rawRecordId ?? null },
+    }).catch(() => null)
+  }
 
   const data = enrichmentResult.data
   let base: BaseEnrichment & {
     phone_secondary?: string | null
     peopleDataResult?: unknown
+    peopleDataProfile?: Record<string, any>
+    emailSeek?: import('./email-seek').EmailSeekResult
     email_verified?: boolean
     mailing_address?: string | null
     mailing_address_verified?: boolean
     mailing_address_source?: string | null
+    /** Lane 89B — 'vendor_delivered' when the acquisition vendor sold the contact points (PDL skipped).
+     *  Wave 93 (93B2) — 'versium_contact_append' when Versium answered first (PDL skipped). */
+    enrichmentSource?: 'vendor_delivered' | 'versium_contact_append'
+    peopleDataSkipped?: boolean
   } = data
     ? {
         first_name:               data.firstName   || fields.first_name,
@@ -639,6 +1056,42 @@ async function enrichWithPeopleData(fields: {
         mailing_address_verified: (data as any).mailingAddressVerified === true,
         mailing_address_source:   (data as any).mailingAddressVerified ? 'enrichment' : null,
         peopleDataResult:         data,
+        // Lane 83A — the demographic profile the lead insert and the raw row carry forward.
+        peopleDataProfile:        buildPeopleDataProfile(data as any),
+      }
+    : versiumAnswered && versium
+    ? {
+        first_name: fields.first_name,
+        last_name:  fields.last_name,
+        email:      fields.email || versium.emails[0],
+        phone:      fields.phone,
+        // A provider-matched email for the named person (Versium bills only a match).
+        enrichmentConfidence: 0.6,
+        enrichmentSource: 'versium_contact_append',
+        peopleDataSkipped: true,
+        // Wave 93 (93B3): the demographic profile PDL used to supply, bought from Versium on the hit
+        // and built on PDL's vocabulary — the lead insert and the raw row carry it exactly as they
+        // carry a PDL profile (peopleDataProfile is the field both read).
+        ...(versium.demographicsProfile ? { peopleDataProfile: versium.demographicsProfile } : {}),
+        // Wave 97 (lane 97C — 96B open item): an EMAIL-ONLY hit (no demographic category bought) still
+        // says where the email came from and when — the same enrichment_profile.field_provenance the
+        // queue drain writes (enrichment-orchestrator.ts provenanceProfile), read back on the contact
+        // card through enrichment-column-map.ts::fieldProvenanceForDisplay.
+        ...(!versium.demographicsProfile && Object.keys(versium.fieldProvenance).length > 0
+          ? { peopleDataProfile: { provider: 'versium', field_provenance: versium.fieldProvenance } }
+          : {}),
+      }
+    : skipPeopleData
+    ? {
+        first_name: fields.first_name,
+        last_name:  fields.last_name,
+        email:      fields.email,
+        phone:      fields.phone,
+        // A vendor-matched contact point is a person match the vendor stands behind, not a guess
+        // (PDL's own matched path reads 0.5 when it reports no confidence).
+        enrichmentConfidence: 0.6,
+        enrichmentSource: 'vendor_delivered',
+        peopleDataSkipped: true,
       }
     : {
         first_name: fields.first_name,
@@ -648,8 +1101,36 @@ async function enrichWithPeopleData(fields: {
         enrichmentConfidence: 0.3,
       }
 
+  // ── EMAIL-SEEK HOOK (lane 85B, owner wave 85: "email required so email and/or phone") ──────────
+  // The gate now needs an EMAIL, so a row PeopleData left without a usable one but WITH a phone is
+  // reverse-traced by phone — BatchData $0.07/matched person, the cheapest phone-keyed provider
+  // already wired (lib/enrichment/reverse-skip-trace.ts; PDL is not asked twice). Only EMPTY fields are
+  // filled: an email, and a first/last name the row lacked (the wrapper already refuses a person whose
+  // last name disagrees). The found email is re-gated by processRawRecord after the post-enrich dedup.
+  if (fields.rawRecordId) {
+    const { seekEmailForRawRecord } = await import('./email-seek')
+    const seek = await seekEmailForRawRecord({
+      brokerageId: fields.brokerageId ?? null, ref: fields.rawRecordId,
+      firstName: base.first_name ?? null, lastName: base.last_name ?? null,
+      phone: base.phone ?? null, email: base.email ?? null,
+      city: fields.city ?? null, state: fields.state ?? null,
+      prior: fields.priorEmailSeek ?? null,
+    })
+    base = { ...base, emailSeek: seek }
+    if (seek.status === 'found' && seek.email) {
+      base = {
+        ...base,
+        email:      seek.email,
+        first_name: base.first_name || seek.firstName,
+        last_name:  base.last_name  || seek.lastName,
+        enrichmentConfidence: Math.max(base.enrichmentConfidence ?? 0, 0.6),
+      }
+    }
+  }
+
   // Cost-gated Perplexity gap-fill: only when skip-trace left a full-name lead
   // without an email (high-value, identity-promising). No spend otherwise.
+  let gapFilled: string[] = []
   if (shouldGapFill(base) && base.first_name && base.last_name) {
     const findings = await enrichViaPerplexity({
       firstName: base.first_name,
@@ -657,12 +1138,46 @@ async function enrichWithPeopleData(fields: {
       city:      fields.city,
       state:     fields.state,
       brokerageId: fields.brokerageId ?? undefined,
+      rawRecordId: fields.rawRecordId ?? null,
     })
+    const beforeGapFill = { email: base.email, phone: base.phone }
     base = { ...base, ...mergeEnrichment(base, findings) }
+    gapFilled = (['email', 'phone'] as const).filter((k) => base[k] && base[k] !== beforeGapFill[k])
+  }
+
+  // ── FIELD PROVENANCE (wave 100, lane 100C — OWNER LAW 2: one shape, THE ONE writer
+  // enrichment-column-map.ts::stampFieldProvenance). Raw-record promotion is where a lead's identity is
+  // born, so every identity field carries WHERE it came from: the acquired record itself (its source —
+  // a scrape, a vendor list, an Exa intent find), PeopleData, Versium (its own stamps), the email-seek
+  // reverse trace, or the Perplexity gap-fill. Later layers win for the fields they landed. The stamps
+  // ride peopleDataProfile → the lead's enrichment_profile, and promotion copies that to the contact.
+  {
+    const acquiredFrom = (fields.source ?? '').trim() || 'raw_record'
+    const fromRecord = (['first_name', 'last_name', 'email', 'phone'] as const)
+      .filter((k) => nonBlank(fields[k]) && base[k] === fields[k])
+    const pdlLanded: string[] = data
+      ? (['first_name', 'last_name', 'email', 'phone'] as const).filter((k) => nonBlank(base[k]) && base[k] !== fields[k])
+      : []
+    if (data && base.mailing_address) pdlLanded.push('mailing_address')
+    const seek = (base as any).emailSeek as { status?: string; email?: string | null; provider?: string | null } | undefined
+    const prov = withFieldProvenance(
+      base.peopleDataProfile ?? null,
+      stampFieldProvenance(fromRecord, { source: acquiredFrom, capability: 'lead.acquire', purpose: 'acquisition' }),
+      fieldProvenanceOf(base.peopleDataProfile ?? null),
+      data ? peopleDataContactPointProvenance(data as any, pdlLanded) : null,
+      versiumAnswered && versium ? versium.fieldProvenance : null,
+      seek?.status === 'found' && seek.email && base.email === seek.email
+        ? stampFieldProvenance(['email'], { source: seek.provider ?? 'email_seek', capability: 'person.skip_trace', purpose: 'skip_trace' })
+        : null,
+      stampFieldProvenance(gapFilled, { source: 'perplexity', capability: 'person.web_gap_fill', purpose: 'osint' }),
+    )
+    if (prov.field_provenance) base = { ...base, peopleDataProfile: prov }
   }
 
   return base
 }
+
+const nonBlank = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
 
 // ─── Deduplication matching ───────────────────────────────────────────────────
 // CANONICAL THREE-TABLE DEDUP (owner round 38): every pass checks
@@ -683,7 +1198,7 @@ async function findBestMatch(
   record: { first_name?: string | null; last_name?: string | null; email?: string | null; phone?: string | null },
   _stage: string,
   brokerageId: string,
-  supabase: Awaited<ReturnType<typeof createClient>>,
+  supabase: ReturnType<typeof createServiceClient>,
   scope?: DedupScope,
 ): Promise<{ id: string; type: 'lead' | 'contact' | 'raw'; score: number; details: any; enrichment_confidence: number | null; email?: string; phone?: string } | null> {
 
@@ -773,10 +1288,41 @@ async function findBestMatch(
 
 // ─── Audit logging ────────────────────────────────────────────────────────────
 
-async function logDeduplication(log: any, supabase: Awaited<ReturnType<typeof createClient>>) {
+async function logDeduplication(log: any, supabase: ReturnType<typeof createServiceClient>) {
+  // Logging must not block deduplication — but a lost audit row is LEDGERED, not silent
+  // (lane 88F; was a try/catch that swallowed both a throw and a resolved refusal).
+  await sentinelWrite(supabase, supabase.from('lead_deduplication_log').insert(log), {
+    table: 'lead_deduplication_log', flow: 'raw_dedup_audit', brokerageId: log?.brokerage_id ?? null,
+    reason: 'audit row of a dedup decision already acted on',
+  })
+}
+
+/**
+ * Lane 88G — a raw row judged a duplicate of an existing LEAD adds its distress signals to that
+ * lead's stack (lib/lead-pipeline/signal-stacking.ts::stackDuplicateOntoLead). Returns the applied
+ * stack for the dedup log's match_details (the idempotency stamp), or null when nothing moved.
+ * Contacts are NOT stacked: a contact belongs to an agent's book, and its motivation lives on the
+ * motivated_seller_signals probe lane (published blind spot). Best-effort — never blocks dedup.
+ */
+async function stackOntoDuplicateLead(
+  supabase: ReturnType<typeof createServiceClient>,
+  dup: { type: string; id: string },
+  rawRecordId: string,
+  rec: RawRecord,
+): Promise<Record<string, unknown> | null> {
+  if (dup.type !== 'lead') return null
   try {
-    await supabase.from('lead_deduplication_log').insert(log)
-  } catch (err: unknown) {
-    // Silent fail - logging should not block deduplication
+    const { stackDuplicateOntoLead } = await import('@/lib/lead-pipeline/signal-stacking')
+    const res = await stackDuplicateOntoLead(supabase, {
+      leadId: dup.id, rawRecordId, signals: rec.normalized_preview?.intentSignals ?? [],
+    })
+    if (!res.applied) {
+      if (res.reason && /refused|matched no row/.test(res.reason)) console.warn(`[pipeline-processor] signal stack not applied to lead ${dup.id}: ${res.reason}`)
+      return null
+    }
+    return { families: res.families, prior_boost: res.priorBoost, boost: res.boost, delta: res.delta, lead_score: res.leadScore }
+  } catch (err) {
+    console.warn('[pipeline-processor] signal stack threw (dedup unaffected):', err instanceof Error ? err.message : String(err))
+    return null
   }
 }

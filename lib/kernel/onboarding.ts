@@ -17,11 +17,17 @@
 //   - Errors returned as structured { success, error } — never thrown silently
 //   - All writes emit canonical KernelEvents
 
-"use server"
+// NOT A "use server" MODULE (lane S1, 2026-09-02). The directive that stood here
+// published four service-client commands — `markOnboardingStepComplete` takes
+// userId / agentId / brokerageId from its parameters — as Server Actions with no
+// session token in the file (§4). The only callers are app/dashboard/page.tsx
+// (a server component that resolves the user from getAgentContext first) and the
+// server-only kernel barrel. `server-only` keeps it that way at build time.
+import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
-import { ROLE_DASHBOARD_ROUTES } from "./role-routes"
+import { roleDashboardRoute } from "./role-routes"
 import { emitUserProvisionedEvent } from "./users"
 import { isPlatformStaffRole } from "@/lib/platform/platform-staff-roster"
 
@@ -208,7 +214,7 @@ export async function markOnboardingStepComplete(
 
     // Update agent_onboarding — NO updated_at column
     if (onboardingRow?.id) {
-      await service
+      const { error: progressErr } = await service
         .from("agent_onboarding")
         .update({
           completion_percentage:  newPct,
@@ -219,6 +225,7 @@ export async function markOnboardingStepComplete(
           } : {}),
         })
         .eq("id", onboardingRow.id)
+      if (progressErr) console.error(`[kernel/onboarding] onboarding progress NOT saved: ${progressErr.message}`)
     }
 
     // Emit completion event
@@ -319,7 +326,7 @@ export async function loadOnboardingWorkspace(params: {
   const completionPct = onboarding?.completion_percentage ?? 0
   const isComplete    = onboarding?.status === "completed"
   const nextRoute     = isComplete
-    ? ROLE_DASHBOARD_ROUTES[userType] ?? "/dashboard/agent"
+    ? roleDashboardRoute(userType)
     : "/dashboard/onboarding"
 
   return {
@@ -391,21 +398,35 @@ export async function determineFirstLoginDestination(
   }
 
   // ── BILLING PAYWALL GATE ────────────────────────────────────────────────────
-  // A lapsed-trial / past-due / cancelled tenant is routed to billing so the money
-  // loop closes itself. Platform staff (superadmin/support) are exempt; a brokerage
-  // with no subscription row is NOT blocked (fail-open — never lock out by accident).
-  if (!["superadmin", "support"].includes(userType)) {
+  // A lapsed-trial / past-due-beyond-grace / cancelled tenant is routed to billing
+  // so the money loop closes itself. TOMBSTONE (wave 99A): the gate that lived
+  // here called loadBillingAccess directly, exempted ["superadmin","support"] by
+  // user_type, and FAILED OPEN on a read error and on a missing subscription row.
+  // Survivor: lib/billing/billing-access.ts mayUseAndAfford (capability
+  // 'app.access') — the same answer proxy.ts gives every dashboard request. It
+  // carries the staff bypass (platform_role + the two legacy user_types) and
+  // fails CLOSED: a throw routes to billing, never into the product.
+  {
+    let allowed = false
     try {
-      const { loadBillingAccess } = await import("@/lib/billing/billing-access")
-      const access = await loadBillingAccess(service, userData.brokerage_id)
-      if (access.blocked) {
-        return { route: "/dashboard/admin/billing", reason: "billing_required" }
-      }
-    } catch { /* fail-open — a billing-read error must never block login */ }
+      const { mayUseAndAfford } = await import("@/lib/billing/billing-access")
+      const verdict = await mayUseAndAfford({
+        brokerageId: userData.brokerage_id, capability: "app.access",
+        actor: { platformRole, userType }, client: service,
+      })
+      allowed = verdict.allowed
+    } catch (e) {
+      console.error("[onboarding] paywall check threw — routing to billing (fail closed):", (e as Error)?.message)
+    }
+    if (!allowed) {
+      return { route: "/dashboard/admin/billing", reason: "billing_required" }
+    }
   }
 
   // Onboarding complete or exempt from onboarding (broker, admin, etc.)
-  const dashboardRoute = ROLE_DASHBOARD_ROUTES[userType] ?? "/dashboard/agent"
+  // The post-login route is computed by the ONE resolver (role-routes.ts:roleDashboardRoute) —
+  // it carries DEFAULT_DASHBOARD_ROUTE, so this file never re-spells "/dashboard/agent".
+  const dashboardRoute = roleDashboardRoute(userType)
   const isOnboardingRequired = ONBOARDING_ROLES.has(userType)
 
   return {

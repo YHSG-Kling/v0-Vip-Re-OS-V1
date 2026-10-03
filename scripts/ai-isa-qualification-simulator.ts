@@ -30,15 +30,30 @@ import {
   signalTemperature,
   deriveQualificationSignals,
   qualificationScoreFor,
-  engine2GatePasses,
   voiceSignalFor,
 } from "../lib/ai-isa/qualification-core"
 import { buildIsaOvernightSection, isaPriorityActions } from "../lib/intelligence/isa-overnight"
 import {
   previewRuleRouting, evaluateRuleConditions, pickRoundRobinAgent,
-  effectiveAgentPool, teamScopeAllows,
+  effectiveAgentPool, teamScopeAllows, evaluateAssignmentEligibility,
 } from "../lib/lead-assignment/rule-matcher"
 import { MANAGERS } from "../lib/kernel/manager-registry"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { execSync } from "node:child_process"
+import { registerHooks } from "node:module"
+import { stripComments } from "./strip-comments"
+import { memSupabase } from "./in-memory-supabase"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { QUALIFICATION_RESULTS, nextQualificationResult } from "../lib/ai-isa/qualification-core"
+
+// Layer 1g drives the server-only outcome stamp under plain tsx.
+registerHooks({
+  resolve(spec: string, ctx: any, next: any) {
+    if (spec === "server-only") return { url: "data:text/javascript,export{}", shortCircuit: true }
+    return next(spec, ctx)
+  },
+})
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -114,10 +129,24 @@ function testScoreAndGate() {
   check("urgency only → 45", qualificationScoreFor({ ...base, confirmedIntent: false, urgency: "high", readinessForAgent: false }) === 45)
   check("neither → 25", qualificationScoreFor({ ...base, confirmedIntent: false, urgency: "medium", readinessForAgent: false }) === 25)
 
-  check("gate: qualified + consented → assignable", engine2GatePasses("qualified", "consented"))
-  check("gate: qualified + unconsented → BLOCKED", !engine2GatePasses("qualified", "unconsented"))
-  check("gate: new + consented → BLOCKED (ISA hasn't qualified)", !engine2GatePasses("new", "consented"))
-  check("gate: null state → BLOCKED", !engine2GatePasses(null, null))
+  // THE GATE MOVED, AND ITS RULE CHANGED. lib/ai-isa/qualification-core.ts
+  // engine2GatePasses is deleted: it was a third copy that CONTRADICTED the owner's
+  // ruling ("qualified OR positive intent" — it was an AND). The survivor is
+  // lib/lead-assignment/rule-matcher.ts evaluateAssignmentEligibility, which both
+  // assignment doors call.
+  //
+  // The second assertion below is INVERTED from what it used to say. It read
+  // "qualified + unconsented → BLOCKED"; under the ruling, qualified ALONE assigns,
+  // so that expectation was the old rule and had to flip rather than be re-pointed.
+  check("gate: qualified + consented → assignable",
+    evaluateAssignmentEligibility("qualified", "consented").ok)
+  check("gate: qualified + unconsented → ASSIGNABLE (qualified is its own arm, per the ruling)",
+    evaluateAssignmentEligibility("qualified", "unconsented").ok)
+  check("gate: not qualified + consented → assignable on the POSITIVE-INTENT arm",
+    evaluateAssignmentEligibility("new", "consented").ok)
+  check("gate: neither arm → BLOCKED",
+    !evaluateAssignmentEligibility("new", "raw").ok)
+  check("gate: null state → BLOCKED", !evaluateAssignmentEligibility(null, null).ok)
 }
 
 function testIsaOvernightBriefing() {
@@ -171,7 +200,16 @@ function testRuleRouting() {
       times_triggered: 0, agent_ids: ["A7"], conditions: {} },
   ]
   const hot = previewRuleRouting(rules, { lead_score: 88, motivation_type: "seller_motivated", property_zip_code: "33133" })
-  check("highest-priority matching rule wins", hot.rule?.id === "r-hot" && hot.agentId === "A5")
+  check("highest-priority matching rule wins", hot.rule?.id === "r-hot")
+  // r-hot is a SPECIALIZATION rule. It used to resolve to pool[0] — which is
+  // how "Specialization" came to mean "always the first agent listed". It now
+  // narrows to a shortlist and the working-load picker chooses from it in the
+  // database, so the preview reports candidates rather than naming a winner it
+  // cannot know. With a one-agent pool the shortlist is still exactly A5.
+  check("…and a specialization rule hands a SHORTLIST to the capacity picker",
+    hot.agentId === null && (hot.candidates ?? []).join() === "A5")
+  check("…labelled honestly when no agent's expertise matched the lead",
+    hot.strategy === "specialization_no_match")
   check("inactive rules never fire (priority 99 skipped)", hot.rule?.id !== "r-off")
   const zip = previewRuleRouting(rules, { lead_score: 40, property_zip_code: "33133" })
   check("score gate fails → next matching rule (zip farm)", zip.rule?.id === "r-zip")
@@ -279,7 +317,7 @@ async function testLiveChain() {
     await svc.from("leads").update({ lead_stage: "qualified", ai_isa_owner: false }).eq("id", leadId)
     const { data: after } = await svc.from("leads").select("lead_stage, lifecycle_state, lead_score, lead_temperature").eq("id", leadId).single()
     check("Engine 2 gate passes after qualification + consent",
-      engine2GatePasses((after as any)?.lead_stage, (after as any)?.lifecycle_state))
+      evaluateAssignmentEligibility((after as any)?.lead_stage, (after as any)?.lifecycle_state).ok)
     check("rolling state intact end-to-end",
       (after as any)?.lead_score === 90 && (after as any)?.lead_temperature === "hot")
   } catch (err) {
@@ -293,6 +331,123 @@ async function testLiveChain() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// LAYER 1g — EVERY qualification_result value has a writer (wave 91 lane 91A; 90C's open item)
+// ─────────────────────────────────────────────────────────────────────────────
+// `no_response` and `appointment_set` were read by the ISA radar ("stalled"), analytics, the
+// campaigns' outcomes, the newly-converted panel and two manager counters, and written by NOBODY.
+// The rule asserted: every value of the LIVE CHECK vocabulary has at least one code writer —
+// derived from scripts/check-vocabularies.ts (generated from the database), never a pinned list.
+async function testOutcomeVocabularyWriters() {
+  console.log("\n[1g] qualification_result — one vocabulary, every value written")
+  const live = CHECK_VOCABULARIES.ai_isa_qualifications?.qualification_result ?? []
+  check("the code vocabulary IS the live CHECK vocabulary (same set, derived from the generated cache)",
+    live.length > 0 && [...live].sort().join() === [...QUALIFICATION_RESULTS].sort().join(), `${live.join(",")} vs ${QUALIFICATION_RESULTS.join(",")}`)
+
+  // WRITER FINDER — a value is written when stripped source sets `qualification_result: "<v>"` on an
+  // insert/update, or hands it to the ONE stamp (`result: "<v>"` inside stampQualificationOutcome(...)).
+  const writtenIn = (src: string, v: string) =>
+    new RegExp(`qualification_result:\\s*[^,\\n}]*["']${v}["']`).test(src)
+    || new RegExp(`stampQualificationOutcome\\([^)]*result:\\s*["']${v}["']`).test(src)
+  check("POSITIVE CONTROL: the finder sees an inline write, a ternary write and a stamp call, and NOT a read",
+    writtenIn(`.insert({ qualification_result: "qualified" })`, "qualified")
+    && writtenIn(`qualification_result: eligible ? "qualified" : "not_qualified",`, "not_qualified")
+    && writtenIn(`await stampQualificationOutcome(svc, { leadId, result: "no_response" })`, "no_response")
+    && !writtenIn(`rows.filter(r => r.qualification_result === "no_response")`, "no_response"))
+  const files = execSync("git ls-files app lib", { cwd: process.cwd(), encoding: "utf8" }).split("\n").filter((f) => /\.(ts|tsx)$/.test(f))
+  const corpus = files.map((f) => ({ f, src: stripComments(readFileSync(join(process.cwd(), f), "utf8")) }))
+    .filter((x) => /qualification_result|stampQualificationOutcome/.test(x.src))
+  const writersOf = (v: string) => corpus.filter((x) => writtenIn(x.src, v)).map((x) => x.f)
+  for (const v of live) {
+    const w = writersOf(v)
+    check(`'${v}' has a writer (${w.length}: ${w.slice(0, 4).join(", ") || "NONE"})`, w.length > 0)
+  }
+  check("POSITIVE CONTROL: with the stamp calls removed, the finder reports no_response + appointment_set writerless (the pre-91A tree)",
+    ["no_response", "appointment_set"].every((v) => corpus.filter((x) => writtenIn(x.src.replace(/stampQualificationOutcome\([^)]*\)/g, ""), v)).length === 0))
+  check("no_response is stamped by the ghost sweep; appointment_set by both bookers + recordAiIsaOutcome",
+    writersOf("no_response").includes("lib/ai-isa/ghost-reengagement.ts")
+    && ["lib/ai-isa/listing-appointment.ts", "lib/ai-isa/book-seller-appointment.ts", "lib/kernel/ai-isa.ts"].every((f) => writersOf("appointment_set").includes(f)))
+  const ghost = stripComments(readFileSync(join(process.cwd(), "lib/ai-isa/ghost-reengagement.ts"), "utf8"))
+  check("the ghost sweep reads its reply-count error and stamps NOTHING on a refusal (unknown ≠ silent; the lead is skipped)",
+    /error: replyCountErr/.test(ghost) && /if \(replyCountErr\) \{[\s\S]{0,300}skipped\+\+[\s\S]{0,40}continue/.test(ghost))
+
+  // THE PURE PRECEDENCE — appointment_set wins; no_response never downgrades a verdict.
+  check("precedence: appointment_set overwrites qualified / needs_follow_up / no_response / null, never itself",
+    nextQualificationResult("qualified", "appointment_set") === "appointment_set" && nextQualificationResult("needs_follow_up", "appointment_set") === "appointment_set"
+    && nextQualificationResult("no_response", "appointment_set") === "appointment_set" && nextQualificationResult(null, "appointment_set") === "appointment_set"
+    && nextQualificationResult("appointment_set", "appointment_set") === null)
+  check("precedence: no_response only over null / needs_follow_up — never over qualified, appointment_set, not_qualified",
+    nextQualificationResult(null, "no_response") === "no_response" && nextQualificationResult("needs_follow_up", "no_response") === "no_response"
+    && nextQualificationResult("qualified", "no_response") === null && nextQualificationResult("appointment_set", "no_response") === null
+    && nextQualificationResult("not_qualified", "no_response") === null && nextQualificationResult("no_response", "no_response") === null)
+
+  // THE WRITER, driven on the in-memory client (refusals resolve like supabase-js).
+  const { stampQualificationOutcome } = await import("../lib/ai-isa/qualification-outcome-stamp")
+  const B = "11111111-1111-4111-8111-111111111111", OTHER = "22222222-2222-4222-8222-222222222222"
+  const L = "l1000000-0000-4000-8000-000000000001", C = "c1000000-0000-4000-8000-000000000001"
+  const db = memSupabase({ ai_isa_qualifications: [
+    { id: "q-old", brokerage_id: B, lead_id: L, contact_id: null, qualification_result: "qualified", qualified_at: "2026-09-01T00:00:00Z" },
+    { id: "q-new", brokerage_id: B, lead_id: L, contact_id: null, qualification_result: "needs_follow_up", qualified_at: "2026-09-20T00:00:00Z" },
+    { id: "q-foreign", brokerage_id: OTHER, lead_id: L, contact_id: null, qualification_result: "needs_follow_up", qualified_at: "2026-09-29T00:00:00Z" },
+  ] })
+  const nr = await stampQualificationOutcome(db, { brokerageId: B, leadId: L, result: "no_response" })
+  const rows = db.tables.ai_isa_qualifications
+  check("no_response lands on the LATEST row in the tenant (not the older verdict, not the other tenant's row)",
+    nr.ok && (nr as any).mode === "updated" && (nr as any).rowId === "q-new" && rows.find((r) => r.id === "q-new")?.qualification_result === "no_response"
+    && rows.find((r) => r.id === "q-old")?.qualification_result === "qualified" && rows.find((r) => r.id === "q-foreign")?.qualification_result === "needs_follow_up", JSON.stringify(nr))
+  const again = await stampQualificationOutcome(db, { brokerageId: B, leadId: L, result: "no_response" })
+  check("the same stamp again is a no-op (the ghost sweep runs daily)", again.ok && (again as any).mode === "unchanged")
+  const appt = await stampQualificationOutcome(db, { brokerageId: B, leadId: L, contactId: C, result: "appointment_set" })
+  check("appointment_set overwrites the ghost verdict and fills the contact side on the same row",
+    appt.ok && (appt as any).mode === "updated" && rows.find((r) => r.id === "q-new")?.qualification_result === "appointment_set" && rows.find((r) => r.id === "q-new")?.contact_id === C)
+  const after = await stampQualificationOutcome(db, { brokerageId: B, leadId: L, result: "no_response" })
+  check("silence AFTER a booking is not 'no response' — the verdict stands", after.ok && (after as any).mode === "unchanged" && rows.find((r) => r.id === "q-new")?.qualification_result === "appointment_set")
+  const fresh = memSupabase({ ai_isa_qualifications: [] })
+  const ins = await stampQualificationOutcome(fresh, { brokerageId: B, contactId: C, result: "appointment_set" })
+  check("no row yet (a contact-keyed booking) → ONE row inserted in the tenant with the outcome",
+    ins.ok && (ins as any).mode === "inserted" && fresh.tables.ai_isa_qualifications.length === 1
+    && fresh.tables.ai_isa_qualifications[0].brokerage_id === B && fresh.tables.ai_isa_qualifications[0].contact_id === C && fresh.tables.ai_isa_qualifications[0].qualification_result === "appointment_set")
+  const refused = memSupabase({ ai_isa_qualifications: [] }, { refuse: { ai_isa_qualifications: "permission denied for table ai_isa_qualifications" } })
+  const rr = await stampQualificationOutcome(refused, { brokerageId: B, leadId: L, result: "no_response" })
+  check("a REFUSED read is returned (never treated as 'no row' → no blind insert)", !rr.ok && /read refused/.test((rr as any).error) && /permission denied/.test((rr as any).error))
+  const none = await stampQualificationOutcome(fresh, { brokerageId: B, result: "no_response" })
+  check("no lead and no contact → refused by name", !none.ok && /neither a lead nor a contact/.test((none as any).error))
+
+  // The readers learn the two values (the console state machine read neither).
+  const consoleSrc = stripComments(readFileSync(join(process.cwd(), "app/dashboard/isa/ai-isa-console-client.tsx"), "utf8"))
+  // Lane 92A: re-anchored from two literal `qualResult === '…'` lines (a WAYPOINT) to the
+  // RULE — the console maps the result through a table keyed by the ONE vocabulary, every
+  // CHECK value has a row, and no comparison names a value the CHECK cannot store.
+  const vocab = new Set<string>(CHECK_VOCABULARIES.ai_isa_qualifications.qualification_result)
+  const resultTable = (src: string): Record<string, string> => {
+    const m = /const\s+RESULT_STATE\s*:\s*Record<QualificationResult,\s*AIISAState>\s*=\s*\{([^}]*)\}/.exec(src)
+    if (!m) return {}
+    return Object.fromEntries([...m[1].matchAll(/(\w+)\s*:\s*'(\w+)'/g)].map((x) => [x[1], x[2]]))
+  }
+  const strayResultLiterals = (src: string): string[] =>
+    [...src.matchAll(/qualResult\s*===\s*'(\w+)'/g)].map((x) => x[1]).filter((v) => !vocab.has(v))
+  const table = resultTable(consoleSrc)
+  check("the ISA console maps the result through RESULT_STATE, keyed by the CHECK vocabulary, with a row for EVERY CHECK value",
+    /QUALIFICATION_RESULTS/.test(consoleSrc) && [...vocab].every((v) => v in table) && Object.keys(table).every((k) => vocab.has(k)))
+  check("…appointment_set → handoff_ready and no_response → ai_nurturing (the wave-91 writers' values land where the radar expects)",
+    table.appointment_set === "handoff_ready" && table.no_response === "ai_nurturing")
+  check("…and no comparison names a qualification_result the CHECK cannot store (the retired 'pending' / 'in_progress' reader-only spellings)",
+    strayResultLiterals(consoleSrc).length === 0)
+  // Lane 92A: a REFUSED stamp is surfaced, not only logged — every caller of the ONE writer
+  // that branches on `!stamped.ok` ledgers the loss (recordBestEffortLoss → self_heal_events,
+  // the repair digest / Exception Center). Derived from the tree: a new caller is judged too.
+  const stampCallers = execSync("git ls-files app lib", { cwd: process.cwd(), encoding: "utf8" }).split("\n")
+    .filter((f) => /\.(ts|tsx)$/.test(f) && f !== "lib/ai-isa/qualification-outcome-stamp.ts")
+    .filter((f) => /stampQualificationOutcome\(/.test(stripComments(readFileSync(join(process.cwd(), f), "utf8"))))
+  const ledgersRefusal = (src: string) => /if\s*\(\s*!stamped\.ok\s*\)\s*\{[\s\S]{0,700}?recordBestEffortLoss\(/.test(src)
+  const unledgered = stampCallers.filter((f) => !ledgersRefusal(stripComments(readFileSync(join(process.cwd(), f), "utf8"))))
+  check(`every caller of stampQualificationOutcome LEDGERS a refused stamp (${stampCallers.length} callers; only-logged: ${unledgered.length}${unledgered.length ? ` — ${unledgered.join(", ")}` : ""})`,
+    stampCallers.length >= 3 && unledgered.length === 0)
+  check("control · a caller that only console.errors the refused stamp is caught",
+    !ledgersRefusal('if (!stamped.ok) console.error(`appointment_set NOT stamped: ${stamped.error}`)'))
+  // Positive control: the pre-92A shape is still recognised as a stray spelling.
+  check("control · the pre-92A `qualResult === 'pending'` / `'in_progress'` branches ARE flagged",
+    strayResultLiterals("if (qualStage === 'awaiting_review' || qualResult === 'pending') return x\nif (qualResult === 'in_progress') return y").join(",") === "pending,in_progress")
+}
 
 async function main() {
   console.log("══════════════════════════════════════════════════")
@@ -304,6 +459,7 @@ async function main() {
   testIsaOvernightBriefing()
   testRuleRouting()
   testTeamTierRouting()
+  await testOutcomeVocabularyWriters()
   await testLiveChain()
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)

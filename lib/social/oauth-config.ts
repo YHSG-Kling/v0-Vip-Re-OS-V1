@@ -5,6 +5,11 @@
 // connections (lib/platform/platform-social.ts) reuse the exact same provider
 // definitions and URL-building instead of forking a divergent copy. Pure module:
 // no I/O beyond process.env reads in the env-status helper.
+//
+// meta.tokenUrl (graph.facebook.com) is a CONFIG STRING, not a live call
+// site — the actual OAuth code exchange that reads it lives in the tenant
+// social OAuth route and stays on REST (wave 71A: the Business SDK has no
+// token-exchange method — see lib/providers/meta/client.ts's header).
 
 export type SocialOAuthProvider =
   | "meta"

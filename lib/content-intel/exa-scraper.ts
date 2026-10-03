@@ -20,10 +20,11 @@
  *     includeText?:   boolean,    // returns full text passages
  *   }
  *
- * Routes through callConnector for the canonical single egress.
+ * Routes through the official Exa SDK adapter (lib/providers/exa/client.ts,
+ * wave 70B) for the canonical single egress.
  */
 import "server-only"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { rawSearch } from "@/lib/providers/exa/client"
 
 export interface ExaSearchResult {
   result_id:        string
@@ -37,6 +38,21 @@ export interface ExaSearchResult {
   published_date:   string | null
   /** Heuristic category tags. */
   categories:       string[]
+  /**
+   * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF, on the WRITER side.
+   *
+   * `competitor_content.media_url` is READ by
+   * app/actions/marketing-intelligence.ts:148 (and carried through to
+   * CompetitorPost.mediaUrl) and was written by NOBODY: the one writer of that
+   * table, lib/competitive-intel/content-intel-scan.ts:160, never set it, so
+   * every competitor post the scan files has a null image and the panel shows a
+   * rival's post as a wall of text. Exa returns the page's representative image
+   * on the search result itself; it was simply being dropped in the mapper
+   * below. NULL when Exa has no image — never a placeholder, because a
+   * fabricated thumbnail on a competitor-intel card is a claim about their
+   * creative.
+   */
+  image_url:        string | null
 }
 
 interface ExaResultItem {
@@ -47,11 +63,14 @@ interface ExaResultItem {
   publishedDate?: string
   highlights?: string[]
   text?:   string
+  /** Exa's representative image for the page, when it found one. */
+  image?:  string
+  /** Some Exa responses carry the favicon instead of/next to `image`. */
+  favicon?: string
 }
 
-interface ExaResponse {
-  results?: ExaResultItem[]
-}
+// Response shape is now the SDK adapter's untyped RawSearchData.results,
+// cast to ExaResultItem[] at the one call site below.
 
 export async function exaSearch(args: {
   query:        string
@@ -82,8 +101,9 @@ export async function exaSearch(args: {
   const apiKey = process.env.EXA_API_KEY
   if (!apiKey) return [] // graceful no-op when key not configured
 
+  // `query` is passed as rawSearch's own second argument (the SDK's
+  // search(query, options) signature) — not repeated inside options.
   const body: Record<string, unknown> = {
-    query:        args.query,
     type:         args.type ?? "neural",
     useAutoprompt: true,
     numResults:   Math.min(args.numResults ?? 15, 25),
@@ -101,19 +121,10 @@ export async function exaSearch(args: {
     body.excludeDomains = args.excludeDomains
   }
 
-  const res = await callConnector<ExaResponse>({
-    connector: "exa",
-    baseUrl:   "https://api.exa.ai",
-    path:      "search",
-    method:    "POST",
-    auth:      { style: "header", name: "x-api-key", value: apiKey },
-    body,
-    responseType: "json",
-    timeoutMs:    25_000,
-  })
+  const res = await rawSearch(apiKey, args.query, body)
   if (!res.ok || !res.data?.results) return []
 
-  return res.data.results.map((r) => {
+  return (res.data.results as unknown as ExaResultItem[]).map((r) => {
     const summary = (r.highlights && r.highlights.length > 0)
       ? r.highlights.join(" … ")
       : (r.text ?? "").slice(0, 240)
@@ -129,6 +140,9 @@ export async function exaSearch(args: {
       summary:          summary.slice(0, 4000),
       published_date:   r.publishedDate ?? null,
       categories:       inferCategoriesFromText(`${r.title ?? ""} ${summary}`),
+      // §1.2 — the page image. `favicon` is deliberately NOT used as a fallback:
+      // a 16px site icon rendered as a post thumbnail misrepresents the post.
+      image_url:        typeof r.image === "string" && r.image.startsWith("http") ? r.image : null,
     }
   })
 }

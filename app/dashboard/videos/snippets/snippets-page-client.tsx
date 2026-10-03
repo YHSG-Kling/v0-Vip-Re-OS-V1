@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -20,14 +20,23 @@ import {
   CheckCircle,
   XCircle,
   Loader2,
+  Trash2,
+  Info,
+  Wand2,
 } from "lucide-react"
 import {
   createVideoSnippet,
   updateSnippetApprovalStatus,
   scheduleSnippetToSocial,
+  deleteSnippet,
+  getSnippetDetail,
+  generateCaptionVariations,
   type VideoSnippet,
   type PlatformTarget,
+  type SnippetDetail,
+  type CaptionVariation,
 } from "@/app/actions/video-repurposing"
+import { getSocialAccountsForDistribution } from "@/app/actions/video/create-video-project"
 import Link from "next/link"
 import { Calendar } from "lucide-react"
 
@@ -68,6 +77,18 @@ export default function SnippetsPageClient({ snippets, brokerageId, userId }: Pr
   const [endSeconds, setEndSeconds]         = useState(30)
   const [hashtags, setHashtags]             = useState("")
 
+  // Caption variations (AI) — generated for the caption being written above,
+  // picked by the agent, and persisted by createVideoSnippet as caption_text.
+  const [variations, setVariations]         = useState<CaptionVariation[]>([])
+  const [isVarying, setIsVarying]           = useState(false)
+  const [variationError, setVariationError] = useState<string | null>(null)
+
+  // Detail sheet state
+  const [detailOpen, setDetailOpen]         = useState(false)
+  const [detail, setDetail]                 = useState<SnippetDetail | null>(null)
+  const [detailError, setDetailError]       = useState<string | null>(null)
+  const [detailLoading, setDetailLoading]   = useState(false)
+
   // Schedule sheet state
   const [scheduleOpen, setScheduleOpen]     = useState(false)
   const [scheduleSnippet, setScheduleSnippet] = useState<VideoSnippet | null>(null)
@@ -77,6 +98,46 @@ export default function SnippetsPageClient({ snippets, brokerageId, userId }: Pr
     d.setMinutes(0, 0, 0)
     return d.toISOString().slice(0, 16)
   })
+
+  // Connected destinations for the schedule sheet. scheduleSnippetToSocial has
+  // always accepted (and tenant-checked) a socialAccountId; nothing on this page
+  // ever supplied one, so every queued post landed with social_account_id null
+  // and no channel behind it.
+  const [accounts, setAccounts] = useState<
+    Array<{ id: string; platform: string; account_name: string; is_active: boolean; scope: string | null }>
+  >([])
+  const [accountsLoaded, setAccountsLoaded] = useState(false)
+  const [selectedAccountId, setSelectedAccountId] = useState<string>("")
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const rows = await getSocialAccountsForDistribution()
+        if (!cancelled) setAccounts(rows)
+      } catch {
+        if (!cancelled) setAccounts([])
+      } finally {
+        if (!cancelled) setAccountsLoaded(true)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  // Only accounts on the platform this snippet targets can receive it.
+  const PLATFORM_OF: Record<string, string> = {
+    instagram_reels: "instagram",
+    instagram_story: "instagram",
+    instagram_post: "instagram",
+    tiktok: "tiktok",
+    youtube_shorts: "youtube",
+    facebook_reels: "facebook",
+    linkedin: "linkedin",
+    twitter: "twitter",
+  }
+  const eligibleAccounts = scheduleSnippet
+    ? accounts.filter(a => a.platform === PLATFORM_OF[scheduleSnippet.platform_target])
+    : []
 
   async function handleApprove(snippetId: string) {
     startTransition(async () => {
@@ -102,8 +163,81 @@ export default function SnippetsPageClient({ snippets, brokerageId, userId }: Pr
     })
   }
 
+  // DELETE — the server decides. deleteSnippet scopes the delete to the
+  // caller's brokerage and reports the affected-row count, so a snippet that is
+  // not ours comes back "not found" instead of a cheerful optimistic removal.
+  async function handleDelete(snippetId: string, title: string) {
+    if (!confirm(`Delete "${title}"? This cannot be undone.`)) return
+    startTransition(async () => {
+      try {
+        const result = await deleteSnippet(snippetId)
+        if (!result.success) {
+          toast.error(result.error ?? "Failed to delete snippet.")
+          return
+        }
+        toast.success("Snippet deleted.")
+        router.refresh()
+      } catch (err: any) {
+        toast.error(err?.message ?? "Failed to delete snippet.")
+      }
+    })
+  }
+
+  // DETAILS — full caption, hashtags and the source project this clip came from.
+  async function openDetail(snippetId: string) {
+    setDetail(null)
+    setDetailError(null)
+    setDetailLoading(true)
+    setDetailOpen(true)
+    try {
+      const result = await getSnippetDetail(snippetId)
+      if (!result.success || !result.snippet) {
+        setDetailError(result.error ?? "Snippet not found.")
+        return
+      }
+      setDetail(result.snippet)
+    } catch (err: any) {
+      setDetailError(err?.message ?? "Could not load this snippet.")
+    } finally {
+      setDetailLoading(false)
+    }
+  }
+
+  // CAPTION VARIATIONS — AI rewrites of the caption currently in the form.
+  async function handleGenerateVariations() {
+    setVariationError(null)
+    setIsVarying(true)
+    try {
+      const result = await generateCaptionVariations({
+        originalCaption: captionText,
+        platform,
+        variationCount: 3,
+      })
+      if (!result.success) {
+        // The server's verdict, not a fabricated success: the old action echoed
+        // the input back on failure, which read as "here are your variations".
+        setVariationError(result.error ?? "Could not generate variations.")
+        setVariations([])
+        return
+      }
+      setVariations(result.variations)
+    } catch (err: any) {
+      setVariationError(err?.message ?? "Could not generate variations.")
+    } finally {
+      setIsVarying(false)
+    }
+  }
+
+  function applyVariation(v: CaptionVariation) {
+    setCaptionText(v.caption)
+    if (v.hashtags.length > 0) setHashtags(v.hashtags.join(", "))
+    setVariations([])
+    toast.success("Caption applied — it will be saved with the snippet.")
+  }
+
   function openSchedule(snippet: VideoSnippet) {
     setScheduleSnippet(snippet)
+    setSelectedAccountId("")
     setScheduleOpen(true)
   }
 
@@ -115,6 +249,7 @@ export default function SnippetsPageClient({ snippets, brokerageId, userId }: Pr
           snippetId: scheduleSnippet.id,
           brokerageId,
           scheduledFor: new Date(scheduleDate).toISOString(),
+          socialAccountId: selectedAccountId || undefined,
           userId,
         })
         toast.success("Snippet queued to omnipresence.", {
@@ -143,6 +278,8 @@ export default function SnippetsPageClient({ snippets, brokerageId, userId }: Pr
     setStartSeconds(0)
     setEndSeconds(30)
     setHashtags("")
+    setVariations([])
+    setVariationError(null)
   }
 
   async function handleCreate() {
@@ -235,6 +372,16 @@ export default function SnippetsPageClient({ snippets, brokerageId, userId }: Pr
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           <Badge variant={statusMeta.variant}>{statusMeta.label}</Badge>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 gap-1.5"
+                            onClick={() => openDetail(s.id)}
+                            aria-label="Snippet details"
+                          >
+                            <Info className="h-3.5 w-3.5" />
+                            Details
+                          </Button>
                           {isPendingStatus && (
                             <>
                               <Button
@@ -270,6 +417,16 @@ export default function SnippetsPageClient({ snippets, brokerageId, userId }: Pr
                               Schedule
                             </Button>
                           )}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 w-8 p-0"
+                            onClick={() => handleDelete(s.id, s.snippet_title)}
+                            disabled={isPending}
+                            aria-label="Delete snippet"
+                          >
+                            <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                          </Button>
                         </div>
                       </div>
                     )
@@ -386,6 +543,52 @@ export default function SnippetsPageClient({ snippets, brokerageId, userId }: Pr
                 onChange={e => setCaptionText(e.target.value)}
                 placeholder="Caption text for the post..."
               />
+
+              {/* AI caption variations — rewrite the caption above for this
+                  platform, pick one, and it is saved with the snippet. */}
+              <div className="flex items-center justify-between pt-1">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5"
+                  disabled={isVarying || !captionText.trim()}
+                  onClick={handleGenerateVariations}
+                >
+                  {isVarying
+                    ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Rewriting…</>
+                    : <><Wand2 className="h-3.5 w-3.5" />Caption variations</>
+                  }
+                </Button>
+                {!captionText.trim() && (
+                  <span className="text-xs text-muted-foreground">Write a caption first</span>
+                )}
+              </div>
+
+              {variationError && (
+                <p className="text-xs text-destructive">{variationError}</p>
+              )}
+
+              {variations.length > 0 && (
+                <div className="space-y-2 pt-1">
+                  {variations.map((v, i) => (
+                    <div key={i} className="rounded-lg border p-2.5 space-y-1.5">
+                      <p className="text-xs whitespace-pre-wrap">{v.caption}</p>
+                      {v.hashtags.length > 0 && (
+                        <p className="text-[11px] text-muted-foreground">
+                          {v.hashtags.map(h => `#${h}`).join(" ")}
+                        </p>
+                      )}
+                      <div className="flex items-center justify-between">
+                        <Badge variant="outline" className="text-[10px]">{v.tone}</Badge>
+                        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => applyVariation(v)}>
+                          Use this
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Hashtags */}
@@ -441,6 +644,46 @@ export default function SnippetsPageClient({ snippets, brokerageId, userId }: Pr
                 onChange={(e) => setScheduleDate(e.target.value)}
               />
             </div>
+
+            {/* Destination account — the connected channels for this snippet's
+                platform. Queuing without one is still allowed (the post lands
+                unassigned for the omnipresence queue to route), but the choice
+                is now the agent's rather than a silent null. */}
+            <div className="space-y-1.5">
+              <Label>Publish to</Label>
+              {!accountsLoaded ? (
+                <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Loading connected accounts…
+                </p>
+              ) : eligibleAccounts.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No connected{" "}
+                  {scheduleSnippet ? (PLATFORM_OF[scheduleSnippet.platform_target] ?? "social") : "social"}{" "}
+                  account. The clip will queue unassigned until one is connected.
+                </p>
+              ) : (
+                <Select value={selectedAccountId} onValueChange={setSelectedAccountId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Choose a connected account…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {eligibleAccounts.map((a) => (
+                      <SelectItem key={a.id} value={a.id}>
+                        {a.account_name}
+                        {a.scope === "brokerage" ? " (brokerage)" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+
+            <p className="text-[11px] text-muted-foreground">
+              Queuing does not publish. The clip enters the omnipresence queue and goes out through
+              the existing consent and brand-compliance checks.
+            </p>
+
             <Button className="w-full" disabled={isPending} onClick={handleSchedule}>
               {isPending ? (
                 <>
@@ -457,6 +700,95 @@ export default function SnippetsPageClient({ snippets, brokerageId, userId }: Pr
             <Button asChild variant="outline" className="w-full">
               <Link href="/dashboard/campaigns/repurpose">View omnipresence queue</Link>
             </Button>
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      {/* Snippet detail sheet — getSnippetDetail resolves the clip and the
+          source it was cut from, gated to the caller's brokerage. */}
+      <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
+        <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle>Snippet details</SheetTitle>
+            <SheetDescription>The clip, its caption, and the video it came from.</SheetDescription>
+          </SheetHeader>
+
+          <div className="space-y-4 mt-6">
+            {detailLoading && (
+              <p className="text-sm text-muted-foreground flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading…
+              </p>
+            )}
+
+            {detailError && !detailLoading && (
+              <p className="text-sm text-destructive">{detailError}</p>
+            )}
+
+            {detail && !detailLoading && (
+              <>
+                <div>
+                  <p className="font-medium">{detail.snippetTitle}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {detail.startSeconds}s – {detail.endSeconds}s ·{" "}
+                    {detail.endSeconds - detail.startSeconds}s ·{" "}
+                    {detail.platformTarget.replace(/_/g, " ")}
+                    {detail.aspectRatio ? ` · ${detail.aspectRatio}` : ""}
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Badge variant={(STATUS_BADGE[detail.approvalStatus] ?? STATUS_BADGE.pending_review).variant}>
+                    {(STATUS_BADGE[detail.approvalStatus] ?? STATUS_BADGE.pending_review).label}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">
+                    created {new Date(detail.createdAt).toLocaleString()}
+                  </span>
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs">Caption</Label>
+                  <p className="text-sm whitespace-pre-wrap rounded-lg border p-3 bg-muted/30">
+                    {detail.captionText || <span className="text-muted-foreground">No caption yet.</span>}
+                  </p>
+                </div>
+
+                {detail.hashtags.length > 0 && (
+                  <div className="space-y-1">
+                    <Label className="text-xs">Hashtags</Label>
+                    <p className="text-sm text-muted-foreground">
+                      {detail.hashtags.map(h => `#${h}`).join(" ")}
+                    </p>
+                  </div>
+                )}
+
+                <div className="space-y-1">
+                  <Label className="text-xs">Source</Label>
+                  {detail.sourceTitle ? (
+                    <div className="rounded-lg border p-3 bg-muted/30 space-y-1">
+                      <p className="text-sm font-medium">{detail.sourceTitle}</p>
+                      {detail.sourceStatus && (
+                        <p className="text-xs text-muted-foreground">status: {detail.sourceStatus}</p>
+                      )}
+                      {detail.sourceVideoUrl && (
+                        <a
+                          href={detail.sourceVideoUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-xs underline text-muted-foreground hover:text-foreground"
+                        >
+                          Open source video
+                        </a>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      Standalone clip — no video project or asset behind it.
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         </SheetContent>
       </Sheet>

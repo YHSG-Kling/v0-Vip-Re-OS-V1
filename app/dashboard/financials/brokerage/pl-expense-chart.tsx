@@ -1,6 +1,7 @@
 "use client"
 
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts"
+import { usd } from "@/lib/format/money"
 
 interface PLExpenseChartProps {
   agentSplits: number
@@ -27,13 +28,9 @@ export function PLExpenseChart({
 
   const total = data.reduce((sum, item) => sum + item.value, 0)
 
-  const formatCurrency = (val: number) => {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      maximumFractionDigits: 0,
-    }).format(val)
-  }
+  // `formatCurrency` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical to lib/format/money.ts `usd` (imported above).
+  const formatCurrency = usd
 
   if (total === 0) {
     return (

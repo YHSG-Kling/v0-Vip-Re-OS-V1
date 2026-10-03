@@ -1,0 +1,90 @@
+-- m600 — every Zoom webhook delivery was a seq scan of the calendar.
+-- ─────────────────────────────────────────────────────────────────────────────
+-- STATUS: APPLIED 2026-09-02 (integrator, MCP execute_sql, hrvaqgvukzxfskkcrwbt).
+-- Preflight matched this header exactly: 0 rows, 4 indexes, target absent.
+-- Postflight: pg_indexes shows idx_calendar_events_zoom_meeting_id as a partial
+-- btree on (((metadata -> 'zoom') ->> 'meeting_id')) WHERE that expression IS
+-- NOT NULL — the exact path the planner printed. No column, CHECK, or FK
+-- changed; no cache regenerated. The 0-row planner caveat below stands: index
+-- selection is proven by definition here, not by an EXPLAIN on a populated table.
+-- Written by lane Z1; only the integrator
+-- applies. Nothing to regenerate afterwards — see ORDERING below.
+--
+-- MEASURED BEFORE WRITING THIS (live db, hrvaqgvukzxfskkcrwbt, 2026-09-02):
+--
+--   public.calendar_events
+--     total rows ........................................................ 0
+--     rows carrying metadata->'zoom'->>'meeting_id' ..................... 0
+--
+--   Every index that exists on the table:
+--     calendar_events_pkey        UNIQUE (id)
+--     idx_calendar_entity         (entity_type, entity_id)
+--     idx_calendar_unique_system  UNIQUE (entity_id, event_type, start_at) WHERE is_system_generated = true
+--     idx_calendar_upcoming       (start_at, deadline_notified) WHERE deadline_notified = false
+--
+--   NOTHING on the zoom meeting id — not on metadata at all.
+--
+--   Planner, verbatim, for the lookup the attacher runs on EVERY delivery:
+--     EXPLAIN SELECT id FROM public.calendar_events
+--              WHERE metadata->'zoom'->>'meeting_id' = '123';
+--       Seq Scan on calendar_events  (cost=0.00..13.68 rows=1 width=16)
+--         Filter: (((metadata -> 'zoom'::text) ->> 'meeting_id'::text) = '123'::text)
+--
+-- WHY
+--
+--   lib/connections/zoom-transcripts.ts:86 is the entry point of every Zoom
+--   recording webhook:
+--       .from("calendar_events").eq("metadata->zoom->>meeting_id", meetingId)
+--   The meeting id is the ONLY handle the webhook has; the tenant, the contact
+--   and the host scope are all resolved FROM the row this finds. It runs on a
+--   provider-retried webhook path, so a slow answer is a re-delivered answer.
+--
+--   m464's own header lists "the Zoom transcript attacher" among the vendor-id
+--   seq scans it set out to fix — and fixed voice_calls, which is the SECOND
+--   read on the contact lane. The FIRST read, this one, stayed a seq scan.
+--   The table is empty today, which is exactly why this is cheap now.
+--
+-- WHY THIS EXACT EXPRESSION
+--
+--   PostgREST renders `metadata->zoom->>meeting_id` as
+--       (metadata -> 'zoom') ->> 'meeting_id'
+--   and the planner uses an expression index ONLY when the indexed expression
+--   matches the query's expression exactly after normalisation. An index on
+--   (metadata->>'zoom'), on a jsonb_path_ops GIN, or on ((metadata->'zoom')::text)
+--   would all be ignored by this query. The expression below is the one the
+--   planner printed above, character for character.
+--
+-- WHY PARTIAL AND WHY PLAIN (NOT UNIQUE)
+--
+--   Partial: most calendar events are not Zoom meetings and carry no
+--   metadata.zoom at all; the predicate keeps them out of the index. Plain, not
+--   unique: this is a LOOKUP index. The attacher does `.maybeSingle()` on it,
+--   which already assumes at most one event per meeting id, but whether one
+--   Zoom meeting may legitimately be stamped on two events (a rescheduled
+--   appointment that kept its meeting) is a product question this lane was not
+--   given; a unique here would turn that question into a refused booking. The
+--   idempotency backstop the lanes need lives on the ATTACH rows instead
+--   (m464 on voice_calls, m599 on communications).
+--
+-- NO VOCABULARY IS ADDED. Index only, no CHECK: nothing to regenerate in
+-- scripts/check-vocabularies.ts; schema-snapshot.ts lists columns, not
+-- indexes.
+--
+-- ORDERING (integrator): apply → nothing to regenerate → done.
+--
+-- PREFLIGHT (run first):
+--   SELECT indexname FROM pg_indexes
+--    WHERE schemaname='public' AND tablename='calendar_events'
+--      AND indexdef ILIKE '%meeting_id%';                  -- expect: 0 rows
+--
+-- POSTFLIGHT:
+--   EXPLAIN SELECT id FROM public.calendar_events
+--            WHERE metadata->'zoom'->>'meeting_id' = '123';
+--     -- expect: Index Scan (or Bitmap Index Scan) using idx_calendar_events_zoom_meeting_id.
+--     -- NOTE: on a 0-row table the planner may still prefer a Seq Scan on
+--     -- cost alone; `SET enable_seqscan = off;` in the same session makes the
+--     -- index-eligibility check honest rather than a coin toss on table size.
+
+CREATE INDEX IF NOT EXISTS idx_calendar_events_zoom_meeting_id
+  ON public.calendar_events ((metadata->'zoom'->>'meeting_id'))
+  WHERE metadata->'zoom'->>'meeting_id' IS NOT NULL;

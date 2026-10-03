@@ -27,14 +27,23 @@ const CAPTURE_TRIGGER_AFTER = 3
 
 // ── Component ────────────────────────────────────────────────────────────────
 
+/**
+ * THE SESSION IS MINTED HERE, ON MOUNT. The page used to hand this component a
+ * randomBytes token that no chat_sessions row had ever been created for, so
+ * /api/widget/message answered every send with "Invalid or closed session" and
+ * lead capture 403'd. It now POSTs the brokerage's PUBLIC SLUG to
+ * /api/widget/session — which resolves the tenant itself, refuses when the
+ * brokerage has the widget switched off, and issues the token — then carries
+ * only that token on every subsequent call.
+ */
 export function WidgetChatClient({
   brokerageSlug,
+  agentId,
   config,
-  sessionToken,
 }: {
   brokerageSlug: string
+  agentId: string | null
   config: WidgetConfig
-  sessionToken: string
 }) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -43,8 +52,69 @@ export function WidgetChatClient({
   const [captureError, setCaptureError] = useState<string | null>(null)
   const [captureLoading, setCaptureLoading] = useState(false)
   const [input, setInput] = useState('')
+  const [sessionToken, setSessionToken] = useState<string | null>(null)
+  const [sessionError, setSessionError] = useState<string | null>(null)
 
   const accentStyle = { '--widget-accent': config.accentColor } as React.CSSProperties
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/widget/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            brokerage_slug: brokerageSlug,
+            agent_id: agentId,
+            source: 'website_widget',
+          }),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (cancelled) return
+        if (!res.ok) {
+          setSessionError(data.error ?? 'Chat is unavailable right now. Please try again later.')
+          return
+        }
+        setSessionToken(data.session_token)
+        // session_id / identity not otherwise surfaced by this entry point —
+        // this page already carries identity as server-resolved config props
+        // (app/widget/[brokerageSlug]/page.tsx), so the session-scoped copy is
+        // a cross-check only, logged rather than repainting the UI a second time.
+        console.debug(`[widget] session ${data.session_id} ready (capture_state=${data.capture_state})`)
+        // Behavioral intake (wave 64): the widget open is the visitor's first
+        // observed behavior. The tenant is resolved server-side from the public
+        // slug; visitor_id is a per-browser id, never an identity claim.
+        try {
+          let visitorId: string | null = null
+          try {
+            visitorId = window.localStorage.getItem('vip_visitor_id')
+            if (!visitorId) {
+              visitorId = crypto.randomUUID()
+              window.localStorage.setItem('vip_visitor_id', visitorId)
+            }
+          } catch { visitorId = crypto.randomUUID() }
+          const trackRes = await fetch('/api/track/visitor', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              brokerage_slug: brokerageSlug,
+              visitor_id: visitorId,
+              page_visited: document.referrer || window.location.href,
+              time_spent: 0,
+              action_taken: 'widget_opened',
+            }),
+          })
+          const track = await trackRes.json().catch(() => ({})) as { ok?: boolean; error?: string }
+          if (!trackRes.ok || track.error) console.debug('[widget] visitor tracking refused:', track.error ?? trackRes.status)
+          else console.debug(`[widget] visitor tracked (ok=${track.ok === true})`)
+        } catch { /* tracking is best-effort; chat must never depend on it */ }
+      } catch {
+        if (!cancelled) setSessionError('Chat is unavailable right now. Please try again later.')
+      }
+    })()
+    return () => { cancelled = true }
+  }, [brokerageSlug, agentId])
 
   const { messages, sendMessage, status } = useChat({
     transport: new DefaultChatTransport({
@@ -52,9 +122,10 @@ export function WidgetChatClient({
       prepareSendMessagesRequest: ({ messages }) => ({
         body: {
           messages,
-          // Server reads snake_case: session_token
+          // Server reads snake_case: session_token. The tenant comes off the
+          // session row, so brokerageSlug is not sent — a body that names a
+          // brokerage alongside an opaque token is the hole this pass closed.
           session_token: sessionToken,
-          brokerageSlug,
         },
       }),
     }),
@@ -76,10 +147,10 @@ export function WidgetChatClient({
 
   const handleSend = useCallback(() => {
     const text = input.trim()
-    if (!text || status === 'streaming' || status === 'submitted') return
+    if (!text || !sessionToken || status === 'streaming' || status === 'submitted') return
     sendMessage({ text })
     setInput('')
-  }, [input, status, sendMessage])
+  }, [input, status, sendMessage, sessionToken])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -94,6 +165,10 @@ export function WidgetChatClient({
       setCaptureError('Name and email are required.')
       return
     }
+    if (!sessionToken) {
+      setCaptureError('Chat is unavailable right now. Please try again later.')
+      return
+    }
     setCaptureLoading(true)
     setCaptureError(null)
     try {
@@ -101,9 +176,10 @@ export function WidgetChatClient({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          // Server reads snake_case: session_token
+          // Server reads snake_case: session_token. Brokerage comes off the
+          // session row — capture-lead has never trusted a body brokerage and
+          // is no longer sent one to ignore.
           session_token: sessionToken,
-          brokerageSlug,
           // Split name into first/last for captureContact viability check
           first_name: captureForm.name.trim().split(' ').slice(0, -1).join(' ') || captureForm.name.trim(),
           last_name: captureForm.name.trim().split(' ').slice(-1).join(' ') !== captureForm.name.trim()
@@ -191,6 +267,13 @@ export function WidgetChatClient({
           </div>
         )}
 
+        {/* The session mint failed — say so instead of leaving a dead input box */}
+        {sessionError && (
+          <div className="widget-bubble widget-bubble--ai" role="alert">
+            <p>{sessionError}</p>
+          </div>
+        )}
+
         <div ref={messagesEndRef} />
       </main>
 
@@ -266,14 +349,14 @@ export function WidgetChatClient({
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          disabled={isStreaming}
+          disabled={isStreaming || !sessionToken}
           aria-label="Chat message"
           autoComplete="off"
         />
         <button
           className="widget-send-btn"
           onClick={handleSend}
-          disabled={isStreaming || !input.trim()}
+          disabled={isStreaming || !sessionToken || !input.trim()}
           aria-label="Send message"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

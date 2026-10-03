@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { generateQRCodeAction } from "@/app/actions/lead-magnets-actions"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -13,7 +13,9 @@ interface Props {
   magnetId: string
   magnetSlug: string
   brokerageId: string
-  agentId: string
+  // No agentId prop: generateQRCodeAction stamps qr_codes.agent_id from the
+  // session's agents.id. Callers only have the auth user id, which is the wrong
+  // id class for that FK.
   existingQrCodeId?: string
   existingQrImageUrl?: string
 }
@@ -22,7 +24,6 @@ export function QRCodeGenerator({
   magnetId,
   magnetSlug,
   brokerageId,
-  agentId,
   existingQrCodeId,
   existingQrImageUrl,
 }: Props) {
@@ -39,6 +40,27 @@ export function QRCodeGenerator({
       : null
   )
   const [label, setLabel] = useState(`Lead Magnet: ${magnetSlug}`)
+  // THE EXISTING CODE'S RECORD (lane 85E, census 6d — the missing reader of
+  // GET /api/lead-magnets/qr/[magnetId]'s session-gated record arm). A magnet
+  // that already had a code opened this card knowing only its id: no tracked
+  // link, no scan count, no active flag — though the route had served exactly
+  // that row (label lead_magnet:<magnetId>) to a member of the owning brokerage
+  // since wave 16. A refused or foreign read shows nothing, never a guess.
+  const [record, setRecord] = useState<{ slug: string; scan_count: number | null; is_active: boolean | null } | null>(null)
+  const [recordNote, setRecordNote] = useState<string | null>(null)
+  useEffect(() => {
+    if (!existingQrCodeId) return
+    let live = true
+    fetch(`/api/lead-magnets/qr/${encodeURIComponent(magnetId)}?brokerageId=${encodeURIComponent(brokerageId)}`)
+      .then(async (r) => {
+        const j = await r.json().catch(() => null)
+        if (!live) return
+        if (r.ok && j?.success && j.qr) setRecord({ slug: j.qr.slug, scan_count: j.qr.scan_count ?? null, is_active: j.qr.is_active ?? null })
+        else setRecordNote(j?.note ?? j?.error ?? "The QR record could not be read.")
+      })
+      .catch(() => { if (live) setRecordNote("The QR record could not be read.") })
+    return () => { live = false }
+  }, [existingQrCodeId, magnetId, brokerageId])
   const [copied, setCopied] = useState(false)
 
   // Build the landing page URL from current origin
@@ -47,9 +69,14 @@ export function QRCodeGenerator({
       ? `${window.location.origin}/lm/${magnetSlug}`
       : `/lm/${magnetSlug}`
 
-  // QR API URL using qrserver.com — no auth token needed, purely URL-based
-  const qrApiUrl = qrResult?.qrImageUrl
-    ?? `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(targetUrl)}&format=png&margin=10`
+  // The QR image is a data: URI rendered SERVER-SIDE by the vendored `qrcode` package and handed
+  // back by generateQRCodeAction. It used to be an <img> pointed at api.qrserver.com, which sent
+  // the lead-bearing landing URL to a third party on every render and made the download button
+  // depend on an outside host staying up. Until the code is generated there is nothing to show —
+  // and there deliberately is no untracked preview: an image built from the raw landing URL
+  // encodes a QR that bypasses /api/qr/scan and records no scan, which is the opposite of what
+  // this card promises.
+  const qrImageUrl = qrResult?.qrImageUrl ?? null
 
   function handleGenerate() {
     setError(null)
@@ -66,9 +93,9 @@ export function QRCodeGenerator({
 
       setQrResult({
         qrCodeId: result.qrCode?.id ?? "",
-        qrImageUrl: undefined,
-        targetUrl,
-        slug: magnetSlug,
+        qrImageUrl: result.qrCode?.image_url,
+        targetUrl: result.qrCode?.target_url ?? targetUrl,
+        slug: result.qrCode?.slug ?? magnetSlug,
       })
     })
   }
@@ -80,8 +107,9 @@ export function QRCodeGenerator({
   }
 
   function handleDownload() {
+    if (!qrImageUrl) return
     const a = document.createElement("a")
-    a.href = qrApiUrl
+    a.href = qrImageUrl
     a.download = `lead-magnet-${magnetSlug}-qr.png`
     a.click()
   }
@@ -100,16 +128,31 @@ export function QRCodeGenerator({
       <CardContent className="space-y-5">
         {/* QR Display */}
         <div className="flex flex-col items-center gap-4 p-6 border rounded-lg bg-muted/20">
-          <img
-            src={qrApiUrl}
-            alt={`QR code for ${magnetSlug}`}
-            className="w-[180px] h-[180px] rounded-lg border bg-white p-2"
-          />
-          {qrResult && (
+          {qrImageUrl ? (
+            <img
+              src={qrImageUrl}
+              alt={`QR code for ${magnetSlug}`}
+              className="w-[180px] h-[180px] rounded-lg border bg-white p-2"
+            />
+          ) : (
+            <div className="w-[180px] h-[180px] rounded-lg border bg-white/60 flex flex-col items-center justify-center gap-2 text-center px-4">
+              <QrCode className="h-9 w-9 text-muted-foreground" />
+              <p className="text-xs text-muted-foreground">
+                Generate the code to see it — the image is the tracked one, not a preview.
+              </p>
+            </div>
+          )}
+          {qrResult?.qrCodeId && (
             <Badge variant="secondary" className="text-xs">
-              {qrResult.qrCodeId ? "Tracked QR Code" : "Preview"}
+              Tracked QR Code
             </Badge>
           )}
+          {record && (
+            <p className="text-xs text-muted-foreground text-center">
+              {record.is_active === false ? "Inactive · " : ""}Scanned {record.scan_count ?? 0} time{record.scan_count === 1 ? "" : "s"} · tracked link /qr/{record.slug}
+            </p>
+          )}
+          {!record && recordNote && <p className="text-xs text-muted-foreground text-center">{recordNote}</p>}
         </div>
 
         {/* Landing URL */}
@@ -134,7 +177,7 @@ export function QRCodeGenerator({
         </div>
 
         {/* Label */}
-        {!qrResult && (
+        {!qrImageUrl && (
           <div className="space-y-2">
             <Label htmlFor="qr-label">QR Code Label</Label>
             <Input
@@ -149,10 +192,13 @@ export function QRCodeGenerator({
         {error && <p className="text-sm text-destructive">{error}</p>}
 
         <div className="flex gap-3">
-          {!qrResult ? (
+          {/* Shown whenever we have no image — including for a magnet that ALREADY has a code.
+              Minting is idempotent on `lead_magnet:<magnetId>`, so pressing this on an existing
+              code returns that same row and its rendered PNG rather than minting a second one. */}
+          {!qrImageUrl ? (
             <Button onClick={handleGenerate} disabled={isPending} className="flex-1">
               {isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <QrCode className="h-4 w-4 mr-2" />}
-              Generate Tracked QR Code
+              {qrResult?.qrCodeId ? "Show Tracked QR Code" : "Generate Tracked QR Code"}
             </Button>
           ) : (
             <Button variant="outline" onClick={handleDownload} className="flex-1">

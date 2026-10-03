@@ -27,7 +27,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog"
-import { getEsignProviders, getTransactionFormProviders } from "@/lib/integrations/providers/catalog"
+import { getSelectableEsignProviders, getTransactionFormProviders, DEFAULT_ESIGN_PROVIDER, PROVIDER_CATALOG } from "@/lib/integrations/providers/catalog"
 
 // ── Provider catalogue ─────────────────────────────────────────────────────
 const PROVIDER_TYPES = ["esign", "transaction", "sms", "email", "voice", "calendar", "mls", "accounting", "crm"] as const
@@ -37,18 +37,33 @@ const PROVIDER_TYPES = ["esign", "transaction", "sms", "email", "voice", "calend
 // and never the unimplemented ones (which crash the factory). Adding a provider
 // class + flipping catalog.implemented makes it appear here automatically.
 const PROVIDER_KEYS_BY_TYPE: Record<string, string[]> = {
-  esign:       [...getEsignProviders(), "none"],
+  // The catalog DEFAULT (lane 89A: DocuSign — embedded in the platform window) is offered FIRST;
+  // Google eSignature (portal-send, no credential), Dotloop and every connectable API provider
+  // remain selectable after it. A selection here always wins over the default.
+  esign:       [...getSelectableEsignProviders(), "none"],
   transaction: [...getTransactionFormProviders(), "none"],
   sms:         ["twilio", "bandwidth", "vonage"],
   email:       ["sendgrid", "mailgun", "resend"],
   voice:       ["twilio", "bandwidth"],
   calendar:    ["google", "outlook"],
-  mls:         ["idx_broker", "spark", "rets", "bridge", "rentcast"],
+  // TOMBSTONE (lane 71C, carried from wave 69): "rentcast" removed from the
+  // tenant-selectable MLS provider list. Wave 69 owner ruling (verbatim):
+  // "rentcast is platform provided but idx is for tenant connected... the
+  // setting page should only allow them to setup their idx connection." The
+  // active-listing source order is DERIVED platform logic, never a tenant
+  // choice — survivor: lib/buyer-search/listing-source-order.ts::resolveActiveListingSources
+  // (IDX when the brokerage's own IDX credential is connected, else RentCast,
+  // never a tenant-picked override). This provider_overrides row was never
+  // consulted by that resolver anyway (readerless write of the "rentcast"
+  // value specifically) — removed at the source rather than left offering a
+  // choice with no effect.
+  mls:         ["idx_broker", "spark", "rets", "bridge"],
   accounting:  ["quickbooks", "xero"],
   crm:         ["gohighlevel", "none"],
 }
 
 const PLATFORM_LABELS: Record<string, string> = {
+  google_esign: PROVIDER_CATALOG.google_esign.label,
   dotloop:      "Dotloop",
   docusign:     "DocuSign",
   skyslope:     "SkySlope",
@@ -66,14 +81,16 @@ const PLATFORM_LABELS: Record<string, string> = {
   spark:        "Spark API",
   bridge:       "Bridge Interactive",
   idx_broker:   "IDX Broker",
-  rentcast:     "Rentcast (no IDX needed)",
   quickbooks:   "QuickBooks",
   xero:         "Xero",
+  wordpress:    "WordPress",
+  idxbroker:    "IDX Broker",   // the CREDENTIAL key; idx_broker above is the provider-override key
   gohighlevel:  "GoHighLevel",
   none:         "None (Disabled)",
 }
 
 const PLATFORM_ICONS: Record<string, string> = {
+  google_esign: "G",
   dotloop:    "D",
   docusign:   "DS",
   skyslope:   "SS",
@@ -104,18 +121,24 @@ type OverrideForm = {
 }
 
 const EMPTY_CRED: CredForm = { platform: "", api_key: "", api_url: "", account_id: "", account_name: "" }
-const EMPTY_OVERRIDE: OverrideForm = { provider_type: "esign", provider_key: "dotloop" }
+// The override form opens on the e-sign DEFAULT (the catalog's ONE constant), never a hard-coded vendor.
+const EMPTY_OVERRIDE: OverrideForm = { provider_type: "esign", provider_key: DEFAULT_ESIGN_PROVIDER }
 
 // ── Component ──────────────────────────────────────────────────────────────
 export function IntegrationsClient({
   credentials: initialCreds,
-  overrides: initialOverrides,
+  overrides,
 }: {
   credentials: PlatformCredential[]
   overrides: ProviderOverride[]
 }) {
+  // `credentials` keeps local state on purpose: handleToggle flips is_active in
+  // place without a reload. TOMBSTONE — `const [overrides, setOverrides] =
+  // useState(initialOverrides)`: setOverrides was never called, so that copy had
+  // no writer; the prop is rendered directly. (handleSaveOverride ends in
+  // window.location.reload(), a full remount, so the list was not frozen in
+  // practice — it would have been the moment that became a router.refresh().)
   const [credentials, setCredentials] = useState(initialCreds)
-  const [overrides, setOverrides] = useState(initialOverrides)
   const [showCredDialog, setShowCredDialog] = useState(false)
   const [showOverrideDialog, setShowOverrideDialog] = useState(false)
   const [credForm, setCredForm] = useState<CredForm>(EMPTY_CRED)
@@ -240,7 +263,7 @@ export function IntegrationsClient({
                     <td className="px-4 py-3 text-gray-700">
                       {override
                         ? PLATFORM_LABELS[override.provider_key] ?? override.provider_key
-                        : <span className="text-gray-400 italic">Kernel default</span>}
+                        : <span className="text-gray-400 italic">{type === "esign" ? `Default — ${PROVIDER_CATALOG[DEFAULT_ESIGN_PROVIDER].label}` : "Kernel default"}</span>}
                     </td>
                     <td className="px-4 py-3">
                       {override ? statusBadge(override.enabled) : (

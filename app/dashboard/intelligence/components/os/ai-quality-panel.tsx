@@ -10,7 +10,6 @@ import {
   ThumbsUp,
   ThumbsDown,
   AlertCircle,
-  CheckCircle2,
   ArrowRight,
   TrendingUp,
   TrendingDown,

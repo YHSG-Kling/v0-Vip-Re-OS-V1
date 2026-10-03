@@ -23,16 +23,23 @@ import {
   NON_SURFACEABLE_STATUSES,
   AUTO_OK_THRESHOLD,
 } from "../lib/kernel/vendor-verification"
+import { VENDOR_CATEGORY_INSPECTOR, isVendorCategory } from "../lib/kernel/vendor-categories"
 
 let pass = 0, fail = 0
 const fails: string[] = []
 const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) } }
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 
-const full = { name: "Acme Inspections", email: "hi@acme.com", phone: "512-555-1212", website: "https://acme.com", category: "Inspector", estimatedTurnaroundDays: 3 }
+// The category is taken from the vocabulary module, never spelled here. This
+// fixture held the literal "Inspector" and m304 (one taxonomy, both vendor
+// tables, lowercase_snake) silently turned the "complete application" into one
+// carrying invalid_or_missing_category — the scorer was right and the fixture
+// was stale. A constant cannot go stale.
+const full = { name: "Acme Inspections", email: "hi@acme.com", phone: "512-555-1212", website: "https://acme.com", category: VENDOR_CATEGORY_INSPECTOR, estimatedTurnaroundDays: 3 }
 
 function pureLayer() {
   console.log("\n[scoreVendorApplication · pure]")
+  check("the 'complete application' fixture really carries an admitted category", isVendorCategory(full.category))
   const clean = scoreVendorApplication(full)
   check(`a complete application scores high (≥${AUTO_OK_THRESHOLD}) → auto_ok`, clean.score >= AUTO_OK_THRESHOLD && clean.recommendation === "auto_ok" && clean.flags.length === 0)
   const thin = scoreVendorApplication({ name: "X", email: null, phone: null, website: null, category: "Nope", estimatedTurnaroundDays: null })
@@ -82,7 +89,7 @@ async function liveLayer() {
   const cleanup: Array<{ table: string; id: string }> = []
   const { runVendorApprovalQueue } = await import("../lib/kernel/vendor-verification")
   try {
-    const { data: v } = await svc.from("vendors").insert({ brokerage_id: brokerageId, name: "ZZ Verify Sim Vendor", category: "Inspector", email: "sim@verify.test", phone: "512-555-9090", status: "pending" }).select("id").single()
+    const { data: v } = await svc.from("vendors").insert({ brokerage_id: brokerageId, name: "ZZ Verify Sim Vendor", category: VENDOR_CATEGORY_INSPECTOR, email: "sim@verify.test", phone: "512-555-9090", status: "pending" }).select("id").single()
     const vendorId = (v as any).id
     cleanup.push({ table: "vendors", id: vendorId })
 

@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -9,7 +10,8 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
 import { Clock, Phone, MessageSquare, CheckCircle, AlertCircle, User } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
 import { toast } from "sonner"
-import { logActivity, completeActivity } from "@/app/actions/activities"
+import { completeActivity } from "@/app/actions/activities"
+import { priorityRank } from "@/lib/kernel/priority-rank"
 
 interface FollowupTask {
   id: string
@@ -30,22 +32,44 @@ interface FollowupTask {
 
 interface MobileFollowupPanelProps {
   tasks: FollowupTask[]
-  onTaskComplete?: (taskId: string) => void
 }
 
-export function MobileFollowupPanel({ tasks, onTaskComplete }: MobileFollowupPanelProps) {
+// BUILD (wave 54, orphan doctrine §1): onTaskComplete was an optional
+// notify-the-parent callback that neither mount point
+// (app/mobile/assistant/page.tsx) could ever supply — it is a Server
+// Component, and a plain closure cannot cross the Server->Client prop
+// boundary, so it sat declared and permanently unpassed while the completed
+// task kept rendering in the list until a manual reload. The real capability
+// this callback existed for — "the list should drop the task once it's done"
+// — is built in directly below with `router.refresh()` (same self-refresh
+// pattern as app/dashboard/coordinator/components/tc-fast-action-panel.tsx's
+// `onCreated={() => router.refresh()}`, just internal since there is no
+// caller that can hand it in from outside): the page's server read re-filters
+// on `status = "pending"`, so a completed task drops out of `tasks` for real.
+export function MobileFollowupPanel({ tasks }: MobileFollowupPanelProps) {
+  const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [noteContent, setNoteContent] = useState("")
-  const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+  // TOMBSTONE (orphan doctrine §1.3, unread-state-census) — `activeTaskId` /
+  // setActiveTaskId was never read. Each Sheet is already scoped per-task
+  // inside the .map() below, and "Mark as Complete" calls
+  // handleCompleteTask(task.id) from that closure directly — the loop
+  // variable already IS the "which task is open" tracking, so a mirrored
+  // state var added nothing.
 
   const pendingTasks = tasks
     .filter((t) => t.status !== "completed")
     .sort((a, b) => {
-      // Sort by priority first, then by due date
-      const priorityOrder = { high: 0, medium: 1, low: 2 }
-      const aPriority = priorityOrder[a.priority as keyof typeof priorityOrder] ?? 1
-      const bPriority = priorityOrder[b.priority as keyof typeof priorityOrder] ?? 1
-      if (aPriority !== bPriority) return aPriority - bPriority
+      // Sort by priority first, then by due date. TOMBSTONE (§1.1, 2026-09-03):
+      // the local `priorityOrder {high:0, medium:1, low:2}` that stood here was
+      // one of five hand copies of the same map — survivor
+      // lib/kernel/priority-rank.ts:45 (`priorityRank` :65, imported above). A
+      // missing priority still folds to `medium` — tasks.priority DEFAULT
+      // 'medium' — which this copy did with `?? 1`; the survivor leaves that
+      // default to the caller, so it is applied here.
+      const aPriority = priorityRank(a.priority ?? "medium")
+      const bPriority = priorityRank(b.priority ?? "medium")
+      if (aPriority !== bPriority) return bPriority - aPriority
 
       const aDate = a.due_date || a.scheduled_at || ""
       const bDate = b.due_date || b.scheduled_at || ""
@@ -55,12 +79,13 @@ export function MobileFollowupPanel({ tasks, onTaskComplete }: MobileFollowupPan
 
   const handleCompleteTask = (taskId: string) => {
     startTransition(async () => {
-      const result = await completeActivity(taskId)
+      // The note is the whole point of this sheet: it is what the agent heard
+      // at the door, captured while it is freshest. It used to be dropped.
+      const result = await completeActivity(taskId, noteContent)
       if (result.success) {
         toast.success("Follow-up completed")
         setNoteContent("")
-        setActiveTaskId(null)
-        onTaskComplete?.(taskId)
+        router.refresh()
       } else {
         toast.error("Failed to complete follow-up")
       }
@@ -202,7 +227,6 @@ export function MobileFollowupPanel({ tasks, onTaskComplete }: MobileFollowupPan
                     <Button
                       size="sm"
                       className="flex-1 h-8 bg-green-600 hover:bg-green-700"
-                      onClick={() => setActiveTaskId(task.id)}
                     >
                       <CheckCircle className="h-3 w-3 mr-1" />
                       Done

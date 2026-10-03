@@ -18,6 +18,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export type OnboardingStatus = "pending" | "in_progress" | "completed" | "abandoned"
 
@@ -68,7 +69,7 @@ export async function acceptUserInvitationOnFirstLogin(params: {
   if (!invite) return { accepted: false }
 
   // Mark accepted
-  await svc
+  const { error: inviteAcceptErr } = await svc
     .from("user_invitations")
     .update({
       status:           "accepted",
@@ -76,12 +77,13 @@ export async function acceptUserInvitationOnFirstLogin(params: {
       accepted_at:      new Date().toISOString(),
     })
     .eq("id", invite.id)
+  if (inviteAcceptErr) console.error(`[onboarding/state-machine] invitation NOT marked accepted: ${inviteAcceptErr.message}`)
 
   // If this is a NON-ADMIN role accepting, the brokerage has moved beyond
   // the initial setup phase — advance to in_progress (idempotent).
   // Admin-only acceptances don't advance, since brokerage admins ARE
   // the onboarding driver.
-  if (!["admin", "broker", "broker_admin", "superadmin"].includes(invite.user_type)) {
+  if (!isAdminOrBroker({ user_type: invite.user_type })) {
     const r = await advanceBrokerageOnboarding(params.brokerageId, "in_progress")
     return { accepted: true, advanced: r.status }
   }

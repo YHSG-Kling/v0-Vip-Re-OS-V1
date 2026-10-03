@@ -34,8 +34,10 @@ interface AIISAQualification {
   id: string
   qualification_score: number | null
   stage: string | null
-  qualification_notes: string | null
-  created_at: string
+  /** live column is `notes` — `qualification_notes` never existed */
+  notes: string | null
+  /** live column is `qualified_at` — this table has no created_at */
+  qualified_at: string | null
   last_outreach_at: string | null
   assigned_to_agent_id: string | null
 }
@@ -93,7 +95,17 @@ export const STAGES = [
   { key: 'lifetime',     label: 'Transaction / Lifetime', color: 'bg-green-500' },
 ]
 
-export function deriveLineageStage(lead: Lead): string {
+/**
+ * MODULE-LOCAL (orphan burn-down, lane E): this was `export`ed with no importer
+ * anywhere. Nothing is deleted — it has five live callers inside this file (the
+ * two funnel-gap counts, the per-lead row badge, the stage tally and the stage
+ * filter) — only the export keyword is gone. That matters beyond tidiness here:
+ * this function IS the lineage-stage vocabulary, derived from the lead row
+ * rather than stored, and an exported copy invites a second surface to import it
+ * and render a stage the ledger never recorded. If another surface ever needs
+ * this, the stage belongs in the query that feeds it, not in a client component.
+ */
+function deriveLineageStage(lead: Lead): string {
   if (lead.contacts && lead.contacts.length > 0) {
     return lead.status === 'closed' ? 'lifetime' : 'converted'
   }
@@ -127,7 +139,15 @@ function daysSince(dateStr: string): number {
 
 // ── Summary card counts ───────────────────────────────────────────────────────
 
-function buildSummary(leads: Lead[], brokerageId: string) {
+// TOMBSTONE (orphan doctrine §1.3) — this took a second `brokerageId: string`
+// parameter and never read it. The tenant predicate it looked like it was applying
+// already ran on the SERVER, at app/dashboard/admin/lead-lineage/page.tsx:79
+// (`.eq('brokerage_id', brokerageId)` on a brokerage_id read from the session
+// profile), so every lead in this array is already this tenant's. Re-filtering here
+// would be worse than redundant: it would be tenancy decided from a PROP a client
+// component was handed, which CLAUDE.md §4 rules out — tenant comes from the
+// session, never from a parameter. There is no second reader to build for it.
+function buildSummary(leads: Lead[]) {
   const now = Date.now()
   const todayStart = new Date()
   todayStart.setHours(0, 0, 0, 0)
@@ -144,7 +164,7 @@ function buildSummary(leads: Lead[], brokerageId: string) {
       (l) =>
         l.ai_isa_qualifications?.some((q) => q.stage === 'qualified') &&
         l.ai_isa_qualifications.some(
-          (q) => q.created_at && new Date(q.created_at) >= todayStart,
+          (q) => q.qualified_at && new Date(q.qualified_at) >= todayStart,
         ),
     ).length,
     awaitingAssignment: leads.filter(
@@ -308,8 +328,8 @@ function LeadDetail({ lead }: { lead: Lead }) {
               {q.last_outreach_at && (
                 <p className="text-muted-foreground">Last touch: <span className="text-foreground">{new Date(q.last_outreach_at).toLocaleDateString()}</span></p>
               )}
-              {q.qualification_notes && (
-                <p className="text-muted-foreground text-xs">{q.qualification_notes}</p>
+              {q.notes && (
+                <p className="text-muted-foreground text-xs">{q.notes}</p>
               )}
             </div>
           ))
@@ -551,8 +571,10 @@ function FunnelStrip({
 
 // ── Summary cards ─────────────────────────────────────────────────────────────
 
-function SummaryCards({ leads, brokerageId }: { leads: Lead[]; brokerageId: string }) {
-  const s = buildSummary(leads, brokerageId)
+// `brokerageId` came off this signature with the same tombstone: it existed only to
+// be handed to buildSummary, which never read it. See the note above buildSummary.
+function SummaryCards({ leads }: { leads: Lead[] }) {
+  const s = buildSummary(leads)
   const cards = [
     { label: "Today's Raw Records", value: s.todayRaw, icon: Clock, color: 'text-slate-600' },
     { label: 'Ready for ISA', value: s.readyForISA, icon: CheckCircle, color: 'text-blue-600' },
@@ -595,7 +617,7 @@ export default function LeadLineageClient({
 
   return (
     <div className="space-y-6">
-      <SummaryCards leads={leads} brokerageId={brokerageId} />
+      <SummaryCards leads={leads} />
 
       <Card>
         <CardHeader className="pb-3">

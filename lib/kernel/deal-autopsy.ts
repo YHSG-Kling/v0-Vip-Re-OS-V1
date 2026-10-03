@@ -24,6 +24,7 @@
 // Pure + testable: classifyFailureReason is a pure function over real facts.
 // NOT server-only (simulator-driven, like the rest of the kernel loaders).
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { publishManagerSignal } from "@/lib/kernel/manager-signals"
 
@@ -465,9 +466,9 @@ export async function runDealAutopsy(
     coachingOk = res.ok
 
     if (res.ok) {
-      await svc.from("deal_autopsy_observations")
+      await sentinelWrite(svc, svc.from("deal_autopsy_observations")
         .update({ coaching_proposed_at: new Date().toISOString() })
-        .eq("id", autopsyId)
+        .eq("id", autopsyId), { table: "deal_autopsy_observations", flow: "deal_autopsy_observations_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
   } catch (e) {
     console.error("[deal-autopsy] coaching proposal skipped:", (e as Error).message)
@@ -500,9 +501,9 @@ export async function runDealAutopsy(
     signalOk = sigRes.ok
 
     if (sigRes.ok) {
-      await svc.from("deal_autopsy_observations")
+      await sentinelWrite(svc, svc.from("deal_autopsy_observations")
         .update({ signal_published_at: new Date().toISOString() })
-        .eq("id", autopsyId)
+        .eq("id", autopsyId), { table: "deal_autopsy_observations", flow: "deal_autopsy_observations_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
   } catch (e) {
     console.error("[deal-autopsy] signal publish skipped:", (e as Error).message)

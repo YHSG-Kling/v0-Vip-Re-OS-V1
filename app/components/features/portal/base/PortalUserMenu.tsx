@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Settings, User, LogOut, Bell, HelpCircle, ChevronDown } from "lucide-react"
+import { signOut } from "@/app/actions/auth"
 
 interface Contact {
   id: string
@@ -33,6 +34,7 @@ interface PortalUserMenuProps {
 export default function PortalUserMenu({ contact, contactId }: PortalUserMenuProps) {
   const router = useRouter()
   const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const [signOutError, setSignOutError] = useState<string | null>(null)
 
   const displayName = contact.first_name
     ? `${contact.first_name} ${contact.last_name || ""}`.trim()
@@ -45,21 +47,26 @@ export default function PortalUserMenu({ contact, contactId }: PortalUserMenuPro
     .toUpperCase()
     .slice(0, 2)
 
+  // This used to clear localStorage/sessionStorage and redirect to "/" — it
+  // never touched the Supabase session. The portal layout authorises off
+  // `supabase.auth.getUser()`, so "Log Out" left the buyer signed in: going
+  // back to /portal/<contactId> still worked. On a shared computer that is the
+  // whole point of the button, so end the session first and say so if it fails.
   const handleLogout = async () => {
     setIsLoggingOut(true)
-    try {
-      // Clear any local storage or session data
-      if (typeof window !== "undefined") {
-        localStorage.removeItem("portalContactId")
-        sessionStorage.clear()
-      }
-      // Redirect to home/login
-      router.push("/")
-    } catch (error) {
-      console.error("Logout error:", error)
-    } finally {
+    setSignOutError(null)
+    const res = await signOut()
+    if (!res.success) {
+      setSignOutError(res.error)
       setIsLoggingOut(false)
+      return
     }
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("portalContactId")
+      sessionStorage.clear()
+    }
+    router.push("/portal/login")
+    router.refresh()
   }
 
   return (
@@ -123,6 +130,11 @@ export default function PortalUserMenu({ contact, contactId }: PortalUserMenuPro
           <LogOut className="mr-2 h-4 w-4" />
           {isLoggingOut ? "Logging out..." : "Log Out"}
         </DropdownMenuItem>
+        {signOutError && (
+          <p className="px-2 py-1.5 text-xs text-destructive">
+            Still signed in — sign out failed: {signOutError}
+          </p>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )

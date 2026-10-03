@@ -1,8 +1,86 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import {
+  CONTRACT_TERM_COLUMNS,
+  copyContractTerms,
+} from "./contract-terms"
 import { createServiceClient } from "@/lib/supabase/service"
+// THE ONE DEFINITION of "the executed contract is on file" — imported, never
+// re-spelled, so this gate and the transaction-creation gate that now refuses on
+// the same fact cannot drift apart (CLAUDE.md §6).
+import { offerExecutionPath } from "./offer-execution-state"
 import { ensureRequiredMilestones, seedJourneyMilestones } from "./milestone-service"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { populateInitialParticipants } from "./participant-populator"
-import { deriveEarnestDueDate } from "./earnest-terms"
+import { deriveEarnestDueDate, addDaysToDateString, isCalendarDate } from "./earnest-terms"
+
+/**
+ * PURE. Derive the three standard contingency DEADLINE DATES that the
+ * transaction row carries as first-class columns (inspection_deadline,
+ * appraisal_deadline, financing_deadline) plus the closing date.
+ *
+ * Precedence, per term:
+ *   1. contract_date + the offer's contingency-DAY column — TZ-safe UTC day math
+ *      off the EXECUTION date, which is what the contract actually says
+ *      ("inspection within 10 days of execution").
+ *   2. the caller-supplied term, but ONLY when it is a real calendar date.
+ *
+ * WHY THE ORDER: every caller (submit-to-compliance, seller-offers, the kernel
+ * converter) computed these as `Date.now() + days`, i.e. days from the moment
+ * the button was clicked. On any deal whose contract date is not today — a
+ * backdated execution, an inbound offer processed days later — that silently
+ * moved every deadline. Deriving here, from the contract date, fixes the class
+ * once for all four accept flows instead of in three separate copies.
+ */
+export function deriveContractDeadlines(input: {
+  contractDate:              string | null | undefined
+  inspectionPeriodDays?:     number | null
+  appraisalContingencyDays?: number | null
+  financingContingencyDays?: number | null
+  offerClosingDate?:         string | null
+  fallback?: {
+    inspectionDeadline?: string
+    appraisalDeadline?:  string
+    financingDeadline?:  string
+    closingDate?:        string
+  }
+}): {
+  inspectionDeadline: string | null
+  appraisalDeadline:  string | null
+  financingDeadline:  string | null
+  closingDate:        string | null
+} {
+  const base = input.contractDate ? String(input.contractDate).slice(0, 10) : null
+  const fromDays = (days: number | null | undefined, fallback: string | undefined): string | null => {
+    if (base && isCalendarDate(base) && typeof days === "number" && Number.isFinite(days)) {
+      return addDaysToDateString(base, days)
+    }
+    return isCalendarDate(fallback) ? fallback.slice(0, 10) : null
+  }
+  const closing = isCalendarDate(input.offerClosingDate)
+    ? String(input.offerClosingDate).slice(0, 10)
+    : isCalendarDate(input.fallback?.closingDate)
+      ? input.fallback!.closingDate!.slice(0, 10)
+      : null
+  return {
+    inspectionDeadline: fromDays(input.inspectionPeriodDays,     input.fallback?.inspectionDeadline),
+    appraisalDeadline:  fromDays(input.appraisalContingencyDays, input.fallback?.appraisalDeadline),
+    financingDeadline:  fromDays(input.financingContingencyDays, input.fallback?.financingDeadline),
+    closingDate:        closing,
+  }
+}
+
+/**
+ * The offer columns the bridge reads. Hoisted OUT of the query chain on purpose:
+ * scripts/tenant-scope-guard.ts examines the 500 characters that follow a
+ * `.from("<table>")` looking for scoping evidence, and a select list long enough
+ * to push `.eq("id", …)` past that window would read as an unscoped query.
+ */
+const OFFER_BRIDGE_COLUMNS = [
+  "id", "agent_id", "contact_id", "listing_id", "offer_price", "closing_date",
+  "property_address", "earnest_money", "earnest_money_due_at", "earnest_money_due_days",
+  "esign_provider", "provider_envelope_id",
+  ...CONTRACT_TERM_COLUMNS,
+].join(", ")
 
 /**
  * Canonical "is this offer eligible to become a transaction?" gate. Reads SOURCE-OF-TRUTH
@@ -60,9 +138,15 @@ export async function assertOfferReadyForTransaction(params: {
   const o = data as OfferGateRow
   if (o.transaction_id)  return { allowed: false, reason: "transaction already exists for this offer", offer: o }
   if (!o.buyer_signed_at) return { allowed: false, reason: "buyer has not signed yet", offer: o }
-  const executedViaResponse = o.seller_response_type === "accepted" && !!o.fully_signed_contract_received_at
-  const executedViaCounter  = !!o.seller_signed_at && !!o.fully_signed_contract_received_at
-  if (!executedViaResponse && !executedViaCounter) {
+  // TOMBSTONE (§1/§6, 2026-09-04): the two-line `executedViaResponse ||
+  // executedViaCounter` boolean that stood here was one of THREE copies of the
+  // same reading. SURVIVOR: lib/transactions/offer-execution-state.ts —
+  // `offerExecutionPath` (the seller half, which also carries the provenance the
+  // gate event records) and `isOfferFullyExecuted` (both legs together). The
+  // buyer leg stays its OWN refusal one line above, because "the buyer has not
+  // signed" and "the executed contract is not on file" are different remedies
+  // and this gate's messages are read by a TC.
+  if (!offerExecutionPath(o)) {
     return { allowed: false, reason: "executed contract not on file (seller_response_type or seller_signed_at + fully_signed_contract_received_at missing)", offer: o }
   }
   if (!o.compliance_passed_at) {
@@ -129,9 +213,11 @@ export async function createTransactionFromOffer(params: {
   // with the canonical external-provider tracking columns (m106). Without this,
   // sync-from-provider can't pull documents for transactions whose provider isn't
   // Dotloop (which is the only one with a dedicated legacy column).
+  // The column list is OFFER_BRIDGE_COLUMNS (above) — it carries every contract
+  // TERM as well as the identity and date columns.
   const { data: offer, error: offerError } = await supabase
     .from("offers")
-    .select("id, agent_id, contact_id, listing_id, offer_price, closing_date, property_address, earnest_money, earnest_money_due_at, earnest_money_due_days, esign_provider, provider_envelope_id")
+    .select(OFFER_BRIDGE_COLUMNS)
     .eq("id", params.offerId)
     .maybeSingle()
 
@@ -143,6 +229,10 @@ export async function createTransactionFromOffer(params: {
   // present == this offer is on OUR listing (the seller side is ours). See deal-type-resolver.ts.
   let resolvedAddress = (offer as any).property_address ?? null
   let sellerContactId: string | null = null
+  // The property's state — needed so the required-document checklist applies the
+  // state-specific rules (the same resolution submitOfferToCompliance does:
+  // in-house → listings.state, outside property → parse it off the address).
+  let stateCode: string | null = null
   if ((offer as any).listing_id) {
     const { data: listing } = await supabase
       .from("listings")
@@ -154,18 +244,33 @@ export async function createTransactionFromOffer(params: {
         resolvedAddress = [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
       }
       sellerContactId = (listing as any).seller_contact_id ?? null
+      stateCode = ((listing as any).state as string | null) ?? null
     }
+  }
+  if (!stateCode && resolvedAddress) {
+    const m = String(resolvedAddress).match(/,\s*([A-Za-z]{2})\s*\d{5}(?:-\d{4})?\b/)
+    stateCode = m ? m[1].toUpperCase() : null
   }
 
   // Who do WE represent? Ground truth: our-listing (seller side) + whether the BUYER is OUR client (in
   // our buyer pipeline → buyer_stage set; an outside buyer's mail/upload-intake offer has none). 'dual'
   // = our listing + our buyer (covers BOTH two-agent and single-agent dual). Caller dealType overrides.
   // Drives compliance required-doc seeding + persona. Only check the buyer when the listing is ours.
+  // REPRESENTATION IS PROVEN, NOT DEFAULTED (wave 93 lane 93D2). contacts.buyer_stage carries a
+  // column DEFAULT of 'BUYER_CONTACT_CREATED' (live, 2026-10-01), so "buyer_stage is set" was true
+  // for EVERY contact — the seller included — and every outside buyer's offer on our listing was
+  // labelled 'dual' (dual agency: wrong disclosures, buyer-side portal cards and touchpoints sent to
+  // a buyer another brokerage represents). Proven live in the wave-93c walk (transaction fa61808f
+  // came out 'dual' for an uploaded outside offer). The buyer is ours when the buyer ladder has
+  // MOVED past the default, or when an ACTIVE buyer-broker agreement names them — the same
+  // agreement test lib/kernel/compliance/active-representation.ts:48 and lib/buyer-broker/gate.ts:57 use.
+  // The read itself lives in ONE place: lib/transactions/buyer-representation.ts.
   let ourBuyer = false
   if (sellerContactId && (offer as any).contact_id) {
-    const { data: buyerContact } = await supabase
-      .from("contacts").select("buyer_stage").eq("id", (offer as any).contact_id).maybeSingle()
-    ourBuyer = !!(buyerContact as { buyer_stage?: string | null } | null)?.buyer_stage
+    const { readBuyerRepresentation } = await import("./buyer-representation")
+    const rep = await readBuyerRepresentation(supabase as any, { contactId: (offer as any).contact_id, brokerageId: params.brokerageId })
+    for (const r of rep.refusals) console.error(`[offer-bridge] offer ${params.offerId}: ${r}`)
+    ourBuyer = rep.ours
   }
   const { resolveDealType } = await import("./deal-type-resolver")
   const dealType = params.dealType ?? resolveDealType({ ourListing: !!sellerContactId, ourBuyer })
@@ -190,9 +295,88 @@ export async function createTransactionFromOffer(params: {
   // chain never fails the insert.
   const dealName = resolvedAddress
     ?? `Transaction ${params.offerId.slice(0, 8)}`
+
+  // CONTRACT DATES AS FIRST-CLASS TRANSACTION COLUMNS. Until now the bridge
+  // persisted the closing date and the three contingency deadlines ONLY as
+  // milestone target_dates — while transactions.close_date, .inspection_deadline,
+  // .appraisal_deadline and .financing_deadline (all live columns) stayed NULL
+  // forever on every offer-created deal. Six real readers key off those columns
+  // (kernel/fire-drills, kernel/team-query, kernel/client-pulse ×2,
+  // managers/deliberation, workflow/intelligence/proactive-checks), so the
+  // deal-health, client-pulse and fire-drill rails saw a deal with no dates at
+  // all. Derived from the CONTRACT date (not "now") — see deriveContractDeadlines.
+  const contractDeadlines = deriveContractDeadlines({
+    contractDate:              params.contractDate,
+    inspectionPeriodDays:      (offer as any).inspection_period_days      as number | null,
+    appraisalContingencyDays:  (offer as any).appraisal_contingency_days  as number | null,
+    financingContingencyDays:  (offer as any).financing_contingency_days  as number | null,
+    offerClosingDate:          (offer as any).closing_date                as string | null,
+    fallback: {
+      inspectionDeadline: params.contractTerms.inspectionDeadline,
+      appraisalDeadline:  params.contractTerms.appraisalDeadline,
+      financingDeadline:  params.contractTerms.financingDeadline,
+      closingDate:        params.contractTerms.closingDate,
+    },
+  })
+  // THE CONTRACT TERMS THEMSELVES (m387). Copied 1:1 off the offer — same column
+  // names on both sides — and spread FIRST in the payload below so that the
+  // explicitly named columns after it always win. A term and a deadline are
+  // different facts (see CONTRACT_TERM_COLUMNS) and the two name sets are
+  // disjoint, so nothing here can overwrite a date the derivation above produced.
+  const contractTerms = copyContractTerms(offer as unknown as Record<string, unknown>)
+
+  // ── THE TRANSACTION-CREATION GATE, AND IT IS NOT SKIPPABLE ────────────────
+  //
+  // Owner's rule: "when the transaction is created it is only created after the
+  // compliance is good, all documents are present with full signatures and
+  // initials. the required document list is in the settings…"
+  //
+  // `skipOfferGate` above lets the authoritative caller skip re-reading the
+  // OFFER COLUMNS it just stamped. It does NOT and must not skip this: no caller
+  // in the tree checked the required-document list AND the per-document
+  // signature/initial state before creating a transaction. submitOfferToCompliance
+  // audited required-document PRESENCE and walked a packet when one was staged,
+  // which is not the same claim as "every required contract in this file carries
+  // every party's signature and every party's initials".
+  //
+  // Fail-closed by construction: assertTransactionCreationAllowed refuses when it
+  // cannot read the checklist, the deal file, or the compliance ledger.
+  // brokerageId is the caller's session tenant, and the gate re-reads the offer's
+  // own brokerage_id and refuses a mismatch.
+  const { assertTransactionCreationAllowed } = await import("./transaction-creation-gate")
+  // agents.id ≠ users.id (23503) — cross via agents.user_id before asking for an
+  // agent-scoped checklist, or the agent scope silently matches nothing.
+  let gateAgentUserId: string | null = null
+  let gateTeamId: string | null = null
+  if ((offer as any).agent_id) {
+    const { data: agentRow } = await supabase
+      .from("agents").select("user_id").eq("id", (offer as any).agent_id).maybeSingle()
+    gateAgentUserId = (agentRow?.user_id as string | null) ?? null
+    if (gateAgentUserId) {
+      const { data: userRow } = await supabase
+        .from("users").select("team_id").eq("id", gateAgentUserId).maybeSingle()
+      gateTeamId = (userRow?.team_id as string | null) ?? null
+    }
+  }
+  const creationGate = await assertTransactionCreationAllowed(supabase as any, {
+    brokerageId: params.brokerageId,
+    offerId:     params.offerId,
+    listingId:   (offer as any).listing_id ?? null,
+    contactIds:  [(offer as any).contact_id ?? null, sellerContactId],
+    agentUserId: gateAgentUserId,
+    teamId:      gateTeamId,
+    dealType,
+    stateCode,
+    door:        "offer → transaction",
+  })
+  if (!creationGate.allowed) {
+    throw new Error(`[offer-bridge] Gate refused transaction creation: ${creationGate.reason}`)
+  }
+
   const { data: transaction, error: txnError } = await supabase
     .from("transactions")
     .insert({
+      ...contractTerms,
       brokerage_id:         params.brokerageId,
       agent_id:             (offer as any).agent_id,
       contact_id:           clientContactId,             // live FK — OUR client (seller on 'seller' deals)
@@ -212,6 +396,15 @@ export async function createTransactionFromOffer(params: {
       // the amount is currency ("Earnest Deposit: $X"), never a date.
       earnest_money:        (offer as any).earnest_money ?? null,
       contract_date:        params.contractDate,
+      // The dates the deal now lives by — persisted ON the transaction, not only
+      // as milestones. close_date is the canonical closing date every finance /
+      // commission / scorecard reader uses; the three deadlines feed the
+      // contingency + deal-health rails.
+      close_date:           contractDeadlines.closingDate,
+      estimated_close_date: contractDeadlines.closingDate,
+      inspection_deadline:  contractDeadlines.inspectionDeadline,
+      appraisal_deadline:   contractDeadlines.appraisalDeadline,
+      financing_deadline:   contractDeadlines.financingDeadline,
       compliance_passed_at: params.compliancePassedAt,
       stage:                "UNDER_CONTRACT",
       status:               "under_contract",
@@ -281,8 +474,11 @@ export async function createTransactionFromOffer(params: {
   // ensureRequiredMilestones looks up dates by snake_case milestone_name key
   // e.g. contractTerms["closing_date"], contractTerms["inspection_deadline"]
   // Normalise camelCase keys from the offer bridge params before passing in
+  // Milestone dates come from the SAME derivation the transaction columns above
+  // used, so a deadline can never read one date on the deal row and a different
+  // one on its milestone card.
   const normalisedTerms: Record<string, string> = {}
-  const { closingDate, inspectionDeadline, appraisalDeadline, financingDeadline } = params.contractTerms
+  const { closingDate, inspectionDeadline, appraisalDeadline, financingDeadline } = contractDeadlines
   if (closingDate)        normalisedTerms["closing_date"]        = closingDate
   if (inspectionDeadline) normalisedTerms["inspection_deadline"] = inspectionDeadline
   if (appraisalDeadline)  normalisedTerms["appraisal_deadline"]  = appraisalDeadline
@@ -293,7 +489,17 @@ export async function createTransactionFromOffer(params: {
   // from the canonical catalog), then ensure the deadline-critical set — which dedupes
   // by identity, so it fills the deadline dates + mirrors them rather than duplicating.
   // An offer transaction now carries the same rich journey a directly-created one does.
-  await seedJourneyMilestones(transaction.id, params.brokerageId, "purchase")
+  // THE JOURNEY FOLLOWS THE DEAL SIDE. This was the literal "purchase" while
+  // `dealType` — resolved a few lines above from ground truth and written to
+  // transactions.deal_type — sat unused, so a SELLER-side deal was seeded the
+  // buyer's milestone journey and the seller's own steps never appeared. The
+  // catalog already splits the two (milestone-catalog.ts:milestoneJourneyFor
+  // switches on "sale"); nothing was missing except passing the side we had.
+  await seedJourneyMilestones(
+    transaction.id,
+    params.brokerageId,
+    dealType === "seller" ? "sale" : "purchase",
+  )
   await ensureRequiredMilestones(
     transaction.id,
     params.brokerageId,
@@ -301,10 +507,11 @@ export async function createTransactionFromOffer(params: {
   )
   
   // Back-link the offer to the created transaction
-  await supabase
+  const { error: offerBackLinkErr } = await supabase
     .from("offers")
     .update({ transaction_id: transaction.id, updated_at: new Date().toISOString() })
     .eq("id", params.offerId)
+  if (offerBackLinkErr) console.error(`[offer-bridge] transaction created but the offer was NOT back-linked to it: ${offerBackLinkErr.message}`)
 
   // TRANSACTION COST BREAKDOWN (burn-down round 4): the client portal's
   // transaction detail reads transaction_cost_breakdown — writer-less until
@@ -317,9 +524,13 @@ export async function createTransactionFromOffer(params: {
   try {
     const { computeNetProceeds, defaultSellerCosts } = await import("@/lib/offers/net-sheet-calc")
     const offerPrice = Number((offer as any).offer_price) || 0
-    const buyerCredit = 0 // closing_cost_contribution is not on this offer select — estimate lines say so
+    // The seller's closing-cost contribution IS a contract term and is now read
+    // (CONTRACT_TERM_COLUMNS). It was hard-zeroed here only because the select
+    // did not carry it, which understated the buyer's credit and overstated the
+    // seller's net on every offer that negotiated one.
+    const buyerCredit = Number((offer as any).closing_cost_contribution) || 0
     const costs = defaultSellerCosts({ listPrice: offerPrice, commissionRateDecimal: 0.06, hoaDuesMonthly: null })
-    await supabase.from("transaction_cost_breakdown").upsert({
+    await sentinelWrite(supabase, supabase.from("transaction_cost_breakdown").upsert({
       transaction_id: transaction.id,
       brokerage_id: params.brokerageId,
       buyer_costs: {
@@ -339,7 +550,7 @@ export async function createTransactionFromOffer(params: {
       },
       net_proceeds: computeNetProceeds({ offerPrice, buyerClosingCredit: buyerCredit }, costs),
       updated_at: new Date().toISOString(),
-    }, { onConflict: "transaction_id" })
+    }, { onConflict: "transaction_id" }), { table: "transaction_cost_breakdown", flow: "offer_bridge_cost_breakdown", brokerageId: params.brokerageId, reason: "estimate seeded at offer→deal bridge; never blocks the bridge (by ruling) — ledgered instead of silent" })
   } catch { /* best-effort — never blocks the offer→deal bridge */ }
 
   // CONTINGENCY DEADLINES — the offer's NON-STANDARD contingencies (home-sale, HOA, title, insurance,
@@ -352,7 +563,9 @@ export async function createTransactionFromOffer(params: {
   } catch { /* best-effort — the deadline-watcher + reapers are the safety net */ }
 
   // Create first activity — Agent task (correct location, no changes) — activity_type: transaction_started
-  await supabase.from("activities").insert({
+  // The transaction's first task. A lost row is a deal under contract whose
+  // "schedule inspection" next-action never appears for the agent.
+  const { error: transactionStartedActivityError } = await supabase.from("activities").insert({
     transaction_id: transaction.id,
     brokerage_id:   params.brokerageId,
     agent_id:       (offer as any).agent_id,  // buyer_agents table does NOT exist
@@ -363,6 +576,9 @@ export async function createTransactionFromOffer(params: {
     status:         "pending",
     created_at:     new Date().toISOString(),
   })
+  if (transactionStartedActivityError) {
+    console.error(`[offer-bridge] transaction_started activity REJECTED for transaction ${transaction.id} — the agent gets no first task:`, transactionStartedActivityError.message)
+  }
   
   // Client-facing "under contract" card now flows through the canonical kernel template path
   // (idempotent + buyer/seller-aware) instead of a one-off direct transparency_updates write — this
@@ -383,8 +599,8 @@ export async function createTransactionFromOffer(params: {
         earnest_money_due:      earnestDueDate ?? null,
         earnest_money_due_days: (offer as any).earnest_money_due_days ?? null,
         title_company:          titleCompany,
-        inspection_deadline:    params.contractTerms.inspectionDeadline ?? null,
-        closing_date:           params.contractTerms.closingDate ?? null,
+        inspection_deadline:    contractDeadlines.inspectionDeadline,
+        closing_date:           contractDeadlines.closingDate,
         created_from_offer:     params.offerId,
       },
     })
@@ -392,17 +608,88 @@ export async function createTransactionFromOffer(params: {
     console.error("[offer-bridge] emitTransactionEvent(OFFER_ACCEPTED) failed", err)
   }
 
+  // BUYER_UNDER_CONTRACT — the buyer-side "you're under contract" moment. Was declared
+  // in lib/kernel/events.ts but never emitted anywhere (a reader-less AND writer-less
+  // enum member — CLAUDE.md §1.2: BUILD the missing half). Distinct from
+  // LISTING_UNDER_CONTRACT (the seller-side event, fired separately from a listing
+  // stage transition in app/actions/listing-lifecycle-core.ts): this is the audience
+  // the transaction.under_contract portal card and its celebratory copy is written
+  // for. Only fired when WE represent the buyer on this deal (representsBuyer) — on a
+  // pure 'seller' deal there is no buyer contact of ours to card. entityType
+  // "transaction" so the portal-stream projector's resolveEntityContext reads
+  // transactions.contact_id, which on a buyer/dual deal IS the buyer (clientContactId
+  // above). Best-effort: never break transaction creation on a fan-out failure.
+  if (representsBuyer) {
+    try {
+      const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+      const { KernelEvent } = await import("@/lib/kernel/events")
+      await emitTransactionEvent({
+        event:       KernelEvent.BUYER_UNDER_CONTRACT,
+        brokerageId: params.brokerageId,
+        entityId:    transaction.id,
+        actorUserId: "",
+        metadata: {
+          property_address:   resolvedAddress,
+          closing_date:        contractDeadlines.closingDate,
+          inspection_deadline: contractDeadlines.inspectionDeadline,
+          created_from_offer:  params.offerId,
+        },
+      })
+    } catch (err) {
+      console.error("[offer-bridge] emitTransactionEvent(BUYER_UNDER_CONTRACT) failed", err)
+    }
+  }
+
   // Auto-populate transaction_participants from offer + listing + brokerage
   // preferred-vendor directory. Never inserts placeholders — only rows for
   // which we can resolve real names/emails. Idempotent (skips when the
   // transaction already has any participants).
   try {
-    await populateInitialParticipants(supabase as any, transaction.id, params.brokerageId)
+    const roster = await populateInitialParticipants(supabase as any, transaction.id, params.brokerageId)
+    // A refused roster read/insert is the accept email to the cooperating agent
+    // not happening — say so beside the deal, never as "nobody to tell".
+    if (roster.error) console.error(`[offer-bridge] participant roster for ${transaction.id} NOT written: ${roster.error}`)
   } catch (err: any) {
     // Failure here must not roll back the transaction. The agent can still
     // populate participants manually from the transaction UI.
     console.error("[offer-bridge] populateInitialParticipants failed (non-fatal):", err?.message ?? err)
   }
 
-  return { success: true, transactionId: transaction.id }
+  // ── OBLIGATION 5, SECOND HALF: tell the parties. ──────────────────────────
+  // Terms and dates are now saved (above); this is where every party learns
+  // them. Runs AFTER populateInitialParticipants on purpose — the roster it
+  // writes IS the recipient list and the contact-info block of the message.
+  // Idempotent (marker on activities), audience-scoped (staff vs client vs
+  // outside professional), and HONEST: a fan-out that reached nobody is logged
+  // as not-sent, never swallowed. Never throws — a notification failure must
+  // not roll back a created transaction, but it must not be invisible either.
+  let partiesNotified: { sent: boolean; already_notified: boolean; errors: string[] } | null = null
+  try {
+    const { notifyTransactionParties } = await import("@/lib/notifications/notify-helpers")
+    partiesNotified = await notifyTransactionParties(supabase as any, {
+      transactionId: transaction.id,
+      brokerageId:   params.brokerageId,
+    })
+    if (!partiesNotified.sent && !partiesNotified.already_notified) {
+      console.error(
+        `[offer-bridge] transaction ${transaction.id} created but NO party was notified:`,
+        partiesNotified.errors.join(" | "),
+      )
+    } else if (partiesNotified.errors.length > 0) {
+      console.warn(
+        `[offer-bridge] party notification for ${transaction.id} completed with issues:`,
+        partiesNotified.errors.join(" | "),
+      )
+    }
+  } catch (err: any) {
+    console.error("[offer-bridge] notifyTransactionParties threw (non-fatal):", err?.message ?? err)
+  }
+
+  return {
+    success: true,
+    transactionId: transaction.id,
+    // Reported, not assumed: callers (and the e2e proof) can see whether the
+    // parties were actually told.
+    partiesNotified: partiesNotified?.sent ?? false,
+  }
 }

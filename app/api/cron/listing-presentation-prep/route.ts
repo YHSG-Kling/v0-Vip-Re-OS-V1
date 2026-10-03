@@ -1,14 +1,43 @@
 /**
  * GET /api/cron/listing-presentation-prep
  *
- * Daily cron — finds every LISTING APPOINTMENT scheduled in the next 24 hours
- * and pre-builds a complete listing presentation (CMA + 3-price net sheet +
- * marketing plan + slide deck + listing-agreement packet) for the agent.
+ * Daily cron — finds every LISTING APPOINTMENT scheduled inside the drip runway
+ * and pre-builds the COMPLETE listing presentation (CMA + 3-price net sheet +
+ * marketing plan + slide deck + listing-agreement packet) for the agent, which
+ * also materializes + schedules the seller-facing pre-listing drip
+ * (buildListingPresentation → materializePresentationSections →
+ * planPresentationSections, the one timetable).
  *
- * Idempotent: skips appointments that already have a listing_presentations row.
+ * THE SAFETY NET, NOT THE FIRST TRIGGER (lanes 87B/88D). Every booking path fires
+ * the listing-appt-prep chain's own `listing.appointment_set` event (CMA →
+ * presentation → chapter reels → section drip → kit); this scan starts that same
+ * event for a booking that missed it, and still builds the presentation directly
+ * when a run ended without one — so a booked seller always ends up with a
+ * complete, scheduled presentation.
  *
- * Schedule (vercel.json): "0 17 * * *"  (12:00 ET / 17:00 UTC, the day before
- * morning appointments → agent has it overnight to review before tomorrow's meeting)
+ * IT SERVES BOTH ORIGINS. An agent booking a consult on a listing, and a
+ * home-value SELLER booking their own appointment from the report page or the
+ * portal, write the same event_type — and the seller is the one this lane exists
+ * for. The subject property is therefore resolved from whichever table that
+ * origin records it in (resolveSubjectProperty at the foot of this file); it used
+ * to be read only from `listings`, which a prospect does not have, so every
+ * home-value seller was counted as `skipped` and got no presentation, no section
+ * drip and no chapter reels.
+ *
+ * WHY THE WINDOW IS THE RUNWAY, NOT 24 HOURS. This scanned `now → now+24h`,
+ * which meant the presentation — and therefore the drip's whole schedule — was
+ * created the day before the meeting. planPresentationSections spreads its
+ * sections between NOW and (appointment − buffer), so building one day out left
+ * seven seller touches to be crammed into roughly twelve hours: the drip
+ * existed and had no runway to drip across. A listing appointment is booked at
+ * least seven days out, so the scan reaches far enough ahead that the schedule
+ * is laid down while there is still a window to spread it over.
+ *
+ * Idempotent: skips appointments that already have a listing_presentations row,
+ * so re-scanning the same wide window every day builds each presentation once.
+ *
+ * Schedule (lib/kernel/cron-dispatch): "0 17 * * *" (12:00 ET / 17:00 UTC), and
+ * "0 19 * * *" for ?phase=deliver.
  *
  * Auth: Authorization: Bearer ${CRON_SECRET}
  */
@@ -17,6 +46,37 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { buildListingPresentation } from "@/lib/workflow/intelligence/listing-presentation-builder"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { CalendarEventType } from "@/lib/kernel/calendar-types"
+import {
+  decideSafetyNetAction,
+  prepRunStatusesForBooking,
+  resolveBookingPrepContext,
+  fireListingAppointmentSetForBooking,
+} from "@/lib/workflow-orchestrator/chains/listing-appt-prep"
+
+/**
+ * How far ahead a listing appointment is picked up for presentation prep.
+ *
+ * A listing appointment is booked at least SEVEN days out, and the pre-listing
+ * drip runs from the moment the presentation is built until (appointment −
+ * buffer). Fourteen days covers the seven-day minimum with room for an
+ * appointment booked further out, and the build is idempotent per appointment,
+ * so widening the window costs nothing beyond the first scan that sees each one.
+ */
+const PREP_LOOKAHEAD_DAYS = 14
+
+/**
+ * How many presentations one tick will BUILD. Skips are a single indexed read
+ * and are not counted — only real builds, each of which runs a CMA. Appointments
+ * are prepped soonest-first, so a tick that hits the ceiling defers the furthest
+ * ones to tomorrow, when they are still inside the runway. (A SQL LIMIT would
+ * not do: ordered by start_at the first rows are the already-built ones, so a
+ * new booking further out would never be reached.)
+ */
+const MAX_BUILDS_PER_TICK = 25
+
+export const dynamic = "force-dynamic"
+export const maxDuration = 300
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   // Cron auth — see lib/cron-auth.ts
@@ -33,75 +93,124 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ phase: "deliver", ...delivery })
   }
 
-  // Find appointments in the next 24h marked as a listing consultation
+  // Find every listing appointment inside the drip runway. See the header: the
+  // window has to be wide enough that planPresentationSections still has room to
+  // spread the seller's sections between now and the appointment.
   const now = new Date().toISOString()
-  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+  const horizon = new Date(Date.now() + PREP_LOOKAHEAD_DAYS * 86_400_000).toISOString()
 
-  // calendar_events replaced appointments — appointments was a writer-less legacy twin (burn-down round 4 repoint).
-  // Mapping: scheduled_at→start_at, appointment_type→event_type ('listing_appointment' is the value
-  // lib/application/listing-lifecycle.ts writes for listing consults; entity_id is the listing,
-  // metadata carries contact_id + agent_id [a users.id], and the address lives on the listing row).
-  const { data: appointments } = await svc
+  // THE SAFETY NET (lanes 87B/88D). The prep STARTS FROM THE BOOKING: every
+  // listing-appointment booking path hands its calendar_events row to the
+  // listing-appt-prep chain's own trigger
+  // (lib/workflow-orchestrator/chains/listing-appt-prep.ts::fireListingAppointmentSetForBooking
+  // — the agent calendar, the listing consult, the AI-ISA/voice booking at the
+  // agent's confirm, the seller's own self-booking from the report page or the
+  // portal), which records ONE listing.appointment_set event per booking. This
+  // scan catches the bookings that missed that event, and reads the ONE spelling
+  // of a listing appointment (CalendarEventType.LISTING_APPOINTMENT; lane 87B2
+  // merged the calendar's "listing_consultation" and the ISA milestone's
+  // "isa_appointment" onto it). The seller check, the tenant (the booking row's
+  // own brokerage_id), the seller's property and the agent's users.id are
+  // resolved by the SAME chain module the booking paths use — never a second
+  // resolver here.
+  const { data: appointments, error: apptErr } = await svc
     .from("calendar_events")
-    .select("id, brokerage_id, entity_type, entity_id, start_at, event_type, metadata")
+    .select("id, brokerage_id, start_at, event_type")
     .gte("start_at", now)
-    .lte("start_at", tomorrow)
-    .eq("event_type", "listing_appointment")
+    .lte("start_at", horizon)
+    .eq("event_type", CalendarEventType.LISTING_APPOINTMENT)
+    .order("start_at", { ascending: true })
+  // A refused read is a FAILED tick, not a quiet one. Reporting scanned:0 here
+  // would read exactly like "no appointments booked".
+  if (apptErr) {
+    return NextResponse.json({ ok: false, error: apptErr.message }, { status: 500 })
+  }
 
   if (!appointments || appointments.length === 0) {
-    return NextResponse.json({ scanned: 0, built: 0, skipped: 0 })
+    return NextResponse.json({ scanned: 0, built: 0, started: 0, in_progress: 0, skipped: 0, refused: 0, deferred: 0 })
   }
 
   let built = 0
+  let started = 0
+  let inProgress = 0
   let skipped = 0
+  let refused = 0
+  let deferred = 0
   const errors: Array<{ appointmentId: string; error: string }> = []
 
   for (const appt of appointments) {
-    const apptAny = appt as any
+    const apptAny = appt as { id: string; brokerage_id: string | null; start_at: string }
+    if (!apptAny.brokerage_id) { refused++; continue }
 
-    // Idempotency — skip if a presentation already exists for this appointment
-    const { data: existing } = await svc
+    if (built + started >= MAX_BUILDS_PER_TICK) { deferred++; continue }
+
+    // Idempotency — a presentation for this appointment already exists.
+    // An unreadable row is NOT treated as absent: building on a failed read
+    // would produce a second presentation (and a second drip) for one seller.
+    const { data: existing, error: existErr } = await svc
       .from("listing_presentations")
       .select("id")
       .eq("appointment_id", appt.id)
+      .eq("brokerage_id", apptAny.brokerage_id)
       .maybeSingle()
-    if (existing) {
-      skipped++
+    if (existErr) {
+      errors.push({ appointmentId: appt.id, error: `idempotency read failed: ${existErr.message}` })
+      continue
+    }
+    const runs = existing
+      ? { ok: true as const, statuses: [] as string[] }
+      : await prepRunStatusesForBooking(svc, { brokerageId: apptAny.brokerage_id, calendarEventId: appt.id })
+    if (!runs.ok) {
+      errors.push({ appointmentId: appt.id, error: `prep run read failed: ${runs.error}` })
+      continue
+    }
+    const action = decideSafetyNetAction({ presentationExists: !!existing, runStatuses: runs.statuses })
+    if (action === "done") { skipped++; continue }
+    if (action === "in_progress") { inProgress++; continue }
+
+    if (action === "start_prep") {
+      // The booking missed its event — start it exactly as the booking would have.
+      const r = await fireListingAppointmentSetForBooking(svc, { calendarEventId: appt.id, origin: "cron_safety_net" })
+      if (r.status === "started" || r.status === "deduped") started++
+      else if (r.status === "refused") refused++
+      else if (r.status === "deferred") deferred++
+      else if (r.status === "skipped") skipped++
+      else errors.push({ appointmentId: appt.id, error: "reason" in r ? r.reason : "prep start failed" })
       continue
     }
 
-    // Need a property address + state to run the CMA — listing_appointment events carry
-    // the listing as entity_id; the address lives on the listings row.
-    let propertyAddress: string | null = null
-    let state: string | null = null
-    let city: string | null = null
-    let zip: string | null = null
-    if (apptAny.entity_type === "listing" && apptAny.entity_id) {
-      const { data: listing } = await svc
-        .from("listings").select("address, city, state, zip").eq("id", apptAny.entity_id).maybeSingle()
-      propertyAddress = (listing as any)?.address ?? null
-      state = (listing as any)?.state ?? null
-      city = (listing as any)?.city ?? null
-      zip = (listing as any)?.zip ?? null
-    }
-    if (!propertyAddress || !state) {
-      skipped++
+    // action === "build_presentation": the prep run ended without a deck. Build
+    // the presentation directly (the net's net), for the SAME seller and property
+    // the core resolves — a non-seller booking is refused here too.
+    const resolved = await resolveBookingPrepContext(svc, { calendarEventId: appt.id })
+    if (!resolved.ok) {
+      if (resolved.outcome === "error") errors.push({ appointmentId: appt.id, error: resolved.reason })
+      else if (resolved.outcome === "refused") refused++
+      else if (resolved.outcome === "deferred") deferred++
+      else skipped++
       continue
     }
-
-    // metadata.agent_id is already the auth users.id (see scheduleListingAppointmentService)
-    const agentUserId: string | null = apptAny.metadata?.agent_id ?? null
+    const ctx = resolved.context
+    // Honest skip: nothing on file names this property, or names it without a
+    // state (listing_presentations.state is NOT NULL and the CMA is state-scoped).
+    // Nothing is invented to get past this line.
+    if (!ctx.property.propertyAddress || !ctx.property.state) { skipped++; continue }
 
     const result = await buildListingPresentation({
-      brokerageId:     apptAny.brokerage_id,
-      agentUserId,
-      contactId:       apptAny.metadata?.contact_id ?? null,
+      brokerageId:     ctx.brokerageId,
+      agentUserId:     ctx.agentUserId,
+      contactId:       ctx.contactId,
       appointmentId:   appt.id,
-      appointmentAt:   apptAny.start_at,
-      propertyAddress,
-      state,
-      city,
-      zip,
+      appointmentAt:   ctx.startAt,
+      listingId:       ctx.property.listingId,
+      propertyAddress: ctx.property.propertyAddress,
+      state:           ctx.property.state,
+      city:            ctx.property.city,
+      zip:             ctx.property.zip,
+      bedrooms:        ctx.property.bedrooms,
+      bathrooms:       ctx.property.bathrooms,
+      sqft:            ctx.property.sqft,
+      yearBuilt:       ctx.property.yearBuilt,
     })
 
     if (result.success) {
@@ -112,8 +221,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       try {
         const { queueListingPitchReel } = await import("@/lib/video/listing-pitch-reel")
         await queueListingPitchReel(svc, {
-          brokerageId: apptAny.brokerage_id, agentUserId,
-          appointmentId: appt.id, address: propertyAddress,
+          brokerageId: ctx.brokerageId, agentUserId: ctx.agentUserId,
+          appointmentId: appt.id, address: ctx.property.propertyAddress,
+          // The seller's contact id — resolves the seller's own language for the
+          // pitch narration (owner ruling, wave 51/52).
+          contactId: ctx.contactId,
         })
       } catch { /* pitch reel is additive */ }
     }
@@ -122,8 +234,26 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   return NextResponse.json({
     scanned: appointments.length,
+    lookahead_days: PREP_LOOKAHEAD_DAYS,
+    // Prep runs the net started for bookings that missed their event.
+    started,
+    // Presentations the net built directly (the prep run ended without one).
     built,
+    in_progress: inProgress,
     skipped,
+    // Not a seller / not a listing appointment / not in a tenant — never prepped.
+    refused,
+    // Over the per-tick build ceiling — picked up by tomorrow's tick, still
+    // inside the runway. Reported so a ceiling that is too low is visible.
+    deferred,
     errors: errors.length > 0 ? errors : undefined,
   })
 }
+
+// SUBJECT PROPERTY / AGENT RESOLUTION — moved (lane 87B) out of this file and, since
+// lane 88D, lives with the chain it feeds: lib/workflow-orchestrator/chains/
+// listing-appt-prep.ts (resolveBookingPrepContext → pickSellerProperty /
+// resolveBookingAgentUserId), the module every booking path already calls.
+// The listing → valuation_request order this file carried is preserved there, with
+// the seller check in front of it and the caller's captured property, the booking's
+// own address and the seller's home address added behind it.

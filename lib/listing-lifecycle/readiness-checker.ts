@@ -116,6 +116,29 @@ async function evaluateSingleCheck(
  * Check: documents_verified
  * Verifies all required documents are uploaded
  */
+/**
+ * "Are the required documents on file, and are the ones on file finished?"
+ *
+ * THE BUG THIS REPLACES WAS A COMPLIANCE BYPASS, not a rough edge. The previous
+ * version read the documents ATTACHED to the listing and asked whether any were
+ * in a non-terminal status. With ZERO documents attached, the filter is empty,
+ * `unverified === 0`, and the gate returned passed:true — verified live against
+ * a real listing. A seller listing with no paperwork whatsoever satisfied
+ * "documents verified" and could be advanced to LISTING_AGREEMENT_SIGNED.
+ *
+ * The owner's rule is explicit: all signed documents from both sides, all
+ * required brokerage/team/agent docs, where required-vs-warning is a setting,
+ * and any missing item notifies the TC and/or the listing agent.
+ *
+ * auditListingDocuments is that rule, and it already existed — it resolves the
+ * REQUIRED checklist for the brokerage/team/agent/state and reports what is
+ * missing, split into blocking and warning. It was reachable only through
+ * markAgreementSigned, which nothing called, so the one path an agent actually
+ * has ran the weaker check. Both halves are now enforced here:
+ *
+ *   1. every BLOCKING required document is present  (was not checked at all)
+ *   2. every attached document has reached a terminal status  (the old check)
+ */
 async function checkDocumentsVerified(
   supabase: SupabaseClient,
   listingId: string
@@ -137,14 +160,142 @@ async function checkDocumentsVerified(
 
   // documents.status terminal/verified states are 'complete' and 'signed'.
   const unverifiedDocs = data?.filter((d) => !["complete", "signed"].includes(d.status)) || []
-  
+
+  // ─── The required-checklist half ──────────────────────────────────────────
+  // Same columns and the same identity resolution markAgreementSigned uses, so
+  // the readiness gate and the execution checkpoint cannot disagree about what
+  // "required" means for this listing.
+  const { data: listing, error: listingError } = await supabase
+    .from("listings")
+    .select("brokerage_id, agent_id, seller_contact_id, contact_id, state")
+    .eq("id", listingId)
+    .maybeSingle()
+
+  if (listingError) {
+    return {
+      check: "documents_verified",
+      passed: false,
+      reason: `Error reading the listing: ${listingError.message}`,
+    }
+  }
+  if (!listing?.brokerage_id) {
+    // No tenant anchor means the required-docs checklist cannot be resolved.
+    // REFUSE rather than fall through to the weaker check — an unresolvable
+    // compliance gate is a blocked transition, not a passed one.
+    return {
+      check: "documents_verified",
+      passed: false,
+      reason: "Listing has no brokerage on file, so its required-document checklist cannot be resolved",
+    }
+  }
+
+  const { auditListingDocuments } = await import("@/lib/compliance/required-documents")
+
+  // listings.agent_id is agents.id. auditListingDocuments wants users.id, so it
+  // is RESOLVED — never substituted. A wrong id here would silently resolve the
+  // wrong agent's document requirements.
+  const listingAgentUserId = listing.agent_id
+    ? ((await supabase.from("agents").select("user_id").eq("id", listing.agent_id).maybeSingle())
+        .data?.user_id as string | null) ?? null
+    : null
+
+  const teamId = listingAgentUserId
+    ? ((await supabase.from("users").select("team_id").eq("id", listingAgentUserId).maybeSingle())
+        .data?.team_id as string | null) ?? null
+    : null
+
+  const audit = await auditListingDocuments(supabase, {
+    brokerageId:     listing.brokerage_id,
+    listingId,
+    // THE SELLER IS IN seller_contact_id. listings.contact_id exists but is not
+    // populated — 0 of 3 rows live — so reading it made sellerContactId always
+    // null and the audit silently skipped every document filed against the
+    // seller's CONTACT record rather than the listing. Raised in review on the
+    // neighborhood-report fallback; the same column mistake was here and in
+    // markAgreementSigned, so both were corrected together. contact_id is kept
+    // as a fallback for any legacy row that used it.
+    sellerContactId: ((listing.seller_contact_id ?? listing.contact_id) as string | null) ?? null,
+    agentUserId:     listingAgentUserId,
+    teamId,
+    stateCode:       (listing.state as string | null) ?? null,
+  })
+
+  // ─── The EXECUTION half ───────────────────────────────────────────────────
+  //
+  // "documents_verified" CLAIMED MORE THAN IT CHECKED. Presence plus a terminal
+  // `documents.status` is not verification: `status` is a workflow label a
+  // caller writes, while whether every required party actually SIGNED and
+  // INITIALED lives in `documents.signature_completeness`, which this check
+  // never opened. A document could sit at status 'complete' with the seller's
+  // initials blank and this gate called it verified.
+  //
+  // The owner's 2026-09-04 ruling — "same compliance gate when a listing becomes
+  // an active listing" — is what closes it. findUnexecutedDocuments is the SAME
+  // pure function the offer-side transaction gate and the listing-activation
+  // gate run (§6: one vocabulary), so a check named `documents_verified` and the
+  // gate that guards MLS_ACTIVE can no longer disagree about what a verified
+  // document is.
+  //
+  // LISTING_AGREEMENT_PARTIES (agent + seller) is passed explicitly: this is
+  // seller-side paperwork and there is no buyer at this point in the lifecycle.
+  // The default is the purchase-contract pair and would refuse every listing.
+  const { findUnexecutedDocuments } = await import("@/lib/transactions/transaction-creation-gate")
+  const { LISTING_AGREEMENT_PARTIES } = await import("@/lib/compliance/signature-completeness")
+  const unexecuted = audit.unavailable_reason
+    ? []
+    : findUnexecutedDocuments(
+        audit.deal_file,
+        audit.required_breakdown.map((r) => r.classification),
+        LISTING_AGREEMENT_PARTIES,
+      )
+  const signatureGaps = unexecuted.filter((u) => u.missingSignatures.length > 0)
+  const initialGaps   = unexecuted.filter((u) => u.missingInitials.length > 0)
+
+  const reasons: string[] = []
+  // AN AUDIT THAT COULD NOT RUN IS NOT A CLEAN AUDIT. This check is the exact
+  // surface finding #105 named ("documents_verified passes with zero
+  // documents"), and the settings end of it had the same shape: a REFUSED
+  // checklist or deal-file read used to come back as the all-zero result of a
+  // clean file. auditListingDocuments now says so, and it BLOCKS here.
+  if (audit.unavailable_reason) {
+    reasons.push(`required-document check could not run: ${audit.unavailable_reason}`)
+  }
+  if (audit.missing_blocking.length > 0) {
+    reasons.push(`${audit.missing_blocking.length} required document(s) missing: ${audit.missing_blocking.join(", ")}`)
+  }
+  // Signatures and initials are reported SEPARATELY, because the owner names
+  // them separately and fixing one is not fixing the other.
+  if (signatureGaps.length > 0) {
+    reasons.push(`${signatureGaps.length} required document(s) not fully signed: ${signatureGaps.map((u) => u.label).join(", ")}`)
+  }
+  if (initialGaps.length > 0) {
+    reasons.push(`initials outstanding on ${initialGaps.length} required document(s): ${initialGaps.map((u) => u.label).join(", ")}`)
+  }
+  if (unverifiedDocs.length > 0) {
+    reasons.push(`${unverifiedDocs.length} attached document(s) not yet complete or signed`)
+  }
+
   return {
     check: "documents_verified",
-    passed: unverifiedDocs.length === 0,
-    reason: unverifiedDocs.length > 0
-      ? `${unverifiedDocs.length} required document(s) not verified`
-      : undefined,
-    details: { totalRequired: data?.length || 0, unverified: unverifiedDocs.length },
+    passed:
+      !audit.unavailable_reason &&
+      audit.missing_blocking.length === 0 &&
+      unexecuted.length === 0 &&
+      unverifiedDocs.length === 0,
+    reason: reasons.length > 0 ? reasons.join("; ") : undefined,
+    details: {
+      attached: data?.length || 0,
+      unverified: unverifiedDocs.length,
+      required_total: audit.required_total,
+      missing_blocking: audit.missing_blocking,
+      // Warnings never block, but the surface should still show them so the
+      // agent knows what the TC is about to ask for.
+      missing_warning: audit.missing_warning,
+      // The execution half, split the way the refusal is, so a surface can tell
+      // an agent WHICH job is outstanding rather than only that one is.
+      missing_signatures: signatureGaps.map((u) => ({ label: u.label, missing: u.missingSignatures, unscanned: u.unscanned })),
+      missing_initials:   initialGaps.map((u) => ({ label: u.label, missing: u.missingInitials, unscanned: u.unscanned })),
+    },
   }
 }
 
@@ -186,8 +337,10 @@ async function checkMediaApproved(
   supabase: SupabaseClient,
   listingId: string
 ): Promise<ReadinessCheckResult> {
-  // Photo approval state lives on listing_media.is_approved (listing_photos has no
-  // approval concept). Filter to photo media for the 10-photo minimum.
+  // Photo approval state lives on listing_media.is_approved. That approval
+  // governance is precisely why listing_media survived the m368/m369
+  // consolidation and the duplicate listing_photos table was dropped.
+  // media_type is pinned so the 10-photo minimum counts photos, not documents.
   const { data: photos } = await supabase
     .from("listing_media")
     .select("id, is_approved")

@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -31,7 +32,10 @@ type PresentationStatus = {
   presentationAssembled: boolean
   videoGenerated: boolean
   readyForDecision: boolean
+  /** A real listing_presentations.id — see the Open button below. */
+  presentationId?: string
   errors?: string[]
+  warnings?: string[]
 }
 
 function StepRow({ label, done }: { label: string; done: boolean }) {
@@ -200,6 +204,16 @@ export function PresentationTab({ listing }: Props) {
                   )}
                 </div>
 
+                {result.presentationId && (
+                  <div className="pt-2 border-t border-border">
+                    <Button asChild size="sm" variant="outline" className="w-full">
+                      <Link href={`/dashboard/listings/presentations/${result.presentationId}`}>
+                        Open presentation
+                      </Link>
+                    </Button>
+                  </div>
+                )}
+
                 <div className="pt-2 border-t border-border flex items-center justify-between">
                   <span className="text-sm font-medium">Ready for Decision</span>
                   <Badge
@@ -217,6 +231,16 @@ export function PresentationTab({ listing }: Props) {
                   <div className="text-xs text-red-700 bg-red-50 rounded px-3 py-2 border border-red-200 space-y-1">
                     {result.errors.map((e, i) => (
                       <p key={i}>{e}</p>
+                    ))}
+                  </div>
+                )}
+
+                {/* Why "Ready for Decision" may read "Not yet" on a run that
+                    otherwise succeeded — a missing artifact or a refused read. */}
+                {result.warnings && result.warnings.length > 0 && (
+                  <div className="text-xs text-amber-800 bg-amber-50 rounded px-3 py-2 border border-amber-200 space-y-1">
+                    {result.warnings.map((w, i) => (
+                      <p key={i}>{w}</p>
                     ))}
                   </div>
                 )}

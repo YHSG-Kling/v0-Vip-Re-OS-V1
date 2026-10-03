@@ -13,14 +13,20 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Loader2, Save, Share2, Copy, Check, Plus, Trash2 } from "lucide-react"
+import { Loader2, Save, Plus, Trash2 } from "lucide-react"
 import {
   calculateSellerNet,
   compareMortgageScenarios,
   calculateRentVsBuy,
   saveCalculation,
-  shareCalculation,
+  getSavedCalculations,
+  emailCalculationResults,
 } from "@/app/actions/calculators"
+// One persisted identity for every tool on this page. Each tab used to mint its
+// own `crypto.randomUUID()` per mount, so a saved calculation was filed under an
+// id that died with the component — unreadable by anything, including the
+// retrieval action written for it.
+import { getOrCreateVisitorId, isVisitorIdPersistent } from "@/lib/tools/visitor-id"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -50,14 +56,32 @@ function fmtPct(n: number) {
   return n.toFixed(2) + "%"
 }
 
+/**
+ * The server's save message, plus the one thing the server cannot know: whether
+ * THIS browser will still have the visitor id on the next visit. Every save
+ * message promises the calculation can be retrieved later; where storage is
+ * blocked (private mode, cookies off) that promise is false, and the caveat has
+ * to come from the browser or not at all.
+ */
+function saveMessageWithRetrievalCaveat(message: string): string {
+  if (isVisitorIdPersistent()) return message
+  return `${message} Note: this browser is blocking local storage, so this calculation will not be findable after you close the tab.`
+}
+
 // ─── Seller Net Sheet Tab ─────────────────────────────────────────────────────
 
 function SellerNetTab({ brokerageId }: { brokerageId: string }) {
-  const [visitorId] = useState(() => crypto.randomUUID())
+  const [visitorId] = useState(getOrCreateVisitorId)
   const [isPending, startTransition] = useTransition()
   const [isSaving, startSaveTransition] = useTransition()
   const [result, setResult] = useState<SellerNetResult | null>(null)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
+  // The address a copy is emailed to. saveCalculation has always ACCEPTED an
+  // email and its success message has always promised "we'll email you a copy",
+  // but no caller ever supplied one and nothing ever sent it. The address is
+  // recorded ON THE ROW here because emailCalculationResults refuses to send
+  // anywhere else — the destination is never the caller's to choose.
+  const [saveEmail, setSaveEmail] = useState("")
 
   const [homeValue, setHomeValue] = useState("")
   const [mortgageBalance, setMortgageBalance] = useState("")
@@ -106,8 +130,9 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
         toolName: "seller_net_sheet",
         calculationData: result,
         visitorId,
+        email: saveEmail.trim() || undefined,
       })
-      setSaveMsg(res.success ? (res.message ?? "Saved.") : "Save failed.")
+      setSaveMsg(res.success ? saveMessageWithRetrievalCaveat(res.message ?? "Saved.") : "Save failed.")
     })
   }
 
@@ -292,7 +317,14 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
           )}
 
           {/* Save */}
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <Input
+              type="email"
+              className="max-w-64"
+              placeholder="Email a copy to (optional)"
+              value={saveEmail}
+              onChange={(e) => setSaveEmail(e.target.value)}
+            />
             <Button variant="outline" onClick={handleSave} disabled={isSaving}>
               {isSaving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
               Save Calculation
@@ -314,11 +346,17 @@ const DEFAULT_SCENARIOS: MortgageScenario[] = [
 ]
 
 function MortgageTab({ brokerageId: _brokerageId }: { brokerageId: string }) {
-  const [visitorId] = useState(() => crypto.randomUUID())
+  const [visitorId] = useState(getOrCreateVisitorId)
   const [isPending, startTransition] = useTransition()
   const [isSaving, startSaveTransition] = useTransition()
   const [result, setResult] = useState<MortgageResult | null>(null)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
+  // The address a copy is emailed to. saveCalculation has always ACCEPTED an
+  // email and its success message has always promised "we'll email you a copy",
+  // but no caller ever supplied one and nothing ever sent it. The address is
+  // recorded ON THE ROW here because emailCalculationResults refuses to send
+  // anywhere else — the destination is never the caller's to choose.
+  const [saveEmail, setSaveEmail] = useState("")
 
   const [loanAmount, setLoanAmount] = useState("")
   const [scenarios, setScenarios] = useState<MortgageScenario[]>(DEFAULT_SCENARIOS)
@@ -365,8 +403,9 @@ function MortgageTab({ brokerageId: _brokerageId }: { brokerageId: string }) {
         toolName: "mortgage_comparison",
         calculationData: result,
         visitorId,
+        email: saveEmail.trim() || undefined,
       })
-      setSaveMsg(res.success ? (res.message ?? "Saved.") : "Save failed.")
+      setSaveMsg(res.success ? saveMessageWithRetrievalCaveat(res.message ?? "Saved.") : "Save failed.")
     })
   }
 
@@ -557,7 +596,14 @@ function MortgageTab({ brokerageId: _brokerageId }: { brokerageId: string }) {
             </Card>
           )}
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <Input
+              type="email"
+              className="max-w-64"
+              placeholder="Email a copy to (optional)"
+              value={saveEmail}
+              onChange={(e) => setSaveEmail(e.target.value)}
+            />
             <Button variant="outline" onClick={handleSave} disabled={isSaving}>
               {isSaving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
               Save Calculation
@@ -573,15 +619,17 @@ function MortgageTab({ brokerageId: _brokerageId }: { brokerageId: string }) {
 // ─── Rent vs Buy Tab ──────────────────────────────────────────────────────────
 
 function RentVsBuyTab({ brokerageId }: { brokerageId: string }) {
-  const [visitorId] = useState(() => crypto.randomUUID())
+  const [visitorId] = useState(getOrCreateVisitorId)
   const [isPending, startTransition] = useTransition()
   const [isSaving, startSaveTransition] = useTransition()
-  const [isSharing, startShareTransition] = useTransition()
   const [result, setResult] = useState<RentVsBuyResult | null>(null)
-  const [savedId, setSavedId] = useState<string | null>(null)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
-  const [shareUrl, setShareUrl] = useState<string | null>(null)
-  const [copied, setCopied] = useState(false)
+  // The address a copy is emailed to. saveCalculation has always ACCEPTED an
+  // email and its success message has always promised "we'll email you a copy",
+  // but no caller ever supplied one and nothing ever sent it. The address is
+  // recorded ON THE ROW here because emailCalculationResults refuses to send
+  // anywhere else — the destination is never the caller's to choose.
+  const [saveEmail, setSaveEmail] = useState("")
 
   const [rentAmount, setRentAmount] = useState("")
   const [homePrice, setHomePrice] = useState("")
@@ -607,12 +655,24 @@ function RentVsBuyTab({ brokerageId }: { brokerageId: string }) {
         brokerageId,
       })
       setResult(res)
-      setSavedId(null)
       setSaveMsg(null)
-      setShareUrl(null)
     })
   }
 
+  /**
+   * Save only. The Share button that sat beside this was REMOVED on the owner's
+   * ruling: "not sure why we would need to share a calculator, sharing property
+   * listings yes". Listing sharing already exists at
+   * /dashboard/listings/[id]/share — that is the capability that was wanted.
+   *
+   * It was also broken and unsafe in three ways, which is why nothing is lost:
+   *   · the URL it produced, /tools/shared/{token}, had NO ROUTE — every link an
+   *     agent copied and sent to a client 404'd.
+   *   · tool_shares RLS requires brokerage membership, so even with a route the
+   *     recipient (a client, by definition not a member) could never read it.
+   *   · the token was `Date.now()` plus ~24 bits of Math.random() — guessable —
+   *     and the shared payload carried the saver's email address.
+   */
   function handleSave() {
     if (!result) return
     startSaveTransition(async () => {
@@ -620,33 +680,10 @@ function RentVsBuyTab({ brokerageId }: { brokerageId: string }) {
         toolName: "rent_vs_buy",
         calculationData: result,
         visitorId,
+        email: saveEmail.trim() || undefined,
       })
-      if (res.success) {
-        setSavedId(res.savedId ?? null)
-        setSaveMsg(res.message ?? "Saved.")
-      } else {
-        setSaveMsg("Save failed.")
-      }
+      setSaveMsg(res.success ? saveMessageWithRetrievalCaveat(res.message ?? "Saved.") : "Save failed.")
     })
-  }
-
-  function handleShare() {
-    if (!savedId) return
-    startShareTransition(async () => {
-      const res = await shareCalculation({ calculationId: savedId })
-      if (res.success) {
-        setShareUrl(res.shareUrl ?? null)
-      } else {
-        setSaveMsg("Failed to create share link.")
-      }
-    })
-  }
-
-  function copyShareUrl() {
-    if (!shareUrl) return
-    navigator.clipboard.writeText(shareUrl)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
   }
 
   const canCalculate =
@@ -818,37 +855,157 @@ function RentVsBuyTab({ brokerageId }: { brokerageId: string }) {
             </Card>
           )}
 
-          {/* Save + Share */}
+          {/* Save. Sharing a CALCULATION was removed — see the note on
+              handleSave below. Sharing a property LISTING is the wanted
+              capability and lives at /dashboard/listings/[id]/share. */}
           <div className="flex flex-wrap items-center gap-3">
+            <Input
+              type="email"
+              className="max-w-64"
+              placeholder="Email a copy to (optional)"
+              value={saveEmail}
+              onChange={(e) => setSaveEmail(e.target.value)}
+            />
             <Button variant="outline" onClick={handleSave} disabled={isSaving}>
               {isSaving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
               Save
             </Button>
-            {savedId && (
-              <Button variant="outline" onClick={handleShare} disabled={isSharing}>
-                {isSharing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Share2 className="h-4 w-4 mr-2" />}
-                Share
-              </Button>
-            )}
             {saveMsg && <p className="text-sm text-muted-foreground">{saveMsg}</p>}
           </div>
-
-          {shareUrl && (
-            <Card className="bg-muted/40">
-              <CardContent className="p-4">
-                <p className="text-sm font-medium mb-2">Share Link</p>
-                <div className="flex items-center gap-2">
-                  <Input value={shareUrl} readOnly className="text-xs font-mono" />
-                  <Button variant="outline" size="icon" onClick={copyShareUrl}>
-                    {copied ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
-                  </Button>
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">Anyone with this link can view the calculation.</p>
-              </CardContent>
-            </Card>
-          )}
         </>
       )}
+    </div>
+  )
+}
+
+// ─── Saved Calculations Tab ───────────────────────────────────────────────────
+
+/**
+ * The retrieval half of `saveCalculation`.
+ *
+ * `getSavedCalculations` and `emailCalculationResults` were both written and
+ * never called: the calculators screen used to mint a throwaway visitor id per
+ * tab, so there was never an id to read back with. `getOrCreateVisitorId()`
+ * persists one id per browser (already used by the three tabs above), which is
+ * the key both actions take — so this tab is the missing UI, not new plumbing.
+ *
+ * The visitor id IS the retrieval credential. It never leaves this browser
+ * except as the argument to these two actions, and `emailCalculationResults`
+ * sends only to the address recorded ON THE ROW at save time — the button below
+ * cannot redirect a send.
+ */
+function SavedCalculationsTab() {
+  const [visitorId] = useState(getOrCreateVisitorId)
+  const [isLoading, startLoad] = useTransition()
+  const [rows, setRows] = useState<Array<{
+    id: string
+    tool_name: string
+    calculation_data_json: unknown
+    created_at: string
+  }> | null>(null)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [emailingId, setEmailingId] = useState<string | null>(null)
+  const [emailMsg, setEmailMsg] = useState<{ id: string; text: string } | null>(null)
+
+  function load() {
+    startLoad(async () => {
+      setEmailMsg(null)
+      const res = await getSavedCalculations(visitorId)
+      // The action returns { success:false, calculations: [] } for a refused
+      // read as well as for a blank id. An empty list is not proof there is
+      // nothing saved, so the two are reported differently.
+      setLoadFailed(!res.success)
+      setRows(res.success ? (res.calculations as typeof rows) ?? [] : [])
+    })
+  }
+
+  async function handleEmail(calculationId: string) {
+    setEmailingId(calculationId)
+    setEmailMsg(null)
+    try {
+      // The action's branches return either { success, message } or
+      // { success, error } and it carries no return annotation, so `success`
+      // widens to boolean and the union does not discriminate. Read both
+      // optional fields rather than pretend it narrows.
+      const res = (await emailCalculationResults({ calculationId, visitorId })) as {
+        success: boolean
+        message?: string
+        error?: string
+      }
+      setEmailMsg({
+        id: calculationId,
+        text: res.success ? (res.message ?? "Sent.") : (res.error ?? "The email was not sent."),
+      })
+    } finally {
+      setEmailingId(null)
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg">Saved Calculations</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <Button variant="outline" onClick={load} disabled={isLoading}>
+              {isLoading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+              {rows === null ? "Load my saved calculations" : "Refresh"}
+            </Button>
+            {!isVisitorIdPersistent() && (
+              <p className="text-sm text-muted-foreground">
+                This browser is blocking local storage, so nothing saved from a previous visit can be
+                found here.
+              </p>
+            )}
+          </div>
+
+          {loadFailed && (
+            <p className="text-sm text-destructive">
+              Your saved calculations could not be read, so this list is not a reading of what you
+              have saved.
+            </p>
+          )}
+
+          {rows !== null && !loadFailed && rows.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              Nothing saved from this browser yet. Run a calculation above and press Save.
+            </p>
+          )}
+
+          {rows !== null && rows.length > 0 && (
+            <div className="space-y-2">
+              {rows.map((r) => (
+                <div key={r.id} className="rounded-lg border px-4 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-medium capitalize">{r.tool_name.replace(/_/g, " ")}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {new Date(r.created_at).toLocaleString()}
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleEmail(r.id)}
+                      disabled={emailingId === r.id}
+                    >
+                      {emailingId === r.id ? (
+                        <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />
+                      ) : null}
+                      Email me a copy
+                    </Button>
+                  </div>
+                  {emailMsg?.id === r.id && (
+                    <p className="mt-2 text-sm text-muted-foreground">{emailMsg.text}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }
@@ -868,6 +1025,7 @@ export function CalculatorsDashboardClient({ brokerageId }: Props) {
           <TabsTrigger value="seller-net">Seller Net Sheet</TabsTrigger>
           <TabsTrigger value="mortgage">Mortgage Comparison</TabsTrigger>
           <TabsTrigger value="rent-vs-buy">Rent vs Buy</TabsTrigger>
+          <TabsTrigger value="saved">Saved</TabsTrigger>
         </TabsList>
 
         <TabsContent value="seller-net" className="mt-6">
@@ -880,6 +1038,10 @@ export function CalculatorsDashboardClient({ brokerageId }: Props) {
 
         <TabsContent value="rent-vs-buy" className="mt-6">
           <RentVsBuyTab brokerageId={brokerageId} />
+        </TabsContent>
+
+        <TabsContent value="saved" className="mt-6">
+          <SavedCalculationsTab />
         </TabsContent>
       </Tabs>
     </div>

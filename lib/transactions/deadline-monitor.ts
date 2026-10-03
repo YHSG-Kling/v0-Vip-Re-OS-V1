@@ -1,5 +1,4 @@
 import { createServiceClient } from "@/lib/supabase/service"
-import type { TransactionStage } from "./transaction-stages"
 import { ActivityFactory } from "./activity-factory"
 import { NotificationService } from "./notification-service"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
@@ -76,11 +75,12 @@ async function handleOverdue(
   const supabase = createServiceClient()
   
   // Mark overdue
-  await supabase
+  const { error: overdueErr } = await supabase
     .from("transaction_milestones")
     .update({ status: "overdue" })
     .eq("id", milestone.id)
     .eq("brokerage_id", txn.brokerage_id)
+  if (overdueErr) console.error(`[deadline-monitor] milestone NOT marked overdue: ${overdueErr.message}`)
   
   // Log event via kernel
   await transitionLifecycle({
@@ -124,12 +124,21 @@ async function sendWarning(
 ) {
   const supabase = createServiceClient()
   
-  // Check if warning already sent (prevent spam)
+  // Check if warning already sent (prevent spam).
+  //
+  // DOTTED WRITE PATH (CLAUDE.md §1, lane BC 2026-09-08 hunt 1): the transitionLifecycle
+  // call just below passes eventType "milestone.warning", and transitionLifecycle
+  // (lib/kernel/lifecycle.ts) always writes `event_type = \`lifecycle.${eventType}\`` — so
+  // the row this dedupe check needs to find is "lifecycle.milestone.warning", not
+  // "transaction.milestone.warning" (a third, unwritten spelling — the writer's own
+  // NotificationService.notifyMilestoneWarning uses that string for a DIFFERENT table's
+  // eventType field, not this one). This query matched nothing, so the 72-hour dedupe
+  // never fired and every hourly cron tick re-sent the same milestone warning.
   const { data: existingWarning } = await supabase
     .from("lifecycle_events")
     .select("id")
     .eq("entity_id", txn.id)
-    .eq("event_type", "transaction.milestone.warning")
+    .eq("event_type", "lifecycle.milestone.warning")
     .eq("metadata->>milestone_name", milestone.milestone_name)
     .gte("created_at", new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString())
     .maybeSingle()

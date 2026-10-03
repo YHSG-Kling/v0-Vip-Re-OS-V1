@@ -50,7 +50,11 @@ function sourceLayer() {
   check("enrollInChallenge upserts idempotently on (challenge_id, agent_id)", /export async function enrollInChallenge/.test(act) && /onConflict:\s*"challenge_id,agent_id"/.test(act))
   check("getChallenges computes LIVE standings via the shared scorer + ranker", /export async function getChallenges/.test(act) && /scoreChallenge\(/.test(act) && /rankParticipants\(/.test(act))
   check("a 'contacts' challenge counts CONTACTS not the ISA lead queue", /from\("contacts"\)/.test(src("lib/recruiting/challenge-runner.ts")) && !/most_contacts[\s\S]{0,80}from\("leads"\)/.test(src("lib/recruiting/challenge-runner.ts")))
-  check("finalize awards prize points into the SAME ledger (agent_points_log, CHALLENGE_PRIZE)", /agent_points_log"\)\.insert\([\s\S]*?CHALLENGE_PRIZE/.test(src("lib/recruiting/challenge-runner.ts")))
+  // The prize used to be a RAW agent_points_log insert: it moved the leaderboard and left
+  // agents.gamification_points behind, so a winner's prize counted on the board and never
+  // toward their tier or their badges. It rides the ONE atomic award path now, which does
+  // the increment and the ledger row in a single transaction (m484: award_agent_points).
+  check("finalize awards prize points through the ONE atomic award path (CHALLENGE_PRIZE)", /awardAgentPoints\([\s\S]*?CHALLENGE_PRIZE/.test(src("lib/recruiting/challenge-runner.ts")))
   check("finalize proposes a GATED wrap announcement (nothing auto-posts)", /proposeClientMessage/.test(src("lib/recruiting/challenge-runner.ts")))
   const page = src("app/dashboard/challenges/page.tsx")
   check("the challenges page reads getChallenges + mounts the client", /getChallenges/.test(page) && /<ChallengesClient/.test(page))

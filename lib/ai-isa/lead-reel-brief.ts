@@ -43,6 +43,21 @@ export interface LeadReelBriefInput {
   timeline?: string | null
   /** The lead's motivation persona (relocation_buyer / first_time_buyer / …). */
   motivationType?: string | null
+  /**
+   * `leads.lead_type` — which SIDE the lead is on (buyer / seller / …).
+   *
+   * OWNER RULING, verbatim: "leads are handled by their type and or persona for
+   * content situation." The persona alone was the whole situation before this, so a
+   * lead whose motivation_type was never filled in — which is the pipeline's own
+   * 'unknown' default until the intent classifier lands one — reached the writer as
+   * the bare phrase "exploring a move", with the one fact we DID have about them
+   * (buyer or seller) nowhere in the brief.
+   *
+   * AND/OR, exactly as ruled: when both exist the situation carries both; when only
+   * one exists it carries that one; when neither does the honest generic phrase
+   * stands rather than a guessed side.
+   */
+  leadType?: string | null
   budgetMin?: number | null
   budgetMax?: number | null
   /** Enrichment block used ONLY to derive the cohort tone (age / age_range). */
@@ -87,10 +102,20 @@ export function buildLeadIntroReelBrief(i: LeadReelBriefInput): LeadReelBrief {
   // speaks (warm/relationship-led for boomer, efficient for gen-x, terse for gen-z) —
   // it is phrasing guidance for the generator, never an emitted demographic fact.
   const toneHint = cohortFraming(cohort).trim()
-  const situationHint = [
-    i.motivationType?.trim() ? i.motivationType.replace(/_/g, " ") : "exploring a move",
-    toneHint ? `(tone: ${toneHint})` : "",
-  ].filter(Boolean).join(" ")
+
+  // TYPE AND/OR PERSONA (owner ruling). 'unknown' is a REAL live lead_type /
+  // motivation_type value the pipeline writes when the source is ambiguous — it is
+  // the absence of an answer, not an answer, so it must never become a situation.
+  const known = (v: string | null | undefined) => {
+    const s = (v ?? "").trim().toLowerCase()
+    return s && s !== "unknown" && s !== "other" ? s.replace(/_/g, " ") : null
+  }
+  const typeBasis = known(i.leadType)
+  const personaBasis = known(i.motivationType)
+  // Persona first when both exist: it is the more specific of the two, and the type
+  // is usually already implied by it ("relocation buyer" carries "buyer").
+  const basis = [personaBasis, typeBasis].filter(Boolean).join(" · ") || "exploring a move"
+  const situationHint = [basis, toneHint ? `(tone: ${toneHint})` : ""].filter(Boolean).join(" ")
 
   const persona: CopyPersona = {
     name: i.firstName,

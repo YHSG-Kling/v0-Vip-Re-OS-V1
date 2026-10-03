@@ -17,7 +17,14 @@
  *
  * Run: npx tsx scripts/phone-scrub-simulator.ts   (npm run test:phone-scrub)
  */
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { electScrubbedPhones, electionToColumnPatch, dispositionOf, toTenDigits } from "../lib/compliance/phone-scrub"
+import { stripComments } from "./strip-comments"
+
+const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
+/** CODE ONLY — a tombstone/comment naming a column is not a write site (CLAUDE.md §2). */
+const code = (p: string) => stripComments(src(p))
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -106,6 +113,28 @@ async function main() {
     }
   } catch (e) {
     console.log(`  ⏭  Live runner skipped under tsx (server-only): ${(e as Error).message.split("\n")[0]}`)
+  }
+
+  console.log("\n[Layer 3 · FRESH-SCRUB STAMP — contacts.dnc_verified_at (wave 69C carry b, m641)]")
+  {
+    // phone-scrub-runner.ts is `server-only`; the outbound-call-gates simulator's own
+    // shim (neutralizing server-only in the require cache) is a per-process idiom that
+    // must run BEFORE any transitive import — too late to retrofit here without risking
+    // Layer 2's already-passing dynamic import above, so this proves the write site the
+    // same way §2/wave-68 lessons prove gate wiring: as CODE, stripped of comments first
+    // so a tombstone naming the column never counts as the column being written.
+    const runner = code("lib/compliance/phone-scrub-runner.ts")
+    check("scrubPhonesForPatch stamps dnc_verified_at EXPLICITLY (never via a spread) —\n      the intake half of the freshness clock lib/communication/tcpa-gate.ts reads",
+      /patch\.dnc_verified_at\s*=\s*new Date\(\)\.toISOString\(\)/.test(runner))
+    check("...conditioned on a verdict actually being recorded (patch.dnc_status set) —\n      never an unconditional stamp on a deferred/empty election",
+      /if \(patch\.dnc_status !== undefined\)/.test(runner))
+    check("...and the runner never writes to `contacts`/`leads` itself — it stays a\n      pure-patch builder; the caller applies the freshness column with the SAME\n      table-aware split the caller uses everywhere else",
+      !/\.from\(["']contacts["']\)\.update|\.from\(["']leads["']\)\.update/.test(runner))
+
+    const orch = code("lib/lead-pipeline/enrichment-orchestrator.ts")
+    const leadSplits = orch.match(/phone_secondary: scrub\.patch\.phone_secondary \?\? null/g) ?? []
+    check(`BOTH enrichment-orchestrator write sites whitelist phone/phone_secondary for\n      \`leads\` (dnc_verified_at has no leads column — PGRST204 refuses the whole\n      row if it leaks through) — found ${leadSplits.length} of 2 expected splits`,
+      leadSplits.length === 2)
   }
 
   report()

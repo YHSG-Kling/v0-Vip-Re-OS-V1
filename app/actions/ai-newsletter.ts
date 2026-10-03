@@ -1,32 +1,27 @@
 "use server"
 
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;")
-}
+// TOMBSTONE: local escapeHtml merged onto lib/format/html.ts escapeHtmlFull — §1/§6 SAME
+// BODY census round 3, 2026-09-09. Its only reader here (the newsletter writer) moved to
+// lib/kernel/content-creators.ts authorNewsletterContent in wave 85F, which imports it.
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "@/lib/ai/generate"
+import { LIFETIME_CUSTOMER_SEGMENT } from "@/lib/contact-types"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
-import { isValidUUID } from "@/lib/validations"
+import { isValidUUID, isValidEmail } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
-import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { applyBrandVoice } from "@/lib/kernel/brand-voice"
-import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { normalizeSectionType, defaultOrderFor } from "@/lib/kernel/newsletter/section-types"
-import { pickTopics, renderTopicsForPrompt, type TopicCandidate } from "@/lib/content-intel/topic-bank"
-import { logTopicUses } from "@/lib/content-intel/performance-aggregator"
+import type { NewsletterSectionInput } from "@/lib/kernel/content-creators"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_newsletter")
 
 // ============================================
 // AI NEWSLETTER SYSTEM
@@ -35,68 +30,15 @@ import { logTopicUses } from "@/lib/content-intel/performance-aggregator"
 // and send time optimization
 // ============================================
 
-interface NewsletterSection {
-  type: "hero" | "featured_listings" | "market_update" | "tips" | "testimonial" | "cta" | "custom"
-  title: string
-  content: string
-  imageUrl?: string
-  listings?: any[]
-  ctaText?: string
-  ctaUrl?: string
-  /** Wave 20 — canonical section taxonomy key. When present, drives ordering
-   *  + persona/location targeting on the decomposed newsletter_sections row.
-   *  Normalized via lib/kernel/newsletter/section-types::normalizeSectionType. */
-  section_type?: string
-  /** Wave 20 — empty/undefined = renders for every recipient. When set,
-   *  only contacts whose contact_persona is in the list see this section. */
-  target_personas?: string[]
-  /** Wave 20 — empty/undefined = renders everywhere. When set, only
-   *  recipients whose city/state/zip_code matches see this section. */
-  target_locations?: {
-    cities?:    string[]
-    states?:    string[]
-    zip_codes?: string[]
-  }
-  /** Wave 20 — non-flat ordering. When unset, falls back to the section
-   *  type's defaultOrder weight from the canonical taxonomy. */
-  order_index?: number
-}
+// The section shape the newsletter builder hands in. ONE definition (§6): the creator's,
+// lib/kernel/content-creators.ts NewsletterSectionInput (section_type / target_personas /
+// target_locations / order_index drive the Wave 20 decompose there).
+type NewsletterSection = NewsletterSectionInput
 
-interface NewsletterTemplate {
-  id: string
-  name: string
-  style: "modern" | "classic" | "minimal" | "luxury"
-  sections: string[]
-  primaryColor: string
-  fontFamily: string
-}
-
-const NEWSLETTER_TEMPLATES: NewsletterTemplate[] = [
-  {
-    id: "modern",
-    name: "Modern Real Estate",
-    style: "modern",
-    sections: ["hero", "featured_listings", "market_update", "tips", "cta"],
-    primaryColor: "#2563eb",
-    fontFamily: "Inter, sans-serif",
-  },
-  {
-    id: "luxury",
-    name: "Luxury Collection",
-    style: "luxury",
-    sections: ["hero", "featured_listings", "testimonial", "cta"],
-    primaryColor: "#1e3a5f",
-    fontFamily: "Playfair Display, serif",
-  },
-  {
-    id: "minimal",
-    name: "Clean & Simple",
-    style: "minimal",
-    sections: ["hero", "market_update", "tips", "cta"],
-    primaryColor: "#374151",
-    fontFamily: "system-ui, sans-serif",
-  },
-]
+// TOMBSTONE (wave 85F, §1.1/§6): NEWSLETTER_TEMPLATES (modern / luxury / minimal / insider)
+// MOVED with its only reader, the writer, to lib/kernel/content-creators.ts
+// NEWSLETTER_TEMPLATES. Its primaryColor / fontFamily fields had no reader anywhere (the
+// list was module-private and the writer read only style + sections), so they did not move.
 
 // ============================================
 // 1. AI SUBJECT LINE GENERATOR
@@ -105,7 +47,7 @@ export async function aiGenerateSubjectLines(params: {
   agentId?: string // ignored — derived from session
   brokerageId?: string // ignored — derived from session
   newsletterTopic: string
-  audience?: "all" | "buyers" | "sellers" | "investors" | "lifetime_customers"
+  audience?: "all" | "buyers" | "sellers" | "investors" | typeof LIFETIME_CUSTOMER_SEGMENT
   tone?: "professional" | "friendly" | "urgent" | "curious"
   includeEmoji?: boolean
 }) {
@@ -237,340 +179,45 @@ export async function aiWriteNewsletterContent(params: {
   featuredListings?: any[]
   marketStats?: any
   customSections?: string[]
-  /** Wave 20.1 — when the marketing agent's approved plan names specific
-   *  topics for the week, the caller passes the topic_ids here so the
-   *  section author and the newsletter video render share the SAME source
-   *  thread (cohesive issue, not two independently-picked themes). When
-   *  omitted, this action runs pickTopics() itself so the manual UI flow
-   *  also gets topic-seeded sections. */
+  /** Wave 20.1 — content_topic_bank ids the approved plan names (cohesion with the video). */
   seedTopicIds?: string[]
-}) {
+}): Promise<{
+  success: boolean
+  error?: string
+  content?: string
+  sections?: NewsletterSection[]
+  estimatedReadTime?: number | null
+  wordCount?: number | null
+  quality?: unknown
+  contentId?: string | null
+  seedTopicIds?: string[]
+  complianceWarnings?: string[]
+}> {
+  // TOMBSTONE (wave 85F, §1.1). The writer's body (topic seeding, persona/location sections,
+  // brand voice, the per-section compliance gate, the quality verdict and the
+  // ai_generated_content artifact) MOVED to the one server-only writer,
+  // lib/kernel/content-creators.ts authorNewsletterContent. The voice webhook has no cookie
+  // session, so stage_newsletter_draft was refused "Unauthorized" here on every call. The
+  // move also made the writer compliance-first (buildComplianceSystemBlocks in the system
+  // prompt, postcheckScript on the issue) and ended the per-section `.catch(() => allowed)`
+  // fail-open. This door keeps what only a "use server" door can do: verify the SESSION.
   try {
     const ctx = await getAgentContext()
-    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
     }
-    const sessionBrokerageId = ctx.brokerageId
-    const sessionUserId = ctx.userId
-    const sessionAgentId = ctx.agentId
-
-    // Kernel: Feature access check
-    const access = await canAccessFeature(sessionUserId, "newsletter_engine")
-    if (!access.allowed) {
-      return { success: false, error: access.reason || "Feature not available" }
-    }
-
-    const supabase = await createClient()
-
-    // Get agent's brand voice
-    const { data: brandVoice } = await supabase
-      .from("brand_voice_profile")
-      .select("*")
-      .eq("agent_id", sessionAgentId ?? sessionUserId)
-      .maybeSingle()
-
-    const template = NEWSLETTER_TEMPLATES.find((t) => t.id === (params.template ?? "modern")) || NEWSLETTER_TEMPLATES[0]
-
-    // Wave 20 — pull the active subscriber audience shape so the generator can
-    // author per-persona / per-location sections instead of one flat blob.
-    // Top 5 personas + top 5 city/state buckets are enough signal; we don't
-    // need a full distribution and we'd rather keep the prompt short.
-    const { data: audienceSubs } = await supabase
-      .from("newsletter_subscribers")
-      .select("contact:contacts!newsletter_subscribers_contact_id_fkey(contact_persona, city, state)")
-      .eq("brokerage_id", sessionBrokerageId)
-      .eq("status", "subscribed")
-      .limit(500)
-    const personaCounts = new Map<string, number>()
-    const locationCounts = new Map<string, { city: string | null; state: string | null; count: number }>()
-    for (const row of (audienceSubs ?? []) as Array<{ contact?: { contact_persona?: string | null; city?: string | null; state?: string | null } | { contact_persona?: string | null; city?: string | null; state?: string | null }[] | null }>) {
-      const c = Array.isArray(row.contact) ? row.contact[0] : row.contact
-      const persona = (c?.contact_persona ?? "").trim()
-      if (persona) personaCounts.set(persona, (personaCounts.get(persona) ?? 0) + 1)
-      const city  = (c?.city  ?? "").trim() || null
-      const state = (c?.state ?? "").trim().toUpperCase() || null
-      if (city || state) {
-        const key = `${city ?? "-"}|${state ?? "-"}`
-        const cur = locationCounts.get(key) ?? { city, state, count: 0 }
-        cur.count++
-        locationCounts.set(key, cur)
-      }
-    }
-    const topPersonas = [...personaCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([p, n]) => `${p} (${n})`)
-    const topLocations = [...locationCounts.values()].sort((a, b) => b.count - a.count).slice(0, 5)
-      .map((l) => `${l.city ?? "(unknown)"} ${l.state ?? ""}`.trim() + ` (${l.count})`)
-    const audienceIsSegmentable = topPersonas.length > 1 || topLocations.length > 1
-
-    // Wave 20.1 — value-first topic seed from content_topic_bank. When the
-    // marketing agent supplied seedTopicIds via params, fetch those exact
-    // rows so video + sections share the same week's thread. Otherwise pick
-    // top 4 fresh, brokerage-boosted, geo-aware topics — the same picker
-    // surface the video and podcast already use. Failure here is non-fatal:
-    // we drop back to evergreen real-estate education so the section author
-    // still has something coherent to write about.
-    //
-    // Wave 23 — when the audience is segmentable, ALSO pull per-persona
-    // top picks so the section author has different topic threads to
-    // anchor different persona sections around. Each persona's pick uses
-    // content_topic_persona_performance: a topic that converted hard with
-    // first_time_buyer last week scores higher for first_time_buyer this
-    // week than for investor. The brokerage-wide pick still anchors the
-    // universal sections (Welcome / Market Update); persona picks anchor
-    // the persona-specific sections (first-time tips, investor beat, etc.).
-    let topics: TopicCandidate[] = []
-    let personaTopicMap = new Map<string, TopicCandidate[]>()  // persona → top 2 topics
-    try {
-      if (Array.isArray(params.seedTopicIds) && params.seedTopicIds.length > 0) {
-        const seedSvc = await createClient()
-        const { data: seedRows } = await seedSvc
-          .from("content_topic_bank")
-          .select("id, topic_title, value_angle, source_url, categories, engagement_score, topic_posted_at, brokerage_id")
-          .in("id", params.seedTopicIds)
-          .or(`brokerage_id.is.null,brokerage_id.eq.${sessionBrokerageId}`)
-        topics = ((seedRows ?? []) as Array<{
-          id: string; topic_title: string; value_angle: string | null; source_url: string | null;
-          categories: string[] | null; engagement_score: number; topic_posted_at: string | null;
-          brokerage_id: string | null
-        }>).map((r) => ({
-          id:                 r.id,
-          topic_title:        r.topic_title,
-          value_angle:        r.value_angle,
-          source_url:         r.source_url,
-          categories:         r.categories ?? [],
-          engagement_score:   r.engagement_score,
-          topic_posted_at:    r.topic_posted_at,
-          is_brokerage_local: r.brokerage_id !== null,
-          geo_match:          false,
-        }))
-      } else {
-        topics = await pickTopics({
-          brokerageId:   sessionBrokerageId,
-          categoriesAny: ["buyer_advice", "finance", "market_education", "neighborhood", "seller_advice"],
-          limit:         4,
-          markUsed:      false, // the newsletter video also pulls; let one
-                                // weekly topic anchor both producers before
-                                // the podcast cron flips it to 'used'
-        })
-        // Wave 23 — persona-specific picks. Cap at top 3 personas to keep
-        // the picker query count + prompt size bounded. Only fires on
-        // segmentable audiences; flat audiences don't benefit from per-
-        // persona threads. Skips when seedTopicIds are supplied — the
-        // agent's plan owns the topic set in that path.
-        if (audienceIsSegmentable) {
-          const topThreePersonas = [...personaCounts.entries()]
-            .sort((a, b) => b[1] - a[1]).slice(0, 3).map(([p]) => p)
-          for (const persona of topThreePersonas) {
-            try {
-              const personaPicks = await pickTopics({
-                brokerageId:      sessionBrokerageId,
-                categoriesAny:    ["buyer_advice", "finance", "market_education", "neighborhood", "seller_advice"],
-                limit:            2,
-                markUsed:         false,
-                recipientPersona: persona,
-              })
-              personaTopicMap.set(persona, personaPicks)
-            } catch (perPersonaErr) {
-              console.warn(`[AI Newsletter] persona pick failed for ${persona}; using brokerage-wide only:`, (perPersonaErr as Error).message)
-            }
-          }
-        }
-      }
-    } catch (e) {
-      console.warn("[AI Newsletter] topic-bank pick failed; falling back to evergreen:", (e as Error).message)
-    }
-
-    // Wave 23 — union all persona picks with the brokerage-wide picks,
-    // dedupe by topic id, so seedTopicIds reported back to the caller
-    // include EVERY topic the section author was seeded with (the Wave 19
-    // content_topic_uses ledger captures all of them; the video render path
-    // reads back from there for cohesion).
-    const allTopicIds = new Set(topics.map((t) => t.id))
-    for (const list of personaTopicMap.values()) {
-      for (const t of list) allTopicIds.add(t.id)
-    }
-
-    const { object: content } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
-      schema: z.object({
-        sections: z.array(
-          z.object({
-            type: z.string(),
-            title: z.string(),
-            content: z.string(),
-            ctaText: z.string().optional(),
-            ctaUrl: z.string().optional(),
-            // Wave 20 — non-flat persona+location targeting. NULL fields =
-            // section renders for everyone (the safe default). The assembler
-            // (lib/kernel/newsletter/assemble::matchesRecipient) honors both.
-            section_type:    z.string().optional().describe("Canonical taxonomy key from lib/kernel/newsletter/section-types"),
-            target_personas: z.array(z.string()).optional().describe("contact_persona values this section is written for. Empty = everyone."),
-            target_locations: z.object({
-              cities:    z.array(z.string()).optional(),
-              states:    z.array(z.string()).optional(),
-              zip_codes: z.array(z.string()).optional(),
-            }).optional().describe("Cities/states/zips to scope this section to. Empty = everyone."),
-            order_index: z.number().int().optional().describe("Render order — lower = higher up. Omit to use the section type's default weight."),
-          })
-        ),
-        estimatedReadTime: z.number(),
-        wordCount: z.number(),
-      }),
-      prompt: `Write newsletter content for a real estate agent.
-
-Template Style: ${template.style}
-Topic: ${params.topic}
-Sections needed: ${template.sections.join(", ")}
-${brandVoice ? `Brand Voice: ${brandVoice.tone}, ${brandVoice.style}` : ""}
-
-${params.featuredListings?.length ? `Featured Listings: ${JSON.stringify(params.featuredListings)}` : ""}
-${params.marketStats ? `Market Stats: ${JSON.stringify(params.marketStats)}` : ""}
-
-═══ LEAD CONTENT — TOPIC INTELLIGENCE BANK ═══
-These are the audience-relevant value threads the platform's content-
-intelligence layer surfaced this week (Reddit + Exa + RSS + Apify ingest,
-ranked by engagement + freshness + brokerage-locality + Wave 19 performance
-feedback). Build the market_update, tips, neighborhood_spotlight, and
-local_news sections AROUND THESE THREADS — do not invent generic copy
-when these are sitting here. The newsletter VIDEO produced for this
-campaign opens with the strongest single thread; the sections should
-develop the same threads in depth so the issue reads as cohesive (video
-hook → email substance), not as two unrelated assets.
-
-UNIVERSAL TOPICS (anchor the market_update / agent_intro / cta sections):
-${renderTopicsForPrompt(topics)}
-${personaTopicMap.size > 0 ? `
-═══ Wave 23 — PERSONA-PERFORMANCE TOPICS ═══
-These threads scored highest with SPECIFIC subscriber personas over the
-last 30 days (per-persona open + click rate aggregated from
-newsletter_sends). When authoring persona-targeted sections, anchor each
-persona's section on its OWN list — these are the threads that have
-ALREADY converted with that persona. Set target_personas on the section
-to lock the row to that segment so the assembler only shows it to
-matching recipients.
-
-${[...personaTopicMap.entries()].map(([persona, list]) =>
-  `── For persona='${persona}' ──\n${renderTopicsForPrompt(list)}`
-).join("\n\n")}
-` : ""}
-
-═══ AUDIENCE SHAPE ═══
-${audienceIsSegmentable
-  ? `This brokerage has a segmentable audience — author MULTIPLE versions of
-persona-relevant sections (market_update, new_listings, tips, cta), each
-scoped via target_personas / target_locations so each subscriber sees the
-ONE version that fits them. The assembler stitches the right version per
-recipient at send time. Do NOT repeat the same content with different
-targeting — write genuinely different copy per segment.
-
-Top subscriber personas: ${topPersonas.join(", ") || "(none on file)"}
-Top subscriber locations: ${topLocations.join(", ") || "(none on file)"}`
-  : `Audience is small / homogeneous. Author flat sections — leave
-target_personas + target_locations empty so every recipient sees them.`}
-
-For each section, set:
-  • section_type — pick the canonical key from this taxonomy:
-    agent_intro, market_update, new_listings, property_highlight,
-    local_news, local_event, neighborhood_spotlight, mortgage_rates,
-    tips, testimonial, community_eats, cta, custom
-  • target_personas — array of contact_persona values when the section is
-    persona-specific (e.g. ["first_time_buyer"] for a buyer-prep tips
-    section). Leave empty when the section is for everyone.
-  • target_locations — {cities, states, zip_codes} when the section is
-    location-specific (e.g. {cities: ["Miami"]} for a Miami market beat).
-    Leave empty when the section is for everyone.
-  • order_index — optional integer; omit to use the section type's default
-    weight (agent_intro=10, market_update=20, new_listings=30, …).
-
-Write engaging content for each section. Keep paragraphs short and scannable.
-Include clear CTAs where appropriate.
-
-COMPLIANCE: Never reference protected classes (race, color, religion,
-national origin, sex, disability, familial status). When targeting a
-persona, target by life-stage / financial readiness / property goal —
-NEVER by demographic proxy. "Perfect for families" is illegal; "Move-in
-ready with a fenced yard" is not.`,
+    const { authorNewsletterContent } = await import("@/lib/kernel/content-creators")
+    return await authorNewsletterContent({
+      ctx: { userId: ctx.userId, brokerageId: ctx.brokerageId, agentId: ctx.agentId ?? undefined },
+      topic: params.topic,
+      template: params.template,
+      targetAudience: params.targetAudience,
+      tone: params.tone,
+      featuredListings: params.featuredListings,
+      marketStats: params.marketStats,
+      customSections: params.customSections,
+      seedTopicIds: params.seedTopicIds,
     })
-
-    // Apply brand voice to generated content. The targeting metadata
-    // (section_type, target_personas, target_locations, order_index) flows
-    // through untouched — brand voice only rewrites the copy itself.
-    // When the AI marked a section persona-specific, seed brandVoice's
-    // persona slot with the first target_persona so the resolver returns
-    // the per-persona tone overrides if any are configured.
-    const brandedSections = await Promise.all(
-      content.sections.map(async (section: any) => {
-        const seedPersona = Array.isArray(section.target_personas) && section.target_personas[0]
-          ? section.target_personas[0]
-          : "seller"
-        const branded = await applyBrandVoice({
-          brokerageId: sessionBrokerageId,
-          actorUserId: sessionAgentId ?? sessionUserId,
-          actorRole: "agent",
-          journeyType: "seller",
-          persona: seedPersona,
-          messageType: "email",
-          content: section.content,
-        })
-        return { ...section, content: branded.content || section.content }
-      })
-    )
-
-    // Run compliance check on all content
-    for (const section of brandedSections) {
-      const compliance = await evaluateOutbound({
-        actorContext: { userId: sessionAgentId ?? sessionUserId, role: "agent", brokerageId: sessionBrokerageId },
-        journeyType: "buyer",
-        persona: "first_time",
-        messageType: "email",
-        content: section.content,
-        contact: {
-          id: "broadcast",
-          first_name: "Subscriber",
-          last_name: "Audience",
-          contact_type: "buyer",
-          tcpa_consent: true,
-          isa_reengage_allowed: false,
-          dnc_status: false,
-        },
-      }).catch(() => ({ allowed: true, violations: [] as string[] }))
-      if (!compliance.allowed) {
-        return { success: false, error: `Compliance violation in ${section.type}: ${compliance.violations.join(", ")}` }
-      }
-    }
-
-    await incrementFeatureUsage(sessionAgentId ?? sessionUserId, "newsletter_engine")
-
-    // Build a flat HTML string from sections for display with dangerouslySetInnerHTML
-    const flatContent = brandedSections
-      .map(
-        (s: any) =>
-          `<section style="margin-bottom:1.5rem">` +
-          `<h2 style="font-size:1.1rem;font-weight:600;margin-bottom:0.5rem">${escapeHtml(s.title)}</h2>` +
-          `<div style="line-height:1.6"><p>${escapeHtml(s.content).replace(/\n{2,}/g, "</p><p>").replace(/\n/g, "<br>")}</p></div>` +
-          (s.ctaText
-            ? `<p style="margin-top:0.75rem"><strong>${escapeHtml(s.ctaText)}</strong></p>`
-            : "") +
-          `</section>`
-      )
-      .join('<hr style="margin:1.5rem 0;border-color:#e5e7eb">')
-
-    return {
-      success: true,
-      /** Flat markdown string — used by content-studio-client for display/editing */
-      content: flatContent,
-      /** Structured sections — used by newsletter campaign builder */
-      sections: brandedSections,
-      estimatedReadTime: (content as any).estimatedReadTime ?? null,
-      wordCount: (content as any).wordCount ?? null,
-      /** Wave 20.1 — the content_topic_bank IDs that seeded this issue.
-       *  The caller passes these into createNewsletterCampaign so the
-       *  performance loop can log them against the newsletter_campaign
-       *  asset (content_topic_uses ledger → daily aggregator → topic
-       *  performance_score → next pick scores them higher).
-       *  Wave 23 — the union now includes per-persona picks so all
-       *  topics actually fed to the section author get attributed. */
-      seedTopicIds: [...allTopicIds],
-    }
   } catch (error) {
     console.error("[AI Newsletter] Content error:", error)
     return handleError(error, "aiWriteNewsletterContent")
@@ -596,13 +243,20 @@ export async function aiOptimizeSendTime(params: {
 
     const supabase = await createClient()
 
-    // Get historical email performance
-    const { data: emailStats } = await supabase
-      .from("newsletter_scheduled_sends")
-      .select("sent_at:sent_time, newsletter:newsletter_campaigns!inner(open_rate, click_rate, agent_id)")
-      .eq("newsletter.agent_id", sessionAgentId ?? sessionUserId)
-      .order("sent_time", { ascending: false })
-      .limit(50)
+    // Get historical email performance. newsletter_campaigns.agent_id is
+    // agents-class; falling back to the session USERS id here matched nothing and
+    // read as "no history" — so no agents row means no history, said honestly.
+    let emailStats: Array<Record<string, unknown>> | null = null
+    if (sessionAgentId) {
+      const { data, error: statsErr } = await supabase
+        .from("newsletter_scheduled_sends")
+        .select("sent_at:sent_time, newsletter:newsletter_campaigns!inner(open_rate, click_rate, agent_id)")
+        .eq("newsletter.agent_id", sessionAgentId)
+        .order("sent_time", { ascending: false })
+        .limit(50)
+      if (statsErr) console.error("[ai-newsletter] send-time history read failed:", statsErr.message)
+      emailStats = data as Array<Record<string, unknown>> | null
+    }
 
     const { object: optimization } = await generateObject({
       model: resolveModel("openai/gpt-4o-mini"),
@@ -674,25 +328,88 @@ export async function aiPersonalizeNewsletter(params: {
       return { success: false, error: "Forbidden" }
     }
 
-    // Get contact data
-    const { data: contact } = await supabase
+    // Get contact data.
+    //
+    // `interactions(*)` and `saved_searches(*)` embedded tables that DO NOT EXIST in the
+    // live database (no public.interactions, no public.saved_searches, and neither name is
+    // an FK column on contacts). PostgREST rejects the ENTIRE query when a select names an
+    // unknown relation, so this read failed every time it ran; `error` was undestructured,
+    // so the caller saw `contact: null` and bailed out with "Contact or newsletter not
+    // found". Personalization has never actually personalized.
+    //   interactions  → `activities`       (activities.contact_id → contacts.id)
+    //   saved_searches → `property_alerts` (property_alerts.contact_id → contacts.id) —
+    //                    this is the real saved-search table in this schema.
+    // Columns are named explicitly; never `*` inside an embed (defect #214).
+    const { data: contact, error: contactError } = await supabase
       .from("contacts")
-      .select("*, interactions(*), saved_searches(*)")
+      .select(`
+        *,
+        activities(notes, created_at),
+        property_alerts(alert_name, cities, zip_codes, keywords, min_price, max_price, bedrooms_min, is_active)
+      `)
       .eq("id", params.contactId)
       .eq("brokerage_id", sessionBrokerageId)
       .maybeSingle()
 
-    // Get newsletter content
-    const { data: newsletter } = await supabase
+    if (contactError) {
+      console.error("[aiPersonalizeNewsletter] contact read failed:", contactError.message)
+      return { success: false, error: contactError.message }
+    }
+
+    // Get newsletter content. Name the columns the prompt below actually uses —
+    // a refusal here arrives as a resolved promise, so the error is read.
+    const { data: newsletter, error: newsletterError } = await supabase
       .from("newsletter_campaigns")
-      .select("*")
+      .select("id, campaign_name, subject_line")
       .eq("id", params.newsletterId)
       .eq("brokerage_id", sessionBrokerageId)
       .maybeSingle()
 
+    if (newsletterError) {
+      console.error("[aiPersonalizeNewsletter] newsletter read failed:", newsletterError.message)
+      return { success: false, error: newsletterError.message }
+    }
+
     if (!contact || !newsletter) {
       return { success: false, error: "Contact or newsletter not found" }
     }
+
+    // WHAT THE MODEL IS TOLD THE NEWSLETTER IS ABOUT.
+    //
+    // A campaign carries no free-standing "topic" — the subject line is the
+    // stated subject, and the campaign name is the fallback the rest of this
+    // file already treats as the human label. Neither is guaranteed to be set,
+    // so the topic line is OMITTED from the prompt rather than emitted with an
+    // empty or absent value: a topic line with nothing behind it is worse than
+    // no topic line, because the model reads it as the actual subject and
+    // steers the whole personalization toward that non-answer.
+    const newsletterTopic =
+      [newsletter.subject_line, newsletter.campaign_name]
+        .find((v): v is string => typeof v === "string" && v.trim().length > 0)
+        ?.trim() ?? null
+
+    const topicLine = newsletterTopic ? `\nNewsletter Topic: ${newsletterTopic}\n` : ""
+
+    // `property_alerts` has no single `criteria` blob (the old `saved_searches.criteria`
+    // was never a real column) — the search is spread across typed columns, so summarize
+    // the ones that exist. Embedded rows are unordered, so pick the newest activity here.
+    const alertSummaries = ((contact.property_alerts ?? []) as Array<Record<string, any>>)
+      .filter((s) => s.is_active !== false)
+      .map((s) =>
+        [
+          s.alert_name,
+          Array.isArray(s.cities) && s.cities.length ? s.cities.join("/") : null,
+          Array.isArray(s.zip_codes) && s.zip_codes.length ? s.zip_codes.join("/") : null,
+          s.min_price || s.max_price ? `$${s.min_price ?? 0}-${s.max_price ?? "any"}` : null,
+          s.bedrooms_min ? `${s.bedrooms_min}+ bd` : null,
+          Array.isArray(s.keywords) && s.keywords.length ? s.keywords.join("/") : null,
+        ].filter(Boolean).join(" · "),
+      )
+      .filter((s) => s.length > 0)
+
+    const lastActivity = ((contact.activities ?? []) as Array<{ notes: string | null; created_at: string | null }>)
+      .filter((a) => a.created_at)
+      .sort((a, b) => new Date(b.created_at!).getTime() - new Date(a.created_at!).getTime())[0] ?? null
 
     const { object: personalization } = await generateObject({
       model: resolveModel("openai/gpt-4o-mini"),
@@ -710,12 +427,10 @@ export async function aiPersonalizeNewsletter(params: {
 
 Contact:
 - Name: ${contact.first_name} ${contact.last_name}
-- Persona: ${contact.persona || "general"}
-- Interests: ${contact.saved_searches?.map((s: any) => s.criteria).join(", ") || "Unknown"}
-- Last Interaction: ${contact.interactions?.[0]?.notes || "None"}
-
-Newsletter Topic: ${newsletter.topic}
-
+- Persona: ${contact.contact_persona || "general"}
+- Interests: ${alertSummaries.join(", ") || "Unknown"}
+- Last Interaction: ${lastActivity?.notes || "None"}
+${topicLine}
 Create personalized elements that will resonate with this specific contact.`,
     })
 
@@ -739,145 +454,44 @@ export async function createNewsletterCampaign(params: {
   content: NewsletterSection[]
   audienceSegment: string
   scheduledAt?: string
-  /** Wave 20.1 — content_topic_bank IDs that seeded this campaign's sections.
-   *  Pulled from aiWriteNewsletterContent's return shape; the caller passes
-   *  them through so the Wave 19 performance loop captures which topics
-   *  produced this newsletter. The aggregator reads open/click rates back
-   *  per topic and bumps its performance_score for the picker. */
+  /** Wave 20.1 — content_topic_bank ids that seeded the sections (performance loop). */
   seedTopicIds?: string[]
-}) {
+  /** UPSERT-BY-ID edit semantics (merged from the deleted insider-edit-save route); the id is
+   *  verified to be the session brokerage's inside the creator. */
+  campaignId?: string
+  /** newsletter_campaigns.marketing_campaign_id — verified in-tenant inside the creator. */
+  marketingCampaignId?: string
+}): Promise<{ success: boolean; error?: string; newsletter?: Record<string, any>; audienceSize?: number }> {
+  // TOMBSTONE (wave 85F, §1.1). The envelope insert/update, the Wave 20 section decompose, the
+  // topic-use ledger, NEWSLETTER_SCHEDULED and the usage counter MOVED to the one creator,
+  // lib/kernel/content-creators.ts createNewsletterCampaign, so the voice webhook (no cookie
+  // session, refused "Unauthorized" here) files through the same chain. The unwired
+  // lib/kernel/marketing.ts createNewsletterCampaign merged onto it too. This door keeps the
+  // SESSION check and the page revalidation.
   try {
     const ctx = await getAgentContext()
-    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
     }
-    const sessionBrokerageId = ctx.brokerageId
-    const sessionUserId = ctx.userId
-    const sessionAgentId = ctx.agentId
-
-    // Kernel: Feature access check
-    const access = await canAccessFeature(sessionUserId, "newsletter_engine")
-    if (!access.allowed) {
-      return { success: false, error: access.reason || "Feature not available" }
+    const { createNewsletterCampaign: fileNewsletter } = await import("@/lib/kernel/content-creators")
+    const result = await fileNewsletter({
+      ctx: { userId: ctx.userId, brokerageId: ctx.brokerageId, agentId: ctx.agentId ?? undefined },
+      title: params.title,
+      subjectLine: params.subjectLine,
+      preheaderText: params.preheaderText,
+      template: params.template,
+      content: params.content,
+      audienceSegment: params.audienceSegment,
+      scheduledAt: params.scheduledAt,
+      seedTopicIds: params.seedTopicIds,
+      campaignId: params.campaignId,
+      marketingCampaignId: params.marketingCampaignId,
+    })
+    if (result.success) {
+      revalidatePath("/content-studio")
+      revalidatePath("/dashboard/marketing/studio")
     }
-
-    const supabase = await createClient()
-
-    // STEP 1: Resolve agents.id from users.id (required for agent_id FK)
-    let agentsTableId: string | null = sessionAgentId
-    if (!agentsTableId) {
-      const { data: agentRow } = await supabase
-        .from("agents")
-        .select("id")
-        .eq("user_id", sessionUserId)
-        .maybeSingle()
-      agentsTableId = agentRow?.id ?? null
-    }
-
-    // STEP 2: Fix the insert payload with correct field names and values
-    const { data: newsletter, error } = await supabase
-      .from("newsletter_campaigns")
-      .insert({
-        campaign_name: params.title, // campaign_name NOT title
-        subject_line: params.subjectLine,
-        content: typeof params.content === "string" ? params.content : JSON.stringify(params.content),
-        status: params.scheduledAt ? "scheduled" : "draft",
-        send_date: params.scheduledAt ?? null, // send_date NOT scheduled_at
-        brokerage_id: sessionBrokerageId, // session-derived
-        agent_id: agentsTableId, // agents.id NOT users.id
-        created_by: sessionUserId, // users.id
-      })
-      .select()
-      .maybeSingle()
-
-    if (error || !newsletter) throw error ?? new Error("Failed to create newsletter campaign")
-
-    // STEP 2b — Wave 20 decomposer. The campaign envelope is in
-    // newsletter_campaigns; the per-section persona+location targeting that
-    // makes the newsletter NON-FLAT lives on newsletter_sections rows. The
-    // assembler (lib/kernel/newsletter/assemble::resolveSectionsForRecipient)
-    // reads from this table — if we don't populate it, every recipient gets
-    // the same flat campaign body regardless of persona / location.
-    //
-    // Each section emitted by the AI writer (or a manual section payload)
-    // becomes one row. NULL/empty targeting columns mean "renders for
-    // everyone" — the safe default that preserves prior flat behavior when
-    // the producer didn't supply targeting metadata.
-    if (Array.isArray(params.content) && params.content.length > 0) {
-      const sectionRows = params.content.map((s, i) => {
-        const tp = Array.isArray(s.target_personas) && s.target_personas.length > 0 ? s.target_personas : null
-        const tl = s.target_locations &&
-          ((s.target_locations.cities?.length ?? 0) +
-           (s.target_locations.states?.length ?? 0) +
-           (s.target_locations.zip_codes?.length ?? 0) > 0)
-          ? s.target_locations
-          : null
-        const normalizedType = normalizeSectionType(s.section_type ?? s.type)
-        return {
-          newsletter_id:    newsletter.id,
-          brokerage_id:     sessionBrokerageId,
-          title:            s.title ?? null,
-          content:          s.content ?? null,
-          order_index:      typeof s.order_index === "number" ? s.order_index : defaultOrderFor(normalizedType) + i,
-          target_personas:  tp,
-          target_locations: tl,
-          section_type:     normalizedType,
-        }
-      })
-      const { error: secErr } = await supabase.from("newsletter_sections").insert(sectionRows)
-      if (secErr) {
-        // Best-effort — the campaign envelope is already persisted. The
-        // assembler's fallback (campaign body as one flat block) still works,
-        // so a section-decompose failure shouldn't fail the whole create.
-        // Surface the error so we see it in cron logs / Sentry without
-        // breaking the caller.
-        console.error(`[AI Newsletter] section decompose failed for campaign ${newsletter.id}:`, secErr.message)
-      }
-    }
-
-    // Wave 20.1 — close the loop on the content intelligence layer for the
-    // newsletter section channel. The Wave 19 ledger (content_topic_uses)
-    // is already wired for newsletter_video and podcast_episode; the
-    // newsletter_campaign asset type was reserved but had no producer
-    // logging it. Now the campaign create logs which topics seeded the
-    // sections, so the daily aggregator can read open/click rates back
-    // per topic and bump performance_score → next picker run weighs them.
-    if (Array.isArray(params.seedTopicIds) && params.seedTopicIds.length > 0) {
-      void logTopicUses({
-        topicIds:    params.seedTopicIds,
-        brokerageId: sessionBrokerageId,
-        assetType:   "newsletter_campaign",
-        assetId:     newsletter.id,
-      })
-    }
-
-    // STEP 3: Fix newsletter_subscribers query — use agents.id not users.id
-    const { count } = await supabase
-      .from("newsletter_subscribers")
-      .select("*", { count: "exact", head: true })
-      .eq("agent_id", agentsTableId) // agents.id NOT params.agentId
-      .eq("status", "subscribed")
-
-    // Kernel: Fire NEWSLETTER_SCHEDULED if scheduled
-    if (params.scheduledAt && newsletter) {
-      processKernelEvent({
-        event: KernelEvent.NEWSLETTER_SCHEDULED,
-        brokerageId: sessionBrokerageId,
-        entityType: "newsletter_campaign",
-        entityId: newsletter.id,
-      }).catch((err) => console.error("[Kernel] NEWSLETTER_SCHEDULED error:", err))
-    }
-
-    await incrementFeatureUsage(sessionAgentId ?? sessionUserId, "newsletter_engine")
-
-    revalidatePath("/content-studio")
-    revalidatePath("/dashboard/marketing/studio")
-
-    return {
-      success: true,
-      newsletter,
-      audienceSize: count || 0,
-    }
+    return result
   } catch (error) {
     console.error("[AI Newsletter] Create campaign error:", error)
     return handleError(error, "createNewsletterCampaign")
@@ -899,6 +513,13 @@ export async function sendNewsletter(params: { newsletterId: string; agentId?: s
 
     if (!isValidUUID(params.newsletterId)) {
       return { success: false, error: "Invalid IDs" }
+    }
+
+    // newsletter_subscribers.agent_id is agents-class. Substituting the session
+    // USERS id matched no rows and surfaced as "No active subscribers for this
+    // agent" — a missing agents profile reported as an empty audience.
+    if (!sessionAgentId) {
+      return { success: false, error: "No agent profile for this user in this brokerage — there is no subscriber list to send to." }
     }
 
     // Kernel: Feature access check
@@ -949,7 +570,7 @@ export async function sendNewsletter(params: { newsletterId: string; agentId?: s
       .from("newsletter_subscribers")
       .select("id, contact_id, email, first_name, last_name, status, agent_id, contact:contacts(id, email, first_name, last_name, contact_persona, city, state, zip_code)")
       .eq("brokerage_id", sessionBrokerageId)
-      .eq("agent_id", sessionAgentId ?? sessionUserId)
+      .eq("agent_id", sessionAgentId)
       .eq("status", "subscribed")
 
     if (!subscribers || subscribers.length === 0) {
@@ -1019,26 +640,34 @@ export async function sendNewsletter(params: { newsletterId: string; agentId?: s
       if (status === "failed")     errors++
 
       try {
-        await supabase.from("newsletter_sends").insert({
+        // `subject` and `template_id` are NOT written on this row (wave 26, §1
+        // duplicate). `assembled.subject` IS newsletter_campaigns.subject_line
+        // (lib/kernel/newsletter/assemble.ts:162 copies context.campaignSubject,
+        // which is the campaign row read at :1268 above and rendered at
+        // app/newsletters/newsletters-client.tsx:1995) — the campaign is the
+        // survivor and campaign_id is the join. The old `template_id: null` was
+        // a literal null: nothing to merge. The one live template_id writer is
+        // the workflow-OS path below (queueNewsletterForContact), where the row
+        // has no campaign and the template is its only content source.
+        await bestEffort(supabase.from("newsletter_sends").insert({
           brokerage_id:        sessionBrokerageId,
           campaign_id:         params.newsletterId,
           contact_id:          subscriber.contact_id ?? null,
-          template_id:         null,
-          subject:             assembled.subject,
           status,
           provider_message_id: result.messageId ?? null,
           sent_at:             status === "sent" ? new Date().toISOString() : null,
-        })
+        }), "per-recipient send row after the dispatch already happened")
       } catch { /* per-recipient log failure shouldn't block remaining recipients */ }
     }
 
     const sendRecord = { id: null as string | null }
 
-    await supabase
+    const { error: nlSentErr } = await supabase
       .from("newsletter_campaigns")
       .update({ status: "sent" })
       .eq("id", params.newsletterId)
       .eq("brokerage_id", sessionBrokerageId)
+    if (nlSentErr) console.error(`[ai-newsletter] newsletter sent but the campaign was NOT marked sent (a scheduler may pick it up again): ${nlSentErr.message}`)
 
     // Kernel: Fire NEWSLETTER_SENT event
     processKernelEvent({
@@ -1094,29 +723,87 @@ export async function getNewsletterAnalytics(params: { newsletterId: string; age
       return { success: false, error: "Forbidden" }
     }
 
-    const { data: send } = await supabase
+    // THE METRICS COME FROM THE DELIVERY LEDGER, NOT THE SCHEDULE.
+    //
+    // This used to read opened_count / delivered_count / clicked_count /
+    // bounced_count / unsubscribed_count off newsletter_scheduled_sends — five
+    // columns that DO NOT EXIST on that table (verified live). Because the read
+    // was a select("*"), nothing refused: every metric came back undefined,
+    // `|| 0`-ed into a zero, and this surface reported 0% opens on every
+    // newsletter forever, invisibly.
+    //
+    // newsletter_scheduled_sends is the SCHEDULE — one row per scheduled issue,
+    // carrying the audience estimate made at schedule time. The per-recipient
+    // truth lives in `newsletter_sends` — one row per recipient, written by the
+    // publish cron and stamped opened_at/clicked_at (+ status promotion) by the
+    // SendGrid fan-out (lib/outcomes/provider-event-fanout.ts). Counted here
+    // the same way the engagement rollup counts it
+    // (lib/marketing/engagement-rollup.ts::newsletterSendRates); the five
+    // columns are NOT added to the schedule table, which would duplicate the
+    // ledger (§6).
+    const sendsBase = () =>
+      supabase
+        .from("newsletter_sends")
+        .select("id", { count: "exact", head: true })
+        .eq("campaign_id", params.newsletterId)
+        .eq("brokerage_id", sessionBrokerageId)
+
+    // Every count is destructured and a refusal ABORTS — a refused read folded
+    // into `?? 0` would render as "nobody opened it" (§3).
+    const [total, delivered, opened, clicked, bounced] = await Promise.all([
+      sendsBase(),
+      sendsBase().not("sent_at", "is", null),
+      sendsBase().not("opened_at", "is", null),
+      sendsBase().not("clicked_at", "is", null),
+      sendsBase().eq("status", "bounced"),
+    ])
+    for (const r of [total, delivered, opened, clicked, bounced]) {
+      if (r.error) return { success: false, error: `Could not read the send ledger: ${r.error.message}` }
+    }
+    const totalSends = total.count ?? 0
+    const deliveredCount = delivered.count ?? 0
+    const openedCount = opened.count ?? 0
+    const clickedCount = clicked.count ?? 0
+    const bouncedCount = bounced.count ?? 0
+
+    // The schedule row still contributes what only IT knows: the audience size
+    // estimated when the issue was scheduled. A campaign sent straight from the
+    // studio has no schedule row — that is not "not sent"; the ledger decides.
+    const { data: schedule, error: scheduleError } = await supabase
       .from("newsletter_scheduled_sends")
-      .select("*")
+      .select("recipient_count, sent_time")
       .eq("newsletter_id", params.newsletterId)
       .order("sent_time", { ascending: false })
       .limit(1)
       .maybeSingle()
+    if (scheduleError) {
+      return { success: false, error: `Could not read the schedule: ${scheduleError.message}` }
+    }
 
-    if (!send) {
+    if (totalSends === 0 && !schedule) {
       return { success: true, analytics: null, message: "Newsletter not yet sent" }
     }
 
-    // Calculate metrics
+    // Denominator: recipients the ledger actually processed, falling back to
+    // the schedule-time estimate only when no per-recipient row exists yet.
+    const recipientCount = totalSends > 0 ? totalSends : (schedule?.recipient_count ?? 0)
+
     const analytics = {
-      recipientCount: send.recipient_count,
-      delivered: send.delivered_count || 0,
-      opened: send.opened_count || 0,
-      clicked: send.clicked_count || 0,
-      bounced: send.bounced_count || 0,
-      unsubscribed: send.unsubscribed_count || 0,
-      openRate: send.recipient_count > 0 ? ((send.opened_count || 0) / send.recipient_count) * 100 : 0,
-      clickRate: send.opened_count > 0 ? ((send.clicked_count || 0) / send.opened_count) * 100 : 0,
-      bounceRate: send.recipient_count > 0 ? ((send.bounced_count || 0) / send.recipient_count) * 100 : 0,
+      recipientCount,
+      delivered: deliveredCount,
+      opened: openedCount,
+      clicked: clickedCount,
+      bounced: bouncedCount,
+      // There is NO per-campaign unsubscribe ledger in this schema —
+      // newsletter_subscribers.status flips to 'unsubscribed' globally, with no
+      // record of which issue prompted it. null, not a fabricated 0: the UI
+      // renders it as "—" rather than claiming nobody unsubscribed.
+      unsubscribed: null as number | null,
+      // Rates over DELIVERED sends, same denominator rule as the engagement
+      // rollup — dividing opens by suppressed recipients flatters the campaign.
+      openRate: deliveredCount > 0 ? (openedCount / deliveredCount) * 100 : 0,
+      clickRate: openedCount > 0 ? (clickedCount / openedCount) * 100 : 0,
+      bounceRate: recipientCount > 0 ? (bouncedCount / recipientCount) * 100 : 0,
     }
 
     return { success: true, analytics }
@@ -1156,14 +843,38 @@ export async function aiAnalyzeNewsletterPerformance(params: { agentId?: string 
       }
     }
 
-    // Get historical performance
-    const { data: sends } = await supabase
-      .from("newsletter_scheduled_sends")
-      .select("*, newsletter:newsletter_campaigns!inner(*)")
-      .eq("newsletter.agent_id", sessionAgentId ?? sessionUserId)
-      .eq("newsletter.brokerage_id", sessionBrokerageId)
-      .order("sent_time", { ascending: false })
-      .limit(20)
+    // Get historical performance. Same class rule as above — newsletter_campaigns
+    // .agent_id is agents-class, and the session users id is not a substitute for
+    // a missing agents row.
+    let sends: Array<Record<string, unknown>> | null = null
+    if (sessionAgentId) {
+      // LITERAL columns, not "*" (both sides of the embed). The census cannot
+      // see through a star, and this exact table is where the sibling defect
+      // lived: getNewsletterAnalytics read five phantom columns
+      // (opened_count/delivered_count/…) through a select("*") that refused
+      // nothing — every metric came back undefined and rendered as 0% forever
+      // (see the tombstone at the METRICS block above, ~:1209). Every column
+      // named here exists live per scripts/schema-snapshot.ts
+      // (newsletter_scheduled_sends :443, newsletter_campaigns :441).
+      const { data, error: sendsErr } = await supabase
+        .from("newsletter_scheduled_sends")
+        .select(
+          // unsubscribe_rate is DELIBERATELY absent from the embed: nothing
+          // writes it — the engagement rollup stamps only open_rate/click_rate,
+          // and this file's own getNewsletterAnalytics already returns
+          // unsubscribed as an honest NULL because no per-campaign unsubscribe
+          // fact exists in this schema (newsletter_subscribers.status flips
+          // globally). Selecting a column no writer fills hands the model a
+          // permanent zero dressed as a measurement (census 1b).
+          "subject_line, preview_text, sent_time, scheduled_time, send_status, recipient_segment, recipient_count, ab_test_variant, newsletter:newsletter_campaigns!inner(campaign_name, subject_line, open_rate, click_rate, status, send_date)"
+        )
+        .eq("newsletter.agent_id", sessionAgentId)
+        .eq("newsletter.brokerage_id", sessionBrokerageId)
+        .order("sent_time", { ascending: false })
+        .limit(20)
+      if (sendsErr) console.error("[ai-newsletter] performance history read failed:", sendsErr.message)
+      sends = data as Array<Record<string, unknown>> | null
+    }
 
     const { object: analysis } = await generateObject({
       model: resolveModel("openai/gpt-4o-mini"),
@@ -1223,22 +934,55 @@ export async function manageSubscribers(params: {
       return { success: false, error: "Unauthorized" }
     }
     const sessionBrokerageId = ctx.brokerageId
-    const sessionUserId = ctx.userId
     const sessionAgentId = ctx.agentId
+
+    // newsletter_subscribers.agent_id is agents-class — a users id here is an FK
+    // violation on insert and a no-match on update, both of which supabase-js
+    // reports as an ordinary empty result.
+    if (!sessionAgentId) {
+      return { success: false, error: "No agent profile for this user in this brokerage — subscribers have no owner to file under." }
+    }
+
+    // The live UNIQUE is `newsletter_subscribers_brokerage_id_email_key
+    // (brokerage_id, email)` — on the RAW email column. Without normalising,
+    // "Bob@Example.com" and "bob@example.com" are two accepted rows for one
+    // person, and that person then receives every newsletter twice. Normalise
+    // before the constraint sees it.
+    const email = String(params.email ?? "").trim().toLowerCase()
+    if (!isValidEmail(email)) {
+      return { success: false, error: "Enter a valid email address" }
+    }
 
     const supabase = await createClient()
 
     if (params.action === "add") {
+      // `source` has a live CHECK constraint; a value outside the vocabulary is
+      // a 23514 the caller would see as an opaque database error.
+      const ALLOWED_SOURCES = [
+        "manual", "import", "form", "open_house", "qr_scan",
+        "portal", "auto_lead_capture", "auto_contact", "auto_lifetime",
+      ]
+      const source = ALLOWED_SOURCES.includes(params.source ?? "") ? params.source! : "manual"
+
       const { data, error } = await supabase.from("newsletter_subscribers").insert({
-        email: params.email,
-        agent_id: sessionAgentId ?? sessionUserId,
+        email,
+        agent_id: sessionAgentId,
         brokerage_id: sessionBrokerageId,
         subscribed_at: new Date().toISOString(),
-        source: params.source || "manual",
+        source,
         status: "subscribed",
       })
 
-      if (error) throw error
+      if (error) {
+        // 23505 = the (brokerage_id, email) UNIQUE. That is the ordinary
+        // "already on the list" case — including someone who UNSUBSCRIBED.
+        // Re-subscribing an opt-out must be a deliberate act, so this reports
+        // the state rather than flipping the row back to 'subscribed'.
+        if ((error as { code?: string }).code === "23505") {
+          return { success: false, error: "That email is already on this brokerage's list." }
+        }
+        throw error
+      }
       revalidatePath("/content-studio")
 
       return { success: true, subscriber: data }
@@ -1248,8 +992,8 @@ export async function manageSubscribers(params: {
       const { error } = await supabase
         .from("newsletter_subscribers")
         .update({ status: "unsubscribed", unsubscribed_at: new Date().toISOString() })
-        .eq("email", params.email)
-        .eq("agent_id", sessionAgentId ?? sessionUserId)
+        .eq("email", email)
+        .eq("agent_id", sessionAgentId)
         .eq("brokerage_id", sessionBrokerageId)
 
       if (error) throw error
@@ -1288,13 +1032,82 @@ export async function getNewsletters(_agentId?: string /* ignored — derived fr
   }
 }
 
-// Backward compatibility aliases — wrapped because "use server" rejects `const = fn`
-export async function createNewsletter(...args: Parameters<typeof createNewsletterCampaign>) {
-  return createNewsletterCampaign(...args)
+/**
+ * Delete a newsletter campaign.
+ *
+ * The newsletter list's Delete button called deleteEmailCampaign, which queries
+ * `email_campaigns` by a `newsletter_campaigns` id — so it answered "Campaign
+ * not found" every time and nothing on this screen could ever be deleted. That
+ * is the third button on one screen pointed at the wrong table (Send and
+ * Schedule were the other two): every action was written against the email
+ * campaign lane while the list itself renders newsletter campaigns.
+ *
+ * Guards mirror deleteEmailCampaign — uuid, session brokerage ownership, and a
+ * refusal on anything already sent — plus 'sending', because a campaign the
+ * cron is mid-loop on must not have its row pulled out from under it.
+ *
+ * Hard delete is correct here: every child FK (newsletter_sections,
+ * newsletter_scheduled_sends, newsletter_local_content, newsletter_video_renders)
+ * is ON DELETE CASCADE, and the sent-campaign refusal means no delivery record
+ * can be destroyed by it.
+ */
+export async function deleteNewsletterCampaign(newsletterId: string) {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const sessionBrokerageId = ctx.brokerageId
+
+    if (!isValidUUID(newsletterId)) {
+      return { success: false, error: "Invalid newsletter ID" }
+    }
+
+    const supabase = await createClient()
+
+    const { data: existing, error: existingError } = await supabase
+      .from("newsletter_campaigns")
+      .select("id, status, brokerage_id")
+      .eq("id", newsletterId)
+      .maybeSingle()
+
+    if (existingError) {
+      return { success: false, error: `Could not read the newsletter: ${existingError.message}` }
+    }
+    if (!existing) return { success: false, error: "Newsletter not found" }
+    if (existing.brokerage_id !== sessionBrokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+    if (existing.status === "sent") {
+      return { success: false, error: "Cannot delete a sent newsletter — its delivery record has to survive." }
+    }
+    if (existing.status === "sending") {
+      return { success: false, error: "This newsletter is being sent right now — wait for it to finish." }
+    }
+
+    const { error } = await supabase
+      .from("newsletter_campaigns")
+      .delete()
+      .eq("id", newsletterId)
+      .eq("brokerage_id", sessionBrokerageId)
+
+    if (error) {
+      return { success: false, error: `Failed to delete the newsletter: ${error.message}` }
+    }
+
+    return { success: true }
+  } catch (error) {
+    return handleError(error, "deleteNewsletterCampaign")
+  }
 }
-export async function generateNewsletterContent(...args: Parameters<typeof aiWriteNewsletterContent>) {
-  return aiWriteNewsletterContent(...args)
-}
+
+// TOMBSTONE (§6 one-vocabulary, lane E2 2026-08-28) — the "backward
+// compatibility" aliases `createNewsletter` and `generateNewsletterContent`
+// were deleted. They were duplicate SPELLINGS of the canonical names in this
+// file — SURVIVORS: `createNewsletterCampaign` (above) and
+// `aiWriteNewsletterContent` (above). A stripped-source census found zero
+// callers of either alias outside the the actions barrel (app/actions/index, deleted this wave) barrel, which
+// itself has zero importers.
 
 // ============================================
 // WORKFLOW OS — queue newsletter for a single contact
@@ -1344,14 +1157,46 @@ export async function queueNewsletterForContact(params: {
       }
     }
 
-    // Record the send intent
+    // IDEMPOTENCY ON (contact, template) — the reader for newsletter_sends.
+    // template_id. A workflow step re-fired for the same contact (a retry, a
+    // re-enrollment, two sequences sharing a template) used to mail the same
+    // newsletter again; the column that could have told us was written here
+    // and read nowhere. Same shape as the per-campaign check in
+    // app/api/cron/publish-newsletters/route.ts:445, keyed on the template
+    // because a workflow send has no campaign. Seven days: a template that
+    // legitimately goes out weekly is not a duplicate the following week.
+    if (params.templateId) {
+      const dupSince = new Date(Date.now() - 7 * 86_400_000).toISOString()
+      const { data: prior, error: priorErr } = await supabase
+        .from("newsletter_sends")
+        .select("id")
+        .eq("brokerage_id", params.brokerageId)
+        .eq("contact_id", params.contactId)
+        .eq("template_id", params.templateId)
+        .in("status", ["sent", "opened", "clicked"])
+        .gte("sent_at", dupSince)
+        .limit(1)
+        .maybeSingle()
+      if (priorErr) {
+        // A refused check is not "no duplicate" — say so, but a read refusal
+        // must not block a send the workflow owes the contact.
+        console.error("[queueNewsletterForContact] duplicate check refused, sending anyway:", priorErr.message)
+      } else if (prior?.id) {
+        return { success: true, newsletterId: prior.id as string }
+      }
+    }
+
+    // Record the send intent. `subject` is NOT written here (wave 26, §1
+    // duplicate): it is newsletter_templates.subject_line, read at :1802 via
+    // the template_id this row keeps, or the step's own override, which the
+    // dispatch ledger records as vendor_usage_tracking.metadata.subject
+    // (lib/providers/dispatch.ts:515).
     const { data: sendRow, error: insertErr } = await supabase
       .from("newsletter_sends")
       .insert({
         brokerage_id: params.brokerageId,
         contact_id: params.contactId,
         template_id: params.templateId ?? null,
-        subject,
         status: "queued",
         queued_at: new Date().toISOString(),
       })
@@ -1359,7 +1204,10 @@ export async function queueNewsletterForContact(params: {
       .maybeSingle()
 
     if (insertErr) {
-      // newsletter_sends may not exist yet — proceed without tracking
+      // §3: a refused insert used to be silent. The send still goes out, but
+      // the ledger row that the queue-latency rollup and the duplicate check
+      // above depend on does not exist, and that must be visible in the log.
+      console.error("[queueNewsletterForContact] newsletter_sends insert refused, send untracked:", insertErr.message)
     }
 
     const newsletterId = sendRow?.id ?? `nws-${Date.now()}`
@@ -1376,14 +1224,20 @@ export async function queueNewsletterForContact(params: {
       html: html || `<p>Hi ${contact.first_name ?? "there"},</p><p>Your newsletter is ready.</p>`,
     })
 
-    // Update send status
+    // Update send status. sent_at ONLY on success: engagement-rollup counts the
+    // delivered denominator as `sent_at IS NOT NULL` and the queue→send latency
+    // as queued_at→sent_at, so stamping a failed send here inflated both.
     if (sendRow?.id) {
-      void Promise.resolve(
+      void bestEffort(
         supabase
           .from("newsletter_sends")
-          .update({ status: result.success ? "sent" : "failed", sent_at: new Date().toISOString() })
-          .eq("id", sendRow.id)
-      ).catch(() => {})
+          .update({
+            status: result.success ? "sent" : "failed",
+            ...(result.success && { sent_at: new Date().toISOString() }),
+          })
+          .eq("id", sendRow.id),
+        "per-recipient send outcome; the dispatch result is returned to the caller",
+      )
     }
 
     return { success: result.success, newsletterId, error: result.error }
@@ -1406,52 +1260,152 @@ export async function manageSubscriberBatch(params: {
       return { success: false, error: "Unauthorized" }
     }
     const sessionBrokerageId = ctx.brokerageId
-    const sessionUserId = ctx.userId
     const sessionAgentId = ctx.agentId
+
+    // Same class rule as manageSubscribers — newsletter_subscribers.agent_id is
+    // agents-class, so a missing agents profile is a refusal, not a users id.
+    if (!sessionAgentId) {
+      return { success: false, error: "No agent profile for this user in this brokerage — subscribers have no owner to file under." }
+    }
+
+    // `contactIds` is a caller-supplied array driving one round trip per entry
+    // (a scope read plus a write). Unbounded, this endpoint is an amplification
+    // primitive: one request becomes arbitrarily many sequential queries. Cap
+    // it and de-duplicate — the same id twice was two round trips for one row.
+    const MAX_BATCH = 500
+    const requestedIds = Array.isArray(params.contactIds) ? params.contactIds : []
+    if (requestedIds.length > MAX_BATCH) {
+      return {
+        success: false,
+        error: `Select ${MAX_BATCH} contacts or fewer per batch (received ${requestedIds.length}).`,
+      }
+    }
+    const contactIds = Array.from(new Set(requestedIds))
 
     const supabase = await createClient()
     let affected = 0
+    /** Contacts that were deliberately not subscribed, with the reason. */
+    const skipped: Array<{ contactId: string; reason: string }> = []
 
-    for (const contactId of params.contactIds) {
-      if (!isValidUUID(contactId)) continue
-
-      // Verify the contact belongs to the session brokerage before mutating subscription
-      const { data: contactRow } = await supabase
-        .from("contacts")
-        .select("brokerage_id")
-        .eq("id", contactId)
-        .maybeSingle()
-      if (!contactRow || contactRow.brokerage_id !== sessionBrokerageId) {
+    for (const contactId of contactIds) {
+      if (!isValidUUID(contactId)) {
+        skipped.push({ contactId, reason: "not a valid contact id" })
         continue
       }
 
+      // Verify the contact belongs to the session brokerage before mutating
+      // subscription — AND read the columns the write actually needs.
+      //
+      // THIS SELECT USED TO BE `brokerage_id` ALONE, and the "add" branch below
+      // then upserted a row with NO `email`. `newsletter_subscribers.email` is
+      // NOT NULL (verified live), so EVERY batch add was rejected by the
+      // database — and the upsert's error was never destructured while
+      // `affected++` ran unconditionally, so this action reported "47 contacts
+      // added" over 47 rows that do not exist. The name and opt-out flag are
+      // read for the same reason the auto-enrolment lane reads them
+      // (lib/content/newsletter-enrollment.ts): a subscriber row with no name is
+      // a worse row, and mailing an opted-out contact is a CAN-SPAM problem, not
+      // a preference.
+      const { data: contactRow, error: contactErr } = await supabase
+        .from("contacts")
+        .select("brokerage_id, email, email_opt_out, first_name, last_name")
+        .eq("id", contactId)
+        .maybeSingle()
+      if (contactErr) {
+        skipped.push({ contactId, reason: `could not be read: ${contactErr.message}` })
+        continue
+      }
+      if (!contactRow || contactRow.brokerage_id !== sessionBrokerageId) {
+        skipped.push({ contactId, reason: "not in your brokerage" })
+        continue
+      }
+
+      const email = String(contactRow.email ?? "").trim().toLowerCase()
+
       if (params.action === "add") {
-        await supabase.from("newsletter_subscribers").upsert({
-          agent_id: sessionAgentId ?? sessionUserId,
-          brokerage_id: sessionBrokerageId,
-          contact_id: contactId,
-          status: "subscribed",
-          subscribed_at: new Date().toISOString(),
-        })
+        if (!isValidEmail(email)) {
+          skipped.push({ contactId, reason: "no usable email address on the contact" })
+          continue
+        }
+        if (contactRow.email_opt_out === true) {
+          skipped.push({ contactId, reason: "contact has opted out of email" })
+          continue
+        }
+
+        // NEVER RE-SUBSCRIBE AN OPT-OUT. Same rule the automatic enrolment lane
+        // enforces: an unsubscribe is a decision the person made, and an
+        // upsert would silently flip it back to 'subscribed'.
+        const { data: existing, error: existingErr } = await supabase
+          .from("newsletter_subscribers")
+          .select("id, status")
+          .eq("brokerage_id", sessionBrokerageId)
+          .eq("email", email)
+          .maybeSingle()
+        if (existingErr) {
+          skipped.push({ contactId, reason: `subscription state unreadable: ${existingErr.message}` })
+          continue
+        }
+        if (existing?.status === "unsubscribed") {
+          skipped.push({ contactId, reason: "previously unsubscribed — re-subscribing must be deliberate" })
+          continue
+        }
+
+        // onConflict names the REAL unique — newsletter_subscribers_brokerage_id_email_key
+        // (brokerage_id, email). Without it the upsert conflicts on the primary
+        // key only, which a new row never collides on, so a second run inserted
+        // a duplicate instead of updating.
+        const { error: upsertErr } = await supabase
+          .from("newsletter_subscribers")
+          .upsert(
+            {
+              agent_id: sessionAgentId,
+              brokerage_id: sessionBrokerageId,
+              contact_id: contactId,
+              email,
+              first_name: contactRow.first_name ?? null,
+              last_name: contactRow.last_name ?? null,
+              status: "subscribed",
+              source: "manual",
+              ...(existing ? {} : { subscribed_at: new Date().toISOString() }),
+            },
+            { onConflict: "brokerage_id,email" },
+          )
+        if (upsertErr) {
+          skipped.push({ contactId, reason: upsertErr.message })
+          continue
+        }
         affected++
       } else if (params.action === "remove") {
-        await supabase
+        // Count what the database actually changed. A zero-row update is not a
+        // removal, and `affected++` on an unchecked update was reporting one.
+        const { data: removed, error: removeErr } = await supabase
           .from("newsletter_subscribers")
           .update({ status: "unsubscribed", unsubscribed_at: new Date().toISOString() })
           .eq("contact_id", contactId)
-          .eq("agent_id", sessionAgentId ?? sessionUserId)
+          .eq("agent_id", sessionAgentId)
           .eq("brokerage_id", sessionBrokerageId)
-        affected++
+          .select("id")
+        if (removeErr) {
+          skipped.push({ contactId, reason: removeErr.message })
+          continue
+        }
+        if (!removed || removed.length === 0) {
+          skipped.push({ contactId, reason: "was not on your list" })
+          continue
+        }
+        affected += removed.length
       } else if (params.action === "update_segment" && params.segment) {
         // Segments are not modeled on newsletter_subscribers (audience targeting lives at the
         // newsletter_sections level via target_personas/target_locations). No-op rather than write a
         // phantom column.
+        skipped.push({ contactId, reason: "segments are not stored on subscribers" })
       }
     }
 
     revalidatePath("/content-studio")
+    revalidatePath("/newsletters")
 
-    return { success: true, affected }
+    return { success: true, affected, skipped }
   } catch (error) {
     console.error("[AI Newsletter] Subscriber management error:", error)
     return handleError(error, "manageSubscriberBatch")

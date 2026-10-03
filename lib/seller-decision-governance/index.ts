@@ -48,6 +48,7 @@ export {
 
 // ─── DECISION LOGGER ──────────────────────────────────────────────────────────
 export type {
+  DecisionLogResult,
   DecisionTransitionEvent,
   CMAQualityEvent,
   NetSheetEvent,

@@ -34,21 +34,26 @@
 // raw send). Best-effort throughout — the copilot never breaks the detector.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { usd } from "@/lib/format/money"
 
 type Svc = ReturnType<typeof createServiceClient>
 
 // ── Pure math layer ──────────────────────────────────────────────────────────
 
-export type AppraisalOptionKey = "seller_reduces" | "buyer_covers" | "split_or_reappraise"
-export type OptionFavors = "buyer" | "seller" | "balanced"
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+type AppraisalOptionKey = "seller_reduces" | "buyer_covers" | "split_or_reappraise"
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+type OptionFavors = "buyer" | "seller" | "balanced"
 
 /** Where the buyer's loan figure actually came from — the sourcing hierarchy the
  *  runner walks (lender record → transaction record → the buyer's pre-approval).
  *  There is NO assumption tier: when none of these exist, terms are UNKNOWN and
  *  the math that needs them is presented as pending — never invented. */
-export type LoanTermsSource = "transaction_lenders" | "transaction" | "pre_approval"
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+type LoanTermsSource = "transaction_lenders" | "transaction" | "pre_approval"
 
-export interface KnownLoanTerms {
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+interface KnownLoanTerms {
   /** The real loan amount (0 = a cash purchase per the record). */
   loanAmount: number
   source: LoanTermsSource
@@ -59,7 +64,7 @@ export interface KnownLoanTerms {
 }
 
 /** The provenance line downstream math carries ("per the buyer's pre-approval from …"). */
-export function loanTermsProvenanceLabel(t: KnownLoanTerms): string {
+function loanTermsProvenanceLabel(t: KnownLoanTerms): string {
   switch (t.source) {
     case "transaction_lenders":
       return `per the lender's loan terms on file${t.lenderName ? ` (${t.lenderName}${t.loanType ? `, ${t.loanType}` : ""})` : t.loanType ? ` (${t.loanType})` : ""}`
@@ -74,7 +79,8 @@ export function loanTermsProvenanceLabel(t: KnownLoanTerms): string {
  *  null means genuinely unknown, and the composer then presents only the price/gap
  *  math (which needs no loan terms) with the loan-dependent figures marked pending.
  *  Nothing is ever assumed. */
-export interface AppraisalGapFacts {
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+interface AppraisalGapFacts {
   contractPrice: number
   appraisalValue: number
   /** Sourced loan terms (lender row → transaction → pre-approval), or null = unknown. */
@@ -83,9 +89,11 @@ export interface AppraisalGapFacts {
 }
 
 /** A single labeled figure for an option (rendering + the briefing text). */
-export interface OptionNumber { label: string; value: number; fmt: string }
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+interface OptionNumber { label: string; value: number; fmt: string }
 
-export interface AppraisalGapOption {
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+interface AppraisalGapOption {
   key: AppraisalOptionKey
   title: string
   favors: OptionFavors
@@ -98,7 +106,8 @@ export interface AppraisalGapOption {
   framing?: string
 }
 
-export interface AppraisalGapContext {
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+interface AppraisalGapContext {
   contractPrice: number
   appraisalValue: number
   gapAmount: number
@@ -115,14 +124,13 @@ export interface AppraisalGapContext {
   loanTermsProvenance: string | null
 }
 
-export interface AppraisalGapCopilot {
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+interface AppraisalGapCopilot {
   context: AppraisalGapContext
   options: AppraisalGapOption[]
 }
 
-function usd(n: number): string {
-  return `$${Math.round(n).toLocaleString("en-US")}`
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 function num(label: string, value: number): OptionNumber {
   return { label, value: Math.round(value), fmt: usd(value) }
@@ -133,7 +141,7 @@ function num(label: string, value: number): OptionNumber {
  * no AI, no I/O. The arithmetic is the "lender lends against the LOWER of price or
  * appraisal" rule that governs every one of these conversations.
  */
-export function composeAppraisalGapOptions(facts: AppraisalGapFacts): AppraisalGapCopilot {
+function composeAppraisalGapOptions(facts: AppraisalGapFacts): AppraisalGapCopilot {
   const contractPrice  = Math.max(0, Math.round(facts.contractPrice))
   const appraisalValue = Math.max(0, Math.round(facts.appraisalValue))
   const gapAmount = Math.max(0, contractPrice - appraisalValue)
@@ -274,7 +282,8 @@ export function composeAppraisalGapOptions(facts: AppraisalGapFacts): AppraisalG
 
 // ── Supporting comps (reuse the platform comps provider — NOT a new scraper) ──
 
-export interface SupportingComp {
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+interface SupportingComp {
   address: string
   salePrice: number
   pricePerSqft: number | null
@@ -292,7 +301,7 @@ export interface SupportingComp {
  * price (the strongest ROV/ARV backing), then nearest, then most recent. Never
  * throws; returns [] when comps aren't available or the provider isn't configured.
  */
-export async function loadSupportingComps(args: {
+async function loadSupportingComps(args: {
   brokerageId: string
   address: string | null
   contractPrice: number
@@ -404,7 +413,7 @@ Return ONLY JSON: {"seller_reduces":"...","buyer_covers":"...","split_or_reappra
 const CIRCLED = ["①", "②", "③", "④", "⑤"]
 
 /** PURE: assemble the full agent briefing text from the framed options + comps. */
-export function buildAgentBriefing(
+function buildAgentBriefing(
   copilot: AppraisalGapCopilot,
   comps: SupportingComp[],
   bottomLine: string,
@@ -466,7 +475,7 @@ export function buildAgentBriefing(
  *   4. null — genuinely unknown. NO assumption tier exists.
  * Best-effort; never throws.
  */
-export async function resolveLoanTermsForTransaction(
+async function resolveLoanTermsForTransaction(
   supabase: Svc,
   transactionId: string,
   contractPrice: number,
@@ -551,7 +560,8 @@ export async function resolveLoanTermsForTransaction(
   return null
 }
 
-export interface AppraisalNegotiationResult {
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+interface AppraisalNegotiationResult {
   ran: boolean
   taskCreated: boolean
   compsFound: number

@@ -8,6 +8,7 @@
 // The logger is injectable so the metering decision is unit-testable without a DB.
 
 import { logVendorUsage, type VendorUsageEvent, type UsageLogResult } from "./usage-logger"
+import { elevenLabsUsdForChars } from "@/lib/video/realism-profile"
 
 export type MeterLogger = (event: VendorUsageEvent) => Promise<UsageLogResult>
 
@@ -20,6 +21,21 @@ export interface MeterVendorInput {
   brokerageId?: string | null
   systemSource?: string
   metadata?: Record<string, any>
+  /**
+   * THE PERSON THIS SPEND WAS FOR (lane 87F, wave 87 — "lead intelligence = history + source cost").
+   * Before this field existed NO meterVendorSpend booking carried a person: lead_id was never set, so
+   * lib/contact-promotion/acquisition-cost.ts (which sums vendor_usage_tracking BY lead_id) found only
+   * the $0 osint_free rows and every paid skip-trace / PeopleData / Versium / property-enrichment call
+   * vanished from cost-per-lead. And because usage-logger's replay fingerprint named no person, two
+   * different people's identical $0.25 matches inside five minutes fingerprinted as ONE event and the
+   * second was dropped from the ledger outright.
+   *   leadId      → vendor_usage_tracking.lead_id (FK → leads.id — pass ONLY a real leads.id)
+   *   contactId   → request_metadata.contactId   (the key trackVendorUsageService already writes)
+   *   rawRecordId → request_metadata.rawRecordId (raw_scraped_leads.id — spend BEFORE a lead exists;
+   *                 read back through leads.raw_record_id / source_raw_ids once the row becomes a lead)
+   * Reader: lib/lead-intelligence/person-spend.ts.
+   */
+  attribution?: { leadId?: string | null; contactId?: string | null; rawRecordId?: string | null }
 }
 
 /**
@@ -34,6 +50,7 @@ export async function meterVendorSpend(
   if (!input.cost || input.cost <= 0) return false
   if (!input.brokerageId) return false
   const logger = deps.logger ?? logVendorUsage
+  const who = input.attribution ?? {}
   try {
     const res = await logger({
       vendorName: input.vendorName,
@@ -42,7 +59,12 @@ export async function meterVendorSpend(
       estimatedCost: input.cost,
       systemSource: input.systemSource ?? "lead_scraping",
       brokerageId: input.brokerageId,
-      metadata: input.metadata,
+      ...(who.leadId ? { leadId: who.leadId } : {}),
+      metadata: {
+        ...(input.metadata ?? {}),
+        ...(who.contactId ? { contactId: who.contactId } : {}),
+        ...(who.rawRecordId ? { rawRecordId: who.rawRecordId } : {}),
+      },
     })
     return !!res.success
   } catch {
@@ -50,16 +72,14 @@ export async function meterVendorSpend(
   }
 }
 
-/** Maps a cron scraper_type to the canonical vendor name recorded in the ledger. */
-export function scraperTypeToVendor(scraperType: string): string {
-  switch (scraperType) {
-    case "zillow_behavior": return "zenrows"
-    case "batchdata_motivated": return "batchdata"
-    case "social_intent": return "apify_social" // composite: apify + exa + tavily
-    case "osint_signal": return "osint"
-    default: return scraperType
-  }
-}
+// TOMBSTONE (§1.1 + §6, lane 83E, 2026-09-26): scraperTypeToVendor DELETED — a second
+// scraper→vendor vocabulary with no runtime reader (orphan-export category A: only
+// scripts/scraper-simulator.ts named it). Its one distinctive entry was the RETIRED composite
+// `social_intent → "apify_social"` that filed Exa/Tavily spend under Apify (wave 82 integration
+// note). Survivor: lib/lead-pipeline/source-intent-map.ts:885 SOURCE_VENDOR, read through
+// vendorForSource (:937) by lib/lead-pipeline/source-cost-ledger.ts::planSourceSpendBooking —
+// which already carries every other entry (zillow → zenrows via the alias map, batchdata_motivated
+// → batchdata, osint_signal → osint), per source rather than per cron block. Nothing to merge.
 
 // ─── Platform-controlled AI vendors (D-ID, HeyGen, ElevenLabs, Vapi) ──────────
 // The platform owns these keys/cost (not the brokerage), but spend is still
@@ -68,7 +88,9 @@ export function scraperTypeToVendor(scraperType: string): string {
 export const PLATFORM_VENDOR_RATES = {
   did:        { perUnit: 0.10,    unit: "video"     }, // ~$0.10 / talk render
   heygen:     { perUnit: 0.50,    unit: "video"     }, // ~$0.50 / avatar video
-  elevenlabs: { perUnit: 0.00018, unit: "character" }, // ~$0.18 / 1k chars (creator tier)
+  // lane 92A: THE ONE voice price (lib/video/realism-profile.ts elevenLabsUsdForChars, $0.10/1K —
+  // the billed eleven_v3 / multilingual_v2 row). Was a private $0.18/1K "creator tier" copy.
+  elevenlabs: { perUnit: elevenLabsUsdForChars(1), unit: "character" },
   vapi:       { perUnit: 0.07,    unit: "minute"    }, // ~$0.07 / call minute (LEGACY lane)
   twilio_voice: { perUnit: 0.02,  unit: "minute"    }, // ~$0.014 carrier + STT/AI overhead — the Twilio-native AI lane
   lob:        { perUnit: 0.84,    unit: "piece"     }, // ~$0.84 / printed+mailed postcard

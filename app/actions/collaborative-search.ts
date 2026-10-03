@@ -8,6 +8,39 @@ const COLLAB_SEARCH_AVAILABLE = process.env.COLLABORATIVE_SEARCH_ENABLED !== 'fa
 
 // ==================== COLLABORATIVE SEARCH CRUD ====================
 
+/**
+ * Create a family/collaborative search for a contact.
+ *
+ * GATED AND TENANT-STAMPED, both of which were missing.
+ *
+ * All four live `collaborative_searches` policies (select / insert-check /
+ * update-both-clauses / delete), granted to `authenticated`, read
+ * `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`. A NULL
+ * brokerage_id SATISFIES that predicate for EVERY tenant, so an unstamped search —
+ * which carries the buyer's name and their search criteria — was published to, and
+ * editable and deletable by, every signed-in user of every other brokerage.
+ *
+ * The tenant is NOT looked up from `contactId` and stamped: that argument is
+ * caller-supplied into a `"use server"` export, and taking the tenant from it would
+ * let the caller choose which brokerage to write into. It goes through
+ * `requireContactAccess`, the same shared portal gate `trackPortalActivity` below
+ * uses — which PROVES the caller is either that contact or staff in the contact's
+ * brokerage before yielding the brokerage id. A foreign contactId is refused, not
+ * stamped.
+ *
+ * Service client for the writes, for the reason documented on `trackPortalActivity`
+ * below: the gate has already proven the caller, and a portal contact (whose own
+ * `current_user_brokerage_id()` need not be the contact's) may satisfy neither the
+ * stamped INSERT check nor a read of their own `contacts` row under RLS. Both
+ * statements are re-scoped by `access.brokerageId` so the bypass can only touch the
+ * tenant the gate proved.
+ *
+ * Stamping does NOT lock the buyer out of their own search: the second SELECT policy
+ * `portal_read_collaborative_searches` admits rows via `portal_member_searches()`,
+ * a SECURITY DEFINER function that matches on the caller's JWT email against the
+ * search's contact / created_by contact or an invited member row. It carries no
+ * brokerage test at all, so the portal reader is untouched by this change.
+ */
 export async function createCollaborativeSearch(
   contactId: string,
   name: string,
@@ -15,11 +48,21 @@ export async function createCollaborativeSearch(
   searchCriteria?: Record<string, any>,
 ) {
   if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not yet available." }
-  const supabase = await createClient()
 
-  const { data, error } = await supabase
+  const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) {
+    console.error("[v0] Error creating collaborative search: caller is not on this contact:", access.error)
+    return { error: access.error }
+  }
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+
+  const { data, error } = await svc
     .from("collaborative_searches")
     .insert({
+      brokerage_id: access.brokerageId,
       contact_id: contactId,
       name,
       description,
@@ -33,15 +76,22 @@ export async function createCollaborativeSearch(
     return { error: error.message }
   }
 
-  // Add the contact as the owner member
-  const { data: contact } = await supabase
+  // Add the contact as the owner member. `error` is destructured because supabase-js
+  // RESOLVES a refused read — `const { data: contact }` alone reported a denial as
+  // "this contact has no email" and silently produced an owner-less search.
+  const { data: contact, error: contactError } = await svc
     .from("contacts")
     .select("email, first_name, last_name")
     .eq("id", contactId)
-    .single()
+    .eq("brokerage_id", access.brokerageId)
+    .maybeSingle()
+
+  if (contactError) {
+    console.error("[v0] Owner lookup refused — search created without an owner member:", contactError.message)
+  }
 
   if (contact?.email) {
-    await supabase.from("collaborative_search_members").insert({
+    const { error: memberError } = await svc.from("collaborative_search_members").insert({
       collaborative_search_id: data.id,
       email: contact.email,
       name: `${contact.first_name || ""} ${contact.last_name || ""}`.trim() || "Owner",
@@ -49,6 +99,9 @@ export async function createCollaborativeSearch(
       invite_status: "accepted",
       accepted_at: new Date().toISOString(),
     })
+    if (memberError) {
+      console.error("[v0] Owner member NOT recorded for collaborative search:", memberError.message)
+    }
   }
 
   revalidatePath(`/portal/${contactId}`)
@@ -99,6 +152,89 @@ export async function getCollaborativeSearchById(searchId: string) {
   }
 
   return data
+}
+
+/**
+ * CLOSE a collaborative search — the terminal half this feature never had.
+ *
+ * `collaborative_searches.status` was READ BY CODE AND WRITTEN BY NOBODY
+ * (census 1b): `getCollaborativeSearches` filters `.eq("status", "active")`
+ * (line ~116) and the only writer of a search row —
+ * `createCollaborativeSearch` above — never names the column, so every search
+ * ever created took the DDL default `'active'` and STAYED active for the life of
+ * the account. A family that bought a house six months ago still had their old
+ * search sitting at the top of their portal, and the filter that exists to hide
+ * finished searches could never hide one.
+ *
+ * The vocabulary is not invented here: the live CHECK admits exactly
+ * `active | archived | completed` (scripts/check-vocabularies.ts:455), so the
+ * database has been expecting this transition all along.
+ *
+ *   completed — they found the home. The happy terminal state.
+ *   archived  — they stopped looking. Hidden, not deleted; the ratings and the
+ *               consensus history stay on the row.
+ *
+ * GATED exactly like the create: `requireContactAccess` proves the caller is
+ * that contact or staff in the contact's brokerage BEFORE anything is written,
+ * and the tenant comes from the gate, never from an argument (§4). The service
+ * client is used for the same reason the create documents — a portal contact's
+ * own `current_user_brokerage_id()` need not be the contact's — and the UPDATE
+ * is re-scoped by the gate's brokerage so the bypass can only touch the tenant
+ * the gate proved.
+ */
+export async function closeCollaborativeSearch(
+  searchId: string,
+  status: "completed" | "archived",
+): Promise<{ success?: true; error?: string }> {
+  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not yet available." }
+  if (status !== "completed" && status !== "archived") {
+    // Fail closed on a value outside the live CHECK rather than letting the
+    // database refuse the whole statement (23514) and reporting success.
+    return { error: "A search can only be completed or archived." }
+  }
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+
+  // Resolve the search's OWNING contact from the row, then gate on THAT — the
+  // searchId is caller-supplied, so the contact it belongs to is read from the
+  // database and never taken from the caller.
+  const { data: search, error: readError } = await svc
+    .from("collaborative_searches")
+    .select("id, contact_id, brokerage_id, status")
+    .eq("id", searchId)
+    .maybeSingle()
+  if (readError) return { error: readError.message }
+  if (!search?.contact_id) return { error: "Search not found." }
+
+  const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
+  const access = await requireContactAccess(search.contact_id as string)
+  if (!access.ok) return { error: access.error }
+  if (search.brokerage_id && search.brokerage_id !== access.brokerageId) {
+    return { error: "Forbidden" }
+  }
+
+  // `.select()` the UPDATE and COUNT it. An update matching nothing resolves
+  // with error null and empty data, byte-identical to one that worked (§3) —
+  // and here zero rows means the search was already closed by somebody else,
+  // which the caller needs to know rather than be told "done".
+  const { data: updated, error } = await svc
+    .from("collaborative_searches")
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq("id", searchId)
+    .eq("brokerage_id", access.brokerageId)
+    .eq("status", "active")
+    .select("id")
+  if (error) {
+    console.error("[v0] Error closing collaborative search:", error.message)
+    return { error: error.message }
+  }
+  if ((updated ?? []).length === 0) {
+    return { error: "That search is no longer active." }
+  }
+
+  revalidatePath(`/portal/${search.contact_id}`)
+  return { success: true }
 }
 
 export async function updateSearchCriteria(searchId: string, criteria: Record<string, any>) {
@@ -167,13 +303,38 @@ export async function inviteFamilyMember(
   // Send email invitation with link containing invite_token
   const { sendCollaborativeSearchInvite } = await import("@/lib/services/communication.service")
   
-  // Get inviter name
-  const { data: search } = await supabase
+  // Get inviter name.
+  //
+  // AMBIGUOUS EMBED — the `!collaborative_searches_contact_id_fkey` hint is
+  // load-bearing. `collaborative_searches` has TWO foreign keys to `contacts`
+  // (collaborative_searches_contact_id_fkey on contact_id, and
+  // collaborative_searches_created_by_contact_id_fkey on created_by_contact_id), so
+  // the bare `contacts(...)` this replaces was unresolvable and PostgREST refused the
+  // whole request with PGRST201. With no `error` destructure that arrived as
+  // `search = null`, so EVERY invitation email in this system has gone out signed
+  // "A colleague" instead of the person who sent it.
+  //
+  // WHICH PARTY, and why the obvious-looking one is wrong: the old select asked for
+  // `created_by_contact_id` alongside, which reads as though the creator lives there.
+  // It does not. NOTHING in this repo ever writes `created_by_contact_id` — grep it;
+  // the only writer of a collaborative_searches row is createCollaborativeSearch
+  // above, which sets `contact_id` and then immediately enrols that same contact as
+  // the OWNER member. The column is dormant, so embedding through it would have
+  // resolved to null on every row and left the "A colleague" bug in place while
+  // looking fixed. `contact_id` is the contact who owns the search and is therefore
+  // the person doing the inviting.
+  const { data: search, error: searchError } = await supabase
     .from("collaborative_searches")
-    .select("created_by_contact_id, contacts(first_name, last_name)")
+    .select("contact_id, contacts!collaborative_searches_contact_id_fkey(first_name, last_name)")
     .eq("id", searchId)
     .single()
-  
+
+  // The invite row is already written at this point, so a failure here must not
+  // abort — but it must not be silently dressed up as "A colleague" either.
+  if (searchError) {
+    console.error("[collaborative-search] could not resolve the inviter's name:", searchError.message)
+  }
+
   const contactObj = (search?.contacts as any)
   const inviterName = contactObj?.first_name
     ? `${contactObj.first_name} ${contactObj.last_name}`
@@ -426,23 +587,63 @@ export async function markAsFinalist(searchId: string, propertyId: string, isFin
 
 // ==================== ACTIVITY TRACKING ====================
 
+/**
+ * The collaborative-search engagement ledger. TENANT-STAMPED, which is the repair: the row's
+ * SELECT policy admits the agent side only through has_brokerage_access(brokerage_id) or
+ * agent_id = current_user_agent_id(), so a row written with both columns null — as this one was —
+ * is readable by the client who generated it and by platform admins, and by nobody who can act on
+ * it. The column is nullable, so the write succeeded and the signal simply never arrived.
+ *
+ * The tenant cannot come from the session (the caller is a portal contact, whose users row has no
+ * brokerage), so it comes from the CONTACT, through the shared portal gate — which also closes the
+ * hole that this took a bare contactId from a client component and would happily plant activity on
+ * any contact in the database. Same gate as the buyer-offer tools; not a second auth pattern.
+ */
 export async function trackPortalActivity(
   contactId: string,
   activityType: string,
   activityData?: Record<string, any>,
   propertyId?: string,
-) {
-  if (!COLLAB_SEARCH_AVAILABLE) return
-  const supabase = await createClient()
+): Promise<{ recorded: boolean; reason?: string }> {
+  if (!COLLAB_SEARCH_AVAILABLE) return { recorded: false, reason: "disabled" }
 
-  const { error } = await supabase.from("client_portal_activity").insert({
+  const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
+  const access = await requireContactAccess(contactId)
+  if (!access.ok) {
+    console.error("[collaborative-search] activity NOT recorded — caller is not on this contact:", access.error)
+    return { recorded: false, reason: access.error }
+  }
+
+  // Service client from here: the gate has proven the caller, and a portal contact cannot read
+  // their own contacts row (to find the owning agent) or satisfy the staff INSERT lane under RLS.
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+
+  // contacts.agent_id is AGENTS-class, the same class this column FKs — a straight copy. The
+  // caller's users.id is a DISJOINT space and is never substituted for it.
+  const { data: owner, error: ownerError } = await svc
+    .from("contacts")
+    .select("agent_id")
+    .eq("id", contactId)
+    .eq("brokerage_id", access.brokerageId)
+    .maybeSingle()
+  if (ownerError) {
+    console.error("[collaborative-search] owning-agent read refused — activity row loses its agent stamp:", ownerError.message)
+  }
+
+  const activityRow = {
+    brokerage_id: access.brokerageId,
     contact_id: contactId,
+    agent_id: (owner as { agent_id: string | null } | null)?.agent_id ?? null,
     activity_type: activityType,
     metadata: activityData || {},
-    property_id: propertyId,
-  })
+    property_id: propertyId ?? null,
+  }
+  const { error } = await svc.from("client_portal_activity").insert(activityRow)
 
   if (error) {
-    console.error("[v0] Error tracking activity:", error)
+    console.error(`[collaborative-search] activity '${activityType}' NOT recorded:`, error.message)
+    return { recorded: false, reason: error.message }
   }
+  return { recorded: true }
 }

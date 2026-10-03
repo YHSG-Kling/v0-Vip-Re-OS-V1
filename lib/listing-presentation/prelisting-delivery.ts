@@ -67,30 +67,56 @@ export interface EmailComposeInput {
   propertyAddress: string
   sectionTitles:   string[]
   portalUrl:       string
+  /**
+   * 'buyer' switches the copy to the buyer-consultation deck — a buyer has no
+   * property being sold, so the seller wording ("plan to sell your home",
+   * "your home's numbers") would make wrong claims to a client. Absent ⇒ the
+   * seller copy, unchanged.
+   */
+  audience?:       "seller" | "buyer"
 }
 export interface ComposedEmail { subject: string; previewText: string; html: string; text: string }
 
 /**
- * Pure: compose the seller-facing announcement email. SELLER-SAFE — it sells the
- * relationship + the market and points to the portal; the home's value is
- * deferred to the meeting (no price anywhere). This is the "email" a human
- * reviews at gate 2 before it is ever sent.
+ * Pure: compose the client-facing announcement email. SELLER-SAFE on the seller
+ * path — it sells the relationship + the market and points to the portal; the
+ * home's value is deferred to the meeting (no price anywhere). The buyer path
+ * announces the home-buying plan ahead of the consultation. Either way this is
+ * the "email" a human reviews at gate 2 before it is ever sent.
  */
 export function composePrelistingEmail(input: EmailComposeInput): ComposedEmail {
+  const buyer = input.audience === "buyer"
   const addr = input.propertyAddress || "your home"
-  const subject = `Your personalized listing plan for ${addr}`
-  const previewText = `${input.agentName} built a custom plan to sell ${addr} — see it before our meeting.`
+  const subject = buyer
+    ? "Your personalized home-buying plan"
+    : `Your personalized listing plan for ${addr}`
+  const previewText = buyer
+    ? `${input.agentName} built your home-buying plan — see it before our consultation.`
+    : `${input.agentName} built a custom plan to sell ${addr} — see it before our meeting.`
   const items = input.sectionTitles.map((t) => `<li style="margin:4px 0">${escapeHtml(t)}</li>`).join("")
+  const opening = buyer
+    ? `Ahead of our consultation, I put together a personalized plan for your home search — financing, the homes that fit, offer strategy, and the path to closing — with a short video walking you through each part.`
+    : `Ahead of our listing appointment, I put together a personalized plan to position and market <strong>${escapeHtml(addr)}</strong> in today's market — with a short video walking you through each part.`
+  const closing = buyer
+    ? `Bring your questions — we'll map the whole search together when we meet. Looking forward to it.`
+    : `I'll walk you through your home's specific numbers when we meet. Looking forward to it.`
+  const cta = buyer ? "Open your plan" : "Open your listing plan"
   const html = `<!doctype html><html><body style="font-family:Helvetica,Arial,sans-serif;color:#0F172A;line-height:1.5">
   <p>Hi,</p>
-  <p>Ahead of our listing appointment, I put together a personalized plan to position and market <strong>${escapeHtml(addr)}</strong> in today's market — with a short video walking you through each part.</p>
+  <p>${opening}</p>
   <p>Inside your portal you'll find:</p>
   <ul>${items}</ul>
-  <p><a href="${escapeAttr(input.portalUrl)}" style="display:inline-block;background:#F59E0B;color:#0F172A;padding:10px 18px;border-radius:6px;text-decoration:none;font-weight:600">Open your listing plan</a></p>
-  <p>I'll walk you through your home's specific numbers when we meet. Looking forward to it.</p>
+  <p><a href="${escapeAttr(input.portalUrl)}" style="display:inline-block;background:#F59E0B;color:#0F172A;padding:10px 18px;border-radius:6px;text-decoration:none;font-weight:600">${cta}</a></p>
+  <p>${closing}</p>
   <p>— ${escapeHtml(input.agentName)}<br/>${escapeHtml(input.brokerageName)}</p>
   </body></html>`
-  const text = `Hi,\n\nAhead of our listing appointment, I put together a personalized plan to sell ${addr}, with a short video for each part:\n${input.sectionTitles.map((t) => ` • ${t}`).join("\n")}\n\nOpen your listing plan: ${input.portalUrl}\n\nI'll walk you through your home's specific numbers when we meet.\n\n— ${input.agentName}\n${input.brokerageName}`
+  const textOpening = buyer
+    ? `Ahead of our consultation, I put together a personalized home-buying plan for you, with a short video for each part:`
+    : `Ahead of our listing appointment, I put together a personalized plan to sell ${addr}, with a short video for each part:`
+  const textClosing = buyer
+    ? `Bring your questions — we'll map the whole search together when we meet.`
+    : `I'll walk you through your home's specific numbers when we meet.`
+  const text = `Hi,\n\n${textOpening}\n${input.sectionTitles.map((t) => ` • ${t}`).join("\n")}\n\n${cta}: ${input.portalUrl}\n\n${textClosing}\n\n— ${input.agentName}\n${input.brokerageName}`
   return { subject, previewText, html, text }
 }
 
@@ -117,11 +143,14 @@ export async function proposePrelistingDeliveryWhenReady(
 
   const { data: pres } = await supabase
     .from("listing_presentations")
-    .select("id, brokerage_id, contact_id, agent_user_id, property_address, appointment_at, delivery_approved_at")
+    .select("id, brokerage_id, contact_id, agent_user_id, property_address, appointment_at, delivery_approved_at, presentation_type")
     .eq("id", presentationId)
     .maybeSingle()
   if (!pres?.brokerage_id) return { proposed: false, reason: "presentation not found" }
   if (pres.delivery_approved_at) return { proposed: false, reason: "already released" }
+  // Buyer-consultation decks ride the SAME gate: produce autonomously, release
+  // by a human. Only the reviewed copy differs.
+  const buyerDeck = (pres as { presentation_type?: string | null }).presentation_type === "buyer_consultation"
 
   // Idempotent — don't re-propose if a release for this presentation is open/done.
   const { data: existing } = await supabase
@@ -170,12 +199,16 @@ export async function proposePrelistingDeliveryWhenReady(
   }
   const { data: brk } = await supabase.from("brokerages").select("name").eq("id", pres.brokerage_id).maybeSingle()
   brokerageName = (brk as { name?: string } | null)?.name ?? brokerageName
-  const portalUrl = `${(process.env.NEXT_PUBLIC_APP_URL ?? "https://app.example.com").replace(/\/$/, "")}/portal/listing-plan/${presentationId}`
+  const appBase = (process.env.NEXT_PUBLIC_APP_URL ?? "https://app.example.com").replace(/\/$/, "")
+  const portalUrl = buyerDeck && pres.contact_id
+    ? `${appBase}/portal/${pres.contact_id}/journey`
+    : `${appBase}/portal/listing-plan/${presentationId}`
   const email = composePrelistingEmail({
     agentName, brokerageName,
     propertyAddress: pres.property_address ?? "your home",
     sectionTitles:   secList.map((s) => s.title ?? s.section_key),
     portalUrl,
+    audience:        buyerDeck ? "buyer" : "seller",
   })
 
   const { data: action, error } = await supabase
@@ -187,11 +220,16 @@ export async function proposePrelistingDeliveryWhenReady(
         presentation_id: presentationId,
         appointment_at:  pres.appointment_at ?? null,
         property_address: pres.property_address ?? null,
+        // Same key the email composer takes ("audience", not presentation_type) —
+        // the Command Center reads it to label a buyer-consultation release as
+        // such instead of showing seller wording for both deck types.
+        audience:        buyerDeck ? "buyer" : "seller",
         video_renders:   readiness.videos,
         email:           { subject: email.subject, preview_text: email.previewText, preview_html: email.html },
       },
-      rationale:
-        `The finished pre-listing presentation for ${pres.property_address ?? "this seller"} is rendered (${readiness.succeeded} video${readiness.succeeded === 1 ? "" : "s"}) and the announcement email is drafted. Review the actual videos + email below, then RELEASE — the seller sees nothing until you do.`,
+      rationale: buyerDeck
+        ? `The finished buyer-consultation deck for this buyer is rendered (${readiness.succeeded} video${readiness.succeeded === 1 ? "" : "s"}) and the announcement email is drafted. Review the actual videos + email below, then RELEASE — the buyer sees nothing until you do.`
+        : `The finished pre-listing presentation for ${pres.property_address ?? "this seller"} is rendered (${readiness.succeeded} video${readiness.succeeded === 1 ? "" : "s"}) and the announcement email is drafted. Review the actual videos + email below, then RELEASE — the seller sees nothing until you do.`,
       status: "proposed",
     })
     .select("id")
@@ -216,10 +254,11 @@ export async function sendPrelistingAnnouncementEmail(
   const supabase = client ?? createServiceClient()
   const { data: pres } = await supabase
     .from("listing_presentations")
-    .select("id, brokerage_id, contact_id, agent_user_id, property_address")
+    .select("id, brokerage_id, contact_id, agent_user_id, property_address, presentation_type")
     .eq("id", presentationId)
     .maybeSingle()
   if (!pres?.brokerage_id || !pres.contact_id) return { sent: false, reason: "no contact" }
+  const buyerDeck = (pres as { presentation_type?: string | null }).presentation_type === "buyer_consultation"
 
   const { data: contact } = await supabase.from("contacts").select("email").eq("id", pres.contact_id).maybeSingle()
   const to = (contact as { email?: string | null } | null)?.email ?? null
@@ -236,7 +275,10 @@ export async function sendPrelistingAnnouncementEmail(
   if (!from) return { sent: false, reason: "no from address" }
 
   const { data: brk } = await supabase.from("brokerages").select("name").eq("id", pres.brokerage_id).maybeSingle()
-  const portalUrl = `${(process.env.NEXT_PUBLIC_APP_URL ?? "https://app.example.com").replace(/\/$/, "")}/portal/listing-plan/${presentationId}`
+  const appBase2 = (process.env.NEXT_PUBLIC_APP_URL ?? "https://app.example.com").replace(/\/$/, "")
+  const portalUrl = buyerDeck
+    ? `${appBase2}/portal/${pres.contact_id}/journey`
+    : `${appBase2}/portal/listing-plan/${presentationId}`
   const { data: sections } = await supabase
     .from("presentation_sections").select("section_key, title").eq("presentation_id", presentationId).order("section_order")
   const email = composePrelistingEmail({
@@ -245,6 +287,7 @@ export async function sendPrelistingAnnouncementEmail(
     propertyAddress: pres.property_address ?? "your home",
     sectionTitles:   ((sections ?? []) as Array<{ section_key: string; title: string | null }>).map((s) => s.title ?? s.section_key),
     portalUrl,
+    audience:        buyerDeck ? "buyer" : "seller",
   })
 
   try {

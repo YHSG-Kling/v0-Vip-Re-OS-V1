@@ -86,6 +86,12 @@ export async function logBatchBuyerSearchMatches(
   const errors: string[] = []
   let logged = 0
 
+  // ONE SHAPE FOR ONE SIGNAL (CLAUDE.md §6). This batch writer and its
+  // single-record sibling above wrote DIFFERENT `notes` payloads for the same
+  // `buyer_search_match` activity: `intent` was accepted here and read by NOTHING,
+  // so `search_query_length` and `persona_confidence` were present on one row shape
+  // and absent on the other, and no single query could read both. `match_score` was
+  // in the batch's own parameter type and dropped on the floor as well.
   const records = matches.map(match => ({
     entity_type: 'contact',
     entity_id: contactId,
@@ -96,7 +102,11 @@ export async function logBatchBuyerSearchMatches(
       listing_id: match.listingId,
       confidence_level: match.confidenceLevel,
       inferred_focus: persona.focusAreas.join(', '),
+      match_factors_shown: [],
+      search_query_length: intent.rawQuery.length,
       persona_detected: persona.persona,
+      persona_confidence: persona.confidence,
+      match_score: match.matchScore,
       generated_at: new Date().toISOString(),
     }),
     status: 'completed',

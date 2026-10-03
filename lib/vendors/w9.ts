@@ -177,20 +177,30 @@ export async function maybeSendVendorW9Reminder(
   // being claimable, so a concurrent caller loses the race instead of
   // double-sending.
   const cutoffIso = new Date(now.getTime() - W9_REMINDER_PERIOD_DAYS * 86_400_000).toISOString()
-  const { data: claimed } = await svc
+  const { data: claimed, error: claimErr } = await svc
     .from("vendor_tax_documents")
     .update({ reminder_last_sent_at: now.toISOString(), updated_at: now.toISOString() })
     .eq("vendor_id", args.vendorId)
     .eq("brokerage_id", args.brokerageId)
     .or(`reminder_last_sent_at.is.null,reminder_last_sent_at.lt.${cutoffIso}`)
     .select("id")
+  // A REFUSED claim is not a lost race — say which one it was (still no send).
+  if (claimErr) {
+    console.error(`[w9] reminder claim refused for vendor ${args.vendorId}: ${claimErr.message}`)
+    return { sent: false, reason: "unavailable" }
+  }
   if (!claimed || claimed.length === 0) return { sent: false, reason: "claim_lost" }
 
   try {
     const { dispatchEmail } = await import("@/lib/providers/dispatch")
     const { DEFAULT_PRODUCT_BRAND } = await import("@/lib/platform/product-brand")
     const esc = (s: string) => s.replace(/</g, "&lt;")
-    const fromEmail = process.env.SENDGRID_FROM_EMAIL ?? "noreply@vip-re.com"
+    // No invented sender: an unverified from-address fails at SendGrid and
+    // takes the W-9 request with it. Null → the caller sees why.
+    const { resolveOutboundSender } = await import("@/lib/providers/outbound-sender")
+    const resolvedSender = await resolveOutboundSender(svc as any, args.brokerageId)
+    if (!resolvedSender) return { sent: false, reason: "unavailable" }
+    const fromEmail = resolvedSender.email
     const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
     const why = args.trigger === "payout"
       ? "a payout was initiated to you"

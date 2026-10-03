@@ -248,7 +248,16 @@ export function CouponsManager({ initialCoupons, brokerages, stripeConfigured, i
                 {c.description && <p className="text-xs text-muted-foreground">{c.description}</p>}
                 <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
                   {c.expires_at && !expired && <span>expires {new Date(c.expires_at).toLocaleDateString('en-US')}</span>}
-                  {c.last_redeemed_at && <span>last redeemed {new Date(c.last_redeemed_at).toLocaleDateString('en-US')}</span>}
+                  {c.last_redeemed_at && (
+                    <span>
+                      last redeemed {new Date(c.last_redeemed_at).toLocaleDateString('en-US')}
+                      {/* WHO — four states from the ledger, never collapsed, never "the system". */}
+                      {c.last_redeemed_by_state === 'resolved' && ` by ${c.last_redeemed_by_name}${c.last_redeemed_by_platform_staff ? ' (platform staff, for the tenant)' : ''}`}
+                      {c.last_redeemed_by_state === 'unresolved' && ' by an account no longer on file'}
+                      {c.last_redeemed_by_state === 'lookup_refused' && ' · redeemer lookup refused'}
+                      {c.last_redeemed_by_state === 'not_recorded' && ' · redeemer not recorded'}
+                    </span>
+                  )}
                   {c.stripe_coupon_id
                     ? isMockStripeCouponId(c.stripe_coupon_id)
                       ? <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-300">Stripe: mock (no creds)</Badge>

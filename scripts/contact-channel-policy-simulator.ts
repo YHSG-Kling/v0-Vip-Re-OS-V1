@@ -49,7 +49,7 @@ async function main() {
   const buyerSearch = buildSituationalVoicemailScript({ firstName: "Sam", side: "buyer", stage: "active_search", hasFreshHook: true })
   const buyerNoHook = buildSituationalVoicemailScript({ firstName: "Sam", side: "buyer", stage: "active_search", hasFreshHook: false })
   const sellerList = buildSituationalVoicemailScript({ firstName: "Sam", side: "seller", stage: "cma_request" })
-  const pastClient = buildSituationalVoicemailScript({ firstName: "Sam", side: "past_client" })
+  const pastClient = buildSituationalVoicemailScript({ firstName: "Sam", side: "lifetime" })
   const buyerFin = buildSituationalVoicemailScript({ firstName: "Sam", side: "buyer", stage: "preapproval" })
   check("buyer (searching, fresh hook) → leads with new homes / first look", /home|came up|first look|send them over/i.test(buyerSearch))
   check("buyer fresh hook ≠ no-hook (situational, not one script)", buyerSearch !== buyerNoHook)
@@ -73,7 +73,8 @@ async function main() {
   check("'both' voicemail differs from buyer + seller + past-client", bothVm !== buyerSearch && bothVm !== sellerList && bothVm !== pastClient)
   // The DELEGATED reel kind fits each of the 4 personas (distinct, not collapsed to 3).
   check("contact_type 'both' → 'both' persona", contactReelPersona("both") === "both")
-  check("contact_type 'lifetime' → 'lifetime' persona", contactReelPersona("lifetime") === "lifetime")
+  check("contact_type 'lifetime_customer' → 'lifetime' persona", contactReelPersona("lifetime_customer") === "lifetime")
+  check("the RETIRED 'lifetime' spelling still maps (readers stay tolerant)", contactReelPersona("lifetime") === "lifetime")
   check("buyer → explainer reel", situationKindForContact("buyer") === "explainer")
   check("seller → cma reel", situationKindForContact("seller") === "cma")
   check("both → market_update reel", situationKindForContact("both") === "market_update")

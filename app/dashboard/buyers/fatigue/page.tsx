@@ -3,7 +3,19 @@
 import { useState, useTransition, useEffect, useCallback } from "react"
 import { useRouter }                                         from "next/navigation"
 import { cn }                                               from "@/lib/utils"
-import { getBrokerageFatigueData }                          from "@/app/actions/buyer-fatigue"
+import { getBrokerageFatigueData, recalculateBrokerageFatigue, getContactFatigueWeights, setContactFatigueWeights } from "@/app/actions/buyer-fatigue"
+import {
+  describeFatigueFactors, UNANSWERED_FOLLOW_UP_FLOOR, MAX_CONTACT_FATIGUE_WEIGHT,
+  type ContactFatigueWeights, type FatigueFactorsInput,
+} from "@/lib/fatigue/fatigue-display"
+
+/** The four brokerage-tunable weights (wave 89, lane 89C) — labels beside the calculator's terms. */
+const WEIGHT_FIELDS: Array<{ key: keyof ContactFatigueWeights; label: string }> = [
+  { key: "unanswered_follow_up", label: "Per unanswered follow-up (from the 2nd, up to 8)" },
+  { key: "saturated_channel",    label: "Per channel at the over-touch cap" },
+  { key: "missed_appointment",   label: "Per missed appointment (up to 3)" },
+  { key: "seller_unresponsive",  label: "Unsigned seller not answering" },
+]
 
 type RiskLevel = "fresh" | "moderate" | "high" | "critical"
 
@@ -17,6 +29,9 @@ interface FatigueRow {
   offers_rejected:  number
   engagement_trend: string | null
   last_calculated_at: string | null
+  /** Wave 88 (lane 88A): the calculator's factor snapshot — follow-up responsiveness, missed
+   *  appointments, unsigned sellers (absent on rows scored before wave 88). */
+  contributing_factors?: FatigueFactorsInput | null
   contacts: {
     id:         string
     first_name: string
@@ -51,9 +66,9 @@ const SUMMARY_COLORS: Record<RiskLevel, { bg: string; text: string; label: strin
   fresh:    { bg: "bg-emerald-50 border-emerald-200", text: "text-emerald-700", label: "Fresh" },
 }
 
-// Hard-coded brokerageId pulled from env (server should pass via props in a real RSC)
-// This page is rendered client-side; in production wrap with an RSC to pass brokerageId.
-const DEMO_BROKERAGE_ID = process.env.NEXT_PUBLIC_BROKERAGE_ID ?? ""
+// TOMBSTONE (lane 86G2): DEMO_BROKERAGE_ID (NEXT_PUBLIC_BROKERAGE_ID) was passed
+// as a tenant from the client. Both server actions below take the tenant from the
+// SESSION (CLAUDE.md §4) — getBrokerageFatigueData already ignored it.
 
 export default function BrokerageFatiguePage() {
   const router       = useRouter()
@@ -63,15 +78,34 @@ export default function BrokerageFatiguePage() {
   const [sortKey,    setSortKey]    = useState<SortKey>("fatigue_score")
   const [sortDir,    setSortDir]    = useState<SortDir>("desc")
   const [isPending,  startTransition] = useTransition()
+  // The brokerage run's COUNTED result (lane 87A) — "scored nobody" must read
+  // differently from "refused", and leads with nothing to score are named.
+  const [lastRun,    setLastRun]    = useState<string | null>(null)
+  // WAVE 89 (lane 89C): the brokerage's tunable weights — shown only when the door admits the caller
+  // (tenant admin / solo owner); an agent seat is refused by the door and simply sees no panel.
+  const [weights,    setWeights]    = useState<ContactFatigueWeights | null>(null)
+  const [weightsDefault, setWeightsDefault] = useState<ContactFatigueWeights | null>(null)
+  const [weightsNote, setWeightsNote] = useState<string | null>(null)
 
   const load = useCallback(() => {
     startTransition(async () => {
-      const res = await getBrokerageFatigueData(DEMO_BROKERAGE_ID)
+      const res = await getBrokerageFatigueData()
       if (res.success) setRows(res.data as FatigueRow[])
       else             setError(res.error)
       setLoaded(true)
+      const w = await getContactFatigueWeights()
+      if (w.success) { setWeights(w.weights); setWeightsDefault(w.defaults) }
     })
   }, [])
+
+  function handleSaveWeights() {
+    if (!weights) return
+    startTransition(async () => {
+      const res = await setContactFatigueWeights(weights)
+      if (!res.success) setWeightsNote(res.error)
+      else setWeightsNote("Weights saved — the next Recalculate and the platform sweep score with them.")
+    })
+  }
 
   useEffect(() => { load() }, [load])
 
@@ -107,13 +141,26 @@ export default function BrokerageFatiguePage() {
   const counts = { critical: 0, high: 0, moderate: 0, fresh: 0 } as Record<RiskLevel, number>
   for (const r of rows) counts[r.risk_level] = (counts[r.risk_level] ?? 0) + 1
 
+  // Was a fetch to /api/fatigue/calculate carrying `process.env.CRON_SECRET ?? ""`
+  // (not NEXT_PUBLIC_ → always "" in the browser → 401 on every click) and a body
+  // brokerageId. TOMBSTONE (lane 86G2) — survivor: the session-gated door
+  // app/actions/buyer-fatigue.ts recalculateBrokerageFatigue (tenant from the
+  // session; no secret in the client).
   function handleRecalculate() {
     startTransition(async () => {
-      await fetch("/api/fatigue/calculate", {
-        method: "POST",
-        headers: { "x-cron-secret": process.env.CRON_SECRET ?? "" },
-        body:    JSON.stringify({ brokerageId: DEMO_BROKERAGE_ID }),
-      })
+      const res = await recalculateBrokerageFatigue()
+      if (!res.success) setError(res.error)
+      else {
+        const d = res.data
+        setLastRun(
+          `Scored ${d.scored} of ${d.total} people with fatigue inputs` +
+          (d.fromLeads ? ` (${d.fromLeads} converted from leads)` : "") +
+          (d.deferred ? ` · ${d.deferred} deferred to the next run` : "") +
+          (d.errors ? ` · ${d.errors} could not be scored` : "") +
+          (d.alertsRaised ? ` · ${d.alertsRaised} new alert${d.alertsRaised === 1 ? "" : "s"}` : "") +
+          (d.leadsWithoutInputs ? ` · ${d.leadsWithoutInputs} unconverted lead${d.leadsWithoutInputs === 1 ? " has" : "s have"} no showings, tours, offers or engagement to score yet` : ""),
+        )
+      }
       load()
     })
   }
@@ -123,9 +170,10 @@ export default function BrokerageFatiguePage() {
       {/* Header */}
       <div className="border-b border-border bg-card px-6 py-4 flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold">Buyer Fatigue Dashboard</h1>
+          <h1 className="text-xl font-semibold">Contact Fatigue</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            All active buyers ranked by fatigue risk
+            Buyers and sellers with showings, tours, offers, engagement, follow-up or missed appointments,
+            ranked by fatigue risk. Agents see the contacts on their own book.
           </p>
         </div>
         <button
@@ -133,7 +181,7 @@ export default function BrokerageFatiguePage() {
           disabled={isPending}
           className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
         >
-          {isPending ? "Recalculating..." : "Recalculate All"}
+          {isPending ? "Recalculating..." : "Recalculate"}
         </button>
       </div>
 
@@ -154,6 +202,51 @@ export default function BrokerageFatiguePage() {
             )
           })}
         </div>
+
+        {lastRun && (
+          <p className="text-xs text-muted-foreground rounded-md border border-border bg-muted/30 px-3 py-2">
+            {lastRun}
+          </p>
+        )}
+
+        {/* Brokerage-tunable weights (wave 89) — tenant admin / solo owner only. */}
+        {weights && weightsDefault && (
+          <div className="rounded-lg border border-border bg-card px-4 py-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium">Follow-up fatigue weights</p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setWeights(weightsDefault)}
+                  className="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted/40"
+                >Reset to defaults</button>
+                <button
+                  type="button"
+                  onClick={handleSaveWeights}
+                  disabled={isPending}
+                  className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >Save weights</button>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              {WEIGHT_FIELDS.map((f) => (
+                <label key={f.key} className="text-xs text-muted-foreground space-y-1">
+                  <span className="block">{f.label}</span>
+                  <input
+                    type="number" min={0} max={MAX_CONTACT_FATIGUE_WEIGHT} step={1}
+                    value={weights[f.key]}
+                    onChange={(e) => setWeights({ ...weights, [f.key]: Number(e.target.value) })}
+                    className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground"
+                  />
+                </label>
+              ))}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Points per signal, 0–{MAX_CONTACT_FATIGUE_WEIGHT}. Defaults {weightsDefault.unanswered_follow_up} / {weightsDefault.saturated_channel} / {weightsDefault.missed_appointment} / {weightsDefault.seller_unresponsive}. High fatigue also tightens the over-touch cap for that contact.
+            </p>
+            {weightsNote && <p className="text-xs text-muted-foreground">{weightsNote}</p>}
+          </div>
+        )}
 
         {/* Error */}
         {error && (
@@ -177,7 +270,7 @@ export default function BrokerageFatiguePage() {
           <div className="rounded-lg border border-border bg-card px-6 py-12 text-center">
             <p className="text-sm text-muted-foreground">No fatigue scores available yet.</p>
             <p className="text-xs text-muted-foreground mt-1">
-              Run a calculation or wait for the daily cron (7 AM).
+              Run a calculation, or wait for the platform sweep (every 12 hours).
             </p>
           </div>
         ) : (
@@ -192,6 +285,8 @@ export default function BrokerageFatiguePage() {
                     { label: "Risk Level",     key: null },
                     { label: "Days Searching", key: "days_searching" as SortKey },
                     { label: "Showings",       key: "total_showings" as SortKey },
+                    { label: "Follow-up",      key: null },
+                    { label: "Missed Appts",   key: null },
                     { label: "Alerts",         key: null },
                   ].map(col => (
                     <th
@@ -217,11 +312,19 @@ export default function BrokerageFatiguePage() {
                     ? `${row.contacts.users.first_name} ${row.contacts.users.last_name}`
                     : "—"
                   const contactId = row.contacts?.id ?? row.contact_id
+                  const f = row.contributing_factors ?? null
+                  const unanswered = f?.unanswered_follow_ups ?? 0
+                  const sent = f?.follow_ups_sent ?? 0
 
                   return (
                     <tr
                       key={row.contact_id}
-                      onClick={() => router.push(`/dashboard/buyers/${contactId}/fatigue`)}
+                      // REPOINTED (dangling-link sweep, 2026-09-02): was
+                      // `/dashboard/buyers/${id}/fatigue` — [contactId] has no fatigue
+                      // child and itself permanently redirects to /crm/contacts/[contactId],
+                      // whose buyer view carries the Fatigue tab (FatiguePanel) and the
+                      // FatigueWidget on Overview. Gate there: assertCanActOnContact(read).
+                      onClick={() => router.push(`/crm/contacts/${contactId}`)}
                       className={cn(
                         "border-b border-border last:border-0 cursor-pointer hover:bg-muted/30 transition-colors",
                         RISK_BG[row.risk_level],
@@ -240,6 +343,13 @@ export default function BrokerageFatiguePage() {
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{row.days_searching}</td>
                       <td className="px-4 py-3 text-muted-foreground">{row.total_showings}</td>
+                      <td className="px-4 py-3 text-muted-foreground" title={describeFatigueFactors(f)}>
+                        {sent === 0 ? "—" : unanswered >= UNANSWERED_FOLLOW_UP_FLOOR
+                          ? <span className="text-orange-700">{unanswered} of {sent} unanswered</span>
+                          : `${sent} sent`}
+                        {f?.seller_unresponsive ? <span className="ml-1 text-xs text-red-700">· unsigned seller</span> : null}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">{f?.missed_appointments ? f.missed_appointments : "—"}</td>
                       <td className="px-4 py-3 text-muted-foreground">
                         {(row.risk_level === "high" || row.risk_level === "critical") ? (
                           <span className="inline-block h-2 w-2 rounded-full bg-orange-400" />

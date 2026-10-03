@@ -1,9 +1,13 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// Wave 97 (lane 97C): every model call here rides the ROUTED lane (books ai_tool_usage under the
+// session's tenant + user; intent_classification routes to gpt-4o-mini, the model each call pinned).
+import { generateTextRouted } from "@/lib/ai/models"
 import { createTenantUserAction } from "@/app/actions/superadmin/tenant-users"
 import { NextRequest, NextResponse } from "next/server"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 // ─── Intent types the voice assistant understands ────────────────────────────
 type VoiceIntent =
@@ -33,6 +37,9 @@ type VoiceIntent =
   | "query_referral_income"
   | "draft_save_plays"
   | "create_tenant_user"
+  | "find_properties"
+  | "draft_offer"
+  | "draft_listing"
   | "general_query"
 
 interface CallQueueItem {
@@ -52,9 +59,31 @@ interface VoiceCommandResponse {
 }
 
 export async function POST(req: NextRequest) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  // ── WHO IS ASKING — two doors, one identity ────────────────────────────
+  // 1. A signed-in seat (the Command Center text bar, the spoken admin).
+  // 2. THE TEXT-AN-ACTION DOOR (owner, 2026-09-06: "text some sort of action
+  //    with 30+ agents on standby"): the inbound SMS ingress resolved a STAFF
+  //    phone inside the tenant the called number belongs to and vouches for
+  //    who texted (lib/voice/text-command.ts). It may act as that user ONLY
+  //    under the cron secret — verifyCronAuth fails closed when the secret is
+  //    unset — and everything below (profile, agent, authority) is resolved
+  //    for that user exactly as for a session. Nothing else in this route
+  //    changes; the classifier and the dispatch stay the ONE brain.
+  let user: { id: string } | null = null
+  {
+    const supabase = await createClient()
+    const { data: { user: sessionUser } } = await supabase.auth.getUser()
+    if (sessionUser) user = { id: sessionUser.id }
+  }
+  if (!user) {
+    const { verifyCronAuth } = await import("@/lib/cron-auth")
+    const unauth = verifyCronAuth(req)
+    const acting = req.headers.get("x-acting-user-id")
+    if (unauth || !acting || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(acting)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+    user = { id: acting }
+  }
 
   const { transcript, sessionId } = await req.json()
   if (!transcript || typeof transcript !== "string") {
@@ -77,13 +106,20 @@ export async function POST(req: NextRequest) {
   // FK agents(id), NOT users(id) — filtering by the raw user.id returned EMPTY,
   // so the voice admin found none of the agent's own showings/contacts/deals.
   const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
-  const voiceAgentId = (await resolveAgentId(service as any, user.id)) ?? user.id
+  // NOT `?? user.id` (m353) — the comment above says the raw user.id filter is
+  // why "the voice admin found none of the agent's own showings/contacts/deals".
+  // Falling back to it means the voice agent answers "you have nothing today"
+  // with total confidence, which is the worst possible failure for a spoken UI.
+  const voiceAgentId = await resolveAgentId(service as any, user.id)
+  if (!voiceAgentId) {
+    return NextResponse.json({ ok: false, spoken: "I can't reach your agent profile yet — finish account setup and try again." }, { status: 409 })
+  }
   const today = new Date().toISOString().slice(0, 10)
   const startOfWeek = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
   // ── Classify intent using AI ──────────────────────────────────────────────
-  const classifyResult = await generateText({
-      model: resolveModel("openai/gpt-4o-mini"),
+  const classifyResult = await generateTextRouted({
+      feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
     system: `Classify the real estate assistant voice command into one of these intents:
 - query_showings: asking about today's or upcoming showings
 - query_hot_contacts: asking about hot leads, top contacts, who to call
@@ -111,11 +147,14 @@ export async function POST(req: NextRequest) {
 - query_referral_income: asking about the agent's own AGENT-TO-AGENT referral income / earnings / how much they've earned referring clients ("how much have I earned in referrals", "my referral income", "what have my agent referrals paid me")
 - draft_save_plays: COMMANDING the assistant to DRAFT / write / prepare retention SAVE-PLAYS for the at-risk / flight-risk agents ("draft save-plays for everyone at flight risk", "write save-plays for my at-risk agents", "prepare retention outreach for the agents who are slipping")
 - create_tenant_user: a PLATFORM-ADMIN command to CREATE / add / invite a new USER / agent / admin / TC into a brokerage ("create a new agent named Jane Doe at jane@x.com", "add an admin to the Denver brokerage", "invite a TC to Coastal Realty")
+- find_properties: asking to FIND / SEARCH / pull PROPERTIES or LISTINGS for a named BUYER with criteria — beds/baths/price/area ("find the Hendersons a 3-bed under 500k in Austin", "search a 4 bedroom with a pool under 800 for Jordan", "what's on the market for the Garcias in Oakdale")
+- draft_offer: asking to DRAFT / write / prepare an OFFER for a named buyer on a property ("draft an offer for the Hendersons on 44 Birch at 450", "write up an offer for Jordan at 620 thousand", "start an offer for the Garcias")
+- draft_listing: asking to DRAFT / write / prepare a LISTING AGREEMENT for a named seller/property ("draft a listing agreement for the Garcias at 12 Oak", "write up the listing for 88 Maple", "start a listing agreement for Jordan's house")
 - general_query: anything else
 
 Respond with ONLY the intent string, nothing else.`,
     messages: [{ role: "user", content: transcript }],
-    maxOutputTokens: 20,
+    maxTokens: 20,
   })
 
   const intent = (classifyResult.text.trim().toLowerCase() as VoiceIntent) ?? "general_query"
@@ -210,9 +249,18 @@ Respond with ONLY the intent string, nothing else.`,
         spokenResponse = `You have ${tasks.length} upcoming task${tasks.length > 1 ? "s" : ""}. Next: ${tasks[0].title}.`
       }
     } else if (intent === "query_transactions") {
-      const { data: transactions } = await service
+      // transactions → contacts carries THREE FKs (transactions_contact_id_fkey,
+      // transactions_buyer_contact_id_fkey, transactions_seller_contact_id_fkey), so a
+      // bare `contacts(...)` is ambiguous: PostgREST refuses the ENTIRE request
+      // (PGRST201) and supabase-js resolves it, so `transactions` came back null and
+      // the assistant spoke "You have no active transactions right now" over a full
+      // pipeline — the worst failure mode for a voice UI. Named contact_id: this is the
+      // agent's own deal list ("your active deals"), and contact_id is the client on the
+      // deal regardless of which side they sit on; buyer_/seller_contact_id are the
+      // per-side links and would drop every deal where the agent's client is the other party.
+      const { data: transactions, error: transactionsError } = await service
         .from("transactions")
-        .select("id, deal_name, status, stage, close_date, purchase_price, contacts(first_name, last_name)")
+        .select("id, deal_name, status, stage, close_date, purchase_price, contacts!transactions_contact_id_fkey(id, first_name, last_name)")
         .eq("agent_id", voiceAgentId)
         .eq("brokerage_id", brokerageId)
         .not("status", "eq", "closed")
@@ -221,7 +269,10 @@ Respond with ONLY the intent string, nothing else.`,
 
       data = { transactions: transactions ?? [] }
 
-      if (!transactions?.length) {
+      if (transactionsError) {
+        // A resolved-but-failed read must not be spoken as "you have nothing".
+        spokenResponse = "I couldn't reach your deals just now — try me again in a moment."
+      } else if (!transactions?.length) {
         spokenResponse = "You have no active transactions right now."
       } else {
         spokenResponse = `You have ${transactions.length} active deal${transactions.length > 1 ? "s" : ""}. ${transactions.slice(0, 2).map((t) => `${t.deal_name ?? "Untitled"} in ${t.stage ?? "unknown stage"}`).join(". ")}.`
@@ -247,11 +298,11 @@ Respond with ONLY the intent string, nothing else.`,
       // "HEY TEAM—" — the bullpen question: every manager contributes what its own
       // tables know about the named person; one manager-attributed spoken answer.
       // Read-only: the team reports, acting still goes through the gate.
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `Extract the person/family name the user is asking about. Respond with ONLY the name (e.g. "Henderson" or "Jordan Henderson"). If no name is present, respond with NONE.`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 12,
+        maxTokens: 12,
       })
       const personQuery = extract.text.trim()
       if (!personQuery || personQuery.toUpperCase() === "NONE" || !brokerageId) {
@@ -296,11 +347,11 @@ Respond with ONLY the intent string, nothing else.`,
       // learning stores it so the team drafts it better next time.
       const { parseOrdinal, runStandupReject } = await import("@/lib/kernel/standup-action")
       const ordinal = parseOrdinal(transcript)
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `Extract WHY the user is rejecting (the reason after the rank, e.g. "too pushy", "wrong tone"). Respond with ONLY the reason, or NONE.`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 30,
+        maxTokens: 30,
       })
       const reasonRaw = extract.text.trim()
       const reason = reasonRaw && reasonRaw.toUpperCase() !== "NONE" ? reasonRaw : null
@@ -315,11 +366,11 @@ Respond with ONLY the intent string, nothing else.`,
     } else if (intent === "area_query") {
       // "Anything happening near 44 Birch?" — the marketing bench reports listings,
       // reels, and live ads in the area. Read-only.
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `Extract the area, neighborhood, city, or street the user is asking about. Respond with ONLY that place (e.g. "44 Birch" or "Springfield"). If none, respond NONE.`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 16,
+        maxTokens: 16,
       })
       const areaQuery = extract.text.trim()
       if (!areaQuery || areaQuery.toUpperCase() === "NONE" || !brokerageId) {
@@ -335,11 +386,11 @@ Respond with ONLY the intent string, nothing else.`,
       // VOICE DELEGATION — the spoken instruction is the human decision. Follow-ups
       // run propose→approve(as the agent) through the SAME gate (consent re-checked);
       // marketing enrolls in a sequence whose steps clear the compliance gate.
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `From the voice command, extract:\nNAME: the person/family name\nDICTATION: the exact message content the user dictated, if any (the words after "saying"/"tell them"), else NONE\nFormat exactly:\nNAME: <name or NONE>\nDICTATION: <text or NONE>`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 120,
+        maxTokens: 120,
       })
       const nameMatch = extract.text.match(/NAME:\s*(.+)/)?.[1]?.trim()
       const dictMatch = extract.text.match(/DICTATION:\s*([\s\S]+)/)?.[1]?.trim()
@@ -359,11 +410,11 @@ Respond with ONLY the intent string, nothing else.`,
       // "Cut a promo reel for 44 Birch" — the voice command is a manual trigger on the
       // CANONICAL Remotion + D-ID promo rail (compliance pre-flight, cooldown debounce,
       // social drafts still human-approved).
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `Extract the listing street address the user wants a promo video for. Respond with ONLY the address fragment (e.g. "44 Birch Lane"). If none, respond NONE.`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 20,
+        maxTokens: 20,
       })
       const addressQuery = extract.text.trim()
       if (!addressQuery || addressQuery.toUpperCase() === "NONE" || !brokerageId) {
@@ -397,10 +448,20 @@ Respond with ONLY the intent string, nothing else.`,
       // Video Director. Nothing auto-publishes — every reel lands at pending_review. The
       // spoken command IS the human trigger; approvals still happen one-by-one in the
       // Content Studio.
+      //
+      // DETERMINISTIC CONFIRM BEFORE MONEY MOVES. A studio session COMMISSIONS reels
+      // (video renders are spend) on the strength of one model label. The pure
+      // isStudioSessionCommand check is the floor: the transcript must also READ as a
+      // batch request (book/plan/schedule + content/reels + a duration) before the
+      // batch is planned. A label without the words asks for a rephrase — the model
+      // still decides intent; it just cannot spend alone.
+      const { voiceStudioSession, isStudioSessionCommand } = await import("@/lib/voice/studio-session")
       if (!brokerageId) {
         spokenResponse = "I can't book a studio session without a brokerage on your profile."
+      } else if (!isStudioSessionCommand(transcript)) {
+        spokenResponse = "That sounded like a content-calendar request, but I couldn't confirm the batch. Say something like \"book me a week of reels\" or \"plan a month of content\" and I'll stage it for your approval."
+        data = { held: "studio_session_unconfirmed" }
       } else {
-        const { voiceStudioSession } = await import("@/lib/voice/studio-session")
         const r = await voiceStudioSession({ brokerageId, agentUserId: user.id, transcript }, service)
         spokenResponse = r.spoken
         data = {
@@ -417,11 +478,11 @@ Respond with ONLY the intent string, nothing else.`,
       // "Optimize the Henderson tour" — resolve the buyer → their latest planned tour →
       // run the REAL optimizer (tour-optimizer.ts) → speak the new order + honest geocoding
       // note. Read+write on the buyer's own tour rows only; nothing client-facing is sent.
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `Extract the buyer/person/family name whose tour to optimize. Respond with ONLY the name (e.g. "Henderson" or "Jordan Henderson"). If none, respond NONE.`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 12,
+        maxTokens: 12,
       })
       const personQuery = extract.text.trim()
       if (!personQuery || personQuery.toUpperCase() === "NONE" || !brokerageId) {
@@ -456,11 +517,11 @@ Respond with ONLY the intent string, nothing else.`,
       // "Send the Garcias their anniversary equity report" — resolve the contact → run the
       // REAL anniversary-equity play scoped to that ONE contact → the client-facing note
       // lands in the GATE (approval queue), exactly like voiceFollowUp. Never autonomous.
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `Extract the person/family name whose anniversary equity report to send. Respond with ONLY the name (e.g. "Garcia" or "Maria Garcia"). If none, respond NONE.`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 12,
+        maxTokens: 12,
       })
       const personQuery = extract.text.trim()
       if (!personQuery || personQuery.toUpperCase() === "NONE" || !brokerageId) {
@@ -482,11 +543,11 @@ Respond with ONLY the intent string, nothing else.`,
       // "Launch the campaign for 123 Oak Street" — resolve the listing by address → pick the
       // most launch-ready campaign for it → launch via the existing admin-gated executor
       // (it enforces role + tenant + compliance; a non-admin speaker is refused honestly).
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `Extract the LISTING street address whose marketing campaign to launch. Respond with ONLY the address or street (e.g. "123 Oak Street" or "Maple"). If none, respond NONE.`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 16,
+        maxTokens: 16,
       })
       const addr = extract.text.trim()
       if (!addr || addr.toUpperCase() === "NONE" || !brokerageId) {
@@ -532,11 +593,11 @@ Respond with ONLY the intent string, nothing else.`,
       // through to the chat deflection (no task created). Now: extract title + due phrase
       // + optional person, resolve the date deterministically, create the real task.
       const isFollowUp = intent === "schedule_followup"
-      const extract = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
         system: `Extract a task from a real-estate agent's spoken command. Respond with ONLY compact JSON: {"title":"<short imperative task, no date>","due":"<relative date phrase like today/tomorrow/friday/in 3 days/next week, or NONE>","person":"<client/family name if one is named, or NONE>"}. Keep the title under 8 words. Do not invent a person or date that wasn't said.`,
         messages: [{ role: "user", content: transcript }],
-        maxOutputTokens: 60,
+        maxTokens: 60,
       })
       let title = "", duePhrase: string | null = null, personQuery = ""
       try {
@@ -638,7 +699,7 @@ Respond with ONLY the intent string, nothing else.`,
       if (!brokerageId) {
         spokenResponse = "I can't draft save-plays without a brokerage on your profile."
       } else {
-        const isStaff = ["broker", "broker_admin", "admin", "superadmin"].includes(profile.user_type ?? "")
+        const isStaff = isAdminOrBroker({ user_type: profile.user_type ?? "" })
         let allowed = isStaff
         if (!allowed) {
           const { data: b } = await service.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle()
@@ -663,15 +724,22 @@ Respond with ONLY the intent string, nothing else.`,
       // (this authenticated route proves the caller's identity; the underlying action also
       // re-checks requireSuperadmin, so this is defence in depth). Routes to the SAME tested,
       // audited createTenantUserAction the god console uses — the "voice admin does it" story.
-      const isPlatformStaff = profile.user_type === "superadmin" || (profile as any).platform_role === "superadmin"
-      if (!isPlatformStaff) {
+      // NAMED FOR WHAT IT TESTS. This local was called `isPlatformStaff`, which reads
+      // as the four-role roster helper and is not what it does — it is the
+      // superadmin-only test (both columns, the is_platform_admin() shape), and that
+      // is CORRECT here: creating tenant users is superadmin-only by design, and the
+      // underlying action re-checks requireSuperadmin. Deliberately NOT widened to the
+      // staff roster; only renamed so it cannot be mistaken for it.
+      // ONE DEFINITION (ruling 1) — lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
+      const isSuperadmin = isPlatformSuperadminIdentity(profile.user_type, (profile as any).platform_role)
+      if (!isSuperadmin) {
         spokenResponse = "Creating platform users is a superadmin-only command — I can't run that for your role."
       } else {
-        const extract = await generateText({
-          model: resolveModel("openai/gpt-4o-mini"),
-          system: `Extract from the command a JSON object: {"email": string, "firstName": string, "lastName": string, "role": one of ["agent","admin","broker","team_lead","tc","isa","compliance_officer","lender","vendor"] (default "agent"), "brokerageName": string or null (the brokerage/company named, else null)}. Respond with ONLY the JSON.`,
+        const extract = await generateTextRouted({
+          feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
+          system: `Extract from the command a JSON object: {"email": string, "firstName": string, "lastName": string, "role": one of ["agent","admin","broker","team_lead","tc","compliance_officer","vendor"] (default "agent"), "brokerageName": string or null (the brokerage/company named, else null)}. Respond with ONLY the JSON.`,
           messages: [{ role: "user", content: transcript }],
-          maxOutputTokens: 200,
+          maxTokens: 200,
         })
         let ex: { email?: string; firstName?: string; lastName?: string; role?: string; brokerageName?: string | null } = {}
         try { ex = JSON.parse(extract.text.trim().replace(/^```json\s*|\s*```$/g, "")) } catch { /* leave empty */ }
@@ -702,6 +770,67 @@ Respond with ONLY the intent string, nothing else.`,
           }
         }
       }
+    } else if (intent === "find_properties") {
+      // "Find the Hendersons a 3-bed under 500k in Austin" — the SAME canonical
+      // find_properties backend (dispatchTeamCommand → searchPropertiesCore) the
+      // premium voice cockpit uses. Resolves the buyer, runs the NL match
+      // (inventory + IDX, Fair-Housing-sanitized), reads back the top matches.
+      // Read-only. Folded here so the always-on assistant shares one search brain.
+      const extract = await generateTextRouted({
+        feature: "intent_classification", brokerageId: brokerageId ?? null, userId: user.id,
+        system: `From the property-search command extract two lines exactly:\nNAME: the buyer/person/family the search is for (or NONE)\nCRITERIA: the search criteria phrase — beds, baths, price, area, features (or NONE)`,
+        messages: [{ role: "user", content: transcript }],
+        maxTokens: 80,
+      })
+      const nameMatch = extract.text.match(/NAME:\s*(.+)/)?.[1]?.trim()
+      const critMatch = extract.text.match(/CRITERIA:\s*([\s\S]+)/)?.[1]?.trim()
+      const personQuery = nameMatch && nameMatch.toUpperCase() !== "NONE" ? nameMatch : null
+      const criteria = critMatch && critMatch.toUpperCase() !== "NONE" ? critMatch : null
+      if (!personQuery || !criteria || !brokerageId) {
+        spokenResponse = "Who's the search for, and what are they after? Try 'find the Hendersons a 3-bed under 500k in Austin'."
+      } else {
+        const { dispatchTeamCommand } = await import("@/lib/voice/team-commands")
+        const r = await dispatchTeamCommand("find_properties", { person_query: personQuery, query: criteria }, { brokerageId, agentUserId: user.id, firstName: profile.first_name }, service)
+        spokenResponse = r.spoken
+        data = r.data ?? {}
+        action = r.ok ? "properties_found" : null
+      }
+    } else if (intent === "draft_offer") {
+      // "Draft an offer for the Hendersons on 44 Birch at 450" — the SAME canonical
+      // voice intake the mobile panel + premium voice use (voiceDraftOffer: extract →
+      // fill packet → documents DRAFT). Single-shot per turn; the spoken response asks
+      // for anything still missing. DRAFT ONLY — nothing dispatches for signature here.
+      if (!brokerageId) {
+        spokenResponse = "I can't draft an offer without a brokerage on your profile."
+      } else {
+        const { voiceDraftOffer } = await import("@/app/actions/voice-assistant/draft-offer-from-voice")
+        const r = await voiceDraftOffer({ voiceInput: transcript })
+        spokenResponse = r.kind === "error" ? r.error : r.spokenResponse
+        data = {
+          kind: r.kind,
+          sessionId: r.kind === "error" ? null : r.sessionId,
+          documentId: r.kind === "finalized" ? r.documentId : null,
+          // A pre-flight refusal is not "still gathering fields" — logging it as
+          // offer_intake_continuing would hide every blocked offer in the ledger.
+          blockers: r.kind === "blocked" ? r.blockers.map((b) => b.title) : null,
+        }
+        action = r.kind === "finalized" ? "offer_drafted"
+          : r.kind === "error" ? null
+          : r.kind === "blocked" ? "offer_intake_blocked"
+          : "offer_intake_continuing"
+      }
+    } else if (intent === "draft_listing") {
+      // "Draft a listing agreement for the Garcias at 12 Oak" — the SAME canonical
+      // voiceDraftListing intake. Single-shot per turn; DRAFT ONLY.
+      if (!brokerageId) {
+        spokenResponse = "I can't draft a listing without a brokerage on your profile."
+      } else {
+        const { voiceDraftListing } = await import("@/app/actions/voice-assistant/draft-listing-from-voice")
+        const r = await voiceDraftListing({ voiceInput: transcript })
+        spokenResponse = r.kind === "error" ? r.error : r.spokenResponse
+        data = { kind: r.kind, sessionId: r.kind === "error" ? null : r.sessionId, documentId: r.kind === "finalized" ? r.documentId : null }
+        action = r.kind === "finalized" ? "listing_drafted" : r.kind === "error" ? null : "listing_intake_continuing"
+      }
     } else {
       // General query — pass to the main AI chat endpoint context
       spokenResponse = "Got it. I'm sending that to the assistant for you."
@@ -712,7 +841,7 @@ Respond with ONLY the intent string, nothing else.`,
   }
 
   // ── Log to voice_commands ────────────────────────────────────────────────
-  await service
+  await sentinelWrite(service, service
     .from("voice_commands")
     .insert({
       user_id: user.id,
@@ -724,9 +853,11 @@ Respond with ONLY the intent string, nothing else.`,
       action_taken: action ?? intent,
       action_result: { spokenResponse, callQueueCount: callQueue.length },
       success: true,
-      source: "voice_assistant",
-    })
-    .then(() => {}, () => {}) // non-fatal
+      // voice_commands.source is the CLIENT SURFACE (web|mobile|pwa|voice_call)
+      // and is nullable. This internal route cannot know which one, and
+      // "voice_assistant" is the feature, not the surface — so it says nothing
+      // rather than guessing.
+    }), { table: "voice_commands", flow: "voice_commands_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" }) // non-fatal
 
   const response: VoiceCommandResponse = {
     spokenResponse,

@@ -1,36 +1,85 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "@/lib/ai/generate"
-import { resolveModel } from "@/lib/ai/resolve-model"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { LIFETIME_CUSTOMER_SEGMENT } from "@/lib/contact-types"
+// THE METERED LANE, which this file imported and never used.
+//
+// Every AI call here went through `generateObject` (lib/ai/generate.ts:120) —
+// the UNROUTED compatibility shim, whose own header says it "never calls
+// logAIUsage". So five model calls a day per agent produced NO `ai_tool_usage`
+// row, and `ai_tool_usage` is the cost ledger that feeds
+// `meter_readings.ai_tokens` and the per-tier overage projection (§5: "a wrong
+// number there is a wrong invoice"). The whole direct-mail feature was invisible
+// spend.
+//
+// The import that was sitting here dead was `generateTextRouted as generateText`
+// — the right lane, wrong shape: every call in this file is structured output.
+// The structured sibling is what it should have been, and it books the row
+// itself when handed a brokerageId (lib/ai/models.ts:722).
+import { generateObjectRouted } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { z } from "zod"
 import {
   canAccessFeature,
   incrementFeatureUsage,
-  KernelEvent,
-  processKernelEvent,
 } from "@/lib/kernel"
+// TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
+// imported here and never called. The wire is real but it is made ONE LAYER
+// DOWN, by the writers this file delegates every state change to:
+//   · the one creator, lib/kernel/marketing.ts createDirectMailCampaign, emits
+//     KernelEvent.DIRECT_MAIL_CAMPAIGN_CREATED (wave 85D; it used to be
+//     createMailCampaign, which now delegates to the same creator)
+//   · sendCampaign → app/actions/direct-mail.ts emits KernelEvent.DIRECT_MAIL_SENT
+//   · addRecipients / logResponse are handled by the same module.
+// This file is the AI/authoring layer over those; a second emission here would
+// have double-fired both events on every campaign.
 import { applyKernelBrandVoice, isBrandVoiceBlocked } from "@/lib/kernel/adapters/brand-voice"
 import {
-  createMailCampaign,
   addRecipients,
   sendCampaign,
   logResponse,
 } from "@/app/actions/direct-mail"
-import { createQrCodeAction } from "@/app/actions/marketing-studio"
+// THE ONE CREATOR (wave 85D). Aliased: this file's own export carries the kernel's name.
+import { createDirectMailCampaign as fileDirectMailCampaign } from "@/lib/kernel/marketing"
+import type { CampaignPieceType } from "@/lib/direct-mail/piece-type"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
 
-// Direct mail piece types — matches the piece_type column on direct_mail_campaigns.
-export type DirectMailPieceType = "postcard" | "letter" | "handwritten_letter" | "thank_you_note"
-
-// Build a public QR PNG URL using a free renderer service. The QR resolves to
-// /api/qr/scan?slug=<slug>, which records the scan and redirects to the landing.
-function buildQrImageUrl(absoluteScanUrl: string, size = 300) {
-  return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(absoluteScanUrl)}`
+/**
+ * WHO THE MODEL SPEND IS BILLED TO — from the SESSION, never from the request.
+ *
+ * `generateObjectRouted` writes the `ai_tool_usage` row itself when it is handed
+ * a `brokerageId` (lib/ai/models.ts:722), and that row is what
+ * `meter_readings.ai_tokens` and the per-tier overage projection are computed
+ * from. Every exported function in this file is a public HTTP endpoint (§4), and
+ * several of them accept `brokerageId` as an ARGUMENT — so passing that argument
+ * through to the cost ledger would let a caller bill another tenant for its own
+ * model calls. The tenant comes from `getAgentContext()` instead, the same
+ * resolver `aiAnalyzeCampaignPerformance` below already uses.
+ *
+ * A null tenant means the routed lane books NOTHING rather than booking it to
+ * the wrong tenant — which is the fail-closed direction for a money column. The
+ * `canAccessFeature` gate on each function is what keeps that from being a way
+ * to get free inference: no session, no gate, no call.
+ */
+async function ledgerActorForSpend(): Promise<{ userId?: string; brokerageId: string | null }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { brokerageId: null }
+  return { userId: ctx.userId, brokerageId: ctx.brokerageId }
 }
+
+// Direct mail piece types: the piece_type column vocabulary, defined ONCE in
+// lib/direct-mail/piece-type.ts (CAMPAIGN_PIECE_TYPES) and re-named here for callers.
+export type DirectMailPieceType = CampaignPieceType
+
+// REMOVED in the QR merge (wave Q): `buildQrImageUrl(absoluteScanUrl, size)`.
+// It returned an api.qrserver.com URL, so the tracked scan URL for every postcard was handed to a
+// third party, and a print/PDF path depended on an outside host being reachable. The QR image now
+// comes back from the minter as a data: URI rendered by the vendored `qrcode` package — see
+// lib/marketing/tracked-qr.ts:renderQrPng, the only QR image source in the tree.
 
 // ============================================
 // AI DIRECT MAIL SYSTEM
@@ -83,7 +132,7 @@ export async function aiWritePostcardCopy(params: {
     | "expired"
     | "divorce_probate"
     | "investors"
-    | "lifetime_customers"
+    | typeof LIFETIME_CUSTOMER_SEGMENT
     | "geographic_farm"
     | "new_movers"
   callToAction: "call" | "scan_qr" | "visit_website" | "text"
@@ -92,6 +141,15 @@ export async function aiWritePostcardCopy(params: {
     if (!isValidUUID(params.agentId)) {
       return { success: false, error: "Invalid agent ID" }
     }
+    // SESSION GATE (lane 91D2, CLAUDE.md §4). This public action had none: any
+    // caller could spend model tokens billed to a named user in a named tenant.
+    // The tenant is the session's (a different body brokerage is refused) and the
+    // author must be the signed-in user (params.agentId is a users.id here — it is
+    // read back from `users` below).
+    const tenant = await requireCallerTenant(params.brokerageId)
+    if (!tenant.ok) return { success: false, error: tenant.error }
+    if (params.agentId !== tenant.userId) return { success: false, error: "Forbidden: you can only write copy as yourself." }
+    params = { ...params, brokerageId: tenant.brokerageId }
 
     // ── Kernel Gate: canAccessFeature ──
     const access = await canAccessFeature(params.agentId, "direct_mail")
@@ -108,23 +166,31 @@ export async function aiWritePostcardCopy(params: {
       .eq("id", params.agentId)
       .single()
 
-    const { object: copy } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
+    const spendActor = await ledgerActorForSpend()
+    const { object: copy } = await generateObjectRouted({
+      ...spendActor,
+      feature: "direct_mail_copy",
+      // NOTE: OpenAI strict structured-output (used by generateObject through the
+      // gateway) rejects string length constraints (.max → maxLength) and optional
+      // properties (.optional). Encode length as guidance in .describe() and use
+      // .nullable() (a required-but-null field) instead of .optional() — this is
+      // why the plain-string aiSuggestDesign schema below works and this one used
+      // to throw "invalid schema".
       schema: z.object({
-        headline: z.string().max(50).describe("Bold, attention-grabbing headline"),
-        subheadline: z.string().max(80).describe("Supporting text"),
-        bodyText: z.string().max(200).describe("Main message, keep scannable"),
-        callToAction: z.string().max(30).describe("Clear CTA text"),
-        testimonialPlaceholder: z.string().optional(),
-        agentTagline: z.string().max(50),
-        urgencyElement: z.string().optional(),
+        headline: z.string().describe("Bold, attention-grabbing headline (≤50 characters)"),
+        subheadline: z.string().describe("Supporting text (≤80 characters)"),
+        bodyText: z.string().describe("Main message, keep scannable (≤200 characters)"),
+        callToAction: z.string().describe("Clear CTA text (≤30 characters)"),
+        testimonialPlaceholder: z.string().nullable().describe("Optional testimonial placeholder, or null"),
+        agentTagline: z.string().describe("Short agent tagline (≤50 characters)"),
+        urgencyElement: z.string().nullable().describe("Optional urgency element, or null"),
         variants: z.array(
           z.object({
             headline: z.string(),
             bodyText: z.string(),
             style: z.string(),
           })
-        ),
+        ).describe("Two alternate copy variants with different approaches"),
       }),
       prompt: `Write compelling postcard copy for a real estate agent.
 
@@ -184,8 +250,10 @@ export async function aiSuggestDesign(params: {
   targetDemo: string
 }) {
   try {
-    const { object: design } = await generateObject({
-      model: resolveModel("openai/gpt-4o-mini"),
+    const spendActor = await ledgerActorForSpend()
+    const { object: design } = await generateObjectRouted({
+      ...spendActor,
+      feature: "direct_mail_design",
       schema: z.object({
         colorScheme: z.object({
           primary: z.string(),
@@ -242,7 +310,7 @@ Consider:
 export async function aiSelectTargetAudience(params: {
   agentId: string
   brokerageId: string
-  campaignGoal: "listings" | "buyers" | "farming" | "brand_awareness" | "lifetime_customers"
+  campaignGoal: "listings" | "buyers" | "farming" | "brand_awareness" | typeof LIFETIME_CUSTOMER_SEGMENT
   budget: number
   area: string
 }) {
@@ -268,8 +336,10 @@ export async function aiSelectTargetAudience(params: {
       .order("estimated_response_rate", { ascending: false })
       .limit(10)
 
-    const { object: targeting } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
+    const spendActor = await ledgerActorForSpend()
+    const { object: targeting } = await generateObjectRouted({
+      ...spendActor,
+      feature: "direct_mail_targeting",
       schema: z.object({
         primarySegment: z.object({
           name: z.string(),
@@ -352,8 +422,10 @@ export async function aiPredictCampaignROI(params: {
     const dataCost = params.quantity * 0.05
     const totalCost = printCost + postageCost + dataCost
 
-    const { object: prediction } = await generateObject({
-      model: resolveModel("openai/gpt-4o-mini"),
+    const spendActor = await ledgerActorForSpend()
+    const { object: prediction } = await generateObjectRouted({
+      ...spendActor,
+      feature: "direct_mail_roi_forecast",
       schema: z.object({
         estimatedResponseRate: z.number(),
         estimatedLeads: z.number(),
@@ -405,14 +477,34 @@ Calculate expected outcomes and ROI.`,
 // ============================================
 // 5. CREATE DIRECT MAIL CAMPAIGN
 // ============================================
-export async function getDirectMailCampaigns(agentId: string) {
+/**
+ * The caller's own direct-mail campaigns.
+ *
+ * The parameter is IGNORED and the identity comes from the session, matching
+ * getNewsletters. Two reasons, both real:
+ *   · direct_mail_campaigns.agent_id is an FK to agents(id). Every UI that
+ *     wanted this list had a users(id) in hand, so passing it through would
+ *     have matched nothing — silently, since a mismatched uuid is a valid
+ *     query that returns zero rows. Resolution belongs on the server.
+ *   · trusting a caller-supplied agent_id let any signed-in agent read another
+ *     agent's campaigns. The brokerage filter closes that even if the resolved
+ *     agent row ever spans tenants.
+ */
+export async function getDirectMailCampaigns(_agentId?: string /* ignored — derived from session */) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not signed in" }
+    if (!ctx.agentId || !ctx.brokerageId) {
+      return { success: false, error: "No agent profile is attached to this account" }
+    }
+
     const supabase = await createClient()
 
     const { data, error } = await supabase
       .from("direct_mail_campaigns")
       .select("*")
-      .eq("agent_id", agentId)
+      .eq("agent_id", ctx.agentId)
+      .eq("brokerage_id", ctx.brokerageId)
       .order("created_at", { ascending: false })
 
     if (error) throw error
@@ -424,24 +516,32 @@ export async function getDirectMailCampaigns(agentId: string) {
 }
 
 /**
- * AI-enhanced direct mail campaign creation.
+ * AI-enhanced direct mail campaign creation: the SESSION door.
  *
- * Delegates the actual `direct_mail_campaigns` insert to the canonical
- * `createMailCampaign` in `app/actions/direct-mail.ts`. This function only
- * layers AI-driven enhancements on top:
- *   - Budget → quantity calculation (per-piece cost economics)
- *   - Piece-type tagging (postcard | letter | brochure)
- *   - QR-code generation + tracking link when tracking enabled
+ * What this adds on top of the one creator:
+ *   - budget → quantity (per-piece cost economics)
+ *   - piece-type tagging (folded onto the one column vocabulary, lib/direct-mail/piece-type.ts)
+ *   - tracked QR + tracking link when tracking is enabled
  *
- * The kernel event (DIRECT_MAIL_CAMPAIGN_CREATED) and feature gate are
- * handled by `createMailCampaign`; this fn does NOT duplicate them.
+ * TOMBSTONE (wave 85D, §1.1). The direct_mail_campaigns insert, the feature gate, the usage
+ * counter, the kernel event, the piece_type/tracking_id stamp, the createQrCodeAction mint
+ * and the reverse qr_code_id link that this function used to run itself (partly through
+ * createMailCampaign) all MERGED onto the one creator, lib/kernel/marketing.ts
+ * createDirectMailCampaign ("THE ONE CREATOR" block). The voice webhook needed the same
+ * chain without a cookie session. Its two stamps are now written IN the insert, so there is
+ * no unstamped window. This function keeps what only a "use server" door can do: verify
+ * the SESSION and revalidate the pages.
  *
- * Use `createMailCampaign` directly for manual / non-AI flows. Do NOT
- * introduce a third creator that bypasses both.
+ * IDENTITY CLASS (wave 84E, CLAUDE.md §3 "agents.id and users.id are DISJOINT"). Both ids
+ * come from the SESSION (§4, this is a "use server" export). users.id is the session user,
+ * and agents.id is crossed through the ONE survivor lib/kernel/agent-identity.ts
+ * `resolveAgentIdInBrokerage` (agents.user_id, pinned to the session tenant). A seat with
+ * no agents row files the campaign with agent_id NULL, never the users id. `brokerageId`
+ * is accepted only as a cross-check, and a foreign tenant is refused.
  */
 export async function createDirectMailCampaign(params: {
-  agentId: string
-  brokerageId: string
+  /** Cross-check only — the tenant is the SESSION's (§4). A foreign id is refused. */
+  brokerageId?: string
   campaignName: string
   targetAudience: string
   mailingType: "postcard" | "letter" | "brochure"
@@ -450,117 +550,66 @@ export async function createDirectMailCampaign(params: {
   budget?: number
   sendDate?: string
   trackingEnabled?: boolean
+  /** Copy the agent wrote or dictated. Absent → the campaign name + audience line, as before. */
+  copyText?: string
+  /** ★ TRACKING LINKED TO CAMPAIGN ★ marketing_campaigns.id when this mailer belongs to an
+   *  umbrella marketing campaign — stamped onto qr_codes.marketing_campaign_id so the scans roll
+   *  up in lib/marketing/campaign-measurer.ts. Verified against the session brokerage inside
+   *  the kernel creator; an FK proves a campaign exists, never that it is ours. */
+  marketingCampaignId?: string
   /** Optional absolute origin (e.g. "https://app.example.com"); QR link defaults
    *  to NEXT_PUBLIC_APP_URL or a relative path if not provided. */
   appOrigin?: string
 }) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    const actor = await getAgentContext()
+    if (!actor.isAuthenticated || !actor.userId) {
+      return { success: false, error: "Not signed in — a direct mail campaign is filed by a signed-in user" }
     }
-
-    const access = await canAccessFeature(params.agentId, "direct_mail")
-    if (!access.allowed) {
-      return { success: false, error: access.reason ?? "Direct mail feature not available" }
+    if (!actor.brokerageId) {
+      return { success: false, error: "No brokerage on your account — a direct mail campaign belongs to a brokerage" }
     }
-
-    const quantity =
-      params.budget && params.budget > 0
-        ? Math.max(1, Math.floor(params.budget / 0.79))
-        : 100
-
-    const perPieceCost =
-      params.budget && quantity > 0
-        ? Number((params.budget / quantity).toFixed(2))
-        : 0.79
-    const trackingId = params.trackingEnabled
-      ? `dm-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-      : null
-
-    const campaignResult = await createMailCampaign({
-      brokerageId: params.brokerageId,
-      agentId: params.agentId,
-      campaignName: params.campaignName,
-      targetAudience: params.targetAudience,
-      designUrl: params.designTemplate ?? undefined,
-      copyText: [params.campaignName, params.targetAudience].filter(Boolean).join(" "),
-      quantity,
-      mailingDate: params.sendDate ?? undefined,
-      perPieceCost,
-      createdBy: params.agentId,
-    })
-
-    if (!campaignResult.success) {
-      return {
-        success: false,
-        error: campaignResult.error || "Failed to create direct mail campaign",
-      }
+    if (!decideClaimedTenant({ actingBrokerageId: actor.brokerageId, claimedBrokerageId: params.brokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
+      return { success: false, error: "That brokerage is not yours — a direct mail campaign is filed in your own brokerage" }
     }
+    const brokerageId = actor.brokerageId
+    // users.id: the gate, the usage counter and created_by (FK users).
+    const actorUserId = actor.userId
+    // agents.id: direct_mail_campaigns.agent_id and qr_codes.agent_id (FK agents),
+    // crossed via agents.user_id and pinned to the session tenant.
+    const agentRecordId = await resolveAgentIdInBrokerage(await createClient(), actorUserId, brokerageId)
 
-    const campaign = campaignResult.campaign as { id: string } | null
-    const supabase = await createClient()
     const pieceType: DirectMailPieceType = params.pieceType ?? "postcard"
 
-    // Persist piece type + tracking id on the campaign row regardless of QR.
-    if (campaign?.id) {
-      await supabase
-        .from("direct_mail_campaigns")
-        .update({ piece_type: pieceType, tracking_id: trackingId })
-        .eq("id", campaign.id)
+    // Budget → quantity / per-piece economics moved INTO the one creator (the voice door
+    // prices a mailer the same way); this door hands over the budget.
+    const created = await fileDirectMailCampaign({
+      ctx: { userId: actorUserId, brokerageId, agentId: agentRecordId ?? undefined },
+      campaignName: params.campaignName,
+      targetAudience: params.targetAudience,
+      designUrl: params.designTemplate,
+      copyText: params.copyText?.trim() || [params.campaignName, params.targetAudience].filter(Boolean).join(" "),
+      budget: params.budget,
+      mailingDate: params.sendDate,
+      pieceType,
+      tracking: params.trackingEnabled
+        ? { marketingCampaignId: params.marketingCampaignId, origin: params.appOrigin }
+        : undefined,
+    })
+    if (!created.success || !created.data) {
+      return { success: false, error: created.error || "Failed to create direct mail campaign" }
     }
-
-    // Generate the QR code + image URL when tracking is enabled.
-    let qrCodeId: string | null = null
-    let qrSlug: string | null = null
-    let qrImageUrl: string | null = null
-    let trackingUrl: string | null = null
-
-    if (params.trackingEnabled && trackingId && campaign?.id) {
-      const origin =
-        params.appOrigin ?? process.env.NEXT_PUBLIC_APP_URL ?? ""
-      // Pre-build the canonical scan URL; the QR slug will be embedded once
-      // createQrCodeAction returns it. We use the trackingId as a stable label.
-      const qrResult = await createQrCodeAction({
-        brokerageId: params.brokerageId,
-        agentId: params.agentId,
-        label: `${params.campaignName} (${trackingId})`,
-        targetUrl: `${origin}/api/qr/scan?slug=__placeholder__`,
-        purpose: "campaign",
-      })
-
-      if (qrResult.success && qrResult.qrCode) {
-        qrCodeId = qrResult.qrCode.id
-        qrSlug = qrResult.qrCode.slug
-        const scanUrl = `${origin}/api/qr/scan?slug=${qrResult.qrCode.slug}`
-
-        // Update qr_codes.target_url with the real scan URL now that we know the slug.
-        await supabase
-          .from("qr_codes")
-          .update({ target_url: scanUrl })
-          .eq("id", qrResult.qrCode.id)
-
-        // Link the QR to the campaign for scan attribution.
-        await supabase
-          .from("direct_mail_campaigns")
-          .update({ qr_code_id: qrResult.qrCode.id })
-          .eq("id", campaign.id)
-
-        trackingUrl = scanUrl
-        qrImageUrl = buildQrImageUrl(scanUrl)
-      }
-    }
+    const { campaign, trackingId, qr } = created.data
 
     revalidatePath("/content-studio")
     revalidatePath("/dashboard/campaigns/mail")
 
     return {
       success: true,
-      campaign: campaign
-        ? { ...campaign, piece_type: pieceType, qr_code_id: qrCodeId, tracking_id: trackingId }
-        : null,
-      trackingUrl,
-      qrImageUrl,
-      qrSlug,
+      campaign: { ...campaign, piece_type: created.data.pieceType, qr_code_id: qr?.qrCodeId ?? null, tracking_id: trackingId },
+      trackingUrl: qr?.scanUrl ?? null,
+      qrImageUrl: qr?.imageUrl ?? null,
+      qrSlug: qr?.slug ?? null,
       pieceType,
     }
   } catch (error) {
@@ -568,6 +617,8 @@ export async function createDirectMailCampaign(params: {
     return handleError(error, "createDirectMailCampaign")
   }
 }
+
+
 
    
 
@@ -713,20 +764,59 @@ export async function submitToPrintFulfillment(params: {
 // ============================================
 // 8. TRACK CAMPAIGN RESPONSES
 // ============================================
+/**
+ * Record a response against a mailed piece, addressed by its printed tracking id.
+ *
+ * GATED (was not) — this is the `trackDelivery` class. `"use server"` makes it a
+ * public endpoint, and its only key was `tracking_id`, a low-entropy string
+ * minted as `dm-<Date.now()>-<9 base36 chars>` and *printed on the mail piece*.
+ * Anyone holding or guessing one could post unlimited "qr_scan" / "call" /
+ * "form_submission" rows against another brokerage's paid campaign. Those rows
+ * are the numerator of the response-rate and cost-per-response figures
+ * `getDirectMailAnalytics` and `aiAnalyzeCampaignPerformance` report, so the
+ * hole was a write into someone else's marketing P&L, not just noise.
+ *
+ * Now: authenticated, and the campaign must belong to the caller's own brokerage.
+ * The tenant id passed to `logResponse` still comes from the campaign row (never
+ * from the caller), and it is now cross-checked against the session.
+ *
+ * NOTE for whoever wires this: the anonymous QR path does NOT come through here —
+ * `/api/qr/scan?slug=…` records scans on its own and is the surface built for
+ * untrusted visitors. This action is the operator-side logger (an agent recording
+ * "this seller called off the postcard"), which is why gating it is correct
+ * rather than restrictive. If a genuinely public response sink is ever needed, it
+ * belongs in a route handler with its own rate limiting and a high-entropy token,
+ * not on a server action.
+ */
 export async function trackCampaignResponse(params: {
   trackingId: string
   responseType: "qr_scan" | "call" | "website_visit" | "form_submission"
   metadata?: any
 }) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Not signed in" }
+    }
+
+    if (typeof params.trackingId !== "string" || params.trackingId.trim().length === 0) {
+      return { success: false, error: "Invalid tracking ID" }
+    }
+
     const supabase = await createClient()
 
-    const { data: campaign } = await supabase
+    const { data: campaign, error: campaignError } = await supabase
       .from("direct_mail_campaigns")
       .select("id, brokerage_id")
       .eq("tracking_id", params.trackingId)
+      .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
 
+    // A refused read is not "no such campaign". Report it rather than letting a
+    // blocked query look like a bad tracking id.
+    if (campaignError) {
+      return { success: false, error: `Could not look up the campaign: ${campaignError.message}` }
+    }
     if (!campaign) {
       return { success: false, error: "Campaign not found" }
     }
@@ -762,10 +852,30 @@ export async function trackCampaignResponse(params: {
 // ============================================
 // 9. GET CAMPAIGN ANALYTICS
 // ============================================
-export async function getDirectMailAnalytics(params: { agentId: string; campaignId?: string }) {
+/**
+ * Per-campaign spend / response / cost-per-response for the calling agent.
+ *
+ * GATED + SESSION-SCOPED (was neither). This is a `"use server"` export, so a
+ * public HTTP endpoint, and it authenticated nothing: it filtered on a
+ * caller-supplied `agent_id` and handed back that agent's whole paid-mail book —
+ * campaign names, quantities, per-piece and total spend, response counts. One
+ * uuid read another brokerage's marketing budget.
+ *
+ * `agentId` is now ignored and derived from the session, matching the already
+ * remediated sibling `getDirectMailCampaigns` in this file. The brokerage
+ * predicate is added too: a mismatched uuid is a *valid* query that returns zero
+ * rows, so tenant scope has to be stated, not assumed from the agent id.
+ */
+export async function getDirectMailAnalytics(params: {
+  /** Ignored — derived from the session. */
+  agentId?: string
+  campaignId?: string
+}) {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not signed in" }
+    if (!ctx.agentId || !ctx.brokerageId) {
+      return { success: false, error: "No agent profile is attached to this account" }
     }
 
     const supabase = await createClient()
@@ -773,13 +883,22 @@ export async function getDirectMailAnalytics(params: { agentId: string; campaign
     let query = supabase
       .from("direct_mail_campaigns")
       .select("*, responses:direct_mail_responses(count)")
-      .eq("agent_id", params.agentId)
+      .eq("agent_id", ctx.agentId)
+      .eq("brokerage_id", ctx.brokerageId)
 
     if (params.campaignId) {
+      if (!isValidUUID(params.campaignId)) {
+        return { success: false, error: "Invalid campaign ID" }
+      }
       query = query.eq("id", params.campaignId)
     }
 
-    const { data: campaigns } = await query
+    // Destructure `error`: supabase-js RESOLVES a refused read, so `{ data }`
+    // alone reports a blocked query as "this agent has no campaigns".
+    const { data: campaigns, error } = await query
+    if (error) {
+      return { success: false, error: `Could not read campaigns: ${error.message}` }
+    }
 
  const analytics = campaigns?.map((c) => {
   const responseCount = c.responses?.[0]?.count || 0
@@ -810,14 +929,40 @@ export async function getDirectMailAnalytics(params: { agentId: string; campaign
 // ============================================
 // 10. AI CAMPAIGN PERFORMANCE ANALYZER
 // ============================================
-export async function aiAnalyzeCampaignPerformance(params: { agentId: string; brokerageId: string }) {
+/**
+ * AI read of the calling agent's direct-mail performance.
+ *
+ * GATED + SESSION-SCOPED (was neither). `canAccessFeature(params.agentId, …)` is
+ * an *entitlement* check, not an authentication check — it answers "is this
+ * agent's plan allowed direct mail", which a caller satisfies simply by naming an
+ * agent whose plan is. With that as the only barrier the endpoint would, for any
+ * uuid supplied by anyone: read that agent's entire paid-mail history including
+ * spend and response rows, serialise the whole thing into a prompt, and bill a
+ * gpt-4o-mini call to the platform. Unauthenticated AI spend on top of an
+ * unauthenticated cross-tenant read.
+ *
+ * `agentId`/`brokerageId` are derived from the session; the entitlement gate is kept
+ * and runs against the *resolved* agent.
+ *
+ * TOMBSTONE — the `params?: { agentId?: string; brokerageId?: string }` argument that
+ * stood here is DELETED. It was accepted and read by NOTHING, which was correct
+ * behaviour wearing a dangerous signature: every export of a "use server" file is a
+ * public HTTP endpoint (CLAUDE.md §4), and an identity-shaped argument that the body
+ * silently ignores is an open invitation for the next person to "finish wiring it up"
+ * and re-open exactly the cross-tenant read the note above records closing. The one
+ * caller (app/dashboard/campaigns/mail/components/analytics-tab.tsx:91) already
+ * passes nothing. Survivor: `getAgentContext()` on the next line.
+ */
+export async function aiAnalyzeCampaignPerformance() {
   try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not signed in" }
+    if (!ctx.agentId || !ctx.brokerageId) {
+      return { success: false, error: "No agent profile is attached to this account" }
     }
 
-    // ── Kernel Gate: canAccessFeature ──
-    const access = await canAccessFeature(params.agentId, "direct_mail")
+    // ── Kernel Gate: canAccessFeature (entitlement, on the RESOLVED agent) ──
+    const access = await canAccessFeature(ctx.agentId, "direct_mail")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Direct mail feature not available" }
     }
@@ -825,14 +970,28 @@ export async function aiAnalyzeCampaignPerformance(params: { agentId: string; br
     const supabase = await createClient()
 
     // Get all campaigns with responses
-    const { data: campaigns } = await supabase
+    const { data: campaigns, error: campaignsError } = await supabase
       .from("direct_mail_campaigns")
       .select("*, responses:direct_mail_responses(*)")
-      .eq("agent_id", params.agentId)
+      .eq("agent_id", ctx.agentId)
+      .eq("brokerage_id", ctx.brokerageId)
       .not("mailing_date", "is", null)
 
-    const { object: analysis } = await generateObject({
-      model: resolveModel("openai/gpt-4o-mini"),
+    // Do not pay for a model call on a read that was refused — a blocked query
+    // and an empty campaign list are the same shape here, and only one of them
+    // is worth analysing.
+    if (campaignsError) {
+      return { success: false, error: `Could not read campaigns: ${campaignsError.message}` }
+    }
+    if (!campaigns || campaigns.length === 0) {
+      return { success: false, error: "No mailed campaigns yet — nothing to analyse." }
+    }
+
+    const { object: analysis } = await generateObjectRouted({
+      // The tenant is already resolved from the session in this function.
+      userId: ctx.userId,
+      brokerageId: ctx.brokerageId,
+      feature: "direct_mail_performance",
       schema: z.object({
         overallROI: z.number(),
         bestPerformingType: z.string(),
@@ -870,3 +1029,6 @@ Provide:
     return handleError(error, "aiAnalyzeCampaignPerformance")
   }
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

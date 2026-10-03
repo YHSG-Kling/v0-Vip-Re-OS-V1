@@ -3,12 +3,32 @@ import { createClient }             from "@/lib/supabase/server"
 import { BuyerOverviewClient }      from "./buyer-overview-client"
 import { SellerLifetimeOverview }   from "./seller-lifetime-overview"
 import { getBuyerEnabledGates }     from "@/app/actions/buyer-lifecycle-core"
+import { checkBuyerOfferEligibility } from "@/app/actions/buyer-lifecycle-core"
 import { ContactQuickActions }      from "@/components/contact/ContactQuickActions"
 import { AddressingCard }           from "@/components/contact/AddressingCard"
 import { StrategySessionCard }      from "@/components/contact/StrategySessionCard"
 import { LastPromiseCard }          from "@/components/contact/LastPromiseCard"
 import { InvestorDealsPanel }        from "@/components/contact/investor-deals-panel"
+import { BuyerBrokerAgreementPanel } from "@/components/contact/buyer-broker-agreement-panel"
+import { WorkflowRunsPanel }         from "./components/workflow-runs-panel"
+import { EnrichmentPanel }          from "./components/enrichment-panel"
+import { FollowupCard }            from "./components/followup-card"
+import { SmartDripCard }           from "./components/smart-drip-card"
+import { LeadHistoryCard }        from "./components/lead-history-card"
+import { VoiceNoteCard }          from "./components/voice-note-card"
+import { IsaOutreachCard }        from "./components/isa-outreach-card"
+import { SegmentMemberships }      from "./components/segment-memberships"
+import { ShowingRoutePlanner, ShowingPlanTourHandoff } from "./showing-route-planner"
+import { CampaignBundleSendCard, type BundleOption } from "./components/campaign-bundle-send-card"
+import { listCampaignBundles }      from "@/app/actions/campaign-bundles"
+import { AgentActionDispositionQueue } from "@/app/components/agent/AgentActionDispositionQueue"
+import { getAgentPortalStream }     from "@/app/actions/portal-stream"
+import { getInboxMessages }         from "@/app/actions/inbox"
 import { assertCanActOnContact }    from "@/lib/auth/contact-access"
+import { getBuyerTours }             from "@/app/actions/tour-planner"
+import { getBuyerJourney, getBuyerUpdateHistory } from "@/app/actions/buyer-execution"
+import { getCollaborativeSearches, getConsensus } from "@/app/actions/collaborative-search"
+import { loadConversationDrafts }    from "@/app/actions/ai-reply-coach"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge }                    from "@/components/ui/badge"
 import { Route, PanelsTopLeft }     from "lucide-react"
@@ -65,7 +85,10 @@ export default async function ContactDetailPage({ params }: PageProps) {
   // cross-brokerage reads, but routing the access decision through the canonical helper means a
   // future refactor that swaps to createServiceClient (RLS bypass) can't silently expose every
   // contact in the DB. Same gate the write-side quick-action server actions run.
-  const gate = await assertCanActOnContact(contactId)
+  // intent:"read" — this is the read path; the gate's default is "write"
+  // (fail-closed), which would wrongly refuse a read_only act-as investigator
+  // and non-impersonating platform staff from VIEWING the page.
+  const gate = await assertCanActOnContact(contactId, { intent: "read" })
   if (!gate.ok) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -75,13 +98,28 @@ export default async function ContactDetailPage({ params }: PageProps) {
   }
 
   // Load minimal data for initial render + decide which view to mount
-  const [contactResult, profileResult, interestsResult, enabledGates, segmentsResult] = await Promise.all([
+  const [contactResult, profileResult, interestsResult, enabledGates, offerGate, segmentsResult] = await Promise.all([
     supabase.from("contacts").select("*").eq("id", contactId).single(),
     supabase.from("users").select("first_name, last_name").eq("id", user.id).maybeSingle(),
     supabase.from("property_interests").select("*").eq("contact_id", contactId).maybeSingle(),
     getBuyerEnabledGates(contactId),
-    // Segment memberships — written by the workflow "add to segment" step
-    // (lib/workflow/adapters/segment-ops.ts). Active memberships only.
+    // THE OFFER GATE IS DECIDED HERE, ON THE SERVER.
+    // buyer-overview-client.tsx used to import isOfferAllowed from gating-helpers and call
+    // it inside JSX — its own comment said "isOfferAllowed is async; server should
+    // pre-compute". Two things were wrong with that. It passed `currentStage` where the
+    // function takes a contactId, and it used the returned PROMISE as the condition: a
+    // promise is always truthy, so the "make an offer" path rendered OPEN for every buyer
+    // regardless of lifecycle state or financial verification. It also pulled server-only
+    // gating code (and the service-role client) into a CLIENT bundle, which is what finally
+    // broke the production build.
+    checkBuyerOfferEligibility(contactId),
+    // Segment memberships — opened and closed by
+    // lib/marketing/segment-membership.ts, reached from the workflow
+    // add_to_segment / remove_from_segment steps and from the X on each badge
+    // below (app/actions/contacts/segment-membership.ts). ACTIVE memberships
+    // only: `removed_at IS NULL` is the same filter the campaign sender uses to
+    // resolve recipients, so what this page shows is exactly who a
+    // segment-targeted campaign would reach.
     supabase
       .from("contact_segments")
       .select("id, segment_id, added_at")
@@ -107,6 +145,107 @@ export default async function ContactDetailPage({ params }: PageProps) {
   const contactSegments = segmentsResult.error
     ? []
     : ((segmentsResult.data ?? []) as Array<{ id: string; segment_id: string; added_at: string }>)
+
+  // ── BUYER OVERVIEW DATA ────────────────────────────────────────────────────
+  //
+  // NINE PROPS WERE HARDCODED [] / null AT THE ONLY MOUNT OF BuyerOverviewClient.
+  // Every one of them had a real loader sitting unused, and the component reads
+  // them all: the Tours tab said "0 tours on file / No upcoming tours scheduled"
+  // for a buyer with tours, while the sibling route /crm/contacts/[id]/tours
+  // rendered those same rows correctly. Same data, same page, two answers.
+  //
+  // Loaded AFTER contact resolves and only when buyer_stage is set — the same
+  // condition that mounts the component — so a seller or a sphere contact does
+  // not pay for six queries it will never render.
+  let buyerTours: any[] = []
+  let buyerNextTour: any = null
+  let buyerJourney: any = null
+  let buyerProfile: any = null
+  let buyerDrafts: any[] = []
+  let collabSearches: any[] = []
+  let activeCollabSearch: any = null
+  let collabConsensus: any = null
+  // Multi-party update trail: the lender/agent/admin actions that moved this
+  // buyer's gates. Loaded with the rest of the buyer block so a seller or sphere
+  // contact does not pay for it.
+  let buyerUpdates: Array<{
+    eventType: string
+    actorId: string
+    actorRole: string
+    timestamp: Date
+    metadata: Record<string, unknown>
+  }> = []
+  let buyerUpdatesError: string | null = null
+
+  if (contact.buyer_stage) {
+    const [toursRes, journeyRes, finProfileRes, searchesRes, convRes, updatesRes] = await Promise.all([
+      getBuyerTours(contactId),
+      getBuyerJourney({ contactId, userId: user.id, source: "agent_action" }),
+      supabase
+        .from("buyer_financial_profiles")
+        .select("id, contact_id, verified, is_cash_buyer, finance_type, pre_approval_amount, updated_at")
+        .eq("contact_id", contactId)
+        .maybeSingle(),
+      getCollaborativeSearches(contactId),
+      // The coaching panel drafts hang off a CONVERSATION, not the contact, so
+      // resolve the contact's most recent thread first.
+      supabase
+        .from("conversations")
+        .select("id")
+        .eq("contact_id", contactId)
+        .order("last_message_at", { ascending: false, nullsFirst: false })
+        .limit(1)
+        .maybeSingle(),
+      // Who moved this buyer's gates, and when. The lender confirmation, the
+      // admin override, the agent advance and the search reconfiguration each
+      // write a `buyer.*` row to `activities` at the moment they happen — and
+      // nothing had ever read them back. An agent looking at a buyer whose
+      // financing gate had been OVERRIDDEN could not see that it had been, by
+      // whom, or on what grounds. This is that trail.
+      getBuyerUpdateHistory({ contactId, limit: 25 }),
+    ])
+
+    buyerTours = toursRes.success ? (toursRes.tours ?? []) : []
+
+    // A refused or failed read is NOT "no activity". getBuyerUpdateHistory
+    // returns {success:false,error} for both, and an empty trail rendered for a
+    // refusal would tell the agent nobody has touched this buyer's gates when
+    // the truth is we could not look.
+    if ((updatesRes as any)?.success) {
+      buyerUpdates = ((updatesRes as any).updates ?? []) as typeof buyerUpdates
+    } else {
+      buyerUpdatesError = ((updatesRes as any)?.error as string) || "Could not load the update trail"
+    }
+
+    // NEXT TOUR is derived, not separately queried — one source, so the count and
+    // the "next tour" line can never disagree. Soonest tour still ahead of today
+    // that has not been cancelled.
+    const today = new Date().toISOString().slice(0, 10)
+    buyerNextTour =
+      buyerTours
+        .filter((t: any) => t?.tour_date && t.tour_date >= today && t.status !== "cancelled")
+        .sort((a: any, b: any) => String(a.tour_date).localeCompare(String(b.tour_date)))[0] ?? null
+
+    // Pass the STATUS object, not the wrapper: the component reads
+    // journey.nextSteps, and BuyerJourneyStatus is what carries it.
+    buyerJourney = (journeyRes as any)?.success ? (journeyRes as any).journey : null
+    buyerProfile = finProfileRes.data ?? null
+
+    // getCollaborativeSearches returns [] when COLLABORATIVE_SEARCH_ENABLED is
+    // off, so an unavailable feature reads as "no searches" rather than an error.
+    collabSearches = Array.isArray(searchesRes) ? searchesRes : []
+    activeCollabSearch = collabSearches[0] ?? null
+    if (activeCollabSearch?.id) {
+      const c = await getConsensus(activeCollabSearch.id)
+      collabConsensus = Array.isArray(c) && c.length > 0 ? c : null
+    }
+
+    const conversationId = (convRes.data as { id: string } | null)?.id
+    if (conversationId) {
+      const draftsRes = await loadConversationDrafts(conversationId)
+      buyerDrafts = draftsRes.success ? (draftsRes.drafts ?? []) : []
+    }
+  }
 
   // Latest AI showing plan (smart_showing_recommendations). The writer keys on
   // lead_id (leads class) with contact_id optional, so match either the contact
@@ -146,6 +285,45 @@ export default async function ContactDetailPage({ params }: PageProps) {
     ? (showingRec!.suggested_order as unknown[]).filter((s): s is string => typeof s === "string")
     : []
 
+  // ── THIS CONTACT'S PORTAL EVENT STREAM + UNIFIED MESSAGE THREAD ────────────
+  //
+  // Two agent-facing reads that existed with no caller anywhere in the tree:
+  //
+  //   · getAgentPortalStream({ contactId }) — the agent view of
+  //     portal_event_stream (agent_copy + suggested action + disposition
+  //     state). Its sibling getOpenAgentActions is mounted on the agent
+  //     dashboard as a BROKERAGE-WIDE queue, and <AgentActionDispositionQueue>
+  //     documents a `compact` mode "used inside a contact's CRM panel" that
+  //     nothing rendered. This is that panel: the same three-way disposition,
+  //     scoped to the one contact whose record you are looking at.
+  //
+  //   · getInboxMessages({ contactId }) — the kernel's universal inbox merged
+  //     across messages / client_portal_messages / voice_calls / chat /
+  //     vendor / ISA lanes for ONE contact. Nothing read it; the app-shell
+  //     inbox slide-out reads `conversations` directly and covers only the
+  //     conversation-threaded channels.
+  //
+  // Both actions gate themselves (session + the contact must be in the
+  // caller's brokerage) and RETURN their refusals, so a refusal is reported
+  // rather than rendered as an empty stream.
+  const [portalStreamResult, contactInboxResult, bundlesResult] = await Promise.all([
+    getAgentPortalStream({ contactId, limit: 25 }),
+    getInboxMessages({ contactId, limit: 25 }),
+    // Saved campaign bundles the caller may dispatch. The action resolves the
+    // caller's own agent/team/brokerage policy scope, so this list is already
+    // narrowed to bundles they are allowed to see.
+    listCampaignBundles(),
+  ])
+  const portalStreamRows = portalStreamResult.success ? (portalStreamResult.rows ?? []) : []
+  const portalStreamError = portalStreamResult.success ? null : (portalStreamResult.error ?? "Portal stream unavailable")
+  const contactMessages = contactInboxResult.success ? (contactInboxResult.messages ?? []) : []
+  const contactInboxError = contactInboxResult.success ? null : (contactInboxResult.error ?? "Messages unavailable")
+  const sendableBundles: BundleOption[] = bundlesResult.success
+    ? bundlesResult.bundles
+        .filter((b) => b.is_active && b.items.length > 0)
+        .map((b) => ({ id: b.id, name: b.name, description: b.description, stepCount: b.items.length }))
+    : []
+
   return (
     <div className="flex flex-col h-full min-h-screen bg-background">
       {/* Route parity: explicit cross-link to the full CRM workspace (portal /
@@ -174,16 +352,13 @@ export default async function ContactDetailPage({ params }: PageProps) {
         />
       </div>
 
-      {/* Segment memberships — added by campaign workflow "add to segment" steps */}
+      {/* Segment memberships — opened by the workflow "add to segment" step, and
+          closable HERE. The badges used to be read-only, which was the visible
+          face of a real defect: contact_segments.removed_at was read by the
+          campaign sender and written by nothing, so a contact added to a
+          marketing segment received its campaigns forever. */}
       {contactSegments.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5 px-4 pt-3">
-          <span className="text-xs text-muted-foreground">Segments</span>
-          {contactSegments.map((s) => (
-            <Badge key={s.id} variant="secondary" className="text-xs font-mono">
-              {s.segment_id.slice(0, 8)}
-            </Badge>
-          ))}
-        </div>
+        <SegmentMemberships contactId={contactId} segments={contactSegments} />
       )}
 
       {/* Addressing memory ("call me Bill") + the auto-prepared strategy session
@@ -205,11 +380,193 @@ export default async function ContactDetailPage({ params }: PageProps) {
         />
       </div>
 
+      {/* This contact's portal event stream — the agent side (agent_copy,
+          suggested action, disposition state), with the same Done / Do now /
+          AI do it / Dismiss controls the dashboard queue uses. */}
+      <div className="px-4 pt-3">
+        {portalStreamError ? (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Portal activity</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-destructive">
+                This contact&apos;s portal stream could not be read, so nothing below is a reading of
+                it: {portalStreamError}
+              </p>
+            </CardContent>
+          </Card>
+        ) : portalStreamRows.length > 0 ? (
+          <AgentActionDispositionQueue
+            rows={portalStreamRows}
+            compact
+            title="Portal activity for this contact"
+          />
+        ) : null}
+      </div>
+
+      {/* Unified message thread for this contact — every channel the kernel
+          merges (sms / email / voice / portal / chat / vendor / AI ISA), not
+          just the conversation-threaded ones. Read-only here; replies go
+          through the inbox, which this links to. */}
+      <div className="px-4 pt-3">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Messages</CardTitle>
+            <CardDescription>
+              Every channel on record for this contact, newest first
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {contactInboxError ? (
+              <p className="text-sm text-destructive">
+                Messages could not be loaded, so this is not a reading of the thread:{" "}
+                {contactInboxError}
+              </p>
+            ) : contactMessages.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No messages on record yet.</p>
+            ) : (
+              <ol className="space-y-2">
+                {contactMessages.slice(0, 12).map((m) => (
+                  <li key={`${m.source_table}-${m.id}`} className="rounded-lg border px-3 py-2">
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <Badge variant="outline" className="text-[11px]">{m.channel}</Badge>
+                      {/* vendor_role and read_at travel on vendor rows since lane W1
+                          (2026-09-02); this is the universal inbox's only vendor-row
+                          renderer — InboxClient's thread loader never receives one. */}
+                      {m.source_table === "vendor_messages" && m.vendor_role && (
+                        <Badge variant="outline" className="text-[11px] capitalize">{m.vendor_role.replace(/_/g, " ")}</Badge>
+                      )}
+                      <span className="text-xs text-muted-foreground">
+                        {m.direction === "inbound" ? "from contact" : "to contact"}
+                      </span>
+                      {m.read_at && (
+                        <span className="text-xs text-muted-foreground">read {new Date(m.read_at).toLocaleString()}</span>
+                      )}
+                      <span className="ml-auto text-xs text-muted-foreground">
+                        {new Date(m.created_at).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-sm line-clamp-3">{m.body}</p>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Chain runs against this contact — the orchestrator's contact-card surface.
+          Without it a run paused on an approval gate had no way to be approved,
+          and a failed run no way to be resumed or cancelled. */}
+      <div className="px-4 pt-3">
+        <WorkflowRunsPanel contactId={contactId} />
+      </div>
+
+      {/* Dispatch a saved multi-channel campaign bundle at this contact — the
+          send side of the bundle builder, which had none. */}
+      <div className="px-4 pt-3">
+        <CampaignBundleSendCard contactId={contactId} bundles={sendableBundles} />
+      </div>
+
+      {/* Smart drip — enroll this contact into the brokerage's compliance-gated
+          sequence of the chosen cadence (restored lane F1; the sequence's steps
+          carry the content, so the door is honest about missing sequences). */}
+      <div className="px-4 pt-3">
+        <SmartDripCard contactId={contactId} />
+      </div>
+
+      {/* ── Lane H2: the three contact routes that had no door ─────────────────
+          Each is the sole implementation of its capability and each was on the
+          census's "route handler nothing in the tree addresses" list. The routes
+          stay the implementation — these cards only call them and read what
+          comes back. Ordered context-then-action: where this person came from,
+          then what you do about it. */}
+
+      {/* Lead lineage — the sole reader of the contact_lead_history view
+          (migration 039). NOT the brief's one-sentence provenance line: this is
+          a row per lead, with source family/channel/subtype, qualification
+          summary and the ISA handoff. */}
+      <div className="px-4 pt-3">
+        <LeadHistoryCard contactId={contactId} />
+      </div>
+
+      {/* Dictate the note after a showing or a call — parsed into a written
+          note, a sentiment read and the follow-up tasks the agent actually
+          named. Distinct from the hands-free voice COMMAND lane
+          (app/actions/voice-assistant.ts), which writes a plain contact_notes
+          row; see the card header for that comparison. */}
+      <div className="px-4 pt-3">
+        <VoiceNoteCard contactId={contactId} />
+      </div>
+
+      {/* ISA follow-up / direct mail — compliance-gated outbound. The route's
+          own activity description ("Operator triggered direct mail from CRM
+          contact record") named this surface; every consent and sender gate
+          stays on the server and every refusal is printed. */}
+      <div className="px-4 pt-3">
+        <IsaOutreachCard contactId={contactId} />
+      </div>
+
+      {/* Stated future re-contact date — the suppression the reactivation
+          cadences already check for and nothing could set. */}
+      <div className="px-4 pt-3">
+        <FollowupCard
+          contactId={contactId}
+          initialFollowupAt={contact.next_followup_at ?? null}
+          initialReason={contact.next_followup_reason ?? null}
+        />
+      </div>
+
+      {/* Enrichment + detected life changes. The enrichment lane has always
+          written household income, ownership, social profiles, public/court/
+          property records and life events onto the contact row, and none of it
+          was displayed anywhere — so a detected divorce or relocation, the whole
+          point of the feature, reached no agent. This is that surface, plus the
+          two manual controls (enrich now / check for changes) and the
+          acknowledgement that stops a change re-surfacing forever. */}
+      <div className="px-4 pt-3">
+        <EnrichmentPanel contactId={contactId} />
+      </div>
+
+      {/* Buyer broker agreement — the NAR 2024 gate that blocks showings and offers
+          until an agreement is signed. Draft → send for e-signature → record signature
+          → cancel all live here; without it a drafted BBA could never reach `active`. */}
+      {contact.buyer_stage && (
+        <div className="px-4 pt-3">
+          <BuyerBrokerAgreementPanel contactId={contactId} />
+        </div>
+      )}
+
       {/* Investor off-market deal finder — buyer-side match against our scraped off-market inventory.
-          Regular buyers get MLS matches; investors get off-market. Shown only for investor contacts. */}
-      {contact.contact_type === "investor" && (
+          Regular buyers get MLS matches; investors get off-market. Shown only for investor contacts —
+          keyed on contact_persona since the owner ruling ("investor is a persona and not a contact
+          type", m589); the contact_type arm is the tolerant read of a pre-m593 legacy row. */}
+      {(contact.contact_persona === "investor" || contact.contact_type === "investor") && (
         <div className="px-4 pt-3">
           <InvestorDealsPanel contactId={contactId} />
+        </div>
+      )}
+
+      {/* ONE DOOR, NOT TWO — the drift this page carried until this wave.
+          This card and the tour lane (/crm/contacts/[contactId]/tours, reachable
+          from the Tours tab above) were two route/drive-time planners on one
+          page, and they used two different engines: the tour lane's real
+          optimizer (lib/kernel/tour-optimizer.ts, real coordinates) and a model
+          asked to guess an order and a drive total. Owner ruling, verbatim: "you
+          have smart showing route but there is also tour planning which was what
+          we built originally. you have to be careful and not create more drifts
+          we are trying to solve."
+          THE COLLAPSE: this card keeps the act that exists nowhere else — WHICH
+          saved homes are worth seeing, resolved against the tenant's property
+          source, with the ones no source could answer named — and gives up the
+          act the tour lane owns. Order and drive minutes come from the kernel
+          now, and the plan card below carries the single on-ramp into the tour
+          lane (ShowingPlanTourHandoff). Nothing was deleted; the second engine
+          was. */}
+      {contact.buyer_stage && (
+        <div className="px-4 pt-3">
+          <ShowingRoutePlanner contactId={contactId} />
         </div>
       )}
 
@@ -226,9 +583,14 @@ export default async function ContactDetailPage({ params }: PageProps) {
                     {new Date(showingRec.recommended_day).toLocaleDateString()}
                   </Badge>
                 )}
+                {/* "est." is load-bearing. The number is the tour optimizer's
+                    straight-line haversine estimate at a documented assumed
+                    speed — not a traffic-aware drive time — and it is NULL, not
+                    0, when no leg could be measured, so an absent badge means
+                    "not measured" rather than "no driving". */}
                 {showingRec.total_drive_time != null && (
                   <Badge variant="secondary" className="text-xs">
-                    ~{Math.round(showingRec.total_drive_time)} min drive
+                    ~{Math.round(showingRec.total_drive_time)} min drive (est.)
                   </Badge>
                 )}
               </CardTitle>
@@ -272,30 +634,73 @@ export default async function ContactDetailPage({ params }: PageProps) {
               ) : (
                 <p className="text-sm text-muted-foreground">No properties in this plan.</p>
               )}
+
+              {/* THE ON-RAMP. A shortlist that cannot become a tour is advice
+                  nobody can act on — and building a second scheduling lane here
+                  is the drift this wave collapsed. So the plan hands off into
+                  the tour lane instead. */}
+              <ShowingPlanTourHandoff contactId={contactId} recommendationId={showingRec.id} />
             </CardContent>
           </Card>
         </div>
+      )}
+
+      {/* ── Gate-change trail ──────────────────────────────────────────────
+          Rendered only when there is something to say: a real trail, or a real
+          failure to read one. Silence here means "nothing has moved this
+          buyer's gates", which is a true and useful answer on its own. */}
+      {contact.buyer_stage && (buyerUpdates.length > 0 || buyerUpdatesError) && (
+        <Card className="mb-4">
+          <CardHeader>
+            <CardTitle className="text-base">Gate changes</CardTitle>
+            <CardDescription>
+              Lender confirmations, admin overrides and stage advances recorded against this buyer
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {buyerUpdatesError ? (
+              <p className="text-sm text-destructive">{buyerUpdatesError}</p>
+            ) : (
+              <ol className="space-y-2">
+                {buyerUpdates.map((u, i) => (
+                  <li key={`${u.eventType}-${i}`} className="flex flex-wrap items-baseline gap-2 text-sm">
+                    <Badge variant="outline" className="font-mono text-[11px]">
+                      {u.eventType.replace(/^buyer\./, "")}
+                    </Badge>
+                    <span className="text-muted-foreground">
+                      {u.actorRole !== "unknown" ? u.actorRole : "actor unrecorded"}
+                    </span>
+                    <span className="ml-auto text-xs text-muted-foreground">
+                      {u.timestamp.toLocaleDateString()}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </CardContent>
+        </Card>
       )}
 
       {contact.buyer_stage ? (
         <BuyerOverviewClient
           buyerId={contactId}
           contact={contact}
-          journey={null}
-          profile={null}
+          journey={buyerJourney}
+          profile={buyerProfile}
           partners={[]}
-          drafts={[]}
+          drafts={buyerDrafts}
           propertyInterests={interestsResult.data ?? null}
           brokerageId={brokerageId}
           agentUserId={user.id}
           agentName={agentName}
-          collaborativeSearches={[]}
-          activeSearch={null}
-          consensus={null}
-          tours={[]}
-          nextTour={null}
+          collaborativeSearches={collabSearches}
+          activeSearch={activeCollabSearch}
+          consensus={collabConsensus}
+          tours={buyerTours}
+          nextTour={buyerNextTour}
           dualAgencyListings={[]}
           enabledGates={enabledGates}
+          offerAllowed={offerGate.allowed}
         />
       ) : (
         /* Seller / lifetime / prospect — consolidated detail surface on this same route */

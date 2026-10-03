@@ -8,7 +8,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
-import { Badge } from "@/components/ui/badge"
 import { createClient } from "@/lib/supabase/client"
 
 interface Notification {
@@ -75,11 +74,18 @@ export function PortalNotificationBell({ contactId, initialUnread }: Props) {
 
   async function markAllRead() {
     const supabase = createClient()
-    await supabase
+    // Read the refusal before clearing the badge (lane 87E, swallowed-refusal
+    // census): a refused mark-read used to zero the count locally, and every
+    // notification came back unread on the next visit with no word why.
+    const { error } = await supabase
       .from("notifications")
       .update({ is_read: true })
       .eq("contact_id", contactId)
       .eq("is_read", false)
+    if (error) {
+      console.warn("[portal] mark-all-read refused:", error.message)
+      return
+    }
     setNotifications((prev) => prev.map((n: Notification) => ({ ...n, is_read: true })))
     setUnread(0)
   }

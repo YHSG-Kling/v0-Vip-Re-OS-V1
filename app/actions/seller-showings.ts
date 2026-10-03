@@ -1,34 +1,22 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
-import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { requireCaller } from "@/lib/auth/require-caller"
 
 // Auth gate — write actions in this file stamp brokerage_id / agent_user_id
 // onto lifecycle_events and listing-stage mutations. Without a session-derived
 // identity, callers could forge those fields.
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `requireCaller` lived here; survivor
+// lib/auth/require-caller.ts:requireCaller (this lane's fold-in of the
+// 2026-09-03 wave-26 survivor)
 
 // ─── ROUTING: detect ShowingTime config ──────────────────────────────────────
 
@@ -107,15 +95,51 @@ export async function syncShowingTimeShowings(params: {
   const fallbackAgentId = (fallbackListing as any)?.agent_id ?? null
 
   let skippedNoParty = 0
+  let skippedForeignShowingId = 0
+  let failedWrite = 0
   for (const s of stShowings) {
     const rowContactId = s.contactId ?? fallbackContactId
     const rowAgentId = s.agentId ?? fallbackAgentId
     if (!rowContactId || !rowAgentId) { skippedNoParty++; continue } // honest skip — never a fake FK ref
-    await supabase
+
+    // showingtime_id is UNIQUE across the whole table, but a ShowingTime id is only
+    // unique within a ShowingTime ACCOUNT. Two brokerages on different accounts can
+    // legitimately produce the same id, and this upsert conflicts on it — which
+    // repointed the other tenant's showing row (listing_id, contact_id, agent_id) to
+    // this caller's listing. Refuse rather than repoint; an external id is not proof
+    // of ownership.
+    const { data: existing } = await supabase
+      .from("showings")
+      .select("id, brokerage_id")
+      .eq("showingtime_id", s.id)
+      .maybeSingle()
+    const existingBrokerageId = (existing as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    if (existingBrokerageId && existingBrokerageId !== auth.brokerageId) {
+      skippedForeignShowingId++
+      continue
+    }
+
+    // STAMP THE TENANT THE GUARD JUST VALIDATED. The skip above only fires when
+    // `existing.brokerage_id` is NON-NULL and foreign — a row this very loop
+    // wrote unstamped comes back with brokerage_id = NULL, `existingBrokerageId`
+    // is null, and the guard falls through and repoints it. So the missing stamp
+    // was not merely invisible to readers, it was disarming the cross-account
+    // showingtime_id defense that sits directly above it. Stamping makes the
+    // guard self-reinforcing: every row this loop writes is one the next pass
+    // can adjudicate.
+    //
+    // The value is the LISTING's own brokerage_id, resolved through the record
+    // (app/actions/open-house.ts:481-498) — a showing is filed against
+    // `listing_id`, so it belongs to whoever owns that home. It is provably
+    // equal to auth.brokerageId here because the check at line 74 returns
+    // Forbidden otherwise; taking it from the record keeps the write correct if
+    // that check is ever loosened, and it is the same value the guard compares.
+    const { error: upsertErr } = await supabase
       .from("showings")
       .upsert(
         {
           listing_id: params.listingId,
+          brokerage_id: listing.brokerage_id,
           showingtime_id: s.id,
           scheduled_at: s.scheduledAt,
           scheduled_date: s.date,
@@ -133,10 +157,25 @@ export async function syncShowingTimeShowings(params: {
         },
         { onConflict: "showingtime_id", ignoreDuplicates: false }
       )
+
+    // supabase-js RESOLVES a refused write, so the previous bare `await` counted
+    // every row as synced whether or not it landed — "permission denied" and
+    // "wrote the row" were the same value. Count the misses instead of
+    // reporting a sync that did not happen.
+    if (upsertErr) {
+      console.error("[syncShowingTimeShowings] upsert failed for showingtime_id", s.id, upsertErr.message)
+      failedWrite++
+    }
   }
 
   revalidatePath(`/dashboard/listings/${params.listingId}/showings`)
-  return { success: true, synced: stShowings.length - skippedNoParty, skippedNoParty }
+  return {
+    success: true,
+    synced: stShowings.length - skippedNoParty - skippedForeignShowingId - failedWrite,
+    skippedNoParty,
+    skippedForeignShowingId,
+    failedWrite,
+  }
 }
 
 // ─── SHOWINGTIME MODE: per-showing actions ────────────────────────────────────
@@ -178,10 +217,11 @@ export async function showingTimeConfirm(params: { showingId: string; credential
 
   if (!resp.ok) return { success: false, error: `ShowingTime confirm failed: ${resp.status}` }
 
-  await supabase
+  const { error: confirmStampErr } = await supabase
     .from("showings")
     .update({ status: "confirmed", updated_at: new Date().toISOString() })
     .eq("id", params.showingId)
+  if (confirmStampErr) return { success: false, error: `ShowingTime confirmed, but the showing was not marked confirmed here: ${confirmStampErr.message}` }
 
   return { success: true }
 }
@@ -228,10 +268,11 @@ export async function showingTimeReschedule(params: {
 
   if (!resp.ok) return { success: false, error: `ShowingTime reschedule failed: ${resp.status}` }
 
-  await supabase
+  const { error: rescheduleStampErr } = await supabase
     .from("showings")
     .update({ status: "rescheduled", updated_at: new Date().toISOString() })
     .eq("id", params.showingId)
+  if (rescheduleStampErr) return { success: false, error: `ShowingTime rescheduled, but the showing was not updated here: ${rescheduleStampErr.message}` }
 
   return { success: true }
 }
@@ -278,10 +319,11 @@ export async function showingTimeDecline(params: {
 
   if (!resp.ok) return { success: false, error: `ShowingTime decline failed: ${resp.status}` }
 
-  await supabase
+  const { error: declineStampErr } = await supabase
     .from("showings")
     .update({ status: "cancelled", notes: params.reason, updated_at: new Date().toISOString() })
     .eq("id", params.showingId)
+  if (declineStampErr) return { success: false, error: `ShowingTime declined, but the showing was not cancelled here: ${declineStampErr.message}` }
 
   return { success: true }
 }
@@ -354,8 +396,15 @@ export async function approveShowingRequest(params: {
 
   if (reqErr || !req) return { success: false, error: "Showing request not found" }
 
-  // UPDATE showing_requests
-  await supabase
+  // UPDATE showing_requests.
+  // This used to be a bare `await` with NO error check and no `.select()`, so a
+  // refused or zero-row update was invisible — and the code below then went on
+  // to INSERT a real `showings` row and fire SHOWING_SCHEDULED for an approval
+  // that was never recorded. The seller's approval is the load-bearing fact
+  // here; if it did not land, nothing after it may happen. (This hardening was
+  // ported from app/actions/showings.ts:updateShowingStatus before that
+  // duplicate was deleted — wave 4 slice 2.)
+  const { data: approvedRows, error: approveErr } = await supabase
     .from("showing_requests")
     .update({
       seller_approved: true,
@@ -364,6 +413,12 @@ export async function approveShowingRequest(params: {
       updated_at: new Date().toISOString(),
     })
     .eq("id", params.requestId)
+    .select("id")
+
+  if (approveErr) return { success: false, error: approveErr.message }
+  if (!approvedRows || approvedRows.length === 0) {
+    return { success: false, error: "Showing request not found, or you do not have access to it." }
+  }
 
   // Compose scheduled_at from date + start_time
   const scheduledAt = new Date(
@@ -387,10 +442,22 @@ export async function approveShowingRequest(params: {
   }
 
   // INSERT showings — agent from session, not params
+  //
+  // brokerage_id from the LISTING record, resolved above at line 364 and proven
+  // to equal auth.brokerageId by the Forbidden guard at line 369. The showing is
+  // filed against `listing_id`, so the listing's tenant is the row's tenant —
+  // the record-resolved answer argued at app/actions/open-house.ts:481-498. This
+  // insert stamped nothing, while the sibling writers of this same table
+  // (tour-planner.ts:376, ai-showing-management.ts:346) both stamp it; the rows
+  // it produced were the ones no .eq("brokerage_id", …) reader could ever see.
+  //
+  // agent_id stays `approverAgentId`: agents(id), a disjoint id space from
+  // brokerages(id) — never bridge the two.
   const { data: showing, error: showErr } = await supabase
     .from("showings")
     .insert({
       listing_id:         params.listingId,
+      brokerage_id:       listing.brokerage_id,
       contact_id:         params.contactId ?? req.contact_id ?? fallbackSellerContactId, // real party or refuse — never a fake FK ref
       agent_id:           approverAgentId, // agents(id) — resolved + refused above when absent
       scheduled_at:       scheduledAt,
@@ -409,20 +476,40 @@ export async function approveShowingRequest(params: {
   if (showErr) return { success: false, error: showErr.message }
 
   // UPDATE converted_showing_id on request
-  await supabase
+  const { error: requestConvertErr } = await supabase
     .from("showing_requests")
     .update({ converted_showing_id: showing.id })
     .eq("id", params.requestId)
+  if (requestConvertErr) console.error(`[seller-showings] showing request NOT linked to the created showing: ${requestConvertErr.message}`)
+
+  // Agent calendar event — MERGED from the deleted
+  // app/actions/showings.ts:confirmShowing (§1 keep-one, lane E2 2026-08-28):
+  // that twin's one capability this survivor lacked. Best-effort: the approval
+  // above is already recorded and error-checked; a refused calendar row must
+  // not un-confirm a showing the buyer's agent has been told about.
+  {
+    const { error: calErr } = await supabase.from("calendar_events").insert({
+      brokerage_id:        auth.brokerageId,
+      entity_type:         "showing_request",
+      entity_id:           params.requestId,
+      event_type:          "showing",
+      start_at:            scheduledAt,
+      is_system_generated: true,
+    })
+    if (calErr) {
+      console.error("[seller-showings] approval calendar_events row refused (showing still approved):", calErr.message)
+    }
+  }
 
   // Kernel sub-event — brokerage_id / actor from session, not params
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id:   auth.brokerageId,
-    entity_type:    "listing_stage_machine",
-    entity_id:      params.listingId,
-    event_type:     "listing.showing.confirmed",
-    actor_user_id:  auth.userId,
+  await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId:   auth.brokerageId,
+    entityType:    "listing_stage_machine",
+    entityId:      params.listingId,
+    event:     "listing.showing.confirmed",
+    actorUserId:  auth.userId,
     metadata: { showing_id: showing.id, request_id: params.requestId },
-  })
+  }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   await processKernelEvent({
     event:      KernelEvent.SHOWING_SCHEDULED,
@@ -459,15 +546,27 @@ export async function suggestAlternativeTime(params: {
     return { success: false, error: "Forbidden" }
   }
 
-  const { error } = await supabase
+  const { data: rescheduledRows, error } = await supabase
     .from("showing_requests")
     .update({
       alternative_times: params.proposedTimes,
+      // Ported from the deleted app/actions/showings.ts:updateShowingStatus
+      // (wave 4 slice 2). Proposing new times used to write ONLY the
+      // alternative_times array and leave status = 'pending', so the request
+      // stayed in the "awaiting your decision" queue that getShowingRequests
+      // builds (`.eq("status","pending")`) and the agent was asked to decide on
+      // it again on every visit. 'needs_reschedule' is live-verified against
+      // showing_requests_status_check.
+      status:            "needs_reschedule",
       updated_at:        new Date().toISOString(),
     })
     .eq("id", params.requestId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!rescheduledRows || rescheduledRows.length === 0) {
+    return { success: false, error: "Showing request not found, or you do not have access to it." }
+  }
 
   revalidatePath(`/dashboard/listings/${params.listingId}/showings`)
   return { success: true }
@@ -497,7 +596,11 @@ export async function denyShowingRequest(params: {
     return { success: false, error: "Forbidden" }
   }
 
-  const { error } = await supabase
+  // `.select("id")` + a zero-row refusal, ported from the deleted
+  // app/actions/showings.ts:updateShowingStatus. Without it an update RLS
+  // refused came back with error === null and was reported as { success: true }
+  // — the agent was told the request was denied when nothing was written.
+  const { data: deniedRows, error } = await supabase
     .from("showing_requests")
     .update({
       status:       "denied",
@@ -505,8 +608,12 @@ export async function denyShowingRequest(params: {
       updated_at:   new Date().toISOString(),
     })
     .eq("id", params.requestId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!deniedRows || deniedRows.length === 0) {
+    return { success: false, error: "Showing request not found, or you do not have access to it." }
+  }
 
   revalidatePath(`/dashboard/listings/${params.listingId}/showings`)
   return { success: true }
@@ -538,13 +645,14 @@ export async function markShowingCompleted(params: {
   }
 
   // UPDATE showings.status
-  await supabase
+  const { error: completeErr } = await supabase
     .from("showings")
     .update({ status: "completed", completed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("id", params.showingId)
+  if (completeErr) return { success: false, error: `Could not mark the showing completed: ${completeErr.message}` }
 
   // INSERT showing_feedback_requests — brokerage from session
-  const { data: feedbackReq } = await supabase
+  const { data: feedbackReq, error: feedbackReqErr } = await supabase
     .from("showing_feedback_requests")
     .insert({
       brokerage_id: auth.brokerageId,
@@ -555,10 +663,11 @@ export async function markShowingCompleted(params: {
     .select("id, feedback_token")
     .single()
 
+  if (feedbackReqErr) return { success: false, error: `Showing completed, but the feedback request was not created: ${feedbackReqErr.message}` }
   if (!feedbackReq) return { success: false, error: "Failed to create feedback request" }
 
   // INSERT showing_feedback stub with same token
-  await supabase
+  const { error: feedbackStubErr } = await supabase
     .from("showing_feedback")
     .insert({
       brokerage_id:   auth.brokerageId,
@@ -566,16 +675,17 @@ export async function markShowingCompleted(params: {
       feedback_token: feedbackReq.feedback_token,
       request_id:     feedbackReq.id,
     })
+  if (feedbackStubErr) console.error(`[seller-showings] feedback stub NOT created (the token link will find no row): ${feedbackStubErr.message}`)
 
   // Direct lifecycle_events insert — session-derived identity
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id:   auth.brokerageId,
-    entity_type:    "listing_stage_machine",
-    entity_id:      params.listingId,
-    event_type:     "listing.showing.completed",
-    actor_user_id:  auth.userId,
+  await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId:   auth.brokerageId,
+    entityType:    "listing_stage_machine",
+    entityId:      params.listingId,
+    event:     "listing.showing.completed",
+    actorUserId:  auth.userId,
     metadata: { showing_id: params.showingId, feedback_token: feedbackReq.feedback_token },
-  })
+  }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   // Kernel notification (non-blocking)
   await processKernelEvent({
@@ -611,7 +721,7 @@ export async function getShowingFeedbackCards(listingId: string) {
   const { data } = await supabase
     .from("showing_feedback")
     .select(`
-      id, created_at, ai_summary,
+      id, created_at, ai_summary, request_id,
       presentation_rating, cleanliness_rating, price_opinion,
       meets_buyer_needs, offer_interest, overall_impression,
       buyer_interest_level, sentiment_score,
@@ -621,5 +731,23 @@ export async function getShowingFeedbackCards(listingId: string) {
     .eq("showings.listing_id", listingId)
     .order("created_at", { ascending: false })
 
-  return data ?? []
+  const rows = data ?? []
+
+  // showing_feedback.request_id -> showing_feedback_requests.id carries no
+  // live FK constraint (schema-fk-map.ts has no entry for it), so PostgREST
+  // cannot auto-embed it — joined by hand instead. Response-latency context
+  // (when the request went out vs when feedback actually landed) for the panel.
+  const requestIds = [...new Set(rows.map((r: any) => r.request_id).filter(Boolean))] as string[]
+  if (requestIds.length > 0) {
+    const { data: requests } = await supabase
+      .from("showing_feedback_requests")
+      .select("id, sent_at, sent_to_email")
+      .in("id", requestIds)
+    const byId = new Map((requests ?? []).map((r: any) => [r.id, r]))
+    for (const r of rows as any[]) {
+      r.request = r.request_id ? byId.get(r.request_id) ?? null : null
+    }
+  }
+
+  return rows
 }

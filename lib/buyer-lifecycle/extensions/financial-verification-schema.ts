@@ -91,14 +91,68 @@ export async function emitFinancialVerificationEvent(
     verification_notes: verificationNotes,
   }
 
+  // `activities.brokerage_id` is NOT NULL with no default (verified against the live
+  // schema), and this insert never supplied it — so EVERY financial-verification event
+  // ever emitted failed on a not-null violation and wrote nothing. The live table
+  // confirms it: zero rows of ANY of the five financial-verification activity_types,
+  // out of 24 activities total. This is the event `checkFinancialVerification` reads to
+  // decide whether a buyer is financially verified, and the event an admin/agent gate
+  // override writes, so nothing on either path could ever land.
+  //
+  // Same defect and same fix as m377 applied to logBuyerExecutionEvent: the tenant comes
+  // off the CONTACT the event is about — the entity the row is filed under, whose
+  // tenancy the activity inherits.
+  const { data: contact, error: contactError } = await supabase
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", contactId)
+    .maybeSingle()
+
+  // supabase-js RESOLVES a refused query, so `error` is destructured; an audit write
+  // that cannot establish its tenant must report failure, never claim success.
+  if (contactError) {
+    console.error("[5.1D] Error resolving tenant for verification event:", contactError)
+    return { success: false, error: contactError.message }
+  }
+
+  const brokerageId = (contact as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+  if (!brokerageId) {
+    const msg = `Cannot emit financial verification event: contact ${contactId} has no brokerage_id`
+    console.error("[5.1D]", msg)
+    return { success: false, error: msg }
+  }
+
+  // agent_user_id is an FK to users.id. Callers reach us with whatever id they hold, and
+  // on the portal lane that can be an auth id with no users row — disjoint id spaces.
+  // An unresolvable actor is recorded as no actor (the column is nullable) plus an
+  // explicit marker in metadata, rather than taking the whole audit row down.
+  let actorUserId: string | null = null
+  if (userId) {
+    const { data: actor, error: actorError } = await supabase
+      .from("users")
+      .select("id")
+      .eq("id", userId)
+      .maybeSingle()
+    if (actorError) {
+      console.error("[5.1D] Error resolving actor user:", actorError)
+    } else if (actor) {
+      actorUserId = (actor as { id: string }).id
+    }
+  }
+
   const { data, error } = await supabase
     .from("activities")
     .insert({
       activity_type: "buyer.financial.verification",
       entity_type: "contact",
       entity_id: contactId,
-      agent_user_id: userId,
-      metadata,
+      contact_id: contactId,
+      brokerage_id: brokerageId,
+      agent_user_id: actorUserId,
+      metadata: {
+        ...metadata,
+        ...(userId && !actorUserId ? { unresolved_actor_id: userId } : {}),
+      },
     })
     .select("id")
     .single()

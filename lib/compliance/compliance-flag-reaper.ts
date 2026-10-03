@@ -5,6 +5,7 @@
 // compliance officer, else broker/admins). A dropped compliance flag is the one
 // thing that must never sit silently. Pure SLA policy in compliance-flag-policy.ts.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { classifyStuckComplianceFlag, slaHoursForSeverity } from "./compliance-flag-policy"
 
@@ -72,7 +73,7 @@ export async function reapStuckComplianceFlags(
     const sev = (row.severity ?? "unspecified").toString()
     const vtype = (row.violation_type ?? "compliance").toString().replace(/_/g, " ")
     for (const userId of recipients) {
-      await svc.from("notifications").insert({
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id: userId,
         brokerage_id: brokerageId,
         type: "compliance_flag_stuck",
@@ -82,7 +83,7 @@ export async function reapStuckComplianceFlags(
         entity_id: row.id,
         priority: sev.toLowerCase() === "low" ? "medium" : "high",
         is_read: false,
-      })
+      }), { table: "notifications", flow: "compliance_flag_reaper_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     }
     result.escalated++
   }

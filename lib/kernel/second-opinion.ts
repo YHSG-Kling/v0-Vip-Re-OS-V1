@@ -34,5 +34,6 @@ export function secondOpinionFor(playType: string | null | undefined): SecondOpi
   return { needed: true, consult, reason: `${playType} is strategic — get ${consult}'s complementary read before acting` }
 }
 
-/** The full set of plays that trigger a huddle (for tests / docs). */
+/** The full set of plays that trigger a huddle.
+ *  @proofSeam runtime asks per play through secondOpinionFor; the enumeration exists so scripts/second-opinion-simulator.ts can sweep every strategic play and prove each names a real, complementary manager. */
 export const SECOND_OPINION_PLAYS = Object.keys(CONSULT_FOR_PLAY)

@@ -60,13 +60,73 @@ export async function GET(request: Request) {
     succeeded: number
     failed: number
     totalCost: number
+    /** Rows the FREE OSINT lane (keyless OSM + US Census) contributed to, at $0.
+     *  Reported alongside — never folded into — the paid counters, so the run
+     *  summary can never read free coverage as paid coverage. */
+    freeLaneRuns?: number
+    /** Rows where the paid person lane was REQUIRED but withheld (vendor budget).
+     *  Not successes: the person question went unanswered. */
+    paidWithheld?: number
+    leadsTopUp?: number
     error?: string
   }> = []
 
   for (const brokerage of brokerages) {
     try {
+      // ── LEAD-TRACK NET (wave 5) ───────────────────────────────────────────
+      // "enrichment also needs to still happen with raw leads" (owner).
+      //
+      // The create doors are hooked (event-reactor D-septies for the live one,
+      // direct hooks for the two that emit nothing), but hooks alone leave three
+      // populations un-enriched forever: every lead created before this shipped,
+      // every lead refused by the per-tenant backlog cap while a scrape surge
+      // drained, and every platform-origin lead that was PARKED (brokerage_id
+      // NULL) at promotion time and only gained a tenant later. This is the net
+      // under them — the same reason wave 3 revived the contact cron instead of
+      // retiring it.
+      //
+      // UNATTENDED DOOR, NOT A SESSION ONE. The tenant comes from the brokerages
+      // list read out of the database above; nothing here reads a tenant from the
+      // request, and CRON_SECRET is verified at the top. This is the pattern the
+      // contact lane's cron was rebuilt on after a session gate silently starved
+      // it of rows.
+      //
+      // BOUNDED: LEAD_NET_PER_BROKERAGE (25) candidates per tenant per run, and
+      // each candidate still crosses queueLeadEnrichment's full gate —
+      // identifier, freshness-by-evidence, pending-row idempotency, live-deal
+      // suppression, the backlog cap and the vendor-budget pre-flight. It only
+      // ENQUEUES; the drain below is what spends, and its per-tenant
+      // BATCH_SIZE is unchanged, so this pass cannot raise the spend ceiling.
+      let leadsTopUp = 0
+      try {
+        const { listLeadsNeedingEnrichment, queueLeadEnrichment, LEAD_NET_PER_BROKERAGE } =
+          await import('@/lib/enrichment/lead-enrichment-core')
+        const net = await listLeadsNeedingEnrichment({
+          brokerageId: brokerage.id,
+          limit: LEAD_NET_PER_BROKERAGE,
+        })
+        if (net.error) {
+          console.error(`[EnrichmentProcessor] ${brokerage.id} lead-net read failed:`, net.error)
+        }
+        for (const lead of net.leads) {
+          const q = await queueLeadEnrichment({
+            leadId: lead.id,
+            brokerageId: brokerage.id,
+            triggerType: 'lead_net',
+          })
+          if (q.queued) leadsTopUp++
+          // A refusal is not an error: 'backlog' means this tenant already has
+          // all the committed spend it is allowed, so stop asking this run.
+          else if (q.reason === 'backlog' || q.reason === 'budget') break
+        }
+      } catch (err) {
+        // The net is additive. A failure here must never stop the drain below,
+        // which is what actually completes work already paid for.
+        console.error(`[EnrichmentProcessor] ${brokerage.id} lead-net top-up failed:`, err)
+      }
+
       const summary = await processEnrichmentQueue(brokerage.id)
-      results.push({ brokerageId: brokerage.id, ...summary })
+      results.push({ brokerageId: brokerage.id, ...summary, leadsTopUp })
     } catch (err) {
       results.push({
         brokerageId: brokerage.id,
@@ -81,12 +141,20 @@ export async function GET(request: Request) {
 
   const totalProcessed = results.reduce((s, r) => s + r.processed, 0)
   const totalSucceeded = results.reduce((s, r) => s + r.succeeded, 0)
+  const totalFreeLane = results.reduce((s, r) => s + (r.freeLaneRuns ?? 0), 0)
+  const totalPaidWithheld = results.reduce((s, r) => s + (r.paidWithheld ?? 0), 0)
 
   await recordCronSuccessAction({
     context_id: contextId,
     records_processed: totalProcessed,
     output_count: totalSucceeded,
-    metadata: { brokerages: results.length, totalProcessed, totalSucceeded, duration_ms: Date.now() - startedAt },
+    metadata: {
+      brokerages: results.length, totalProcessed, totalSucceeded,
+      // Lane split, so a run that leaned on the free lane (or that withheld paid
+      // spend against an exhausted budget) is legible from the cron ledger alone.
+      totalFreeLane, totalPaidWithheld,
+      duration_ms: Date.now() - startedAt,
+    },
   })
 
   return NextResponse.json({

@@ -15,7 +15,8 @@ type Svc = ReturnType<typeof createServiceClient>
 export { prepareMagnetDeliverable }
 
 /** Record the magnet delivery as an auditable activity on the contact. Best-effort. */
-export async function recordMagnetDelivery(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function recordMagnetDelivery(
   args: { brokerageId: string; contactId: string; agentUserId?: string | null; magnetType: MagnetType; deliverable: MagnetDeliverable }, client?: Svc,
 ): Promise<{ ok: boolean }> {
   const svc = client ?? createServiceClient()
@@ -47,7 +48,7 @@ export async function deliverMagnet(
       const r = await evaluateOutbound({
         actorContext: { brokerageId: args.brokerageId, userId: args.agentUserId ?? "", role: "system" },
         journeyType: "buyer", persona: "other", messageType: "email", content,
-      })
+      }, { client: svc })
       return { allowed: r.allowed, violations: r.violations }
     } catch {
       return { allowed: true, violations: [] } // gate unreachable → the deterministic copy is already FH-safe

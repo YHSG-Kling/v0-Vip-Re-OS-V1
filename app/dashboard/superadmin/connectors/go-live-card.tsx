@@ -12,10 +12,13 @@ import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Rocket, ListChecks } from "lucide-react"
+import { Rocket, ListChecks, Webhook } from "lucide-react"
 import { getGoLiveReadinessAction, queueRenderPipelineProbeAction } from "@/app/actions/superadmin/go-live-readiness"
+import { checkStripeWebhookEventsAction, registerStripeWebhookEventsAction } from "@/app/actions/superadmin/stripe-webhook-events"
 import type { GoLiveReadiness } from "@/lib/platform/go-live-readiness"
 import type { LaunchChecklist } from "@/lib/platform/launch-checklist"
+import type { StripeWebhookRegistrationResult } from "@/lib/billing/stripe-webhook-registration"
+import type { StripeWebhookEndpoint } from "@/lib/billing/stripe-account-scope"
 
 const STATUS_BADGE: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
   ready: { label: "Ready", variant: "default" },
@@ -162,7 +165,72 @@ export function LaunchChecklistCard({ checklist }: { checklist: LaunchChecklist 
             )
           })}
         </ul>
+        {/* ON-DEMAND DRIFT CHECKS — a presence map cannot see these; each is a
+            real vendor read, run on click. The Stripe webhook-events item is the
+            first (wave 80A). */}
+        {checklist.driftChecks.length > 0 && (
+          <ul className="space-y-2 border-t pt-3">
+            {checklist.driftChecks.map((d) => (
+              <li key={d.key} className="text-xs">
+                <span className="font-medium">{d.capability}</span>
+                <span className="text-muted-foreground"> — {d.whatDrifts}</span>
+                {d.key === "stripe_webhook_events" && <StripeWebhookEventsDrift endpoint="tenant_billing" />}
+                {d.key === "stripe_vendor_webhook_events" && <StripeWebhookEventsDrift endpoint="vendor_marketplace" />}
+              </li>
+            ))}
+          </ul>
+        )}
       </CardContent>
     </Card>
+  )
+}
+
+/**
+ * THE WEBHOOK EVENTS DRIFT ITEM (wave 80A, owner: "go ahead with the add
+ * event to stripe webhook endpoint but remember we use stripe sdk"). Check =
+ * list the platform account's endpoint for /api/billing/webhook and diff its
+ * enabled_events against what the route handles; Register = write the UNION
+ * through stripe.webhookEndpoints.update. Publishes nothing else in Stripe.
+ * `endpoint` names WHICH of the platform account's two endpoints (lane 81E
+ * added the vendor marketplace one; its vocabulary is derived from the route's
+ * two data maps — lib/vendors/vendor-webhook-events.ts).
+ */
+function StripeWebhookEventsDrift({ endpoint }: { endpoint: StripeWebhookEndpoint }) {
+  const [busy, setBusy] = useState<"check" | "register" | null>(null)
+  const [r, setR] = useState<StripeWebhookRegistrationResult | { ok: false; reason: "forbidden"; error: string } | null>(null)
+  const run = async (mode: "check" | "register") => {
+    setBusy(mode)
+    setR(mode === "check" ? await checkStripeWebhookEventsAction(endpoint) : await registerStripeWebhookEventsAction(endpoint))
+    setBusy(null)
+  }
+  const read = r && r.ok ? r : null
+  const refusal = r && !r.ok ? r : null
+  return (
+    <div className="mt-1 space-y-1">
+      <div className="flex items-center gap-2">
+        <Button size="sm" variant="outline" className="h-6 px-2 text-xs" onClick={() => run("check")} disabled={busy !== null}>
+          <Webhook className="h-3 w-3 mr-1" />{busy === "check" ? "Checking…" : "Check webhook events"}
+        </Button>
+        {read && !read.plan.inSync && (
+          <Button size="sm" className="h-6 px-2 text-xs" onClick={() => run("register")} disabled={busy !== null}>
+            {busy === "register" ? "Registering…" : `Register ${read.plan.missing.length} missing event${read.plan.missing.length === 1 ? "" : "s"}`}
+          </Button>
+        )}
+        {read && (
+          <Badge variant={read.plan.inSync ? "default" : "destructive"}>{read.plan.inSync ? "In sync" : "Drift"}</Badge>
+        )}
+      </div>
+      {refusal && <div className="text-red-600">{refusal.error}</div>}
+      {read && (
+        <div className="text-muted-foreground">
+          {read.url} · {read.status}{read.livemode ? " · live" : " · test"} · before: {read.before.length} event{read.before.length === 1 ? "" : "s"}
+          {read.plan.wildcard ? " (wildcard — every event delivered)" : ""}
+          {read.plan.missing.length > 0 && <> · missing: {read.plan.missing.join(", ")}</>}
+          {read.plan.extra.length > 0 && <> · registered but unhandled: {read.plan.extra.join(", ")}</>}
+          {read.applied && <> · <span className="text-green-600">registered — now {read.after.length} events</span></>}
+          {read.otherEndpointUrls.length > 0 && <> · other endpoints on the account: {read.otherEndpointUrls.join(", ")}</>}
+        </div>
+      )}
+    </div>
   )
 }

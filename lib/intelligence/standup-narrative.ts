@@ -55,6 +55,21 @@ export function composeStandupScript(
     parts.push(`Your reapers caught ${plural(totalCaught, "stuck item")} before ${totalCaught === 1 ? "it" : "they"} could slip through the cracks.`)
   }
 
+  // RECEIPTS, spoken. `touches` is absent both when a manager sent nothing and when the
+  // provenance read was refused (manager-standup.ts), so an absent field says nothing out
+  // loud — the brief never claims "zero touches" on a ledger it could not read.
+  const totalTouches = lines.reduce((s, l) => s + (l.touches?.count ?? 0), 0)
+  if (totalTouches > 0) {
+    const channels = [...new Set(lines.flatMap((l) => l.touches?.channels ?? []))].sort()
+    const fromSequences = lines.reduce((s, l) => s + (l.touches?.sequenceCount ?? 0), 0)
+    parts.push(
+      `They sent ${totalTouches} ${totalTouches === 1 ? "touch" : "touches"}`
+      + (channels.length > 0 ? ` across ${channels.join(", ")}` : "")
+      + (fromSequences > 0 ? `, ${fromSequences} of ${totalTouches === 1 ? "it" : "them"} driven by an active sequence` : "")
+      + ".",
+    )
+  }
+
   // Name the managers that most need attention first, then the busiest.
   const ranked = [...lines].sort(
     (a, b) => (b.needs_human + b.reaped_24h) - (a.needs_human + a.reaped_24h) || b.activity_24h - a.activity_24h,

@@ -13,6 +13,8 @@
  *
  * Run: npx tsx scripts/whisper-simulator.ts  (npm run test:whisper)
  */
+import { readFileSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 import { whisperTierCapability, buildWhisperScript, produceAppointmentWhispers, type WhisperSynthesizer } from "../lib/intelligence/appointment-whisper"
 
 let passed = 0, failed = 0
@@ -52,6 +54,28 @@ async function main() {
     propensityReasons: [], savedHomes: 0, latestSave: null, managerTalk: [], upcomingVendorVisit: null,
   })
   check("script: sparse facts → NO fabricated sections", !sparse.includes("saved") && !sparse.includes("likely to move") && sparse.includes("Go get them."))
+
+  // Lane 78D, blind spot (2) — the TTS seam is METERED. Read as STRIPPED source
+  // (a tombstone is not a call site, CLAUDE.md §2), with a positive control.
+  console.log("\n[Layer 1b · the synthesizer seam books its spend to the tenant]")
+  const seamSrc = stripComments(readFileSync("lib/intelligence/appointment-whisper.ts", "utf8"))
+  const seamCall = /synthesizeSpeech\(\{[^}]*\bbrokerageId\b[^}]*\}\)/
+  check("WhisperSynthesizer's signature carries the tenant (script, voiceId, brokerageId)",
+    /WhisperSynthesizer\s*=\s*\(script: string, voiceId: string, brokerageId: string\)/.test(seamSrc))
+  check("realSynthesizer passes brokerageId into synthesizeSpeech — the call that meters through logVendorUsage", seamCall.test(seamSrc))
+  check("realSynthesizer REFUSES an empty tenant rather than synthesising unmetered", /if \(!brokerageId\) return null/.test(seamSrc))
+  check("CONTROL: the metered-call finder does not pass on the retired unmetered shape",
+    !seamCall.test('const res = await synthesizeSpeech({ text: withNaturalPauses(script, whisperModel), voiceId, modelId: whisperModel })'))
+  for (const [file, arg] of [
+    ["lib/intelligence/appointment-whisper.ts", "script"],
+    ["lib/kernel/commission-forecaster.ts", "summary.body"],
+    ["lib/kernel/fire-drills.ts", "composed.agentBrief"],
+  ] as const) {
+    const s = stripComments(readFileSync(file, "utf8"))
+    check(`${file}: every synthesizer(...) call names the brokerage it runs for`,
+      new RegExp(`synthesizer\\(${arg.replace(".", "\\.")}, voiceId, brokerageId\\)`).test(s)
+      && !/synthesizer\([^)]*voiceId\)\s*$/m.test(s))
+  }
 
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
     !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)

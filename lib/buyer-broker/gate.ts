@@ -103,57 +103,11 @@ export async function requireActiveBBA(params: {
   }
 }
 
-/**
- * Read variant that does NOT block — returns the current BBA state for
- * UI display ("BBA signed Mar 15, expires Sep 15"). Use in dashboards
- * and contact-detail surfaces.
- */
-export async function getActiveBBASummary(params: {
-  buyerContactId: string
-  agentId?:       string
-}): Promise<{
-  hasActive:      boolean
-  agreement?: {
-    id:                 string
-    agreement_type:     string
-    commission_text:    string
-    expiration_date:    string | null
-    signed_at:          string | null
-    signed_method:      string | null
-  }
-}> {
-  try {
-    const svc = createServiceClient()
-    let q = svc
-      .from("buyer_broker_agreements")
-      .select("id, agreement_type, commission_percentage, commission_flat_amount, commission_payer, expiration_date, signed_at, signed_method, agent_id")
-      .eq("buyer_contact_id", params.buyerContactId)
-      .eq("status", "active")
-    if (params.agentId) q = q.eq("agent_id", params.agentId)
-
-    const { data } = await q.maybeSingle()
-    if (!data) return { hasActive: false }
-
-    const pct = data.commission_percentage as number | null
-    const flat = data.commission_flat_amount as number | null
-    const payer = data.commission_payer as string
-    const commission_text =
-      pct  != null ? `${pct}% paid by ${payer}` :
-      flat != null ? `$${flat.toLocaleString()} paid by ${payer}` :
-      "Terms in document"
-
-    return {
-      hasActive: true,
-      agreement: {
-        id:                 data.id as string,
-        agreement_type:     data.agreement_type as string,
-        commission_text,
-        expiration_date:    data.expiration_date,
-        signed_at:          data.signed_at,
-        signed_method:      data.signed_method,
-      },
-    }
-  } catch {
-    return { hasActive: false }
-  }
-}
+// TOMBSTONE (orphan tranche 3): getActiveBBASummary deleted — a non-blocking
+// read variant no surface called. The live survivors split its job more
+// completely: requireActiveBBA above is the blocking gate (wired from
+// showings, self-book, voice tools and the AI-ISA converter), and
+// app/actions/buyer-broker-agreements.ts:getBBAForBuyerAction is the UI read
+// (wired from app/components/contact/buyer-broker-agreement-panel.tsx),
+// returning the FULL agreement history — active state included — where this
+// summary returned a single trimmed row.

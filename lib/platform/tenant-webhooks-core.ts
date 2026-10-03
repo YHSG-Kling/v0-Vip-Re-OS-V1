@@ -242,7 +242,14 @@ export function verifyWebhookSignature(
 // default cap the waits actually used are 1m/5m/30m/2h; the 12h rung applies if
 // the cap is ever raised.
 
-export const WEBHOOK_BACKOFF_SCHEDULE_MS: readonly number[] = [
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: WEBHOOK_BACKOFF_SCHEDULE_MS.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
+const WEBHOOK_BACKOFF_SCHEDULE_MS: readonly number[] = [
   60_000,        // 1m
   300_000,       // 5m
   1_800_000,     // 30m
@@ -289,5 +296,28 @@ export function validateTenantScopes(requested: readonly string[] | null | undef
   return { ok: true, scopes: Array.from(new Set(requested)) }
 }
 
-/** Tiers whose principals may self-serve mint API tokens. */
-export const TOKEN_SELF_SERVE_TIERS: ReadonlySet<string> = new Set(["brokerage", "multi_location"])
+/**
+ * Tiers whose principals may self-serve mint API tokens — ALL FOUR.
+ *
+ * OWNER, verbatim: "when we have the team and solo agent subscription tiers,
+ * those subscriptions get the same level of features as brokerages." Tiers
+ * differ by SEAT COUNT, not by feature set, so a token is not a thing a solo
+ * tenant is too small to have; the scopes it may mint (TENANT_MINTABLE_SCOPES
+ * above) and the brokerage it is pinned to are what keep it safe, and both are
+ * identical on every tier.
+ *
+ * ── FLAGGED FOR PRICING, NOT WITHHELD ───────────────────────────────────────
+ *
+ * This is the third of the three parity items with a real operating cost rather
+ * than a code gate: every self-serve token is an unattended API caller on the
+ * platform's own rate limits and support surface, and the cheapest plans are
+ * where the most of them will be minted. It ships open because the owner ruled
+ * it open; the cost is reported so it can be priced (or capped per tenant,
+ * which is a CAPACITY lever the ruling leaves available) rather than silently
+ * absorbed.
+ *
+ * Kept as a set rather than deleted: it is still the ONE place the answer
+ * lives, and a per-tier floor is one edit away if the owner prices it that way.
+ */
+export const TOKEN_SELF_SERVE_TIERS: ReadonlySet<string> =
+  new Set(["solo_agent", "team", "brokerage", "multi_location"])

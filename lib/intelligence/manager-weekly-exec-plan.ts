@@ -16,6 +16,7 @@
 // This file is PURE (no I/O) so it is fully unit-testable; the generator (loadWeeklyExecPlan) feeds it real
 // board data and the Command Center renders it.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { generateManagerWeeklyPnl, type ManagerWeeklyScorecard } from "@/lib/intelligence/manager-weekly-pnl"
@@ -366,11 +367,11 @@ export async function runWeeklyExecStandup(
   const priority = plan.oneAsk?.impactBand === "high" ? "high" : "medium"
   const body = `${plan.headline}${ask} Open the Command Center to action your ranked plan.`
   for (const uid of recipients) {
-    await supabase.from("notifications").insert({
+    await sentinelWrite(supabase, supabase.from("notifications").insert({
       user_id: uid, brokerage_id: brokerageId, type: "exec_standup",
       title: "🎯 Your AI Executive Standup is ready", body,
       entity_type: "brokerage", entity_id: brokerageId, priority, is_read: false,
-    }).then(undefined, () => {})
+    }), { table: "notifications", flow: "manager_weekly_exec_plan_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
   }
   return true
 }

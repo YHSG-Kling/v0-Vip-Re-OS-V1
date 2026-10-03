@@ -10,15 +10,17 @@
 
 import type { createServiceClient } from "@/lib/supabase/service"
 import { pickLeastLoadedWithHeadroom, tierMaxLoadForAgentCount } from "@/lib/kernel/capacity-guardian"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 type Svc = ReturnType<typeof createServiceClient>
 
 /** An agent's WORKING LOAD = active contacts + owned leads + active deals. */
-export async function agentWorkingLoad(supabase: Svc, brokerageId: string, agentId: string): Promise<number> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function agentWorkingLoad(supabase: Svc, brokerageId: string, agentId: string): Promise<number> {
   const [c, l, d] = await Promise.all([
     supabase.from("contacts").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("agent_id", agentId).is("deleted_at", null),
     supabase.from("leads").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("agent_id", agentId),
-    supabase.from("transactions").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("agent_id", agentId).in("status", ["active", "under_contract", "closing"]),
+    supabase.from("transactions").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("agent_id", agentId).in("status", [...TRANSACTION_STATUSES_OPEN]),
   ])
   return (c.count ?? 0) + (l.count ?? 0) + (d.count ?? 0)
 }
@@ -39,3 +41,9 @@ export async function selectAgentByCapacity(
   for (const id of agentIds) candidates.push({ agentId: id, load: await agentWorkingLoad(supabase, brokerageId, id) })
   return pickLeastLoadedWithHeadroom(candidates, maxLoad)
 }
+
+// TOMBSTONE (wave 87, lane 87A): `agentHasHeadroom` DELETED. Its only caller was the mailbox-owner
+// rung's CAPACITY fall-through, which the owner's ruling removed ("since the email was from the
+// agents' mailbox, it should lead back to the agent." — a busy agent is still the sender's agent).
+// The capacity test itself lives on in the pool pick: survivor
+// lib/kernel/capacity-guardian.ts pickLeastLoadedWithHeadroom, via selectAgentByCapacity above.

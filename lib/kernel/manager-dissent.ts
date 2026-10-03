@@ -231,9 +231,10 @@ export async function runManagerDissent(
     if (result.verdict === "veto") {
       // Machine veto — a Compliance Officer pre-flight HARD STOP (consent). Auditable, no forged
       // human approver, only while still proposed.
-      const { data: done } = await supabase.from("agent_client_messages")
+      const { data: done, error: vetoErr } = await supabase.from("agent_client_messages")
         .update({ status: "rejected", send_error: `vetoed by ${complianceLabel} pre-flight: ${result.objections[0]}` })
         .eq("id", p.id).eq("status", "proposed").select("id").maybeSingle()
+      if (vetoErr) console.error(`[manager-dissent] compliance veto NOT recorded on the proposed message: ${vetoErr.message}`)
       if (done) vetoes += 1
     } else if (result.verdict === "dissent" || complianceAdvisories.length > 0) {
       // The Compliance Officer leads the header when Fair Housing is involved (it owns that finding);
@@ -245,15 +246,17 @@ export async function runManagerDissent(
         ...coordination.map((o) => `- [${reviewerLabel}] ${o}`),
       ]
       const annotation = `\n\n${REVIEW_MARK} PEER REVIEW — ${who} DISSENTS:\n${lines.join("\n")}`
-      const { data: done } = await supabase.from("agent_client_messages")
+      const { data: done, error: dissentErr } = await supabase.from("agent_client_messages")
         .update({ rationale: `${p.rationale ?? ""}${annotation}` })
         .eq("id", p.id).eq("status", "proposed").select("id").maybeSingle()
+      if (dissentErr) console.error(`[manager-dissent] dissent annotation NOT recorded: ${dissentErr.message}`)
       if (done) dissents += 1
     } else {
       const annotation = `\n\n${REVIEW_MARK} Peer-reviewed by ${reviewerLabel} — no objections.`
-      const { data: done } = await supabase.from("agent_client_messages")
+      const { data: done, error: passErr } = await supabase.from("agent_client_messages")
         .update({ rationale: `${p.rationale ?? ""}${annotation}` })
         .eq("id", p.id).eq("status", "proposed").select("id").maybeSingle()
+      if (passErr) console.error(`[manager-dissent] peer-review annotation NOT recorded: ${passErr.message}`)
       if (done) passed += 1
     }
   }

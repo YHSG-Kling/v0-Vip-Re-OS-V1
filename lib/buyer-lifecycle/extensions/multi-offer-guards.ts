@@ -8,6 +8,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { getCurrentBuyerState } from "../lifecycle-logger"
+import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 
 export type OfferStatus = "submitted" | "accepted" | "rejected" | "withdrawn" | "expired" | "countered"
 
@@ -36,7 +37,7 @@ export async function emitOfferLifecycleEvent(params: {
   const { data, error } = await supabase
     .from("activities")
     .insert({
-      activity_type: "buyer.offer.lifecycle",
+      activity_type: OFFER_AUDIT_EVENT.LIFECYCLE,
       entity_type: "contact",
       entity_id: contactId,
       agent_user_id: userId,
@@ -74,7 +75,7 @@ export async function queryBuyerOffers(
   const { data: events, error } = await supabase
     .from("activities")
     .select("created_at, metadata")
-    .eq("activity_type", "buyer.offer.lifecycle")
+    .eq("activity_type", OFFER_AUDIT_EVENT.LIFECYCLE)
     .eq("entity_type", "contact")
     .eq("entity_id", contactId)
     .order("created_at", { ascending: false })
@@ -258,7 +259,7 @@ export async function emitOfferTerminalEvent(params: {
 
   // Agent task (correct location, no changes) — type: buyer.offer.terminal
   const { error } = await supabase.from("activities").insert({
-    activity_type: "buyer.offer.terminal",
+    activity_type: OFFER_AUDIT_EVENT.TERMINAL,
     entity_type: "contact",
     entity_id: contactId,
     agent_user_id: userId,

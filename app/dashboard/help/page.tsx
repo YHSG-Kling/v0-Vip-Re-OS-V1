@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
-import { searchHelp, listMyTickets } from "@/app/actions/support"
+import { searchHelp, listMyTickets, canRaisePlatformTicket } from "@/app/actions/support"
 import { HelpCenterClient } from "./help-client"
 
 export const dynamic = "force-dynamic"
@@ -16,10 +16,11 @@ export default async function DashboardHelpPage() {
   if (!ctx.isAuthenticated) redirect("/login")
 
   const supabase = await createClient()
-  const [{ data: brokerage }, articles, tickets] = await Promise.all([
+  const [{ data: brokerage }, articles, ticketsResult, canRaiseWithPlatform] = await Promise.all([
     supabase.from("brokerages").select("name, email, phone").eq("id", ctx.brokerageId ?? "").maybeSingle(),
     searchHelp(),
     listMyTickets(),
+    canRaisePlatformTicket(),
   ])
 
   return (
@@ -28,7 +29,12 @@ export default async function DashboardHelpPage() {
       supportEmail={(brokerage?.email as string | null) ?? null}
       supportPhone={(brokerage?.phone as string | null) ?? null}
       initialArticles={articles}
-      initialTickets={tickets}
+      // A REFUSED read is carried through as a refusal. listMyTickets used to
+      // return a bare array off `{ data }`, so "permission denied" arrived here
+      // as [] and rendered as "You haven't raised any tickets yet."
+      initialTickets={ticketsResult.ok ? ticketsResult.tickets : []}
+      ticketsError={ticketsResult.ok ? null : ticketsResult.error}
+      canRaiseWithPlatform={canRaiseWithPlatform}
     />
   )
 }

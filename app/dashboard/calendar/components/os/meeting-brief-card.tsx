@@ -1,12 +1,18 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { X, FileText, User, Target, MessageSquare, AlertCircle, CheckCircle2, Sparkles } from "lucide-react"
-import { prepareMeetingBrief } from "@/app/actions/ai-calendar-management"
+import { X, FileText, User, Target, MessageSquare, AlertCircle, CheckCircle2, Sparkles, CalendarClock, XCircle } from "lucide-react"
+// Lane E2 2026-08-28: updateAppointment + cancelAppointment WIRED — the
+// calendar could create appointments (quick-create panel) but nothing could
+// move or cancel one. Both actions are session-gated and tenant-pinned.
+import { prepareMeetingBrief, updateAppointment, cancelAppointment } from "@/app/actions/ai-calendar-management"
 import type { UnifiedCalendarEvent } from "./calendar-shell"
 
 interface MeetingBriefCardProps {
@@ -41,9 +47,50 @@ type MeetingBrief = {
 }
 
 export function MeetingBriefCard({ event, agentId, onClose }: MeetingBriefCardProps) {
+  const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [brief, setBrief] = useState<MeetingBrief | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Reschedule / cancel (calendar_events-source appointments only — showings,
+  // tours, open houses etc. have their own lifecycle actions).
+  const isAppointment = event.source === "calendar_events"
+  const [showReschedule, setShowReschedule] = useState(false)
+  const [newStart, setNewStart] = useState("")
+  const [mutating, setMutating] = useState(false)
+  const [mutateMsg, setMutateMsg] = useState<string | null>(null)
+
+  const handleReschedule = async () => {
+    if (!newStart) return
+    setMutating(true)
+    setMutateMsg(null)
+    const startIso = new Date(newStart).toISOString()
+    const durationMs = new Date(event.endAt).getTime() - new Date(event.startAt).getTime()
+    const endIso = new Date(new Date(newStart).getTime() + Math.max(durationMs, 15 * 60 * 1000)).toISOString()
+    const res = await updateAppointment(event.id, { start_time: startIso, end_time: endIso })
+    setMutating(false)
+    if ((res as any).success) {
+      setMutateMsg("Rescheduled")
+      setShowReschedule(false)
+      router.refresh()
+    } else {
+      setMutateMsg((res as any).error?.message ?? (res as any).error ?? "Reschedule failed")
+    }
+  }
+
+  const handleCancel = async () => {
+    if (!window.confirm("Cancel this appointment?")) return
+    setMutating(true)
+    setMutateMsg(null)
+    const res = await cancelAppointment(event.id)
+    setMutating(false)
+    if ((res as any).success) {
+      onClose()
+      router.refresh()
+    } else {
+      setMutateMsg((res as any).error?.message ?? (res as any).error ?? "Cancel failed")
+    }
+  }
 
   const handleGenerateBrief = (forceRegenerate = false) => {
     if (event.source !== "showings" && event.source !== "calendar_events") {
@@ -100,6 +147,55 @@ export function MeetingBriefCard({ event, agentId, onClose }: MeetingBriefCardPr
                 </div>
               )}
             </div>
+
+            {/* Appointment management — calendar_events only */}
+            {isAppointment && (
+              <div className="space-y-2">
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="flex-1 text-xs"
+                    onClick={() => { setShowReschedule((v) => !v); setMutateMsg(null) }}
+                    disabled={mutating}
+                  >
+                    <CalendarClock className="h-3.5 w-3.5 mr-1" />
+                    Reschedule
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="flex-1 text-xs text-destructive hover:bg-destructive/10"
+                    onClick={handleCancel}
+                    disabled={mutating}
+                  >
+                    <XCircle className="h-3.5 w-3.5 mr-1" />
+                    Cancel
+                  </Button>
+                </div>
+                {showReschedule && (
+                  <div className="space-y-2 p-2 border rounded-md">
+                    <Label htmlFor="new-start" className="text-xs">New start time</Label>
+                    <Input
+                      id="new-start"
+                      type="datetime-local"
+                      value={newStart}
+                      onChange={(e) => setNewStart(e.target.value)}
+                      className="h-8 text-xs"
+                    />
+                    <Button
+                      size="sm"
+                      className="w-full text-xs"
+                      onClick={handleReschedule}
+                      disabled={mutating || !newStart}
+                    >
+                      {mutating ? "Saving..." : "Save New Time"}
+                    </Button>
+                  </div>
+                )}
+                {mutateMsg && <p className="text-xs text-muted-foreground">{mutateMsg}</p>}
+              </div>
+            )}
 
             {!brief ? (
               <>

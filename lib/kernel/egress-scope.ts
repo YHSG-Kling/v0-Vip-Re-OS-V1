@@ -33,14 +33,25 @@ export interface EgressScope {
 }
 
 /** Role families. */
-const BROKERAGE_WIDE = new Set(["superadmin", "broker", "broker_admin"])
-const ADMIN = new Set(["admin"])
+// SCOPE LADDER (kept inline — collapsing to a shared admin predicate would move
+// roles between tiers). 'superadmin' removed: dead as users.user_type (0 live
+// rows; platform staff carry platform_role). 'broker_owner' added: storable,
+// owns the brokerage, and previously fell to the "own work" tier below.
+const BROKERAGE_WIDE = new Set(["broker", "broker_owner", "broker_admin"])
+// Lane 90A: 'compliance_officer' joins the admin tier on the owner's 2026-09-04
+// ruling (CLAUDE.md §4 — the sixth tenant-admin seat, TENANT_ADMIN_USER_TYPES).
+// Before this it fell through to "own work" below, so every scope this resolver
+// decides (Command Center, exception center, reporting, source analytics) showed
+// the compliance officer an empty personal slice of a brokerage they administer.
+// Same tier as admin: location-aware, brokerage-wide without one. NOT a move of
+// any other role between tiers.
+const ADMIN = new Set(["admin", "compliance_officer"])
 const TEAM_LEVEL = new Set(["team_lead"])
 
 /**
  * Resolve what a user oversees. Pure.
  *
- *  · superadmin / broker / broker_admin → the whole brokerage, ALL locations.
+ *  · broker / broker_owner / broker_admin → the whole brokerage, ALL locations.
  *  · admin WITH a locationId → that location only (a multi-location office admin).
  *  · admin WITHOUT a locationId → the whole brokerage (single-office admin).
  *  · team_lead → their team.

@@ -6,6 +6,15 @@ import { Mail } from "lucide-react"
 
 export type DirectMailPieceType = "postcard" | "letter" | "handwritten_letter" | "thank_you_note"
 
+/** Palette from the AI design suggestion (aiSuggestDesign colorScheme). Applied
+ *  best-effort as inline styles so the preview reflects the suggested design. */
+export interface MailPreviewColors {
+  primary?: string
+  background?: string
+  text?: string
+  accent?: string
+}
+
 interface Props {
   pieceType: DirectMailPieceType
   headline?: string
@@ -16,6 +25,7 @@ interface Props {
   agentLogoUrl?: string
   qrImageUrl?: string | null
   recipientName?: string
+  colors?: MailPreviewColors
 }
 
 const PIECE_LABELS: Record<DirectMailPieceType, string> = {
@@ -35,6 +45,7 @@ export function MailPiecePreview({
   agentLogoUrl,
   qrImageUrl,
   recipientName,
+  colors,
 }: Props) {
   return (
     <div className="space-y-3">
@@ -43,22 +54,26 @@ export function MailPiecePreview({
         <span>Preview · {PIECE_LABELS[pieceType]}</span>
       </div>
 
-      {pieceType === "postcard" && <PostcardPreview {...{ headline, body, cta, agentName, agentPhone, agentLogoUrl, qrImageUrl }} />}
-      {pieceType === "letter" && <LetterPreview {...{ headline, body, cta, agentName, agentPhone, agentLogoUrl, qrImageUrl, recipientName }} />}
+      {pieceType === "postcard" && <PostcardPreview {...{ headline, body, cta, agentName, agentPhone, agentLogoUrl, qrImageUrl, colors }} />}
+      {pieceType === "letter" && <LetterPreview {...{ headline, body, cta, agentName, agentPhone, agentLogoUrl, qrImageUrl, recipientName, colors }} />}
       {pieceType === "handwritten_letter" && <HandwrittenLetterPreview {...{ body, agentName, recipientName }} />}
       {pieceType === "thank_you_note" && <ThankYouNotePreview {...{ body, agentName, recipientName }} />}
     </div>
   )
 }
 
-function PostcardPreview({ headline, body, cta, agentName, agentPhone, agentLogoUrl, qrImageUrl }: Omit<Props, "pieceType" | "recipientName">) {
+function PostcardPreview({ headline, body, cta, agentName, agentPhone, agentLogoUrl, qrImageUrl, colors }: Omit<Props, "pieceType" | "recipientName">) {
   return (
     <Card className="overflow-hidden">
       <CardContent className="p-0">
+        {/* accent bar reflects the suggested design's accent/primary color */}
+        {(colors?.accent || colors?.primary) && (
+          <div className="h-1.5 w-full" style={{ backgroundColor: colors.accent || colors.primary }} />
+        )}
         {/* 4x6 aspect ratio (postcard) */}
-        <div className="aspect-[3/2] w-full bg-white p-6 flex flex-col gap-3 border">
-          <h3 className="text-lg font-bold text-gray-900">{headline}</h3>
-          <p className="text-xs text-gray-700 flex-1">{body}</p>
+        <div className="aspect-[3/2] w-full p-6 flex flex-col gap-3 border" style={{ backgroundColor: colors?.background || "#ffffff" }}>
+          <h3 className="text-lg font-bold" style={{ color: colors?.primary || "#111827" }}>{headline}</h3>
+          <p className="text-xs flex-1" style={{ color: colors?.text || "#374151" }}>{body}</p>
           <div className="flex items-end justify-between gap-3">
             <div className="text-[10px] text-gray-700">
               {agentLogoUrl && <Image src={agentLogoUrl} alt="logo" width={40} height={40} className="mb-1" />}

@@ -18,24 +18,83 @@ export interface NormalizedIdxListing {
   propertyType: string | null
   daysOnMarket: number | null
   photoUrl: string | null
+  /**
+   * The MLS listing number from the connected IDX feed. IDX Broker's raw field
+   * is `mlsID` — the alert engine already keys on that spelling
+   * (lib/property-alerts/idx-alert-search.ts), so it is confirmed, not guessed.
+   *
+   * It was previously only ever read as one of four fallbacks for `externalId`,
+   * which meant that whenever `listingID` was present — the normal case — the
+   * MLS number was silently discarded. A brokerage that connected IDX
+   * specifically to get MLS numbers got none.
+   *
+   * Kept SEPARATE from externalId on purpose: externalId is a feed-local
+   * identity used for dedupe, the MLS number is the industry identity a
+   * consumer and a compliance officer both recognise. Collapsing them loses
+   * the second.
+   */
+  mlsNumber: string | null
+  /**
+   * The feed's own status label for the row, VERBATIM (`propStatus` — e.g.
+   * "Active", "Pending", "Contingent"), lowercased. Not normalized to our
+   * vocabulary here: this is what the MLS said, and the CMA's comp provider is
+   * the only reader that has to decide what "pending" means for a comp set.
+   *
+   * Kept separate from `propertyType`, which used to fall back to `propStatus`
+   * and so occasionally reported a STATUS where a caller expected a TYPE.
+   */
+  status: string | null
 }
 
 export class IDXBrokerClient {
   private apiKey: string
   private baseUrl = "https://api.idxbroker.com"
 
-  constructor(apiKey?: string) {
-    this.apiKey = apiKey ?? process.env.IDXBROKER_API_KEY ?? ""
+  /**
+   * The key is REQUIRED, and there is deliberately no `process.env` fallback here.
+   *
+   * It used to read `apiKey ?? process.env.IDXBROKER_API_KEY ?? ""`, which made
+   * `new IDXBrokerClient()` a silently-working call: nine call sites across
+   * app/actions/{ai-predictions,calculators,lead-intelligence}.ts constructed the
+   * client with no argument and therefore ran every brokerage's property search on
+   * the PLATFORM'S feed — including brokerages that had connected their own IDX
+   * Broker account specifically to get their own board's data. The capability
+   * (`forBrokerage`, below) was built, correct, and unreached, and nothing failed,
+   * because the env fallback made the omission invisible.
+   *
+   * With the parameter required, that omission is a COMPILE error rather than a
+   * quiet cross-tenant read. `forBrokerage` remains the only place the platform
+   * env key is consulted, and it is consulted last — after the owner cascade — so
+   * "the platform's key" is a documented final tier instead of a default.
+   *
+   * An empty string is still accepted and still means "not configured"
+   * (`isConfigured()` is false, the search methods return empty and the surfaces
+   * report the data as unavailable) — that is the honest end state when neither
+   * the tenant nor the platform has a key, and it is NOT the same thing as a
+   * missing argument.
+   */
+  constructor(apiKey: string) {
+    this.apiKey = apiKey
     if (!this.apiKey) {
       console.warn("[IDXBroker] API key not configured")
     }
   }
 
   /**
-   * Multi-tenant factory: resolves the IDX Broker connection through the unified ownership
-   * cascade (agent → team → brokerage → platform, legacy fallback), then the IDXBROKER_API_KEY
-   * env as the platform default. Pass actor context to honor a per-agent/team IDX connection;
-   * brokerage-only callers keep their existing behavior.
+   * Multi-tenant factory — THE only supported way to obtain a client, and the only
+   * reader of IDXBROKER_API_KEY.
+   *
+   * Resolves the IDX Broker connection through the unified ownership cascade
+   * (agent → team → brokerage → platform, legacy fallback) FIRST, and only then
+   * falls back to the platform env key. That order is the owner ruling: IDX Broker
+   * is tenant-settable (lib/connections/scope.ts lists `idxbroker` under the
+   * per-tier-connectable `listing` domain), so a tenant that connected its own
+   * account must be served from its own account. Reversing these two lines
+   * silently restores the platform-feed bug.
+   *
+   * `actor.agentUserId` is a USERS.id — the id class scopeCascade files an
+   * "agent"-scope credential under. `agents.id` and `contacts.id` are DISJOINT
+   * spaces and are never interchangeable with it.
    */
   static async forBrokerage(
     brokerageId: string,
@@ -112,21 +171,24 @@ export class IDXBrokerClient {
     }
   }
 
-  async getProperties(filters: { city?: string; minPrice?: number; maxPrice?: number; status?: string } = {}) {
-    if (!this.apiKey) {
-      console.error("[IDXBroker] API key not configured — returning empty property list")
-      return []
-    }
-
-    try {
-      const response = await this.request<any>("/clients/featured")
-      if (!response.ok) return []
-      return response.data ?? []
-    } catch (error) {
-      console.error("[IDXBroker] Properties fetch error:", error)
-      return []
-    }
-  }
+  // getProperties(filters) was REMOVED — it was a degenerate duplicate of
+  // searchActiveListings below. It advertised {city, minPrice, maxPrice, status}
+  // and applied NONE of them: its whole body hit `/clients/featured` and returned
+  // the raw wire rows. So every caller — whatever it asked for — got the same
+  // array of the brokerage's featured ACTIVE listings. Two calls with different
+  // filters were indistinguishable, and `status: "sold"` returned active listings
+  // whose `soldPrice` field does not exist, so callers rendered `$undefined`.
+  //
+  // searchActiveListings serves the SAME endpoint but normalizes the rows into
+  // NormalizedIdxListing and really does filter (city/state/zip/price/beds/baths/
+  // limit). It is the survivor; every former getProperties caller now uses it.
+  //
+  // What this client CANNOT do, and no rewrite of it will: return SOLD comparable
+  // sales. IDX Broker's per-MLS search endpoint needs account-specific MLS ids and
+  // field mappings provisioned per brokerage, so a bare API key reaches only the
+  // brokerage's own IDX-enabled active/featured set. Sold/market figures come from
+  // the `market_data` observation table (writer: lib/intelligence/market-insight-
+  // generator.ts) or the CMA engine (lib/cma/ai-cma-orchestrator.ts) — never from here.
 
   /**
    * Normalized active-listing search for the external-listings router.
@@ -137,6 +199,13 @@ export class IDXBrokerClient {
    * IDX-enabled active/featured listings (`/clients/featured`) — the set the agent
    * has rights to surface — and narrow client-side by the caller's filters. Returns
    * a normalized shape; callers map to their own listing type.
+   *
+   * The rows are the brokerage's FEATURED set, which is overwhelmingly (but not
+   * by contract) live inventory — a feed that leaves a home featured after it
+   * goes under contract will return it here. `NormalizedIdxListing.status`
+   * carries the feed's own `propStatus` verbatim so a caller that needs to tell
+   * active from pending can, instead of assuming. No status FILTER is applied
+   * here: that would change what every existing caller receives.
    */
   async searchActiveListings(filters: {
     city?: string
@@ -181,9 +250,14 @@ export class IDXBrokerClient {
       bathrooms:  num(r.totalBaths ?? r.bathrooms ?? r.baths),
       squareFeet: num(r.sqFt ?? r.sqft ?? r.acres),
       yearBuilt:  num(r.yearBuilt),
-      propertyType: str(r.idxPropType ?? r.propType ?? r.propStatus),
+      // propStatus was in this fallback chain and is NOT a property type — a row
+      // with no idxPropType/propType reported "Active" as its property type. It
+      // has its own field now.
+      propertyType: str(r.idxPropType ?? r.propType),
       daysOnMarket: num(r.daysOnMarket ?? r.dom),
       photoUrl:   str(r.image?.["0"]?.url ?? r.image?.[0]?.url ?? r.thumbnail ?? r.photoURL),
+      mlsNumber:  str(r.mlsID ?? r.mlsNumber ?? r.listingID),
+      status:     str(r.propStatus ?? r.status)?.toLowerCase() ?? null,
     }))
 
     // Client-side narrowing.

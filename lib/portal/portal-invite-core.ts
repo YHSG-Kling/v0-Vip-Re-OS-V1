@@ -1,6 +1,11 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { CONVERSION_MARKER_COLUMN } from "@/lib/contact-promotion/conversion-finality"
+import {
+  QUALIFIED_CONTACT_STATUS,
+  PRE_QUALIFICATION_CONTACT_STATUSES,
+} from "@/lib/contact-promotion/qualification"
 import { randomUUID } from "crypto"
 
 /**
@@ -11,22 +16,141 @@ import { randomUUID } from "crypto"
  * path can invite cross-tenant.
  *
  * Email (Supabase OTP magic link) is sent only when the contact has an email AND has not opted out /
- * unsubscribed — TCPA/CAN-SPAM safe. The invite row + welcome message are always (re)created so an
- * opted-out contact still has a portal they can reach via an agent-shared link.
+ * unsubscribed — TCPA/CAN-SPAM safe. The invite ROW is always (re)created so an opted-out contact
+ * still has a portal they can reach via an agent-shared link.
+ *
+ * `sendMagicLink` IS A DELIVERY DECISION AND THE CALLER OWNS IT. On the conversion lanes it is
+ * FALSE: the ONE welcome email (lib/kernel/client-welcome.ts) carries the portal door, and a
+ * second OTP mail racing it is the duplicate the owner's "welcome email is the FIRST on
+ * conversion" ruling forbids. It stays TRUE where no agent-signed welcome will be produced
+ * (an agent's manual CRM invite, a home-value report, a contact type no manager picks
+ * up — see resolveWelcomeManagers) — there it is the only thing that tells the contact
+ * their portal exists.
  */
 export interface IssuePortalInviteParams {
   contactId:        string
   /** Authorized actor (users.id). Caller is responsible for having verified this actor. */
   invitedByUserId:  string
   sendMagicLink?:   boolean
+  /**
+   * THE AUTOMATIC DOOR'S RULE (owner, wave 94: "a portal invite is all part of the
+   * automation when a new contact or a converted contact is added"). Set by
+   * createSystemPortalInvite — every automated caller — and NOT by the agent's own
+   * CRM button. A contact with no email on file cannot sign in at all (the portal
+   * door is an emailed one-time code), so an automatic invite for them would be a
+   * row nobody can ever accept: it queues NOTHING and comes back as
+   * `reason: "no_email_on_file"` for the caller to REPORT. The agent can still add
+   * an email and press the CRM button, which is a person's deliberate choice.
+   */
+  requireEmail?:    boolean
+}
+
+/** Why an invite was not issued, machine-readable for the caller's report. */
+export type PortalInviteRefusal = "no_email_on_file"
+
+// ─── QUALIFICATION — MERGED HERE FROM app/api/contacts/qualify/route.ts ───────
+//
+// OWNER RULING, verbatim:
+//
+//   "invitation from a lead converting to a contact makes sense for status
+//    qualified but any other new contacts coming in from forms, lead magnets,
+//    other real estate sites, etc. haven't been qualified yet."
+//
+// So `contacts.status = 'qualified'` is EARNED, and the only thing that earns it
+// is a LEAD CONVERSION standing behind the contact. An invite issued for a
+// contact that arrived from a web form, a lead magnet, an IDX/portal
+// registration, a CSV import, a manual CRM add or any third-party real-estate
+// site leaves the status exactly where that entry point put it.
+//
+// DERIVED FROM THE RECORD, NEVER FROM A CALLER FLAG (CLAUDE.md §4). The question
+// "did a lead convert into this contact?" is answered by `leads.contact_id` —
+// THE one conversion marker, spelled once at
+// lib/contact-promotion/conversion-finality.ts:50 and imported here rather than
+// re-spelled (§6). It is the only marker every one of the three converters
+// writes. Both invite doors (the agent's manual CRM invite and the system
+// conversion invite) therefore agree, because both are reading the same row
+// rather than trusting whichever button was pressed.
+//
+// FAIL CLOSED. A refused or throwing conversion read leaves the status ALONE.
+// "Nobody checked" must never render as "checked and qualified".
+//
+// NEVER A DOWNGRADE, AND NEVER A REWIND. The stamp is applied only to a contact
+// still sitting at a pre-qualification status; anything later already claimed the
+// row. Both the earned status and that set are spelled ONCE, in
+// lib/contact-promotion/qualification.ts, and imported here — the same module the
+// three CREATE paths use to refuse a forged 'qualified' (§6).
+
+/**
+ * Stamp `contacts.status = 'qualified'` IFF a lead converted into this contact.
+ *
+ * Returns true only when this call actually moved the row. Every other outcome —
+ * no originating lead, an already-advanced status, a refused read, a refused
+ * write — returns false and leaves the contact exactly as it was. NEVER THROWS
+ * and never fails the invite: the portal grant does not depend on the stamp.
+ */
+async function stampQualifiedIfLeadConverted(
+  supabase: ReturnType<typeof createServiceClient>,
+  contactId: string,
+  brokerageId: string,
+): Promise<boolean> {
+  try {
+    // supabase-js RESOLVES refusals — the error is READ, never dropped (§3).
+    const { data: originLeads, error: leadError } = await supabase
+      .from("leads")
+      .select("id")
+      .eq(CONVERSION_MARKER_COLUMN, contactId)
+      .eq("brokerage_id", brokerageId)
+      .limit(1)
+
+    if (leadError) {
+      console.error(
+        `[portal-invite] conversion check for contact ${contactId} was REFUSED (${leadError.message}) — ` +
+          `status left UNCHANGED rather than stamped '${QUALIFIED_CONTACT_STATUS}' off an unread record.`,
+      )
+      return false
+    }
+    // No lead converted into this contact: it came from a form, a lead magnet, an
+    // IDX/portal registration, an import, a manual add or a third-party site. Per
+    // the ruling it has not been qualified — leave the entry status alone.
+    if (!originLeads || originLeads.length === 0) return false
+
+    // An UPDATE that matches nothing also resolves (§3) — `.select()` and COUNT.
+    // Here zero rows is NOT a failure: it means the contact had already moved off
+    // its entry status, and walking that back would be the rewind above.
+    const { data: stamped, error: stampError } = await supabase
+      .from("contacts")
+      .update({ status: QUALIFIED_CONTACT_STATUS, updated_at: new Date().toISOString() })
+      .eq("id", contactId)
+      .eq("brokerage_id", brokerageId)
+      .in("status", PRE_QUALIFICATION_CONTACT_STATUSES)
+      .select("id")
+
+    if (stampError) {
+      console.error(
+        `[portal-invite] qualification stamp REFUSED for contact ${contactId}:`,
+        stampError.message,
+      )
+      return false
+    }
+    return (stamped?.length ?? 0) > 0
+  } catch (e: any) {
+    console.error(
+      `[portal-invite] qualification stamp threw for contact ${contactId} (${e?.message ?? "unknown error"}) — ` +
+        `status left unchanged; the portal grant is unaffected.`,
+    )
+    return false
+  }
 }
 
 export async function issuePortalInvite(
   params: IssuePortalInviteParams,
-): Promise<{ success: boolean; inviteId?: string; emailSent?: boolean; error?: string }> {
-  const { contactId, invitedByUserId, sendMagicLink = false } = params
+): Promise<{ success: boolean; inviteId?: string; emailSent?: boolean; error?: string; reason?: PortalInviteRefusal }> {
+  const { contactId, invitedByUserId, sendMagicLink = false, requireEmail = false } = params
   const supabase = createServiceClient()
 
+  // A CONTACT, NEVER A LEAD. The read is on `contacts` by its PRIMARY key, and
+  // portal_contact_invites.contact_id FKs contacts(id) (verified live) — a leads.id
+  // resolves to no row here and is refused before anything is written.
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
     .select("id, email, first_name, contact_type, brokerage_id, agent_id, email_opt_out, email_unsubscribed")
@@ -34,6 +158,13 @@ export async function issuePortalInvite(
     .maybeSingle()
   if (contactError || !contact) return { success: false, error: "Contact not found" }
   if (!contact.brokerage_id)    return { success: false, error: "Contact has no brokerage" }
+  if (requireEmail && !String(contact.email ?? "").trim()) {
+    return {
+      success: false,
+      reason:  "no_email_on_file",
+      error:   "Contact has no email on file — no portal invite was queued (the portal door is an emailed code). Add an email, then invite from the CRM.",
+    }
+  }
 
   // Defense-in-depth tenant check: the actor must belong to the contact's brokerage. Resolve the
   // actor's brokerage from users.brokerage_id, falling back to agents.brokerage_id (some agent users
@@ -61,16 +192,20 @@ export async function issuePortalInvite(
 
   // Upsert the invite row (reuse/reset existing; revoked stays blocked).
   let inviteId: string
-  const { data: existing } = await supabase
+  const { data: existing, error: existingError } = await supabase
     .from("portal_contact_invites")
     .select("id, status, expires_at")
     .eq("contact_id", contactId)
     .maybeSingle()
+  // A refused read is not "no invite yet" (§3): reading it as absent would try a
+  // second insert the UNIQUE(contact_id) constraint refuses anyway.
+  if (existingError) return { success: false, error: `Could not read the existing invite: ${existingError.message}` }
   if (existing) {
     if (existing.status === "revoked") return { success: false, error: "Invite revoked for this contact" }
     if (new Date(existing.expires_at) < now) {
-      await supabase.from("portal_contact_invites")
+      const { error: reviveErr } = await supabase.from("portal_contact_invites")
         .update({ status: "pending", expires_at: newExpiry }).eq("id", existing.id)
+      if (reviveErr) return { success: false, error: `Could not renew the expired invite: ${reviveErr.message}` }
     }
     inviteId = existing.id
   } else {
@@ -82,9 +217,33 @@ export async function issuePortalInvite(
         status: "pending", expires_at: newExpiry, invited_at: now.toISOString(),
       })
       .select("id").single()
-    if (insErr || !created) return { success: false, error: insErr?.message ?? "Failed to create invite" }
-    inviteId = created.id
+    if ((insErr as { code?: string } | null)?.code === "23505") {
+      // ONE INVITE PER CONTACT, ENFORCED BY THE DATABASE (portal_contact_invites_contact_unique,
+      // UNIQUE(contact_id), verified live). Two automatic doors firing for the same contact
+      // at once — the new-contact command and a conversion — both miss the read above; the
+      // loser's insert is refused 23505. That is the idempotency WORKING, not a failure:
+      // re-read the winner's row and carry on with it.
+      const { data: winner, error: winnerError } = await supabase
+        .from("portal_contact_invites").select("id, status").eq("contact_id", contactId).maybeSingle()
+      if (winnerError || !winner) return { success: false, error: winnerError?.message ?? "Invite raced and could not be re-read" }
+      if (winner.status === "revoked") return { success: false, error: "Invite revoked for this contact" }
+      inviteId = winner.id
+    } else if (insErr || !created) {
+      return { success: false, error: insErr?.message ?? "Failed to create invite" }
+    } else {
+      inviteId = created.id
+    }
   }
+
+  // Qualification (owner ruling — see stampQualifiedIfLeadConverted above). AFTER
+  // the grant, deliberately: the `portal_contact_invites` row is the access, and a
+  // status stamp must never be able to cost a contact their portal. The return
+  // value is not propagated because the READER of this write is the
+  // `contacts.status` column itself — read live at app/actions/briefing-actions.ts:470,
+  // app/actions/ai-lead-nurturing.ts:442, app/dashboard/listings/[id]/lifecycle/page.tsx:325
+  // and counted as converted at app/api/contacts/analytics/route.ts:58 — and a
+  // result field nobody reads is the very orphan §1 exists to prevent.
+  await stampQualifiedIfLeadConverted(supabase, contactId, brokerageId)
 
   // Compliance-gated magic-link email.
   let emailSent = false
@@ -97,24 +256,34 @@ export async function issuePortalInvite(
     })
     if (!otpErr) {
       emailSent = true
-      await supabase.from("portal_contact_invites").update({ status: "sent" }).eq("id", inviteId)
+      const { error: sentStampErr } = await supabase.from("portal_contact_invites").update({ status: "sent" }).eq("id", inviteId)
+      if (sentStampErr) console.error(`[portal-invite] invite email sent but NOT marked sent: ${sentStampErr.message}`)
     }
   }
 
-  // Welcome message — direction MUST be 'agent_to_client' (CHECK constraint) and agent_id is a NOT
-  // NULL FK to *agents* (contacts.agent_id is the agents.id). Skip if the contact has no assigned
-  // agent (the NOT NULL FK would otherwise drop the row).
-  if (contact.agent_id) {
-    void supabase.from("client_portal_messages").insert({
-      contact_id:   contactId,
-      brokerage_id: brokerageId,
-      agent_id:     contact.agent_id,
-      direction:    "agent_to_client",
-      body:         `Hi ${contact.first_name ?? "there"}, your client portal is ready. Log in to track your journey.`,
-      channel:      "portal",
-      read:         false,
-    })
-  }
+  // ─── TOMBSTONE (orphan doctrine §1.1) ──────────────────────────────────────
+  // REMOVED: the hardcoded generic portal greeting this function used to insert
+  // into `client_portal_messages` —
+  //   "Hi ${first_name}, your client portal is ready. Log in to track your journey."
+  //
+  // SURVIVOR: lib/kernel/client-welcome.ts::writePortalWelcomeCard (the
+  // `transparency_updates` card the ONE welcome writes, carrying the agent-signed
+  // situational copy AND the personal video URL the portal home feed plays).
+  //
+  // WHY IT HAD TO GO, not merely why it could. OWNER RULING: "we only sent content
+  // to leads and contacts that are personalized and situation, them first
+  // messaging." That sentence is exactly one line long and this greeting broke it
+  // in every clause — no situation, no agent voice, brokerage-first framing, and
+  // it was the FIRST thing a converted contact saw. Two spellings of "the portal
+  // greeting" also put the welcome on two rails (client_portal_messages and
+  // transparency_updates), which is the §6 defect that lets a scorer match neither.
+  //
+  // MEASUREMENT: `client_portal_messages` held ZERO rows on hrvaqgvukzxfskkcrwbt
+  // when this was removed, so nothing live is losing a message it already had.
+  //
+  // The ACCESS GRANT above is deliberately untouched: the invite row IS the portal,
+  // it is still created immediately and unconditionally, and no contact can lose
+  // portal access because a video render, an email, or a greeting failed.
 
   return { success: true, inviteId, emailSent }
 }
@@ -169,10 +338,41 @@ export async function ensureContactPortalUser(
     const svc = createServiceClient()
 
     // Idempotency gate: users.id === auth uid is the identity invariant.
-    const { data: existing } = await svc
-      .from("users").select("id").eq("id", authUserId).maybeSingle()
+    const { data: existing, error: existingError } = await svc
+      .from("users").select("id, user_type, brokerage_id, is_contact").eq("id", authUserId).maybeSingle()
+    if (existingError) return { ensured: false, created: false }
 
     let created = false
+    // THE TRIGGER GOT THERE FIRST (wave 93, lane 93D — found live). A portal client's
+    // first OTP sign-in fires on_auth_user_created → handle_new_auth_user, which —
+    // the OTP carrying no metadata — seats the new uid as user_type 'agent' with NO
+    // brokerage and is_contact false. This function then saw a row, skipped its own
+    // insert, and the client stayed an 'agent' nobody's brokerage owns. Adopt exactly
+    // that bare trigger-default shape (never a row with a brokerage, never a row
+    // already marked contact, never one that owns an agents row) as this contact.
+    if (existing && existing.user_type === "agent" && !existing.brokerage_id && existing.is_contact !== true) {
+      const { data: agentSeat, error: agentSeatError } = await svc
+        .from("agents").select("id").eq("user_id", authUserId).limit(1).maybeSingle()
+      if (!agentSeatError && !agentSeat) {
+        await sentinelWrite(
+          svc,
+          svc.from("users")
+            .update({
+              user_type:    "contact",
+              role:         "contact",
+              brokerage_id: contact.brokerage_id,
+              is_contact:   true,
+              status:       "active",
+              ...(contact.first_name ? { first_name: contact.first_name } : {}),
+              ...(contact.last_name ? { last_name: contact.last_name } : {}),
+              updated_at:   new Date().toISOString(),
+            })
+            .eq("id", authUserId)
+            .is("brokerage_id", null),
+          { table: "users", flow: "portal_contact_user_adopt", brokerageId: contact.brokerage_id },
+        )
+      }
+    }
     if (!existing) {
       const email = (contact.email ?? authEmail ?? "").trim().toLowerCase()
       // Checked insert (NOT upsert): existence was checked above, and an id
@@ -182,8 +382,9 @@ export async function ensureContactPortalUser(
         svc.from("users").insert({
           id:           authUserId,
           email:        email || null,
-          first_name:   contact.first_name ?? null,
-          last_name:    contact.last_name ?? null,
+          // users.first_name / last_name are NOT NULL (live): empty, never fabricated.
+          first_name:   contact.first_name ?? "",
+          last_name:    contact.last_name ?? "",
           user_type:    "contact",
           role:         "contact",
           brokerage_id: contact.brokerage_id,
@@ -197,13 +398,31 @@ export async function ensureContactPortalUser(
 
     // Link-back stamp: only when unset (never clobber an existing link), and the
     // has_login flag so roster/portal-state reads agree with reality.
+    //
+    // `login_created_at` MERGED HERE from app/api/contacts/qualify/route.ts:77,
+    // which was the tree's ONLY writer of the column — deleting that route without
+    // this line would have left a written-nowhere column, which is the orphan §1
+    // forbids. It belongs in THIS statement and no other: `has_login` becomes true
+    // exactly here, so the flag and its timestamp are set in one write and can
+    // never disagree. Stamped only when EMPTY — a re-ensure must not keep pushing
+    // "when did this contact get a login?" forward to today.
+    //
+    // The moment recorded is HONESTER than the route's was. The route stamped it
+    // when it minted an auth user the contact had not used (and could not use: the
+    // password was console.logged and no mail was ever sent), whereas the ensure
+    // runs on the contact's first AUTHENTICATED portal hit — the point at which a
+    // login demonstrably exists.
     const { data: c } = await svc
-      .from("contacts").select("contact_user_id, has_login").eq("id", contact.id).maybeSingle()
-    if (c && (!c.contact_user_id || !c.has_login)) {
+      .from("contacts").select("contact_user_id, has_login, login_created_at").eq("id", contact.id).maybeSingle()
+    if (c && (!c.contact_user_id || !c.has_login || !c.login_created_at)) {
       await sentinelWrite(
         svc,
         svc.from("contacts")
-          .update({ contact_user_id: c.contact_user_id ?? authUserId, has_login: true })
+          .update({
+            contact_user_id:  c.contact_user_id ?? authUserId,
+            has_login:        true,
+            login_created_at: c.login_created_at ?? new Date().toISOString(),
+          })
           .eq("id", contact.id),
         { table: "contacts", flow: "portal_contact_user_ensure", brokerageId: contact.brokerage_id },
       )
@@ -226,11 +445,60 @@ export async function createSystemPortalInvite(params: {
   contactId:   string
   agentUserId: string
   sendMagicLink?: boolean
-}): Promise<{ success: boolean; inviteId?: string; emailSent?: boolean; error?: string }> {
+}): Promise<{ success: boolean; inviteId?: string; emailSent?: boolean; error?: string; reason?: PortalInviteRefusal }> {
   if (!params.agentUserId) return { success: false, error: "agentUserId required" }
   return issuePortalInvite({
     contactId:       params.contactId,
     invitedByUserId: params.agentUserId,
     sendMagicLink:   params.sendMagicLink ?? true,
+    // Every caller of THIS function is automation (conversion, new-contact command,
+    // warm capture, the welcome package, home-value) — the wave-94 rule applies.
+    requireEmail:    true,
   })
 }
+
+// ─── TOMBSTONE (orphan doctrine §1.1) ────────────────────────────────────────
+//
+// DELETED: app/api/contacts/qualify/route.ts (POST) — the SECOND portal-login
+// door. It fetched the contact, minted an auth user, and stamped
+// `contacts.status='qualified'`, `contact_user_id`, `has_login` and
+// `login_created_at` in one write.
+//
+// SURVIVOR: this file.
+//   · the qualification stamp      → stampQualifiedIfLeadConverted
+//                                    (lib/portal/portal-invite-core.ts:77), called from
+//                                    issuePortalInvite (lib/portal/portal-invite-core.ts:204)
+//   · `login_created_at`           → ensureContactPortalUser
+//                                    (lib/portal/portal-invite-core.ts:349)
+//   · `contact_user_id`/`has_login`→ ensureContactPortalUser, which already held both
+//   · the invite/portal grant      → issuePortalInvite (lib/portal/portal-invite-core.ts:131)
+// Five wired callers reach the survivor through
+// app/actions/portal-invites.ts:createPortalInviteForContact and
+// lib/contact-promotion/portal-access.ts:grantPortalAccessForPromotedContact.
+//
+// WHY IT HAD TO GO, not merely why it could. Everything it did that the survivor
+// did NOT do was a defect, VERIFIED in the source before deletion:
+//   1. It generated a 16-char plaintext temporary password and printed it to the
+//      server log (route.ts:47, :137). A credential in a log line is a credential
+//      leaked to everyone with log access.
+//   2. It never sent that password anywhere. `sendWelcomeEmail` was a `console.log`
+//      with `// TODO: Replace with actual email provider` (route.ts:143), so every
+//      account it created was unreachable by the person it was created for.
+//   3. It called `auth.admin.createUser` and wrote NO `public.users` row — the one
+//      thing ensureContactPortalUser exists to guarantee ("portal clients ARE
+//      users", above). Its logins were therefore invisible to staff rosters and
+//      not impersonable, because impersonation targets users.id.
+//   4. It stamped 'qualified' on ANY contact whose id was posted, which is exactly
+//      what the owner's ruling forbids for a contact that arrived from a form, a
+//      lead magnet, an IDX/portal registration, an import or a manual add.
+//
+// NO CALLER COULD EXIST, proven rather than assumed (§1 "unreferenced is not
+// dead"): the route opened with `requireAuth(supabase)` on a COOKIE-BOUND server
+// client (lib/kernel/api-auth.ts:54) — no API key, no bearer token, no webhook
+// signature — so nothing outside a logged-in browser session of this app could
+// ever reach it. Inside the tree it had zero callers: the only occurrences of the
+// string "contacts/qualify" anywhere in the repo were two BASELINE files already
+// recording it as unwired (scripts/orphan-export-baseline.json:1200,
+// scripts/opposite-missing-baseline.json:701). It appears in no `vercel.json`
+// cron, in no lib/kernel/cron-dispatch.ts route, and in no `${baseUrl}/api/…`
+// self-call.

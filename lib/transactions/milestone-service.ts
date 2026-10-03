@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { CRITICAL_MILESTONES } from "./transaction-stages"
 import { resolveMilestoneIdentity } from "./milestone-identity"
@@ -43,11 +44,23 @@ export async function seedJourneyMilestones(
 ): Promise<void> {
   const supabase = createServiceClient()
 
-  const { data: existing } = await supabase
+  // A REFUSED EXISTENCE CHECK MUST NOT READ AS "NOTHING IS THERE". supabase-js
+  // RESOLVES a denied query, so `const { data }` alone turns "I could not look"
+  // into "the deal has no milestones" — and the only thing this read guards is
+  // whether to seed. Failing open here does not lose data, it DUPLICATES the
+  // deal's entire journey, which is worse: two rows per milestone, each
+  // completable independently, and a portal timeline that never reads done.
+  const { data: existing, error: existingError } = await supabase
     .from("transaction_milestones")
     .select("milestone_name, milestone_type")
     .eq("transaction_id", transactionId)
     .eq("brokerage_id", brokerageId)
+  if (existingError) {
+    throw new Error(
+      `[seedJourneyMilestones] could not read the existing milestones for transaction ${transactionId} ` +
+      `(${existingError.message}) — refusing to seed, because seeding on top of an unreadable journey duplicates it.`,
+    )
+  }
 
   const existingIds = new Set<string>()
   for (const m of (existing ?? []) as Array<{ milestone_name: string; milestone_type: string | null }>) {
@@ -93,11 +106,19 @@ export async function ensureRequiredMilestones(
   // for the rows we insert because completion code (cda-workflow, title watchtower,
   // milestone-service.completeMilestone) matches these by milestone_name. Identity,
   // visibility, and deadline metadata all come from the single milestone catalog.
-  const { data: existing } = await supabase
+  // Same rule as seedJourneyMilestones: this read decides whether a required
+  // milestone is ADDED, so a refusal that reads as "absent" duplicates it.
+  const { data: existing, error: existingError } = await supabase
     .from("transaction_milestones")
     .select("id, milestone_name, milestone_type, target_date")
     .eq("transaction_id", transactionId)
     .eq("brokerage_id", brokerageId)
+  if (existingError) {
+    throw new Error(
+      `[ensureRequiredMilestones] could not read the existing milestones for transaction ${transactionId} ` +
+      `(${existingError.message}) — refusing to add, because adding on top of an unreadable set duplicates it.`,
+    )
+  }
 
   const existingById = new Map<string, { rowId: string; target_date: string | null }>()
   for (const m of (existing ?? []) as Array<{ id: string; milestone_name: string; milestone_type: string | null; target_date: string | null }>) {
@@ -139,11 +160,10 @@ export async function ensureRequiredMilestones(
   }
 
   for (const fill of dateFills) {
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("transaction_milestones")
       .update({ target_date: fill.date, updated_at: now })
-      .eq("id", fill.rowId)
-      .then(() => null, () => null)
+      .eq("id", fill.rowId), { table: "transaction_milestones", flow: "transaction_milestones_write", reason: "target-date backfill for display; re-derived on the next milestone read" })
   }
 
   // Mirror deadline-bearing milestones into transaction_deadlines so the
@@ -178,18 +198,26 @@ const DEADLINE_BEARING: Array<{
   calendarEventType: e.deadline.calendarEventType,
 }))
 
-export async function ensureTransactionDeadlines(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function ensureTransactionDeadlines(
   transactionId: string,
   brokerageId: string,
   contractTerms: Record<string, string | Date>
 ): Promise<void> {
   const supabase = createServiceClient()
 
-  const { data: existing } = await supabase
+  // Same class: this guards whether a deadline row is inserted.
+  const { data: existing, error: existingError } = await supabase
     .from("transaction_deadlines")
     .select("deadline_type")
     .eq("transaction_id", transactionId)
     .eq("brokerage_id", brokerageId)
+  if (existingError) {
+    throw new Error(
+      `[ensureTransactionDeadlines] could not read the existing deadlines for transaction ${transactionId} ` +
+      `(${existingError.message}) — refusing to insert duplicates over an unreadable set.`,
+    )
+  }
 
   const existingTypes = new Set((existing ?? []).map((d: any) => d.deadline_type))
   const now = new Date().toISOString()
@@ -218,12 +246,23 @@ export async function ensureTransactionDeadlines(
   // ── Mirror to calendar_events so the deadline watcher cron fires
   //    upcoming-deadline notifications. The watcher queries
   //    calendar_events with start_at <= 24h AND deadline_notified=false.
-  const { data: existingCalEvents } = await supabase
+  // The calendar mirror is best-effort by design — a missing mirror costs a
+  // reminder, not the deal — but a refused read still must not masquerade as
+  // "no events yet" and double every deadline on the agent's calendar. Reported
+  // and skipped rather than thrown: the deadlines themselves are already saved.
+  const { data: existingCalEvents, error: calReadError } = await supabase
     .from("calendar_events")
     .select("event_type")
     .eq("entity_type", "transaction")
     .eq("entity_id", transactionId)
     .eq("brokerage_id", brokerageId)
+  if (calReadError) {
+    console.error(
+      `[ensureTransactionDeadlines] calendar mirror SKIPPED for transaction ${transactionId} — ` +
+      `could not read existing events (${calReadError.message}); duplicating them would double every reminder.`,
+    )
+    return
+  }
 
   const existingCalTypes = new Set((existingCalEvents ?? []).map((e: any) => e.event_type))
 
@@ -285,7 +324,7 @@ export async function completeMilestone(params: CompleteMilestoneParams): Promis
   // as completed too, not just the Milestones tab).
   const mapped = DEADLINE_BEARING.find(d => d.milestone === milestoneName)
   if (mapped) {
-    await supabase
+    const { error: deadlineDoneErr } = await supabase
       .from("transaction_deadlines")
       .update({
         status:       "completed",
@@ -296,7 +335,7 @@ export async function completeMilestone(params: CompleteMilestoneParams): Promis
       .eq("transaction_id", transactionId)
       .eq("brokerage_id", brokerageId)
       .eq("deadline_type", mapped.deadlineType)
-      .then(() => null, () => null)
+    if (deadlineDoneErr) console.error(`[milestone-service] mirrored deadline NOT completed (the deadline watcher will keep flagging it): ${deadlineDoneErr.message}`)
   }
 
   // Log lifecycle event via kernel

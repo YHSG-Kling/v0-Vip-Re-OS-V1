@@ -8,15 +8,21 @@
  *   - approveStep: mark a paused step as approved and advance
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getChainByKey } from "./chains"
 import { findReusableRun, type ExistingRun } from "./run-dedupe"
 import type {
-  WorkflowChain,
   WorkflowStep,
   WorkflowRunContext,
   WorkflowRunStatus,
+  WorkflowStepStatus,
 } from "./types"
+
+/** Every workflow_run_steps.status write below is `satisfies`-checked against this shape, so a
+ *  status outside WorkflowStepStatus (the vocabulary types.ts declares, previously enforced by
+ *  nothing) cannot be written — a typo'd status used to compile and silently strand the run. */
+type StepStatusWrite = { status: WorkflowStepStatus }
 
 interface StartRunInput {
   chainKey: string
@@ -103,9 +109,10 @@ export async function startRun(input: StartRunInput): Promise<RunResult> {
     step_index: i,
     step_key: s.key,
     step_label: s.label,
-    status: "pending" as const,
+    status: "pending" satisfies WorkflowStepStatus,
   }))
-  await svc.from("workflow_run_steps").insert(stepRows)
+  const { error: stepsInsErr } = await svc.from("workflow_run_steps").insert(stepRows)
+  if (stepsInsErr) console.error(`[workflow-engine] run steps NOT created: ${stepsInsErr.message}`)
 
   // Begin execution
   return await advanceRun(run.id)
@@ -140,7 +147,14 @@ export async function advanceRun(runId: string): Promise<RunResult> {
     return await completeRun(runId)
   }
 
-  const step = chain.steps[stepIndex]
+  // DECLARED `| undefined` because the very next line believes it can be.
+  // `chain.steps[stepIndex]` types as WorkflowStep with no index check, so the
+  // `if (!step)` guard below reads as dead code to a reviewer and to any tool
+  // that prunes unreachable branches — while `stepIndex` comes out of the
+  // workflow_runs ROW, not out of the chain, and a run whose chain was edited
+  // since it started really can point past the end. The annotation is the only
+  // place the two facts are stated together.
+  const step: WorkflowStep | undefined = chain.steps[stepIndex]
   if (!step) {
     return await completeRun(runId)
   }
@@ -148,14 +162,15 @@ export async function advanceRun(runId: string): Promise<RunResult> {
   // Mark step running
   await svc
     .from("workflow_run_steps")
-    .update({ status: "running", started_at: new Date().toISOString() })
+    .update({ status: "running", started_at: new Date().toISOString() } satisfies StepStatusWrite & Record<string, unknown>)
     .eq("run_id", runId)
     .eq("step_index", stepIndex)
 
-  await svc
+  const { error: runningErr } = await svc
     .from("workflow_runs")
     .update({ status: "running" })
     .eq("id", runId)
+  if (runningErr) console.error(`[workflow-engine] run NOT marked running: ${runningErr.message}`)
 
   // Build context
   const ctx: WorkflowRunContext = {
@@ -190,25 +205,26 @@ export async function advanceRun(runId: string): Promise<RunResult> {
     }
   }
 
-  await svc
+  await sentinelWrite(svc, svc
     .from("workflow_run_steps")
     .update({ attempt_count: attempt })
     .eq("run_id", runId)
-    .eq("step_index", stepIndex)
+    .eq("step_index", stepIndex), { table: "workflow_run_steps", flow: "workflow_run_steps_write", reason: "attempt counter" })
 
   // Failure: mark step + run as failed
   if (!result?.success) {
-    await svc
+    const { error: stepFailErr } = await svc
       .from("workflow_run_steps")
       .update({
         status: "failed",
         error_message: lastError ?? "Unknown error",
         completed_at: new Date().toISOString(),
-      })
+      } satisfies StepStatusWrite & Record<string, unknown>)
       .eq("run_id", runId)
       .eq("step_index", stepIndex)
+    if (stepFailErr) console.error(`[workflow-engine] step failure NOT recorded: ${stepFailErr.message}`)
 
-    await svc
+    const { error: runFailErr } = await svc
       .from("workflow_runs")
       .update({
         status: "failed",
@@ -216,6 +232,7 @@ export async function advanceRun(runId: string): Promise<RunResult> {
         error_message: `Step '${step.key}' failed: ${lastError}`,
       })
       .eq("id", runId)
+    if (runFailErr) console.error(`[workflow-engine] run failure NOT recorded (it will read as running): ${runFailErr.message}`)
 
     return { success: false, runId, status: "failed", error: lastError }
   }
@@ -227,45 +244,49 @@ export async function advanceRun(runId: string): Promise<RunResult> {
   const needsApproval = result.requiresApproval || step.requiresApproval
 
   if (needsApproval) {
-    await svc
+    const { error: stepApprovalErr } = await svc
       .from("workflow_run_steps")
       .update({
         status: "needs_approval",
         output: result.output ?? {},
         completed_at: new Date().toISOString(),
-      })
+      } satisfies StepStatusWrite & Record<string, unknown>)
       .eq("run_id", runId)
       .eq("step_index", stepIndex)
+    if (stepApprovalErr) console.error(`[workflow-engine] step NOT marked needs_approval: ${stepApprovalErr.message}`)
 
-    await svc
+    const { error: runPauseErr } = await svc
       .from("workflow_runs")
       .update({
         status: "paused",
         step_outputs: newOutputs,
       })
       .eq("id", runId)
+    if (runPauseErr) console.error(`[workflow-engine] run NOT paused for approval: ${runPauseErr.message}`)
 
     return { success: true, runId, status: "paused" }
   }
 
   // Completed successfully — advance to next step
-  await svc
+  const { error: stepDoneErr } = await svc
     .from("workflow_run_steps")
     .update({
       status: "done",
       output: result.output ?? {},
       completed_at: new Date().toISOString(),
-    })
+    } satisfies StepStatusWrite & Record<string, unknown>)
     .eq("run_id", runId)
     .eq("step_index", stepIndex)
+  if (stepDoneErr) console.error(`[workflow-engine] step NOT marked done: ${stepDoneErr.message}`)
 
-  await svc
+  const { error: runAdvanceErr } = await svc
     .from("workflow_runs")
     .update({
       step_outputs: newOutputs,
       current_step_index: stepIndex + 1,
     })
     .eq("id", runId)
+  if (runAdvanceErr) console.error(`[workflow-engine] run NOT advanced to the next step: ${runAdvanceErr.message}`)
 
   // If more steps remain, recurse to run the next one
   if (stepIndex + 1 < chain.steps.length) {
@@ -298,19 +319,21 @@ export async function approveStep(params: {
     return { success: false, error: `Step is ${step.status}, cannot approve` }
   }
 
-  await svc
+  const { error: approvedStepErr } = await svc
     .from("workflow_run_steps")
-    .update({ status: "done" })
+    .update({ status: "done" } satisfies StepStatusWrite)
     .eq("run_id", params.runId)
     .eq("step_index", step.step_index)
+  if (approvedStepErr) console.error(`[workflow-engine] approved step NOT marked done: ${approvedStepErr.message}`)
 
-  await svc
+  const { error: resumeErr } = await svc
     .from("workflow_runs")
     .update({
       status: "running",
       current_step_index: step.step_index + 1,
     })
     .eq("id", params.runId)
+  if (resumeErr) console.error(`[workflow-engine] approved run NOT resumed: ${resumeErr.message}`)
 
   return await advanceRun(params.runId)
 }
@@ -321,7 +344,7 @@ export async function approveStep(params: {
 
 export async function cancelRun(runId: string, reason?: string): Promise<RunResult> {
   const svc = createServiceClient()
-  await svc
+  const { error: cancelErr } = await svc
     .from("workflow_runs")
     .update({
       status: "cancelled",
@@ -329,6 +352,7 @@ export async function cancelRun(runId: string, reason?: string): Promise<RunResu
       error_message: reason ?? "Cancelled by user",
     })
     .eq("id", runId)
+  if (cancelErr) console.error(`[workflow-engine] run NOT marked cancelled: ${cancelErr.message}`)
   return { success: true, runId, status: "cancelled" }
 }
 
@@ -338,12 +362,13 @@ export async function cancelRun(runId: string, reason?: string): Promise<RunResu
 
 async function completeRun(runId: string): Promise<RunResult> {
   const svc = createServiceClient()
-  await svc
+  const { error: completeErr } = await svc
     .from("workflow_runs")
     .update({
       status: "completed",
       completed_at: new Date().toISOString(),
     })
     .eq("id", runId)
+  if (completeErr) console.error(`[workflow-engine] run NOT marked completed: ${completeErr.message}`)
   return { success: true, runId, status: "completed" }
 }

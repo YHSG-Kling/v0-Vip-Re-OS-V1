@@ -53,8 +53,17 @@ export function buildWhisperScript(f: WhisperFacts): string {
 /** The user's ASSISTANT voice — voice_assistant_config.voice_profile_id →
  *  agent_voice_profiles.elevenlabs_voice_id. Null when unconfigured (text fallback). */
 export async function resolveAssistantVoiceId(supabase: Svc, agentUserId: string): Promise<string | null> {
+  // IDENTITY CLASS (m365). voice_assistant_config.agent_id FKs AGENTS (and is
+  // NOT NULL, so every row holds a real agents id) while agentUserId is a users
+  // id — the filter matched nothing, resolveAssistantVoiceId returned null on
+  // every call, and the whisper silently fell back to text. The agent's cloned
+  // voice was configured and never used.
+  const { data: whisperAgentRow } = await supabase
+    .from("agents").select("id").eq("user_id", agentUserId).maybeSingle()
+  const whisperAgentId = (whisperAgentRow as { id?: string } | null)?.id ?? null
+  if (!whisperAgentId) return null
   const { data: cfg } = await supabase
-    .from("voice_assistant_config").select("voice_profile_id").eq("agent_id", agentUserId).maybeSingle()
+    .from("voice_assistant_config").select("voice_profile_id").eq("agent_id", whisperAgentId).maybeSingle()
   const profileId = (cfg as { voice_profile_id: string | null } | null)?.voice_profile_id ?? null
   if (!profileId) return null
   const { data: vp } = await supabase
@@ -62,14 +71,46 @@ export async function resolveAssistantVoiceId(supabase: Svc, agentUserId: string
   return (vp as { elevenlabs_voice_id: string | null } | null)?.elevenlabs_voice_id ?? null
 }
 
-/** Vendor seam: synthesize the brief → audio URL (or null → text fallback). */
-export type WhisperSynthesizer = (script: string, voiceId: string) => Promise<string | null>
+/** Vendor seam: synthesize the brief → audio URL (or null → text fallback).
+ *  `brokerageId` (lane 78D, blind spot 2) is the TENANT THE SPEND IS BOOKED
+ *  TO: the whisper, the commission forecast and the fire drill all run per
+ *  brokerage, and without it the seam synthesised unmetered — the vendor
+ *  ledger (lib/vendor-governance/usage-logger.ts::logVendorUsage, reached
+ *  through synthesizeSpeech → meterVendorSpend) only books when a tenant is
+ *  named. */
+export type WhisperSynthesizer = (script: string, voiceId: string, brokerageId: string) => Promise<string | null>
 
-const realSynthesizer: WhisperSynthesizer = async (script, voiceId) => {
+/** THE real synthesizer seam — same-body census, round 4 (2026-09-09, lane
+ *  FC). Exported (was module-private) so lib/kernel/commission-forecaster.ts
+ *  and lib/kernel/fire-drills.ts — which already imported the `WhisperSynthesizer`
+ *  TYPE from here — import this IMPLEMENTATION too instead of each pasting an
+ *  identical `realSynthesizer`/`defaultSynthesizer` const. */
+export const realSynthesizer: WhisperSynthesizer = async (script, voiceId, brokerageId) => {
+  if (!brokerageId) return null // unmetered spend is refused, not booked to nobody (§5: a wrong number there is a wrong invoice)
   try {
-    const { synthesizeSpeechStream } = await import("@/lib/voice/elevenlabs-tts")
-    const res = await synthesizeSpeechStream({ text: script, voiceId })
-    return (res as { audioUrl?: string | null })?.audioUrl ?? null
+    // BUILT (lane 77C, orphan census round 22 — a reader with no writer).
+    // This called synthesizeSpeechStream and then read `res.audioUrl` — a
+    // field the streaming primitive has NEVER returned (it hands back the raw
+    // fetch Response for piping), so every whisper resolved to null audio and
+    // the "audio on every tier" promise below was a text fallback on every
+    // tier. The whisper is a scripted 25-40-minute-ahead brief, not a live
+    // turn: it is rendered on the BUFFERED primitive, on the narration lane
+    // through the ONE selector, paced, and hosted where the other narration
+    // clips live (lib/remotion/media-host.ts → the public `video-assets`
+    // bucket) so the notification's audio link is a URL that exists.
+    const { synthesizeSpeech } = await import("@/lib/voice/elevenlabs-tts")
+    const { elevenLabsModelForLane, withNaturalPauses } = await import("@/lib/video/realism-profile")
+    const whisperModel = elevenLabsModelForLane("brief_narration")
+    // METERED (lane 78D): `brokerageId` makes synthesizeSpeech run the vendor
+    // budget gate and book the characters to vendor_usage_tracking through the
+    // ONE logger (usage-logger.ts::logVendorUsage) — the same ledger every other
+    // ElevenLabs caller books to. Before this the whisper lane was the one TTS
+    // seam with no tenant on the call, so its spend was invisible to the invoice.
+    const res = await synthesizeSpeech({ text: withNaturalPauses(script, whisperModel), voiceId, modelId: whisperModel, brokerageId })
+    if (!res.success || !res.audioBuffer) return null
+    const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
+    const slug = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    return await hostRenderedMedia(createServiceClient(), `whispers/${slug}.mp3`, res.audioBuffer, "audio/mpeg")
   } catch { return null }
 }
 
@@ -145,7 +186,7 @@ export async function produceAppointmentWhispers(
     let audioUrl: string | null = null
     if (whisperTierCapability(tier) === "audio") {
       const voiceId = await resolveAssistantVoiceId(supabase, ev.agent_user_id)
-      if (voiceId) audioUrl = await synthesizer(script, voiceId)
+      if (voiceId) audioUrl = await synthesizer(script, voiceId, brokerageId)
     }
 
     const { error } = await supabase.from("notifications").insert({

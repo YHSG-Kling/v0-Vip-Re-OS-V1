@@ -17,6 +17,10 @@ export interface ObjectionScenario {
   systemPrompt: string
   /** What the agent should ideally accomplish — used by the scorer */
   successCriteria: string[]
+  /** "library" = static catalog below; "call" = AI-generated from a real call. */
+  source?: "library" | "call"
+  /** For call-sourced scenarios: the objections the AI heard on the real call. */
+  sourceObjections?: string[]
 }
 
 export const OBJECTION_SCENARIOS: ObjectionScenario[] = [

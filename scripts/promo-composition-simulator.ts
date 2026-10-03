@@ -33,12 +33,13 @@ import {
   compositionForPromoEvent,
   buildPromoProps,
   buildComingSoonTeaser,
-  computeDaysOnMarket,
+  daysOnMarketAtSale,
   type PromoListingFacts,
   type PromoBrand,
   type PromoCompositionId,
   type PromoCompositionChoice,
 } from "../lib/video/promo-composition"
+import { computeDaysOnMarket as computeDaysOnMarketLiveListing } from "../lib/listings/compute-dom"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -254,12 +255,26 @@ function main() {
     buildComingSoonTeaser(thinFacts()) === "3 BD · 2 BA · condo")
   check("buildComingSoonTeaser: nothing usable → null",
     buildComingSoonTeaser(thinFacts({ bedrooms: "", bathrooms: "", property_type: "" })) === null)
-  check("computeDaysOnMarket: 2026-01-01 → 2026-01-08 = 7",
-    computeDaysOnMarket("2026-01-01T00:00:00Z", "2026-01-08") === 7)
-  check("computeDaysOnMarket: missing sold_date → null",
-    computeDaysOnMarket("2026-01-01T00:00:00Z", null) === null)
-  check("computeDaysOnMarket: negative (sold before listed) → null",
-    computeDaysOnMarket("2026-02-01T00:00:00Z", "2026-01-01") === null)
+  check("daysOnMarketAtSale: 2026-01-01 → 2026-01-08 = 7",
+    daysOnMarketAtSale("2026-01-01T00:00:00Z", "2026-01-08") === 7)
+  check("daysOnMarketAtSale: missing sold_date → null",
+    daysOnMarketAtSale("2026-01-01T00:00:00Z", null) === null)
+  check("daysOnMarketAtSale: negative (sold before listed) → null",
+    daysOnMarketAtSale("2026-02-01T00:00:00Z", "2026-01-01") === null)
+
+  // Positive control (wave 60 rename): promo-composition's SOLD-RECAP dom
+  // (created_at→sold_date) and compute-dom's LIVE-LISTING dom (go_live_date→
+  // now) are two DIFFERENT names computing two DIFFERENT quantities on
+  // purpose — same wall-clock "now", different anchor dates, different
+  // callers. Proves the rename didn't collapse them back into one spelling.
+  {
+    const soldRecap = daysOnMarketAtSale("2026-01-01T00:00:00Z", "2026-01-15")
+    const liveListing = computeDaysOnMarketLiveListing("2026-01-01T00:00:00Z")
+    check("daysOnMarketAtSale vs computeDaysOnMarket (live-listing): distinct names both exported",
+      typeof daysOnMarketAtSale === "function" && typeof computeDaysOnMarketLiveListing === "function")
+    check("daysOnMarketAtSale (sold-recap, anchored to sold_date) ≠ computeDaysOnMarket (live-listing, anchored to now)",
+      soldRecap === 14 && liveListing !== 14)
+  }
 
   // ── Layer 2 (live, read-only) ──────────────────────────────────────────────
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&

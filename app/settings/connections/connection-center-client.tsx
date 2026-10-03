@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -14,6 +14,10 @@ import {
   type ConnectionCenter,
   type OwnerHint,
 } from "@/app/actions/connections/connection-center"
+import { syncContactNowAction } from "@/app/actions/crm-connect"
+import { getByoCarrierPolicy, setByoCarrierPolicy } from "@/app/actions/settings/global-settings-actions"
+import { MANAGERS } from "@/lib/kernel/manager-registry"
+import Link from "next/link"
 
 const DOMAIN_LABELS: Record<string, string> = {
   email: "Email", phone: "Phone / SMS", calendar: "Calendar", social: "Social",
@@ -21,6 +25,18 @@ const DOMAIN_LABELS: Record<string, string> = {
   transaction: "Transaction Management", esign: "E-Signature", showing: "Showings",
   podcast: "Podcast Syndication",
   meetings: "Video Meetings",
+}
+
+// Short clarifying notes under a domain title. Email is the important one: what
+// you connect here is your PERSONAL relationship inbox (Gmail/Outlook). The
+// brokerage's transactional + offers email is platform-managed (SendGrid) and is
+// NOT a tenant setting — so nobody routes offers mail through a personal box.
+const DOMAIN_NOTES: Record<string, string> = {
+  email:
+    "Connect your personal relationship inbox (Gmail or Outlook) for 1:1 email. Transactional and offer emails are sent by the platform (SendGrid) and captured for the offers system automatically — nothing to set up here.",
+  phone:
+    "Your calling/SMS number is provided and billed by the platform — you don't enter a carrier API key.",
+  crm: "One-way: contact updates are pushed OUT to your CRM. Nothing syncs back in.",
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -96,12 +112,35 @@ function ProviderRow({ domain, provider, fields, owner }: { domain: Domain["doma
 
   const isStripeConnect = domain === "financial" && provider.provider === "stripe"
   const refresh = () => { setOpen(false); router.refresh() }
+  // disconnectProvider RETURNS { ok: false, error } — "Not authorized", "Not
+  // available for your account type", or the update's own error — and never
+  // throws. The result was discarded and the page refreshed regardless, so a
+  // REFUSED disconnect was indistinguishable from a successful one: the row
+  // re-rendered still connected with no explanation, on the surface whose whole
+  // job is telling you what is and is not connected.
+  const [rowError, setRowError] = useState<string | null>(null)
   const onDisconnect = () =>
-    startTransition(async () => { await disconnectProvider({ domain, provider: provider.provider, owner }); router.refresh() })
+    startTransition(async () => {
+      setRowError(null)
+      const res = await disconnectProvider({ domain, provider: provider.provider, owner })
+      if (!res?.ok) {
+        setRowError(res?.error ?? "Could not disconnect")
+        return
+      }
+      router.refresh()
+    })
+  // Same "read the outcome" rule as onDisconnect: startStripeConnect RETURNS
+  // { ok: false, error } and never throws, so a refused onboarding link used to
+  // leave the button looking like nothing happened.
   const onStripeConnect = () =>
     startTransition(async () => {
+      setRowError(null)
       const res = await startStripeConnect(owner)
-      if (res.ok) window.location.href = res.url
+      if (!res?.ok) {
+        setRowError(res?.error ?? "Could not start Stripe onboarding")
+        return
+      }
+      window.location.href = res.url
     })
 
   return (
@@ -118,7 +157,19 @@ function ProviderRow({ domain, provider, fields, owner }: { domain: Domain["doma
         </div>
         <div className="flex items-center gap-2">
           {!provider.available ? (
-            <Button size="sm" variant="outline" disabled>Unavailable</Button>
+            provider.managePath ? (
+              // Managed elsewhere (per-scope accounting offering matrix): the capability is
+              // real but lives on another surface — link there instead of a dead badge.
+              <Button asChild size="sm" variant="outline">
+                <Link href={provider.managePath}>Manage</Link>
+              </Button>
+            ) : (
+              // Not a control — there is nothing to click and no capability behind
+              // it. It was a permanently-disabled <Button>, which reads as an
+              // affordance; the reason is already spelled out to the left. Render
+              // it as the status it actually is.
+              <Badge variant="outline" className="text-xs font-normal text-muted-foreground">Unavailable</Badge>
+            )
           ) : isStripeConnect ? (
             <Button size="sm" variant={provider.connected ? "outline" : "default"} disabled={pending} onClick={onStripeConnect}>
               {provider.connected ? "Reconnect" : "Connect"}
@@ -137,9 +188,141 @@ function ProviderRow({ domain, provider, fields, owner }: { domain: Domain["doma
           )}
         </div>
       </div>
+      {rowError && (
+        <p className="mt-2 text-xs text-destructive">{rowError}</p>
+      )}
       {open && provider.available && provider.auth === "api_key" && (
         <ApiKeyForm domain={domain} provider={provider.provider} fields={fields} owner={owner} onDone={refresh} />
       )}
+    </div>
+  )
+}
+
+// "Sync a contact now" — the manual sync-out tool, BUILT INTO the Connection Center
+// (rather than stranded on the legacy /settings/crm page). It is a DATA STEWARD
+// operation (CRM/identity stewardship) and is labeled with that manager's identity;
+// on success the action announces contact_crm_synced on the manager bus to the
+// Sphere Manager, so the push is governed + visible in the Command Center feed.
+function CrmSyncNowCard() {
+  const steward = MANAGERS.data_steward
+  const [contactId, setContactId] = useState("")
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [pending, startTransition] = useTransition()
+
+  function syncNow() {
+    const id = contactId.trim()
+    if (!id) return
+    setMsg(null)
+    startTransition(async () => {
+      const res = await syncContactNowAction(id)
+      setMsg(res.ok
+        ? { ok: true, text: `Synced to ${res.providerKey}${res.action ? ` (${res.action})` : ""}` }
+        : { ok: false, text: res.error })
+    })
+  }
+
+  return (
+    <div className="mt-3 rounded-md border border-dashed p-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-medium">Sync a contact now</span>
+        <Badge variant="outline" className={`text-[10px] ${steward.accent}`}>{steward.label}</Badge>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Push one contact OUT to your active CRM immediately. Sync-out only — nothing syncs back in.
+      </p>
+      <div className="flex items-center gap-2">
+        <Input
+          value={contactId}
+          onChange={(e) => setContactId(e.target.value)}
+          placeholder="Contact ID"
+          className="h-8 text-xs"
+        />
+        <Button size="sm" className="h-8 text-xs" disabled={pending || !contactId.trim()} onClick={syncNow}>
+          {pending ? "Syncing…" : "Sync now"}
+        </Button>
+      </div>
+      {msg && (
+        <p className={`text-xs ${msg.ok ? "text-green-600" : "text-red-600"}`}>{msg.text}</p>
+      )}
+    </div>
+  )
+}
+
+// Phone/SMS is PLATFORM-PROVIDED for every tier except the multi-location top tier:
+// the platform owns Twilio, provisions the number, and bills it separately — the
+// tenant never enters a carrier API key (see docs/PHONE-SYSTEM-SETUP.md). This panel
+// makes that the primary path and bridges to the number/forwarding surface; the
+// carrier API-key rows below are reframed as the ADVANCED "bring your own carrier"
+// option (only the top tier assumes its own carrier registration).
+function PlatformProvidedPhonePanel({ scope }: { scope: string }) {
+  // The subscriber (broker/admin — "brokerage" scope) may let their MANAGED agents
+  // bring their own carrier; otherwise the platform provisions + bills the number.
+  const isSubscriber = scope === "brokerage"
+  const [allowByo, setAllowByo] = useState<boolean | null>(null)
+  const [byoError, setByoError] = useState<string | null>(null)
+  const [saving, startSaving] = useTransition()
+
+  useEffect(() => {
+    if (!isSubscriber) return
+    getByoCarrierPolicy()
+      .then((r) => setAllowByo(r.allowUserByo))
+      .catch((e: any) => setByoError(e?.message ?? "Could not read the BYO-carrier policy"))
+  }, [isSubscriber])
+
+  function toggleByo() {
+    if (allowByo === null) return
+    const next = !allowByo
+    setByoError(null)
+    startSaving(async () => {
+      // setByoCarrierPolicy returns { ok:false, error } on a refusal — the old
+      // code discarded it, so a rejected policy change silently left the toggle
+      // where it was with no explanation.
+      const res = await setByoCarrierPolicy(next)
+      if (!res?.ok) {
+        setByoError((res as any)?.error ?? "The BYO-carrier policy was not saved")
+        return
+      }
+      setAllowByo(next)
+    })
+  }
+
+  return (
+    <div className="rounded-md border bg-muted/40 p-3 space-y-2">
+      <p className="text-sm font-medium">Your number is provided by the platform</p>
+      <p className="text-xs text-muted-foreground">
+        We provision and bill your calling/SMS number (Twilio, platform-owned) — there's no
+        carrier API key to enter. Provision a number and set call forwarding in Phone setup.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <Button asChild size="sm" variant="outline" className="h-8 text-xs">
+          <Link href="/dashboard/admin/phone-settings">Provision number &amp; forwarding</Link>
+        </Button>
+        <Button asChild size="sm" variant="ghost" className="h-8 text-xs">
+          <Link href="/dashboard/onboarding/ai-call-setup">AI call handling</Link>
+        </Button>
+      </div>
+      {isSubscriber && (
+        <div className="flex items-center justify-between border-t pt-2 mt-1">
+          <div>
+            <p className="text-xs font-medium">Let your agents bring their own carrier</p>
+            <p className="text-[11px] text-muted-foreground">
+              {allowByo
+                ? "Agents may connect their own Twilio (they bill their own usage)."
+                : "Agents use the platform-provided number (billed to you). You can always BYO for the brokerage."}
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant={allowByo ? "default" : "outline"}
+            className="h-7 text-xs"
+            disabled={saving || allowByo === null}
+            onClick={toggleByo}
+          >
+            {allowByo === null ? "…" : allowByo ? "On" : "Off"}
+          </Button>
+        </div>
+      )}
+      {isSubscriber && byoError && <p className="text-xs text-destructive">{byoError}</p>}
     </div>
   )
 }
@@ -158,11 +341,25 @@ export function ConnectionCenterClient({ data, owner }: { data: ConnectionCenter
         <Card key={d.domain}>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm">{label(DOMAIN_LABELS, d.domain)}</CardTitle>
+            {DOMAIN_NOTES[d.domain] && (
+              <p className="text-xs text-muted-foreground mt-1">{DOMAIN_NOTES[d.domain]}</p>
+            )}
           </CardHeader>
           <CardContent className="space-y-2">
+            {/* Phone/SMS: platform-provided is the primary path; the carrier
+                API-key rows below are the advanced bring-your-own-carrier option. */}
+            {d.domain === "phone" && <PlatformProvidedPhonePanel scope={data.scope} />}
+            {d.domain === "phone" && d.providers.length > 0 && (
+              <p className="text-[11px] font-medium text-muted-foreground pt-1">
+                Advanced — bring your own carrier (top tier)
+              </p>
+            )}
             {d.providers.map((p) => (
               <ProviderRow key={p.provider} domain={d.domain} provider={p} fields={d.fields} owner={owner} />
             ))}
+            {/* Feature parity with the legacy /settings/crm page — the manual
+                sync-out tool now lives in the one Connection Center hub. */}
+            {d.domain === "crm" && <CrmSyncNowCard />}
           </CardContent>
         </Card>
       ))}

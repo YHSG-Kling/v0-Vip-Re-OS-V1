@@ -31,13 +31,14 @@
 // and the tenant "Your coverage" card (app/dashboard/admin/scrape-diagnostics).
 
 import { activeSubscriberBrokerageIds, ACTIVE_SUBSCRIPTION_STATUSES } from "@/lib/lead-pipeline/subscription-gate"
+import { territoryUnion } from "@/lib/lead-pipeline/scrape-territories"
 
 // ─── Declared constants (named in the labels — never implied) ────────────────
 
 /** Days of lead/raw volume the coverage board counts. */
 export const COVERAGE_WINDOW_DAYS = 30
 /** Row cap per bounded read — a hit cap is reported, never silently truncated. */
-export const COVERAGE_ROW_CAP = 5000
+const COVERAGE_ROW_CAP = 5000
 /** Max expansion hints shown on the tenant card. */
 export const EXPANSION_HINT_LIMIT = 12
 
@@ -108,7 +109,7 @@ export interface CoverageBoard {
 }
 
 export interface CoverageInputs {
-  subscriptions: Array<{ brokerage_id: string | null; status: string | null }>
+  subscriptions: Array<{ brokerage_id: string | null; status: string | null; trial_end?: string | null }>
   serviceAreas: ServiceAreaClaim[]
   brokerages: Array<{ id: string; name: string | null }>
   leadRows: CoverageLeadRow[]
@@ -235,6 +236,10 @@ export interface TenantCoverage {
   /** SAME-STATE unclaimed zips with real platform-lead volume — honest expansion
    *  hints (no adjacency math exists; the label says exactly what these are). */
   expansionHints: ZipCoverageRow[]
+  /** The UNION of geography across every configured market (territoryUnion) — a
+   *  multi-market brokerage (agent-scoped + team-scoped + brokerage-wide territory
+   *  rows) reads its footprint as one rolled-up area instead of counting markets. */
+  areaUnion: { cities: string[]; states: string[]; zipCodes: string[]; counties: string[] }
   honestNotes: string[]
 }
 
@@ -268,12 +273,19 @@ export function composeTenantCoverage(
     rawCount: claimedZips.reduce((s, z) => s + z.rawCount, 0),
   }
 
+  // Multi-market union (pure lib/lead-pipeline/scrape-territories.ts::territoryUnion —
+  // the SAME resolver the scrape-territory pipeline itself uses, not a second rollup).
+  const areaUnion = territoryUnion(
+    markets.map((m) => ({ brokerage_id: brokerageId, city: m.city, state: m.state, zip_codes: m.zip_codes })),
+  )
+
   return {
     brokerageId,
     markets,
     claimedZips,
     totals,
     expansionHints,
+    areaUnion,
     honestNotes: [
       `Volume is the last ${board.windowDays} days across your claimed zips (subscriber_service_areas — synced from your scraping markets).`,
       "Expansion hints are SAME-STATE zips no active subscriber claims that produced real platform-lead volume in the window — adjacency is not computed (no map data exists in this system), and zips with zero observed volume are never suggested.",
@@ -290,7 +302,7 @@ async function loadCoverageInputs(supabase: AnyClient, windowDays: number): Prom
   const sinceIso = new Date(Date.now() - windowDays * 86_400_000).toISOString()
   let capped = false
 
-  const { data: subs, error: sErr } = await supabase.from("subscriptions").select("brokerage_id, status")
+  const { data: subs, error: sErr } = await supabase.from("subscriptions").select("brokerage_id, status, trial_end")
   if (sErr) return { error: `subscriptions: ${sErr.message}` }
 
   const { data: areas, error: aErr } = await supabase
@@ -326,7 +338,7 @@ async function loadCoverageInputs(supabase: AnyClient, windowDays: number): Prom
   if ((raws ?? []).length >= COVERAGE_ROW_CAP) capped = true
 
   return {
-    subscriptions: (subs ?? []) as Array<{ brokerage_id: string | null; status: string | null }>,
+    subscriptions: (subs ?? []) as Array<{ brokerage_id: string | null; status: string | null; trial_end?: string | null }>,
     serviceAreas: (areas ?? []) as ServiceAreaClaim[],
     brokerages,
     leadRows: (leads ?? []) as CoverageLeadRow[],

@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { repairIncompleteAccountSetup } from "@/lib/kernel/users"
+import { ensureAgentBrokerage } from "@/app/actions/onboarding/ensure-agent-brokerage"
 import { determineFirstLoginDestination } from "@/lib/kernel/onboarding"
 
 export const dynamic = "force-dynamic"
@@ -22,6 +23,13 @@ export default async function DashboardPage() {
   if (!context.isAuthenticated) {
     redirect("/login")
   }
+
+  // A brokerage-less agent (legacy seed / aborted-invite / hand-created row) is
+  // walled out of every brokerage-gated surface ("Requires a brokerage…"). Give
+  // them a personal brokerage-of-one FIRST — idempotent, guarded (agent/team_lead
+  // only, and never while an invitation is pending) — then the repair below fills
+  // the agents/onboarding/RBAC rows for it.
+  await ensureAgentBrokerage()
 
   // Silently repair any missing domain records on every visit.
   // This is idempotent — does nothing if all records already exist.

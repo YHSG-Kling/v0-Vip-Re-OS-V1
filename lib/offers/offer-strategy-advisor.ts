@@ -30,9 +30,15 @@ export type { BuyerOfferStrategy, BuyerOfferStrategyInput } from "./offer-strate
  */
 export async function generateBuyerOfferStrategy(
   params: BuyerOfferStrategyInput,
+  /** Tenant + actor for the AI cost ledger. Both callers resolve it
+   *  server-side — the server action from getAgentContext, the autonomous
+   *  producer from the run it is executing — never from a body (§4). */
+  spendActor: { brokerageId: string | null; userId: string | null } = { brokerageId: null, userId: null },
 ): Promise<BuyerOfferStrategy | null> {
   try {
     const { object } = await generateObjectRouted({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId,
       feature: "offer_analysis",
       schema: BuyerOfferStrategySchema,
       prompt: `You are a buyer's agent strategist. Help craft a winning offer strategy.

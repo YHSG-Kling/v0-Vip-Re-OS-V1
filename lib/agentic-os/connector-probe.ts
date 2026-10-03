@@ -166,6 +166,15 @@ export const PLATFORM_PROVIDER_KEYS: Record<string, string> = {
   // web-push (VAPID browser push) has no GET-probeable endpoint — like the
   // Exa/BatchData POST-only exemption above, it is key-presence-audited only.
   web_push: "VAPID_PRIVATE_KEY",
+  // Simli — the BACKUP live face-render provider (lib/live-agent/face-render.ts,
+  // lib/providers/simli/client.ts). Lane 76C: the key was in .env.example and
+  // the seam failed closed on it ("SIMLI_API_KEY is not configured"), but the
+  // provider-readiness board derived from THIS list + the tenancy matrix never
+  // showed the seam dark, so an absent key read as nothing rather than as a
+  // platform_dark row. Key-presence-audited only (no PROBE_SPEC: Simli's
+  // documented surface is the POST /compose/token mint — a probe would MINT a
+  // session; probeConnector returns null for it and the guardian moves on).
+  simli: "SIMLI_API_KEY",
 }
 
 export interface ProbeResult {
@@ -273,6 +282,7 @@ export async function probeConnector(
   let httpStatus: number | null = null
   let networkError = false
   let drift: ShapeDrift | null = null
+  let drifted = false
   let error: string | null = null
 
   try {
@@ -282,6 +292,7 @@ export async function probeConnector(
       const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
       const adapted = adaptResponse(json, spec.shape)
       drift = adapted.drift
+      drifted = adapted.drifted
     } else {
       error = `HTTP ${res.status}`
     }
@@ -290,6 +301,9 @@ export async function probeConnector(
     error = err instanceof Error ? err.message : String(err)
   }
 
+  // shapeHealthy(drift) is stricter than !drifted (an aliased-but-present field still
+  // counts as "drifted" for the UI notice but is HEALTHY for classification — see its
+  // own doc) — so classifyProbe reads missingRequired directly, not the drifted flag.
   const status = classifyProbe({
     configured: true,
     httpStatus,
@@ -300,7 +314,9 @@ export async function probeConnector(
     provider,
     status,
     httpStatus,
-    drifted: !!drift && (drift.aliased.length > 0 || drift.missingRequired.length > 0),
+    // ONE VOCABULARY (§6): reuse adaptResponse's own `drifted` rather than recomputing
+    // the same aliased/missingRequired formula a second time.
+    drifted,
     drift,
     checkedAt,
     error: status === "ok" ? null : error,

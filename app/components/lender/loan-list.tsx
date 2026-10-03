@@ -16,6 +16,8 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { ChevronRight, Search, Filter, ArrowUpDown } from "lucide-react"
+import { usdOrNA } from "@/lib/format/money"
+import { formatDateOrTBD } from "@/lib/format/dates"
 
 interface Loan {
   id: string
@@ -53,23 +55,9 @@ const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   withdrawn: { label: "Withdrawn", color: "bg-slate-100 text-slate-500" },
 }
 
-function formatCurrency(amount: number | null | undefined): string {
-  if (!amount) return "N/A"
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(amount)
-}
-
-function formatDate(date: string | null | undefined): string {
-  if (!date) return "TBD"
-  return new Date(date).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  })
-}
+// `formatCurrency`/`formatDate` — same-body census, round 4 (2026-09-09, lane
+// FC): DELETED, byte-identical to lib/format/money.ts `usdOrNA` and
+// lib/format/dates.ts `formatDateOrTBD` (both imported above).
 
 export function LenderLoanList({ loans }: { loans: Loan[] }) {
   const [search, setSearch] = useState("")
@@ -200,13 +188,13 @@ export function LenderLoanList({ loans }: { loans: Loan[] }) {
                           ? `${loan.transactions.leads.first_name} ${loan.transactions.leads.last_name || ""}`
                           : "N/A"}
                       </TableCell>
-                      <TableCell>{formatCurrency(loan.loan_amount || loan.transactions?.contract_price)}</TableCell>
+                      <TableCell>{usdOrNA(loan.loan_amount || loan.transactions?.contract_price)}</TableCell>
                       <TableCell>
                         <Badge variant="secondary" className={status.color}>
                           {status.label}
                         </Badge>
                       </TableCell>
-                      <TableCell>{formatDate(loan.transactions?.close_date)}</TableCell>
+                      <TableCell>{formatDateOrTBD(loan.transactions?.close_date)}</TableCell>
                       <TableCell>
                         {transactionId && (
                           <Button variant="ghost" size="icon" asChild>

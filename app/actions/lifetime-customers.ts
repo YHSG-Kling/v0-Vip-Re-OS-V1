@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import {
   aiScoreSphereEngagement,
   aiSegmentSphere,
@@ -12,6 +13,7 @@ import {
 } from "@/app/actions/ai-sphere-management"
 import { getRecentLifeChanges } from "@/app/actions/contact-enrichment"
 import { identifyReferralOpportunities } from "@/app/actions/ai-referral-management"
+import { bestEffort } from "@/lib/db/best-effort"
 
 /**
  * Log a touchpoint for a lifetime customer
@@ -54,17 +56,20 @@ export async function logTouchpoint({
   }
 
   // Record activity with kernel event reference
-  await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    agent_id: agentId,
-    contact_id: contactId,
-    activity_type: "lifetime_customer_touchpoint_sent",
-    title: `Lifetime customer touchpoint: ${touchpointType}`,
-    description: notes ?? `${touchpointType} sent via ${channel}`,
-    notes: JSON.stringify({ touchpoint_type: touchpointType, channel, kernel_event: KernelEvent.LIFETIME_CUSTOMER_TOUCHPOINT_SENT }),
-    status: "completed",
-    entity_type: "contact",
-  }).then(() => {}, err => console.error("Error recording activity:", err))
+  await bestEffort(
+    supabase.from("activities").insert({
+      brokerage_id: brokerageId,
+      agent_id: agentId,
+      contact_id: contactId,
+      activity_type: "lifetime_customer_touchpoint_sent",
+      title: `Lifetime customer touchpoint: ${touchpointType}`,
+      description: notes ?? `${touchpointType} sent via ${channel}`,
+      notes: JSON.stringify({ touchpoint_type: touchpointType, channel, kernel_event: KernelEvent.LIFETIME_CUSTOMER_TOUCHPOINT_SENT }),
+      status: "completed",
+      entity_type: "contact",
+    }),
+    "the lifetime_customer_touchpoints row above is the ledger of the send and its error is already checked and returned; this timeline echo must not fail a touchpoint that was recorded. The old rejection handler could not see a REFUSED row at all — bestEffort logs both.",
+  )
 
   return { success: true, touchpoint: data }
 }
@@ -80,7 +85,7 @@ export async function sendMarketUpdate({
   messageBody: string
 }) {
   const supabase = await createClient()
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
 
   // Insert client portal message
   const { data: message, error: msgError } = await supabase
@@ -122,17 +127,43 @@ export async function sendMarketUpdate({
   }
 
   // Record activity with kernel event reference
-  await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    agent_id: agentId,
-    contact_id: contactId,
-    activity_type: "market_update_sent",
-    title: "Market update sent",
-    description: messageBody.substring(0, 200),
-    notes: JSON.stringify({ message_id: message.id, kernel_event: KernelEvent.MARKET_UPDATE_SENT }),
-    status: "completed",
-    entity_type: "contact",
-  }).then(() => {}, err => console.error("Error recording activity:", err))
+  await bestEffort(
+    supabase.from("activities").insert({
+      brokerage_id: brokerageId,
+      agent_id: agentId,
+      contact_id: contactId,
+      activity_type: "market_update_sent",
+      title: "Market update sent",
+      description: messageBody.substring(0, 200),
+      notes: JSON.stringify({ message_id: message.id, kernel_event: KernelEvent.MARKET_UPDATE_SENT }),
+      status: "completed",
+      entity_type: "contact",
+    }),
+    "the message row and the touchpoint ledger above are the record of the send and both are error-checked; this timeline echo must not fail a market update that already went out. The old rejection handler could not see a REFUSED row at all — bestEffort logs both.",
+  )
+
+  // MARKET_UPDATE_SENT — read by event-fanout.ts's "Your market update is ready" portal
+  // card + campaign_sequences.trigger_event, but the activities row above only ever
+  // NAMED the kernel event in its notes JSON (`kernel_event: KernelEvent.MARKET_UPDATE_SENT`)
+  // — it was never actually emitted, so this was a reader with no writer (CLAUDE.md §1).
+  // This send — the client_portal_messages insert above, error-checked — IS the real
+  // moment. void'd — a fan-out failure must never undo a market update that already
+  // went out; emitKernelEvent never throws (lib/kernel/emit.ts).
+  void emitKernelEvent({
+    event:          KernelEvent.MARKET_UPDATE_SENT,
+    brokerageId,
+    entityType:     "contact",
+    entityId:       contactId,
+    actorUserId:    userId,
+    agentId,
+    agentUserId:    userId,
+    contactId,
+    metadata: {
+      message_id: message.id,
+    },
+  }).catch((e) => {
+    console.error("[sendMarketUpdate] MARKET_UPDATE_SENT emit failed:", e)
+  })
 
   return { success: true, message }
 }
@@ -151,6 +182,16 @@ export async function getLifetimeCustomers({
 } = {}) {
   const supabase = await createClient()
   const { agentId, brokerageId } = await getAgentContext()
+
+  // IDENTITY GUARD — carried from app/actions/lifetime-customer-touchpoints.ts
+  // :getLifetimeCustomerContacts, the unwired duplicate of this reader that was
+  // removed in its favour (see the tombstone in that file). Without it a caller
+  // with no agents row issued `.eq("agent_id", null)` — `agent_id=eq.null` on
+  // the wire, which matches nothing — and the screen said "no lifetime
+  // customers" for what is actually "we could not identify you".
+  if (!agentId || !brokerageId) {
+    return { success: false, error: "Agent context not available" }
+  }
 
   // Get lifetime customers (contacts with closed transactions)
   // Fetch contacts first, then get their closed transactions separately
@@ -193,11 +234,24 @@ export async function getLifetimeCustomers({
     return { success: false, error: transError.message }
   }
 
-  // Get engagement scores for these contacts
-  const { data: engagementScores } = await supabase
+  // Get engagement scores for these contacts.
+  //
+  // ORPHAN DOCTRINE §1.2 (2026-09-04) — `agent_id` joined this select. It is
+  // written by the scorer (app/actions/lifetime-customer-touchpoints.ts:366) and
+  // was read by NOBODY. The table is UNIQUE(contact_id), so there is exactly ONE
+  // score per client no matter how many agents have worked them — and the score
+  // is computed from THAT agent's touchpoints. When a client changes hands the
+  // row keeps the old agent's id and the new agent reads a number describing a
+  // relationship that is not theirs, with nothing on the screen to say so. The
+  // id is the only thing that can say so, and nobody was asking for it.
+  const { data: engagementScores, error: engagementError } = await supabase
     .from("client_engagement_scores")
-    .select("contact_id, engagement_score:score, last_touchpoint_date:last_interaction, computed_at:calculated_at, referrals_given, touchpoints_count")
+    .select("contact_id, agent_id, engagement_score:score, last_touchpoint_date:last_interaction, computed_at:calculated_at, referrals_given, touchpoints_count")
     .in("contact_id", contactIds)
+  // §3 — a refused read must not render as "every client scores zero".
+  if (engagementError) {
+    console.error("[lifetime-customers] client_engagement_scores read refused:", engagementError.message)
+  }
 
   // Merge data together
   const transactionMap = new Map()
@@ -217,8 +271,30 @@ export async function getLifetimeCustomers({
     .map(c => ({
       ...c,
       transactions: transactionMap.get(c.id) || [],
-      client_engagement_scores: engagementMap.get(c.id) ? [engagementMap.get(c.id)] : []
+      client_engagement_scores: engagementMap.get(c.id) ? [engagementMap.get(c.id)] : [],
+      // §1.2 — TRUE when the one score on this client was computed for a
+      // DIFFERENT agent, so the surface can mark the number as somebody else's
+      // relationship instead of presenting it as this agent's own. False when
+      // the row has no agent_id at all: unknown provenance is not a claim that
+      // it belongs to someone else.
+      engagement_scored_by_other_agent:
+        !!engagementMap.get(c.id)?.agent_id && engagementMap.get(c.id)?.agent_id !== agentId,
     }))
+    // MOST-RECENT-CLOSING FIRST — carried from the removed duplicate
+    // (lifetime-customer-touchpoints.ts:getLifetimeCustomerContacts). This
+    // returned rows in whatever order PostgREST handed back, so the client the
+    // agent closed last week could sit below one from four years ago. The
+    // transaction alias here is `actual_close_date`, which is the same
+    // `close_date` column the duplicate sorted on.
+    .sort((a, b) => {
+      const latest = (c: any) => {
+        const times = (c.transactions ?? [])
+          .map((t: any) => new Date(t.actual_close_date).getTime())
+          .filter((n: number) => Number.isFinite(n))
+        return times.length ? Math.max(...times) : 0
+      }
+      return latest(b) - latest(a)
+    })
 
 
   return { success: true, clients: pastClients }
@@ -372,24 +448,53 @@ export async function getAISuggestedTouchpoint(contactId: string) {
   const supabase = await createClient()
   const { agentId, brokerageId } = await getAgentContext()
 
-  // Get contact info and last touchpoint
+  // Get contact info and last touchpoint.
+  //
+  // AMBIGUOUS EMBED — the `!transactions_contact_id_fkey` hint is load-bearing.
+  // `transactions` carries THREE foreign keys to `contacts`
+  // (transactions_contact_id_fkey, transactions_buyer_contact_id_fkey,
+  // transactions_seller_contact_id_fkey), so the bare `transactions(...)` this
+  // replaces could not be resolved and PostgREST refused the ENTIRE request with
+  // PGRST201 — taking the engagement scores down with it. The guard below then
+  // answered "Contact not found" for every lifetime customer, so this surface has
+  // only ever emitted the final `newsletter` fallback suggestion.
+  //
+  // `contact_id` is the party WE represent on the deal (documented on the canonical
+  // writer, lib/transactions/offer-bridge.ts:302) and is the same FK the sibling
+  // sphere actions this file imports from already name
+  // (app/actions/ai-sphere-management.ts:46). A lifetime customer is a past client of
+  // ours whether they bought or sold, so buyer_contact_id would drop every seller-side
+  // client and seller_contact_id every buyer-side one — and the anniversary touchpoint
+  // is owed to both.
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
     .select(`
-      *,
+      first_name, last_name,
       client_engagement_scores(engagement_score:score, last_touchpoint_date:last_interaction),
-      transactions(actual_close_date:close_date, property_address)
+      transactions!transactions_contact_id_fkey(actual_close_date:close_date, property_address)
     `)
     .eq("id", contactId)
     .single()
 
-  if (contactError || !contact) {
+  // Fail CLOSED and distinguish the two cases — supabase-js resolves a refused read,
+  // and a refusal is not a missing contact.
+  if (contactError) {
+    return { success: false, error: `Could not read that contact: ${contactError.message}` }
+  }
+  if (!contact) {
     return { success: false, error: "Contact not found" }
   }
 
   const lastTouchpointDate = contact.client_engagement_scores?.[0]?.last_touchpoint_date
   const engagementScore = contact.client_engagement_scores?.[0]?.engagement_score || 50
-  const closeDate = contact.transactions?.[0]?.actual_close_date
+  // Embedded rows come back UNORDERED, so `[0]` was an arbitrary deal. The
+  // anniversary worth congratulating is the MOST RECENT close — the home they are
+  // living in now, not one they moved out of years ago.
+  const closeDate = (contact.transactions ?? [])
+    .map((t: any) => t.actual_close_date)
+    .filter(Boolean)
+    .sort()
+    .reverse()[0] as string | undefined
 
   // Calculate days since last contact
   const daysSinceContact = lastTouchpointDate

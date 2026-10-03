@@ -23,9 +23,10 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
-import { recordMatchesTerritory } from '@/lib/lead-pipeline/source-intent-map'
+import { sentinelWrite } from '@/lib/kernel/write-sentinel'
+import { recordMatchesTerritory, recencyWindowForSource } from '@/lib/lead-pipeline/source-intent-map'
 import { resolveScrapeTerritoriesFrom } from '@/lib/lead-pipeline/scrape-territories'
-import type { NormalizedScrapedRecord } from '@/lib/lead-pipeline/raw-record-types'
+import { isWithinRecencyWindow, type NormalizedScrapedRecord } from '@/lib/lead-pipeline/raw-record-types'
 import {
   isViableRecord,
   buildLeadIdentityKey,
@@ -49,7 +50,8 @@ export interface ScrapingMarket {
   last_scraped_at: string | null
   lead_scraping_property_params: Array<{
     id: string
-    is_active: boolean
+    // NOTE: this table has no is_active column — the property params are active
+    // whenever the row exists. Selecting it made PostgREST reject the whole query.
     min_price?: number | null
     max_price?: number | null
     min_beds?: number | null
@@ -68,14 +70,51 @@ export interface ScrapingMarket {
 }
 
 export interface IngestRawSourceBatchParams {
-  brokerageId: string
-  marketId: string
+  /** null = PLATFORM-owned pool (scheduled/territory-driven scraping — brokerage_id stays
+   *  NULL until the promotion gate / Engine 1 distribution resolves an owner); a real id =
+   *  an EXPLICIT brokerage-configured/triggered scrape, owned by that brokerage immediately.
+   *  Drives raw_scraped_leads.source_origin ('platform' | 'brokerage') — never a body value. */
+  brokerageId: string | null
+  /** null = a non-territory, first-party source with no lead_scraping_markets row to attach to.
+   *  m648 (still APPLIED, still harmless) was written for lane 73A's inbound_email_unknown,
+   *  which no longer calls this function at all as of wave 74 (see
+   *  lib/lead-pipeline/unknown-sender-identification.ts's header tombstone — it now creates a
+   *  lead/contact DIRECTLY); the nullable column stays available to any other non-territory,
+   *  first-party source that reaches this path. Every territory-scraped source still passes a
+   *  real market id. Lane 85B (wave 85): inbound_email_unknown's BROKERAGE branch calls this
+   *  function again with marketId null (owner: "an unknown sender needs to go through enrichment
+   *  before lead gate") — processRawRecord resolves such a row's owner from its brokerage_id. */
+  marketId: string | null
   source: string
-  sourceFamily: string        // e.g. 'property_search' | 'motivated_seller' | 'social_intent'
+  // SCRAPE CATEGORY (e.g. 'property_search' | 'motivated_seller' | 'social_intent') — lands on
+  // raw_scraped_leads.scrape_category (m647), NEVER on source_family, whose live CHECK admits
+  // only the lineage vocabulary ('raw' | 'lead' | 'contact_direct', app/actions/source-analytics.ts
+  // SourceFamily). Written 'raw' unconditionally by this function. See m647's header for why.
+  sourceFamily: string
   sourceChannel: string       // e.g. 'zillow' | 'batchdata' | 'nextdoor' | 'reddit'
   sourceSubtype?: string      // e.g. 'fsbo' | 'motivated_owner' | 'search_signal'
   records: NormalizedScrapedRecord[]
   executionId: string | null
+  /** Caller-supplied market geography — skips the extra lead_scraping_markets round-trip
+   *  this function otherwise does per call when the caller already loaded it (the cron loads
+   *  it once per territory). Omit (undefined) to fall back to the DB lookup by marketId. */
+  marketGeo?: { city?: string | null; state?: string | null; zip_codes?: string[] | null } | null
+  /**
+   * WAVE 66 (raw_scraped_leads.cost_per_record writer — no writer existed before this).
+   * The TOTAL vendor ledger cost this caller metered for the WHOLE batch (the same figure
+   * meterVendorSpend/vendor_usage_tracking records for the market/lane — e.g. the cron's
+   * `sourceCostUsd`), divided per-record below and written on EVERY row inserted from this
+   * call. NEVER a per-record body value — a caller cannot hand a single record its own price;
+   * it can only hand the batch's real metered total, which this function then divides. Omit
+   * (undefined/null) when the caller has not metered a cost yet (or never will, e.g. BatchData's
+   * own vendor lane, which meters without a market_id) — cost_per_record is left null rather
+   * than fabricated (CLAUDE.md: "COST — recorded, never estimated", lib/analytics/territory-roi.ts).
+   * acquisition_cost (m634, live) sums this correctly once it is populated.
+   */
+  batchCostUsd?: number | null
+  /** Wave 91 (lane 91B): an explicit client-side recency window (days) for this batch. Omit
+   *  (undefined) to use the source's own SOURCE_RECENCY window; null/0 = no window. */
+  recencyDays?: number | null
 }
 
 export interface IngestBatchResult {
@@ -83,6 +122,11 @@ export interface IngestBatchResult {
   skipped_duplicate: number
   skipped_not_viable: number
   skipped_territory: number
+  /** Inserts the database REFUSED (not 23505) — lane 88F; they used to be counted as duplicates. */
+  skipped_refused: number
+  /** Wave 91 (lane 91B): DATED records older than their source's recency window — dropped before
+   *  the row exists, so they never reach enrichment spend. Undated records are kept. */
+  skipped_stale: number
   rawIds: string[]
 }
 
@@ -94,7 +138,10 @@ export interface NormalizeRawRecordParams {
 export interface NormalizedRawOutput {
   normalized_preview: Record<string, unknown>
   processing_status: 'pending'
+  /** The LINEAGE constant ('raw') — see m647. Not the scrape category. */
   source_family: string
+  /** The scrape-category classification (m647) — 'property_search' | 'motivated_seller' | ... */
+  scrape_category: string
   source_channel: string
   source_subtype: string
   identity_key: string | null
@@ -222,6 +269,20 @@ export interface ScrapingDiagnosticsData {
     started_at: string
     completed_at: string | null
   }>
+  /** BatchData Smart Search (V2 Property Subscription) registrations per market
+   *  (m633, wave 65) — the reconcile tick writes status/last_error/
+   *  last_reconciled_at/webhook_url; this is their ONE reader (diagnostics). */
+  smartSearchSubscriptions: Array<{
+    id: string
+    market_id: string
+    quicklist: string
+    subscription_id: string | null
+    status: string
+    webhook_url: string
+    last_error: string | null
+    last_reconciled_at: string | null
+    renewed_at: string | null
+  }>
   failedBatches: Array<{
     id: string
     scraper_type: string
@@ -233,6 +294,27 @@ export interface ScrapingDiagnosticsData {
     leads_created: number | null
     error_message: string | null
   }>
+  /**
+   * Dimensions whose read FAILED, so the panel above can say so instead of
+   * rendering an empty state.
+   *
+   * Every array on this interface used to be `result.data ?? []`, which turns
+   * "this query was refused" into "there is nothing here" — the six panels of a
+   * DIAGNOSTICS page, of all things, reporting a healthy zero for an outage.
+   * supabase-js RESOLVES a failed query, so nothing threw and nothing was
+   * logged. Empty is a legitimate answer for this page (the platform has no
+   * scraped data yet), which is exactly why it could not be told apart from a
+   * failure by looking.
+   *
+   * One entry per failed dimension, `dimension` matching the field it would
+   * have filled. Empty array = every read succeeded. Shaped after the
+   * `{ coverage, error }` pairs this page's own TenantCoverageCard already
+   * uses rather than app/actions/system-health.ts's HealthRead<T>: this loader
+   * runs on the SERVICE client, so a failure here is a broken query or an
+   * outage, never an authorization verdict, and HealthRead's `unauthorized` /
+   * `not_scoped` states would be states that cannot occur.
+   */
+  readErrors: Array<{ dimension: string; message: string }>
 }
 
 export interface RetryFailedBatchParams {
@@ -273,7 +355,7 @@ export async function runScrapeSourcesChronologically(
   const cronStartedAt = Date.now()
 
   // Open cron_execution_logs record
-  const { data: cronLog } = await supabase
+  const { data: cronLog, error: cronLogErr } = await supabase
     .from('cron_execution_logs')
     .insert({
       cron_name:    'lead-scraping',
@@ -286,13 +368,15 @@ export async function runScrapeSourcesChronologically(
     .maybeSingle()
 
   const cronLogId = (cronLog as any)?.id ?? null
+  // A refused run-log open is REPORTED on the run, never mistaken for "no log needed".
+  if (cronLogErr) console.error('[kernel/scraping] cron_execution_logs open refused:', cronLogErr.message)
 
   const result: RunScrapeResult = {
     marketsProcessed:      0,
     totalRawInserted:      0,
     totalDuplicatesSkipped: 0,
     cronLogId,
-    errors:                [],
+    errors:                cronLogErr ? [`cron_execution_logs open refused: ${cronLogErr.message}`] : [],
   }
 
   try {
@@ -310,7 +394,7 @@ export async function runScrapeSourcesChronologically(
         id, brokerage_id, name, city, state, zip_codes, counties,
         enabled_sources, monthly_budget_usd, spend_this_month,
         max_records_per_run, priority, last_scraped_at,
-        lead_scraping_property_params (id, is_active, min_price, max_price, min_beds, max_beds, days_on_market_min, property_types),
+        lead_scraping_property_params (id, min_price, max_price, min_beds, max_beds, days_on_market_min, property_types),
         lead_scraping_motivated_params (id, is_active, signal_types, lookback_days, facebook_group_urls, reddit_subreddits)
       `)
       .eq('is_active', true)
@@ -334,7 +418,7 @@ export async function runScrapeSourcesChronologically(
     const markets = resolution.territories
 
     // Write SCRAPING_CRON_STARTED lifecycle event
-    await supabase.from('lifecycle_events').insert({
+    await scrapeEvent(supabase, {
       entity_type: 'system',
       entity_id:   cronLogId ?? '00000000-0000-0000-0000-000000000000',
       event_type:  KernelEvent.SCRAPING_CRON_STARTED,
@@ -351,7 +435,7 @@ export async function runScrapeSourcesChronologically(
       // Budget gate — skip territory if monthly budget exhausted
       if ((market.spend_this_month ?? 0) >= (market.monthly_budget_usd ?? 100)) {
         result.errors.push(`Budget exhausted: ${market.name} ($${market.spend_this_month}/$${market.monthly_budget_usd})`)
-        await supabase.from('lifecycle_events').insert({
+        await scrapeEvent(supabase, {
           entity_type: 'system',
           entity_id:   market.id,
           event_type:  KernelEvent.SCRAPING_BUDGET_EXHAUSTED,
@@ -372,15 +456,15 @@ export async function runScrapeSourcesChronologically(
     // Update cron_execution_logs — success
     const durationMs = Date.now() - cronStartedAt
     if (cronLogId) {
-      await supabase.from('cron_execution_logs').update({
+      await sentinelWrite(supabase, supabase.from('cron_execution_logs').update({
         status:           'completed',
         duration_ms:      durationMs,
         records_processed: result.totalRawInserted,
         completed_at:     new Date().toISOString(),
-      }).eq('id', cronLogId)
+      }).eq('id', cronLogId), { table: 'cron_execution_logs', flow: 'scraping_run_log_close', brokerageId: params.brokerageId ?? null, reason: 'run-history row; the run result is returned to the caller either way' })
     }
 
-    await supabase.from('lifecycle_events').insert({
+    await scrapeEvent(supabase, {
       entity_type: 'system',
       entity_id:   cronLogId ?? '00000000-0000-0000-0000-000000000000',
       event_type:  KernelEvent.SCRAPING_CRON_COMPLETED,
@@ -395,15 +479,15 @@ export async function runScrapeSourcesChronologically(
     const durationMs = Date.now() - cronStartedAt
 
     if (cronLogId) {
-      await supabase.from('cron_execution_logs').update({
+      await sentinelWrite(supabase, supabase.from('cron_execution_logs').update({
         status:       'failed',
         duration_ms:  durationMs,
         error_message: msg,
         completed_at: new Date().toISOString(),
-      }).eq('id', cronLogId)
+      }).eq('id', cronLogId), { table: 'cron_execution_logs', flow: 'scraping_run_log_close', brokerageId: params.brokerageId ?? null, reason: 'run-history row on the failure path; the error is returned to the caller' })
     }
 
-    await supabase.from('lifecycle_events').insert({
+    await scrapeEvent(supabase, {
       entity_type: 'system',
       entity_id:   cronLogId ?? '00000000-0000-0000-0000-000000000000',
       event_type:  KernelEvent.SCRAPING_CRON_FAILED,
@@ -415,6 +499,31 @@ export async function runScrapeSourcesChronologically(
     result.errors.push(msg)
     return result
   }
+}
+
+// ─── scrapeEvent — every scraping lifecycle echo, DECLARED (lane 88F) ────────
+// Fourteen `await supabase.from('lifecycle_events').insert(…)` echoes dropped their
+// result (swallowed-refusal census). Each one is an AUDIT ECHO of a step whose own
+// write is read separately below — losing it must not fail the scrape, but it must
+// not vanish either: the sentinel ledgers the loss to self_heal_events for the repair
+// digest (service client — the ledger is reachable).
+async function scrapeEvent(
+  supabase: ReturnType<typeof createServiceClient>,
+  row: Record<string, unknown>,
+): Promise<boolean> {
+  // Lane 93D live walk: lifecycle_events.brokerage_id is NOT NULL, so a PLATFORM-pool echo
+  // (brokerage_id null until the promotion gate resolves an owner) is refused 23502 EVERY time,
+  // and each refusal was ledgered to self_heal_events as a "repair" that no repair can make.
+  // The platform run's audit lives on scraper_executions + raw_scraped_leads (both admit a null
+  // brokerage); the tenant-owned echo resumes once the record has an owner. Not a write attempt,
+  // so nothing is lost and nothing is reported as fixed.
+  if (!row.brokerage_id) return false
+  return sentinelWrite(supabase, supabase.from('lifecycle_events').insert(row), {
+    table: 'lifecycle_events',
+    flow: 'scraping_lifecycle_echo',
+    brokerageId: (row.brokerage_id as string | null | undefined) ?? null,
+    reason: 'audit echo of a scrape step; the step\'s own write is read where it happens',
+  })
 }
 
 // ─── 2. ingestRawSourceBatch ─────────────────────────────────────────────────
@@ -431,27 +540,39 @@ export async function ingestRawSourceBatch(
     skipped_duplicate: 0,
     skipped_not_viable: 0,
     skipped_territory: 0,
+    skipped_refused: 0,
+    skipped_stale: 0,
     rawIds: [],
   }
 
-  // Open scraper_executions record for this source batch
-  const execRecordResult = await supabase
-    .from('scraper_executions')
-    .insert({
-      brokerage_id:  params.brokerageId,
-      scraper_type:  params.source,
-      status:        'running',
-      started_at:    new Date().toISOString(),
-    })
-    .select('id')
-    .maybeSingle()
-    .then(r => r, () => ({ data: null }))
-  const execRecord = execRecordResult?.data
+  // PLATFORM ('platform') = scheduled, territory-driven, brokerage_id NULL until Engine 1 /
+  // the promotion gate resolves an owner. BROKERAGE ('brokerage') = an explicit brokerageId
+  // was handed in — a brokerage-configured/triggered scrape, owned immediately. Derived from
+  // which caller supplied what, never from a request body (CLAUDE.md §4).
+  const sourceOrigin: 'platform' | 'brokerage' = params.brokerageId ? 'brokerage' : 'platform'
 
-  const execId = (execRecord as any)?.id ?? params.executionId
+  // A caller that already opened a scraper_executions row for this run (the cron opens ONE
+  // per phase/source and fans multiple ingestRawSourceBatch calls into it) passes its id as
+  // executionId — reuse it instead of opening (and later stomping) a second row per call.
+  const ownsExecution = !params.executionId
+  let execId: string | null = params.executionId ?? null
+  if (ownsExecution) {
+    const execRecordResult = await supabase
+      .from('scraper_executions')
+      .insert({
+        brokerage_id:  params.brokerageId,
+        scraper_type:  params.source,
+        status:        'running',
+        started_at:    new Date().toISOString(),
+      })
+      .select('id')
+      .maybeSingle()
+      .then(r => r, () => ({ data: null }))
+    execId = (execRecordResult?.data as any)?.id ?? null
+  }
 
   // Emit SCRAPE_SOURCE_RUN_STARTED
-  await supabase.from('lifecycle_events').insert({
+  await scrapeEvent(supabase, {
     entity_type: 'system',
     entity_id:   params.marketId,
     event_type:  KernelEvent.SCRAPE_SOURCE_RUN_STARTED,
@@ -465,20 +586,54 @@ export async function ingestRawSourceBatch(
   // Load the scraped market's geography once for the INGEST territory gate — a lead
   // must belong to the active territory it was scraped for (recordMatchesTerritory
   // passes through no-/partial-geo records; the promotion gate re-checks post-enrichment).
-  const { data: gateMarket } = await supabase
-    .from("lead_scraping_markets")
-    .select("city, state, zip_codes")
-    .eq("id", params.marketId)
-    .maybeSingle()
-  const marketGeo = gateMarket
-    ? { city: (gateMarket as any).city, state: (gateMarket as any).state, zip_codes: (gateMarket as any).zip_codes }
-    : null
+  // A caller that already loaded the market (the cron loads it once per territory) passes
+  // marketGeo directly and this skips the round-trip; `undefined` (not passed) falls back
+  // to the DB lookup so callers like the territory-gate simulator are unaffected.
+  let marketGeo = params.marketGeo
+  if (marketGeo === undefined) {
+    // marketId null (lane 73A, m648: a non-territory first-party source) — there is no
+    // lead_scraping_markets row to look up at all; `.eq("id", null)` would be a malformed
+    // PostgREST filter, not an honest "no geography" answer, so this short-circuits instead.
+    const { data: gateMarket } = params.marketId
+      ? await supabase
+          .from("lead_scraping_markets")
+          .select("city, state, zip_codes")
+          .eq("id", params.marketId)
+          .maybeSingle()
+      : { data: null }
+    marketGeo = gateMarket
+      ? { city: (gateMarket as any).city, state: (gateMarket as any).state, zip_codes: (gateMarket as any).zip_codes }
+      : null
+  }
+
+  // raw_scraped_leads.cost_per_record WRITER (wave 66 finding — none existed). Derived from
+  // the BATCH'S ledger cost ÷ the records in this call, never a per-record body value. Every
+  // record that survives the viability/territory gates below and actually gets inserted shares
+  // the SAME per-record figure, because the vendor charged for the batch, not for any one row —
+  // dividing by the incoming count (not just the inserted count) is the honest denominator: a
+  // record dropped by the viability/territory gate still consumed its share of the call the
+  // vendor billed. null (never 0) when the caller has not metered a cost — 0 would read as "this
+  // vendor was free," which is a claim this function has no basis to make.
+  const costPerRecord: number | null =
+    typeof params.batchCostUsd === "number" && params.batchCostUsd > 0 && params.records.length > 0
+      ? params.batchCostUsd / params.records.length
+      : null
 
   try {
     for (const record of params.records) {
       // Gate 1 — viability: must have at least one identity signal
       if (!isViableRecord(record)) {
         result.skipped_not_viable++
+        continue
+      }
+
+      // Gate 1b — RECENCY (wave 91, lane 91B; owner: "we should only pull more recent data"). A
+      // DATED record older than its source's window (source-intent-map.ts SOURCE_RECENCY, or the
+      // caller's explicit recencyDays) is dropped HERE — before the raw row exists, so it can never
+      // reach PeopleData. Undated records are kept (nothing proves them stale).
+      const recencyDays = params.recencyDays !== undefined ? params.recencyDays : recencyWindowForSource(record.source)
+      if (!isWithinRecencyWindow(record, recencyDays)) {
+        result.skipped_stale++
         continue
       }
 
@@ -494,9 +649,22 @@ export async function ingestRawSourceBatch(
         .from('raw_scraped_leads')
         .insert({
           brokerage_id:         params.brokerageId,
+          // 'platform' (scheduled/territory-driven pool) | 'brokerage' (explicit brokerageId).
+          // Read downstream by pipeline-processor.ts (leads.brokerage_id/source_origin carry-
+          // forward) and lib/platform/distribution-engine.ts (Engine 1 only rotates 'platform').
+          source_origin:        sourceOrigin,
           market_id:            params.marketId,
           source:               record.source,
-          source_family:        params.sourceFamily,
+          // FIX (wave 70, lane 70C, m647): source_family carries a live CHECK restricted to the
+          // LINEAGE vocabulary ('raw' | 'lead' | 'contact_direct' — app/actions/source-analytics.ts
+          // SourceFamily) that source-analytics.ts's funnel grouping depends on. params.sourceFamily
+          // is a DIFFERENT concept — the SCRAPE CATEGORY ('property_search' | 'motivated_seller' |
+          // 'social_intent' | ...) — and writing it here violated that CHECK on every insert,
+          // silently (the catch-all error handling below buckets a CHECK-violation refusal into
+          // skipped_duplicate). Every raw record now gets its correct lineage value, and the scrape
+          // category moves to its own column (m647). See that migration's header for the full trace.
+          source_family:        'raw',
+          scrape_category:      params.sourceFamily,
           source_channel:       params.sourceChannel,
           source_subtype:       params.sourceSubtype ?? null,
           source_record_id:     record.sourceRecordId,
@@ -522,6 +690,17 @@ export async function ingestRawSourceBatch(
             lastName:        record.lastName        ?? null,
             email:           record.email           ?? null,
             phone:           record.phone           ?? null,
+            // lane 72B — was computed for isViableRecord()/buildLeadIdentityKey()
+            // above and then DROPPED: a post-author/handle-only record (no name,
+            // email or phone — the shape social_intent sources actually arrive
+            // in) survived to a raw_scraped_leads row but carried nothing that
+            // let PeopleData identify the person later (owner: "we use
+            // peopledata for finding a person's name etc. from raw leads that
+            // may come in from the scrapers especially from posts or
+            // behavioral signal intent online"). See
+            // lib/lead-pipeline/social-identity-resolve.ts::deriveSocialProfileUrl,
+            // the reader this now feeds.
+            username:        record.username        ?? null,
             city:            record.city            ?? null,
             state:           record.state           ?? null,
             zip:             record.zip             ?? null,
@@ -533,9 +712,18 @@ export async function ingestRawSourceBatch(
             mailingAddress:  record.mailingAddress  ?? null,
             sourceUrl:       record.sourceUrl       ?? null,
             leadIdentityKey: identityKey,
+            // Rich intent block (buyer/seller/investor/agent + persona + property-alert +
+            // matched phrases/addresses/prices) from the ZenRows/Exa page-level normalizers —
+            // read by the canonical lead-creation gate and the AI-ISA script selector downstream.
+            intent:          record.intent           ?? null,
+            // Lane 89B — ONE spelling: the vendor sold the person with this record (BatchData contact
+            // dataset). Read by pipeline-processor.ts to skip the PeopleData call — owner 2026-09-29:
+            // "…enriched by people data lab … unless we already paid for that lead data with the lead."
+            paid_person_data: record.paidPersonData === true,
           },
           processing_status:    'pending',
           scraper_execution_id: execId ?? null,
+          cost_per_record:      costPerRecord,
         })
         .select('id')
         .maybeSingle()
@@ -546,7 +734,10 @@ export async function ingestRawSourceBatch(
         continue
       }
       if (insertError || !inserted) {
-        result.skipped_duplicate++
+        // A REFUSAL is not a duplicate (lane 88F): this branch used to add it to
+        // skipped_duplicate, so an RLS/CHECK/PGRST204 refusal read as "already had it".
+        result.skipped_refused++
+        console.error('[kernel/scraping] raw_scraped_leads insert refused:', insertError?.message ?? 'no row returned')
         continue
       }
 
@@ -554,7 +745,7 @@ export async function ingestRawSourceBatch(
       result.rawIds.push((inserted as any).id)
 
       // Emit RAW_RECORD_CREATED per record — used for audit trail
-      await supabase.from('lifecycle_events').insert({
+      await scrapeEvent(supabase, {
         entity_type: 'raw_scraped_lead',
         entity_id:   (inserted as any).id,
         event_type:  KernelEvent.RAW_RECORD_CREATED,
@@ -564,17 +755,20 @@ export async function ingestRawSourceBatch(
       })
     }
 
-    // Close scraper_executions — completed
-    if (execId) {
-      await supabase.from('scraper_executions').update({
+    // Close scraper_executions — completed. Only when this call opened the row itself; a
+    // caller-supplied executionId (ownsExecution false) is a shared phase-level row the
+    // caller closes once after all its ingestRawSourceBatch calls, so it is never stomped
+    // mid-phase by an earlier sub-source batch finishing first.
+    if (execId && ownsExecution) {
+      await sentinelWrite(supabase, supabase.from('scraper_executions').update({
         status:            'completed',
         total_items_found: params.records.length,
         leads_created:     result.inserted,
         completed_at:      new Date().toISOString(),
-      }).eq('id', execId)
+      }).eq('id', execId), { table: 'scraper_executions', flow: 'scrape_execution_close', brokerageId: params.brokerageId ?? null, reason: 'execution bookkeeping; the batch counts are returned to the caller' })
     }
 
-    await supabase.from('lifecycle_events').insert({
+    await scrapeEvent(supabase, {
       entity_type: 'system',
       entity_id:   params.marketId,
       event_type:  KernelEvent.SCRAPE_SOURCE_RUN_COMPLETED,
@@ -586,15 +780,15 @@ export async function ingestRawSourceBatch(
   } catch (err) {
     batchError = err instanceof Error ? err : new Error(String(err))
 
-    if (execId) {
-      await supabase.from('scraper_executions').update({
+    if (execId && ownsExecution) {
+      await sentinelWrite(supabase, supabase.from('scraper_executions').update({
         status:        'failed',
         error_message: batchError.message,
         completed_at:  new Date().toISOString(),
-      }).eq('id', execId)
+      }).eq('id', execId), { table: 'scraper_executions', flow: 'scrape_execution_close', brokerageId: params.brokerageId ?? null, reason: 'execution bookkeeping on the failure path; scraper-health reads the ledger' })
     }
 
-    await supabase.from('lifecycle_events').insert({
+    await scrapeEvent(supabase, {
       entity_type: 'system',
       entity_id:   params.marketId,
       event_type:  KernelEvent.SCRAPE_SOURCE_RUN_FAILED,
@@ -630,6 +824,9 @@ export function normalizeRawSourceRecord(
       lastName:        record.lastName        ?? null,
       email:           record.email           ?? null,
       phone:           record.phone           ?? null,
+      // lane 72B — see the matching note in ingestRawSourceBatch's own
+      // normalized_preview build above; same field, same reader.
+      username:        record.username        ?? null,
       city:            record.city            ?? market.city ?? null,
       state:           record.state           ?? market.state ?? null,
       zip:             record.zip             ?? null,
@@ -644,9 +841,14 @@ export function normalizeRawSourceRecord(
       // Rich intent block (buyer/seller/investor/agent + persona + property-alert + addresses/prices)
       // populated by ZenRows + Exa normalizers; null when the scraper produced no scoreable text.
       intent:          record.intent          ?? null,
+      // Lane 89B — same field, same reader as ingestRawSourceBatch's build above.
+      paid_person_data: record.paidPersonData === true,
     },
     processing_status: 'pending',
-    source_family:     sourceFamily,
+    // m647: source_family is the LINEAGE constant the live CHECK admits; the scrape category
+    // this function derives moves to scrape_category (mirrors ingestRawSourceBatch's own fix).
+    source_family:     'raw',
+    scrape_category:   sourceFamily,
     source_channel:    sourceChannel,
     source_subtype:    sourceSubtype,
     identity_key:      identityKey,
@@ -670,6 +872,11 @@ function deriveSourceFamily(source: string): string {
 export async function dedupRawAgainstLeadAndContact(
   params: DedupRawParams,
 ): Promise<DedupResult> {
+  // EVERY query below is scoped to params.brokerageId. It always carried the tenant and
+  // never used it: on the service-role client, matching a scraped lead on email, phone or
+  // name alone made ANOTHER tenant's lead or contact the "duplicate", and handed their row
+  // id back as matchId to the promotion path. The name-only fallback (score 0.80) made
+  // that likely rather than theoretical — two tenants can easily both know a John Smith.
   const supabase = createServiceClient()
 
   const noMatch: DedupResult = {
@@ -687,6 +894,7 @@ export async function dedupRawAgainstLeadAndContact(
       const { data: lead } = await supabase
         .from('leads')
         .select('id, enrichment_confidence, email, phone')
+        .eq('brokerage_id', params.brokerageId)
         .eq('email', params.email)
         .eq('is_active', true)
         .maybeSingle()
@@ -710,6 +918,7 @@ export async function dedupRawAgainstLeadAndContact(
         const { data: lead } = await supabase
           .from('leads')
           .select('id, enrichment_confidence, email, phone')
+          .eq('brokerage_id', params.brokerageId)
           .eq('phone_digits', digits)
           .eq('is_active', true)
           .maybeSingle()
@@ -733,6 +942,7 @@ export async function dedupRawAgainstLeadAndContact(
       const { data: contact } = await supabase
         .from('contacts')
         .select('id, engagement_score, email, phone')
+        .eq('brokerage_id', params.brokerageId)
         .eq('email', params.email)
         .is('deleted_at', null)
         .maybeSingle()
@@ -769,6 +979,7 @@ export async function dedupRawAgainstLeadAndContact(
       const { data: rawCandidates } = await supabase
         .from('raw_scraped_leads')
         .select('id, lead_id, processing_status, created_at')
+        .eq('brokerage_id', params.brokerageId)
         .or(identityFilters)
         .neq('id', params.rawRecordId)
         .limit(25)
@@ -797,6 +1008,7 @@ export async function dedupRawAgainstLeadAndContact(
       const { data: leads } = await supabase
         .from('leads')
         .select('id, enrichment_confidence, first_name, last_name, email, phone')
+        .eq('brokerage_id', params.brokerageId)
         .eq('first_name', params.firstName)
         .eq('last_name', params.lastName)
         .eq('is_active', true)
@@ -831,7 +1043,7 @@ async function logDedupDecision(
   matchScore: number,
   reason: string,
 ) {
-  await supabase.from('lead_deduplication_log').insert({
+  await sentinelWrite(supabase, supabase.from('lead_deduplication_log').insert({
     raw_record_id:           params.rawRecordId,
     brokerage_id:            params.brokerageId,
     stage:                   params.stage,
@@ -842,9 +1054,9 @@ async function logDedupDecision(
     duplicate_of_lead_id:    matchType === 'lead'    ? matchId : null,
     duplicate_of_contact_id: matchType === 'contact' ? matchId : null,
     created_at:              new Date().toISOString(),
-  })
+  }), { table: 'lead_deduplication_log', flow: 'raw_dedup_audit', brokerageId: params.brokerageId ?? null, reason: 'audit row of a dedup decision the caller already acted on' })
 
-  await supabase.from('lifecycle_events').insert({
+  await scrapeEvent(supabase, {
     entity_type: 'raw_scraped_lead',
     entity_id:   params.rawRecordId,
     event_type:  KernelEvent.RAW_RECORD_DEDUPLICATED,
@@ -865,13 +1077,17 @@ export async function enrichRawRecord(
 
   try {
     // Update raw record to 'enriching'
-    await supabase
+    const { error: statusErr } = await supabase
       .from('raw_scraped_leads')
       .update({ processing_status: 'enriching', updated_at: new Date().toISOString() })
       .eq('id', params.rawRecordId)
+    if (statusErr) {
+      console.error('[kernel/scraping] raw_scraped_leads enriching flip refused:', statusErr.message)
+      return { queued: false, queueId: null }
+    }
 
     // Write to lead_enrichment_queue — the worker picks this up
-    const { data: queueEntry } = await supabase
+    const { data: queueEntry, error: queueErr } = await supabase
       .from('lead_enrichment_queue')
       .insert({
         brokerage_id:      params.brokerageId,
@@ -888,9 +1104,14 @@ export async function enrichRawRecord(
       .select('id')
       .maybeSingle()
 
+    if (queueErr || !queueEntry) {
+      // Not queued is not "queued with no id" — the caller is told (lane 88F).
+      console.error('[kernel/scraping] lead_enrichment_queue insert refused:', queueErr?.message ?? 'no row returned')
+      return { queued: false, queueId: null }
+    }
     const queueId = (queueEntry as any)?.id ?? null
 
-    await supabase.from('lifecycle_events').insert({
+    await scrapeEvent(supabase, {
       entity_type: 'raw_scraped_lead',
       entity_id:   params.rawRecordId,
       event_type:  KernelEvent.RAW_RECORD_ENRICHED,
@@ -936,10 +1157,11 @@ export async function gateRawRecordToLead(
         ((market as any).zip_codes?.includes(params.normalizedZip))
 
       if (!inTerritory) {
-        await supabase.from('raw_scraped_leads')
+        const { error: tmErr } = await supabase.from('raw_scraped_leads')
           .update({ processing_status: 'territory_mismatch', updated_at: new Date().toISOString() })
           .eq('id', params.rawRecordId)
-        await supabase.from('lifecycle_events').insert({
+        if (tmErr) console.error('[kernel/scraping] territory_mismatch status write refused:', tmErr.message)
+        await scrapeEvent(supabase, {
           entity_type: 'raw_scraped_lead',
           entity_id:   params.rawRecordId,
           event_type:  KernelEvent.RAW_RECORD_TERRITORY_GATED,
@@ -947,17 +1169,18 @@ export async function gateRawRecordToLead(
           metadata:    { record_city: recordCity, market_city: marketCity },
           created_at:  new Date().toISOString(),
         })
-        return { decision: 'territory_mismatch', reason: `Record city ${recordCity} outside market ${marketCity}, ${marketState}` }
+        return { decision: 'territory_mismatch', reason: `Record city ${recordCity} outside market ${marketCity}, ${marketState}${tmErr ? ` (status write refused: ${tmErr.message})` : ''}` }
       }
     }
   }
 
   // Identity gate — require at least one usable anchor before enrichment spend
   if (!params.passesIdentityGate) {
-    await supabase.from('raw_scraped_leads')
+    const { error: idErr } = await supabase.from('raw_scraped_leads')
       .update({ processing_status: 'insufficient_identity', updated_at: new Date().toISOString() })
       .eq('id', params.rawRecordId)
-    await supabase.from('lifecycle_events').insert({
+    if (idErr) console.error('[kernel/scraping] insufficient_identity status write refused:', idErr.message)
+    await scrapeEvent(supabase, {
       entity_type: 'raw_scraped_lead',
       entity_id:   params.rawRecordId,
       event_type:  KernelEvent.RAW_RECORD_IDENTITY_GATED,
@@ -965,10 +1188,10 @@ export async function gateRawRecordToLead(
       metadata:    {},
       created_at:  new Date().toISOString(),
     })
-    return { decision: 'insufficient_identity', reason: 'No email, phone, full name+location, or property address' }
+    return { decision: 'insufficient_identity', reason: `No email, phone, full name+location, or property address${idErr ? ` (status write refused: ${idErr.message})` : ''}` }
   }
 
-  await supabase.from('lifecycle_events').insert({
+  await scrapeEvent(supabase, {
     entity_type: 'raw_scraped_lead',
     entity_id:   params.rawRecordId,
     event_type:  KernelEvent.RAW_RECORD_VIABILITY_GATED,
@@ -991,6 +1214,20 @@ export async function loadScrapingDiagnostics(
   const supabase = createServiceClient()
   const limit = params.limit ?? 50
 
+  // The tenant disjunction is applied while the chain is still a FILTER builder.
+  // `.or()` is declared on PostgrestFilterBuilder; `.order()` / `.limit()` return
+  // a PostgrestTransformBuilder, which does not declare it — so scoping after
+  // those would still run but would not type-check.
+  const cronBase = supabase
+    .from('cron_execution_logs')
+    .select('id, cron_name, cron_path, status, duration_ms, records_processed, error_message, started_at, completed_at')
+
+  const cronQuery = (params.brokerageId
+    ? cronBase.or(`brokerage_id.is.null,brokerage_id.eq.${params.brokerageId}`)
+    : cronBase)
+    .order('started_at', { ascending: false })
+    .limit(30)
+
   const [
     marketsResult,
     executionsResult,
@@ -998,6 +1235,7 @@ export async function loadScrapingDiagnostics(
     dedupResult,
     cronResult,
     failedBatchesResult,
+    smartSearchResult,
   ] = await Promise.all([
     supabase
       .from('lead_scraping_markets')
@@ -1025,12 +1263,28 @@ export async function loadScrapingDiagnostics(
       .order('created_at', { ascending: false })
       .limit(100),
 
-    // Cron run history
-    supabase
-      .from('cron_execution_logs')
-      .select('id, cron_name, cron_path, status, duration_ms, records_processed, error_message, started_at, completed_at')
-      .order('started_at', { ascending: false })
-      .limit(30),
+    // Cron run history.
+    //
+    // TENANT SCOPE — this runs on a SERVICE client, so RLS is bypassed and the
+    // predicate below IS the boundary. It is written to compute exactly what
+    // `cron_execution_logs`' own SELECT policy computes for a session client:
+    //
+    //     (brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())
+    //
+    // `params.brokerageId` is undefined ONLY for a platform admin — the single
+    // caller, app/dashboard/admin/scrape-diagnostics/page.tsx, passes
+    // `userType === "superadmin" ? undefined : brokerageId` behind an
+    // admin/broker/superadmin gate. So: a superadmin sees every tenant's runs; a
+    // broker sees their OWN tenant's runs plus the untenanted platform sweeps,
+    // and never another tenant's job names or failure messages.
+    //
+    // IT IS AN `.or()`, NOT AN `.eq()`, AND THAT IS THE WHOLE POINT. `NULL =
+    // <uuid>` is NULL, so an `.eq()` would silently drop every platform sweep —
+    // and every row this ledger currently receives is one: all 130
+    // `createCronRunContextAction` call sites pass no brokerage_id, and the two
+    // direct writers (api/cron/health-check, api/cron/contact-enrichment) stamp
+    // an explicit `brokerage_id: null`. An `.eq()` would leave this panel blank.
+    cronQuery,
 
     // Failed batches — retryable
     supabase
@@ -1039,7 +1293,33 @@ export async function loadScrapingDiagnostics(
       .eq('status', 'failed')
       .order('started_at', { ascending: false })
       .limit(20),
+    supabase
+      .from('batchdata_smart_search_subscriptions')
+      .select('id, market_id, quicklist, subscription_id, status, webhook_url, last_error, last_reconciled_at, renewed_at')
+      .order('last_reconciled_at', { ascending: false, nullsFirst: false })
+      .limit(limit)
   ])
+
+  // A REFUSED READ IS NOT AN EMPTY ONE. supabase-js RESOLVES a failed query, so
+  // every `result.data ?? []` below used to render a broken read as a healthy
+  // zero — on the page whose whole purpose is telling the operator what the
+  // pipeline is doing. Nothing threw and nothing was logged. Empty is a
+  // legitimate answer here (the platform has no scraped data yet), which is
+  // precisely why a failure could not be told apart from one by looking.
+  const readErrors: ScrapingDiagnosticsData['readErrors'] = []
+  const collect = (dimension: string, result: { error: { message: string } | null }) => {
+    if (result.error) {
+      console.error(`[scraping-diagnostics] ${dimension} read FAILED: ${result.error.message}`)
+      readErrors.push({ dimension, message: result.error.message })
+    }
+  }
+  collect('markets',        marketsResult)
+  collect('executions',     executionsResult)
+  collect('funnel',         rawLeadsResult)     // funnel + gatingDecisions both derive from this
+  collect('dedupDecisions', dedupResult)
+  collect('cronHistory',    cronResult)
+  collect('smartSearchSubscriptions', smartSearchResult)
+  collect('failedBatches',  failedBatchesResult)
 
   // Apply brokerage filter to executions if provided
   const executions = ((executionsResult.data ?? []) as any[]).filter(
@@ -1091,6 +1371,8 @@ export async function loadScrapingDiagnostics(
     gatingDecisions,
     cronHistory:    (cronResult.data       ?? []) as ScrapingDiagnosticsData['cronHistory'],
     failedBatches:  (failedBatchesResult.data ?? []) as ScrapingDiagnosticsData['failedBatches'],
+    smartSearchSubscriptions: (smartSearchResult.data ?? []) as ScrapingDiagnosticsData['smartSearchSubscriptions'],
+    readErrors,
   }
 }
 
@@ -1131,7 +1413,7 @@ export async function retryFailedSourceBatch(
     }
 
     // Reset raw records to pending
-    await supabase
+    const { data: requeued, error: requeueErr } = await supabase
       .from('raw_scraped_leads')
       .update({
         processing_status: 'pending',
@@ -1139,9 +1421,14 @@ export async function retryFailedSourceBatch(
         updated_at:        new Date().toISOString(),
       })
       .in('id', recordIds)
+      .select('id')
+    if (requeueErr) {
+      return { success: false, rawRecordsRequeued: 0, error: `raw_scraped_leads requeue refused: ${requeueErr.message}` }
+    }
+    const requeuedCount = (requeued ?? []).length
 
     // Reset execution status
-    await supabase
+    const { error: execResetErr } = await supabase
       .from('scraper_executions')
       .update({
         status:        'pending',
@@ -1150,22 +1437,25 @@ export async function retryFailedSourceBatch(
         leads_created: 0,
       })
       .eq('id', params.executionId)
+    if (execResetErr) {
+      return { success: false, rawRecordsRequeued: requeuedCount, error: `${requeuedCount} record(s) requeued but the execution reset was refused: ${execResetErr.message}` }
+    }
 
     // Emit SCRAPE_BATCH_RETRIED event
-    await supabase.from('lifecycle_events').insert({
+    await scrapeEvent(supabase, {
       entity_type: 'scraper_execution',
       entity_id:   params.executionId,
       event_type:  KernelEvent.SCRAPE_BATCH_RETRIED,
       brokerage_id: params.brokerageId,
       metadata:    {
-        records_requeued: recordIds.length,
+        records_requeued: requeuedCount,
         retried_by:       params.retriedByUserId,
         scraper_type:     (execution as any).scraper_type,
       },
       created_at:   new Date().toISOString(),
     })
 
-    return { success: true, rawRecordsRequeued: recordIds.length, error: null }
+    return { success: true, rawRecordsRequeued: requeuedCount, error: null }
   } catch (err) {
     return { success: false, rawRecordsRequeued: 0, error: err instanceof Error ? err.message : String(err) }
   }

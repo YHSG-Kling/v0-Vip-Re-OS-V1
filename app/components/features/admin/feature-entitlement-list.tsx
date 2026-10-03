@@ -35,11 +35,12 @@ export function FeatureEntitlementList({ brokerageId }: FeatureEntitlementListPr
     try {
       setLoading(true)
       const response = await fetch(`/api/admin/billing/dashboard?brokerageId=${brokerageId}`)
+      const data = await response.json().catch(() => ({}))
 
-      if (!response.ok) throw new Error("Failed to fetch features")
+      if (!response.ok) throw new Error(data.error ?? "Failed to fetch features")
 
-      const data = await response.json()
       setFeatures(data.features || [])
+      setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
     } finally {
@@ -67,7 +68,10 @@ export function FeatureEntitlementList({ brokerageId }: FeatureEntitlementListPr
         }
       )
 
-      if (!response.ok) throw new Error("Failed to apply trial")
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data.error ?? "Failed to apply trial")
+      }
 
       await fetchFeatures()
     } catch (err) {
@@ -87,6 +91,12 @@ export function FeatureEntitlementList({ brokerageId }: FeatureEntitlementListPr
         <CardTitle>Feature Entitlements</CardTitle>
       </CardHeader>
       <CardContent>
+        {error && (
+          <div className="mb-3 flex items-center gap-2 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+            {error}
+          </div>
+        )}
         <div className="space-y-2">
           {features.map((feature) => {
             const isTrialExpired = feature.trialEndsAt && new Date(feature.trialEndsAt) < new Date()

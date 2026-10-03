@@ -29,6 +29,7 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 
 const ROOT = process.cwd()
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8")
@@ -49,10 +50,18 @@ function check(name: string, cond: boolean, detail?: string) {
 console.log("\n[1 · all emit paths converge on dispatchKernelEvent]")
 check("processKernelEvent (the ~79 direct callers' entry) dispatches into the reactor",
   /dispatchKernelEvent\s*\(/.test(notifSrc) && /event-reactor/.test(notifSrc))
-check("emit.ts routes through fanOutKernelEvent (audit + fan-out)",
-  /fanOutKernelEvent\s*\(/.test(emitSrc))
-check("fanOutKernelEvent forwards into processKernelEvent (no separate portal path to drift)",
-  /processKernelEvent\s*\(/.test(fanoutSrc))
+// 2026-09-03 — fanOutKernelEvent was folded onto emitKernelEvent (§6, one spelling):
+// emit.ts now calls processKernelEvent itself, and event-fanout.ts keeps only the
+// reactor's client channels (templates + writers). Read comment-STRIPPED (§2): the
+// tombstone in event-fanout.ts quotes the retired name and the raw file would match.
+check("emit.ts routes into processKernelEvent itself (audit row + fan-out, one entry)",
+  /processKernelEvent\s*\(/.test(stripComments(emitSrc)))
+check("event-fanout.ts no longer carries a second fan-out entry (fanOutKernelEvent retired)",
+  !/fanOutKernelEvent/.test(stripComments(fanoutSrc)) && !/processKernelEvent/.test(stripComments(fanoutSrc)))
+check("emit.ts gates the fan-out on the KernelEvent enum (free-form strings are audit-only)",
+  /isKernelEventValue\s*\(/.test(stripComments(emitSrc)) && /Object\.values\(KernelEvent\)/.test(stripComments(emitSrc)))
+check("emit.ts forwards suppressEnrollment (the feedback-loop guard the old forwarder dropped)",
+  /suppressEnrollment:\s*input\.suppressEnrollment/.test(stripComments(emitSrc)))
 
 // ── 2. The reactor fans out ALL THREE client channels ───────────────────────
 console.log("\n[2 · reactor fans out portal + enrollment + bell for every event]")

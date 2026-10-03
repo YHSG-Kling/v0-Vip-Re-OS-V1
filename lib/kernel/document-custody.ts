@@ -49,6 +49,21 @@ type Svc = ReturnType<typeof createServiceClient>
 // Re-export the bucket constant so custody callers have one import surface.
 export { DOCUMENT_BUCKET, parseBucketObjectPath }
 
+// URL ISSUANCE ONLY. The classification of which buckets may serve a permanent
+// unauthenticated URL, and the write-time router that honours it, live in
+// lib/storage/document-buckets.ts. They are re-exported here — and NOT
+// re-implemented — so "how a document URL is issued" has exactly one spelling
+// (CLAUDE.md §6): issueGovernedDocumentUrl below governs a READ of a
+// client_documents row (short purpose-scoped TTL + document_access_log row);
+// issueBucketObjectUrl governs the URL a WRITER persists after storing bytes.
+// Nothing else in this file is touched by that lane.
+export {
+  isDocumentClassBucket,
+  issueBucketObjectUrl,
+  DOCUMENT_CLASS_BUCKETS,
+  PUBLIC_MEDIA_BUCKETS,
+} from "@/lib/storage/document-buckets"
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Layer 1 — PURE retention policy (a DATA map, honest defaults; no I/O)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -299,7 +314,7 @@ export async function issueGovernedDocumentUrl(
   // 4. RECORD the access on the existing document_access_log rail (best-effort).
   let auditId: string | undefined
   try {
-    const { data: logRow } = await supabase
+    const { data: logRow, error: accessLogErr } = await supabase
       .from("document_access_log")
       .insert({
         document_id: documentId,
@@ -312,6 +327,9 @@ export async function issueGovernedDocumentUrl(
       })
       .select("id")
       .maybeSingle()
+    // Best-effort (the URL stands), but a refused custody row is logged — callers
+    // that require the row see auditId undefined.
+    if (accessLogErr) console.error(`[document-custody] access to document ${documentId} NOT recorded on document_access_log: ${accessLogErr.message}`)
     auditId = (logRow as { id?: string } | null)?.id
   } catch {
     // The URL is valid; an audit hiccup must not void it. (Reason left unset — the

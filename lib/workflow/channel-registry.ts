@@ -38,6 +38,30 @@ export interface StepContext {
   supabase: SupabaseClient
 }
 
+/**
+ * ACTION LEDGER context for a sequence step's send (wave 98, lane 98B) — every adapter that
+ * dispatches passes this as `DispatchActorContext.ledger`. WHY = CAMPAIGN_STEP; the unit of "once"
+ * is (enrollment, step), so a step the worker re-picks (crash between the send and the
+ * current_step advance) replays instead of sending twice. The subject is the real recipient class
+ * (a lead enrollment loads the leads row into `contact`).
+ */
+export function sequenceStepLedger(ctx: Pick<StepContext, "enrollmentId" | "step" | "contact" | "entity">): {
+  reasonCode: "CAMPAIGN_STEP"
+  reasonDetail: string
+  cycle: string
+  subject?: { type: "contact" | "lead"; id: string }
+  detail: { sequence_id: string; step_id: string }
+} {
+  return {
+    reasonCode: "CAMPAIGN_STEP",
+    reasonDetail: `sequence ${ctx.step.sequence_id} step ${ctx.step.id}`,
+    cycle: `enrollment:${ctx.enrollmentId}:step:${ctx.step.id}`,
+    // Wave 100A: the campaign this send belongs to, for outcome → revenue attribution by campaign.
+    detail: { sequence_id: String(ctx.step.sequence_id), step_id: String(ctx.step.id) },
+    ...(ctx.contact?.id ? { subject: { type: ctx.entity === "lead" ? "lead" as const : "contact" as const, id: ctx.contact.id } } : {}),
+  }
+}
+
 export interface ContactRow {
   id: string
   first_name: string | null

@@ -4,20 +4,164 @@
 //               vendor-tracking.ts, /api/cron/contact-enrichment
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 import { skipTraceWithPeopleData } from '@/lib/external/peopledata-client'
 import { scrubPhonesForPatch } from '@/lib/compliance/phone-scrub-runner'
-import { peopleDataProfileToContactColumns, peopleDataProfileToLeadColumns } from '@/lib/lead-pipeline/enrichment-column-map'
+import {
+  peopleDataProfileToContactColumns, peopleDataProfileToLeadColumns, buildPeopleDataProfile,
+  batchDataPropertyEnrichmentToLeadColumns, batchDataPropertyEnrichmentToContactColumns,
+  carryForwardHouseholdFinancials,
+  stampFieldProvenance, withFieldProvenance, fieldProvenanceOf, peopleDataContactPointProvenance,
+} from '@/lib/lead-pipeline/enrichment-column-map'
 import { trackVendorUsageService } from '@/lib/vendor-governance'
+import { meterVendorSpend } from '@/lib/vendor-governance/meter-vendor'
+// THE ONE BATCHDATA GATE + the owner-contact provider route (wave 80B / 81B) are
+// imported DYNAMICALLY at their call sites (same reason as queueContactEnrichment
+// below: the rail's transports must not join this module's static graph, which
+// test:compliance-scope walks).
 import {
   handleLeadScored,
   processKernelEvent,
 } from '@/lib/kernel'
 import { KernelEvent } from '@/lib/kernel/events'
-import { MAX_RETRIES, enrichmentRetryOutcome } from './enrichment-retry'
+import { MAX_RETRIES, enrichmentRetryOutcome, classifyEnrichmentFault, escalateConfigFaultOnce } from './enrichment-retry'
+import { isContactInLiveDeal } from '@/lib/enrichment/deal-suppression'
+// PURE (no server-only) — the one "which contact points are worth buying" rule (lane 93D2).
+import { contactPointsToBuy } from '@/lib/enrichment/identifier-guard'
+import { PEOPLEDATA_MATCH_COST_USD } from '@/lib/external/peopledata-client'
+import {
+  planEnrichmentLane,
+  runFreeOsintLane,
+  describeFreeLane,
+  type FreeOsintInput,
+  type FreeOsintLaneResult,
+} from '@/lib/external/osint-free'
+// NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
+// not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
+/**
+ * Lane 83A (wave 83, owner verbatim: "we need the richer demographics for raw leads and leads,
+ * etc") — a row whose CONTACT POINTS BatchData matched still buys the PeopleData person PROFILE
+ * (demographics). Reverses lane 81B's profile-skip. scripts/lead-demographics-guard.ts pins it on.
+ */
+export const DEMOGRAPHICS_AFTER_CONTACT_MATCH = true
+
+// `server-only` (it holds the service client and the paid PeopleData/OSINT
+// clients), and a static import here would pull that into every module graph
+// that reaches this file — including the plain `tsx` guard simulators, which are
+// not a server component and crash on `server-only` at load. lib/kernel/crm.ts
+// already used the dynamic form for exactly this reason; these call sites were
+// the inconsistency. The queue call is best-effort and already awaited/voided,
+// so deferring the import costs nothing.
 
 const BATCH_SIZE = 10
 
+/**
+ * The owner-contact lane's WORST-CASE per-record charge, PRE-FLIGHTED so the
+ * budget check can never admit a call the ledger then books higher (wave 72
+ * integration). Since wave 81B the route asks BatchData first ($0.07/match) and
+ * PeopleData only on a miss ($0.25/match) — the pre-flight stays at the dearer
+ * figure because a single row can still reach both. The ledger records the cost
+ * each client actually reports.
+ */
+const PEOPLEDATA_UNIT_COST = PEOPLEDATA_MATCH_COST_USD
+
 type EntityType = 'lead' | 'contact'
+
+/** Lane 87F — every paid enrichment booking names the person it was for (lead → vendor_usage_tracking.lead_id,
+ *  contact → request_metadata.contactId), so lib/lead-intelligence/person-spend.ts can put it on that
+ *  person's cost and lib/contact-promotion/acquisition-cost.ts can carry it through conversion. */
+/** The ONE spelling of "which leg produced the contact points" (profile, ledger note, provider column). */
+function contactLaneOf(via: 'v3' | 'reverse' | 'versium'): string {
+  return via === 'versium' ? 'versium_contact_append' : via === 'reverse' ? 'batchdata_reverse_skip_trace' : 'batchdata_skip_trace'
+}
+
+/** Wave 100 (lane 100C) — provenance for the contact points a skip-trace / append leg supplied, through
+ *  THE ONE writer (enrichment-column-map.ts::stampFieldProvenance). The reverse leg was ASKED with the
+ *  row's own email, so it never stamps `email` when the row already had one (that email is not its). */
+function contactPointProvenance(
+  leg: { phones: string[]; emails: string[]; via: 'v3' | 'reverse' | 'versium'; person?: { firstName: string | null } | null },
+  entity: Record<string, unknown>,
+): Record<string, unknown> {
+  const fields: string[] = []
+  if (leg.phones.length > 0) fields.push('phone')
+  if (leg.emails.length > 0 && !(leg.via === 'reverse' && entity.email)) fields.push('email')
+  if (leg.via === 'reverse' && leg.person?.firstName && !(entity.first_name || entity.last_name)) fields.push('first_name', 'last_name')
+  return stampFieldProvenance(fields, {
+    source: contactLaneOf(leg.via),
+    capability: leg.via === 'versium' ? 'person.enrich_contact' : 'person.skip_trace',
+    purpose: leg.via === 'versium' ? 'enrichment' : 'skip_trace',
+  })
+}
+
+function personAttribution(entityType: EntityType, entityId: string): { leadId?: string; contactId?: string } {
+  return entityType === 'lead' ? { leadId: entityId } : { contactId: entityId }
+}
+
+/**
+ * Columns the entity read needs, per table. Two lists because leads and contacts
+ * are different tables with different columns — verified live: `leads` carries
+ * address/city/state/zip_code/property_zip_code/lat/lng, `contacts` carries
+ * address/city/state/zip_code and has NO lat/lng. Selecting a column a table does
+ * not have makes supabase-js resolve with an error, and this drain would then read
+ * `entity` as missing and fail an otherwise-enrichable row.
+ */
+const ENTITY_COLUMNS: Record<EntityType, string> = {
+  lead: 'id, first_name, last_name, email, phone, enrichment_profile, address, city, state, zip_code, property_zip_code, mailing_address, mailing_city, mailing_state, mailing_zip, lat, lng, source, source_channel',
+  contact: 'id, first_name, last_name, email, phone, enrichment_profile, address, city, state, zip_code, mailing_address, mailing_city, mailing_state, mailing_zip, source, source_channel, property_records',
+}
+
+/** PURE — does this row trace back to a BatchData source? Gates the property-enrichment
+ *  step below so it only spends on records BatchData's own datasets are actually about —
+ *  the same posture lib/lead-pipeline/pipeline-processor.ts already uses for BatchRank
+ *  (`rec.source === "batchdata_motivated" || rec.source === "expired_listing"`). */
+function isBatchDataOrigin(entity: Record<string, unknown>): boolean {
+  const source = String(entity.source ?? '').toLowerCase()
+  const channel = String(entity.source_channel ?? '').toLowerCase()
+  return source.includes('batchdata') || channel.includes('batchdata') || source === 'expired_listing'
+}
+
+/**
+ * PURE. The place-keyed inputs the FREE OSINT lane can work from, preferring the
+ * record's own address and falling back to the mailing address. Returns the parts
+ * as-is; the free lane decides what it can ask with them.
+ */
+function freeLaneInputFor(entity: Record<string, unknown>): FreeOsintInput {
+  const s = (v: unknown): string | null => {
+    const t = (v ?? '').toString().trim()
+    return t.length > 0 ? t : null
+  }
+  return {
+    address: s(entity.address) ?? s(entity.mailing_address),
+    city: s(entity.city) ?? s(entity.mailing_city),
+    state: s(entity.state) ?? s(entity.mailing_state),
+    zip: s(entity.zip_code) ?? s(entity.property_zip_code) ?? s(entity.mailing_zip),
+  }
+}
+
+/**
+ * The free lane's facts, shaped for the enrichment_profile JSONB. Deliberately
+ * nested under its own `osint_free` key and using AREA-scoped field names, so a
+ * downstream reader can never mistake a ZIP median for this person's home value
+ * or a free geocode for a paid skip-trace fact.
+ */
+function freeLaneProfileBlock(free: FreeOsintLaneResult): Record<string, unknown> {
+  return {
+    lane: free.lane,
+    cost: free.cost,
+    captured_at: new Date().toISOString(),
+    reachable: free.reachable,
+    answered: free.answered,
+    lat: free.facts.lat,
+    lng: free.facts.lng,
+    area_median_home_value_zip: free.facts.areaMedianHomeValueZip,
+    area_median_home_value_year: free.facts.areaMedianHomeValueYear,
+    area_appreciation: free.facts.areaAppreciation,
+    neighborhood_amenities: free.facts.neighborhoodAmenities,
+    unavailable: free.unavailable,
+    // Stated on every row so nothing downstream has to remember it.
+    scope_note: 'Place-keyed AREA data from keyless public sources (OSM + US Census). NOT a person record and NOT a valuation of a specific home.',
+  }
+}
 
 interface QueueEntry {
   id: string
@@ -36,6 +180,12 @@ interface EnrichmentResult {
   succeeded: number
   failed: number
   totalCost: number
+  /** Rows the FREE OSINT lane contributed to (at $0). Reported separately from
+   *  `succeeded` so a caller can never read free coverage as paid coverage. */
+  freeLaneRuns: number
+  /** Rows where the paid person lane was REQUIRED but withheld (budget). These
+   *  are NOT counted as succeeded — the person question went unanswered. */
+  paidWithheld: number
 }
 
 export async function processEnrichmentQueue(
@@ -47,6 +197,8 @@ export async function processEnrichmentQueue(
     succeeded: 0,
     failed: 0,
     totalCost: 0,
+    freeLaneRuns: 0,
+    paidWithheld: 0,
   }
 
   // Fetch pending batch
@@ -72,51 +224,521 @@ export async function processEnrichmentQueue(
     // Raw-record rows (both null) are enriched inline by the pipeline, not via
     // this queue — fail them with a clear reason instead of looping retries.
     if (!entry.lead_id && !entry.contact_id) {
-      await supabase
+      const { error: guardErr } = await supabase
         .from('lead_enrichment_queue')
         .update({ status: 'failed', error_message: 'No lead_id or contact_id to enrich' })
         .eq('id', entry.id)
+      if (guardErr) console.error(`[enrichment-orchestrator] queue ${entry.id} fail-mark refused:`, guardErr.message)
+      result.failed++
       continue
     }
 
-    // Step 1: Mark processing
-    await supabase
+    // Step 1: CLAIM (pending → processing), COUNTED (lane 88F). This was a bare update
+    // whose result was dropped: a refusal left the row 'pending' while the paid lanes ran
+    // anyway, and a concurrent drain could run the same row twice. Only the run that moves
+    // it out of 'pending' works it; a refused claim is a failure, a lost race is a skip.
+    const { data: claimed, error: claimErr } = await supabase
       .from('lead_enrichment_queue')
       .update({ status: 'processing' })
       .eq('id', entry.id)
+      .eq('status', 'pending')
+      .select('id')
+    if (claimErr) {
+      console.error(`[enrichment-orchestrator] queue ${entry.id} claim refused:`, claimErr.message)
+      result.failed++
+      continue
+    }
+    if ((claimed ?? []).length === 0) continue
 
     // Step 2: Determine entity type
     const entityType: EntityType = entry.lead_id ? 'lead' : 'contact'
     const entityId = (entry.lead_id ?? entry.contact_id) as string
+
+    // ── Step 2a: THE OWNER'S SUPPRESSION RULE ────────────────────────────────
+    // "…but not if they have an active listing or an active transaction; just
+    // before or after." This is the LAST gate before money is spent, and it is
+    // re-asked here even though the queue writer already asked it: a contact can
+    // sign a listing agreement or go under contract between being queued and
+    // being drained, and the drain runs on a 15-minute cron.
+    //
+    // Only CONTACTS are checked. A `leads` row is by definition pre-contact —
+    // leads.id and contacts.id are disjoint id spaces, so passing a lead id to a
+    // contact-keyed predicate would ask a question about the wrong row.
+    //
+    // isContactInLiveDeal FAILS CLOSED: an unreadable listings/transactions read
+    // returns "in a live deal", so a broken read stops spend instead of
+    // releasing it.
+    if (entityType === 'contact') {
+      const verdict = await isContactInLiveDeal({
+        contactId: entityId,
+        brokerageId,
+        supabase,
+      })
+      if (verdict.inLiveDeal) {
+        // NOT a failure and NOT a retry — the contact is simply not eligible
+        // right now. 'skipped' keeps it out of the retry ladder (which would
+        // otherwise burn its three attempts against a deal that lasts weeks) and
+        // the create-time / deal-ended triggers will re-queue it once the deal
+        // ends.
+        const { error: skipErr } = await supabase
+          .from('lead_enrichment_queue')
+          .update({
+            status: 'skipped',
+            error_message: `Suppressed — contact is in a live ${verdict.reason ?? 'deal'}`
+              + (verdict.error ? ` (${verdict.error})` : ''),
+            completed_at: new Date().toISOString(),
+          })
+          .eq('id', entry.id)
+        if (skipErr) console.error(`[enrichment-orchestrator] queue ${entry.id} suppression skip-mark refused:`, skipErr.message)
+        continue
+      }
+    }
+
+    // ── Step 2b: LIFE-CHANGE re-checks are a different job ───────────────────
+    // A row queued with enrichment_type 'osint_profile' asks "what changed?",
+    // not "who is this?" — it must NOT buy a PeopleData record. Routed to the
+    // OSINT-only checker instead of falling through into the skip-trace path.
+    //
+    // 'osint_profile' is not a token invented for this branch: it is one of the
+    // five values lead_enrichment_queue_enrichment_type_check admits
+    // (skip_trace | property_match | phone_validation | osint_profile |
+    // duplicate_check, verified live), and it is the one that describes an OSINT
+    // search. A made-up 'life_change' would have been rejected by the constraint
+    // and the row would have vanished on insert — and, because the drain filters
+    // on values the column can hold, nothing here would ever have run.
+    if (entityType === 'contact' && entry.enrichment_type === 'osint_profile') {
+      const check = await (await import("@/lib/enrichment/contact-enrichment-core")).runLifeChangeCheck({
+        contactId: entityId,
+        brokerageId,
+        supabase,
+        trigger: entry.trigger_type,
+      })
+      const { error: lifeMarkErr } = await supabase
+        .from('lead_enrichment_queue')
+        .update({
+          status: check.success ? 'completed' : 'failed',
+          error_message: check.error ?? null,
+          enrichment_results: { changes_found: check.changesFound, skipped: check.skipped ?? null },
+          completed_at: new Date().toISOString(),
+        })
+        .eq('id', entry.id)
+      if (lifeMarkErr) console.error(`[enrichment-orchestrator] queue ${entry.id} life-change completion refused:`, lifeMarkErr.message)
+      if (check.success) result.succeeded++
+      else result.failed++
+      continue
+    }
 
     try {
       // Step 3: Fetch entity
       const table = entityType === 'lead' ? 'leads' : 'contacts'
       const { data: entity, error: entityError } = await supabase
         .from(table)
-        .select('id, first_name, last_name, email, phone, enrichment_profile')
+        .select(ENTITY_COLUMNS[entityType])
         .eq('id', entityId)
-        .single()
+        .single<Record<string, any>>()
 
       if (entityError || !entity) {
-        throw new Error(`Entity not found in ${table}: ${entityId}`)
+        throw new Error(`Entity not found in ${table}: ${entityId}${entityError ? ` (${entityError.message})` : ''}`)
       }
 
-      // Step 4: Validate identifier
+      // ── Step 4: PROVIDER SELECTION — "there is a free osint selection" ─────
+      //
+      // Two lanes answer DIFFERENT questions, so the router asks what the ROW
+      // needs, not which vendor anyone prefers (see the boundary written out at
+      // the top of lib/external/osint-free.ts):
+      //   • FREE (keyless OSM + US Census) — place-keyed facts: geocode,
+      //     neighbourhood amenities, ZIP-level ACS median value + its direction.
+      //   • PAID (PeopleData) — person-keyed facts: identity, contact points,
+      //     demographics. No free source in this lane holds any of them.
+      //
+      // FREE RUNS FIRST AND ALWAYS, whenever the record has address parts: the
+      // address-derived facts must never be bought. The paid call is then
+      // pre-flighted against the brokerage's vendor budget, which this drain
+      // never did — it metered spend AFTER the fact and would happily run a
+      // batch past an exhausted cap.
+      //
+      // checkVendorBudget is imported DYNAMICALLY for the reason stated at the
+      // top of this file: lib/vendor-governance/budget-gate.ts is `server-only`
+      // and a static import here would crash the plain-tsx guard simulators that
+      // reach this module. It fails OPEN (a ledger read error returns allowed)
+      // so a broken budget system never stops enrichment.
+      const { checkVendorBudget } = await import('@/lib/vendor-governance/budget-gate')
+      const budget = await checkVendorBudget({ brokerageId, addCost: PEOPLEDATA_UNIT_COST })
+
+      const freeInput = freeLaneInputFor(entity)
+      const plan = planEnrichmentLane({
+        enrichmentType: entry.enrichment_type,
+        input: freeInput,
+        paidAllowed: budget.allowed,
+        paidBlockedReason: budget.allowed
+          ? null
+          : `brokerage vendor budget exhausted ($${budget.spent.toFixed(2)} of $${budget.budget.toFixed(2)} this month)`,
+      })
+
+      // Step 4a: FREE LANE — zero cost, no key, runs before any spend.
+      let free: FreeOsintLaneResult | null = null
+      if (plan.free.run) {
+        free = await runFreeOsintLane(freeInput, plan.free.answers)
+        result.freeLaneRuns++
+
+        // Metered as FREE. VENDOR_PRICING['osint_free'].costPerUnit is 0, so this
+        // records the work without adding a cent to the ledger checkVendorBudget
+        // reads. Without that pricing row normalizeVendorCost would have applied
+        // its $0.01/unit unknown-vendor fallback and invented spend.
+        const connectorCalls = free.connectors.filter((c) => c.outcome !== 'not_attempted').length
+        if (connectorCalls > 0) {
+          await trackVendorUsageService({
+            vendor: 'osint_free',
+            systemSource: 'enrichment',
+            unitCount: connectorCalls,
+            brokerageId,
+            ...(entityType === 'lead' ? { leadId: entityId } : { contactId: entityId }),
+            metadata: {
+              lane: 'osint_free',
+              cost: 0,
+              queueEntryId: entry.id,
+              enrichmentType: entry.enrichment_type,
+              answered: free.answered,
+              unavailable: free.unavailable,
+            },
+          })
+        }
+
+        // Persist what the free lane found, on its own terms. leads.lat/lng are
+        // real columns nothing else in the pipeline fills; contacts have neither,
+        // so the free geocode lands only in the profile block there.
+        const freeBlock = freeLaneProfileBlock(free)
+        const existingProfile = (entity.enrichment_profile ?? {}) as Record<string, unknown>
+        const freePatch: Record<string, unknown> = {
+          enrichment_profile: { ...existingProfile, osint_free: freeBlock },
+        }
+        if (entityType === 'lead' && free.facts.lat != null && free.facts.lng != null
+            && entity.lat == null && entity.lng == null) {
+          freePatch.lat = free.facts.lat
+          freePatch.lng = free.facts.lng
+        }
+        const { error: freeWriteError } = await supabase.from(table).update(freePatch).eq('id', entityId)
+        if (freeWriteError) {
+          console.warn('[enrichment-orchestrator] free-lane write failed:', freeWriteError.message)
+        }
+        // Keep the in-memory copy in step with the row so the paid write below
+        // merges onto the free block instead of overwriting it.
+        entity.enrichment_profile = freePatch.enrichment_profile
+      }
+
+      // Step 4b: FREE-ONLY ROWS TERMINATE HERE. A 'property_match' row asks an
+      // address question; escalating it to a person provider would buy the wrong
+      // answer. The row closes on the free lane's own honesty — completed when it
+      // ANSWERED, retried when its providers were UNREACHABLE (a keyless provider
+      // being down is not a finding about the record).
+      if (!plan.paid.required) {
+        if (!plan.free.run) {
+          throw new Error(`No lane serves enrichment_type '${entry.enrichment_type}' for this record — ${plan.free.reason}`)
+        }
+        const laneNote = describeFreeLane(free!)
+        if (free!.answered.length > 0) {
+          // supabase-js RESOLVES a failed write — destructure `error`. A silently
+          // failed status write leaves the row stuck in 'processing' forever, which
+          // the drain's `status = 'pending'` fetch will never pick up again.
+          const { error: closeError } = await supabase
+            .from('lead_enrichment_queue')
+            .update({
+              status: 'completed',
+              enrichment_cost: 0,
+              enrichment_results: {
+                lane: plan.label,
+                person_enrichment: 'not_applicable',
+                free_osint: freeLaneProfileBlock(free!),
+                note: laneNote,
+              },
+              error_message: free!.unavailable.length ? laneNote : null,
+              completed_at: new Date().toISOString(),
+            })
+            .eq('id', entry.id)
+          if (closeError) {
+            console.error('[enrichment-orchestrator] free-lane queue close failed:', closeError.message)
+          }
+          result.succeeded++
+        } else {
+          // Classify like the top-level catch (~:1034): a free-lane provider that is
+          // simply unreachable/keyless is transient (retry later), but a provider
+          // refusing on the SAME account-config signature (token ability missing /
+          // provisioning required) is a config fault and must terminalize + escalate
+          // once rather than burn MAX_RETRIES against a wall that will not move.
+          const freeLaneFault = classifyEnrichmentFault(laneNote)
+          if (freeLaneFault === "config") {
+            await escalateConfigFaultOnce(supabase, {
+              brokerageId,
+              vendor: plan.label,
+              errorMessage: laneNote,
+            })
+          }
+          const { nextRetry, isFinal, status } = enrichmentRetryOutcome(entry.retry_count, entry.max_retries ?? MAX_RETRIES, freeLaneFault)
+          const { error: retryError } = await supabase
+            .from('lead_enrichment_queue')
+            .update({
+              retry_count: nextRetry,
+              status,
+              enrichment_cost: 0,
+              enrichment_results: { lane: plan.label, person_enrichment: 'not_applicable', free_osint: freeLaneProfileBlock(free!) },
+              error_message: laneNote,
+            })
+            .eq('id', entry.id)
+          if (retryError) {
+            console.error('[enrichment-orchestrator] free-lane queue retry write failed:', retryError.message)
+          }
+          if (isFinal) {
+            await sentinelWrite(supabase, supabase.from('automation_errors').insert({
+              brokerage_id: brokerageId,
+              workflow_name: 'enrichment_processor',
+              lead_id: entityType === 'lead' ? entityId : null,
+              error_message: `Free OSINT lane produced nothing after max retries — ${laneNote}`,
+              context_json: JSON.stringify({ entityType, entityId, queueEntryId: entry.id, lane: plan.label, reason: free!.reachable ? 'no_data' : 'provider_unavailable' }),
+              status: 'open',
+              severity: 'low',
+            }), { table: 'automation_errors', flow: 'enrichment_final_retry_escalation', brokerageId, reason: 'ops escalation row; the queue row already carries the terminal status and message' })
+          }
+          result.failed++
+        }
+        continue
+      }
+
+      // Step 4c: PAID LANE WITHHELD. The person question is REQUIRED for this row
+      // and the budget says no. Whatever the free lane found is already persisted,
+      // but this row is NOT complete and must never be counted as such — a partial
+      // place-keyed result presented as a finished enrichment is the failure mode
+      // this whole selection exists to prevent. 'skipped' keeps it out of the retry
+      // ladder (retrying against an exhausted cap just burns the three attempts);
+      // the create-time and persona-drift triggers re-queue it later.
+      if (!plan.paid.run) {
+        const { error: withheldError } = await supabase
+          .from('lead_enrichment_queue')
+          .update({
+            status: 'skipped',
+            enrichment_cost: 0,
+            enrichment_results: {
+              lane: plan.free.run ? 'osint_free' : 'none',
+              person_enrichment: 'withheld_budget',
+              // Lane 82B — the person-keyed questions left UNANSWERED by the withheld paid lane.
+              withheld_answers: plan.paid.answers,
+              free_osint: free ? freeLaneProfileBlock(free) : null,
+              note: plan.paid.reason,
+            },
+            error_message: `${plan.paid.reason}${free ? ` — ${describeFreeLane(free)}` : ''}`,
+            completed_at: new Date().toISOString(),
+          })
+          .eq('id', entry.id)
+        if (withheldError) {
+          console.error('[enrichment-orchestrator] budget-withheld queue write failed:', withheldError.message)
+        }
+        result.paidWithheld++
+        continue
+      }
+
+      // Step 4d: Validate identifier for the PAID person call
       const hasIdentifier = entity.first_name || entity.phone || entity.email
       if (!hasIdentifier) {
         throw new Error('No identifier (first_name, phone, or email) available for skip trace')
       }
 
-      // Step 5: Call PeopleData
-      const name = [entity.first_name, entity.last_name].filter(Boolean).join(' ') || undefined
-      const { data: enriched, cost } = await skipTraceWithPeopleData({
-        name,
-        phone: entity.phone ?? undefined,
-        email: entity.email ?? undefined,
+      // ── Step 5: OWNER-CONTACT PROVIDER ROUTE — cheapest adequate provider FIRST ──
+      // (wave 81 lane B, owner verbatim: "make sure that peoplesearch and batchdata
+      // don't overlap and if they do then search which one is cheaper, then use that
+      // one"). The ONE overlap is phone/email append. BatchData V3 skip trace bills
+      // $0.07 per matched record (DNC/TCPA flags inline); PeopleData bills $0.25 per
+      // match. lib/ai-isa/property-lookup-rail.ts::resolveContactProviderRoute picks
+      // the order from what THIS record carries: a property address → BatchData first,
+      // PeopleData ONLY when BatchData returns nothing; no address → PeopleData (the
+      // only provider that can be asked by name/email/phone). Before this wave the
+      // order was the reverse (PeopleData first, BatchData as the no-match fallback),
+      // which paid the dearer provider on every address-bearing row.
+      // 81B had a row BatchData matched skip the PeopleData person profile (cost-down), which left
+      // the persona builder without demographics for every address-bearing lead. REVERSED in lane
+      // 83A (owner verbatim, wave 83: "we need the richer demographics for raw leads and leads,
+      // etc") — see DEMOGRAPHICS_AFTER_CONTACT_MATCH at Step 5b below.
+      const { resolveBatchDataAccess, resolveContactProviderRoute, runVersiumContactLeg } = await import('@/lib/ai-isa/property-lookup-rail')
+      const propertyStreet = (entity.address as string | null) ?? (entity.mailing_address as string | null) ?? null
+      const entityCity = (entity.city as string | null) ?? (entity.mailing_city as string | null) ?? null
+      const entityState = (entity.state as string | null) ?? (entity.mailing_state as string | null) ?? null
+      const entityZip = (entity.zip_code as string | null) ?? (entity.mailing_zip as string | null) ?? null
+      const route = resolveContactProviderRoute({
+        hasName: !!(entity.first_name || entity.last_name),
+        hasPropertyAddress: !!propertyStreet,
+        hasEmailOrPhone: !!(entity.email || entity.phone),
+        hasProfileUrl: false,
+        hasLocation: !!((entityCity && entityState) || entityZip),
       })
+      console.info('[enrichment-orchestrator] owner-contact route:', route.providers.join(' → ') || 'none', '—', route.reason)
 
-      result.totalCost += cost
+      // The CONTACT-POINTS answer, whichever provider gave it (the name is historical — BatchData was
+      // the first provider before wave 93; `via` says which leg answered).
+      let batchDataFallback: {
+        phones: string[]
+        emails: string[]
+        /** Set on the REVERSE leg (person-keyed row): who the phone/email resolved to (name-checked). */
+        person?: { firstName: string | null; lastName: string | null } | null
+        via: 'v3' | 'reverse' | 'versium'
+      } | null = null
+      let batchDataFallbackCost = 0
+      // Wave 93 (93B3): the Versium demographic profile bought on a contact hit (PDL's vocabulary).
+      let versiumDemographics: Record<string, any> | null = null
+      // Wave 96 (lane 96B): provenance per field the Versium leg returned (source, retrievedAt,
+      // matchConfidence) — written into enrichment_profile.field_provenance beside the values.
+      let versiumFieldProvenance: Record<string, unknown> = {}
+      // Wave 93 (lane 93D2 — found live): a CONTACT that already carries an email buys no
+      // contact point — no Versium phone append, no BatchData skip/reverse trace. The walk saw an
+      // email-only buyer queued for a phone lookup. Same rule the queue writer records
+      // (contactPointsToBuy). Leads keep their own route (93B2: Versium asks a lead for email only).
+      // PeopleData demographics below are not contact points and are unaffected.
+      const contactPointLegs = entityType === 'lead' || contactPointsToBuy({ email: entity.email, phone: entity.phone }).length > 0
+      if (!contactPointLegs) console.info('[enrichment-orchestrator] contact already has an email — no contact-point purchase')
+
+      // ── Step 5-pre: VERSIUM FIRST (wave 93, lane 93B2 — owner cost decision: "Versium first for
+      // owner/person email+phone append, People Data Labs only when Versium misses"). The route names
+      // Versium first whenever it can be asked; the leg asks only for what this person is missing (a
+      // lead: email only), books vendor "versium" with answered_by, and on a hit BatchData is not asked
+      // at all. Unconfigured → skipped, and the BatchData → PeopleData chain below runs as before.
+      if (contactPointLegs && route.providers[0] === 'versium') {
+        const v = await runVersiumContactLeg({
+          brokerageId, stage: entityType === 'lead' ? 'lead' : 'contact',
+          identity: {
+            firstName: (entity.first_name as string | null) ?? null, lastName: (entity.last_name as string | null) ?? null,
+            email: (entity.email as string | null) ?? null, phone: (entity.phone as string | null) ?? null,
+            address: propertyStreet, city: entityCity, state: entityState, zip: entityZip,
+          },
+          hasEmail: !!entity.email, hasPhone: !!entity.phone,
+          systemSource: 'skip_trace',
+          metadata: { entityType, entityId, queueEntryId: entry.id, route: route.providers.join('>') },
+          attribution: personAttribution(entityType, entityId),
+          // Wave 93 (93B3): the categories this person's profile already carries are not re-bought.
+          existingProfile: (entity.enrichment_profile as Record<string, unknown> | null) ?? null,
+        })
+        batchDataFallbackCost += v.cost
+        versiumDemographics = v.demographicsProfile
+        versiumFieldProvenance = v.fieldProvenance
+        if (v.answered) batchDataFallback = { phones: v.phones, emails: v.emails, via: 'versium' }
+        else if (v.skipped) console.info('[enrichment-orchestrator] versium contact append skipped:', v.skipped)
+      }
+      // Captured (not just logged) so the Step 7 no-match path below can classify it
+      // instead of always defaulting to "transient" — a BatchData token/provisioning
+      // refusal here is the SAME config fault the top-level catch (~:1034) escalates.
+      let batchDataFallbackErrorMessage: string | null = null
+      // THE ONE BATCHDATA GATE (wave 80 lane B): purpose "skip_trace" through
+      // lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess (tier ≠ off — the
+      // platform-wide monthly cap; the tenant on-market opt-in does not apply to a skip
+      // trace). Refused → falls through to PeopleData (when the route admits it) or to
+      // the Step 7 no-match handling below.
+      const skipTraceAccess = !batchDataFallback && contactPointLegs && route.providers.includes('batchdata') && process.env.BATCHDATA_API_KEY
+        ? await resolveBatchDataAccess({ brokerageId, purpose: 'skip_trace' })
+        : null
+      if (skipTraceAccess && !skipTraceAccess.allowed) {
+        console.info('[enrichment-orchestrator] batchdata skip trace skipped:', skipTraceAccess.reason)
+      }
+      if (skipTraceAccess?.allowed && route.capability === 'reverse_contact') {
+        // ── PERSON-KEYED ROW (no property address, a phone/email): the REVERSE skip trace
+        // (wave 82 lane A, owner: "build a reverse skip trace wrapper") — $0.07/match through
+        // the ONE wrapper lib/enrichment/reverse-skip-trace.ts, handed the gate verdict above so
+        // the gate runs once. The wrapper books its own platform-ledger row; `peopleData: null`
+        // because Step 5b below is this drain's PeopleData leg (it builds the rich profile).
+        const { reverseSkipTracePerson } = await import('@/lib/enrichment/reverse-skip-trace')
+        const rev = await reverseSkipTracePerson({
+          brokerageId, ref: entityId,
+          firstName: (entity.first_name as string | null) ?? null,
+          lastName: (entity.last_name as string | null) ?? null,
+          phone: (entity.phone as string | null) ?? null,
+          email: (entity.email as string | null) ?? null,
+          city: (entity.city as string | null) ?? (entity.mailing_city as string | null) ?? null,
+          state: (entity.state as string | null) ?? (entity.mailing_state as string | null) ?? null,
+        }, { access: skipTraceAccess, peopleData: null, metadata: { entityType, entityId, queueEntryId: entry.id }, attribution: personAttribution(entityType, entityId) })
+        batchDataFallbackCost += rev.costUsd
+        if (rev.status === 'matched' && rev.provider === 'batchdata') {
+          batchDataFallback = { phones: rev.phones, emails: rev.emails, person: rev.person, via: 'reverse' }
+        } else if (rev.status !== 'matched') {
+          console.info('[enrichment-orchestrator] reverse skip trace miss:', rev.reason)
+        }
+      } else if (skipTraceAccess?.allowed) {
+        let v3Cost = 0
+        try {
+          const { skipTraceBatchDataV3Batch } = await import('@/lib/external/batchdata-client')
+          const { matches, cost: btCost } = await skipTraceBatchDataV3Batch([{
+            ref: entityId,
+            firstName: (entity.first_name as string | null) ?? undefined,
+            lastName: (entity.last_name as string | null) ?? undefined,
+            address: propertyStreet ?? undefined,
+            city: (entity.city as string | null) ?? (entity.mailing_city as string | null) ?? undefined,
+            state: (entity.state as string | null) ?? (entity.mailing_state as string | null) ?? undefined,
+            zip: (entity.zip_code as string | null) ?? (entity.mailing_zip as string | null) ?? undefined,
+          }])
+          v3Cost = btCost
+          batchDataFallbackCost += btCost
+          const m = matches[0]
+          if (m?.matched) batchDataFallback = { phones: m.phones, emails: m.emails, via: 'v3' }
+        } catch (e) {
+          batchDataFallbackErrorMessage = e instanceof Error ? e.message : String(e)
+          console.warn('[enrichment-orchestrator] batchdata skip trace failed (non-blocking):', e)
+        }
+        if (v3Cost > 0) {
+          // PLATFORM LEDGER (vendor_usage_tracking) at the REAL cost the client reported —
+          // never a unitCount the normalizer prices at VENDOR_PRICING.batchdata's $0.50
+          // motivated-seller rate (a 7× overstatement that tripped the platform cap early).
+          await meterVendorSpend({
+            vendorName: 'batchdata',
+            usageType: 'skip_trace',
+            cost: v3Cost,
+            brokerageId,
+            systemSource: 'skip_trace',
+            metadata: { entityType, entityId, queueEntryId: entry.id, result: batchDataFallback ? 'matched' : 'no_match', route: route.providers.join('>') },
+            attribution: personAttribution(entityType, entityId),
+          })
+        }
+      }
+
+      // Step 5b: PeopleData. Two jobs, one call:
+      //   • CONTACT POINTS when BatchData found nothing (or could not be asked) — as before;
+      //   • the DEMOGRAPHIC PROFILE (age / cohort, gender, household, occupation, salary band,
+      //     education, interests, location history) even AFTER a BatchData match — lane 83A reversal
+      //     of the 81B profile-skip (DEMOGRAPHICS_AFTER_CONTACT_MATCH). BatchData returns contact
+      //     points only; PeopleData is the only provider in the drain that answers "who is this
+      //     person". Asked with BatchData's phone/email when the row had none (better match rate).
+      // COST, platform-paid: +PEOPLEDATA_MATCH_COST_USD ($0.25) per MATCHED person on top of the
+      // $0.07 BatchData match (≈ $0.32 per fully-enriched person); a PDL no-match is $0. Booked on
+      // vendor_usage_tracking at Step 6c (peopledata) beside the BatchData row booked above.
+      const name = [entity.first_name, entity.last_name].filter(Boolean).join(' ') || undefined
+      // Wave 93 (lane 93B2): PeopleData is asked ONLY AFTER A VERSIUM MISS. A Versium hit ends the
+      // chain (owner cost decision: "People Data Labs only when Versium misses"); the lane-83A
+      // demographics-after-match leg still follows a BatchData match, which itself is reached only after
+      // Versium missed (or could not be asked). PDL stays the person-profile provider for the explicit
+      // profile doors (quick actions, deal investigator, contact enrichment core).
+      const askPeopleData = route.providers.includes('peopledata')
+        && (!batchDataFallback || (DEMOGRAPHICS_AFTER_CONTACT_MATCH && batchDataFallback.via !== 'versium'))
+      const { data: enriched, cost } = askPeopleData
+        ? await skipTraceWithPeopleData({
+            name,
+            phone: (entity.phone ?? batchDataFallback?.phones[0]) ?? undefined,
+            email: (entity.email ?? batchDataFallback?.emails[0]) ?? undefined,
+            // Lane 84C — PDL admits a NAME only beside a location qualifier (locality/region/location);
+            // without it a name-only lead could never match. Same rule as pipeline-processor.ts.
+            address: [entity.city ?? entity.mailing_city, entity.state ?? entity.mailing_state].filter(Boolean).join(', ') || undefined,
+          }).catch((e) => {
+            // After a BatchData match a PDL failure must not undo the match — fall through to the
+            // BatchData write below. Without a match it is the drain's own error, as before.
+            if (batchDataFallback) { console.warn('[enrichment-orchestrator] PeopleData demographics call failed (BatchData match kept):', e); return { data: null, cost: 0 } }
+            throw e
+          })
+        : { data: null, cost: 0 }
+
+      // Contact points: BatchData's matched (cheaper, DNC/TCPA-flagged) lines lead; PeopleData's
+      // extras follow; the same scrub below elects the clean primary. The reverse leg was asked with
+      // the row's own email — never replaced.
+      if (enriched && batchDataFallback) {
+        enriched.phones = Array.from(new Set([...batchDataFallback.phones, ...(enriched.phones ?? [])]))
+        enriched.emails = batchDataFallback.via === 'reverse' && entity.email
+          ? Array.from(new Set([entity.email as string, ...(enriched.emails ?? [])]))
+          : Array.from(new Set([...batchDataFallback.emails, ...(enriched.emails ?? [])]))
+      }
+      const contactPointsProvider = batchDataFallback ? contactLaneOf(batchDataFallback.via) : null
+
+      result.totalCost += cost + batchDataFallbackCost
 
       // Step 6: Data returned
       if (enriched) {
@@ -149,71 +771,132 @@ export async function processEnrichmentQueue(
         const mailingStreet = (enriched as any).streetAddress ?? enriched.address ?? null
         const hasMailingData = !!(mailingStreet || enriched.city || enriched.state)
         // PDL now reports verification flags directly (peopledata-client derives them from the
-        // person likelihood + presence of structured email/address). Fall back to hasMailingData
-        // for back-compat with mocks/tests.
+        // person likelihood + presence of structured email/address).
+        //
+        // THE FALLBACK USED TO BE `hasMailingData` — "the provider returned an address" recorded
+        // as "the address is VERIFIED". That was already documented as a lie by
+        // lib/providers/mailing-cass-gate.ts ("it is NEVER CASS/USPS-verified"), and the owner's
+        // wave-14 conversion ruling made the flag load-bearing at the promotion gate: with the
+        // old fallback, "a mailing address verified" would have degraded right back into "any
+        // address string", which is the exact arm the ruling excludes. Absent an explicit
+        // provider verdict the flag stays FALSE. (The gate-side Lob buyer, promotion-address-verification.ts,
+        // was retired in lane 84C: the wave-84 gate admits phone/email only; the real Lob verdict is
+        // bought at the direct-mail send — lib/providers/dispatch.ts needsCassCheck.)
         const mvRaw = (enriched as any).mailingAddressVerified
-        const mailingVerified: boolean = typeof mvRaw === 'boolean' ? mvRaw : hasMailingData
+        const mailingVerified: boolean = mvRaw === true
         const emailFlagVerified: boolean = (enriched as any).emailVerified === true
+
+        // NAME BACKFILL (wave 66, owner ruling 2026-09-15 verbatim: "we need to get
+        // rid of the fair housing and anything else that is preventing from getting
+        // the full lead info including name, email, etc."). A record skip-traced by
+        // phone/email alone (see `hasIdentifier` above — first_name is NOT required)
+        // used to have PeopleData's returned name land ONLY in enrichment_profile.
+        // full_name/first_name/last_name, never on the first-class columns every
+        // scorer/segmenter/dashboard reads. Backfill ONLY when the entity does not
+        // already carry a name — this fills a gap, it never overwrites a name the
+        // record already had with a different provider match.
+        const entityHasName = !!(entity.first_name || entity.last_name)
+        const namePatch: Record<string, unknown> =
+          !entityHasName && enriched.firstName
+            ? { first_name: enriched.firstName, ...(enriched.lastName && { last_name: enriched.lastName }) }
+            : {}
 
         // Rich enrichment profile (downstream — AI-ISA scripts, AI Mesh, dashboards) so the full
         // PDL payload is queryable without re-calling the API. Only includes fields actually
         // returned by the provider; undefined/null are omitted so callers can use coalesce safely.
-        const profile: Record<string, any> = {
-          provider: 'peopledata',
-          peopledata_id: (enriched as any).peopledataId,
-          captured_at: new Date().toISOString(),
-          confidence: enriched.enrichmentConfidence,
-          full_name: enriched.fullName,
-          middle_name: enriched.middleName,
-          emails: enriched.emails,
-          phones: enriched.phones,
-          mobile_phone: enriched.mobilePhone,
-          work_phone: enriched.workPhone,
-          age: enriched.age,
-          age_range: enriched.ageRange,
-          gender: enriched.gender,
-          marital_status: enriched.maritalStatus,
-          children_count: enriched.childrenCount,
-          household_size: enriched.householdSize,
-          employer: enriched.currentEmployer,
-          job_title: enriched.currentTitle,
-          industry: enriched.currentIndustry,
-          years_of_experience: enriched.yearsOfExperience,
-          education: enriched.education,
-          household_income: enriched.householdIncome,
-          net_worth: enriched.netWorth,
-          home_owner_status: enriched.homeOwnerStatus,
-          home_value: enriched.homeValue,
-          credit_score_range: enriched.creditScoreRange,
-          linkedin_url: enriched.linkedinUrl,
-          linkedin_username: enriched.linkedinUsername,
-          facebook_url: enriched.facebookUrl,
-          twitter_url: enriched.twitterUrl,
-          github_url: enriched.githubUrl,
-          skills: enriched.skills,
-          certifications: enriched.certifications,
-          life_events: (enriched as any).life_events ?? (enriched as any).lifeEvents,
+        // THE ONE profile builder (enrichment-column-map.ts::buildPeopleDataProfile) — the raw-record
+        // path (pipeline-processor.ts) builds the same blob, so scraped and drained leads match.
+        const profile: Record<string, any> = buildPeopleDataProfile(enriched)
+        if (contactPointsProvider) profile.contact_points_provider = contactPointsProvider
+
+        // WHICH LANE PRODUCED WHAT — carried on the profile itself, because the
+        // writes below REPLACE enrichment_profile wholesale. Without this the
+        // free block written in step 4a would be silently dropped by the paid
+        // write and the record would look like a pure PeopleData enrichment.
+        // The free facts stay in their own `osint_free` sub-object with
+        // AREA-scoped names; they are never merged up into the person fields.
+        const priorFreeBlock = (entity.enrichment_profile as Record<string, unknown> | null)?.osint_free
+        const freeBlock = free ? freeLaneProfileBlock(free) : (priorFreeBlock ?? null)
+        if (freeBlock) profile.osint_free = freeBlock
+        profile.lane = plan.label
+        // Lane 82B — WHICH person-keyed questions the paid lane was bought for (PAID_ONLY_ANSWERS
+        // partition from planEnrichmentLane), so the lineage view shows what the spend answered.
+        profile.paid_answers = plan.paid.answers
+
+        // Lane 85C — HOUSEHOLD FINANCIALS (marital status / household income / net worth / modeled
+        // credit band). The write below REPLACES enrichment_profile wholesale, so the values an
+        // earlier BatchData read put there (seller-signal probe, acquisition pull, Step 6f) are
+        // carried forward first — PeopleData sells none of the four, and a refresh must not erase
+        // them. Then the PAID rung (Versium financial append) is asked ONLY for a gap it can fill,
+        // vendor-budget pre-flighted and booked on the platform ledger inside appendModeledCredit.
+        // Both through the ONE mapper (enrichment-column-map.ts HOUSEHOLD FINANCIALS).
+        Object.assign(profile, carryForwardHouseholdFinancials(profile, entity.enrichment_profile as Record<string, any> | null))
+        {
+          const { appendModeledCredit } = await import('@/lib/enrichment/household-financials')
+          const credit = await appendModeledCredit({
+            profile,
+            identity: {
+              firstName: (entity.first_name as string | null) ?? enriched.firstName ?? null,
+              lastName: (entity.last_name as string | null) ?? enriched.lastName ?? null,
+              email: primaryEmail,
+              phone: primaryPhone,
+              address: (entity.address as string | null) ?? null,
+              city: (entity.city as string | null) ?? enriched.city ?? null,
+              state: (entity.state as string | null) ?? enriched.state ?? null,
+              zip: (entity.zip_code as string | null) ?? enriched.zipCode ?? null,
+            },
+            brokerageId,
+            lane: 'enrichment_drain',
+          })
+          Object.assign(profile, credit.profile)
+          result.totalCost += credit.cost
+          if (credit.error) console.warn('[enrichment-orchestrator] household-financial rung (non-blocking):', credit.error)
         }
-        // Strip undefined / null / empty arrays so the JSONB blob stays compact.
-        for (const k of Object.keys(profile)) {
-          const v = profile[k]
-          if (v === undefined || v === null) delete profile[k]
-          else if (Array.isArray(v) && v.length === 0) delete profile[k]
+
+        // Wave 100 (lane 100C) — FIELD PROVENANCE through THE ONE writer. The write below REPLACES
+        // enrichment_profile wholesale, so the prior stamps go FIRST (a staff edit or an older append
+        // survives); then PeopleData's mapped columns (buildPeopleDataProfile), then the contact points /
+        // name / mailing address PeopleData actually landed, then the skip-trace / Versium leg that led
+        // the contact points (it wins where it supplied the line the write elects).
+        {
+          const pdlLanded: string[] = []
+          if (primaryEmail) pdlLanded.push('email')
+          if (primaryPhone) pdlLanded.push('phone')
+          if (namePatch.first_name) pdlLanded.push('first_name', ...(namePatch.last_name ? ['last_name'] : []))
+          if (hasMailingData) pdlLanded.push('mailing_address')
+          profile.field_provenance = withFieldProvenance(
+            null,
+            fieldProvenanceOf(entity.enrichment_profile as Record<string, unknown> | null),
+            fieldProvenanceOf(profile),
+            peopleDataContactPointProvenance(enriched, pdlLanded, profile.captured_at),
+            batchDataFallback ? contactPointProvenance(batchDataFallback, entity) : null,
+            batchDataFallback?.via === 'versium' ? versiumFieldProvenance : null,
+          ).field_provenance
         }
 
         // Step 6a: Update entity table
+        // The PAID result landing on the entity — READ on both branches (lane 88F: the
+        // lead branch dropped it; the contact branch logged it and marked the queue done
+        // regardless). A refusal is carried onto the queue row below, not retried: the
+        // provider already billed, and a retry would bill again.
+        let entityWriteRefusal: string | null = null
         if (entityType === 'lead') {
-          await supabase
+          const { error: leadWriteError } = await supabase
             .from('leads')
             .update({
               ...(primaryEmail && { email: primaryEmail }),
               ...leadPhonePatch,
+              // NAME BACKFILL (wave 66) — see the namePatch note above.
+              ...namePatch,
               // First-class lead enrichment (m233): promote home_owner_status + life_events out of
               // the jsonb so lead persona/segmentation read them directly (parity with contacts).
               ...peopleDataProfileToLeadColumns(profile),
               last_enriched_at: new Date().toISOString(),
               enrichment_status: 'complete',
-              enrichment_provider: 'peopledata',
+              // Names the lane(s) that produced this row — 'peopledata' or
+              // 'osint_free+peopledata'. The admin lead-lineage view renders it
+              // verbatim, so provenance is visible without opening the jsonb.
+              enrichment_provider: contactPointsProvider ? `${contactPointsProvider}+${plan.label}` : plan.label,
               enrichment_confidence: enriched.enrichmentConfidence,
               enrichment_profile: profile,
               // Verification flags drive the canonical lead-eligibility gate + AI-ISA channel
@@ -233,6 +916,10 @@ export async function processEnrichmentQueue(
               ...(primaryEmail && { minimum_viable_for_isa: true }),
             })
             .eq('id', entityId)
+          if (leadWriteError) {
+            entityWriteRefusal = `leads write refused: ${leadWriteError.message}`
+            console.error(`[enrichment] lead enrichment write REFUSED for ${entityId} — paid result NOT persisted:`, leadWriteError.message)
+          }
 
           // Back-fill raw_scraped_leads so a record that previously failed the canonical eligibility
           // gate can re-pass on the next sweep. Without this, a stranded raw_scraped_leads row would
@@ -242,7 +929,7 @@ export async function processEnrichmentQueue(
               .from('leads').select('raw_record_id').eq('id', entityId).maybeSingle()
             const rawId = leadRow?.raw_record_id
             if (rawId) {
-              await supabase.from('raw_scraped_leads').update({
+              await sentinelWrite(supabase, supabase.from('raw_scraped_leads').update({
                 email_verified:           emailFlagVerified,
                 ...(hasMailingData && {
                   mailing_address:          mailingStreet,
@@ -253,7 +940,7 @@ export async function processEnrichmentQueue(
                 }),
                 processed_at:             new Date().toISOString(),
                 updated_at:               new Date().toISOString(),
-              }).eq('id', rawId)
+              }).eq('id', rawId), { table: 'raw_scraped_leads', flow: 'enrichment_raw_backfill', brokerageId, reason: 'mirror of the lead write onto its raw row so the stranded sweep can re-pass it; the lead row is the record' })
             }
           } catch (e) {
             console.warn('[enrichment-orchestrator] raw_scraped_leads back-fill skipped:', e)
@@ -275,65 +962,110 @@ export async function processEnrichmentQueue(
           // manager — not just a quiet row update. Reuses the detector; no duplicate life-event logic.
           const { materialEnrichmentChange } = await import('@/lib/lead-pipeline/material-enrichment-change')
           const matChange = materialEnrichmentChange((entity as any).enrichment_profile, profile)
-          await supabase
+          // The error is READ. This is the entire PAID enrichment result landing on
+          // the row — email, phones, demographics, confidence, the profile blob. The
+          // queue entry is marked done immediately below either way, so a refusal
+          // (one PGRST204 phantom column refuses the WHOLE row, not part of it) meant
+          // money spent, queue drained, and nothing written.
+          const { error: enrichmentWriteError } = await supabase
             .from('contacts')
             .update({
               ...(primaryEmail && { email: primaryEmail }),
               ...contactPhonePatch,
+              // NAME BACKFILL (wave 66) — see the namePatch note above.
+              ...namePatch,
               ...contactEnrichmentColumns,
               last_enriched_at: enrichedAt,
               enrichment_confidence: enriched.enrichmentConfidence,
               email_verified: emailFlagVerified,
+              // MAILING ADDRESS (wave 66, owner ruling 2026-09-15 — "the full lead
+              // info including name, email, etc."). Contacts carries the same
+              // mailing_address/_city/_state/_zip/_verified/_source columns leads
+              // does (scripts/schema-snapshot.ts), but this branch never wrote them —
+              // a contact's PDL-returned mailing address was stranded in
+              // enrichment_profile.streetAddress/city/state while the identical lead
+              // branch (above) promoted it to first-class columns. BUILT (CLAUDE.md
+              // §1.2): same shape as the lead write immediately above.
+              ...(hasMailingData && {
+                mailing_address: mailingStreet,
+                mailing_city: enriched.city ?? null,
+                mailing_state: enriched.state ?? null,
+                mailing_zip: enriched.zipCode ?? null,
+                mailing_address_verified: mailingVerified,
+                mailing_address_source: 'enrichment',
+              }),
               enrichment_profile: profile,
               ...(matChange.changed && { last_life_event_detected: enrichedAt }),
             })
             .eq('id', entityId)
+          if (enrichmentWriteError) {
+            entityWriteRefusal = `contacts write refused: ${enrichmentWriteError.message}`
+            console.error(`[enrichment] contact enrichment write REFUSED for ${entityId} — paid result NOT persisted:`, enrichmentWriteError.message)
+          }
         }
 
-        // Step 6b: Update queue entry
-        await supabase
+        // Step 6b: Update queue entry. The result carries the LANE STAMP so a
+        // reader never has to guess whether the free lane contributed — and, when
+        // it did, what it could and could not reach.
+        const { error: completeErr } = await supabase
           .from('lead_enrichment_queue')
           .update({
             status: 'completed',
-            enrichment_cost: cost,
-            enrichment_results: enriched as unknown as Record<string, unknown>,
+            // A refused entity write is stated on the row (not retried — the provider billed).
+            error_message: entityWriteRefusal,
+            // Both legs when BatchData supplied the contact points and PDL the profile (lane 83A).
+            enrichment_cost: cost + batchDataFallbackCost,
+            enrichment_results: {
+              lane: plan.label,
+              person_enrichment: 'peopledata',
+              ...(contactPointsProvider ? { contact_points: contactPointsProvider } : {}),
+              free_osint: free ? freeLaneProfileBlock(free) : null,
+              ...(free && free.unavailable.length ? { free_osint_note: describeFreeLane(free) } : {}),
+              peopledata: enriched as unknown as Record<string, unknown>,
+            },
             completed_at: new Date().toISOString(),
           })
           .eq('id', entry.id)
+        if (completeErr) console.error(`[enrichment-orchestrator] queue ${entry.id} completion refused:`, completeErr.message)
 
-        // Step 6c: Track vendor usage
-        await trackVendorUsageService({
-          vendor: 'PeopleData',
-          systemSource: 'skip_trace',
-          unitCount: 1,
+        // Step 6c: Track vendor usage — PLATFORM LEDGER (vendor_usage_tracking) at the
+        // cost the client reported (PEOPLEDATA_MATCH_COST_USD on a match). Vendor key
+        // LOWERCASE 'peopledata'. Was a unitCount:1 through trackVendorUsageService,
+        // which priced a $0.25 match at VENDOR_PRICING's old $0.10 (lane 81B).
+        await meterVendorSpend({
+          vendorName: 'peopledata',
+          usageType: 'skip_trace',
+          cost,
           brokerageId,
-          metadata: { entityType, entityId, queueEntryId: entry.id, cost },
+          systemSource: 'skip_trace',
+          metadata: { entityType, entityId, queueEntryId: entry.id, cost, lane: plan.label },
+          attribution: personAttribution(entityType, entityId),
         })
 
         // Step 6d: Lead-specific post-enrichment
         if (entityType === 'lead') {
-          await supabase.from('lifecycle_events').insert({
+          await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
             entity_type: 'lead',
             entity_id: entityId,
             brokerage_id: brokerageId,
             event_type: KernelEvent.ENRICHMENT_COMPLETED,
             metadata: { queueEntryId: entry.id, cost },
             created_at: new Date().toISOString(),
-          })
+          }), { table: 'lifecycle_events', flow: 'enrichment_lifecycle_echo', brokerageId, reason: 'audit echo; the enrichment itself is on the entity and queue rows' })
 
           await handleLeadScored({ leadId: entityId, brokerageId })
         }
 
         // Step 6e: Contact-specific post-enrichment
         if (entityType === 'contact') {
-          await supabase.from('lifecycle_events').insert({
+          await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
             entity_type: 'contact',
             entity_id: entityId,
             brokerage_id: brokerageId,
             event_type: KernelEvent.CONTACT_ENRICHMENT_COMPLETED,
             metadata: { queueEntryId: entry.id, cost },
             created_at: new Date().toISOString(),
-          })
+          }), { table: 'lifecycle_events', flow: 'enrichment_lifecycle_echo', brokerageId, reason: 'audit echo; the enrichment itself is on the entity and queue rows' })
 
           await processKernelEvent({
             event: KernelEvent.CONTACT_ENRICHMENT_COMPLETED,
@@ -353,27 +1085,37 @@ export async function processEnrichmentQueue(
             const { calculateLeadScore } = await import('@/lib/lead-governance/multi-factor-scorer')
             const scoreResult = calculateLeadScore(contact)
 
-            await supabase.from('lead_score_history').insert({
+            await sentinelWrite(supabase, supabase.from('lead_score_history').insert({
               contact_id: entityId,
               brokerage_id: brokerageId,
               score: scoreResult.finalScore,
               factors: scoreResult.factors as unknown as Record<string, unknown>,
               scored_at: new Date().toISOString(),
-            })
+            }), { table: 'lead_score_history', flow: 'enrichment_rescore_history', brokerageId, reason: 'score history row; the score is recomputed from the contact on the next enrichment or scoring pass' })
 
-            await supabase
-              .from('contacts')
-              .update({ last_scored_at: new Date().toISOString() })
-              .eq('id', entityId)
+            await sentinelWrite(
+              supabase,
+              supabase
+                .from('contacts')
+                .update({ last_scored_at: new Date().toISOString() })
+                .eq('id', entityId),
+              {
+                table: 'contacts',
+                flow: 'enrichment_orchestrator_score_recency_stamp',
+                brokerageId,
+                reason:
+                  'round-robin recency stamp for the scorer; the score itself is already on the lead_score_history row inserted above and re-scoring is idempotent, so a lost stamp costs an early re-score, not a fact',
+              },
+            )
 
-            await supabase.from('lifecycle_events').insert({
+            await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
               entity_type: 'contact',
               entity_id: entityId,
               brokerage_id: brokerageId,
               event_type: KernelEvent.CONTACT_SCORED,
               metadata: { score: scoreResult.finalScore },
               created_at: new Date().toISOString(),
-            })
+            }), { table: 'lifecycle_events', flow: 'enrichment_lifecycle_echo', brokerageId, reason: 'audit echo; the enrichment itself is on the entity and queue rows' })
 
             // PERSONA-AT-ENRICHMENT (burn-down round 5): the moment verified
             // demographics land, the contact's detailed persona is built from
@@ -389,10 +1131,22 @@ export async function processEnrichmentQueue(
                 agentId: (contact as any).agent_id ?? null, // contacts.agent_id is agents-class
                 facts: {
                   ageRange: enriched.ageRange ?? (enriched.age ? String(enriched.age) : null),
-                  maritalStatus: enriched.maritalStatus ?? null,
+                  // Lane 85C — the four household financials read from the PROFILE (carried forward +
+                  // the paid rung), not the PDL object, which never carries them.
+                  maritalStatus: profile.marital_status ?? enriched.maritalStatus ?? null,
                   childrenCount: enriched.childrenCount ?? null,
                   householdSize: enriched.householdSize ?? null,
-                  householdIncome: enriched.householdIncome ?? null,
+                  // PDL carries a PERSON salary band (inferred_salary), not household income — used
+                  // only when no household figure exists, and labelled so the persona never mistakes it.
+                  householdIncome: profile.household_income ?? enriched.householdIncome ?? (enriched.inferredSalary ? `${enriched.inferredSalary} (individual salary, inferred)` : null),
+                  // m640: promoted from the jsonb blob alongside household_income —
+                  // see lib/lead-pipeline/enrichment-column-map.ts and the migration header.
+                  netWorth: profile.net_worth ?? enriched.netWorth ?? null,
+                  // TOMBSTONE (wave 86, lane 86A): the modeled credit band is no longer a persona fact.
+                  // The persona's pain_points reach OUTBOUND copy (app/actions/open-house-automation.ts
+                  // puts them in the invitation prompt), so a band there was a band in outbound copy —
+                  // the FCRA / fair-lending line the owner drew. The band's reader is the agent contact
+                  // card (app/actions/contact-enrichment.ts::getContactInsights).
                   homeOwnerStatus: enriched.homeOwnerStatus ?? null,
                   homeValue: enriched.homeValue ?? null,
                   occupation: enriched.currentTitle ?? null,
@@ -407,7 +1161,7 @@ export async function processEnrichmentQueue(
                 },
                 summarize: async (prompt) => {
                   const { text } = await generateTextRouted({
-                    feature: 'client_message', brokerageId, prompt, temperature: 0.3, maxTokens: 180,
+                    feature: 'enrichment_persona_summary', brokerageId, prompt, temperature: 0.3, maxTokens: 180,
                   })
                   return text
                 },
@@ -416,25 +1170,199 @@ export async function processEnrichmentQueue(
           }
         }
 
+        // ── Step 6f: BATCHDATA PROPERTY-ENRICHMENT (additive, BatchData-origin only) ──
+        // Task 4 (wave 65): valuation/mortgage-liens/foreclosure/deed/owner datasets,
+        // mapped onto EXISTING leads/contacts columns by enrichment-column-map.ts.
+        // Gated to BatchData-origin rows (isBatchDataOrigin) so this never spends on the
+        // huge non-BatchData majority of the enrichment queue — PeopleData above already
+        // answered the PERSON question for every row; this answers the PROPERTY question
+        // only where BatchData's own property facts are what the row is about. Runs
+        // AFTER a successful person-match so a failed/no-match row (which retries or
+        // terminates below) is never charged for a property lookup it may not need.
+        // Best-effort: never overturns the person-enrichment result above.
+        // THE ONE BATCHDATA GATE (wave 80 lane B): a billed per-tenant property pull is
+        // purpose "acquisition" — lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess
+        // (tier ≠ off AND the platform-staff opt-in). Refused → this step is skipped with
+        // the reason logged; the person-enrichment result above stands.
+        const propertyAccess = isBatchDataOrigin(entity) && process.env.BATCHDATA_API_KEY
+          ? await resolveBatchDataAccess({ brokerageId, purpose: 'acquisition' })
+          : null
+        if (propertyAccess && !propertyAccess.allowed) {
+          console.info('[enrichment-orchestrator] batchdata property-enrichment skipped:', propertyAccess.reason)
+        }
+        if (propertyAccess?.allowed) {
+          try {
+            const propertyAddress = (entity.address as string | null) ?? (entity.mailing_address as string | null) ?? null
+            if (propertyAddress) {
+              const { enrichPropertyDatasetsBatchData } = await import('@/lib/external/batchdata-client')
+              const propEnrichment = await enrichPropertyDatasetsBatchData(propertyAddress)
+              if (propEnrichment.ok) {
+                const patch = entityType === 'lead'
+                  ? batchDataPropertyEnrichmentToLeadColumns(propEnrichment, profile)
+                  // Wave 100 (lane 100C): `profile` (just written) comes back with the BatchData
+                  // provenance stamped — contacts keep the property facts in property_records.
+                  : batchDataPropertyEnrichmentToContactColumns(propEnrichment, (entity.property_records as Record<string, unknown> | null) ?? null, profile)
+                if (Object.keys(patch).length > 0) {
+                  const { error: propWriteError } = await supabase.from(table).update(patch).eq('id', entityId)
+                  if (propWriteError) {
+                    console.warn('[enrichment-orchestrator] batchdata property-enrichment write failed:', propWriteError.message)
+                  } else {
+                    // PLATFORM LEDGER at the client's reported cost (lane 81B — was a
+                    // unitCount:1 priced at the $0.50 motivated-seller rate).
+                    await meterVendorSpend({
+                      vendorName: 'batchdata',
+                      usageType: 'property_enrichment',
+                      cost: propEnrichment.cost,
+                      brokerageId,
+                      systemSource: 'property_enrichment',
+                      metadata: { entityType, entityId, queueEntryId: entry.id, cost: propEnrichment.cost },
+                      attribution: personAttribution(entityType, entityId),
+                    })
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            console.warn('[enrichment-orchestrator] batchdata property-enrichment step failed (non-blocking):', e)
+          }
+        }
+
         result.succeeded++
       } else {
+        // ── BATCHDATA V3 SKIP TRACE MATCHED (the cheaper provider, asked FIRST in Step 5
+        // since wave 81 lane B; wave 65 built this as the PeopleData no-match fallback).
+        // Reuses the SAME DNC/TCPA scrub (scrubPhonesForPatch, lib/compliance/phone-
+        // scrub-runner.ts) every other phone candidate in this file goes through.
+        if (batchDataFallback) {
+          // Same phone-scrub discipline as the PeopleData matched path — DNC/TCPA
+          // scrubbed and the clean line elected primary, never a naive first-found.
+          const scrub = await scrubPhonesForPatch(batchDataFallback.phones)
+          const useScrub = !scrub.deferred && Object.keys(scrub.patch).length > 0
+          // Same contacts/leads column split as the PeopleData-matched path above (~505):
+          // `leads` carries phone/phone_secondary only, never the gate columns
+          // (phone_status/phone_verified/phone_secondary_*/dnc_verified_at) — writing an
+          // absent column refuses the WHOLE update (PGRST204, CLAUDE.md §3), which is what
+          // silently dropped every scrubbed lead here before this split existed.
+          const phonePatch = useScrub
+            ? (entityType === 'lead'
+                ? { ...(scrub.patch.phone !== undefined && { phone: scrub.patch.phone }), phone_secondary: scrub.patch.phone_secondary ?? null }
+                : scrub.patch)
+            : (batchDataFallback.phones[0] ? { phone: batchDataFallback.phones[0] } : {})
+          // NAME BACKFILL on the REVERSE leg (same rule as the PeopleData path's namePatch: fill
+          // a gap, never overwrite). The wrapper already refused a person whose last name
+          // disagrees with the record's, so a backfilled name is the person the phone/email names.
+          const reversePerson = batchDataFallback.via === 'reverse' ? batchDataFallback.person ?? null : null
+          const reverseNamePatch: Record<string, unknown> =
+            reversePerson && !(entity.first_name || entity.last_name) && reversePerson.firstName
+              ? { first_name: reversePerson.firstName, ...(reversePerson.lastName && { last_name: reversePerson.lastName }) }
+              : {}
+          // Wave 93 (lane 93B3): a VERSIUM hit carries the demographic profile PDL used to supply —
+          // merged onto the person's existing profile (filled categories were not re-bought) and
+          // written into the SAME columns the PDL path writes (one mapper per table, §6).
+          const demographicProfile = batchDataFallback.via === 'versium' && versiumDemographics
+            ? carryForwardHouseholdFinancials(
+                { ...((entity.enrichment_profile as Record<string, any> | null) ?? {}), ...versiumDemographics },
+                entity.enrichment_profile as Record<string, any> | null,
+              )
+            : null
+          // Wave 96 (lane 96B): provenance per field — merged onto any provenance already held, and
+          // written even when no demographic category was bought (an email-only hit still says where
+          // the email came from and when).
+          // Wave 100 (lane 100C): EVERY leg stamps through THE ONE writer (BatchData v3 / reverse skip
+          // trace included — they used to land phone / email / name with no provenance at all); Versium's
+          // own stamps (with its match level) win for the fields it returned.
+          const priorProfile = (demographicProfile ?? (entity.enrichment_profile as Record<string, any> | null) ?? {}) as Record<string, any>
+          const legProvenance = {
+            ...contactPointProvenance(batchDataFallback, entity),
+            ...(batchDataFallback.via === 'versium' ? versiumFieldProvenance : {}),
+          }
+          const provenanceProfile: Record<string, any> | null = Object.keys(legProvenance).length > 0
+            ? withFieldProvenance(priorProfile, fieldProvenanceOf(entity.enrichment_profile as Record<string, unknown> | null), fieldProvenanceOf(priorProfile), legProvenance)
+            : null
+          const demographicColumns: Record<string, unknown> = demographicProfile
+            ? (entityType === 'lead'
+                ? { ...peopleDataProfileToLeadColumns(demographicProfile), enrichment_profile: demographicProfile }
+                : { ...peopleDataProfileToContactColumns(demographicProfile, { enrichedAt: new Date().toISOString() }), enrichment_profile: demographicProfile })
+            : {}
+          const patch: Record<string, unknown> = {
+            ...demographicColumns,
+            ...(provenanceProfile ? { enrichment_profile: provenanceProfile } : {}),
+            ...phonePatch,
+            // The reverse leg was ASKED with the row's own email — never replace it with another.
+            ...(batchDataFallback.emails[0] && !(batchDataFallback.via === 'reverse' && entity.email) && { email: batchDataFallback.emails[0] }),
+            ...reverseNamePatch,
+            last_enriched_at: new Date().toISOString(),
+            // 'batchdata_skip_trace' (was 'batchdata_skip_trace_fallback' — it is the
+            // FIRST provider now; no reader of the old spelling existed: grepped lane 81B).
+            // 'batchdata_reverse_skip_trace' names the person-keyed leg (wave 82 lane A).
+            enrichment_provider: contactLaneOf(batchDataFallback.via),
+            ...(entityType === 'lead' && { enrichment_status: 'complete' }),
+          }
+          const { error: fallbackWriteError } = await supabase.from(table).update(patch).eq('id', entityId)
+          if (fallbackWriteError) {
+            console.error('[enrichment-orchestrator] batchdata skip-trace fallback write REFUSED — result NOT persisted:', fallbackWriteError.message)
+          }
+          const { error: fallbackQueueError } = await supabase
+            .from('lead_enrichment_queue')
+            .update({
+              status: 'completed',
+              enrichment_cost: cost + batchDataFallbackCost,
+              enrichment_results: {
+                lane: contactLaneOf(batchDataFallback.via),
+                person_enrichment: batchDataFallback.via === 'versium' ? (demographicProfile ? 'versium_demographics' : 'versium_match') : 'batchdata_match',
+                free_osint: free ? freeLaneProfileBlock(free) : null,
+                note: `${batchDataFallback.via === 'versium' ? 'Versium contact append' : `BatchData ${batchDataFallback.via === 'reverse' ? 'REVERSE' : 'V3'} skip trace`} (cheapest adequate provider, route ${route.providers.join('>')}) found a contact point; PeopleData ${askPeopleData ? 'demographics: no match ($0)' : 'not asked'}`,
+              },
+              completed_at: new Date().toISOString(),
+            })
+            .eq('id', entry.id)
+          if (fallbackQueueError) {
+            console.error('[enrichment-orchestrator] batchdata fallback queue close failed:', fallbackQueueError.message)
+          }
+          result.succeeded++
+        } else {
         // Step 7: No data returned — increment retry, log cost (API charged). On the
         // FINAL attempt terminalize to 'failed' (NOT 'pending') so a permanently-
         // unmatchable lead doesn't sit as a zombie 'pending' entry the fetch will never
         // pick up again, and surface it to automation_errors like the exception path.
-        const { nextRetry, isFinal, status } = enrichmentRetryOutcome(entry.retry_count, entry.max_retries ?? MAX_RETRIES)
-        await supabase
+        //
+        // Classify like the top-level catch (~:1034): a genuine "no match" is transient
+        // (worth retrying — a later scrape can still find the person), but a swallowed
+        // BatchData fallback refusal (token ability missing / not provisioned) is a
+        // CONFIG fault on the ACCOUNT and must terminalize + escalate once, not burn
+        // MAX_RETRIES against the same wall.
+        const step7Fault = classifyEnrichmentFault(batchDataFallbackErrorMessage)
+        if (step7Fault === "config") {
+          await escalateConfigFaultOnce(supabase, {
+            brokerageId,
+            vendor: "batchdata",
+            errorMessage: batchDataFallbackErrorMessage!,
+          })
+        }
+        const { nextRetry, isFinal, status } = enrichmentRetryOutcome(entry.retry_count, entry.max_retries ?? MAX_RETRIES, step7Fault)
+        const { error: noMatchMarkErr } = await supabase
           .from('lead_enrichment_queue')
           .update({
             retry_count: nextRetry,
             enrichment_cost: cost,
             status,
-            error_message: 'No match found in PeopleData',
+            // The free lane may still have answered its own (place-keyed) questions
+            // on this row. Recording that here is NOT a claim the person lookup
+            // succeeded — `person_enrichment: 'no_match'` says plainly that it did not.
+            enrichment_results: {
+              lane: plan.label,
+              person_enrichment: 'no_match',
+              free_osint: free ? freeLaneProfileBlock(free) : null,
+            },
+            error_message: `No match found (owner-contact route ${route.providers.join(' → ') || 'none'}: ${route.reason})`
+              + (free ? ` — ${describeFreeLane(free)}` : ''),
           })
           .eq('id', entry.id)
+        // Refused, the row would sit in 'processing' where no drain selects it — say so.
+        if (noMatchMarkErr) console.error(`[enrichment-orchestrator] queue ${entry.id} retry-mark refused (row left processing):`, noMatchMarkErr.message)
 
         if (isFinal) {
-          await supabase.from('automation_errors').insert({
+          await sentinelWrite(supabase, supabase.from('automation_errors').insert({
             brokerage_id: brokerageId,
             workflow_name: 'enrichment_processor',
             lead_id: entityType === 'lead' ? entityId : null,
@@ -442,24 +1370,39 @@ export async function processEnrichmentQueue(
             context_json: JSON.stringify({ entityType, entityId, queueEntryId: entry.id, reason: 'no_match' }),
             status: 'open',
             severity: 'low',
+          }), { table: 'automation_errors', flow: 'enrichment_final_retry_escalation', brokerageId, reason: 'ops escalation row; the queue row already carries the terminal status and message' })
+        }
+
+        // Lowercase 'peopledata'; PLATFORM LEDGER at the reported cost — a PDL no-match
+        // is $0 (PEOPLEDATA_NO_MATCH_COST_USD), so meterVendorSpend no-ops on it rather
+        // than booking a unit the normalizer would price at the matched rate.
+        if (cost > 0) {
+          await meterVendorSpend({
+            vendorName: 'peopledata',
+            usageType: 'skip_trace',
+            cost,
+            brokerageId,
+            systemSource: 'skip_trace',
+            metadata: { entityType, entityId, queueEntryId: entry.id, cost, result: 'no_match', lane: plan.label },
+            attribution: personAttribution(entityType, entityId),
           })
         }
 
-        await trackVendorUsageService({
-          vendor: 'PeopleData',
-          systemSource: 'skip_trace',
-          unitCount: 1,
-          brokerageId,
-          metadata: { entityType, entityId, queueEntryId: entry.id, cost, result: 'no_match' },
-        })
-
         result.failed++
+        }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      const { nextRetry, isFinal, status } = enrichmentRetryOutcome(entry.retry_count, entry.max_retries ?? MAX_RETRIES)
+      // Wave 66C seam: a BatchData "token ability missing" / "not provisioned"
+      // refusal is a CONFIG fault — terminal on attempt 1, escalated ONCE to
+      // self_heal_events (domain connector) instead of retried as transient.
+      const fault = classifyEnrichmentFault(message)
+      if (fault === "config") {
+        await escalateConfigFaultOnce(supabase, { brokerageId: entry.brokerage_id ?? null, vendor: "batchdata", errorMessage: message })
+      }
+      const { nextRetry, isFinal, status } = enrichmentRetryOutcome(entry.retry_count, entry.max_retries ?? MAX_RETRIES, fault)
 
-      await supabase
+      const { error: failMarkErr } = await supabase
         .from('lead_enrichment_queue')
         .update({
           retry_count: nextRetry,
@@ -467,10 +1410,11 @@ export async function processEnrichmentQueue(
           error_message: message,
         })
         .eq('id', entry.id)
+      if (failMarkErr) console.error(`[enrichment-orchestrator] queue ${entry.id} retry-mark refused (row left processing):`, failMarkErr.message)
 
       // Step 8: Log to automation_errors on final retry
       if (isFinal) {
-        await supabase.from('automation_errors').insert({
+        await sentinelWrite(supabase, supabase.from('automation_errors').insert({
           brokerage_id: brokerageId,
           workflow_name: 'enrichment_processor',
           lead_id: entityType === 'lead' ? entityId : null,
@@ -478,7 +1422,7 @@ export async function processEnrichmentQueue(
           context_json: JSON.stringify({ entityType, entityId, queueEntryId: entry.id }),
           status: 'open',
           severity: 'medium',
-        })
+        }), { table: 'automation_errors', flow: 'enrichment_final_retry_escalation', brokerageId, reason: 'ops escalation row; the queue row already carries the terminal status and message' })
       }
 
       result.failed++

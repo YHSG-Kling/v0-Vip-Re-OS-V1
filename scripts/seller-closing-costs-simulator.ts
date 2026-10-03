@@ -306,8 +306,24 @@ function accuracyLayer() {
   check("side-less rows are buyer-side by construction (never guessed as seller)",
     summarizeClosingCostRows([{ state: "TX", lines: [buyerLine], created_at: null }]).sideBreakdown!.every((b) => b.group === "buyer"))
   const pa = src("lib/analytics/prediction-accuracy.ts")
-  check("adapter survives a pre-1105 ledger: selects side, falls back to the legacy select instead of going dark",
-    /state, lines, created_at, side/.test(pa) && /buildQuery\(false\)/.test(pa))
+  // ASSERT THE RULE, NOT THE LITERAL (CLAUDE.md §2). This check used to pin the
+  // exact string "state, lines, created_at, side", so it could only pass while
+  // the adapter selected those four columns and nothing else — a waypoint. Wave
+  // H5 added the sample-provenance columns (extraction_verified,
+  // extracted_field_keys, purchase_price, loan_amount, total_closing_costs) and
+  // the assertion went red because the READ GOT BETTER. The rule it actually
+  // exists to hold is: the adapter offers TWO selects, they differ by `side`
+  // ALONE, and the m1105-less path is a real fallback rather than going dark.
+  const ccSelects = [...pa.matchAll(/\?\s*"([^"]*\bstate,\s*lines[^"]*)"\s*\n?\s*:\s*"([^"]*\bstate,\s*lines[^"]*)"/g)][0]
+  const withSideSel = ccSelects?.[1] ?? ""
+  const legacySel = ccSelects?.[2] ?? ""
+  check("adapter survives a pre-1105 ledger: the two selects differ by `side` ALONE (no column silently dropped)",
+    withSideSel.length > 0 && legacySel.length > 0 &&
+    withSideSel.split(",").map((c) => c.trim()).includes("side") &&
+    !legacySel.split(",").map((c) => c.trim()).includes("side") &&
+    withSideSel.replace(/,\s*side\b/, "").trim() === legacySel.trim())
+  check("adapter falls back to the legacy shape instead of going dark",
+    /buildQuery\(false\)/.test(pa))
 }
 
 function main() {

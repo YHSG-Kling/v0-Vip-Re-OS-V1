@@ -41,7 +41,8 @@ export async function createVendorSubscriptionCheckout(tier: VendorTier, opts?: 
       metadata: { vendor_profile_id: profile.id, kind: "vendor_platform_subscription" },
     })
     customerId = customer.id
-    await svc.from("vendor_marketplace_profiles").update({ stripe_customer_id: customerId, updated_at: new Date().toISOString() }).eq("id", profile.id)
+    const { error: stripeCustomerErr } = await svc.from("vendor_marketplace_profiles").update({ stripe_customer_id: customerId, updated_at: new Date().toISOString() }).eq("id", profile.id)
+    if (stripeCustomerErr) console.error(`[vendor-billing] Stripe customer created but NOT saved on the profile (a second customer may be created next time): ${stripeCustomerErr.message}`)
   }
 
   const base = opts?.returnUrl ?? process.env.NEXT_PUBLIC_APP_URL ?? "https://app.example.com"
@@ -64,7 +65,8 @@ export async function createVendorSubscriptionCheckout(tier: VendorTier, opts?: 
   })
   if (!session.url) throw new Error("Stripe did not return a checkout URL")
   // Record the intended tier immediately; the webhook confirms it active on payment.
-  await svc.from("vendor_marketplace_profiles").update({ subscription_tier: t, updated_at: new Date().toISOString() }).eq("id", profile.id)
+  const { error: intendedTierErr } = await svc.from("vendor_marketplace_profiles").update({ subscription_tier: t, updated_at: new Date().toISOString() }).eq("id", profile.id)
+  if (intendedTierErr) console.error(`[vendor-billing] intended tier NOT recorded: ${intendedTierErr.message}`)
   return { url: session.url }
 }
 
@@ -95,6 +97,7 @@ export async function applyVendorSubscriptionEvent(input: {
   if (input.tier) update.subscription_tier = normalizeTier(input.tier)
   if (mapped.suspendAccount) update.status = "suspended"
   else if (mapped.status === "active") update.status = "approved"
-  await svc.from("vendor_marketplace_profiles").update(update).eq("id", input.vendorProfileId)
+  const { error: subStatusErr } = await svc.from("vendor_marketplace_profiles").update(update).eq("id", input.vendorProfileId)
+  if (subStatusErr) console.error(`[vendor-billing] vendor subscription status NOT saved: ${subStatusErr.message}`)
   return { status: mapped.status, suspended: mapped.suspendAccount }
 }

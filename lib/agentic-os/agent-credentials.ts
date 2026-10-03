@@ -6,6 +6,7 @@
 // Pure helpers (hash, generate, bearer extraction) are unit-tested; resolveAgentToken
 // is the server lookup.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createHash, randomBytes } from "node:crypto"
 
 const TOKEN_PREFIX = "vos_" // VIP-RE-OS agent token
@@ -28,7 +29,7 @@ export function extractBearerToken(authHeader: string | null | undefined): strin
   return tok && tok.startsWith(TOKEN_PREFIX) ? tok : null
 }
 
-export interface ResolvedAgentToken {
+interface ResolvedAgentToken {
   credentialId: string
   brokerageId: string | null
   scopes: string[]
@@ -38,7 +39,8 @@ export interface ResolvedAgentToken {
  * Resolve a raw agent bearer token to its credential. Returns null when the token is
  * unknown, inactive, or expired. Touches last_used_at (fire-and-forget). Never throws.
  */
-export async function resolveAgentToken(rawToken: string): Promise<ResolvedAgentToken | null> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function resolveAgentToken(rawToken: string): Promise<ResolvedAgentToken | null> {
   try {
     const { createServiceClient } = await import("@/lib/supabase/service")
     const svc = createServiceClient()
@@ -51,7 +53,7 @@ export async function resolveAgentToken(rawToken: string): Promise<ResolvedAgent
     if (error || !data || !data.is_active) return null
     if (data.expires_at && new Date(data.expires_at) < new Date()) return null
 
-    void svc.from("agent_credentials").update({ last_used_at: new Date().toISOString() }).eq("id", data.id).then(() => {}, () => {})
+    void sentinelWrite(svc, svc.from("agent_credentials").update({ last_used_at: new Date().toISOString() }).eq("id", data.id), { table: "agent_credentials", flow: "agent_credential_last_used", reason: "last-used stamp on a token lookup; never blocks authentication" })
     return { credentialId: data.id, brokerageId: data.brokerage_id ?? null, scopes: data.scopes ?? [] }
   } catch {
     return null
@@ -72,15 +74,28 @@ export interface AgenticCaller {
 export async function resolveAgenticCaller(req: Request): Promise<AgenticCaller> {
   const raw = extractBearerToken(req.headers.get("authorization"))
   if (raw) {
+    // Zapier is OUTBOUND-ONLY (wave 87, lane 87A — owner: "zapier zaps are only
+    // allowed out from this platform, never to the platform."). A token call that
+    // identifies itself as a Zap authenticates as nobody, before the token lookup.
+    const { isZapierInbound } = await import("@/lib/integrations/zapier-direction")
+    if (isZapierInbound({ userAgent: req.headers.get("user-agent") })) return { brokerageId: null, scopes: [], via: "none" }
     const resolved = await resolveAgentToken(raw)
     if (resolved) return { brokerageId: resolved.brokerageId, scopes: resolved.scopes, via: "token" }
     return { brokerageId: null, scopes: [], via: "none" } // token present but invalid
   }
   const { createClient } = await import("@/lib/supabase/server")
   const { requireAuth } = await import("@/lib/kernel/api-auth")
-  const { isPlatformStaff } = await import("@/lib/auth/resolve-user-role")
+  const { isPlatformStaffIdentity } = await import("@/lib/auth/resolve-user-role")
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { brokerageId: null, scopes: [], via: "none" }
-  return { brokerageId: auth.brokerageId, scopes: isPlatformStaff(auth.userType) ? ["*"] : [], via: "session" }
+  // Wildcard scopes are platform-staff only, and staff identity is dual-column. The
+  // previous `isPlatformStaff(auth.userType)` handed "*" to any tenant user carrying
+  // user_type='support' and withheld it from the platform's own superadmin, whose
+  // row is (user_type='admin', platform_role='superadmin').
+  return {
+    brokerageId: auth.brokerageId,
+    scopes: isPlatformStaffIdentity(auth.userType, auth.platformRole) ? ["*"] : [],
+    via: "session",
+  }
 }

@@ -16,7 +16,7 @@
  */
 import { checkEmailSyntax, checkEmailMx } from "../lib/external/email-verifier"
 import { socrataQuery } from "../lib/external/socrata-client"
-import { getMarketDatasets, listSupportedMarkets, MARKETS } from "../lib/external/socrata-market-registry"
+import { getMarketDatasets, listSupportedMarkets, providerOf, MARKETS } from "../lib/external/socrata-market-registry"
 import { getConnectorSpec } from "../lib/agentic-os/connector-registry"
 
 let pass = 0, fail = 0
@@ -73,11 +73,29 @@ ok(getMarketDatasets({ state: "WA", city: "Seattle" }).some(d => d.kind === "per
 ok(getMarketDatasets({ state: "FL", city: "Miami"   }).some(d => d.kind === "permits"), "market-registry: Miami has a permits dataset")
 ok(getMarketDatasets({ state: "XX", city: "Nowhere" }).length === 0, "market-registry: unknown market returns empty (fallback)")
 ok(getMarketDatasets({ state: null, city: null }).length === 0,     "market-registry: null inputs safe")
-// Every spec has a real host + dataset id (data quality)
+// Every spec has a real host + a well-formed dataset id (data quality).
+//
+// ── ID SHAPE IS PER-PROVIDER (2026-08-20) ───────────────────────────────────
+// This loop asserted "every id is a Socrata 4x4", which was true while Socrata was the only
+// provider and became false the moment the registry gained `provider: "arcgis"` (Miami-Dade, read
+// by lib/external/arcgis-permits.ts). ArcGIS has no 4x4 — an ArcGIS entry is identified by its
+// 32-hex AGOL item id, with the queryable locator in `serviceUrl`.
+//
+// The RULE this assertion existed for is unchanged and is the one that matters: `datasetId` is
+// the first segment of `permitDedupeKey`, so a malformed or unstable id means a signal that
+// re-files itself every day. So the id is still checked strictly — just against the shape its own
+// provider actually issues, rather than against one provider's shape for all of them.
 for (const m of Object.values(MARKETS)) {
   for (const d of m.datasets) {
     ok(/^[a-z0-9.-]+$/i.test(d.host) && d.host.includes("."), `market-registry: ${m.city} dataset host shape ok`)
-    ok(/^[a-z0-9]{4}-[a-z0-9]{4}$/.test(d.datasetId),         `market-registry: ${m.city} dataset id is Socrata 4x4`)
+    const isArcgis = providerOf(d) === "arcgis"
+    ok(isArcgis ? /^[0-9a-f]{32}$/.test(d.datasetId) : /^[a-z0-9]{4}-[a-z0-9]{4}$/.test(d.datasetId),
+      `market-registry: ${m.city} dataset id is a well-formed ${isArcgis ? "ArcGIS item id" : "Socrata 4x4"}`)
+    // An ArcGIS spec without a layer URL is not addressable at all — it would be counted as
+    // coverage and then refused on every run. isQueryableDataset enforces it; this proves the
+    // registry never contains one in the first place.
+    ok(!isArcgis || /^https:\/\/.+\/(FeatureServer|MapServer)\/\d+$/.test(d.serviceUrl ?? ""),
+      `market-registry: ${m.city} ArcGIS dataset carries a FeatureServer layer URL`)
   }
 }
 

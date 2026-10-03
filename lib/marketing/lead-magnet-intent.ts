@@ -8,8 +8,11 @@
 
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
 
-export type MagnetType =
-  | "home_valuation" | "buyer_guide" | "seller_guide" | "market_report" | "listing_alert" | "open_house" | "generic_form"
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): `MagnetType` deleted — a union no
+// caller ever carried. classifyMagnetIntent below deliberately takes a plain
+// string (magnet types arrive from stored rows and form payloads) and its
+// switch is the one live spelling of the vocabulary, with unknowns routed to
+// "unknown" instead of refused.
 
 export type MagnetIntent = "buyer" | "seller" | "unknown"
 

@@ -141,6 +141,11 @@ export function ChallengesClient({ challenges, isAdmin, currentAgentId }: { chal
                   {c.prizePoints > 0 && <span className="flex items-center gap-1"><Award className="h-3.5 w-3.5" />{c.prizePoints} pts</span>}
                   {c.prizeDescription && <span>{c.prizeDescription}</span>}
                   <span className="flex items-center gap-1"><Users className="h-3.5 w-3.5" />{c.winnerCount} winner{c.winnerCount === 1 ? "" : "s"}</span>
+                  {/* challenges.team_id — a team is a mini brokerage, so say which board
+                      this is. Brokerage-wide challenges carry no badge. */}
+                  {c.teamId && <Badge variant="outline">Team challenge</Badge>}
+                  {/* Whether these numbers are the crowned result or a live recount. */}
+                  {c.standingsSource === "final" && <span>final standings</span>}
                 </div>
 
                 {c.standings.length > 0 ? (
@@ -149,6 +154,13 @@ export function ChallengesClient({ challenges, isAdmin, currentAgentId }: { chal
                       <div key={s.agentId} className="flex items-center gap-3 text-sm">
                         <span className={"w-6 text-center font-bold " + (s.isWinner ? "text-yellow-500" : "text-muted-foreground")}>#{s.rank}</span>
                         <span className={"flex-1 truncate " + (s.agentId === currentAgentId ? "font-semibold text-blue-700" : "")}>{s.agentName}{s.agentId === currentAgentId && " (you)"}</span>
+                        {/* challenge_participants.prize_awarded — a crowned winner whose
+                            points never landed is the one thing this board must not hide. */}
+                        {s.isWinner && c.prizePoints > 0 && (
+                          s.prizeAwarded
+                            ? <span className="text-[11px] text-emerald-700">prize paid</span>
+                            : <span className="text-[11px] text-amber-700">prize not awarded yet</span>
+                        )}
                         <span className="font-medium">{s.value.toLocaleString()}</span>
                       </div>
                     ))}

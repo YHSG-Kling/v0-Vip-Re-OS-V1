@@ -56,6 +56,24 @@ export const BUYER_MILESTONE_JOURNEY: MilestoneCatalogEntry[] = [
   { id: "appraisal_completed",        name: "Appraisal Complete",     clientVisible: true },
   { id: "financing_deadline",         name: "Financing Approval",     clientVisible: true,  deadline: FINANCING },
   { id: "loan_approved",              name: "Loan Approved",          clientVisible: true },
+  // ── HAZARD INSURANCE (m385) — BUYER SIDE ONLY ─────────────────────────────
+  // These two are on the BUYER journey and deliberately NOT on the seller one:
+  // the buyer is the party who must have coverage in force at funding. They are
+  // also NOT in REQUIRED_MILESTONE_IDS below, because ensureRequiredMilestones
+  // is transaction-type BLIND — putting them there would seed a homeowner's
+  // policy step onto every seller deal too.
+  //
+  // insurance_quote_approved was ALREADY a canonical identity and is ALREADY
+  // targeted by lib/transactions/vendor-quote-workflow.ts approveQuote(), which
+  // updates transaction_milestones WHERE milestone_name='insurance_quote_approved'.
+  // It was in NO journey, so that update matched zero rows and did nothing,
+  // silently, on every deal. Seeding it here is what makes that live code work.
+  // Internal (clientVisible:false) — approving a quote is coordination, not a
+  // moment worth telling the buyer about.
+  { id: "insurance_quote_approved",   name: "Insurance Quote Approved", clientVisible: false },
+  // The client-facing one: coverage actually in force, binder on file. This is
+  // the step a lender checks and the one that stops a closing when missing.
+  { id: "hazard_insurance_bound",     name: "Homeowner's Insurance Bound", clientVisible: true },
   { id: "clear_to_close_received",    name: "Clear to Close",         clientVisible: true },
   { id: "cda_delivered",              name: "Commission Disbursement",clientVisible: false },
   { id: "cd_uploaded",                name: "Closing Disclosure",     clientVisible: false },

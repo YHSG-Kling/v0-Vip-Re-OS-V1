@@ -1,6 +1,6 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { generateAIResponse } from "@/lib/ai"
 import { createServiceClient } from "@/lib/supabase/service"
-import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
 
 export interface CompScoreResult {
@@ -64,6 +64,7 @@ export async function scoreAllComps(
 
   let scored = 0
   const riskFlagsToInsert: Array<{
+    brokerage_id: string
     cma_id: string
     listing_id: string
     risk_type: string
@@ -141,7 +142,7 @@ Respond ONLY with valid JSON (no markdown):
       const riskFlags = Array.isArray(parsed.risk_flags) ? parsed.risk_flags : []
 
       // INSERT ai_comp_scores
-      await supabase.from("ai_comp_scores").insert({
+      await sentinelWrite(supabase, supabase.from("ai_comp_scores").insert({
         cma_id: cmaId,
         comparable_id: comp.id,
         listing_id: listingId,
@@ -151,10 +152,10 @@ Respond ONLY with valid JSON (no markdown):
         score_rationale: parsed.rationale ?? null,
         risk_flags: riskFlags,
         coaching_insight: parsed.coaching_insight ?? null,
-      })
+      }), { table: "ai_comp_scores", flow: "ai_comp_scores_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
       // UPDATE cma_comparables with score summary
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("cma_comparables")
         .update({
           ai_score: score,
@@ -162,11 +163,20 @@ Respond ONLY with valid JSON (no markdown):
           risk_flags: riskFlags,
           coaching_insight: parsed.coaching_insight ?? null,
         })
-        .eq("id", comp.id)
+        .eq("id", comp.id), { table: "cma_comparables", flow: "cma_comparables_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
       // Collect risk flags for bulk insert into comp_risk_flags
       for (const flag of riskFlags) {
         riskFlagsToInsert.push({
+          // STAMP THE TENANT. This insert omitted brokerage_id while the two
+          // sibling inserts in this same function (lines 148 and 211) carried it,
+          // from the very same `brokerageId` parameter — so comp_risk_flags was a
+          // column READ BY CODE AND WRITTEN BY NOBODY. The reader that suffered is
+          // resolveCompRiskFlagService, which has to establish a flag's ownership
+          // through its CMA precisely because it could not trust this column; that
+          // fallback stays (a flag from before this fix still has NULL here), but
+          // new rows now answer the ownership question directly.
+          brokerage_id: brokerageId,
           cma_id: cmaId,
           listing_id: listingId,
           risk_type: "comp_quality",
@@ -185,7 +195,17 @@ Respond ONLY with valid JSON (no markdown):
 
   // Bulk insert risk flags
   if (riskFlagsToInsert.length > 0) {
-    await supabase.from("comp_risk_flags").insert(riskFlagsToInsert)
+    // READ THE ERROR. supabase-js RESOLVES a refusal, so the bare `await` this
+    // replaced reported success whatever happened. That matters more now that the
+    // row carries brokerage_id: under PGRST204 an INSERT naming an absent column
+    // is refused ENTIRELY — not partially — so a single wrong column name here
+    // would silently drop EVERY risk flag for the CMA while the caller counted
+    // them as filed, and the compliance panel would show a clean report for a
+    // comp set that had actually raised flags.
+    const { error: flagsError } = await supabase.from("comp_risk_flags").insert(riskFlagsToInsert)
+    if (flagsError) {
+      console.error("[ai-cma-engine] comp_risk_flags insert refused:", flagsError.message)
+    }
   }
 
   // Update CMA quality_score based on average ai_score
@@ -199,28 +219,27 @@ Respond ONLY with valid JSON (no markdown):
       const avgScore = Math.round(
         scores.reduce((sum, s) => sum + s.score, 0) / scores.length
       )
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("cma_reports")
         .update({ quality_score: avgScore })
-        .eq("id", cmaId)
+        .eq("id", cmaId), { table: "cma_reports", flow: "cma_reports_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
   }
 
   // Fire kernel event — non-blocking
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type: "listing",
-    entity_id: listingId,
-    event_type: KernelEvent.CMA_GENERATED,
-    actor_user_id: actorUserId,
-    metadata: { cma_id: cmaId, comps_scored: scored },
-  })
-  await processKernelEvent({
-    event: KernelEvent.CMA_GENERATED,
+  // LINEAGE (wave 98, lane 98B): the direct insert + a separate processKernelEvent were the
+  // two halves THE emitter (lib/kernel/emit.ts) already does in one call — and the reactor now
+  // gets the lifecycleEventId, so every child it emits is caused BY this row.
+  const { emitKernelEvent } = await import("@/lib/kernel/emit")
+  const cmaEvent = await emitKernelEvent({
     brokerageId,
     entityType: "listing",
     entityId: listingId,
-  }).catch(() => {})
+    event: KernelEvent.CMA_GENERATED,
+    actorUserId,
+    metadata: { cma_id: cmaId, comps_scored: scored },
+  })
+  if (cmaEvent.error) console.error("[ai-cma-engine] CMA_GENERATED event refused:", cmaEvent.error)
 
   return { success: true, scored, cmaId }
 }

@@ -6,7 +6,7 @@
 // same real last-practice signals the radar uses. Read-only; best-effort; no model narration in the numbers.
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { computeSkillFreshness, SKILL_LABEL, type SkillArea, type SkillSignal } from "@/lib/education/skill-freshness"
+import { computeSkillFreshness, SKILL_LABEL, type SkillSignal } from "@/lib/education/skill-freshness"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -83,13 +83,15 @@ export async function generateSkillFreshnessBoard(
       const [obj, quiz, course] = await Promise.all([
         a.user_id ? supabase.from("objection_training_sessions").select("completed_at, total_score").eq("agent_user_id", a.user_id).not("completed_at", "is", null).order("completed_at", { ascending: false }).limit(1).maybeSingle() : Promise.resolve({ data: null }),
         supabase.from("agent_quiz_attempts").select("created_at, score, passed").eq("agent_id", a.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
-        supabase.from("agent_courses").select("completed_at, score").eq("agent_id", a.id).eq("status", "passed").not("completed_at", "is", null).order("completed_at", { ascending: false }).limit(1).maybeSingle(),
+        // Coursework = most recent COMPLETED learning_modules assignment (canonical rail; legacy
+        // agent_courses had no writer, so it was permanently null).
+        a.user_id ? supabase.from("learning_assignments").select("completed_at, quiz_score").eq("agent_user_id", a.user_id).eq("status", "completed").is("contact_id", null).not("completed_at", "is", null).order("completed_at", { ascending: false }).limit(1).maybeSingle() : Promise.resolve({ data: null }),
       ])
       const o = (obj as any).data, q = (quiz as any).data, c = (course as any).data
       const signals: SkillSignal[] = [
         { area: "objection_handling", lastPracticedDays: daysSince(o?.completed_at, now), lastScore: o?.total_score ?? null },
         { area: "product_knowledge", lastPracticedDays: daysSince(q?.created_at, now), lastScore: q ? (q.passed === false ? Math.min(q.score ?? 0, 50) : q.score ?? null) : null },
-        { area: "coursework", lastPracticedDays: daysSince(c?.completed_at, now), lastScore: c?.score ?? null },
+        { area: "coursework", lastPracticedDays: daysSince(c?.completed_at, now), lastScore: c?.quiz_score ?? null },
       ]
       const u = Array.isArray(a.users) ? a.users[0] : a.users
       const name = [u?.first_name, u?.last_name].filter(Boolean).join(" ").trim() || "An agent"

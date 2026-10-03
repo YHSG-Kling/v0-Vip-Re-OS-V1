@@ -4,12 +4,15 @@
 // Layer 9.2 Social Media Automation — Agent Social Share Actions
 // Tables: social_posts, agent_social_shares
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
 
 // ============================================
 // AGENT SOCIAL SHARE
@@ -36,6 +39,13 @@ export async function shareListingPost(params: {
   if (!isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid brokerage ID" }
   }
+  // SESSION GATE (lane 91D2, CLAUDE.md §4): the tenant is the session's (a
+  // different body brokerage is refused) and the sharer is the signed-in user —
+  // agentUserId named whose feature grant and whose share was recorded.
+  const tenant = await requireCallerTenant(params.brokerageId)
+  if (!tenant.ok) return { success: false, error: tenant.error }
+  if (params.agentUserId !== tenant.userId) return { success: false, error: "Forbidden: you can only share as yourself." }
+  params = { ...params, brokerageId: tenant.brokerageId }
 
   // Feature access check
   const canAccess = await canAccessFeature(params.agentUserId, "social_automation")
@@ -95,11 +105,11 @@ export async function shareListingPost(params: {
     }
 
     // Fire kernel event
-    await supabase.from("lifecycle_events").insert({
-      entity_type: "agent_social_share",
-      entity_id: share.id,
-      brokerage_id: params.brokerageId,
-      event_type: KernelEvent.SOCIAL_POST_SHARED_BY_AGENT,
+    await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      entityType: "agent_social_share",
+      entityId: share.id,
+      brokerageId: params.brokerageId,
+      event: KernelEvent.SOCIAL_POST_SHARED_BY_AGENT,
       metadata: {
         social_post_id: params.socialPostId,
         agent_user_id: params.agentUserId,
@@ -107,7 +117,8 @@ export async function shareListingPost(params: {
         original_platform: post.platform,
         listing_id: post.listing_id,
       },
-    })
+      auditOnly: true,
+    }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
     await processKernelEvent({
       event: KernelEvent.SOCIAL_POST_SHARED_BY_AGENT,
@@ -127,16 +138,31 @@ export async function shareListingPost(params: {
 }
 
 /**
- * Get agent's share history
+ * Get the calling agent's share history.
+ *
+ * GATED + SESSION-SCOPED (was neither). `"use server"` with **no session**, and
+ * both scoping keys — `agentUserId` and `brokerageId` — supplied by the caller.
+ * A pair of uuids read any agent's social publishing history in any brokerage.
+ * The `isValidUUID` checks looked protective but only assert *shape*: a
+ * well-formed uuid belonging to someone else passed them cleanly.
+ *
+ * Both keys now come from the session. `agent_social_shares.agent_user_id` is a
+ * **users** id (not `agents.id`) — the column name says so and the join keys
+ * confirm it — so `ctx.userId` is the correct value here. That distinction is not
+ * cosmetic in this codebase: the two id spaces are disjoint, so substituting one
+ * for the other yields a valid query that silently matches nothing.
  */
-export async function getAgentShareHistory(params: {
-  agentUserId: string
-  brokerageId: string
+export async function getAgentShareHistory(params?: {
+  /** Ignored — derived from the session. */
+  agentUserId?: string
+  /** Ignored — derived from the session. */
+  brokerageId?: string
   limit?: number
 }) {
-  if (!isValidUUID(params.agentUserId) || !isValidUUID(params.brokerageId)) {
-    return []
-  }
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) return []
+
+  const limit = Math.min(Math.max(Math.trunc(params?.limit ?? 50) || 50, 1), 200)
 
   const supabase = await createClient()
 
@@ -146,15 +172,15 @@ export async function getAgentShareHistory(params: {
       `
       *,
       social_posts (
-        id, platform, post_type, content, media_urls, 
+        id, platform, post_type, content, media_urls,
         published_at, status, listing_id
       )
     `
     )
-    .eq("agent_user_id", params.agentUserId)
-    .eq("brokerage_id", params.brokerageId)
+    .eq("agent_user_id", ctx.userId)
+    .eq("brokerage_id", ctx.brokerageId)
     .order("shared_at", { ascending: false })
-    .limit(params.limit || 50)
+    .limit(limit)
 
   if (error) {
     console.error("[social-share] getAgentShareHistory error:", error)
@@ -165,14 +191,37 @@ export async function getAgentShareHistory(params: {
 }
 
 /**
- * Check if agent can share a specific post
+ * Check if the calling agent may share a specific post.
+ *
+ * GATED + SESSION-SCOPED (was neither). **This is a compliance gate**, so its
+ * failure modes matter more than a read's: it is what decides whether a post that
+ * has not passed brand compliance or broker approval may go out under the
+ * brokerage's name.
+ *
+ * Two problems, both now closed:
+ *  - `brokerageId` came from the caller, so the tenant a post was checked against
+ *    was chosen by whoever asked.
+ *  - There was no session at all, so an anonymous caller could enumerate posts.
+ *
+ * It already **fails closed** on a refused or empty read (`error || !post` →
+ * `canShare: false`), which is the correct direction for a gate and is preserved
+ * — this is the exact shape that went the wrong way in the wave-1
+ * `checkSuppression` finding, so it is called out here rather than left implicit.
+ * The refusal reason is now distinguished from "no such post" for the operator's
+ * sake, without changing the verdict.
  */
 export async function canAgentSharePost(params: {
   socialPostId: string
-  brokerageId: string
+  /** Ignored — derived from the session. */
+  brokerageId?: string
 }): Promise<{ canShare: boolean; reason?: string }> {
-  if (!isValidUUID(params.socialPostId) || !isValidUUID(params.brokerageId)) {
+  if (!isValidUUID(params.socialPostId)) {
     return { canShare: false, reason: "Invalid parameters" }
+  }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { canShare: false, reason: "Not authenticated" }
   }
 
   const supabase = await createClient()
@@ -181,10 +230,16 @@ export async function canAgentSharePost(params: {
     .from("social_posts")
     .select("approval_status, brand_compliance_passed, status")
     .eq("id", params.socialPostId)
-    .eq("brokerage_id", params.brokerageId)
-    .single()
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
 
-  if (error || !post) {
+  // Fail CLOSED on either outcome, but do not report a refused read as a missing
+  // post — an operator debugging a permissions problem needs to see the
+  // difference.
+  if (error) {
+    return { canShare: false, reason: "Could not verify this post's approval state" }
+  }
+  if (!post) {
     return { canShare: false, reason: "Post not found" }
   }
 

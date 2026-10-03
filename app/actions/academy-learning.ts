@@ -20,6 +20,7 @@
  * the caller's own ids — the same pattern as learning-modules.ts.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -138,10 +139,10 @@ export async function markModuleViewed(
     })
     if (error) return { ok: false, error: error.message }
   } else if (!existing.viewed_at && existing.status !== "completed") {
-    await svc
+    await sentinelWrite(svc, svc
       .from("learning_assignments")
       .update({ status: existing.status === "assigned" || !existing.status ? "viewed" : existing.status, viewed_at: new Date().toISOString() })
-      .eq("id", existing.id)
+      .eq("id", existing.id), { table: "learning_assignments", flow: "learning_assignments_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
 
   // Best-effort view counter (single canonical RPC).
@@ -204,18 +205,18 @@ export async function submitModuleQuiz(
     .eq("agent_user_id", ctx.userId)
     .maybeSingle()
   if (existing) {
-    await svc
+    await sentinelWrite(svc, svc
       .from("learning_assignments")
       .update({ ...progress, viewed_at: existing.viewed_at ?? nowIso })
-      .eq("id", existing.id)
+      .eq("id", existing.id), { table: "learning_assignments", flow: "learning_assignments_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   } else {
-    await svc.from("learning_assignments").insert({
+    await sentinelWrite(svc, svc.from("learning_assignments").insert({
       brokerage_id: ctx.brokerageId,
       module_id: moduleId,
       agent_user_id: ctx.userId,
       signal_source: "academy_self_serve",
       ...progress,
-    })
+    }), { table: "learning_assignments", flow: "learning_assignments_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
 
   // Certification — only for REQUIRED modules, only on a pass, idempotent.
@@ -255,6 +256,89 @@ export async function submitModuleQuiz(
 }
 
 /** Resolve the signed-in learner's real identity for the Academy client (no client-supplied ids). */
+export interface MyLearningProgress {
+  completed: Array<{ id: string; title: string; type: string }>
+  inProgress: Array<{ id: string; title: string; type: string }>
+}
+
+/**
+ * The current learner's real progress — learning_assignments joined to their
+ * modules. Feeds the Academy "My Progress" panel, which previously rendered
+ * hardcoded empty arrays (always 0/0).
+ */
+export async function getMyLearningProgress(): Promise<MyLearningProgress> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { completed: [], inProgress: [] }
+
+  const svc = createServiceClient()
+  const { data } = await svc
+    .from("learning_assignments")
+    .select("status, module_id, priority_score, learning_modules ( id, title )")
+    .eq("agent_user_id", ctx.userId)
+    .order("viewed_at", { ascending: false })
+    .limit(100)
+
+  const completed: MyLearningProgress["completed"] = []
+  const inProgressRanked: Array<{ id: string; title: string; type: string; priorityScore: number }> = []
+  for (const r of (data ?? []) as any[]) {
+    const mod = Array.isArray(r.learning_modules) ? r.learning_modules[0] : r.learning_modules
+    if (!mod?.id) continue
+    const row = { id: mod.id as string, title: (mod.title as string) ?? "Module", type: "module" }
+    if (r.status === "completed") completed.push(row)
+    // 'dismissed' deliberately excluded — a learner who dismissed an assignment
+    // asked it OFF their "Continue Learning" list, not to see it forever.
+    else if (r.status === "viewed" || r.status === "assigned") {
+      inProgressRanked.push({ ...row, priorityScore: Number(r.priority_score ?? 0) })
+    }
+  }
+  // Highest priority_score first — the "Continue Learning" strip only shows the
+  // top 3 (training-progress-panel.tsx), so which 3 THAT is depends on this.
+  inProgressRanked.sort((a, b) => b.priorityScore - a.priorityScore)
+  const inProgress: MyLearningProgress["inProgress"] = inProgressRanked.map(({ priorityScore, ...row }) => row)
+  return { completed, inProgress }
+}
+
+/**
+ * Dismiss an assigned-but-unwanted module — the "not now" the learner never had
+ * (status='dismissed' + dismissed_at is a CHECK-valid pair that nothing wrote
+ * before this: only the retake reset in onboarding/progress.ts CLEARED the
+ * field, and getMyLearningProgress above is the reader that now honors it).
+ * Never dismisses a REQUIRED module — those stay on the list until completed.
+ */
+export async function dismissLearningAssignmentAction(
+  moduleId: string,
+): Promise<{ success: boolean; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId) return { success: false, error: "Not authenticated" }
+
+  const svc = createServiceClient()
+  const { data: mod } = await svc
+    .from("learning_modules")
+    .select("id, required")
+    .eq("id", moduleId)
+    .maybeSingle()
+  if ((mod as { required?: boolean } | null)?.required) {
+    return { success: false, error: "Required modules can't be dismissed" }
+  }
+
+  const { data, error } = await svc
+    .from("learning_assignments")
+    .update({ status: "dismissed", dismissed_at: new Date().toISOString() })
+    .eq("agent_user_id", ctx.userId)
+    .eq("module_id", moduleId)
+    // 'assigned' is NOT a member of learning_assignments_status_check (live
+    // vocabulary: completed | dismissed | open | superseded | viewed) — only
+    // 'open' and 'viewed' name an active, not-yet-resolved row.
+    .in("status", ["open", "viewed"])
+    .select("id")
+
+  if (error) return { success: false, error: error.message }
+  if (!data || data.length === 0) return { success: false, error: "Assignment not found or already resolved" }
+
+  revalidatePath("/academy")
+  return { success: true }
+}
+
 export async function getAcademyViewer(): Promise<
   { agentId: string; brokerageId: string; agentName: string } | null
 > {

@@ -4,6 +4,7 @@ import { useState, useEffect } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { X, PartyPopper } from "lucide-react"
+import { priceOrPendingReview } from "@/lib/format/money"
 
 interface CongratsCardProps {
   contactId: string
@@ -49,11 +50,8 @@ export function CongratsCard({
     year: "numeric",
   })
 
-  const formattedPrice = new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(salePrice)
+  // Never "$0" (wave 94 — the one wording for a price we do not have yet).
+  const formattedPrice = priceOrPendingReview(salePrice)
 
   return (
     <Card className="relative overflow-hidden border-2 border-green-200 bg-gradient-to-br from-green-50 to-emerald-50">

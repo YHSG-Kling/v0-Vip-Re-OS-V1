@@ -1,10 +1,21 @@
 /**
  * lib/agentic-os/deal-investigator.ts
  *
- * "One paragraph, three vendors" agent — given a contact, fan out to PDL (person) + RentCast
- * (typed MLS) + BatchData (MCP-first, REST fallback) and ask Claude to synthesize a single
+ * "One paragraph, three sources" agent — given a contact, fan out to PDL (person) + RentCast
+ * (AVM) + RentCast (the full property record) and ask Claude to synthesize a single
  * AI-ISA-ready summary of why this contact, why now. Replaces three manual lookups with one
  * structured artifact the agent can read.
+ *
+ * WAVE 92 (lane 92B): the PROPERTY leg was BatchData (batchDataPreferMcp("property.search"),
+ * purpose "valuation"). Owner (2026-10-01): "use rentcast as much as possible regarding … a
+ * simple property lookup" · "batchdata is to be used more for scrapping leads". TOMBSTONE
+ * (§1.3): that leg is deleted — survivor: lib/property/rentcast.ts::getRentcastPropertyDetail
+ * (every attribute of the record: features, owner, sale history, tax years; staff-only, which
+ * this investigator is), gated + metered + cached 30 days by the ONE RentCast client.
+ * WAVE 93 (lane 93B, owner: "use batchdata as a backup"): the leg now asks the provider chain's
+ * lookup (lib/avm/provider-chain.ts::getPropertyRecordWithFallback) — RentCast first, BatchData
+ * only as the backup after a named RentCast miss. This is a staff button (runDealInvestigatorAction),
+ * not an AI agent tool, so the server-side backup is permitted here.
  *
  * Every external call routes through the canonical gateway. Never throws (gateway contract).
  */
@@ -47,7 +58,7 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
   const svc = createServiceClient()
   const { data: contact } = await svc
     .from("contacts")
-    .select("id, first_name, last_name, email, phone, mailing_address, mailing_city, mailing_state, mailing_zip, enrichment_profile")
+    .select("id, brokerage_id, first_name, last_name, email, phone, mailing_address, mailing_city, mailing_state, mailing_zip, enrichment_profile")
     .eq("id", params.contactId)
     .maybeSingle()
   if (!contact) {
@@ -73,43 +84,59 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
   if (result.cost >= cap) { result.warnings.push("cap reached after PDL — skipping MLS + property"); return result }
 
   // (2) MLS — RentCast typed-helper. AVM-by-address gives sale + rent estimates.
+  // FIX (wave 70, lane 70C): this used to read RENTCAST_API_KEY and call callRentcastGet
+  // directly — unmetered (the flat `cost: 0.01` was never logged to vendor_usage_tracking)
+  // and skipped the platform vendor-budget gate every other RentCast caller goes through.
+  // Routed through the ONE metered client (lib/property/rentcast.ts::getRentcastAVM) so
+  // every RentCast request is booked at RENTCAST_USD_PER_REQUEST.
   try {
     if (contact.mailing_address && contact.mailing_zip) {
-      const apiKey = process.env.RENTCAST_API_KEY
-      if (apiKey) {
-        const { callRentcastGet } = await import("@/lib/external/rentcast-typed")
-        const avm = await callRentcastGet("/avm/value", {
-          address: address,
-        } as any, apiKey)
-        result.cost += 0.01
-        result.sources.mls = avm.data as unknown as Record<string, unknown> | null
+      if (!contact.brokerage_id) {
+        result.warnings.push("rentcast: contact has no brokerage_id to meter against")
       } else {
-        result.warnings.push("rentcast: RENTCAST_API_KEY not configured")
+        // Wave 99 (lane 99C, LAW 3): the property_valuation CAPABILITY (lib/avm/provider-chain.ts::
+        // requestPropertyValuation) — a NORMALIZED valuation (value, range, confidence, source), never
+        // the vendor body; cost is what the legs actually metered.
+        const { requestPropertyValuation } = await import("@/lib/avm/provider-chain")
+        const v = await requestPropertyValuation({
+          brokerageId: contact.brokerage_id,
+          address,
+          systemSource: "deal_investigator",
+          contactId: contact.id,
+        })
+        result.cost += v.costUsd
+        result.sources.mls = v.valuation ? ({ ...v.valuation } as unknown as Record<string, unknown>) : null
       }
     }
   } catch (e) { result.warnings.push(`rentcast: ${(e as Error).message}`) }
 
   if (result.cost >= cap) { result.warnings.push("cap reached after MLS — skipping property"); return result }
 
-  // (3) Property — BatchData MCP first, REST adapter as fallback (per recommendation #2)
+  // (3) Property — the full RentCast property RECORD (wave 92; the BatchData leg is retired —
+  // header). Same tenant attribution as the AVM leg above; a refusal leaves the source null and
+  // says why. A cached record costs nothing (the client's 30-day fact cache).
   try {
-    if (address) {
-      const { batchDataPreferMcp } = await import("@/lib/external/batchdata-mcp")
-      const property = await batchDataPreferMcp<Record<string, unknown>>(
-        "property.search",
-        { address },
-        async () => {
-          // REST fallback would call lib/external/batchdata-client.fetchMotivatedSellers / similar
-          // shaped for a single address; left as a thunk returning null so this turn ships without
-          // tightly coupling investigator to the existing REST module's specific signature.
-          return null as unknown as Record<string, unknown>
-        },
-      )
-      result.cost += 0.02
-      result.sources.property = property.data
-      if (property.via === "rest") result.warnings.push("batchdata: fell back to REST (MCP unconfigured or failed)")
+    if (address && contact.brokerage_id) {
+      // Wave 93 (lane 93B, owner: "use batchdata as a backup"): THE PROVIDER CHAIN's lookup —
+      // RentCast's full record first, BatchData only as the backup after a named RentCast miss.
+      const [{ getPropertyRecordWithFallback }, { RENTCAST_USD_PER_REQUEST }] = await Promise.all([
+        import("@/lib/avm/provider-chain"),
+        import("@/lib/property/rentcast"),
+      ])
+      const { record, note, backupCostUsd } = await getPropertyRecordWithFallback({
+        brokerageId: contact.brokerage_id,
+        address,
+        systemSource: "deal_investigator",
+        contactId: contact.id,
+      })
+      result.cost += RENTCAST_USD_PER_REQUEST + backupCostUsd
+      result.sources.property = record ? ((record.rentcastDetail ?? record) as unknown as Record<string, unknown>) : null
+      if (!record) result.warnings.push(`property record: none (${note})`)
+      else if (record.provider === "batchdata") result.warnings.push(`property record: ${note}`)
+    } else if (address) {
+      result.warnings.push("rentcast: contact has no brokerage_id to meter the property record against")
     }
-  } catch (e) { result.warnings.push(`batchdata: ${(e as Error).message}`) }
+  } catch (e) { result.warnings.push(`rentcast property record: ${(e as Error).message}`) }
 
   // (4) Synthesize — one paragraph, AI-ISA-ready, via the Vercel AI Gateway.
   if (!process.env.AI_GATEWAY_API_KEY) {
@@ -128,7 +155,7 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
           "Lead with the strongest motivation signal. End with a concrete next-step suggestion. NO bullet points.\n\n" +
           `PERSON (PeopleData): ${JSON.stringify(result.sources.person).slice(0, 2000)}\n\n` +
           `MLS (RentCast): ${JSON.stringify(result.sources.mls).slice(0, 1500)}\n\n` +
-          `PROPERTY (BatchData): ${JSON.stringify(result.sources.property).slice(0, 1500)}`,
+          `PROPERTY RECORD (RentCast): ${JSON.stringify(result.sources.property).slice(0, 1500)}`,
       }],
     })
     if (llm.ok && llm.content) {

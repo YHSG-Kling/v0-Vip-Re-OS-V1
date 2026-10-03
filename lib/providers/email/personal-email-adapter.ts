@@ -18,6 +18,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { decryptSecret } from "@/lib/security/secret-crypto"
+import { googleOAuthClient, microsoftOAuthClient } from "@/lib/env/aliases"
 
 export type PersonalProvider = "gmail" | "outlook"
 
@@ -106,6 +107,22 @@ export async function getFreshPersonalToken(
   return { provider: cred.service_name, accessToken, email: cred.email }
 }
 
+/**
+ * Which personal account is connected, and what it was GRANTED — without minting a token.
+ * The Google-eSignature hand-off (lib/esign/google-esign-handoff.ts) asks this so it can
+ * say "reconnect Google to grant Drive access" BEFORE a send fails, and the FormWizard's
+ * provider lookup can show Google as the e-sign method only when it can actually run.
+ * `scope` is the space-separated grant the OAuth callback recorded on config.scope
+ * (null when the row predates that write — callers then attempt and read the refusal).
+ */
+export async function getPersonalConnectionInfo(
+  agentUserId: string,
+): Promise<{ provider: PersonalProvider; email: string | null; scope: string | null } | null> {
+  const cred = await loadActivePersonalCred(agentUserId)
+  if (!cred) return null
+  return { provider: cred.service_name, email: cred.email, scope: cred.scope }
+}
+
 interface PersonalCred {
   id: string
   service_name: "gmail" | "outlook"
@@ -113,6 +130,8 @@ interface PersonalCred {
   refresh_token: string | null
   token_expires_at: string | null
   email: string | null
+  /** The OAuth grant recorded at connect time (config.scope), when known. */
+  scope: string | null
   /** Which table the cred came from — token refresh writes back to the same place. */
   source: "agent_api_credentials" | "platform_credentials"
 }
@@ -138,7 +157,7 @@ async function loadActivePersonalCred(agentUserId: string): Promise<PersonalCred
       // decryptSecret is backward-compatible: a plaintext token passes through unchanged, an
       // at-rest-encrypted token is transparently decrypted — so this read is safe before/after
       // the credential-encryption rollout (lib/security/secret-crypto.ts).
-      return { id: c.id, service_name: c.service_name, access_token: decryptSecret(c.access_token), refresh_token: decryptSecret(c.refresh_token), token_expires_at: c.token_expires_at, email: c.config?.email ?? null, source: "agent_api_credentials" }
+      return { id: c.id, service_name: c.service_name, access_token: decryptSecret(c.access_token), refresh_token: decryptSecret(c.refresh_token), token_expires_at: c.token_expires_at, email: c.config?.email ?? null, scope: (c.config?.scope as string | undefined) ?? null, source: "agent_api_credentials" }
     }
   }
 
@@ -151,7 +170,8 @@ async function loadActivePersonalCred(agentUserId: string): Promise<PersonalCred
  * (owner_type, owner_id). This is what lets a VENDOR or CONTACT (no agents row) use their OWN
  * connected mailbox; agent/team/brokerage owner scopes resolve here too.
  */
-export async function loadOwnerEmailCred(owner: EmailOwner): Promise<PersonalCred | null> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function loadOwnerEmailCred(owner: EmailOwner): Promise<PersonalCred | null> {
   const svc = createServiceClient()
   const { data: rows } = await svc
     .from("platform_credentials")
@@ -170,6 +190,7 @@ export async function loadOwnerEmailCred(owner: EmailOwner): Promise<PersonalCre
     refresh_token: c.refresh_token,
     token_expires_at: c.token_expires_at,
     email: (c.config?.email as string) ?? null,
+    scope: (c.config?.scope as string | undefined) ?? null,
     source: "platform_credentials",
   }
 }
@@ -209,8 +230,8 @@ async function ensureFreshAccessToken(cred: PersonalCred): Promise<string | null
 }
 
 async function refreshGoogle(refreshToken: string): Promise<{ accessToken: string; expiresInSec: number } | null> {
-  const clientId = process.env.GOOGLE_CLIENT_ID
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET
+  // ONE SPELLING (§6): GOOGLE_CLIENT_ID/SECRET via lib/env/aliases.ts.
+  const { clientId, clientSecret } = googleOAuthClient()
   if (!clientId || !clientSecret) return null
 
   const res = await callConnector<{ access_token?: string; expires_in?: number }>({
@@ -227,25 +248,54 @@ async function refreshGoogle(refreshToken: string): Promise<{ accessToken: strin
   return { accessToken: res.data.access_token, expiresInSec: res.data.expires_in ?? 3600 }
 }
 
+// ── THE MICROSOFT REFRESH SCOPE, AND WHY IT IS TWO STRINGS AND NOT ONE ────────────────────
+// Microsoft NARROWS a refreshed access token to the scopes REQUESTED at the token endpoint —
+// unlike Google, whose refresh (refreshGoogle above) sends no `scope` at all and therefore
+// returns the full consented set. This function requested Mail.Send + Mail.ReadWrite only, so
+// every refreshed Microsoft token silently LOST Calendars.ReadWrite even though the consent
+// granted it (app/api/integrations/oauth/[provider]/route.ts:62-68 requests offline_access,
+// User.Read, Calendars.ReadWrite, Mail.Send, Mail.ReadWrite).
+//
+// The consequence was invisible because the FIRST token — the one minted by the OAuth callback
+// — does carry calendar scope: an Outlook calendar write worked for about an hour after
+// connecting and returned 403 from then on, for the whole life of the connection. Two live
+// callers were affected: lib/providers/calendar/personal-calendar.ts (Graph /me/events for
+// per-agent bookings) and, as of w27, lib/providers/calendar/outlook-calendar-sync-adapter.ts.
+//
+// FIXED BY WIDENING, WITH A FALLBACK RATHER THAN A BET. Asking for a scope that was never
+// consented makes Microsoft refuse the ENTIRE token request (AADSTS65001), which would turn a
+// degraded calendar into a dead MAILBOX for any connection made before Calendars.ReadWrite
+// joined the consent list. So the wide request is tried first and the historical mail-only
+// request is the fallback: a modern connection gains calendar scope, a legacy one behaves
+// exactly as it did before, and neither can be broken by this change.
+const MS_REFRESH_SCOPES_WITH_CALENDAR =
+  "offline_access https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Calendars.ReadWrite"
+const MS_REFRESH_SCOPES_MAIL_ONLY =
+  "offline_access https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Mail.ReadWrite"
+
 async function refreshMicrosoft(refreshToken: string): Promise<{ accessToken: string; expiresInSec: number } | null> {
-  const clientId = process.env.MICROSOFT_CLIENT_ID
-  const clientSecret = process.env.MICROSOFT_CLIENT_SECRET
+  const { clientId, clientSecret } = microsoftOAuthClient()
   if (!clientId || !clientSecret) return null
 
-  const res = await callConnector<{ access_token?: string; expires_in?: number }>({
-    connector: "microsoft-oauth", baseUrl: "https://login.microsoftonline.com",
-    path: "/common/oauth2/v2.0/token", method: "POST",
-    auth: { style: "none" }, bodyType: "form",
-    body: {
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-      client_id: clientId,
-      client_secret: clientSecret,
-      scope: "https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Mail.ReadWrite offline_access",
-    },
-  })
-  if (!res.ok || !res.data?.access_token) return null
-  return { accessToken: res.data.access_token, expiresInSec: res.data.expires_in ?? 3600 }
+  const attempt = async (scope: string) => {
+    const res = await callConnector<{ access_token?: string; expires_in?: number }>({
+      connector: "microsoft-oauth", baseUrl: "https://login.microsoftonline.com",
+      path: "/common/oauth2/v2.0/token", method: "POST",
+      auth: { style: "none" }, bodyType: "form",
+      body: {
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: clientId,
+        client_secret: clientSecret,
+        scope,
+      },
+    })
+    // callConnector resolves refusals rather than throwing, so the result is read, not assumed.
+    if (!res.ok || !res.data?.access_token) return null
+    return { accessToken: res.data.access_token, expiresInSec: res.data.expires_in ?? 3600 }
+  }
+
+  return (await attempt(MS_REFRESH_SCOPES_WITH_CALENDAR)) ?? (await attempt(MS_REFRESH_SCOPES_MAIL_ONLY))
 }
 
 // ─── Gmail send (RFC 5322 + base64url) ───────────────────────────────────────

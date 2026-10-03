@@ -18,13 +18,16 @@ import {
   type ExceptionScope,
 } from "@/lib/kernel/exception-center"
 import { resolveEgressScope } from "@/lib/kernel/egress-scope"
+import { pickUserOffice } from "@/lib/kernel/resolve-user-office"
 
 // PRINCIPAL seats (owner: not every subscription is a brokerage) — whoever
 // OWNS the subscription's operations gets the Exception Center: brokers on
 // brokerage/multi-location tiers, the solo agent on a solo tier, the team
 // lead on a team tier. A team member or a brokerage's staff agent is
 // OVERSEEN by their principal, not a principal themselves.
-const PRINCIPAL_TYPES = new Set(["broker", "broker_admin", "admin", "superadmin", "solo_agent", "team_lead"])
+// SCOPE LADDER (kept inline): 'superadmin' removed — dead as users.user_type
+// (0 live rows); broker_owner added — storable seat that OWNS the subscription.
+const PRINCIPAL_TYPES = new Set(["broker", "broker_owner", "broker_admin", "admin", "solo_agent", "team_lead"])
 
 async function resolveBroker() {
   const supabase = await createClient()
@@ -129,15 +132,29 @@ export async function getExceptionCenter(opts?: { locationId?: string | null }):
   scope.locations = ((locs ?? []) as any[]).map((l) => ({ id: String(l.id), name: String(l.name ?? "Office") }))
 
   // Same scope resolver reporting uses (keep-one): a multi-location office
-  // admin (admin WITH agents.location_id) oversees ONLY their office;
-  // broker/broker_admin/superadmin see all locations and may narrow by choice.
+  // admin oversees ONLY their office; broker/broker_admin/superadmin see all
+  // locations and may narrow by choice.
+  //
+  // THE OFFICE COMES FROM pickUserOffice, NOT FROM agents.location_id ALONE.
+  // This used to read only the agents row, which meant the office admin this
+  // whole block implements could not exist on the multi_location tier:
+  // requiresAgentRow() gives a pure-admin owner of a brokerage/multi_location
+  // tenant NO agents row at all (deliberately — they own no contacts, listings
+  // or transactions), so `agentRow` was null and every such admin fell through
+  // to brokerage-wide. m423 put the office on `users` for exactly this person.
+  const { data: userRow } = await svc.from("users")
+    .select("location_id").eq("id", caller.userId).maybeSingle()
   const { data: agentRow } = await svc.from("agents")
     .select("location_id, team_id").eq("user_id", caller.userId).maybeSingle()
+  const office = pickUserOffice(
+    (userRow as any)?.location_id ?? null,
+    (agentRow as any)?.location_id ?? null,
+  )
   const egress = resolveEgressScope({
     userType: caller.userType,
     userId: caller.userId,
     brokerageId: caller.brokerageId,
-    locationId: (agentRow as any)?.location_id ?? null,
+    locationId: office.locationId,
     teamId: (agentRow as any)?.team_id ?? null,
   })
 

@@ -1,6 +1,9 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateObject } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// ROUTED, was raw — see lib/ai/models.ts:prompt_calibration. The key is pinned
+// to claude-sonnet, the model this call site already passed, so only the ledger
+// changes.
+import { generateObjectRouted } from "@/lib/ai/models"
 import { z } from "zod"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
@@ -76,8 +79,9 @@ export async function calibrateSystemPrompts(
     if (data.themes.length === 0) continue
 
     try {
-      const { object: promptChanges } = await generateObject({
-        model: resolveModel("anthropic/claude-sonnet-4-20250514"),
+      const { object: promptChanges } = await generateObjectRouted({
+        feature: "prompt_calibration",
+        brokerageId,
         schema: CalibrationSchema,
         system: `You are an AI quality engineer. Based on the negative feedback themes, suggest specific system prompt improvements to increase quality. Return JSON with:
 - system_prompt_additions: A paragraph of guidance to add to the system prompt
@@ -88,7 +92,7 @@ export async function calibrateSystemPrompts(
           negative_themes: data.themes,
           current_approval_rate: data.approvalRate,
         }),
-        maxOutputTokens: 500,
+        maxTokens: 500,
       })
 
       // Insert into model_retraining_log
@@ -118,7 +122,7 @@ export async function calibrateSystemPrompts(
       })
 
       // Create smart_assistant_suggestion for admins
-      await supabase.from("smart_assistant_suggestions").insert({
+      await sentinelWrite(supabase, supabase.from("smart_assistant_suggestions").insert({
         brokerage_id: brokerageId,
         agent_id: null, // Admin-level suggestion
         title: `AI Quality Alert: ${formatSystemName(sourceSystem)} needs attention`,
@@ -131,7 +135,7 @@ export async function calibrateSystemPrompts(
           calibration_log_id: insertedLog?.id,
         },
         status: "pending",
-      })
+      }), { table: "smart_assistant_suggestions", flow: "smart_assistant_suggestions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     } catch (error) {
       console.error(`[PromptCalibrator] Error calibrating ${sourceSystem}:`, error)
     }

@@ -7,7 +7,7 @@
 // escalates breaches to platform staff EXACTLY ONCE per (ticket, breach kind).
 // CSAT rides the same table: the tenant rates a resolved ticket 1–5, once.
 
-import { TICKET_PRIORITIES, type TicketPriority } from "./ticket-constants"
+import { TICKET_PRIORITIES, ticketAnsweredBy, type TicketPriority } from "./ticket-constants"
 
 /** Response/resolution targets in HOURS, by priority. */
 export const SLA_TARGETS_HOURS: Record<TicketPriority, { firstResponse: number; resolution: number }> = {
@@ -94,12 +94,16 @@ export interface SlaSweepResult { open: number; breached: number; escalated: num
  */
 export async function runSupportSlaSweep(svc: any, now: Date = new Date()): Promise<SlaSweepResult> {
   const result: SlaSweepResult = { open: 0, breached: 0, escalated: 0 }
-  const { data: tickets } = await svc
+  // `error` destructured: an unchecked read here reports a refused query as
+  // "no open tickets" and the sweep returns a clean zero while every SLA in the
+  // product silently stops being measured.
+  const { data: tickets, error } = await svc
     .from("support_tickets")
-    .select("id, subject, brokerage_id, created_at, priority, status, first_response_at, resolved_at")
+    .select("id, subject, brokerage_id, lane, created_at, priority, status, first_response_at, resolved_at")
     .in("status", ["open", "in_progress"]).limit(500)
+  if (error) throw new Error(`support SLA sweep could not read tickets: ${error.message}`)
 
-  for (const t of (tickets ?? []) as Array<SlaTicket & { id: string; subject: string | null; brokerage_id: string | null }>) {
+  for (const t of (tickets ?? []) as Array<SlaTicket & { id: string; subject: string | null; brokerage_id: string | null; lane: string | null }>) {
     result.open += 1
     const sla = evaluateTicketSla(t, now)
     if (sla.breaches.length === 0) continue
@@ -109,21 +113,36 @@ export async function runSupportSlaSweep(svc: any, now: Date = new Date()): Prom
       const type = `support_sla_breach_${kind}`
       // Dedupe: one escalation per (ticket, kind) — ever. The queue badge stays
       // red until resolved; staff don't need an hourly repeat.
-      const { data: existing } = await svc
+      const { data: existing, error: dedupeErr } = await svc
         .from("notifications").select("id")
         .eq("type", type).eq("entity_id", t.id).limit(1).maybeSingle()
+      // A refused dedupe read must not be read as "never escalated" — that would
+      // re-page the answering side every hour, forever.
+      if (dedupeErr) { console.error("[support-sla] dedupe read refused:", dedupeErr.message); continue }
       if (existing) continue
 
-      const { notifyPlatformStaff } = await import("@/lib/notifications/platform-staff")
       const label = kind === "first_response" ? "first response" : "resolution"
-      await notifyPlatformStaff(svc, {
+      const payload = {
         type,
         title: `SLA breach (${label}): ${t.subject ?? "Support ticket"}`,
         body: `Ticket is ${Math.round(sla.ageHours)}h old (priority ${t.priority ?? "medium"}) and past its ${label} target. Jump in from the support console.`,
         entityType: "support_ticket",
         entityId: t.id,
-        priority: "high",
-      })
+        priority: "high" as const,
+      }
+
+      // ESCALATE TO WHOEVER ANSWERS THIS LANE. This used to page platform staff for
+      // EVERY breached ticket, so a brokerage-internal ticket nobody at the platform
+      // is working — or can work — raised a platform alert, while the brokerage's own
+      // office, which owes the response, was never told its clock had run out.
+      if (ticketAnsweredBy(t.lane) === "brokerage_office") {
+        if (!t.brokerage_id) continue
+        const { notifyBrokerageAdmins } = await import("@/lib/notifications/brokerage-admins")
+        await notifyBrokerageAdmins(svc, t.brokerage_id, payload)
+      } else {
+        const { notifyPlatformStaff } = await import("@/lib/notifications/platform-staff")
+        await notifyPlatformStaff(svc, payload)
+      }
       result.escalated += 1
     }
   }

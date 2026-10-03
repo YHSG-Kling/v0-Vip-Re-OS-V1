@@ -1,3 +1,4 @@
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 // lib/kernel/week-in-review.ts
 // ─────────────────────────────────────────────────────────────────────────────
 // VOICE WEEK-IN-REVIEW — the voice admin's OUTBOUND direction. The admin takes
@@ -77,13 +78,12 @@ export function weekReviewTag(agentId: string, isoWeek: string): string {
   return `[WEEKLY_REVIEW] [${agentId}] [${isoWeek}]`
 }
 
-export function isoWeekOf(d: Date): string {
-  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
-  t.setUTCDate(t.getUTCDate() + 4 - (t.getUTCDay() || 7))
-  const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1))
-  const week = Math.ceil(((t.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7)
-  return `${t.getUTCFullYear()}-W${String(week).padStart(2, "0")}`
-}
+// isoWeekOf DELETED (duplicates round 5, lane 59C) — byte-identical to
+// lib/format/dates.ts:isoWeekOf. Survivor: lib/format/dates.ts. Re-exported
+// (not folded into a bare `export … from`) because
+// scripts/orphan-export-guard.ts is blind to re-export specifiers.
+export { isoWeekOf } from "@/lib/format/dates"
+import { isoWeekOf } from "@/lib/format/dates"
 
 export interface WeekReviewResult { agents: number; briefed: number; audioRendered: number; proposalsQueued: number; skipped: number; errors: number }
 
@@ -157,7 +157,7 @@ export async function runWeekInReview(svc: any, now: Date = new Date()): Promise
           selfHealByBrokerage.set(a.brokerage_id, facts)
         }
         const { composeSelfHealBrief } = await import("@/lib/kernel/repair-digest")
-        const isBrokerVoice = ["broker", "broker_admin", "admin"].includes(String(u?.user_type ?? ""))
+        const isBrokerVoice = isAdminOrBroker({ user_type: String(u?.user_type ?? "") })
         selfHealBrief = composeSelfHealBrief({ healed: facts.healed, openExceptions: facts.openExceptions, isBrokerVoice })
       } catch { /* the income brief still lands */ }
 
@@ -186,7 +186,12 @@ export async function runWeekInReview(svc: any, now: Date = new Date()): Promise
       if (process.env.ELEVENLABS_API_KEY) {
         try {
           const { synthesizeSpeech } = await import("@/lib/voice/elevenlabs-tts")
-          const tts = await synthesizeSpeech({ text: script, brokerageId: a.brokerage_id })
+          // MODEL + PACING through the ONE selector (lane 77C): a week-in-
+          // review is a scripted brief — the narration lane, never the
+          // primitive's old monolingual_v1 default.
+          const { elevenLabsModelForLane, withNaturalPauses } = await import("@/lib/video/realism-profile")
+          const reviewModel = elevenLabsModelForLane("brief_narration")
+          const tts = await synthesizeSpeech({ text: withNaturalPauses(script, reviewModel), modelId: reviewModel, brokerageId: a.brokerage_id })
           if (tts.success && tts.audioBuffer) {
             const path = `tts/${a.brokerage_id}/week-review-${a.id}-${isoWeek}.mp3`
             const { error: upErr } = await svc.storage.from("video-assets")
@@ -200,12 +205,13 @@ export async function runWeekInReview(svc: any, now: Date = new Date()): Promise
         } catch { /* audio is best-effort — the text brief still lands */ }
       }
 
-      await svc.from("notifications").insert({
+      const { error: notifyError } = await svc.from("notifications").insert({
         user_id: a.user_id, brokerage_id: a.brokerage_id, type: "week_in_review",
         title: "Your week in review — from your AI team",
         body: `${audioUrl ? `▶ Listen: ${audioUrl} — ` : ""}${script}`.slice(0, 480) + ` [${isoWeek}]`,
         priority: "medium", channel: "in_app", is_read: false,
       })
+      if (notifyError) console.warn("[week-in-review.ts] notifications insert refused — the bell will not ring:", notifyError.message)
       r.briefed += 1
 
       // Delegation close: the TOP action as ONE gated proposal (deduped per week).

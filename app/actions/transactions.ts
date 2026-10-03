@@ -1,29 +1,71 @@
 "use server"
 
 import { isValidUUID } from "@/lib/validations"
-import * as TransactionKernel from "@/lib/kernel/transactions"
+import { DEADLINE_STATUSES, isDeadlineStatus } from "@/lib/transactions/coordination-status"
 import * as TransactionService from "@/lib/application/transactions"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isAdminOrBroker, isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { createContactManually } from "@/lib/kernel/crm"
 
 // ============================================
 // TRANSACTION CRUD
 // ============================================
 
+/**
+ * ABSORBED (wave 16) from the retired /api/dashboard/data `transactions` branch:
+ * the SESSION-DERIVED tenant scope and the session-pinned agent scope.
+ *
+ * Both used to be optional caller-supplied arguments and neither was applied by
+ * default, so `getTransactions()` read every deal on the platform and
+ * `getTransactions({ agent_id })` read any agent's book by id. A caller-supplied
+ * agent id may now only NARROW, only inside the caller's own tenant, and only
+ * for a broker/admin; everyone else is pinned to their own agents.id.
+ *
+ * It also returned a bare `[]` for a rejected argument, which the caller could
+ * not tell from an empty pipeline. Every exit is now the discriminated shape.
+ */
 export async function getTransactions(filters?: {
   status?: string
   agent_id?: string
   agentId?: string
-  brokerage_id?: string
 }) {
-  const agentIdValue = filters?.agent_id || filters?.agentId
-  if (agentIdValue && !isValidUUID(agentIdValue)) {
-    console.warn("[transactions.ts] getTransactions called with invalid UUID:", agentIdValue)
-    return []
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) {
+    return { success: false as const, error: "Not authenticated", data: [] as unknown[] }
   }
+  if (!ctx.brokerageId) {
+    return {
+      success: false as const,
+      error: "Your account is not linked to a brokerage yet.",
+      data: [] as unknown[],
+    }
+  }
+
+  const requestedAgentId = filters?.agent_id || filters?.agentId
+  if (requestedAgentId && !isValidUUID(requestedAgentId)) {
+    return { success: false as const, error: "Invalid agent ID", data: [] as unknown[] }
+  }
+
+  // agents.id — resolved from the session, never a users.id substituted with `??`.
+  let agentFilter: string | undefined
+  if (isAdminOrBroker({ user_type: ctx.userType })) {
+    // A broker/admin may narrow to one agent; the tenant filter below is what
+    // keeps that id inside their own brokerage.
+    agentFilter = requestedAgentId
+  } else {
+    if (!ctx.agentId) {
+      return { success: false as const, error: "Agent profile not found", data: [] as unknown[] }
+    }
+    agentFilter = ctx.agentId
+  }
+
   // Use application service for now - kernel doesn't have direct list function
   // TODO: Migrate to kernel when loadTransactionWorkspace is refactored for listing
-  return TransactionService.getTransactions(filters)
+  return TransactionService.getTransactions({
+    status: filters?.status,
+    agent_id: agentFilter,
+    brokerage_id: ctx.brokerageId,
+  })
 }
 
 export async function getTransactionById(transactionId: string) {
@@ -160,6 +202,52 @@ export async function getClosingChecklist(transactionId: string) {
 // ============================================
 
 /**
+ * THE SESSION GATE for the lifecycle commands below (lane 91D, CLAUDE.md §4).
+ *
+ * closeTransaction / reopenTransactionIfAuthorized / recalculateCommissionState /
+ * emitClientFriendlyUpdate are exports of a "use server" file — public HTTP
+ * endpoints — and each handed a BODY-SUPPLIED brokerageId (and, for reopen, a
+ * body-supplied ROLE) straight to a kernel command that runs on the service
+ * client. Anyone holding a transaction id could close it (firing commission and
+ * lifetime-touch writes), reopen it by claiming role "broker", or send the client
+ * a portal update. The tenant now comes from the session; the transaction must
+ * be in it; and the caller must be a tenant admin (the one roster,
+ * isAdminOrBroker) or the agent on the deal. `requireFinance` narrows to the
+ * brokerage's books tier (isBrokerageFinanceAdmin) for reopening a closed deal.
+ * Fail closed: an unreadable transaction refuses. Not exported (a "use server"
+ * export would itself be a public endpoint).
+ */
+async function requireTransactionActor(
+  transactionId: string,
+  opts: { requireFinance?: boolean } = {},
+): Promise<{ ok: true; brokerageId: string; userId: string; userType: string } | { ok: false; error: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId) return { ok: false, error: "Not authenticated" }
+  if (!ctx.brokerageId) return { ok: false, error: "Your account is not linked to a brokerage yet." }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const { data: tx, error } = await svc
+    .from("transactions")
+    .select("id, agent_id, buyer_agent_id, seller_agent_id")
+    .eq("id", transactionId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+  if (error) return { ok: false, error: `Could not verify the transaction: ${error.message}` }
+  if (!tx) return { ok: false, error: "Transaction not found" }
+  if (opts.requireFinance) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
+      return { ok: false, error: "Only the brokerage's broker or admin can do this." }
+    }
+  } else {
+    const onDeal = !!ctx.agentId && [tx.agent_id, tx.buyer_agent_id, tx.seller_agent_id].includes(ctx.agentId)
+    if (!onDeal && !isAdminOrBroker({ user_type: ctx.userType })) {
+      return { ok: false, error: "Only the agent on this transaction or a brokerage admin can do this." }
+    }
+  }
+  return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId, userType: ctx.userType }
+}
+
+/**
  * Close a transaction. Sets status=closed, stage=CLOSED, close_date to today if not set.
  * Writes a timeline entry and emits lifecycle_events record.
  */
@@ -170,10 +258,12 @@ export async function closeTransaction(params: {
   reason?: string
 }): Promise<{ success: boolean; error?: string }> {
   if (!isValidUUID(params.transactionId)) return { success: false, error: "Invalid transaction ID" }
-  if (!isValidUUID(params.brokerageId)) return { success: false, error: "Invalid brokerage ID" }
+  // brokerageId / agentId are IGNORED on input — the session supplies both (see requireTransactionActor).
+  const gate = await requireTransactionActor(params.transactionId)
+  if (!gate.ok) return { success: false, error: gate.error }
 
   const { closeTransactionCommand } = await import("@/lib/kernel/transactions")
-  return closeTransactionCommand(params)
+  return closeTransactionCommand({ transactionId: params.transactionId, brokerageId: gate.brokerageId, agentId: gate.userId, reason: params.reason })
 }
 
 /**
@@ -188,12 +278,16 @@ export async function reopenTransactionIfAuthorized(params: {
   reason: string
 }): Promise<{ success: boolean; error?: string }> {
   if (!isValidUUID(params.transactionId)) return { success: false, error: "Invalid transaction ID" }
-  if (!["broker", "admin"].includes(params.requestingUserRole)) {
-    return { success: false, error: "Only brokers and admins can reopen transactions." }
-  }
+  // The role used to be read from the BODY (requestingUserRole) — a self-asserted
+  // "broker" passed. Tenant, user and role now all come from the session.
+  const gate = await requireTransactionActor(params.transactionId, { requireFinance: true })
+  if (!gate.ok) return { success: false, error: gate.error }
 
   const { reopenTransactionCommand } = await import("@/lib/kernel/transactions")
-  return reopenTransactionCommand(params)
+  return reopenTransactionCommand({
+    transactionId: params.transactionId, brokerageId: gate.brokerageId,
+    requestingUserId: gate.userId, requestingUserRole: gate.userType, reason: params.reason,
+  })
 }
 
 // ============================================
@@ -210,9 +304,11 @@ export async function recalculateCommissionState(params: {
   agentId: string
 }): Promise<{ success: boolean; error?: string; data?: unknown }> {
   if (!isValidUUID(params.transactionId)) return { success: false, error: "Invalid transaction ID" }
+  const gate = await requireTransactionActor(params.transactionId)
+  if (!gate.ok) return { success: false, error: gate.error }
 
   const { recalculateCommissionStateCommand } = await import("@/lib/kernel/transactions")
-  return recalculateCommissionStateCommand(params)
+  return recalculateCommissionStateCommand({ ...params, brokerageId: gate.brokerageId })
 }
 
 // ============================================
@@ -235,9 +331,20 @@ export async function emitClientFriendlyUpdate(params: {
 }): Promise<{ success: boolean; error?: string }> {
   if (!isValidUUID(params.transactionId)) return { success: false, error: "Invalid transaction ID" }
   if (!isValidUUID(params.contactId)) return { success: false, error: "Invalid contact ID" }
+  const gate = await requireTransactionActor(params.transactionId)
+  if (!gate.ok) return { success: false, error: gate.error }
+  // The recipient must be a contact of the SAME tenant — a body-supplied contact id
+  // from another brokerage would otherwise receive this brokerage's client update.
+  {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { data: c, error: cErr } = await createServiceClient()
+      .from("contacts").select("id").eq("id", params.contactId).eq("brokerage_id", gate.brokerageId).maybeSingle()
+    if (cErr) return { success: false, error: `Could not verify the contact: ${cErr.message}` }
+    if (!c) return { success: false, error: "Contact not found" }
+  }
 
   const { emitClientFriendlyUpdateCommand } = await import("@/lib/kernel/transactions")
-  return emitClientFriendlyUpdateCommand(params)
+  return emitClientFriendlyUpdateCommand({ ...params, brokerageId: gate.brokerageId })
 }
 
 export async function updateChecklistItem(itemId: string, completed: boolean) {
@@ -442,6 +549,12 @@ export async function updateDocumentStatus(documentId: string, status: string, s
   return TransactionService.updateDocumentStatus(documentId, status, signedAt)
 }
 
+/** Staff toggle: show / hide a deal document in the client's portal (wave 98, m690). */
+export async function setDocumentClientVisibility(documentId: string, visible: boolean) {
+  if (!isValidUUID(documentId)) return { success: false, error: "Invalid document ID" }
+  return TransactionService.setDocumentClientVisibility(documentId, visible === true)
+}
+
 // ============================================
 // TIMELINE
 // ============================================
@@ -481,6 +594,24 @@ export async function updateDeadline(
   updates: Partial<{ status: string; deadline_date: string; notes: string; completed_at: string }>,
 ) {
   if (!isValidUUID(deadlineId)) return { success: false, error: "Invalid deadline ID" }
+
+  // VOCABULARY GATE (wave 26). `status` arrives here as free text on a
+  // "use server" export — a public HTTP endpoint — and
+  // lib/application/transactions.ts:1101 passes it straight into
+  // transaction_deadlines.status, which is CHECK-constrained. An unadmitted
+  // value therefore reached the database and came back as a raw constraint
+  // error naming none of the valid states. Validated against the ONE canonical
+  // list (lib/transactions/coordination-status.ts:49), the same shape
+  // updateListingStatus already uses for listings.status, so the two cannot
+  // drift. `completeDeadline` below writes 'completed' as a literal and is
+  // unaffected.
+  if (updates.status !== undefined && !isDeadlineStatus(updates.status)) {
+    return {
+      success: false,
+      error: `'${String(updates.status)}' is not a deadline status. Valid: ${DEADLINE_STATUSES.join(", ")}`,
+    }
+  }
+
   return TransactionService.updateDeadline(deadlineId, updates)
 }
 
@@ -589,8 +720,25 @@ export async function generateStatusUpdate(transactionId: string) {
 }
 
 export async function generateSmartChecklist(transactionId: string, stage: string) {
-  if (!isValidUUID(transactionId)) return { success: false }
+  if (!isValidUUID(transactionId)) return { success: false, error: "Invalid transaction ID" }
   return TransactionService.generateSmartChecklist(transactionId, stage)
+}
+
+// ── Smart checklist card (transaction detail page) ─────────────────────────
+// The reader + completion writer for smart_checklists / task_items. The
+// generator above wrote per-deal compliance checklists that no surface could
+// show; these are the two halves the card in
+// app/dashboard/transactions/[id]/smart-checklist-panel.tsx stands on.
+
+export async function getSmartChecklists(transactionId: string) {
+  if (!isValidUUID(transactionId)) return { success: false as const, error: "Invalid transaction ID" }
+  return TransactionService.getSmartChecklists(transactionId)
+}
+
+export async function setTaskItemCompleted(taskItemId: string, transactionId: string, completed: boolean) {
+  if (!isValidUUID(taskItemId)) return { success: false as const, error: "Invalid task ID" }
+  if (!isValidUUID(transactionId)) return { success: false as const, error: "Invalid transaction ID" }
+  return TransactionService.setTaskItemCompleted(taskItemId, transactionId, completed)
 }
 
 export async function detectTransactionIssues(transactionId: string) {

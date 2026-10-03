@@ -48,11 +48,12 @@ export async function matchMentor(agentId: string): Promise<{ success: boolean; 
   // Idempotent: if the mentee already has an active mentor, keep it (return the ranking for review).
   const { data: existing } = await svc.from("agent_mentor_relationships").select("id").eq("mentee_agent_id", agentId).eq("status", "active").maybeSingle()
   if (!existing) {
-    await svc.from("agent_mentor_relationships").insert({
+    const { error: mentorMatchErr } = await svc.from("agent_mentor_relationships").insert({
       brokerage_id: me.brokerage_id, mentee_agent_id: agentId, mentor_agent_id: best.mentorId, status: "active",
       start_date: new Date().toISOString(),
       notes: JSON.stringify({ reason: best.reason, score: best.score, topics: ["First-30-days plan", "Your first showing", "Pricing conversations"] }),
     })
+    if (mentorMatchErr) console.error(`[mentorship] mentor relationship NOT created: ${mentorMatchErr.message}`)
   }
   return { success: true, mentorId: best.mentorId, matchScore: best.score, matches }
 }

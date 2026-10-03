@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { CheckCircle, AlertTriangle, Mail, MessageSquare } from 'lucide-react'
@@ -10,16 +10,20 @@ type Stage = 'confirm' | 'processing' | 'done' | 'error' | 'invalid'
 export function UnsubscribeClient() {
   const params = useSearchParams()
   const contactId = params.get('contactId')
-  const channel   = params.get('channel') as 'email' | 'sms' | null
+  const channel   = params.get('channel') as 'email' | 'sms' | 'mail' | null
 
   const [stage, setStage]   = useState<Stage>(() => {
     if (!contactId || !channel) return 'invalid'
-    if (channel !== 'email' && channel !== 'sms') return 'invalid'
+    // 'mail' is admitted now that both suppression writers can express it and
+    // dispatchDirectMail reads it back. The route's ALLOWED set is the authority;
+    // this list must not be narrower or a valid link renders as "invalid link".
+    if (channel !== 'email' && channel !== 'sms' && channel !== 'mail') return 'invalid'
     return 'confirm'
   })
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
-  const channelLabel = channel === 'sms' ? 'text messages (SMS)' : 'marketing emails'
+  const channelLabel =
+    channel === 'sms' ? 'text messages (SMS)' : channel === 'mail' ? 'physical mail' : 'marketing emails'
   const Icon = channel === 'sms' ? MessageSquare : Mail
 
   async function handleConfirm() {

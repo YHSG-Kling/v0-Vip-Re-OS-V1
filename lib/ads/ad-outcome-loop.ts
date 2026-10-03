@@ -172,7 +172,8 @@ export function decideBudgetRebalance(rows: CampaignCplRow[]): { fromCampaignId:
 /** GATED distribution intelligence: budget-shift proposals ride the
  *  inter-manager bus — a human approves before any money moves. One open
  *  proposal per (from,to) pair (dedup via the signal payload). */
-export async function proposeBudgetRebalance(svc: any, brokerageId: string): Promise<{ proposed: boolean }> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function proposeBudgetRebalance(svc: any, brokerageId: string): Promise<{ proposed: boolean }> {
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
   const { data: campaigns } = await svc.from("ad_campaigns")
     .select("id, campaign_name")

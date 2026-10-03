@@ -330,7 +330,7 @@ check("contact attach rides the ONE voice-transcript ledger (voice_calls + call 
 check("tenant attach rides communications (channel 'zoom_transcript', contact_id null)",
   transcriptsSrc.includes('from("communications")') && transcriptsSrc.includes('channel: "zoom_transcript"') && transcriptsSrc.includes("contact_id: null"))
 check("both attach lanes are idempotent per meeting uuid",
-  transcriptsSrc.includes('eq("vapi_call_id", vendorCallId)') && transcriptsSrc.includes('eq("metadata->>zoom_uuid", meetingUuid)'))
+  transcriptsSrc.includes('eq("vendor_call_id", vendorCallId)') && transcriptsSrc.includes('eq("metadata->>zoom_uuid", meetingUuid)'))
 
 check("webhook route verifies Zoom's signature and gates on the secret (no secret → 401)",
   webhookSrc.includes("verifyZoomWebhook") && webhookSrc.includes("ZOOM_WEBHOOK_SECRET_TOKEN") && webhookSrc.includes("endpoint.url_validation"))

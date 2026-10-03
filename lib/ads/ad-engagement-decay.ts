@@ -32,10 +32,10 @@ export interface EngagementDecay {
 
 /** Don't judge fatigue on thin data (mirrors format_learning's honesty gate). */
 export const MIN_SAMPLE = 3
-export const MIN_DAYS = 7
+const MIN_DAYS = 7
 /** A creative that's lost this much of its opening CTR is fatigued. */
-export const HIGH_DROP = 0.4
-export const MED_DROP = 0.2
+const HIGH_DROP = 0.4
+const MED_DROP = 0.2
 
 const days = (a: string, b: string) => (new Date(b).getTime() - new Date(a).getTime()) / 86_400_000
 

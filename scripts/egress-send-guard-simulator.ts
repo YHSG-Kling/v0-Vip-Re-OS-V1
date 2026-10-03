@@ -11,9 +11,11 @@
  * This is a baseline ratchet (like schema-drift): the CURRENT direct callers are frozen + classified;
  * the surface can only shrink. KNOWN-GAP entries are honest TODOs to route through the gate.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { fileURLToPath } from "node:url"
 import { dirname, join, relative } from "node:path"
+import { blankComments } from "./strip-comments"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -41,7 +43,10 @@ const ALLOWLIST: Record<string, { cls: Class; why: string }> = {
   "lib/billing/dunning.ts":                     { cls: "b2b-transactional", why: "dunning email to the TENANT billing admin (the platform own customer, past-due recovery, not consumer marketing; SendGrid-gated, one step per episode via platform_dunning_events)" },
   "lib/platform/prospect-followup.ts":          { cls: "b2b-transactional", why: "the platform's own speed-to-lead to a B2B prospect who RAISED THEIR HAND (site form / phone reception / consented capture — never a cold consumer); platform suppression list enforced as a hard boundary; intro + exactly ONE day-3 nudge ('ignore this and we won't keep nudging'), then permanent silence; failed sends never fake a contacted stamp; every send audited to superadmin_audit_log" },
   "app/actions/superadmin/tenant-message.ts":   { cls: "b2b-transactional", why: "direct staff→tenant-admin message (round 31; support WRITE capability gated) — the platform emailing ITS OWN customer's broker/admin bench, never a consumer; platform suppression list checked before send; canonical sendEmail with success only on provider acceptance; audited to superadmin_audit_log (subject + target, never the body) and mirrored to in-app notifications" },
-  "app/actions/lender-status-request.ts":       { cls: "b2b-transactional", why: "transactional request to a lender (B2B, not consumer marketing)" },
+  // app/actions/lender-status-request.ts — RETIRED from this allowlist (lane
+  // 78D): it now sends through dispatchEmail/dispatchSms (the ONE governed
+  // egress) while persisting the ask on document_requests; the entry left
+  // would have sat here reading as a live importer (§2).
   "lib/transactions/deal-vendor-notify.ts":     { cls: "b2b-transactional", why: "Deal-Save Huddle B2B leg — notifies the loan officer / title-escrow officer of a deal issue (business counterparty on the file; deduped + audited)" },
   "lib/kernel/vendors.ts":                      { cls: "b2b-transactional", why: "vendor-facing email (B2B service coordination)" },
   "lib/showings/dispatchers.ts":                { cls: "b2b-transactional", why: "agent-to-agent showing coordination (listing agent's phone, no consumer contact) via the connector-gateway adapter" },
@@ -52,23 +57,37 @@ const ALLOWLIST: Record<string, { cls: Class; why: string }> = {
 }
 
 // ── Walk lib/ + app/ for every file that touches the low-level senders ──
-function walk(dir: string, out: string[]) {
-  for (const name of readdirSync(dir)) {
-    if (name === "node_modules" || name.startsWith(".")) continue
-    const p = join(dir, name)
-    const st = statSync(p)
-    if (st.isDirectory()) walk(p, out)
-    else if (/\.(ts|tsx)$/.test(name)) out.push(p)
-  }
-}
-const files: string[] = []
-walk(join(root, "lib"), files)
-walk(join(root, "app"), files)
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, out)` that stood here
+// was one of 82 copies of the same readdirSync walker. Survivor:
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above. It enumerated
+// DIRECTORIES, so the root-level runtime files — `proxy.ts`, the edge middleware
+// that runs on EVERY request — were outside the corpus of an EGRESS guard.
+// `rootRuntimeFiles()` from the same survivor supplies them.
+const files = [...walkTs(join(root, "lib")), ...walkTs(join(root, "app")), ...rootRuntimeFiles(root)]
 
 const importers: string[] = []
 for (const abs of files) {
-  const src = readFileSync(abs, "utf8")
+  // BLANK COMMENTS FIRST. This scan used to read the file RAW, and a file was
+  // accused of touching the low-level senders because the word `sendSMS`
+  // appeared IN A COMMENT — app/actions/dispatch-showing.ts:243 says "the one
+  // the actual send path (sendSMS) reads", while the code calls dispatchViaSms.
+  // That is the CLAUDE.md section 2 defect: a guard that cannot tell code from
+  // prose either accuses live code or, in the other direction, is satisfied by
+  // a mention. blankComments preserves offsets, so nothing downstream shifts.
+  const src = blankComments(readFileSync(abs, "utf8"))
   if (src.includes(MESSAGING) && SENDERS.test(src)) importers.push(relative(root, abs).replace(/\\/g, "/"))
+}
+
+// ── POSITIVE CONTROL ─────────────────────────────────────────────────────────
+// A broken scanner and a clean tree both report zero. Prove the finder still
+// fires on a REAL sender call, and stays quiet on the same text commented out.
+{
+  const live = `import { x } from "${MESSAGING}"\nawait sendSMS(to, body)\n`
+  const prose = `import { x } from "${MESSAGING}"\n// await sendSMS(to, body)\n`
+  const sees = (t: string) => { const b = blankComments(t); return b.includes(MESSAGING) && SENDERS.test(b) }
+  if (!sees(live)) { console.error("  ✗ POSITIVE CONTROL FAILED — the finder no longer recognises a real sendSMS call"); process.exit(1) }
+  if (sees(prose)) { console.error("  ✗ CONTROL FAILED — a commented-out sendSMS is still being counted as code"); process.exit(1) }
+  console.log("  ✓ positive control · a real sendSMS call is still caught, a commented one is not")
 }
 
 console.log("\n[1 · every file touching the low-level senders is on the reviewed allowlist]")
@@ -121,7 +140,33 @@ check("lib/providers/dispatch.ts exposes NO consent-skip flag (no force/bypass/s
 
 // ── 5. NO CONNECTOR BYPASS — a consumer message must not go via a raw messaging-connector call ──
 console.log("\n[5 · no consumer send via a raw messaging-connector (bypassing the consent gate)]")
+// WAVE 70B (owner: "if there is an sdk option, we should use that"): six of
+// these files' Twilio egress moved from raw callConnector to the official
+// `twilio` SDK behind lib/providers/twilio/client.ts (lib/voice/twilio-tenancy.ts,
+// twilio-voice.ts, twilio-outbound.ts, number-provisioning.ts, warm-transfer.ts,
+// call-recording.ts) - same admin/dial calls, same gate stack running BEFORE
+// them, different transport. A detector keyed only to callConnector would stop
+// seeing these files and silently shrink this guard's coverage (CLAUDE.md #2:
+// a count that moves is the finding - this is a transport swap, not a removed
+// capability), so the detector recognizes BOTH shapes.
 const CONNECTOR_SEND = /callConnector[\s\S]{0,300}connector:\s*["'](twilio|telnyx|bandwidth|sendgrid)["']/
+// Matches BOTH a static import ("from '...'") and this file's usual dynamic
+// import ("await import('...')") — every one of the six migrated call sites
+// uses the dynamic form (imported inline, right where the old callConnector
+// call used to sit).
+const TWILIO_SDK_SEND = /(?:from\s+["']|import\(\s*["'])@\/lib\/providers\/twilio\/client["']/
+const isConnectorSend = (src: string) => CONNECTOR_SEND.test(src) || TWILIO_SDK_SEND.test(src)
+
+// POSITIVE CONTROL - the SDK-adapter detector fires on a real import (both
+// shapes) and stays quiet on the same text commented out.
+{
+  const live = `const { placeCall } = await import("@/lib/providers/twilio/client")\n`
+  const prose = `// const { placeCall } = await import("@/lib/providers/twilio/client")\n`
+  const sees = (t: string) => TWILIO_SDK_SEND.test(blankComments(t))
+  if (!sees(live)) { console.error("  FAILED POSITIVE CONTROL - the Twilio SDK-adapter detector no longer recognises a real import"); process.exit(1) }
+  if (sees(prose)) { console.error("  FAILED CONTROL - a commented-out Twilio SDK import is still being counted as code"); process.exit(1) }
+  console.log("  ✓ positive control - a real Twilio SDK adapter import is caught, a commented one is not")
+}
 const CONNECTOR_ALLOWLIST: Record<string, string> = {
   "lib/providers/messaging/index.ts":      "the provider layer (called BY dispatch.ts, behind the gate)",
   "lib/providers/messaging/sms-adapters.ts": "the provider adapters (behind the gate)",
@@ -131,19 +176,21 @@ const CONNECTOR_ALLOWLIST: Record<string, string> = {
   "lib/voice/twilio-tenancy.ts":           "Twilio SUBACCOUNT administration (creates per-tenant subaccounts; admin API, not a message)",
   "lib/voice/twilio-voice.ts":              "Twilio number VoiceUrl binding for the AI reception lane (admin API config write, not a message)",
   "app/actions/superadmin/platform-reception.ts": "PLATFORM line VoiceUrl binding (master-account admin API config write, not a message)",
-  "lib/voice/twilio-outbound.ts":           "outbound AI voice dial — the TCPA chokepoint (enforceTCPACompliance) + vendor budget gate run INSIDE this module BEFORE the Twilio request (same governance as the Vapi lane it replaces)",
+  "lib/voice/twilio-outbound.ts":           "outbound AI voice dial — the ONE pre-dial gate stack (lib/voice/outbound-call-gates.ts: autonomy → suppression incl. contact_suppression_list → TCPA chokepoint → de-conflict → vendor budget) runs to completion BEFORE the Twilio request; a refusal short-circuits and never dials",
   "app/api/voice/relay/plan/route.ts":      "live-call transfer redirect (call-control REST on an ALREADY-GATED in-progress call; secret-gated endpoint, not a message)",
   "lib/voice/a2p-registration.ts":          "A2P 10DLC carrier registration (TrustHub/Messaging admin APIs — compliance filings, not messages)",
+  "lib/voice/number-port-in.ts":            "number PORT-IN (wave 83D) — Twilio Porting ADMIN API only (Portability check, PortIn create/fetch, the utility-bill Documents upload); session finance-admin gated + plan-allowance gated; Twilio itself e-mails the LOA to the signer the tenant names; never a message from us",
   "app/api/voice/twilio/intelligence/route.ts": "Conversational Intelligence transcript/operator READS (GET-only merge onto the call ledger, not a message)",
   "lib/platform/go-live-readiness.ts":      "go-live readiness probes (read-only GET reachability checks per vendor — never a message)",
   "lib/voice/warm-transfer.ts":             "warm-bridge agent leg (call-control dial to the AGENT on an already-gated live call — a bridge, not a consumer message)",
   "app/api/voice/twilio/whisper/route.ts":  "warm-bridge caller redirect (call-control on the SAME already-gated live call; token-gated endpoints we author ourselves)",
   "lib/platform/provider-posture.ts":       "provider fleet posture sweeps (round 24) — READ-ONLY GETs: Twilio subaccount status/number lists/usage records + SendGrid domain-auth/suppressions; superadmin 'providers'-gated + audited; never a message",
   "lib/voice/number-provisioning.ts":       "shared number search/purchase/webhook-bind pipeline (round 26) — Twilio ADMIN API only (AvailablePhoneNumbers search, IncomingPhoneNumbers purchase, VoiceUrl/SmsUrl binding); one implementation for the tenant action and the staff fleet console (providers+write gated, audited, type-the-number release confirm); never a message",
+  "lib/voice/call-recording.ts":            "call RECORDING control on an already-connected call — POST /Calls/<sid>/Recordings.json, which starts a Recording resource against a live call and sends nothing to anyone. Reached only from the inbound answer path, where `<Gather>` cannot carry a record attribute and `<Record>` would replace the conversation instead of capturing it; the outbound lane arms recording at dial time behind twilio-outbound.ts's gate stack instead. Recording is per-brokerage opt-in and the spoken disclosure is flipped in the same breath (lib/communication/call-disclosures.ts), so the callee is told before it starts. A failure returns honestly — the call is simply NOT recorded — rather than being reported as success.",
 }
 const connectorSenders = files
   .map((abs) => ({ abs, src: readFileSync(abs, "utf8") }))
-  .filter(({ src }) => CONNECTOR_SEND.test(src))
+  .filter(({ src }) => isConnectorSend(src))
   .map(({ abs }) => relative(root, abs).replace(/\\/g, "/"))
 for (const f of connectorSenders) {
   check(`${f} — ${CONNECTOR_ALLOWLIST[f] ? "reviewed" : "UNREVIEWED"}`, f in CONNECTOR_ALLOWLIST,

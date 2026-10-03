@@ -49,13 +49,15 @@ export async function searchStockImagesAction(query: string): Promise<
 }
 
 // ─── Tenant stock-provider key (Settings → Stock Library) ────────────────────
-const TENANT_ADMIN_TYPES = new Set(["broker", "broker_admin", "admin", "superadmin"])
+// TRUE ADMIN GATE (operational: marketing) — repointed to the ONE tenant roster
+// (isAdminOrBroker). 'superadmin' was dead: 0 live rows store that users.user_type.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export async function setStockProviderKeyAction(input: { apiKey: string }): Promise<{ ok: boolean; error?: string }> {
   const p = await callerProfile()
   const ctx = await getAgentContext().catch(() => null)
   if (!p || !ctx?.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
-  if (!TENANT_ADMIN_TYPES.has(p.userType ?? "")) return { ok: false, error: "Forbidden — brokerage admin only" }
+  if (!isAdminOrBroker({ user_type: p.userType })) return { ok: false, error: "Forbidden — brokerage admin only" }
   const apiKey = input.apiKey?.trim()
   if (!apiKey || apiKey.length < 10) return { ok: false, error: "That doesn't look like a valid API key" }
   const svc = createServiceClient()
@@ -153,7 +155,7 @@ export async function listImageLibraryAction(): Promise<
   const brokerageId = ctx?.isAuthenticated ? ctx.brokerageId : null
 
   let q = svc.from("marketing_assets")
-    .select("id, asset_name, asset_url, thumbnail_url, visibility_scope, metadata, brokerage_id")
+    .select("id, asset_name, asset_url, thumbnail_url, visibility_scope, metadata, brokerage_id, tags")
     .eq("asset_type", "image").eq("approval_status", "approved")
     .order("created_at", { ascending: false }).limit(200)
   q = brokerageId
@@ -162,9 +164,25 @@ export async function listImageLibraryAction(): Promise<
   const { data, error } = await q
   if (error) return { ok: false, error: error.message }
 
+  // WAVE 84B — a SCREENSHOT enters the library only when THE ONE USE RULE
+  // admits it for "image_library" (lib/assets/screenshot-uses.ts
+  // screenshotRowUseAllowed: the row's subject AND its recorded uses). Owner:
+  // "screenshots can be used for all marketing/assets/videos/guides/education
+  // … only the zillow zestimate screenshot can be used for marketing campaigns
+  // including video" — so a general still (an OS surface, product UI) is
+  // library stock unless a person narrowed it out, while a Zestimate still
+  // (campaign + campaign video only) and another portal's page never are: the
+  // library feeds every creative picker, not only campaigns. The estimate
+  // comparison COMPOSITE embeds the Zillow still, so it is judged as the
+  // Zestimate and stays inside its campaign too (82D-83C let it in).
+  // Non-screenshot images pass untouched.
+  const { screenshotRowUseAllowed, isScreenshotRuleRow } = await import("@/lib/assets/screenshot-uses")
+  const admitted = ((data ?? []) as any[]).filter((r) =>
+    isScreenshotRuleRow(r) ? screenshotRowUseAllowed(r, "image_library") : true)
+
   return {
     ok: true,
-    assets: ((data ?? []) as any[]).map((r) => ({
+    assets: admitted.map((r) => ({
       id: r.id,
       name: r.asset_name,
       url: r.asset_url,

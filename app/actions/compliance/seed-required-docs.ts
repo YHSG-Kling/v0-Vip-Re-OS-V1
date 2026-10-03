@@ -58,7 +58,11 @@ export async function seedRequiredDocsForBrokerage(
     return { success: false, inserted_count: 0, skipped_count: 0, classifications_inserted: [], error: "Invalid scope" }
   }
 
-  const presets = getRequiredDocPresetsForState(stateCode ?? null)
+  // Pass the deal type through. Without it this seeded the BUYER stack under a
+  // seller deal_type — pre_approval_letter and proof_of_funds as blocking
+  // requirements a seller has no way to produce, so every seller file would
+  // have sat permanently blocked on paperwork that does not exist.
+  const presets = getRequiredDocPresetsForState(stateCode ?? null, dealType)
   if (presets.length === 0) {
     return { success: true, inserted_count: 0, skipped_count: 0, classifications_inserted: [] }
   }

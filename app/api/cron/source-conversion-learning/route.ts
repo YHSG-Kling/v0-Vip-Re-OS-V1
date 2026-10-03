@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { loadSourceConversions } from "@/lib/lead-pipeline/source-conversion-runner"
+import { loadSourceConversions, runSourceReallocationScan } from "@/lib/lead-pipeline/source-conversion-runner"
 import { recommendSourceAllocation } from "@/lib/lead-pipeline/source-conversion-learning"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import {
@@ -41,6 +41,10 @@ export async function GET(request: NextRequest) {
   try {
     const { data: brokerages } = await svc.from("brokerages").select("id").limit(MAX_BROKERAGES)
     let scanned = 0, advised = 0
+    // PER-MARKET reallocation, counted apart from the brokerage-level advice.
+    // Two different units — one is "brokerages advised", the other is "markets
+    // signalled" — and summing them would hide which one produced nothing.
+    let marketsScanned = 0, marketsSignalled = 0
     const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
 
     for (const b of (brokerages ?? []) as { id: string }[]) {
@@ -83,6 +87,33 @@ export async function GET(request: NextRequest) {
         advised++
       }
 
+      // ── THE PER-MARKET HALF OF THE SAME LEARNING ──────────────────────────
+      //
+      // `recommendSourceAllocation` above answers the BROKERAGE-level question
+      // ("which sources are worth money to this tenant") against the union of
+      // every market's enabled set, and publishes one advisory signal. That
+      // union is not actionable: `lead_scraping_markets.enabled_sources` is
+      // per-market, so a source that wins in Austin and loses in Dallas is
+      // averaged into a recommendation nobody can apply to either.
+      //
+      // `runSourceReallocationScan` is the missing half and it was written,
+      // exercised by scripts/source-reallocation-simulator.ts, and never called
+      // from the product: it re-scores the SAME `loadSourceConversions` output
+      // per ACTIVE market and publishes a gated `lead_source_waste` signal
+      // carrying that market's id, which is what turns the advice into the
+      // one-tap reallocation a human approves. Read-only — the proposal and the
+      // approval do the writes.
+      //
+      // Best-effort, matching every other rider in this loop: a per-market
+      // failure must not lose the brokerage-level advice already published.
+      try {
+        const realloc = await runSourceReallocationScan(b.id, {}, svc)
+        marketsScanned += realloc.scanned
+        marketsSignalled += realloc.signalled
+      } catch (reallocErr) {
+        console.error("[source-conversion-learning] reallocation scan failed:", reallocErr)
+      }
+
       // SOURCE LIFETIME-HEALTH — the full arc (lead→contact→thriving/dormant), not just first close.
       // Records each source's lifetime verdict (scraper viability accumulates it) and flags the
       // money-pits the close-rate alone misses: sources that convert cheap but produce fading
@@ -101,7 +132,7 @@ export async function GET(request: NextRequest) {
       } catch { /* best-effort — lifetime health never fails the conversion learner */ }
     }
 
-    const summary = { scanned, advised }
+    const summary = { scanned, advised, markets_scanned: marketsScanned, markets_signalled: marketsSignalled }
     await recordCronSuccessAction({ context_id: contextId, records_processed: advised, metadata: summary })
     return NextResponse.json({ message: "Source-conversion learning complete", summary })
   } catch (e) {

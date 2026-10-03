@@ -14,6 +14,8 @@
  * Conversion logic is deterministic and documented.
  */
 
+import { elevenLabsUsdForChars } from "@/lib/video/realism-profile"
+
 export type UnitType = 'tokens' | 'api_calls' | 'emails' | 'minutes' | 'records' | 'pieces' | 'credits'
 
 export interface VendorPricing {
@@ -57,6 +59,17 @@ export const VENDOR_PRICING: Record<string, VendorPricing> = {
     costPerUnit: 0.01, // $0.01 per request
     notes: 'Property search and social scraping',
   },
+  // Wave 82 lane A — Exa now books under its OWN name (it used to ride the composite
+  // "apify_social" row). exa.ai/docs/reference/pricing (Exa 2026-09-25): /search $7 per 1k
+  // requests (≤10 results), +$1/1k results above 10, +$1/1k pages per content type; $10/mo
+  // free-tier credit. Callers book the SDK-reported `costDollars.total`; this row only prices a
+  // unitCount booking so Exa can never fall to the unknown-vendor fallback.
+  'exa': {
+    vendorName: 'Exa',
+    unitType: 'api_calls',
+    costPerUnit: 0.007, // $7 per 1,000 /search requests
+    notes: 'Neural web search — intent acquisition, permit/pre-listing, search enrichment',
+  },
   'apify': {
     vendorName: 'Apify',
     unitType: 'credits',
@@ -71,9 +84,43 @@ export const VENDOR_PRICING: Record<string, VendorPricing> = {
   'peopledata': {
     vendorName: 'PeopleData Labs',
     unitType: 'records',
-    costPerUnit: 0.10, // $0.10 per enrichment
+    // MUST EQUAL lib/external/peopledata-client.ts::PEOPLEDATA_MATCH_COST_USD
+    // (scripts/provider-cost-routing-guard.ts holds the two in agreement). Was
+    // 0.10 — a unitCount:1 booking through trackVendorUsageService priced a
+    // $0.25 match at $0.10 in the SAME ledger checkVendorBudget reads. Callers
+    // that know the real per-call outcome book through meterVendorSpend with
+    // the matched/no-match constant instead of a unit count (lane 81B).
+    costPerUnit: 0.25,
+    notes: 'Per SUCCESSFUL match (PDL bills nothing on a 404 no-match) — lib/external/peopledata-client.ts',
   },
-  
+  // Lane 85C — the ONLY rung that sells a (modeled) credit band. MUST EQUAL
+  // lib/external/versium-client.ts::VERSIUM_FINANCIAL_MATCH_COST_USD (one match credit, credit-package
+  // ceiling; versium.com/pricing, Exa 2026-09-26). Asked only for a lead/contact still missing a
+  // household financial after BatchData's already-bought demographic dataset.
+  'versium': {
+    vendorName: 'Versium REACH',
+    unitType: 'records',
+    costPerUnit: 0.05,
+    notes: 'Financial append (Household Income / Estimated Net Worth / Credit Rating) — per MATCH, no-match free — lib/external/versium-client.ts',
+  },
+
+  // KEYLESS / FREE LANES — rated at exactly $0 ON PURPOSE.
+  //
+  // normalizeVendorCost() below falls back to $0.01/unit for an UNKNOWN vendor
+  // key. Without these rows, metering the free OSINT lane (Nominatim + Overpass
+  // + US Census, the `osint_free` posture row in lib/platform/provider-posture.ts)
+  // would INVENT a cent of spend per call and inflate the same
+  // vendor_usage_tracking ledger checkVendorBudget reads to decide whether a
+  // brokerage may spend. A free call must be recorded as free, or not at all —
+  // it must never be priced by the unknown-vendor default. The lane IS recorded
+  // (rather than skipped) so the ledger shows the work that was done for $0.
+  'osint_free': {
+    vendorName: 'OSINT Free (OSM + Census)',
+    unitType: 'api_calls',
+    costPerUnit: 0, // keyless free tiers — Nominatim, Overpass, US Census ACS
+    notes: 'Keyless lane. Zero cost by construction; the row exists so free calls are never priced by the unknown-vendor fallback.',
+  },
+
   // Email Providers
   'sendgrid': {
     vendorName: 'SendGrid',
@@ -103,8 +150,11 @@ export const VENDOR_PRICING: Record<string, VendorPricing> = {
   'elevenlabs': {
     vendorName: 'ElevenLabs',
     unitType: 'tokens',
-    costPerUnit: 0.00030, // $0.30 per 1K characters
-    notes: 'AI voice generation',
+    // lane 92A: THE ONE voice price (lib/video/realism-profile.ts elevenLabsUsdForChars,
+    // $0.10/1K). Was a private $0.30/1K copy — 3x the billed rate, written into the slideshow
+    // voiceover's video_render_log.cost_usd (app/api/videos/listing-voiceover/route.ts).
+    costPerUnit: elevenLabsUsdForChars(1), // per CHARACTER
+    notes: 'AI voice generation — per character',
   },
   
   // Direct Mail

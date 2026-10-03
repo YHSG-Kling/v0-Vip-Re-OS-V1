@@ -27,9 +27,16 @@
 //     record locally would double on retry).
 //   • A QBO id is only recorded after Intuit actually returned one.
 //
-// Requires (REPORT-ONLY migration, not yet applied):
-//   ALTER TABLE team_earnings      ADD COLUMN quickbooks_export_id text, ADD COLUMN quickbooks_synced_at timestamptz;
-//   ALTER TABLE agent_commissions  ADD COLUMN quickbooks_export_id text, ADD COLUMN quickbooks_synced_at timestamptz;
+// MARKER COLUMNS — APPLIED. This header used to read "Requires (REPORT-ONLY
+// migration, not yet applied)" and list the two ALTERs below. That was true when
+// written and is now a WAYPOINT (CLAUDE.md §2): both columns exist on both tables
+// on the live database, per the generated cache —
+//   scripts/schema-snapshot.ts :: team_earnings and agent_commissions both carry
+//   "quickbooks_export_id" and "quickbooks_synced_at".
+// The missing-migration branches below are therefore defensive, not expected;
+// they stay because they are the honest answer if a column is ever rolled back.
+//   ALTER TABLE team_earnings      ADD COLUMN quickbooks_export_id text, ADD COLUMN quickbooks_synced_at timestamptz;  -- applied
+//   ALTER TABLE agent_commissions  ADD COLUMN quickbooks_export_id text, ADD COLUMN quickbooks_synced_at timestamptz;  -- applied
 
 import "server-only"
 import type { createServiceClient } from "@/lib/supabase/service"

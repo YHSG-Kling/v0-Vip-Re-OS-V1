@@ -1,7 +1,6 @@
 import { notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { WidgetChatClient } from './widget-chat-client'
-import { randomBytes } from 'crypto'
 
 export const dynamic = 'force-dynamic'
 
@@ -36,6 +35,11 @@ export default async function WidgetPage({
   //    belong to THIS brokerage (a foreign slug falls back to brokerage).
   let identity: { assistant_name: string | null; avatar_url: string | null; tone: string | null; welcome_message: string | null } | null = null
   let entityName = brokerage.name
+  // agents.id, only when ?agent= resolved to an agent OF THIS BROKERAGE. It is
+  // handed to the client so the session it mints is ATTRIBUTED to that agent —
+  // /api/widget/session re-checks it against the brokerage before writing it,
+  // so this is a hint, not a grant.
+  let scopedAgentId: string | null = null
 
   if (sp.agent) {
     const { data: agentRow } = await supabase
@@ -45,6 +49,7 @@ export default async function WidgetPage({
       .eq('brokerage_id', brokerage.id)
       .maybeSingle()
     if (agentRow) {
+      scopedAgentId = (agentRow as any).id
       const u = Array.isArray((agentRow as any).users) ? (agentRow as any).users[0] : (agentRow as any).users
       entityName = [u?.first_name, u?.last_name].filter(Boolean).join(' ') || brokerage.name
       const { data: p } = await supabase.from('ai_identity_profiles')
@@ -90,10 +95,14 @@ export default async function WidgetPage({
     identity?.welcome_message ??
     `Hi! I'm ${assistantName} from ${entityName}. Ask me anything about buying, selling, or local market conditions.`
 
-  // ── 3. Generate a one-time session token (persisted by the session API) ───
-  //    The client calls POST /api/widget/session on mount to create the DB row.
-  //    We pre-generate the token server-side so it can be baked into the page.
-  const sessionToken = randomBytes(24).toString('hex')
+  // ── 3. The session token is MINTED BY THE SESSION API, not by this page ───
+  //    This page used to bake a randomBytes token into the HTML with a comment
+  //    saying the client would call POST /api/widget/session to create the row.
+  //    The client never did — so no chat_sessions row ever existed for this
+  //    lane, and every /api/widget/message and /api/widget/capture-lead call it
+  //    made was answered "Invalid or closed session" (403). The client now mints
+  //    on mount from the slug, exactly like the other widget entry point, and
+  //    uses the token the server issues.
 
   return (
     <html lang="en">
@@ -106,7 +115,7 @@ export default async function WidgetPage({
       <body style={{ margin: 0, padding: 0, height: '100%', overflow: 'hidden' }}>
         <WidgetChatClient
           brokerageSlug={brokerageSlug}
-          sessionToken={sessionToken}
+          agentId={scopedAgentId}
           config={{
             assistantName,
             assistantAvatar,

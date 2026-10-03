@@ -1,63 +1,85 @@
 'use client';
 
 import React from 'react';
-import { SettingsCard } from '@/app/components/settings/SettingsCard';
 import Link from 'next/link';
+import {
+  Settings as SettingsIcon,
+  Palette,
+  DollarSign,
+  Mail,
+  Bell,
+  Plug,
+  Layers,
+  SlidersHorizontal,
+  Film,
+  Sparkles,
+  Send,
+  Cpu,
+  ChevronRight,
+} from 'lucide-react';
+
+type Tile = {
+  href: string;
+  title: string;
+  description: string;
+  icon: React.ComponentType<{ className?: string }>;
+  accent: string; // tailwind text/bg accent for the icon chip
+};
+
+// Same destinations as before — richer, scannable presentation.
+const TILES: Tile[] = [
+  { href: '/settings/general', title: 'General', description: 'Brokerage name, time zone, and date format', icon: SettingsIcon, accent: 'text-slate-600 bg-slate-100' },
+  { href: '/settings/branding', title: 'Branding', description: 'Colors, fonts, logos, and your public website', icon: Palette, accent: 'text-fuchsia-600 bg-fuchsia-100' },
+  { href: '/settings/commission', title: 'Commissions', description: 'Split and revenue-share structures', icon: DollarSign, accent: 'text-emerald-600 bg-emerald-100' },
+  { href: '/settings/email-templates', title: 'Email Templates', description: 'Reusable content for outgoing email', icon: Mail, accent: 'text-blue-600 bg-blue-100' },
+  { href: '/settings/notifications', title: 'Notifications', description: 'Which events notify whom, and on what channel', icon: Bell, accent: 'text-amber-600 bg-amber-100' },
+  { href: '/settings/integrations', title: 'Integrations', description: 'Connect your CRM, IDX, social, and more', icon: Plug, accent: 'text-cyan-600 bg-cyan-100' },
+  { href: '/settings/campaign-bundles', title: 'Campaign Bundles', description: 'Compose presets into coordinated multi-channel dispatches', icon: Layers, accent: 'text-indigo-600 bg-indigo-100' },
+  { href: '/settings/channel-presets', title: 'Channel Presets', description: 'Locked creative per channel — email, SMS, social, ads, portal', icon: SlidersHorizontal, accent: 'text-violet-600 bg-violet-100' },
+  { href: '/dashboard/settings/stock-library', title: 'Stock Library', description: 'Intros, outros, B-roll, and music for your videos', icon: Film, accent: 'text-rose-600 bg-rose-100' },
+  { href: '/dashboard/settings/twin-studio', title: 'AI Avatar & Voice', description: 'Your on-camera avatar and cloned voice in Twin Studio', icon: Sparkles, accent: 'text-purple-600 bg-purple-100' },
+  // ── ORPHAN-ROUTE SWEEP. Both pages are built and both were unreachable. ────
+  // This hub is the ONLY way into /settings/*: the sidebar carries a single
+  // "Settings" link and everything below it is a tile here. A settings page
+  // with no tile is therefore a page a human can only reach by typing the URL.
+  //
+  // Neither of these was a false positive. The only references to
+  // /settings/services in the whole tree were six revalidatePath() calls in
+  // app/actions/services-config.ts, and to /settings/direct-mail one
+  // revalidatePath in app/actions/direct-mail-size-prefs.ts. A cache
+  // invalidation is evidence a page is INTENDED, never evidence anyone can get
+  // to it — which is exactly the false pass the route sweep stopped counting.
+  { href: '/settings/direct-mail', title: 'Direct Mail', description: 'Postcard sizes, presets, and creative variants', icon: Send, accent: 'text-orange-600 bg-orange-100' },
+  { href: '/settings/services', title: 'Services & AI', description: 'External service credentials and AI agent templates', icon: Cpu, accent: 'text-teal-600 bg-teal-100' },
+];
 
 export default function SettingsDashboard() {
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
-        <p className="text-gray-600 mt-2">Manage your brokerage configuration</p>
+        <p className="text-gray-600 mt-2">
+          Configure your brokerage — identity, money, communication, campaigns, and AI media.
+        </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-6">
-        <Link href="/settings/general">
-          <SettingsCard title="General" description="App name, timezone, formats">
-            <p className="text-gray-600">Configure basic application settings</p>
-          </SettingsCard>
-        </Link>
-        <Link href="/settings/branding">
-          <SettingsCard title="Branding" description="Colors, fonts, logos">
-            <p className="text-gray-600">Customize the app appearance</p>
-          </SettingsCard>
-        </Link>
-        <Link href="/settings/commission">
-          <SettingsCard title="Commissions" description="Commission structures">
-            <p className="text-gray-600">Define commission calculation rules</p>
-          </SettingsCard>
-        </Link>
-        <Link href="/settings/email-templates">
-          <SettingsCard title="Email Templates" description="Email content">
-            <p className="text-gray-600">Create and edit email templates</p>
-          </SettingsCard>
-        </Link>
-        <Link href="/settings/notifications">
-          <SettingsCard title="Notifications" description="Trigger rules">
-            <p className="text-gray-600">Configure notification settings</p>
-          </SettingsCard>
-        </Link>
-        <Link href="/settings/integrations">
-          <SettingsCard title="Integrations" description="Third-party APIs">
-            <p className="text-gray-600">Manage API credentials</p>
-          </SettingsCard>
-        </Link>
-        <Link href="/settings/campaign-bundles">
-          <SettingsCard title="Campaign Bundles" description="Multi-channel campaigns">
-            <p className="text-gray-600">Compose presets across channels into coordinated dispatches</p>
-          </SettingsCard>
-        </Link>
-        <Link href="/settings/channel-presets">
-          <SettingsCard title="Channel Presets" description="Email / SMS / social / voicedrop / ad / portal">
-            <p className="text-gray-600">Locked creative for every bundle channel</p>
-          </SettingsCard>
-        </Link>
-        <Link href="/dashboard/settings/stock-library">
-          <SettingsCard title="Stock Library" description="Intros / outros / B-roll / music">
-            <p className="text-gray-600">Upload assets the render coordinator stitches into your videos</p>
-          </SettingsCard>
-        </Link>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {TILES.map(({ href, title, description, icon: Icon, accent }) => (
+          <Link
+            key={href}
+            href={href}
+            className="group relative flex items-start gap-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-all hover:border-blue-300 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <span className={`shrink-0 grid place-items-center h-10 w-10 rounded-lg ${accent}`}>
+              <Icon className="h-5 w-5" />
+            </span>
+            <div className="min-w-0 pr-5">
+              <h2 className="font-semibold text-gray-900">{title}</h2>
+              <p className="text-sm text-gray-600 mt-0.5 leading-snug">{description}</p>
+            </div>
+            <ChevronRight className="absolute right-4 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-300 transition-colors group-hover:text-blue-400" />
+          </Link>
+        ))}
       </div>
     </div>
   );

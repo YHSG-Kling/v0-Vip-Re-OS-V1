@@ -9,6 +9,7 @@
  * Every code is IDEMPOTENT per (listing/brokerage, kind) so re-generating a packet reuses the same
  * tracked code, and uses only destination_type values the video path already proved enum-valid.
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { mintTrackedQr, normalizeOrigin, type MintedTrackedQr } from "./tracked-qr"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -65,6 +66,12 @@ export interface MintMarketingQrArgs extends MarketingQrRefs {
   /** agents.id (qr_codes.agent_id FK → agents.id). */
   agentId?: string | null
   kind: MarketingQrKind
+  /** ★ TRACKING LINKED TO CAMPAIGN ★ marketing_campaigns.id when this piece belongs to a
+   *  campaign — stamped onto qr_codes.marketing_campaign_id so campaign-measurer can see the
+   *  scans. Omit for a standalone piece. */
+  marketingCampaignId?: string | null
+  /** qr_codes.expires_at — a dated piece (an open house, a seasonal flyer) can carry one. */
+  expiresAt?: string | null
   origin?: string
   /** When true AND a NEW code was minted, notify the owner to confirm/assign the destination URL. */
   notifyOwner?: boolean
@@ -106,12 +113,14 @@ async function notifyOwnerToAssignUrl(
       const { data: admins } = await svc
         .from("users").select("id")
         .eq("brokerage_id", args.brokerageId)
-        .in("user_type", ["broker_admin", "admin", "broker", "superadmin"])
+        // RECIPIENT FILTER: 'superadmin' dropped (matches zero users.user_type
+        // rows); broker_owner added — storable seat that owns the brokerage.
+        .in("user_type", ["admin", "broker", "broker_owner"])
       for (const u of admins ?? []) recipients.push(u.id)
     }
 
     for (const userId of recipients) {
-      await svc.from("notifications").insert({
+      await sentinelWrite(svc, svc.from("notifications").insert({
         user_id: userId,
         brokerage_id: args.brokerageId,
         type: "qr_url_assignment_needed",
@@ -121,7 +130,7 @@ async function notifyOwnerToAssignUrl(
         entity_id: args.qrCodeId,
         priority: "medium",
         channel: "in_app",
-      })
+      }), { table: "notifications", flow: "marketing_qr_notify", brokerageId: args.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     }
   } catch {
     /* best-effort */
@@ -148,6 +157,8 @@ export async function mintMarketingQr(
       destinationType: dest.destinationType,
       targetUrl: dest.buildTargetUrl(normalizeOrigin(args.origin), args),
       listingId: args.listingId ?? null,
+      marketingCampaignId: args.marketingCampaignId ?? null,
+      expiresAt: args.expiresAt ?? null,
       purpose: args.kind === "open_house_flyer" ? "open_house" : "listing",
       origin: args.origin,
     },

@@ -30,16 +30,20 @@ export async function distributeRepurposedVideoAsDraft(
   }
   if (!project.video_url) return { success: false, created: 0, error: "Video not ready" }
 
-  // ai_video_projects.agent_id is a users.id, but social_media_accounts/
-  // social_posts.agent_id are agents.id — resolve the agents row.
-  const { data: agentRow } = await supabase
+  // Since m366 ai_video_projects.agent_id is the SAME class social_media_accounts
+  // /social_posts.agent_id FK, so it carries straight through. The AI-usage
+  // metadata still wants a users id, so that one hop is resolved here.
+  const agentsId = project.agent_id as string | null
+  if (!agentsId) return { success: false, created: 0, error: "Agent not found" }
+  const { data: agentRow, error: agentErr } = await supabase
     .from("agents")
-    .select("id")
-    .eq("user_id", project.agent_id)
+    .select("user_id")
+    .eq("id", agentsId)
     .eq("brokerage_id", project.brokerage_id)
     .maybeSingle()
-  const agentsId = agentRow?.id
-  if (!agentsId) return { success: false, created: 0, error: "Agent not found" }
+  if (agentErr) return { success: false, created: 0, error: agentErr.message }
+  const agentUserId = (agentRow?.user_id as string | null) ?? null
+  if (!agentUserId) return { success: false, created: 0, error: "Agent not found" }
 
   // Resolve the agent's active connected accounts → platform → account id.
   const { data: accounts } = await supabase
@@ -81,7 +85,7 @@ export async function distributeRepurposedVideoAsDraft(
         const cap = await generateAIResponse({
           prompt: `Write a platform-native ${cfg.displayName} caption for a real estate agent's short video, with a clear call to action and a few relevant non-discriminatory hashtags. Keep it concise.`,
           maxTokens: 300,
-          metadata: { userId: project.agent_id, brokerageId: project.brokerage_id, feature: "video_script_generation" },
+          metadata: { userId: agentUserId, brokerageId: project.brokerage_id, feature: "video_script_generation" },
         })
         content = (cap.text ?? content).trim() || content
       } catch {
@@ -94,7 +98,7 @@ export async function distributeRepurposedVideoAsDraft(
     const hashtags = extractHashtags(content)
     const body = content.replace(/(^|\s)#[\p{L}0-9_]+/gu, "").replace(/\s{2,}/g, " ").trim() || content
 
-    const { data: post } = await supabase
+    const { data: post, error: repurposePostErr } = await supabase
       .from("social_posts")
       .insert({
         brokerage_id: project.brokerage_id,
@@ -113,14 +117,16 @@ export async function distributeRepurposedVideoAsDraft(
       })
       .select("id")
       .maybeSingle()
+    if (repurposePostErr) console.error(`[repurpose] social post NOT created: ${repurposePostErr.message}`)
     if (post) created++
   }
 
   // Mark distributed so a cron re-poll / retry can't draft duplicates.
-  await supabase
+  const { error: markErr } = await supabase
     .from("ai_video_projects")
     .update({ video_metadata: { ...(metadata ?? {}), repurpose: { ...intent, distributed: true } } })
     .eq("id", projectId)
+  if (markErr) return { success: true, created, error: `drafts created but the project was not marked distributed (${markErr.message}) — a retry could draft again` }
 
   return { success: true, created }
 }

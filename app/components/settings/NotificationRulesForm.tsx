@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from "react"
+import { useState } from "react"
 import { createRule, editRule, removeRule } from "@/app/actions/settings/manage-notification-rules"
 import { updateNotificationRules as toggleRule } from "@/app/actions/settings/update-notification-rules"
 import type { NotificationRuleRow } from "@/lib/kernel"
@@ -11,6 +11,27 @@ interface NotificationRulesFormProps {
   onRefresh: () => void
 }
 
+// ── recipient_role OPTIONS (both selects below) ──────────────────────────────
+// The reader of this column is lib/kernel/notification-engine.ts:69 — it matches
+// rule.recipient_role against the roles its recipient resolver produces:
+// "agent", "TC" (contacts.tc_user_id — the CHECK's own casing, see engine :253),
+// "compliance_officer", "seller", and the brokerage pool user_types
+// ["admin","broker","compliance_officer","team_lead"]. Only a value that set can
+// produce will ever match, so only those are offered. "TC" is deliberately
+// Title-Case here: notification_rules.recipient_role's live CHECK admits 'TC'
+// verbatim (scripts/check-vocabularies.ts notification_rules.recipient_role) —
+// unlike users.user_type, where m036 retired that spelling.
+//
+// TOMBSTONE (§1, 2026-09-01): options 'title_agent' and 'closing_attorney'
+// stood here and are DELETED — no resolver branch ever produces either role, so
+// a rule naming them matched nothing forever. 'title_agent' is a role m307
+// removed outright (a title company is vendors.category='title'; its CDA access
+// is per-row via closing_disclosure.title_agent_id). 'closing_attorney' exists
+// only on transaction_communications.recipient_role / the CDA upload lane — a
+// different column with a different reader. Both values are still admitted by
+// the notification_rules CHECK; retiring them there is a migration (integrator's
+// call). Re-adding an option belongs with the resolver branch that produces the
+// role (see the engine's deal_team_members FUTURE note).
 function formatNotificationType(type: "push" | "email" | "sms"): string {
   if (type === "push") return "In-App"
   if (type === "email") return "Email"
@@ -159,13 +180,13 @@ export function NotificationRulesForm({ rules, onRefresh }: NotificationRulesFor
                 onChange={(e) => setAddFormData({ ...addFormData, recipient_role: e.target.value })}
                 className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
               >
+                {/* Options limited to roles the notification engine's resolver
+                    can produce — see the recipient_role note above the component. */}
                 <option value="agent">Agent</option>
                 <option value="broker">Broker</option>
                 <option value="admin">Admin</option>
                 <option value="TC">TC</option>
                 <option value="compliance_officer">Compliance Officer</option>
-                <option value="title_agent">Title Agent</option>
-                <option value="closing_attorney">Closing Attorney</option>
               </select>
               <select
                 value={addFormData.notification_type}
@@ -249,13 +270,13 @@ export function NotificationRulesForm({ rules, onRefresh }: NotificationRulesFor
                     }
                     className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
                   >
+                    {/* Same matchable-role roster as the create form —
+                        see the recipient_role note above the component. */}
                     <option value="agent">Agent</option>
                     <option value="broker">Broker</option>
                     <option value="admin">Admin</option>
                     <option value="TC">TC</option>
                     <option value="compliance_officer">Compliance Officer</option>
-                    <option value="title_agent">Title Agent</option>
-                    <option value="closing_attorney">Closing Attorney</option>
                   </select>
                   <select
                     defaultValue={rule.notification_type}

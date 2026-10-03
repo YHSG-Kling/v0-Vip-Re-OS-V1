@@ -1,20 +1,25 @@
 "use server"
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
-import { put } from "@vercel/blob"
+import { createServiceClient } from "@/lib/supabase/service"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia → Supabase `media` (published
+// audio and cover art are fetched unauthenticated by podcast clients).
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
-import { gatewayChat } from "@/lib/ai/gateway-chat"
+import { convertSpeech } from "@/lib/providers/elevenlabs/client"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { syndicateEpisode, type SyndicateEpisodeResult } from "@/lib/podcast/transistor-client"
 import { generateTextRouted } from "@/lib/ai/models"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { DEFAULT_LANGUAGE } from "@/lib/video/multilingual-reel"
 import { resolveProvider } from "@/lib/kernel/providers"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
-import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
 
 /**
  * AI Podcast Generation Actions
@@ -24,7 +29,8 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
  * - canAccessFeature('podcast_generation') before any write
  * - resolveProvider({ providerType: 'video', actorContext }) for voice synthesis via heygen stack
  * - applyBrandVoice() on script/show notes before saving
- * - evaluateOutbound() on script — block if compliance fails
+ * - evaluateOutbound() on script — block if compliance fails (createPodcastEpisode: now inside
+ *   lib/kernel/content-creators.ts, wave 85F)
  * - checkBrandCompliance(contentType='podcast') after episode is saved
  * - processKernelEvent(PODCAST_EPISODE_GENERATED) after status='completed'
  * - processKernelEvent(PODCAST_EPISODE_DISTRIBUTED) for each channel success
@@ -44,243 +50,45 @@ export async function createPodcastEpisode(params: {
   sourceVideoAssetId?: string
   marketingCampaignId?: string
   publishChannels?: string[]
-}) {
-  const supabase = await createClient()
-
-  // Get agent context for proper FK relationships and kernel calls
-  let agentContext: { userId: string; agentId: string; brokerageId: string }
+}): Promise<{
+  success: boolean
+  episode?: Record<string, any>
+  brandVoiceNotes?: string[]
+  complianceWarnings?: string[]
+  violations?: string[]
+  error?: string
+}> {
+  // TOMBSTONE (wave 85F, §1.1). The feature gate, provider/template/voice resolution, the
+  // script writer, brand voice, the outbound compliance gate, the podcast_episodes insert,
+  // the template use counter, the usage counter and the post-save brand check MOVED to the one
+  // creator, lib/kernel/content-creators.ts createPodcastEpisode. The voice webhook has no
+  // cookie session and was refused "Missing agent context" here, then fell back to a raw
+  // service-role insert in lib/wizard-staging/content-staging.ts (merged onto the same
+  // creator). The unwired lib/kernel/marketing.ts createPodcastEpisodeKernel merged onto it
+  // too. Closed in the move: podcast_templates was read by id with no tenant predicate, and
+  // the campaign / source-video ids were written unverified. This door keeps the SESSION.
   try {
     const ctx = await getAgentContext()
-    if (!ctx.agentId) return { success: false, error: "Missing agent context" }
-    if (!ctx.brokerageId) return { success: false, error: "Missing agent context" }
-    agentContext = {
-      userId: ctx.userId,
-      agentId: ctx.agentId,
-      brokerageId: ctx.brokerageId,
+    if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) {
+      return { success: false, error: "Not authenticated" }
     }
-  } catch {
-    return { success: false, error: "Not authenticated" }
-  }
-
-  const { userId, agentId, brokerageId } = agentContext
-
-  try {
-    // ══════════════════════════════════════════════════════════════════════════
-    // KERNEL GATE 1: Feature Access Check
-    // ══════════════════════════════════════════════════════════════════════════
-    const accessCheck = await canAccessFeature(userId, "podcast_generation")
-    if (!accessCheck.allowed) {
-      return { success: false, error: accessCheck.reason || "Feature access denied" }
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════
-    // KERNEL: Resolve Provider (video stack for voice synthesis)
-    // ══════════════════════════════════════════════════════════════════════════
-    const provider = await resolveProvider({
-      providerType: "video",
-      actorContext: {
-        userId,
-        brokerageId,
-        teamId: undefined,
-      },
+    const { createPodcastEpisode: fileEpisode } = await import("@/lib/kernel/content-creators")
+    return await fileEpisode({
+      ctx: { userId: ctx.userId, brokerageId: ctx.brokerageId, agentId: ctx.agentId ?? undefined },
+      ...params,
     })
-
-    // If template provided, load template settings
-    let templateData = null
-    if (params.templateId) {
-      const { data: template } = await supabase
-        .from("podcast_templates")
-        .select("*")
-        .eq("id", params.templateId)
-        .single()
-      templateData = template
-    }
-
-    // Resolve agent's ElevenLabs cloned voice (canonical for podcast audio).
-    // The voice clone lives in agent_voice_profiles keyed by agents.id (agentId) —
-    // it is a customer-facing brand asset. (users has no elevenlabs_voice_id.)
-    const { data: voiceProfile } = await supabase
-      .from("agent_voice_profiles")
-      .select("elevenlabs_voice_id")
-      .eq("agent_id", agentId)
-      .eq("brokerage_id", brokerageId)
-      .order("is_default", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-    const agentVoiceId = voiceProfile?.elevenlabs_voice_id ?? null
-
-    // Generate script from keywords if no script provided
-    let finalScript = params.script
-    if (!finalScript && params.keywords && params.keywords.length > 0) {
-      finalScript = await generateScriptFromKeywords(params.keywords, params.category, userId)
-    }
-
-    if (!finalScript) {
-      return { success: false, error: "Script or keywords required" }
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════
-    // KERNEL GATE 2: Apply Brand Voice
-    // ══════════════════════════════════════════════════════════════════════════
-    const brandVoiceResult = await applyBrandVoice({
-      brokerageId,
-      actorUserId: userId,
-      actorRole: "agent",
-      journeyType: "buyer",
-      persona: "first_time",
-      messageType: "social",
-      content: finalScript,
-    })
-
-    // Check for brand voice violations (hard block on prohibited words)
-    if (brandVoiceResult.violations.length > 0) {
-      const hasProhibitedWord = brandVoiceResult.violations.some(v => 
-        v.toLowerCase().includes("prohibited")
-      )
-      if (hasProhibitedWord) {
-        return { 
-          success: false, 
-          error: `Brand voice violation: ${brandVoiceResult.violations[0]}`,
-          violations: brandVoiceResult.violations,
-        }
-      }
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════
-    // KERNEL GATE 3: Evaluate Outbound Compliance
-    // ══════════════════════════════════════════════════════════════════════════
-    // Create a minimal contact object for compliance check (podcast is broadcast, not 1:1)
-    const complianceResult = await evaluateOutbound({
-      actorContext: {
-        userId,
-        brokerageId,
-        teamId: undefined,
-        role: "agent",
-      },
-      journeyType: "buyer",
-      persona: "first_time",
-      messageType: "social",
-      content: finalScript,
-      contact: {
-        id: agentId, // Use agent as the "contact" for broadcast content
-        first_name: "",
-        last_name: "",
-        contact_type: "buyer" as const,
-        tcpa_consent: true, // Podcast is not direct outreach
-        isa_reengage_allowed: true,
-        dnc_status: false,
-        status: "active",
-      },
-    })
-
-    if (!complianceResult.allowed) {
-      return { 
-        success: false, 
-        error: `Compliance violation: ${complianceResult.blockedReason}`,
-        violations: complianceResult.violations,
-      }
-    }
-
-    // Create episode record with all kernel-required fields
-    const { data: episode, error } = await supabase
-      .from("podcast_episodes")
-      .insert({
-        brokerage_id: brokerageId,
-        // podcast_episodes.agent_id FKs to users (content/business action), not agents.
-        agent_id: userId,
-        template_id: params.templateId || null,
-        marketing_campaign_id: params.marketingCampaignId || null,
-        source_video_project_id: params.sourceVideoProjectId || null,
-        source_video_asset_id: params.sourceVideoAssetId || null,
-        title: params.title,
-        description: params.description || "",
-        script: finalScript,
-        keywords: params.keywords || [],
-        primary_voice_id: params.voiceId || agentVoiceId || templateData?.default_voice_id || provider.config?.default_voice_id || "default",
-        voice_settings: templateData?.voice_settings || provider.config?.voice_settings || {
-          stability: 0.5,
-          similarity_boost: 0.75,
-          style: 0.0,
-          use_speaker_boost: true,
-        },
-        category: params.category || "general",
-        status: "draft",
-        publish_channels: params.publishChannels || [],
-      })
-      .select()
-      .single()
-
-    if (error) throw error
-
-    // ══════════════════════════════════════════════════════════════════════════
-    // KERNEL: Increment Feature Usage
-    // ══════════════════════════════════════════════════════════════════════════
-    await incrementFeatureUsage(userId, "podcast_generation")
-
-    // ══════════════════════════════════════════════════════════════════════════
-    // KERNEL: Check Brand Compliance (post-save)
-    // ══════════════════════════════════════════════════════════════════════════
-    await checkBrandCompliance({
-      contentType: "podcast",
-      contentId: episode.id,
-      brokerageId,
-    }).catch(err => {
-      console.error("[Podcast] Brand compliance check failed (non-blocking):", err)
-    })
-
-    return { 
-      success: true, 
-      episode,
-      brandVoiceNotes: brandVoiceResult.notes,
-    }
   } catch (error: any) {
-    console.error("[v0] Error creating podcast episode:", error)
-    return { success: false, error: error.message }
+    console.error("[podcast] Error creating podcast episode:", error)
+    return { success: false, error: error?.message ?? "Failed to create podcast episode" }
   }
 }
 
-// Generate script from keywords using AI
-async function generateScriptFromKeywords(keywords: string[], category?: string, userId?: string): Promise<string> {
-  if (userId) {
-    const access = await canAccessFeature(userId, "podcast_generation")
-    if (!access.allowed) throw new Error(access.reason ?? "Podcast generation not available")
-  }
-  // Use Grok/OpenAI to generate podcast script
-  const prompt = `Generate a 3-5 minute podcast script for a real estate agent based on these keywords: ${keywords.join(", ")}. 
-  Category: ${category || "general real estate"}
-  
-  The script should:
-  - Have a friendly, conversational tone
-  - Include an intro, main content, and outro
-  - Be engaging and informative
-  - Include transitions between topics
-  - End with a call-to-action
-  
-  Format: Return only the script text, no additional formatting.`
-
-  try {
-    const response = await gatewayChat({
-      model: "xai/grok-beta",
-      temperature: 0.7,
-      maxTokens: 2048,
-      messages: [
-        { role: "system", content: "You are a professional podcast script writer for real estate agents." },
-        { role: "user", content: prompt },
-      ],
-    })
-
-    if (!response.ok) {
-      throw new Error(`Script API request failed: ${response.error}`)
-    }
-    if (!response.content) {
-      throw new Error("Invalid API response: missing content")
-    }
-    return response.content
-  } catch (error) {
-    console.error("[v0] Error generating script:", error)
-    throw new Error("Failed to generate script from keywords")
-  }
-}
+// TOMBSTONE (wave 85F, §1.1/§5): generateScriptFromKeywords (private) MOVED to
+// lib/kernel/content-creators.ts writePodcastScript. It wrote with a bare "podcast script
+// writer" system prompt and no post-check; the survivor puts buildComplianceSystemBlocks in
+// the system prompt, pre-checks the brief for fair housing, and grades the draft with
+// postcheckScript via gradeWrittenCopy (a hard fair-housing or blocking-phrase flag refuses
+// it; warnings pass through).
 
 // Public wrapper: generate a draft script from a topic / keywords for the wizard.
 // Returns the draft script PLUS a brand-voice compliance summary so the UI can
@@ -304,7 +112,15 @@ export async function generatePodcastScriptDraft(params: {
     if (params.keywords?.length) seed.push(...params.keywords)
     if (seed.length === 0) return { success: false, error: "Provide a topic or at least one keyword." }
 
-    const script = await generateScriptFromKeywords(seed, params.category, ctx.userId)
+    // The one compliance-first writer (lib/kernel/content-creators.ts writePodcastScript).
+    const { writePodcastScript } = await import("@/lib/kernel/content-creators")
+    const written = await writePodcastScript({
+      ctx: { userId: ctx.userId, brokerageId: ctx.brokerageId },
+      keywords: seed,
+      category: params.category,
+    })
+    if (!written.success) return { success: false, error: written.error }
+    const script = written.script
 
     // Run brand-voice check so the UI can show pass/fail before the user advances.
     const bv = await applyBrandVoice({
@@ -368,7 +184,7 @@ export async function generatePodcastAudio(episodeId: string) {
       .single()
 
     if (episodeError) throw episodeError
-    if (episode.agent_id !== userId) {
+    if (episode.agent_id !== agentId) {
       return { success: false, error: "Unauthorized" }
     }
 
@@ -395,13 +211,13 @@ export async function generatePodcastAudio(episodeId: string) {
     })
 
     // Update status to generating
-    await supabase
+    await bestEffort(supabase
       .from("podcast_episodes")
       .update({
         status: "generating",
         generation_started_at: new Date().toISOString(),
       })
-      .eq("id", episodeId)
+      .eq("id", episodeId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     // Break script into segments
     const segments = parseScriptIntoSegments(episode.script)
@@ -416,16 +232,20 @@ export async function generatePodcastAudio(episodeId: string) {
           provider.providerKey
         )
 
-        // Upload to Vercel Blob
-        const fileName = `podcast-${episodeId}-segment-${index}.mp3`
-        const blob = await put(fileName, audioBuffer, {
-          access: "public",
-          contentType: "audio/mpeg",
-        })
+        // The old key was a BARE `podcast-…-segment-N.mp3` at the store root,
+        // shared by every tenant. Now brokerage-prefixed like every other
+        // object we write.
+        const segUrl = await hostRenderedMedia(
+          createServiceClient(),
+          `${brokerageId}/podcast/segments/${episodeId}-${index}.mp3`,
+          audioBuffer,
+          "audio/mpeg",
+          "media",
+        )
 
         // No podcast_segments row: intermediate render artifacts retired —
         // episodes carry the consumable audio (open-loop sweep).
-        return { url: blob.url, duration: segment.estimatedDuration }
+        return { url: segUrl, duration: segment.estimatedDuration }
       })
     )
 
@@ -435,7 +255,7 @@ export async function generatePodcastAudio(episodeId: string) {
     const totalDuration = audioSegments.reduce((sum, seg) => sum + seg.duration, 0)
 
     // Update episode with final audio
-    const { data: completedEpisode } = await supabase
+    const { data: completedEpisode, error: episodeDoneErr } = await supabase
       .from("podcast_episodes")
       .update({
         audio_url: finalAudioUrl,
@@ -447,6 +267,7 @@ export async function generatePodcastAudio(episodeId: string) {
       .eq("id", episodeId)
       .select()
       .single()
+    if (episodeDoneErr) console.error(`[podcast-generation] episode NOT marked completed: ${episodeDoneErr.message}`)
 
     // ══════════════════════════════════════════════════════════════════════════
     // KERNEL: Process Episode Generated Event
@@ -470,13 +291,13 @@ export async function generatePodcastAudio(episodeId: string) {
     console.error("[v0] Error generating podcast audio:", error)
 
     // Update status to failed
-    await supabase
+    await bestEffort(supabase
       .from("podcast_episodes")
       .update({
         status: "failed",
         error_message: error.message,
       })
-      .eq("id", episodeId)
+      .eq("id", episodeId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     // ══════════════════════════════════════════════════════════════════════════
     // KERNEL: Process Episode Failed Event
@@ -547,19 +368,13 @@ async function synthesizeVoice(
   if (!process.env.ELEVENLABS_API_KEY) {
     throw new Error("ELEVENLABS_API_KEY is not configured. Contact your administrator to enable ElevenLabs voice synthesis.")
   }
-  const response = await callConnector<Buffer>({
-    connector: "elevenlabs",
-    baseUrl: "https://api.elevenlabs.io",
-    path: `/v1/text-to-speech/${voiceId}`,
-    method: "POST",
-    auth: { style: "header", name: "xi-api-key", value: process.env.ELEVENLABS_API_KEY },
-    headers: { Accept: "audio/mpeg" },
-    responseType: "arraybuffer",
-    body: {
-      text,
-      model_id: "eleven_monolingual_v1",
-      voice_settings: settings,
-    },
+  // Official server SDK adapter (lib/providers/elevenlabs/client.ts) — same
+  // endpoint, same price as the raw fetch this replaced.
+  const response = await convertSpeech(process.env.ELEVENLABS_API_KEY, {
+    voiceId,
+    text,
+    modelId: "eleven_monolingual_v1",
+    voiceSettings: settings,
   })
 
   if (!response.ok || !response.data) {
@@ -571,14 +386,17 @@ async function synthesizeVoice(
 
 // Get all podcast episodes for agent
 export async function getPodcastEpisodes(filters?: { status?: string; category?: string }) {
-  const { userId, brokerageId } = await getAgentContext()
+  const { userId, agentId, brokerageId } = await getAgentContext()
   if (!userId || !brokerageId) {
     return { success: false, error: "Missing agent context", episodes: [] }
   }
+  // Authenticated but no agent profile ⇒ no episodes are yours. Empty list,
+  // not a filter on null.
+  if (!agentId) return { success: true, episodes: [] }
   const supabase = await createClient()
 
   try {
-    let query = supabase.from("podcast_episodes").select("*").eq("agent_id", userId).eq("brokerage_id", brokerageId).order("created_at", { ascending: false })
+    let query = supabase.from("podcast_episodes").select("*").eq("agent_id", agentId).eq("brokerage_id", brokerageId).order("created_at", { ascending: false })
 
     if (filters?.status) {
       query = query.eq("status", filters.status)
@@ -656,7 +474,7 @@ export async function publishPodcastEpisode(
       .single()
 
     if (episodeError) throw episodeError
-    if (episode.agent_id !== userId) {
+    if (episode.agent_id !== agentId) {
       return { success: false, error: "Unauthorized" }
     }
 
@@ -691,7 +509,7 @@ export async function publishPodcastEpisode(
         publish_channels: channels,
       })
       .eq("id", episodeId)
-      .eq("agent_id", userId)
+      .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
 
     if (error) throw error
@@ -741,7 +559,7 @@ export async function publishPodcastEpisode(
     // One log row per requested channel, all reflecting the single real syndication result.
     const distributionResults: { channel: string; success: boolean; error?: string }[] = []
     for (const channel of channels) {
-      const { data: logEntry } = await supabase
+      const { data: logEntry, error: distLogErr } = await supabase
         .from("podcast_distribution_log")
         .insert({
           brokerage_id: brokerageId,
@@ -751,10 +569,11 @@ export async function publishPodcastEpisode(
         })
         .select()
         .single()
+      if (distLogErr) console.error(`[podcast-generation] distribution log row NOT created: ${distLogErr.message}`)
 
       if (syndication.ok) {
         if (logEntry) {
-          await supabase
+          await bestEffort(supabase
             .from("podcast_distribution_log")
             .update({
               distribution_status: "published",
@@ -762,15 +581,15 @@ export async function publishPodcastEpisode(
               external_episode_id: syndication.episodeId,
               provider_response: { provider: "transistor", share_url: syndication.shareUrl ?? null },
             })
-            .eq("id", logEntry.id)
+            .eq("id", logEntry.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
         }
         distributionResults.push({ channel, success: true })
       } else {
         if (logEntry) {
-          await supabase
+          await bestEffort(supabase
             .from("podcast_distribution_log")
             .update({ distribution_status: "failed", error_message: syndication.error })
-            .eq("id", logEntry.id)
+            .eq("id", logEntry.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
         }
         distributionResults.push({ channel, success: false, error: syndication.error })
       }
@@ -815,14 +634,16 @@ export async function trackPodcastEvent(episodeId: string, eventType: string, da
 
 // Get podcast templates
 export async function getPodcastTemplates() {
-  const { userId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId } = await getAgentContext()
+  // Templates are owned by an agents row; without one the honest answer is none.
+  if (!agentId) return { success: true, templates: [] }
   const supabase = await createClient()
 
   try {
     const { data: templates, error } = await supabase
       .from("podcast_templates")
       .select("*")
-      .eq("agent_id", userId)
+      .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
       .eq("is_active", true)
       .order("use_count", { ascending: false })
@@ -845,7 +666,8 @@ export async function createPodcastTemplate(params: {
   showName?: string
   hostName?: string
 }) {
-  const { userId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId) return { success: false, error: "No agent profile for this user — the template was not created." }
   const supabase = await createClient()
 
   try {
@@ -853,7 +675,7 @@ export async function createPodcastTemplate(params: {
       .from("podcast_templates")
       .insert({
         brokerage_id: brokerageId,
-        agent_id: userId,
+        agent_id: agentId,
         name: params.name,
         description: params.description || "",
         template_type: params.templateType,
@@ -886,7 +708,8 @@ export async function updatePodcastTemplate(
     isActive?: boolean
   }
 ) {
-  const { userId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId) return { success: false, error: "No agent profile for this user — nothing to update." }
   const supabase = await createClient()
 
   try {
@@ -903,7 +726,7 @@ export async function updatePodcastTemplate(
         updated_at: new Date().toISOString(),
       })
       .eq("id", templateId)
-      .eq("agent_id", userId)
+      .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
       .select()
       .single()
@@ -973,17 +796,34 @@ export async function updateDistributionChannel(
   }
 }
 
-// Create a distribution channel for the brokerage
+// Create a PERSONAL distribution channel for the calling agent.
+//
+// Lane fix (2026-09-01): the only caller is the settings page's
+// "Set Up My Channels" button (app/dashboard/settings/podcast-channels/
+// podcast-channels-client.tsx:127), whose whole purpose is the personal
+// override lane — yet this insert never stamped agent_user_id, so every
+// "personal" channel landed in the brokerage lane (agent_user_id NULL) and
+// the page's my-channels query (.eq("agent_user_id", user.id)) was
+// structurally empty forever. Worse, the duplicate check was lane-blind:
+// an existing BROKERAGE spotify channel made the personal setup return
+// alreadyExists and create nothing. Both now speak the personal lane;
+// agent_user_id FKs users(id) and getAgentContext().userId is that class.
 export async function createDistributionChannel(channelName: string) {
-  const { brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
+  if (!userId || !brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
   const supabase = await createClient()
 
   try {
-    // Check if channel already exists to prevent duplicates
+    // Check if a PERSONAL channel already exists to prevent duplicates —
+    // a brokerage-level channel of the same name is the inherited default,
+    // not a duplicate of the caller's own.
     const { data: existing } = await supabase
       .from("podcast_distribution_channels")
       .select("id")
       .eq("brokerage_id", brokerageId)
+      .eq("agent_user_id", userId)
       .eq("channel_name", channelName)
       .maybeSingle()
 
@@ -995,6 +835,7 @@ export async function createDistributionChannel(channelName: string) {
       .from("podcast_distribution_channels")
       .insert({
         brokerage_id: brokerageId,
+        agent_user_id: userId,
         channel_name: channelName,
         is_enabled: false,
         created_at: new Date().toISOString(),
@@ -1014,7 +855,17 @@ export async function createDistributionChannel(channelName: string) {
 
 // Get video scripts library for episode sourcing
 export async function getVideoScriptsLibrary() {
-  const { brokerageId } = await getAgentContext()
+  // `getAgentContext()` never throws: an unauthenticated caller gets the safe
+  // default, whose `brokerageId` is NULL. `.eq("brokerage_id", null)` is not the
+  // no-op it looks like — postgrest renders it as `brokerage_id=eq.null`, which
+  // Postgres tries to cast to uuid and rejects with 22P02. The error was then
+  // routed into the `catch` and reported as a generic failure, so an
+  // unauthenticated call and a real database problem looked identical. Refuse
+  // explicitly instead.
+  const { isAuthenticated, brokerageId } = await getAgentContext()
+  if (!isAuthenticated || !brokerageId) {
+    return { success: false, error: "Unauthorized", scripts: [] }
+  }
   const supabase = await createClient()
 
   try {
@@ -1037,7 +888,8 @@ export async function getVideoScriptsLibrary() {
 
 // Get video projects for episode sourcing
 export async function getVideoProjects() {
-  const { userId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId) return { success: true, projects: [] }
   const supabase = await createClient()
 
   try {
@@ -1045,8 +897,8 @@ export async function getVideoProjects() {
       .from("ai_video_projects")
       .select("id, title, script_content, video_type, duration_seconds, status, created_at")
       .eq("brokerage_id", brokerageId)
-      .eq("agent_id", userId)
-      .in("status", ["completed", "published"])
+      .eq("agent_id", agentId)
+      .in("status", VIDEO_FINISHED_STATUSES as unknown as string[])
       .order("created_at", { ascending: false })
       .limit(50)
 
@@ -1081,68 +933,35 @@ export async function getPodcastEpisode(episodeId: string) {
   }
 }
 
-// Get real podcast analytics aggregated from podcast_analytics_events + podcast_episodes
-export async function getPodcastAnalytics() {
-  const { brokerageId } = await getAgentContext()
-  const supabase = await createClient()
-
-  try {
-    // Total plays (play events)
-    const { count: totalPlays } = await supabase
-      .from("podcast_analytics_events")
-      .select("*", { count: "exact", head: true })
-      .eq("brokerage_id", brokerageId)
-      .eq("event_type", "play")
-
-    // Total listen time in minutes
-    const { data: listenData } = await supabase
-      .from("podcast_analytics_events")
-      .select("duration_listened_seconds")
-      .eq("brokerage_id", brokerageId)
-    const totalListenMinutes = Math.round(
-      (listenData ?? []).reduce((s: number, r: { duration_listened_seconds?: number }) => s + (r.duration_listened_seconds ?? 0), 0) / 60
-    )
-
-    // Per-episode play counts
-    const { data: episodePlays } = await supabase
-      .from("podcast_analytics_events")
-      .select("episode_id")
-      .eq("brokerage_id", brokerageId)
-      .eq("event_type", "play")
-
-    const playsByEpisode: Record<string, number> = {}
-    for (const row of episodePlays ?? []) {
-      playsByEpisode[row.episode_id] = (playsByEpisode[row.episode_id] ?? 0) + 1
-    }
-
-    // Episode titles
-    const { data: episodes } = await supabase
-      .from("podcast_episodes")
-      .select("id, title")
-      .eq("brokerage_id", brokerageId)
-      .eq("status", "published")
-
-    const episodeStats = (episodes ?? []).map((ep: { id: string; title: string }) => ({
-      id: ep.id,
-      title: ep.title,
-      plays: playsByEpisode[ep.id] ?? 0,
-    })).sort((a, b) => b.plays - a.plays)
-
-    return {
-      success: true,
-      totalPlays: totalPlays ?? 0,
-      totalListenMinutes,
-      episodeStats,
-    }
-  } catch (error: any) {
-    console.error("[v0] Error fetching podcast analytics:", error)
-    return { success: false, error: error.message, totalPlays: 0, totalListenMinutes: 0, episodeStats: [] }
-  }
-}
+// ─── getPodcastAnalytics — MERGED-THEN-DELETED (orphan burn-down lane C) ──────
+//
+// SURVIVOR: getPodcastAdvancedAnalytics at app/actions/podcast-generation.ts:1443
+// — the read the Podcast dashboard's Analytics tab actually calls
+// (app/dashboard/marketing/podcast/components/analytics-tab.tsx:71). It computes
+// this one's whole result set (totalPlays, totalListenMinutes, per-episode plays)
+// from a SINGLE podcast_analytics_events read instead of three, and adds the
+// per-channel breakdown, the daily trend, subscriber growth and the platform deep
+// links on top.
+//
+// MERGED FIRST, then deleted. Two axes this had and the survivor did not:
+//   · per-episode rows SORTED by plays descending — an episode list in arbitrary
+//     Postgres order is not a leaderboard;
+//   · the ability to tell a published episode from a draft — this filtered
+//     status='published'; the survivor already SELECTED `status` and dropped it,
+//     so the column is now returned and the caller can filter or label.
+// Both now live on getPodcastAdvancedAnalytics.
+//
+// NOT merged (deliberately): this one's `.select("*", { head: true, count })` for
+// totalPlays. A head-count destructured without `error` resolves to count: null on
+// a refusal, and `?? 0` renders that as a confident "0 plays". The survivor counts
+// rows it actually read, so there is no count it can fail to compute silently.
 
 // Delete podcast episode
 export async function deletePodcastEpisode(episodeId: string) {
-  const { userId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId } = await getAgentContext()
+  // The ownership filter is agents-class; with no agent profile there is no row
+  // this caller owns, so refuse rather than issue a delete that matches nothing.
+  if (!agentId) return { success: false, error: "No agent profile for this user." }
   const supabase = await createClient()
 
   try {
@@ -1154,7 +973,7 @@ export async function deletePodcastEpisode(episodeId: string) {
       .from("podcast_episodes")
       .delete()
       .eq("id", episodeId)
-      .eq("agent_id", userId)
+      .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
 
     if (error) throw error
@@ -1176,6 +995,9 @@ export async function generatePodcastEpisodeDescription(params: {
     if (!ctx.isAuthenticated) return { success: false, error: "Unauthorized" }
 
     const { text } = await generateTextRouted({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       feature: "podcast_description_generation",
       maxTokens: 200,
       temperature: 0.7,
@@ -1231,7 +1053,7 @@ export async function savePodcastShowSettings(params: {
         host_name: params.hostName ?? null,
         description: params.description ?? null,
         category: params.category ?? "Real Estate",
-        language: params.language ?? "en",
+        language: params.language ?? DEFAULT_LANGUAGE,
         cover_art_url: params.coverArtUrl ?? null,
         website_url: params.websiteUrl ?? null,
         updated_at: new Date().toISOString(),
@@ -1249,12 +1071,28 @@ export async function uploadPodcastCoverArt(formData: FormData) {
   if (!file) return { success: false, error: "No file provided" }
   if (!file.type.startsWith("image/")) return { success: false, error: "File must be an image" }
   try {
-    const ext = file.name.split(".").pop() ?? "png"
-    const blob = await put(`podcast-cover-art/${agentId}-${Date.now()}.${ext}`, file, {
-      access: "public",
+    // THE SIZE GATE. This is a Server Action taking the File in the request
+    // body, so the bytes DO cross a Vercel Function and the 4.5 MB body cap
+    // applies — `server_action`, not `direct_to_storage`. Without this the
+    // upload 413s at the edge with no message this code chose.
+    const { checkUpload } = await import("@/lib/storage/file-limits")
+    const gate = checkUpload({
+      bucket: "media",
+      transport: "server_action",
+      bytes: file.size,
       contentType: file.type,
     })
-    return { success: true, url: blob.url }
+    if (!gate.ok) return { success: false, error: gate.reason }
+
+    const ext = file.name.split(".").pop() ?? "png"
+    const url = await hostRenderedMedia(
+      createServiceClient(),
+      `${brokerageId}/podcast/cover-art/${agentId}-${Date.now()}.${ext}`,
+      Buffer.from(await file.arrayBuffer()),
+      file.type,
+      "media",
+    )
+    return { success: true, url }
   } catch (error: any) {
     return { success: false, error: error.message }
   }
@@ -1312,7 +1150,7 @@ export async function testDistributionChannelConnection(channelId: string): Prom
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function generatePodcastSnippetSuggestions(params: { episodeId: string }) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, agentId, brokerageId } = await getAgentContext()
   if (!agentId || !brokerageId) return { success: false, error: "Missing agent context", snippets: [] }
   const supabase = await createClient()
   const { data: episode } = await supabase
@@ -1325,6 +1163,9 @@ export async function generatePodcastSnippetSuggestions(params: { episodeId: str
   if (!episode.script) return { success: false, error: "Episode has no script to extract from", snippets: [] }
   try {
     const { text } = await generateTextRouted({
+      brokerageId,
+      userId,
+      agentId,
       feature: "podcast_snippet_suggestions",
       maxTokens: 800,
       temperature: 0.7,
@@ -1353,58 +1194,43 @@ Return as JSON array of {hook: string, body: string, suggested_caption: string, 
 
 export async function generatePodcastBlogPost(params: { episodeId: string }) {
   const { userId, agentId, brokerageId } = await getAgentContext()
-  if (!agentId || !brokerageId) return { success: false, error: "Missing agent context" }
+  if (!userId || !agentId || !brokerageId) return { success: false, error: "Missing agent context" }
   const supabase = await createClient()
-  const { data: episode } = await supabase
+  const { data: episode, error: episodeErr } = await supabase
     .from("podcast_episodes")
     .select("id, title, description, script, category")
     .eq("id", params.episodeId)
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
+  if (episodeErr) return { success: false, error: `Could not read that episode: ${episodeErr.message}` }
   if (!episode) return { success: false, error: "Episode not found" }
   if (!episode.script) return { success: false, error: "Episode has no script" }
-  try {
-    const { text } = await generateTextRouted({
-      feature: "podcast_blog_post",
-      maxTokens: 1500,
-      temperature: 0.6,
-      prompt: `Turn this podcast episode transcript into a long-form blog post (markdown, 600-900 words).
-Lead with reader value. Use H2 section headers, short paragraphs, and a clear takeaway list at the end.
 
-Title: ${episode.title}
-Description: ${episode.description ?? ""}
-Transcript:
-${episode.script.slice(0, 6000)}`,
-    })
-    const blogTitle = `${episode.title}`
-    // Persist to blog_posts table if it exists; fail gracefully if not.
-    let savedId: string | null = null
-    try {
-      const { data: row } = await supabase
-        .from("blog_posts")
-        .insert({
-          brokerage_id: brokerageId,
-          agent_user_id: userId, // FK→users.id (canonical, matches blog.ts)
-          created_by: userId,
-          title: blogTitle,
-          content: text, // real column (was phantom content_md)
-          publish_status: "draft", // CHECK-valid; was phantom status
-          is_ai_generated: true,
-        })
-        .select("id")
-        .single()
-      savedId = row?.id ?? null
-    } catch {
-      savedId = null
-    }
-    return { success: true, blogPostId: savedId, content: text, title: blogTitle }
-  } catch (error: any) {
-    return { success: false, error: error.message }
+  // MERGED (lane 86C, §1.1): this was a THIRD AI blog writer — a bare "turn this transcript into
+  // a blog post" prompt with no fair-housing block, no gate and no post-check, and a blog_posts
+  // insert whose refusal was swallowed (`catch { savedId = null }`, success reported anyway).
+  // The one writer, lib/kernel/content-creators.ts writeBlogPost, already writes FROM source
+  // material (sourceContent); this door now hands it the episode, for the SESSION's actor.
+  const { writeBlogPost } = await import("@/lib/kernel/content-creators")
+  const written = await writeBlogPost({
+    ctx: { userId, brokerageId },
+    agentUserId: userId,
+    title: episode.title ?? undefined,
+    keywords: episode.category ? [String(episode.category)] : [],
+    sourceContent: [episode.description ?? "", episode.script].filter(Boolean).join("\n\n"),
+  })
+  if (!written.success) return { success: false, error: written.error }
+  return {
+    success: true,
+    blogPostId: written.postId,
+    content: written.content,
+    title: written.title,
+    complianceWarnings: written.complianceWarnings,
   }
 }
 
 export async function generatePodcastNewsletterTeaser(params: { episodeId: string }) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, agentId, brokerageId } = await getAgentContext()
   if (!agentId || !brokerageId) return { success: false, error: "Missing agent context" }
   const supabase = await createClient()
   const { data: episode } = await supabase
@@ -1416,6 +1242,9 @@ export async function generatePodcastNewsletterTeaser(params: { episodeId: strin
   if (!episode) return { success: false, error: "Episode not found" }
   try {
     const { text } = await generateTextRouted({
+      brokerageId,
+      userId,
+      agentId,
       feature: "podcast_newsletter_teaser",
       maxTokens: 220,
       temperature: 0.65,
@@ -1429,7 +1258,7 @@ ${(episode.script ?? "").slice(0, 1500)}`,
     })
     let teaserId: string | null = null
     try {
-      const { data: row } = await supabase
+      const { data: row, error: teaserErr } = await supabase
         .from("newsletter_teasers")
         .insert({
           brokerage_id: brokerageId,
@@ -1441,6 +1270,7 @@ ${(episode.script ?? "").slice(0, 1500)}`,
         })
         .select("id")
         .single()
+      if (teaserErr) console.error(`[podcast-generation] newsletter teaser NOT recorded: ${teaserErr.message}`)
       teaserId = row?.id ?? null
     } catch {
       teaserId = null
@@ -1465,12 +1295,99 @@ export async function getPodcastAdvancedAnalytics(params?: { trendDays?: number 
   const since60 = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString()
 
   try {
-    const { data: events } = await supabase
+    const { data: events, error: eventsError } = await supabase
       .from("podcast_analytics_events")
-      .select("event_type, episode_id, platform, duration_listened_seconds, created_at")
+      .select("event_type, episode_id, platform, duration_listened_seconds, timestamp_seconds, listener_contact_id, created_at")
       .eq("brokerage_id", brokerageId)
+    if (eventsError) {
+      // §3 — a refused read used to fall through as "no events" and the tab
+      // rendered zeros over a refusal.
+      return { success: false, error: `podcast_analytics_events read refused: ${eventsError.message}` }
+    }
 
     const rows = events ?? []
+
+    // ── Per-contact listening — THE CRM SIGNAL (wave 26 columns) ─────────────
+    // trackPodcastEvent (:832) stamps listener_contact_id and timestamp_seconds
+    // on every event, and nothing read either: the tab could say "412 plays"
+    // and never WHO — so a past client who listened to every episode this
+    // quarter was indistinguishable from an anonymous RSS hit, and the one
+    // fact an agent can act on (this named person is engaging with my show)
+    // never reached them. Collapsed per contact, named from the contacts
+    // table (tenant-scoped), ranked by minutes. `anonymousEvents` is the
+    // denominator's blind spot published beside it: events with no
+    // listener_contact_id (RSS / directory plays) cannot be attributed.
+    type Listener = {
+      plays: number; seconds: number; ctaClicks: number
+      episodes: Set<string>; lastListenedAt: string | null
+    }
+    const byContact = new Map<string, Listener>()
+    let anonymousEvents = 0
+    for (const r of rows) {
+      const cid = (r as { listener_contact_id?: string | null }).listener_contact_id ?? null
+      if (!cid) { anonymousEvents++; continue }
+      const l = byContact.get(cid) ?? { plays: 0, seconds: 0, ctaClicks: 0, episodes: new Set<string>(), lastListenedAt: null }
+      if (r.event_type === "play") l.plays++
+      if (r.event_type === "cta_click") l.ctaClicks++
+      l.seconds += r.duration_listened_seconds ?? 0
+      if (r.episode_id) l.episodes.add(r.episode_id)
+      const ts = (r.created_at as string | null) ?? null
+      if (ts && (!l.lastListenedAt || ts > l.lastListenedAt)) l.lastListenedAt = ts
+      byContact.set(cid, l)
+    }
+    const listenerIds = Array.from(byContact.keys())
+    const listenerName = new Map<string, string | null>()
+    let listenerNameLookupError: string | null = null
+    if (listenerIds.length > 0) {
+      const { data: contactRows, error: contactErr } = await supabase
+        .from("contacts")
+        .select("id, first_name, last_name")
+        .eq("brokerage_id", brokerageId)
+        .in("id", listenerIds)
+      if (contactErr) {
+        listenerNameLookupError = contactErr.message
+      } else {
+        for (const c of (contactRows ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null }>) {
+          const name = [c.first_name, c.last_name].filter(Boolean).join(" ").trim()
+          listenerName.set(c.id, name || null)
+        }
+      }
+    }
+    const topListeners = Array.from(byContact.entries())
+      .map(([contactId, l]) => ({
+        contactId,
+        name: listenerName.get(contactId) ?? null,
+        plays: l.plays,
+        minutes: Math.round(l.seconds / 60),
+        episodesHeard: l.episodes.size,
+        ctaClicks: l.ctaClicks,
+        lastListenedAt: l.lastListenedAt,
+      }))
+      .sort((a, b) => b.minutes - a.minutes || b.plays - a.plays)
+      .slice(0, 25)
+
+    // ── Drop-off point (timestamp_seconds) ───────────────────────────────────
+    // A `pause` event's timestamp_seconds is where the listener stopped. The
+    // median of those per episode is the drop-off point; with no pause events
+    // it is null ("not measured"), never 0. `play` events carry a 0 timestamp
+    // by construction and are excluded so they cannot drag the median down.
+    const pauseByEpisode = new Map<string, number[]>()
+    const allPauses: number[] = []
+    for (const r of rows) {
+      if (r.event_type !== "pause") continue
+      const t = Number((r as { timestamp_seconds?: number | null }).timestamp_seconds ?? 0)
+      if (!Number.isFinite(t) || t <= 0) continue
+      const arr = pauseByEpisode.get(r.episode_id) ?? []
+      arr.push(t); pauseByEpisode.set(r.episode_id, arr)
+      allPauses.push(t)
+    }
+    const median = (xs: number[]): number | null => {
+      if (xs.length === 0) return null
+      const s = [...xs].sort((a, b) => a - b)
+      const mid = Math.floor(s.length / 2)
+      return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2)
+    }
+    const medianDropOffSeconds = median(allPauses)
 
     // Total plays
     const totalPlays = rows.filter((r: any) => r.event_type === "play").length
@@ -1480,13 +1397,17 @@ export async function getPodcastAdvancedAnalytics(params?: { trendDays?: number 
       rows.reduce((s: number, r: any) => s + (r.duration_listened_seconds ?? 0), 0) / 60
     )
 
-    // Avg completion rate (only for events that record completion_pct)
-    const completionRows = rows.filter((r: any) => typeof r.completion_pct === "number")
-    const avgCompletionRate = completionRows.length
-      ? Math.round(
-          (completionRows.reduce((s: number, r: any) => s + (r.completion_pct ?? 0), 0) / completionRows.length) * 100
-        ) / 100
-      : 0
+    // Avg completion rate — HONESTLY ABSENT, not zero.
+    //
+    // This filtered `typeof r.completion_pct === "number"`, but there is no
+    // completion_pct column on podcast_analytics_events (live-verified: id,
+    // brokerage_id, episode_id, event_type, timestamp_seconds,
+    // duration_listened_seconds, platform, listener_contact_id, created_at) and it
+    // was not in the select either. The filter was false for every row that will
+    // ever exist, so the branch always fell through to 0 and the Analytics tab
+    // rendered a confident "0%" for a number nobody had computed. Null says
+    // "not measured" — the tab renders a dash.
+    const avgCompletionRate: number | null = null
 
     // Subscriber growth: new subscribe events over last 30 days vs prior 30 days
     const subs30 = rows.filter(
@@ -1562,14 +1483,21 @@ export async function getPodcastAdvancedAnalytics(params?: { trendDays?: number 
       else if (n === "rss") platformLinks.rss = ch.external_show_id
     }
 
+    // MERGED from getPodcastAnalytics (see its tombstone above): `status` is
+    // returned rather than selected-and-dropped, so a caller can tell a published
+    // episode from a draft, and the list is SORTED by plays descending so it reads
+    // as a leaderboard instead of whatever order Postgres returned.
     const perEpisode = (episodeRows ?? []).map((ep: any) => ({
       id: ep.id,
       title: ep.title,
+      status: ep.status as string | null,
       plays: playsByEpisode[ep.id] ?? 0,
+      /** Median pause position in seconds, or null when no listener paused. */
+      dropOffSeconds: median(pauseByEpisode.get(ep.id) ?? []),
       audioUrl: ep.audio_url,
       publishedChannels: ep.publish_channels ?? [],
       platformLinks,
-    }))
+    })).sort((a, b) => b.plays - a.plays)
 
     return {
       success: true,
@@ -1581,6 +1509,12 @@ export async function getPodcastAdvancedAnalytics(params?: { trendDays?: number 
       channelBreakdown,
       dailyTrend,
       perEpisode,
+      /** Named listeners ranked by minutes — the per-contact CRM signal. */
+      topListeners,
+      identifiedListeners: byContact.size,
+      anonymousEvents,
+      listenerNameLookupError,
+      medianDropOffSeconds,
     }
   } catch (error: any) {
     return { success: false, error: error.message }

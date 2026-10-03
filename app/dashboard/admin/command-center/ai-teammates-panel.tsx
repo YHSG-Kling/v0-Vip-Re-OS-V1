@@ -46,7 +46,7 @@ const EMPTY_FORM: FormState = {
   id: null,
   name: "",
   roleTitle: "",
-  baseManagerKey: "marketing_agent",
+  baseManagerKey: "campaign_orchestrator", // m618: default was "marketing_agent" (retired ManagerKey)
   charter: "",
   focusTags: "",
   autonomy: "draft_only",
@@ -82,7 +82,7 @@ export function AiTeammatesPanel({
       id: t.id,
       name: t.name,
       roleTitle: t.roleTitle,
-      baseManagerKey: (t.baseManagerKey in MANAGERS ? t.baseManagerKey : "marketing_agent") as ManagerKey,
+      baseManagerKey: (t.baseManagerKey in MANAGERS ? t.baseManagerKey : "campaign_orchestrator") as ManagerKey, // m618: fallback was "marketing_agent" (retired ManagerKey)
       charter: t.charter,
       focusTags: t.focusTags.join(", "),
       autonomy: t.autonomy,

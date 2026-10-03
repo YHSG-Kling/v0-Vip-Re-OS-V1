@@ -13,6 +13,7 @@
 // referral already closed is a no-op). No fabricated commissions — uses the
 // referral's own recorded/potential value, else leaves it null.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
 
@@ -88,7 +89,7 @@ export async function closeReferralOnDealClose(
   const commission = referralCommissionFor(r)
 
   // Close the referral (idempotent — only when not already closed).
-  await supabase
+  const { error: referralCloseErr } = await supabase
     .from("referrals")
     .update({
       status: "closed",
@@ -99,6 +100,7 @@ export async function closeReferralOnDealClose(
     })
     .eq("id", r.id)
     .neq("status", "closed")
+  if (referralCloseErr) console.error(`[referral-closer] referral NOT closed: ${referralCloseErr.message}`)
 
   // Credit the referring partner's lifetime value + received count.
   if (r.partner_id && commission != null) {
@@ -108,11 +110,11 @@ export async function closeReferralOnDealClose(
       .eq("id", r.partner_id).maybeSingle()
     const partner = p as { total_value_generated: number | null; total_referrals_received: number | null; partner_name: string | null } | null
     if (partner) {
-      await supabase.from("referral_partners").update({
+      await sentinelWrite(supabase, supabase.from("referral_partners").update({
         total_value_generated: (partner.total_value_generated ?? 0) + commission,
         total_referrals_received: (partner.total_referrals_received ?? 0) + 1,
         updated_at: new Date().toISOString(),
-      }).eq("id", r.partner_id)
+      }).eq("id", r.partner_id), { table: "referral_partners", flow: "referral_partners_write", reason: "partner counters (reporting)" })
     }
   }
 
@@ -127,11 +129,20 @@ export async function closeReferralOnDealClose(
         const { data: already } = await supabase.from("commission_distributions").select("id")
           .eq("transaction_id", transactionId).eq("agent_id", r.referring_agent_id).eq("distribution_type", "referral").limit(1).maybeSingle()
         if (!already) {
-          await supabase.from("commission_distributions").insert({
+          // The try/catch here never sees a refusal — supabase-js RESOLVES one.
+          // This row is the referring agent's fee; losing it silently is money
+          // an agent is owed and will never be paid.
+          const { error: feeError } = await supabase.from("commission_distributions").insert({
             brokerage_id: brokerageId, transaction_id: transactionId, agent_id: r.referring_agent_id,
             distribution_type: "referral", calculation_type: "percent", calculation_value: r.referral_fee_pct,
             calculated_amount: fee, source_of_funds: "agent", status: "pending",
           })
+          if (feeError) {
+            console.error(
+              `[referral-closer] commission_distributions insert REFUSED — agent ${r.referring_agent_id}'s referral fee on transaction ${transactionId} was NOT booked:`,
+              feeError.message,
+            )
+          }
         }
       }
     } catch (e) { console.error("[referral-closer] agent referral fee booking failed:", e) }

@@ -14,8 +14,8 @@ export type FilingStatus = "single" | "married_joint" | "married_separate" | "he
 // net SE income). The Social Security WAGE BASE changes yearly, so it is a PARAMETER (never hardcoded
 // to a guessed future value). Half of SE tax is deductible against income — modeled below.
 export const SE_NET_FACTOR = 0.9235
-export const SS_RATE = 0.124
-export const MEDICARE_RATE = 0.029
+const SS_RATE = 0.124
+const MEDICARE_RATE = 0.029
 // Sensible default blended INCOME-tax effective rate for a self-employed agent (fed + state), used
 // only when the agent hasn't set their own. Deliberately conservative; the agent overrides it.
 export const DEFAULT_EFFECTIVE_INCOME_RATE = 0.12

@@ -17,9 +17,24 @@ export const RECORDING_DISCLOSURE =
 
 const AI_MENTION = /\b(AI|A\.I\.|artificial intelligence|virtual assistant|digital assistant|automated assistant)\b/i
 
+/** THE one regex that decides "does this message announce recording". Exported
+ *  through hasRecordingDisclosure so the RECORDING PRODUCER
+ *  (lib/voice/call-recording.ts) and this COMPOSER agree by construction — two
+ *  copies of this test is exactly how a call gets recorded without an
+ *  announcement. */
+const RECORDING_MENTION = /recorded/i
+
 /** PURE: is the AI already disclosed in this message? */
 export function hasAiDisclosure(message: string): boolean {
   return AI_MENTION.test(message)
+}
+
+/** PURE: does this message already announce that the call may be recorded?
+ *  The RECORDING-POSTURE INVARIANT (lib/voice/call-recording.ts:
+ *  disclosureCoversRecording) is stated in terms of this predicate: the spoken
+ *  message must announce recording whenever recording is actually armed. */
+export function hasRecordingDisclosure(message: string): boolean {
+  return RECORDING_MENTION.test(message)
 }
 
 /** PURE: guarantee the AI disclosure — prepend only when absent. */
@@ -36,7 +51,7 @@ export function withAiCallDisclosures(
   opts: { recipientPhone?: string | null; recorded?: boolean } = {},
 ): string {
   let msg = ensureAiDisclosure(firstMessage)
-  if (opts.recorded !== false && !/recorded/i.test(msg)) {
+  if (opts.recorded !== false && !hasRecordingDisclosure(msg)) {
     msg = `${RECORDING_DISCLOSURE}${msg}`
   }
   return msg
