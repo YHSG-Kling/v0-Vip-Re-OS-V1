@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { bookedGenerateObject } from "@/lib/ai/generate"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
-import { requireCaller } from "@/lib/auth/require-caller"
+import { requireCaller, requireCallerTenant } from "@/lib/auth/require-caller"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
 import { AGENT_GOAL_TYPES, isAgentGoalType, type AgentGoalType } from "@/lib/goals/goal-types"
@@ -18,9 +18,8 @@ const generateObject = bookedGenerateObject("ai_agent_goals")
  * caller's own brokerage — a mismatch, no session or no brokerage refuses (fail closed).
  */
 async function refuseForeignTenant(brokerageId: string): Promise<string | null> {
-  const caller = await requireCaller()
-  if (!caller.ok) return caller.error
-  return caller.brokerageId === brokerageId ? null : "Forbidden"
+  const caller = await requireCallerTenant(brokerageId)
+  return caller.ok ? null : caller.error
 }
 
 /**

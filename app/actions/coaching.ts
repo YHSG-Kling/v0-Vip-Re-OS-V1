@@ -27,9 +27,9 @@ export async function generateWeeklyCoachingReport(
 ): Promise<WeeklyCoachingReport> {
   // Tenant from the SESSION (CLAUDE.md §4): this public "use server" export took both ids from the
   // caller. The brokerage must be the caller's own; a mismatch or no session refuses (fail closed).
-  const { requireCaller } = await import("@/lib/auth/require-caller")
-  const caller = await requireCaller()
-  if (!caller.ok || caller.brokerageId !== brokerageId) throw new Error(caller.ok ? "Forbidden" : caller.error)
+  const { requireCallerTenant } = await import("@/lib/auth/require-caller")
+  const caller = await requireCallerTenant(brokerageId)
+  if (!caller.ok) throw new Error(caller.error)
   const report = await runAgentCoachingForAgent(agentId, caller.brokerageId)
   // runAgentCoachingForAgent returns null only when the agent is unknown — surface a
   // safe, honest empty report rather than throwing (the dashboard renders its empty state).

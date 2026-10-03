@@ -92,10 +92,9 @@ async function refuseForeignNetworkTenant(brokerageId: string): Promise<string |
     networkInvoked = false // no request scope → a direct server-side call
   }
   if (!networkInvoked) return null
-  const { requireCaller } = await import('@/lib/auth/require-caller')
-  const caller = await requireCaller()
-  if (!caller.ok) return caller.error
-  return caller.brokerageId === brokerageId ? null : 'Forbidden'
+  const { requireCallerTenant } = await import('@/lib/auth/require-caller')
+  const caller = await requireCallerTenant(brokerageId)
+  return caller.ok ? null : caller.error
 }
 
 export async function engageContact(
