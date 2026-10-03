@@ -149,10 +149,11 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
     // deliberately, and only after that check.
     const writeClient = isClientSender ? createServiceClient() : supabase
 
-    // Insert message
-    const { data: message, error: insertError } = await writeClient
-      .from("client_portal_messages")
-      .insert({
+    // Insert message — through the ledgered portal egress (wave 98, lib/portal/portal-message-egress.ts).
+    // A human sent it: actor is the session user, reason HUMAN_REQUESTED, no cycle (a person may
+    // legitimately send the same words twice).
+    const { insertPortalMessage } = await import("@/lib/portal/portal-message-egress")
+    const { data: message, error: insertError } = await insertPortalMessage(writeClient, {
         contact_id: contactId,
         agent_id: agentId,
         brokerage_id: contact.brokerage_id,
@@ -162,9 +163,11 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
         read: false,
         transaction_id: transactionId || null,
         read_at: null,
-      })
-      .select()
-      .maybeSingle()
+      }, {
+        actor: isClientSender ? { type: "user", userId: user.id } : { type: "user", userId: user.id, agentId },
+        reasonCode: "HUMAN_REQUESTED",
+        systemSource: isClientSender ? "portal_client_message" : "portal_agent_message",
+      }, { select: "*" })
 
     if (insertError || !message) {
       console.error("[Portal Messages] Insert error:", insertError)

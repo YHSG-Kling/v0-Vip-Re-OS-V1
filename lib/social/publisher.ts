@@ -9,6 +9,7 @@
 
 import { callConnector, type GatewayAuth } from "@/lib/agentic-os/connector-gateway"
 import { graphPost } from "@/lib/providers/meta/client"
+import { withActionLedger, type ActionReasonCode, type LedgerClient } from "@/lib/kernel/action-ledger"
 
 /** One social POST through the gateway. Returns the gateway result; callers map the provider shape. */
 function socialPost(connector: string, baseUrl: string, path: string, body: unknown, auth: GatewayAuth, headers?: Record<string, string>) {
@@ -34,7 +35,65 @@ export interface PublishResult {
  * Publish content to a social platform
  * Returns the external post ID on success, throws on failure
  */
+/** ACTION LEDGER context for a publish (wave 98). The tenant is required for a ledger row
+ *  (agent_action_ledger.brokerage_id NOT NULL); the platform's own posts carry none and publish
+ *  unledgered. `cycle` (e.g. `<social_posts.id>:<platform>`) makes the publish at-most-once. */
+export interface SocialPublishLedger {
+  brokerageId: string | null
+  postId?: string | null
+  cycle?: string | null
+  reasonCode?: ActionReasonCode | null
+  actorUserId?: string | null
+}
+
+const TIMEOUT_LIKE = /timed?[\s-]?out|ETIMEDOUT|ECONNRESET|504/i
+
 export async function publishToSocialPlatform(
+  platform: string,
+  params: PublishParams,
+  ledger?: SocialPublishLedger,
+): Promise<PublishResult> {
+  // ACTION LEDGER (wave 98, lane 98B) — this is the single door every social publish goes
+  // through (see the pre-flight note below), so it is where the publish is claimed and settled.
+  // A publish whose status flip failed is retried by the cron; with a cycle the retry REPLAYS
+  // the external post id instead of posting twice.
+  if (!ledger?.brokerageId) return publishToSocialPlatformUnledgered(platform, params)
+  return ledgerSocialPublish(platform, params, ledger as SocialPublishLedger & { brokerageId: string }, () => publishToSocialPlatformUnledgered(platform, params))
+}
+
+/**
+ * The ledger half of the social door — claim → `publish()` → settle.
+ * @proofSeam exported so scripts/action-ledger-guard.ts proves one publish = one ledger row and a retried post (status flip lost) publishes once.
+ */
+export function ledgerSocialPublish(
+  platform: string,
+  params: PublishParams,
+  ledger: SocialPublishLedger & { brokerageId: string },
+  publish: () => Promise<PublishResult>,
+  opts?: { client?: LedgerClient },
+): Promise<PublishResult> {
+  return withActionLedger<PublishResult>({
+    brokerageId: ledger.brokerageId,
+    action: "marketing.social.publish",
+    channel: "social",
+    actor: ledger.actorUserId ? { type: "user", userId: ledger.actorUserId } : { type: "system" },
+    subject: ledger.postId ? { type: "social_post", id: ledger.postId } : { type: "social_account", id: null, ref: params.accountId },
+    reasonCode: ledger.reasonCode ?? null,
+    reasonDetail: `publish to ${platform}`,
+    cycle: ledger.cycle ?? null,
+    riskClass: "COMMUNICATION",
+    systemSource: "social_publisher",
+  }, publish, {
+    settle: (r) => r.success
+      ? { status: "executed", outcome: "published", provider: platform, providerRef: r.externalPostId ?? null, costUsd: 0 }
+      : { status: TIMEOUT_LIKE.test(r.error ?? "") ? "unknown" : "failed", outcome: "publish_failed", provider: platform, error: r.error ?? null },
+    replay: (claim) => claim.kind === "replay"
+      ? { success: true, externalPostId: claim.entry.provider_ref ?? undefined, platform }
+      : { success: false, platform, error: claim.kind === "refused" ? claim.error : `publish ${claim.kind === "unknown" ? "outcome unknown — not re-posted; reconcile it first" : "already in flight"}` },
+  }, opts)
+}
+
+async function publishToSocialPlatformUnledgered(
   platform: string,
   params: PublishParams
 ): Promise<PublishResult> {

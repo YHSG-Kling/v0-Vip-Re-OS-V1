@@ -223,6 +223,16 @@ export class NotificationService {
         event_type: params.eventType,
         ...params.metadata,
       },
+      // ACTION LEDGER (wave 98, lane 98B): WHY + the unit of "once". One notice per
+      // (transaction, event, milestone, recipient, UTC day) — the milestone sweeps re-run hourly.
+      ...(params.transactionId ? {
+        ledger: {
+          reasonCode: /deadline|overdue|due/i.test(params.eventType) ? "TRANSACTION_DEADLINE" as const : "TRANSACTION_MILESTONE" as const,
+          reasonDetail: params.eventType,
+          subject: { type: "transaction" as const, id: params.transactionId },
+          cycle: `${params.eventType}:${String((params.metadata as Record<string, unknown> | undefined)?.milestone_name ?? "")}:${params.recipientIds[0] ?? ""}:${new Date().toISOString().slice(0, 10)}`,
+        },
+      } : {}),
     })
 
     return { success: result.success, error: result.error }

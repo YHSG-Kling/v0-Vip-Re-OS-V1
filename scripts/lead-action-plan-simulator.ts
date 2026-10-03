@@ -70,6 +70,7 @@ import {
   planNextLeadTouch,
   isPersonalizedForLead,
   wireChannelFor,
+  nonActionRecordFor,
   type LeadSettingsResolution,
 } from "../lib/ai-isa/lead-action-plan"
 import { DEFAULT_AISA_SETTINGS, DEAD_END_OUTCOMES, canonicalDeadEnd, deadEndsFromLeadSources, type AIISASettings } from "../lib/ai-isa/settings-types"
@@ -77,6 +78,7 @@ import { pickLeadOutreachChannel, LEAD_ALLOWED_CHANNELS } from "../lib/ai-isa/le
 import { CRON_REGISTRY } from "../lib/kernel/cron-dispatch"
 import {
   scoreDecayedIntent, decayFactor, byIntentMomentumDesc, INTENT_SIGNAL_POLICY, STATED_TIMELINE_POLICY,
+  leadIntentObservations,
   type IntentObservation,
 } from "../lib/lead-intelligence/behavioral-summary"
 
@@ -597,6 +599,55 @@ console.log("\n── 7b. LANE 97B: signal decay, intent velocity, next-best-act
   const bs = code("lib/lead-intelligence/behavioral-summary.ts")
   check("DECAY-WIRED: the behavioural fold IS the decayed score (one number, not two)",
     /behavioralIntentScore\s*=\s*decayedIntent\.score/.test(bs) && !/perSourceMax/.test(bs))
+}
+
+console.log("\n── 7c. LANE 98B: NBA verdicts → the action ledger; intent for UNCONVERTED leads ──")
+{
+  const B98 = "11111111-1111-4111-8111-111111111111"
+  const L98 = "33333333-3333-4333-8333-333333333333"
+  const now98 = new Date("2026-08-10T12:00:00Z")
+  // do_nothing — a human paused the AI
+  const paused = planNextLeadTouch({ ...planBase, now: now98, context: { outreachPaused: true } })
+  const rec = nonActionRecordFor(paused, { brokerageId: B98, leadId: L98, now: now98 })
+  check("NBA-LEDGER-DO-NOTHING: a do_nothing verdict becomes a recordNonAction context with NO_ACTION_NEEDED",
+    paused.action === "do_nothing" && rec?.decision === "do_nothing" && rec?.reasonCode === "NO_ACTION_NEEDED" && rec?.subject.id === L98)
+  check("NBA-LEDGER-REASONS: every reason-not-to-act rides in detail, with the plan's own code",
+    Array.isArray((rec?.detail as { reasons_not_to_act?: unknown[] } | undefined)?.reasons_not_to_act) &&
+    ((rec?.detail as { reasons_not_to_act: Array<{ code: string }> }).reasons_not_to_act.some((r) => r.code === "outreach_paused")) &&
+    (rec?.detail as { plan_code?: string }).plan_code === "outreach_paused")
+  check("NBA-LEDGER-CYCLE: one row per lead per verdict per UTC day (deterministic cycle)", rec?.cycle === "outreach_paused:2026-08-10")
+  // wait — fatigue window
+  const fatigued = planNextLeadTouch({ ...planBase, now: now98, context: { lastAnyTouchAt: new Date(now98.getTime() - 3_600_000) } })
+  const wrec = nonActionRecordFor(fatigued, { brokerageId: B98, leadId: L98, now: now98 })
+  check("NBA-LEDGER-WAIT: a wait verdict → WAIT_COOLDOWN with its until", fatigued.action === "wait" && wrec?.decision === "wait" && wrec?.reasonCode === "WAIT_COOLDOWN" && !!wrec?.until)
+  // POSITIVE CONTROL — an ACTING verdict records no non-action
+  const due = planNextLeadTouch({ ...planBase, now: now98 })
+  check("NBA-LEDGER-CONTROL: a send_touch verdict records NO non-action (null)", due.action === "send_touch" && nonActionRecordFor(due, { brokerageId: B98, leadId: L98, now: now98 }) === null)
+  // The sweep is wired to record it
+  const sweep = stripComments(readFileSync(join(process.cwd(), "lib/ai-isa/lead-action-plan.ts"), "utf8"))
+  const adv = sweep.slice(sweep.indexOf("export async function advanceLeadActionPlans"))
+  check("NBA-LEDGER-WIRED: advanceLeadActionPlans records every non-action BEFORE skipping the lead",
+    /const nonAction = nonActionRecordFor\(plan,/.test(adv) && /recordNonAction\(nonAction/.test(adv) &&
+    adv.indexOf("recordNonAction(nonAction") < adv.indexOf("out.skipped.push({ leadId, code: plan.code"))
+
+  // INTENT for an UNCONVERTED lead — lead-keyed rows only
+  const obs = leadIntentObservations({
+    replies: [{ replied_at: "2026-08-09T18:00:00Z" }, { replied_at: null }],
+    timeline: "1-3_months",
+  })
+  check("LEAD-INTENT-MAP: replies and the stated timeline become observations (a null reply is not one; timeline age unknown)",
+    obs.length === 2 && obs.filter((o) => o.type === "inbound_reply").length === 1 && obs.some((o) => o.type === "stated_timeline" && o.observedAt === null))
+  const sweepSrc = stripComments(readFileSync(join(process.cwd(), "lib/lead-intelligence/behavioral-summary.ts"), "utf8"))
+  const leadFn = sweepSrc.slice(sweepSrc.indexOf("export async function buildLeadDecayedIntent"))
+  check("LEAD-INTENT-NO-WRITERLESS-READ: the lead reader does not read lead_idx_property_interactions (no lead-class writer by owner ruling)",
+    leadFn.length > 0 && !/lead_idx_property_interactions/.test(leadFn) && /\.from\("isa_outreach_log"\)/.test(leadFn))
+  const intent = scoreDecayedIntent(obs, now98)
+  const withIntent = planNextLeadTouch({ ...planBase, now: now98, context: { intent } })
+  check("LEAD-INTENT-FED: a lead with lead-keyed rows gets a non-zero priority from its decayed intent", intent.score > 0 && withIntent.priority === intent.momentumRank && withIntent.priority !== 0)
+  check("LEAD-INTENT-CONTROL: no lead-keyed rows → no observations (the plan decides on cadence alone)",
+    leadIntentObservations({ replies: [], timeline: null }).length === 0 && planNextLeadTouch({ ...planBase, now: now98 }).priority === 0)
+  check("LEAD-INTENT-WIRED: the sweep feeds buildLeadDecayedIntent into the plan's context",
+    /intent:\s*\(await buildLeadDecayedIntent\(supabase, input\.brokerageId,/.test(adv) && /duplicate_of_contact_id,[^"]*\btimeline\b[^"]*"/.test(adv))
 }
 
 console.log("\n── 8. LIVE LAYER (creds-gated): the gate opens and closes, with ZERO spend ──")

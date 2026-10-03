@@ -596,6 +596,14 @@ export async function copyCooperatingAgentOnDealMoment(
     channelPurpose: "transactional",
     systemSource:   "cooperating_agent_copy_transactional",
     metadata:       { event: params.event, moment: plan.moment, outside_agent_id: found.agent.id, [anchorType + "_id"]: anchorId },
+    // ACTION LEDGER (wave 98, lane 98B): the copy key IS the unit of "once" — a retry after the
+    // activities marker below was refused replays instead of copying the outside agent twice.
+    ledger: {
+      reasonCode: "TRANSACTION_MILESTONE",
+      reasonDetail: `cooperating agent copied: ${plan.moment}`,
+      cycle: `outside_agent_copy:${plan.copyKey}`,
+      ...(transactionId ? { subject: { type: "transaction" as const, id: transactionId } } : listingId ? { subject: { type: "listing" as const, id: listingId } } : {}),
+    },
   })
   if (!sent?.success) return { copied: false, moment: plan.moment, email, error: `email not sent: ${sent?.error ?? "unknown"}` }
 

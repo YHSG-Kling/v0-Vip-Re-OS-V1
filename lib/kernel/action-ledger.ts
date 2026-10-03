@@ -393,6 +393,78 @@ export function replayDispatchResult(claim: NonActingClaim): DispatchLike {
   }
 }
 
+// ─── AI tool calls (wave 98, lane 98B) ────────────────────────────────────────
+// No tool-execution wrapper existed: each surface mounts an AI SDK tool registry and the model
+// calls `execute` directly. This is the ONE wrapper, applied where a registry is assembled with
+// its tenant known (lib/ai-isa/customer-context-tools.ts buildCustomerFreeTools — every
+// customer-facing surface spreads it). Only the consequential classes are ledgered —
+// COMMUNICATION and FINANCIAL (lib/ai-isa/persona-tool-policy.ts riskClassForTool); a READ or a
+// LOW_RISK_WRITE is not an external action. The tool call id (AI SDK `options.toolCallId`) is the
+// cycle, so a retried step of the SAME call is at-most-once.
+
+/** The risk classes whose tool calls leave a ledger row. */
+const LEDGERED_TOOL_RISK = new Set(["COMMUNICATION", "FINANCIAL"])
+
+/** A tool result reads as a failure when it says so (`success: false` / `error`). */
+function settleToolResult(r: unknown): Settlement {
+  const o = (r && typeof r === "object") ? r as { success?: unknown; error?: unknown } : null
+  if (o && (o.success === false || (typeof o.error === "string" && o.error && o.success !== true))) {
+    const msg = typeof o.error === "string" ? o.error : "tool reported failure"
+    return isTimeoutLike(msg) ? { status: "unknown", outcome: "provider_timeout", error: msg } : { status: "failed", outcome: "tool_failed", error: msg }
+  }
+  return { status: "executed", outcome: "tool_completed" }
+}
+
+/**
+ * Wrap every COMMUNICATION / FINANCIAL tool in `registry` so each call is claimed → run → settled
+ * on agent_action_ledger (action `ai.tool.<name>`). Other tools are returned untouched. A replayed
+ * / in-flight / unknown claim returns a refusal object the model can read — it never re-executes.
+ */
+export function ledgerToolExecutions<T extends Record<string, unknown>>(
+  registry: T,
+  ctx: {
+    brokerageId: string
+    subject: { type: string; id?: string | null }
+    riskClassOf: (toolName: string) => string
+    actor?: ActionContext["actor"]
+    surface?: string
+  },
+  opts?: { client?: LedgerClient },
+): T {
+  const out: Record<string, unknown> = {}
+  for (const [name, t] of Object.entries(registry)) {
+    const risk = ctx.riskClassOf(name)
+    const exec = (t as { execute?: unknown } | null)?.execute
+    if (!LEDGERED_TOOL_RISK.has(risk) || typeof exec !== "function" || !/^[a-z][a-z0-9_]*$/.test(name)) { out[name] = t; continue }
+    out[name] = {
+      ...(t as object),
+      execute: (args: unknown, options?: { toolCallId?: string }) => withActionLedger<unknown>(
+        {
+          brokerageId: ctx.brokerageId,
+          action: `ai.tool.${name}`,
+          channel: "ai_tool",
+          actor: ctx.actor ?? { type: "system" },
+          subject: ctx.subject,
+          riskClass: risk,
+          systemSource: ctx.surface ?? null,
+          cycle: options?.toolCallId ?? null,
+          detail: { tool: name },
+        },
+        () => Promise.resolve((exec as (a: unknown, o?: unknown) => unknown)(args, options)),
+        {
+          settle: settleToolResult,
+          replay: (claim) => ({
+            success: claim.kind === "replay",
+            error: claim.kind === "replay" ? undefined : `This exact tool call was already ${claim.kind === "unknown" ? "attempted and its outcome is unknown" : claim.kind === "in_flight" ? "in progress" : "refused"} — not repeated.`,
+          }),
+        },
+        opts,
+      ),
+    }
+  }
+  return out as T
+}
+
 // ─── flight recorder: the causal chain ────────────────────────────────────────
 
 export interface ChainEvent {

@@ -96,7 +96,10 @@ async function portalMessage(
   if (!anchor.ok) return { success: false, written: 0, error: anchor.error }
   // client_portal_messages.agent_id / brokerage_id are NOT NULL.
   if (!anchor.agentId) return { success: true, written: 0, error: "Contact has no agent — no portal thread to post into" }
-  const { data, error } = await svc.from("client_portal_messages").insert({
+  // Ledgered portal egress (wave 98, lib/portal/portal-message-egress.ts): an AUTOMATED message,
+  // at-most-once per (contact, kind, stage) — a re-processed journey event replays, never re-posts.
+  const { insertPortalMessage } = await import("@/lib/portal/portal-message-egress")
+  const { data, error } = await insertPortalMessage(svc, {
     contact_id: payload.contact_id,
     agent_id: anchor.agentId,
     brokerage_id: brokerageId,
@@ -105,7 +108,13 @@ async function portalMessage(
     body,
     metadata,
     read: false,
-  }).select("id").maybeSingle()
+  }, {
+    actor: { type: "system" },
+    reasonCode: "TRANSACTION_MILESTONE",
+    reasonDetail: `journey ${String(metadata.kind ?? "message")}`,
+    cycle: `journey:${String(metadata.kind ?? "message")}:${String(metadata.stage_name ?? "all")}`,
+    systemSource: "journey_event_handler",
+  })
   if (error || !data) return { success: false, written: 0, error: `Portal message refused: ${error?.message ?? "no row returned"}` }
   return { success: true, written: 1 }
 }

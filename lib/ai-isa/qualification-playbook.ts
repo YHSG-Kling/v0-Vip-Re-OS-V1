@@ -162,6 +162,7 @@
 
 import type { ToolPersona } from "./persona-tool-policy"
 import type { BrandPlaybookContext } from "./brand-playbook-context"
+import { currentMemoryFacts, factsDueForReview } from "@/lib/kernel/conversation-memory"
 
 export type QualificationSurface =
   | "isa_email"
@@ -636,17 +637,38 @@ export interface QualificationKnownFacts {
   intent?: string | null
   persona?: string | null
   timeline?: string | null
+  /** Lane 98B: the contact's context spine (contacts.metadata.context_spine). When present, the
+   *  "do not re-ask" list reads ONLY its CURRENT, unexpired facts (currentMemoryFacts); a fact past
+   *  its review_by is listed to RE-CONFIRM instead — and a `timeline` column value is not
+   *  claimed as on file while the ledger says that timeline expired. */
+  memory?: unknown
+  /** The instant "current" is judged at (defaults to now) — the proof pins it. */
+  now?: Date
 }
 
-function knownFactsBlock(known: QualificationKnownFacts | undefined): string {
+const MEMORY_FACT_LABEL: Readonly<Record<string, string>> = {
+  timeline: "timeline", price_expectation: "price expectation", channel_preference: "preferred channel", motivation: "motivation",
+}
+
+/** @proofSeam exported so scripts/qualification-playbook-simulator.ts asserts the current-vs-expired rule (expired → re-confirm, current → do not re-ask) on the pure function directly. */
+export function knownFactsBlock(known: QualificationKnownFacts | undefined): string {
   if (!known) return ""
+  const now = known.now ?? new Date()
+  const current = known.memory ? currentMemoryFacts(known.memory, now) : []
+  const expired = known.memory ? factsDueForReview(known.memory, now) : []
+  const expiredKeys = new Set(expired.map((f) => f.key))
   const have: string[] = []
   if (known.hasContactInfo) have.push("contact info")
   if (known.intent) have.push(`intent (${known.intent})`)
   if (known.persona) have.push(`persona (${known.persona})`)
-  if (known.timeline) have.push(`timeline (${known.timeline})`)
-  if (have.length === 0) return ""
-  return `ALREADY ON FILE — do not re-ask: ${have.join(", ")}.`
+  const currentTimeline = current.find((f) => f.key === "timeline")
+  if (currentTimeline) have.push(`timeline (${currentTimeline.value})`)
+  else if (known.timeline && !expiredKeys.has("timeline")) have.push(`timeline (${known.timeline})`)
+  for (const f of current) if (f.key !== "timeline") have.push(`${MEMORY_FACT_LABEL[f.key] ?? f.key} (${f.value})`)
+  const lines: string[] = []
+  if (have.length > 0) lines.push(`ALREADY ON FILE — do not re-ask: ${have.join(", ")}.`)
+  if (expired.length > 0) lines.push(`ON FILE BUT OLDER THAN ITS REVIEW WINDOW — re-confirm gently, do not assume: ${expired.map((f) => MEMORY_FACT_LABEL[f.key] ?? f.key).join(", ")}.`)
+  return lines.join("\n")
 }
 
 export interface BuildQualificationPromptInput {

@@ -903,6 +903,10 @@ export async function ensureClientWelcome(svc: Svc, contact: {
     // gate HOLDS this and leaves the draft for the Command Center.
     // The OWNING manager's posture gates the send — the same one on the ledger row.
     managerKey: owningManager,
+    // ACTION LEDGER (wave 98, lane 98B): ONE welcome per contact, ever — the same `conversion`
+    // cycle conversion-welcome.ts gives its welcome.decision.wait row. A re-fired conversion
+    // replays the first send instead of welcoming the client twice.
+    ledger: { reasonCode: "CONTACT_WELCOME", cycle: "conversion", reasonDetail: `welcome (${journey})` },
     metadata: {
       // `welcome_side` is retired here; `welcome_journey` is the one spelling, and
       // it is the same four-value vocabulary the welcome REEL routes on (§6).

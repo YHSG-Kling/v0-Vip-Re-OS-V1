@@ -18,9 +18,12 @@ const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ $
 
 async function main() {
   console.log("\n[registry shape]")
-  check("net has 14 registered reapers", REAPER_NET.length === 14)
+  // RE-ANCHORED (wave 98, lane 98B — CLAUDE.md §2: assert the RULE, not a waypoint). The count was
+  // pinned at 14 and went false the moment a reaper was added; the rule is "every named domain is
+  // registered exactly once".
+  check("every domain is registered exactly once", new Set(REAPER_NET.map((e) => e.domain)).size === REAPER_NET.length && REAPER_NET.length > 0)
   const domains = REAPER_NET.map((e) => e.domain)
-  for (const d of ["stale_video_workflows", "stale_workflow_runs", "stranded_offers", "closing_overdue", "lifetime_touchpoints", "commission_unrecorded", "commission_tracking_drift", "compliance_flags_stuck", "stuck_social_posts", "stuck_marketing_campaigns", "ad_action_unlaunched", "recruit_gone_cold", "cda_undelivered", "manager_handoffs"]) {
+  for (const d of ["stale_video_workflows", "stale_workflow_runs", "stranded_offers", "closing_overdue", "lifetime_touchpoints", "commission_unrecorded", "commission_tracking_drift", "compliance_flags_stuck", "stuck_social_posts", "stuck_marketing_campaigns", "ad_action_unlaunched", "recruit_gone_cold", "cda_undelivered", "manager_handoffs", "unknown_action_outcomes"]) {
     check(`domain present: ${d}`, domains.includes(d))
   }
   check("every entry has a run thunk + protects copy", REAPER_NET.every((e) => typeof e.run === "function" && e.protects.length > 0))
@@ -29,9 +32,11 @@ async function main() {
   console.log("\n[lanes partition cleanly — no double-firing]")
   const proactive = REAPER_NET.filter((e) => e.lane === "proactive")
   const signals = REAPER_NET.filter((e) => e.lane === "signals")
-  check("13 proactive-lane reapers", proactive.length === 13)
-  check("1 signals-lane reaper (the bus handoff reaper)", signals.length === 1)
-  check("signals lane is exactly manager_handoffs", signals[0]?.domain === "manager_handoffs")
+  // RE-ANCHORED (wave 98): the signals lane carries the bus-handoff reaper AND the unknown-action
+  // settler (both need the 30-minute cadence); the rule is the lane each one is on.
+  check("the bus handoff reaper rides the signals lane", signals.some((e) => e.domain === "manager_handoffs"))
+  check("the unknown-action settler rides the signals lane (30-min cadence, no new cron)", signals.some((e) => e.domain === "unknown_action_outcomes"))
+  check("every other reaper is proactive", REAPER_NET.every((e) => e.lane === "proactive" || ["manager_handoffs", "unknown_action_outcomes"].includes(e.domain)))
   check("lanes are disjoint (every entry in exactly one lane)", proactive.length + signals.length === REAPER_NET.length)
 
   console.log("\n[coverage map is honest]")
@@ -71,7 +76,7 @@ async function main() {
   check("exactly one uncovered manager, and it is cron_manager (platform-scoped by design)",
     cov.uncoveredManagers.length === 1 && cov.uncoveredManagers[0] === "cron_manager")
   check("uncovered managers are genuinely unregistered", cov.uncoveredManagers.every((m) => !managersUnderReaperCoverage().includes(m)))
-  check("coverage domains list = 14", cov.domains.length === 14)
+  check("coverage domains list = the registry", cov.domains.length === REAPER_NET.length)
 
   // ── LIVE LAYER (creds-gated): ledger round-trip ──
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -102,6 +107,6 @@ async function main() {
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ REAPER_NET_FAIL"); process.exit(1) }
-  console.log(" ✅ REAPER_NET_PASS — 14 reapers, lanes disjoint, coverage honest, ledger round-trips")
+  console.log(` ✅ REAPER_NET_PASS — ${REAPER_NET.length} reapers, lanes disjoint, coverage honest, ledger round-trips`)
 }
 main()

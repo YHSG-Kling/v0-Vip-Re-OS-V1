@@ -299,29 +299,26 @@ export async function applyLeadOptOut(
   })
 
   // ── 3. AUDIT ───────────────────────────────────────────────────────────────
-  await sentinelWrite(
-    supabase,
-    supabase.from("lifecycle_events").insert({
-      brokerage_id: params.brokerageId,
-      entity_type: "lead",
-      entity_id: params.leadId,
-      event_type: isGlobal ? "LEAD_DNC_SET" : "LEAD_CHANNEL_OPT_OUT",
-      metadata: {
-        channels,
-        global_dnc: isGlobal,
-        source: params.source,
-        suppression_rows_written: suppressionRowsWritten,
-        message: params.rawMessage?.slice(0, 300) ?? null,
-      },
-      created_at: now,
-    }),
-    {
-      table: "lifecycle_events",
-      flow: "lead_opt_out_audit",
-      brokerageId: params.brokerageId,
-      reason: "lead opt-out lifecycle audit row — the flags and the suppression bridge are already written; losing the timeline entry must not unwind them",
+  // LINEAGE (wave 98, lane 98B): through THE emitter (lib/kernel/emit.ts) so the row carries the
+  // causation of the event being processed. The event type is audit-only (not a KernelEvent), so
+  // nothing fans out — exactly the old row, plus its lineage. A refusal is read and said; losing
+  // the timeline entry must not unwind the flags and the suppression bridge already written.
+  const { emitKernelEvent } = await import("@/lib/kernel/emit")
+  const optOutAudit = await emitKernelEvent({
+    brokerageId: params.brokerageId,
+    entityType: "lead",
+    entityId: params.leadId,
+    event: isGlobal ? "LEAD_DNC_SET" : "LEAD_CHANNEL_OPT_OUT",
+    metadata: {
+      channels,
+      global_dnc: isGlobal,
+      source: params.source,
+      suppression_rows_written: suppressionRowsWritten,
+      message: params.rawMessage?.slice(0, 300) ?? null,
     },
-  )
+    createdAt: now,
+  })
+  if (optOutAudit.error) console.error("[lead-opt-out] opt-out audit row refused:", optOutAudit.error)
 
   return {
     applied: true,
@@ -646,11 +643,16 @@ export async function reopenLeadOnInboundConsent(
   })
 
   // ── 4. THE RECORD — same ledger as the opt-out, and NOT best-effort ────────
-  const { error: auditError } = await supabase.from("lifecycle_events").insert({
-    brokerage_id: params.brokerageId,
-    entity_type: "lead",
-    entity_id: params.leadId,
-    event_type: "LEAD_REOPENED_ON_INBOUND_INTENT",
+  // LINEAGE (wave 98, lane 98B): through THE emitter so the reopen record carries the causation of
+  // the inbound message being processed. CHECKED, not best-effort: emitKernelEvent returns the
+  // insert's refusal, which is read below exactly as the direct insert's was.
+  const { emitKernelEvent } = await import("@/lib/kernel/emit")
+  const reopenAudit = await emitKernelEvent({
+    brokerageId: params.brokerageId,
+    entityType: "lead",
+    entityId: params.leadId,
+    event: "LEAD_REOPENED_ON_INBOUND_INTENT",
+    createdAt: now,
     metadata: {
       // WHAT justified it — the person's own words, which are the consent signal.
       message: message.slice(0, 2000),
@@ -675,8 +677,8 @@ export async function reopenLeadOnInboundConsent(
       // Stated for the auditor: a reopen restores REACHABILITY, never consent.
       tcpa_consent_untouched: true,
     },
-    created_at: now,
   })
+  const auditError = reopenAudit.error ? { message: reopenAudit.error } : null
 
   if (auditError) {
     console.error("[lead-opt-out] reopen audit row refused:", auditError.message)

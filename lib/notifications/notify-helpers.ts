@@ -753,6 +753,14 @@ export async function notifyTransactionParties(
         channelPurpose: "transactional",
         systemSource:   "transaction_parties_notice",
         metadata:       { transaction_id: transactionId, participant_role: party.role },
+        // ACTION LEDGER (wave 98, lane 98B): one terms notice per (transaction, role, address) —
+        // the activities marker above dedupes only after its own write lands; this is the key.
+        ledger: {
+          reasonCode: "TRANSACTION_MILESTONE",
+          reasonDetail: `contract terms to the ${party.role}`,
+          subject: { type: "transaction", id: transactionId },
+          cycle: `parties_notice:${party.role}:${email}`,
+        },
       })
       if (sendResult?.success) {
         result.emailed.push({ role: party.role, email: party.email! })

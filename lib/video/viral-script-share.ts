@@ -202,12 +202,15 @@ export async function shareViralScriptWithBrokerage(
   //
   // The AUTHOR is told directly, through the one notifications lane, because
   // their work has just changed hands and nothing else would tell them.
-  const { error: eventError } = await svc.from("lifecycle_events").insert({
-    entity_type: "script",
-    entity_id: script.id,
-    brokerage_id: script.brokerage_id,
-    event_type: "script_shared_to_brokerage",
-    actor_user_id: script.created_by ?? null,
+  // LINEAGE (wave 98, lane 98B): through THE emitter (lib/kernel/emit.ts) — audit-only type,
+  // nothing fans out; the row now carries its causation.
+  const { emitKernelEvent } = await import("@/lib/kernel/emit")
+  const { error: eventError } = await emitKernelEvent({
+    entityType: "script",
+    entityId: script.id,
+    brokerageId: script.brokerage_id,
+    event: "script_shared_to_brokerage",
+    actorUserId: script.created_by ?? null,
     metadata: {
       script_title: script.title,
       video_project_id: project.id,
@@ -217,7 +220,7 @@ export async function shareViralScriptWithBrokerage(
     },
   })
   if (eventError) {
-    console.error("[viral-script-share] lifecycle_events insert refused:", eventError.message)
+    console.error("[viral-script-share] lifecycle_events insert refused:", eventError)
   }
 
   if (script.created_by) {

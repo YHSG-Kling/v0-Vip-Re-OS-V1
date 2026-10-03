@@ -204,10 +204,13 @@ export async function POST(request: Request) {
     // ── CONTINUITY — the context spine (one shared memory across phone, video,
     // and chat): what the team already discussed, referenced naturally. ──
     let contextSpine: string | null = null
+    // Lane 98B: the raw spine also feeds the playbook's "do not re-ask" block (current facts only).
+    let spineForPlaybook: unknown = null
     try {
       const { data: cmeta } = await supabase.from('contacts')
         .select('metadata').eq('id', contactId).maybeSingle()
       const spine = (cmeta as any)?.metadata?.context_spine
+      spineForPlaybook = spine ?? null
       // Lane 97B memory compiler: the summary + ONLY current, unexpired facts
       // (superseded and past-review facts never reach the prompt).
       if (spine?.summary) {
@@ -388,6 +391,9 @@ export async function POST(request: Request) {
       buildQualificationPrompt({
         surface: 'portal',
         persona: portalPersona,
+        // Lane 98B: "already on file — do not re-ask" reads only CURRENT, unexpired facts from the
+        // contact's memory; an expired timeline/price/channel is listed to re-confirm instead.
+        known: { hasContactInfo: true, memory: spineForPlaybook },
         // Wave 75 — business processes/SOPs, brand KB, office hours, service
         // areas. `omitVoiceBlock: true` + `preloadedVoice: brand` because this
         // route ALREADY rendered brand's tone/FAQ/objections above — the

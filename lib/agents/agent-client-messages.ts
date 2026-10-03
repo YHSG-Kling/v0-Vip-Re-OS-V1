@@ -129,8 +129,18 @@ export interface ClientMessageResult { status: "sent" | "skipped" | "failed"; re
 export async function approveClientMessage(
   messageId: string, approverUserId: string | null, editedBody?: string,
   client?: ReturnType<typeof createServiceClient>,
+  ledgerOpts?: { reasonCode?: import("@/lib/kernel/action-ledger").ActionReasonCode; reasonDetail?: string },
 ): Promise<ClientMessageResult> {
   const supabase = client ?? createServiceClient()
+  // ACTION LEDGER (wave 98, lane 98B): the proposal IS the unit of "once" — whoever releases it
+  // (a human in the Command Center, the lead-plan governor, a voice delegation) and however many
+  // times, it sends at most once. WHY: the caller's reason, else HUMAN_REQUESTED when a person
+  // approved it; an autonomous release with no stated reason records UNSPECIFIED (a finding).
+  const ledger = {
+    cycle: `agent_client_message:${messageId}`,
+    reasonCode: ledgerOpts?.reasonCode ?? (approverUserId ? "HUMAN_REQUESTED" as const : undefined),
+    reasonDetail: ledgerOpts?.reasonDetail,
+  }
   const patch: Record<string, unknown> = { status: "approved", approved_by: approverUserId ?? null, approved_at: new Date().toISOString() }
   if (editedBody?.trim()) patch.body = editedBody
   const { data: claimed, error: claimErr } = await supabase.from("agent_client_messages")
@@ -173,7 +183,7 @@ export async function approveClientMessage(
         if (!gate.allowed) return await fail(supabase, messageId, gate.reason ?? "blocked by compliance gate")
         if (!lead.email) return await fail(supabase, messageId, "lead has no email")
         const { dispatchEmail } = await import("@/lib/providers/dispatch")
-        const r = await dispatchEmail({ brokerageId: m.brokerage_id, leadId: m.recipient_lead_id, from: "", to: lead.email, subject: m.subject ?? "An update from your agent", html: `<p>${m.body.replace(/\n/g, "<br/>")}</p>`, text: m.body, channelPurpose: "update", systemSource: "agent_client_message" })
+        const r = await dispatchEmail({ brokerageId: m.brokerage_id, leadId: m.recipient_lead_id, from: "", to: lead.email, subject: m.subject ?? "An update from your agent", html: `<p>${m.body.replace(/\n/g, "<br/>")}</p>`, text: m.body, channelPurpose: "update", systemSource: "agent_client_message", ledger })
         if (!r.success) return await fail(supabase, messageId, r.error ?? "email send failed")
       } else if (channel === "direct_mail") {
         if (lead.direct_mail_opt_out) return await fail(supabase, messageId, "lead opted out of direct mail")
@@ -216,7 +226,7 @@ export async function approveClientMessage(
         if (!contact.phone) return await fail(supabase, messageId, "contact has no phone")
         if (channel === "sms") {
           const { dispatchSms } = await import("@/lib/providers/dispatch")
-          const r = await dispatchSms({ brokerageId: m.brokerage_id, contactId: m.recipient_contact_id ?? undefined, to: contact.phone, message: m.body, systemSource: "agent_client_message" })
+          const r = await dispatchSms({ brokerageId: m.brokerage_id, contactId: m.recipient_contact_id ?? undefined, to: contact.phone, message: m.body, systemSource: "agent_client_message", ledger })
           if (!r.success) return await fail(supabase, messageId, r.error ?? "sms send failed")
         } else {
           // voice_drop: deliver a ringless voicemail when the manager supplied a preset.
@@ -230,7 +240,7 @@ export async function approveClientMessage(
         // email
         if (!contact.email) return await fail(supabase, messageId, "contact has no email")
         const { dispatchEmail } = await import("@/lib/providers/dispatch")
-        const r = await dispatchEmail({ brokerageId: m.brokerage_id, contactId: m.recipient_contact_id ?? undefined, from: "", to: contact.email, subject: m.subject ?? "An update from your agent", html: `<p>${m.body.replace(/\n/g, "<br/>")}</p>`, text: m.body, channelPurpose: "update", systemSource: "agent_client_message" })
+        const r = await dispatchEmail({ brokerageId: m.brokerage_id, contactId: m.recipient_contact_id ?? undefined, from: "", to: contact.email, subject: m.subject ?? "An update from your agent", html: `<p>${m.body.replace(/\n/g, "<br/>")}</p>`, text: m.body, channelPurpose: "update", systemSource: "agent_client_message", ledger })
         if (!r.success) return await fail(supabase, messageId, r.error ?? "email send failed")
       }
     } else if (channel === "direct_mail") {

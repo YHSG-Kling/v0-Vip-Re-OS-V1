@@ -1,7 +1,6 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { generateAIResponse } from "@/lib/ai"
 import { createServiceClient } from "@/lib/supabase/service"
-import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
 
 export interface PricePredictionResult {
@@ -209,12 +208,15 @@ Respond ONLY with valid JSON (no markdown):
       }), { table: "price_trend_alerts", flow: "price_trend_alerts_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
       // Fire PRICE_ALERT_TRIGGERED kernel event
-      await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-        brokerage_id: brokerageId,
-        entity_type: "listing",
-        entity_id: listingId,
-        event_type: KernelEvent.PRICE_ALERT_TRIGGERED,
-        actor_user_id: actorUserId,
+      // LINEAGE (wave 98, lane 98B): insert + separate processKernelEvent → THE emitter
+      // (lib/kernel/emit.ts), which does both and hands the reactor this row's id as the cause.
+      const { emitKernelEvent } = await import("@/lib/kernel/emit")
+      const alertEvent = await emitKernelEvent({
+        brokerageId,
+        entityType: "listing",
+        entityId: listingId,
+        event: KernelEvent.PRICE_ALERT_TRIGGERED,
+        actorUserId,
         metadata: {
           prediction_id: inserted.id,
           predicted_price: predictedPrice,
@@ -222,13 +224,8 @@ Respond ONLY with valid JSON (no markdown):
           delta_pct: priceDeltaPct,
           severity,
         },
-      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
-      await processKernelEvent({
-        event: KernelEvent.PRICE_ALERT_TRIGGERED,
-        brokerageId,
-        entityType: "listing",
-        entityId: listingId,
-      }).catch(() => {})
+      })
+      if (alertEvent.error) console.error("[predictive-pricing] PRICE_ALERT_TRIGGERED event refused:", alertEvent.error)
     }
   }
 

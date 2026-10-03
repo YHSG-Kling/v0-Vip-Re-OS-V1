@@ -98,6 +98,7 @@ import { pickLeadOutreachChannel } from "./lead-channel-policy"
 import { permittedLeadChannels, decideNextChannel } from "./next-best-touch"
 import type { GenerationalCohort } from "@/lib/kernel/education"
 import type { DecayedIntent } from "@/lib/lead-intelligence/behavioral-summary"
+import type { recordNonAction as recordNonActionType } from "@/lib/kernel/action-ledger"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE PLAN'S VOCABULARY
@@ -888,7 +889,12 @@ export async function releaseDueLeadTouches(input: {
     // is no person to name. Stamping some human's id here would be a false audit
     // trail on the exact record a regulator would ask for.
     const { approveClientMessage } = await import("@/lib/agents/agent-client-messages")
-    const res = await approveClientMessage(messageId, null, undefined, supabase)
+    // ACTION LEDGER (wave 98): WHY = the lead plan's step; the proposal id is the cycle
+    // (approveClientMessage), so a re-swept proposal never sends twice.
+    const res = await approveClientMessage(messageId, null, undefined, supabase, {
+      reasonCode: "CAMPAIGN_STEP",
+      reasonDetail: `lead action plan auto-release (${verdict.code})`,
+    })
 
     if (res.status === "sent") out.sent++
     else if (res.status === "failed") out.failed++
@@ -1062,6 +1068,38 @@ async function leadStillSendable(args: {
   return { ok: true, reason: personalized.reason }
 }
 
+/**
+ * PURE (lane 98B). The recordNonAction context for a wait / do_nothing verdict, or null when the
+ * plan acts (send_touch / convert). WAIT_COOLDOWN / NO_ACTION_NEEDED are the m687 vocabulary; the
+ * plan's own reasonCode and every reason-not-to-act ride in `detail`. Cycle = verdict + UTC day.
+ */
+/** @proofSeam exported so scripts/lead-action-plan-simulator.ts asserts the verdict → ledger mapping (wait, do_nothing, acting = none) on the pure function directly. */
+export function nonActionRecordFor(
+  plan: LeadTouchPlan,
+  at: { brokerageId: string; leadId: string; now: Date },
+): NonActionRecord | null {
+  if (plan.action !== "wait" && plan.action !== "do_nothing") return null
+  return {
+    brokerageId: at.brokerageId,
+    domain: "lead",
+    decision: plan.action,
+    actor: { type: "manager", managerKey: "ai_isa" },
+    subject: { type: "lead", id: at.leadId },
+    reasonCode: plan.action === "wait" ? "WAIT_COOLDOWN" : "NO_ACTION_NEEDED",
+    reasonDetail: `${plan.reasonCode}: ${plan.reason}`.slice(0, 500),
+    cycle: `${plan.reasonCode}:${at.now.toISOString().slice(0, 10)}`,
+    until: plan.dueAt ? plan.dueAt.toISOString() : null,
+    systemSource: "lead_action_plan",
+    detail: {
+      plan_code: plan.reasonCode,
+      reasons_not_to_act: plan.reasonsNotToAct,
+      evidence: plan.evidence.slice(0, 6),
+      priority: plan.priority,
+    },
+  }
+}
+type NonActionRecord = Parameters<typeof recordNonActionType>[0]
+
 // ─────────────────────────────────────────────────────────────────────────────
 // THE SCHEDULER FOR TOUCHES 2..N — async
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1133,7 +1171,7 @@ export async function advanceLeadActionPlans(input: {
       "id, brokerage_id, first_touched_at, first_touch_channel, lifecycle_state, is_active, agent_id, contact_id, " +
       "ai_outreach_paused, dnc_status, email, email_verified, email_opt_out, direct_mail_opt_out, " +
       "mailing_address, mailing_address_verified, mailing_city, mailing_state, mailing_zip, enrichment_profile, " +
-      "duplicate_of_lead_id, duplicate_of_contact_id, qualification_summary, long_term_nurture_until",
+      "duplicate_of_lead_id, duplicate_of_contact_id, qualification_summary, long_term_nurture_until, timeline",
     )
     .eq("brokerage_id", input.brokerageId)
     .eq("ai_isa_owner", true)
@@ -1178,6 +1216,8 @@ export async function advanceLeadActionPlans(input: {
 
   const { cohortFromEnrichment } = await import("./adaptive-reengagement")
   const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+  const { buildLeadDecayedIntent } = await import("@/lib/lead-intelligence/behavioral-summary")
+  const { recordNonAction } = await import("@/lib/kernel/action-ledger")
 
   for (const lead of (leads ?? []) as Array<Record<string, any>>) {
     out.examined++
@@ -1284,8 +1324,21 @@ export async function advanceLeadActionPlans(input: {
           longTermNurtureUntil: (lead.long_term_nurture_until as string | null) ?? null,
         }),
         suppressOnOutcomes: settings.suppress_on_outcomes,
+        // LANE 98B: the decayed intent of an UNCONVERTED lead, from its lead-keyed rows
+        // (lib/lead-intelligence/behavioral-summary.ts buildLeadDecayedIntent). Null → omitted,
+        // and the plan decides on cadence alone exactly as before.
+        intent: (await buildLeadDecayedIntent(supabase, input.brokerageId, { id: leadId, timeline: (lead.timeline as string | null) ?? null }, now)) ?? undefined,
       },
     })
+
+    // NBA → LEDGER (lane 98B): a wait / do_nothing verdict is an action too — recorded on
+    // agent_action_ledger with its reason code and every reason-not-to-act, once per lead per
+    // verdict per UTC day (the sweep re-runs; the idempotency key holds it to one row).
+    const nonAction = nonActionRecordFor(plan, { brokerageId: input.brokerageId, leadId, now })
+    if (nonAction) {
+      const rec = await recordNonAction(nonAction, { client: supabase })
+      if (!rec.recorded && rec.error) out.warnings.push(`lead ${leadId}: ${nonAction.decision} not ledgered — ${rec.error}`)
+    }
 
     if (plan.code !== "due" || !plan.step) {
       out.skipped.push({ leadId, code: plan.code, reason: plan.reason })

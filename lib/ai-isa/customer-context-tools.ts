@@ -1107,7 +1107,27 @@ export function buildRecordQualificationTool(ctx: CustomerContextToolsContext) {
               { table: "property_preferences", flow: "record_qualification", brokerageId: ctx.brokerageId })
       }
 
-      return { success: wrote || wroteCriteria, recorded: summaryBits, criteriaRecorded: wroteCriteria }
+      // CONVERSATION → MEMORY, NOW (wave 98, lane 98B). What the person just stated (timeline,
+      // channel, price, reason for moving) goes into the contact's facts ledger immediately via
+      // recordMemoryFact (lib/kernel/conversation-memory.ts recordConversationFacts) — a restated
+      // value refreshes its review window today, a changed one supersedes the old one today.
+      // Contacts only: the spine lives on contacts.metadata (a pre-conversion lead has none).
+      let factsRecorded = 0
+      if (ctx.contactId) {
+        const { factsFromQualification, recordConversationFacts } = await import("@/lib/kernel/conversation-memory")
+        const facts = factsFromQualification({
+          timeline: args.timeline ?? null,
+          preferredChannel: typeof patch.preferred_channel === "string" ? patch.preferred_channel : null,
+          minPrice: args.buyer_criteria?.min_price ?? null,
+          maxPrice: args.buyer_criteria?.max_price ?? null,
+          reasonForMove: args.seller_situation?.reason_for_move ?? null,
+        })
+        const mem = await recordConversationFacts(ctx.contactId, ctx.brokerageId, facts, { client: svc, source: "conversation.record_qualification" })
+        if (mem.error) console.error(`[record_qualification] memory facts not recorded for contact ${ctx.contactId}: ${mem.error}`)
+        factsRecorded = mem.recorded
+      }
+
+      return { success: wrote || wroteCriteria || factsRecorded > 0, recorded: summaryBits, criteriaRecorded: wroteCriteria }
     },
   })
 }
@@ -1198,7 +1218,19 @@ export async function buildCustomerFreeTools(ctx: CustomerContextToolsContext): 
   if (offered.length === 0 && (ctx.contactId || ctx.leadId)) {
     console.warn("[customer-context-tools] follow-up menu names no registered tool", { menu: QUALIFICATION_FOLLOW_UP_MENU.map((o) => o.tool) })
   }
-  return out
+  // ACTION LEDGER (wave 98, lane 98B): every COMMUNICATION / FINANCIAL tool call this bundle
+  // mounts is claimed → run → settled on agent_action_ledger (lib/kernel/action-ledger.ts
+  // ledgerToolExecutions). This assembler is where the tenant + the person are KNOWN, so it is the
+  // tool-execution chokepoint for every customer-facing surface that spreads the bundle.
+  const { ledgerToolExecutions } = await import("@/lib/kernel/action-ledger")
+  const { riskClassForTool } = await import("@/lib/ai-isa/persona-tool-policy")
+  return ledgerToolExecutions(out, {
+    brokerageId: ctx.brokerageId,
+    subject: ctx.contactId ? { type: "contact", id: ctx.contactId } : ctx.leadId ? { type: "lead", id: ctx.leadId } : { type: "conversation", id: null },
+    riskClassOf: riskClassForTool,
+    actor: { type: "manager", managerKey: "ai_isa" },
+    surface: ctx.persona ? `customer_tools:${ctx.persona}` : "customer_tools",
+  })
 }
 
 /** PURE, module-private — the goal keys `record_qualification` may write,

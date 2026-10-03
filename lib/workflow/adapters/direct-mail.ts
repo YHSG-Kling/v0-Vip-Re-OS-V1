@@ -4,7 +4,7 @@
  * QR code is attached when step.qr_attached = true (universal QR modifier).
  */
 
-import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
+import { sequenceStepLedger, type ChannelAdapter, type StepContext, type StepResult } from "../channel-registry"
 import { dispatchDirectMail } from "@/lib/providers/dispatch"
 
 export const directMailAdapter: ChannelAdapter = {
@@ -56,6 +56,7 @@ export const directMailAdapter: ChannelAdapter = {
         piece_type: step.direct_mail_piece_type ?? "postcard",
         ...(qrInfo ? { qr_url: qrInfo.scanUrl, qr_slug: qrInfo.slug } : {}),
       },
+      ledger: sequenceStepLedger(ctx),
     })
 
     return {

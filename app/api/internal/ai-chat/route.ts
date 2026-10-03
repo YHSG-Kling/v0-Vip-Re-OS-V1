@@ -676,9 +676,10 @@ export async function POST(req: NextRequest) {
 
         if (!contact) return { success: false, error: "Contact not found" }
 
-        const { data, error } = await service
-          .from("client_portal_messages")
-          .insert({
+        // Ledgered portal egress (wave 98, lib/portal/portal-message-egress.ts) — a COMMUNICATION
+        // tool call: the staff member asked the copilot, so the actor is the session user.
+        const { insertPortalMessage } = await import("@/lib/portal/portal-message-egress")
+        const { data, error } = await insertPortalMessage(service, {
             contact_id,
             // contact.agent_id IS an agents.id; the old `?? user.id` fallback was the
             // wrong class on a NOT NULL agents(id) FK. Resolve instead.
@@ -689,9 +690,12 @@ export async function POST(req: NextRequest) {
             read: false,
             body: message_body,
             read_at: null,
+          }, {
+            actor: { type: "user", userId: user.id },
+            reasonCode: "HUMAN_REQUESTED",
+            reasonDetail: "staff copilot send_portal_message",
+            systemSource: "ai_tool:send_portal_message",
           })
-          .select("id")
-          .maybeSingle()
 
         if (error || !data) return { success: false, error: error?.message ?? "Insert failed" }
         return { success: true, message_id: data.id, preview: message_body.slice(0, 80) }

@@ -30,6 +30,18 @@ async function resolveTouchpointActor(opts: TouchpointActorOpts | undefined) {
   return { supabase, agentId, brokerageId: agentRow?.brokerage_id ?? null }
 }
 
+/**
+ * ACTION LEDGER context for a lifetime touch (wave 98, lane 98B). A SYSTEM caller (the daily
+ * lifetime-touchpoints cron passes a service client) sends for reason LIFETIME_TOUCH with a
+ * deterministic cycle — one anniversary per anniversary year, one birthday per calendar year, one
+ * referral ask per day — so a re-run cron replays instead of texting twice. A UI caller (no
+ * client) is a human decision: HUMAN_REQUESTED, no cycle. Not exported — a "use server" export is
+ * a public endpoint (CLAUDE.md §4).
+ */
+function touchLedger(opts: TouchpointActorOpts | undefined, cycle: string): { reasonCode: "LIFETIME_TOUCH" | "HUMAN_REQUESTED"; cycle?: string } {
+  return opts?.client ? { reasonCode: "LIFETIME_TOUCH", cycle } : { reasonCode: "HUMAN_REQUESTED" }
+}
+
 // (REMOVED) scheduleLifetimeCustomerTouchpoints — the dead fixed-calendar scheduler. It had no callers
 // and created the orphaned 'scheduled' rows nothing delivered. Lifetime nurture is now the situational
 // model (newsletter baseline + the situational reel rail + equity/anniversary/life-event triggers).
@@ -79,6 +91,7 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
     systemSource: "lifetime_touchpoints",
     contactId,
     metadata: { touchpoint: "home_anniversary", yearsAgo },
+    ledger: touchLedger(opts, `home_anniversary:year_${yearsAgo}`),
   })
   if (!result.success) {
     return { success: false, error: result.error ?? "Send blocked by compliance gate" }
@@ -160,6 +173,7 @@ export async function sendBirthdayMessage(contactId: string, opts?: TouchpointAc
     systemSource: "lifetime_touchpoints",
     contactId,
     metadata: { touchpoint: "birthday" },
+    ledger: touchLedger(opts, `birthday:${new Date().toISOString().slice(0, 4)}`),
   })
   if (!result.success) {
     return { success: false, error: result.error ?? "Send blocked by compliance gate" }
@@ -223,6 +237,7 @@ export async function sendReferralRequest(contactId: string, opts?: TouchpointAc
     systemSource: "lifetime_touchpoints",
     contactId,
     metadata: { touchpoint: "referral_request" },
+    ledger: touchLedger(opts, `referral_request:${new Date().toISOString().slice(0, 10)}`),
   })
   if (!result.success) {
     return { success: false, error: result.error ?? "Send blocked by compliance gate" }

@@ -321,3 +321,47 @@ export function summarizeReconciliations(
   s.provenRatePct = decided > 0 ? Math.round((s.confirmed / decided) * 1000) / 10 : null
   return s
 }
+
+// ─── SETTLING an agent_action_ledger row stuck at 'unknown' (wave 98, lane 98B) ────────────
+// PURE half of lib/outcomes/reconciliation-ledger.ts settleUnknownActions — see its header.
+// Match by provider_ref first (cannot be wrong); else by tenant + person + channel inside the
+// action's window. confirmed / pending / unverifiable → executed (the provider took it);
+// contradicted → failed; no claim after UNKNOWN_ABANDON_HOURS → failed / reconcile_no_evidence;
+// younger and unmatched → null (stay unknown — the provider may still report).
+
+/** Ledger channel → outcome_reconciliations.channel. Channels with no claim lane are absent. */
+const LEDGER_TO_OUTCOME_CHANNEL: Readonly<Record<string, OutcomeChannel>> = Object.freeze({
+  email: "email", sms: "sms", direct_mail: "direct_mail", social: "social", voice_drop: "voice_drop", portal: "in_app", push: "in_app",
+})
+export const UNKNOWN_MATCH_WINDOW_MIN = 15
+export const UNKNOWN_ABANDON_HOURS = 72
+
+export interface UnknownActionRow { id: string; channel: string | null; subject_type: string; subject_id: string | null; provider_ref: string | null; created_at: string }
+export interface ClaimRow { id: string; channel: string; provider_ref: string | null; contact_id: string | null; lead_id: string | null; claimed_at: string; verdict: ReconciliationVerdict }
+export interface UnknownSettlement { status: "executed" | "failed"; outcome: string; providerRef: string | null; error: string | null }
+
+/** PURE. Decide one 'unknown' row against the claims read for its tenant. null = leave it unknown. */
+/** @proofSeam exported so scripts/action-ledger-guard.ts asserts the settle rules (ref match, window match, contradiction, abandon, too-young) on the pure function directly. */
+export function settleUnknownAction(row: UnknownActionRow, claims: readonly ClaimRow[], now: Date): UnknownSettlement | null {
+  const ch = row.channel ? LEDGER_TO_OUTCOME_CHANNEL[row.channel] : undefined
+  const startedAt = Date.parse(row.created_at)
+  let match: ClaimRow | undefined
+  if (row.provider_ref) match = claims.find((c) => c.provider_ref === row.provider_ref && (!ch || c.channel === ch))
+  if (!match && ch && row.subject_id && (row.subject_type === "contact" || row.subject_type === "lead")) {
+    const until = startedAt + UNKNOWN_MATCH_WINDOW_MIN * 60_000
+    match = claims.find((c) => {
+      const t = Date.parse(c.claimed_at)
+      const person = row.subject_type === "contact" ? c.contact_id === row.subject_id : c.lead_id === row.subject_id
+      return c.channel === ch && person && Number.isFinite(t) && t >= startedAt && t <= until
+    })
+  }
+  if (match) {
+    return match.verdict === "contradicted"
+      ? { status: "failed", outcome: "reconciled_contradicted", providerRef: match.provider_ref, error: "the provider reported it did not land" }
+      : { status: "executed", outcome: `reconciled_${match.verdict}`, providerRef: match.provider_ref, error: null }
+  }
+  if (Number.isFinite(startedAt) && now.getTime() - startedAt >= UNKNOWN_ABANDON_HOURS * 3_600_000) {
+    return { status: "failed", outcome: "reconcile_no_evidence", providerRef: row.provider_ref, error: `no provider record within ${UNKNOWN_ABANDON_HOURS}h proves this left — settled failed; a later cycle may act again` }
+  }
+  return null
+}

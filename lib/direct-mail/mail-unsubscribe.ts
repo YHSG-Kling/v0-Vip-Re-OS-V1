@@ -369,7 +369,7 @@ export async function applyMailUnsubscribe(args: {
     // provenance of an address-keyed row that names no person; when it did not,
     // it is the only durable record that this person asked, and a human clearing
     // the source list needs to find it.
-    await recordRecipientOnlyRequest(supabase, r, args.request, reason, now, bindingGap ?? null)
+    await recordRecipientOnlyRequest(r, args.request, reason, now, bindingGap ?? null)
     if (!channelsSuppressed.includes("mail")) channelsSuppressed.push("mail")
   }
 
@@ -455,7 +455,6 @@ async function suppressionRowExists(
  * nothing reads it as a gate — a human clearing the source list needs to find it.
  */
 async function recordRecipientOnlyRequest(
-  supabase: ReturnType<typeof createServiceClient>,
   r: ResolvedMailRecipient,
   request: MailUnsubRequest,
   reason: string,
@@ -464,14 +463,17 @@ async function recordRecipientOnlyRequest(
    *  not a gap, and it must not claim otherwise. */
   bindingGap: string | null,
 ): Promise<void> {
-  const { error } = await supabase.from("lifecycle_events").insert({
-    brokerage_id: r.brokerageId,
-    entity_type: "direct_mail_recipient",
-    entity_id: r.recipientId,
+  // LINEAGE (wave 98, lane 98B): through THE emitter (lib/kernel/emit.ts) — audit-only type,
+  // nothing fans out; the row now carries the causation of the event being processed.
+  const { emitKernelEvent } = await import("@/lib/kernel/emit")
+  const { error } = await emitKernelEvent({
+    brokerageId: r.brokerageId,
+    entityType: "direct_mail_recipient",
+    entityId: r.recipientId,
     // The event type still says UNBOUND — it is the type a human sweeping the
     // source list greps for — but the metadata now distinguishes the two very
     // different states it can be in.
-    event_type: "MAIL_OPT_OUT_UNBOUND",
+    event: "MAIL_OPT_OUT_UNBOUND",
     source: "system",
     metadata: {
       campaign_id: r.campaignId,
@@ -480,9 +482,9 @@ async function recordRecipientOnlyRequest(
       bound_to: bindingGap ? "nothing" : "mailing_address",
       binding_gap: bindingGap,
     },
-    created_at: now,
+    createdAt: now,
   })
   if (error) {
-    console.error("[mail-unsubscribe] unbound opt-out audit row refused:", error.message)
+    console.error("[mail-unsubscribe] unbound opt-out audit row refused:", error)
   }
 }

@@ -311,6 +311,10 @@ async function drainPushQueue(supabase: Svc): Promise<PushQueueCounts> {
           title: row.title,
           body: row.body ?? "",
           data: d,
+          // ACTION LEDGER (wave 98): the queue row is the unit of "once" — a re-drained row
+          // (crash between the push and the 'delivered' flip) replays instead of pushing twice.
+          brokerageId: row.brokerage_id ?? null,
+          ledger: { cycle: `push_queue:${row.id}`, reasonDetail: typeof d.event_type === "string" ? d.event_type : undefined },
         })
         counts.pruned_subscriptions += push.pruned
         if (push.error) {

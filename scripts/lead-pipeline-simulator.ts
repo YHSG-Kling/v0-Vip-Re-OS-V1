@@ -417,8 +417,11 @@ function testInboundReopen() {
   // 3. THE RECORD. Same ledger the opt-out writes (lifecycle_events), carrying the
   //    message that justified it, what reopened, and when — and NOT best-effort.
   check("the reopen writes to the SAME ledger applyLeadOptOut writes (lifecycle_events — no second ledger invented)",
-    /event_type: isGlobal \? "LEAD_DNC_SET" : "LEAD_CHANNEL_OPT_OUT"/.test(optOut) &&
-    /event_type: "LEAD_REOPENED_ON_INBOUND_INTENT"/.test(optOut))
+    // RE-ANCHORED (wave 98, lane 98B): both rows now go through THE emitter (lib/kernel/emit.ts —
+    // the same lifecycle_events table, plus causation lineage). The rule is "the same ledger",
+    // whichever spelling writes it: a direct insert's `event_type:` or the emitter's `event:`.
+    /(event_type|event): isGlobal \? "LEAD_DNC_SET" : "LEAD_CHANNEL_OPT_OUT"/.test(optOut) &&
+    /(event_type|event): "LEAD_REOPENED_ON_INBOUND_INTENT"/.test(optOut))
   const reopenFn = optOut.slice(optOut.indexOf("export async function reopenLeadOnInboundConsent"))
   check("the record carries the MESSAGE TEXT that justified the reopen",
     /message: message\.slice\(/.test(reopenFn))
@@ -427,7 +430,8 @@ function testInboundReopen() {
   check("the record carries the suppression it lifted (prior flags + the removed list rows)",
     /previous_state: before/.test(reopenFn) && /suppression_rows_removed: removed\.rows/.test(reopenFn))
   check("the audit insert is CHECKED, not bestEffort — a reopen must not be silent",
-    /const \{ error: auditError \} = await supabase\.from\("lifecycle_events"\)\.insert/.test(reopenFn) &&
+    (/const \{ error: auditError \} = await supabase\.from\("lifecycle_events"\)\.insert/.test(reopenFn) ||
+      (/const reopenAudit = await emitKernelEvent\(/.test(reopenFn) && /const auditError = reopenAudit\.error/.test(reopenFn) && /recorded: !auditError/.test(reopenFn))) &&
     !/bestEffort\(\s*supabase\.from\("lifecycle_events"\)/.test(reopenFn))
   check("a refused reopen is reported, never reported as honoured (the decisive write is destructured)",
     /const \{ error: updateError \} = await supabase\s*\n?\s*\.from\("leads"\)/.test(reopenFn) &&

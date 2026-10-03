@@ -322,10 +322,180 @@ async function main() {
     check("the migration carries a status header on line 1", /^-- ── (WRITTEN, NOT APPLIED|APPLIED LIVE)/.test(sqlRaw))
   }
 
+  // ─── wave 98, lane 98B ─────────────────────────────────────────────────────
+  console.log("\n[9 · voice / push / portal / social / AI tool — each send is one ledger row; a duplicate cycle sends once]")
+  {
+    const { ledgerVoiceDial } = await import("../lib/voice/twilio-outbound")
+    const { ledgerWebPush } = await import("../lib/providers/web-push")
+    const { ledgerSocialPublish } = await import("../lib/social/publisher")
+    const { insertPortalMessage } = await import("../lib/portal/portal-message-egress")
+    const { ledgerToolExecutions } = await import("../lib/kernel/action-ledger")
+
+    // VOICE
+    const v = fakeLedger()
+    let dials = 0
+    const dial = async () => { dials++; return { ok: true as const, callSid: "CA-1", voiceCallId: "vc-1", fromNumber: "+15550000000" } }
+    const vp = { toNumber: "+15615550100", contactId: CONTACT, brokerageId: TENANT, objective: "check in", systemSource: "ai_isa", ledger: { reasonCode: "LIFETIME_TOUCH" as const, cycle: "voice:2026-10-03" } }
+    const v1 = await ledgerVoiceDial(vp, dial, { client: v.client })
+    const v2 = await ledgerVoiceDial(vp, dial, { client: v.client })
+    check("voice: one dial → ONE ledger row comms.voice.call, executed, provider_ref = CallSid", v1.ok && v.rows.length === 1 && v.rows[0]?.action === "comms.voice.call" && v.rows[0]?.status === "executed" && v.rows[0]?.provider_ref === "CA-1")
+    check("voice: the same cycle dials ONCE (the retry replays the CallSid)", dials === 1 && v2.ok && (v2 as { callSid?: string }).callSid === "CA-1")
+    const vg = fakeLedger()
+    await ledgerVoiceDial({ ...vp, ledger: undefined }, async () => ({ ok: false as const, error: "Outbound blocked: no TCPA consent", blocked: true, blockReason: "tcpa" }), { client: vg.client })
+    check("voice: a gate refusal settles 'skipped' (nothing dialed; a later cycle may)", vg.rows[0]?.status === "skipped" && vg.rows[0]?.outcome === "tcpa")
+    const vc = fakeLedger()
+    let ctlDials = 0
+    const ctlDial = async () => { ctlDials++; return { ok: true as const, callSid: `CA-${ctlDials}`, voiceCallId: null, fromNumber: "+1" } }
+    await ledgerVoiceDial({ ...vp, ledger: undefined }, ctlDial, { client: vc.client })
+    await ledgerVoiceDial({ ...vp, ledger: undefined }, ctlDial, { client: vc.client })
+    check("POSITIVE CONTROL: voice with NO cycle dials twice and records two rows", ctlDials === 2 && vc.rows.length === 2)
+
+    // PUSH
+    const p = fakeLedger()
+    let pushes = 0
+    const push = async () => { pushes++; return { sent: 1, failed: 0, pruned: 0 } }
+    const pp = { userId: CONTACT, title: "Closing tomorrow", body: "x", brokerageId: TENANT, ledger: { cycle: "push_queue:q-1" } }
+    await ledgerWebPush(pp, push, { client: p.client })
+    const p2 = await ledgerWebPush(pp, push, { client: p.client })
+    check("push: one push → ONE row comms.push.send executed", p.rows.length === 1 && p.rows[0]?.action === "comms.push.send" && p.rows[0]?.status === "executed")
+    check("push: a re-drained queue row pushes ONCE (replays sent)", pushes === 1 && p2.sent === 1 && !p2.error)
+    const pn = fakeLedger()
+    await ledgerWebPush({ ...pp, ledger: { cycle: "push_queue:q-2" } }, async () => ({ sent: 0, failed: 0, pruned: 0 }), { client: pn.client })
+    check("push: no active subscription settles 'skipped' (honest, not 'executed')", pn.rows[0]?.status === "skipped" && pn.rows[0]?.outcome === "no_active_subscription")
+
+    // PORTAL
+    const pl = fakeLedger()
+    const inserted: Row[] = []
+    const writer = { from: (_t: string) => ({ insert: (row: Row) => ({ select: (_c: string) => ({ maybeSingle: async () => { const r = { id: `pm-${inserted.length + 1}`, ...row }; inserted.push(r); return { data: r, error: null } } }) }) }) }
+    const prow = { brokerage_id: TENANT, contact_id: CONTACT, agent_id: "a1", direction: "agent_to_client", channel: "portal", body: "Stage complete", read: false }
+    const pm1 = await insertPortalMessage(writer, prow, { actor: { type: "system" }, reasonCode: "TRANSACTION_MILESTONE", cycle: "journey:milestone:Inspection" }, { ledgerClient: pl.client })
+    const pm2 = await insertPortalMessage(writer, prow, { actor: { type: "system" }, reasonCode: "TRANSACTION_MILESTONE", cycle: "journey:milestone:Inspection" }, { ledgerClient: pl.client })
+    check("portal: one message → ONE row comms.portal.send executed with the message id", !pm1.error && pl.rows.length === 1 && pl.rows[0]?.action === "comms.portal.send" && pl.rows[0]?.provider_ref === "pm-1")
+    check("portal: a re-processed journey event posts ONCE", inserted.length === 1 && !pm2.error && pm2.data?.id === "pm-1")
+
+    // SOCIAL
+    const so = fakeLedger()
+    let posts = 0
+    const publish = async () => { posts++; return { success: true, externalPostId: "fb-9", platform: "facebook" } }
+    const sl = { brokerageId: TENANT, postId: CONTACT, cycle: `${CONTACT}:facebook:acct` }
+    await ledgerSocialPublish("facebook", { content: "x", accessToken: "t", accountId: "acct" }, sl, publish, { client: so.client })
+    const s2 = await ledgerSocialPublish("facebook", { content: "x", accessToken: "t", accountId: "acct" }, sl, publish, { client: so.client })
+    check("social: one publish → ONE row marketing.social.publish with the external post id", so.rows.length === 1 && so.rows[0]?.action === "marketing.social.publish" && so.rows[0]?.provider_ref === "fb-9")
+    check("social: a post whose status flip was lost publishes ONCE on the retry", posts === 1 && s2.success && s2.externalPostId === "fb-9")
+
+    // AI TOOLS
+    const at = fakeLedger()
+    let commCalls = 0, readCalls = 0
+    const registry = {
+      send_newsletter: { description: "x", execute: async () => { commCalls++; return { success: true } } },
+      get_my_context: { description: "y", execute: async () => { readCalls++; return { ok: true } } },
+    }
+    const risk = (n: string) => (n === "send_newsletter" ? "COMMUNICATION" : "READ")
+    const wrapped = ledgerToolExecutions(registry, { brokerageId: TENANT, subject: { type: "contact", id: CONTACT }, riskClassOf: risk }, { client: at.client })
+    await (wrapped.send_newsletter.execute as (a: unknown, o: unknown) => Promise<unknown>)({}, { toolCallId: "call-1" })
+    await (wrapped.send_newsletter.execute as (a: unknown, o: unknown) => Promise<unknown>)({}, { toolCallId: "call-1" })
+    await (wrapped.get_my_context.execute as (a: unknown, o: unknown) => Promise<unknown>)({}, { toolCallId: "call-2" })
+    check("AI tool: a COMMUNICATION tool call → ONE row ai.tool.send_newsletter, risk_class COMMUNICATION", at.rows.length === 1 && at.rows[0]?.action === "ai.tool.send_newsletter" && at.rows[0]?.risk_class === "COMMUNICATION" && at.rows[0]?.status === "executed")
+    check("AI tool: the same toolCallId executes ONCE", commCalls === 1)
+    check("POSITIVE CONTROL: a READ tool is NOT ledgered and still runs", readCalls === 1 && wrapped.get_my_context === registry.get_my_context)
+  }
+
+  console.log("\n[10 · the chokepoints are wired to their REAL callers (stripped source)]")
+  {
+    const has = (rel: string, re: RegExp) => re.test(code(rel))
+    check("placeOutboundAiCall runs through ledgerVoiceDial", has("lib/voice/twilio-outbound.ts", /export async function placeOutboundAiCall[\s\S]{0,400}return ledgerVoiceDial\(/))
+    check("sendWebPush runs through ledgerWebPush; the queue drain passes the tenant + the queue row as the cycle", has("lib/providers/web-push.ts", /return ledgerWebPush\(/) && has("app/api/cron/queue-drain/route.ts", /brokerageId:\s*row\.brokerage_id/) && /cycle:\s*`push_queue:\$\{row\.id\}`/.test(stripComments(read("app/api/cron/queue-drain/route.ts"))))
+    check("publishToSocialPlatform runs through ledgerSocialPublish; both cron call sites pass a (post, platform, account) cycle", has("lib/social/publisher.ts", /return ledgerSocialPublish\(/) && (stripComments(read("app/api/cron/publish-social-posts/route.ts")).match(/cycle:\s*`\$\{post\.id\}:/g) ?? []).length === 2)
+    for (const rel of ["app/actions/portal-messages.ts", "lib/portal/journey-event-handlers.ts", "app/api/internal/ai-chat/route.ts", "lib/kernel/communications.ts"]) {
+      check(`portal send routes through insertPortalMessage: ${rel}`, has(rel, /insertPortalMessage\(/))
+    }
+    check("buildCustomerFreeTools returns its registry through ledgerToolExecutions(riskClassForTool)", has("lib/ai-isa/customer-context-tools.ts", /return ledgerToolExecutions\(out,[\s\S]{0,300}riskClassOf:\s*riskClassForTool/))
+    check("POSITIVE CONTROL: the wiring finder sees a specimen and refuses its absence", /insertPortalMessage\(/.test("await insertPortalMessage(svc, row, l)") && !/insertPortalMessage\(/.test("await svc.from(\"client_portal_messages\").insert(row)"))
+  }
+
+  console.log("\n[11 · callers say WHY (m687 vocabulary) and pass a deterministic cycle]")
+  {
+    const callers: Array<[string, RegExp]> = [
+      ["lib/ai-isa/lead-action-plan.ts (lead plan release)", /approveClientMessage\([^)]*\{\s*reasonCode:\s*"CAMPAIGN_STEP"/],
+      ["lib/agents/agent-client-messages.ts (the proposal is the cycle)", /cycle:\s*`agent_client_message:\$\{messageId\}`/],
+      ["app/actions/lifetime-customer-touchpoints.ts (LIFETIME_TOUCH + cycle)", /reasonCode:\s*"LIFETIME_TOUCH",\s*cycle/],
+      ["lib/workflow/channel-registry.ts (campaign step cycle)", /reasonCode:\s*"CAMPAIGN_STEP"[\s\S]{0,200}cycle:\s*`enrollment:\$\{ctx\.enrollmentId\}:step:\$\{ctx\.step\.id\}`/],
+      ["lib/transactions/notification-service.ts (milestone / deadline)", /"TRANSACTION_DEADLINE"[\s\S]{0,80}"TRANSACTION_MILESTONE"[\s\S]{0,400}cycle:/],
+      ["lib/offers/outside-agent-record.ts (copy key is the cycle)", /reasonCode:\s*"TRANSACTION_MILESTONE"[\s\S]{0,200}cycle:\s*`outside_agent_copy:\$\{plan\.copyKey\}`/],
+      ["lib/kernel/client-welcome.ts (one welcome per contact)", /ledger:\s*\{\s*reasonCode:\s*"CONTACT_WELCOME",\s*cycle:\s*"conversion"/],
+    ]
+    for (const [label, re] of callers) {
+      const rel = label.split(" ")[0]
+      check(`passes a reason + cycle: ${label}`, re.test(stripComments(read(rel))))
+    }
+    for (const rel of ["lib/workflow/adapters/email.ts", "lib/workflow/adapters/sms.ts", "lib/workflow/adapters/direct-mail.ts", "lib/workflow/adapters/newsletter.ts"]) {
+      check(`sequence adapter passes sequenceStepLedger(ctx): ${rel}`, /ledger:\s*sequenceStepLedger\(ctx\)/.test(stripComments(read(rel))))
+    }
+    const codes = new Set(ACTION_REASON_CODES)
+    const used = [...new Set(callers.flatMap(([l]) => [...stripComments(read(l.split(" ")[0])).matchAll(/reasonCode:\s*"([A-Z_]+)"/g)].map((m) => m[1])))]
+    check("every reasonCode literal those callers write is in the m687 vocabulary (none invented)", used.length > 0 && used.every((c) => codes.has(c)), used.filter((c) => !codes.has(c)).join(","))
+    check("POSITIVE CONTROL: an invented code is caught by the same test", !["INVENTED_REASON"].every((c) => codes.has(c)))
+  }
+
+  console.log("\n[12 · 'unknown' rows are settled against outcome_reconciliations]")
+  {
+    const { settleUnknownAction, UNKNOWN_ABANDON_HOURS } = await import("../lib/outcomes/reconciliation")
+    const t0 = "2026-10-01T10:00:00.000Z"
+    const now = new Date("2026-10-01T12:00:00.000Z")
+    const row = { id: "u1", channel: "sms", subject_type: "contact", subject_id: CONTACT, provider_ref: null, created_at: t0 }
+    const claim = (o: Partial<{ provider_ref: string | null; contact_id: string | null; claimed_at: string; verdict: "confirmed" | "contradicted" | "pending" | "unverifiable"; channel: string }>) =>
+      ({ id: "c", channel: "sms", provider_ref: "SM1", contact_id: CONTACT, lead_id: null, claimed_at: "2026-10-01T10:02:00.000Z", verdict: "confirmed" as const, ...o })
+    const byWindow = settleUnknownAction(row, [claim({})], now)
+    check("unknown + a confirmed claim for the same person/channel inside the window → executed with the provider ref", byWindow?.status === "executed" && byWindow.providerRef === "SM1")
+    const byRef = settleUnknownAction({ ...row, provider_ref: "SM7", subject_id: null }, [claim({ provider_ref: "SM7", contact_id: null })], now)
+    check("unknown + a claim with the SAME provider_ref → settled from that claim", byRef?.status === "executed" && byRef.providerRef === "SM7")
+    const contra = settleUnknownAction(row, [claim({ verdict: "contradicted" })], now)
+    check("a contradicted claim settles 'failed' (the provider said it did not land)", contra?.status === "failed" && contra.outcome === "reconciled_contradicted")
+    check("too young and no claim → stays unknown (null)", settleUnknownAction(row, [], now) === null)
+    const late = settleUnknownAction(row, [], new Date(Date.parse(t0) + (UNKNOWN_ABANDON_HOURS + 1) * 3_600_000))
+    check("no claim after the abandon window → failed / reconcile_no_evidence, said plainly", late?.status === "failed" && late.outcome === "reconcile_no_evidence" && /no provider record/.test(late.error ?? ""))
+    check("POSITIVE CONTROL: a claim for ANOTHER person, or outside the window, does not settle it",
+      settleUnknownAction(row, [claim({ contact_id: "someone-else" })], now) === null && settleUnknownAction(row, [claim({ claimed_at: "2026-10-01T11:30:00.000Z" })], now) === null)
+    const rn = code("lib/intelligence/reaper-net.ts")
+    check("mounted on the EXISTING reaper net (signals lane → manager-signals cron), not a new cron", /domain:\s*"unknown_action_outcomes"[\s\S]{0,200}lane:\s*"signals"[\s\S]{0,400}settleUnknownActions\(/.test(stripComments(read("lib/intelligence/reaper-net.ts"))) && rn.length > 0)
+    const led = stripComments(read("lib/outcomes/reconciliation-ledger.ts"))
+    check("the live settle UPDATE is guarded on status='unknown' + tenant and COUNTED", /\.eq\("status", "unknown"\)\s*\.select\("id"\)/.test(led) && /upd\.length !== 1/.test(led))
+  }
+
+  console.log("\n[13 · lineage: moved lifecycle_events inserters emit through emitKernelEvent]")
+  {
+    const moved = [
+      "lib/lead-intent/lead-opt-out.ts", "lib/lead-intent/inbound-lead-intent.ts", "lib/finance/auto-dispute.ts",
+      "lib/transactions/walkthrough-outcome.ts", "lib/direct-mail/mail-unsubscribe.ts", "lib/video/viral-script-share.ts",
+      "lib/cma/ai-cma-engine.ts", "lib/pricing/predictive-pricing.ts",
+    ]
+    const directInsert = /\.from\(\s*"lifecycle_events"\s*\)\s*\.(insert|upsert)\(/
+    for (const rel of moved) {
+      const src = stripComments(read(rel))
+      check(`${rel}: emits through emitKernelEvent and inserts lifecycle_events directly nowhere`, /emitKernelEvent\(/.test(src) && !directInsert.test(src))
+    }
+    check("POSITIVE CONTROL: the direct-insert finder sees a specimen", directInsert.test('await svc.from("lifecycle_events").insert({ a: 1 })'))
+    const { readdirSync, statSync } = await import("node:fs")
+    const walk = (dir: string, out: string[] = []): string[] => {
+      for (const e of readdirSync(join(root, dir))) {
+        const rel = `${dir}/${e}`
+        if (e === "node_modules" || e.startsWith(".")) continue
+        const st = statSync(join(root, rel))
+        if (st.isDirectory()) walk(rel, out)
+        else if (/\.(ts|tsx)$/.test(e)) out.push(rel)
+      }
+      return out
+    }
+    const remaining = [...walk("lib"), ...walk("app")].filter((rel) => rel !== "lib/kernel/emit.ts" && directInsert.test(stripComments(read(rel))))
+    console.log(`  · census: ${remaining.length} module(s) under lib/ + app/ still insert lifecycle_events directly (published, not ratcheted — see docs/architecture/OS-BLUEPRINT-GAP-MAP.md row 17)`)
+    check("the census ran over a non-trivial tree (denominator > 0) and excludes the emitter itself", remaining.length > 0 && !remaining.includes("lib/kernel/emit.ts"))
+  }
+
   console.log("\n[blind spots]")
-  console.log("  · direct lifecycle_events inserters that bypass emitKernelEvent (e.g. lib/lead-intent/lead-opt-out.ts) write no lineage")
-  console.log("  · voice (lib/voice/twilio-outbound.ts placeOutboundAiCall), push, portal messages and provider calls outside lib/providers/dispatch.ts are not ledgered yet")
-  console.log("  · callers that pass no ledger.reasonCode record UNSPECIFIED; no caller passes a cycle yet, so de-duplication is opt-in")
+  console.log("  · lifecycle_events inserters NOT moved (count printed in section 13): kernel commands that insert inside a Promise.all and call processKernelEvent themselves, audits written through an INJECTED client a proof's in-memory DB asserts (agent-books / agent-deactivation), KernelEvent-typed rows that are deliberately audit-only (moving them would START a fan-out), and entity_id-null rows (emitKernelEvent requires an entity)")
+  console.log("  · portal messages: ~30 direct client_portal_messages inserters remain outside insertPortalMessage; the four senders that reach a client on demand are routed")
+  console.log("  · AI tool calls are ledgered on the CUSTOMER bundle (buildCustomerFreeTools); the platform prospect agent (no tenant) and the staff toolkit's non-portal tools are not")
+  console.log("  · 'unknown' rows with no outcome_reconciliations claim are settled 'failed' after the abandon window — a send that DID leave without a claim (provider timed out AFTER accepting) can then be retried by a LATER cycle")
   console.log("  · the in-memory table models UNIQUE/23505 and filters; it does not model RLS (m687's policy is asserted textually)")
 
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)

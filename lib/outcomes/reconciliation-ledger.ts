@@ -27,6 +27,9 @@ import { publishManagerSignal } from "@/lib/kernel/manager-signals"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
 import {
   reconcile,
+  settleUnknownAction,
+  type ClaimRow,
+  type UnknownActionRow,
   TRUTH_SOURCES,
   type OutcomeChannel,
   type ProviderTruth,
@@ -311,5 +314,79 @@ export async function loadReconciliations(
     }))
   } catch {
     return []
+  }
+}
+
+// ─── SETTLING 'unknown' ACTIONS (wave 98, lane 98B) ──────────────────────────
+//
+// agent_action_ledger (lib/kernel/action-ledger.ts) marks an action 'unknown' when the provider
+// never answered — the message may or may not have left, so the ledger REFUSES to retry it until
+// someone settles it. Nothing settled them. This is the reconciler, on THIS ledger (the survivor
+// that already holds the provider's word): the 'unknown' row is matched to an
+// outcome_reconciliations claim —
+//   1. by provider_ref when the ledger row has one (the only correlation that cannot be wrong);
+//   2. else by tenant + person (contact_id / lead_id) + channel, with a claim made inside the
+//      action's window [created_at, created_at + UNKNOWN_MATCH_WINDOW_MIN];
+// and settled from the claim's verdict: confirmed / pending / unverifiable → 'executed' (the
+// provider took it), contradicted → 'failed'. With NO matching claim after UNKNOWN_ABANDON_HOURS
+// the row is settled 'failed' / outcome 'reconcile_no_evidence' and says so: no provider record
+// proves it left, and a later cycle may act again. Younger unmatched rows stay 'unknown' (the
+// provider may still report).
+// Mounted on the EXISTING reaper net (lib/intelligence/reaper-net.ts, domain
+// `unknown_action_outcomes`, lane 'signals' → /api/cron/manager-signals) — no new cron.
+
+// The DECISION is pure and lives beside reconcile() in ./reconciliation (settleUnknownAction);
+// this file owns the reads and the guarded, counted writes.
+
+/**
+ * LIVE. Settle one tenant's 'unknown' ledger rows. Never throws; every refusal is read and said.
+ * The UPDATE is guarded on status='unknown' and COUNTED (an update matching nothing resolves too).
+ */
+export async function settleUnknownActions(
+  brokerageId: string,
+  client?: ReturnType<typeof createServiceClient>,
+  opts: { now?: Date; limit?: number } = {},
+): Promise<{ scanned: number; reaped: number; escalated: number; errors: string[] }> {
+  const out = { scanned: 0, reaped: 0, escalated: 0, errors: [] as string[] }
+  try {
+    const svc = client ?? createServiceClient()
+    const now = opts.now ?? new Date()
+    const { data: rows, error } = await svc.from("agent_action_ledger")
+      .select("id, channel, subject_type, subject_id, provider_ref, created_at")
+      .eq("brokerage_id", brokerageId).eq("status", "unknown")
+      .order("created_at", { ascending: true }).limit(opts.limit ?? 100)
+    if (error) {
+      // m687 not applied → nothing to settle; any other refusal is said.
+      if (!["42P01", "PGRST205"].includes(error.code ?? "")) out.errors.push(`unknown rows read refused: ${error.message}`)
+      return out
+    }
+    const unknownRows = (rows ?? []) as UnknownActionRow[]
+    out.scanned = unknownRows.length
+    if (unknownRows.length === 0) return out
+
+    const { data: claims, error: claimErr } = await svc.from("outcome_reconciliations")
+      .select("id, channel, provider_ref, contact_id, lead_id, claimed_at, verdict")
+      .eq("brokerage_id", brokerageId).gte("claimed_at", unknownRows[0].created_at).limit(1000)
+    if (claimErr) {
+      out.errors.push(`outcome_reconciliations read refused: ${claimErr.message} — nothing settled`)
+      return out
+    }
+    for (const row of unknownRows) {
+      const s = settleUnknownAction(row, (claims ?? []) as ClaimRow[], now)
+      if (!s) continue
+      const stamp = new Date().toISOString()
+      const { data: upd, error: upErr } = await svc.from("agent_action_ledger")
+        .update({ status: s.status, outcome: s.outcome, provider_ref: s.providerRef, error: s.error, settled_at: stamp, updated_at: stamp })
+        .eq("id", row.id).eq("brokerage_id", brokerageId).eq("status", "unknown")
+        .select("id")
+      if (upErr) { out.errors.push(`settle ${row.id} refused: ${upErr.message}`); continue }
+      if (!Array.isArray(upd) || upd.length !== 1) continue // settled concurrently — not ours to count
+      out.reaped++
+      if (s.outcome === "reconcile_no_evidence" || s.outcome === "reconciled_contradicted") out.escalated++
+    }
+    return out
+  } catch (e) {
+    out.errors.push(e instanceof Error ? e.message : String(e))
+    return out
   }
 }

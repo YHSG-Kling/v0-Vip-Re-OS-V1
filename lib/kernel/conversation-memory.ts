@@ -519,6 +519,83 @@ export function compileObservedFacts(
   return ledger
 }
 
+/**
+ * PURE (wave 98, lane 98B). What a qualification answer states, as memory facts — in the SAME
+ * value spelling the spine's column observer uses (loadContactFacts), so the two writers agree:
+ * timeline = the bucket; channel_preference = the parsed preferred_channel; price_expectation =
+ * "up to <max>" (or "from <min>"); motivation = the reason for moving in their words (the
+ * recorder drops it when the typed motivation_type column is set — a column value would otherwise
+ * supersede the words on every refresh and the two would flip-flop).
+ */
+/** @proofSeam exported so scripts/conversation-memory-simulator.ts asserts the qualification → fact mapping on the pure function directly. */
+export function factsFromQualification(q: {
+  timeline?: string | null
+  preferredChannel?: string | null
+  minPrice?: number | null
+  maxPrice?: number | null
+  reasonForMove?: string | null
+}): Array<{ key: MemoryFactKey; value: string; confidence: number }> {
+  const out: Array<{ key: MemoryFactKey; value: string; confidence: number }> = []
+  if (q.timeline?.trim()) out.push({ key: "timeline", value: q.timeline.trim(), confidence: 0.85 })
+  if (q.preferredChannel?.trim()) out.push({ key: "channel_preference", value: q.preferredChannel.trim(), confidence: 0.85 })
+  if (typeof q.maxPrice === "number" && Number.isFinite(q.maxPrice) && q.maxPrice > 0) out.push({ key: "price_expectation", value: `up to ${q.maxPrice}`, confidence: 0.75 })
+  else if (typeof q.minPrice === "number" && Number.isFinite(q.minPrice) && q.minPrice > 0) out.push({ key: "price_expectation", value: `from ${q.minPrice}`, confidence: 0.6 })
+  if (q.reasonForMove?.trim()) out.push({ key: "motivation", value: q.reasonForMove.trim().slice(0, 160), confidence: 0.7 })
+  return out
+}
+
+/**
+ * LIVE (wave 98, lane 98B — the CONVERSATION-SIDE fact writer 97B left open). When a conversation
+ * states a fact (the record_qualification tool every AI surface shares: portal chat, ISA email
+ * reply, widget, D-ID, voice), it is recorded into the facts ledger IMMEDIATELY through
+ * recordMemoryFact — not only on the ~6-hourly spine refresh — so a re-statement of the SAME value
+ * refreshes observed_at / review_by now, and a changed value supersedes the old one now.
+ * Writes ONLY context_spine.facts (sibling spine keys and metadata keys preserved) and, for a stated
+ * price, metadata.price_expectation — the column the spine's own observer reads
+ * (loadContactFacts), so the next refresh sees an UNCHANGED value and does not flip it back.
+ * Tenant-pinned read + write; every refusal is read and returned. Never throws.
+ */
+export async function recordConversationFacts(
+  contactId: string,
+  brokerageId: string,
+  facts: ReadonlyArray<{ key: MemoryFactKey; value: string; confidence: number }>,
+  opts: { client?: Svc; now?: Date; source?: string } = {},
+): Promise<{ recorded: number; error?: string }> {
+  let usable = facts.filter((f) => typeof f.value === "string" && f.value.trim())
+  if (!contactId || !brokerageId || usable.length === 0) return { recorded: 0 }
+  try {
+    const supabase = opts.client ?? createServiceClient()
+    const now = opts.now ?? new Date()
+    const { data: cur, error: readErr } = await supabase.from("contacts")
+      .select("metadata, motivation_type").eq("id", contactId).eq("brokerage_id", brokerageId).maybeSingle()
+    if (readErr) return { recorded: 0, error: `contact read refused: ${readErr.message}` }
+    if (!cur) return { recorded: 0, error: "contact not found in this brokerage" }
+    // A typed motivation_type column wins on the spine refresh; recording free words beside it
+    // would flip-flop the ledger every ~6h, so the column's value stands.
+    if (typeof (cur as any).motivation_type === "string" && (cur as any).motivation_type.trim()) usable = usable.filter((f) => f.key !== "motivation")
+    if (usable.length === 0) return { recorded: 0 }
+    const md = (((cur as any).metadata ?? {}) as Record<string, any>)
+    const prior = (md.context_spine && typeof md.context_spine === "object") ? md.context_spine as Record<string, unknown> : {}
+    let ledger = readFactsLedger(prior)
+    for (const f of usable) {
+      ledger = recordMemoryFact(ledger, { key: f.key, value: f.value, confidence: f.confidence, observedAt: now.toISOString(), source: opts.source ?? "conversation" })
+    }
+    const priceFact = usable.find((f) => f.key === "price_expectation")
+    const metadata = {
+      ...md,
+      ...(priceFact ? { price_expectation: priceFact.value.trim() } : {}),
+      context_spine: { ...prior, facts: ledger },
+    }
+    const { data: upd, error: writeErr } = await supabase.from("contacts")
+      .update({ metadata }).eq("id", contactId).eq("brokerage_id", brokerageId).select("id")
+    if (writeErr) return { recorded: 0, error: `facts write refused: ${writeErr.message}` }
+    if (!Array.isArray(upd) || upd.length !== 1) return { recorded: 0, error: "facts write matched no contact" }
+    return { recorded: usable.length }
+  } catch (e) {
+    return { recorded: 0, error: (e as Error).message }
+  }
+}
+
 /** LIVE: the stored running summary for any manager to read. Null when none has been composed yet. */
 export async function loadContactContext(contactId: string, client?: Svc): Promise<ContextSpine | null> {
   const supabase = client ?? createServiceClient()

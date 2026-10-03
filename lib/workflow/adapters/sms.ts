@@ -4,7 +4,7 @@
  * before this adapter is called.
  */
 
-import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
+import { sequenceStepLedger, type ChannelAdapter, type StepContext, type StepResult } from "../channel-registry"
 import { dispatchSms } from "@/lib/providers/dispatch"
 
 export const smsAdapter: ChannelAdapter = {
@@ -55,6 +55,7 @@ export const smsAdapter: ChannelAdapter = {
       contactId: contact.id,
       to: contact.phone,
       message: rendered.textBody,
+      ledger: sequenceStepLedger(ctx),
     })
 
     return {

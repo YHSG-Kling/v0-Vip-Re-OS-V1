@@ -979,7 +979,7 @@
     "test:agent-fatigue": "tsx scripts/agent-fatigue-guard.ts",
     "test:zapier-outbound-only": "tsx scripts/zapier-outbound-only-guard.ts",
     "test:walk93-production-fixes": "tsx scripts/walk93-production-fixes-guard.ts",
-    "test:action-ledger": "tsx scripts/action-ledger-guard.ts",
+    "test:action-ledger": "tsx --conditions=react-server scripts/action-ledger-guard.ts",
     "test:client-automation-rulings": "tsx --conditions=react-server scripts/client-automation-rulings-guard.ts",
     "test:form-wizard-esign": "tsx --conditions=react-server scripts/form-wizard-esign-simulator.ts"
   },

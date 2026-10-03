@@ -22,6 +22,7 @@
 
 import { withAiCallDisclosures } from "@/lib/communication/call-disclosures"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
+import { withActionLedger, type ActionReasonCode, type LedgerClient } from "@/lib/kernel/action-ledger"
 
 export interface OutboundCallBrief {
   engine: "twilio"
@@ -130,7 +131,15 @@ export interface PlaceOutboundParams {
   managerKey?: ManagerKey | null
   /** A human approved this call (approval queue) — bypasses the autonomy gate. */
   humanApproved?: boolean
+  /** ACTION LEDGER context (wave 98, lib/kernel/action-ledger.ts) — same shape as
+   *  DispatchActorContext.ledger. Every dial is recorded whether or not this is set; set it to
+   *  say WHY and to make the dial at-most-once per `cycle`. */
+  ledger?: { reasonCode?: ActionReasonCode; reasonDetail?: string; cycle?: string; idempotencyKey?: string }
 }
+
+/** Twilio-native voice ~$0.014/min outbound; one dial is booked at a nominal minute — the
+ *  real per-minute cost lands on voice_calls / vendor usage when the call completes. */
+const VOICE_DIAL_COST_USD = 0.014
 
 export type PlaceOutboundResult =
   | { ok: true; callSid: string; voiceCallId: string | null; fromNumber: string }
@@ -145,6 +154,52 @@ export type PlaceOutboundResult =
  * claiming success.
  */
 export async function placeOutboundAiCall(svc: any, params: PlaceOutboundParams): Promise<PlaceOutboundResult> {
+  // ACTION LEDGER (wave 98, lane 98B) — the ONE voice chokepoint (every outbound dial in the
+  // tree calls this function), wired here exactly as lib/providers/dispatch.ts wires email/SMS/
+  // mail: claim → dial → settle. A gate refusal (`blocked`) settles 'skipped'; a timeout 'unknown'.
+  return ledgerVoiceDial(params, () => placeOutboundAiCallUnledgered(svc, params))
+}
+
+/**
+ * The ledger half of the voice chokepoint — claim → `dial()` → settle — split out so the proof
+ * drives it with an in-memory ledger and a fake dial (the real dial needs Twilio + the gate stack).
+ * @proofSeam exported so scripts/action-ledger-guard.ts proves one voice dial = one ledger row, a duplicate cycle dials once, and a gate refusal settles 'skipped'.
+ */
+export function ledgerVoiceDial(
+  params: PlaceOutboundParams,
+  dial: () => Promise<PlaceOutboundResult>,
+  opts?: { client?: LedgerClient },
+): Promise<PlaceOutboundResult> {
+  const autonomous = !!params.managerKey && !params.humanApproved
+  return withActionLedger<PlaceOutboundResult>({
+    brokerageId: params.brokerageId,
+    action: "comms.voice.call",
+    channel: "voice",
+    actor: autonomous ? { type: "manager", managerKey: params.managerKey ?? null, userId: params.initiatedBy ?? null }
+      : params.initiatedBy ? { type: "user", userId: params.initiatedBy }
+      : { type: "system" },
+    subject: params.contactId ? { type: "contact", id: params.contactId }
+      : params.leadId ? { type: "lead", id: params.leadId }
+      : { type: "recipient", id: null, ref: params.toNumber },
+    reasonCode: params.ledger?.reasonCode ?? (params.humanApproved || (!autonomous && params.initiatedBy) ? "HUMAN_REQUESTED" : null),
+    reasonDetail: params.ledger?.reasonDetail ?? params.objective.slice(0, 200),
+    cycle: params.ledger?.cycle ?? null,
+    idempotencyKey: params.ledger?.idempotencyKey ?? null,
+    riskClass: "COMMUNICATION",
+    systemSource: params.systemSource ?? null,
+  }, dial, {
+    settle: (r) => r.ok
+      ? { status: "executed", outcome: "dialed", provider: "twilio", providerRef: r.callSid, costUsd: VOICE_DIAL_COST_USD }
+      : r.blocked
+        ? { status: "skipped", outcome: r.blockReason ?? "gate", error: r.error }
+        : { status: /timed?[\s-]?out|ETIMEDOUT|ECONNRESET|504/i.test(r.error) ? "unknown" : "failed", outcome: "dial_failed", provider: "twilio", error: r.error },
+    replay: (claim) => claim.kind === "replay"
+      ? { ok: true, callSid: claim.entry.provider_ref ?? "", voiceCallId: null, fromNumber: "" }
+      : { ok: false, blocked: true, blockReason: "action_ledger_gate", error: claim.kind === "unknown" ? "An earlier dial's outcome is unknown — not redialed; reconcile it first" : claim.kind === "in_flight" ? "An identical dial is already in flight" : claim.error },
+  }, opts)
+}
+
+async function placeOutboundAiCallUnledgered(svc: any, params: PlaceOutboundParams): Promise<PlaceOutboundResult> {
   // 1. THE GATE STACK — every deterministic refusal, cheapest first, money last,
   //    all of it BEFORE anything that dials. A refusal short-circuits, so a
   //    suppressed or non-consenting recipient never reaches the budget read and

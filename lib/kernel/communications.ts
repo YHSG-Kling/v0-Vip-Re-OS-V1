@@ -705,9 +705,9 @@ export async function sendInboxReply(
 
     // Persist via messages table (outbound)
     if (channel === "portal") {
-      const { data: msg, error } = await supabase
-        .from("client_portal_messages")
-        .insert({
+      // Ledgered portal egress (wave 98, lib/portal/portal-message-egress.ts) — a staff reply.
+      const { insertPortalMessage } = await import("@/lib/portal/portal-message-egress")
+      const { data: msg, error } = await insertPortalMessage(supabase, {
           contact_id: contactId,
           agent_id: agentId,
           brokerage_id: actorContext.brokerageId,
@@ -716,10 +716,12 @@ export async function sendInboxReply(
           direction: "agent_to_client",
           read: true,
           created_at: new Date().toISOString(),
+        }, {
+          actor: { type: "user", userId: actorContext.userId, agentId },
+          reasonCode: "HUMAN_REQUESTED",
+          systemSource: "universal_inbox_reply",
         })
-        .select("id")
-        .single()
-      if (error) throw error
+      if (error || !msg) throw new Error(error?.message ?? "portal reply insert returned no row")
       return { success: true, messageId: msg.id }
     } else {
       // messages.conversation_id is NOT NULL (live schema) — this insert

@@ -1,7 +1,6 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { generateAIResponse } from "@/lib/ai"
 import { createServiceClient } from "@/lib/supabase/service"
-import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
 
 export interface CompScoreResult {
@@ -228,20 +227,19 @@ Respond ONLY with valid JSON (no markdown):
   }
 
   // Fire kernel event — non-blocking
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type: "listing",
-    entity_id: listingId,
-    event_type: KernelEvent.CMA_GENERATED,
-    actor_user_id: actorUserId,
-    metadata: { cma_id: cmaId, comps_scored: scored },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
-  await processKernelEvent({
-    event: KernelEvent.CMA_GENERATED,
+  // LINEAGE (wave 98, lane 98B): the direct insert + a separate processKernelEvent were the
+  // two halves THE emitter (lib/kernel/emit.ts) already does in one call — and the reactor now
+  // gets the lifecycleEventId, so every child it emits is caused BY this row.
+  const { emitKernelEvent } = await import("@/lib/kernel/emit")
+  const cmaEvent = await emitKernelEvent({
     brokerageId,
     entityType: "listing",
     entityId: listingId,
-  }).catch(() => {})
+    event: KernelEvent.CMA_GENERATED,
+    actorUserId,
+    metadata: { cma_id: cmaId, comps_scored: scored },
+  })
+  if (cmaEvent.error) console.error("[ai-cma-engine] CMA_GENERATED event refused:", cmaEvent.error)
 
   return { success: true, scored, cmaId }
 }

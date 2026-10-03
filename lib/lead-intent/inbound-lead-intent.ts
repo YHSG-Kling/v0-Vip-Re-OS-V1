@@ -106,7 +106,6 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { detectOptOutIntent } from "@/lib/ai-isa/opt-out-utils"
 import {
   applyLeadOptOut,
@@ -294,7 +293,7 @@ export async function evaluateInboundLeadSignal(
     }
 
     if (isDNC) {
-      const routed = await routeInboundIntent(supabase, signal, body)
+      const routed = await routeInboundIntent(signal, body)
       if (routed.outcome !== "converted" || !routed.classified) {
         // Ambiguous, negative, or a failed conversion — the stop stands.
         return {
@@ -351,7 +350,7 @@ export async function evaluateInboundLeadSignal(
     }
 
     // ── 6. INTENT — the existing classifier, unchanged ───────────────────────
-    const routed = await routeInboundIntent(supabase, signal, body)
+    const routed = await routeInboundIntent(signal, body)
 
     return {
       outcome:
@@ -390,8 +389,9 @@ export async function evaluateInboundLeadSignal(
  * Positive → the canonical lane converts. Negative → halted. Ambiguous →
  * nurtured. This module adds no scoring of its own.
  */
+// The `supabase` parameter is gone (wave 98, lane 98B): its ONLY use was the direct audit insert,
+// which now goes through emitKernelEvent (its own service client). Survivor: the emit below.
 async function routeInboundIntent(
-  supabase: ReturnType<typeof createServiceClient>,
   signal: InboundLeadSignal,
   body: string,
 ) {
@@ -403,30 +403,26 @@ async function routeInboundIntent(
   })
 
   if (routed.outcome === "converted" && !routed.alreadyConverted) {
-    await sentinelWrite(
-      supabase,
-      supabase.from("lifecycle_events").insert({
-        brokerage_id: signal.brokerageId,
-        entity_type: "lead",
-        entity_id: signal.leadId,
-        event_type: "LEAD_CONVERTED_ON_INBOUND_INTENT",
-        metadata: {
-          channel: signal.channel,
-          provider_ref: signal.providerRef ?? null,
-          side: routed.classified?.side ?? null,
-          intent_reason: routed.classified?.reason ?? null,
-          contact_id: routed.contactId ?? null,
-        },
-        created_at: new Date().toISOString(),
-      }),
-      {
-        table: "lifecycle_events",
-        flow: "inbound_lead_intent_conversion_audit",
-        brokerageId: signal.brokerageId,
-        reason:
-          "inbound-intent conversion audit row — the conversion lane already wrote LEAD_ASSIGNED + LEAD_CONVERTED_TO_CONTACT; this one records WHICH inbound message caused it and must not unwind the conversion",
+    // LINEAGE (wave 98, lane 98B): through THE emitter (lib/kernel/emit.ts) — audit-only type,
+    // nothing fans out; the row now carries the causation of the inbound message's event. The
+    // conversion lane already wrote LEAD_ASSIGNED + LEAD_CONVERTED_TO_CONTACT; this records WHICH
+    // inbound message caused it and a refusal must not unwind the conversion (logged, not thrown).
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    const conversionAudit = await emitKernelEvent({
+      brokerageId: signal.brokerageId,
+      entityType: "lead",
+      entityId: signal.leadId,
+      event: "LEAD_CONVERTED_ON_INBOUND_INTENT",
+      metadata: {
+        channel: signal.channel,
+        provider_ref: signal.providerRef ?? null,
+        side: routed.classified?.side ?? null,
+        intent_reason: routed.classified?.reason ?? null,
+        contact_id: routed.contactId ?? null,
       },
-    )
+      createdAt: new Date().toISOString(),
+    })
+    if (conversionAudit.error) console.error("[inbound-lead-intent] conversion audit row refused:", conversionAudit.error)
   }
 
   return routed

@@ -12,7 +12,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { CdaDiscrepancy } from "@/lib/commission/cda-discrepancy"
 import type { DispositionRoute } from "@/lib/platform/disposition-route"
-import { bestEffort } from "@/lib/db/best-effort"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -81,14 +80,15 @@ export async function autoDetectCommissionDispute(
     }
     // The event mirror IS allowed to fail — the dispute above is the record that
     // matters, and losing its timeline echo must not undo it.
-    await bestEffort(
-      svc.from("lifecycle_events").insert({
-        brokerage_id: params.brokerageId, // NOT NULL (pass 5): missing → the dispute event never landed
-        entity_type: "agent_commission", entity_id: commissionId,
-        event_type: "commission_disputed", metadata: { reason, auto: true, source: "cda_contract_discrepancy" }, created_at: now,
-      }),
-      "timeline echo of a dispute that is already filed on agent_commissions",
-    )
+    // LINEAGE (wave 98, lane 98B): through THE emitter (lib/kernel/emit.ts) — audit-only type,
+    // nothing fans out; the echo now carries the causation of the CDA event that raised it.
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    const echo = await emitKernelEvent({
+      brokerageId: params.brokerageId, // NOT NULL (pass 5): missing → the dispute event never landed
+      entityType: "agent_commission", entityId: commissionId,
+      event: "commission_disputed", metadata: { reason, auto: true, source: "cda_contract_discrepancy" }, createdAt: now,
+    })
+    if (echo.error) console.warn("[auto-dispute] timeline echo of a dispute already filed on agent_commissions refused:", echo.error)
     return { acted: "auto_disputed", reason }
   }
 

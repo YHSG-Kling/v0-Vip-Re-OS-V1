@@ -190,7 +190,7 @@ export async function GET(request: Request) {
               const pr = await publishToSocialPlatform(acct.platform, {
                 content: fanContent, mediaUrls: post.media_urls || [],
                 accessToken: acct.access_token, accountId: acct.account_id, hashtags: post.hashtags || [],
-              })
+              }, { brokerageId: post.brokerage_id, postId: post.id, cycle: `${post.id}:${acct.platform}:${acct.account_id}`, actorUserId: post.user_id ?? null })
               await sentinelWrite(supabase, supabase.from("social_publish_log").insert({
                 social_post_id: post.id, brokerage_id: post.brokerage_id, platform: acct.platform,
                 publish_status: pr.success ? "published" : "failed",
@@ -246,6 +246,11 @@ export async function GET(request: Request) {
           accessToken: account.access_token,
           accountId: account.account_id,
           hashtags: post.hashtags || [],
+        }, {
+          // ACTION LEDGER (wave 98): one publish per (post, platform, account) — a post whose
+          // 'published' flip failed is replayed on the next run, never re-posted.
+          brokerageId: post.brokerage_id, postId: post.id,
+          cycle: `${post.id}:${post.platform}:${account.account_id}`, actorUserId: post.user_id ?? null,
         })
 
         if (publishResult.success) {

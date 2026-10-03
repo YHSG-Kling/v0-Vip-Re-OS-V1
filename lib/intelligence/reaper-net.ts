@@ -194,6 +194,22 @@ export const REAPER_NET: ReaperEntry[] = [
       return norm(await reapStuckManagerSignals(b, svc))
     },
   },
+  {
+    // Wave 98 (lane 98B): agent_action_ledger rows stuck at 'unknown' (the provider never
+    // answered) are settled against outcome_reconciliations — the reconciler survivor
+    // (lib/outcomes/reconciliation-ledger.ts settleUnknownActions). data_steward observes
+    // provider truth. Signals lane = the 30-minute manager-signals cron; no new cron.
+    domain: "unknown_action_outcomes",
+    manager: "data_steward",
+    lane: "signals",
+    protects: "AI actions whose provider never answered, settled against the provider's own record",
+    run: async (b, svc) => {
+      const { settleUnknownActions } = await import("@/lib/outcomes/reconciliation-ledger")
+      const r = await settleUnknownActions(b, svc)
+      if (r.errors.length > 0) console.error(`[reaper-net] unknown_action_outcomes ${b}:`, r.errors.join("; "))
+      return norm(r)
+    },
+  },
 ]
 
 /** Persist one reaper's sweep to the accountability ledger (best-effort). */

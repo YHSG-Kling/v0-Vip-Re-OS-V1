@@ -605,3 +605,56 @@ export async function buildBehavioralIntentSummary(
     narrative,
   }
 }
+
+// ─── UNCONVERTED LEADS (wave 98, lane 98B — 97B "still open": the lead sweep passed no intent) ──
+// A lead in the plan sweep has NO contact row (conversion finality: contact_id IS NULL), so the
+// contact-keyed reader above has nothing to read. What IS keyed by leads.id AND has a writer:
+//   · isa_outreach_log.lead_id + replied_at — the person REPLIED to a touch (inbound_reply;
+//     written by app/actions/ai-isa/handle-inbound-email.ts);
+//   · leads.timeline — the stated bucket, with no stated-at (age unknown → UNKNOWN_AGE_DECAY).
+// NOT READ, deliberately (documented gap, not guessed):
+//   · lead_idx_property_interactions.lead_id has NO writer by owner ruling ("leads not for idx or
+//     rentcast, only contacts" — lib/kernel/manager-registry.ts leads_never_reach_property_providers);
+//     reading it would be a reader with no writer (test:opposite-missing 1b);
+//   · valuation_requests, tasks (callback), behavioral_signals, intelligence_signals_log key on
+//     contact_id only; external_behavior hangs off behavioral_signals. A lead's site / valuation /
+//     IDX activity therefore counts once the lead is converted to a contact.
+
+export interface LeadIntentRows {
+  replies: ReadonlyArray<{ replied_at?: string | null }>
+  timeline: string | null
+}
+
+/** PURE. The lead-keyed rows → observations, on the SAME type/source mapping the contact reader uses. */
+/** @proofSeam exported so scripts/lead-action-plan-simulator.ts asserts the lead-keyed mapping (replies age, timeline age-unknown) on the pure function directly. */
+export function leadIntentObservations(rows: LeadIntentRows): IntentObservation[] {
+  const out: IntentObservation[] = []
+  for (const r of rows.replies) {
+    if (r.replied_at) out.push({ type: "inbound_reply", source: "isa_outreach_log.replied_at", observedAt: r.replied_at })
+  }
+  if (rows.timeline) out.push({ type: "stated_timeline", source: "leads.timeline", observedAt: null, timelineBucket: rows.timeline })
+  return out
+}
+
+/**
+ * LIVE. The decayed intent of an UNCONVERTED lead from its lead-keyed rows, or null when the lead
+ * has none (the plan then decides on cadence alone, exactly as before). Tenant-pinned; a refused
+ * read degrades that source to empty and is said, never thrown.
+ */
+export async function buildLeadDecayedIntent(
+  supabase: Svc,
+  brokerageId: string,
+  lead: { id: string; timeline?: string | null },
+  now: Date = new Date(),
+): Promise<DecayedIntent | null> {
+  const replyRes = await supabase.from("isa_outreach_log")
+    .select("replied_at")
+    .eq("brokerage_id", brokerageId).eq("lead_id", lead.id)
+    .not("replied_at", "is", null).limit(20)
+  if (replyRes.error) console.error(`[behavioral-summary] lead ${lead.id}: isa_outreach_log replies read refused:`, replyRes.error.message)
+  const observations = leadIntentObservations({
+    replies: (replyRes.error ? [] : replyRes.data ?? []) as LeadIntentRows["replies"],
+    timeline: lead.timeline ?? null,
+  })
+  return observations.length > 0 ? scoreDecayedIntent(observations, now) : null
+}

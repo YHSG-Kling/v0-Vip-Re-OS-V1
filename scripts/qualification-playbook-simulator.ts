@@ -652,6 +652,32 @@ console.log("\n[Layer 13 · lane 90C — NO qualification outcome ends the loop:
     !/convertSellerLeadOnIntent\(|convertBuyerLeadOnIntent\(/.test(fixtureDeadEnd) && fixtureDeadEnd.includes("scheduleFollowUp("))
 }
 
+console.log("\n[Lane 98B · 'already on file — do not re-ask' reads only CURRENT facts; expired → re-confirm]")
+{
+  const { knownFactsBlock, buildQualificationPrompt: buildP } = await import("../lib/ai-isa/qualification-playbook")
+  const now = new Date("2026-10-03T12:00:00Z")
+  const day = 86_400_000
+  const spine = {
+    summary: "x",
+    facts: [
+      // current: observed 10 days ago, review in 50 days
+      { key: "channel_preference", value: "sms", observedAt: new Date(now.getTime() - 10 * day).toISOString(), confidence: 0.85, reviewBy: new Date(now.getTime() + 50 * day).toISOString(), source: "conversation" },
+      // EXPIRED: the timeline's review window ended yesterday
+      { key: "timeline", value: "1-3_months", observedAt: new Date(now.getTime() - 61 * day).toISOString(), confidence: 0.85, reviewBy: new Date(now.getTime() - day).toISOString(), source: "conversation" },
+    ],
+  }
+  const block = knownFactsBlock({ hasContactInfo: true, timeline: "1-3_months", memory: spine, now })
+  check("a CURRENT fact is listed as on file — do not re-ask", /ALREADY ON FILE — do not re-ask:[^\n]*preferred channel \(sms\)/.test(block))
+  check("an EXPIRED timeline is NOT claimed as on file, even though the column still holds it", !/do not re-ask:[^\n]*timeline/.test(block))
+  check("…it is listed to RE-CONFIRM instead (the stale value itself is not shown)", /re-confirm gently[^\n]*timeline/.test(block) && !/re-confirm[^\n]*1-3_months/.test(block))
+  const fresh = knownFactsBlock({ timeline: "1-3_months", memory: { facts: [{ ...spine.facts[1], reviewBy: new Date(now.getTime() + 5 * day).toISOString() }] }, now })
+  check("POSITIVE CONTROL: the SAME timeline inside its review window IS on file — do not re-ask", /do not re-ask:[^\n]*timeline \(1-3_months\)/.test(fresh) && !/re-confirm/.test(fresh))
+  check("POSITIVE CONTROL: with no memory, the column timeline is listed exactly as before", /do not re-ask: timeline \(3-6_months\)/.test(knownFactsBlock({ timeline: "3-6_months" })))
+  check("the block reaches the prompt every real-estate surface builds", buildP({ surface: "portal", known: { memory: spine, now } }).includes("re-confirm gently"))
+  const portal = stripped("app/api/portal/ai-chat/route.ts")
+  check("WIRED: the portal AI chat passes the contact's spine as known.memory", /known:\s*\{\s*hasContactInfo:\s*true,\s*memory:\s*spineForPlaybook\s*\}/.test(portal))
+}
+
 console.log("\n" + "─".repeat(60))
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) {
