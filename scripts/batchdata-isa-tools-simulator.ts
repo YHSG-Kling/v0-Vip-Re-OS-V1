@@ -411,16 +411,16 @@ let sphereToolsEligible: Record<string, unknown> = {}
   // Re-anchored on the two real facts: the SAME three registries feed the
   // ONE selector call, and the selector's result is what generateText's
   // tools: actually receives (never a rival merge).
-  ok(/selectToolsForPersona\(\{\s*\.\.\.freeTools,\s*\.\.\.batchDataTools,\s*\.\.\.rentCastTools\s*\}\)/.test(inboundEmail),
+  ok(/selectToolsForPersona\(\{\s*\.\.\.freeTools,\s*\.\.\.batchDataTools,\s*\.\.\.rentCastTools\s*\}\s*[,)]/.test(inboundEmail),
      "app/actions/ai-isa/handle-inbound-email.ts: free + batchData + rentCast tools flow through the ONE cost-ranked selector (lane 74B)")
-  ok(/tools:\s*\{\s*\.\.\.isaTools,\s*\.\.\.propertyAndFreeTools\s*\}/.test(inboundEmail),
+  ok(/tools:\s*\{\s*\.\.\.(?:isaTools|Object\.fromEntries\(Object\.entries\(isaTools\)[^\n]*isToolAllowedAtAuthority[^\n]*\)),\s*\.\.\.propertyAndFreeTools,?\s*\}/.test(inboundEmail),
      "app/actions/ai-isa/handle-inbound-email.ts: generateText receives the CRM tools + the selector's cost-ranked output, not a hand-merged map")
 
   const customLlm = readBlanked("app/api/did/custom-llm/route.ts")
   ok(/import\s*\{\s*resolveToolPersona/.test(customLlm), "app/api/did/custom-llm/route.ts: imports resolveToolPersona (lane 73B)")
   ok(/const toolPersona = resolveToolPersona\(/.test(customLlm), "app/api/did/custom-llm/route.ts: derives persona via resolveToolPersona from the resolved contact's context, never a request body")
   // Lane 74B: same cost-ranked selector re-anchor as the inbound-email check above.
-  ok(/tools:\s*selectToolsForPersona\(\{\s*\.\.\.freeTools,\s*\.\.\.batchDataTools,\s*\.\.\.rentCastTools\s*\}\)/.test(customLlm),
+  ok(/tools:\s*selectToolsForPersona\(\{\s*\.\.\.freeTools,\s*\.\.\.batchDataTools,\s*\.\.\.rentCastTools\s*\}\s*[,)]/.test(customLlm),
      "app/api/did/custom-llm/route.ts: passes free + batchData + rentCast tools through the cost-ranked selector into streamTextRouted (lane 74B)")
 
   // POSITIVE CONTROL for the stripped-source read itself — a comment-only mention must NOT
