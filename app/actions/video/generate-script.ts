@@ -532,18 +532,20 @@ ${l.features?.length ? `- Key features: ${l.features.join(", ")}` : ""}
       // Not fatal, and deliberately after `savedScriptId`: the script is
       // saved, and a ledger write that fails must not un-save it.
       if (savedScriptId) {
-        const { error: ledgerError } = await supabase.from("lifecycle_events").insert({
-          entity_type: "video_script",
-          entity_id: savedScriptId,
-          brokerage_id: brokerageId,
-          event_type: KernelEvent.SCRIPT_GENERATED,
-          actor_user_id: userId,
+        const kernelEmit = await import("@/lib/kernel/emit")
+        const { error: ledgerError } = kernelEmit.asWriteResult(await kernelEmit.emitKernelEvent({
+          entityType: "video_script",
+          entityId: savedScriptId!, // narrowed by the enclosing `if (savedScriptId)`; lost inside the callback
+          brokerageId: brokerageId,
+          event: KernelEvent.SCRIPT_GENERATED,
+          actorUserId: userId,
           metadata: {
             script_type: toLibraryScriptType(params.videoType),
             ai_generated: true,
             approval_status: "draft",
           },
-        })
+          auditOnly: true,
+        }))
         // supabase-js RESOLVES a refused insert. Without this the ledger could
         // be empty forever and every surface would read that as "no scripts".
         if (ledgerError) {

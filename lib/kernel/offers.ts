@@ -43,14 +43,15 @@ async function emitOfferEvent(params: {
   const supabase = createServiceClient()
   const { event, brokerageId, entityId, actorUserId, metadata } = params
 
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    brokerage_id:  brokerageId,
-    entity_type:   "offer",
-    entity_id:     entityId,
-    event_type:    event,
-    actor_user_id: actorUserId,
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId:  brokerageId,
+    entityType:   "offer",
+    entityId:     entityId,
+    event:    event,
+    actorUserId: actorUserId,
     metadata:      metadata ?? {},
-  }).throwOnError(), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // Resolve buyer (offer.contact_id) + seller (listing.seller_contact_id) so the
   // canonical fan-out can reach both sides' portals. Only events with a portal

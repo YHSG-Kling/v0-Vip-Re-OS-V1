@@ -205,19 +205,18 @@ export async function collectError(params: CollectErrorParams): Promise<string |
 
     // If severity is critical, emit SYSTEM_HEALTH_ALERT kernel event
     if (severity === "critical") {
-      const { error: lifecycleError } = await supabase
-        .from("lifecycle_events")
-        .insert({
-          brokerage_id: brokerageId || null,
-          entity_type: "automation_error",
-          entity_id: errorId,
-          event_type: "SYSTEM_HEALTH_ALERT",
+      const kernelEmit = await import("@/lib/kernel/emit")
+      const { error: lifecycleError } = kernelEmit.asWriteResult(await kernelEmit.emitKernelEvent({
+          brokerageId: brokerageId || null,
+          entityType: "automation_error",
+          entityId: errorId,
+          event: "SYSTEM_HEALTH_ALERT",
           metadata: {
             workflow_name: workflowName,
             severity,
             error_message: errorMessage.substring(0, 500),
           },
-        })
+        }))
 
       if (lifecycleError) {
         console.error("[collectError] Failed to emit kernel event:", lifecycleError)

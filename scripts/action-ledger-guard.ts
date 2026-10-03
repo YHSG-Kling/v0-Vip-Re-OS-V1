@@ -628,9 +628,65 @@ async function main() {
   console.log("\n[13 · lineage: moved lifecycle_events inserters emit through emitKernelEvent]")
   {
     const moved = [
+      // wave 98 (lane 98B)
       "lib/lead-intent/lead-opt-out.ts", "lib/lead-intent/inbound-lead-intent.ts", "lib/finance/auto-dispute.ts",
       "lib/transactions/walkthrough-outcome.ts", "lib/direct-mail/mail-unsubscribe.ts", "lib/video/viral-script-share.ts",
       "lib/cma/ai-cma-engine.ts", "lib/pricing/predictive-pricing.ts",
+      // wave 100 (lane 100B): 112 sites in 53 modules, plus lib/kernel/reputation.ts (its row + fan-out pair is now one emit)
+      "app/actions/business-card/business-card-actions.ts",
+      "app/actions/buyer-offers.ts",
+      "app/actions/communications.ts",
+      "app/actions/contact-reassignment.ts",
+      "app/actions/coverage-mode.ts",
+      "app/actions/ctv-ads.ts",
+      "app/actions/deal-shaky.ts",
+      "app/actions/dispatch-showing.ts",
+      "app/actions/lead-magnets-actions.ts",
+      "app/actions/listing-lifecycle.ts",
+      "app/actions/multi-persona.ts",
+      "app/actions/portal-offer-decision.ts",
+      "app/actions/seller-listing/execution-engine.ts",
+      "app/actions/seller-open-house.ts",
+      "app/actions/seller-showings.ts",
+      "app/actions/social-media-automation.ts",
+      "app/actions/social-share.ts",
+      "app/actions/transaction-stage-machine.ts",
+      "app/actions/vendor-requests.ts",
+      "app/actions/video-generation.ts",
+      "app/actions/video-repurposing.ts",
+      "app/actions/video-voice.ts",
+      "app/actions/video/generate-script.ts",
+      "app/api/cron/lead-scraping/route.ts",
+      "app/api/cron/publish-social-posts/route.ts",
+      "app/api/errors/escalate/route.ts",
+      "app/api/offers/upload/route.ts",
+      "app/api/open-house/attend/route.ts",
+      "app/api/providers/inbound/route.ts",
+      "app/api/showings/showingtime-webhook/route.ts",
+      "app/api/video/engagement/route.ts",
+      "app/dashboard/admin/command-center/page.tsx",
+      "app/dashboard/settings/widget/actions.ts",
+      "lib/ads/ad-creator.ts",
+      "lib/ads/ad-manager.ts",
+      "lib/ads/chatgpt-campaign.ts",
+      "lib/ads/ctv-campaign.ts",
+      "lib/ai-isa/convert-buyer-lead-on-intent.ts",
+      "lib/ai-isa/inbound-intent-classifier.ts",
+      "lib/errors/collect-error.ts",
+      "lib/kernel/ai-isa.ts",
+      "lib/kernel/ai-tools.ts",
+      "lib/kernel/content-creators.ts",
+      "lib/kernel/crm.ts",
+      "lib/kernel/education.ts",
+      "lib/kernel/financial.ts",
+      "lib/kernel/lead-magnets.ts",
+      "lib/kernel/listings.ts",
+      "lib/kernel/offers.ts",
+      "lib/kernel/reputation.ts",
+      "lib/kernel/transactions.ts",
+      "lib/kernel/users.ts",
+      "lib/offers/offer-analyzer.ts",
+      "lib/offers/offer-extractor.ts",
     ]
     const directInsert = /\.from\(\s*"lifecycle_events"\s*\)\s*\.(insert|upsert)\(/
     for (const rel of moved) {
@@ -650,12 +706,108 @@ async function main() {
       return out
     }
     const remaining = [...walk("lib"), ...walk("app")].filter((rel) => rel !== "lib/kernel/emit.ts" && directInsert.test(stripComments(read(rel))))
-    console.log(`  · census: ${remaining.length} module(s) under lib/ + app/ still insert lifecycle_events directly (published, not ratcheted — see docs/architecture/OS-BLUEPRINT-GAP-MAP.md row 17)`)
-    check("the census ran over a non-trivial tree (denominator > 0) and excludes the emitter itself", remaining.length > 0 && !remaining.includes("lib/kernel/emit.ts"))
+    // THE RATCHET (wave 100): every module that still inserts lifecycle_events directly is NAMED here
+    // with the reason it is not a drop-in. A new direct inserter fails; a moved one prints as stale.
+    // The count is DERIVED (remaining.length), never pinned.
+    const NOT_MOVED: Record<string, string> = {
+      "app/actions/ai-review-automation.ts": "writes lifecycle_events.payload; emitKernelEvent carries metadata only",
+      "app/actions/orchestrator.ts": "the orchestrator's own recorder: writes payload/user_id/processed=false and returns the whole row",
+      "lib/events/lifecycle-event-core.ts": "recordLifecycleEvent core: writes processed=false + payload for the orchestrator worker and returns the whole row",
+      "lib/kernel/document-autofile.ts": "writes lifecycle_events.payload, which the autofile reviewer reads",
+      "lib/agents/agent-books.ts": "audits through an INJECTED client its in-memory proof asserts; emitKernelEvent has no client seam",
+      "lib/agents/agent-deactivation.ts": "audits through an INJECTED client its in-memory proof asserts; emitKernelEvent has no client seam",
+      "lib/kernel/lifecycle.ts": "transitionLifecycle IS the state-machine writer: inserts lifecycle.<event> and fans out itself with its own row id",
+      "lib/lead-pipeline/unknown-sender-identification.ts": "audits through an INJECTED client its in-memory proof (test:lead-email-conversion) asserts; UNKNOWN_SENDER_DROPPED also has entity_id NULL (emitKernelEvent requires an entity)",
+      "lib/kernel/managing-broker.ts": "audits through an INJECTED client its in-memory proof (test:managing-broker) asserts; emitKernelEvent has no client seam",
+    }
+    const unexplained = remaining.filter((rel) => !(rel in NOT_MOVED))
+    const stale = Object.keys(NOT_MOVED).filter((rel) => !remaining.includes(rel))
+    console.log(`  · census: ${remaining.length} module(s) under lib/ + app/ still insert lifecycle_events directly (wave 98 end: 63; denominator: every .ts/.tsx under lib/ + app/)`)
+    check("RATCHET: every remaining direct inserter is named with its reason (no new direct inserter)", unexplained.length === 0, unexplained.join(", "))
+    if (stale.length) console.log(`  · stale NOT_MOVED entries (moved since; delete them): ${stale.join(", ")}`)
+    check("POSITIVE CONTROL: the ratchet accuses an unnamed inserter", ["lib/x/new-inserter.ts"].filter((rel) => !(rel in NOT_MOVED)).length === 1)
+    check("the census ran over a non-trivial tree and excludes the emitter itself", remaining.length > 0 && !remaining.includes("lib/kernel/emit.ts"))
+  }
+
+  console.log("\n[13b · audit-only option + executed lineage through a fake PostgREST]")
+  {
+    const { KernelEvent } = await import("../lib/kernel/events")
+
+    // A local HTTP server stands in for PostgREST: emitKernelEvent runs for REAL (createServiceClient,
+    // supabase-js, fetch). Every request is recorded, so "did not fan out" is OBSERVED, not inferred.
+    const http = await import("node:http")
+    const seen: Array<{ method: string; path: string; body: Record<string, unknown> | null }> = []
+    const srv = http.createServer((req, res) => {
+      let raw = ""
+      req.on("data", (c) => { raw += c })
+      req.on("end", () => {
+        let body: Record<string, unknown> | null = null
+        try { body = raw ? JSON.parse(raw) : null } catch { body = null }
+        seen.push({ method: req.method ?? "", path: req.url ?? "", body })
+        res.setHeader("content-type", "application/json")
+        if (req.method === "POST" && (req.url ?? "").startsWith("/rest/v1/lifecycle_events")) { res.end(JSON.stringify({ id: `le-${seen.length}` })); return }
+        res.end("[]")
+      })
+    })
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()))
+    const addr = srv.address() as { port: number }
+    const prevUrl = process.env.NEXT_PUBLIC_SUPABASE_URL, prevKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+    process.env.NEXT_PUBLIC_SUPABASE_URL = `http://127.0.0.1:${addr.port}`
+    process.env.SUPABASE_SERVICE_ROLE_KEY = "proof-only-key"
+    try {
+      const { emitKernelEvent } = await import("../lib/kernel/emit")
+      const leRows = () => seen.filter((x) => x.method === "POST" && x.path.startsWith("/rest/v1/lifecycle_events"))
+
+      seen.length = 0
+      const audit = await withCausationFrom("evt-parent", () => emitKernelEvent({
+        event: KernelEvent.CONTACT_UPDATED, brokerageId: "b-1", entityType: "contact", entityId: "c-1", auditOnly: true,
+      }))
+      const row = leRows()[0]?.body ?? {}
+      check("AUDIT-ONLY: the row is written WITH lineage (causation_id + correlation_id from the scope)",
+        audit.inserted && audit.lifecycleEventId !== null && row.causation_id === "evt-parent" && row.correlation_id === "evt-parent", JSON.stringify(row))
+      check("AUDIT-ONLY: nothing but the one insert reached the database (no fan-out reads)", seen.length === 1, `${seen.length} request(s)`)
+
+      seen.length = 0
+      await withCausationFrom("evt-parent", () => emitKernelEvent({
+        event: KernelEvent.CONTACT_UPDATED, brokerageId: "b-1", entityType: "contact", entityId: "c-1",
+      }))
+      check("POSITIVE CONTROL: the same typed event WITHOUT auditOnly fans out (the reactor reads past the insert)", leRows().length === 1 && seen.length > 1, `${seen.length} request(s)`)
+
+      seen.length = 0
+      await emitKernelEvent({ event: "x_free_form_audit", brokerageId: "b-1", entityType: "contact", entityId: "c-1" })
+      const freeForm = seen.length
+      seen.length = 0
+      await emitKernelEvent({ event: KernelEvent.CONTACT_UPDATED, brokerageId: null, entityType: "contact", entityId: "c-1" })
+      check("a free-form string never fans out, and neither does a tenant-less typed event (one insert each)", freeForm === 1 && seen.length === 1, `${freeForm} / ${seen.length}`)
+
+      // A MIGRATED inserter, executed: collectError (lib/errors/collect-error.ts) writes its own rows
+      // through an injected client and its critical alert through emitKernelEvent.
+      seen.length = 0
+      const builder = (data: unknown) => {
+        const p = Promise.resolve({ data, error: null }) as Promise<{ data: unknown; error: null }> & Record<string, unknown>
+        p.select = () => p; p.single = () => p; p.maybeSingle = () => p; p.eq = () => p
+        return p
+      }
+      const fakeClient = { from: (_t: string) => ({ insert: (_r: unknown) => builder({ id: "err-1" }) }) }
+      const { collectError } = await import("../lib/errors/collect-error")
+      const args = { workflowName: "proof", errorMessage: "boom", severity: "critical", brokerageId: "b-1", client: fakeClient } as unknown as Parameters<typeof collectError>[0]
+      const errId = await withCausationFrom("evt-cause", () => collectError(args))
+      const alert = leRows()[0]?.body ?? {}
+      check("A MIGRATED INSERTER CARRIES CAUSATION: collectError's critical alert row has causation_id = the scope's event",
+        errId === "err-1" && alert.event_type === "SYSTEM_HEALTH_ALERT" && alert.causation_id === "evt-cause" && alert.entity_id === "err-1", JSON.stringify(alert))
+      seen.length = 0
+      await collectError(args)
+      check("POSITIVE CONTROL: outside a scope the same inserter writes NO causation (a root event)", leRows().length === 1 && !("causation_id" in (leRows()[0]?.body ?? {})))
+    } finally {
+      if (prevUrl === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL; else process.env.NEXT_PUBLIC_SUPABASE_URL = prevUrl
+      if (prevKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY; else process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey
+      srv.close()
+    }
   }
 
   console.log("\n[blind spots]")
-  console.log("  · lifecycle_events inserters NOT moved (count printed in section 13): kernel commands that insert inside a Promise.all and call processKernelEvent themselves, audits written through an INJECTED client a proof's in-memory DB asserts (agent-books / agent-deactivation), KernelEvent-typed rows that are deliberately audit-only (moving them would START a fan-out), and entity_id-null rows (emitKernelEvent requires an entity)")
+  console.log("  · lifecycle_events inserters NOT moved are NAMED with their reasons in section 13 (payload/processed writers, injected-client audits, the transition writer, an entity-less row). The finder sees only the literal .from(\"lifecycle_events\").insert( shape — a table-name constant or a single-quoted literal is invisible to it")
+  console.log("  · a moved row whose module ALSO calls processKernelEvent separately keeps that call (auditOnly row + the existing fan-out; the two metadata shapes differ). Merging each pair into ONE emit, so the reactor gets the lifecycleEventId, is the next step")
   console.log("  · portal messages: ~30 direct client_portal_messages inserters remain outside insertPortalMessage; the four senders that reach a client on demand are routed")
   console.log("  · AI tool calls are ledgered on the CUSTOMER bundle (buildCustomerFreeTools); the platform prospect agent (no tenant) and the staff toolkit's non-portal tools are not")
   console.log("  · 'unknown' rows with no outcome_reconciliations claim are settled 'failed' after the abandon window — a send that DID leave without a claim (provider timed out AFTER accepting) can then be retried by a LATER cycle")

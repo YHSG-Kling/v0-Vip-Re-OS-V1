@@ -705,16 +705,14 @@ caller?: { client: { from: (t: string) => any }; actorUserId: string },
   }
 
   // ── Ledger the act (audit + dedupe marker) — best-effort, never blocks ──
-  await sentinelWrite(svc, svc
-    .from("lifecycle_events")
-    .insert({
-      brokerage_id: ctx.brokerageId,
-      entity_type: scope === "team" ? "team" : "brokerage",
-      entity_id: scope === "team" ? teamId : ctx.brokerageId,
-      event_type: "team_announcement_posted",
-      actor_user_id: ctx.userId,
+  await sentinelWrite(svc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: ctx.brokerageId,
+      entityType: scope === "team" ? "team" : "brokerage",
+      entityId: scope === "team" && teamId ? teamId : ctx.brokerageId,
+      event: "team_announcement_posted",
+      actorUserId: ctx.userId,
       metadata: { subject, priority, scope, team_id: teamId, notified: recipientIds.length },
-    }), { table: "lifecycle_events", flow: "team_announcement_ledger", reason: "audit + dedupe marker — best-effort by design, never blocks" })
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "team_announcement_ledger", reason: "audit + dedupe marker — best-effort by design, never blocks" })
 
   return { ok: true, notified: recipientIds.length, scope }
 }

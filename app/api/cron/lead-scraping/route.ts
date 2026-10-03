@@ -148,14 +148,15 @@ export async function GET(request: Request) {
   await recordCronStartAction({ context_id: contextId })
 
   // Emit SCRAPING_CRON_STARTED lifecycle event
-  void sentinelWrite(serviceClient, serviceClient.from("lifecycle_events").insert({
-    entity_type:  "system",
-    entity_id:    cronLogId ?? "00000000-0000-0000-0000-000000000000",
-    event_type:   KernelEvent.SCRAPING_CRON_STARTED,
-    brokerage_id: null,
+  void sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType:  "system",
+    entityId:    cronLogId ?? "00000000-0000-0000-0000-000000000000",
+    event:   KernelEvent.SCRAPING_CRON_STARTED,
+    brokerageId: null,
     metadata:     { triggered_by: "cron", context_id: contextId },
-    created_at:   new Date().toISOString(),
-  }), { table: "lifecycle_events", flow: "scraping_cron_echo", reason: "run-level audit echo; the run result is returned and logged by the cron kernel" })
+    createdAt:   new Date().toISOString(),
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "scraping_cron_echo", reason: "run-level audit echo; the run result is returned and logged by the cron kernel" })
 
   console.log("[Lead Scraping Cron] Starting scheduled scraping with full enrichment pipeline...")
 
@@ -1628,14 +1629,15 @@ export async function GET(request: Request) {
       metadata: { ...results, duration_ms: durationMs },
     })
 
-    await sentinelWrite(serviceClient, serviceClient.from("lifecycle_events").insert({
-      entity_type:  "system",
-      entity_id:    cronLogId ?? "00000000-0000-0000-0000-000000000000",
-      event_type:   KernelEvent.SCRAPING_CRON_COMPLETED,
-      brokerage_id: null,
+    await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      entityType:  "system",
+      entityId:    cronLogId ?? "00000000-0000-0000-0000-000000000000",
+      event:   KernelEvent.SCRAPING_CRON_COMPLETED,
+      brokerageId: null,
       metadata:     { ...results, duration_ms: durationMs, context_id: contextId },
-      created_at:   new Date().toISOString(),
-    }), { table: "lifecycle_events", flow: "scraping_cron_echo", reason: "run-level audit echo; the run result is returned and logged by the cron kernel" })
+      createdAt:   new Date().toISOString(),
+      auditOnly: true,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "scraping_cron_echo", reason: "run-level audit echo; the run result is returned and logged by the cron kernel" })
 
     // RELIST DETECTION — a property de-listed (expired/withdrawn) and back on the
     // market is a textbook motivated-seller signal. The detector joins this run's
@@ -1674,14 +1676,15 @@ export async function GET(request: Request) {
     // Close cron context — failure
     await recordCronFailureAction({ context_id: contextId, error: error as Error | string, stage: "main-processing" })
 
-    await sentinelWrite(serviceClient, serviceClient.from("lifecycle_events").insert({
-      entity_type:  "system",
-      entity_id:    cronLogId ?? "00000000-0000-0000-0000-000000000000",
-      event_type:   KernelEvent.SCRAPING_CRON_FAILED,
-      brokerage_id: null,
+    await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      entityType:  "system",
+      entityId:    cronLogId ?? "00000000-0000-0000-0000-000000000000",
+      event:   KernelEvent.SCRAPING_CRON_FAILED,
+      brokerageId: null,
       metadata:     { error: String(error), duration_ms: durationMs, context_id: contextId },
-      created_at:   new Date().toISOString(),
-    }), { table: "lifecycle_events", flow: "scraping_cron_echo", reason: "run-level audit echo; the run result is returned and logged by the cron kernel" })
+      createdAt:   new Date().toISOString(),
+      auditOnly: true,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "scraping_cron_echo", reason: "run-level audit echo; the run result is returned and logged by the cron kernel" })
 
     return NextResponse.json({ error: String(error), results, context_id: contextId }, { status: 500 })
   }

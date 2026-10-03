@@ -71,6 +71,7 @@ import {
   isPersonalizedForLead,
   wireChannelFor,
   nonActionRecordFor,
+  planNextContactTouch,
   type LeadSettingsResolution,
 } from "../lib/ai-isa/lead-action-plan"
 import { DEFAULT_AISA_SETTINGS, DEAD_END_OUTCOMES, canonicalDeadEnd, deadEndsFromLeadSources, type AIISASettings } from "../lib/ai-isa/settings-types"
@@ -648,6 +649,38 @@ console.log("\n── 7c. LANE 98B: NBA verdicts → the action ledger; intent f
     leadIntentObservations({ replies: [], timeline: null }).length === 0 && planNextLeadTouch({ ...planBase, now: now98 }).priority === 0)
   check("LEAD-INTENT-WIRED: the sweep feeds buildLeadDecayedIntent into the plan's context",
     /intent:\s*\(await buildLeadDecayedIntent\(supabase, input\.brokerageId,/.test(adv) && /duplicate_of_contact_id,[^"]*\btimeline\b[^"]*"/.test(adv))
+}
+
+console.log("\n── 7d. WAVE 100 (100B): ONE NBA, two subjects — the contact gets the lead's inputs and verdicts ──")
+{
+  const B = "11111111-1111-4111-8111-111111111111"
+  const C = "44444444-4444-4444-8444-444444444444"
+  const now = new Date("2026-10-03T12:00:00Z")
+  const ctxs: Array<[string, Parameters<typeof planNextContactTouch>[0]["context"]]> = [
+    ["dead end not_interested", { deadEnds: [{ outcome: "not_interested", at: now, source: "voice_calls.outcome" }] }],
+    ["postponed", { deadEnds: [{ outcome: "postponed", at: null, until: new Date(now.getTime() + 30 * 86_400_000), source: "leads.long_term_nurture_until" }] }],
+    ["fatigue", { lastAnyTouchAt: new Date(now.getTime() - 3_600_000) }],
+    ["paused", { outreachPaused: true }],
+  ]
+  for (const [name, context] of ctxs) {
+    const lead = planNextLeadTouch({ ...planBase, now, context })
+    const contact = planNextContactTouch({ now, context })
+    check(`ONE-ENGINE (${name}): the contact verdict, code and reasons equal the lead's for the same context`,
+      lead.action === contact.action && lead.reasonCode === contact.reasonCode &&
+      JSON.stringify(lead.reasonsNotToAct) === JSON.stringify(contact.reasonsNotToAct), `${lead.action}/${lead.reasonCode} vs ${contact.action}/${contact.reasonCode}`)
+  }
+  const free = planNextContactTouch({ now, context: {} })
+  check("ONE-ENGINE CONTROL: with nothing against acting the contact subject is send_touch (its channel stays engageContact's)",
+    free.action === "send_touch" && free.reasonCode === "due" && free.channel === null)
+  const mem = planNextContactTouch({ now, context: { memoryFacts: [{ key: "timeline", value: "3-6_months", confidence: 0.8, observedAt: now.toISOString() }] } })
+  check("MEMORY-EVIDENCE: current memory facts are read as evidence, never a blocker",
+    mem.action === "send_touch" && mem.evidence.some((e) => e.kind === "memory:timeline" && /3-6_months/.test(e.detail)))
+  const waitRec = nonActionRecordFor(planNextContactTouch({ now, context: ctxs[1][1] }), { brokerageId: B, contactId: C, now })
+  check("CONTACT-LEDGER: a contact wait is recorded on the SAME ledger under the contact subject/domain with its until",
+    waitRec?.subject.type === "contact" && waitRec?.subject.id === C && waitRec?.domain === "contact" && waitRec?.reasonCode === "WAIT_COOLDOWN" && !!waitRec?.until)
+  const leadRec = nonActionRecordFor(planNextLeadTouch({ ...planBase, now, context: { outreachPaused: true } }), { brokerageId: B, leadId: C, now })
+  check("CONTACT-LEDGER CONTROL: the lead subject still records as a lead (domain lead, source lead_action_plan)",
+    leadRec?.subject.type === "lead" && leadRec?.domain === "lead" && leadRec?.systemSource === "lead_action_plan")
 }
 
 console.log("\n── 8. LIVE LAYER (creds-gated): the gate opens and closes, with ZERO spend ──")

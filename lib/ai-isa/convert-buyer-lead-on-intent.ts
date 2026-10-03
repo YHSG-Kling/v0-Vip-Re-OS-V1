@@ -464,19 +464,20 @@ export async function convertBuyerLeadOnIntent(
     if (!stageErr) {
       buyerStage = plan.targetStage
       // Audit row on the buyer_lifecycle machine (same entity_type transitionLifecycle uses).
-      await sentinelWrite(svc, svc.from("lifecycle_events").insert({
-        brokerage_id: params.brokerageId,
-        entity_type: "buyer_lifecycle",
-        entity_id: contactId,
-        event_type: `lifecycle.${plan.kernelEvent}`,
+      await sentinelWrite(svc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: params.brokerageId,
+        entityType: "buyer_lifecycle",
+        entityId: contactId,
+        event: `lifecycle.${plan.kernelEvent}`,
         metadata: {
           from_state: fromStage,
           to_state: plan.targetStage,
           via: "buyer_intent_conversion",
           reason: params.reason,
         },
-        created_at: new Date().toISOString(),
-      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+        createdAt: new Date().toISOString(),
+        auditOnly: true,
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
       // Fire the kernel milestone event (service-client safe; non-blocking).
       try {
         await processKernelEvent({

@@ -52,14 +52,15 @@ export async function setCoverageAction(input: {
   }).eq("id", input.awayAgentId)
   if (error) return { ok: false, error: error.message }
 
-  await sentinelWrite(gate.svc, gate.svc.from("lifecycle_events").insert({
-    brokerage_id: gate.brokerageId,
-    entity_type: "agent",
-    entity_id: input.awayAgentId,
-    event_type: setting ? "coverage_started" : "coverage_cleared",
-    actor_user_id: gate.userId,
+  await sentinelWrite(gate.svc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: gate.brokerageId,
+    entityType: "agent",
+    entityId: input.awayAgentId,
+    event: setting ? "coverage_started" : "coverage_cleared",
+    actorUserId: gate.userId,
     metadata: { covering_agent_id: input.coveringAgentId, until: input.until ?? null },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return { ok: true }
 }

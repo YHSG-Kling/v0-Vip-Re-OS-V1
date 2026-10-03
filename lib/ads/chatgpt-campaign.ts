@@ -356,10 +356,12 @@ export async function markChatgptCampaignLaunched(input: {
   }).eq("id", input.campaignId).eq("brokerage_id", input.brokerageId).select("id")
   if (uErr) return { success: false, error: uErr.message }
   if (!flipped?.length) return { success: false, error: "No row was updated" }
-  const { error: eErr } = await svc.from("lifecycle_events").insert({
-    brokerage_id: input.brokerageId, entity_type: "ad_campaign", entity_id: input.campaignId, event_type: "ad_campaign_launched",
-    actor_user_id: input.actorUserId, metadata: { platform: "chatgpt", campaign_name: c.campaign_name, launched_via: "human_confirmation_chatgpt_ads_manager", external_campaign_id: input.externalCampaignId ?? null },
-  })
+  const kernelEmit = await import("@/lib/kernel/emit")
+  const { error: eErr } = kernelEmit.asWriteResult(await kernelEmit.emitKernelEvent({
+    brokerageId: input.brokerageId, entityType: "ad_campaign", entityId: input.campaignId, event: "ad_campaign_launched",
+    actorUserId: input.actorUserId, metadata: { platform: "chatgpt", campaign_name: c.campaign_name, launched_via: "human_confirmation_chatgpt_ads_manager", external_campaign_id: input.externalCampaignId ?? null },
+    auditOnly: true,
+  }))
   if (eErr) return { success: true, error: `Launched, but lifecycle event failed to record: ${eErr.message}` }
   return { success: true }
 }
@@ -443,14 +445,16 @@ export async function launchChatgptCampaignOnOpenai(input: LaunchChatgptInput): 
   if (flipError || !flipped?.length) {
     return { ...result, reason: `Active on OpenAI Ads (${result.openaiCampaignId}) but the row did NOT flip to live: ${flipError?.message ?? "no row matched"} — mark it launched by hand` }
   }
-  const { error: eventError } = await svc.from("lifecycle_events").insert({
-    brokerage_id: input.brokerageId,
-    entity_type: "ad_campaign",
-    entity_id: input.campaignId,
-    event_type: "ad_campaign_launched",
-    actor_user_id: input.actorUserId,
+  const kernelEmit = await import("@/lib/kernel/emit")
+  const { error: eventError } = kernelEmit.asWriteResult(await kernelEmit.emitKernelEvent({
+    brokerageId: input.brokerageId,
+    entityType: "ad_campaign",
+    entityId: input.campaignId,
+    event: "ad_campaign_launched",
+    actorUserId: input.actorUserId,
     metadata: { platform: "chatgpt", launched_via: input.launchedVia, openai_campaign_id: result.openaiCampaignId, review_status: result.reviewStatus ?? null },
-  })
+    auditOnly: true,
+  }))
   if (eventError) console.error("[chatgpt-campaign] launch ledger refused:", eventError.message)
   return result
 }

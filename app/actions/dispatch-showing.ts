@@ -187,19 +187,20 @@ export async function dispatchStopScheduling(
   }
 
   // Record the dispatch attempt — agent UI reads this to show history.
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    brokerage_id:  ctx.brokerageId,
-    entity_type:   "tour_stop",
-    entity_id:     input.tourStopId,
-    event_type:    result.sent ? "tour_stop.scheduling_sent" : "tour_stop.scheduling_drafted",
-    actor_user_id: ctx.userId,
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId:  ctx.brokerageId,
+    entityType:   "tour_stop",
+    entityId:     input.tourStopId,
+    event:    result.sent ? "tour_stop.scheduling_sent" : "tour_stop.scheduling_drafted",
+    actorUserId: ctx.userId,
     metadata: {
       channel:       input.channel,
       provider_ref:  result.providerRef,
       to:            result.draft.to,
       sent:          result.sent,
     },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return { ...result, success: true, channel: input.channel }
 }

@@ -236,14 +236,15 @@ export async function updateMagnetSettingsAction(magnetId: string, settings: Rec
     if (error) return { success: false as const, error: error.message }
     // Audit trail (merged from the kernel command): who changed which settings.
     // Best-effort — the settings write above already succeeded.
-    const { error: auditError } = await supabase.from("lifecycle_events").insert({
-      entity_type: "lead_capture_form",
-      entity_id: magnetId,
-      event_type: "lead_magnet_updated",
-      actor_user_id: ctx.userId ?? null,
-      brokerage_id: ctx.brokerageId,
+    const kernelEmit = await import("@/lib/kernel/emit")
+    const { error: auditError } = kernelEmit.asWriteResult(await kernelEmit.emitKernelEvent({
+      entityType: "lead_capture_form",
+      entityId: magnetId,
+      event: "lead_magnet_updated",
+      actorUserId: ctx.userId ?? null,
+      brokerageId: ctx.brokerageId,
       metadata: { updatedFields: Object.keys(updatePayload).filter((k) => k !== "updated_at") },
-    })
+    }))
     if (auditError) console.warn("[lead-magnets] settings updated but audit event refused:", auditError.message)
     return { success: true as const }
   } catch (err: any) {

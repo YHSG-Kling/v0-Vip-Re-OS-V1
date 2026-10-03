@@ -284,17 +284,18 @@ export async function POST(req: NextRequest) {
   }
 
   // lifecycle_events + OFFER_UPLOADED kernel event (non-blocking)
-  await bestEffort(supabase.from("lifecycle_events").insert({
-    brokerage_id:  brokerageId,
-    entity_type:   "offer",
-    entity_id:     offer.id,
-    event_type:    KernelEvent.OFFER_UPLOADED,
-    actor_user_id: user.id,
+  await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId:  brokerageId,
+    entityType:   "offer",
+    entityId:     offer.id,
+    event:    KernelEvent.OFFER_UPLOADED,
+    actorUserId: user.id,
     metadata: {
       listing_id:        listingId,
       offer_document_url: publicUrl,
     },
-  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+    auditOnly: true,
+  }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   await processKernelEvent({
     event:      KernelEvent.OFFER_UPLOADED,

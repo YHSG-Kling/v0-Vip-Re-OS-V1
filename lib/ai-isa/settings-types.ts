@@ -203,13 +203,18 @@ export interface DeadEndEvidence {
  *     line (lib/ai-isa/customer-context-tools.ts, which names THIS reader as the one it was waiting for);
  *     the NEWEST line wins, so a later "no" clears an earlier "yes"
  *   · leads.long_term_nurture_until — recordAiIsaOutcome 'not_ready_now' → postponed until that date
- * Called by lib/ai-isa/lead-action-plan.ts advanceLeadActionPlans (the lead sweep).
+ * Called by lib/ai-isa/lead-action-plan.ts advanceLeadActionPlans (the lead sweep) and, keyed by
+ * contact, loadContactNbaContext (the contact NBA, wave 100). `property_sold` is written by
+ * lib/kernel/ai-isa.ts recordObservedDeadEnd onto ai_isa_activities (the platform observes a sale).
  */
 export function deadEndsFromLeadSources(input: {
   isaOutcomes?: ReadonlyArray<{ outcome: string | null; created_at: string | null }>
   callOutcomes?: ReadonlyArray<{ outcome: string | null; created_at: string | null }>
   qualificationSummary?: string | null
   longTermNurtureUntil?: string | null
+  /** Wave 100 (100B): the contact NBA feeds the SAME sources keyed by contact. Only the evidence
+   *  label of the qualification line changes (contacts.qualification_summary); default 'lead'. */
+  subject?: 'lead' | 'contact'
 }): DeadEndEvidence[] {
   const out: DeadEndEvidence[] = []
   const at = (v: string | null | undefined) => (v && Number.isFinite(new Date(v).getTime()) ? new Date(v) : null)
@@ -226,7 +231,7 @@ export function deadEndsFromLeadSources(input: {
   }
   const lines = [...(input.qualificationSummary ?? "").matchAll(/already represented by an agent:\s*(yes|no)/gi)]
   if (lines.length > 0 && lines[lines.length - 1][1].toLowerCase() === "yes") {
-    out.push({ outcome: "already_represented", at: null, source: "leads.qualification_summary" })
+    out.push({ outcome: "already_represented", at: null, source: input.subject === 'contact' ? "contacts.qualification_summary" : "leads.qualification_summary" })
   }
   const until = at(input.longTermNurtureUntil)
   if (until) out.push({ outcome: "postponed", at: null, until, source: "leads.long_term_nurture_until" })

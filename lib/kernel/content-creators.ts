@@ -1644,17 +1644,19 @@ export async function createVideoProject(input: CreateVideoProjectInput): Promis
     feature: "video_project", projectId: String(project.id), autonomous: false, decision: videoMeter,
   })
 
-  const { error: eventError } = await supabase.from("lifecycle_events").insert({
-    entity_type: "video_project",
-    entity_id: project.id,
-    brokerage_id: brokerageId,
-    event_type: KernelEvent.VIDEO_GENERATION_REQUESTED,
-    actor_user_id: userId,     // users-class
+  const kernelEmit = await import("@/lib/kernel/emit")
+  const { error: eventError } = kernelEmit.asWriteResult(await kernelEmit.emitKernelEvent({
+    entityType: "video_project",
+    entityId: project.id,
+    brokerageId: brokerageId,
+    event: KernelEvent.VIDEO_GENERATION_REQUESTED,
+    actorUserId: userId,     // users-class
     metadata: {
       video_type: input.videoType, title: input.title, campaign_id: marketingCampaignId,
       source_type: input.sourceType ?? null, source_id: input.sourceId ?? null,
     },
-  })
+    auditOnly: true,
+  }))
   if (eventError) console.error("[content-creators] lifecycle_events insert error:", eventError.message)
 
   await processKernelEvent({

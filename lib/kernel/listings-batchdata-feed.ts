@@ -354,6 +354,18 @@ async function runActiveListingDiscoveryForMarket(
       const removedAt = Date.parse(String(l.removedDate ?? ""))
       const soldAt = Date.parse(String(record?.lastSaleDate ?? ""))
       const sold = Number.isFinite(removedAt) && Number.isFinite(soldAt) && soldAt >= removedAt - 7 * 86_400_000
+      // NEGATIVE INTELLIGENCE (wave 100, lane 100B): a SALE is a dead end for the person who held
+      // this address — the property_sold WRITER the dead-end vocabulary lacked, onto the existing
+      // source both NBAs read (lib/kernel/ai-isa.ts recordObservedDeadEnd → ai_isa_activities).
+      if (sold) {
+        const { recordObservedDeadEnd } = await import("@/lib/kernel/ai-isa")
+        const dead = await recordObservedDeadEnd(supabase, {
+          brokerageId: matched.brokerageId, subject: { type: matched.entity, id: matched.id }, outcome: "property_sold",
+          source: "market_active_listings sold transition (RentCast property record)",
+          observed: { address: addressRaw, removed_date: l.removedDate ?? null, last_sale_date: record?.lastSaleDate ?? null },
+        })
+        if (dead.error) errors.push(`property_sold dead end not recorded for ${addressRaw}: ${dead.error}`)
+      }
       signal = {
         signalType: sold ? SOLD_LISTING_SIGNAL_TYPE : EXPIRED_LISTING_SIGNAL_TYPE,
         strength: sold ? "weak" : "moderate",

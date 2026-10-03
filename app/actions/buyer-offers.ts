@@ -913,14 +913,14 @@ export async function createOffer(
   }
 
   // lifecycle_events insert
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    brokerage_id:  brokerageId,
-    entity_type:   "buyer_lifecycle",
-    entity_id:     contactId,
-    event_type:    "offer.created",
-    actor_user_id: agentUserId,
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId:  brokerageId,
+    entityType:   "buyer_lifecycle",
+    entityId:     contactId,
+    event:    "offer.created",
+    actorUserId: agentUserId,
     metadata:      { offer_id: offer.id, property_address: form.property_address },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return { success: true, offerId: offer.id }
 }

@@ -264,14 +264,14 @@ export async function createLeadMagnet(
   }
 
   // 2. Log lifecycle event
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    entity_type: "lead_capture_form",
-    entity_id: form.id,
-    event_type: "lead_magnet_created",
-    actor_user_id: input.createdBy,
-    brokerage_id: input.brokerageId,
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType: "lead_capture_form",
+    entityId: form.id,
+    event: "lead_magnet_created",
+    actorUserId: input.createdBy,
+    brokerageId: input.brokerageId,
     metadata: { magnetType: input.magnetType, title: input.title },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return {
     success: true,
@@ -379,14 +379,14 @@ export async function publishLeadMagnet(
   }
 
   // Log lifecycle event
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    entity_type: "lead_capture_form",
-    entity_id: input.magnetId,
-    event_type: "lead_magnet_published",
-    actor_user_id: input.actorUserId,
-    brokerage_id: input.brokerageId,
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType: "lead_capture_form",
+    entityId: input.magnetId,
+    event: "lead_magnet_published",
+    actorUserId: input.actorUserId,
+    brokerageId: input.brokerageId,
     metadata: { channels: input.channels, landingUrl, publishedAt },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return {
     success: true,
@@ -813,16 +813,16 @@ export async function captureFormSubmission(
   }
 
   // Log lifecycle event
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    entity_type: "form_submission",
-    entity_id: submission.id,
-    event_type: "form_submission_captured",
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType: "form_submission",
+    entityId: submission.id,
+    event: "form_submission_captured",
     // The submitter is a public visitor, not a platform user: actor_user_id FKs users(id), so the
     // contact id here refused every echo with 23503 (wave 93 live walk). The contact rides in metadata.
-    actor_user_id: null,
-    brokerage_id: input.brokerageId,
+    actorUserId: null,
+    brokerageId: input.brokerageId,
     metadata: { formId: input.formId, contactId, source: input.source },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // Notify agent — non-fatal
   if (form.agent_id) {
@@ -1074,20 +1074,18 @@ export async function trackMagnetEvent(
   }
 
   // Log the lifecycle event — stamped to the MAGNET's tenant.
-  const { data: event, error } = await supabase
-    .from("lifecycle_events")
-    .insert({
-      entity_type: "lead_capture_form",
-      entity_id: input.magnetId,
-      event_type: `lead_magnet_${input.eventType}`,
+  const kernelEmit = await import("@/lib/kernel/emit")
+  const { data: event, error } = kernelEmit.asWriteResult(await kernelEmit.emitKernelEvent({
+      entityType: "lead_capture_form",
+      entityId: input.magnetId,
+      event: `lead_magnet_${input.eventType}`,
       // A contact is not a platform user (actor_user_id FKs users): a contact id here refused the
       // event with 23503 every time a visitor submitted (wave 93 live walk). contactId rides in metadata.
-      actor_user_id: null,
-      brokerage_id: tenantId,
+      actorUserId: null,
+      brokerageId: tenantId,
       metadata: { ...input.metadata, contactId: input.contactId },
-    })
-    .select("id")
-    .maybeSingle()
+      auditOnly: true,
+    }))
 
   if (error) {
     return { success: false, error: error.message }

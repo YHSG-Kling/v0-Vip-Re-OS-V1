@@ -251,7 +251,9 @@ function supersetLayer() {
   const eventInsert = insertObject(body, "lifecycle_events")
   check("the survivor still resolves the provider and emits the kernel event",
     /resolveVideoProvider\s*\(/.test(body) &&
-    /event_type\s*:\s*KernelEvent\.VIDEO_GENERATION_REQUESTED/.test(eventInsert) &&
+    // Wave 100 (100B): the row may be written through emitKernelEvent (event: …) — same rule.
+    (/event_type\s*:\s*KernelEvent\.VIDEO_GENERATION_REQUESTED/.test(eventInsert) ||
+      /emitKernelEvent\(\{[\s\S]{0,300}?event\s*:\s*KernelEvent\.VIDEO_GENERATION_REQUESTED/.test(body)) &&
     /processKernelEvent\(\{\s*event\s*:\s*KernelEvent\.VIDEO_GENERATION_REQUESTED/.test(body.replace(/\s*\n\s*/g, " ")))
 
   // The kernel creator's own shape WAS the reference for "nothing lost" while it
@@ -293,7 +295,8 @@ function silentFailureLayer() {
     (/verifyInTenant\(supabase,\s*"marketing_campaigns"/.test(body) && /if\s*\(!v\.ok\)\s*return/.test(body)
       && /const\s*\{\s*data,\s*error\s*\}\s*=\s*await\s*client\.from\(table\)/.test(verifier) && /if\s*\(error\)\s*return\s*\{\s*ok:\s*false/.test(verifier)))
   check("the lifecycle_events insert destructures error — it used to be a bare await",
-    /const\s*\{\s*error:\s*\w+\s*\}\s*=\s*await\s*supabase\s*\.?\s*from\(["']lifecycle_events["']\)/.test(body.replace(/\s*\n\s*/g, " ")))
+    /const\s*\{\s*error:\s*\w+\s*\}\s*=\s*await\s*supabase\s*\.?\s*from\(["']lifecycle_events["']\)/.test(body.replace(/\s*\n\s*/g, " ")) ||
+    /const\s*\{\s*error:\s*\w+\s*\}\s*=\s*kernelEmit\.asWriteResult\(await\s*kernelEmit\.emitKernelEvent\(/.test(body))
 }
 
 // ── 4. THE ROUTE — RETIRED ONTO THE SURVIVOR (wave 86, lane 86B) ────────────

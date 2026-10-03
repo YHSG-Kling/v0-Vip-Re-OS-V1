@@ -261,14 +261,12 @@ export async function reassignContactAction(input: {
   }
 
   // ── Audit (same lifecycle_events idiom as the bulk flow) — best-effort ──
-  await sentinelWrite(svc, svc
-    .from("lifecycle_events")
-    .insert({
-      brokerage_id: auth.brokerageId,
-      entity_type: "contact",
-      entity_id: input.contactId,
-      event_type: "CONTACT_REASSIGNED",
-      actor_user_id: auth.actorUserId,
+  await sentinelWrite(svc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: auth.brokerageId,
+      entityType: "contact",
+      entityId: input.contactId,
+      event: "CONTACT_REASSIGNED",
+      actorUserId: auth.actorUserId,
       metadata: {
         from_agent: fromAgentId,
         to_agent: input.toAgentId,
@@ -278,8 +276,8 @@ export async function reassignContactAction(input: {
         open_tasks_moved: result.openTasksMoved,
         alerts_moved: result.alertsMoved,
       },
-      created_at: nowIso,
-    }), { table: "lifecycle_events", flow: "contact_reassigned_audit", reason: "audit echo of a reassignment already made (best-effort by design)" })
+      createdAt: nowIso,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "contact_reassigned_audit", reason: "audit echo of a reassignment already made (best-effort by design)" })
 
   // ── Tell the receiving agent (in-app notification, mirrors the bulk flow) ──
   if (targetUserId) {

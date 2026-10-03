@@ -272,13 +272,14 @@ export async function uploadBusinessCard(params: {
     }).eq("id", scan!.id)
     if (scanUpdateVendorError) console.error("[businessCardUpload] scan classification update (vendor) failed:", scanUpdateVendorError)
 
-    await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-      brokerage_id: brokerageId,
-      entity_type: "vendor",
-      entity_id: vendor.id,
-      event_type: KernelEvent.BUSINESS_CARD_APPROVED,
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: brokerageId,
+      entityType: "vendor",
+      entityId: vendor.id,
+      event: KernelEvent.BUSINESS_CARD_APPROVED,
       metadata: { scanId: scan!.id, routed_to: "vendor", category: category ?? VENDOR_CATEGORY_OTHER, card_subject_type: cardSubjectType },
-    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      auditOnly: true,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     await processKernelEvent({
       event: KernelEvent.BUSINESS_CARD_APPROVED,
@@ -326,13 +327,14 @@ export async function uploadBusinessCard(params: {
     }).eq("id", scan!.id)
     if (scanUpdateAgentError) console.error("[businessCardUpload] scan classification update (agent) failed:", scanUpdateAgentError)
 
-    await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-      brokerage_id: brokerageId,
-      entity_type: "recruit",
-      entity_id: recruit.id,
-      event_type: KernelEvent.BUSINESS_CARD_APPROVED,
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: brokerageId,
+      entityType: "recruit",
+      entityId: recruit.id,
+      event: KernelEvent.BUSINESS_CARD_APPROVED,
       metadata: { scanId: scan!.id, routed_to: "recruit", card_subject_type: cardSubjectType },
-    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      auditOnly: true,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     await processKernelEvent({
       event: KernelEvent.BUSINESS_CARD_APPROVED,
@@ -358,13 +360,14 @@ export async function uploadBusinessCard(params: {
     }).eq("id", scan!.id)
     if (scanUpdateSphereError) console.error("[businessCardUpload] scan classification update (sphere/unknown) failed:", scanUpdateSphereError)
 
-    await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-      brokerage_id: brokerageId,
-      entity_type: "business_card",
-      entity_id: scan!.id,
-      event_type: KernelEvent.BUSINESS_CARD_APPROVED,
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: brokerageId,
+      entityType: "business_card",
+      entityId: scan!.id,
+      event: KernelEvent.BUSINESS_CARD_APPROVED,
       metadata: { scanId: scan!.id, card_subject_type: cardSubjectType },
-    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      auditOnly: true,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     await processKernelEvent({
       event: KernelEvent.BUSINESS_CARD_APPROVED,
@@ -420,13 +423,14 @@ export async function uploadBusinessCard(params: {
     .eq("id", scan!.id)
   if (scanUpdateContactError) console.error("[businessCardUpload] scan classification update (contact) failed:", scanUpdateContactError)
 
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type: "contact",
-    entity_id: contactId,
-    event_type: KernelEvent.BUSINESS_CARD_APPROVED,
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: brokerageId,
+    entityType: "contact",
+    entityId: contactId,
+    event: KernelEvent.BUSINESS_CARD_APPROVED,
     metadata: { scanId: scan!.id, autoApproved: true, card_subject_type: cardSubjectType },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   await processKernelEvent({
     event: KernelEvent.BUSINESS_CARD_APPROVED,

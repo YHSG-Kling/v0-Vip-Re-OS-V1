@@ -45,6 +45,15 @@
  *     transparency-update window, portal idempotency) handles the rest. No DB-level unique index
  *     because lifecycle_events is intentionally append-only (audit log).
  *
+ * AUDIT-ONLY TYPED EVENTS (wave 100, lane 100B). Some product modules write a typed KernelEvent
+ * row as a pure audit echo — either the module fans the event out ITSELF right after (with a
+ * different metadata shape the reactor reads), or the owner has never ruled that the event should
+ * bell anyone. Moving those onto this emitter without a switch would START a fan-out (or double
+ * one). `auditOnly: true` writes the row WITH lineage (causation/correlation from the scope) and
+ * skips the reactor — one emitter, one more option, never a second emitter (LAW 2).
+ * `asWriteResult` adapts the result to the supabase `{ data, error }` shape so a moved inserter
+ * keeps its sentinelWrite / bestEffort wrapper (which ledgers the loss) unchanged.
+ *
  * Never throws — emitters are usually inside scoring/coaching/detection paths where a fan-out
  * failure must not break the primary write. The insert's own refusal IS reported (supabase-js
  * resolves refusals, §3): `error` carries it and `inserted` is false.
@@ -113,6 +122,10 @@ export interface EmitKernelEventInput {
   lifecycleEventId?: string
   complianceEventId?: string
   activityId?:        string
+  // ── Audit-only (wave 100, lane 100B) ─────────────────────────────────────────────────────────
+  /** Write the row (with lineage) and DO NOT fan out, even for a typed KernelEvent. For audit echoes
+   *  whose caller fans out separately, or that the owner has never ruled should notify anyone. */
+  auditOnly?:         boolean
 }
 
 export interface EmitKernelEventResult {
@@ -128,7 +141,14 @@ export interface EmitKernelEventResult {
  * 2026-09-03 sweep found 40+ modules silently dropping notifications / sequences / portal).
  */
 export async function emitKernelEvent(input: EmitKernelEventInput): Promise<EmitKernelEventResult> {
-  const svc = createServiceClient()
+  // "Never throws" includes a missing service credential: a moved inserter that used to resolve
+  // a refusal must not start throwing into its caller.
+  let svc: ReturnType<typeof createServiceClient>
+  try {
+    svc = createServiceClient()
+  } catch (e) {
+    return { inserted: false, lifecycleEventId: null, fanOutOk: false, error: (e as Error).message }
+  }
   const metadata: Record<string, unknown> = { ...(input.metadata ?? {}) }
 
   let lifecycleEventId: string | null = input.lifecycleEventId ?? null
@@ -218,11 +238,11 @@ export async function emitKernelEvent(input: EmitKernelEventInput): Promise<Emit
   // THE GATE — see the header. Free-form lifecycle strings are audit-only; typed KernelEvents
   // reach staff notifications, sequence enrollment, portal cards and every reactor handler.
   let fanOutOk = true
-  if (input.brokerageId && isKernelEventValue(input.event as string)) {
+  if (shouldFanOut(input)) {
     try {
       await processKernelEvent({
         event:             input.event as KernelEvent,
-        brokerageId:       input.brokerageId,
+        brokerageId:       input.brokerageId as string, // shouldFanOut proved it non-null
         entityType:        input.entityType,
         entityId:          input.entityId,
         lifecycleEventId:  lifecycleEventId ?? undefined,
@@ -244,4 +264,21 @@ export async function emitKernelEvent(input: EmitKernelEventInput): Promise<Emit
   }
 
   return { inserted, lifecycleEventId, fanOutOk, error: null }
+}
+
+/** THE GATE as one predicate: a tenant, a typed KernelEvent, and not audit-only. (Executed by
+ *  scripts/action-ledger-guard.ts §13b through emitKernelEvent itself, against a fake PostgREST.) */
+function shouldFanOut(input: Pick<EmitKernelEventInput, "brokerageId" | "event" | "auditOnly">): boolean {
+  return !!input.brokerageId && !input.auditOnly && isKernelEventValue(input.event as string)
+}
+
+/**
+ * emitKernelEvent's result in the supabase write shape (`{ data, error }`), so a moved inserter keeps
+ * its `sentinelWrite(svc, …)` / `bestEffort(…)` wrapper — the loss ledger — byte-for-byte.
+ */
+export function asWriteResult(r: EmitKernelEventResult): { data: { id: string } | null; error: { message: string } | null } {
+  return {
+    data: r.lifecycleEventId ? { id: r.lifecycleEventId } : null,
+    error: r.error ? { message: r.error } : null,
+  }
 }

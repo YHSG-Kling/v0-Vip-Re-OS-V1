@@ -303,14 +303,15 @@ export async function scheduleListingAppointment(params: {
   ]
 
   for (const sub of subEvents) {
-    await bestEffort(supabase.from("lifecycle_events").insert({
-      brokerage_id:  brokerageId,
-      entity_type:   "listing_stage_machine",
-      entity_id:     listingId,
-      event_type:    sub.event_type,
-      actor_user_id: userId,
+    await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId:  brokerageId,
+      entityType:   "listing_stage_machine",
+      entityId:     listingId,
+      event:    sub.event_type,
+      actorUserId: userId,
       metadata:      sub.metadata,
-    }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+      auditOnly: true,
+    }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
   }
 
   return { success: true }
@@ -509,14 +510,16 @@ export async function initiateListingAgreement(params: {
   if (!stageGate.ok) return { success: false, error: stageGate.error }
 
   // Sub-event: agreement paperwork started inside LISTING_AGREEMENT_INITIATED stage — no state change
-  const { error: leError } = await supabase.from("lifecycle_events").insert({
-    brokerage_id:  brokerageId,
-    entity_type:   "listing_stage_machine",
-    entity_id:     listingId,
-    event_type:    KernelEvent.LISTING_AGREEMENT_INITIATED,
-    actor_user_id: userId,
+  const kernelEmit = await import("@/lib/kernel/emit")
+  const { error: leError } = kernelEmit.asWriteResult(await kernelEmit.emitKernelEvent({
+    brokerageId:  brokerageId,
+    entityType:   "listing_stage_machine",
+    entityId:     listingId,
+    event:    KernelEvent.LISTING_AGREEMENT_INITIATED,
+    actorUserId: userId,
     metadata:      { stage: "LISTING_AGREEMENT_INITIATED" },
-  })
+    auditOnly: true,
+  }))
 
   if (leError) {
     return { success: false, error: leError.message }
@@ -1301,14 +1304,15 @@ export async function markRepairFailed(params: {
   }
 
   // Sub-event: kernel event + lifecycle_events row
-  await bestEffort(supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type:  "listing_stage_machine",
-    entity_id:    listingId,
-    event_type:   KernelEvent.LISTING_REPAIR_FAILED,
-    actor_user_id: userId,
+  await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: brokerageId,
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    event:   KernelEvent.LISTING_REPAIR_FAILED,
+    actorUserId: userId,
     metadata: { repair_id: repairId, reason },
-  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+    auditOnly: true,
+  }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
   await processKernelEvent({
     event:      KernelEvent.LISTING_REPAIR_FAILED,
     brokerageId,
@@ -1359,14 +1363,15 @@ export async function scheduleMediaCapture(params: {
   }
 
   // Sub-event: kernel event + lifecycle_events row
-  await bestEffort(supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type:  "listing_stage_machine",
-    entity_id:    listingId,
-    event_type:   KernelEvent.LISTING_MEDIA_SCHEDULED,
-    actor_user_id: userId,
+  await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: brokerageId,
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    event:   KernelEvent.LISTING_MEDIA_SCHEDULED,
+    actorUserId: userId,
     metadata: { scheduled_date: scheduledDate, vendor_id: vendorId ?? null },
-  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+    auditOnly: true,
+  }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
   await processKernelEvent({
     event:      KernelEvent.LISTING_MEDIA_SCHEDULED,
     brokerageId,
@@ -1812,14 +1817,15 @@ export async function submitToMLSAdmin(params: {
   }
 
   // Sub-event: kernel event + lifecycle_events row
-  await bestEffort(supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type:  "listing_stage_machine",
-    entity_id:    listingId,
-    event_type:   KernelEvent.LISTING_MLS_SUBMITTED_TO_ADMIN,
-    actor_user_id: userId,
+  await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: brokerageId,
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    event:   KernelEvent.LISTING_MLS_SUBMITTED_TO_ADMIN,
+    actorUserId: userId,
     metadata: {},
-  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+    auditOnly: true,
+  }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
   await processKernelEvent({
     event:      KernelEvent.LISTING_MLS_SUBMITTED_TO_ADMIN,
     brokerageId,
@@ -1936,14 +1942,14 @@ export async function activateMLS(params: {
   })
 
   // Sub-event within MLS_ACTIVE stage — no stage change → lifecycle_events
-  await bestEffort(supabase.from("lifecycle_events").insert({
-    brokerage_id:  brokerageId,
-    entity_type:   "listing_stage_machine",
-    entity_id:     listingId,
-    event_type:    "seller.listing.syndicated",
-    actor_user_id: userId,
+  await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId:  brokerageId,
+    entityType:   "listing_stage_machine",
+    entityId:     listingId,
+    event:    "seller.listing.syndicated",
+    actorUserId: userId,
     metadata:      { mls_number: mlsNumber },
-  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+  }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   return { success: true }
 }
@@ -2106,14 +2112,15 @@ export async function recordShowingCompleted(params: {
   }
 
   // Sub-event: kernel event + lifecycle_events row
-  await bestEffort(supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type:  "listing_stage_machine",
-    entity_id:    listingId,
-    event_type:   KernelEvent.LISTING_SHOWING_COMPLETED,
-    actor_user_id: userId,
+  await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: brokerageId,
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    event:   KernelEvent.LISTING_SHOWING_COMPLETED,
+    actorUserId: userId,
     metadata: { showing_id: showingId, feedback: feedback ?? null },
-  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+    auditOnly: true,
+  }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
   await processKernelEvent({
     event:      KernelEvent.LISTING_SHOWING_COMPLETED,
     brokerageId,

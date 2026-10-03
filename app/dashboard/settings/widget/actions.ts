@@ -52,14 +52,14 @@ export async function saveWidgetSettings({
     .maybeSingle()
 
   if (agent?.brokerage_id) {
-    await sentinelWrite(service, service.from("lifecycle_events").insert({
-      brokerage_id: agent.brokerage_id,
-      event_type: "widget_settings_updated",
-      entity_type: "agent",
-      entity_id: agentId,
-      actor_user_id: user.id,
+    await sentinelWrite(service, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: agent.brokerage_id,
+      event: "widget_settings_updated",
+      entityType: "agent",
+      entityId: agentId,
+      actorUserId: user.id,
       metadata: { widget_enabled: enabled, widget_position: position },
-    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
   }
 
   revalidatePath("/dashboard/settings/widget")
@@ -164,14 +164,14 @@ export async function saveAIIdentity({
   }
 
   // Emit lifecycle event
-  await sentinelWrite(service, service.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    event_type: "ai_identity_updated",
-    entity_type: agentId ? "agent" : "brokerage",
-    entity_id: agentId ?? brokerageId,
-    actor_user_id: user.id,
+  await sentinelWrite(service, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: brokerageId,
+    event: "ai_identity_updated",
+    entityType: agentId ? "agent" : "brokerage",
+    entityId: agentId ?? brokerageId,
+    actorUserId: user.id,
     metadata: { assistant_name: assistantName, tone, formality_level: formality },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   revalidatePath("/dashboard/settings/widget")
   return { success: true }

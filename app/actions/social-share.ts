@@ -105,11 +105,11 @@ export async function shareListingPost(params: {
     }
 
     // Fire kernel event
-    await bestEffort(supabase.from("lifecycle_events").insert({
-      entity_type: "agent_social_share",
-      entity_id: share.id,
-      brokerage_id: params.brokerageId,
-      event_type: KernelEvent.SOCIAL_POST_SHARED_BY_AGENT,
+    await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      entityType: "agent_social_share",
+      entityId: share.id,
+      brokerageId: params.brokerageId,
+      event: KernelEvent.SOCIAL_POST_SHARED_BY_AGENT,
       metadata: {
         social_post_id: params.socialPostId,
         agent_user_id: params.agentUserId,
@@ -117,7 +117,8 @@ export async function shareListingPost(params: {
         original_platform: post.platform,
         listing_id: post.listing_id,
       },
-    }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+      auditOnly: true,
+    }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
     await processKernelEvent({
       event: KernelEvent.SOCIAL_POST_SHARED_BY_AGENT,

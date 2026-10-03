@@ -254,16 +254,16 @@ export async function createListingRecord(
     // refused insert and a written row looked identical, and the listing's
     // history silently began empty. Non-fatal (the listing exists either way)
     // but never silent.
-    const { error: eventError } = await supabase
-      .from("lifecycle_events")
-      .insert({
-        entity_type:  "listing",
-        entity_id:    listing.id,
-        event_type:   KernelEvent.LISTING_CREATED ?? "listing_created",
-        brokerage_id: input.brokerageId,
+    const kernelEmit = await import("@/lib/kernel/emit")
+    const { error: eventError } = kernelEmit.asWriteResult(await kernelEmit.emitKernelEvent({
+        entityType:  "listing",
+        entityId:    listing.id,
+        event:   KernelEvent.LISTING_CREATED ?? "listing_created",
+        brokerageId: input.brokerageId,
         metadata:     { stage: "LISTING_AGREEMENT_INITIATED", agent_id: input.agentId },
-        created_at:   new Date().toISOString(),
-      })
+        createdAt:   new Date().toISOString(),
+        auditOnly: true,
+      }))
     if (eventError) {
       console.error("[createListingRecord] lifecycle_events insert failed — this listing has no creation row:", eventError.message)
     }
@@ -719,16 +719,15 @@ export async function launchListing(input: {
     // event never landed without it. The updated listing row carries it.
     // `to_state` is the key transitionLifecycle uses and the key every timeline
     // reader looks for; `stage` is kept alongside it for the older readers.
-    const { error: launchEventError } = await supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: (listing as any)?.brokerage_id ?? null,
-        entity_type:  "listing",
-        entity_id:    input.listingId,
-        event_type:   "listing_stage_active",
+    const kernelEmit = await import("@/lib/kernel/emit")
+    const { error: launchEventError } = kernelEmit.asWriteResult(await kernelEmit.emitKernelEvent({
+        brokerageId: (listing as any)?.brokerage_id ?? null,
+        entityType:  "listing",
+        entityId:    input.listingId,
+        event:   "listing_stage_active",
         metadata:     { mls_number: input.mlsNumber, actor: input.actorUserId, to_state: "MLS_ACTIVE", stage: "MLS_ACTIVE" },
-        created_at:   new Date().toISOString(),
-      })
+        createdAt:   new Date().toISOString(),
+      }))
     if (launchEventError) {
       console.error("[launchListing] lifecycle_events insert failed — the launch is not in the listing's history:", launchEventError.message)
     }

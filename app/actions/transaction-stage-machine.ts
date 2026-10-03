@@ -125,12 +125,12 @@ export async function advanceTransactionStage(params: {
     if (updateErr) return { success: false, error: updateErr.message }
 
     // Audit trail — explicit override event with reason + actor role in metadata
-    await sentinelWrite(svc, svc.from("lifecycle_events").insert({
-      brokerage_id:  brokerageId,
-      entity_type:   "transaction",
-      entity_id:     params.transactionId,
-      event_type:    "transaction.stage_overridden",
-      actor_user_id: overrideCtx.userId,
+    await sentinelWrite(svc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId:  brokerageId,
+      entityType:   "transaction",
+      entityId:     params.transactionId,
+      event:    "transaction.stage_overridden",
+      actorUserId: overrideCtx.userId,
       metadata: {
         from_stage:           current.stage,
         to_stage:             params.targetStage,
@@ -139,8 +139,8 @@ export async function advanceTransactionStage(params: {
         override_user_type:   overrideCtx.userType,
         original_reason:      params.reason ?? null,
       },
-      created_at: new Date().toISOString(),
-    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      createdAt: new Date().toISOString(),
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     revalidatePath(`/dashboard/transactions/${params.transactionId}`)
     revalidatePath(`/dashboard/coordinator`)

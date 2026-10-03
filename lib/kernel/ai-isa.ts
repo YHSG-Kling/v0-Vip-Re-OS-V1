@@ -672,18 +672,16 @@ export async function assignAiIsaToLeadAfterGate(
 
     if (updateErr) throw updateErr
 
-    await sentinelWrite(supabase, supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: ctx.brokerageId,
-        entity_type: "lead",
-        entity_id: leadId,
-        event_type: "ai_isa_assigned",
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: ctx.brokerageId,
+        entityType: "lead",
+        entityId: leadId,
+        event: "ai_isa_assigned",
         metadata: {
           assigned_by: ctx.userId,
           campaign_id: campaignId ?? null,
         },
-      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { success: true }
   } catch (err) {
@@ -766,15 +764,13 @@ export async function startAiIsaAutomation(
     if (startLeadFlag.error) return { success: false, error: `Could not start AI ISA automation: ${startLeadFlag.error.message}` }
     if ((startLeadFlag.data ?? []).length === 0) return { success: false, error: "Lead not found in this brokerage — AI ISA automation unchanged" }
 
-    await sentinelWrite(supabase, supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: ctx.brokerageId,
-        entity_type: "lead",
-        entity_id: leadId,
-        event_type: "ai_isa_automation_started",
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: ctx.brokerageId,
+        entityType: "lead",
+        entityId: leadId,
+        event: "ai_isa_automation_started",
         metadata: { channel, campaign_id: campaignId ?? null, actor: ctx.userId },
-      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { success: true }
   } catch (err) {
@@ -839,15 +835,13 @@ export async function pauseAiIsaAutomation(
     if (pauseLeadFlag.error) return { success: false, error: `Could not pause AI ISA automation: ${pauseLeadFlag.error.message}` }
     if ((pauseLeadFlag.data ?? []).length === 0) return { success: false, error: "Lead not found in this brokerage — AI ISA automation unchanged" }
 
-    await sentinelWrite(supabase, supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: ctx.brokerageId,
-        entity_type: "lead",
-        entity_id: leadId,
-        event_type: "ai_isa_automation_paused",
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: ctx.brokerageId,
+        entityType: "lead",
+        entityId: leadId,
+        event: "ai_isa_automation_paused",
         metadata: { reason, actor: ctx.userId },
-      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { success: true }
   } catch (err) {
@@ -920,15 +914,13 @@ export async function resumeAiIsaAutomation(
     if (resumeLeadFlag.error) return { success: false, error: `Could not resume AI ISA automation: ${resumeLeadFlag.error.message}` }
     if ((resumeLeadFlag.data ?? []).length === 0) return { success: false, error: "Lead not found in this brokerage — AI ISA automation unchanged" }
 
-    await sentinelWrite(supabase, supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: ctx.brokerageId,
-        entity_type: "lead",
-        entity_id: leadId,
-        event_type: "ai_isa_automation_resumed",
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: ctx.brokerageId,
+        entityType: "lead",
+        entityId: leadId,
+        event: "ai_isa_automation_resumed",
         metadata: { actor: ctx.userId, notes: notes ?? null },
-      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { success: true }
   } catch (err) {
@@ -1006,19 +998,17 @@ export async function handoffToHumanAgent(
       .eq("brokerage_id", ctx.brokerageId)
     if (ownerFlipErr) throw new Error(`Handoff ${handoffRes.data.id} created, but the lead's AI ISA ownership was not released: ${ownerFlipErr.message}`)
 
-    await sentinelWrite(supabase, supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: ctx.brokerageId,
-        entity_type: "lead",
-        entity_id: leadId,
-        event_type: "ai_isa_handoff_created",
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: ctx.brokerageId,
+        entityType: "lead",
+        entityId: leadId,
+        event: "ai_isa_handoff_created",
         metadata: {
           handoff_id: handoffRes.data.id,
           assigned_agent_id: assignedAgentId ?? null,
           reason: handoffReason,
         },
-      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { success: true, data: { handoffId: handoffRes.data.id } }
   } catch (err) {
@@ -1146,15 +1136,13 @@ export async function recordAiIsaOutcome(
       if (apptOnCallErr) console.error(`[kernel/ai-isa] appointment outcome NOT recorded on the ISA call: ${apptOnCallErr.message}`)
     }
 
-    await sentinelWrite(supabase, supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: ctx.brokerageId,
-        entity_type: "lead",
-        entity_id: leadId,
-        event_type: "ai_isa_outcome_recorded",
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: ctx.brokerageId,
+        entityType: "lead",
+        entityId: leadId,
+        event: "ai_isa_outcome_recorded",
         metadata: { outcome, call_id: callId ?? null, actor: ctx.userId },
-      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     // ── Side-effects gated on outcome ────────────────────────────────────
     if (outcome === "explicit_opt_out") {
@@ -1268,17 +1256,18 @@ export async function routeHistoryToCanonicalEntity(
     const now = new Date().toISOString()
 
     // Write the inbound event
-    await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-      brokerage_id: ctx.brokerageId,
-      entity_type: entityType,
-      entity_id: entityId,
-      event_type: "isa_reply_received",
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: ctx.brokerageId,
+      entityType: entityType,
+      entityId: entityId,
+      event: "isa_reply_received",
       metadata: {
         channel,
         text: inboundText.slice(0, 500),
         provider_message_id: providerMessageId ?? null,
       },
-    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      auditOnly: true,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     // Update last activity. leads has last_activity_at; contacts tracks
     // recency via last_contacted_at (no last_activity_at column).
@@ -1426,4 +1415,95 @@ export async function resolveLeadChannel(
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Failed to resolve channel" }
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OBSERVED DEAD ENDS (wave 100, lane 100B) — the SYSTEM writer beside recordAiIsaOutcome.
+//
+// The 7-value dead-end vocabulary (lib/ai-isa/settings-types.ts DEAD_END_OUTCOMES) had
+// `property_sold` with NO writer: nothing a person tells the ISA records it — the PLATFORM
+// observes it (the RentCast active-listing monitor sees a sold transition; a transaction closes
+// on the address). It is written onto the EXISTING dead-end source both NBAs already read —
+// ai_isa_activities (activity_type 'outcome_recorded', outcome) — keyed by lead_id OR contact_id,
+// so deadEndsFromLeadSources picks it up on the lead sweep and on the contact NBA alike. No new
+// table, no new column. Idempotent per (person, outcome): an existing row is not re-written.
+// Callers: lib/kernel/listings-batchdata-feed.ts (sold transition) and
+// lib/kernel/transactions.ts closeTransactionCommand (seller leads at the closed address).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ObservedDeadEndInput {
+  brokerageId: string
+  subject: { type: "lead" | "contact"; id: string }
+  /** A canonical DEAD_END_OUTCOMES value the platform can OBSERVE (a person states the others). */
+  outcome: "property_sold"
+  /** Where it was observed — the evidence line a later decision shows. */
+  source: string
+  observed?: Record<string, unknown>
+}
+
+export async function recordObservedDeadEnd(
+  supabase: any,
+  input: ObservedDeadEndInput,
+): Promise<{ recorded: boolean; duplicate: boolean; error: string | null }> {
+  if (!input.brokerageId || !input.subject?.id) return { recorded: false, duplicate: false, error: "brokerageId and subject are required" }
+  const keyCol = input.subject.type === "lead" ? "lead_id" : "contact_id"
+  const { data: prior, error: priorErr } = await supabase
+    .from("ai_isa_activities")
+    .select("id")
+    .eq("brokerage_id", input.brokerageId)
+    .eq(keyCol, input.subject.id)
+    .eq("activity_type", "outcome_recorded")
+    .eq("outcome", input.outcome)
+    .limit(1)
+  // Fail closed on the dedupe read: a refused read is said, never treated as "no prior row".
+  if (priorErr) return { recorded: false, duplicate: false, error: `dead-end dedupe read refused: ${priorErr.message}` }
+  if ((prior ?? []).length > 0) return { recorded: false, duplicate: true, error: null }
+  const { data: written, error } = await supabase
+    .from("ai_isa_activities")
+    .insert({
+      brokerage_id: input.brokerageId,
+      lead_id: input.subject.type === "lead" ? input.subject.id : null,
+      contact_id: input.subject.type === "contact" ? input.subject.id : null,
+      activity_type: "outcome_recorded",
+      outcome: input.outcome,
+      summary: `Observed by the platform: ${input.source}`,
+      qualifying_response: { actor: "system", source: input.source, observed: input.observed ?? null },
+    })
+    .select("id")
+  if (error) return { recorded: false, duplicate: false, error: error.message }
+  const n = (written ?? []).length
+  return { recorded: n === 1, duplicate: false, error: n === 1 ? null : "insert returned no row" }
+}
+
+/**
+ * The closed-transaction half: a SELLER LEAD still being prospected at the address that just
+ * closed has sold — record property_sold on each (LEADS only: the transaction's own contacts are
+ * our clients, whose relationship continues as lifetime customers). Same address normaliser and
+ * the same 200-row page the listing feed's matcher uses.
+ */
+export async function recordPropertySoldForClosedAddress(
+  supabase: any,
+  input: { brokerageId: string; address: string | null | undefined; transactionId: string },
+): Promise<{ recorded: number; errors: string[] }> {
+  const out = { recorded: 0, errors: [] as string[] }
+  const { normalizeStreetAddress } = await import("@/lib/external/permit-signals")
+  const key = normalizeStreetAddress(input.address)
+  if (!key) return out
+  const { data: leads, error } = await supabase
+    .from("leads")
+    .select("id, address, mailing_address")
+    .eq("brokerage_id", input.brokerageId)
+    .is("converted_at", null)
+    .limit(200)
+  if (error) { out.errors.push(`leads read refused: ${error.message}`); return out }
+  for (const l of (leads ?? []) as Array<{ id: string; address: string | null; mailing_address: string | null }>) {
+    if (normalizeStreetAddress(l.address) !== key && normalizeStreetAddress(l.mailing_address) !== key) continue
+    const r = await recordObservedDeadEnd(supabase, {
+      brokerageId: input.brokerageId, subject: { type: "lead", id: l.id }, outcome: "property_sold",
+      source: "transactions.status=closed", observed: { transaction_id: input.transactionId },
+    })
+    if (r.recorded) out.recorded++
+    else if (r.error) out.errors.push(`lead ${l.id}: ${r.error}`)
+  }
+  return out
 }

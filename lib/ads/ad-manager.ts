@@ -367,7 +367,8 @@ async function runAdHandler(
       // the publisher's 'launching' queue.
       const { error: launchErr } = await svc.from("ad_campaigns").update({ status: "launching", targeting_config: { ...(campaign.targeting_config ?? {}), assembled_ad: assembled.meta ?? assembled.google } }).eq("id", campaignId)
       if (launchErr) return { status: "failed", result: { error: `ad campaign launch refused: ${launchErr.message}` } }
-      await sentinelWrite(svc, svc.from("lifecycle_events").insert({ brokerage_id: brokerageId, entity_type: "ad_campaign", entity_id: campaignId, event_type: "ad_campaign_launched", actor_user_id: null, metadata: { via: "ads_manager" } }), { table: "lifecycle_events", flow: "ad_campaign_launched_echo", brokerageId, reason: "lifecycle echo after the launch flip landed" })
+      await sentinelWrite(svc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({ brokerageId: brokerageId, entityType: "ad_campaign", entityId: campaignId, event: "ad_campaign_launched", actorUserId: null, metadata: { via: "ads_manager" },
+ auditOnly: true}).then(k.asWriteResult)), { table: "lifecycle_events", flow: "ad_campaign_launched_echo", brokerageId, reason: "lifecycle echo after the launch flip landed" })
       return { status: "succeeded", result: { campaign_id: campaignId, status: "launching", validated: true } }
     }
     case "pause_ad_campaign": {

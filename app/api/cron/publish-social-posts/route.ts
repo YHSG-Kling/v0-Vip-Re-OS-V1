@@ -298,18 +298,19 @@ export async function GET(request: Request) {
           }), { table: "social_engagement_tracking", flow: "social_engagement_tracking_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
           // processKernelEvent(KernelEvent.SOCIAL_POST_PUBLISHED)
-          await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-            entity_type: "social_post",
-            entity_id: post.id,
-            brokerage_id: post.brokerage_id,
-            event_type: KernelEvent.SOCIAL_POST_PUBLISHED,
+          await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+            entityType: "social_post",
+            entityId: post.id,
+            brokerageId: post.brokerage_id,
+            event: KernelEvent.SOCIAL_POST_PUBLISHED,
             metadata: {
               platform: post.platform,
               external_post_id: publishResult.externalPostId,
               listing_id: post.listing_id,
               post_type: post.post_type,
             },
-          }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+            auditOnly: true,
+          }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
           await processKernelEvent({
             event: KernelEvent.SOCIAL_POST_PUBLISHED,
@@ -359,18 +360,19 @@ export async function GET(request: Request) {
         }), { table: "social_publish_log", flow: "social_publish_log_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
         // processKernelEvent(KernelEvent.SOCIAL_POST_FAILED)
-        await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-          entity_type: "social_post",
-          entity_id: post.id,
-          brokerage_id: post.brokerage_id,
-          event_type: KernelEvent.SOCIAL_POST_FAILED,
+        await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+          entityType: "social_post",
+          entityId: post.id,
+          brokerageId: post.brokerage_id,
+          event: KernelEvent.SOCIAL_POST_FAILED,
           metadata: {
             platform: post.platform,
             error: postError.message,
             retry_count: retryCount,
             listing_id: post.listing_id,
           },
-        }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+          auditOnly: true,
+        }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
         await processKernelEvent({
           event: KernelEvent.SOCIAL_POST_FAILED,

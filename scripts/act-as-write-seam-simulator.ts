@@ -190,7 +190,8 @@ function main() {
   const crm = read("lib/kernel/crm.ts")
   check("kernel updateContactRecord accepts actorUserId and stamps lifecycle_events.actor_user_id",
     /actorUserId\?: string \| null/.test(crm) &&
-    (crm.match(/actor_user_id: params\.actorUserId \?\? null/g) ?? []).length >= 2)
+    // Wave 100 (100B): the rows go through emitKernelEvent, whose actorUserId writes actor_user_id.
+    (crm.match(/(actor_user_id|actorUserId): params\.actorUserId \?\? null/g) ?? []).length >= 2)
 
   console.log("\n[wired actions — listings.ts]")
   const listings = read("app/actions/listings.ts")

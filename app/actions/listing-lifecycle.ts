@@ -146,12 +146,12 @@ export async function advanceListingStage(
     if (updateErr) throw updateErr
 
     // Audit trail
-    await sentinelWrite(svc, svc.from("lifecycle_events").insert({
-      brokerage_id:  overrideCtx.brokerageId,
-      entity_type:   "listing",
-      entity_id:     listingId,
-      event_type:    "listing.stage_overridden",
-      actor_user_id: overrideCtx.userId,
+    await sentinelWrite(svc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId:  overrideCtx.brokerageId,
+      entityType:   "listing",
+      entityId:     listingId,
+      event:    "listing.stage_overridden",
+      actorUserId: overrideCtx.userId,
       metadata: {
         from_stage:           listing.lifecycle_stage,
         to_stage:             toStage,
@@ -160,8 +160,8 @@ export async function advanceListingStage(
         override_user_type:   overrideCtx.userType,
         notes:                notes ?? null,
       },
-      created_at: new Date().toISOString(),
-    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      createdAt: new Date().toISOString(),
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     // A manual override still RUNS the stage's automations — the listing IS now at this stage, so its
     // managers must act (prep chain, packet, …). The override only bypassed the PREREQUISITE gates.

@@ -85,21 +85,19 @@ export async function POST(request: NextRequest) {
 
         // Emit kernel event for critical escalations
         if (escalatedSeverity === "critical" && errorRecord) {
-          await bestEffort(supabase
-            .from("lifecycle_events")
-            .insert({
-              brokerage_id: errorRecord.brokerage_id,
-              entity_type: "automation_error",
-              entity_id: id,
-              event_type: "SYSTEM_HEALTH_ALERT",
-              actor_user_id: user.id,
+          await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+              brokerageId: errorRecord.brokerage_id,
+              entityType: "automation_error",
+              entityId: id,
+              event: "SYSTEM_HEALTH_ALERT",
+              actorUserId: user.id,
               metadata: {
                 workflow_name: errorRecord.workflow_name,
                 severity: "critical",
                 escalated_by: user.id,
                 notes,
               },
-            }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+            }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
         }
 
         // Send notification if user specified

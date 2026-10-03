@@ -254,12 +254,12 @@ export async function POST(req: NextRequest) {
     }
 
     // 5. Direct lifecycle_events insert
-    await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-      brokerage_id: event.brokerage_id,
-      entity_type: "listing_stage_machine",
-      entity_id: event.listing_id,
-      event_type: "listing.open_house.attendee_captured",
-      actor_user_id: event.agent_id,
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: event.brokerage_id,
+      entityType: "listing_stage_machine",
+      entityId: event.listing_id,
+      event: "listing.open_house.attendee_captured",
+      actorUserId: event.agent_id,
       metadata: {
         attendee_id: attendee.id,
         contact_id: contactId,
@@ -267,7 +267,7 @@ export async function POST(req: NextRequest) {
         working_with_agent: workingWithAgent,
         hear_about_us: hearAboutUs ?? null,
       },
-    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     // 6. processKernelEvent
     // contactId + metadata.eventId are carried so lib/kernel/event-reactor.ts's

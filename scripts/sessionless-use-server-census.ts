@@ -505,6 +505,7 @@ const LEDGER: Record<string, Ruling> = {
     "app/actions/lifetime-customer-touchpoints.ts::sendBirthdayMessage",
     "app/actions/lifetime-customer-touchpoints.ts::sendReferralRequest",
   ], { kind: "adjudicated", why: "CLIENT SEAM FILLED — resolveTouchpointActor takes opts.client ?? createClient() and opts.agentId ?? auth.getUser(); app/api/cron/lifetime-customer-touchpoints passes { agentId, client: supabase } (service) on every call, so neither cookie read runs." }),
+  "app/actions/ai-isa/engage-contact.ts::engageContact": { kind: "adjudicated", why: "NETWORK-ONLY SESSION READ — refuseForeignNetworkTenant reads headers() and requireCaller() ONLY when the request carries a `next-action` header (a server action invoked over the network). The sessionless callers (app/api/cron/speed-to-lead > lib/ai-isa/speed-to-lead.ts, the stale-contact cron via initiateAIISAContactEngagement) call it directly inside a route handler — no next-action header, so the cookie read never runs and the trusted brokerageId stands; outside request scope headers() throws and is caught as 'not network-invoked'. Wave 100 integrator: closes the caller-claimed-tenant IDOR lane 100B flagged on this public export." },
   "app/actions/open-house-automation.ts::processEventFollowups": { kind: "adjudicated", why: "CLIENT SEAM FILLED — processEventFollowups(eventId, client) uses client ?? createClient(); app/api/cron/open-house-followup passes svc. Lane 86E threaded the SAME client into its analytics tail (generateEventAnalytics built its own cookie client and wrote an all-zero open_house_analytics row from the cron)." },
   "app/actions/showings.ts::requestShowing": { kind: "adjudicated", why: "CLIENT SEAM FILLED — requestShowing's sessionless-caller overload (app/actions/showings.ts, `caller?: { client, actorUserId }`); lib/voice/showing-request.ts passes { client: svc, actorUserId }, so the cookie client and auth.getUser are never reached from the voice tool call." },
   "app/actions/ai-isa/initiate-engagement.ts::initiateAIISAEngagement": { kind: "adjudicated", why: "DUAL-MODE GATE WITH A PRESENTED CREDENTIAL — the speed-to-lead cron (lib/ai-isa/speed-to-lead.ts) passes { internalSecret: CRON_SECRET }; getAgentContext answers unauthenticated and the gate admits the matching secret; every read is on the service client with the lead row's tenant. Lane 86E closed the env-PRESENCE trust (any anonymous POST was 'trusted internal' on a real deploy)." },
@@ -683,11 +684,9 @@ console.log("\n═══ 5. THE EMITTER (lane 86F) — no sessionless path inser
   // verified row's tenant; logEventAndTrigger is a SESSION door. lib/offers/
   // offer-extractor.ts (inbound-mail webhook) took the service client through a seam.
   // What remains is ADJUDICATED with evidence; a NEW writer fails, a stale entry fails.
-  const EVENT_LEDGER: Record<string, string> = {
-    "lib/kernel/education.ts": "MODULE-LEVEL OVER-REPORT through the lib/kernel barrel — app/api/cron/calendar-sync imports ONLY pullCalendarEventsFromProvider from @/lib/kernel (the same evidence as respondToCounter above); education's session writers have no sessionless caller.",
-    "lib/kernel/listings.ts": "MODULE-LEVEL OVER-REPORT through the lib/kernel barrel — reached only via app/api/cron/calendar-sync's `import { pullCalendarEventsFromProvider } from \"@/lib/kernel\"`.",
-    "lib/kernel/offers.ts": "MODULE-LEVEL OVER-REPORT through the lib/kernel barrel — calendar-sync imports only pullCalendarEventsFromProvider; offers.ts's cookie insert helper is reached from its session actions.",
-  }
+  // Wave 100 (100B): education.ts / listings.ts / offers.ts moved their lifecycle_events rows onto
+  // emitKernelEvent (service client) — no cookie-client event writer is left to adjudicate.
+  const EVENT_LEDGER: Record<string, string> = {}
   console.log(`  event writers on the cookie client reached sessionless: ${r.eventWriters.length} (${r.eventWriters.filter((w) => EVENT_LEDGER[w.file]).length} adjudicated)`)
   for (const w of r.eventWriters) console.log(`    ${EVENT_LEDGER[w.file] ? "· adjudicated" : "✗ NEW"}  ${w.file}  path: ${w.path.join(" > ")}`)
   const newWriters = r.eventWriters.filter((w) => !EVENT_LEDGER[w.file])

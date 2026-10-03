@@ -143,18 +143,19 @@ export async function createAdCampaign(
   }
 
   // ── 3. Lifecycle event + kernel event ───────────────────────────────────────
-  await bestEffort(supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type: "ad_campaign",
-    entity_id: campaign.id,
-    event_type: "ad_campaign_created",
-    actor_user_id: userId,
+  await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: brokerageId,
+    entityType: "ad_campaign",
+    entityId: campaign.id,
+    event: "ad_campaign_created",
+    actorUserId: userId,
     metadata: {
       platform: params.platform,
       objective: params.objective,
       campaign_name: params.campaignName,
     },
-  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+    auditOnly: true,
+  }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   // ── 4. Increment usage ──────────────────────────────────────────────────────
   await incrementFeatureUsage(userId, "ad_creator")
@@ -558,14 +559,14 @@ export async function rejectCreativeVariation(
   // ad_creative_variations has no rejection_reason column (verified against the
   // live schema), so it is recorded on the lifecycle ledger instead, where the
   // approval rail already reads ad_creative events.
-  await bestEffort(supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type: "ad_creative_variation",
-    entity_id: variationId,
-    event_type: "ad_creative_rejected",
-    actor_user_id: userId,
+  await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: brokerageId,
+    entityType: "ad_creative_variation",
+    entityId: variationId,
+    event: "ad_creative_rejected",
+    actorUserId: userId,
     metadata: { reason: reason ?? null },
-  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+  }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   return { success: true }
 }
@@ -630,17 +631,18 @@ export async function launchAdCampaign(
   }
 
   // ── 3. Record lifecycle event ───────────────────────────────────────────────
-  await bestEffort(supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type: "ad_campaign",
-    entity_id: campaignId,
-    event_type: "ad_campaign_launched",
-    actor_user_id: userId,
+  await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: brokerageId,
+    entityType: "ad_campaign",
+    entityId: campaignId,
+    event: "ad_campaign_launched",
+    actorUserId: userId,
     metadata: {
       platform: campaign.platform,
       campaign_name: campaign.campaign_name,
     },
-  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+    auditOnly: true,
+  }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   return { success: true }
 }

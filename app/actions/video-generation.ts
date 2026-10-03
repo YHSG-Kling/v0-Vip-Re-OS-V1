@@ -257,18 +257,19 @@ export async function saveVideoScript(data: {
   }
 
   // Write lifecycle_events row
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    entity_type: "video_script",
-    entity_id: script.id,
-    brokerage_id: brokerageId,
-    event_type: KernelEvent.SCRIPT_GENERATED,
-    actor_user_id: createdBy,
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType: "video_script",
+    entityId: script.id,
+    brokerageId: brokerageId,
+    event: KernelEvent.SCRIPT_GENERATED,
+    actorUserId: createdBy,
     metadata: {
       script_type: data.scriptType,
       ai_generated: data.aiGenerated ?? false,
       approval_status: data.approvalStatus ?? "draft",
     },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // Fire kernel event
   await processKernelEvent({
@@ -400,17 +401,18 @@ export async function updateScriptApprovalStatus(
       ? KernelEvent.SCRIPT_REJECTED
       : KernelEvent.SCRIPT_GENERATED
 
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    entity_type: "video_script",
-    entity_id: scriptId,
-    brokerage_id: brokerageId,
-    event_type: eventType,
-    actor_user_id: actorUserId,
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType: "video_script",
+    entityId: scriptId,
+    brokerageId: brokerageId,
+    event: eventType,
+    actorUserId: actorUserId,
     metadata: {
       approval_status: approvalStatus,
       compliance_review_notes: complianceReviewNotes,
     },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // ── RENDER FROM APPROVAL (wave 87, lane 87D) ───────────────────────────────
   // The kernel row above is the ledger; it dispatches nothing, so the routed
@@ -595,18 +597,19 @@ export async function createScriptVariation(data: {
   }
 
   // Write lifecycle event
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    entity_type: "script_variation",
-    entity_id: variation.id,
-    brokerage_id: brokerageId,
-    event_type: KernelEvent.SCRIPT_VARIATION_CREATED,
-    actor_user_id: createdBy,
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType: "script_variation",
+    entityId: variation.id,
+    brokerageId: brokerageId,
+    event: KernelEvent.SCRIPT_VARIATION_CREATED,
+    actorUserId: createdBy,
     metadata: {
       script_library_id: data.scriptLibraryId,
       variation_label: data.variationLabel,
       is_ab_test: data.isAbTest ?? false,
     },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // Fire kernel event for variation
   await processKernelEvent({
@@ -906,11 +909,11 @@ async function checkAndFirePerformanceEvents(brokerageId: string, tracking: any)
   const clickThroughRate = tracking.click_through_rate || 0
 
   // Always fire VIDEO_PERFORMANCE_UPDATED
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    entity_type: "video_performance",
-    entity_id: tracking.id,
-    brokerage_id: brokerageId,
-    event_type: KernelEvent.VIDEO_PERFORMANCE_UPDATED,
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType: "video_performance",
+    entityId: tracking.id,
+    brokerageId: brokerageId,
+    event: KernelEvent.VIDEO_PERFORMANCE_UPDATED,
     metadata: {
       total_views: totalViews,
       completion_rate: completionRate,
@@ -918,7 +921,8 @@ async function checkAndFirePerformanceEvents(brokerageId: string, tracking: any)
       video_asset_id: tracking.video_asset_id,
       video_project_id: tracking.video_project_id,
     },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   await processKernelEvent({
     event: KernelEvent.VIDEO_PERFORMANCE_UPDATED,
@@ -933,18 +937,19 @@ async function checkAndFirePerformanceEvents(brokerageId: string, tracking: any)
     completionRate >= PERFORMANCE_THRESHOLDS.HIGH_PERFORMER.minCompletionRate &&
     clickThroughRate >= PERFORMANCE_THRESHOLDS.HIGH_PERFORMER.minClickThroughRate
   ) {
-    await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-      entity_type: "video_performance",
-      entity_id: tracking.id,
-      brokerage_id: brokerageId,
-      event_type: KernelEvent.VIDEO_HIGH_PERFORMER_DETECTED,
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      entityType: "video_performance",
+      entityId: tracking.id,
+      brokerageId: brokerageId,
+      event: KernelEvent.VIDEO_HIGH_PERFORMER_DETECTED,
       metadata: {
         total_views: totalViews,
         completion_rate: completionRate,
         click_through_rate: clickThroughRate,
         thresholds: PERFORMANCE_THRESHOLDS.HIGH_PERFORMER,
       },
-    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      auditOnly: true,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     await processKernelEvent({
       event: KernelEvent.VIDEO_HIGH_PERFORMER_DETECTED,
@@ -960,18 +965,19 @@ async function checkAndFirePerformanceEvents(brokerageId: string, tracking: any)
     completionRate <= PERFORMANCE_THRESHOLDS.LOW_PERFORMER.maxCompletionRate &&
     clickThroughRate <= PERFORMANCE_THRESHOLDS.LOW_PERFORMER.maxClickThroughRate
   ) {
-    await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-      entity_type: "video_performance",
-      entity_id: tracking.id,
-      brokerage_id: brokerageId,
-      event_type: KernelEvent.VIDEO_LOW_PERFORMER_DETECTED,
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      entityType: "video_performance",
+      entityId: tracking.id,
+      brokerageId: brokerageId,
+      event: KernelEvent.VIDEO_LOW_PERFORMER_DETECTED,
       metadata: {
         total_views: totalViews,
         completion_rate: completionRate,
         click_through_rate: clickThroughRate,
         thresholds: PERFORMANCE_THRESHOLDS.LOW_PERFORMER,
       },
-    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      auditOnly: true,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     await processKernelEvent({
       event: KernelEvent.VIDEO_LOW_PERFORMER_DETECTED,

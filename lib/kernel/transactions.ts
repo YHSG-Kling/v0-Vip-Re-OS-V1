@@ -1145,7 +1145,7 @@ export async function closeTransactionCommand(params: {
     // Capture related entities BEFORE the close so we can propagate state
     const { data: txBefore } = await supabase
       .from("transactions")
-      .select("listing_id, buyer_contact_id, seller_contact_id, contact_id")
+      .select("listing_id, buyer_contact_id, seller_contact_id, contact_id, property_address")
       .eq("id", params.transactionId)
       .eq("brokerage_id", params.brokerageId)
       .maybeSingle()
@@ -1223,12 +1223,12 @@ export async function closeTransactionCommand(params: {
         performed_by:   params.agentId,
         created_at:     nowIso,
       }), { table: "transaction_timeline", flow: "transaction_closed_timeline", brokerageId: params.brokerageId, reason: "timeline echo after the close landed" }),
-      sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-        brokerage_id:  params.brokerageId,
-        entity_type:   "transaction",
-        entity_id:     params.transactionId,
-        event_type:    KernelEvent.TRANSACTION_CLOSED,
-        actor_user_id: params.agentId,
+      sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId:  params.brokerageId,
+        entityType:   "transaction",
+        entityId:     params.transactionId,
+        event:    KernelEvent.TRANSACTION_CLOSED,
+        actorUserId: params.agentId,
         // Must match the metadata handed to the skipInsert emitKernelEvent call
         // below: that call fans out with { reason, close_date } in memory, but
         // THIS is the row a later reader (the portal-stream-projector cron)
@@ -1236,8 +1236,9 @@ export async function closeTransactionCommand(params: {
         // carried metadata: null forever — a one-sided wire of the same shape
         // this sweep was named for (rich payload in-process, empty on disk).
         metadata:      { reason: params.reason ?? null, close_date: today },
-        created_at:    nowIso,
-      }), { table: "lifecycle_events", flow: "transaction_closed_event_row", brokerageId: params.brokerageId, reason: "the persisted TRANSACTION_CLOSED row the portal projector re-reads; fan-out below runs regardless" }),
+        createdAt:    nowIso,
+        auditOnly: true,
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "transaction_closed_event_row", brokerageId: params.brokerageId, reason: "the persisted TRANSACTION_CLOSED row the portal projector re-reads; fan-out below runs regardless" }),
       ...activityWrites,
     ])
 
@@ -1292,6 +1293,21 @@ export async function closeTransactionCommand(params: {
       })
     } catch (e) {
       console.error("[closeTransactionCommand] emitKernelEvent(DEAL_CLOSED) failed (non-blocking)", e)
+    }
+
+    // NEGATIVE INTELLIGENCE (wave 100, lane 100B): the property SOLD — a seller lead still being
+    // prospected at this address is a property_sold dead end (lib/kernel/ai-isa.ts). Best-effort:
+    // the close already landed; a miss is logged, never thrown.
+    try {
+      const { recordPropertySoldForClosedAddress } = await import("@/lib/kernel/ai-isa")
+      const sold = await recordPropertySoldForClosedAddress(supabase, {
+        brokerageId: params.brokerageId,
+        address: (txBefore as { property_address?: string | null } | null)?.property_address ?? null,
+        transactionId: params.transactionId,
+      })
+      if (sold.errors.length) console.warn("[closeTransactionCommand] property_sold dead end not fully recorded:", sold.errors.join("; "))
+    } catch (e) {
+      console.error("[closeTransactionCommand] property_sold dead-end writer failed (non-blocking)", e)
     }
 
     // ── Propagate close to related entities ────────────────────────────────

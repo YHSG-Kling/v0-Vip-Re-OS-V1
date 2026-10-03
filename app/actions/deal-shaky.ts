@@ -46,14 +46,15 @@ export async function setDealShakyAction(input: {
     .update({ deal_shaky: input.shaky }).eq("id", input.transactionId)
   if (error) return { ok: false, error: error.message }
 
-  await sentinelWrite(svc, svc.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type: "transaction",
-    entity_id: input.transactionId,
-    event_type: input.shaky ? "deal_marked_shaky" : "deal_shaky_cleared",
-    actor_user_id: user.id,
+  await sentinelWrite(svc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: brokerageId,
+    entityType: "transaction",
+    entityId: input.transactionId,
+    event: input.shaky ? "deal_marked_shaky" : "deal_shaky_cleared",
+    actorUserId: user.id,
     metadata: { by: user.id },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return { ok: true, shaky: input.shaky }
 }

@@ -488,14 +488,15 @@ export async function endOpenHouseEvent(params: {
     // attendee already welcomed at check-in is a no-op here, never a second
     // send — proved in scripts/conversion-welcome-simulator.ts.
     for (const attendee of attendees) {
-      await sentinelWrite(serviceClient, serviceClient.from("lifecycle_events").insert({
-        brokerage_id: auth.brokerageId,
-        entity_type: "listing",
-        entity_id: params.listingId,
-        event_type: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
-        actor_user_id: auth.userId,
+      await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: auth.brokerageId,
+        entityType: "listing",
+        entityId: params.listingId,
+        event: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
+        actorUserId: auth.userId,
         metadata: { attendee_id: attendee.id, scored_at_event_end: true },
-      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+        auditOnly: true,
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
       await processKernelEvent({
         event:       KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
@@ -515,14 +516,14 @@ export async function endOpenHouseEvent(params: {
     attendeeCount: attendees?.length ?? 0,
   })
 
-  await sentinelWrite(serviceClient, serviceClient.from("lifecycle_events").insert({
-    brokerage_id: auth.brokerageId,
-    entity_type: "listing_stage_machine",
-    entity_id: params.listingId,
-    event_type: "listing.open_house.completed",
-    actor_user_id: auth.userId,
+  await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: auth.brokerageId,
+    entityType: "listing_stage_machine",
+    entityId: params.listingId,
+    event: "listing.open_house.completed",
+    actorUserId: auth.userId,
     metadata: { event_id: params.eventId, attendee_count: attendees?.length ?? 0 },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
   return { success: true }
@@ -636,14 +637,15 @@ export async function createOpenHouseEvent(params: {
   if (error) return { success: false, error: error.message }
   if (!event) return { success: false, error: "Failed to create event" }
 
-  await sentinelWrite(serviceClient, serviceClient.from("lifecycle_events").insert({
-    brokerage_id: auth.brokerageId,
-    entity_type: "listing",
-    entity_id: params.listingId,
-    event_type: KernelEvent.OPEN_HOUSE_SCHEDULED,
-    actor_user_id: auth.userId,
+  await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: auth.brokerageId,
+    entityType: "listing",
+    entityId: params.listingId,
+    event: KernelEvent.OPEN_HOUSE_SCHEDULED,
+    actorUserId: auth.userId,
     metadata: { event_id: event.id, event_date: params.eventDate },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // Portal fan-out: the seller sees "Open house scheduled" on their portal.
   const { data: ohListing } = await serviceClient
@@ -735,19 +737,20 @@ export async function checkInAttendee(params: {
 
   if (error) return { success: false, error: error.message }
 
-  await sentinelWrite(serviceClient, serviceClient.from("lifecycle_events").insert({
-    brokerage_id: event.brokerage_id,
-    entity_type: "listing",
-    entity_id: event.listing_id,
-    event_type: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
-    actor_user_id: event.agent_id,
+  await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: event.brokerage_id,
+    entityType: "listing",
+    entityId: event.listing_id,
+    event: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
+    actorUserId: event.agent_id,
     metadata: {
       attendee_id: attendee?.id,
       event_id: params.eventId,
       has_email: !!params.email,
       working_with_agent: params.workingWithAgent,
     },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   if (params.email || safePhone) {
     const { error: kioskConsentErr } = await serviceClient.from("contact_consent_events").insert({
@@ -831,14 +834,15 @@ export async function convertAttendeeToContact(params: {
     if (contactErr || !newContact) return { success: false, error: contactErr?.message ?? "Failed to create contact" }
     contactId = newContact.id
 
-    await sentinelWrite(serviceClient, serviceClient.from("lifecycle_events").insert({
-      brokerage_id: auth.brokerageId,
-      entity_type: "contact",
-      entity_id: contactId,
-      event_type: KernelEvent.CONTACT_CREATED,
-      actor_user_id: auth.userId,
+    await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: auth.brokerageId,
+      entityType: "contact",
+      entityId: contactId,
+      event: KernelEvent.CONTACT_CREATED,
+      actorUserId: auth.userId,
       metadata: { source: "open_house", attendee_id: params.attendeeId, listing_id: params.listingId },
-    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      auditOnly: true,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     // AUTOMATIC ENRICHMENT ON A NEW CONTACT (owner, wave 14). The insert above was
     // the WHOLE emit: the row landed, the event was auditable, and the REACTOR
@@ -955,19 +959,20 @@ export async function scheduleShowingFromAttendee(params: {
 
   if (error) return { success: false, error: error.message }
 
-  await sentinelWrite(serviceClient, serviceClient.from("lifecycle_events").insert({
-    brokerage_id: auth.brokerageId,
-    entity_type: "listing",
-    entity_id: params.listingId,
-    event_type: KernelEvent.SHOWING_REQUESTED,
-    actor_user_id: auth.userId,
+  await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: auth.brokerageId,
+    entityType: "listing",
+    entityId: params.listingId,
+    event: KernelEvent.SHOWING_REQUESTED,
+    actorUserId: auth.userId,
     metadata: {
       source: "open_house_post_event",
       attendee_id: params.attendeeId,
       contact_id: params.contactId,
       showing_request_id: showingReq?.id,
     },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
   return { success: true, showingRequestId: showingReq?.id }

@@ -743,7 +743,9 @@ const assertions: Assertion[] = [
     },
     breaks: [
       { file: F.kernelListings, find: `    const { data: listing, error: prefillError } = await supabase`, replace: `    const { data: listing } = await supabase` },
-      { file: F.kernelListings, find: `    const { error: launchEventError } = await supabase`, replace: `    await supabase` },
+      // Wave 100 (100B): the launch event row moved onto emitKernelEvent (no supabase statement left
+      // to mutate there) — the second probe now strips the agents read's error instead.
+      { file: F.kernelListings, find: `    const { data: agentRow, error: agentRowError } = await supabase`, replace: `    const { data: agentRow } = await supabase` },
     ],
   },
 

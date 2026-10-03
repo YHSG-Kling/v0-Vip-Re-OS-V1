@@ -251,13 +251,14 @@ export async function mergeOrUpdateContactIfDuplicate(params: {
   }), { table: "lead_deduplication_log", flow: "lead_deduplication_log_write", reason: "dedup audit row; the merge itself landed" })
 
   // Lifecycle event
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    entity_type: "contact",
-    entity_id: params.existingContactId,
-    event_type: KernelEvent.CONTACT_MERGED,
-    brokerage_id: params.brokerageId,
-    created_at: now,
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType: "contact",
+    entityId: params.existingContactId,
+    event: KernelEvent.CONTACT_MERGED,
+    brokerageId: params.brokerageId,
+    createdAt: now,
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return {
     success: true,
@@ -845,14 +846,15 @@ export async function convertLeadToContact(params: {
   // function): it names both sides of the fact, the automatic lane and
   // lib/audiences/audience-sync.ts:204 already speak it, and
   // scripts/lead-pipeline-simulator.ts:262 already asserts on it.
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    entity_type:  "lead",
-    entity_id:    params.leadId,
-    event_type:   KernelEvent.LEAD_CONVERTED_TO_CONTACT,
-    brokerage_id: params.brokerageId,
-    created_at:   now,
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType:  "lead",
+    entityId:    params.leadId,
+    event:   KernelEvent.LEAD_CONVERTED_TO_CONTACT,
+    brokerageId: params.brokerageId,
+    createdAt:   now,
     metadata:     { contact_id: result.contactId },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // A newly-created converted lead was qualified + consented, so AI-ISA keeps
   // engaging the contact until an agent toggles it off (merged from the retired
@@ -1069,13 +1071,14 @@ export async function notifyAssignedAgentForNextAction(params: {
   // (KernelEvent.CONTACT_CREATED) + subjectDisplayName. One alert, human text.
   // The CONTACT_AGENT_NOTIFIED echo below stays: the agent IS notified, by the survivor.
 
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    entity_type:  "contact",
-    entity_id:    params.contactId,
-    event_type:   KernelEvent.CONTACT_AGENT_NOTIFIED,
-    brokerage_id: params.brokerageId,
-    created_at:   new Date().toISOString(),
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType:  "contact",
+    entityId:    params.contactId,
+    event:   KernelEvent.CONTACT_AGENT_NOTIFIED,
+    brokerageId: params.brokerageId,
+    createdAt:   new Date().toISOString(),
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return { success: true }
 }
@@ -1155,15 +1158,16 @@ export async function updateContactRecord(params: {
 
   // Lifecycle event — actor_user_id names the REAL actor (act-as seam: the
   // impersonating staff member, never the tenant identity they act as).
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    entity_type:  "contact",
-    entity_id:    params.contactId,
-    event_type:   KernelEvent.CONTACT_UPDATED,
-    brokerage_id: params.brokerageId,
-    actor_user_id: params.actorUserId ?? null,
-    created_at:   now,
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType:  "contact",
+    entityId:    params.contactId,
+    event:   KernelEvent.CONTACT_UPDATED,
+    brokerageId: params.brokerageId,
+    actorUserId: params.actorUserId ?? null,
+    createdAt:   now,
     metadata:     { updated_fields: Object.keys(params.updates) },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return {
     success: true,
@@ -1223,15 +1227,16 @@ export async function archiveContactRecord(params: {
     return { success: false, error: "Contact not found, already archived, or not yours to archive" }
   }
 
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    entity_type:  "contact",
-    entity_id:    params.contactId,
-    event_type:   KernelEvent.CONTACT_ARCHIVED,
-    brokerage_id: params.brokerageId,
-    actor_user_id: params.actorUserId ?? null,
-    created_at:   now,
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType:  "contact",
+    entityId:    params.contactId,
+    event:   KernelEvent.CONTACT_ARCHIVED,
+    brokerageId: params.brokerageId,
+    actorUserId: params.actorUserId ?? null,
+    createdAt:   now,
     metadata:     { reason: params.reason ?? "manual" },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // ── ABSORBED (wave 14) from app/api/contacts/delete/route.ts ────────────────
   // That route wrote an `activities` row on removal; this command wrote only a
@@ -1413,14 +1418,15 @@ export async function generateContactFollowupDraft(params: {
     return { success: false, error: error?.message ?? "Draft insert failed" }
   }
 
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    entity_type:  "contact",
-    entity_id:    params.contactId,
-    event_type:   KernelEvent.CONTACT_FOLLOWUP_DRAFT_GENERATED,
-    brokerage_id: params.brokerageId,
-    created_at:   new Date().toISOString(),
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType:  "contact",
+    entityId:    params.contactId,
+    event:   KernelEvent.CONTACT_FOLLOWUP_DRAFT_GENERATED,
+    brokerageId: params.brokerageId,
+    createdAt:   new Date().toISOString(),
     metadata:     { draft_id: data.id, channel: params.channel },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return { success: true, data: { draftId: data.id } }
 }

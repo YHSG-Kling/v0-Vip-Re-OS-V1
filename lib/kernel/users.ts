@@ -1173,17 +1173,16 @@ export async function emitUserProvisionedEvent(params: {
   // wrapper-choice rule in scripts/silent-write-guard.ts): the provisioning it
   // records has already happened, so a lost audit row is ledgered for the repair
   // digest rather than dropped (lane 87E, swallowed-refusal census).
-  await sentinelWrite(service, service
-    .from("lifecycle_events")
-    .insert({
-      entity_type:   "user",
-      entity_id:     params.userId,
-      event_type:    params.eventType,
-      actor_user_id: params.callerUserId,
-      brokerage_id:  params.brokerageId,
+  await sentinelWrite(service, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      entityType:   "user",
+      entityId:     params.userId,
+      event:    params.eventType,
+      actorUserId: params.callerUserId,
+      brokerageId:  params.brokerageId,
       metadata:      params.metadata ?? {},
-      created_at:    new Date().toISOString(),
-    }), {
+      createdAt:    new Date().toISOString(),
+      auditOnly: true,
+    }).then(k.asWriteResult)), {
     table: "lifecycle_events",
     flow: "user_provisioning_audit",
     brokerageId: params.brokerageId,

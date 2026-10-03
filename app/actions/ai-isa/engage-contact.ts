@@ -82,10 +82,32 @@ export interface EngageContactResult {
   error?: string
 }
 
+/** Not exported (a "use server" export is an endpoint): network-invoked → session tenant must match. */
+async function refuseForeignNetworkTenant(brokerageId: string): Promise<string | null> {
+  let networkInvoked = false
+  try {
+    const { headers } = await import('next/headers')
+    networkInvoked = Boolean((await headers()).get('next-action'))
+  } catch {
+    networkInvoked = false // no request scope → a direct server-side call
+  }
+  if (!networkInvoked) return null
+  const { requireCaller } = await import('@/lib/auth/require-caller')
+  const caller = await requireCaller()
+  if (!caller.ok) return caller.error
+  return caller.brokerageId === brokerageId ? null : 'Forbidden'
+}
+
 export async function engageContact(
   params: EngageContactParams,
 ): Promise<EngageContactResult> {
   const { contactId, brokerageId, reason, forceChannel, actorId } = params
+  // Tenant from the SESSION (CLAUDE.md §4): this is a "use server" export, so it is reachable as a
+  // network endpoint. Invoked over the network it must belong to the caller's own brokerage; a
+  // direct server-side call (the stale-contact cron, initiateAIISAContactEngagement's already-gated
+  // path) carries no `next-action` header and keeps its trusted brokerageId. Fail closed.
+  const tenantRefusal = await refuseForeignNetworkTenant(brokerageId)
+  if (tenantRefusal) return { success: false, reason: tenantRefusal }
   const supabase = createServiceClient()
 
   try {
@@ -103,7 +125,7 @@ export async function engageContact(
          mailing_address, city, mailing_state:state, mailing_zip:zip_code,
          budget_min, budget_max, timeline, motivation_type, enrichment_profile, age_range,
          occupation, household_income, home_owner_status, life_events, marital_status,
-         last_contacted_at`
+         last_contacted_at, qualification_summary`
       )
       .eq('id', contactId)
       .eq('brokerage_id', brokerageId)
@@ -147,6 +169,34 @@ export async function engageContact(
     const canContinue = await checkMaxTouches(contactId, 'contact', brokerageId)
     if (!canContinue) {
       return { success: false, reason: 'stop:max_touches' }
+    }
+
+    // ── 4b. NEXT-BEST-ACTION (wave 100, lane 100B) — the SAME NBA the lead sweep runs
+    //    (lib/ai-isa/lead-action-plan.ts planNextContactTouch — no second engine), fed the
+    //    contact's dead ends (ISA outcomes, call dispositions, represented, postponed-until),
+    //    decayed intent, current memory facts and reasons-not-to-act. It runs BEFORE the reel
+    //    handoff and the portal note, because those are touches too. wait / do_nothing are
+    //    actions: recorded on the action ledger with every reason, then nothing is sent. ──
+    {
+      const nbaNow = new Date()
+      const { loadContactNbaContext, planNextContactTouch, nonActionRecordFor } = await import('@/lib/ai-isa/lead-action-plan')
+      const nbaCtx = await loadContactNbaContext(supabase, {
+        brokerageId, contact, humanInitiated: !!actorId || !!forceChannel, now: nbaNow,
+      })
+      if (!nbaCtx.ok) {
+        console.warn(`[engageContact] next-best-action inputs unreadable for ${contactId} — not touching: ${nbaCtx.error}`)
+        return { success: false, reason: 'stop:nba_unreadable' }
+      }
+      const nbaPlan = planNextContactTouch({ now: nbaNow, context: nbaCtx.context })
+      const nonAction = nonActionRecordFor(nbaPlan, { brokerageId, contactId, now: nbaNow })
+      if (nonAction) {
+        const { recordNonAction } = await import('@/lib/kernel/action-ledger')
+        const rec = await recordNonAction(nonAction, { client: supabase })
+        if (!rec.recorded && rec.error) console.warn(`[engageContact] ${nonAction.decision} not ledgered for ${contactId}: ${rec.error}`)
+      }
+      if (nbaPlan.action === 'wait' || nbaPlan.action === 'do_nothing') {
+        return { success: false, reason: `nba:${nbaPlan.action}:${nbaPlan.reasonCode}` }
+      }
     }
 
     // ── MANAGERS DELEGATING — the ISA hands a TRULY SITUATIONAL reel to the Asset Manager

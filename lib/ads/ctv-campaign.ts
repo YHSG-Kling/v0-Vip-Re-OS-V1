@@ -350,14 +350,16 @@ export async function launchCtvCampaignOnVibe(input: LaunchCtvInput): Promise<Ct
   if (flipError || !flipped?.length) {
     return { ...result, reason: `Published on Vibe (${result.vibeCampaignId}) but the row did NOT flip to live: ${flipError?.message ?? "no row matched"} — mark it launched by hand` }
   }
-  const { error: eventError } = await svc.from("lifecycle_events").insert({
-    brokerage_id: input.brokerageId,
-    entity_type: "ad_campaign",
-    entity_id: input.campaignId,
-    event_type: "ad_campaign_launched",
-    actor_user_id: input.actorUserId,
+  const kernelEmit = await import("@/lib/kernel/emit")
+  const { error: eventError } = kernelEmit.asWriteResult(await kernelEmit.emitKernelEvent({
+    brokerageId: input.brokerageId,
+    entityType: "ad_campaign",
+    entityId: input.campaignId,
+    event: "ad_campaign_launched",
+    actorUserId: input.actorUserId,
     metadata: { platform: "vibe_ctv", launched_via: input.launchedVia, vibe_campaign_id: result.vibeCampaignId },
-  })
+    auditOnly: true,
+  }))
   if (eventError) console.error("[ctv-campaign] launch ledger refused:", eventError.message)
   return result
 }

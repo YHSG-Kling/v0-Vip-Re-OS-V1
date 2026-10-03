@@ -58,13 +58,14 @@ export async function recordClientOfferDecision(input: {
   // The ledger — the client's word, timestamped. `.then(ok, err)` used to stand in for an error
   // check here: supabase-js RESOLVES a refused write, so the reject arm never ran and the failure
   // was dropped either way. Destructured now.
-  const { error: ledgerError } = await svc.from("lifecycle_events").insert({
-    brokerage_id: owningBrokerageId,
-    entity_type: "offer",
-    entity_id: input.offerId,
-    event_type: "client_offer_decision",
+  const kernelEmit = await import("@/lib/kernel/emit")
+  const { error: ledgerError } = kernelEmit.asWriteResult(await kernelEmit.emitKernelEvent({
+    brokerageId: owningBrokerageId,
+    entityType: "offer",
+    entityId: input.offerId,
+    event: "client_offer_decision",
     metadata: { decision, side: side.toLowerCase(), contact_id: input.contactId, note: note || null },
-  })
+  }))
   if (ledgerError) console.error("[portal-offer-decision] lifecycle event NOT recorded:", ledgerError.message)
 
   // The engagement stream the recognition rails already read. THE TENANT AND THE OWNING AGENT ARE

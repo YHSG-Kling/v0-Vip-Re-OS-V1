@@ -77,18 +77,20 @@ export async function markCtvCampaignLaunchedAction(
     .eq("brokerage_id", actor.brokerageId)
   if (updateError) return { success: false, error: updateError.message }
 
-  const { error: eventError } = await supabase.from("lifecycle_events").insert({
-    brokerage_id: actor.brokerageId,
-    entity_type: "ad_campaign",
-    entity_id: campaignId,
-    event_type: "ad_campaign_launched",
-    actor_user_id: actor.userId,
+  const kernelEmit = await import("@/lib/kernel/emit")
+  const { error: eventError } = kernelEmit.asWriteResult(await kernelEmit.emitKernelEvent({
+    brokerageId: actor.brokerageId,
+    entityType: "ad_campaign",
+    entityId: campaignId,
+    event: "ad_campaign_launched",
+    actorUserId: actor.userId,
     metadata: {
       platform: "vibe_ctv",
       campaign_name: campaign.campaign_name,
       launched_via: "human_confirmation_vibe_dashboard",
     },
-  })
+    auditOnly: true,
+  }))
   // Status change succeeded; a ledger failure is reported, not rolled back.
   if (eventError) {
     return { success: true, error: `Launched, but lifecycle event failed to record: ${eventError.message}` }

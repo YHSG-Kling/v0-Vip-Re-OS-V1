@@ -134,14 +134,14 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
       // NEVER silent: every assumed view lands on the ledger. Best-effort.
       if (kind === "agent" || kind === "team") {
         const actingAsSvc = createServiceClient()
-        await sentinelWrite(actingAsSvc, actingAsSvc.from("lifecycle_events").insert({
-          brokerage_id: brokerageId,
-          entity_type: kind,
-          entity_id: id,
-          event_type: "acting_as_view",
-          actor_user_id: user.id,
+        await sentinelWrite(actingAsSvc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+          brokerageId: brokerageId,
+          entityType: kind,
+          entityId: id,
+          event: "acting_as_view",
+          actorUserId: user.id,
           metadata: { surface: "command_center", viewer_role: userType },
-        }), { table: "lifecycle_events", flow: "acting_as_view_audit", brokerageId, reason: "acting-as audit is best-effort by design (never blocks the view); a loss is ledgered, never silent" })
+        }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "acting_as_view_audit", brokerageId, reason: "acting-as audit is best-effort by design (never blocks the view); a loss is ledgered, never silent" })
       }
     }
   }

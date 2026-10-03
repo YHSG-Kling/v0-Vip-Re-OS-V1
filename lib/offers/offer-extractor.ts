@@ -192,12 +192,12 @@ export async function applyExtractedOfferData(
     if (updateError) throw new Error(updateError.message)
 
     // lifecycle_events insert + kernel event
-    await bestEffort(supabase.from("lifecycle_events").insert({
-      brokerage_id: brokerageId,
-      entity_type: "offer",
-      entity_id: offerId,
-      event_type: KernelEvent.OFFER_AI_EXTRACTED,
-      actor_user_id: null,
+    await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: brokerageId,
+      entityType: "offer",
+      entityId: offerId,
+      event: KernelEvent.OFFER_AI_EXTRACTED,
+      actorUserId: null,
       metadata: {
         listing_id: listingId,
         offer_price: extracted.offer_price,
@@ -206,7 +206,8 @@ export async function applyExtractedOfferData(
           (k) => extracted[k as keyof ExtractedOfferData] !== null
         ).length,
       },
-    }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+      auditOnly: true,
+    }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
     await processKernelEvent({
       event: KernelEvent.OFFER_AI_EXTRACTED,

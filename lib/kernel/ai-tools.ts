@@ -343,19 +343,17 @@ export async function attachAiOutputToEntity(
     if (noteErr) throw noteErr
 
     // Write lifecycle event
-    await sentinelWrite(supabase, supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: ctx.brokerageId,
-        entity_type: entityType,
-        entity_id: entityId,
-        event_type: "ai_note_attached",
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: ctx.brokerageId,
+        entityType: entityType,
+        entityId: entityId,
+        event: "ai_note_attached",
         metadata: {
           tool_name: saved.tool_name,
           saved_output_id: savedOutputId,
           actor_user_id: ctx.userId,
         },
-      }), { table: "lifecycle_events", flow: "ai_note_attached_echo", reason: "lifecycle echo after the note landed" }) // lifecycle event is non-fatal
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "ai_note_attached_echo", reason: "lifecycle echo after the note landed" }) // lifecycle event is non-fatal
 
     return { success: true }
   } catch (err) {

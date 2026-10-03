@@ -262,7 +262,7 @@ export async function POST(request: Request) {
 
     // 3. Check thresholds and fire kernel events
     if (trackingResult) {
-      await checkPerformanceThresholds(db, trackingResult, brokerageId)
+      await checkPerformanceThresholds(trackingResult, brokerageId)
     }
 
     return NextResponse.json({
@@ -453,7 +453,6 @@ async function aggregateVideoPerformance(
 
 // Helper: Check thresholds and fire kernel events
 async function checkPerformanceThresholds(
-  supabase: any,
   tracking: any,
   brokerageId: string
 ) {
@@ -462,11 +461,11 @@ async function checkPerformanceThresholds(
   const clickThroughRate = tracking.click_through_rate || 0
 
   // Always fire VIDEO_PERFORMANCE_UPDATED
-  await bestEffort(supabase.from("lifecycle_events").insert({
-    entity_type: "video_performance",
-    entity_id: tracking.id,
-    brokerage_id: brokerageId,
-    event_type: KernelEvent.VIDEO_PERFORMANCE_UPDATED,
+  await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType: "video_performance",
+    entityId: tracking.id,
+    brokerageId: brokerageId,
+    event: KernelEvent.VIDEO_PERFORMANCE_UPDATED,
     metadata: {
       total_views: totalViews,
       completion_rate: completionRate,
@@ -474,7 +473,8 @@ async function checkPerformanceThresholds(
       video_asset_id: tracking.video_asset_id,
       video_project_id: tracking.video_project_id,
     },
-  }), "performance audit echo; the engagement tracking row itself is written above")
+    auditOnly: true,
+  }).then(k.asWriteResult)), "performance audit echo; the engagement tracking row itself is written above")
 
   await processKernelEvent({
     event: KernelEvent.VIDEO_PERFORMANCE_UPDATED,
@@ -489,18 +489,19 @@ async function checkPerformanceThresholds(
     completionRate >= PERFORMANCE_THRESHOLDS.HIGH_PERFORMER.minCompletionRate &&
     clickThroughRate >= PERFORMANCE_THRESHOLDS.HIGH_PERFORMER.minClickThroughRate
   ) {
-    await bestEffort(supabase.from("lifecycle_events").insert({
-      entity_type: "video_performance",
-      entity_id: tracking.id,
-      brokerage_id: brokerageId,
-      event_type: KernelEvent.VIDEO_HIGH_PERFORMER_DETECTED,
+    await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      entityType: "video_performance",
+      entityId: tracking.id,
+      brokerageId: brokerageId,
+      event: KernelEvent.VIDEO_HIGH_PERFORMER_DETECTED,
       metadata: {
         total_views: totalViews,
         completion_rate: completionRate,
         click_through_rate: clickThroughRate,
         thresholds: PERFORMANCE_THRESHOLDS.HIGH_PERFORMER,
       },
-    }), "performance audit echo; the engagement tracking row itself is written above")
+      auditOnly: true,
+    }).then(k.asWriteResult)), "performance audit echo; the engagement tracking row itself is written above")
 
     await processKernelEvent({
       event: KernelEvent.VIDEO_HIGH_PERFORMER_DETECTED,
@@ -516,18 +517,19 @@ async function checkPerformanceThresholds(
     completionRate <= PERFORMANCE_THRESHOLDS.LOW_PERFORMER.maxCompletionRate &&
     clickThroughRate <= PERFORMANCE_THRESHOLDS.LOW_PERFORMER.maxClickThroughRate
   ) {
-    await bestEffort(supabase.from("lifecycle_events").insert({
-      entity_type: "video_performance",
-      entity_id: tracking.id,
-      brokerage_id: brokerageId,
-      event_type: KernelEvent.VIDEO_LOW_PERFORMER_DETECTED,
+    await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      entityType: "video_performance",
+      entityId: tracking.id,
+      brokerageId: brokerageId,
+      event: KernelEvent.VIDEO_LOW_PERFORMER_DETECTED,
       metadata: {
         total_views: totalViews,
         completion_rate: completionRate,
         click_through_rate: clickThroughRate,
         thresholds: PERFORMANCE_THRESHOLDS.LOW_PERFORMER,
       },
-    }), "performance audit echo; the engagement tracking row itself is written above")
+      auditOnly: true,
+    }).then(k.asWriteResult)), "performance audit echo; the engagement tracking row itself is written above")
 
     await processKernelEvent({
       event: KernelEvent.VIDEO_LOW_PERFORMER_DETECTED,

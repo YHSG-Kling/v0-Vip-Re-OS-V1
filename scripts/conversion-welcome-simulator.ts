@@ -964,7 +964,9 @@ function layer9_formsAndOpenHouse() {
   check("CONTROL: endOpenHouseEvent is findable in the stripped source", endEventStart > -1 && endEventNextExport > endEventStart)
   const endEventBlock = sellerOpenHouse.slice(endEventStart, endEventNextExport > -1 ? endEventNextExport : endEventStart + 6000)
   check("endOpenHouseEvent still writes the lifecycle_events AUDIT row for\n    OPEN_HOUSE_ATTENDEE_CAPTURED (the fix adds the reactor call, it does not\n    remove the audit trail)",
-    /event_type:\s*KernelEvent\.OPEN_HOUSE_ATTENDEE_CAPTURED/.test(endEventBlock))
+    /event_type:\s*KernelEvent\.OPEN_HOUSE_ATTENDEE_CAPTURED/.test(endEventBlock) ||
+    // Wave 100 (100B): the audit row through THE emitter, audit-only (the reactor call below fans out).
+    /emitKernelEvent\(\{[^}]*event:\s*KernelEvent\.OPEN_HOUSE_ATTENDEE_CAPTURED[\s\S]{0,500}?auditOnly:\s*true/.test(endEventBlock))
   check("...AND now calls processKernelEvent for the SAME event, so the reactor\n    (and therefore deliverConversionWelcome, when the attendee already\n    resolved to a contact) actually runs",
     /processKernelEvent\(\{[^}]*event:\s*KernelEvent\.OPEN_HOUSE_ATTENDEE_CAPTURED/s.test(endEventBlock))
   check("CONTROL: the matcher requires BOTH the emit call and the enum on the same\n    call — a bare `processKernelEvent(` elsewhere in the block (e.g. a\n    differently-typed event) would not satisfy it",

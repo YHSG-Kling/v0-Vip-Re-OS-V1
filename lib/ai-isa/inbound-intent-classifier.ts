@@ -459,12 +459,12 @@ export async function classifyAndRouteInbound(
     await sentinelWrite(svc, svc.from("leads")
       .update({ reengagement_status: "active", reengagement_attempt_count: 0, updated_at: new Date().toISOString() })
       .eq("id", params.leadId), { table: "leads", flow: "isa_reclaim_on_reply", reason: "re-engagement resurrection; the reply routing proceeds regardless and a loss is ledgered" })
-    await sentinelWrite(svc, svc.from("lifecycle_events").insert({
-      brokerage_id: params.brokerageId, entity_type: "lead", entity_id: params.leadId,
-      event_type: "ISA_RECLAIMED_ON_REPLY",
+    await sentinelWrite(svc, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: params.brokerageId, entityType: "lead", entityId: params.leadId,
+      event: "ISA_RECLAIMED_ON_REPLY",
       metadata: { from_status: fromStatus, note: "reply re-armed the active cadence" },
-      created_at: new Date().toISOString(),
-    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      createdAt: new Date().toISOString(),
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
   }
 
   const knownSide = deriveLeadSide((lead as any).motivation_type, (lead as any).lead_type)

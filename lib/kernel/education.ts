@@ -1051,16 +1051,16 @@ export async function recordCompletion(
     throw new Error(`Failed to record completion: ${error?.message}`)
   }
 
-  await bestEffort(supabase.from("lifecycle_events").insert({
-    brokerage_id: input.brokerageId,
-    entity_type: "contact",
-    entity_id: input.contactId,
-    event_type: "education_completed",
+  await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: input.brokerageId,
+    entityType: "contact",
+    entityId: input.contactId,
+    event: "education_completed",
     metadata: {
       module_id: input.resourceId,
     },
-    created_at: new Date().toISOString(),
-  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+    createdAt: new Date().toISOString(),
+  }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   return {
     progressId: data.id,

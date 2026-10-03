@@ -230,12 +230,12 @@ Return ONLY a valid JSON object with this exact schema (no markdown, no commenta
   const comparisonId = (compRow as { id: string } | null)?.id ?? null
 
   // lifecycle_events + kernel event
-  await bestEffort(supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type: "listing_stage_machine",
-    entity_id: listingId,
-    event_type: KernelEvent.OFFER_COMPARISON_GENERATED,
-    actor_user_id: agentUserId,
+  await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: brokerageId,
+    entityType: "listing_stage_machine",
+    entityId: listingId,
+    event: KernelEvent.OFFER_COMPARISON_GENERATED,
+    actorUserId: agentUserId,
     metadata: {
       offer_count: offers.length,
       ranked_offer_ids: result.ranked_offer_ids,
@@ -244,7 +244,8 @@ Return ONLY a valid JSON object with this exact schema (no markdown, no commenta
       // to the row instead of re-deriving "latest for this listing".
       comparison_id: comparisonId,
     },
-  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+    auditOnly: true,
+  }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   await processKernelEvent({
     event: KernelEvent.OFFER_COMPARISON_GENERATED,

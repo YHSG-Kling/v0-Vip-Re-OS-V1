@@ -17,7 +17,6 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
-import { processKernelEvent } from "./notification-engine"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -181,7 +180,6 @@ export interface RespondToReviewInput extends ReputationActorContext {
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 async function emitLifecycleEvent(params: {
-  supabase:    ReturnType<typeof createServiceClient>
   brokerageId: string
   agentId:     string
   entityType:  string
@@ -189,39 +187,26 @@ async function emitLifecycleEvent(params: {
   event:       KernelEvent
   metadata?:   Record<string, unknown>
 }) {
-  // The error was not destructured: a refused audit insert resolved with
-  // data === null, the `if (data?.id)` below quietly skipped, and every caller
-  // reported a clean success with no lifecycle row and no notification fan-out.
-  const { data, error } = await params.supabase
-    .from("lifecycle_events")
-    .insert({
-      brokerage_id: params.brokerageId,
-      agent_id:     params.agentId,
-      entity_type:  params.entityType,
-      entity_id:    params.entityId,
-      event_type:   params.event,
-      metadata:     params.metadata ?? {},
-      created_at:   new Date().toISOString(),
-    })
-    .select("id")
-    .single()
+  // LINEAGE (wave 100, lane 100B): the row + fan-out pair is ONE emitKernelEvent call (the
+  // canonical emitter, lib/kernel/emit.ts), so the row carries causation/correlation and the
+  // reactor gets its lifecycleEventId. A refused insert is still surfaced, never skipped.
+  const { emitKernelEvent } = await import("@/lib/kernel/emit")
+  const r = await emitKernelEvent({
+    brokerageId: params.brokerageId,
+    agentId:     params.agentId,
+    entityType:  params.entityType,
+    entityId:    params.entityId,
+    event:       params.event,
+    metadata:    params.metadata ?? {},
+    createdAt:   new Date().toISOString(),
+  })
 
-  if (error) {
+  if (r.error) {
     console.error(
       `[kernel/reputation] lifecycle_events insert refused for ${params.event} on ${params.entityType}:${params.entityId}:`,
-      error.message,
+      r.error,
     )
-    return { emitted: false as const, error: error.message }
-  }
-
-  if (data?.id) {
-    processKernelEvent({
-      event:             params.event,
-      brokerageId:       params.brokerageId,
-      entityType:        params.entityType,
-      entityId:          params.entityId,
-      lifecycleEventId:  data.id,
-    }).catch(() => { /* non-blocking */ })
+    return { emitted: false as const, error: r.error }
   }
 
   return { emitted: true as const }
@@ -454,7 +439,6 @@ export async function createReviewRequest(
     }
 
     await emitLifecycleEvent({
-      supabase,
       brokerageId: input.brokerageId,
       agentId:     input.agentId,
       entityType:  "review_request",
@@ -556,7 +540,6 @@ export async function respondToReview(
     }
 
     await emitLifecycleEvent({
-      supabase,
       brokerageId: input.brokerageId,
       agentId:     input.agentId,
       entityType:  "agent_review",

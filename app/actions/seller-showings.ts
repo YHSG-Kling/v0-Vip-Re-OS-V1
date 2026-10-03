@@ -502,14 +502,14 @@ export async function approveShowingRequest(params: {
   }
 
   // Kernel sub-event — brokerage_id / actor from session, not params
-  await bestEffort(supabase.from("lifecycle_events").insert({
-    brokerage_id:   auth.brokerageId,
-    entity_type:    "listing_stage_machine",
-    entity_id:      params.listingId,
-    event_type:     "listing.showing.confirmed",
-    actor_user_id:  auth.userId,
+  await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId:   auth.brokerageId,
+    entityType:    "listing_stage_machine",
+    entityId:      params.listingId,
+    event:     "listing.showing.confirmed",
+    actorUserId:  auth.userId,
     metadata: { showing_id: showing.id, request_id: params.requestId },
-  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+  }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   await processKernelEvent({
     event:      KernelEvent.SHOWING_SCHEDULED,
@@ -678,14 +678,14 @@ export async function markShowingCompleted(params: {
   if (feedbackStubErr) console.error(`[seller-showings] feedback stub NOT created (the token link will find no row): ${feedbackStubErr.message}`)
 
   // Direct lifecycle_events insert — session-derived identity
-  await bestEffort(supabase.from("lifecycle_events").insert({
-    brokerage_id:   auth.brokerageId,
-    entity_type:    "listing_stage_machine",
-    entity_id:      params.listingId,
-    event_type:     "listing.showing.completed",
-    actor_user_id:  auth.userId,
+  await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId:   auth.brokerageId,
+    entityType:    "listing_stage_machine",
+    entityId:      params.listingId,
+    event:     "listing.showing.completed",
+    actorUserId:  auth.userId,
     metadata: { showing_id: params.showingId, feedback_token: feedbackReq.feedback_token },
-  }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+  }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
   // Kernel notification (non-blocking)
   await processKernelEvent({

@@ -339,11 +339,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   // ── Step 6: Write lifecycle_events ─────────────────────────────────────────
   // DB column is `metadata` (jsonb) — pass plain object, not JSON.stringify
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    brokerage_id: inbound.brokerageId,
-    entity_type: entityType,
-    entity_id: entityId,
-    event_type: KernelEvent.ISA_REPLY_RECEIVED,
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    brokerageId: inbound.brokerageId,
+    entityType: entityType,
+    entityId: entityId,
+    event: KernelEvent.ISA_REPLY_RECEIVED,
     metadata: {
       provider: inbound.providerType,
       messageId: inbound.messageId,
@@ -352,7 +352,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       subject: inbound.subject,
       text: (inbound.text ?? "").slice(0, 500),
     },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // ── Step 6b: Behavioural event log — sms_reply ─────────────────────────────
   // The contact texting back is a scored responsiveness signal (sms_reply,

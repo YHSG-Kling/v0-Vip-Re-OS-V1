@@ -191,14 +191,15 @@ export async function POST(req: NextRequest) {
     case "appointment.rescheduled": {
       if (!appt.external_ref) return NextResponse.json({ ok: true, ignored: true })
       // Just record the lifecycle event — agent will see it and can re-dispatch
-      await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-        brokerage_id:  brokerageId,
-        entity_type:   "tour_stop",
-        entity_id:     appt.external_ref,
-        event_type:    `tour_stop.showingtime.${payload.event_type.replace("appointment.", "")}`,
-        actor_user_id: null,
+      await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId:  brokerageId,
+        entityType:   "tour_stop",
+        entityId:     appt.external_ref!, // narrowed by the early return above; lost inside the callback
+        event:    `tour_stop.showingtime.${payload.event_type.replace("appointment.", "")}`,
+        actorUserId: null,
         metadata:      { showingtime_id: appt.id, notes: appt.notes ?? null },
-      }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+        auditOnly: true,
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
       return NextResponse.json({ ok: true })
     }
 

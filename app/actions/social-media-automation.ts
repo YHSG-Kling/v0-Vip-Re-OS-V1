@@ -428,11 +428,11 @@ export async function scheduleSocialPost(params: {
       .catch((err) => console.warn("[social-media-automation] Usage increment failed:", err))
 
     // Fire kernel event
-    await bestEffort(supabase.from("lifecycle_events").insert({
-      entity_type: "social_post",
-      entity_id: post.id,
-      brokerage_id: brokerageId,
-      event_type: KernelEvent.SOCIAL_POST_SCHEDULED,
+    await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      entityType: "social_post",
+      entityId: post.id,
+      brokerageId: brokerageId,
+      event: KernelEvent.SOCIAL_POST_SCHEDULED,
       metadata: {
         platform: params.platform,
         post_type: params.postType,
@@ -440,7 +440,8 @@ export async function scheduleSocialPost(params: {
         listing_id: params.listingId,
         campaign_id: params.campaignId,
       },
-    }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+      auditOnly: true,
+    }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
     await processKernelEvent({
       event: KernelEvent.SOCIAL_POST_SCHEDULED,
@@ -1278,14 +1279,14 @@ export async function retryFailedPost(postId: string, userId: string) {
       created_at: new Date().toISOString(),
     }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
-    await bestEffort(supabase.from("lifecycle_events").insert({
-      entity_type: "social_post",
-      entity_id: postId,
-      brokerage_id: post.brokerage_id,
-      event_type: "social_post_retry_queued",
-      actor_user_id: userId,
+    await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      entityType: "social_post",
+      entityId: postId,
+      brokerageId: post.brokerage_id,
+      event: "social_post_retry_queued",
+      actorUserId: userId,
       metadata: { retried_at: new Date().toISOString() },
-    }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+    }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
     revalidatePath("/dashboard/social")
     return { success: true, data: post }
@@ -1321,14 +1322,14 @@ export async function deleteSocialPost(postId: string, userId: string) {
     if (error) throw error
     if (!post) return { success: false, error: "Post not found or already published — cannot delete" }
 
-    await bestEffort(supabase.from("lifecycle_events").insert({
-      entity_type: "social_post",
-      entity_id: postId,
-      brokerage_id: post.brokerage_id,
-      event_type: "social_post_deleted",
-      actor_user_id: userId,
+    await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      entityType: "social_post",
+      entityId: postId,
+      brokerageId: post.brokerage_id,
+      event: "social_post_deleted",
+      actorUserId: userId,
       metadata: { deleted_at: new Date().toISOString() },
-    }), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
+    }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
     revalidatePath("/dashboard/social")
     return { success: true }

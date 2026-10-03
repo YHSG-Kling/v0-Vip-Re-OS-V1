@@ -3224,7 +3224,10 @@ async function main() {
         offenders.length === 0
         && src("app/actions/tasks.ts").includes("cannot create the task")
         && src("lib/listing-lifecycle/lifecycle-event-tasks.ts").includes("listingTaskContext") // moved lane 86F (server-only event core)
-        && src("lib/kernel/financial.ts").includes("brokerage_id: brokerageId, // NOT NULL (pass 5)")
+        // Wave 100 (100B): the commission lifecycle rows now go through emitKernelEvent, whose input
+        // spells the same NOT NULL tenant `brokerageId:` — either spelling carries the rule.
+        && (src("lib/kernel/financial.ts").includes("brokerage_id: brokerageId, // NOT NULL (pass 5)")
+          || src("lib/kernel/financial.ts").includes("brokerageId: brokerageId, // NOT NULL (pass 5)"))
         && src("lib/ai-isa/isa-outreach-logger.ts").includes("brokerage_id: params.brokerageId,")
         && src("app/actions/credit-copilot.ts").includes("insertCreditTask"))
     }

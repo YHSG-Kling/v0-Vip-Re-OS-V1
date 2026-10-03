@@ -417,6 +417,9 @@ export interface NextBestActionContext {
   deadEnds?: readonly DeadEndEvidence[]
   /** The tenant's ai_isa_settings.suppress_on_outcomes (any spelling; canonicalised on read). */
   suppressOnOutcomes?: readonly string[]
+  /** Wave 100 (100B): the person's CURRENT memory facts (lib/kernel/conversation-memory.ts
+   *  currentMemoryFacts — expired facts never reach here). Evidence the decision read, never a blocker. */
+  memoryFacts?: ReadonlyArray<{ key: string; value: string; confidence: number; observedAt: string }>
 }
 
 export interface NbaEvidence { kind: string; detail: string }
@@ -558,12 +561,35 @@ function intentEvidence(intent: DecayedIntent | null | undefined): NbaEvidence[]
  * is SKIPPED, not downgraded into a channel the lead never allowed.
  */
 export function planNextLeadTouch(input: PlanNextLeadTouchInput): LeadTouchPlan {
-  const ctx = input.context
-  const reasons = reasonsNotToAct(ctx, input.now)
-  const evidence = intentEvidence(ctx?.intent)
+  return decideNextAction(input.context, input.now, () => planLeadTouchCore(input))
+}
+
+/**
+ * planNextContactTouch — PURE (wave 100, lane 100B). The CONTACT subject of the SAME NBA
+ * (no second engine): the same reasonsNotToAct (dead ends, postponed-until, pause, appointment,
+ * agent handling, fatigue, quiet hours, consent), the same intent priority, the same verdicts.
+ * What differs is only the core once nothing argues against acting: a contact's cadence and
+ * channel are engageContact's (decideNextChannel over the consent-permitted set), so the core
+ * answers "due" and the channel stays the engine's call.
+ * Wired: app/actions/ai-isa/engage-contact.ts (before the channel decision).
+ */
+export function planNextContactTouch(input: { now: Date; context?: NextBestActionContext }): LeadTouchPlan {
+  return decideNextAction(input.context, input.now, () => ({
+    code: "due", step: null, channel: null, reason: "no reason not to act — the contact engine picks the channel", dueAt: input.now,
+  }))
+}
+
+function memoryEvidence(facts: NextBestActionContext["memoryFacts"]): NbaEvidence[] {
+  return (facts ?? []).slice(0, 4).map((f) => ({ kind: `memory:${f.key}`, detail: `${f.value} (confidence ${f.confidence}, observed ${f.observedAt})` }))
+}
+
+/** THE NBA — one decision for both subjects; `core` is the subject's own plan when nothing blocks. */
+function decideNextAction(ctx: NextBestActionContext | undefined, now: Date, core: () => CorePlan): LeadTouchPlan {
+  const reasons = reasonsNotToAct(ctx, now)
+  const evidence = [...intentEvidence(ctx?.intent), ...memoryEvidence(ctx?.memoryFacts)]
   const priority = ctx?.intent ? ctx.intent.momentumRank : 0
-  const finish = (core: CorePlan): LeadTouchPlan =>
-    ({ ...core, action: ACTION_FOR_CODE[core.code], reasonCode: core.code, evidence, reasonsNotToAct: reasons, priority })
+  const finish = (plan: CorePlan): LeadTouchPlan =>
+    ({ ...plan, action: ACTION_FOR_CODE[plan.code], reasonCode: plan.code, evidence, reasonsNotToAct: reasons, priority })
 
   // A duplicate is never worked — not even converted; the survivor is.
   const dup = reasons.find((r) => r.code === "duplicate")
@@ -573,7 +599,7 @@ export function planNextLeadTouch(input: PlanNextLeadTouchInput): LeadTouchPlan 
   // A callback never overrides a terminal dead end (an opt-out, or represented by another agent).
   const terminal = reasons.some((r) => r.code === "dead_end" && r.outcome && ALWAYS_TERMINAL_DEAD_ENDS.has(r.outcome))
   if (ctx?.callbackRequested && !terminal && !reasons.some((r) => r.code === "outreach_paused")) {
-    return finish({ code: "convert_on_callback", step: null, channel: null, reason: "callback requested — positive intent; convert and book the call", dueAt: input.now })
+    return finish({ code: "convert_on_callback", step: null, channel: null, reason: "callback requested — positive intent; convert and book the call", dueAt: now })
   }
   const blocking = reasons.find((r) => r.blocking)
   if (blocking) {
@@ -584,7 +610,7 @@ export function planNextLeadTouch(input: PlanNextLeadTouchInput): LeadTouchPlan 
       : null
     return finish({ code, step: null, channel: null, reason: blocking.detail, dueAt })
   }
-  return finish(planLeadTouchCore(input))
+  return finish(core())
 }
 
 export interface PlanNextLeadTouchInput {
@@ -1078,20 +1104,22 @@ async function leadStillSendable(args: {
 /** @proofSeam exported so scripts/lead-action-plan-simulator.ts asserts the verdict → ledger mapping (wait, do_nothing, acting = none) on the pure function directly. */
 export function nonActionRecordFor(
   plan: LeadTouchPlan,
-  at: { brokerageId: string; leadId: string; now: Date },
+  at: { brokerageId: string; leadId: string; now: Date } | { brokerageId: string; contactId: string; now: Date },
 ): NonActionRecord | null {
   if (plan.action !== "wait" && plan.action !== "do_nothing") return null
+  // Wave 100 (100B): the contact subject of the same NBA records on the same ledger, its own domain.
+  const subject = "contactId" in at ? { type: "contact" as const, id: at.contactId } : { type: "lead" as const, id: at.leadId }
   return {
     brokerageId: at.brokerageId,
-    domain: "lead",
+    domain: subject.type,
     decision: plan.action,
     actor: { type: "manager", managerKey: "ai_isa" },
-    subject: { type: "lead", id: at.leadId },
+    subject,
     reasonCode: plan.action === "wait" ? "WAIT_COOLDOWN" : "NO_ACTION_NEEDED",
     reasonDetail: `${plan.reasonCode}: ${plan.reason}`.slice(0, 500),
     cycle: `${plan.reasonCode}:${at.now.toISOString().slice(0, 10)}`,
     until: plan.dueAt ? plan.dueAt.toISOString() : null,
-    systemSource: "lead_action_plan",
+    systemSource: subject.type === "contact" ? "contact_next_action" : "lead_action_plan",
     detail: {
       plan_code: plan.reasonCode,
       reasons_not_to_act: plan.reasonsNotToAct,
@@ -1101,6 +1129,94 @@ export function nonActionRecordFor(
   }
 }
 type NonActionRecord = Parameters<typeof recordNonActionType>[0]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE CONTACT SUBJECT'S INPUTS (wave 100, lane 100B) — the SAME inputs the lead
+// sweep feeds planNextLeadTouch, through the SAME helpers, keyed by contact:
+//   · dead ends — deadEndsFromLeadSources over ai_isa_activities.outcome and
+//     voice_calls.outcome (the call disposition) keyed by contact_id OR by a
+//     lineage lead (leads.contact_id), contacts.qualification_summary (already
+//     represented), and the lineage lead's long_term_nurture_until (postponed
+//     with its date); ai_outreach_paused rides as `paused`;
+//   · decayed intent — buildBehavioralIntentSummary(...).decayedIntent;
+//   · memory — loadContactMemoryForPrompt → currentMemoryFacts (current only);
+//   · reasons-not-to-act — fatigue from contacts.last_contacted_at on an
+//     AUTONOMOUS run (a human who asks for the touch is not fatigued by their own
+//     ask), the tenant's suppress_on_outcomes.
+// FAIL CLOSED: a refused dead-end read returns ok:false — "nobody checked whether
+// this person said no" must never render as "they never said no" (§4).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ContactNbaRow {
+  id: string
+  ai_outreach_paused?: boolean | null
+  qualification_summary?: string | null
+  last_contacted_at?: string | null
+}
+
+export type ContactNbaContextResult =
+  | { ok: true; context: NextBestActionContext }
+  | { ok: false; error: string }
+
+export async function loadContactNbaContext(
+  supabase: any,
+  input: { brokerageId: string; contact: ContactNbaRow; humanInitiated: boolean; now: Date },
+): Promise<ContactNbaContextResult> {
+  const { brokerageId, contact, now } = input
+  const { data: lineage, error: lineageErr } = await supabase
+    .from("leads").select("id, long_term_nurture_until")
+    .eq("brokerage_id", brokerageId).eq("contact_id", contact.id).limit(20)
+  if (lineageErr) return { ok: false, error: `lineage leads read refused: ${lineageErr.message}` }
+  const leadIds = ((lineage ?? []) as Array<{ id: string }>).map((l) => l.id)
+  const keyed = leadIds.length > 0 ? `contact_id.eq.${contact.id},lead_id.in.(${leadIds.join(",")})` : `contact_id.eq.${contact.id}`
+  const [isaRes, callRes] = await Promise.all([
+    supabase.from("ai_isa_activities").select("outcome, created_at")
+      .eq("brokerage_id", brokerageId).eq("activity_type", "outcome_recorded").or(keyed)
+      .not("outcome", "is", null).order("created_at", { ascending: false }).limit(200),
+    supabase.from("voice_calls").select("outcome, created_at")
+      .eq("brokerage_id", brokerageId).or(keyed)
+      .not("outcome", "is", null).order("created_at", { ascending: false }).limit(200),
+  ])
+  if (isaRes.error || callRes.error) {
+    return { ok: false, error: `dead-end outcome read refused: ${(isaRes.error ?? callRes.error)?.message}` }
+  }
+  const nurtureUntil = ((lineage ?? []) as Array<{ long_term_nurture_until: string | null }>)
+    .map((l) => l.long_term_nurture_until).filter((v): v is string => !!v).sort().pop() ?? null
+  const deadEnds = deadEndsFromLeadSources({
+    isaOutcomes: isaRes.data ?? [],
+    callOutcomes: callRes.data ?? [],
+    qualificationSummary: contact.qualification_summary ?? null,
+    longTermNurtureUntil: nurtureUntil,
+    subject: "contact",
+  })
+  if (contact.ai_outreach_paused === true) deadEnds.push({ outcome: "paused", at: null, source: "contacts.ai_outreach_paused" })
+
+  const resolution = await resolveLeadSettingsResolution({ brokerageId })
+  // An unreadable policy narrows to the DEFAULT suppressions — the always-terminal dead ends
+  // (opt-out, represented) block regardless, so the fallback can only be stricter-or-equal.
+  const suppressOnOutcomes = resolution.status === "unreadable"
+    ? DEFAULT_AISA_SETTINGS.suppress_on_outcomes
+    : (resolution.settings.suppress_on_outcomes ?? DEFAULT_AISA_SETTINGS.suppress_on_outcomes)
+
+  const { buildBehavioralIntentSummary } = await import("@/lib/lead-intelligence/behavioral-summary")
+  const { loadContactMemoryForPrompt, currentMemoryFacts } = await import("@/lib/kernel/conversation-memory")
+  const [summary, memory] = await Promise.all([
+    buildBehavioralIntentSummary(contact.id, brokerageId, supabase, { now }),
+    loadContactMemoryForPrompt({ contactId: contact.id, brokerageId, client: supabase, now }),
+  ])
+  const lastAny = contact.last_contacted_at && Number.isFinite(Date.parse(contact.last_contacted_at)) ? new Date(contact.last_contacted_at) : null
+  return {
+    ok: true,
+    context: {
+      intent: summary.decayedIntent.independentSources > 0 ? summary.decayedIntent : undefined,
+      outreachPaused: contact.ai_outreach_paused === true,
+      lastAnyTouchAt: input.humanInitiated ? null : lastAny,
+      deadEnds,
+      suppressOnOutcomes,
+      memoryFacts: memory ? currentMemoryFacts(memory.spine, now) : [],
+    },
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE SCHEDULER FOR TOUCHES 2..N — async

@@ -921,16 +921,15 @@ export async function recalculateCommissionState(
     }
 
     // Emit lifecycle event
-    await sentinelWrite(supabase, supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: brokerageId, // NOT NULL (pass 5)
-        entity_type: "commission_state",
-        entity_id:   brokerageId,
-        event_type:  KernelEvent.COMMISSION_STATE_RECALCULATED,
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: brokerageId, // NOT NULL (pass 5)
+        entityType: "commission_state",
+        entityId:   brokerageId,
+        event:  KernelEvent.COMMISSION_STATE_RECALCULATED,
         metadata:    { recalculated: capTracking?.length ?? 0, capped },
-        created_at:  new Date().toISOString(),
-      }), { table: "lifecycle_events", flow: "commission_state_recalculated_echo", brokerageId: brokerageId, reason: "lifecycle echo of a completed recalculation; the cap rows are the record" })
+        createdAt:  new Date().toISOString(),
+        auditOnly: true,
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "commission_state_recalculated_echo", brokerageId: brokerageId, reason: "lifecycle echo of a completed recalculation; the cap rows are the record" })
 
     return {
       success: true,
@@ -1004,16 +1003,15 @@ export async function markCommissionApproved(
     })
 
     // Emit lifecycle event
-    await sentinelWrite(supabase, supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: brokerageId, // NOT NULL (pass 5)
-        entity_type: "agent_commission",
-        entity_id:   commissionId,
-        event_type:  KernelEvent.COMMISSION_APPROVED,
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: brokerageId, // NOT NULL (pass 5)
+        entityType: "agent_commission",
+        entityId:   commissionId,
+        event:  KernelEvent.COMMISSION_APPROVED,
         metadata:    { oldStatus, newStatus, approvedBy },
-        created_at:  approvedAt,
-      }), { table: "lifecycle_events", flow: "commission_approved_echo", brokerageId: brokerageId, reason: "lifecycle echo after the approval landed" })
+        createdAt:  approvedAt,
+        auditOnly: true,
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "commission_approved_echo", brokerageId: brokerageId, reason: "lifecycle echo after the approval landed" })
 
     return {
       success: true,
@@ -1086,16 +1084,15 @@ export async function markCommissionPaid(
     })
 
     // Emit lifecycle event
-    await sentinelWrite(supabase, supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: brokerageId, // NOT NULL (pass 5)
-        entity_type: "agent_commission",
-        entity_id:   commissionId,
-        event_type:  KernelEvent.COMMISSION_PAID,
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: brokerageId, // NOT NULL (pass 5)
+        entityType: "agent_commission",
+        entityId:   commissionId,
+        event:  KernelEvent.COMMISSION_PAID,
         metadata:    { oldStatus, newStatus, paidAt, method },
-        created_at:  paidAt,
-      }), { table: "lifecycle_events", flow: "commission_paid_echo", brokerageId: brokerageId, reason: "lifecycle echo after the payout record landed" })
+        createdAt:  paidAt,
+        auditOnly: true,
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "commission_paid_echo", brokerageId: brokerageId, reason: "lifecycle echo after the payout record landed" })
 
     // Update agent cap tracking (cap_paid_to_date)
     const { data: agentEarnings } = await supabase
@@ -1198,11 +1195,12 @@ export async function markCommissionDisputed(input: {
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
     await sentinelWrite(supabase, supabase.from("commission_splits").update({ status: "disputed", updated_at: now }).eq("commission_id", commissionId), { table: "commission_splits", flow: "commission_splits_mirror_disputed", brokerageId: brokerageId, reason: "mirror of agent_commissions (dispute already filed, the source of truth); ledgered so the miss is visible" })
 
-    await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-      brokerage_id: brokerageId, // NOT NULL (pass 5)
-      entity_type: "agent_commission", entity_id: commissionId,
-      event_type: KernelEvent.COMMISSION_DISPUTED, metadata: { reason: trimmed, disputedBy: ctx.userId }, created_at: now,
-    }), { table: "lifecycle_events", flow: "commission_disputed_echo", brokerageId: brokerageId, reason: "lifecycle echo after the dispute landed" })
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: brokerageId, // NOT NULL (pass 5)
+      entityType: "agent_commission", entityId: commissionId,
+      event: KernelEvent.COMMISSION_DISPUTED, metadata: { reason: trimmed, disputedBy: ctx.userId }, createdAt: now,
+      auditOnly: true,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "commission_disputed_echo", brokerageId: brokerageId, reason: "lifecycle echo after the dispute landed" })
 
     return { success: true, data: { commissionId, status: "disputed" } }
   } catch (error) {
@@ -1263,12 +1261,13 @@ export async function resolveCommissionDispute(input: {
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
     await sentinelWrite(supabase, supabase.from("commission_splits").update({ status: nextStatus, updated_at: now }).eq("commission_id", commissionId), { table: "commission_splits", flow: "commission_splits_mirror_dispute_resolved", brokerageId: brokerageId, reason: "mirror of agent_commissions (resolution already landed, the source of truth); ledgered so the miss is visible" })
 
-    await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-      brokerage_id: brokerageId, // NOT NULL (pass 5)
-      entity_type: "agent_commission", entity_id: commissionId,
-      event_type: nextStatus === "approved" ? KernelEvent.COMMISSION_APPROVED : KernelEvent.COMMISSION_CALCULATED,
-      metadata: { dispute_resolution: resolution, notes: notes ?? null, resolvedBy: ctx.userId }, created_at: now,
-    }), { table: "lifecycle_events", flow: "commission_dispute_resolved_echo", brokerageId: brokerageId, reason: "lifecycle echo after the resolution landed" })
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: brokerageId, // NOT NULL (pass 5)
+      entityType: "agent_commission", entityId: commissionId,
+      event: nextStatus === "approved" ? KernelEvent.COMMISSION_APPROVED : KernelEvent.COMMISSION_CALCULATED,
+      metadata: { dispute_resolution: resolution, notes: notes ?? null, resolvedBy: ctx.userId }, createdAt: now,
+      auditOnly: true,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "commission_dispute_resolved_echo", brokerageId: brokerageId, reason: "lifecycle echo after the resolution landed" })
 
     return { success: true, data: { commissionId, status: nextStatus } }
   } catch (error) {
@@ -1362,16 +1361,15 @@ export async function createExpenseRecord(
     }
 
     // Emit lifecycle event
-    await sentinelWrite(supabase, supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: ctx.brokerageId, // NOT NULL (pass 5)
-        entity_type: "business_expense",
-        entity_id:   expense.id,
-        event_type:  KernelEvent.EXPENSE_CREATED,
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: ctx.brokerageId, // NOT NULL (pass 5)
+        entityType: "business_expense",
+        entityId:   expense.id,
+        event:  KernelEvent.EXPENSE_CREATED,
         metadata:    { agentId, category, amount, description },
-        created_at:  now,
-      }), { table: "lifecycle_events", flow: "expense_created_echo", brokerageId: ctx.brokerageId, reason: "lifecycle echo after the expense row landed" })
+        createdAt:  now,
+        auditOnly: true,
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "expense_created_echo", brokerageId: ctx.brokerageId, reason: "lifecycle echo after the expense row landed" })
 
     return {
       success: true,
@@ -1635,16 +1633,15 @@ export async function exportFinancialReport(
     }
 
     // Emit lifecycle event
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: brokerageId, // NOT NULL (pass 5)
-        entity_type: "financial_report",
-        entity_id:   brokerageId,
-        event_type:  format === "csv" ? KernelEvent.REPORT_EXPORTED_CSV : KernelEvent.REPORT_EXPORTED_PDF,
+    await import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: brokerageId, // NOT NULL (pass 5)
+        entityType: "financial_report",
+        entityId:   brokerageId,
+        event:  format === "csv" ? KernelEvent.REPORT_EXPORTED_CSV : KernelEvent.REPORT_EXPORTED_PDF,
         metadata:    { reportType, dateFrom, dateTo, filename },
-        created_at:  generatedAt,
-      })
+        createdAt:  generatedAt,
+        auditOnly: true,
+      }).then(k.asWriteResult))
 
     return {
       success: true,
@@ -1698,16 +1695,15 @@ export async function emailFinancialReport(
     }
 
     // Emit lifecycle event
-    await sentinelWrite(supabase, supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: brokerageId, // NOT NULL (pass 5)
-        entity_type: "email_report",
-        entity_id:   brokerageId,
-        event_type:  KernelEvent.REPORT_EMAILED,
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId: brokerageId, // NOT NULL (pass 5)
+        entityType: "email_report",
+        entityId:   brokerageId,
+        event:  KernelEvent.REPORT_EMAILED,
         metadata:    { reportType, recipients, subject },
-        created_at:  queuedAt,
-      }), { table: "lifecycle_events", flow: "report_emailed_echo", brokerageId: brokerageId, reason: "lifecycle echo after the email_queue rows landed" })
+        createdAt:  queuedAt,
+        auditOnly: true,
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "report_emailed_echo", brokerageId: brokerageId, reason: "lifecycle echo after the email_queue rows landed" })
 
     return {
       success: true,

@@ -376,18 +376,19 @@ export async function createVideoSnippet(data: {
   }
 
   // Write lifecycle event
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    entity_type: "video_snippet",
-    entity_id: snippet.id,
-    brokerage_id: brokerageId,
-    event_type: KernelEvent.SNIPPET_CREATED,
-    actor_user_id: createdBy,
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType: "video_snippet",
+    entityId: snippet.id,
+    brokerageId: brokerageId,
+    event: KernelEvent.SNIPPET_CREATED,
+    actorUserId: createdBy,
     metadata: {
       platform_target: normalizedPlatform,
       duration: duration,
       source_project_id: data.videoProjectId,
     },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // Fire kernel event
   await processKernelEvent({
@@ -437,14 +438,15 @@ export async function updateSnippetApprovalStatus(
       ? KernelEvent.SNIPPET_REJECTED
       : KernelEvent.SNIPPET_CREATED
 
-  await sentinelWrite(supabase, supabase.from("lifecycle_events").insert({
-    entity_type: "video_snippet",
-    entity_id: snippetId,
-    brokerage_id: brokerageId,
-    event_type: eventType,
-    actor_user_id: actorUserId,
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType: "video_snippet",
+    entityId: snippetId,
+    brokerageId: brokerageId,
+    event: eventType,
+    actorUserId: actorUserId,
     metadata: { approval_status: approvalStatus },
-  }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+    auditOnly: true,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   revalidatePath("/dashboard/videos/snippets")
   return snippet
