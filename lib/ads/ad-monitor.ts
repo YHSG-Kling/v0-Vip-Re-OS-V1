@@ -7,10 +7,10 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
-import { resolveProvider } from "@/lib/kernel/providers"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { generateText } from "ai"
+// ROUTED, was raw (lane 99B) — see generateInsights below.
+import { generateTextRouted } from "@/lib/ai/models"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -276,9 +276,17 @@ export async function ingestCompetitorPost(
 // ─── GENERATE INSIGHTS ────────────────────────────────────────────────────────
 
 export async function generateInsights(
-  brokerageId: string
+  /** Ignored (lane 99B) — the tenant is resolved from the SESSION by requireBrokerage(),
+   *  exactly like the two ingest writers. Kept so existing callers still type-check. */
+  _requestedBrokerageId?: string
 ): Promise<{ success: boolean; insights?: Insight[]; error?: string }> {
   try {
+    // SESSION-SCOPED (was body-supplied): this is a public "use server" endpoint that
+    // spends AI and writes rows; a caller-named brokerageId would bill and write into
+    // any tenant whose plan has the feature (CLAUDE.md §4). Fail closed without one.
+    const gate = await requireBrokerage()
+    if (!gate.ok) return { success: false, error: gate.error }
+    const brokerageId = gate.brokerageId
     const supabase = await createClient()
 
     // Kernel gate: canAccessFeature
@@ -314,8 +322,15 @@ export async function generateInsights(
       return { success: true, insights: [] }
     }
 
-    // Step 2: Build Claude API prompt
-    const provider = await resolveProvider({ providerType: "ai", actorContext: { userId: "", brokerageId } })
+    // Step 2: Build the prompt.
+    //
+    // TOMBSTONE (lane 99B) — `resolveProvider({ providerType: "ai" })` stood here and its
+    // `providerKey` was handed to the raw SDK as the MODEL. `ai` is a SYSTEM-ONLY provider
+    // type (lib/kernel/providers.ts SYSTEM_ONLY_TYPES — no tenant override exists), so this
+    // was never "the brokerage's own AI provider": it resolved the platform VENDOR name
+    // ("anthropic"), not a model id, and no ai_tool_usage row was written. SURVIVOR: the
+    // routed lane below — lib/ai/models.ts `competitive_monitoring`, booked to the session
+    // tenant (platform-covered AI with per-tier overage, CLAUDE.md §5).
 
     const adsForPrompt = (recentAds || []).map((ad) => ({
       platform: ad.source_platform,
@@ -360,11 +375,12 @@ Be specific to real estate marketing. Identify patterns like:
 - Price anchoring strategies
 - Lead generation tactics`
 
-    const { text } = await generateText({
-      model: provider.providerKey,
+    const { text } = await generateTextRouted({
+      feature: "competitive_monitoring",
+      brokerageId,
       system: systemPrompt,
       prompt: userPrompt,
-      maxOutputTokens: 2000,
+      maxTokens: 2000,
     })
 
     // Parse the JSON response

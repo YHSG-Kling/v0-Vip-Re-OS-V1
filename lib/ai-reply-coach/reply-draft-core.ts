@@ -31,6 +31,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { applyBrandVoice }     from "@/lib/kernel/brand-voice"
 import { processKernelEvent }  from "@/lib/kernel/notification-engine"
 import { KernelEvent }         from "@/lib/kernel/events"
+import { loadContactMemoryForPrompt, contactMemoryPromptSection } from "@/lib/kernel/conversation-memory"
+import { knownFactsBlock }     from "@/lib/ai-isa/qualification-playbook"
 
 export interface GenerateAIReplyDraftParams {
   brokerageId:     string
@@ -132,6 +134,14 @@ export async function generateAIReplyDraftForTenant(
       .map(m => `${m.direction === "inbound" ? "Contact" : "Agent"}: ${(m.body ?? "").substring(0, 120)}`)
       .join("\n")
 
+    // Lane 99B — MEMORY on the shared spine, scoped to THIS tenant (the contact row
+    // above already proved membership; the helper re-applies the predicate). The
+    // playbook's "already on file — do not re-ask" block reads the SAME spine, so a
+    // current fact is never re-asked and an expired one is re-confirmed, not assumed.
+    const contactMemory = await loadContactMemoryForPrompt({ contactId: contact.id, brokerageId: params.brokerageId, client: supabase })
+    const memorySection = contactMemoryPromptSection(contactMemory)
+    const onFile = knownFactsBlock({ hasContactInfo: true, timeline: contact.timeline ?? null, memory: contactMemory?.spine ?? null })
+
     const charLimit = params.channel === "sms" ? 160 : params.channel === "in_app" ? 500 : 2000
     const includeSubject = params.channel === "email"
 
@@ -156,6 +166,7 @@ ${listing ? `LISTING CONTEXT:
 
 RECENT THREAD (newest last):
 ${threadHistory || "No prior messages"}
+${memorySection ? `\n${memorySection}\n` : ""}${onFile ? `\n${onFile}\n` : ""}
 
 BRAND VOICE GUIDANCE:
 ${brandVoiceResult.notes.join("\n") || "Use professional, helpful tone"}

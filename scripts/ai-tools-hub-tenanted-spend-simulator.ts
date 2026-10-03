@@ -598,34 +598,31 @@ async function servedModelLayer(): Promise<void> {
     unattributed.row?.tokens_used === 0 && unattributed.row?.model_used === null,
     `tokens_used=${unattributed.row?.tokens_used} model_used=${String(unattributed.row?.model_used)}`)
 
-  // social_post and email_composer ride the generateObject shim, which has no
-  // fallback — so the label is right today either way. What changed is WHERE it
-  // comes from: the lane's report, not a comparison against the lane's name.
+  // Lane 99B — social_post and email_composer's survivor (app/actions/social/generate-social-post.ts)
+  // is now bound to the BOOKED shim (bookedGenerateObject → logAIUsage, session tenant), so the
+  // spend is on the survivor's own ai_tool_usage row and the hub row books ZERO — whatever model
+  // or counts the survivor reports. A hub row that still carried tokens here would DOUBLE-BILL.
   const social = await run("social_post", { platform: "instagram", context: "4 bed in Oak Park" })
-  check("social_post: the row names the model the survivor reports",
-    social.row?.model_used === "claude-sonnet", `model_used=${String(social.row?.model_used)}`)
   const socialRepinned = await run("social_post", { platform: "instagram", context: "4 bed in Oak Park" }, {
     social: {
       success: true, data: { content: "c", hashtags: [] },
       usage: { inputTokens: 200, outputTokens: 60, totalTokens: 260, estimated: false, model: "gpt-4o" },
     },
   })
-  check("social_post: re-pin the survivor's model and the LEDGER FOLLOWS — no name comparison left",
-    socialRepinned.row?.model_used === "gpt-4o", `model_used=${String(socialRepinned.row?.model_used)}`)
-  check("social_post: the counts are still the survivor's own (200+60)",
-    social.row?.tokens_used === 260 && socialRepinned.row?.tokens_used === 260)
+  check("social_post: booked_by_survivor — the hub row books ZERO tokens and names no model",
+    social.row?.tokens_used === 0 && socialRepinned.row?.tokens_used === 0 && !social.row?.model_used,
+    `tokens_used=${social.row?.tokens_used}/${socialRepinned.row?.tokens_used} model_used=${String(social.row?.model_used)}`)
 
   const email = await run("email_composer", { emailType: "follow-up", recipient: "John", context: "Toured 3 homes" })
-  check("email_composer: the row names the model the survivor reports",
-    email.row?.model_used === "gpt-4o-mini", `model_used=${String(email.row?.model_used)}`)
   const emailRepinned = await run("email_composer", { emailType: "follow-up", context: "Toured 3 homes" }, {
     draft: {
       success: true, draft: "d",
       usage: { inputTokens: 90, outputTokens: 30, totalTokens: 120, estimated: false, model: "claude-sonnet" },
     },
   })
-  check("email_composer: re-pin the survivor's model and the LEDGER FOLLOWS",
-    emailRepinned.row?.model_used === "claude-sonnet", `model_used=${String(emailRepinned.row?.model_used)}`)
+  check("email_composer: booked_by_survivor — the hub row books ZERO tokens",
+    email.row?.tokens_used === 0 && emailRepinned.row?.tokens_used === 0,
+    `tokens_used=${email.row?.tokens_used}/${emailRepinned.row?.tokens_used}`)
 
   const unnamedSocial = await run("social_post", { platform: "instagram", context: "4 bed in Oak Park" }, {
     social: {
@@ -633,7 +630,7 @@ async function servedModelLayer(): Promise<void> {
       usage: { inputTokens: 200, outputTokens: 60, totalTokens: 260, estimated: false, model: null },
     },
   })
-  check("social_post: a survivor that cannot name its model books ZERO, not a priced guess",
+  check("social_post: a survivor that cannot name its model still books ZERO here, not a priced guess",
     unnamedSocial.row?.tokens_used === 0 && unnamedSocial.row?.model_used === null,
     `tokens_used=${unnamedSocial.row?.tokens_used}`)
 
@@ -960,25 +957,21 @@ async function main(): Promise<void> {
       replace: "  if (brokerageId) {",
     })
 
-    // F2.1 — the pinned model asserted back over the served one.
-    controlled("model_used stamped from the survivor's name instead of its report", {
+    // F2.1 (lane 99B) — the pinned-model mutation this control used to apply lived in the hub's
+    // usageToTokens, which is DELETED (tombstone in app/actions/ai-tools-hub.ts): its two callers'
+    // survivor now books its own calls, so the hub no longer books social usage at all. The
+    // defect that replaced it as the live risk is the DOUBLE-BILL — the hub booking the social
+    // survivor's reported usage again on top of the survivor's own logAIUsage row.
+    controlled("the social survivor's usage booked AGAIN by the hub (double-bill)", {
       file: F.hub,
-      find: `priced against a guess\`,
-    }
-  }
-  return {
-    measured: true,
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    model: usage.model,`,
-      replace: `priced against a guess\`,
-    }
-  }
-  return {
-    measured: true,
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    model: lane === "generateSocialPostContent" ? "claude-sonnet" : "gpt-4o-mini",`,
+      find: `    tokens: {
+      measured: false,
+      reason: "booked_by_survivor",
+      detail: "generateSocialPostContent → bookedGenerateObject`,
+      replace: `    tokens: res.usage && res.usage.model ? { measured: true, inputTokens: res.usage.inputTokens, outputTokens: res.usage.outputTokens, model: res.usage.model } : {
+      measured: false,
+      reason: "booked_by_survivor",
+      detail: "generateSocialPostContent → bookedGenerateObject`,
     })
 
     // F2.1b — the same defect on the tool the hub runs itself.

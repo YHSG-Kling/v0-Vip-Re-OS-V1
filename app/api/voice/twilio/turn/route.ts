@@ -135,9 +135,15 @@ export async function POST(request: NextRequest) {
     ? await (async () => {
         const { buildOutboundPrompt } = await import("@/lib/voice/reception-brain")
         const { planTurnWithPrompt } = await import("@/lib/voice/twilio-voice")
-        const { systemPrompt } = buildOutboundPrompt(ctx!.identity, {
+        // Lane 99B — the called CONTACT's memory (voice_calls.contact_id), scoped to
+        // the calling number's brokerage; a lead-only call has none (clean skip).
+        const { loadContactMemoryForPrompt, contactMemoryPromptSection } = await import("@/lib/kernel/conversation-memory")
+        const contactMemory = await loadContactMemoryForPrompt({ contactId: (call as any)?.contact_id ?? null, brokerageId: ctx!.brokerageId, client: svc })
+        const { systemPrompt: briefPrompt } = buildOutboundPrompt(ctx!.identity, {
           objective: brief.objective, contactName: brief.contactName, extraSystemPrompt: brief.systemPrompt,
-        })
+        }, contactMemory ? { hasContactInfo: true, memory: contactMemory.spine } : undefined)
+        const memorySection = contactMemoryPromptSection(contactMemory)
+        const systemPrompt = memorySection ? `${briefPrompt}\n\n${memorySection}` : briefPrompt
         // Lane 86D: the outbound-brief turn books on the calling tenant (it
         // used to reach generateTextRouted with no brokerageId — unbooked).
         return planTurnWithPrompt(systemPrompt, transcript, speech, undefined, {},

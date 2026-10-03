@@ -16,7 +16,7 @@
  */
 
 import { bestEffort } from "@/lib/db/best-effort"
-import { generateObject, type GeneratedUsage } from "@/lib/ai/generate"
+import { bookedGenerateObject, type GeneratedUsage } from "@/lib/ai/generate"
 import { friendlyAiError } from "@/lib/ai/ai-error"
 import { z } from "zod"
 import { resolveModel } from "@/lib/ai/resolve-model"
@@ -32,6 +32,14 @@ import { SOCIAL_POST_CHAR_LIMITS, SOCIAL_POST_CHAR_LIMIT_DEFAULT } from "@/lib/c
 import { analyzeContentQuality, type QualityScore } from "@/lib/quality-checker"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { requireCallerTenant } from "@/lib/auth/require-caller"
+
+// Lane 99B — BOOKED HERE, ONCE. The four generators below were on the unbooking shim;
+// only the AI Tools hub booked the usage they returned, so the composer / post dialog /
+// listing social panel / assist bar (direct callers) and generateWeeklyContentPlan +
+// suggestHashtags (no booking caller at all) bought tokens nobody ledgered. Binding the
+// booked shim books every call against the SESSION tenant (logAIUsage), and the hub now
+// records `booked_by_survivor` (0 tokens) — exactly one booking per call on every path.
+const generateObject = bookedGenerateObject("social_post_generation")
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -169,9 +177,10 @@ export async function generateSocialPostContent(params: {
   complianceViolations?: string[]
   error?: string
   /** REAL provider token counts for this call. ADDITIVE — see GeneratedUsage.
-   *  This lane books nothing (the generateObject shim never calls logAIUsage),
-   *  so a caller that ledgers a run of this generator MUST take the figure from
-   *  here rather than inventing one. Absent when no model call was made. */
+   *  Lane 99B: this file now BOOKS its own spend (bookedGenerateObject → logAIUsage,
+   *  session tenant), so the figure is informational — a caller must NOT book it
+   *  again (app/actions/ai-tools-hub.ts records `booked_by_survivor`, 0 tokens).
+   *  Absent when no model call was made. */
   usage?: GeneratedUsage
   /** Merged (§1.1, lane N3a 2026-09-01) from the deleted /api/generate/social
    *  route: the them-first quality verdict for the generated post. */
@@ -545,8 +554,7 @@ export async function generateContextualDraft(params: {
   complianceViolations?: string[]
   error?: string
   /** REAL provider token counts. ADDITIVE, and for the same reason as on
-   *  generateSocialPostContent: this lane books nothing, so a caller that
-   *  ledgers the run must take the figure from here. */
+   *  generateSocialPostContent: already BOOKED here (lane 99B) — never re-book it. */
   usage?: GeneratedUsage
 }> {
   try {

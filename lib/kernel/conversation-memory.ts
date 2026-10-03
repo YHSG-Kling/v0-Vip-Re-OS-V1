@@ -605,6 +605,65 @@ export async function loadContactContext(contactId: string, client?: Svc): Promi
   return spine as ContextSpine
 }
 
+// ─── THE ONE READ EVERY CONVERSING AI SURFACE USES (lane 99B) ─────────────────
+//
+// Writes reached every surface; reads reached only the portal chat. This is the
+// read side, on the SAME store (contacts.metadata.context_spine — no new memory
+// store, OWNER LAW 1/2), consumed by: app/api/did/custom-llm/route.ts,
+// app/actions/ai-isa/handle-inbound-email.ts, lib/voice/twilio-voice.ts (reception
+// turn) + app/api/voice/twilio/turn/route.ts (outbound brief turn),
+// lib/ai-reply-coach/reply-draft-core.ts (the ISA SMS reply), app/api/internal/
+// ai-chat/route.ts (copilot open on a contact) and app/api/widget/message/route.ts.
+//   · TENANT: the contact must belong to the brokerage the caller resolved from its
+//     session/event (`.eq("brokerage_id", …)`) — a foreign contact reads as nothing.
+//   · LEADS have no spine: a null contactId is a clean skip (null), never a leads read.
+//   · FAIL CLOSED: a refused read injects NOTHING (logged), never a guessed memory.
+//   · `spine` is passed as the playbook's `known.memory` (the "already on file — do
+//     not re-ask" path); `block` is memoryContextBlock — current facts only, plus the
+//     re-confirm cue for expired ones.
+
+export interface ContactMemoryForPrompt {
+  /** The raw spine — hand it to buildQualificationPrompt / knownFactsBlock as `known.memory`. */
+  spine: unknown
+  /** memoryContextBlock(spine) — summary + current facts + re-confirm cue. May be "". */
+  block: string
+}
+
+/** LIVE: the tenant-scoped memory read for an AI surface. Null = inject nothing. */
+export async function loadContactMemoryForPrompt(input: {
+  contactId: string | null | undefined
+  brokerageId: string | null | undefined
+  client?: Svc
+  now?: Date
+}): Promise<ContactMemoryForPrompt | null> {
+  if (!input.contactId || !input.brokerageId) return null
+  try {
+    const supabase = input.client ?? createServiceClient()
+    const { data, error } = await supabase
+      .from("contacts")
+      .select("metadata")
+      .eq("id", input.contactId)
+      .eq("brokerage_id", input.brokerageId)
+      .maybeSingle()
+    if (error) {
+      console.error(`[conversation-memory] memory read REFUSED for contact ${input.contactId}:`, error.message)
+      return null
+    }
+    const spine = (((data as any)?.metadata ?? {}) as Record<string, any>).context_spine
+    if (!spine || typeof spine !== "object") return null
+    return { spine, block: memoryContextBlock(spine, input.now ?? new Date()).slice(0, 1600) }
+  } catch (e) {
+    console.error(`[conversation-memory] memory read failed for contact ${input.contactId}:`, (e as Error).message)
+    return null
+  }
+}
+
+/** PURE. The one prompt section a surface appends — "" when there is nothing to say. */
+export function contactMemoryPromptSection(mem: ContactMemoryForPrompt | null | undefined): string {
+  if (!mem || !mem.block.trim()) return ""
+  return `WHAT WE ALREADY KNOW ABOUT THIS CONTACT (reference naturally; never read it back verbatim):\n${mem.block}`
+}
+
 // ─── REFRESH SWEEP (the write side the cron drives) ───────────────────────────
 //
 // The spine is only useful if it's kept current. This bounded sweep refreshes the

@@ -117,6 +117,85 @@ async function main() {
       /spine\.facts\s*=\s*compileObservedFacts\(/.test("spine.facts = compileObservedFacts(prior, x, now)"))
   }
 
+  console.log("\n[Layer 0a · lane 99B — the ONE memory read, on every conversing AI surface]")
+  {
+    const T0 = new Date("2026-09-01T12:00:00Z")
+    const day = (d: number) => new Date(T0.getTime() + d * 86_400_000)
+    let ledger: MemoryFact[] = []
+    ledger = recordMemoryFact(ledger, { key: "timeline", value: "1-3_months", observedAt: day(0).toISOString(), confidence: 0.8, source: "contacts.timeline" })
+    ledger = recordMemoryFact(ledger, { key: "channel_preference", value: "sms", observedAt: day(0).toISOString(), confidence: 0.9, source: "conversation" })
+    const spine = { summary: "Wants a yard; touring weekends.", facts: ledger }
+    const BRK = "11111111-1111-1111-1111-111111111111", OTHER = "22222222-2222-2222-2222-222222222222", CID = "33333333-3333-3333-3333-333333333333"
+    // Injected client: records every predicate and answers ONLY a contact in BRK (a foreign
+    // brokerage's predicate matches nothing — exactly what PostgREST does).
+    const fake = (opts: { refuse?: boolean } = {}) => {
+      const calls: Array<[string, unknown]> = []
+      const q: any = {
+        from: (t: string) => { calls.push(["from", t]); return q },
+        select: (c: string) => { calls.push(["select", c]); return q },
+        eq: (c: string, v: unknown) => { calls.push([c, v]); return q },
+        maybeSingle: async () => {
+          if (opts.refuse) return { data: null, error: { message: "permission denied" } }
+          const brk = calls.find(([c]) => c === "brokerage_id")?.[1]
+          return { data: brk === BRK ? { metadata: { context_spine: spine } } : null, error: null }
+        },
+      }
+      return { client: q, calls }
+    }
+    const { loadContactMemoryForPrompt, contactMemoryPromptSection } = await import("../lib/kernel/conversation-memory")
+
+    const ok = fake()
+    const mem = await loadContactMemoryForPrompt({ contactId: CID, brokerageId: BRK, client: ok.client, now: day(30) })
+    const section = contactMemoryPromptSection(mem)
+    check("INJECT: a current fact reaches the prompt section (timeline + channel, with the summary)",
+      !!mem && section.includes("timeline: 1-3_months") && section.includes("preferred channel: sms") && section.includes("Wants a yard"), section)
+    check("INJECT: the raw spine is handed back for the playbook's known.memory", !!mem && (mem.spine as any)?.facts?.length === 2)
+    check("TENANT: the read carries BOTH predicates (id AND brokerage_id)",
+      ok.calls.some(([c, v]) => c === "id" && v === CID) && ok.calls.some(([c, v]) => c === "brokerage_id" && v === BRK))
+    const expired = await loadContactMemoryForPrompt({ contactId: CID, brokerageId: BRK, client: fake().client, now: day(MEMORY_FACT_REVIEW_DAYS.timeline + 1) })
+    const expiredSection = contactMemoryPromptSection(expired)
+    check("EXPIRED: an expired timeline leaves the section and a RE-CONFIRM cue names it",
+      !expiredSection.includes("1-3_months") && /re-confirming[^\n]*timeline/.test(expiredSection), expiredSection)
+    const foreign = await loadContactMemoryForPrompt({ contactId: CID, brokerageId: OTHER, client: fake().client, now: day(30) })
+    check("TENANT: a contact outside the session/event brokerage reads as NO memory", foreign === null && contactMemoryPromptSection(foreign) === "")
+    const lead = fake()
+    const leadMem = await loadContactMemoryForPrompt({ contactId: null, brokerageId: BRK, client: lead.client, now: day(30) })
+    check("LEAD: no contact id (a lead has no spine) → null, and NOT ONE query is issued", leadMem === null && lead.calls.length === 0)
+    const refused = await loadContactMemoryForPrompt({ contactId: CID, brokerageId: BRK, client: fake({ refuse: true }).client, now: day(30) })
+    check("FAIL CLOSED: a refused read injects nothing (never a guessed memory)", refused === null)
+    const noTenant = fake()
+    check("FAIL CLOSED: no tenant → null without a query",
+      (await loadContactMemoryForPrompt({ contactId: CID, brokerageId: null, client: noTenant.client })) === null && noTenant.calls.length === 0)
+
+    // WIRING — each of the five surfaces calls the ONE read and renders it (stripped source).
+    const root = join(import.meta.dirname, "..")
+    const code = (rel: string) => blankStrings(stripComments(readFileSync(join(root, rel), "utf8")))
+    const reads = (src: string) => /\bloadContactMemoryForPrompt\s*\(/.test(src) && /\bcontactMemoryPromptSection\s*\(/.test(src)
+    const SURFACES: Array<[string, string[]]> = [
+      ["D-ID custom LLM", ["app/api/did/custom-llm/route.ts"]],
+      ["ISA inbound email", ["app/actions/ai-isa/handle-inbound-email.ts"]],
+      ["voice agent (reception turn + outbound brief turn)", ["lib/voice/twilio-voice.ts", "app/api/voice/twilio/turn/route.ts"]],
+      ["ISA SMS reply (reply coach core)", ["lib/ai-reply-coach/reply-draft-core.ts"]],
+      ["staff copilot (contact in context)", ["app/api/internal/ai-chat/route.ts"]],
+    ]
+    for (const [name, files] of SURFACES) {
+      check(`WIRED-READ ${name}: calls loadContactMemoryForPrompt + contactMemoryPromptSection`, files.every((f) => reads(code(f))), files.join(", "))
+    }
+    check("WIRED-SCAN-CONTROL (positive control): the finder matches the call shape, and NOT a bare mention",
+      reads("const m = await loadContactMemoryForPrompt({}); x(contactMemoryPromptSection(m))") && !reads("loadContactMemoryForPrompt contactMemoryPromptSection"))
+    // LEADS: each surface keys the read on a CONTACT id, never a lead id.
+    check("LEAD-ISA-EMAIL: the ISA email reads lead.contact_id (a bare lead skips), never the lead id",
+      /loadContactMemoryForPrompt\(\s*\{\s*contactId:\s*lead\.contact_id/.test(code("app/actions/ai-isa/handle-inbound-email.ts")))
+    check("LEAD-VOICE: the voice turns read the call's contact_id, never voice_calls.lead_id",
+      /contactId:\s*input\.voiceToolCtx\?\.contactId/.test(code("lib/voice/twilio-voice.ts"))
+        && /contactId:\s*\(call as any\)\?\.contact_id/.test(code("app/api/voice/twilio/turn/route.ts")))
+    // PUBLIC claimed-identity surfaces are deliberately excluded (contact linked by a visitor-typed email).
+    check("PUBLIC-EXCLUSION: the public widget does not inject contact memory (claimed identity)",
+      !/\bloadContactMemoryForPrompt\s*\(/.test(code("app/api/widget/message/route.ts")))
+    check("PUBLIC-EXCLUSION: D-ID skips memory on an embed (public) session",
+      /contactId:\s*ctx && !embedSessionId \? resolvedContactId : null/.test(code("app/api/did/custom-llm/route.ts")))
+  }
+
   console.log("\n[Layer 0b · lane 98B conversation → memory fact, written NOW]")
   {
     const facts = factsFromQualification({ timeline: "1-3_months", preferredChannel: "sms", maxPrice: 650000, reasonForMove: "new job in Tampa" })

@@ -81,6 +81,7 @@ import { resolveToolPersona, filterRentCastToolsForPersona, selectToolsForPerson
 import { rentCastMcpTools } from "@/lib/external/rentcast-ai-tools"
 import { buildCustomerFreeTools } from "@/lib/ai-isa/customer-context-tools"
 import { buildQualificationPrompt } from "@/lib/ai-isa/qualification-playbook"
+import { loadContactMemoryForPrompt, contactMemoryPromptSection, type ContactMemoryForPrompt } from "@/lib/kernel/conversation-memory"
 import { loadBrandPlaybookContext, type BrandPlaybookContext } from "@/lib/ai-isa/brand-playbook-context"
 import { resolvePlatformLiveSession } from "@/lib/did/platform-live-agent"
 import { CONTACT_CTX_RE, EMBED_CTX_RE, PLATFORM_LIVE_CTX_RE } from "@/lib/did/context-markers"
@@ -348,6 +349,8 @@ function buildSystemPrompt(input: {
   brandVoiceBlock: string
   toolPersona: ToolPersona
   brand?: BrandPlaybookContext | null
+  /** Lane 99B: the contact's compiled memory (null for an anonymous visitor / a lead). */
+  memory?: ContactMemoryForPrompt | null
 }): string {
   const lines: string[] = [
     input.isAnonymous
@@ -415,9 +418,16 @@ function buildSystemPrompt(input: {
   // should be doing qualification work (contact info, intent, persona,
   // property address, criteria, timeline, financing) rather than only
   // servicing an existing deal.
+  // Lane 99B — the contact's memory (current facts only + the re-confirm cue).
+  const memorySection = contactMemoryPromptSection(input.memory)
+  if (memorySection) {
+    lines.push("")
+    lines.push(memorySection)
+  }
+
   if (!input.ctx?.activeTransaction && !input.ctx?.activeListing) {
     lines.push("")
-    lines.push(buildQualificationPrompt({ surface: "did_avatar", persona: input.toolPersona, brand: input.brand }))
+    lines.push(buildQualificationPrompt({ surface: "did_avatar", persona: input.toolPersona, brand: input.brand, known: { hasContactInfo: !input.isAnonymous, memory: input.memory?.spine ?? null } }))
   }
 
   return lines.join("\n")
@@ -520,8 +530,20 @@ export async function POST(request: NextRequest) {
     knowledgeQuery: latestUserText || null,
   }).catch(() => null)
 
+  // Lane 99B — memory read on the SAME spine the portal reads, for the KNOWN-contact
+  // deployment (portal/website [[CTX:contactId]] marker) only. A PUBLIC embed session
+  // is excluded: its contact link comes from /api/embed/capture → captureContact,
+  // which dedups a visitor-CLAIMED email/phone onto an existing contact, so reading
+  // memory there would recite one person's facts to whoever typed their email.
+  // Anonymous visitor / lead: none. Tenant predicate = the contact's brokerage.
+  const contactMemory = await loadContactMemoryForPrompt({
+    contactId: ctx && !embedSessionId ? resolvedContactId : null,
+    brokerageId: ctx?.brokerageId ?? null,
+  })
+
   const systemPrompt = buildSystemPrompt({
     contactName, isAnonymous, ctx, brandVoiceBlock: brand.systemBlock ?? "", toolPersona, brand: brandPlaybook,
+    memory: contactMemory,
   })
 
   if (latestUserText && detectsEscalation(latestUserText)) {

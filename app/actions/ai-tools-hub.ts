@@ -4,7 +4,6 @@ import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { generateTextRouted as generateText, type RoutedUsage } from "@/lib/ai/models"
 import { calculateCost, type AIModel } from "@/lib/ai/cost-tracking"
-import type { GeneratedUsage } from "@/lib/ai/generate"
 import { getAgentContext, type AgentContext } from "@/lib/identity/get-agent-context"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import type { MessageType } from "@/lib/kernel/types"
@@ -1241,7 +1240,13 @@ async function composeEmail(
   return {
     output: res.draft,
     feature: "email_generation",
-    tokens: usageToTokens(res.usage, "generateContextualDraft"),
+    // Lane 99B: the survivor books its own call now (bookedGenerateObject → logAIUsage,
+    // session tenant) — booking res.usage here again would double-bill the tenant.
+    tokens: {
+      measured: false,
+      reason: "booked_by_survivor",
+      detail: "generateContextualDraft → bookedGenerateObject → logAIUsage already wrote this call's ai_tool_usage row (feature='social_post_generation') against the same session tenant",
+    },
   }
 }
 
@@ -1307,7 +1312,12 @@ async function generateSocialPost(
   return {
     output: rendered,
     feature: "social_post_generation",
-    tokens: usageToTokens(res.usage, "generateSocialPostContent"),
+    // Lane 99B: booked by the survivor (bookedGenerateObject) — 0 here, never twice.
+    tokens: {
+      measured: false,
+      reason: "booked_by_survivor",
+      detail: "generateSocialPostContent → bookedGenerateObject → logAIUsage already wrote this call's ai_tool_usage row (feature='social_post_generation') against the same session tenant",
+    },
   }
 }
 
@@ -1757,50 +1767,10 @@ async function explainDocument(
   }
 }
 
-/**
- * Convert a survivor-reported usage block into the hub's token provenance.
- *
- * The `estimated` flag survives into the detail line rather than being
- * flattened away: an estimate measured off the real prompt and the real
- * completion is a legitimate ledger figure, but a reader of this table is
- * entitled to know it was not the provider's own count.
- *
- * THE MODEL COMES FROM THE SAME PLACE THE COUNTS DO. This used to read
- *
- *     model: lane === "generateSocialPostContent" ? "claude-sonnet" : "gpt-4o-mini"
- *
- * — a string comparison on the survivor's NAME, deciding what to write in a
- * billing record. It was right only for as long as those two files kept pinning
- * the models this file believed they pinned, nothing connected the two, and
- * cost_cents is priced off that label: claude-sonnet bills 20x gpt-4o-mini per
- * input token. The generateObject shim now reports the model it actually
- * called, so the label is read, not asserted.
- *
- * A usage block that cannot name its model books ZERO rather than picking one:
- * m508 refuses a row that claims tokens without a model, and inventing one to
- * get past that is the exact defect this file exists to prevent.
- */
-function usageToTokens(usage: GeneratedUsage | undefined, lane: string): ToolTokens {
-  if (!usage) {
-    return {
-      measured: false,
-      reason: "lane_reports_no_usage",
-      detail: `${lane} returned no usage block for this call`,
-    }
-  }
-  if (!usage.model) {
-    return {
-      measured: false,
-      reason: "lane_reports_no_usage",
-      detail:
-        `${lane} reported ${usage.totalTokens} tokens but could not name the model that served them ` +
-        `(a pre-built provider instance, or an ambiguous model id) — booked as 0 rather than priced against a guess`,
-    }
-  }
-  return {
-    measured: true,
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    model: usage.model,
-  }
-}
+// TOMBSTONE (lane 99B, CLAUDE.md §1.3) — `usageToTokens` (survivor-reported usage → a
+// MEASURED hub row) stood here. Its only two callers were social_post and email_composer,
+// whose survivor (app/actions/social/generate-social-post.ts) now books its OWN calls via
+// bookedGenerateObject (lib/ai/generate.ts `bookedGenerateObject`) → logAIUsage. Booking the
+// returned usage here as well would double-bill, so both arms record booked_by_survivor and the
+// converter had no caller left. SURVIVOR: lib/ai/generate.ts bookedGenerateObject. The model-
+// name rule it carried (read the served model, never a lane-name comparison) lives on there.

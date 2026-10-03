@@ -1,14 +1,5 @@
 {
   "unbooked": {
-    "app/actions/buyer-coaching.ts": [
-      "raw:generateText"
-    ],
-    "app/actions/social/generate-social-post.ts": [
-      "shim:generateObject"
-    ],
-    "lib/ads/ad-monitor.ts": [
-      "raw:generateText"
-    ],
     "services/aiMappingService.ts": [
       "raw:generateText"
     ]

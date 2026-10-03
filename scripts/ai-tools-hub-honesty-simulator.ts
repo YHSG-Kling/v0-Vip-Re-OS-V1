@@ -452,21 +452,22 @@ async function behaviourLayer(): Promise<void> {
   check("property_description: the gate is asked under the SESSION brokerage",
     listing.world.gateCalls[0]?.actorContext?.brokerageId === SESSION_BROKERAGE)
 
-  // ── P2: a survivor that reports its usage has that usage booked here ─────
+  // ── P2 (lane 99B): the social survivor now BOOKS ITS OWN CALL (bookedGenerateObject →
+  // logAIUsage), so the hub books ZERO — exactly one booking per call, never two ─────
   const social = await run("social_post", { platform: "instagram", contentType: "just-listed", context: "4 bed in Oak Park" })
-  check("social_post: books the survivor's REPORTED counts (200+60)",
-    social.row?.tokens_used === 260, `tokens_used=${social.row?.tokens_used}`)
+  check("social_post: books ZERO — the survivor already ledgered this call (no double-bill)",
+    social.row?.tokens_used === 0, `tokens_used=${social.row?.tokens_used}`)
   const socialMoved = await run(
     "social_post",
     { platform: "instagram", context: "4 bed in Oak Park" },
     { social: { success: true, data: { content: "c", hashtags: [] }, usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3, estimated: false, model: "claude-sonnet" } } },
   )
-  check("social_post: that figure MOVES with the survivor's report (1+2)",
-    socialMoved.row?.tokens_used === 3, `tokens_used=${socialMoved.row?.tokens_used}`)
+  check("social_post: still ZERO whatever the survivor reports (its own row carries the spend)",
+    socialMoved.row?.tokens_used === 0, `tokens_used=${socialMoved.row?.tokens_used}`)
 
   const email = await run("email_composer", { emailType: "follow-up", recipient: "John", context: "Toured 3 homes" })
-  check("email_composer: books the survivor's REPORTED counts (90+30)",
-    email.row?.tokens_used === 120, `tokens_used=${email.row?.tokens_used}`)
+  check("email_composer: books ZERO — generateContextualDraft already ledgered this call",
+    email.row?.tokens_used === 0, `tokens_used=${email.row?.tokens_used}`)
   check("email_composer: returns the survivor's draft", String(email.res?.result).includes("what you asked for"))
 
   // ── P3: a tool that genuinely called no model books zero ─────────────────

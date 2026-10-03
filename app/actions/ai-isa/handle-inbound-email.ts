@@ -28,6 +28,7 @@ import { resolveToolPersona, filterRentCastToolsForPersona, selectToolsForPerson
 import { rentCastMcpTools } from '@/lib/external/rentcast-ai-tools'
 import { buildCustomerFreeTools } from '@/lib/ai-isa/customer-context-tools'
 import { buildQualificationPrompt } from '@/lib/ai-isa/qualification-playbook'
+import { loadContactMemoryForPrompt, contactMemoryPromptSection } from '@/lib/kernel/conversation-memory'
 import { loadBrandPlaybookContext } from '@/lib/ai-isa/brand-playbook-context'
 import { TENANT_ADMIN_USER_TYPES } from '@/lib/auth/resolve-user-role'
 import type { MessageType, Persona } from '@/lib/kernel/types'
@@ -420,6 +421,16 @@ export async function processInboundEmail(params: {
   // SURVIVOR: lib/ai-isa/qualification-playbook.ts::buildQualificationPrompt
   // (CLAUDE.md §6 — one vocabulary; four surfaces hand-rolled this prose
   // independently before this lane merged them onto one builder).
+  //
+  // Lane 99B — memory read. A LEAD has no spine; only when this lead is linked to
+  // a CONTACT (lead.contact_id) is that contact's memory read, scoped to the lead's
+  // own (already tenant-checked) brokerage. A bare lead is a clean skip (null).
+  const contactMemory = await loadContactMemoryForPrompt({
+    contactId: lead.contact_id ?? null,
+    brokerageId: lead.brokerage_id,
+    client: supabase,
+  })
+  const memorySection = contactMemoryPromptSection(contactMemory)
   const baseSystem = [
     'You are an AI Inside Sales Agent (ISA) for a real estate brokerage.',
     'Keep replies concise (3–5 sentences max), conversational.',
@@ -428,7 +439,8 @@ export async function processInboundEmail(params: {
     'Do not make up property details, pricing, or market data.',
     'Respect TCPA, DNC, and fair housing requirements in every message.',
     '',
-    buildQualificationPrompt({ surface: 'isa_email', persona: toolPersona, brand: brandPlaybook }),
+    ...(memorySection ? [memorySection, ''] : []),
+    buildQualificationPrompt({ surface: 'isa_email', persona: toolPersona, brand: brandPlaybook, known: { memory: contactMemory?.spine ?? null } }),
     '',
     'You can take real CRM actions via tools:',
     '- escalate_to_agent: when the lead asks for a human or needs urgent attention',

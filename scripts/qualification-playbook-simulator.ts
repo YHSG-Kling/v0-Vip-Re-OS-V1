@@ -678,6 +678,50 @@ console.log("\n[Lane 98B · 'already on file — do not re-ask' reads only CURRE
   check("WIRED: the portal AI chat passes the contact's spine as known.memory", /known:\s*\{\s*hasContactInfo:\s*true,\s*memory:\s*spineForPlaybook\s*\}/.test(portal))
 }
 
+console.log("\n[Lane 99B · the SAME 'already on file' path on the five memory surfaces — current kept, expired re-confirmed, a lead gets none]")
+{
+  const { knownFactsBlock } = await import("../lib/ai-isa/qualification-playbook")
+  const { buildReceptionPrompt, buildOutboundPrompt } = await import("../lib/voice/reception-brain")
+  const now = new Date("2026-10-03T12:00:00Z")
+  const day = 86_400_000
+  const spine = {
+    facts: [
+      { key: "channel_preference", value: "sms", observedAt: new Date(now.getTime() - 10 * day).toISOString(), confidence: 0.85, reviewBy: new Date(now.getTime() + 50 * day).toISOString(), source: "conversation" },
+      { key: "timeline", value: "1-3_months", observedAt: new Date(now.getTime() - 61 * day).toISOString(), confidence: 0.85, reviewBy: new Date(now.getTime() - day).toISOString(), source: "conversation" },
+    ],
+  }
+  const id = { assistantName: "Ava", welcomeMessage: null, tone: null, brokerageName: "Oak Realty", agentName: null, prohibitedLanguage: null, elevenlabsVoiceId: null, forwardNumber: null } as any
+  const onFile = (s: string) => /ALREADY ON FILE — do not re-ask:[^\n]*preferred channel \(sms\)/.test(s)
+  const reconfirm = (s: string) => /re-confirm gently[^\n]*timeline/.test(s) && !/do not re-ask:[^\n]*timeline/.test(s)
+
+  // VOICE (reception + outbound): the builders thread `known` into the shared playbook.
+  const rec = buildReceptionPrompt(id, { hasContactInfo: true, memory: spine, now }).systemPrompt
+  const out = buildOutboundPrompt(id, { objective: "follow up" }, { hasContactInfo: true, memory: spine, now }).systemPrompt
+  check("VOICE reception: a CURRENT fact is on file — do not re-ask", onFile(rec))
+  check("VOICE reception: the EXPIRED timeline is re-confirmed, not assumed", reconfirm(rec))
+  check("VOICE outbound: current on file + expired re-confirmed", onFile(out) && reconfirm(out))
+  check("VOICE LEAD/unknown caller (no known): no on-file claim, no re-confirm cue",
+    !/ALREADY ON FILE/.test(buildReceptionPrompt(id).systemPrompt) && !/re-confirm gently/.test(buildOutboundPrompt(id, { objective: "x" }).systemPrompt))
+
+  // SMS reply core + staff copilot append knownFactsBlock directly; DID + ISA email pass known.memory.
+  const sms = knownFactsBlock({ hasContactInfo: true, timeline: "1-3_months", memory: spine, now })
+  check("ISA SMS reply: the column timeline is NOT claimed on file while the ledger says it expired", onFile(sms) && reconfirm(sms))
+  check("LEAD (no memory, no column): the block is empty — nothing to claim, nothing to re-confirm", knownFactsBlock({ memory: null, now }) === "")
+
+  const P = (rel: string) => stripped(rel)
+  check("WIRED DID: the playbook receives the contact's spine as known.memory",
+    /known:\s*\{\s*hasContactInfo:\s*!input\.isAnonymous,\s*memory:\s*input\.memory\?\.spine/.test(P("app/api/did/custom-llm/route.ts")))
+  check("WIRED ISA email: the playbook receives known.memory", /surface:\s*'isa_email'[^)]*known:\s*\{\s*memory:\s*contactMemory\?\.spine/.test(P("app/actions/ai-isa/handle-inbound-email.ts")))
+  check("WIRED voice: the reception turn passes the spine into buildReceptionPrompt",
+    /buildReceptionPrompt\(input\.ctx\.identity,\s*contactMemory\s*\?\s*\{\s*hasContactInfo:\s*true,\s*memory:\s*contactMemory\.spine/.test(P("lib/voice/twilio-voice.ts")))
+  check("WIRED voice: the outbound brief turn passes the spine into buildOutboundPrompt",
+    /contactMemory\s*\?\s*\{\s*hasContactInfo:\s*true,\s*memory:\s*contactMemory\.spine\s*\}/.test(P("app/api/voice/twilio/turn/route.ts")))
+  check("WIRED ISA SMS reply: knownFactsBlock reads the spine", /knownFactsBlock\(\{[^}]*memory:\s*contactMemory\?\.spine/.test(P("lib/ai-reply-coach/reply-draft-core.ts")))
+  check("WIRED staff copilot: knownFactsBlock reads the spine", /knownFactsBlock\(\{\s*memory:\s*contactMemory\?\.spine/.test(P("app/api/internal/ai-chat/route.ts")))
+  check("POSITIVE CONTROL: the wiring finder rejects a surface that drops the spine",
+    !/knownFactsBlock\(\{[^}]*memory:\s*contactMemory\?\.spine/.test("knownFactsBlock({ hasContactInfo: true })"))
+}
+
 console.log("\n" + "─".repeat(60))
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) {

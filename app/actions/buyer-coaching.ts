@@ -8,8 +8,13 @@
  * cache miss → Anthropic generate → INSERT as system-default row.
  */
 
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// ROUTED, was raw (lane 99B). It used to call the raw SDK pinned to
+// claude-opus-4.6 — a model absent from MODEL_CONFIG, with no ai_tool_usage row.
+// It now rides lib/ai/models.ts:buyer_stage_coaching (claude-sonnet → gpt-4o
+// fallback), the SAME routing entry lib/intelligence/coaching-engine.ts already
+// uses for this exact content, booked to the caller's brokerage (the session's —
+// this file's own header records that a cache miss BILLS the brokerage).
+import { generateTextRouted } from "@/lib/ai/models"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireCaller } from "@/lib/auth/require-caller"
 import { isCrmContactStaff } from "@/lib/auth/crm-contact-staff"
@@ -120,8 +125,10 @@ export async function getBuyerCoaching(params: {
   const stageLabel = stage.replace(/_/g, " ").replace("BUYER ", "").toLowerCase()
   const personaCtx = persona ? ` The buyer has a "${persona}" persona.` : ""
 
-  const { text: raw } = await generateText({
-    model: resolveModel("anthropic/claude-opus-4.6"),
+  const { text: raw } = await generateTextRouted({
+    feature: "buyer_stage_coaching",
+    brokerageId,
+    userId: caller.userId,
     prompt: `You are a real estate coaching expert. Generate agent coaching content for a buyer at stage: "${stageLabel}".${personaCtx}
 
 Return ONLY valid JSON matching this structure exactly:

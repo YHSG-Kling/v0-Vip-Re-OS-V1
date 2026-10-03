@@ -918,8 +918,19 @@ export async function planReceptionTurn(input: ReceptionTurnInput, deps: VoiceTo
   // deployment === "tenant" — pass ctx and the reception AI answers from the
   // tenant's LIVE INVENTORY (facts from listings rows injected per turn; the
   // no-invention rule scopes to the list — see lib/voice/reception-inventory).
-  const { systemPrompt: base } = buildReceptionPrompt(input.ctx.identity)
+  //
+  // Lane 99B — MEMORY: the call's linked CONTACT (voice_calls.contact_id, never a
+  // body value) is read on the shared spine, scoped to the ANSWERING number's
+  // brokerage (ctx.brokerageId — the event's tenant). A lead-only or unknown caller
+  // has no spine → null, a clean skip. Read only with the route's svc, like inventory.
+  const { loadContactMemoryForPrompt, contactMemoryPromptSection } = await import("@/lib/kernel/conversation-memory")
+  const contactMemory = input.svc
+    ? await loadContactMemoryForPrompt({ contactId: input.voiceToolCtx?.contactId ?? null, brokerageId: input.ctx.brokerageId, client: input.svc })
+    : null
+  const { systemPrompt: base } = buildReceptionPrompt(input.ctx.identity, contactMemory ? { hasContactInfo: true, memory: contactMemory.spine } : undefined)
   let prompt = base
+  const memorySection = contactMemoryPromptSection(contactMemory)
+  if (memorySection) prompt = `${prompt}\n\n${memorySection}`
   if (input.svc) {
     const { loadInventoryContext } = await import("@/lib/voice/reception-inventory")
     const inventory = await loadInventoryContext(input.svc, input.ctx.brokerageId, input.utterance)

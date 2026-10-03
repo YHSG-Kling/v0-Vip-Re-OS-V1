@@ -370,6 +370,64 @@ console.log("\n[A5 · the booked shim books — callers switched onto it leave t
   console.log(`  files bound to the booked shim: ${bound.length}`)
 }
 
+// A6 (wave 99, lane 99B) — THE FOUR FROZEN EXCEPTIONS, ADJUDICATED. Before: 4 files frozen
+// (buyer-coaching, social/generate-social-post, lib/ads/ad-monitor, services/aiMappingService).
+// After: 1 (aiMappingService — UNRESOLVED, see A6d). Each closure is asserted as a RULE on
+// stripped source, not as a waypoint, with a positive control where the finder is a regex.
+console.log("\n[A6 · the wave-98 exceptions stay closed — one booking per call, the right tier, the session tenant]")
+{
+  const strip = (p: string) => blankStrings(stripComments(readFileSync(join(root, p), "utf8")))
+  const keepStr = (p: string) => stripComments(readFileSync(join(root, p), "utf8"))
+  const modelsKeep = stripComments(readFileSync(join(root, "lib/ai/models.ts"), "utf8"))
+  const featureRouted = (f: string) => new RegExp(`^\\s*${f}\\s*:\\s*\\{\\s*model:`, "m").test(modelsKeep)
+
+  // A6a — social: booked ONCE. The survivor binds the booked shim; the hub must then book 0
+  // (booked_by_survivor) for the two tools that route to it, or the tenant is billed twice.
+  const social = "app/actions/social/generate-social-post.ts"
+  check("A6a social survivor is bound to the booked shim (bookedGenerateObject)", /\bbookedGenerateObject\s*\(/.test(strip(social)) && !unbookedNow[social])
+  const hubKeep = keepStr("app/actions/ai-tools-hub.ts")
+  const hubBooksSurvivorUsage = (src: string) => /tokens:\s*usageToTokens\s*\(\s*res\.usage\s*,\s*["'](generateSocialPostContent|generateContextualDraft)["']/.test(src)
+  check("A6a the hub does NOT re-book the social survivor's usage (no measured row for social_post / email_composer)", !hubBooksSurvivorUsage(hubKeep))
+  check("A6a PC: the double-booking finder flags the pre-99B hub spelling",
+    hubBooksSurvivorUsage(`tokens: usageToTokens(res.usage, "generateSocialPostContent"),`))
+  const surv = (hubKeep.match(/generate(SocialPostContent|ContextualDraft) → bookedGenerateObject → logAIUsage/g) ?? []).length
+  check(`A6a both hub arms name the survivor's booking as booked_by_survivor (found ${surv}, need 2)`, surv === 2)
+
+  // A6b — buyer-coaching: routed on a MODEL_CONFIG tier, booked to the session tenant.
+  const bc = keepStr("app/actions/buyer-coaching.ts")
+  check("A6b buyer-coaching rides generateTextRouted on a feature MODEL_CONFIG routes (buyer_stage_coaching)",
+    /generateTextRouted\s*\(\s*\{\s*feature:\s*["']buyer_stage_coaching["']/.test(bc) && featureRouted("buyer_stage_coaching"))
+  check("A6b buyer-coaching books the SESSION brokerage (requireCaller), never a body value",
+    /const brokerageId = caller\.brokerageId/.test(bc) && !/claude-opus-4\.6/.test(bc))
+
+  // A6c — ad-monitor: there is no "brokerage's own AI provider". `ai` is SYSTEM-ONLY in
+  // lib/kernel/providers.ts, so the old resolveProvider key was the platform VENDOR name, not a
+  // model. Routed on competitive_monitoring, tenant from the session gate.
+  const am = keepStr("lib/ads/ad-monitor.ts")
+  const prov = keepStr("lib/kernel/providers.ts")
+  check("A6c premise checked: `ai` is a SYSTEM_ONLY provider type (no tenant-paid AI provider exists)",
+    /SYSTEM_ONLY_TYPES\s*=\s*new Set\(\[\s*["']ai["']/.test(prov))
+  check("A6c ad-monitor routes competitive_monitoring (a MODEL_CONFIG feature) with a tenant",
+    /generateTextRouted\s*\(\s*\{\s*feature:\s*["']competitive_monitoring["'],\s*brokerageId/.test(am) && featureRouted("competitive_monitoring"))
+  const insightsBody = am.slice(am.search(/export async function generateInsights\(/), am.search(/export async function generateInsights\(/) + 1400)
+  check("A6c generateInsights takes its tenant from the SESSION gate (requireBrokerage), not its argument",
+    /const gate = await requireBrokerage\(\)/.test(insightsBody) && /const brokerageId = gate\.brokerageId/.test(insightsBody))
+
+  // A6d — aiMappingService: UNRESOLVED, held frozen. It is imported (services/supabaseService.ts),
+  // but every one of its model calls sits inside supabaseService.createContact / updateContact /
+  // bulkImportContacts, and NOTHING calls those three. No survivor maps imported status/persona
+  // (lib/data-steward/value-normalizer.ts covers contact_type, lead_temperature, lender_status,
+  // preferred_channel only), so deleting it would delete a capability, not a duplicate (§1).
+  // This tripwire goes red the moment one of those doors gains a caller — route it first.
+  const reachDoor = /\bsupabaseService\s*\.\s*(createContact|updateContact|bulkImportContacts)\s*\(/
+  const wired = files.filter((f) => !f.startsWith("services/") && reachDoor.test(strip(f)))
+  check(`A6d aiMappingService stays unreached — no caller of the three supabaseService doors that reach it (${wired.length})`,
+    wired.length === 0, wired.join(", "))
+  check("A6d PC: the door finder recognises a caller", reachDoor.test(`await supabaseService.bulkImportContacts(rows)`))
+  check("A6d aiMappingService is still DECLARED debt (unresolved, not silently cleared)",
+    !!baseline.unbooked["services/aiMappingService.ts"] || !unbookedNow["services/aiMappingService.ts"])
+}
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${pass} passed, ${fail} failed`)
 if (fail > 0) {

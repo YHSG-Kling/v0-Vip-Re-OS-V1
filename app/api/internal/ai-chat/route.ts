@@ -10,7 +10,8 @@ import { batchDataMcpTools } from "@/lib/external/batchdata-ai-tools"
 import { rentCastMcpTools } from "@/lib/external/rentcast-ai-tools"
 import { resolveEffectiveBatchDataToolTier, filterToolsByTier, resolveToolPersona } from "@/lib/ai-isa/persona-tool-policy"
 import { writeFollowUpActivity, buildCustomerFreeTools } from "@/lib/ai-isa/customer-context-tools"
-import { buildQualificationPrompt } from "@/lib/ai-isa/qualification-playbook"
+import { buildQualificationPrompt, knownFactsBlock } from "@/lib/ai-isa/qualification-playbook"
+import { loadContactMemoryForPrompt, contactMemoryPromptSection } from "@/lib/kernel/conversation-memory"
 import { loadBrandPlaybookContext, type BrandPlaybookContext } from "@/lib/ai-isa/brand-playbook-context"
 import {
   COPILOT_ADMITTED_ROLES, USER_TYPE_TOOL_POLICY, resolveUserTypeSeat, selectToolsForSeat, seatPromptBlock,
@@ -1368,6 +1369,9 @@ export async function POST(req: NextRequest) {
   // from that row's own columns (resolveToolPersona) — never from the body.
   // Partner seats never reach this (policy.customerPersonaToolsForContact).
   let customerTools: Record<string, unknown> = {}
+  // Lane 99B — the open contact's MEMORY, read on the same staff-side-seat gate and
+  // the same session-tenant proof as the tools (a partner seat never reads it).
+  let contactMemorySection = ""
   const claimedContactId = typeof (body as { contactId?: unknown }).contactId === "string" ? (body as { contactId: string }).contactId : null
   if (seatPolicy.customerPersonaToolsForContact && claimedContactId) {
     const { data: contact, error: cErr } = await service
@@ -1384,6 +1388,9 @@ export async function POST(req: NextRequest) {
         agentId: contact.agent_id ?? (await resolveAgentId(service as any, user.id)),
         persona: resolveToolPersona({ contactType: contact.contact_type, contactPersona: contact.contact_persona, homeOwnerStatus: contact.home_owner_status }),
       })
+      const contactMemory = await loadContactMemoryForPrompt({ contactId: contact.id, brokerageId, client: service })
+      const onFile = knownFactsBlock({ memory: contactMemory?.spine ?? null })
+      contactMemorySection = [contactMemoryPromptSection(contactMemory), onFile].filter(Boolean).join("\n")
     }
   }
 
@@ -1401,7 +1408,7 @@ export async function POST(req: NextRequest) {
   try {
     result = await streamTextRouted({
       feature: "internal_assistant_chat",
-      system: systemPrompt,
+      system: contactMemorySection ? `${systemPrompt}\n\n${contactMemorySection}` : systemPrompt,
       messages: await convertToModelMessages(messages),
       maxTokens: 1024,
       tools,
