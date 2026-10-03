@@ -21,6 +21,18 @@ export interface DunningStep {
   body: string
 }
 
+/**
+ * THE PAST-DUE GRACE WINDOW — one number, two readers (wave 99A, §6).
+ *
+ * The ladder below already PROMISED this rule in its copy: step 3 ("One week past
+ * due — access is restricted … Sign-ins now route to the billing page") is the
+ * moment access stops, and steps 1–2 promise nothing of the kind. The paywall
+ * (lib/billing/billing-access.ts resolveBillingAccess) used to refuse a past_due
+ * tenant on day 0, contradicting the email it sent the same day. Both now read
+ * this constant: step 3 fires AT it and the resolver refuses AFTER it.
+ */
+export const PAST_DUE_GRACE_DAYS = 7
+
 // The ladder. Tone escalates but stays factual — no fabricated deadlines; the
 // day-14 step states the real consequence (access already restricted + Stripe
 // retries eventually cancel).
@@ -36,7 +48,7 @@ export const DUNNING_LADDER: DunningStep[] = [
     body: "We still couldn't collect payment for {brokerage}{amount}. Stripe retries automatically, but the fastest fix is updating the card on your billing page. If something looks wrong on our side, reply and platform support will dig in.",
   },
   {
-    step: 3, afterDays: 7,
+    step: 3, afterDays: PAST_DUE_GRACE_DAYS,
     subject: "One week past due — {brokerage} access is restricted",
     body: "It's been a week since the payment for {brokerage} failed{amount}. Sign-ins now route to the billing page until payment is restored. Everything — contacts, deals, history — is intact and waiting.",
   },

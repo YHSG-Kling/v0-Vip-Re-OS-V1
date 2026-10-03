@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { runDunningSweep } from "@/lib/billing/dunning"
 import { reconcileSubscriptionsFromStripe } from "@/lib/billing/seat-sync"
+import { runSubscriptionLifecycleSweep } from "@/lib/billing/stripe-subscription-ops"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -48,12 +49,21 @@ export async function GET(request: NextRequest) {
       candidates: 0, retrieved: 0, patched: 0, tierChanged: 0, unmatched: [], skipped: false,
       errors: [{ subscriptionId: "*", error: (e as Error)?.message ?? "seat reconcile threw" }],
     }))
+    // STEP 3 (wave 99A) — TRIAL / RENEWAL LIFECYCLE. Runs AFTER the reconcile
+    // so Stripe-linked rows already carry Stripe's status; this step ends LOCAL
+    // trials (convert with a card on file, else pause) and sends the trial-end /
+    // renewal reminders once per cycle (lib/billing/stripe-subscription-ops.ts
+    // runSubscriptionLifecycleSweep). Same cron, same ledger row, third key.
+    const lifecycle = await runSubscriptionLifecycleSweep(svc).catch((e: unknown) => ({
+      scanned: 0, converted: 0, expired: 0, remindersAttempted: 0, remindersSent: 0,
+      errors: [(e as Error)?.message ?? "lifecycle sweep threw"],
+    }))
     await recordCronSuccessAction({
       context_id: contextId,
-      records_processed: summary.stepsSent,
-      metadata: { ...(summary as any), seatSync },
+      records_processed: summary.stepsSent + lifecycle.expired + lifecycle.converted + lifecycle.remindersSent,
+      metadata: { ...(summary as any), seatSync, lifecycle },
     })
-    return NextResponse.json({ message: "Dunning sweep complete", summary, seatSync })
+    return NextResponse.json({ message: "Dunning sweep complete", summary, seatSync, lifecycle })
   } catch (e) {
     const message = e instanceof Error ? e.message : "Dunning sweep failed"
     await recordCronFailureAction({ context_id: contextId, error: message })

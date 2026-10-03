@@ -14,9 +14,32 @@ import {
   checkPlatformAIEnabled,
   type AIModel
 } from "./cost-tracking"
-import { checkAIFairUse } from "./fair-use"
+// TOMBSTONE (wave 99A, LAW 2): the four model entry points below each called
+// checkAIFairUse directly — a BUDGET answer with no SUBSCRIPTION answer, so a
+// tenant whose trial had lapsed kept running AI on the platform's bill. Survivor:
+// lib/billing/billing-access.ts mayUseAndAfford (capability 'ai.generate'), which
+// composes the SAME checkAIFairUse (budget half, contract unchanged) with the
+// subscription answer. affordAI is the one pre-flight every entry point calls.
+import { mayUseAndAfford } from "@/lib/billing/billing-access"
 
 export type { AIModel } from "./cost-tracking"
+
+/**
+ * The AI pre-flight: may this tenant use AI, and afford this call? No tenant =
+ * a background/platform job — platform-covered and uncapped, the rule
+ * checkAIFairUse always held (preserved, and ratcheted by test:ai-spend-booked A2).
+ */
+async function affordAI(brokerageId: string | null | undefined, estTokens: number): Promise<{ allowed: boolean; message?: string }> {
+  if (!brokerageId) return { allowed: true }
+  const v = await mayUseAndAfford({ brokerageId, capability: "ai.generate", estTokens })
+  if (v.allowed) return { allowed: true, message: v.message }
+  return {
+    allowed: false,
+    message: v.message ?? (v.reason === "ai_budget_exhausted"
+      ? "AI fair-use limit reached for this billing period."
+      : `AI is unavailable: the brokerage's subscription does not currently cover it (${v.reason}).`),
+  }
+}
 
 function toGatewayModel(modelStr: string) {
   const key = process.env.AI_GATEWAY_API_KEY
@@ -619,14 +642,12 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
   // Fair-use quota pre-flight (subscription-included AI — protects platform margin).
   // Estimate the call's token cost from the prompt + system so we trip BEFORE the
   // call rather than after the counter actually exceeds. Background jobs without
-  // brokerageId are uncapped (handled inside checkAIFairUse).
+  // brokerageId are uncapped (handled inside affordAI). The subscription answer
+  // rides the same call (mayUseAndAfford, wave 99A).
   const estimatedTokens = estimateTokens(
     (request.prompt ?? "") + (request.system ?? "")
   ) + (request.maxTokens ?? 2000)
-  const fairUse = await checkAIFairUse({
-    brokerageId: request.metadata.brokerageId,
-    addTokens:   estimatedTokens,
-  })
+  const fairUse = await affordAI(request.metadata.brokerageId, estimatedTokens)
   if (!fairUse.allowed) {
     throw new Error(fairUse.message ?? "AI fair-use limit reached for this billing period.")
   }
@@ -934,7 +955,7 @@ export async function generateObjectRouted<TSchema extends z.ZodTypeAny>(
 
   // Fair-use pre-flight (skipped for background jobs without brokerageId)
   const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "") + messagesTextForEstimate(request.messages)) + (request.maxTokens ?? 2000)
-  const fairUse = await checkAIFairUse({ brokerageId: request.brokerageId, addTokens: estTokens })
+  const fairUse = await affordAI(request.brokerageId, estTokens)
   if (!fairUse.allowed) throw new Error(fairUse.message ?? "AI fair-use limit reached.")
 
   // Data Guard — redact high-confidence secrets before either model call (primary + fallback).
@@ -1017,7 +1038,7 @@ export async function generateTextRouted(
 
   // Fair-use pre-flight (skipped for background jobs without brokerageId)
   const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "") + messagesTextForEstimate(request.messages)) + (request.maxTokens ?? 2000)
-  const fairUse = await checkAIFairUse({ brokerageId: request.brokerageId, addTokens: estTokens })
+  const fairUse = await affordAI(request.brokerageId, estTokens)
   if (!fairUse.allowed) throw new Error(fairUse.message ?? "AI fair-use limit reached.")
 
   // Data Guard — redact high-confidence secrets before either model call (primary + fallback).
@@ -1233,7 +1254,7 @@ export async function streamTextRouted(
   const estTokens = estimateTokens(
     (request.prompt ?? "") + (request.system ?? "") + messagesTextForEstimate(request.messages)
   ) + (request.maxTokens ?? 2000)
-  const fairUse = await checkAIFairUse({ brokerageId: request.brokerageId, addTokens: estTokens })
+  const fairUse = await affordAI(request.brokerageId, estTokens)
   if (!fairUse.allowed) {
     throw new AIFairUseError(fairUse.message ?? "AI fair-use limit reached for this billing period.")
   }

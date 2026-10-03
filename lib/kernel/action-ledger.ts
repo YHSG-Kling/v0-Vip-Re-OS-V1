@@ -68,6 +68,8 @@ const ACTION_REASON_CODES = [
   "COMPLIANCE_NOTICE",
   "HUMAN_REQUESTED",
   "SCHEDULED_CONTENT_PUBLISH",
+  // m692 (wave 99A): a subscription state the lifecycle sweep moved (trial expired / converted).
+  "SUBSCRIPTION_LIFECYCLE",
   "WAIT_COOLDOWN",
   "NO_ACTION_NEEDED",
   "UNSPECIFIED",

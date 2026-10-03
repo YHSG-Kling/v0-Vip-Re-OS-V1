@@ -133,7 +133,7 @@ console.log("\n[(b) streamTextRouted — cap BEFORE the stream, ledger in onFini
   const body = start !== -1 && end > start ? MODELS.slice(start, end) : ""
   check("streamTextRouted exists in lib/ai/models.ts (and generateSimpleText still follows it)",
     body.length > 0)
-  const capAt = body.indexOf("checkAIFairUse(")
+  const capAt = body.indexOf("affordAI(")
   const streamAt = body.indexOf("streamText({")
   check("the fair-use check runs BEFORE streamText — refuse before the first byte",
     capAt !== -1 && streamAt !== -1 && capAt < streamAt)
@@ -215,7 +215,7 @@ console.log("\n[(d) #187 closures — anonymous turns metered, history estimated
     (() => {
       const est = body.indexOf("estimateTokens(")
       const msgs = body.indexOf("messagesTextForEstimate(request.messages)")
-      const cap = body.indexOf("checkAIFairUse(")
+      const cap = body.indexOf("affordAI(")
       return est !== -1 && msgs !== -1 && cap !== -1 && est < msgs && msgs < cap
     })())
   check("messagesTextForEstimate returns TEXT for estimateTokens — it is not a second token heuristic",
@@ -257,7 +257,7 @@ check("NEGATIVE — the raw-import scan trips on streamText but NOT on streamTex
   !RAW_IMPORT_RE.test('import { streamTextRouted } from "@/lib/ai/models"') &&
   !RAW_IMPORT_RE.test('import { convertToModelMessages } from "ai"'))
 check("NEGATIVE — the order comparator would flag a cap check placed AFTER the stream",
-  (() => { const s = "streamText({}); checkAIFairUse("; const c = s.indexOf("checkAIFairUse("); const t = s.indexOf("streamText({"); return !(c !== -1 && t !== -1 && c < t) })())
+  (() => { const s = "streamText({}); affordAI("; const c = s.indexOf("affordAI("); const t = s.indexOf("streamText({"); return !(c !== -1 && t !== -1 && c < t) })())
 check("NEGATIVE — the tenant-gate scan WOULD flag a resurrected userId && brokerageId ledger gate",
   codeHits("if (userId && brokerageId) { logAIUsage({}) }", "userId && brokerageId") === 1)
 check("NEGATIVE — the estimate scan fails on the old prompt-only estimate",

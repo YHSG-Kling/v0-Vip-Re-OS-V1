@@ -75,7 +75,6 @@
     "lib/ai-isa/post-call-outcome.ts": 2,
     "lib/ai-isa/property-lookup-rail.ts": 7,
     "lib/ai-isa/property-lookup-tools.ts": 1,
-    "lib/ai-isa/qualification-playbook.ts": 1,
     "lib/ai-isa/reengagement-policy.ts": 2,
     "lib/ai-isa/resolve-isa-settings.ts": 1,
     "lib/ai-isa/voice-dial-batch.ts": 2,
@@ -89,8 +88,9 @@
     "lib/avm/provider-chain.ts": 1,
     "lib/billing/ai-overage.ts": 1,
     "lib/billing/billing-access.ts": 1,
-    "lib/billing/dunning.ts": 3,
+    "lib/billing/dunning.ts": 2,
     "lib/billing/stripe-overage-meter.ts": 8,
+    "lib/billing/stripe-subscription-ops.ts": 2,
     "lib/billing/stripe-webhook-registration.ts": 2,
     "lib/billing/stripe-webhook-secrets.ts": 1,
     "lib/brokerage-intelligence/miners.ts": 1,
@@ -517,7 +517,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10560,
+  "census": 10573,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2847,7 +2847,7 @@
     "lib/ai-isa/personalize-outreach.ts": 4,
     "lib/ai-isa/portal-link.ts": 3,
     "lib/ai-isa/post-call-outcome.ts": 3,
-    "lib/ai-isa/property-lookup-rail.ts": 13,
+    "lib/ai-isa/property-lookup-rail.ts": 14,
     "lib/ai-isa/property-lookup-tools.ts": 3,
     "lib/ai-isa/qualification-core.ts": 6,
     "lib/ai-isa/qualification-evaluator.ts": 2,
@@ -2906,12 +2906,12 @@
     "lib/auth/resolve-user-role.ts": 13,
     "lib/auth/role-grants.ts": 9,
     "lib/auth/useAuth.ts": 1,
-    "lib/avm/provider-chain.ts": 6,
+    "lib/avm/provider-chain.ts": 7,
     "lib/behavior-learning/prediction-engine.ts": 2,
     "lib/behavior-learning/preference-updater.ts": 2,
     "lib/behavior-learning/signal-mapping.ts": 7,
     "lib/billing/ai-overage.ts": 4,
-    "lib/billing/billing-access.ts": 2,
+    "lib/billing/billing-access.ts": 5,
     "lib/billing/dunning.ts": 5,
     "lib/billing/phone-plan-resolve.ts": 2,
     "lib/billing/phone-plan.ts": 3,
@@ -2924,7 +2924,7 @@
     "lib/billing/stripe-overage-meter.ts": 13,
     "lib/billing/stripe-portal.ts": 1,
     "lib/billing/stripe-status.ts": 4,
-    "lib/billing/stripe-subscription-ops.ts": 12,
+    "lib/billing/stripe-subscription-ops.ts": 18,
     "lib/billing/stripe-webhook-registration.ts": 3,
     "lib/billing/stripe-webhook-secrets.ts": 2,
     "lib/billing/subscription-activation.ts": 5,
@@ -3561,7 +3561,7 @@
     "lib/kernel/content-studio.ts": 7,
     "lib/kernel/continuity-receipt.ts": 3,
     "lib/kernel/contracts.ts": 2,
-    "lib/kernel/conversation-memory.ts": 12,
+    "lib/kernel/conversation-memory.ts": 14,
     "lib/kernel/conversation-thread.ts": 2,
     "lib/kernel/coordination-kind.ts": 1,
     "lib/kernel/crm.ts": 13,
@@ -14122,6 +14122,7 @@
       "routePostCallOutcome"
     ],
     "lib/ai-isa/property-lookup-rail.ts": [
+      "routeCapability",
       "resolveContactProviderRoute",
       "runVersiumContactLeg",
       "isBatchDataRungAllowed",
@@ -14561,6 +14562,7 @@
     ],
     "lib/avm/provider-chain.ts": [
       "getCurrentAvm",
+      "requestPropertyValuation",
       "rentcastMissFrom",
       "batchDataPropertyFallback",
       "getPropertyRecordWithFallback",
@@ -14592,7 +14594,10 @@
     ],
     "lib/billing/billing-access.ts": [
       "resolveBillingAccess",
-      "loadBillingAccess"
+      "loadBillingAccess",
+      "mayUseAndAfford",
+      "isPaywalledPath",
+      "resolveRequestAccess"
     ],
     "lib/billing/dunning.ts": [
       "daysBetween",
@@ -14687,7 +14692,13 @@
       "stripePauseCollection",
       "computeTrialExtension",
       "stripeApplyCoupon",
-      "stripeRefundLatestInvoice"
+      "stripeRefundLatestInvoice",
+      "reminderCycle",
+      "planLifecycleReminder",
+      "planTrialEnd",
+      "emitSubscriptionTransition",
+      "sendSubscriptionReminder",
+      "runSubscriptionLifecycleSweep"
     ],
     "lib/billing/stripe-webhook-registration.ts": [
       "expectedWebhookUrl",
@@ -17827,6 +17838,8 @@
       "factsFromQualification",
       "recordConversationFacts",
       "loadContactContext",
+      "loadContactMemoryForPrompt",
+      "contactMemoryPromptSection",
       "refreshRecentContactSpines",
       "realSummaryRewriter"
     ],

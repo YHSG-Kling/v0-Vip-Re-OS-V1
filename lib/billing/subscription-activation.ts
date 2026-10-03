@@ -254,7 +254,12 @@ export function buildSubscriptionPatch(s: NormalizedStripeSub): Record<string, u
 
 // ── IMPURE: the ONE brokerage-keyed writer (no duplicate rows) ─────────────────
 
-export interface UpsertResult { action: "updated" | "inserted"; id: string | null }
+export interface UpsertResult {
+  action: "updated" | "inserted"
+  id: string | null
+  /** The row's status BEFORE this write (wave 99A) — the webhook emits the transition from it. */
+  previousStatus?: string | null
+}
 
 /**
  * Link a Stripe subscription to a brokerage's ONE subscription row.
@@ -274,11 +279,11 @@ export async function upsertBrokerageSubscription(
 
   const { data: rows } = await svc
     .from("subscriptions")
-    .select("id, stripe_subscription_id, created_at")
+    .select("id, stripe_subscription_id, status, created_at")
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
     .limit(50)
-  const list = (rows ?? []) as Array<{ id: string; stripe_subscription_id: string | null }>
+  const list = (rows ?? []) as Array<{ id: string; stripe_subscription_id: string | null; status?: string | null }>
 
   const target =
     list.find((r) => stripeSubId && r.stripe_subscription_id === stripeSubId) ??
@@ -299,7 +304,7 @@ export async function upsertBrokerageSubscription(
       console.error("[billing] subscription UPDATE rejected — access state is now stale:", error.message, patch)
       throw new Error(`subscription update rejected: ${error.message}`)
     }
-    return { action: "updated", id: target.id }
+    return { action: "updated", id: target.id, previousStatus: target.status ?? null }
   }
 
   const { data: inserted, error: insertError } = await svc
@@ -311,5 +316,5 @@ export async function upsertBrokerageSubscription(
     console.error("[billing] subscription INSERT rejected:", insertError.message, patch)
     throw new Error(`subscription insert rejected: ${insertError.message}`)
   }
-  return { action: "inserted", id: (inserted as any)?.id ?? null }
+  return { action: "inserted", id: (inserted as any)?.id ?? null, previousStatus: null }
 }

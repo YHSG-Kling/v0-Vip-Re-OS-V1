@@ -398,17 +398,29 @@ export async function determineFirstLoginDestination(
   }
 
   // ── BILLING PAYWALL GATE ────────────────────────────────────────────────────
-  // A lapsed-trial / past-due / cancelled tenant is routed to billing so the money
-  // loop closes itself. Platform staff (superadmin/support) are exempt; a brokerage
-  // with no subscription row is NOT blocked (fail-open — never lock out by accident).
-  if (!["superadmin", "support"].includes(userType)) {
+  // A lapsed-trial / past-due-beyond-grace / cancelled tenant is routed to billing
+  // so the money loop closes itself. TOMBSTONE (wave 99A): the gate that lived
+  // here called loadBillingAccess directly, exempted ["superadmin","support"] by
+  // user_type, and FAILED OPEN on a read error and on a missing subscription row.
+  // Survivor: lib/billing/billing-access.ts mayUseAndAfford (capability
+  // 'app.access') — the same answer proxy.ts gives every dashboard request. It
+  // carries the staff bypass (platform_role + the two legacy user_types) and
+  // fails CLOSED: a throw routes to billing, never into the product.
+  {
+    let allowed = false
     try {
-      const { loadBillingAccess } = await import("@/lib/billing/billing-access")
-      const access = await loadBillingAccess(service, userData.brokerage_id)
-      if (access.blocked) {
-        return { route: "/dashboard/admin/billing", reason: "billing_required" }
-      }
-    } catch { /* fail-open — a billing-read error must never block login */ }
+      const { mayUseAndAfford } = await import("@/lib/billing/billing-access")
+      const verdict = await mayUseAndAfford({
+        brokerageId: userData.brokerage_id, capability: "app.access",
+        actor: { platformRole, userType }, client: service,
+      })
+      allowed = verdict.allowed
+    } catch (e) {
+      console.error("[onboarding] paywall check threw — routing to billing (fail closed):", (e as Error)?.message)
+    }
+    if (!allowed) {
+      return { route: "/dashboard/admin/billing", reason: "billing_required" }
+    }
   }
 
   // Onboarding complete or exempt from onboarding (broker, admin, etc.)

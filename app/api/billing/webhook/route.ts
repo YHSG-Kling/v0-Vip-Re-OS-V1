@@ -8,7 +8,21 @@ import { setStripeOnboardingByAccount } from "@/lib/connections/vendor-stripe"
 import { buildSubscriptionPatch, upsertBrokerageSubscription, type NormalizedStripeSub } from "@/lib/billing/subscription-activation"
 import { deriveSubscriptionSeatState, itemFactsOf, normalizeStripeSubscription, type TierSeatLink } from "@/lib/billing/seat-packages"
 import { TENANT_BILLING_WEBHOOK_EVENTS } from "@/lib/billing/stripe-account-scope"
+import { emitSubscriptionTransition, reminderCycle, sendSubscriptionReminder } from "@/lib/billing/stripe-subscription-ops"
 import Stripe from "stripe"
+
+/** Every status this webhook moves emits its kernel event (wave 99A, LAW 5) — from the
+ *  row's status BEFORE the write (upsertBrokerageSubscription returns it) to the patch's. */
+async function emitWebhookTransition(
+  brokerageId: string,
+  res: { id: string | null; previousStatus?: string | null },
+  patch: Record<string, unknown>,
+): Promise<void> {
+  const to = typeof patch.status === "string" ? patch.status : null
+  if (!res.id || !to || (res.previousStatus ?? null) === to) return
+  const r = await emitSubscriptionTransition({ brokerageId, subscriptionId: res.id, from: res.previousStatus ?? null, to, source: "webhook" })
+  if (!r.ok) console.error("[Billing Webhook] subscription transition event not recorded:", r.error)
+}
 
 /** Normalize a Stripe subscription into the shape buildSubscriptionPatch wants,
  *  READING THE ITEMS (wave 79A): the plan item names the tier the tenant is
@@ -40,7 +54,8 @@ async function normalizeSub(svc: ReturnType<typeof createServiceClient>, s: Stri
 // Stripe webhook handler — THE PLATFORM'S BILLING LEDGER.
 // Handles: checkout.session.completed, invoice.paid, invoice.payment_failed,
 //          customer.subscription.created, customer.subscription.updated,
-//          customer.subscription.deleted, account.updated
+//          customer.subscription.deleted, customer.subscription.trial_will_end,
+//          account.updated
 // — exactly TENANT_BILLING_WEBHOOK_EVENTS (lib/billing/stripe-account-scope.ts),
 // the ONE vocabulary the Stripe-SDK registration and the launch checklist
 // read; scripts/stripe-webhook-events-guard.ts holds this switch equal to it
@@ -132,7 +147,7 @@ export async function POST(request: NextRequest) {
         if (session.subscription) {
           const sub = await stripe.subscriptions.retrieve(session.subscription as string)
           const patch = buildSubscriptionPatch(await normalizeSub(supabase, sub))
-          await upsertBrokerageSubscription(supabase, brokerageId, patch)
+          await emitWebhookTransition(brokerageId, await upsertBrokerageSubscription(supabase, brokerageId, patch), patch)
           await syncBrokeragePlanTier(brokerageId)
           // THE TRIAL → CONVERTED MOMENT (wave 78A). The prospect row was
           // stamped 'trial' when the tenant was created (a free trial or a paid
@@ -270,7 +285,7 @@ export async function POST(request: NextRequest) {
         // the signup row has no stripe_subscription_id, so a raw upsert-by-that-id
         // used to insert a second row here.
         const patch = buildSubscriptionPatch(await normalizeSub(supabase, subscription))
-        await upsertBrokerageSubscription(supabase, brokerageId, patch)
+        await emitWebhookTransition(brokerageId, await upsertBrokerageSubscription(supabase, brokerageId, patch), patch)
 
         // Keep brokerages.plan_tier in sync with the active subscription so
         // cap-enforcement reflects upgrades/downgrades immediately. Failure
@@ -290,7 +305,7 @@ export async function POST(request: NextRequest) {
         }
 
         // Update subscription status to cancelled
-        const { error } = await supabase
+        const { data: cancelledRows, error } = await supabase
           .from("subscriptions")
           .update({
             status: "cancelled",
@@ -298,9 +313,16 @@ export async function POST(request: NextRequest) {
             updated_at: new Date().toISOString(),
           })
           .eq("stripe_subscription_id", subscription.id)
+          .select("id")
 
         if (error) {
           console.error("[Billing Webhook] Failed to cancel subscription:", error)
+        } else if ((cancelledRows ?? []).length === 0) {
+          // An UPDATE matching nothing resolves too (§3) — say so, never read it as done.
+          console.error(`[Billing Webhook] customer.subscription.deleted matched no local row for ${subscription.id}`)
+        }
+        for (const row of (cancelledRows ?? []) as Array<{ id: string }>) {
+          await emitWebhookTransition(brokerageId, { id: row.id, previousStatus: null }, { status: "cancelled" })
         }
 
         // Cap-enforcement: with no active subscription the brokerage falls
@@ -317,6 +339,34 @@ export async function POST(request: NextRequest) {
           priority: "high",
         }), { table: "notifications", flow: "billing_subscription_cancelled_alert", brokerageId, reason: "the tier downgrade itself already applied; this is only the in-app alert" })
 
+        break
+      }
+
+      // ─── TRIAL WILL END (wave 99A) — Stripe's 3-day notice → the trial reminder ──
+      // The SAME sender and ledger cycle the daily sweep uses
+      // (lib/billing/stripe-subscription-ops.ts sendSubscriptionReminder,
+      // cycle = trial_end:<date>:<recipient>), so whichever of the two arrives
+      // first sends and the other replays from the action ledger. The tenant is
+      // the platform-signed event's metadata AND must match a row carrying this
+      // Stripe subscription id — never a body field.
+      case "customer.subscription.trial_will_end": {
+        const subscription = event.data.object as Stripe.Subscription
+        const brokerageId = subscription.metadata?.brokerage_id
+        if (!brokerageId || !subscription.trial_end) {
+          console.error("[Billing Webhook] trial_will_end without brokerage_id or trial_end:", subscription.id)
+          break
+        }
+        const { data: row, error: rowErr } = await supabase
+          .from("subscriptions").select("id, brokerage_id")
+          .eq("stripe_subscription_id", subscription.id).eq("brokerage_id", brokerageId)
+          .maybeSingle()
+        if (rowErr || !row) {
+          console.error("[Billing Webhook] trial_will_end: no local subscription row —", rowErr?.message ?? subscription.id)
+          break
+        }
+        const aboutIso = new Date(subscription.trial_end * 1000).toISOString()
+        const sent = await sendSubscriptionReminder(supabase, row as { id: string; brokerage_id: string }, { kind: "trial_end", cycle: reminderCycle("trial_end", aboutIso), aboutIso })
+        if (sent.error) console.error("[Billing Webhook] trial reminder not sent:", sent.error)
         break
       }
 

@@ -64,6 +64,7 @@ import { createServerClient } from "@supabase/ssr"
 import { createServiceClient } from "@/lib/supabase/service"
 import { PROTECTED_ROUTES, classifyProxyPath } from "@/app/constants/auth"
 import { siteUrl } from "@/lib/platform/site-url"
+import { isPaywalledPath, resolveRequestAccess } from "@/lib/billing/billing-access"
 
 export default async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname
@@ -247,6 +248,33 @@ export default async function proxy(request: NextRequest) {
   // fallback only when setAll did not already speak.
   if (!response.headers.has("Cache-Control")) {
     response.headers.set("Cache-Control", "private, no-store")
+  }
+
+  // ── 5) Paywall at the request boundary (wave 99A, LAW 2) ─────────────────
+  // The paywall used to run ONLY when the post-login route was computed
+  // (lib/kernel/onboarding.ts), so a tenant whose trial lapsed mid-session — or
+  // anyone who typed a dashboard URL — never met it. Every paywalled dashboard
+  // request now asks the ONE resolver (lib/billing/billing-access.ts
+  // resolveRequestAccess → mayUseAndAfford 'app.access'), with the tenant taken
+  // from the SESSION user. Public routes, webhooks and crons returned above and
+  // never reach this. A gate that throws refuses (§4 fail closed).
+  if (isPaywalledPath(pathname)) {
+    let gate: { allowed: boolean; reason: string; redirectTo: string | null }
+    try {
+      gate = await resolveRequestAccess(createServiceClient(), user.id)
+    } catch (e) {
+      gate = { allowed: false, reason: `paywall_threw`, redirectTo: "/dashboard/admin/billing" }
+      console.error("[proxy] paywall check threw — refusing:", (e as Error)?.message)
+    }
+    if (!gate.allowed && gate.redirectTo) {
+      const target = new URL(gate.redirectTo, request.url)
+      target.searchParams.set("paywall", gate.reason.split(":")[0])
+      const refused = NextResponse.redirect(target)
+      // Carry any refreshed session cookie and the no-store floor onto the redirect.
+      response.cookies.getAll().forEach((c) => refused.cookies.set(c))
+      refused.headers.set("Cache-Control", response.headers.get("Cache-Control") ?? "private, no-store")
+      return refused
+    }
   }
   return response
 }

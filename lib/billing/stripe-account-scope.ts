@@ -371,6 +371,8 @@ export const TENANT_BILLING_WEBHOOK_EVENTS: readonly string[] = Object.freeze([
   "customer.subscription.created",
   "customer.subscription.updated",
   "customer.subscription.deleted",
+  // wave 99A — the trial reminder (app/api/billing/webhook/route.ts → sendSubscriptionReminder).
+  "customer.subscription.trial_will_end",
   "account.updated",
 ])
 

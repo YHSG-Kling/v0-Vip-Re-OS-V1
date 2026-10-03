@@ -77,7 +77,7 @@ export interface ScrapeTerritoryResolution<M extends ScrapeTerritoryLike = Scrap
  * active-subscription tenant. No territories → honest no-op with the reason.
  */
 export function resolveScrapeTerritoriesFrom<M extends ScrapeTerritoryLike>(
-  subscriptions: Array<{ brokerage_id: string | null; status: string | null }>,
+  subscriptions: Array<{ brokerage_id: string | null; status: string | null; trial_end?: string | null }>,
   activeMarkets: M[],
 ): ScrapeTerritoryResolution<M> {
   const activeIds = activeSubscriberBrokerageIds(subscriptions)
@@ -136,14 +136,14 @@ export async function resolveActiveScrapeTerritories(
 ): Promise<ScrapeTerritoryResolution<any>> {
   const { data: subs, error: subsError } = await supabase
     .from("subscriptions")
-    .select("brokerage_id, status")
+    .select("brokerage_id, status, trial_end")
   // Wave 92 (lane 92B): a refused read is NOT "nobody subscribes" — same action (no pull), its
   // own reason, so a broken read can never look like an idle platform.
   if (subsError) {
     return { territories: [], activeBrokerageIds: [], noOp: true, reason: "subscription_query_failed", error: subsError.message }
   }
 
-  const activeIds = activeSubscriberBrokerageIds((subs ?? []) as Array<{ brokerage_id: string | null; status: string | null }>)
+  const activeIds = activeSubscriberBrokerageIds((subs ?? []) as Array<{ brokerage_id: string | null; status: string | null; trial_end?: string | null }>)
   if (activeIds.size === 0) {
     return { territories: [], activeBrokerageIds: [], noOp: true, reason: "no_active_subscribers" }
   }
@@ -173,7 +173,7 @@ export async function resolveActiveScrapeTerritories(
   }
 
   return resolveScrapeTerritoriesFrom(
-    (subs ?? []) as Array<{ brokerage_id: string | null; status: string | null }>,
+    (subs ?? []) as Array<{ brokerage_id: string | null; status: string | null; trial_end?: string | null }>,
     (markets ?? []) as any[],
   )
 }

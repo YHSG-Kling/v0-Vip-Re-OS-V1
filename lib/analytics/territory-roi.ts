@@ -419,9 +419,9 @@ export async function publishTerritoryRoiReferrals(client?: any): Promise<SlaRef
   try {
     // Candidate tenants: active subscription (the resolver predicate, reused)
     // AND at least two active markets (one market has nothing to diverge from).
-    const { data: subs, error: sErr } = await svc.from("subscriptions").select("brokerage_id, status")
+    const { data: subs, error: sErr } = await svc.from("subscriptions").select("brokerage_id, status, trial_end")
     if (sErr) { result.errors.push(`subscriptions: ${sErr.message}`); return result }
-    const activeIds = activeSubscriberBrokerageIds((subs ?? []) as Array<{ brokerage_id: string | null; status: string | null }>)
+    const activeIds = activeSubscriberBrokerageIds((subs ?? []) as Array<{ brokerage_id: string | null; status: string | null; trial_end?: string | null }>)
 
     const { data: marketRows, error: mErr } = await svc.from("lead_scraping_markets")
       .select("brokerage_id")

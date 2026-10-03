@@ -109,7 +109,7 @@ export interface CoverageBoard {
 }
 
 export interface CoverageInputs {
-  subscriptions: Array<{ brokerage_id: string | null; status: string | null }>
+  subscriptions: Array<{ brokerage_id: string | null; status: string | null; trial_end?: string | null }>
   serviceAreas: ServiceAreaClaim[]
   brokerages: Array<{ id: string; name: string | null }>
   leadRows: CoverageLeadRow[]
@@ -302,7 +302,7 @@ async function loadCoverageInputs(supabase: AnyClient, windowDays: number): Prom
   const sinceIso = new Date(Date.now() - windowDays * 86_400_000).toISOString()
   let capped = false
 
-  const { data: subs, error: sErr } = await supabase.from("subscriptions").select("brokerage_id, status")
+  const { data: subs, error: sErr } = await supabase.from("subscriptions").select("brokerage_id, status, trial_end")
   if (sErr) return { error: `subscriptions: ${sErr.message}` }
 
   const { data: areas, error: aErr } = await supabase
@@ -338,7 +338,7 @@ async function loadCoverageInputs(supabase: AnyClient, windowDays: number): Prom
   if ((raws ?? []).length >= COVERAGE_ROW_CAP) capped = true
 
   return {
-    subscriptions: (subs ?? []) as Array<{ brokerage_id: string | null; status: string | null }>,
+    subscriptions: (subs ?? []) as Array<{ brokerage_id: string | null; status: string | null; trial_end?: string | null }>,
     serviceAreas: (areas ?? []) as ServiceAreaClaim[],
     brokerages,
     leadRows: (leads ?? []) as CoverageLeadRow[],

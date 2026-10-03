@@ -141,7 +141,7 @@ interface DispatchActorContext {
     cycle?: string
     idempotencyKey?: string
     causationId?: string
-    subject?: { type: "listing" | "transaction" | "contact" | "lead"; id: string }
+    subject?: { type: "listing" | "transaction" | "contact" | "lead" | "subscription"; id: string }
   }
 }
 
@@ -270,9 +270,48 @@ async function vendorBudgetPreflight(args: {
   systemSource?: string
 }): Promise<{ refusal: DispatchResult | null; warning?: string }> {
   const channelLabel = args.channel.replace(/_/g, " ")
+
+  // ── SUBSCRIPTION ACCESS + BUDGET — ONE ANSWER (wave 99A, LAW 2) ──────────────
+  // This pre-flight used to ask checkVendorBudget alone, so a tenant whose
+  // subscription had lapsed kept sending on the platform's vendor bill until a
+  // human noticed. It now asks the ONE resolver (lib/billing/billing-access.ts
+  // mayUseAndAfford), which composes the subscription answer with the SAME
+  // checkVendorBudget it always used. The two halves keep DIFFERENT failure
+  // contracts on purpose: the access half fails CLOSED (an unreadable
+  // subscription is not a paying one), the budget half keeps its fail-open rule
+  // below. The platform's own billing notices (BILLING_NOTICE_SOURCES — the
+  // reminder that tells a lapsed tenant how to pay) ride 'billing.notice', which
+  // is served whatever the subscription state.
+  let verdict: import("@/lib/billing/billing-access").MayUseAndAffordDecision
   try {
-    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
-    const budget = await checkVendorBudget({ brokerageId: args.brokerageId, addCost: args.addCost })
+    const { mayUseAndAfford, BILLING_NOTICE_SOURCES } = await import("@/lib/billing/billing-access")
+    const capability = args.systemSource && BILLING_NOTICE_SOURCES.has(args.systemSource) ? "billing.notice" : "comms.send"
+    verdict = await mayUseAndAfford({ brokerageId: args.brokerageId, capability, estCostUsd: args.addCost })
+  } catch (e) {
+    return { refusal: { success: false, providerKey: "billing_gate", error: `Outbound blocked: subscription access could not be checked (${(e as Error)?.message ?? "unknown"})` } }
+  }
+  if (!verdict.allowed && verdict.reason !== "vendor_budget_exhausted") {
+    await recordBudgetLedgerEvent({
+      brokerageId: args.brokerageId,
+      subject: `subscription:${args.channel}:${args.brokerageId}`,
+      outcome: "escalated",
+      detail: {
+        flow: "egress_subscription_blocked", channel: args.channel, connector: args.vendorKey,
+        reason: `The brokerage's subscription does not currently cover ${channelLabel} sends — update billing to resume`,
+        access_reason: verdict.reason,
+        system_source: args.systemSource ?? "dispatch",
+      },
+    })
+    return { refusal: { success: false, providerKey: "billing_gate", error: `Outbound blocked: subscription does not cover sends (${verdict.reason})` } }
+  }
+
+  try {
+    const budget = {
+      allowed: verdict.allowed,
+      degraded: verdict.budgetDegraded === true,
+      softWarning: verdict.softWarning === true,
+      remaining: verdict.remainingBudget,
+    }
 
     if (budget.degraded) {
       // The budget system couldn't answer (ledger read failed) — FAIL OPEN: proceed,
@@ -304,7 +343,7 @@ async function vendorBudgetPreflight(args: {
         detail: {
           flow: "egress_budget_blocked", channel: args.channel, connector: args.vendorKey,
           reason: `Monthly platform usage limit reached — ${channelLabel} sends are paused until the limit resets`,
-          spent: budget.spent, budget: budget.budget, percent: budget.percent,
+          remaining_usd: budget.remaining,
           system_source: args.systemSource ?? "dispatch",
         },
       })

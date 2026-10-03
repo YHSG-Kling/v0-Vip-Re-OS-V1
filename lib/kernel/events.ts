@@ -437,6 +437,12 @@ export enum KernelEvent {
   SUBSCRIPTION_UPGRADED              = 'subscription_upgraded',
   SUBSCRIPTION_DOWNGRADED            = 'subscription_downgraded',
   SUBSCRIPTION_CANCELLED             = 'subscription_cancelled',
+  // Trial / renewal lifecycle (wave 99A) — emitted by lib/billing/stripe-subscription-ops.ts
+  // (runSubscriptionLifecycleSweep, sendSubscriptionReminder) and app/api/billing/webhook/route.ts.
+  SUBSCRIPTION_TRIAL_CONVERTED       = 'subscription_trial_converted',
+  SUBSCRIPTION_TRIAL_EXPIRED         = 'subscription_trial_expired',
+  SUBSCRIPTION_STATUS_CHANGED        = 'subscription_status_changed',
+  SUBSCRIPTION_REMINDER_SENT         = 'subscription_reminder_sent',
   BILLING_INVOICE_GENERATED          = 'billing_invoice_generated',
   USAGE_THRESHOLD_REACHED            = 'usage_threshold_reached',
   RECRUITING_ROI_CALCULATED          = 'recruiting_roi_calculated',

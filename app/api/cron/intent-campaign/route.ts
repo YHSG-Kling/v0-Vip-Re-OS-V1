@@ -23,8 +23,8 @@ export async function GET(req: NextRequest) {
     // motivated-seller counts + Exa buyer intent per market — only tenants with
     // a live (active/trialing) subscription may be scraped for. Churned/past_due
     // tenants are skipped; no tenants → honest no-op.
-    const { data: subs } = await supabase.from("subscriptions").select("brokerage_id, status")
-    const activeIds = activeSubscriberBrokerageIds((subs ?? []) as Array<{ brokerage_id: string | null; status: string | null }>)
+    const { data: subs } = await supabase.from("subscriptions").select("brokerage_id, status, trial_end")
+    const activeIds = activeSubscriberBrokerageIds((subs ?? []) as Array<{ brokerage_id: string | null; status: string | null; trial_end?: string | null }>)
     const { data: rows, error } = await supabase.from("brokerages").select("id").limit(500)
     if (error) throw error
     const activeRows = ((rows ?? []) as Array<{ id: string }>).filter((b) => activeIds.has(b.id))
