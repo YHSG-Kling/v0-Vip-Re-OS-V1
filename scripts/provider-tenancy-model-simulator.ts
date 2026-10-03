@@ -408,13 +408,20 @@ A.push({
     // The chain half: rentcast's result must be consumed conditionally, and the
     // adapter must not throw — otherwise "no key" ends the cascade.
     const chain = functionBodies(code(F.chain))
-    const getCurrent = chain.get("getCurrentAvm")
+    // Wave 99 (lane 99C, OWNER LAW 3): the RentCast tier moved from getCurrentAvm onto the
+    // property_valuation CAPABILITY (requestPropertyValuation, same file), which getCurrentAvm asks and
+    // consumes conditionally (`if (v.valuation) return v.valuation`). The rule is unchanged.
+    const getCurrent = chain.get("requestPropertyValuation")
+    const outer = chain.get("getCurrentAvm")
     const tryRc = chain.get("tryRentcast")
-    if (!getCurrent) return { ok: false, detail: "getCurrentAvm not found in the AVM chain" }
+    if (!getCurrent || !outer) return { ok: false, detail: "getCurrentAvm / requestPropertyValuation not found in the AVM chain" }
+    if (!/const\s+(\w+)\s*=\s*await\s+requestPropertyValuation\([\s\S]{0,200}?if\s*\(\s*\1\.valuation\s*\)\s*return\s+\1\.valuation/.test(outer.body)) {
+      return { ok: false, detail: "getCurrentAvm does not consume the valuation capability behind a guard — a dark lane would end the cascade" }
+    }
     if (!tryRc) return { ok: false, detail: "tryRentcast adapter not found in the AVM chain" }
     // Wave 93 (lane 93B): tryRentcast now returns { result, outcome } (the outcome names the miss the
     // BatchData BACKUP needs) — the rule is unchanged: the result is consumed behind a guard.
-    const conditional = /const\s+(\w+)\s*=\s*await\s+tryRentcast\(\s*req\s*\)\s*;?\s*if\s*\(\s*\1(?:\.result)?\s*&&[\s\S]{0,80}?\)\s*return\s+\1\b/
+    const conditional = /const\s+(\w+)\s*=\s*await\s+tryRentcast\(\s*req\b[^)]*\)[\s\S]{0,80}?if\s*\(\s*\1(?:\.result)?\s*&&[\s\S]{0,80}?\)\s*\{?[^}]{0,80}?return\s+(?:\1|out)\b/
     if (!conditional.test(getCurrent.body)) {
       return { ok: false, detail: "the rentcast result is not consumed behind a confidence guard — a dark lane would end the cascade" }
     }
@@ -438,8 +445,9 @@ A.push({
       // The chain returns whatever rentcast gave it, including null — ending the
       // cascade before the next provider is ever tried.
       file: F.chain,
-      find: "      const rc = await tryRentcast(req)\n      if (rc.result && rc.result.confidence >= 0.6) return rc.result",
-      replace: "      const rc = await tryRentcast(req)\n      return rc.result",
+      // Wave 99 (lane 99C): the anchor follows the RentCast leg into requestPropertyValuation.
+      find: "        const rc = await tryRentcast(req, deps?.rentcast)\n        out.costUsd += rc.costUsd\n        if (rc.result && rc.result.confidence >= 0.6) { out.valuation = rc.result as PropertyValuation; return out }",
+      replace: "        const rc = await tryRentcast(req, deps?.rentcast)\n        out.costUsd += rc.costUsd\n        { out.valuation = rc.result as PropertyValuation; return out }",
     },
     {
       // The adapter propagates instead of falling through.
@@ -447,7 +455,7 @@ A.push({
       // Wave 92 (lane 92B): tryBatchData was retired from the chain (a home value is RentCast's);
       // the adapter after tryRentcast is now tryZillowViaZenRows — the anchor follows it.
       // Wave 93 (lane 93B): the adapter after tryRentcast is now the BatchData BACKUP leg.
-      find: "  } catch {\n    return { result: null, outcome: \"error\", eligibilityReason: null }\n  }\n}\n\n/** The AVM half of the backup",
+      find: "  } catch {\n    return { result: null, outcome: \"error\", eligibilityReason: null, costUsd: 0 }\n  }\n}\n\n/** The AVM half of the backup",
       replace: "  } catch (e) {\n    throw e\n  }\n}\n\n/** The AVM half of the backup",
     },
   ],

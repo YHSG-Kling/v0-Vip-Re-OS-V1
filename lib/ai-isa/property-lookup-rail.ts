@@ -275,7 +275,9 @@ export const BATCHDATA_FALLBACK_MISS_REASONS: ReadonlySet<RentcastMissReason> = 
 // Wave 93 (lane 93B2): "versium" joins — the EXISTING vendor (household financials) now also sells
 // the owner/person email + phone append, cheapest per match (owner cost decision, header of
 // runVersiumContactLeg below).
-export type ContactDataProvider = "versium" | "batchdata" | "peopledata"
+// Wave 99 (lane 99C, LAW 3 "agents request capabilities, not vendors"): "rentcast" joins as the
+// PRIMARY of the property_valuation capability — the AVM chain now routes through this same table.
+export type ContactDataProvider = "versium" | "batchdata" | "peopledata" | "rentcast"
 
 /** The capabilities the two providers sell, named by the QUESTION a caller asks. */
 export type ProviderCapability =
@@ -286,6 +288,7 @@ export type ProviderCapability =
   | "email_validation"       // is this address deliverable / role / disposable
   | "property_facts"         // beds/baths/sqft/year/lot for an address (the rail's rung 5)
   | "motivated_seller_list"  // quicklist pulls (pre-foreclosure, absentee, vacant, …)
+  | "property_valuation"     // "what is this home worth?" — AVM point + range (wave 99, lane 99C)
 
 export interface ProviderRouteEntry {
   provider: ContactDataProvider
@@ -294,6 +297,11 @@ export interface ProviderRouteEntry {
   /** What the provider needs to be asked with. */
   keyedBy: "property_address" | "person_identifier" | "phone" | "email" | "geography"
 }
+
+/** RENTCAST_USD_PER_REQUEST (lib/property/rentcast.ts), Foundation plan; $0.018 at Scale — ONE spelling
+ *  in this file, read by the property_valuation route AND the rentcast rung cost below (the rail does
+ *  not import the RentCast client statically; scripts/provider-cost-routing-guard.ts asserts equality). */
+const RENTCAST_REQUEST_USD = 0.074
 
 /**
  * THE ONE PRICE TABLE, cheapest first per capability. scripts/provider-cost-
@@ -334,6 +342,59 @@ export const CONTACT_PROVIDER_ROUTES: Readonly<Record<ProviderCapability, readon
   motivated_seller_list: [
     { provider: "batchdata", unitCostUsd: BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD, keyedBy: "geography" },
   ],
+  // Wave 99 (lane 99C): THE AVM CHAIN AS A CAPABILITY. Ordered by OWNER RULING, not by price (see
+  // OWNER_ORDERED_CAPABILITIES): RentCast primary (wave 92, "use rentcast as much as possible
+  // regarding … home values"), BatchData the backup (wave 93, "use batchdata as a backup") — reached
+  // only after a named RentCast miss (BATCHDATA_FALLBACK_MISS_REASONS) through the ONE BatchData gate.
+  // RentCast's cost is the rung constant above (= RENTCAST_USD_PER_REQUEST); BatchData's is the
+  // per-record Property Search constant fetchBatchDataPropertyFallback books.
+  property_valuation: [
+    { provider: "rentcast", unitCostUsd: RENTCAST_REQUEST_USD, keyedBy: "property_address" },
+    { provider: "batchdata", unitCostUsd: BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD, keyedBy: "property_address" },
+  ],
+}
+
+/**
+ * Capabilities whose provider ORDER is an owner ruling rather than cheapest-first. Every other
+ * capability stays sorted by unit cost (scripts/provider-cost-routing-guard.ts asserts both rules).
+ * The value is the ruling, verbatim, so the exception carries its own authority.
+ */
+export const OWNER_ORDERED_CAPABILITIES: ReadonlyMap<ProviderCapability, string> = new Map<ProviderCapability, string>([
+  ["property_valuation", "owner 2026-10-01: \"use rentcast as much as possible regarding … home values\" + \"use batchdata as a backup\""],
+])
+
+/** The health a capability route reads per provider (connector-gateway.ts::loadProviderHealth shape). */
+export type CapabilityProviderHealth = { state: string; routeAround: boolean; reason: string }
+
+export interface CapabilityRoute {
+  capability: ProviderCapability
+  /** Providers to ask IN ORDER (table order minus the skipped). */
+  providers: readonly ContactDataProvider[]
+  /** Who was left out and why — a caller-skipped provider or one in a `failing` cool-down. */
+  skipped: ReadonlyArray<{ provider: ContactDataProvider; reason: string }>
+}
+
+/**
+ * PURE — THE CAPABILITY ROUTER (wave 99, lane 99C; LAW 3). A caller names a CAPABILITY; this
+ * returns the provider order from CONTACT_PROVIDER_ROUTES with every provider the caller excluded,
+ * and every provider in a `failing` cool-down (connector-gateway.ts::deriveProviderHealth,
+ * routeAround), left out WITH its reason. A provider with no health entry is asked (no evidence is
+ * not a fault). Deterministic: no vendor call is made to decide the route.
+ */
+export function routeCapability(
+  capability: ProviderCapability,
+  health: Partial<Record<ContactDataProvider, CapabilityProviderHealth | null>>,
+  exclude: ReadonlySet<string> = new Set(),
+): CapabilityRoute {
+  const providers: ContactDataProvider[] = []
+  const skipped: Array<{ provider: ContactDataProvider; reason: string }> = []
+  for (const e of CONTACT_PROVIDER_ROUTES[capability] ?? []) {
+    const h = health[e.provider]
+    if (exclude.has(e.provider)) skipped.push({ provider: e.provider, reason: "excluded by the caller" })
+    else if (h?.routeAround) skipped.push({ provider: e.provider, reason: `provider_failing (${h.state}): ${h.reason}` })
+    else providers.push(e.provider)
+  }
+  return { capability, providers, skipped }
 }
 
 /** What ONE record carries — the resolver picks the provider order from this, never
@@ -581,7 +642,7 @@ export const PROPERTY_LOOKUP_RUNG_COST_USD: Readonly<Record<PropertyLookupRung, 
   cache: { usd: 0 },
   tenant_idx: { usd: 0 },
   rentcast: {
-    usd: 0.074, // RENTCAST_USD_PER_REQUEST (lib/property/rentcast.ts), Foundation plan; $0.018 at Scale
+    usd: RENTCAST_REQUEST_USD, // RENTCAST_USD_PER_REQUEST (lib/property/rentcast.ts), Foundation plan; $0.018 at Scale
     aheadOfCheaper:
       "public_records (the rung) is cheaper per call but is NOT adequate first. It is a live LLM web search "
       + "(Perplexity Sonar) that extracts facts from county pages with a confidence score and a "

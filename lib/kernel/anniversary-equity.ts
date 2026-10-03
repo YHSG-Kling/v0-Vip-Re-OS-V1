@@ -454,10 +454,12 @@ export async function runAnniversaryEquity(
   // brokerage below only attributes + meters the call, never logged/persisted here).
   // No key or no result → null → honest skip. The simulator injects fixed numbers.
   const fetchValuation: ValuationFetcher = opts.valuationFetcher ?? (async ({ brokerageId: bid, address }) => {
-    const { getRentcastAVM } = await import("@/lib/property/rentcast")
-    const avm = await getRentcastAVM({ brokerageId: bid, address })
-    if (!avm.value || avm.value <= 0) return null
-    return { value: avm.value, rangeLow: avm.rangeLow, rangeHigh: avm.rangeHigh, source: "rentcast" }
+    // Wave 99 (lane 99C, LAW 3): the property_valuation CAPABILITY (lib/avm/provider-chain.ts::
+    // requestPropertyValuation — RentCast primary, BatchData backup, a failing provider routed around).
+    const { requestPropertyValuation } = await import("@/lib/avm/provider-chain")
+    const { valuation: v } = await requestPropertyValuation({ brokerageId: bid, address })
+    if (!v || v.value <= 0) return null
+    return { value: v.value, rangeLow: v.rangeLow ?? null, rangeHigh: v.rangeHigh ?? null, source: v.source }
   })
 
   // EXISTING D-ID + ElevenLabs render path (intro-video-reactor) — NEVER HeyGen.

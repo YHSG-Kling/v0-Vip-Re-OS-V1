@@ -30,6 +30,23 @@ deletion — check `vercel.json`, `lib/kernel/cron-dispatch.ts`, provider consol
 and same-origin self-calls written as `` `${baseUrl}/api/…` ``. When you cannot
 prove it either way, write "unresolved" rather than guessing.
 
+### Architectural laws (owner, 2026-10-03)
+
+Full text, diagrams and the code/guard behind each law: `docs/architecture/OS-CONSTITUTION.md`.
+
+1. **Extend before replacing** — existing working code is the default survivor (the doctrine above).
+2. **One canonical path** — three systems doing one function consolidate toward ONE kernel
+   service, never a fourth.
+3. **Agents request capabilities, not vendors** — caller → capability → router → provider. The
+   route table is `CONTACT_PROVIDER_ROUTES` + `routeCapability` (`lib/ai-isa/property-lookup-rail.ts`);
+   a home value is `requestPropertyValuation` (`lib/avm/provider-chain.ts`), never `getRentcastAVM`.
+4. **AI doesn't bypass business rules** — AI manager → tool → authority → policy → capability →
+   domain service → database/provider. Never LLM → SQL.
+5. **Consequential actions leave evidence** — who/what initiated, why, what evidence, which policy
+   permitted, which tool, which provider, what it cost, what happened (`withActionLedger`).
+
+No new subsystem until the current survivor is identified and proven insufficient.
+
 ## 2. Measurement discipline
 
 A guard that cannot see the code it judges is worse than no guard: it reports

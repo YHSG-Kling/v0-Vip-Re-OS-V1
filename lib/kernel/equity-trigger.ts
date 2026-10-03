@@ -411,10 +411,12 @@ export async function runEquityTrigger(
 
   // REAL RentCast-backed default valuation (same as anniversary-equity). Null → honest skip.
   const fetchValuation: ValuationFetcher = opts.valuationFetcher ?? (async ({ brokerageId: bid, address }) => {
-    const { getRentcastAVM } = await import("@/lib/property/rentcast")
-    const avm = await getRentcastAVM({ brokerageId: bid, address })
-    if (!avm.value || avm.value <= 0) return null
-    return { value: avm.value, source: "rentcast" }
+    // Wave 99 (lane 99C, LAW 3): the property_valuation CAPABILITY (lib/avm/provider-chain.ts::
+    // requestPropertyValuation — RentCast primary, BatchData backup, a failing provider routed around).
+    const { requestPropertyValuation } = await import("@/lib/avm/provider-chain")
+    const { valuation: v } = await requestPropertyValuation({ brokerageId: bid, address })
+    if (!v || v.value <= 0) return null
+    return { value: v.value, source: v.source }
   })
 
   // AUTHORITATIVE current-rate default — market_rate_snapshots (today, else latest). A

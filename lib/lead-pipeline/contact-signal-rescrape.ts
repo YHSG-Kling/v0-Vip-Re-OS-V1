@@ -115,16 +115,23 @@ export async function triggerSignalRescrape(params: {
       if (!contact.brokerage_id) {
         out.tasks.push({ name: "rentcast_avm_refresh", ok: false, error: "contact has no brokerage_id to meter against" })
       } else {
-        const { getRentcastAVM, RENTCAST_USD_PER_REQUEST } = await import("@/lib/property/rentcast")
-        const avm = await getRentcastAVM({
+        // Wave 99 (lane 99C, LAW 3): the property_valuation CAPABILITY, not a vendor
+        // (lib/avm/provider-chain.ts::requestPropertyValuation — RentCast primary, BatchData backup,
+        // a failing provider routed around). Each leg meters itself; `costUsd` is what was actually
+        // metered (a 14-day cache hit is $0 — the flat RENTCAST_USD_PER_REQUEST here over-reported it).
+        const { requestPropertyValuation } = await import("@/lib/avm/provider-chain")
+        const v = await requestPropertyValuation({
           brokerageId: contact.brokerage_id,
           address: addr,
           systemSource: "contact_signal_rescrape",
           contactId: contact.id,
+          // This sweep only WARMS the RentCast cache (the value is not used here) — a paid BatchData
+          // backup would buy nothing but a warm cache, so it is excluded (owner cost-down rule).
+          exclude: ["batchdata"],
         })
-        const ok = avm.value !== null
-        out.tasks.push({ name: "rentcast_avm_refresh", ok, cost: RENTCAST_USD_PER_REQUEST })
-        out.totalCost += RENTCAST_USD_PER_REQUEST
+        const ok = v.valuation !== null
+        out.tasks.push({ name: "rentcast_avm_refresh", ok, cost: v.costUsd })
+        out.totalCost += v.costUsd
       }
     } catch (e) { out.tasks.push({ name: "rentcast_avm_refresh", ok: false, error: (e as Error).message }) }
   }

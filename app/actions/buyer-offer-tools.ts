@@ -459,29 +459,29 @@ export async function analyzeAddressForBuyer(input: {
     const brokerageId = resolved.contact.brokerage_id
     const contactAgentId = resolved.contact.agent_id
 
-    const [{ lookupPropertyByAddress }, { getRentcastAVM }, { getCurrentAvm }, { buildAddressAnalysis }] = await Promise.all([
+    const [{ lookupPropertyByAddress }, { getCurrentAvm }, { buildAddressAnalysis }] = await Promise.all([
       import("@/lib/property/address-lookup"),
-      import("@/lib/property/rentcast"),
       import("@/lib/avm/provider-chain"),
       import("@/lib/buyer-offers/address-analysis"),
     ])
-    // RentCast is the brokerage's chosen property-data provider — try its AVM first (with a value
-    // RANGE, which is more honest than a single number). Fall back to the free cache/Perplexity
-    // tier only when RentCast has no key or no hit. Specs come from the free OSINT lookup.
-    const [lookup, rc] = await Promise.all([
+    // Wave 99 (lane 99C, LAW 3 — "agents request capabilities, not vendors"): ONE request for the
+    // property VALUE capability (lib/avm/provider-chain.ts::getCurrentAvm → requestPropertyValuation:
+    // RentCast primary WITH its range, BatchData the backup, a failing provider routed around, then
+    // the free cache/Perplexity tiers). TOMBSTONE: the direct getRentcastAVM call that stood here
+    // asked RentCast, then on a miss asked it AGAIN through getCurrentAvm — survivor: the capability.
+    // Specs come from the free OSINT lookup.
+    const [lookup, est] = await Promise.all([
       // §4 — `brokerageId` is the CONTACT row's tenant, resolved through
       // requireContactAccess + resolveContactAgent above, not a body value.
       lookupPropertyByAddress({ address, city: "", state: "", brokerageId }).catch(() => null),
-      brokerageId ? getRentcastAVM({ brokerageId, address }).catch(() => null) : Promise.resolve(null),
+      getCurrentAvm({ address, brokerageId }).catch(() => null),
     ])
     let avm: { value: number; confidence: number; source: string } | null = null
     let range: { low: number | null; high: number | null } | null = null
-    if (rc && typeof rc.value === "number" && rc.value > 0) {
-      avm = { value: rc.value, confidence: 0.85, source: "rentcast" }
-      range = { low: rc.rangeLow ?? null, high: rc.rangeHigh ?? null }
-    } else {
-      const fallback = await getCurrentAvm({ address, brokerageId }).catch(() => null)
-      if (fallback) avm = { value: fallback.value, confidence: fallback.confidence, source: fallback.source }
+    if (est) {
+      // A RentCast answer keeps the 0.85 this surface has always shown for it (unchanged when healthy).
+      avm = { value: est.value, confidence: est.source === "rentcast" ? 0.85 : est.confidence, source: est.source }
+      if (est.rangeLow !== undefined || est.rangeHigh !== undefined) range = { low: est.rangeLow ?? null, high: est.rangeHigh ?? null }
     }
     const analysis = buildAddressAnalysis(lookup as any, avm, range)
 

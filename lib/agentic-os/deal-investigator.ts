@@ -94,15 +94,18 @@ export async function investigateDeal(params: DealInvestigationParams): Promise<
       if (!contact.brokerage_id) {
         result.warnings.push("rentcast: contact has no brokerage_id to meter against")
       } else {
-        const { getRentcastAVM, RENTCAST_USD_PER_REQUEST } = await import("@/lib/property/rentcast")
-        const avm = await getRentcastAVM({
+        // Wave 99 (lane 99C, LAW 3): the property_valuation CAPABILITY (lib/avm/provider-chain.ts::
+        // requestPropertyValuation) — a NORMALIZED valuation (value, range, confidence, source), never
+        // the vendor body; cost is what the legs actually metered.
+        const { requestPropertyValuation } = await import("@/lib/avm/provider-chain")
+        const v = await requestPropertyValuation({
           brokerageId: contact.brokerage_id,
           address,
           systemSource: "deal_investigator",
           contactId: contact.id,
         })
-        result.cost += RENTCAST_USD_PER_REQUEST
-        result.sources.mls = avm.value !== null ? (avm as unknown as Record<string, unknown>) : null
+        result.cost += v.costUsd
+        result.sources.mls = v.valuation ? ({ ...v.valuation } as unknown as Record<string, unknown>) : null
       }
     }
   } catch (e) { result.warnings.push(`rentcast: ${(e as Error).message}`) }

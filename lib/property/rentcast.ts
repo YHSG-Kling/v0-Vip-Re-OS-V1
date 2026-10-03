@@ -1068,8 +1068,10 @@ function parseAvmValue(data: RentcastAvmValueResponse | null): { value: number |
  */
 export async function getRentcastAVM(
   params: RentcastCaller & { address: string },
-): Promise<{ value: number | null; rangeLow: number | null; rangeHigh: number | null; outcome: RentcastReadOutcome; eligibility: RentcastEligibility }> {
-  const none = { value: null, rangeLow: null, rangeHigh: null }
+): Promise<{ value: number | null; rangeLow: number | null; rangeHigh: number | null; outcome: RentcastReadOutcome; eligibility: RentcastEligibility; cacheHit: boolean }> {
+  // Wave 99 (lane 99C): `cacheHit` rides back so the property_valuation capability
+  // (lib/avm/provider-chain.ts::requestPropertyValuation) reports the cost it actually metered.
+  const none = { value: null, rangeLow: null, rangeHigh: null, cacheHit: false }
   const { apiKey, eligibility } = await gateRentcast(params, "property_data")
   if (!apiKey) return { ...none, outcome: "not_eligible", eligibility }
 
@@ -1092,7 +1094,7 @@ export async function getRentcastAVM(
       })
     if (!read.ok) return { ...none, outcome: "error", eligibility }
     const avm = parseAvmValue(read.data)
-    return { ...avm, outcome: avm.value != null ? "answered" : "no_record", eligibility }
+    return { ...avm, outcome: avm.value != null ? "answered" : "no_record", eligibility, cacheHit: read.cacheHit }
   } catch {
     return { ...none, outcome: "error", eligibility }
   }

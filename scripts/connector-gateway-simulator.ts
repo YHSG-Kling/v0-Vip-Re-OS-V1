@@ -101,5 +101,79 @@ for (const [name, fn, check] of checks) {
     { routedCalls, calls })
 }
 
+// ── Wave 99 (lane 99C, OWNER LAW 3): THE AVM CHAIN ON THE SAME HEALTH-AWARE ROUTER ─────────────────
+// lib/avm/provider-chain.ts::requestPropertyValuation — the property_valuation capability. EXECUTED
+// with injected seams (health, eligibility, RentCast, the BatchData gate/fetch/meter/cache): zero
+// network, zero database. Each scenario has its positive control beside it.
+{
+  const { createRequire } = await import("node:module")
+  const _require = createRequire(import.meta.url)
+  try { const so = _require.resolve("server-only"); _require.cache[so] = { id: so, filename: so, loaded: true, exports: {} } as any } catch { /* nothing to shim */ }
+  const chain = await import("../lib/avm/provider-chain")
+  const railMod = await import("../lib/ai-isa/property-lookup-rail")
+  const { RENTCAST_USD_PER_REQUEST } = await import("../lib/property/rentcast")
+  const { BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD } = await import("../lib/external/batchdata-client")
+  const expect = (name: string, cond: boolean, detail?: unknown) => {
+    if (cond) { console.log(` ✓ ${name}`); pass++ } else { console.log(` ✗ ${name} → ${JSON.stringify(detail)}`); fail++ }
+  }
+  const calls: string[] = []
+  const metered: any[] = []
+  const NORMALIZED = new Set(["value", "confidence", "source", "fetchedAt", "notes", "rangeLow", "rangeHigh"])
+  const deps = (o: { rcFailing?: boolean; rcAnswer?: "value" | "no_record" | "error"; overBudget?: boolean; cacheHit?: boolean } = {}) => ({
+    providerHealth: async (k: string) => ({ state: o.rcFailing && k === "rentcast" ? "failing" : "healthy", routeAround: !!o.rcFailing && k === "rentcast", reason: "proof" }),
+    eligibility: async () => ({ eligible: true, overBudget: !!o.overBudget }),
+    rentcast: async () => {
+      calls.push("rentcast")
+      const a = o.rcAnswer ?? "value"
+      return a === "value"
+        ? { value: 500000, rangeLow: 480000, rangeHigh: 520000, outcome: "answered" as const, eligibility: { reason: null }, cacheHit: !!o.cacheHit }
+        : { value: null, rangeLow: null, rangeHigh: null, outcome: a, eligibility: { reason: null }, cacheHit: false }
+    },
+    fallback: {
+      // THE REAL gate decision (decideBatchDataAccess) over an injected policy — over_budget must still refuse.
+      access: async (r: any) => railMod.decideBatchDataAccess(r, { batchDataTier: "lean", batchDataOptedIn: false }),
+      fetch: async () => { calls.push("batchdata"); return { ok: true, found: true, facts: null, valuation: { value: 490000, rangeLow: 470000, rangeHigh: 515000 }, comps: [], cost: BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD, error: null } as any },
+      meter: async (m: any) => { metered.push(m) },
+      cache: null,
+    },
+  })
+  const run = async (o: Parameters<typeof deps>[0], exclude?: string[]) => {
+    calls.length = 0; metered.length = 0
+    const r = await chain.requestPropertyValuation({ brokerageId: "00000000-0000-0000-0000-000000000001", address: "1 Main St, Austin, TX 78701", exclude }, deps(o))
+    return { r, calls: [...calls], metered: [...metered] }
+  }
+
+  const healthy = await run({})
+  expect("AVM all-healthy: RentCast answers FIRST and alone — BatchData never called (behaviour unchanged)",
+    healthy.r.valuation?.source === "rentcast" && healthy.r.valuation.value === 500000 && healthy.calls.join(",") === "rentcast" && healthy.r.skipped.length === 0, healthy)
+  expect("AVM all-healthy: the cost the RentCast leg metered is reported (RENTCAST_USD_PER_REQUEST); a 14-day cache hit reports $0 (positive control)",
+    healthy.r.costUsd === RENTCAST_USD_PER_REQUEST && (await run({ cacheHit: true })).r.costUsd === 0)
+
+  const failing = await run({ rcFailing: true })
+  expect("AVM: a FAILING RentCast is skipped (never called) and the capability falls through to the BatchData backup",
+    !failing.calls.includes("rentcast") && failing.calls.join(",") === "batchdata" && failing.r.valuation?.source === "batchdata"
+    && failing.r.rentcastMiss === "error" && failing.r.skipped.some((s) => s.provider === "rentcast" && /provider_failing/.test(s.reason)), failing)
+  expect("AVM: the backup's cost is METERED through the existing path (meterVendorSpend shape: vendor batchdata, property_fallback_avm, answered_by + fallback_for) and reported",
+    failing.metered.length === 1 && failing.metered[0].vendorName === "batchdata" && failing.metered[0].usageType === "property_fallback_avm"
+    && failing.metered[0].cost === BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD && failing.metered[0].metadata?.answered_by === "batchdata"
+    && failing.metered[0].metadata?.fallback_for === "rentcast" && failing.r.costUsd === BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD, failing.metered)
+  expect("AVM: the result shape is NORMALIZED — the same keys whichever provider answered, never vendor JSON (no price/priceRangeLow/vendor body)",
+    [healthy.r.valuation, failing.r.valuation].every((v) => !!v && Object.keys(v).every((k) => NORMALIZED.has(k)) && typeof v.value === "number" && "rangeLow" in v && "rangeHigh" in v),
+    [healthy.r.valuation, failing.r.valuation].map((v) => v && Object.keys(v)))
+
+  const noRecord = await run({ rcAnswer: "no_record" })
+  expect("AVM all-healthy, RentCast has no record → the wave-93 backup still answers (RentCast THEN BatchData — unchanged)",
+    noRecord.calls.join(",") === "rentcast,batchdata" && noRecord.r.valuation?.source === "batchdata" && noRecord.r.rentcastMiss === "no_record", noRecord)
+  const over = await run({ overBudget: true })
+  expect("AVM over budget: neither RentCast nor the paid backup is called (over_budget is not a fallback trigger) — positive control for the failing case",
+    over.calls.length === 0 && over.r.valuation === null && over.r.overBudget && over.r.rentcastMiss === "over_budget", over)
+  const agentSurface = await run({ rcFailing: true }, ["batchdata"])
+  expect("AVM: a caller exclusion holds even when RentCast is failing (AI-agent surfaces pass skipProviders [\"batchdata\"]) — nothing paid is called",
+    agentSurface.calls.length === 0 && agentSurface.r.valuation === null && agentSurface.r.skipped.some((s) => s.provider === "batchdata" && /excluded/.test(s.reason)), agentSurface)
+  const tenantless = await chain.requestPropertyValuation({ brokerageId: null, address: "1 Main St" }, deps({}))
+  expect("AVM: a tenant-less request reaches no provider (§4) — refused with a reason",
+    tenantless.valuation === null && tenantless.providersTried.length === 0 && /no tenant/.test(tenantless.skipped[0]?.reason ?? ""), tenantless)
+}
+
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

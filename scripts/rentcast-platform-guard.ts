@@ -153,14 +153,22 @@ async function main() {
   // owner: "use rentcast as much as possible regarding … home values"). Perplexity is the fallback.
   const chain = stripped("lib/avm/provider-chain.ts")
   const avmBody = fnBody(chain, "getCurrentAvm")
-  const rcAt = avmBody.indexOf("await tryRentcast(req)"), pxAt = avmBody.indexOf("await tryPerplexitySonar(req)")
-  const firstOrder = (b: string) => { const r = b.indexOf("await tryRentcast(req)"), p = b.indexOf("await tryPerplexitySonar(req)"); return r > -1 && p > -1 && r < p }
-  check("the AVM chain asks RentCast BEFORE the Perplexity fallback", firstOrder(avmBody), `rentcast@${rcAt} perplexity@${pxAt}`)
+  // Re-anchored (wave 99, lane 99C — OWNER LAW 3): the RentCast-first / BatchData-backup tiers moved
+  // OUT of getCurrentAvm onto the property_valuation CAPABILITY (requestPropertyValuation, same file),
+  // which getCurrentAvm asks before the Perplexity fallback. The RULE is unchanged: the capability
+  // (RentCast inside it) comes before Perplexity, and is gated by eligibility + budget, never the premium flag.
+  const capBody = fnBody(chain, "requestPropertyValuation")
+  const rcAt = avmBody.indexOf("await requestPropertyValuation("), pxAt = avmBody.indexOf("await tryPerplexitySonar(req)")
+  const firstOrder = (b: string, cap: string) => { const r = b.indexOf("await requestPropertyValuation("), p = b.indexOf("await tryPerplexitySonar(req)"); return r > -1 && p > -1 && r < p && /await tryRentcast\(req/.test(cap) }
+  check("the AVM chain asks RentCast (through the property_valuation capability) BEFORE the Perplexity fallback", firstOrder(avmBody, capBody), `capability@${rcAt} perplexity@${pxAt}`)
   check("POSITIVE CONTROL: the ordering check fails on a Perplexity-first fixture",
-    !firstOrder(`const px = await tryPerplexitySonar(req)\nconst rc = await tryRentcast(req)`))
+    !firstOrder(`const px = await tryPerplexitySonar(req)\nconst rc = await requestPropertyValuation(x)`, capBody))
   const preRc = avmBody.slice(0, rcAt)
   check("…and RentCast-first does NOT wait for usePaidProviders (the premium flag governs only the Zillow scrape), but is gated by the ONE eligibility verdict (property_data) and the budget",
-    !/usePaidProviders/.test(preRc) && /readKind: "property_data"/.test(preRc) && /const rentcastFirst = rentcastEligible && !overBudget/.test(preRc)
+    !/usePaidProviders/.test(preRc) && !/usePaidProviders/.test(capBody)
+    && /readKind: "property_data"/.test(fnBody(chain, "productionValuationEligibility"))
+    && /if \(!eligible \|\| out\.overBudget\)[\s\S]{0,120}continue/.test(capBody)
+    && /overBudget = v\.overBudget/.test(avmBody)
     && /if \(req\.usePaidProviders && !overBudget\)[\s\S]{0,200}tryZillowViaZenRows\(req\)/.test(avmBody))
   const scan = stripped("lib/wealth-advisor/scan-opportunities.ts")
   check("the daily wealth scan (the background value refresh) hands the chain its tenant, so RentCast is reachable from the scan",
@@ -408,12 +416,18 @@ async function main() {
   check("EXECUTED: RentCast paused over budget → no backup (free tiers only), no BatchData request", notMiss.record === null && notMiss.rentcastMiss === "over_budget" && fetched === 0)
 
   // The AVM chain's ORDER: RentCast → BatchData backup → Perplexity; the backup sits behind a miss.
-  const avm = fnBody(stripped("lib/avm/provider-chain.ts"), "getCurrentAvm")
-  const iRc = avm.indexOf("await tryRentcast(req)"), iBd = avm.indexOf("await tryBatchDataBackup(req, rentcastMiss)"), iPx = avm.indexOf("await tryPerplexitySonar(req)")
-  check("the AVM chain asks RentCast → the BatchData BACKUP → Perplexity, and the backup is guarded by a named miss + a tenant + skipProviders",
-    iRc > -1 && iBd > iRc && iPx > iBd && /if \(rentcastMiss && req\.brokerageId && !skip\.has\("batchdata"\)\)/.test(avm), JSON.stringify({ iRc, iBd, iPx }))
+  // Re-anchored (wave 99, lane 99C): the order lives in the property_valuation capability
+  // (RentCast → BatchData backup), which getCurrentAvm asks before Perplexity. Executed proof of the
+  // health skip + metering: scripts/connector-gateway-simulator.ts (AVM block).
+  const chainSrc = stripped("lib/avm/provider-chain.ts")
+  const avm = fnBody(chainSrc, "getCurrentAvm"), cap = fnBody(chainSrc, "requestPropertyValuation")
+  const iRc = cap.indexOf("await tryRentcast(req"), iBd = cap.indexOf("await tryBatchDataBackup(req, out.rentcastMiss"), iCap = avm.indexOf("await requestPropertyValuation("), iPx = avm.indexOf("await tryPerplexitySonar(req)")
+  check("the AVM chain asks RentCast → the BatchData BACKUP (inside the capability) → Perplexity, and the backup is guarded by a named miss + a tenant + the caller's exclusions (skipProviders)",
+    iRc > -1 && iBd > iRc && iCap > -1 && iPx > iCap
+    && /if \(!out\.rentcastMiss\)[\s\S]{0,160}continue/.test(cap) && /if \(!req\.brokerageId/.test(cap)
+    && /routeCapability\("property_valuation", health, exclude\)/.test(cap) && /exclude: \[\.\.\.skip\]/.test(avm), JSON.stringify({ iRc, iBd, iCap, iPx }))
   check("POSITIVE CONTROL: a BatchData-before-RentCast fixture fails the same ordering test",
-    (() => { const fx = "await tryBatchDataBackup(req, rentcastMiss)\nawait tryRentcast(req)"; return !(fx.indexOf("await tryRentcast(req)") < fx.indexOf("await tryBatchDataBackup(req, rentcastMiss)")) })())
+    (() => { const fx = "await tryBatchDataBackup(req, out.rentcastMiss)\nawait tryRentcast(req"; return !(fx.indexOf("await tryRentcast(req") < fx.indexOf("await tryBatchDataBackup(req, out.rentcastMiss")) })())
   const comp = stripped("lib/cma/comp-provider.ts")
   check("the CMA sold side asks the backup only when RentCast did NOT ANSWER (not when it was merely short — §3b's widened RentCast search owns that)",
     /rentcastRows\.length === 0 \? \(avmPull\?\.avmUnavailableReason === "provider_error" \? "error" : "no_record"\) : null/.test(comp)

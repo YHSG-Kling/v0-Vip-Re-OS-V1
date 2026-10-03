@@ -53,6 +53,10 @@ export interface AvmResult {
   source: AvmSource
   fetchedAt: string           // ISO
   notes?: string
+  /** Wave 99 (lane 99C): the provider's own range when it published one (RentCast / BatchData);
+   *  absent for the tiers that have none. Normalized here so no caller reads vendor JSON. */
+  rangeLow?: number | null
+  rangeHigh?: number | null
 }
 
 interface AvmRequest {
@@ -108,52 +112,19 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
     }
   }
 
-  // ── 1. RENTCAST FIRST (wave 92, lane 92B2) ─────────────────────────────
-  // Owner, verbatim (2026-10-01): "use rentcast as much as possible regarding property listings,
-  // market, comparable, home values". A home value is RentCast's FIRST — for the daily background
-  // scans too (lib/wealth-advisor/scan-opportunities.ts), not only an agent's premium CMA. What
-  // bounds the cost is the 14-day freshness window twice over: the caller's own cachedValue
-  // short-circuit above AND RentCast's own fact cache (lib/property/rentcast.ts
-  // RENTCAST_CACHE_TTL_DAYS.avm = 14), so one home costs at most one request per 14 days.
-  // Perplexity Sonar stays as the FALLBACK when RentCast is not eligible or has no confident value.
-  //
-  // THE ONE ELIGIBILITY GATE decides it (lib/property/rentcast-eligibility.ts, readKind
-  // "property_data" — a home value has no IDX substitute, so a tenant's IDX feed never blocks it;
-  // the platform key and the vendor budget still do). Over budget → RentCast AND the premium paid
-  // tier are skipped; the free fallbacks below still answer. A tenant-less call never reaches
-  // RentCast (an unattributable paid call is spend nobody can see).
-  let rentcastEligible = false
+  // ── 1 + 1b. THE PROPERTY_VALUATION CAPABILITY (wave 99, lane 99C — LAW 3) ──────
+  // TOMBSTONE (wave 99, §1.3): the inline RentCast-first tier (wave 92, lane 92B2) and the inline
+  // BatchData backup tier (wave 93, lane 93B) stood here. Survivor: requestPropertyValuation below —
+  // the same eligibility gate, the same RentCast-then-backup order, the same confidence floors —
+  // now asked as ONE capability through the health-aware router, so a RentCast in a `failing`
+  // cool-down is routed around instead of paying a timeout per home. Healthy providers → the same
+  // calls in the same order as before. Over budget → RentCast AND the premium paid tier are skipped;
+  // the free fallbacks below still answer. A tenant-less call never reaches the paid tier.
   let overBudget = false
-  if (req.brokerageId && !skip.has("rentcast")) {
-    const { resolveRentcastEligibility, rentcastBudgetBlocked } = await import("@/lib/property/rentcast-eligibility")
-    const eligibility = await resolveRentcastEligibility({ brokerageId: req.brokerageId, readKind: "property_data" })
-    rentcastEligible = eligibility.eligible
-    overBudget = eligibility.budget.checked
-      ? eligibility.reason === "budget_exhausted"
-      : (await rentcastBudgetBlocked(req.brokerageId)).blocked
-  }
-  const rentcastFirst = rentcastEligible && !overBudget
-  // Wave 93 (lane 93B): the NAMED reason RentCast did not answer — the only door to the backup.
-  let rentcastMiss: RentcastMissReason | null = null
-  if (rentcastFirst) {
-    if (!skip.has("rentcast") && req.brokerageId && rentcastEligible) {
-      const rc = await tryRentcast(req)
-      if (rc.result && rc.result.confidence >= 0.6) return rc.result
-      rentcastMiss = rc.result ? "no_record" : rentcastMissFrom(rc.outcome, rc.eligibilityReason)
-    }
-  } else if (req.brokerageId && !skip.has("rentcast")) {
-    rentcastMiss = overBudget ? "over_budget" : "unconfigured"
-  }
-
-  // ── 1b. BATCHDATA — THE BACKUP (wave 93, lane 93B) ─────────────────────
-  // Owner, verbatim (2026-10-01): "use batchdata as a backup." Reached ONLY after a named RentCast
-  // miss the gate accepts (unconfigured / error / no record — never over budget, see
-  // BATCHDATA_FALLBACK_MISS_REASONS), only for a tenant-attributed call, through the ONE BatchData
-  // gate's fallback purpose. Its answer is booked as vendor "batchdata" with `answered_by` and the
-  // miss on the ledger row, and cached 14 days (the same window as RentCast's AVM cache).
-  if (rentcastMiss && req.brokerageId && !skip.has("batchdata")) {
-    const bd = await tryBatchDataBackup(req, rentcastMiss)
-    if (bd && bd.confidence >= 0.55) return bd
+  if (req.brokerageId) {
+    const v = await requestPropertyValuation({ brokerageId: req.brokerageId, address: req.address, exclude: [...skip] })
+    overBudget = v.overBudget
+    if (v.valuation) return v.valuation
   }
 
   // ── 2. Perplexity Sonar (FALLBACK) ──────────────────────────────────────
@@ -201,15 +172,19 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
 // silent-fail to the next provider. The one deliberate null is OSINT (public
 // records yield life events, not values).
 
-/** The RentCast leg's answer: the AVM (or null) and WHY it is null — the miss the backup reads. */
-type RentcastLeg = { result: AvmResult | null; outcome: RentcastReadOutcome; eligibilityReason: string | null }
+/** The RentCast leg's answer: the AVM (or null), WHY it is null — the miss the backup reads — and
+ *  the USD this request metered (0 when not eligible or served from RentCast's 14-day cache). */
+type RentcastLeg = { result: AvmResult | null; outcome: RentcastReadOutcome; eligibilityReason: string | null; costUsd: number }
 
-async function tryRentcast(req: AvmRequest): Promise<RentcastLeg> {
-  if (!req.brokerageId) return { result: null, outcome: "not_eligible", eligibilityReason: null }
+async function tryRentcast(req: ValuationRequest, seam?: PropertyValuationDeps["rentcast"]): Promise<RentcastLeg> {
+  if (!req.brokerageId) return { result: null, outcome: "not_eligible", eligibilityReason: null, costUsd: 0 }
   try {
-    const { getRentcastAVM } = await import("@/lib/property/rentcast")
-    const avm = await getRentcastAVM({ brokerageId: req.brokerageId, address: req.address })
-    if (!avm.value || avm.value <= 0) return { result: null, outcome: avm.outcome === "answered" ? "no_record" : avm.outcome, eligibilityReason: avm.eligibility.reason }
+    const { getRentcastAVM, RENTCAST_USD_PER_REQUEST } = await import("@/lib/property/rentcast")
+    const call = { brokerageId: req.brokerageId, address: req.address, ...(req.systemSource ? { systemSource: req.systemSource } : {}), ...(req.contactId ? { contactId: req.contactId } : {}) }
+    const avm = seam ? await seam(call) : await getRentcastAVM(call)
+    // getRentcastAVM meters every request it makes (meterCall at RENTCAST_USD_PER_REQUEST); this only REPORTS it.
+    const costUsd = avm.outcome !== "not_eligible" && avm.cacheHit !== true ? RENTCAST_USD_PER_REQUEST : 0
+    if (!avm.value || avm.value <= 0) return { result: null, outcome: avm.outcome === "answered" ? "no_record" : avm.outcome, eligibilityReason: avm.eligibility.reason, costUsd }
     // Tighter range around the point estimate → higher confidence.
     const spread = avm.rangeLow && avm.rangeHigh && avm.value > 0 ? (avm.rangeHigh - avm.rangeLow) / avm.value : 0.3
     const confidence = Math.max(0.6, Math.min(0.92, 0.9 - spread))
@@ -220,29 +195,152 @@ async function tryRentcast(req: AvmRequest): Promise<RentcastLeg> {
         source: "rentcast",
         fetchedAt: new Date().toISOString(),
         notes: avm.rangeLow && avm.rangeHigh ? `RentCast AVM (range $${avm.rangeLow.toLocaleString()}–$${avm.rangeHigh.toLocaleString()})` : "RentCast AVM",
+        rangeLow: avm.rangeLow ?? null,
+        rangeHigh: avm.rangeHigh ?? null,
       },
       outcome: "answered",
       eligibilityReason: avm.eligibility.reason,
+      costUsd,
     }
   } catch {
-    return { result: null, outcome: "error", eligibilityReason: null }
+    return { result: null, outcome: "error", eligibilityReason: null, costUsd: 0 }
   }
 }
 
-/** The AVM half of the backup — BatchData's own valuation for the address, after a RentCast miss. */
-async function tryBatchDataBackup(req: AvmRequest, miss: RentcastMissReason): Promise<AvmResult | null> {
-  if (!req.brokerageId) return null
-  const bd = await batchDataPropertyFallback({ brokerageId: req.brokerageId, address: req.address, kind: "avm", rentcastMiss: miss, systemSource: "avm_provider_chain" })
+/** The AVM half of the backup — BatchData's own valuation for the address, after a RentCast miss.
+ *  The fallback meters its own spend (meterVendorSpend, vendor "batchdata"); costUsd only REPORTS it. */
+async function tryBatchDataBackup(req: ValuationRequest, miss: RentcastMissReason, deps?: BatchDataFallbackDeps): Promise<{ result: AvmResult | null; costUsd: number; reason: string }> {
+  if (!req.brokerageId) return { result: null, costUsd: 0, reason: "no tenant" }
+  const bd = await batchDataPropertyFallback({ brokerageId: req.brokerageId, address: req.address, kind: "avm", rentcastMiss: miss, systemSource: req.systemSource ?? "avm_provider_chain", contactId: req.contactId ?? null }, deps)
+  const costUsd = bd.answeredBy === "batchdata" && !bd.cacheHit ? (bd.result?.cost ?? 0) : 0
   const v = bd.result?.valuation
-  if (bd.answeredBy !== "batchdata" || !v?.value) return null
+  if (bd.answeredBy !== "batchdata" || !v?.value) return { result: null, costUsd, reason: bd.reason }
   const spread = v.rangeLow && v.rangeHigh ? (v.rangeHigh - v.rangeLow) / v.value : 0.35
   return {
-    value: v.value,
-    confidence: Math.max(0.55, Math.min(0.85, 0.85 - spread)),
-    source: "batchdata",
-    fetchedAt: new Date().toISOString(),
-    notes: `BatchData AVM — the BACKUP, used because RentCast did not answer (${miss})${bd.cacheHit ? "; served from the 14-day fallback cache" : ""}`,
+    result: {
+      value: v.value,
+      confidence: Math.max(0.55, Math.min(0.85, 0.85 - spread)),
+      source: "batchdata",
+      fetchedAt: new Date().toISOString(),
+      notes: `BatchData AVM — the BACKUP, used because RentCast did not answer (${miss})${bd.cacheHit ? "; served from the 14-day fallback cache" : ""}`,
+      rangeLow: v.rangeLow ?? null,
+      rangeHigh: v.rangeHigh ?? null,
+    },
+    costUsd,
+    reason: bd.reason,
   }
+}
+
+// ─── THE PROPERTY_VALUATION CAPABILITY (wave 99, lane 99C — LAW 3) ──────────────────────
+// Owner LAW 3: "Agents request capabilities, not vendors." A caller asks "what is this home worth?"
+// and names NO vendor; the provider order is CONTACT_PROVIDER_ROUTES.property_valuation (the ONE
+// price/route table, lib/ai-isa/property-lookup-rail.ts), routed by routeCapability over the
+// gateway's derived provider health (lib/agentic-os/connector-gateway.ts::deriveProviderHealth):
+// a provider in a `failing` cool-down is skipped WITH its reason; every other state is asked.
+// Each leg meters through its existing path (RentCast: meterCall in getRentcastAVM; BatchData:
+// meterVendorSpend in batchDataPropertyFallback) — nothing is booked twice, costUsd only reports.
+
+export interface ValuationRequest {
+  brokerageId: string | null | undefined
+  address: string
+  /** The vendor-ledger lane the metered call is attributed to (each leg's own default otherwise). */
+  systemSource?: string
+  contactId?: string | null
+  /** Providers the CALLER rules out (e.g. AI-agent surfaces keep BatchData out: ["batchdata"]). */
+  exclude?: readonly string[]
+}
+
+/** The normalized answer — the same shape whichever provider answered; never vendor JSON. */
+export type PropertyValuation = AvmResult & { source: "rentcast" | "batchdata" }
+
+export interface PropertyValuationOutcome {
+  valuation: PropertyValuation | null
+  /** Why RentCast did not answer — null when it answered or was never asked. */
+  rentcastMiss: RentcastMissReason | null
+  /** The tenant's vendor budget is spent — the paid tier is closed. */
+  overBudget: boolean
+  providersTried: string[]
+  skipped: Array<{ provider: string; reason: string }>
+  /** USD this request metered (cache hits and refusals cost 0). */
+  costUsd: number
+}
+
+/** Injectable seams so a proof runs the capability with zero network (scripts/connector-gateway-simulator.ts). */
+export interface PropertyValuationDeps {
+  providerHealth?: (serviceKey: string) => Promise<{ state: string; routeAround: boolean; reason: string }>
+  eligibility?: (brokerageId: string) => Promise<{ eligible: boolean; overBudget: boolean }>
+  rentcast?: (p: { brokerageId: string; address: string; systemSource?: string; contactId?: string | null }) => Promise<{ value: number | null; rangeLow: number | null; rangeHigh: number | null; outcome: RentcastReadOutcome; eligibility: { reason: string | null }; cacheHit?: boolean }>
+  fallback?: BatchDataFallbackDeps
+}
+
+/** THE ONE ELIGIBILITY GATE for the RentCast leg (lib/property/rentcast-eligibility.ts, readKind
+ *  "property_data": a home value has no IDX substitute; the platform key and the budget decide). */
+async function productionValuationEligibility(brokerageId: string): Promise<{ eligible: boolean; overBudget: boolean }> {
+  const { resolveRentcastEligibility, rentcastBudgetBlocked } = await import("@/lib/property/rentcast-eligibility")
+  const eligibility = await resolveRentcastEligibility({ brokerageId, readKind: "property_data" })
+  const overBudget = eligibility.budget.checked
+    ? eligibility.reason === "budget_exhausted"
+    : (await rentcastBudgetBlocked(brokerageId)).blocked
+  return { eligible: eligibility.eligible, overBudget }
+}
+
+/**
+ * THE capability entry. Never throws. Order of questions:
+ *   1. a tenant on the request (an unattributable paid call is spend nobody can see) — else nothing;
+ *   2. the route: CONTACT_PROVIDER_ROUTES.property_valuation minus the caller's exclusions minus any
+ *      provider in a `failing` cool-down (routeCapability);
+ *   3. RentCast (primary) under the ONE eligibility gate — a miss is NAMED; a RentCast routed around
+ *      for health is the miss "error" (its newest calls faulted), so the backup may answer;
+ *   4. BatchData (backup) ONLY behind a named RentCast miss, through the ONE BatchData gate.
+ */
+export async function requestPropertyValuation(req: ValuationRequest, deps?: PropertyValuationDeps): Promise<PropertyValuationOutcome> {
+  const out: PropertyValuationOutcome = { valuation: null, rentcastMiss: null, overBudget: false, providersTried: [], skipped: [], costUsd: 0 }
+  if (!req.brokerageId || !req.address?.trim()) {
+    out.skipped.push({ provider: "*", reason: !req.brokerageId ? "no tenant on the request — the paid valuation tier is never reached unattributed (§4)" : "no address to value" })
+    return out
+  }
+  try {
+    const { CONTACT_PROVIDER_ROUTES, routeCapability } = await import("@/lib/ai-isa/property-lookup-rail")
+    const exclude = new Set<string>(req.exclude ?? [])
+    const healthFn = deps?.providerHealth
+      ?? (async (k: string) => (await import("@/lib/agentic-os/connector-gateway")).loadProviderHealth(k))
+    const health: Record<string, { state: string; routeAround: boolean; reason: string } | null> = {}
+    for (const e of CONTACT_PROVIDER_ROUTES.property_valuation) {
+      if (!exclude.has(e.provider)) health[e.provider] = await healthFn(e.provider).catch(() => null)
+    }
+    const route = routeCapability("property_valuation", health, exclude)
+    out.skipped.push(...route.skipped)
+
+    let eligible = false
+    if (!exclude.has("rentcast")) {
+      const e = await (deps?.eligibility ?? productionValuationEligibility)(req.brokerageId)
+      eligible = e.eligible
+      out.overBudget = e.overBudget
+      if (!eligible || out.overBudget) out.rentcastMiss = out.overBudget ? "over_budget" : "unconfigured"
+      else if (!route.providers.includes("rentcast")) out.rentcastMiss = "error"
+    }
+
+    for (const provider of route.providers) {
+      if (provider === "rentcast") {
+        if (!eligible || out.overBudget) { out.skipped.push({ provider, reason: `not eligible (${out.rentcastMiss})` }); continue }
+        out.providersTried.push(provider)
+        const rc = await tryRentcast(req, deps?.rentcast)
+        out.costUsd += rc.costUsd
+        if (rc.result && rc.result.confidence >= 0.6) { out.valuation = rc.result as PropertyValuation; return out }
+        out.rentcastMiss = rc.result ? "no_record" : rentcastMissFrom(rc.outcome, rc.eligibilityReason)
+      } else if (provider === "batchdata") {
+        if (!out.rentcastMiss) { out.skipped.push({ provider, reason: "the backup — reached only after a named RentCast miss" }); continue }
+        out.providersTried.push(provider)
+        const bd = await tryBatchDataBackup(req, out.rentcastMiss, deps?.fallback)
+        out.costUsd += bd.costUsd
+        if (bd.result && bd.result.confidence >= 0.55) { out.valuation = bd.result as PropertyValuation; return out }
+        out.skipped.push({ provider, reason: bd.reason })
+      }
+    }
+  } catch (e) {
+    out.skipped.push({ provider: "*", reason: `valuation capability threw: ${e instanceof Error ? e.message : String(e)}` })
+  }
+  return out
 }
 
 // ─── THE BATCHDATA BACKUP — one door for every property read (wave 93, lane 93B) ───────

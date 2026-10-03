@@ -38,6 +38,11 @@
  *   Layer 8 — the frozen "peoplesearch" scrape (lib/osint-client.ts) still returns
  *             no structured person record — the audit verdict stays true.
  *   Layer 9 — registration (package.json, guard ordering, MAINTENANCE_DOMAINS).
+ *   Layer 10 — (wave 99, lane 99C, OWNER LAW 3 "agents request capabilities, not vendors") the AVM
+ *             chain is the property_valuation CAPABILITY in the SAME table: RentCast primary,
+ *             BatchData backup (an OWNER-ORDERED capability — the one exception to cheapest-first,
+ *             carrying its ruling); routeCapability skips a `failing` provider and changes nothing
+ *             when all are healthy; no caller under app/ lib/ asks the RentCast AVM vendor directly.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
@@ -79,12 +84,13 @@ const bd = await import("../lib/external/batchdata-client")
 const pdl = await import("../lib/external/peopledata-client")
 const aiTools = await import("../lib/external/batchdata-ai-tools")
 const { VENDOR_PRICING } = await import("../lib/vendor-governance/cost-normalizer")
-const { CONTACT_PROVIDER_ROUTES, resolveContactProviderRoute } = rail
+const { CONTACT_PROVIDER_ROUTES, resolveContactProviderRoute, OWNER_ORDERED_CAPABILITIES } = rail
 type Capability = keyof typeof CONTACT_PROVIDER_ROUTES
 const caps = Object.keys(CONTACT_PROVIDER_ROUTES) as Capability[]
 // Wave 82 lane A: + reverse_contact (person-keyed BatchData REVERSE skip trace, PeopleData on a miss).
-check("seven capabilities are routed (owner_contact, reverse_contact, person_profile, dnc_tcpa, email_validation, property_facts, motivated_seller_list)",
-  caps.sort().join(",") === "dnc_tcpa,email_validation,motivated_seller_list,owner_contact,person_profile,property_facts,reverse_contact")
+// Wave 99 (lane 99C): + property_valuation (the AVM chain as a capability — Layer 10).
+check("eight capabilities are routed (owner_contact, reverse_contact, person_profile, dnc_tcpa, email_validation, property_facts, motivated_seller_list, property_valuation)",
+  caps.sort().join(",") === "dnc_tcpa,email_validation,motivated_seller_list,owner_contact,person_profile,property_facts,property_valuation,reverse_contact")
 const rc = CONTACT_PROVIDER_ROUTES.reverse_contact
 // Re-anchored (wave 93, lane 93B2 — owner cost decision: "Versium first for owner/person email+phone
 // append, People Data Labs only when Versium misses"): Versium (an EXISTING vendor) leads both overlap
@@ -96,8 +102,15 @@ check("reverse_contact overlaps like owner_contact: VERSIUM FIRST, then BatchDat
 for (const cap of caps) {
   const list = CONTACT_PROVIDER_ROUTES[cap]
   const sorted = list.every((e, i) => i === 0 || list[i - 1].unitCostUsd <= e.unitCostUsd)
-  check(`${cap}: providers are ordered cheapest-first (${list.map((e) => `${e.provider} $${e.unitCostUsd}`).join(" → ")})`, list.length > 0 && sorted && list.every((e) => e.unitCostUsd > 0))
+  // Wave 99: an OWNER-ORDERED capability is exempt from cheapest-first ONLY by carrying its ruling (Layer 10).
+  const ruling = OWNER_ORDERED_CAPABILITIES.get(cap)
+  check(ruling
+    ? `${cap}: providers are ordered by OWNER RULING, not price (${list.map((e) => `${e.provider} $${e.unitCostUsd}`).join(" → ")}) — ${ruling}`
+    : `${cap}: providers are ordered cheapest-first (${list.map((e) => `${e.provider} $${e.unitCostUsd}`).join(" → ")})`,
+    list.length > 0 && (sorted || (typeof ruling === "string" && /owner/i.test(ruling))) && list.every((e) => e.unitCostUsd > 0))
 }
+check("the cheapest-first exemption is NARROW: only property_valuation is owner-ordered (every other capability stays cost-sorted)",
+  [...OWNER_ORDERED_CAPABILITIES.keys()].join(",") === "property_valuation")
 const oc = CONTACT_PROVIDER_ROUTES.owner_contact
 check("owner_contact is THE overlap: three providers, VERSIUM FIRST ($0.05/matched output) < BatchData $0.07/match < PeopleData $0.25/match",
   oc.length === 3 && oc[0].provider === "versium" && oc[1].provider === "batchdata" && oc[2].provider === "peopledata"
@@ -439,6 +452,46 @@ check("lib/osint-client.ts: parsePublicRecordsHtml (the truepeoplesearch/whitepa
   pubRecStart >= 0 && pubRecEnd > pubRecStart && !/records\.push\(/.test(pubRec) && /life_events\.push\(/.test(pubRec) && /return \{ properties: \[\] \}/.test(osint) && !/truepeoplesearch|osint-client/.test(railSrc))
 
 // ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[Layer 10 · the AVM chain is the property_valuation CAPABILITY on the same router (wave 99, 99C, LAW 3)]")
+{
+  const rcMod = await import("../lib/property/rentcast")
+  const pv = CONTACT_PROVIDER_ROUTES.property_valuation
+  check("property_valuation: RentCast PRIMARY, BatchData the BACKUP — exactly two providers, in the owner's order",
+    pv.length === 2 && pv[0].provider === "rentcast" && pv[1].provider === "batchdata")
+  check("property_valuation costs ARE the transport constants (RENTCAST_USD_PER_REQUEST, BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD — what fetchBatchDataPropertyFallback books) — no second spelling",
+    pv[0].unitCostUsd === rcMod.RENTCAST_USD_PER_REQUEST && pv[1].unitCostUsd === bd.BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD)
+  check("the rail's RentCast rung cost and the property_valuation entry are ONE value (the rung table reads the same constant)",
+    rail.PROPERTY_LOOKUP_RUNG_COST_USD.rentcast.usd === pv[0].unitCostUsd)
+  const H = (routeAround: boolean) => ({ state: routeAround ? "failing" : "healthy", routeAround, reason: "proof" })
+  const healthy = rail.routeCapability("property_valuation", { rentcast: H(false), batchdata: H(false) })
+  const noEvidence = rail.routeCapability("property_valuation", {})
+  check("routeCapability: all providers healthy (or no evidence) → the table order, nothing skipped (behaviour unchanged)",
+    healthy.providers.join(",") === "rentcast,batchdata" && healthy.skipped.length === 0 && noEvidence.providers.join(",") === "rentcast,batchdata")
+  const failingRc = rail.routeCapability("property_valuation", { rentcast: H(true), batchdata: H(false) })
+  check("routeCapability: a FAILING RentCast is skipped with a provider_failing reason; BatchData stays on the route (POSITIVE CONTROL for the healthy case above)",
+    failingRc.providers.join(",") === "batchdata" && failingRc.skipped.length === 1 && failingRc.skipped[0].provider === "rentcast" && /provider_failing/.test(failingRc.skipped[0].reason))
+  const excluded = rail.routeCapability("property_valuation", { rentcast: H(false) }, new Set(["batchdata"]))
+  check("routeCapability: a caller exclusion (AI-agent surfaces keep BatchData out) is honoured and said",
+    excluded.providers.join(",") === "rentcast" && excluded.skipped.some((x) => x.provider === "batchdata" && /excluded/.test(x.reason)))
+  check("routeCapability is generic over the ONE table: owner_contact with a failing Versium routes BatchData → PeopleData",
+    rail.routeCapability("owner_contact", { versium: H(true) }).providers.join(",") === "batchdata,peopledata")
+  // No caller asks the vendor: a direct getRentcastAVM( outside its own client and the capability.
+  const AVM_VENDOR_CALL = /\bgetRentcastAVM\s*\(/
+  const AVM_ALLOWED = new Set(["lib/property/rentcast.ts", "lib/avm/provider-chain.ts"])
+  const direct = CORPUS.filter((p) => !AVM_ALLOWED.has(p) && AVM_VENDOR_CALL.test(code(p)))
+  check(`no caller under app/ lib/ asks the RentCast AVM vendor directly — every AVM request rides the capability (scanned ${CORPUS.length} files; allowed: ${[...AVM_ALLOWED].join(", ")})`,
+    direct.length === 0, direct.join(", "))
+  check("POSITIVE CONTROL: a direct vendor call IS flagged; the same token in a comment or a string is NOT",
+    AVM_VENDOR_CALL.test(blankStrings(stripComments("const a = await getRentcastAVM({ brokerageId, address })")))
+    && !AVM_VENDOR_CALL.test(blankStrings(stripComments("// getRentcastAVM(x) was here\nconst s = \"getRentcastAVM(\"\n"))))
+  const chain = code("lib/avm/provider-chain.ts")
+  check("WIRED: getCurrentAvm asks the capability (requestPropertyValuation) — the inline RentCast/BatchData tiers are gone",
+    /export async function getCurrentAvm[\s\S]{0,1600}?requestPropertyValuation\(/.test(chain)
+    && !/export async function getCurrentAvm[\s\S]{0,2400}?tryRentcast\(req\)/.test(chain))
+  check("WIRED: the capability reads provider health (loadProviderHealth) and routes with routeCapability over CONTACT_PROVIDER_ROUTES.property_valuation",
+    /loadProviderHealth\(/.test(chain) && /routeCapability\(/.test(chain) && /CONTACT_PROVIDER_ROUTES\.property_valuation/.test(chain))
+}
+
 console.log("\n[Layer 9 · registration]")
 const pkg = JSON.parse(read("package.json")) as { scripts: Record<string, string> }
 check("package.json registers test:provider-cost-routing → this file", pkg.scripts["test:provider-cost-routing"] === "tsx scripts/provider-cost-routing-guard.ts")
