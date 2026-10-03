@@ -67,8 +67,11 @@ function refusedAccess(reason: string): BillingAccess {
 // already classifies with. One vocabulary, both paths, every spelling.
 import { normalizeStripeStatus, isCurrentStatus, isDelinquentStatus } from "./stripe-status"
 // The grace length and the episode anchor are dunning's — the paywall reads them,
-// it does not re-derive them (§6).
-import { PAST_DUE_GRACE_DAYS, daysBetween, episodeAnchor } from "./dunning"
+// it does not re-derive them (§6). Read from dunning's PURE leaf, not ./dunning:
+// this module is imported by proxy.ts, and ./dunning's sweep lazy-imports
+// @/lib/providers/messaging, which webpack compiles into the proxy bundle (827
+// first-party modules vs 18 — see lib/billing/past-due-clock.ts header, wave 100D).
+import { PAST_DUE_GRACE_DAYS, daysBetween, episodeAnchor } from "./past-due-clock"
 import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 
 /** PURE: classify a brokerage's access from its subscription row + now. */

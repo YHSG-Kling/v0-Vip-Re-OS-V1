@@ -10,8 +10,14 @@
 // exist (creds-gated, never faked). Nothing here suspends an account — the
 // paywall (billing-access) already gates access; dunning is the communication.
 
-import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
 import { TENANT_COMMERCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
+// The grace length, the day count and the episode anchor are PURE and also read
+// by the paywall; they live in the leaf lib/billing/past-due-clock.ts so the
+// paywall (and through it proxy.ts) never imports this file's sweep — whose
+// lazy @/lib/providers/messaging import webpack compiles into every bundle that
+// reaches here. Re-exported so every existing importer keeps asking dunning.
+import { PAST_DUE_GRACE_DAYS, daysBetween, episodeAnchor } from "./past-due-clock"
+export { PAST_DUE_GRACE_DAYS, daysBetween, episodeAnchor }
 
 export interface DunningStep {
   step: number
@@ -22,17 +28,8 @@ export interface DunningStep {
   body: string
 }
 
-/**
- * THE PAST-DUE GRACE WINDOW — one number, two readers (wave 99A, §6).
- *
- * The ladder below already PROMISED this rule in its copy: step 3 ("One week past
- * due — access is restricted … Sign-ins now route to the billing page") is the
- * moment access stops, and steps 1–2 promise nothing of the kind. The paywall
- * (lib/billing/billing-access.ts resolveBillingAccess) used to refuse a past_due
- * tenant on day 0, contradicting the email it sent the same day. Both now read
- * this constant: step 3 fires AT it and the resolver refuses AFTER it.
- */
-export const PAST_DUE_GRACE_DAYS = 7
+// TOMBSTONE (wave 100D): PAST_DUE_GRACE_DAYS moved verbatim, doc included —
+// survivor lib/billing/past-due-clock.ts:36 (imported + re-exported above).
 
 // The ladder. Tone escalates but stays factual — no fabricated deadlines; the
 // day-14 step states the real consequence (access already restricted + Stripe
@@ -60,14 +57,8 @@ export const DUNNING_LADDER: DunningStep[] = [
   },
 ]
 
-// TOMBSTONE (§1.1, 2026-09-08): the day-diff arithmetic lived here; survivor
-// lib/format/dates.ts:daysBetween. The never-negative clamp is dunning's own
-// policy (a past-due episode can't have negative days-late), not shared date
-// math, so it stays as a thin wrapper around the survivor.
-/** PURE: whole days between two ISO timestamps (floored, never negative). */
-export function daysBetween(fromIso: string, nowIso: string): number {
-  return Math.max(0, dateDaysBetween(fromIso, nowIso, { round: "floor" }))
-}
+// TOMBSTONE (wave 100D): daysBetween moved verbatim — survivor
+// lib/billing/past-due-clock.ts:43 (imported + re-exported above).
 
 /**
  * PURE: given how many days a subscription has been past due and which steps
@@ -93,19 +84,8 @@ export function composeDunningMessage(
   return { subject: sub(step.subject), body: sub(step.body) }
 }
 
-/**
- * PURE: the anchor a past-due episode ages from — the oldest OPEN invoice's
- * date, else the subscription's own updated_at (status flip time). Events
- * older than the anchor belong to a PREVIOUS episode and don't dedupe this one.
- */
-export function episodeAnchor(
-  sub: { updated_at: string | null },
-  openInvoices: Array<{ invoice_date: string | null; due_date: string | null }>,
-): string | null {
-  const dates = openInvoices.map((i) => i.due_date ?? i.invoice_date).filter(Boolean) as string[]
-  if (dates.length > 0) return dates.sort()[0]
-  return sub.updated_at ?? null
-}
+// TOMBSTONE (wave 100D): episodeAnchor moved verbatim — survivor
+// lib/billing/past-due-clock.ts:52 (imported + re-exported above).
 
 export interface DunningSweepResult {
   pastDueCount: number

@@ -2913,7 +2913,8 @@
     "lib/behavior-learning/signal-mapping.ts": 7,
     "lib/billing/ai-overage.ts": 4,
     "lib/billing/billing-access.ts": 5,
-    "lib/billing/dunning.ts": 5,
+    "lib/billing/dunning.ts": 3,
+    "lib/billing/past-due-clock.ts": 2,
     "lib/billing/phone-plan-resolve.ts": 2,
     "lib/billing/phone-plan.ts": 3,
     "lib/billing/plan-catalog.ts": 11,
@@ -14604,11 +14605,13 @@
       "resolveRequestAccess"
     ],
     "lib/billing/dunning.ts": [
-      "daysBetween",
       "planNextDunningStep",
       "composeDunningMessage",
-      "episodeAnchor",
       "runDunningSweep"
+    ],
+    "lib/billing/past-due-clock.ts": [
+      "daysBetween",
+      "episodeAnchor"
     ],
     "lib/billing/phone-plan-resolve.ts": [
       "evaluateTenantNumberProvisioning",

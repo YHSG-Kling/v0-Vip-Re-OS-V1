@@ -398,6 +398,40 @@ jobs:
       # larger runner or a first-party graph cut (a route/page census — 996 entry
       # points), and either is an owner decision.
       # vercel.json still carries 10240 deliberately (no swap there).
+      # ── 2026-10-03, commit 08282ad6c (wave 99): 13312 ABORTED 3x AT ONE COMMIT,
+      # "Ineffective mark-compacts near heap limit", last GC 10.74 GB used /
+      # 11.76 GB committed (88% of cap). Commit 5fdebe24e (one wave earlier) built
+      # GREEN on this exact config. The owner ruled the GRAPH CUT (the runner is
+      # being configured separately); cap left at 13312.
+      # ATTRIBUTION — measured, not guessed, with a first-party import-graph walk
+      # (static AND dynamic import() edges, since webpack compiles both; comments
+      # blanked via scripts/strip-comments.ts; `import type` not followed):
+      #                         5fdebe24e   08282ad6c   after cut
+      #   proxy.ts entry              4         827          18
+      #   app/layout.tsx            922         931         931
+      #   union of 992 app entries 4806        4815        4816
+      #   client graph (stops at
+      #   "use server")            1454        1459        1459
+      # The app graph moved +9; the PROXY moved +823. proxy.ts is compiled by its
+      # OWN webpack compiler, so every module it reaches is compiled a second
+      # time on top of the app graph. Wave 99 made proxy.ts import
+      # lib/billing/billing-access.ts, which imported three pure helpers from
+      # ./dunning; dunning's runDunningSweep lazy-imports @/lib/providers/messaging,
+      # and that ONE edge pulled the kernel, video, transactions, AI-ISA and AI-SDK
+      # graphs into the proxy compile.
+      # THE CUT (wave 100D, no behaviour change): PAST_DUE_GRACE_DAYS, daysBetween
+      # and episodeAnchor moved verbatim into the leaf lib/billing/past-due-clock.ts
+      # (imports only lib/format/dates.ts); billing-access reads the leaf; dunning
+      # imports and re-exports it, so its importers are unchanged. Proxy entry
+      # 827 → 18 first-party modules. The other wave-99 edges were measured and
+      # left in place: billing-access's lazy fair-use (4) and budget-gate (3)
+      # are small, and lib/ai/models.ts → billing-access adds nothing to the
+      # union. next.config already sets optimizePackageImports +
+      # serverExternalPackages.
+      # EXPECTED: committed heap back toward the 5fdebe24e level. TO BE CONFIRMED
+      # BY CI on the commit carrying this cut; add the GC reading here. If it
+      # still aborts, the next lever is the runner (owner, in progress), not
+      # another cap step.
       NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_HEAP_MB || '13312' }}"
       #
       # A COMMENT THAT SAID THE OPPOSITE OF THE LINE ABOVE IT USED TO LIVE HERE.
