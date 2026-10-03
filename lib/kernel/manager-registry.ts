@@ -2493,6 +2493,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   lead_engagement_scores: "ai_isa",
   lead_enrichment_queue: "ai_isa",
   lead_idx_property_interactions: "ai_isa",
+  agent_action_ledger: "compliance_officer", // m687 (wave 97): every external action + wait/do_nothing, the flight-recorder source
   lead_imports: "ai_isa",
   lead_intelligence: "ai_isa",
   // TOMBSTONE (m519) — `lead_motivated_seller_signals` was DROPPED; its ownership entry went with it.
