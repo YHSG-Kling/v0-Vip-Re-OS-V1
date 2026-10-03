@@ -69,7 +69,7 @@ import { normalizeStripeStatus, isCurrentStatus, isDelinquentStatus } from "./st
 // The grace length and the episode anchor are dunning's — the paywall reads them,
 // it does not re-derive them (§6).
 import { PAST_DUE_GRACE_DAYS, daysBetween, episodeAnchor } from "./dunning"
-import { isPlatformStaffRole } from "@/lib/platform/platform-staff-roster"
+import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 
 /** PURE: classify a brokerage's access from its subscription row + now. */
 export function resolveBillingAccess(sub: BillingSubRow | null, now: Date = new Date()): BillingAccess {
@@ -288,9 +288,10 @@ export interface MayUseAndAffordDecision {
 /** PURE: is this actor platform staff for the access bypass? */
 function isAccessBypassActor(actor: MayUseAndAffordInput["actor"]): boolean {
   if (!actor) return false
-  if (isPlatformStaffRole(actor.platformRole ?? null)) return true
-  // The login gate always exempted these two legacy user_type spellings; kept.
-  return actor.userType === "superadmin" || actor.userType === "support"
+  // ONE platform-staff definition (lib/auth/resolve-user-role.ts isPlatformStaffIdentity — the same
+  // rule public.is_platform_staff() applies: platform_role, plus the legacy user_type 'superadmin').
+  // A tenant-side user_type 'support' is not platform staff (CLAUDE.md §4: staff live in platform_role).
+  return isPlatformStaffIdentity(actor.userType ?? null, actor.platformRole ?? null)
 }
 
 export async function mayUseAndAfford(input: MayUseAndAffordInput): Promise<MayUseAndAffordDecision> {
