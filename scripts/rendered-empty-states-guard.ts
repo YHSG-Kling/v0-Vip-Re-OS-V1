@@ -112,7 +112,11 @@ const isClient = (s: string) => /^\s*["']use client["']/m.test(s)
 
 function resolveImport(fromAbs: string, spec: string): string | null {
   let base: string
-  if (spec.startsWith("@/")) base = path.join(ROOT, spec.slice(2))
+  // tsconfig "paths": "@/components/*" → "./app/components/*" is checked BEFORE the general "@/*" → "./*"
+  // (wave 100: missing it made every `@/components/...` import unresolvable, so a page whose empty state
+  // lives in such a component read as LIST_WITHOUT_EMPTY_STATE — the census was blind, not the page).
+  if (spec.startsWith("@/components/")) base = path.join(ROOT, "app/components", spec.slice("@/components/".length))
+  else if (spec.startsWith("@/")) base = path.join(ROOT, spec.slice(2))
   else if (spec.startsWith(".")) base = path.resolve(path.dirname(fromAbs), spec)
   else return null
   for (const ext of ["", ".tsx", ".ts", "/index.tsx", "/index.ts"]) {
