@@ -293,6 +293,28 @@ export function scopeToDealTenant<Q>(query: Q, brokerageId: string | null): Q {
 // module imports the cookie client); every portal READ of transaction_documents goes through
 // portalDealClient above and filters with that module's isClientVisibleDealDocument.
 
+/**
+ * Wave 100 (lane 100C) — the staff Show/Hide flags of the client's own folder
+ * (client_documents.client_visible, m695), read SEPARATELY from the row list so a refused
+ * read (42703 before m695 is applied, or any refusal) FAILS CLOSED to "nothing staff-shown"
+ * without also hiding the documents the client uploaded themselves (those pass on
+ * uploaded_by alone — isClientVisibleClientDocument). Returns id → flag; absent = false.
+ */
+export async function readClientDocumentVisibilityFlags(
+  db: { from: (t: string) => any },
+  ids: string[],
+): Promise<Map<string, boolean>> {
+  const flags = new Map<string, boolean>()
+  if (ids.length === 0) return flags
+  const { data, error } = await db.from("client_documents").select("id, client_visible").in("id", ids)
+  if (error) {
+    console.error("[portal] client_documents visibility flags refused — treating every row as staff-hidden:", error.message)
+    return flags
+  }
+  for (const r of (data ?? []) as Array<{ id: string; client_visible?: boolean | null }>) flags.set(r.id, r.client_visible === true)
+  return flags
+}
+
 /** KERNEL CONTRACT: the portal layouts for a contact — what every portal surface reads. */
 export async function resolvePortalLayouts(
   supabase: SupabaseClient,

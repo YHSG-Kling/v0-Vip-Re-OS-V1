@@ -25,6 +25,13 @@ interface ProfileUpdate {
   metadata?: Record<string, any>
 }
 
+/** The columns updateContactProfile may write — exactly ProfileUpdate's keys (file-local; a "use server"
+ *  file exports only async functions, CLAUDE.md §4). */
+const SELF_EDITABLE_PROFILE_FIELDS = [
+  "first_name", "last_name", "email", "phone", "address", "city", "state", "zip_code",
+  "preferred_contact_method", "preferred_language", "metadata",
+] as const satisfies ReadonlyArray<keyof ProfileUpdate>
+
 export async function updateContactProfile(
   contactId: string,
   updates: ProfileUpdate,
@@ -42,7 +49,11 @@ export async function updateContactProfile(
       return { success: false, error: "Only the account holder can update this profile." }
     }
 
-    const payload: Record<string, unknown> = { ...updates, updated_at: new Date().toISOString() }
+    // Only the fields this self-service form declares reach the write. `...updates` used to spread the
+    // client's object verbatim, so a hand-built call could name ANY contacts column (owner, tenant,
+    // score, enrichment_profile …) — a "use server" export's argument is attacker-controlled (§4).
+    const payload: Record<string, unknown> = { updated_at: new Date().toISOString() }
+    for (const k of SELF_EDITABLE_PROFILE_FIELDS) if (updates[k] !== undefined) payload[k] = updates[k]
 
     // preferred_language: normalize through the ONE resolver's own mapper
     // (never trust the client sent an already-canonical code) and FAIL
@@ -68,6 +79,22 @@ export async function updateContactProfile(
     if (error) {
       console.error("Error updating contact profile:", error)
       return { success: false, error: error.message }
+    }
+
+    // FIELD PROVENANCE (wave 100, lane 100C — THE ONE writer, enrichment-column-map.ts::stampFieldProvenance):
+    // what the contact typed about themselves is stamped source 'contact' with their own user id, so
+    // staff see on the contact card that the person — not a provider — set it. Gate passed above (the
+    // session's own contact), so the service client lands the stamp on that tenant's row only.
+    // Non-blocking: the value is already saved.
+    const typed = (["first_name", "last_name", "email", "phone", "address", "city", "state", "zip_code"] as const)
+      .filter((k) => updates[k] !== undefined)
+    if (typed.length > 0) {
+      const { stampFieldProvenance } = await import("@/lib/lead-pipeline/enrichment-column-map")
+      const { persistFieldProvenance } = await import("@/lib/enrichment/field-provenance-store")
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const prov = await persistFieldProvenance(createServiceClient(), { table: "contacts", id: contactId, brokerageId: access.brokerageId },
+        stampFieldProvenance(typed, { source: "contact", capability: "contact.self_edit", purpose: "self_service", actor: access.userId }))
+      if (!prov.ok) console.warn("[portal-settings] self-edit provenance not recorded:", prov.error)
     }
 
     revalidatePath(`/portal/${contactId}`)

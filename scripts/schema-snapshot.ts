@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-03
  * source: public.live_schema_json()
- * body-sha256: e99acadee64bdc57a9ff3eee4e7e7b81dbea2230ac405045ebf681b4ba83ff57
+ * body-sha256: e055d79423c566695555d61a2ce6af45abcb125c08a7ce544a2e23807b46212f
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -186,7 +186,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   chat_sessions: ["agent_id", "brokerage_id", "capture_state", "contact_id", "created_at", "id", "lead_id", "metadata", "session_type", "source", "status", "updated_at", "visitor_fingerprint", "widget_session_token"],
   chat_templates: ["agent_id", "allowed_lead_types", "brokerage_id", "compliance_approved", "created_at", "id", "is_active", "template_body", "template_category", "template_name", "updated_at", "usage_count"],
   client_detailed_personas: ["agent_id", "ai_summary", "brokerage_id", "buying_triggers", "contact_id", "created_at", "demographics", "id", "pain_points", "persona_name", "persona_type", "psychographics", "updated_at"],
-  client_documents: ["ai_metadata", "brokerage_id", "contact_id", "content", "created_at", "doc_category", "document_name", "document_type", "document_url", "dotloop_document_id", "dotloop_folder_name", "dotloop_loop_id", "expiration_date", "id", "is_financial_verification", "listing_id", "metadata", "notes", "signature_provider", "signature_status", "signed_at", "status", "transaction_id", "uploaded_by", "verification_amount", "verification_lender", "verified_at", "verified_by"],
+  client_documents: ["ai_metadata", "brokerage_id", "client_visible", "contact_id", "content", "created_at", "doc_category", "document_name", "document_type", "document_url", "dotloop_document_id", "dotloop_folder_name", "dotloop_loop_id", "expiration_date", "id", "is_financial_verification", "listing_id", "metadata", "notes", "signature_provider", "signature_status", "signed_at", "status", "transaction_id", "uploaded_by", "verification_amount", "verification_lender", "verified_at", "verified_by"],
   client_engagement_scores: ["agent_id", "brokerage_id", "calculated_at", "contact_id", "created_at", "id", "last_interaction", "referrals_given", "score", "touchpoints_count"],
   client_friendly_updates: ["ai_generated", "brokerage_id", "created_at", "id", "read_at", "sent_via", "tone", "transaction_id", "update_text", "update_type"],
   client_gifts: ["acknowledged_at", "actual_cost", "agent_id", "ai_reasoning", "brokerage_id", "budget_max", "budget_min", "contact_id", "created_at", "delivered_at", "delivery_address", "delivery_notes", "estimated_cost", "gift_description", "gift_name", "gift_type", "id", "occasion", "personalization_note", "scheduled_delivery", "sent_at", "source", "status", "tracking_number", "transaction_id", "updated_at", "vendor_name", "vendor_url"],

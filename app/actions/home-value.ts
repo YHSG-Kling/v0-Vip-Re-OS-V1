@@ -608,6 +608,17 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       .eq("id", contactId)
     if (contactValueError) {
       console.error("[home-value] contacts.home_value_estimate write failed:", contactValueError.message)
+    } else if (resolvedBrokerageId) {
+      // FIELD PROVENANCE (wave 100, lane 100C — THE ONE writer): the value's method is its source.
+      const { stampFieldProvenance } = await import("@/lib/lead-pipeline/enrichment-column-map")
+      const { persistFieldProvenance } = await import("@/lib/enrichment/field-provenance-store")
+      const prov = await persistFieldProvenance(supabase, { table: "contacts", id: contactId, brokerageId: resolvedBrokerageId }, stampFieldProvenance(["home_value_estimate"], {
+        source: storedEstimate.methodology ?? "home_value_estimate",
+        capability: "property.avm",
+        purpose: "valuation",
+        matchConfidence: storedEstimate.confidence_score ?? null,
+      }))
+      if (!prov.ok) console.warn("[home-value] home_value_estimate provenance not recorded:", prov.error)
     }
 
     // Step 8: EMIT HOME_VALUE_CONTACT_CREATED kernel event

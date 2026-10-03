@@ -114,7 +114,16 @@ async function main() {
   const ORIG = "d0000000-0000-4000-8000-000000000098"
   const seedRow = { id: ORIG, brokerage_id: BRK, transaction_id: "t1", commission_id: "c1", agent_id: "a1", team_id: null, rule_id: null,
     distribution_type: "agent", source_of_funds: "brokerage", cap_status: "pre_cap", status: "paid", entry_type: "entry", calculated_amount: 9000, paid_at: "2026-10-01T00:00:00Z" }
-  const svc = memSupabase({ commission_distributions: [{ ...seedRow }] })
+  // Wave 100 (100C): the two SUMMARY rows the waterfall / deal recalculation write (not derived — no
+  // trigger or view behind them), seeded at the pre-correction figure so the re-stamp is observable.
+  const svc = memSupabase({
+    commission_distributions: [{ ...seedRow }],
+    agent_commissions: [{ id: "c1", brokerage_id: BRK, transaction_id: "t1", agent_id: "a1", net_to_agent: 9000, net_to_brokerage: 1000, status: "paid" }],
+    transaction_commissions: [
+      { id: "tc-a", brokerage_id: BRK, transaction_id: "t1", recipient_type: "agent", recipient_id: "a1", calculated_amount: 9000, status: "paid" },
+      { id: "tc-b", brokerage_id: BRK, transaction_id: "t1", recipient_type: "brokerage", recipient_id: BRK, calculated_amount: 1000, status: "paid" },
+    ],
+  })
   G98.__98A.svc = svc
   const finKernel = await import("../lib/kernel/financial")
   const ctxFor = (userType: string, brokerageId = BRK) => ({ userId: "u-fin", agentId: null, brokerageId, userType: userType as any, isTenantPrincipal: false })
@@ -132,11 +141,29 @@ async function main() {
   check("...linked to the original, typed, reasoned, posted, -500", !!added && added.adjusts_distribution_id === ORIG && added.entry_type === "adjustment"
     && added.correction_reason === "split corrected to 85%" && added.status === "paid" && added.calculated_amount === -500 && added.agent_id === "a1" && added.distribution_type === "agent")
   check("...and the PAID row is byte-identical — never updated, never deleted", JSON.stringify(rowsNow.find((r) => r.id === ORIG)) === before
-    && !svc.writes.some((w) => w.op === "update" || w.op === "delete"))
+    && !svc.writes.some((w) => w.table === "commission_distributions" && (w.op === "update" || w.op === "delete")))
+  // Wave 100 (lane 100C — 98A open item / gap row 16): the SUMMARY rows are re-derived from the rows.
+  const ac = svc.tables.agent_commissions.find((r) => r.id === "c1")
+  const tcA = svc.tables.transaction_commissions.find((r) => r.id === "tc-a")
+  const tcB = svc.tables.transaction_commissions.find((r) => r.id === "tc-b")
+  check("the correction RE-STAMPS agent_commissions.net_to_agent (9000 → 8500) and the deal stamp's agent row, counted (1 + 1)",
+    ac?.net_to_agent === 8500 && tcA?.calculated_amount === 8500 && (ok.data as any)?.summaries?.agentCommissions === 1 && (ok.data as any)?.summaries?.transactionStamps === 1)
+  check("...and touches NOTHING of another type: net_to_brokerage and the brokerage stamp keep 1000",
+    ac?.net_to_brokerage === 1000 && tcB?.calculated_amount === 1000)
+  {
+    const { summaryAmountFromDistributions, isSummarizedDistributionType } = await import("../lib/commission/distribution-correction")
+    const rows = [{ distribution_type: "agent", calculated_amount: 9000 }, { distribution_type: "agent", calculated_amount: -500.05 }, { distribution_type: "fee", calculated_amount: 300 }]
+    check("PURE: the summary is Σ of that type's rows in cents (9000 − 500.05 = 8499.95); other types ignored; re-running gives the same figure (derived, not incremented)",
+      summaryAmountFromDistributions(rows, "agent") === 8499.95 && summaryAmountFromDistributions(rows, "agent") === summaryAmountFromDistributions(rows, "agent") && summaryAmountFromDistributions(rows, "brokerage") === 0)
+    check("POSITIVE CONTROL: fee / referral / team_member have NO summary column (their corrections net in the rows only); agent + brokerage do",
+      !isSummarizedDistributionType("fee") && !isSummarizedDistributionType("team_member") && isSummarizedDistributionType("agent") && isSummarizedDistributionType("brokerage"))
+  }
   check("readers that SUM the entry's rows now see the corrected net (9000 + -500 = 8500)",
     rowsNow.filter((r) => r.agent_id === "a1" && r.distribution_type === "agent").reduce((s, r) => s + Number(r.calculated_amount), 0) === 8500)
   const again = await finKernel.correctCommissionDistribution({ ctx: ctxFor("broker"), distributionId: ORIG, kind: "reversal", reason: "reverse it all" })
   check("a second correction nets from the CORRECTED figure (reversal writes -8500)", !!again.success && again.data?.amount === -8500 && again.data?.netAfter === 0)
+  check("...and the summaries follow it to 0 (re-derived from all three rows, not 8500 − 8500 applied to a stale cache)",
+    svc.tables.agent_commissions.find((r) => r.id === "c1")?.net_to_agent === 0 && svc.tables.transaction_commissions.find((r) => r.id === "tc-a")?.calculated_amount === 0)
   const onCorrection = await finKernel.correctCommissionDistribution({ ctx: ctxFor("broker"), distributionId: added?.id as string, kind: "reversal", reason: "correct a correction" })
   check("correcting a correction row is refused", !onCorrection.success)
 

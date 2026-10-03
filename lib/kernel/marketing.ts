@@ -602,9 +602,18 @@ export async function createDirectMailCampaign(
 
   // The gate reads through THIS client: the webhook has no cookie session, and the cookie
   // client there is anon (feature_flags is readable by `authenticated` only).
+  // TOMBSTONE (CLAUDE.md §1.1, wave 100 lane 100C): the bare canAccessFeature(actorUserId, "direct_mail",
+  // undefined, featureClient) call that stood here asked the PLAN-FEATURE half only — a tenant whose
+  // subscription had lapsed still passed it and bought postage. Survivor: lib/billing/billing-access.ts
+  // ::mayUseAndAfford capability "feature.use" (subscription half first, then THE SAME canAccessFeature
+  // through the same client seam). Nothing was missing from the survivor but the feature half, merged first.
   const featureClient = supabase as unknown as Parameters<typeof canAccessFeature>[3]
-  const access = await canAccessFeature(actorUserId, "direct_mail", undefined, featureClient)
-  if (!access.allowed) return { success: false, error: access.reason ?? "Direct mail access denied" }
+  const { mayUseAndAfford } = await import("@/lib/billing/billing-access")
+  const access = await mayUseAndAfford({
+    brokerageId, capability: "feature.use",
+    feature: { userId: actorUserId, featureKey: "direct_mail", client: featureClient },
+  })
+  if (!access.allowed) return { success: false, error: access.message ?? access.reason ?? "Direct mail access denied" }
 
   const pieceType: CampaignPieceType | null = canonicalCampaignPieceType(input.pieceType)
   if (input.pieceType && !pieceType) {

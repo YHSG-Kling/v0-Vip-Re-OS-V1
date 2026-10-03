@@ -20,9 +20,20 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolveActingContext } from "@/lib/platform/acting-context"
 import { issueGovernedDocumentUrl, type AccessPurpose } from "@/lib/kernel/document-custody"
 
+/** The Document Center's whole-brokerage scope ladder (admits the tc / compliance tiers) — ONE
+ *  file-local definition the list and the Show/Hide switch both read (wave 100 hoisted it out of the
+ *  list's inline literal so the switch does not retype it). */
+const DOCUMENT_CENTER_ELEVATED: ReadonlySet<string> = new Set([
+  "admin", "broker", "broker_owner", "broker_admin", "tc", "transaction_coordinator", "compliance_officer",
+])
+
 export interface DocumentCenterRow {
   id: string
   documentName: string
+  /** Wave 100 (m695): staff showed this row in the client's portal. null = the flag could not be read. */
+  clientVisible: boolean | null
+  /** A CDA / disbursement / internal type — never client-visible, so the switch is not offered. */
+  clientHiddenType: boolean
   documentType: string | null
   documentUrl: string
   uploadedAt: string
@@ -84,7 +95,7 @@ export async function getDocumentCenterData(): Promise<{
   // SCOPE LADDER (kept inline — admits tc/compliance tiers): 'superadmin'
   // removed — dead as users.user_type (0 live rows); broker_owner added —
   // storable seat that owns the brokerage.
-  const elevated = ["admin", "broker", "broker_owner", "broker_admin", "tc", "transaction_coordinator", "compliance_officer"].includes(role ?? "")
+  const elevated = DOCUMENT_CENTER_ELEVATED.has(role ?? "")
 
   // Build query
   let q = supabase
@@ -93,6 +104,7 @@ export async function getDocumentCenterData(): Promise<{
       id,
       document_name,
       document_type,
+      doc_category,
       document_url,
       created_at,
       contact_id,
@@ -138,12 +150,25 @@ export async function getDocumentCenterData(): Promise<{
   const txMap = new Map((transactions ?? []).map((t: any) => [t.id, t.property_address]))
 
   // Build rows + group by folder
+  // Wave 100 (lane 100C): the staff Show/Hide state of each row (client_documents.client_visible, m695),
+  // read apart so the Document Center keeps working before m695 is applied (the switch then reads
+  // "unavailable" instead of the whole center refusing on 42703).
+  const { isClientHiddenDealDocType } = await import("@/lib/kernel/deal-document-visibility")
+  const flagIds = (docs ?? []).map((d: any) => d.id as string)
+  const { data: flagRows, error: flagProbeError } = flagIds.length > 0
+    ? await supabase.from("client_documents").select("id, client_visible").in("id", flagIds)
+    : { data: [] as Array<{ id: string; client_visible: boolean | null }>, error: null }
+  if (flagProbeError) console.warn("[document-center] client_visible not readable (column unreadable):", flagProbeError.message)
+  const flags = new Map<string, boolean>(((flagRows ?? []) as Array<{ id: string; client_visible: boolean | null }>).map((r) => [r.id, r.client_visible === true]))
+
   const rows: DocumentCenterRow[] = (docs ?? []).map((d: any) => {
     const aiMeta = d.ai_metadata as any
     const sig = aiMeta?.signatureCompleteness ?? null
     return {
       id: d.id,
       documentName: d.document_name,
+      clientVisible: flagProbeError ? null : flags.get(d.id) === true,
+      clientHiddenType: isClientHiddenDealDocType(d.document_type) || isClientHiddenDealDocType(d.doc_category),
       documentType: d.document_type,
       documentUrl: d.document_url,
       uploadedAt: d.created_at,
@@ -242,4 +267,55 @@ export async function getGovernedDocumentUrl(
     return { success: false, error: res.reason ?? "Could not issue a governed document URL" }
   }
   return { success: true, url: res.signedUrl, ttlSeconds: res.ttlSeconds }
+}
+
+/**
+ * Wave 100 (lane 100C — 98A open item): the staff Show/Hide switch for the CLIENT'S OWN FOLDER
+ * (client_documents.client_visible, m695) — the same switch transaction_documents has
+ * (lib/application/transactions.ts setDocumentClientVisibility), under the same rule
+ * (lib/kernel/deal-document-visibility.ts isClientVisibleClientDocument): publishing a denied type
+ * (CDA / disbursement / internal, asked of document_type AND doc_category) is refused here as well as
+ * hidden on read. Tenant from the SESSION (resolveActingContext); back-office roster only
+ * (isCrmContactStaff — a contact / vendor / lender seat never flips it); an agent only on a contact
+ * they own (the same scope getDocumentCenterData lists). The update is .select()ed and COUNTED.
+ */
+export async function setClientDocumentVisibility(
+  documentId: string,
+  visible: boolean,
+): Promise<{ success: boolean; clientVisible?: boolean; error?: string }> {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  const { isCrmContactStaff } = await import("@/lib/auth/crm-contact-staff")
+  if (!isCrmContactStaff(ctx.userType)) return { success: false, error: "Forbidden" }
+  const supabase = ctx.db
+  const { data: doc, error: readErr } = await supabase
+    .from("client_documents")
+    .select("id, contact_id, document_type, doc_category")
+    .eq("id", documentId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+  if (readErr) return { success: false, error: readErr.message }
+  if (!doc) return { success: false, error: "Document not found" }
+  const row = doc as { contact_id: string | null; document_type: string | null; doc_category: string | null }
+  const { isClientHiddenDealDocType } = await import("@/lib/kernel/deal-document-visibility")
+  if (visible && (isClientHiddenDealDocType(row.document_type) || isClientHiddenDealDocType(row.doc_category))) {
+    return { success: false, error: "This document type (CDA / disbursement / internal) is never shown to clients." }
+  }
+  const elevated = DOCUMENT_CENTER_ELEVATED.has(ctx.userType ?? "")
+  if (!elevated) {
+    if (!ctx.agentId || !row.contact_id) return { success: false, error: "Forbidden" }
+    const { data: owned, error: ownErr } = await supabase
+      .from("contacts").select("id").eq("id", row.contact_id).eq("agent_id", ctx.agentId).maybeSingle()
+    if (ownErr) return { success: false, error: ownErr.message }
+    if (!owned) return { success: false, error: "Forbidden" }
+  }
+  const { data, error } = await supabase
+    .from("client_documents")
+    .update({ client_visible: visible === true })
+    .eq("id", documentId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .select("id, client_visible")
+  if (error) return { success: false, error: error.message }
+  if (!data || data.length !== 1) return { success: false, error: "Document visibility not saved (no row matched)" }
+  return { success: true, clientVisible: (data[0] as { client_visible: boolean }).client_visible === true }
 }

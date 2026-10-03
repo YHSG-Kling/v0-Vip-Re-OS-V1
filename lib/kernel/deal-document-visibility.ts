@@ -55,7 +55,24 @@ export function isClientVisibleDealDocument(
   return !!viewerUserId && !!doc.uploaded_by && doc.uploaded_by === viewerUserId
 }
 
-const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+// ─── THE CLIENT'S OWN FOLDER (client_documents) — wave 100, lane 100C (98A open item) ───────────
+// The SAME rule, the SAME deny list, the SAME staff switch as deal documents: m695 adds
+// client_documents.client_visible (default false — deny by default, 0 live rows when written) and
+// the staff Show/Hide switch is the Document Center row (app/actions/document-center.ts
+// setClientDocumentVisibility). client_documents names its type twice (document_type, doc_category);
+// the deny list is asked of BOTH. Readers: app/portal/[contactId]/documents/page.tsx,
+// app/portal/[contactId]/calendar/page.tsx, app/actions/portal-seller.ts getSellerDocuments.
+
+/** PURE — may this viewer (a portal client) see this row of their own folder? */
+export function isClientVisibleClientDocument(
+  doc: { client_visible?: boolean | null; uploaded_by?: string | null; document_type?: string | null; doc_category?: string | null },
+  viewerUserId: string | null,
+): boolean {
+  if (isClientHiddenDealDocType(doc.doc_category)) return false
+  return isClientVisibleDealDocument({ client_visible: doc.client_visible, uploaded_by: doc.uploaded_by, doc_type: doc.document_type }, viewerUserId)
+}
+
+const UUID_SHAPE =/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 /** The PostgREST `.or()` half of the rule (narrows the read; isClientVisibleDealDocument still runs after). */
 export function clientDealDocumentFilter(viewerUserId: string | null): string {
   return viewerUserId && UUID_SHAPE.test(viewerUserId)

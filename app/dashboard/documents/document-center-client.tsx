@@ -20,6 +20,7 @@ import {
   Loader2,
 } from "lucide-react"
 import type { DocumentCenterFolder, DocumentCenterRow } from "@/app/actions/document-center"
+import { setClientDocumentVisibility } from "@/app/actions/document-center"
 import { ShareDocumentDialog } from "./share-document-dialog"
 import { DocumentWorkspacePanel } from "./document-workspace-panel"
 import { DocumentActionsDialog } from "./document-actions-dialog"
@@ -362,6 +363,9 @@ function DocRow({ doc }: { doc: DocumentCenterRow }) {
 
       <div className="flex items-center gap-3 shrink-0">
         <ScanBadge doc={doc} />
+        {/* Wave 100 (lane 100C): the staff Show/Hide switch for the client's portal — the same switch
+            deal documents carry (app/actions/document-center.ts setClientDocumentVisibility). */}
+        {doc.contactId && <ClientVisibilitySwitch doc={doc} />}
         {/* Per-document capabilities: classify, signature check, access log, and
             Dotloop send/status — all previously unreachable. */}
         <DocumentActionsDialog documentId={doc.id} documentName={doc.documentName} />
@@ -379,6 +383,34 @@ function DocRow({ doc }: { doc: DocumentCenterRow }) {
         </a>
       </div>
     </div>
+  )
+}
+
+/** Show / Hide in the client's portal. A denied type (CDA / disbursement / internal) offers no switch;
+ *  a flag that could not be read (column unreadable) offers none either and says so. */
+function ClientVisibilitySwitch({ doc }: { doc: DocumentCenterRow }) {
+  const [visible, setVisible] = useState<boolean | null>(doc.clientVisible)
+  const [error, setError] = useState<string | null>(null)
+  const [pending, startTransition] = useTransition()
+  if (doc.clientHiddenType) return <span className="text-[11px] text-muted-foreground">Never shown to client</span>
+  if (visible === null) return <span className="text-[11px] text-muted-foreground">Client visibility unavailable</span>
+  return (
+    <Button
+      size="sm"
+      variant={visible ? "secondary" : "outline"}
+      disabled={pending}
+      title={error ?? (visible ? "Shown in the client's portal — click to hide" : "Hidden from the client — click to show")}
+      onClick={() =>
+        startTransition(async () => {
+          setError(null)
+          const res = await setClientDocumentVisibility(doc.id, !visible)
+          if (res.success) setVisible(res.clientVisible === true)
+          else setError(res.error ?? "Visibility not saved")
+        })
+      }
+    >
+      {pending ? <Loader2 className="h-3 w-3 animate-spin" /> : visible ? "Client: shown" : "Client: hidden"}
+    </Button>
   )
 }
 

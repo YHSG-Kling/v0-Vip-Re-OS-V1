@@ -59,7 +59,7 @@
 //   4. Set VERSIUM_API_KEY in Vercel (Production + Preview). Nothing else: the budget gate, the
 //      ledger booking and the provider order are already wired.
 
-import { householdFinancialsFromVersium, buildVersiumDemographicProfile, type HouseholdFinancials } from "@/lib/lead-pipeline/enrichment-column-map"
+import { householdFinancialsFromVersium, buildVersiumDemographicProfile, fieldProvenanceStamp, type FieldProvenance, type HouseholdFinancials } from "@/lib/lead-pipeline/enrichment-column-map"
 
 // ─── OUR CAPABILITY CONTRACT (wave 96, lane 96B — owner blueprint: "Versium behind OUR normalized
 // capability contract, never raw vendor shapes leaking; provenance per field") ──────────────────
@@ -73,8 +73,11 @@ import { householdFinancialsFromVersium, buildVersiumDemographicProfile, type Ho
  *  endpoints are named). The ledger rows a caller books carry the same name in metadata.capability. */
 type VersiumCapability = "person.enrich_contact" | "person.enrich_demographics" | "person.enrich_financial"
 
-/** Provenance for a value this adapter returned — written beside the value where it is stored. */
-export interface VersiumProvenance {
+/** Provenance for a value this adapter returned — written beside the value where it is stored.
+ *  Wave 100 (lane 100C): this shape is the SURVIVOR every provider now writes — it is THE
+ *  FieldProvenance (enrichment-column-map.ts) narrowed to Versium's source / capability / match levels,
+ *  and it is built through THE ONE writer (fieldProvenanceStamp) below. */
+export interface VersiumProvenance extends FieldProvenance {
   source: "versium"
   capability: VersiumCapability
   /** ISO time the vendor answered. */
@@ -99,7 +102,7 @@ function matchConfidenceOf(row: unknown): VersiumProvenance["matchConfidence"] {
 }
 
 function provenance(capability: VersiumCapability, retrievedAt: string, row: unknown): VersiumProvenance {
-  return { source: "versium", capability, retrievedAt, matchConfidence: matchConfidenceOf(row) }
+  return fieldProvenanceStamp({ source: "versium", capability, purpose: "enrichment", retrievedAt, matchConfidence: matchConfidenceOf(row) }) as VersiumProvenance
 }
 
 /** One match credit — the credit-package ceiling (don't understate a bill). A no-match is free. */
@@ -224,7 +227,7 @@ export async function appendVersiumFinancial(id: VersiumIdentity): Promise<Versi
       cost: parsed.credits > 0 ? parsed.credits * VERSIUM_MATCH_CREDIT_USD : VERSIUM_NO_MATCH_COST_USD,
       credits: parsed.credits,
       matchLevel: parsed.matchLevel,
-      ...(parsed.data ? { provenance: { source: "versium" as const, capability: "person.enrich_financial" as const, retrievedAt: new Date().toISOString(), matchConfidence: parsed.matchLevel } } : {}),
+      ...(parsed.data ? { provenance: fieldProvenanceStamp({ source: "versium", capability: "person.enrich_financial", purpose: "enrichment", matchConfidence: parsed.matchLevel }) as VersiumProvenance } : {}),
     }
   } catch (e) {
     return { data: null, cost: 0, error: e instanceof Error ? e.message : String(e) }

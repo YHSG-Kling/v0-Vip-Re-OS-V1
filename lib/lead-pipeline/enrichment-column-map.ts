@@ -236,7 +236,32 @@ export function buildPeopleDataProfile(enriched: PeopleDataPersonLike, capturedA
     if (v === undefined || v === null) delete profile[k]
     else if (Array.isArray(v) && v.length === 0) delete profile[k]
   }
+  // Wave 100 (lane 100C) — provenance per field through THE ONE writer (stampFieldProvenance), keyed by
+  // the CONTACT COLUMN each value lands in (the reader's key). Built HERE so the drain, the raw-record
+  // path and the contact card's "Enrich now" all carry it. Only the MAPPED columns are stamped — every
+  // one of those paths writes them; contact points / name / mailing address are written by some paths
+  // and not others, so the writer that lands them stamps them (peopleDataContactPointProvenance).
+  const stamped = Object.keys(peopleDataProfileToContactColumns(profile))
+    .filter((k) => !['enrichment_source', 'enriched_at', 'peopledata_id', 'social_handles'].includes(k))
+  if (stamped.length > 0) profile.field_provenance = stampFieldProvenance(stamped, peopleDataStampInput(enriched, capturedAt))
   return profile
+}
+
+function peopleDataStampInput(enriched: PeopleDataPersonLike, capturedAt?: string): ProvenanceStampInput {
+  return {
+    source: 'peopledata', capability: 'person.enrich_identity', purpose: 'enrichment',
+    retrievedAt: capturedAt, matchConfidence: enriched.enrichmentConfidence ?? null,
+  }
+}
+
+/** PURE — provenance for the PeopleData contact points / name / mailing address a writer actually LANDED
+ *  (the caller passes the column names it wrote). Same stamp as the profile's mapped columns. */
+export function peopleDataContactPointProvenance(
+  enriched: PeopleDataPersonLike,
+  landed: Iterable<string>,
+  capturedAt?: string,
+): Record<string, FieldProvenance> {
+  return stampFieldProvenance(landed, peopleDataStampInput(enriched, capturedAt))
 }
 
 /** PURE — the demographic subset of a profile (what a raw_scraped_leads row carries). */
@@ -307,6 +332,17 @@ function sharedBatchDataPropertyColumns(e: BatchDataPropertyEnrichmentLike): Rec
   return out
 }
 
+/** Wave 100 (lane 100C) — the BatchData property dataset's provenance, keyed by the CONTACT column each
+ *  value is displayed under (a lead's estimated_value becomes the contact's home_value_estimate at
+ *  promotion, so it is stamped under that key and travels with enrichment_profile). */
+function batchDataPropertyProvenance(e: BatchDataPropertyEnrichmentLike): Record<string, FieldProvenance> {
+  const fields = Object.keys(sharedBatchDataPropertyColumns(e))
+  if (typeof e.estimatedValue === 'number') fields.push('home_value_estimate')
+  // The `demographic` dataset's household values ride the same lookup (same source, same moment).
+  if (e.householdFinancials) fields.push(...Object.keys(householdFinancialContactColumns(e.householdFinancials)))
+  return stampFieldProvenance(fields, { source: 'batchdata', capability: 'property.enrich_datasets', purpose: 'valuation' })
+}
+
 /** Pure: BatchData property-enrichment → leads columns + the enrichment_profile.batchdata_property
  *  nested block (leads has no dedicated property jsonb column). Lane 85C: the `demographic` dataset's
  *  household financials (the same lookup, no extra record) merge into the profile through the ONE
@@ -322,7 +358,7 @@ export function batchDataPropertyEnrichmentToLeadColumns(
     ? mergeHouseholdFinancials(priorProfile ?? {}, e.householdFinancials, 'batchdata', { prefer: 'incoming' })
     : (priorProfile ?? {})
   out.enrichment_profile = {
-    ...withHousehold,
+    ...withFieldProvenance(withHousehold, fieldProvenanceOf(withHousehold), batchDataPropertyProvenance(e)),
     batchdata_property: {
       captured_at: new Date().toISOString(),
       equity_percent: e.equityPercent,
@@ -341,9 +377,16 @@ export function batchDataPropertyEnrichmentToLeadColumns(
 export function batchDataPropertyEnrichmentToContactColumns(
   e: BatchDataPropertyEnrichmentLike | null | undefined,
   priorPropertyRecords: Record<string, unknown> | null | undefined,
+  /** Wave 100 (lane 100C) — the contact's current enrichment_profile; when given, the patch carries it
+   *  back with the BatchData provenance stamped (contacts keep property facts in property_records, so
+   *  without this the values landed with no provenance at all). */
+  priorProfile?: Record<string, unknown> | null,
 ): Record<string, unknown> {
   if (!e || !e.ok) return {}
   const out = sharedBatchDataPropertyColumns(e)
+  if (priorProfile !== undefined) {
+    out.enrichment_profile = withFieldProvenance(priorProfile, fieldProvenanceOf(priorProfile), batchDataPropertyProvenance(e))
+  }
   if (typeof e.estimatedValue === 'number') out.home_value_estimate = e.estimatedValue
   // Lane 85C — the demographic dataset's household financials land on the contact's first-class
   // columns through the ONE column mapper (same function peopleDataProfileToContactColumns uses).
@@ -685,22 +728,129 @@ export function householdFinancialContactColumns(source: Record<string, unknown>
   return out
 }
 
-// ─── FIELD PROVENANCE READER (wave 97, lane 97C) ──────────────────────────────────────────────────
+// ─── FIELD PROVENANCE — THE ONE WRITER + THE ONE READER (wave 97 reader, wave 100 writer) ─────────
 // Wave 96B wrote `enrichment_profile.field_provenance` (Versium email / phone / demographics, each
 // { source, capability, retrievedAt, matchConfidence }) and lanes 85C/86 wrote
 // `household_financials.{sources, captured_at}` — and NOTHING read either back (96B open item:
-// "field_provenance has no reader yet"). This is the ONE reader; the contact card
+// "field_provenance has no reader yet"). fieldProvenanceForDisplay is the ONE reader; the contact card
 // (app/actions/contact-enrichment.ts::getContactInsights → app/crm/contacts/[contactId]/components/
 // enrichment-panel.tsx) shows it beside the enriched value. Keys are the CONTACT COLUMN the value is
 // displayed under, plus `email` / `phone` / `demographics` for the Versium contact + demographic appends.
+//
+// WAVE 100 (lane 100C — OWNER LAW 2, OS-CONSTITUTION row 4 "every enriched field carries provenance"):
+// the Versium adapter's shape is the SURVIVOR and is now the ONE shape every writer stamps through
+// stampFieldProvenance — PeopleData (buildPeopleDataProfile), BatchData skip trace + property datasets
+// (enrichment-orchestrator.ts / the BatchData column mappers below), RentCast/AVM values
+// (app/actions/home-value.ts, lib/wealth-advisor/scan-opportunities.ts via
+// lib/enrichment/field-provenance-store.ts::persistFieldProvenance), raw-record promotion
+// (pipeline-processor.ts::enrichWithPeopleData — the record's own source, email-seek, Perplexity gap-fill),
+// OSINT / Exa findings (contact-enrichment-core.ts), staff edits (lib/kernel/crm.ts::updateContactRecord,
+// source 'staff' + actor) and contact self-edits (app/actions/portal-settings.ts, source 'contact' + actor).
+// The Versium field names (source, capability, retrievedAt, matchConfidence) keep their spelling — every
+// stored row and both proofs read them — and `purpose` + `actor` are ADDED (optional on read, so rows
+// written before wave 100 still render). Leads carry the same jsonb and the same shape; lead→contact
+// promotion copies enrichment_profile verbatim (contact-creator.ts), so the stamps travel with it.
+
+/** Why a value was obtained — the `purpose` of a provenance stamp (one vocabulary, §6). */
+const PROVENANCE_PURPOSES = [
+  'enrichment',   // person enrichment (PeopleData / Versium) — the drain or the contact card's "Enrich now"
+  'skip_trace',   // BatchData skip trace / reverse skip trace — contact points for a known person
+  'valuation',    // AVM / CMA value on the person's property (RentCast chain, BatchData valuation)
+  'acquisition',  // the value arrived with the acquired record itself (scrape / vendor list / Exa)
+  'osint',        // public-web findings (Exa mentions, ZenRows people search, Perplexity gap-fill)
+  'staff_edit',   // a back-office user typed it
+  'self_service', // the contact typed it in their own portal
+] as const
+export type ProvenancePurpose = typeof PROVENANCE_PURPOSES[number]
+
+/** THE stored provenance shape (enrichment_profile.field_provenance[<contact column>]). */
+export interface FieldProvenance {
+  /** Provider / origin ('peopledata', 'batchdata_skip_trace', 'versium', 'rentcast', …), or 'staff' /
+   *  'contact' for a human edit. */
+  source: string
+  /** The capability that produced it, as the platform asks for it ('person.enrich_contact', …). */
+  capability: string
+  /** ISO time the value was obtained. */
+  retrievedAt: string
+  /** Provider match confidence ('individual' / 'household' / a 0–1 likelihood as text); null when unstated. */
+  matchConfidence: string | null
+  purpose?: ProvenancePurpose
+  /** users.id of the human who typed it (staff / self edits); null for a provider. */
+  actor?: string | null
+}
+
+export interface ProvenanceStampInput {
+  source: string
+  capability: string
+  purpose: ProvenancePurpose
+  retrievedAt?: string
+  matchConfidence?: string | number | null
+  actor?: string | null
+}
+
+/** PURE — one provenance stamp in THE shape. A numeric confidence is stored as text (the reader's type). */
+export function fieldProvenanceStamp(input: ProvenanceStampInput): FieldProvenance {
+  const mc = input.matchConfidence
+  return {
+    source: input.source,
+    capability: input.capability,
+    retrievedAt: input.retrievedAt ?? new Date().toISOString(),
+    matchConfidence: typeof mc === 'number' && Number.isFinite(mc) ? String(mc) : nonEmpty(mc) ? mc.trim() : null,
+    purpose: input.purpose,
+    actor: input.actor ?? null,
+  }
+}
+
+/** PURE — THE ONE PROVENANCE WRITER: the same stamp keyed by every field it covers (blank names dropped). */
+export function stampFieldProvenance(fields: Iterable<string>, input: ProvenanceStampInput): Record<string, FieldProvenance> {
+  const stamp = fieldProvenanceStamp(input)
+  const out: Record<string, FieldProvenance> = {}
+  for (const f of fields) if (nonEmpty(f)) out[f] = { ...stamp }
+  return out
+}
+
+/** PURE — the field_provenance block a profile carries (empty object when none / malformed). */
+export function fieldProvenanceOf(profile: Record<string, unknown> | null | undefined): Record<string, unknown> {
+  const fp = profile && typeof profile === 'object' ? (profile as Record<string, unknown>).field_provenance : null
+  return fp && typeof fp === 'object' ? (fp as Record<string, unknown>) : {}
+}
+
+/** PURE — `profile` with field_provenance = every layer merged in order (a later layer wins per field).
+ *  A writer that REPLACES enrichment_profile wholesale passes the PRIOR profile's block as the first
+ *  layer, so stamps it does not itself carry (a staff edit, an older Versium email) survive the replace. */
+export function withFieldProvenance(
+  profile: Record<string, any> | null | undefined,
+  ...layers: Array<Record<string, unknown> | null | undefined>
+): Record<string, any> {
+  const merged: Record<string, unknown> = {}
+  for (const layer of layers) {
+    if (!layer || typeof layer !== 'object') continue
+    for (const [k, v] of Object.entries(layer)) if (v && typeof v === 'object') merged[k] = v
+  }
+  const out: Record<string, any> = { ...(profile ?? {}) }
+  if (Object.keys(merged).length > 0) out.field_provenance = merged
+  return out
+}
+
+/** Contact columns whose provenance is FINANCIAL (CLAUDE.md §5: contacts, lenders and vendors see no
+ *  financials) — dropped by the reader when `includeFinancials` is false, whichever writer stamped them. */
+const FINANCIAL_PROVENANCE_KEYS: ReadonlySet<string> = new Set([
+  'household_income', 'net_worth_range', 'credit_score_range', 'inferred_salary',
+  'home_value_estimate', 'estimated_value', 'equity_estimate', 'lender_status', 'mortgage_balance',
+])
+
 export interface FieldProvenanceLine {
   source: string
   retrievedAt: string | null
   matchConfidence: string | null
+  capability: string | null
+  purpose: string | null
+  actor: string | null
 }
 
 /** PURE — provenance per displayed field. `includeFinancials: false` drops income / net worth / credit
- *  band (CLAUDE.md §5: contacts, lenders and vendors see no financials). Never throws on a malformed blob. */
+ *  band / property value (CLAUDE.md §5: contacts, lenders and vendors see no financials). Never throws
+ *  on a malformed blob. */
 export function fieldProvenanceForDisplay(
   profile: Record<string, unknown> | null | undefined,
   opts: { includeFinancials: boolean },
@@ -714,19 +864,23 @@ export function fieldProvenanceForDisplay(
     for (const f of HOUSEHOLD_FINANCIAL_FIELDS) {
       if (f !== 'marital_status' && !opts.includeFinancials) continue
       const src = block.sources?.[f]
-      if (nonEmpty(src)) out[HOUSEHOLD_FINANCIAL_CONTACT_COLUMN[f]] = { source: src, retrievedAt: at, matchConfidence: null }
+      if (nonEmpty(src)) out[HOUSEHOLD_FINANCIAL_CONTACT_COLUMN[f]] = { source: src, retrievedAt: at, matchConfidence: null, capability: null, purpose: null, actor: null }
     }
   }
   const fp = profile.field_provenance
   if (fp && typeof fp === 'object') {
     for (const [key, raw] of Object.entries(fp as Record<string, unknown>)) {
       if (!raw || typeof raw !== 'object') continue
-      const p = raw as { source?: unknown; retrievedAt?: unknown; matchConfidence?: unknown }
+      if (!opts.includeFinancials && FINANCIAL_PROVENANCE_KEYS.has(key)) continue
+      const p = raw as { source?: unknown; retrievedAt?: unknown; matchConfidence?: unknown; capability?: unknown; purpose?: unknown; actor?: unknown }
       if (!nonEmpty(p.source)) continue
       out[key] = {
         source: p.source,
         retrievedAt: nonEmpty(p.retrievedAt) ? p.retrievedAt : null,
         matchConfidence: nonEmpty(p.matchConfidence) ? p.matchConfidence : null,
+        capability: nonEmpty(p.capability) ? p.capability : null,
+        purpose: nonEmpty(p.purpose) ? p.purpose : null,
+        actor: nonEmpty(p.actor) ? p.actor : null,
       }
     }
   }

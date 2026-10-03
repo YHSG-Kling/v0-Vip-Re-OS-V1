@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { CONTRACT_ESIGN_AWAITING_STATUSES } from "@/lib/transactions/coordination-status"
-import { clientTransactionFilter, portalDealClient, scopeToDealTenant } from "@/lib/kernel/portal"
-import { clientDealDocumentFilter, isClientVisibleDealDocument, isClientHiddenDealDocType } from "@/lib/kernel/deal-document-visibility"
+import { clientTransactionFilter, portalDealClient, scopeToDealTenant, readClientDocumentVisibilityFlags } from "@/lib/kernel/portal"
+import { clientDealDocumentFilter, isClientVisibleDealDocument, isClientVisibleClientDocument } from "@/lib/kernel/deal-document-visibility"
 import { redirect } from "next/navigation"
 import { DocumentsClient } from "./DocumentsClient"
 import { syncAllForContact } from "@/lib/transactions/sync-from-provider"
@@ -67,8 +67,13 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
     dealTenant,
   ).order("created_at", { ascending: false })
   if (clientDocsError) console.error("[portal/documents] client documents read refused:", clientDocsError.message)
-  const clientDocs = (clientDocsRaw ?? []).filter((d: { document_type?: string | null; doc_category?: string | null }) =>
-    !isClientHiddenDealDocType(d.document_type) && !isClientHiddenDealDocType(d.doc_category))
+  // Wave 100 (lane 100C): the client's own folder follows THE deal-document rule — staff-shown
+  // (client_documents.client_visible, m695, the Document Center switch) or self-uploaded, and never a
+  // denied type (asked of document_type AND doc_category). Flags read apart so a refusal fails closed
+  // without hiding what the client uploaded (lib/kernel/portal.ts readClientDocumentVisibilityFlags).
+  const clientDocFlags = await readClientDocumentVisibilityFlags(dealDb, (clientDocsRaw ?? []).map((d: { id: string }) => d.id))
+  const clientDocs = (clientDocsRaw ?? []).filter((d: { id: string; uploaded_by?: string | null; document_type?: string | null; doc_category?: string | null }) =>
+    isClientVisibleClientDocument({ ...d, client_visible: clientDocFlags.get(d.id) === true }, viewerUserId))
 
   // STEP 3 — Deal documents the CLIENT may see (wave 98 owner ruling): staff-marked
   // client_visible (m690) or uploaded by this viewer — never the CDA / disbursement /

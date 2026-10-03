@@ -56,6 +56,9 @@ import {
   householdFinancialsFromProfile,
   type EnrichmentProvider,
   peopleDataProfileToContactColumns,
+  stampFieldProvenance,
+  withFieldProvenance,
+  fieldProvenanceOf,
 } from "@/lib/lead-pipeline/enrichment-column-map"
 import { OSINTClient } from "@/lib/osint-client"
 import { validateEmail, validatePhone } from "@/lib/contact-validation"
@@ -729,11 +732,29 @@ export async function enrichContactRecord(params: {
     // …)` behind a 20-key payload makes a correctly-scoped write look unscoped
     // (app/actions/home-value.ts carries the same note for the same reason).
     // Keeping the chain short keeps the scope auditable at a glance.
+    // FIELD PROVENANCE (wave 100, lane 100C — THE ONE writer, enrichment-column-map.ts::stampFieldProvenance).
+    // The profile spread below used to REPLACE the stored field_provenance with PeopleData's (or drop it);
+    // the prior stamps now go first, PeopleData's mapped columns next, and what the OSINT people search
+    // filled (social URLs PeopleData lacked, life events, public / court / property records) last.
+    const priorProfile = (contact.enrichment_profile as Record<string, any> | null) ?? {}
+    const osintFilled: string[] = []
+    if (osintData) {
+      for (const k of ["linkedin_url", "facebook_url", "twitter_url"] as const) {
+        if (enrichmentData[k] && enrichmentData[k] !== profile?.[k]) osintFilled.push(k)
+      }
+      for (const k of ["life_events", "public_records", "court_records", "property_records"] as const) {
+        if (Array.isArray(enrichmentData[k]) && enrichmentData[k].length > 0) osintFilled.push(k)
+      }
+    }
+    const osintProvenance = stampFieldProvenance(osintFilled, { source: "zenrows", capability: "person.osint_search", purpose: "osint" })
+    const nextProfile = profile || osintFilled.length > 0
+      ? withFieldProvenance({ ...priorProfile, ...(profile ?? {}) }, fieldProvenanceOf(priorProfile), fieldProvenanceOf(profile), osintProvenance)
+      : null
     const enrichmentUpdate = {
       // PDL demographics + the four household financials, through the ONE mapper (only present
       // values — a miss never nulls a column an earlier enrichment filled).
       ...mappedColumns,
-      ...(profile && { enrichment_profile: { ...((contact.enrichment_profile as Record<string, any> | null) ?? {}), ...profile } }),
+      ...(nextProfile && { enrichment_profile: nextProfile }),
       linkedin_url: enrichmentData.linkedin_url ?? mappedColumns.linkedin_url,
       facebook_url: enrichmentData.facebook_url ?? mappedColumns.facebook_url,
       twitter_url: enrichmentData.twitter_url ?? mappedColumns.twitter_url,
@@ -799,7 +820,7 @@ export async function runLifeChangeCheck(params: {
   try {
     const { data: contact, error: readError } = await supabase
       .from("contacts")
-      .select("id, first_name, last_name, city, state, life_events")
+      .select("id, first_name, last_name, city, state, life_events, enrichment_profile")
       .eq("id", contactId)
       .eq("brokerage_id", brokerageId)
       .maybeSingle()
@@ -886,6 +907,14 @@ export async function runLifeChangeCheck(params: {
     if (changesFound > 0) {
       update.life_events = merged
       update.last_life_event_detected = new Date().toISOString()
+      // FIELD PROVENANCE (wave 100, lane 100C — THE ONE writer): which rung found the new life events —
+      // the Exa web-mention search (URL evidence) or the ZenRows people-search fallback.
+      const prior = (contact.enrichment_profile as Record<string, any> | null) ?? {}
+      update.enrichment_profile = withFieldProvenance(prior, fieldProvenanceOf(prior), stampFieldProvenance(["life_events"], {
+        source: mentions.ran ? "exa" : "zenrows",
+        capability: mentions.ran ? "person.web_mentions" : "person.osint_search",
+        purpose: "osint",
+      }))
     }
 
     const { error: writeError } = await supabase

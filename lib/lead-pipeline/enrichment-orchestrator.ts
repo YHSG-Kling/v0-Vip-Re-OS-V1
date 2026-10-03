@@ -11,6 +11,7 @@ import {
   peopleDataProfileToContactColumns, peopleDataProfileToLeadColumns, buildPeopleDataProfile,
   batchDataPropertyEnrichmentToLeadColumns, batchDataPropertyEnrichmentToContactColumns,
   carryForwardHouseholdFinancials,
+  stampFieldProvenance, withFieldProvenance, fieldProvenanceOf, peopleDataContactPointProvenance,
 } from '@/lib/lead-pipeline/enrichment-column-map'
 import { trackVendorUsageService } from '@/lib/vendor-governance'
 import { meterVendorSpend } from '@/lib/vendor-governance/meter-vendor'
@@ -72,6 +73,24 @@ type EntityType = 'lead' | 'contact'
 /** The ONE spelling of "which leg produced the contact points" (profile, ledger note, provider column). */
 function contactLaneOf(via: 'v3' | 'reverse' | 'versium'): string {
   return via === 'versium' ? 'versium_contact_append' : via === 'reverse' ? 'batchdata_reverse_skip_trace' : 'batchdata_skip_trace'
+}
+
+/** Wave 100 (lane 100C) — provenance for the contact points a skip-trace / append leg supplied, through
+ *  THE ONE writer (enrichment-column-map.ts::stampFieldProvenance). The reverse leg was ASKED with the
+ *  row's own email, so it never stamps `email` when the row already had one (that email is not its). */
+function contactPointProvenance(
+  leg: { phones: string[]; emails: string[]; via: 'v3' | 'reverse' | 'versium'; person?: { firstName: string | null } | null },
+  entity: Record<string, unknown>,
+): Record<string, unknown> {
+  const fields: string[] = []
+  if (leg.phones.length > 0) fields.push('phone')
+  if (leg.emails.length > 0 && !(leg.via === 'reverse' && entity.email)) fields.push('email')
+  if (leg.via === 'reverse' && leg.person?.firstName && !(entity.first_name || entity.last_name)) fields.push('first_name', 'last_name')
+  return stampFieldProvenance(fields, {
+    source: contactLaneOf(leg.via),
+    capability: leg.via === 'versium' ? 'person.enrich_contact' : 'person.skip_trace',
+    purpose: leg.via === 'versium' ? 'enrichment' : 'skip_trace',
+  })
 }
 
 function personAttribution(entityType: EntityType, entityId: string): { leadId?: string; contactId?: string } {
@@ -834,6 +853,27 @@ export async function processEnrichmentQueue(
           if (credit.error) console.warn('[enrichment-orchestrator] household-financial rung (non-blocking):', credit.error)
         }
 
+        // Wave 100 (lane 100C) — FIELD PROVENANCE through THE ONE writer. The write below REPLACES
+        // enrichment_profile wholesale, so the prior stamps go FIRST (a staff edit or an older append
+        // survives); then PeopleData's mapped columns (buildPeopleDataProfile), then the contact points /
+        // name / mailing address PeopleData actually landed, then the skip-trace / Versium leg that led
+        // the contact points (it wins where it supplied the line the write elects).
+        {
+          const pdlLanded: string[] = []
+          if (primaryEmail) pdlLanded.push('email')
+          if (primaryPhone) pdlLanded.push('phone')
+          if (namePatch.first_name) pdlLanded.push('first_name', ...(namePatch.last_name ? ['last_name'] : []))
+          if (hasMailingData) pdlLanded.push('mailing_address')
+          profile.field_provenance = withFieldProvenance(
+            null,
+            fieldProvenanceOf(entity.enrichment_profile as Record<string, unknown> | null),
+            fieldProvenanceOf(profile),
+            peopleDataContactPointProvenance(enriched, pdlLanded, profile.captured_at),
+            batchDataFallback ? contactPointProvenance(batchDataFallback, entity) : null,
+            batchDataFallback?.via === 'versium' ? versiumFieldProvenance : null,
+          ).field_provenance
+        }
+
         // Step 6a: Update entity table
         // The PAID result landing on the entity — READ on both branches (lane 88F: the
         // lead branch dropped it; the contact branch logged it and marked the queue done
@@ -1159,7 +1199,9 @@ export async function processEnrichmentQueue(
               if (propEnrichment.ok) {
                 const patch = entityType === 'lead'
                   ? batchDataPropertyEnrichmentToLeadColumns(propEnrichment, profile)
-                  : batchDataPropertyEnrichmentToContactColumns(propEnrichment, (entity.property_records as Record<string, unknown> | null) ?? null)
+                  // Wave 100 (lane 100C): `profile` (just written) comes back with the BatchData
+                  // provenance stamped — contacts keep the property facts in property_records.
+                  : batchDataPropertyEnrichmentToContactColumns(propEnrichment, (entity.property_records as Record<string, unknown> | null) ?? null, profile)
                 if (Object.keys(patch).length > 0) {
                   const { error: propWriteError } = await supabase.from(table).update(patch).eq('id', entityId)
                   if (propWriteError) {
@@ -1226,9 +1268,16 @@ export async function processEnrichmentQueue(
           // Wave 96 (lane 96B): provenance per field — merged onto any provenance already held, and
           // written even when no demographic category was bought (an email-only hit still says where
           // the email came from and when).
+          // Wave 100 (lane 100C): EVERY leg stamps through THE ONE writer (BatchData v3 / reverse skip
+          // trace included — they used to land phone / email / name with no provenance at all); Versium's
+          // own stamps (with its match level) win for the fields it returned.
           const priorProfile = (demographicProfile ?? (entity.enrichment_profile as Record<string, any> | null) ?? {}) as Record<string, any>
-          const provenanceProfile: Record<string, any> | null = batchDataFallback.via === 'versium' && Object.keys(versiumFieldProvenance).length > 0
-            ? { ...priorProfile, field_provenance: { ...(((entity.enrichment_profile as Record<string, any> | null) ?? {}).field_provenance ?? {}), ...versiumFieldProvenance } }
+          const legProvenance = {
+            ...contactPointProvenance(batchDataFallback, entity),
+            ...(batchDataFallback.via === 'versium' ? versiumFieldProvenance : {}),
+          }
+          const provenanceProfile: Record<string, any> | null = Object.keys(legProvenance).length > 0
+            ? withFieldProvenance(priorProfile, fieldProvenanceOf(entity.enrichment_profile as Record<string, unknown> | null), fieldProvenanceOf(priorProfile), legProvenance)
             : null
           const demographicColumns: Record<string, unknown> = demographicProfile
             ? (entityType === 'lead'

@@ -251,6 +251,13 @@ function freshWorld(opts: { agentRowForA?: boolean; flagEnabled?: boolean } = {}
     ops: [], events: [], insertReturnsNothing: new Set(),
     tables: {
       brokerages: [{ id: A.brokerage, plan_tier: "brokerage" }, { id: B.brokerage, plan_tier: "brokerage" }],
+      // Wave 100 (lane 100C): the direct-mail gate is mayUseAndAfford("feature.use") — the SUBSCRIPTION
+      // half runs before the feature half, so each tenant needs a current subscription (fail closed
+      // without one: billing-access proof Layer 1c owns the lapsed / missing cases).
+      subscriptions: [
+        { id: "sub-a", brokerage_id: A.brokerage, status: "active", trial_end: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+        { id: "sub-b", brokerage_id: B.brokerage, status: "active", trial_end: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+      ],
       users: [
         { id: A.user, user_type: "agent", brokerage_id: A.brokerage, team_id: null, platform_role: null },
         { id: B.user, user_type: "agent", brokerage_id: B.brokerage, team_id: null, platform_role: null },

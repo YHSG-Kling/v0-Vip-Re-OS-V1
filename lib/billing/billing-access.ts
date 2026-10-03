@@ -244,6 +244,12 @@ export const PAID_CAPABILITIES: Readonly<Record<string, { graceAllowed: boolean;
   // pre-99A): preserved — platform spend does not run on an unpaid account.
   "lead.scrape":    { graceAllowed: false, budget: "none" },
   "billing.notice": { graceAllowed: true,  budget: "none", accessExempt: true },
+  // Wave 100 (lane 100C — 99A open item 3): a PLAN FEATURE (feature_flags tier / rollout / overrides /
+  // usage limit) composed as a capability. The subscription half runs first; the feature half is THE
+  // survivor lib/kernel/0.1-feature-access.ts::canAccessFeature, called with the caller's own client
+  // (input.feature.client — the session client seam) so RLS-scoped reads and the webhook's verified
+  // service client both keep working. Requires input.feature; refuses without it.
+  "feature.use":    { graceAllowed: true,  budget: "none" },
 })
 
 /** dispatch systemSource values that are the platform's own billing notices to the tenant. */
@@ -262,8 +268,13 @@ export interface MayUseAndAffordInput {
   now?: Date
   /** Service client (defaults to createServiceClient, loaded lazily). */
   client?: any
+  /** "feature.use" only — WHICH plan feature, for WHOM (a VERIFIED user id, or the tenant id for a
+   *  tenant-gated rail), read through `client`: the caller's session client, or the verified service
+   *  client of a cookieless webhook (canAccessFeature's own client contract). */
+  feature?: { userId: string; featureKey: string; userTier?: string; client?: any }
   /** Test seams — default to the real survivors. */
   deps?: {
+    featureAccess?: (userId: string, featureKey: string, userTier: string | undefined, client: any) => Promise<{ allowed: boolean; reason?: string; [k: string]: unknown }>
     loadAccess?: (svc: any, brokerageId: string, now: Date) => Promise<BillingAccess>
     aiBudget?: (p: { brokerageId: string; addTokens?: number }) => Promise<{ allowed: boolean; tokensUsed: number; tokensLimit: number; message?: string; softWarning?: boolean }>
     vendorBudget?: (p: { brokerageId: string; addCost?: number }) => Promise<{ allowed: boolean; spent: number; budget: number; softWarning: boolean; degraded?: boolean }>
@@ -283,6 +294,8 @@ export interface MayUseAndAffordDecision {
   softWarning?: boolean
   /** The budget half could not read its ledger and failed open (its documented contract). */
   budgetDegraded?: boolean
+  /** "feature.use" only — the plan-feature verdict as canAccessFeature returned it (limits, usage, beta …). */
+  feature?: { allowed: boolean; reason?: string; [k: string]: unknown }
 }
 
 /** PURE: is this actor platform staff for the access bypass? */
@@ -324,6 +337,26 @@ export async function mayUseAndAfford(input: MayUseAndAffordInput): Promise<MayU
     }
   }
   const allowReason = staff ? "platform_staff" : cap.accessExempt ? "access_exempt" : plan?.state === "past_due" ? "past_due_in_grace" : "subscription_current"
+
+  // THE PLAN-FEATURE HALF (wave 100, lane 100C). Fails CLOSED: no feature named, or a gate that threw
+  // (canAccessFeature throws on a refused flag / user read), is a refusal — never "nobody checked".
+  if (input.capability === "feature.use") {
+    const f = input.feature
+    if (!f?.userId || !f.featureKey) return { allowed: false, reason: "feature_unspecified", plan, remainingBudget: null }
+    let verdict: { allowed: boolean; reason?: string; [k: string]: unknown }
+    try {
+      const gate = input.deps?.featureAccess
+        ?? (async (u: string, k: string, t: string | undefined, c: any) =>
+          (await import("@/lib/kernel/0.1-feature-access")).canAccessFeature(u, k, t as any, c) as unknown as { allowed: boolean; reason?: string })
+      verdict = await gate(f.userId, f.featureKey, f.userTier, f.client)
+    } catch (e) {
+      return { allowed: false, reason: `feature_check_threw: ${(e as Error)?.message ?? String(e)}`, plan, remainingBudget: null }
+    }
+    if (!verdict.allowed) {
+      return { allowed: false, reason: `feature_refused:${f.featureKey}`, plan, remainingBudget: null, message: verdict.reason, feature: verdict }
+    }
+    return { allowed: true, reason: allowReason, plan, remainingBudget: null, feature: verdict }
+  }
 
   if (cap.budget === "ai_tokens") {
     const fair = input.deps?.aiBudget

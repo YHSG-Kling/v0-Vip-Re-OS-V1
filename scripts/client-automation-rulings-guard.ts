@@ -602,6 +602,56 @@ async function main() {
       && /\.update\(\{ client_visible: visible \}\)[\s\S]{0,120}\.select\(/.test(code("lib/application/transactions.ts")))
   }
 
+  // ════ R7b — wave 100 (lane 100C, 98A open item): the CLIENT'S OWN FOLDER gets the same switch ═══
+  console.log("\n[R7b · client_documents: staff Show/Hide + self-uploads, the same deny list (document_type AND doc_category)]")
+  {
+    const vis = await import("../lib/kernel/deal-document-visibility")
+    const ME = "a9000000-0000-4000-8000-000000000100", STAFF = "a8000000-0000-4000-8000-000000000100"
+    check("PURE: a staff-shown folder document is shown; an unshown staff upload is hidden (deny by default); the client's own upload is shown",
+      vis.isClientVisibleClientDocument({ client_visible: true, uploaded_by: STAFF, document_type: "inspection_report" }, ME)
+      && !vis.isClientVisibleClientDocument({ client_visible: false, uploaded_by: STAFF, document_type: "inspection_report" }, ME)
+      && vis.isClientVisibleClientDocument({ client_visible: false, uploaded_by: ME, document_type: "upload" }, ME))
+    check("PURE: the deny list wins over the flag on EITHER type column (doc_category 'cda' with an innocent document_type)",
+      !vis.isClientVisibleClientDocument({ client_visible: true, document_type: "other", doc_category: "cda" }, ME)
+      && !vis.isClientVisibleClientDocument({ client_visible: true, document_type: "commission_disbursement", doc_category: null }, ME))
+    check("POSITIVE CONTROL: the same row with an innocent category IS shown — the refusal above is the deny list",
+      vis.isClientVisibleClientDocument({ client_visible: true, document_type: "other", doc_category: "inspection" }, ME))
+
+    // The real seller-portal reader against an in-memory folder.
+    const CLIENT_USER = "c9000000-0000-4000-8000-000000000100"
+    const FOLDER = [
+      { id: "cd-shown", contact_id: C_SELLER, brokerage_id: BRK, document_type: "inspection_report", doc_category: "inspection", document_name: "Inspection", document_url: "u", client_visible: true, uploaded_by: STAFF, created_at: "2026-10-01" },
+      { id: "cd-hidden", contact_id: C_SELLER, brokerage_id: BRK, document_type: "addendum", doc_category: "contract", document_name: "Draft", document_url: "u", client_visible: false, uploaded_by: STAFF, created_at: "2026-10-01" },
+      { id: "cd-own", contact_id: C_SELLER, brokerage_id: BRK, document_type: "upload", doc_category: "other", document_name: "My ID", document_url: "u", client_visible: false, uploaded_by: CLIENT_USER, created_at: "2026-10-01" },
+      { id: "cd-cda", contact_id: C_SELLER, brokerage_id: BRK, document_type: "other", doc_category: "cda", document_name: "CDA", document_url: "u", client_visible: true, uploaded_by: STAFF, created_at: "2026-10-01" },
+    ]
+    const svc = world({ transaction_documents: [], client_documents: FOLDER.map((d) => ({ ...d })) })
+    ;(svc.tables.contacts.find((c) => c.id === C_SELLER) as Row).contact_user_id = CLIENT_USER
+    ;(svc as any).auth.getUser = async () => ({ data: { user: { id: CLIENT_USER, email: "seller@wave100.test" } } })
+    const { getSellerDocuments } = await import("../app/actions/portal-seller")
+    const got = await getSellerDocuments(C_SELLER, null)
+    const ids = (got.clientDocuments as Array<{ id: string }>).map((d) => d.id).sort()
+    check("the seller portal's folder returns the staff-shown doc + the client's own upload — and nothing else", JSON.stringify(ids) === JSON.stringify(["cd-own", "cd-shown"]), ids.join(","))
+    check("CONTROL: the hidden + CDA rows ARE in the folder, so their absence is the rule, not an empty table",
+      rows(svc, "client_documents", (r) => r.contact_id === C_SELLER).length === 4)
+
+    const page = code("app/portal/[contactId]/documents/page.tsx")
+    const cal = code("app/portal/[contactId]/calendar/page.tsx")
+    check("every portal reader of the folder applies isClientVisibleClientDocument with the flags read apart (documents page, calendar)",
+      /readClientDocumentVisibilityFlags\(dealDb,/.test(page) && /isClientVisibleClientDocument\(\{ \.\.\.d, client_visible: clientDocFlags\.get\(d\.id\) === true \}, viewerUserId\)/.test(page)
+      && /isClientVisibleClientDocument\(\{ \.\.\.d, client_visible: pendingFlags\.get\(d\.id\) === true \}/.test(cal))
+    const dc = code("app/actions/document-center.ts")
+    const sw = dc.slice(dc.indexOf("export async function setClientDocumentVisibility("))
+    check("the staff switch: session tenant, back-office roster, deny list refused on publish, tenant-pinned COUNTED update — and wired on the Document Center row",
+      sw.length > 0 && /resolveActingContext\(\)/.test(sw) && /isCrmContactStaff\(ctx\.userType\)/.test(sw) && /isClientHiddenDealDocType\(row\.doc_category\)/.test(sw)
+      && /\.update\(\{ client_visible: visible === true \}\)[\s\S]{0,160}\.select\(/.test(sw) && /data\.length !== 1/.test(sw)
+      && /setClientDocumentVisibility\(doc\.id, !visible\)/.test(code("app/dashboard/documents/document-center-client.tsx")))
+    const m695File = readdirSync(join(process.cwd(), "supabase/migrations")).find((f) => /^m695-/.test(f))
+    const m695 = m695File ? stripComments(readFileSync(join(process.cwd(), "supabase/migrations", m695File), "utf8")) : ""
+    check("m695: client_documents.client_visible boolean NOT NULL DEFAULT false (deny by default) + the client-upload trigger",
+      /ALTER TABLE public\.client_documents\s+ADD COLUMN IF NOT EXISTS client_visible boolean NOT NULL DEFAULT false/.test(m695) && /BEFORE INSERT ON public\.client_documents/.test(m695))
+  }
+
   // ════ R8 — wave 98: an APPROVED client-facing video is delivered once (portal + email) ═══
   console.log("\n[R8 · an approved client-facing video reaches its contact's portal + inbox exactly once]")
   {

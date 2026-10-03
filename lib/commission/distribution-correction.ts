@@ -78,3 +78,32 @@ export function planDistributionCorrection(args: {
   }
   return { ok: true, amount: fromCents(delta), netBefore: fromCents(netBefore), netAfter: fromCents(netBefore + delta) }
 }
+
+// ─── SUMMARY RE-STAMP (wave 100, lane 100C — 98A open item / gap row 16) ──────────────────────────
+// agent_commissions and transaction_commissions are NOT derived reads: they are rows the waterfall
+// (lib/commission/waterfall/11-validate-persist.ts) and the deal recalculation (lib/kernel/
+// transactions.ts) WRITE, with no trigger or view behind them (live pg_trigger, 2026-10-03: only
+// commission_distribution_posted_is_append_only exists on the three tables). So a correction row left
+// them stating the pre-correction figure. The waterfall writes EXACTLY ONE 'agent' distribution (the
+// agent's final net → agent_commissions.net_to_agent) and ONE 'brokerage' distribution (→ net_to_brokerage)
+// per commission, and a correction inherits the original's commission_id + distribution_type — so the
+// summary is RE-DERIVED from the rows (original + every correction), never incremented: re-running it
+// gives the same answer, and a lost write is healed by the next correction's re-stamp.
+
+/** The distribution types that HAVE a summary column. fee / referral / residual / royalty /
+ *  team_member corrections net in the distribution rows only (no summary column carries them). */
+export const SUMMARIZED_DISTRIBUTION_TYPES = { agent: "net_to_agent", brokerage: "net_to_brokerage" } as const
+export type SummarizedDistributionType = keyof typeof SUMMARIZED_DISTRIBUTION_TYPES
+
+export function isSummarizedDistributionType(t: string | null | undefined): t is SummarizedDistributionType {
+  return t === "agent" || t === "brokerage"
+}
+
+/** PURE — the summary figure for one distribution type: Σ calculated_amount over the rows of that type
+ *  (original + its corrections), in cents, one rounding at the boundary. Rows of other types are ignored. */
+export function summaryAmountFromDistributions(
+  rows: ReadonlyArray<{ distribution_type: string | null; calculated_amount: number | string | null }>,
+  type: SummarizedDistributionType,
+): number {
+  return fromCents(rows.filter((r) => r.distribution_type === type).reduce((s, r) => s + toCents(r.calculated_amount), 0))
+}

@@ -63,7 +63,7 @@
     "lib/ai-isa/ghost-reengagement.ts": 1,
     "lib/ai-isa/inbound-intent-classifier.ts": 1,
     "lib/ai-isa/isa-acting-scope.ts": 1,
-    "lib/ai-isa/lead-action-plan.ts": 2,
+    "lib/ai-isa/lead-action-plan.ts": 1,
     "lib/ai-isa/lead-nurture.ts": 1,
     "lib/ai-isa/listing-appointment.ts": 6,
     "lib/ai-isa/meeting-followthrough.ts": 2,
@@ -518,7 +518,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10578,
+  "census": 10593,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -694,7 +694,7 @@
     "app/actions/cma-presentation/index.ts": 1,
     "app/actions/cma-presentation/net-sheet-calculator.ts": 6,
     "app/actions/cma-presentation/presentation-assembler.ts": 1,
-    "app/actions/coaching.ts": 2,
+    "app/actions/coaching.ts": 1,
     "app/actions/collaborative-search.ts": 16,
     "app/actions/coming-soon-content.ts": 1,
     "app/actions/command-center.ts": 3,
@@ -758,7 +758,7 @@
     "app/actions/direct-mail-variants-settings.ts": 3,
     "app/actions/direct-mail.ts": 13,
     "app/actions/dispatch-showing.ts": 1,
-    "app/actions/document-center.ts": 2,
+    "app/actions/document-center.ts": 3,
     "app/actions/document-extractions.ts": 2,
     "app/actions/document-field-audit.ts": 1,
     "app/actions/document-kernel-review.ts": 7,
@@ -2832,7 +2832,7 @@
     "lib/ai-isa/inbound-intent-classifier.ts": 3,
     "lib/ai-isa/isa-acting-scope.ts": 2,
     "lib/ai-isa/isa-outreach-logger.ts": 4,
-    "lib/ai-isa/lead-action-plan.ts": 9,
+    "lib/ai-isa/lead-action-plan.ts": 11,
     "lib/ai-isa/lead-call-intent.ts": 1,
     "lib/ai-isa/lead-channel-policy.ts": 3,
     "lib/ai-isa/lead-nurture.ts": 2,
@@ -3034,7 +3034,7 @@
     "lib/commission/agreement-total-rate.ts": 1,
     "lib/commission/cap-resolver.ts": 7,
     "lib/commission/cda-discrepancy.ts": 6,
-    "lib/commission/distribution-correction.ts": 1,
+    "lib/commission/distribution-correction.ts": 3,
     "lib/commission/engine.ts": 1,
     "lib/commission/finalization.ts": 2,
     "lib/commission/ledger-sync.ts": 7,
@@ -3243,6 +3243,7 @@
     "lib/enrichment/contact-enrichment-core.ts": 6,
     "lib/enrichment/deal-suppression.ts": 3,
     "lib/enrichment/deal-vocabulary.ts": 3,
+    "lib/enrichment/field-provenance-store.ts": 1,
     "lib/enrichment/household-financials.ts": 3,
     "lib/enrichment/identifier-guard.ts": 2,
     "lib/enrichment/lead-enrichment-core.ts": 3,
@@ -3501,7 +3502,7 @@
     "lib/kernel/agent-identity.ts": 5,
     "lib/kernel/agent-onboarding.ts": 8,
     "lib/kernel/ai-copy.ts": 3,
-    "lib/kernel/ai-isa.ts": 10,
+    "lib/kernel/ai-isa.ts": 12,
     "lib/kernel/ai-model.ts": 1,
     "lib/kernel/ai-search-citation-monitor.ts": 8,
     "lib/kernel/ai-sentinel.ts": 2,
@@ -3570,7 +3571,7 @@
     "lib/kernel/cron-logging.ts": 6,
     "lib/kernel/deal-autopsy.ts": 3,
     "lib/kernel/deal-confidence.ts": 1,
-    "lib/kernel/deal-document-visibility.ts": 3,
+    "lib/kernel/deal-document-visibility.ts": 4,
     "lib/kernel/deal-play-outcomes.ts": 2,
     "lib/kernel/deal-play.ts": 2,
     "lib/kernel/deal-room-reel.ts": 4,
@@ -3586,7 +3587,7 @@
     "lib/kernel/education.ts": 14,
     "lib/kernel/egress-scope.ts": 3,
     "lib/kernel/email-deliverability.ts": 2,
-    "lib/kernel/emit.ts": 2,
+    "lib/kernel/emit.ts": 3,
     "lib/kernel/equity-trigger.ts": 5,
     "lib/kernel/event-fanout.ts": 2,
     "lib/kernel/event-reactor.ts": 1,
@@ -3660,7 +3661,7 @@
     "lib/kernel/portal-contracts.ts": 2,
     "lib/kernel/portal-template-render.ts": 1,
     "lib/kernel/portal-value.ts": 2,
-    "lib/kernel/portal.ts": 20,
+    "lib/kernel/portal.ts": 21,
     "lib/kernel/postclose-concierge.ts": 4,
     "lib/kernel/preview.ts": 2,
     "lib/kernel/priority-rank.ts": 2,
@@ -3777,7 +3778,7 @@
     "lib/lead-pipeline/contact-signal-rescrape.ts": 1,
     "lib/lead-pipeline/email-engagement-sourcer.ts": 2,
     "lib/lead-pipeline/email-seek.ts": 2,
-    "lib/lead-pipeline/enrichment-column-map.ts": 22,
+    "lib/lead-pipeline/enrichment-column-map.ts": 27,
     "lib/lead-pipeline/enrichment-merge.ts": 2,
     "lib/lead-pipeline/enrichment-orchestrator.ts": 1,
     "lib/lead-pipeline/enrichment-retry.ts": 3,
@@ -5723,8 +5724,7 @@
       "assemblePresentation"
     ],
     "app/actions/coaching.ts": [
-      "generateWeeklyCoachingReport",
-      "getBuyerCoaching"
+      "generateWeeklyCoachingReport"
     ],
     "app/actions/collaborative-search.ts": [
       "createCollaborativeSearch",
@@ -6100,7 +6100,8 @@
     ],
     "app/actions/document-center.ts": [
       "getDocumentCenterData",
-      "getGovernedDocumentUrl"
+      "getGovernedDocumentUrl",
+      "setClientDocumentVisibility"
     ],
     "app/actions/document-extractions.ts": [
       "listRecentExtractionsAction",
@@ -14017,9 +14018,11 @@
       "isPersonalizedForLead",
       "reasonsNotToAct",
       "planNextLeadTouch",
+      "planNextContactTouch",
       "releaseDueLeadTouches",
       "resolveLeadSettingsResolution",
       "nonActionRecordFor",
+      "loadContactNbaContext",
       "advanceLeadActionPlans"
     ],
     "lib/ai-isa/lead-call-intent.ts": [
@@ -15300,7 +15303,9 @@
       "buildCdaContractVerdict"
     ],
     "lib/commission/distribution-correction.ts": [
-      "planDistributionCorrection"
+      "planDistributionCorrection",
+      "isSummarizedDistributionType",
+      "summaryAmountFromDistributions"
     ],
     "lib/commission/engine.ts": [
       "calculateCommission"
@@ -16254,6 +16259,9 @@
       "isListingLive",
       "isTransactionLive",
       "leadDealLinkage"
+    ],
+    "lib/enrichment/field-provenance-store.ts": [
+      "persistFieldProvenance"
     ],
     "lib/enrichment/household-financials.ts": [
       "needsPaidHouseholdRung",
@@ -17504,7 +17512,9 @@
       "handoffToHumanAgent",
       "recordAiIsaOutcome",
       "routeHistoryToCanonicalEntity",
-      "resolveLeadChannel"
+      "resolveLeadChannel",
+      "recordObservedDeadEnd",
+      "recordPropertySoldForClosedAddress"
     ],
     "lib/kernel/ai-model.ts": [
       "resolveAIModel"
@@ -17896,6 +17906,7 @@
     "lib/kernel/deal-document-visibility.ts": [
       "isClientHiddenDealDocType",
       "isClientVisibleDealDocument",
+      "isClientVisibleClientDocument",
       "clientDealDocumentFilter"
     ],
     "lib/kernel/deal-play-outcomes.ts": [
@@ -18003,7 +18014,8 @@
     ],
     "lib/kernel/emit.ts": [
       "isKernelEventValue",
-      "emitKernelEvent"
+      "emitKernelEvent",
+      "asWriteResult"
     ],
     "lib/kernel/equity-trigger.ts": [
       "equityTriggerSignal",
@@ -18448,6 +18460,7 @@
       "portalLayoutsFor",
       "portalDealClient",
       "scopeToDealTenant",
+      "readClientDocumentVisibilityFlags",
       "resolvePortalLayouts",
       "portalShowsLayout",
       "buildPortalNavForLayouts",
@@ -19157,6 +19170,7 @@
       "deriveEducationLevel",
       "peopleDataProfileToContactColumns",
       "buildPeopleDataProfile",
+      "peopleDataContactPointProvenance",
       "demographicsFromProfile",
       "peopleDataProfileToLeadColumns",
       "batchDataPropertyEnrichmentToLeadColumns",
@@ -19175,6 +19189,10 @@
       "mergeHouseholdFinancials",
       "carryForwardHouseholdFinancials",
       "householdFinancialContactColumns",
+      "fieldProvenanceStamp",
+      "stampFieldProvenance",
+      "fieldProvenanceOf",
+      "withFieldProvenance",
       "fieldProvenanceForDisplay"
     ],
     "lib/lead-pipeline/enrichment-merge.ts": [

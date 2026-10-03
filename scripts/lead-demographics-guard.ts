@@ -218,7 +218,9 @@ console.log("\n[D7 · Versium hit → demographics filled on PDL's vocabulary, P
   // provenance (no demographic profile bought → a provenance-only profile), and the lead row names Versium.
   check("the raw path writes field_provenance on an EMAIL-ONLY hit too (provenance-only profile when no demographics were bought) and names Versium as enrichment_provider",
     /!versium\.demographicsProfile && Object\.keys\(versium\.fieldProvenance\)\.length > 0\s*\?\s*\{ peopleDataProfile: \{ provider: 'versium', field_provenance: versium\.fieldProvenance \} \}/.test(ppD7)
-      && /enrichment_provider: enriched\.peopleDataProfile\.provider === 'versium' \? 'versium' : 'peopledata'/.test(ppD7))
+      // Wave 100 (100C): the provider column now reads THE provider vocabulary (a Versium profile names
+      // versium; a provenance-only profile names no provider) — the rule, not the 97C ternary spelling.
+      && /enrichment_provider: enrichmentProviderOf\(enriched\.peopleDataProfile\.provider\)/.test(ppD7))
   check("POSITIVE CONTROL: the email-only finder rejects the 96B shape (provenance only when demographics were bought)",
     !/!versium\.demographicsProfile && Object\.keys\(versium\.fieldProvenance\)/.test("...(versium.demographicsProfile ? { peopleDataProfile: versium.demographicsProfile } : {}),"))
 }
@@ -247,6 +249,78 @@ console.log("\n[provenance reader — field_provenance + household_financials.so
   check("the contact card reads it: getContactInsights selects enrichment_profile, returns provenance for CRM staff only, and the panel renders source + date beside the value",
     /property_records, enrichment_profile"/.test(act) && /const provenance = contact && staff\s*\?\s*fieldProvenanceForDisplay\(/.test(act)
       && /setProvenance\(res\.provenance \?\? \{\}\)/.test(panel) && /fieldProvenance\(key\)/.test(panel) && /via \$\{p\.source\} · \$\{when\}/.test(panel))
+}
+
+// ── UNIVERSAL FIELD PROVENANCE (wave 100, lane 100C — OWNER LAW 2) ──────────
+// ONE shape (the Versium adapter's: source / capability / retrievedAt / matchConfidence, + purpose / actor)
+// written by ONE pure writer (stampFieldProvenance) at every chokepoint that sets an identity / contact /
+// property field on a contact or lead, and read back by the ONE reader for staff.
+console.log("\n[universal field provenance — one writer, every chokepoint, read for staff]")
+{
+  const M = await import("../lib/lead-pipeline/enrichment-column-map")
+  const s = M.stampFieldProvenance(["email", "", "phone"], { source: "batchdata_skip_trace", capability: "person.skip_trace", purpose: "skip_trace", retrievedAt: "2026-10-03T00:00:00.000Z", matchConfidence: 0.82 })
+  check("EXECUTED: the writer stamps every named field in THE shape (source, capability, retrievedAt, matchConfidence as text, purpose, actor) and drops a blank name",
+    Object.keys(s).join(",") === "email,phone" && s.email.source === "batchdata_skip_trace" && s.email.capability === "person.skip_trace"
+      && s.email.retrievedAt === "2026-10-03T00:00:00.000Z" && s.email.matchConfidence === "0.82" && s.email.purpose === "skip_trace" && s.email.actor === null)
+  const merged = M.withFieldProvenance({ a: 1 }, { email: { source: "staff" }, phone: { source: "old" } } as any, { phone: { source: "new" } } as any)
+  check("EXECUTED: withFieldProvenance merges layers in order — a prior stamp the new layer does not carry SURVIVES, a later layer wins per field",
+    merged.a === 1 && merged.field_provenance.email.source === "staff" && merged.field_provenance.phone.source === "new")
+  check("POSITIVE CONTROL: with no layer content no field_provenance key is invented",
+    !("field_provenance" in M.withFieldProvenance({ a: 1 }, null, {})))
+  // PDL — stamps exactly the mapped CONTACT columns it fills (the reader's keys), never a contact point.
+  const pdl = M.buildPeopleDataProfile({ ageRange: "35-44", gender: "female", currentTitle: "Nurse", linkedinUrl: "https://linkedin.com/in/x", emails: ["a@b.co"], enrichmentConfidence: 0.9 }, "2026-10-03T00:00:00.000Z")
+  const pdlKeys = Object.keys(pdl.field_provenance ?? {}).sort().join(",")
+  check(`EXECUTED: buildPeopleDataProfile stamps the contact columns it maps (${pdlKeys}) as peopledata with its likelihood, and NOT email (the writer that lands it stamps it)`,
+    pdlKeys === "age_range,gender,linkedin_url,occupation" && pdl.field_provenance.gender.source === "peopledata" && pdl.field_provenance.gender.matchConfidence === "0.9" && !pdl.field_provenance.email)
+  check("POSITIVE CONTROL: an empty PDL match carries no provenance block",
+    !("field_provenance" in M.buildPeopleDataProfile({}, "2026-10-03T00:00:00.000Z")))
+  // BatchData property datasets — both tables, keyed by the contact column (lead estimated_value → home_value_estimate).
+  const bd = { ok: true, equityPercent: 40, estimatedValue: 500000, mortgageBalance: null, foreclosureStatus: null, lastDeedType: null, ownerOccupied: null }
+  const leadPatch = M.batchDataPropertyEnrichmentToLeadColumns(bd, { field_provenance: { email: { source: "staff", capability: "contact.manual_edit", retrievedAt: "x", matchConfidence: null } } })
+  const contactPatch = M.batchDataPropertyEnrichmentToContactColumns(bd, null, { field_provenance: { email: { source: "staff", capability: "contact.manual_edit", retrievedAt: "x", matchConfidence: null } } })
+  check("EXECUTED: BatchData property values are stamped on BOTH tables (equity_estimate + home_value_estimate) and the prior staff stamp survives",
+    (leadPatch.enrichment_profile as any).field_provenance.home_value_estimate.source === "batchdata" && (leadPatch.enrichment_profile as any).field_provenance.email.source === "staff"
+      && (contactPatch.enrichment_profile as any).field_provenance.equity_estimate.purpose === "valuation" && (contactPatch.enrichment_profile as any).field_provenance.email.source === "staff")
+  check("POSITIVE CONTROL: the contact mapper called WITHOUT a profile (the pre-100C call shape) writes no enrichment_profile — the stamp exists only because the caller passed one",
+    !("enrichment_profile" in M.batchDataPropertyEnrichmentToContactColumns(bd, null)))
+  // Reader — new fields + financial filter across EVERY writer's keys (§5).
+  const prof = { field_provenance: { ...s, home_value_estimate: M.fieldProvenanceStamp({ source: "rentcast", capability: "property.avm", purpose: "valuation" }), first_name: M.fieldProvenanceStamp({ source: "staff", capability: "contact.manual_edit", purpose: "staff_edit", actor: "u-1" }) } }
+  const staffRead = M.fieldProvenanceForDisplay(prof, { includeFinancials: true })
+  const otherRead = M.fieldProvenanceForDisplay(prof, { includeFinancials: false })
+  check("EXECUTED: the reader returns capability / purpose / actor (staff edit names its actor)",
+    staffRead.first_name?.actor === "u-1" && staffRead.first_name?.purpose === "staff_edit" && staffRead.email?.capability === "person.skip_trace")
+  check("EXECUTED: includeFinancials:false drops a field_provenance FINANCIAL key whichever writer stamped it (home_value_estimate) and keeps identity keys; staff keep it (positive control)",
+    !otherRead.home_value_estimate && otherRead.first_name?.source === "staff" && staffRead.home_value_estimate?.source === "rentcast")
+  // Versium survivor — built through the one writer, shape unchanged.
+  const vc = stripped("lib/external/versium-client.ts")
+  check("the Versium adapter (the survivor shape) builds its stamps through THE ONE writer (fieldProvenanceStamp) and VersiumProvenance extends FieldProvenance",
+    /interface VersiumProvenance extends FieldProvenance/.test(vc) && (vc.match(/fieldProvenanceStamp\(\{ source: "versium"/g) ?? []).length === 2)
+  // Chokepoint wiring — every writer named by the owner calls the one writer / the one door.
+  const wire: Array<[string, string, RegExp]> = [
+    ["enrichment drain (PDL + skip-trace legs, prior stamps carried)", "lib/lead-pipeline/enrichment-orchestrator.ts", /profile\.field_provenance = withFieldProvenance\(\s*null,\s*fieldProvenanceOf\(entity\.enrichment_profile[\s\S]{0,400}contactPointProvenance\(batchDataFallback, entity\)/],
+    ["enrichment drain BatchData-only leg", "lib/lead-pipeline/enrichment-orchestrator.ts", /\.\.\.contactPointProvenance\(batchDataFallback, entity\)/],
+    ["enrichment drain Step 6f contact property stamps", "lib/lead-pipeline/enrichment-orchestrator.ts", /batchDataPropertyEnrichmentToContactColumns\(propEnrichment, [^\n]*, profile\)/],
+    ["raw-record promotion (record source / PDL / Versium / email-seek / Perplexity)", "lib/lead-pipeline/pipeline-processor.ts", /stampFieldProvenance\(fromRecord, \{ source: acquiredFrom[\s\S]{0,900}stampFieldProvenance\(gapFilled, \{ source: 'perplexity'/],
+    ["contact card Enrich now (PDL + OSINT, prior carried)", "lib/enrichment/contact-enrichment-core.ts", /withFieldProvenance\(\{ \.\.\.priorProfile, \.\.\.\(profile \?\? \{\}\) \}, fieldProvenanceOf\(priorProfile\), fieldProvenanceOf\(profile\), osintProvenance\)/],
+    ["Exa / ZenRows life events", "lib/enrichment/contact-enrichment-core.ts", /stampFieldProvenance\(\["life_events"\], \{\s*source: mentions\.ran \? "exa" : "zenrows"/],
+    ["staff edits (source staff + actor)", "lib/kernel/crm.ts", /stampFieldProvenance\(typed, \{ source: "staff", capability: "contact\.manual_edit", purpose: "staff_edit", actor: params\.actorUserId/],
+    ["contact self-edits (source contact + actor)", "app/actions/portal-settings.ts", /stampFieldProvenance\(typed, \{ source: "contact", capability: "contact\.self_edit", purpose: "self_service", actor: access\.userId \}\)/],
+    ["AVM value from the home-value form", "app/actions/home-value.ts", /persistFieldProvenance\(supabase, \{ table: "contacts"[\s\S]{0,120}stampFieldProvenance\(\["home_value_estimate"\]/],
+    ["AVM chain refresh (RentCast / BatchData tier)", "lib/wealth-advisor/scan-opportunities.ts", /stampFieldProvenance\(\["home_value_estimate"\], \{\s*source: fresh\.source/],
+  ]
+  for (const [what, file, re] of wire) check(`WIRED: ${what} — ${file}`, re.test(stripped(file)))
+  check("POSITIVE CONTROL: the wiring finder rejects the pre-100C self-edit spread (no stamp)",
+    !wire[7][2].test(`const payload = { ...updates, updated_at: now }`))
+  const store = stripped("lib/enrichment/field-provenance-store.ts")
+  check("the one persistence door is tenant-anchored on read AND write, COUNTS the update, and merges the prior block first",
+    (store.match(/\.eq\("brokerage_id", target\.brokerageId\)/g) ?? []).length === 2 && /withFieldProvenance\(prior, fieldProvenanceOf\(prior\), stamps\)/.test(store)
+      && /written\.length === 0/.test(store))
+  const pset = code("app/actions/portal-settings.ts")
+  check("the self-edit write takes only declared fields (no body spread into the contacts update)",
+    !/\{\s*\.\.\.updates,\s*updated_at/.test(pset) && /for \(const k of SELF_EDITABLE_PROFILE_FIELDS\)/.test(pset))
+  const panel100 = stripped("app/crm/contacts/[contactId]/components/enrichment-panel.tsx")
+  check("the card lists every OTHER stamped field under Field sources (not only the inline FIELD_LABELS)",
+    /const otherSources = Object\.entries\(provenance\)\.filter/.test(panel100) && /otherSources\.map\(/.test(panel100))
 }
 
 // ── cost ────────────────────────────────────────────────────────────────────

@@ -394,11 +394,22 @@ console.log("\n[A6 · the wave-98 exceptions stay closed — one booking per cal
   check(`A6a both hub arms name the survivor's booking as booked_by_survivor (found ${surv}, need 2)`, surv === 2)
 
   // A6b — buyer-coaching: routed on a MODEL_CONFIG tier, booked to the session tenant.
+  // Wave 100 (lane 100C — 99B open item): the action's duplicate cache-then-generate copy was MERGED onto
+  // lib/intelligence/coaching-engine.ts::getBuyerCoaching (§1.1). The RULE: exactly ONE routed
+  // buyer_stage_coaching generator in the tree (the survivor); the action is the session gate that passes
+  // the session tenant + the requesting user to it; the body-brokerage third door (app/actions/coaching.ts)
+  // is gone.
   const bc = keepStr("app/actions/buyer-coaching.ts")
-  check("A6b buyer-coaching rides generateTextRouted on a feature MODEL_CONFIG routes (buyer_stage_coaching)",
-    /generateTextRouted\s*\(\s*\{\s*feature:\s*["']buyer_stage_coaching["']/.test(bc) && featureRouted("buyer_stage_coaching"))
-  check("A6b buyer-coaching books the SESSION brokerage (requireCaller), never a body value",
-    /const brokerageId = caller\.brokerageId/.test(bc) && !/claude-opus-4\.6/.test(bc))
+  const eng = keepStr("lib/intelligence/coaching-engine.ts")
+  const BC_GEN = /generateTextRouted\s*\(\s*\{\s*feature:\s*["']buyer_stage_coaching["']/
+  check("A6b buyer-coaching has ONE routed generator (the engine survivor) on a MODEL_CONFIG feature (buyer_stage_coaching); the action no longer generates",
+    BC_GEN.test(eng) && !BC_GEN.test(bc) && featureRouted("buyer_stage_coaching"))
+  check("A6b POSITIVE CONTROL: the generator finder recognises the action's pre-100C spelling",
+    BC_GEN.test(`const { text: raw } = await generateTextRouted({\n    feature: "buyer_stage_coaching",`))
+  check("A6b buyer-coaching books the SESSION brokerage (requireCaller) and the requesting user, never a body value",
+    /const brokerageId = caller\.brokerageId/.test(bc) && /coachingSurvivor\(stage, [^\n]*, brokerageId, \{ actorUserId: caller\.userId \}\)/.test(bc) && !/claude-opus-4\.6/.test(bc))
+  check("A6b the body-brokerage third door is gone (app/actions/coaching.ts exports no getBuyerCoaching)",
+    !/export async function getBuyerCoaching\s*\(/.test(keepStr("app/actions/coaching.ts")))
 
   // A6c — ad-monitor: there is no "brokerage's own AI provider". `ai` is SYSTEM-ONLY in
   // lib/kernel/providers.ts, so the old resolveProvider key was the platform VENDOR name, not a

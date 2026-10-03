@@ -19,7 +19,7 @@ import { deriveSocialProfileUrl } from './social-identity-resolve'
 import { meterVendorSpend } from '@/lib/vendor-governance/meter-vendor'
 // Lane 83A — THE ONE PeopleData profile builder (also used by the enrichment drain), so a lead born
 // from a scrape carries the same demographics blob as a drained one.
-import { buildPeopleDataProfile, demographicsFromProfile, peopleDataProfileToLeadColumns, householdFinancialsFromBatchData, mergeHouseholdFinancials } from './enrichment-column-map'
+import { buildPeopleDataProfile, demographicsFromProfile, peopleDataProfileToLeadColumns, householdFinancialsFromBatchData, mergeHouseholdFinancials, stampFieldProvenance, withFieldProvenance, fieldProvenanceOf, peopleDataContactPointProvenance, enrichmentProviderOf } from './enrichment-column-map'
 import { mergeEnrichment, shouldGapFill, enrichViaPerplexity, type BaseEnrichment } from './perplexity-enrichment'
 import { recordAcquisitionIntents } from './acquisition-coverage'
 // Lane 90B — THE email rule (pure, no I/O) decides what is an enrichment anchor before any spend.
@@ -392,14 +392,17 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   const rawHousehold = householdFinancialsFromBatchData(rec.raw_data)
   if (Object.keys(rawHousehold).length > 0) {
     enriched.peopleDataProfile = mergeHouseholdFinancials(
-      enriched.peopleDataProfile ?? { provider: 'batchdata' }, rawHousehold, 'batchdata', { prefer: 'existing' },
+      enriched.peopleDataProfile?.provider ? enriched.peopleDataProfile : { ...(enriched.peopleDataProfile ?? {}), provider: 'batchdata' },
+      rawHousehold, 'batchdata', { prefer: 'existing' },
     )
   }
 
   // ── Raw-lead demographics (lane 83A) — the PDL match lands on the RAW row too, so a record that
   // stops at a gate (duplicate / identity) still carries who the person is for the next sweep and
   // for lead intelligence. normalized_preview is the raw layer's jsonb (no new column).
-  if (enriched.peopleDataProfile) {
+  // (Wave 100: a PROVENANCE-ONLY profile — no provider, the record's own fields stamped — is not an
+  // enrichment and does not mark the raw row enriched; every provider-built profile names its provider.)
+  if (enriched.peopleDataProfile?.provider) {
     const { error: rawDemoError } = await supabase.from('raw_scraped_leads').update({
       normalized_preview: { ...(rec.normalized_preview ?? {}), demographics: demographicsFromProfile(enriched.peopleDataProfile) },
       enriched_at: new Date().toISOString(),
@@ -750,7 +753,12 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
         enrichment_profile:  enriched.peopleDataProfile,
         // Wave 97 (97C): a Versium-built profile (93B3 demographics / 97C email-only provenance) names
         // Versium — the lineage page displays this value; it was 'peopledata' for every profile.
-        enrichment_provider: enriched.peopleDataProfile.provider === 'versium' ? 'versium' : 'peopledata',
+        // Wave 100 (lane 100C): through THE provider vocabulary (enrichmentProviderOf) — a profile that
+        // carries only provenance (a scraped record no provider enriched) or only BatchData household
+        // values no longer reads as 'peopledata'; with no provider the column is left unset.
+        ...(enrichmentProviderOf(enriched.peopleDataProfile.provider)
+          ? { enrichment_provider: enrichmentProviderOf(enriched.peopleDataProfile.provider) }
+          : {}),
       } : {}),
       lead_stage:            'new',
       source_raw_ids:        [rawRecordId],
@@ -1122,6 +1130,7 @@ async function enrichWithPeopleData(fields: {
 
   // Cost-gated Perplexity gap-fill: only when skip-trace left a full-name lead
   // without an email (high-value, identity-promising). No spend otherwise.
+  let gapFilled: string[] = []
   if (shouldGapFill(base) && base.first_name && base.last_name) {
     const findings = await enrichViaPerplexity({
       firstName: base.first_name,
@@ -1131,11 +1140,44 @@ async function enrichWithPeopleData(fields: {
       brokerageId: fields.brokerageId ?? undefined,
       rawRecordId: fields.rawRecordId ?? null,
     })
+    const beforeGapFill = { email: base.email, phone: base.phone }
     base = { ...base, ...mergeEnrichment(base, findings) }
+    gapFilled = (['email', 'phone'] as const).filter((k) => base[k] && base[k] !== beforeGapFill[k])
+  }
+
+  // ── FIELD PROVENANCE (wave 100, lane 100C — OWNER LAW 2: one shape, THE ONE writer
+  // enrichment-column-map.ts::stampFieldProvenance). Raw-record promotion is where a lead's identity is
+  // born, so every identity field carries WHERE it came from: the acquired record itself (its source —
+  // a scrape, a vendor list, an Exa intent find), PeopleData, Versium (its own stamps), the email-seek
+  // reverse trace, or the Perplexity gap-fill. Later layers win for the fields they landed. The stamps
+  // ride peopleDataProfile → the lead's enrichment_profile, and promotion copies that to the contact.
+  {
+    const acquiredFrom = (fields.source ?? '').trim() || 'raw_record'
+    const fromRecord = (['first_name', 'last_name', 'email', 'phone'] as const)
+      .filter((k) => nonBlank(fields[k]) && base[k] === fields[k])
+    const pdlLanded: string[] = data
+      ? (['first_name', 'last_name', 'email', 'phone'] as const).filter((k) => nonBlank(base[k]) && base[k] !== fields[k])
+      : []
+    if (data && base.mailing_address) pdlLanded.push('mailing_address')
+    const seek = (base as any).emailSeek as { status?: string; email?: string | null; provider?: string | null } | undefined
+    const prov = withFieldProvenance(
+      base.peopleDataProfile ?? null,
+      stampFieldProvenance(fromRecord, { source: acquiredFrom, capability: 'lead.acquire', purpose: 'acquisition' }),
+      fieldProvenanceOf(base.peopleDataProfile ?? null),
+      data ? peopleDataContactPointProvenance(data as any, pdlLanded) : null,
+      versiumAnswered && versium ? versium.fieldProvenance : null,
+      seek?.status === 'found' && seek.email && base.email === seek.email
+        ? stampFieldProvenance(['email'], { source: seek.provider ?? 'email_seek', capability: 'person.skip_trace', purpose: 'skip_trace' })
+        : null,
+      stampFieldProvenance(gapFilled, { source: 'perplexity', capability: 'person.web_gap_fill', purpose: 'osint' }),
+    )
+    if (prov.field_provenance) base = { ...base, peopleDataProfile: prov }
   }
 
   return base
 }
+
+const nonBlank = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
 
 // ─── Deduplication matching ───────────────────────────────────────────────────
 // CANONICAL THREE-TABLE DEDUP (owner round 38): every pass checks

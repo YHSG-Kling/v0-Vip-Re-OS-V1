@@ -13,13 +13,6 @@
  * importing the lib directly to avoid the Server Action POST round-trip.
  */
 
-// getBuyerCoaching stays in coaching-engine — a DISTINCT buyer-facing feature
-// (per-stage buyer playbooks), unrelated to the agent performance/weekly report.
-import {
-  getBuyerCoaching as _getBuyerCoaching,
-  type BuyerCoachingContent,
-  type BuyerPersona,
-} from "@/lib/intelligence/coaching-engine"
 // The agent weekly report is now sourced from the OUTCOME-BASED agent-coaching loop
 // (the single source of truth). runAgentCoachingForAgent is the WRITE path behind the
 // "Generate New Report" button; both map the brief into the dashboard's WeeklyCoachingReport shape.
@@ -32,7 +25,12 @@ export async function generateWeeklyCoachingReport(
   agentId: string,
   brokerageId: string,
 ): Promise<WeeklyCoachingReport> {
-  const report = await runAgentCoachingForAgent(agentId, brokerageId)
+  // Tenant from the SESSION (CLAUDE.md §4): this public "use server" export took both ids from the
+  // caller. The brokerage must be the caller's own; a mismatch or no session refuses (fail closed).
+  const { requireCaller } = await import("@/lib/auth/require-caller")
+  const caller = await requireCaller()
+  if (!caller.ok || caller.brokerageId !== brokerageId) throw new Error(caller.ok ? "Forbidden" : caller.error)
+  const report = await runAgentCoachingForAgent(agentId, caller.brokerageId)
   // runAgentCoachingForAgent returns null only when the agent is unknown — surface a
   // safe, honest empty report rather than throwing (the dashboard renders its empty state).
   return (
@@ -54,10 +52,10 @@ export async function generateWeeklyCoachingReport(
   )
 }
 
-export async function getBuyerCoaching(
-  buyerStage: string,
-  persona: BuyerPersona,
-  brokerageId: string,
-): Promise<BuyerCoachingContent> {
-  return _getBuyerCoaching(buyerStage, persona, brokerageId)
-}
+// TOMBSTONE (CLAUDE.md §1.1/§1.3, wave 100 lane 100C): `getBuyerCoaching(buyerStage, persona, brokerageId)`
+// that stood here was a THIRD door onto buyer coaching — a "use server" export (a public endpoint, §4)
+// that took brokerageId from the BODY, checked no session and, on a cache miss, ran a paid model call
+// under whatever tenant the caller named. Nothing imported it (grep: app/dashboard/coaching/page.tsx
+// imports the engine directly; the CRM card imports app/actions/buyer-coaching.ts). The capability lives
+// at lib/intelligence/coaching-engine.ts::getBuyerCoaching, reached from a client only through the
+// session-gated app/actions/buyer-coaching.ts::getBuyerCoaching.

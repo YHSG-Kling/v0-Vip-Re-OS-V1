@@ -288,7 +288,11 @@ console.log("\n[Layer 2c · VERSIUM CONTRACT — normalized results, provenance,
   // Gap-only: the drain passes what is held; the orchestrator writes provenance where the value lands.
   const orchP = code("lib/lead-pipeline/enrichment-orchestrator.ts")
   check("the drain writes the Versium provenance into enrichment_profile.field_provenance beside the stored values",
-    /versiumFieldProvenance = v\.fieldProvenance/.test(orchP) && /field_provenance: \{/.test(orchP) && /enrichment_profile: provenanceProfile/.test(orchP))
+    // Wave 100 (100C): written through THE ONE provenance writer (withFieldProvenance merge, prior stamps
+    // first) instead of an inline `field_provenance: {` literal — assert the rule: the Versium block is a
+    // layer of the merge that lands in enrichment_profile.
+    /versiumFieldProvenance = v\.fieldProvenance/.test(orchP) && /batchDataFallback\.via === [^?\n]*\? versiumFieldProvenance/.test(orchP)
+      && /withFieldProvenance\(priorProfile, [^\n]*legProvenance\)/.test(orchP) && /enrichment_profile: provenanceProfile/.test(orchP))
   console.log("  blind spots: Versium's live contact-output field names are UNRESOLVED (no paid call); the raw-key list is the documented API's names; enrichment_profile.field_provenance has no reader yet (the contact card does not show it); demographics are not refreshed by age (wave 92: recency only where data is time-sensitive).")
 }
 

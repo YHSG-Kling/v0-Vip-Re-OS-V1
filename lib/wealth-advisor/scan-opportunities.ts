@@ -366,6 +366,17 @@ async function detectOpportunities(input: {
             "caches a refreshed AVM back onto the contact; the value in hand is used for this scan regardless and the 14-day cache check simply re-fetches next time, so a lost cache costs an AVM call, not a result",
         },
       )
+      // FIELD PROVENANCE (wave 100, lane 100C — THE ONE writer): which AVM tier answered (RentCast /
+      // BatchData / …), its confidence and when — the chain already normalizes all three.
+      if (brokerageId) {
+        const { stampFieldProvenance } = await import("@/lib/lead-pipeline/enrichment-column-map")
+        const { persistFieldProvenance } = await import("@/lib/enrichment/field-provenance-store")
+        const prov = await persistFieldProvenance(supabase, { table: "contacts", id: contact.id, brokerageId }, stampFieldProvenance(["home_value_estimate"], {
+          source: fresh.source, capability: "property.avm", purpose: "valuation",
+          retrievedAt: fresh.fetchedAt, matchConfidence: fresh.confidence,
+        }))
+        if (!prov.ok) console.warn("[wealth-advisor] AVM provenance not recorded:", prov.error)
+      }
     }
   }
 

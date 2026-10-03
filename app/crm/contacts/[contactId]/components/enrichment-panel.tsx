@@ -78,12 +78,23 @@ const MODELED_FIELDS = new Set(["net_worth_range", "credit_score_range"])
 /** Fields a Versium DEMOGRAPHIC append fills (field_provenance.demographics covers them as a block). */
 const DEMOGRAPHIC_FIELDS = new Set(["age_range", "gender", "home_owner_status", "length_of_residence", "occupation", "education_level", "home_value_estimate"])
 
-/** "via versium · Oct 1, 2026" — source + retrieved date beside an enriched value. */
-function provenanceLabel(p: { source: string; retrievedAt: string | null; matchConfidence: string | null } | undefined): string | null {
+/** One provenance line as the ONE reader returns it (lib/lead-pipeline/enrichment-column-map.ts
+ *  FieldProvenanceLine — wave 100 adds capability / purpose / actor). */
+type ProvenanceLine = {
+  source: string; retrievedAt: string | null; matchConfidence: string | null
+  capability?: string | null; purpose?: string | null; actor?: string | null
+}
+
+/** "via versium · Oct 1, 2026" — source + retrieved date beside an enriched value; a human edit reads
+ *  "via staff · … · staff edit" so a typed value is never mistaken for a provider's. */
+function provenanceLabel(p: ProvenanceLine | undefined): string | null {
   if (!p) return null
   const when = p.retrievedAt ? new Date(p.retrievedAt).toLocaleDateString() : "date unknown"
-  return `via ${p.source} · ${when}${p.matchConfidence ? ` · ${p.matchConfidence} match` : ""}`
+  return `via ${p.source} · ${when}${p.matchConfidence ? ` · ${p.matchConfidence} match` : ""}${p.purpose ? ` · ${p.purpose.replace(/_/g, " ")}` : ""}`
 }
+
+/** Provenance keys the card already shows inline beside a value — the rest list under "Field sources". */
+const INLINE_PROVENANCE_KEYS = new Set(["email", "phone", "demographics"])
 
 const SOCIAL_FIELDS: Array<[string, string]> = [
   ["linkedin_url", "LinkedIn"],
@@ -98,7 +109,7 @@ export function EnrichmentPanel({ contactId }: Props) {
   const [lastEnriched, setLastEnriched] = useState<string | null>(null)
   // Wave 97 (lane 97C): where each enriched value came from and when (staff only — the action
   // returns an empty map to anyone else).
-  const [provenance, setProvenance] = useState<Record<string, { source: string; retrievedAt: string | null; matchConfidence: string | null }>>({})
+  const [provenance, setProvenance] = useState<Record<string, ProvenanceLine>>({})
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
@@ -175,6 +186,10 @@ export function EnrichmentPanel({ contactId }: Props) {
   const showsModeled = populated.some(([k]) => MODELED_FIELDS.has(k))
   const fieldProvenance = (key: string) =>
     provenanceLabel(provenance[key] ?? (DEMOGRAPHIC_FIELDS.has(key) ? provenance.demographics : undefined))
+  // Every OTHER stamped field (name, address, property value, social links, life events, records …) —
+  // wave 100: every enriched field shows where it came from, not only the ones with an inline slot.
+  const shownInline = new Set([...INLINE_PROVENANCE_KEYS, ...populated.map(([k]) => k)])
+  const otherSources = Object.entries(provenance).filter(([k]) => !shownInline.has(k))
 
   return (
     <Card>
@@ -267,6 +282,19 @@ export function EnrichmentPanel({ contactId }: Props) {
                     {label}
                   </a>
                 ))}
+              </div>
+            )}
+
+            {otherSources.length > 0 && (
+              <div>
+                <p className="text-xs font-medium mb-1">Field sources</p>
+                <ul className="space-y-0.5">
+                  {otherSources.map(([key, p]) => (
+                    <li key={key} className="text-[11px] text-muted-foreground">
+                      <span className="font-medium">{key.replace(/_/g, " ")}</span> {provenanceLabel(p)}
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
 

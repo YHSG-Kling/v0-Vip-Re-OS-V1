@@ -51,7 +51,10 @@ import { readCapProgress } from "@/lib/finance/cap-progress"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 import { usd } from "@/lib/format/money"
-import { planDistributionCorrection, type DistributionCorrectionKind } from "@/lib/commission/distribution-correction"
+import {
+  planDistributionCorrection, type DistributionCorrectionKind,
+  isSummarizedDistributionType, summaryAmountFromDistributions, SUMMARIZED_DISTRIBUTION_TYPES,
+} from "@/lib/commission/distribution-correction"
 
 
 // ─── CONSTANTS & ENUMS ────────────────────────────────────────────────────────
@@ -1884,6 +1887,78 @@ export async function loadAgentFinancialDashboardSummary(
 // action never accepts one), fail closed on every refused read. The insert is .select()ed and
 // COUNTED.
 
+export interface CommissionSummaryRestamp {
+  /** agent_commissions rows re-stamped (0 when the type has no summary column or no commission). */
+  agentCommissions: number
+  /** transaction_commissions stamp rows re-stamped. */
+  transactionStamps: number
+  /** Why nothing was re-stamped, when that is the correct outcome. */
+  skipped?: string
+  error?: string
+}
+
+/**
+ * Wave 100 (lane 100C — 98A open item, gap row 16). Re-derives the summary figures a correction moved:
+ * agent_commissions.net_to_agent / net_to_brokerage for the original's commission_id, and the deal
+ * stamp transaction_commissions.calculated_amount for (transaction, 'agent' + recipient agent) or
+ * (transaction, 'brokerage'). Each is Σ of that type's distribution rows (original + every correction)
+ * — re-derived, not incremented, so it is idempotent. Tenant-anchored; every UPDATE .select()ed and
+ * COUNTED (§3: an UPDATE that matches nothing also resolves).
+ */
+async function restampCommissionSummaries(
+  supabase: ReturnType<typeof createServiceClient>,
+  p: { brokerageId: string; commissionId: string | null; transactionId: string | null; agentId: string | null; distributionType: string | null },
+): Promise<CommissionSummaryRestamp> {
+  const out: CommissionSummaryRestamp = { agentCommissions: 0, transactionStamps: 0 }
+  if (!isSummarizedDistributionType(p.distributionType)) {
+    return { ...out, skipped: `distribution_type ${p.distributionType ?? "null"} has no summary column` }
+  }
+  const type = p.distributionType
+  const now = new Date().toISOString()
+  const errors: string[] = []
+
+  // ONE figure: the corrected entry's own commission (commission_id) when it has one — a deal recalculated
+  // twice carries two commissions, and summing the transaction would count both; the transaction's rows
+  // (scoped to the recipient agent) only when the entry was posted without a commission.
+  if (!p.commissionId && !p.transactionId) return { ...out, skipped: "entry has neither a commission nor a transaction" }
+  let rowsQ = supabase
+    .from("commission_distributions")
+    .select("distribution_type, calculated_amount")
+    .eq("brokerage_id", p.brokerageId)
+    .eq("distribution_type", type)
+  rowsQ = p.commissionId ? rowsQ.eq("commission_id", p.commissionId) : rowsQ.eq("transaction_id", p.transactionId as string)
+  if (!p.commissionId && type === "agent" && p.agentId) rowsQ = rowsQ.eq("agent_id", p.agentId)
+  const { data: rows, error: rowsErr } = await rowsQ
+  if (rowsErr) return { ...out, error: `distribution rows: ${rowsErr.message}` }
+  const amount = summaryAmountFromDistributions((rows ?? []) as Array<{ distribution_type: string | null; calculated_amount: number | null }>, type)
+  if (!Number.isFinite(amount)) return { ...out, error: "distribution rows carry a non-numeric amount" }
+
+  if (p.commissionId) {
+    const { data: upd, error: updErr } = await supabase
+      .from("agent_commissions")
+      .update({ [SUMMARIZED_DISTRIBUTION_TYPES[type]]: amount, updated_at: now })
+      .eq("id", p.commissionId)
+      .eq("brokerage_id", p.brokerageId)
+      .select("id")
+    if (updErr) errors.push(`agent_commissions: ${updErr.message}`)
+    else out.agentCommissions = (upd ?? []).length
+  }
+
+  if (p.transactionId) {
+    let stampQ = supabase
+      .from("transaction_commissions")
+      .update({ calculated_amount: amount, updated_at: now })
+      .eq("transaction_id", p.transactionId)
+      .eq("brokerage_id", p.brokerageId)
+      .eq("recipient_type", type)
+    if (type === "agent" && p.agentId) stampQ = stampQ.eq("recipient_id", p.agentId)
+    const { data: upd, error: updErr } = await stampQ.select("id")
+    if (updErr) errors.push(`transaction_commissions: ${updErr.message}`)
+    else out.transactionStamps = (upd ?? []).length
+  }
+  return errors.length > 0 ? { ...out, error: errors.join("; ") } : out
+}
+
 export interface CorrectCommissionDistributionInput {
   ctx: FinancialActorContext
   distributionId: string
@@ -1894,7 +1969,7 @@ export interface CorrectCommissionDistributionInput {
 
 export async function correctCommissionDistribution(
   input: CorrectCommissionDistributionInput,
-): Promise<KernelFinancialResult<{ correctionId: string; amount: number; netAfter: number }>> {
+): Promise<KernelFinancialResult<{ correctionId: string; amount: number; netAfter: number; summaries: CommissionSummaryRestamp }>> {
   const { ctx, distributionId, kind } = input
   if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
     return { success: false, error: "Only the brokerage's finance admins can correct a posted commission entry." }
@@ -1956,7 +2031,21 @@ export async function correctCommissionDistribution(
     if (!inserted || inserted.length !== 1) {
       return { success: false, error: `Correction not recorded (${inserted?.length ?? 0} rows written)` }
     }
-    return { success: true, data: { correctionId: (inserted[0] as { id: string }).id, amount: plan.amount, netAfter: plan.netAfter } }
+    // Wave 100 (lane 100C — 98A open item): the SUMMARY rows re-derived from the distribution rows
+    // (lib/commission/distribution-correction.ts SUMMARY RE-STAMP). The correction is already posted
+    // (append-only), so a refused re-stamp is REPORTED beside the success, never rolled into a failure.
+    const restamp = await restampCommissionSummaries(supabase, {
+      brokerageId: ctx.brokerageId,
+      commissionId: (o.commission_id as string | null) ?? null,
+      transactionId: (o.transaction_id as string | null) ?? null,
+      agentId: (o.agent_id as string | null) ?? null,
+      distributionType: (o.distribution_type as string | null) ?? null,
+    })
+    if (restamp.error) console.error("[financial] commission correction posted; summary re-stamp incomplete:", restamp.error)
+    return {
+      success: true,
+      data: { correctionId: (inserted[0] as { id: string }).id, amount: plan.amount, netAfter: plan.netAfter, summaries: restamp },
+    }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) }
   }

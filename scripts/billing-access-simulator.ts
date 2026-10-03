@@ -200,6 +200,43 @@ async function main() {
       deps: { ...viaAccess(active), vendorBudget: async () => ({ allowed: true, spent: 0, budget: 50, softWarning: false, degraded: true }) } })
     check("the vendor-budget half keeps its DOCUMENTED fail-open contract, surfaced as budgetDegraded", degraded.allowed && degraded.budgetDegraded === true)
 
+    // ── wave 100 (lane 100C — 99A open item 3): the PLAN-FEATURE half, composed as capability "feature.use".
+    const seen: Array<{ u: string; k: string; c: unknown }> = []
+    const sessionClient = { tag: "session-client" }
+    const featOk = await mayUseAndAfford({ brokerageId: "b1", capability: "feature.use", now, feature: { userId: "u1", featureKey: "direct_mail", client: sessionClient },
+      deps: { ...viaAccess(active), featureAccess: async (u, k, _t, c) => { seen.push({ u, k, c }); return { allowed: true, limit: 10, used: 2 } } } })
+    check("feature.use: subscription current + canAccessFeature allows → allowed, the verdict rides back, and the gate read through the CALLER'S client (the session seam)",
+      featOk.allowed && featOk.reason === "subscription_current" && (featOk.feature as any)?.used === 2 && seen.length === 1 && seen[0].c === sessionClient && seen[0].k === "direct_mail")
+    const featNo = await mayUseAndAfford({ brokerageId: "b1", capability: "feature.use", now, feature: { userId: "u1", featureKey: "direct_mail" },
+      deps: { ...viaAccess(active), featureAccess: async () => ({ allowed: false, reason: "Not on your plan" }) } })
+    check("feature.use: a feature refusal refuses, names the feature, and carries the gate's own message",
+      !featNo.allowed && featNo.reason === "feature_refused:direct_mail" && featNo.message === "Not on your plan")
+    const featLapsed = await mayUseAndAfford({ brokerageId: "b1", capability: "feature.use", now, feature: { userId: "u1", featureKey: "direct_mail" },
+      deps: { ...viaAccess(resolveBillingAccess({ status: "cancelled", trial_end: null }, now)), featureAccess: async () => { throw new Error("feature gate must not be asked when access is refused") } } })
+    check("feature.use: a LAPSED tenant is refused on access BEFORE the feature gate runs (the gap the bare canAccessFeature call left open)",
+      !featLapsed.allowed && featLapsed.reason === "status_cancelled")
+    const featThrew = await mayUseAndAfford({ brokerageId: "b1", capability: "feature.use", now, feature: { userId: "u1", featureKey: "x" },
+      deps: { ...viaAccess(active), featureAccess: async () => { throw new Error("flag read refused") } } })
+    const featNone = await mayUseAndAfford({ brokerageId: "b1", capability: "feature.use", now, deps: { ...viaAccess(active), featureAccess: async () => ({ allowed: true }) } })
+    check("feature.use FAILS CLOSED: a gate that threw refuses (feature_check_threw), and no feature named refuses (feature_unspecified) even when the gate would allow (positive control)",
+      !featThrew.allowed && /^feature_check_threw/.test(featThrew.reason) && !featNone.allowed && featNone.reason === "feature_unspecified")
+    const mk = stripComments(readFileSync(join(process.cwd(), "lib/kernel/marketing.ts"), "utf8"))
+    check("WIRED: the direct-mail creator asks mayUseAndAfford(feature.use) with its client seam — the bare canAccessFeature(…\"direct_mail\"…) call is gone (tombstoned)",
+      /capability: "feature\.use",\s*feature: \{ userId: actorUserId, featureKey: "direct_mail", client: featureClient \}/.test(mk) && !/await canAccessFeature\(actorUserId, "direct_mail"/.test(mk))
+    check("POSITIVE CONTROL: the bare-call finder flags the pre-100C spelling",
+      /await canAccessFeature\(actorUserId, "direct_mail"/.test(`const access = await canAccessFeature(actorUserId, "direct_mail", undefined, featureClient)`))
+
+    // ── wave 100 (lane 100C — 99A open item 2): dunning recipients come from THE roster.
+    const dun = blankStrings(stripComments(readFileSync(join(process.cwd(), "lib/billing/dunning.ts"), "utf8")))
+    const dunKeep = stripComments(readFileSync(join(process.cwd(), "lib/billing/dunning.ts"), "utf8"))
+    check("dunning in-app recipients spread TENANT_COMMERCE_ADMIN_USER_TYPES (lib/auth/resolve-user-role.ts) — no retyped role literal",
+      /\.in\("user_type", \[\.\.\.TENANT_COMMERCE_ADMIN_USER_TYPES\]\)/.test(dunKeep) && !/\.in\(\s*"user_type"\s*,\s*\[\s*"broker"/.test(dunKeep) && dun.length > 0)
+    check("POSITIVE CONTROL: the retyped-roster finder flags the pre-100C literal",
+      /\.in\(\s*"user_type"\s*,\s*\[\s*"broker"/.test(`.in("user_type", ["broker", "admin"]).limit(20)`))
+    const { TENANT_COMMERCE_ADMIN_USER_TYPES } = await import("../lib/auth/resolve-user-role")
+    check("the roster reaches every billing owner (broker_owner, broker_admin) and excludes compliance_officer (reads the books, never pays)",
+      TENANT_COMMERCE_ADMIN_USER_TYPES.has("broker_owner") && TENANT_COMMERCE_ADMIN_USER_TYPES.has("broker_admin") && !TENANT_COMMERCE_ADMIN_USER_TYPES.has("compliance_officer"))
+
     check("request boundary: /dashboard/** is paywalled, the billing / onboarding / staff doors are not, /portal is not this gate",
       isPaywalledPath("/dashboard") && isPaywalledPath("/dashboard/agent/leads") && !isPaywalledPath("/dashboard/admin/billing")
       && !isPaywalledPath("/dashboard/admin/billing/invoices") && isPaywalledPath("/dashboard/admin/billingx")

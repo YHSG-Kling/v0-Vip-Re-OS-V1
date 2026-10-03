@@ -11,6 +11,7 @@
 // paywall (billing-access) already gates access; dunning is the communication.
 
 import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
+import { TENANT_COMMERCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 export interface DunningStep {
   step: number
@@ -158,11 +159,16 @@ export async function runDunningSweep(svc: any, now: Date = new Date()): Promise
       const amountCents = open[0]?.amount_cents ?? null
       const msg = composeDunningMessage(step, brokerageName, amountCents)
 
-      // In-app to the tenant's billing admins (broker/admin user types).
-      const { data: admins } = await svc
+      // In-app to the tenant's billing admins — THE roster of who may obligate the brokerage to pay
+      // (subscription, seats): TENANT_COMMERCE_ADMIN_USER_TYPES (lib/auth/resolve-user-role.ts, CLAUDE.md
+      // §4 — spread the Set, never retype it). Wave 100 (lane 100C, 99A open item 2): this was the literal
+      // ["broker","admin"], so a broker_owner / broker_admin / team_lead billing owner was never told the
+      // card failed. compliance_officer is excluded by the roster itself (reads the books, never pays).
+      const { data: admins, error: adminsError } = await svc
         .from("users").select("id, email")
         .eq("brokerage_id", sub.brokerage_id)
-        .in("user_type", ["broker", "admin"]).limit(20)
+        .in("user_type", [...TENANT_COMMERCE_ADMIN_USER_TYPES]).limit(20)
+      if (adminsError) console.warn("[dunning.ts] billing-admin read refused — no in-app or email recipient:", adminsError.message)
       const adminRows = (admins ?? []) as Array<{ id: string; email: string | null }>
       if (adminRows.length > 0) {
         const { error: notifyError } = await svc.from("notifications").insert(adminRows.map((a) => ({

@@ -920,12 +920,23 @@ export async function getSellerDocuments(contactId: string, transactionId: strin
   const supabase = createServiceClient()
 
   // Get client documents — scoped to caller's brokerage
-  const { data: clientDocs } = await supabase
+  const { data: clientDocsRaw, error: clientDocsError } = await supabase
     .from("client_documents")
-    .select("id, document_type, file_name:document_name, file_url:document_url, created_at, status")
+    .select("id, document_type, doc_category, uploaded_by, file_name:document_name, file_url:document_url, created_at, status")
     .eq("contact_id", contactId)
     .eq("brokerage_id", access.brokerageId)
     .order("created_at", { ascending: false })
+  if (clientDocsError) console.error("[portal-seller] client documents read refused:", clientDocsError.message)
+  // Wave 100 (lane 100C): the CLIENT sees their own folder through THE deal-document rule — staff-shown
+  // (client_visible, m695) or self-uploaded, never a denied type (it had no filter at all here: a CDA
+  // filed into the seller's folder reached the seller). Staff previewing the portal see every row.
+  let clientDocs = (clientDocsRaw ?? []) as Array<{ id: string; uploaded_by?: string | null; document_type?: string | null; doc_category?: string | null; [k: string]: unknown }>
+  if (access.isContactSelf) {
+    const { readClientDocumentVisibilityFlags } = await import("@/lib/kernel/portal")
+    const { isClientVisibleClientDocument } = await import("@/lib/kernel/deal-document-visibility")
+    const flags = await readClientDocumentVisibilityFlags(supabase, clientDocs.map((d) => d.id))
+    clientDocs = clientDocs.filter((d) => isClientVisibleClientDocument({ ...d, client_visible: flags.get(d.id) === true }, access.userId))
+  }
 
   // Get transaction documents if we have a transaction; verify ownership first
   let transactionDocs: any[] = []

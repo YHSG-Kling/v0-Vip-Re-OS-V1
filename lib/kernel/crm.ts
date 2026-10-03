@@ -1156,6 +1156,21 @@ export async function updateContactRecord(params: {
     return { success: false, error: error?.message ?? "Update failed or contact not found" }
   }
 
+  // FIELD PROVENANCE (wave 100, lane 100C — THE ONE writer, enrichment-column-map.ts::stampFieldProvenance):
+  // an identity / contact-point field a person TYPED is stamped source 'staff' with the REAL actor (the
+  // impersonator under act-as), so the contact card says a human — not a provider — set it, and a later
+  // enrichment pass carries the stamp forward. Non-blocking: the value is already written.
+  {
+    const typed = (["first_name", "last_name", "email", "phone"] as const).filter((k) => params.updates[k] !== undefined)
+    if (typed.length > 0) {
+      const { stampFieldProvenance } = await import("@/lib/lead-pipeline/enrichment-column-map")
+      const { persistFieldProvenance } = await import("@/lib/enrichment/field-provenance-store")
+      const prov = await persistFieldProvenance(supabase, { table: "contacts", id: params.contactId, brokerageId: params.brokerageId },
+        stampFieldProvenance(typed, { source: "staff", capability: "contact.manual_edit", purpose: "staff_edit", actor: params.actorUserId ?? null }))
+      if (!prov.ok) console.warn("[crm] staff-edit provenance not recorded:", prov.error)
+    }
+  }
+
   // Lifecycle event — actor_user_id names the REAL actor (act-as seam: the
   // impersonating staff member, never the tenant identity they act as).
   await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({

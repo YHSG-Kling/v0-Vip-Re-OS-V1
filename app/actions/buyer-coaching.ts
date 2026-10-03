@@ -3,18 +3,14 @@
 /**
  * Buyer Coaching Card — Server Actions
  *
- * Reads/writes buyer_stage_coaching with the same cache-then-generate
- * pattern as seller-coaching: priority lookup (brokerage → system default),
- * cache miss → Anthropic generate → INSERT as system-default row.
+ * The SESSION gate in front of the one buyer-coaching engine
+ * (lib/intelligence/coaching-engine.ts::getBuyerCoaching): priority lookup
+ * (brokerage → system default), cache miss → routed generate → cached row.
  */
 
-// ROUTED, was raw (lane 99B). It used to call the raw SDK pinned to
-// claude-opus-4.6 — a model absent from MODEL_CONFIG, with no ai_tool_usage row.
-// It now rides lib/ai/models.ts:buyer_stage_coaching (claude-sonnet → gpt-4o
-// fallback), the SAME routing entry lib/intelligence/coaching-engine.ts already
-// uses for this exact content, booked to the caller's brokerage (the session's —
-// this file's own header records that a cache miss BILLS the brokerage).
-import { generateTextRouted } from "@/lib/ai/models"
+// ROUTED (lane 99B), then MERGED (wave 100, lane 100C): the model call this file made now lives only
+// in the survivor lib/intelligence/coaching-engine.ts::getBuyerCoaching (same routed feature,
+// lib/ai/models.ts:buyer_stage_coaching). See the tombstone in the body.
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireCaller } from "@/lib/auth/require-caller"
 import { isCrmContactStaff } from "@/lib/auth/crm-contact-staff"
@@ -89,116 +85,35 @@ export async function getBuyerCoaching(params: {
   const stage   = contact.buyer_stage   ?? "prospect"
   const persona = contact.contact_persona ?? null
 
-  // 2. Priority-ordered lookup: brokerage+persona > brokerage+null > system+persona > system+null
-  const { data: cached } = await supabase
-    .from("buyer_stage_coaching")
-    .select("*")
-    .eq("buyer_stage", stage)
-    .or(`brokerage_id.eq.${brokerageId},brokerage_id.is.null`)
-    .or(persona ? `persona.eq.${persona},persona.is.null` : "persona.is.null")
-    .eq("is_active", true)
-    .order("brokerage_id",  { ascending: false, nullsFirst: false })
-    .order("persona",       { ascending: false, nullsFirst: false })
-    .limit(1)
-    .maybeSingle()
-
-  if (cached) {
+  // TOMBSTONE (CLAUDE.md §1.1, wave 100 lane 100C — 99B open item): this action's OWN cache-then-generate
+  // copy (a priority lookup on buyer_stage_coaching, a generateTextRouted("buyer_stage_coaching") call on
+  // a miss, an INSERT of a system-default row) is DELETED — a second implementation of one feature over
+  // one table. Survivor: lib/intelligence/coaching-engine.ts::getBuyerCoaching (freshness window,
+  // scope-correct upsert, booked through the same routed feature). What this copy had and the survivor
+  // lacked was merged onto it FIRST: the is_active filter, maybeSingle, the full playbook fields this card
+  // renders (objections, next action, stage duration, success / risk signals) and the requesting user on
+  // the ledger row. This action is now only the SESSION gate (above) in front of the survivor; the tenant
+  // it passes is the session's (`brokerageId = caller.brokerageId`), never params.brokerageId.
+  try {
+    const { getBuyerCoaching: coachingSurvivor } = await import("@/lib/intelligence/coaching-engine")
+    const c = await coachingSurvivor(stage, persona as Parameters<typeof coachingSurvivor>[1], brokerageId, { actorUserId: caller.userId })
     return {
       success:  true,
       coaching: {
-        id:                       cached.id,
-        buyer_stage:              cached.buyer_stage,
-        persona:                  cached.persona,
-        coaching_headline:        cached.coaching_headline,
-        coaching_body:            cached.coaching_body,
-        suggested_talking_points: cached.suggested_talking_points ?? [],
-        common_objections:        cached.common_objections          ?? [],
-        next_action_prompt:       cached.next_action_prompt         ?? null,
-        estimated_stage_duration: cached.estimated_stage_duration   ?? null,
-        success_signals:          cached.success_signals            ?? [],
-        risk_signals:             cached.risk_signals               ?? [],
+        id:                       c.id ?? "generated",
+        buyer_stage:              c.buyer_stage,
+        persona:                  c.persona,
+        coaching_headline:        c.coaching_headline,
+        coaching_body:            c.coaching_body,
+        suggested_talking_points: c.suggested_talking_points ?? [],
+        common_objections:        c.common_objections         ?? [],
+        next_action_prompt:       c.next_action_prompt        ?? null,
+        estimated_stage_duration: c.estimated_stage_duration  ?? null,
+        success_signals:          c.success_signals           ?? [],
+        risk_signals:             c.risk_signals              ?? [],
       },
     }
-  }
-
-  // 3. Cache miss — generate via AI
-  const stageLabel = stage.replace(/_/g, " ").replace("BUYER ", "").toLowerCase()
-  const personaCtx = persona ? ` The buyer has a "${persona}" persona.` : ""
-
-  const { text: raw } = await generateTextRouted({
-    feature: "buyer_stage_coaching",
-    brokerageId,
-    userId: caller.userId,
-    prompt: `You are a real estate coaching expert. Generate agent coaching content for a buyer at stage: "${stageLabel}".${personaCtx}
-
-Return ONLY valid JSON matching this structure exactly:
-{
-  "coaching_headline": "Short motivating headline (max 10 words)",
-  "coaching_body": "2-3 sentence coaching guidance for the agent about this stage",
-  "suggested_talking_points": ["point 1", "point 2", "point 3", "point 4"],
-  "common_objections": [
-    { "objection": "I'm not sure I'm ready", "response": "Acknowledge and bridge response" },
-    { "objection": "The market seems risky", "response": "Data-driven reassurance response" }
-  ],
-  "next_action_prompt": "Single clear next action for the agent to take",
-  "estimated_stage_duration": "Typical duration string e.g. '3-7 days'",
-  "success_signals": ["Signal 1", "Signal 2", "Signal 3"],
-  "risk_signals": ["Risk 1", "Risk 2"]
-}`,
-  })
-
-  let parsed: any
-  try {
-    const jsonMatch = raw.match(/\{[\s\S]*\}/)
-    parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw)
-  } catch {
-    parsed = {
-      coaching_headline:        `Coaching for ${stageLabel}`,
-      coaching_body:            "Guide your buyer through this stage with clear communication and consistent follow-up.",
-      suggested_talking_points: ["Check in on their timeline", "Review recent listings", "Address any concerns", "Confirm next steps"],
-      common_objections:        [],
-      next_action_prompt:       "Schedule a check-in call within 48 hours",
-      estimated_stage_duration: "3-7 days",
-      success_signals:          ["Engaged in conversation", "Actively reviewing properties"],
-      risk_signals:             ["Unresponsive for 3+ days"],
-    }
-  }
-
-  // 4. Cache as system-default row (brokerage_id = null)
-  const { data: inserted, error: coachingCacheErr } = await supabase
-    .from("buyer_stage_coaching")
-    .insert({
-      brokerage_id:             null,
-      buyer_stage:              stage,
-      persona:                  persona,
-      coaching_headline:        parsed.coaching_headline,
-      coaching_body:            parsed.coaching_body,
-      suggested_talking_points: parsed.suggested_talking_points ?? [],
-      common_objections:        parsed.common_objections         ?? [],
-      next_action_prompt:       parsed.next_action_prompt        ?? null,
-      estimated_stage_duration: parsed.estimated_stage_duration  ?? null,
-      success_signals:          parsed.success_signals           ?? [],
-      risk_signals:             parsed.risk_signals              ?? [],
-      is_active:                true,
-    })
-    .select("id")
-    .single()
-  if (coachingCacheErr) console.error(`[buyer-coaching] coaching cache row NOT saved: ${coachingCacheErr.message}`)
-
-  return {
-    success:  true,
-    coaching: {
-      id:                       inserted?.id ?? "generated",
-      buyer_stage:              stage,
-      persona,
-      coaching_headline:        parsed.coaching_headline,
-      coaching_body:            parsed.coaching_body,
-      suggested_talking_points: parsed.suggested_talking_points ?? [],
-      common_objections:        parsed.common_objections         ?? [],
-      next_action_prompt:       parsed.next_action_prompt        ?? null,
-      estimated_stage_duration: parsed.estimated_stage_duration  ?? null,
-      success_signals:          parsed.success_signals           ?? [],
-      risk_signals:             parsed.risk_signals              ?? [],
-    },
+  } catch (e) {
+    return { success: false, error: (e as Error)?.message ?? "Coaching could not be loaded" }
   }
 }

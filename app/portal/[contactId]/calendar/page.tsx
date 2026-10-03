@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { Suspense } from "react"
-import { clientTransactionFilter, portalDealClient, scopeToDealTenant, selectClientMilestones } from "@/lib/kernel/portal"
+import { clientTransactionFilter, portalDealClient, scopeToDealTenant, selectClientMilestones, readClientDocumentVisibilityFlags } from "@/lib/kernel/portal"
+import { isClientVisibleClientDocument } from "@/lib/kernel/deal-document-visibility"
 import PortalCalendarDashboard from "@/components/portal/PortalCalendarDashboard"
 
 export default async function CalendarPage({ params }: { params: Promise<{ contactId: string }> }) {
@@ -74,7 +75,13 @@ export default async function CalendarPage({ params }: { params: Promise<{ conta
 
   const showings = showingsResult.data || []
   const transactions = transactionsResult.data || []
-  const pendingDocuments = documentsResult.data || []
+  // Wave 100 (lane 100C): the client's folder follows THE deal-document rule (staff-shown or
+  // self-uploaded, never a denied type) — lib/kernel/deal-document-visibility.ts isClientVisibleClientDocument.
+  const { data: { user: viewer } } = await supabase.auth.getUser()
+  const pendingRaw = (documentsResult.data || []) as Array<{ id: string; uploaded_by?: string | null; document_type?: string | null; doc_category?: string | null }>
+  const pendingFlags = await readClientDocumentVisibilityFlags(supabase, pendingRaw.map((d) => d.id))
+  const pendingDocuments = pendingRaw.filter((d) =>
+    isClientVisibleClientDocument({ ...d, client_visible: pendingFlags.get(d.id) === true }, viewer?.id ?? null))
 
   // The kernel decides which milestones a client sees (the service client reads them all).
   const milestones = transactions.flatMap((t: any) =>
