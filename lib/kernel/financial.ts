@@ -51,6 +51,7 @@ import { readCapProgress } from "@/lib/finance/cap-progress"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 import { usd } from "@/lib/format/money"
+import { planDistributionCorrection, type DistributionCorrectionKind } from "@/lib/commission/distribution-correction"
 
 
 // ─── CONSTANTS & ENUMS ────────────────────────────────────────────────────────
@@ -1865,6 +1866,101 @@ export async function loadAgentFinancialDashboardSummary(
         earningsHistory: historyResult.data ?? [],
       },
     }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+// ─── COMMISSION CORRECTION (wave 98 — owner: "yes build commission correction screen") ───────────
+//
+// m689 made a POSTED (paid) commission_distributions entry append-only; this is the ONE writer of
+// its correction: a NEW row (m690 entry_type 'reversal' | 'adjustment', adjusts_distribution_id →
+// the original, correction_reason, corrected_by) whose signed amount the pure planner
+// (lib/commission/distribution-correction.ts) derives in cents from the original + every earlier
+// correction. The paid row is never updated. The row inherits the original's recipient + deal +
+// type + commission so every reader that sums calculated_amount (CDA breakdown, referral earnings,
+// revenue-share board, CDA template fields) nets the correction in with no special case; it is
+// stamped 'paid' (posted at once) so the posting UPDATEs — which skip paid rows — never touch it, and
+// m689 makes it append-only in turn.
+//
+// GATE: the brokerage's books tier (isBrokerageFinanceAdmin — BROKERAGE_FINANCE_ADMIN_USER_TYPES
+// plus the m526 tenant principal), the tenant from the SESSION context (ctx.brokerageId — the
+// action never accepts one), fail closed on every refused read. The insert is .select()ed and
+// COUNTED.
+
+export interface CorrectCommissionDistributionInput {
+  ctx: FinancialActorContext
+  distributionId: string
+  kind: DistributionCorrectionKind
+  correctedAmount?: number | null
+  reason: string
+}
+
+export async function correctCommissionDistribution(
+  input: CorrectCommissionDistributionInput,
+): Promise<KernelFinancialResult<{ correctionId: string; amount: number; netAfter: number }>> {
+  const { ctx, distributionId, kind } = input
+  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
+    return { success: false, error: "Only the brokerage's finance admins can correct a posted commission entry." }
+  }
+  if (!ctx.brokerageId) return { success: false, error: "Missing brokerage context" }
+  const supabase = createServiceClient()
+  try {
+    const { data: original, error: readErr } = await supabase
+      .from("commission_distributions")
+      .select("id, brokerage_id, transaction_id, commission_id, agent_id, team_id, rule_id, distribution_type, source_of_funds, cap_status, status, entry_type, calculated_amount")
+      .eq("id", distributionId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (readErr) return { success: false, error: `Could not read the entry: ${readErr.message}` }
+    if (!original) return { success: false, error: "Commission entry not found" }
+
+    const { data: prior, error: priorErr } = await supabase
+      .from("commission_distributions")
+      .select("calculated_amount")
+      .eq("adjusts_distribution_id", distributionId)
+      .eq("brokerage_id", ctx.brokerageId)
+    if (priorErr) return { success: false, error: `Could not read earlier corrections: ${priorErr.message}` }
+
+    const plan = planDistributionCorrection({
+      original: original as { id: string; status: string | null; entry_type?: string | null; calculated_amount: number | null },
+      priorCorrections: (prior ?? []) as Array<{ calculated_amount: number | null }>,
+      kind,
+      correctedAmount: input.correctedAmount ?? null,
+      reason: input.reason,
+    })
+    if (!plan.ok) return { success: false, error: plan.error }
+
+    const o = original as Record<string, unknown>
+    const now = new Date().toISOString()
+    const { data: inserted, error: insErr } = await supabase
+      .from("commission_distributions")
+      .insert({
+        brokerage_id:            ctx.brokerageId,
+        transaction_id:          o.transaction_id ?? null,
+        commission_id:           o.commission_id ?? null,
+        agent_id:                o.agent_id ?? null,
+        team_id:                 o.team_id ?? null,
+        rule_id:                 o.rule_id ?? null,
+        distribution_type:       o.distribution_type,
+        source_of_funds:         o.source_of_funds ?? "brokerage",
+        cap_status:              o.cap_status ?? null,
+        calculation_type:        "flat",
+        calculation_value:       plan.amount,
+        calculated_amount:       plan.amount,
+        status:                  "paid",
+        paid_at:                 now,
+        entry_type:              kind,
+        adjusts_distribution_id: distributionId,
+        correction_reason:       input.reason.trim(),
+        corrected_by:            ctx.userId,
+      })
+      .select("id, calculated_amount")
+    if (insErr) return { success: false, error: `Correction refused: ${insErr.message}` }
+    if (!inserted || inserted.length !== 1) {
+      return { success: false, error: `Correction not recorded (${inserted?.length ?? 0} rows written)` }
+    }
+    return { success: true, data: { correctionId: (inserted[0] as { id: string }).id, amount: plan.amount, netAfter: plan.netAfter } }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) }
   }

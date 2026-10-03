@@ -78,7 +78,8 @@ export function ledgerSocialPublish(
     channel: "social",
     actor: ledger.actorUserId ? { type: "user", userId: ledger.actorUserId } : { type: "system" },
     subject: ledger.postId ? { type: "social_post", id: ledger.postId } : { type: "social_account", id: null, ref: params.accountId },
-    reasonCode: ledger.reasonCode ?? null,
+    // m691: a scheduled social post has its own reason (it was UNSPECIFIED — no m687 code fit).
+    reasonCode: ledger.reasonCode ?? "SCHEDULED_CONTENT_PUBLISH",
     reasonDetail: `publish to ${platform}`,
     cycle: ledger.cycle ?? null,
     riskClass: "COMMUNICATION",

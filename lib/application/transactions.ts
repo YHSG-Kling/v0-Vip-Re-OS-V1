@@ -1014,6 +1014,41 @@ export async function updateDocumentStatus(documentId: string, status: string, s
   return { success: true, data }
 }
 
+/**
+ * WAVE 98 (owner: client-visible deal documents) — the staff WRITER of
+ * transaction_documents.client_visible (m690), the flag the portal's
+ * isClientVisibleDealDocument reads. Same gate as updateDocumentStatus (the acting
+ * session's RLS-scoped client, so a document outside the caller's deals matches
+ * nothing). Publishing a DENIED type (CDA / disbursement / internal) is refused here
+ * as well as hidden on read. The update is `.select()`ed and COUNTED: zero rows means
+ * the tenant predicate refused, and that is reported, never "saved".
+ */
+export async function setDocumentClientVisibility(documentId: string, visible: boolean) {
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
+  const { data: doc, error: readErr } = await supabase
+    .from("transaction_documents")
+    .select("id, doc_type, transaction_id")
+    .eq("id", documentId)
+    .maybeSingle()
+  if (readErr) return { success: false, error: readErr.message }
+  if (!doc) return { success: false, error: "Document not found" }
+  const { isClientHiddenDealDocType } = await import("@/lib/kernel/deal-document-visibility")
+  if (visible && isClientHiddenDealDocType((doc as { doc_type?: string | null }).doc_type)) {
+    return { success: false, error: "This document type (CDA / disbursement / internal) is never shown to clients." }
+  }
+  const { data, error } = await supabase
+    .from("transaction_documents")
+    .update({ client_visible: visible })
+    .eq("id", documentId)
+    .select("id, client_visible")
+  if (error) return { success: false, error: error.message }
+  if (!data || data.length !== 1) return { success: false, error: "Document visibility not saved (no row matched)" }
+  revalidatePath(`/dashboard/transactions/${(doc as { transaction_id: string }).transaction_id}`)
+  return { success: true, data: data[0] }
+}
+
 // ============================================
 // TIMELINE
 // ============================================

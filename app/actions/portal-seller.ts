@@ -943,14 +943,24 @@ export async function getSellerDocuments(contactId: string, transactionId: strin
         tx.seller_contact_id === contactId ||
         tx.contact_id === contactId)
     if (txValid) {
-      const { data: txDocs } = await supabase
+      // WAVE 98 owner ruling — this read is ELEVATED (service client), and it returned EVERY
+      // deal document to the seller portal: the CDA / disbursement form and internal paperwork
+      // included. It now applies the ONE client-visibility rule (lib/kernel/portal.ts
+      // isClientVisibleDealDocument): staff-marked client_visible (m690) or uploaded by this
+      // viewer, never a denied type. A refused read (m690 not applied) shows nothing.
+      const { clientDealDocumentFilter, isClientVisibleDealDocument } = await import("@/lib/kernel/deal-document-visibility")
+      const { data: txDocs, error: txDocsError } = await supabase
         .from("transaction_documents")
-        .select("id, document_type:doc_type, file_name:doc_label, file_url:storage_url, created_at, status")
+        .select("id, document_type:doc_type, file_name:doc_label, file_url:storage_url, created_at, status, doc_type, client_visible, uploaded_by")
         .eq("transaction_id", transactionId)
         .eq("brokerage_id", access.brokerageId)
+        .or(clientDealDocumentFilter(access.userId))
         .order("created_at", { ascending: false })
+      if (txDocsError) console.error(`[portal-seller] deal documents read refused for transaction ${transactionId}: ${txDocsError.message}`)
 
-      transactionDocs = txDocs ?? []
+      transactionDocs = ((txDocs ?? []) as Array<{ doc_type?: string | null; client_visible?: boolean | null; uploaded_by?: string | null }>)
+        .filter((d) => isClientVisibleDealDocument(d, access.userId))
+        .map(({ client_visible: _cv, uploaded_by: _ub, doc_type: _dt, ...rest }) => rest)
     }
   }
 

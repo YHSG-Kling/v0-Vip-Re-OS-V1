@@ -961,6 +961,23 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
       }
     }
 
+    // ── 1b. WAVE 98 — an APPROVED client-facing video whose render just landed ─────────
+    // A video approved before its render finished had no URL to deliver at approval
+    // (lib/kernel/approval-queue-aggregator.ts applyMarketingAssetApproval("video")); this
+    // render-ready moment is the second and last delivery point. The rule (approved +
+    // CLIENT_FACING_VIDEO_TYPES + a contact) and the once-per-video idempotency live in
+    // lib/video/client-video-delivery.ts; its kinds are disjoint from personalVideoTypes above,
+    // so this never doubles the draft rail.
+    if (video_id) {
+      const { deliverApprovedClientVideo } = await import("@/lib/video/client-video-delivery")
+      const delivery = await deliverApprovedClientVideo(svc as any, video_id)
+      if (delivery.card === "written") summary.push("client video portal card")
+      if (delivery.email === "sent") summary.push("client video email")
+      if (delivery.card === "failed" || delivery.email === "failed") {
+        console.error(`[handleVideoGenerated] client video delivery incomplete for ${video_id}: card=${delivery.card} email=${delivery.email} ${delivery.detail ?? ""}`)
+      }
+    }
+
     // ── 2. Listing videos → attach to the property landing page ─────────────
     // listing_media is the canonical table the public listing detail page
     // reads from. media_type='video' + file_url=video_url. We let the

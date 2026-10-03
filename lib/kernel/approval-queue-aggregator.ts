@@ -140,6 +140,19 @@ export async function applyMarketingAssetApproval(
       }
     }
   }
+  if (kind === "video") {
+    // WAVE 98 (owner 2026-10-03) — AN APPROVED CLIENT-FACING VIDEO IS DELIVERED: one portal card +
+    // one governed email to the contact it was made for (lib/video/client-video-delivery.ts; the
+    // kinds are its CLIENT_FACING_VIDEO_TYPES). No contact / in-house / marketing kind → library
+    // only. Not rendered yet → reactToVideoReady delivers when the render lands. Idempotent per
+    // video (ledger cycle + card check), so a re-approval sends nothing twice. The approval stands
+    // whatever delivery reports.
+    const { deliverApprovedClientVideo } = await import("@/lib/video/client-video-delivery")
+    const delivery = await deliverApprovedClientVideo(svc as any, id)
+    if (delivery.card === "failed" || delivery.email === "failed") {
+      console.error(`[approval-queue] approved video ${id} — delivery incomplete: card=${delivery.card} email=${delivery.email} ${delivery.detail ?? ""}`)
+    }
+  }
   if (kind === "video_script") {
     // WAVE 87 (lane 87D) — APPROVAL RENDERS. This queue approval is the second
     // writer of video_scripts_library.approval_status (see the tombstone at

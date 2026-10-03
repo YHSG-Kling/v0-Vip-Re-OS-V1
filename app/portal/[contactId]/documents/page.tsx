@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { CONTRACT_ESIGN_AWAITING_STATUSES } from "@/lib/transactions/coordination-status"
 import { clientTransactionFilter, portalDealClient, scopeToDealTenant } from "@/lib/kernel/portal"
+import { clientDealDocumentFilter, isClientVisibleDealDocument, isClientHiddenDealDocType } from "@/lib/kernel/deal-document-visibility"
 import { redirect } from "next/navigation"
 import { DocumentsClient } from "./DocumentsClient"
 import { syncAllForContact } from "@/lib/transactions/sync-from-provider"
@@ -37,10 +38,7 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
   // STEP 1 — Resolve transaction IDs (never use Supabase subquery in .in()). The
   // client's own session sees none of its deals, so the ids come through the kernel's
   // gate-then-service deal client (lib/kernel/portal.ts portalDealClient), scoped to
-  // this contact + tenant. ONLY the ids are elevated: transaction_documents below stays
-  // on the session client on purpose — there is no client-visible document rule yet,
-  // and an elevated read would hand the client the brokerage's CDA and internal notes
-  // (CLAUDE.md §5). Owner item (wave 96 notes).
+  // this contact + tenant.
   const { client: dealDb, brokerageId: dealTenant } = await portalDealClient(supabase, contactId)
   const { data: transactions, error: txError } = await scopeToDealTenant(
     dealDb
@@ -52,31 +50,53 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
   if (txError) console.error("[portal/documents] deal read refused:", txError.message)
 
   const transactionIds = transactions?.map(t => t.id) ?? []
+  // The viewer — "the docs they uploaded" is decided against THIS user, never a parameter.
+  const { data: { user: viewer } } = await supabase.auth.getUser()
+  const viewerUserId = viewer?.id ?? null
 
-  // STEP 2 — Fetch client documents
-  const { data: clientDocs } = await supabase
-    .from("client_documents")
-    .select(`id, document_name, document_url, document_type, doc_category,
+  // STEP 2 — Fetch client documents (the client's own folder: contact_id = them). Same
+  // gate as the deals: elevated only when requireContactAccess admitted the caller, and
+  // then pinned to this contact + the gate's tenant. `notes` is never selected.
+  const { data: clientDocsRaw, error: clientDocsError } = await scopeToDealTenant(
+    dealDb
+      .from("client_documents")
+      .select(`id, document_name, document_url, document_type, doc_category,
              is_financial_verification, verification_amount, verification_lender,
              expiration_date, verified_by, verified_at, uploaded_by, created_at`)
-    .eq("contact_id", contactId)
-    .order("created_at", { ascending: false })
+      .eq("contact_id", contactId),
+    dealTenant,
+  ).order("created_at", { ascending: false })
+  if (clientDocsError) console.error("[portal/documents] client documents read refused:", clientDocsError.message)
+  const clientDocs = (clientDocsRaw ?? []).filter((d: { document_type?: string | null; doc_category?: string | null }) =>
+    !isClientHiddenDealDocType(d.document_type) && !isClientHiddenDealDocType(d.doc_category))
 
-  // STEP 3 — Fetch transaction documents with inline analysis data
-  const { data: txDocs } = transactionIds.length > 0
-    ? await supabase
-        .from("transaction_documents")
-        .select(`id, transaction_id, doc_type, doc_label, status, storage_url,
-                 uploaded_at, extracted_data, classification_confidence,
-                 rejection_reason, notes`)
-        .in("transaction_id", transactionIds)
-        .order("uploaded_at", { ascending: false })
-    : { data: [] }
+  // STEP 3 — Deal documents the CLIENT may see (wave 98 owner ruling): staff-marked
+  // client_visible (m690) or uploaded by this viewer — never the CDA / disbursement /
+  // internal paperwork (isClientVisibleDealDocument re-checks every row after the
+  // narrowing .or()), and never the internal `notes` column. Before m690 is applied the
+  // read is REFUSED (42703) and the client sees no deal documents: fail closed.
+  const { data: txDocsRaw, error: txDocsError } = transactionIds.length > 0
+    ? await scopeToDealTenant(
+        dealDb
+          .from("transaction_documents")
+          .select(`id, transaction_id, doc_type, doc_label, status, storage_url,
+                   uploaded_at, extracted_data, classification_confidence,
+                   rejection_reason, client_visible, uploaded_by`)
+          .in("transaction_id", transactionIds)
+          .or(clientDealDocumentFilter(viewerUserId)),
+        dealTenant,
+      ).order("uploaded_at", { ascending: false })
+    : { data: [], error: null }
+  if (txDocsError) console.error("[portal/documents] deal documents read refused:", txDocsError.message)
+  const txDocs = ((txDocsRaw ?? []) as Array<{ id: string; client_visible?: boolean | null; uploaded_by?: string | null; doc_type?: string | null; [k: string]: unknown }>)
+    .filter((d) => isClientVisibleDealDocument(d, viewerUserId))
+    .map((d) => ({ ...d, notes: null }))
 
-  // STEP 4 — Fetch extraction log for all transaction docs with completed analysis
-  const txDocIds = txDocs?.map(d => d.id) ?? []
+  // STEP 4 — Fetch extraction log for the VISIBLE transaction docs only (ids from the
+  // filtered list above, so the elevated read cannot reach a hidden document's analysis)
+  const txDocIds = txDocs.map(d => d.id as string)
   const { data: extractionLogs } = txDocIds.length > 0
-    ? await supabase
+    ? await dealDb
         .from("document_extraction_log")
         .select(`id, transaction_doc_id, extraction_method, extracted_fields,
                  confidence_score, processing_status, processed_at, error_message`)
@@ -124,8 +144,8 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
 
   // STEP 7 — Fetch state compliance requirements for doc types present
   const uniqueDocTypes = [...new Set([
-    ...(txDocs?.map(d => d.doc_type).filter(Boolean) ?? []),
-    ...(clientDocs?.map(d => d.document_type).filter(Boolean) ?? []),
+    ...(txDocs.map(d => d.doc_type as string | null).filter(Boolean)),
+    ...(clientDocs.map((d: { document_type?: string | null }) => d.document_type).filter(Boolean)),
   ])]
 
   const { data: stateRequirements } = uniqueDocTypes.length > 0
@@ -138,8 +158,8 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
   return (
     <DocumentsClient
       contactId={contactId}
-      clientDocs={clientDocs ?? []}
-      txDocs={txDocs ?? []}
+      clientDocs={clientDocs}
+      txDocs={txDocs as any}
       extractionLogs={extractionLogs ?? []}
       checklist={checklist ?? []}
       classifications={classifications ?? []}

@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition, useEffect } from "react"
+import { CorrectEntryDialog } from "./correct-entry-dialog"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
@@ -90,6 +91,8 @@ interface CDAWorkflowClientProps {
   brokerageId: string
   userType: string
   userId: string
+  /** WAVE 98 — the finance tier may correct a POSTED entry (server re-gates). */
+  canCorrectEntries?: boolean
   cda: {
     id: string
     transaction_id: string
@@ -170,6 +173,7 @@ export function CDAWorkflowClient({
   brokerageId,
   userType,
   userId,
+  canCorrectEntries = false,
   cda,
   offersCda,
   agent,
@@ -192,19 +196,29 @@ export function CDAWorkflowClient({
     cap_applied: boolean | null
     status: string
     paid_at: string | null
+    /** m690 — 'entry' | 'reversal' | 'adjustment' (absent before m690 is applied → 'entry'). */
+    entry_type?: string | null
+    adjusts_distribution_id?: string | null
+    correction_reason?: string | null
   }>>([])
   const [markingPaid, setMarkingPaid] = useState(false)
+  const [correctingId, setCorrectingId] = useState<string | null>(null)
+  const [distributionsVersion, setDistributionsVersion] = useState(0)
 
   useEffect(() => {
     const supabase = createClient()
+    // `*` on purpose (wave 98): the m690 correction columns ride along once applied, and the
+    // read keeps working before it is (a named entry_type would be refused 42703 until then).
     supabase
       .from("commission_distributions")
-      .select("id, distribution_type, calculation_type, calculation_value, calculated_amount, source_of_funds, cap_applied, status, paid_at")
+      .select("*")
       .eq("transaction_id", transaction.id)
-      .then(({ data }: { data: any }) => {
+      .order("created_at", { ascending: true })
+      .then(({ data, error }: { data: any; error: { message: string } | null }) => {
+        if (error) console.error("[cda-workflow] commission breakdown read refused:", error.message)
         if (data) setDistributions(data)
       })
-  }, [transaction.id])
+  }, [transaction.id, distributionsVersion])
 
   // STEP 1 OF THE CDA CHAIN — the preliminary HUD / settlement statement arriving
   // from the title company or the closing attorney. uploadPreliminaryCdAction and
@@ -816,6 +830,7 @@ export function CDAWorkflowClient({
                         <TableHead>Amount</TableHead>
                         <TableHead>Source</TableHead>
                         <TableHead>Status</TableHead>
+                        {canCorrectEntries && <TableHead />}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -828,6 +843,11 @@ export function CDAWorkflowClient({
                              dist.distribution_type}
                             {dist.cap_applied && (
                               <Badge className="ml-2 text-xs bg-amber-100 text-amber-800 border-amber-200">Capped</Badge>
+                            )}
+                            {dist.entry_type && dist.entry_type !== "entry" && (
+                              <Badge variant="outline" className="ml-2 text-xs capitalize" title={dist.correction_reason ?? undefined}>
+                                {dist.entry_type}
+                              </Badge>
                             )}
                           </TableCell>
                           <TableCell className="text-muted-foreground text-sm">
@@ -854,6 +874,24 @@ export function CDAWorkflowClient({
                               <Badge variant="outline" className="capitalize">{dist.status}</Badge>
                             )}
                           </TableCell>
+                          {canCorrectEntries && (
+                            <TableCell>
+                              {dist.status === "paid" && (dist.entry_type ?? "entry") === "entry" && (
+                                <>
+                                  <Button size="sm" variant="ghost" className="text-xs h-7" onClick={() => setCorrectingId(dist.id)}>
+                                    Correct entry
+                                  </Button>
+                                  <CorrectEntryDialog
+                                    entry={dist}
+                                    priorCorrections={distributions.filter((d) => d.adjusts_distribution_id === dist.id)}
+                                    open={correctingId === dist.id}
+                                    onOpenChange={(o) => setCorrectingId(o ? dist.id : null)}
+                                    onCorrected={() => { setDistributionsVersion((v) => v + 1); router.refresh() }}
+                                  />
+                                </>
+                              )}
+                            </TableCell>
+                          )}
                         </TableRow>
                       ))}
                     </TableBody>

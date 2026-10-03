@@ -549,6 +549,12 @@ export async function updateDocumentStatus(documentId: string, status: string, s
   return TransactionService.updateDocumentStatus(documentId, status, signedAt)
 }
 
+/** Staff toggle: show / hide a deal document in the client's portal (wave 98, m690). */
+export async function setDocumentClientVisibility(documentId: string, visible: boolean) {
+  if (!isValidUUID(documentId)) return { success: false, error: "Invalid document ID" }
+  return TransactionService.setDocumentClientVisibility(documentId, visible === true)
+}
+
 // ============================================
 // TIMELINE
 // ============================================

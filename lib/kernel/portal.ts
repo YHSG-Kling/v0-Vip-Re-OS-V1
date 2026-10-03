@@ -288,6 +288,11 @@ export function scopeToDealTenant<Q>(query: Q, brokerageId: string | null): Q {
   return brokerageId ? ((query as unknown as { eq: (c: string, v: string) => Q }).eq("brokerage_id", brokerageId)) : query
 }
 
+// ─── CLIENT-VISIBLE DEAL DOCUMENTS (wave 98) — the RULE lives in the client-safe pure module
+// lib/kernel/deal-document-visibility.ts (the staff toggle, a client component, needs it and this
+// module imports the cookie client); every portal READ of transaction_documents goes through
+// portalDealClient above and filters with that module's isClientVisibleDealDocument.
+
 /** KERNEL CONTRACT: the portal layouts for a contact — what every portal surface reads. */
 export async function resolvePortalLayouts(
   supabase: SupabaseClient,

@@ -15,13 +15,32 @@
 import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { stripComments } from "./strip-comments"
+import { registerHooks } from "node:module"
+import { memSupabase, type MemClient } from "./in-memory-supabase"
+
+// Wave 98 — module edges only, for the correction command's in-memory run (no network, no live rows).
+const G98 = globalThis as any
+G98.__98A = { svc: null as MemClient | null }
+const STUB98: Record<string, string> = {
+  "server-only": "export{}",
+  "@/lib/supabase/service": "export const createServiceClient = () => globalThis.__98A.svc",
+  "@/lib/supabase/server": "export const createClient = async () => globalThis.__98A.svc",
+  "next/cache": "export const revalidatePath = () => {}; export const revalidateTag = () => {}",
+}
+registerHooks({
+  resolve(spec: string, ctx: any, next: any) {
+    const body = STUB98[spec]
+    if (body !== undefined) return { url: `data:text/javascript,${encodeURIComponent(body)}`, shortCircuit: true }
+    return next(spec, ctx)
+  },
+})
 
 let pass = 0, fail = 0
 const fails: string[] = []
 const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) } }
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 
-function main() {
+async function main() {
   const sp = src("lib/transactions/stage-progression.ts")
   const closedIdx = sp.indexOf('params.targetStage === "CLOSED"')
   const block = sp.slice(closedIdx, closedIdx + 3200)
@@ -73,10 +92,80 @@ function main() {
   check("markDistributionPaid COUNTS what it posted (an UPDATE matching nothing resolves — CLAUDE.md §3) and refuses 0 rows",
     /const \{ data: posted, error: distributionError \}/.test(pt) && /if \(!posted \|\| posted\.length === 0\)/.test(pt))
 
+  // ════ Wave 98 (lane 98A) — the CORRECTION of a posted entry is a NEW row (owner: "yes build
+  // commission correction screen"). Rule, not waypoint: whatever the amounts, the paid row is
+  // never written and the new row nets the entry to the corrected figure.
+  console.log("\n[a posted entry is CORRECTED by a new reversal / adjustment row — the paid row is never edited]")
+  const { planDistributionCorrection } = await import("../lib/commission/distribution-correction")
+  const paid = { id: "d1", status: "paid", entry_type: "entry", calculated_amount: 1000.1 }
+  const rev = planDistributionCorrection({ original: paid, priorCorrections: [], kind: "reversal", reason: "duplicate payout" })
+  check("reversal of a posted 1000.10 writes -1000.10 and nets the entry to 0", rev.ok && rev.amount === -1000.1 && rev.netAfter === 0)
+  const adj = planDistributionCorrection({ original: paid, priorCorrections: [{ calculated_amount: -100.05 }], kind: "adjustment", correctedAmount: 850, reason: "split was 85%" })
+  check("adjustment counts EARLIER corrections: net 900.05 → target 850 writes -50.05", adj.ok && adj.netBefore === 900.05 && adj.amount === -50.05 && adj.netAfter === 850)
+  const cents = planDistributionCorrection({ original: { id: "d", status: "paid", calculated_amount: 0.1 }, priorCorrections: [{ calculated_amount: 0.2 }], kind: "adjustment", correctedAmount: 0.3, reason: "float check" })
+  check("money math is integer cents (0.1 + 0.2 → 0.3 is a no-op, refused — not a 0.0000000000000000x row)", !cents.ok)
+  check("an UNPOSTED entry is refused (still editable in the posting lifecycle)", !planDistributionCorrection({ original: { ...paid, status: "approved" }, priorCorrections: [], kind: "reversal", reason: "nope nope" }).ok)
+  check("a correction row cannot itself be corrected", !planDistributionCorrection({ original: { ...paid, entry_type: "reversal" }, priorCorrections: [], kind: "reversal", reason: "nope nope" }).ok)
+  check("a reason is required", !planDistributionCorrection({ original: paid, priorCorrections: [], kind: "reversal", reason: "  " }).ok)
+  check("reversing an entry that already nets to zero is refused", !planDistributionCorrection({ original: paid, priorCorrections: [{ calculated_amount: -1000.1 }], kind: "reversal", reason: "again again" }).ok)
+
+  // The REAL kernel command against an in-memory ledger.
+  const BRK = "b0000000-0000-4000-8000-000000000098", OTHER = "b0000000-0000-4000-8000-000000000099"
+  const ORIG = "d0000000-0000-4000-8000-000000000098"
+  const seedRow = { id: ORIG, brokerage_id: BRK, transaction_id: "t1", commission_id: "c1", agent_id: "a1", team_id: null, rule_id: null,
+    distribution_type: "agent", source_of_funds: "brokerage", cap_status: "pre_cap", status: "paid", entry_type: "entry", calculated_amount: 9000, paid_at: "2026-10-01T00:00:00Z" }
+  const svc = memSupabase({ commission_distributions: [{ ...seedRow }] })
+  G98.__98A.svc = svc
+  const finKernel = await import("../lib/kernel/financial")
+  const ctxFor = (userType: string, brokerageId = BRK) => ({ userId: "u-fin", agentId: null, brokerageId, userType: userType as any, isTenantPrincipal: false })
+  const before = JSON.stringify(svc.tables.commission_distributions[0])
+  const refused = await finKernel.correctCommissionDistribution({ ctx: ctxFor("agent"), distributionId: ORIG, kind: "reversal", reason: "agent tries it" })
+  check("a NON-finance role (agent) is refused, and nothing is written", !refused.success && svc.writes.length === 0)
+  const tl = await finKernel.correctCommissionDistribution({ ctx: ctxFor("team_lead"), distributionId: ORIG, kind: "reversal", reason: "team lead tries it" })
+  check("...team_lead is refused too (the books tier excludes it, m472)", !tl.success && svc.writes.length === 0)
+  const cross = await finKernel.correctCommissionDistribution({ ctx: ctxFor("broker", OTHER), distributionId: ORIG, kind: "reversal", reason: "other tenant" })
+  check("another tenant's finance admin cannot reach the entry (session tenant pins the read)", !cross.success && svc.writes.length === 0)
+  const ok = await finKernel.correctCommissionDistribution({ ctx: ctxFor("broker"), distributionId: ORIG, kind: "adjustment", correctedAmount: 8500, reason: "split corrected to 85%" })
+  const rowsNow = svc.tables.commission_distributions
+  const added = rowsNow.find((r) => r.id !== ORIG)
+  check("a finance admin's correction INSERTS one new row (insert counted)", ok.success && rowsNow.length === 2 && svc.writes.filter((w) => w.op === "insert").length === 1)
+  check("...linked to the original, typed, reasoned, posted, -500", !!added && added.adjusts_distribution_id === ORIG && added.entry_type === "adjustment"
+    && added.correction_reason === "split corrected to 85%" && added.status === "paid" && added.calculated_amount === -500 && added.agent_id === "a1" && added.distribution_type === "agent")
+  check("...and the PAID row is byte-identical — never updated, never deleted", JSON.stringify(rowsNow.find((r) => r.id === ORIG)) === before
+    && !svc.writes.some((w) => w.op === "update" || w.op === "delete"))
+  check("readers that SUM the entry's rows now see the corrected net (9000 + -500 = 8500)",
+    rowsNow.filter((r) => r.agent_id === "a1" && r.distribution_type === "agent").reduce((s, r) => s + Number(r.calculated_amount), 0) === 8500)
+  const again = await finKernel.correctCommissionDistribution({ ctx: ctxFor("broker"), distributionId: ORIG, kind: "reversal", reason: "reverse it all" })
+  check("a second correction nets from the CORRECTED figure (reversal writes -8500)", !!again.success && again.data?.amount === -8500 && again.data?.netAfter === 0)
+  const onCorrection = await finKernel.correctCommissionDistribution({ ctx: ctxFor("broker"), distributionId: added?.id as string, kind: "reversal", reason: "correct a correction" })
+  check("correcting a correction row is refused", !onCorrection.success)
+
+  // Wiring + migration (stripped source).
+  const kernelSrc = stripComments(src("lib/kernel/financial.ts"))
+  const cmd = kernelSrc.slice(kernelSrc.indexOf("export async function correctCommissionDistribution("))
+  check("the command gates on the finance tier BEFORE it builds the service client (fail closed)",
+    cmd.indexOf("isBrokerageFinanceAdmin(") > -1 && cmd.indexOf("isBrokerageFinanceAdmin(") < cmd.indexOf("createServiceClient()"))
+  const action = stripComments(src("app/actions/financial-kernel.ts"))
+  const actFn = action.slice(action.indexOf("export async function correctCommissionDistributionAction("), action.indexOf("export async function loadFinancialWorkspaceAction("))
+  const actSig = actFn.slice(0, actFn.indexOf(") {"))
+  check("the server action takes NO brokerage id and builds the actor from the session", actFn.length > 0 && !/brokerageId/.test(actSig) && /getFinancialActorContext\(\)/.test(actFn))
+  const ui = stripComments(src("app/dashboard/transactions/[id]/cda/cda-workflow-client.tsx"))
+  const dlg = stripComments(src("app/dashboard/transactions/[id]/cda/correct-entry-dialog.tsx"))
+  check("the 'Correct entry' dialog is WIRED on the existing commission breakdown and calls the action",
+    /<CorrectEntryDialog\b/.test(ui) && /Correct entry/.test(ui) && /correctCommissionDistributionAction\(/.test(dlg))
+  const m690File = readdirSync(join(process.cwd(), "supabase/migrations")).find((f) => /^m690-/.test(f))
+  const m690 = m690File ? stripComments(src(`supabase/migrations/${m690File}`)) : ""
+  const NEG_ONLY_CORRECTIONS = /CHECK \(calculated_amount >= \(0\)::numeric OR entry_type <> 'entry'\)/
+  check("m690: entry_type CHECK + adjusts_distribution_id self-FK + a correction must name its original and reason",
+    /entry_type text NOT NULL DEFAULT 'entry'/.test(m690) && /adjusts_distribution_id uuid REFERENCES public\.commission_distributions\(id\)/.test(m690)
+    && /entry_type <> 'entry'\s+AND adjusts_distribution_id IS NOT NULL/.test(m690))
+  check("m690: only a correction row may be negative", NEG_ONLY_CORRECTIONS.test(m690))
+  check("POSITIVE CONTROL: the negative-amount finder rejects the pre-m690 CHECK", !NEG_ONLY_CORRECTIONS.test("CHECK ((calculated_amount >= (0)::numeric))"))
+
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ COMMISSION_SET_IN_STONE_FAIL"); process.exit(1) }
   console.log(" ✅ COMMISSION_SET_IN_STONE_PASS — close FREEZES the amount; the ledger tracks deposit→disbursement; paid is stamped at disbursement, not close")
 }
-main()
+main().catch((e) => { console.error(e); process.exit(1) })

@@ -118,7 +118,8 @@ import {
   resolveFormsProviderAction,
   loadAvailableFormsAction,
 } from "@/app/actions/forms-kernel"
-import { detectTransactionIssues, detectTransactionDelays, setMilestoneClientVisibility } from "@/app/actions/transactions"
+import { detectTransactionIssues, detectTransactionDelays, setMilestoneClientVisibility, setDocumentClientVisibility } from "@/app/actions/transactions"
+import { isClientHiddenDealDocType } from "@/lib/kernel/deal-document-visibility"
 import {
   TransactionFormEsignFlow,
   type FormTemplate,
@@ -197,6 +198,8 @@ interface TransactionDetailClientProps {
     rejection_reason: string | null
     extracted_data: Record<string, unknown> | null
     classification_confidence: number | null
+    /** m690 — staff marked this visible in the client portal (wave 98). */
+    client_visible?: boolean | null
   }>
   documentCountsByStatus: Record<string, number>
   // Uses actual Supabase deal_health_scores table columns
@@ -1010,6 +1013,7 @@ export function TransactionDetailClient({
   // AI Document Intelligence state
   const [analyzingDocId, setAnalyzingDocId] = useState<string | null>(null)
   const [deletingDocId, setDeletingDocId] = useState<string | null>(null)
+  const [togglingDocId, setTogglingDocId] = useState<string | null>(null)
   const [docAnalysisResults, setDocAnalysisResults] = useState<Record<string, Record<string, unknown>>>({})
   const [expandedDocId, setExpandedDocId] = useState<string | null>(null)
   const [disclosureResult, setDisclosureResult] = useState<{
@@ -3944,6 +3948,31 @@ export function TransactionDetailClient({
                                 </div>
                               </div>
                               <div className="flex items-center gap-2 shrink-0">
+                                {/* WAVE 98 — the staff writer of transaction_documents.client_visible
+                                    (app/actions/transactions.ts setDocumentClientVisibility). A denied
+                                    type (CDA / disbursement / internal) never offers the switch. */}
+                                {isClientHiddenDealDocType(d.doc_type) ? (
+                                  <span className="text-xs text-muted-foreground whitespace-nowrap">Never shown to client</span>
+                                ) : (
+                                  <label className="flex items-center gap-1 text-xs text-muted-foreground whitespace-nowrap">
+                                    <Switch
+                                      checked={d.client_visible === true}
+                                      disabled={togglingDocId === d.id}
+                                      onCheckedChange={async (visible) => {
+                                        setTogglingDocId(d.id)
+                                        const res = await setDocumentClientVisibility(d.id, visible)
+                                        setTogglingDocId(null)
+                                        if (!res.success) {
+                                          toast.error(res.error ?? "Failed to update document visibility")
+                                        } else {
+                                          toast.success(visible ? "Document now visible in client portal" : "Document hidden from client portal")
+                                          router.refresh()
+                                        }
+                                      }}
+                                    />
+                                    {d.client_visible ? "Client sees this" : "Staff only"}
+                                  </label>
+                                )}
                                 <Badge
                                   variant={
                                     d.status === "approved"

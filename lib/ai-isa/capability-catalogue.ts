@@ -531,10 +531,10 @@ function buildSendMarketReportTool(ctx: CustomerCapabilityContext) {
 
 function buildSendExplainerVideoTool(ctx: CustomerCapabilityContext) {
   return tool({
-    // Wave 97 (97C): the commissioned video waits for a human in the approval queue and is not addressed
-    // to the person automatically (persona-tool-policy.ts TOOL_APPROVAL_GATE.send_explainer_video), so the
-    // model must not say it was sent.
-    description: "Commission a short explainer video walking the person through the BUYING or SELLING process — what to expect, step by step. Their agent reviews it and shares it with them; never say it has already been sent. Use when a first-time buyer or an unsure seller wants to understand the process before committing to anything, not for property-specific questions.",
+    // Wave 97 (97C) + wave 98: the commissioned video is ADDRESSED to this person (contactId below) and
+    // waits for a human in the approval queue; on approval it is delivered to their portal + email
+    // (lib/video/client-video-delivery.ts). Until then nothing has been sent, so the model must not say it was.
+    description: "Commission a short explainer video walking the person through the BUYING or SELLING process — what to expect, step by step. Their agent reviews it, and once approved it arrives in their client portal and by email; never say it has already been sent. Use when a first-time buyer or an unsure seller wants to understand the process before committing to anything, not for property-specific questions.",
     inputSchema: z.object({
       focus: z.enum(["buying_process", "selling_process"]).describe("Which process to explain"),
     }),
@@ -556,6 +556,8 @@ function buildSendExplainerVideoTool(ctx: CustomerCapabilityContext) {
         topic,
         audience,
         presetId: focus === "buying_process" ? "buyer_education" : null,
+        // WHO it is for — the conversation's contact (wave 98: delivered to them once approved).
+        contactId: ctx.contactId ?? null,
       })
       if (!result.ok) return { success: false, error: result.reason }
 

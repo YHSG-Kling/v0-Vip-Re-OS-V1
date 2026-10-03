@@ -197,6 +197,7 @@ export default async function CDAPage({ params }: PageProps) {
       brokerageId={brokerageId}
       userType={userType}
       userId={user.id}
+      canCorrectEntries={isBrokerageFinanceAdminGrantRole(userType)}
       cda={cda}
       offersCda={(brokerage as { offers_cda?: boolean | null } | null)?.offers_cda ?? true}
       agent={agent}

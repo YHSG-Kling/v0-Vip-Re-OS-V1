@@ -52,6 +52,19 @@ const STUB_BY_PATH: Array<[RegExp, string]> = [
   [/\/lib\/kernel\/emit\.ts$/, "export const emitKernelEvent = async (p) => { globalThis.__94A.emits.push(p.event); return {} }"],
   [/\/lib\/enrichment\/contact-enrichment-core\.ts$/, "export const queueContactEnrichment = async () => ({ queued: false })"],
   [/\/lib\/video\/avatar-render-orchestrator\.ts$/, "export const COMPOSITE_WAIT_MS = 7200000"],
+  // R8 (wave 98): the governed egress is the EDGE — the stub records each dispatch and emulates the
+  // 97A ledger's cycle idempotency (tenant:contact:id:action:cycle → a second call REPLAYS, no send).
+  // The real ledger replay is proven by its own proof (test:action-ledger); here we prove the delivery
+  // hands it a STABLE cycle. Outside R8 (no recorder armed) it refuses, like an unconfigured provider.
+  [/\/lib\/providers\/dispatch\.ts$/, [
+    "export async function dispatchEmail(p) { const g = globalThis.__94A;",
+    "  if (!g.emails) return { success: false, providerKey: 'stub', error: 'no provider in this proof' };",
+    "  const key = p.ledger && p.ledger.cycle ? [p.brokerageId, 'contact', p.contactId, 'comms.email.send', p.ledger.cycle].join(':') : null;",
+    "  const replay = !!key && g.ledgerKeys.has(key); if (key) g.ledgerKeys.add(key);",
+    "  g.emails.push({ ...p, sent: !replay }); return { success: true, providerKey: replay ? 'action_ledger' : 'stub' } }",
+    "export async function dispatchSms() { return { success: false, providerKey: 'stub', error: 'no provider in this proof' } }",
+  ].join("\n")],
+  [/\/lib\/ai-isa\/video-generator\.ts$/, "export async function embedVideoInEmail(h, u) { return h.replace('[Video will be embedded here]', String(u)) }"],
   [/\/lib\/contact-promotion\/welcome-avatar-video\.ts$/,
     "export const ensureWelcomeAvatarVideo = async () => ({ commissioned: false, reason: 'agent_not_video_ready', warnings: [] })"],
   // The welcome EMAIL is the edge: the invite under test is the grant that precedes it.
@@ -535,9 +548,123 @@ async function main() {
     check("...and the neighbourhood list goes through excludeOwnHome", /excludeOwnHome\(nearby \?\? \[\], transaction\)/.test(homeRead))
   }
 
+  // ════ R7 — wave 98: a client sees marked deal documents + their own uploads, never the CDA ═══
+  console.log("\n[R7 · client-visible deal documents: marked or self-uploaded — never the commission form or internal paperwork]")
+  {
+    const vis = await import("../lib/kernel/deal-document-visibility")
+    const ME = "a9000000-0000-4000-8000-000000000098", STAFF = "a8000000-0000-4000-8000-000000000098"
+    check("PURE: a staff-marked document is shown", vis.isClientVisibleDealDocument({ client_visible: true, uploaded_by: STAFF, doc_type: "inspection_report" }, ME))
+    check("PURE: an UNMARKED staff document is hidden (deny by default)", !vis.isClientVisibleDealDocument({ client_visible: false, uploaded_by: STAFF, doc_type: "inspection_report" }, ME))
+    check("PURE: the client's OWN upload is shown unmarked", vis.isClientVisibleDealDocument({ client_visible: false, uploaded_by: ME, doc_type: "upload" }, ME))
+    check("PURE: the commission disbursement form is NEVER shown — even marked visible", !vis.isClientVisibleDealDocument({ client_visible: true, doc_type: "commission_disbursement_authorization" }, ME))
+    check("PURE: ...nor a CDA copy, nor internal paperwork, by any spelling carrying the segment",
+      ["cda", "cda_check_copy", "cda_signed", "internal_notes", "broker_internal_memo", "disbursement_ledger"].every((t) => vis.isClientHiddenDealDocType(t)))
+    check("PURE: the Buyer Broker Agreement (classification commission_agreement) is the CLIENT's document and stays showable",
+      vis.isClientVisibleDealDocument({ client_visible: true, doc_type: "commission_agreement" }, ME))
+    check("PURE: no viewer → only marked documents (an unknown viewer never matches 'own')",
+      !vis.isClientVisibleDealDocument({ client_visible: false, uploaded_by: null, doc_type: "upload" }, null)
+      && vis.clientDealDocumentFilter(null) === "client_visible.eq.true" && vis.clientDealDocumentFilter(ME) === `client_visible.eq.true,uploaded_by.eq.${ME}`)
+
+    // The elevated seller-portal reader (getSellerDocuments) against an in-memory deal.
+    const CLIENT_USER = "c9000000-0000-4000-8000-000000000098"
+    const DOCS = [
+      { id: "doc-marked", transaction_id: TXN, brokerage_id: BRK, doc_type: "inspection_report", doc_label: "Inspection", client_visible: true, uploaded_by: STAFF, created_at: "2026-10-01" },
+      { id: "doc-unmarked", transaction_id: TXN, brokerage_id: BRK, doc_type: "addendum", doc_label: "Draft addendum", client_visible: false, uploaded_by: STAFF, created_at: "2026-10-01" },
+      { id: "doc-own", transaction_id: TXN, brokerage_id: BRK, doc_type: "upload", doc_label: "My pay stub", client_visible: false, uploaded_by: CLIENT_USER, created_at: "2026-10-01" },
+      { id: "doc-cda", transaction_id: TXN, brokerage_id: BRK, doc_type: "commission_disbursement_authorization", doc_label: "CDA", client_visible: true, uploaded_by: STAFF, created_at: "2026-10-01" },
+      { id: "doc-other-tenant", transaction_id: TXN, brokerage_id: "b0000000-0000-4000-8000-0000000000ff", doc_type: "inspection_report", doc_label: "x", client_visible: true, uploaded_by: STAFF, created_at: "2026-10-01" },
+    ]
+    const svc = world({ transaction_documents: DOCS.map((d) => ({ ...d })), client_documents: [] })
+    ;(svc.tables.contacts.find((c) => c.id === C_SELLER) as Row).contact_user_id = CLIENT_USER
+    ;(svc as any).auth.getUser = async () => ({ data: { user: { id: CLIENT_USER, email: "seller@wave94.test" } } })
+    const { getSellerDocuments } = await import("../app/actions/portal-seller")
+    const got = await getSellerDocuments(C_SELLER, TXN)
+    const ids = (got.transactionDocuments as Array<{ id: string }>).map((d) => d.id).sort()
+    check("the seller portal returns the marked doc + the client's own upload — and nothing else", JSON.stringify(ids) === JSON.stringify(["doc-marked", "doc-own"]), ids.join(","))
+    check("...the commission disbursement form (marked visible by mistake) is NOT among them", !ids.includes("doc-cda"))
+    check("CONTROL: the CDA row IS in the deal's documents, so its absence above is the rule, not an empty table",
+      rows(svc, "transaction_documents", (r) => r.transaction_id === TXN && r.brokerage_id === BRK).some((r) => r.id === "doc-cda"))
+
+    // Every portal reader of transaction_documents goes through the gate + the rule (stripped source).
+    const page = code("app/portal/[contactId]/documents/page.tsx")
+    const SESSION_DOC_READ = /\bsupabase\s*\.from\(\s*"transaction_documents"\s*\)/
+    check("CONTROL: the finder recognises a session-client deal-document read", SESSION_DOC_READ.test('await supabase\n  .from("transaction_documents")'))
+    check("the documents page reads deal documents through the deal client, never the session", !SESSION_DOC_READ.test(page) && /dealDb\s*\.from\("transaction_documents"\)/.test(page))
+    check("...narrows with clientDealDocumentFilter and re-checks every row with isClientVisibleDealDocument",
+      /\.or\(clientDealDocumentFilter\(viewerUserId\)\)/.test(page) && /isClientVisibleDealDocument\(d, viewerUserId\)/.test(page))
+    const docSelect = /from\("transaction_documents"\)\s*\.select\(`([^`]*)`/.exec(page)?.[1] ?? ""
+    check("...and never selects the internal `notes` column", docSelect.length > 0 && !/\bnotes\b/.test(docSelect))
+    const viewer = code("app/actions/documents.ts")
+    check("the document viewer's portal fallback gates (portalDealClient) and applies the same rule",
+      /portalDealClient\(supabase as any, contactId\)/.test(viewer) && /isClientVisibleDealDocument\(portalDoc as any/.test(viewer))
+    check("the staff toggle is wired on the deal documents tab and writes through the gated action",
+      /setDocumentClientVisibility\(d\.id, visible\)/.test(code("app/dashboard/transactions/[id]/transaction-detail-client.tsx"))
+      && /\.update\(\{ client_visible: visible \}\)[\s\S]{0,120}\.select\(/.test(code("lib/application/transactions.ts")))
+  }
+
+  // ════ R8 — wave 98: an APPROVED client-facing video is delivered once (portal + email) ═══
+  console.log("\n[R8 · an approved client-facing video reaches its contact's portal + inbox exactly once]")
+  {
+    const del = await import("../lib/video/client-video-delivery")
+    check("the list is ONE constant and excludes the kinds with their own rail (welcome, home_anniversary)",
+      !(del.CLIENT_FACING_VIDEO_TYPES as readonly string[]).includes("welcome") && !(del.CLIENT_FACING_VIDEO_TYPES as readonly string[]).includes("home_anniversary"))
+
+    const V_CONTACT = "f9000000-0000-4000-8000-000000000001", V_NONE = "f9000000-0000-4000-8000-000000000002"
+    const V_MKT = "f9000000-0000-4000-8000-000000000003"
+    const vid = (id: string, extra: Row) => ({ id, brokerage_id: BRK, agent_id: AGENT, listing_id: null, title: "Teammate explainer — How buying works",
+      video_type: "avatar_explainer", audience_type: "customer_facing", approval_status: "pending_review", video_url: "https://cdn/v.mp4", thumbnail_url: null, ...extra })
+    const svc = world({ ai_video_projects: [vid(V_CONTACT, { contact_id: C_BUYER }), vid(V_NONE, { contact_id: null }), vid(V_MKT, { contact_id: C_BUYER, video_type: "just_listed" })] })
+    G.__94A.emails = [] as Array<Record<string, any>>
+    G.__94A.ledgerKeys = new Set<string>()
+    const { applyMarketingAssetApproval } = await import("../lib/kernel/approval-queue-aggregator")
+    await applyMarketingAssetApproval("video", V_CONTACT)
+    await applyMarketingAssetApproval("video", V_CONTACT) // re-approval
+    await applyMarketingAssetApproval("video", V_NONE)
+    await applyMarketingAssetApproval("video", V_MKT)
+    // The rule's other refusals, through the real delivery function (file-local verdict).
+    svc.tables.ai_video_projects.push(
+      vid("f9000000-0000-4000-8000-000000000004", { contact_id: C_BUYER, approval_status: "pending_review" }),
+      vid("f9000000-0000-4000-8000-000000000005", { contact_id: C_BUYER, approval_status: "approved", video_url: null }),
+      vid("f9000000-0000-4000-8000-000000000006", { contact_id: C_BUYER, approval_status: "approved", video_type: "market_update", audience_type: "in_house" }),
+    )
+    const reasons = await Promise.all(["4", "5", "6"].map((n) => del.deliverApprovedClientVideo(svc as any, `f9000000-0000-4000-8000-00000000000${n}`)))
+    check("not approved → nothing; approved but not rendered → nothing yet; in-house → library only",
+      JSON.stringify(reasons.map((r) => r.reason)) === '["not_approved","not_rendered","not_client_facing"]', JSON.stringify(reasons.map((r) => r.reason)))
+    const cards = rows(svc, "transparency_updates", (r) => r.update_type === del.CLIENT_VIDEO_UPDATE_TYPE)
+    const sends = G.__94A.emails as Array<Record<string, any>>
+    check("approved contact video → exactly ONE portal card for that contact, playable (url + project id)",
+      cards.length === 1 && cards[0].contact_id === C_BUYER && cards[0].is_visible_to_client === true
+      && (cards[0].metadata as any)?.video_project_id === V_CONTACT && (cards[0].metadata as any)?.video_url === "https://cdn/v.mp4", String(cards.length))
+    check("...and exactly ONE email actually sent (re-approval replayed the ledger cycle, no second send)",
+      sends.filter((e) => e.sent).length === 1 && sends.filter((e) => e.sent)[0].to === "buyer@wave94.test", JSON.stringify(sends.map((e) => [e.to, e.sent])))
+    check("...through dispatchEmail with a stable cycle + an m687 reason (HUMAN_REQUESTED) + human-approved",
+      sends.length === 2 && sends.every((e) => e.ledger?.cycle === `video:${V_CONTACT}` && e.ledger?.reasonCode === "HUMAN_REQUESTED" && e.humanApproved === true && e.contactId === C_BUYER))
+    {
+      const { dispatchEmail } = await import("../lib/providers/dispatch")
+      const n = (G.__94A.emails as unknown[]).length
+      await dispatchEmail({ brokerageId: BRK, contactId: C_BUYER, to: "x@wave98.test", subject: "s", html: "h" } as any)
+      await dispatchEmail({ brokerageId: BRK, contactId: C_BUYER, to: "x@wave98.test", subject: "s", html: "h" } as any)
+      check("CONTROL: without a cycle the same send goes out TWICE — the single send above is the cycle's doing",
+        (G.__94A.emails as Array<{ sent: boolean }>).slice(n).filter((e) => e.sent).length === 2)
+      ;(G.__94A.emails as unknown[]).splice(n) // in place: `sends` above is this same array
+    }
+    check("no-contact video and marketing video: no card, no email", !cards.some((c) => (c.metadata as any)?.video_project_id !== V_CONTACT) && !sends.some((e) => e.metadata?.video_project_id !== V_CONTACT))
+    check("CONTROL: the approval itself landed on all three (delivery is the only thing skipped)",
+      rows(svc, "ai_video_projects", (r) => [V_CONTACT, V_NONE, V_MKT].includes(r.id as string) && r.approval_status === "approved").length === 3)
+
+    check("the explainer tool ADDRESSES the video: capability passes the conversation's contact; the commission writes the tenant-checked id",
+      /contactId: ctx\.contactId \?\? null/.test(code("lib/ai-isa/capability-catalogue.ts")) && /contact_id: contactIdInTenant/.test(code("lib/video/avatar-explainer.ts")))
+    check("CONTROL: the finder recognises the pre-wave-98 unaddressed row", !/contact_id: contactIdInTenant/.test("    contact_id: null,"))
+    check("the render-ready moment (handleVideoGenerated, the in-force video.generated handler) delivers too",
+      /deliverApprovedClientVideo\(svc as any, video_id\)/.test(code("lib/orchestrator/internal.ts")))
+    check("the portal feed plays the delivered card (CARD_VIDEO_KEYS has the client_video spec)",
+      /client_video:\s*\{\s*url:\s*"video_url"/.test(code("app/portal/[contactId]/components/RecentUpdatesFeed.tsx")))
+  }
+
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
-  console.log("  blind spots (R5/R6): R5 scans app/portal/[contactId] only and recognises the `supabase.from(\"transactions\")` chain — a deal read through a differently named session variable, or a portal read inside an app/actions module, is not seen; the deal-derived tables are pinned by review, not by this scan; transaction_documents on the documents page stays on the session client deliberately (no client-visible document rule). R6 matches the street line only (unit numbers after a comma are ignored)")
+  console.log("  blind spots (R5/R6): R5 scans app/portal/[contactId] only and recognises the `supabase.from(\"transactions\")` chain — a deal read through a differently named session variable, or a portal read inside an app/actions module, is not seen; the deal-derived tables are pinned by review, not by this scan; transaction_documents is read through the deal gate and filtered by the wave-98 client-visibility rule (R7). R6 matches the street line only (unit numbers after a comma are ignored)")
   console.log("  blind spots: R1's welcome EMAIL and video are module edges here (the grant under test precedes them; the email itself is held by test:conversion-welcome); R2 replays the four writers this lane owns (engine, fan-out bell, parties packet) — a fifth direct notifications writer on the accept/close path would not be counted; portal CARDS (transparency_updates, the feed) are not alerts and keep one per event; R3's surface scan is app/portal/[contactId] + the education resolver — a portal surface outside that tree is not scanned; R4's '|| 0' finder sees the inline shape only — the net-sheet table (lane 94B) is not in scope")
+  console.log("  blind spots (R7/R8): R7's deny-list is by doc_type (named list + cda/disbursement/internal segments) — a CDA stored under a neutral doc_type such as 'upload' is not recognised; client_documents (the client's own folder) is filtered by the same deny-list but has no staff flag; R8 stubs dispatchEmail at the module edge (cycle replay emulated — the real replay is test:action-ledger's) and drives the approval door, not the render-ready door (that one is a wiring scan)")
   if (fail > 0) { console.log(" ❌ CLIENT_AUTOMATION_RULINGS_FAIL"); process.exit(1) }
   console.log(" ✅ CLIENT_AUTOMATION_RULINGS_PASS — one automatic portal invite per contact on both doors (no email → nothing queued, reported); one alert per person per accept/close moment; every portal surface asks the kernel's layouts (dual → seller + buyer); a price nobody read says 'price pending review'")
 }

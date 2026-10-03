@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 711 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 712 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-02
+ * generated: 2026-10-03
  * source: public.live_schema_json()
- * body-sha256: fcf947d44e2924e129d8968b2c16dc5b1e4cdeefa4586367c09c06df1c63d267
+ * body-sha256: e99acadee64bdc57a9ff3eee4e7e7b81dbea2230ac405045ebf681b4ba83ff57
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -39,6 +39,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   ad_retarget_presets: ["ad_body", "ad_cta", "ad_headline", "ad_image_url", "ad_landing_url", "ad_video_url", "brokerage_id", "compliance_event_id", "created_at", "created_by", "daily_budget_cents", "facebook_audience_id", "id", "is_active", "name", "scope_id", "scope_type", "updated_at"],
   affiliate_commission_events: ["affiliate_id", "brokerage_id", "commission_cents", "created_at", "id", "mrr_cents", "period", "referral_id", "status"],
   affiliate_referrals: ["affiliate_id", "attributed_at", "brokerage_id", "expires_at", "first_payment_at", "id"],
+  agent_action_ledger: ["action", "actor_agent_id", "actor_manager_key", "actor_type", "actor_user_id", "attempts", "brokerage_id", "causation_id", "channel", "correlation_id", "cost_usd", "created_at", "detail", "error", "id", "idempotency_key", "outcome", "provider", "provider_ref", "reason_code", "reason_detail", "risk_class", "settled_at", "status", "subject_id", "subject_ref", "subject_type", "system_source", "updated_at"],
   agent_api_credentials: ["access_token", "agent_id", "api_key", "api_secret", "brokerage_id", "config", "created_at", "error_message", "id", "is_active", "is_verified", "last_verified_at", "refresh_token", "service_name", "service_type", "token_expires_at", "updated_at"],
   agent_assistant_sessions: ["agent_id", "brokerage_id", "context_contact_id", "context_listing_id", "context_transaction_id", "context_url", "conversation_id", "duration_seconds", "ended_at", "ended_reason", "id", "message_count", "metadata", "started_at", "tool_call_count", "user_id"],
   agent_assistant_tool_calls: ["brokerage_id", "error_message", "id", "latency_ms", "session_id", "success", "tool_input", "tool_name", "tool_output", "ts"],
@@ -205,7 +206,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   collaborative_searches: ["brokerage_id", "contact_id", "created_at", "created_by_contact_id", "description", "id", "name", "search_criteria", "status", "updated_at"],
   commission_adjustments: ["adjustment_type", "applies_to", "approved_by_agent_id", "brokerage_id", "created_at", "created_by_agent_id", "direction", "effective_date", "id", "is_active", "notes", "recipient_name", "recipient_type", "transaction_id", "updated_at", "value", "value_type"],
   commission_calculations: ["agent_id", "breakdown_json", "brokerage_id", "calculated_at", "calculation_details_json", "calculation_version", "engine_inputs", "id", "total_commission", "transaction_id"],
-  commission_distributions: ["accounting_export_id", "agent_id", "brokerage_id", "calculated_amount", "calculation_type", "calculation_value", "calculation_version", "cap_applied", "cap_status", "commission_id", "created_at", "distribution_type", "id", "paid_at", "rule_id", "source_of_funds", "status", "team_id", "transaction_id", "voided_at", "voided_reason"],
+  commission_distributions: ["accounting_export_id", "adjusts_distribution_id", "agent_id", "brokerage_id", "calculated_amount", "calculation_type", "calculation_value", "calculation_version", "cap_applied", "cap_status", "commission_id", "corrected_by", "correction_reason", "created_at", "distribution_type", "entry_type", "id", "paid_at", "rule_id", "source_of_funds", "status", "team_id", "transaction_id", "voided_at", "voided_reason"],
   commission_splits: ["agent_amount", "agent_id", "brokerage_amount", "brokerage_id", "commission_id", "created_at", "id", "location_id", "metadata", "paid_at", "status", "transaction_id", "updated_at"],
   commission_structures: ["base_amount", "base_percentage", "brokerage_id", "commission_type", "created_at", "description", "id", "is_active", "is_default", "name", "tier_rules", "updated_at"],
   communication_audit_log: ["agent_id", "body_snippet", "brokerage_id", "channel", "communication_type", "compliance_passed", "contact_id", "created_at", "id", "lead_id", "lead_temperature", "sent_at", "subject", "user_id", "was_approved_content"],
@@ -667,7 +668,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   transaction_coordinators: ["brokerage_id", "created_at", "display_name", "id", "is_active", "max_active_deals", "user_id"],
   transaction_cost_breakdown: ["brokerage_id", "buyer_costs", "created_at", "id", "net_proceeds", "seller_costs", "transaction_id", "updated_at"],
   transaction_deadlines: ["brokerage_id", "completed_at", "completed_by", "created_at", "deadline_date", "deadline_type", "extension_date", "extension_reason", "id", "notes", "source_document_id", "source_field_key", "status", "transaction_id", "updated_at"],
-  transaction_documents: ["brokerage_id", "classification_confidence", "contact_id", "created_at", "doc_label", "doc_type", "external_document_id", "extracted_data", "id", "listing_id", "metadata", "notes", "provider_source", "rejection_reason", "signature_status", "status", "storage_url", "transaction_id", "updated_at", "uploaded_at", "uploaded_by", "uploaded_by_type"],
+  transaction_documents: ["brokerage_id", "classification_confidence", "client_visible", "contact_id", "created_at", "doc_label", "doc_type", "external_document_id", "extracted_data", "id", "listing_id", "metadata", "notes", "provider_source", "rejection_reason", "signature_status", "status", "storage_url", "transaction_id", "updated_at", "uploaded_at", "uploaded_by", "uploaded_by_type"],
   transaction_health_factors: ["ai_narrative", "brokerage_id", "factor_score", "factor_type", "id", "recommendations", "red_flags", "scored_at", "transaction_id", "warning_signs"],
   transaction_inspections: ["brokerage_id", "completed_date", "cost", "created_at", "id", "inspection_type", "inspector_company", "inspector_email", "inspector_name", "inspector_phone", "issues_found", "notes", "quote_activity_id", "quote_approved", "report_url", "scheduled_date", "status", "transaction_id", "updated_at"],
   transaction_lenders: ["appraisal_completed_date", "appraisal_ordered_date", "appraisal_value", "brokerage_id", "clear_to_close_date", "created_at", "id", "interest_rate", "lender_name", "loan_amount", "loan_officer_email", "loan_officer_name", "loan_officer_phone", "loan_term_years", "loan_type", "notes", "pre_approval_amount", "pre_approval_date", "rate_lock_date", "rate_lock_expiration_date", "rate_lock_extended_at", "transaction_id", "underwriting_status", "updated_at"],

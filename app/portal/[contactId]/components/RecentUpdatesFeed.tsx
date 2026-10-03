@@ -72,6 +72,14 @@ const CARD_VIDEO_KEYS: Record<string, { url: string; poster: string; projectId: 
     projectId: "anniversary_video_project_id",
     caption:   "A personal note from your agent",
   },
+  // WAVE 98 — an approved client-facing video (lib/video/client-video-delivery.ts
+  // CLIENT_VIDEO_UPDATE_TYPE; written through pushPortalValueCard with these keys).
+  client_video: {
+    url:       "video_url",
+    poster:    "video_thumbnail_url",
+    projectId: "video_project_id",
+    caption:   "A video from your agent",
+  },
 }
 
 /** The playable clip on a card's metadata, or null — never a "coming soon". */

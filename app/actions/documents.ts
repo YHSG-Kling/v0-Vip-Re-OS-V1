@@ -1007,7 +1007,7 @@ export async function getContactDocuments(contactId: string): Promise<ContactDoc
   return { ok: true, documents: documents ?? [] }
 }
 
-export async function getDocumentWithAnalysis(documentId: string) {
+export async function getDocumentWithAnalysis(documentId: string, contactId?: string) {
   const supabase = await createClient()
 
   // Try client_documents first
@@ -1045,6 +1045,48 @@ export async function getDocumentWithAnalysis(documentId: string) {
         .single()
       
       extractionLog = log
+    }
+  }
+
+  // WAVE 98 — THE PORTAL CLIENT'S OWN DOCUMENT. A portal client's session sees none of its
+  // deal documents (transaction_documents RLS admits agents/staff only), so a document the
+  // list page showed them (lib/kernel/deal-document-visibility.ts isClientVisibleDealDocument) opened as "not
+  // found". With a contactId the read goes through the kernel's deal gate (portalDealClient:
+  // requireContactAccess first, then the service client), pinned to that contact's deals +
+  // tenant, and returns the row ONLY when the client-visibility rule admits it for this viewer.
+  // `notes` (internal) is blanked. A refused gate elevates nothing.
+  if (!document && contactId) {
+    const { portalDealClient, scopeToDealTenant, clientTransactionFilter } = await import("@/lib/kernel/portal")
+    const { isClientVisibleDealDocument } = await import("@/lib/kernel/deal-document-visibility")
+    const { client: dealDb, brokerageId: dealTenant } = await portalDealClient(supabase as any, contactId)
+    if (dealTenant) {
+      const { data: { user: viewer } } = await supabase.auth.getUser()
+      const { data: deals, error: dealsErr } = await scopeToDealTenant(
+        dealDb.from("transactions").select("id").or(clientTransactionFilter(contactId)), dealTenant)
+      const dealIds = ((deals ?? []) as Array<{ id: string }>).map((d) => d.id)
+      if (dealsErr) console.error(`[documents] portal deal read refused for ${documentId}: ${dealsErr.message}`)
+      if (dealIds.length > 0) {
+        const { data: portalDoc, error: portalDocErr } = await dealDb
+          .from("transaction_documents")
+          .select("*")
+          .eq("id", documentId)
+          .eq("brokerage_id", dealTenant)
+          .in("transaction_id", dealIds)
+          .maybeSingle()
+        if (portalDocErr) console.error(`[documents] portal document read refused for ${documentId}: ${portalDocErr.message}`)
+        if (portalDoc && isClientVisibleDealDocument(portalDoc as any, viewer?.id ?? null)) {
+          document = { ...(portalDoc as Record<string, unknown>), notes: null } as any
+          docSource = "transaction_documents"
+          const { data: log } = await dealDb
+            .from("document_extraction_log")
+            .select("*")
+            .eq("transaction_doc_id", documentId)
+            .order("processed_at", { ascending: false })
+            .limit(1)
+            .maybeSingle()
+          extractionLog = log
+        }
+      }
     }
   }
 

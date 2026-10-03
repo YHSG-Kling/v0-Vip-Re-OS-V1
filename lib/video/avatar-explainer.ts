@@ -141,6 +141,14 @@ export interface CommissionAvatarExplainerParams {
   /** Optional preset id — recorded for analytics; content is AI-authored. */
   presetId?: AvatarExplainerPreset["id"] | null
   listingId?: string | null
+  /**
+   * contacts.id of the person the video is FOR (wave 98) — set by the AI-ISA's
+   * send_explainer_video, which knows who it is talking to. Once the row is approved,
+   * lib/video/client-video-delivery.ts delivers it to that contact's portal + email.
+   * Absent (the video studio's teammate explainer) → library only, as before. The id
+   * is verified IN THIS TENANT before it is written.
+   */
+  contactId?: string | null
 }
 
 export type CommissionAvatarExplainerResult =
@@ -599,12 +607,22 @@ export async function commissionAvatarExplainer(
     }
   }
 
+  // The contact the video is FOR — only when it is a contact of THIS brokerage (never a
+  // cross-tenant id carried in from a tool argument); a refused read fails closed to none.
+  let contactIdInTenant: string | null = null
+  if (params.contactId) {
+    const { data: contactRow, error: contactErr } = await svc
+      .from("contacts").select("id").eq("id", params.contactId).eq("brokerage_id", params.brokerageId).maybeSingle()
+    if (contactErr) console.error(`[avatar-explainer] contact check refused — video filed with no contact: ${contactErr.message}`)
+    contactIdInTenant = (contactRow as { id?: string } | null)?.id ?? null
+  }
+
   const now = new Date().toISOString()
   const row = {
     brokerage_id: params.brokerageId,
     agent_id: agentRecordId,
     listing_id: params.listingId ?? null,
-    contact_id: null,
+    contact_id: contactIdInTenant,
     title: `Teammate explainer — ${content.title}`.slice(0, 200),
     script_content: content.narration,
     status,

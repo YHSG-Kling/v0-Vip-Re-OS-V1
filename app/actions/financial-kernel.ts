@@ -29,6 +29,7 @@ import {
   exportFinancialReport,
   emailFinancialReport,
   createCommissionRecord,
+  correctCommissionDistribution,
   type CreateCommissionRecordInput,
   type FinancialActorContext,
   type LoadAgentFinancialSummaryInput,
@@ -176,6 +177,40 @@ async function authorizeAgentScope(
 }
 
 // ─── EXPORTED SERVER ACTIONS ──────────────────────────────────────────────────────
+
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * WAVE 98 — correct a POSTED commission entry by writing a reversal / adjustment row (never
+ * editing the paid one — m689). The tenant and the actor come from the SESSION
+ * (getFinancialActorContext throws → refused); the finance-admin gate is the kernel's
+ * (lib/kernel/financial.ts correctCommissionDistribution). Only the entry id, the kind, the
+ * corrected amount and the reason come from the caller. UI: the "Correct entry" dialog on the
+ * CDA Commission Breakdown (app/dashboard/transactions/[id]/cda/cda-workflow-client.tsx).
+ */
+export async function correctCommissionDistributionAction(input: {
+  distributionId: string
+  kind: "reversal" | "adjustment"
+  correctedAmount?: number | null
+  reason: string
+}) {
+  try {
+    if (!input || typeof input.distributionId !== "string" || !UUID_SHAPE.test(input.distributionId)) {
+      return { success: false, error: "Invalid entry id" }
+    }
+    if (input.kind !== "reversal" && input.kind !== "adjustment") return { success: false, error: "Invalid correction kind" }
+    const ctx = await getFinancialActorContext()
+    return await correctCommissionDistribution({
+      ctx,
+      distributionId: input.distributionId,
+      kind: input.kind,
+      correctedAmount: typeof input.correctedAmount === "number" ? input.correctedAmount : null,
+      reason: String(input.reason ?? ""),
+    })
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
 
 export async function loadFinancialWorkspaceAction() {
   try {
