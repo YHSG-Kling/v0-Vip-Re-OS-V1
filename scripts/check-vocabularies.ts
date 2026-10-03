@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-03
  * source: public.live_check_constraints_json()
- * body-sha256: ed3ca2803331f1968321e5400f6b84aa64dd51ccdd934cc13fdb46ac446176f2
+ * body-sha256: 83cce7e35c2bc3ba6f386cc15f648e72ebed8d0ecfe0a6ca8758956bf76e41c4
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -59,7 +59,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   agent_action_ledger: {
     actor_type: ["agent", "manager", "system", "user"],
-    reason_code: ["AGENT_SLA_BREACH", "BUYER_PROPERTY_MATCH", "CAMPAIGN_STEP", "COMPLIANCE_NOTICE", "CONTACT_WELCOME", "HUMAN_REQUESTED", "LEAD_FIRST_RESPONSE", "LIFETIME_TOUCH", "NO_ACTION_NEEDED", "PROPERTY_VALUE_CHANGE", "SCHEDULED_CONTENT_PUBLISH", "SELLER_FOLLOWUP_INTENT_INCREASE", "SUBSCRIPTION_LIFECYCLE", "TRANSACTION_DEADLINE", "TRANSACTION_MILESTONE", "UNSPECIFIED", "WAIT_COOLDOWN"],
+    reason_code: ["AGENT_SLA_BREACH", "BUYER_PROPERTY_MATCH", "CAMPAIGN_STEP", "COMPLIANCE_NOTICE", "CONTACT_WELCOME", "CONVERSATION_RESPONSE", "HUMAN_REQUESTED", "LEAD_FIRST_RESPONSE", "LIFETIME_TOUCH", "NO_ACTION_NEEDED", "NURTURE_TOUCH", "PROPERTY_VALUE_CHANGE", "SCHEDULED_CONTENT_PUBLISH", "SELLER_FOLLOWUP_INTENT_INCREASE", "SERVICE_NOTICE", "STAFF_ALERT", "SUBSCRIPTION_LIFECYCLE", "TRANSACTION_DEADLINE", "TRANSACTION_MILESTONE", "UNSPECIFIED", "WAIT_COOLDOWN"],
     status: ["executed", "failed", "proposed", "skipped", "unknown"],
   },
   agent_assistant_sessions: {

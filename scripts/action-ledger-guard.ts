@@ -25,6 +25,8 @@ import { join } from "node:path"
 import { stripComments, blankStrings } from "./strip-comments"
 import {
   assembleCausalChain,
+  attributedActor,
+  canonicalReasonCode,
   recordNonAction,
   replayDispatchResult,
   settleDispatchResult,
@@ -428,7 +430,7 @@ async function main() {
   console.log("\n[11 · callers say WHY (m687 vocabulary) and pass a deterministic cycle]")
   {
     const callers: Array<[string, RegExp]> = [
-      ["lib/ai-isa/lead-action-plan.ts (lead plan release)", /approveClientMessage\([^)]*\{\s*reasonCode:\s*"CAMPAIGN_STEP"/],
+      ["lib/ai-isa/lead-action-plan.ts (lead plan release)", /approveClientMessage\([^)]*\{\s*reasonCode:\s*"[A-Z_]+"/],
       ["lib/agents/agent-client-messages.ts (the proposal is the cycle)", /cycle:\s*`agent_client_message:\$\{messageId\}`/],
       ["app/actions/lifetime-customer-touchpoints.ts (LIFETIME_TOUCH + cycle)", /reasonCode:\s*"LIFETIME_TOUCH",\s*cycle/],
       ["lib/workflow/channel-registry.ts (campaign step cycle)", /reasonCode:\s*"CAMPAIGN_STEP"[\s\S]{0,200}cycle:\s*`enrollment:\$\{ctx\.enrollmentId\}:step:\$\{ctx\.step\.id\}`/],
@@ -447,6 +449,155 @@ async function main() {
     const used = [...new Set(callers.flatMap(([l]) => [...stripComments(read(l.split(" ")[0])).matchAll(/reasonCode:\s*"([A-Z_]+)"/g)].map((m) => m[1])))]
     check("every reasonCode literal those callers write is in the m687 vocabulary (none invented)", used.length > 0 && used.every((c) => codes.has(c)), used.filter((c) => !codes.has(c)).join(","))
     check("POSITIVE CONTROL: an invented code is caught by the same test", !["INVENTED_REASON"].every((c) => codes.has(c)))
+  }
+
+  console.log("\n[11b · UNIVERSAL reason codes — one vocabulary, one mapping table, every writer names a WHY (wave 100A)]")
+  {
+    const ledgerSrc = stripComments(read("lib/kernel/action-ledger.ts"))
+    const mapBlock = /const REASON_CODE_MAP = \{([\s\S]*?)\n\} as const/.exec(ledgerSrc)?.[1] ?? ""
+    const targets = [...new Set([...mapBlock.matchAll(/:\s*"([A-Z_]+)"/g)].map((m) => m[1]))]
+    const codes = new Set(ACTION_REASON_CODES)
+    check("REASON_CODE_MAP found and non-trivial (denominator > 0)", targets.length >= 10, `targets=${targets.length}`)
+    check("every mapping TARGET is a canonical ACTION_REASON_CODES member (no fourth spelling)", targets.every((c) => codes.has(c)), targets.filter((c) => !codes.has(c)).join(","))
+    check("POSITIVE CONTROL: the target reader catches an invented target", !["NOT_A_REAL_CODE"].every((c) => codes.has(c)))
+
+    // The NBA vocabulary: every LeadTouchPlanCode is mapped, and the map agrees with the verdict.
+    const planSrc = stripComments(read("lib/ai-isa/lead-action-plan.ts"))
+    const planCodes = [...(/export type LeadTouchPlanCode =([\s\S]*?)\n\n/.exec(planSrc)?.[1] ?? "").matchAll(/"([a-z_]+)"/g)].map((m) => m[1])
+    const verdictOf = new Map([...(/const ACTION_FOR_CODE[^{]*\{([\s\S]*?)\}\)/.exec(planSrc)?.[1] ?? "").matchAll(/([a-z_]+):\s*"([a-z_]+)"/g)].map((m) => [m[1], m[2]] as const))
+    const expected: Record<string, string> = { wait: "WAIT_COOLDOWN", do_nothing: "NO_ACTION_NEEDED", send_touch: "NURTURE_TOUCH", convert: "CONVERSATION_RESPONSE" }
+    check("LeadTouchPlanCode and ACTION_FOR_CODE read from source (denominator > 0)", planCodes.length >= 10 && verdictOf.size === planCodes.length, `codes=${planCodes.length} verdicts=${verdictOf.size}`)
+    const nbaMiss = planCodes.filter((c) => canonicalReasonCode("nba_plan", c) !== expected[verdictOf.get(c) ?? ""])
+    check("every NBA plan code maps to the canonical code its verdict implies (wait → WAIT_COOLDOWN, do_nothing → NO_ACTION_NEEDED, send → NURTURE_TOUCH, convert → CONVERSATION_RESPONSE)", nbaMiss.length === 0, nbaMiss.join(","))
+    check("POSITIVE CONTROL: an unmapped plan code is null, not a guess", canonicalReasonCode("nba_plan", "invented_plan_code") === null)
+
+    // The ledger RESOLVES a caller's own spelling (real withActionLedger, in-memory table).
+    const resolved = async (over: Partial<ActionContext>): Promise<string> => {
+      const { client, rows } = fakeLedger()
+      await withActionLedger(ctx({ cycle: null, reasonCode: null, ...over }), async () => ({ success: true, providerKey: "x" }), hooks(0), { client })
+      return String(rows[0]?.reason_code)
+    }
+    check("no reasonCode + systemSource 'sequence' → CAMPAIGN_STEP", await resolved({ systemSource: "sequence" }) === "CAMPAIGN_STEP")
+    check("no reasonCode + systemSource 'vendor_booking' → SERVICE_NOTICE (prefix family)", await resolved({ systemSource: "vendor_booking" }) === "SERVICE_NOTICE")
+    check("no reasonCode + action ai.tool.* → CONVERSATION_RESPONSE (action family)", await resolved({ action: "ai.tool.send_portal_message" }) === "CONVERSATION_RESPONSE")
+    check("an explicit valid reasonCode wins over the systemSource map", await resolved({ systemSource: "sequence", reasonCode: "TRANSACTION_DEADLINE" }) === "TRANSACTION_DEADLINE")
+    check("POSITIVE CONTROL: an unmapped systemSource still records UNSPECIFIED (a finding, never a guess)", await resolved({ systemSource: "banana_source" }) === "UNSPECIFIED")
+
+    // Vocabulary lag: a code the LIVE CHECK lacks (a code whose widening migration is not applied yet) is recorded, not dropped.
+    {
+      const rows: Row[] = []
+      const lagClient: LedgerClient = {
+        from(table: string) {
+          if (table === "brokerages") return fakeLedger().client.from(table)
+          let payload: Row = {}
+          const b = {
+            insert(r: Row) { payload = r; return b },
+            update() { return b }, select() { return b }, eq() { return b },
+            single() {
+              if (payload.reason_code === "NURTURE_TOUCH") return Promise.resolve({ data: null, error: { code: "23514", message: 'new row for relation "agent_action_ledger" violates check constraint "agent_action_ledger_reason_code_check"' } })
+              const row = { id: `lag-${rows.length + 1}`, ...payload }; rows.push(row); return Promise.resolve({ data: row, error: null })
+            },
+            then(res: (v: unknown) => unknown) { return Promise.resolve({ data: [{ id: "lag-1" }], error: null }).then(res) },
+          }
+          return b
+        },
+      }
+      await withActionLedger(ctx({ cycle: null, reasonCode: "NURTURE_TOUCH" }), async () => ({ success: true, providerKey: "x" }), hooks(0), { client: lagClient })
+      check("a 23514 on reason_code (CHECK not widened yet) re-records the row as UNSPECIFIED naming the intended code", rows.length === 1 && rows[0].reason_code === "UNSPECIFIED" && /intended NURTURE_TOUCH/.test(String(rows[0].reason_detail)))
+    }
+
+    // CENSUS — every chokepoint call site names a WHY: an explicit reason, a ledger helper, a human
+    // approval, or a systemSource the ONE map resolves. Detection reads comment+string-blanked source
+    // (a tombstone or a prose mention is not a call site); the argument is read from the
+    // comment-blanked source at the same offsets.
+    const FNS = ["dispatchEmail", "dispatchSms", "dispatchDirectMail", "placeOutboundAiCall", "insertPortalMessage"]
+    const callRe = new RegExp(`\\b(${FNS.join("|")})\\s*\\(`, "g")
+    const { blankComments } = await import("./strip-comments")
+    const walkTs = (dir: string, out: string[] = []): string[] => {
+      for (const e of readdirSync(join(root, dir), { withFileTypes: true })) {
+        if (e.name === "node_modules" || e.name.startsWith(".")) continue
+        const rel = `${dir}/${e.name}`
+        if (e.isDirectory()) walkTs(rel, out); else if (/\.(ts|tsx)$/.test(e.name)) out.push(rel)
+      }
+      return out
+    }
+    const namesWhy = (arg: string): boolean => {
+      if (/\breasonCode\b|Ledger\(|\bledger\s*[:,}]|humanApproved\s*:\s*true/.test(arg)) return true
+      // The systemSource VALUE (to the end of its line): a literal, a `x ?? "fallback"`, or a ternary
+      // of literals. Every literal in it must map; an expression with no literal does not resolve.
+      const value = /systemSource\s*:\s*([^\n]*)/.exec(arg)?.[1] ?? ""
+      // Only RESULT literals count (at the start, or after `??` / `?` / `:`) — not a comparison operand.
+      const lits = [...value.matchAll(/(?:^|\?\?|\?|:)\s*["'`]([a-z0-9_:]+)["'`]/g)].map((x) => x[1])
+      return lits.length > 0 && lits.every((lit) => (canonicalReasonCode("system_source", lit) ?? canonicalReasonCode("system_source_prefix", lit)) !== null)
+    }
+    // A FORWARDER (`dispatchEmail(p)`, `dispatchEmail(params as never)`) passes its caller's object
+    // through; the WHY is the caller's, which the stripe / stall / door proofs pin. Counted, published.
+    const isForwarder = (arg: string) => /^\s*[A-Za-z_$][\w$]*(\s+as\s+[\w<>[\]]+)?\s*$/.test(arg)
+    let forwarders = 0
+    const sites: Array<{ at: string; names: boolean }> = []
+    for (const rel of [...walkTs("lib"), ...walkTs("app")]) {
+      const raw = read(rel)
+      if (!callRe.test(raw)) { callRe.lastIndex = 0; continue }
+      callRe.lastIndex = 0
+      const masked = blankStrings(raw)
+      const bare = blankComments(raw)
+      let m: RegExpExecArray | null
+      while ((m = callRe.exec(masked))) {
+        if (/(function|async|export)\s+$/.test(masked.slice(Math.max(0, m.index - 20), m.index))) continue
+        let i = m.index + m[0].length, depth = 1
+        while (i < masked.length && depth > 0) { const c = masked[i]; if (c === "(") depth++; else if (c === ")") depth--; i++ }
+        const arg = bare.slice(m.index + m[0].length, i - 1)
+        if (isForwarder(arg)) { forwarders++; continue }
+        sites.push({ at: `${rel}:${masked.slice(0, m.index).split("\n").length}`, names: namesWhy(arg) })
+      }
+    }
+    const silent = sites.filter((s) => !s.names)
+    console.log(`  · census: ${sites.length} chokepoint call sites (dispatchEmail / dispatchSms / dispatchDirectMail / placeOutboundAiCall / insertPortalMessage) under lib/ + app/, ${forwarders} forwarder(s) excluded; ${silent.length} name no WHY (wave 100A measured 78 of 98 at base 08282ad6c, when only an explicit reasonCode counted and no map existed)`)
+    check("the census ran over a non-trivial tree (denominator > 0)", sites.length >= 50, `sites=${sites.length}`)
+    check("EVERY chokepoint call site names a canonical WHY (UNSPECIFIED trends to 0)", silent.length === 0, silent.map((s) => s.at).join(" · "))
+    check("POSITIVE CONTROL: the census flags a specimen that names no WHY, and passes one that does",
+      !namesWhy(`{ brokerageId, to, subject }`) && !namesWhy(`{ systemSource: "banana_source" }`) && !namesWhy(`{ systemSource: spec.systemSource }`)
+      && !namesWhy(`{ systemSource: x ? "ai_isa" : "banana_source" }`) && namesWhy(`{ systemSource: r === "ghosted" ? "ghost_recovery" : "ai_isa" }`) && namesWhy(`{ systemSource: "ai_isa" }`) && namesWhy(`{ ledger: { reasonCode: "CAMPAIGN_STEP" } }`)
+      && isForwarder("params as never") && !isForwarder("{ to }"))
+    console.log("  · blind spots: a `systemSource: args.x ?? \"literal\"` site is judged by its FALLBACK (a caller passing another spelling resolves at run time through the same map, or records UNSPECIFIED); the other ledger writers (web push, social, Stripe lifecycle, AI tool wrapper, recordNonAction) fix their WHY inside the chokepoint and are proven by behaviour in sections 3/9, not by this census")
+  }
+
+  console.log("\n[11c · the AI ISA is a SYSTEM actor — never a human seat (wave 100A)]")
+  {
+    const ISA_TENANT = "33333333-3333-4333-8333-333333333333"
+    const ISA_SYS = "44444444-4444-4444-8444-444444444444"
+    const HUMAN = "55555555-5555-4555-8555-555555555555"
+    const pure = attributedActor({ type: "manager", managerKey: "ai_isa", userId: HUMAN, agentId: "agent-row" }, ISA_SYS)
+    check("pure: an ai_isa action names the ISA's system user, not the human beside it", pure.actor.type === "manager" && pure.actor.managerKey === "ai_isa" && pure.actor.userId === ISA_SYS && pure.actor.agentId === null)
+    check("pure: the human is kept only as on-behalf-of context", pure.onBehalfOfUserId === HUMAN)
+    check("pure: no system identity provisioned → the row names NO user (never the human)", attributedActor({ type: "manager", managerKey: "ai_isa", userId: HUMAN }, null).actor.userId === null)
+    const humanIsa = attributedActor({ type: "user", userId: HUMAN }, ISA_SYS)
+    check("POSITIVE CONTROL: a HUMAN acting (incl. approving an ISA draft) keeps the human", humanIsa.actor.type === "user" && humanIsa.actor.userId === HUMAN && humanIsa.onBehalfOfUserId === null)
+    check("POSITIVE CONTROL: another manager is untouched", attributedActor({ type: "manager", managerKey: "deal_coordinator", userId: HUMAN }, ISA_SYS).actor.userId === HUMAN)
+
+    // End to end: the real ledger resolves the system identity from brokerages.ai_isa_system_user_id.
+    const { client, rows } = fakeLedger()
+    const withBrokerage: LedgerClient = {
+      from(table: string) {
+        if (table !== "brokerages") return client.from(table)
+        const b = { select() { return b }, eq() { return b }, maybeSingle() { return Promise.resolve({ data: { ai_isa_system_user_id: ISA_SYS }, error: null }) } }
+        return b
+      },
+    }
+    await withActionLedger(ctx({ brokerageId: ISA_TENANT, cycle: null, reasonCode: null, systemSource: "ai_isa", actor: { type: "manager", managerKey: "ai_isa", userId: HUMAN } }),
+      async () => ({ success: true, providerKey: "sendgrid" }), hooks(0), { client: withBrokerage })
+    const r = rows[0] ?? {}
+    check("ledger row: actor_type manager, actor_manager_key ai_isa, actor_user_id = the ISA system user", r.actor_type === "manager" && r.actor_manager_key === "ai_isa" && r.actor_user_id === ISA_SYS && r.actor_agent_id === null)
+    check("ledger row: the human rides detail.on_behalf_of_user_id, and the WHY resolves to NURTURE_TOUCH", (r.detail as Row | undefined)?.on_behalf_of_user_id === HUMAN && r.reason_code === "NURTURE_TOUCH")
+    await withActionLedger(ctx({ brokerageId: ISA_TENANT, cycle: null, reasonCode: "HUMAN_REQUESTED", actor: { type: "user", userId: HUMAN } }),
+      async () => ({ success: true, providerKey: "sendgrid" }), hooks(0), { client: withBrokerage })
+    check("POSITIVE CONTROL ledger row: a human ISA-desk action keeps the human actor", rows[1]?.actor_type === "user" && rows[1]?.actor_user_id === HUMAN)
+    // The NBA's own decisions are the ISA's too.
+    const planSrc = stripComments(read("lib/ai-isa/lead-action-plan.ts"))
+    check("the NBA's wait / do_nothing decisions are recorded as manager ai_isa", /actor:\s*\{\s*type:\s*"manager",\s*managerKey:\s*"ai_isa"\s*\}/.test(planSrc))
+    // ONE resolver: the ledger reads the system identity through lib/auth/isa-actor.ts, never its own query.
+    const ledgerSrc = stripComments(read("lib/kernel/action-ledger.ts"))
+    check("the ledger resolves the ISA identity through getIsaSystemUserIdCached (no second resolver)", /getIsaSystemUserIdCached\(/.test(ledgerSrc) && !/\.from\(\s*"brokerages"\s*\)/.test(ledgerSrc))
   }
 
   console.log("\n[12 · 'unknown' rows are settled against outcome_reconciliations]")

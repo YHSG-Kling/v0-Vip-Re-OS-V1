@@ -24,9 +24,10 @@ import {
   type ChainEvent,
   type ChainLink,
 } from "@/lib/kernel/action-ledger"
+import { loadLedgerAttribution, type LedgerAttribution } from "@/lib/intelligence/roi-ledger"
 
 export type CausalChainResult =
-  | { ok: true; chain: ChainLink[]; ledgerAvailable: boolean; causationAvailable: boolean }
+  | { ok: true; chain: ChainLink[]; ledgerAvailable: boolean; causationAvailable: boolean; attribution: LedgerAttribution | null; attributionError: string | null }
   | { ok: false; error: string }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -109,5 +110,17 @@ export async function getEntityCausalChain(input: { entityType: string; entityId
     }
   }
 
-  return { ok: true, chain: assembleCausalChain([...events.values()], [...actions.values()]), ledgerAvailable, causationAvailable }
+  // 4. Wave 100A — what these actions EARNED: the person's / deal's outcomes (reply, appointment,
+  //    contract, closed GCI) credited back to the ledger rows that preceded them, last-touch and
+  //    all-touch (lib/intelligence/roi-ledger.ts loadLedgerAttribution — the same rule as the
+  //    command-center tile). Pinned to the session tenant. A failed read is SAID, never a silent "earned nothing".
+  let attribution: LedgerAttribution | null = null
+  let attributionError: string | null = null
+  if (ledgerAvailable && (entityType === "contact" || entityType === "transaction")) {
+    const attr = await loadLedgerAttribution(svc, brokerageId, entityType === "contact" ? { contactId: entityId } : { transactionId: entityId })
+    if (attr.ok) attribution = attr.result
+    else attributionError = attr.error
+  }
+
+  return { ok: true, chain: assembleCausalChain([...events.values()], [...actions.values()]), ledgerAvailable, causationAvailable, attribution, attributionError }
 }

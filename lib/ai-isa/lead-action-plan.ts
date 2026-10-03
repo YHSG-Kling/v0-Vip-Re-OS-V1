@@ -890,9 +890,11 @@ export async function releaseDueLeadTouches(input: {
     // trail on the exact record a regulator would ask for.
     const { approveClientMessage } = await import("@/lib/agents/agent-client-messages")
     // ACTION LEDGER (wave 98): WHY = the lead plan's step; the proposal id is the cycle
-    // (approveClientMessage), so a re-swept proposal never sends twice.
+    // (approveClientMessage), so a re-swept proposal never sends twice. Wave 100A: a lead-plan
+    // touch is the ISA's NURTURE_TOUCH (action-ledger.ts REASON_CODE_MAP.nba_plan.due), not a
+    // campaign-sequence step — one spelling for both hid the ISA's revenue inside campaigns'.
     const res = await approveClientMessage(messageId, null, undefined, supabase, {
-      reasonCode: "CAMPAIGN_STEP",
+      reasonCode: "NURTURE_TOUCH",
       reasonDetail: `lead action plan auto-release (${verdict.code})`,
     })
 

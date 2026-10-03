@@ -176,9 +176,32 @@ export default async function AIAuditPage({ searchParams }: { searchParams: Prom
                     {l.kind === 'action' && <Badge variant="outline">{l.status} · {l.reasonCode}{l.settledAt ? ` · settled ${new Date(l.settledAt).toLocaleString()}` : ''}{l.error ? ` · ${l.error}` : ''}</Badge>}
                     {l.kind === 'action' && (l.actor || l.costUsd != null || l.riskClass || l.source || l.subjectRef) && <span className="text-xs text-muted-foreground" title={l.detail ? JSON.stringify(l.detail) : undefined}>{[l.actor && `by ${l.actor}`, l.riskClass, l.source, l.subjectRef, l.costUsd != null && `$${l.costUsd.toFixed(4)}`].filter(Boolean).join(' · ')}</span>}
                     {l.because && l.because.length > 0 && <span className="text-xs text-gray-500">because {l.because.join(' → ')}</span>}
+                    {l.kind === 'action' && (() => {
+                      // Wave 100A: what this action EARNED (last-touch / all-touch credit, deterministic rule).
+                      const mine = flight.attribution?.credits.filter((c) => c.actionId === l.id) ?? []
+                      if (mine.length === 0) return null
+                      const last = mine.filter((c) => c.model === 'last_touch')
+                      const allCents = mine.filter((c) => c.model === 'all_touch').reduce((s, c) => s + c.cents, 0)
+                      return <Badge className="bg-emerald-50 text-emerald-800 border-emerald-200">credited: {[...new Set(mine.map((c) => c.kind))].join(', ')}{last.length > 0 ? ` · last touch ×${last.length}` : ''}{allCents > 0 ? ` · $${Math.round(allCents / 100).toLocaleString()} all-touch` : ''}</Badge>
+                    })()}
                   </li>
                 ))}
               </ol>)}
+          {flight?.ok && flight.attribution && (
+            <div className="rounded border px-3 py-2 text-sm space-y-1">
+              <p className="font-medium">Outcomes → credited actions</p>
+              <p className="text-xs text-muted-foreground">
+                {flight.attribution.outcomes.length} outcome{flight.attribution.outcomes.length === 1 ? '' : 's'} (reply · appointment · contract · closed GCI);
+                {' '}{flight.attribution.outcomes.length - flight.attribution.uncredited.length} credited to a preceding ledger action or NBA decision of this tenant.
+                Rule: last-touch = 100% to the latest executed action before the outcome; all-touch = equal split across every executed action and NBA decision in the window. Actions after the outcome earn nothing.
+              </p>
+              {flight.attribution.byReasonCode.length > 0 && (
+                <p className="text-xs">By reason code: {flight.attribution.byReasonCode.map((r) => `${r.key} ($${Math.round(r.lastTouchCents / 100).toLocaleString()} last / $${Math.round(r.allTouchCents / 100).toLocaleString()} all)`).join(' · ')}</p>
+              )}
+              {flight.attribution.uncredited.length > 0 && <p className="text-xs text-amber-700">Not credited (no preceding ledger row): {flight.attribution.uncredited.join(', ')}</p>}
+            </div>
+          )}
+          {flight?.ok && flight.attributionError && <p className="text-xs text-red-600">Outcome attribution could not be read: {flight.attributionError}</p>}
           {flight?.ok && !flight.ledgerAvailable && <p className="text-xs text-amber-700">Action ledger not deployed yet — showing events only.</p>}
         </CardContent>
       </Card>

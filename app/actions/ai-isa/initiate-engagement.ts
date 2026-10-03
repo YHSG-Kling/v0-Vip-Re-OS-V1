@@ -694,6 +694,9 @@ async function dispatchToChannel(
       leadId,
       to: phone,
       message: smsBody.slice(0, 320),
+      // Wave 100A: name the AI ISA as the sender (the ledger's system actor + NURTURE_TOUCH); the
+      // recipient is the contact, and ai_isa_contact does not arm the autonomy gate (unchanged policy).
+      systemSource: 'ai_isa_contact',
       metadata: { leadId, source: 'ai_isa', channel: 'sms' },
     })
 

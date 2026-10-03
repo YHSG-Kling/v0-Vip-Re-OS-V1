@@ -585,6 +585,8 @@ export async function processInboundEmail(params: {
     systemSource:   'ai_isa',
     leadId:         params.leadId,
     metadata:       { source: 'ai_isa_reply' },
+    // WHY (wave 100A): the ISA is answering the person's own email, not running its cadence.
+    ledger:         { reasonCode: 'CONVERSATION_RESPONSE', reasonDetail: 'AI ISA reply to an inbound email' },
   })
 
   if (!sendResult.success) {

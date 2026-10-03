@@ -658,7 +658,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
       import("@/lib/intelligence/skill-freshness-board").then((m) => m.generateSkillFreshnessBoard(brokerageId)),
       import("@/lib/intelligence/revenue-share-board").then((m) => m.generateRevenueShareBoard(brokerageId)),
       import("@/lib/intelligence/curriculum-board").then((m) => m.generateCurriculumBoard(brokerageId)),
-      import("@/lib/intelligence/roi-ledger").then((m) => m.generateRoiLedger(supabase, brokerageId)),
+      import("@/lib/intelligence/roi-ledger").then((m) => m.generateRoiLedger(supabase, brokerageId, 90, { attribution: true })),
     ])
     if (standupRes.status === "fulfilled") standup = standupRes.value
     else console.error("[command-center] manager standup failed:", standupRes.reason)

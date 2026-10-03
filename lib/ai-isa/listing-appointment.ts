@@ -838,7 +838,7 @@ async function confirmAppointmentCore(params: ConfirmCoreParams): Promise<Confir
         // platform prospect's id never flows into a contactId/leadId slot.
         ...(r.entity_type === "contact" ? { contactId: r.entity_id } : {}),
         brokerageId: r.brokerage_id,
-        systemSource: spec.systemSource, channelPurpose: "transactional",
+        systemSource: spec.systemSource, channelPurpose: "transactional", ledger: { reasonCode: "SERVICE_NOTICE", reasonDetail: `${spec.label} confirmation` },
         icsAttachment: { filename: "appointment.ics", content: ics },
       }).catch((e) => ({ success: false, error: String(e) })),
       dispatchEmail({
@@ -848,7 +848,7 @@ async function confirmAppointmentCore(params: ConfirmCoreParams): Promise<Confir
         // goes in as userId — DispatchActorContext.agentId is an AGENTS id and
         // the two are disjoint (CLAUDE.md §3).
         brokerageId: r.brokerage_id, userId: r.agent_user_id,
-        systemSource: spec.systemSource, channelPurpose: "transactional",
+        systemSource: spec.systemSource, channelPurpose: "transactional", ledger: { reasonCode: "SERVICE_NOTICE", reasonDetail: `${spec.label} confirmation` },
         icsAttachment: { filename: "appointment.ics", content: ics },
       }).catch((e) => ({ success: false, error: String(e) })),
     ])
@@ -987,7 +987,7 @@ export async function sendAppointmentReminders(svc: Svc = createServiceClient(),
         to: c.email, subject: `${spec.label} reminder`, html: `<p>Hi ${c.firstName ?? ""},</p><p>${copy}</p>`,
         ...(row.entity_type === "contact" ? { contactId: row.entity_id } : {}),
         brokerageId: row.brokerage_id,
-        systemSource: spec.systemSource, channelPurpose: "transactional",
+        systemSource: spec.systemSource, channelPurpose: "transactional", ledger: { reasonCode: "SERVICE_NOTICE", reasonDetail: `${spec.label} reminder` },
       }).catch((e) => console.error(`[${kind}] reminder email failed:`, e))
     }
     if (row.entity_type === "contact") {

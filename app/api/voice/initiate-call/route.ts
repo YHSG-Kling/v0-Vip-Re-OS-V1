@@ -203,6 +203,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // ConversationRelay transport + AMD voice-drop <Play> — see
     // OutboundCallBrief.elevenlabsVoiceId's own note for the full wiring gap.
     elevenlabsVoiceId: callCtx.voiceConfig?.voiceId ?? null,
+    // WHY (wave 100A): the signed-in agent pressed "call" — a human-requested dial (initiatedBy).
+    ledger: { reasonCode: "HUMAN_REQUESTED", reasonDetail: `agent-initiated AI call (${callPurpose})` },
   })
   if (!placed.ok) {
     // Honest failure — blocked (TCPA/budget) or no tenant number/creds.

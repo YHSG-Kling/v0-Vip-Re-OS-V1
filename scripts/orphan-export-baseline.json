@@ -198,10 +198,11 @@
     "lib/intelligence/retention-board.ts": 1,
     "lib/intelligence/retention-outcomes.ts": 2,
     "lib/intelligence/revenue-share-board.ts": 1,
-    "lib/intelligence/roi-ledger.ts": 1,
+    "lib/intelligence/roi-ledger.ts": 2,
     "lib/intelligence/skill-freshness-board.ts": 1,
     "lib/intelligence/steer-my-day.ts": 1,
     "lib/intelligence/time-to-value-radar.ts": 1,
+    "lib/kernel/action-ledger.ts": 2,
     "lib/kernel/agent-coaching.ts": 1,
     "lib/kernel/ai-search-citation-monitor.ts": 5,
     "lib/kernel/ai-sentinel.ts": 1,
@@ -517,7 +518,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10573,
+  "census": 10578,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -3465,7 +3466,7 @@
     "lib/intelligence/retention-board.ts": 2,
     "lib/intelligence/retention-outcomes.ts": 3,
     "lib/intelligence/revenue-share-board.ts": 2,
-    "lib/intelligence/roi-ledger.ts": 2,
+    "lib/intelligence/roi-ledger.ts": 4,
     "lib/intelligence/showing-feedback-routing-runner.ts": 1,
     "lib/intelligence/showing-feedback-routing.ts": 1,
     "lib/intelligence/skill-freshness-board.ts": 2,
@@ -3487,7 +3488,7 @@
     "lib/journey-conformance/conformance-checker.ts": 1,
     "lib/journey-conformance/conformance-runner.ts": 1,
     "lib/kernel/0.1-feature-access.ts": 5,
-    "lib/kernel/action-ledger.ts": 6,
+    "lib/kernel/action-ledger.ts": 9,
     "lib/kernel/actor-attribution.ts": 2,
     "lib/kernel/actor-context.ts": 1,
     "lib/kernel/adapters/brand-voice.ts": 2,
@@ -17336,7 +17337,9 @@
     ],
     "lib/intelligence/roi-ledger.ts": [
       "composeRoiHeadline",
-      "generateRoiLedger"
+      "generateRoiLedger",
+      "attributeOutcomesToLedger",
+      "loadLedgerAttribution"
     ],
     "lib/intelligence/showing-feedback-routing-runner.ts": [
       "routeAndPublishShowingFeedback"
@@ -17416,6 +17419,9 @@
       "disableFeatureFor"
     ],
     "lib/kernel/action-ledger.ts": [
+      "canonicalReasonCode",
+      "isAiIsaSystemSource",
+      "attributedActor",
       "recordNonAction",
       "withActionLedger",
       "settleDispatchResult",

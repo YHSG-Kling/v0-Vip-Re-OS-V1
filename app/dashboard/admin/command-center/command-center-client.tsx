@@ -325,6 +325,39 @@ export function CommandCenterClient({
         </section>
       )}
 
+      {/* Wave 100A — WHICH reason code / manager / playbook / campaign produced the revenue: closed GCI,
+          contracts, appointments and replies credited back to the action ledger (last-touch + all-touch,
+          deterministic; lib/intelligence/roi-ledger.ts loadLedgerAttribution). Trace one record in the
+          flight recorder (/dashboard/admin/ai-audit). */}
+      {data.roiLedger?.ledgerAttribution && data.roiLedger.ledgerAttribution.outcomes > 0 && (
+        <section className="space-y-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-sm font-semibold">What produced the revenue</h2>
+            <span className="text-xs text-muted-foreground">
+              {data.roiLedger.ledgerAttribution.credited} of {data.roiLedger.ledgerAttribution.outcomes} outcomes credited to a preceding action · last {data.roiLedger.periodDays} days
+            </span>
+          </div>
+          <div className="grid gap-3 md:grid-cols-4">
+            {([
+              ["Reason code", data.roiLedger.ledgerAttribution.byReasonCode],
+              ["Manager", data.roiLedger.ledgerAttribution.byManager],
+              ["Playbook", data.roiLedger.ledgerAttribution.byPlaybook],
+              ["Campaign", data.roiLedger.ledgerAttribution.byCampaign],
+            ] as const).map(([label, rows]) => (
+              <Card key={label} className="p-3">
+                <div className="text-xs text-muted-foreground mb-1">By {label.toLowerCase()} · last-touch / all-touch</div>
+                {rows.length === 0 ? <div className="text-xs text-muted-foreground">nothing credited</div> : rows.map((r) => (
+                  <div key={r.key} className="flex justify-between gap-2 text-xs">
+                    <span className="truncate" title={r.key}>{r.key}</span>
+                    <span className="tabular-nums">${Math.round(r.lastTouchCents / 100).toLocaleString()} / ${Math.round(r.allTouchCents / 100).toLocaleString()}</span>
+                  </div>
+                ))}
+              </Card>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Retention board — the Recruiting Manager's daily flight-risk scores made visible.
           People health beside production: who's trending down and why, before they leave. */}
       {data.retentionBoard && data.retentionBoard.scored > 0 && (

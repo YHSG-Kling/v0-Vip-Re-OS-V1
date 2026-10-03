@@ -67,7 +67,7 @@
  * the column with a migration when the state is genuinely new and something can write it.
  * UPDATE_CHECK_VOCAB_BASELINE=1 still exists for a deliberate, reviewed schema change.
  */
-import { readFileSync, writeFileSync, existsSync } from "node:fs"
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs"
 import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { dirname, join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -883,6 +883,55 @@ if (process.env.CHECK_VOCAB_DUMP === "1") {
   for (const v of [...memFound].sort((a, b) => memKey(a).localeCompare(memKey(b)))) {
     console.log(`  ${v.file}\t${v.column}[${v.tables}]\t${v.kind}\t${v.value}`)
   }
+}
+
+// ── Code-side vocabularies a CHECK mirrors (wave 100A) ─────────────────────────
+// The literal scan above sees `.insert({ col: "X" })`. It cannot see a vocabulary held as a code
+// CONSTANT and written through a resolver — the action ledger's reason codes are resolved through
+// lib/kernel/action-ledger.ts REASON_CODE_MAP, so no caller literal ever reaches the scan. Hold the
+// constant and the CHECK together here: every code value is live, or is declared by a migration that
+// is still WRITTEN, NOT APPLIED (the integrator's queue); and every live value is still in the code.
+console.log("\n[code-side vocabularies mirrored by a CHECK]")
+{
+  const MIRRORS: Array<{ file: string; constant: string; table: string; column: string; constraint: string }> = [
+    { file: "lib/kernel/action-ledger.ts", constant: "ACTION_REASON_CODES", table: "agent_action_ledger", column: "reason_code", constraint: "agent_action_ledger_reason_code_check" },
+    { file: "lib/kernel/action-ledger.ts", constant: "ACTION_ACTOR_TYPES", table: "agent_action_ledger", column: "actor_type", constraint: "agent_action_ledger_actor_type_check" },
+    { file: "lib/kernel/action-ledger.ts", constant: "ACTION_STATUSES", table: "agent_action_ledger", column: "status", constraint: "agent_action_ledger_status_check" },
+  ]
+  const constantValues = (rel: string, name: string): string[] => {
+    const m = new RegExp(`const ${name}\\s*=\\s*\\[([^\\]]*)\\]`, "s").exec(stripComments(readFileSync(join(root, rel), "utf8")))
+    return m ? [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]) : []
+  }
+  const migDir = join(root, "supabase/migrations")
+  const pendingValues = (constraint: string): string[] => {
+    const out: string[] = []
+    for (const f of readdirSync(migDir).filter((n) => n.endsWith(".sql"))) {
+      const raw = readFileSync(join(migDir, f), "utf8")
+      if (!/^--[^\n]*WRITTEN, NOT APPLIED/.test(raw)) continue
+      const body = raw.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")
+      const m = new RegExp(`${constraint}\\s*CHECK\\s*\\(\\s*\\w+\\s+IN\\s*\\(([^)]*)\\)`, "s").exec(body)
+      if (m) out.push(...[...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]))
+    }
+    return out
+  }
+  for (const mr of MIRRORS) {
+    const codeVals = constantValues(mr.file, mr.constant)
+    const live = CHECK_VOCABULARIES[mr.table]?.[mr.column] ?? []
+    const pending = new Set(pendingValues(mr.constraint))
+    const notLive = codeVals.filter((v) => !live.includes(v))
+    const unqueued = notLive.filter((v) => !pending.has(v))
+    const dropped = live.filter((v) => !codeVals.includes(v))
+    check(`${mr.table}.${mr.column}: ${mr.constant} (${codeVals.length}) == live CHECK (${live.length})${notLive.length ? ` + ${notLive.length} pending in a WRITTEN-NOT-APPLIED migration` : ""}`,
+      codeVals.length > 0 && live.length > 0 && unqueued.length === 0 && dropped.length === 0,
+      [unqueued.length ? `in code, not live, no pending migration: ${unqueued.join(",")}` : "", dropped.length ? `live, gone from code: ${dropped.join(",")}` : ""].filter(Boolean).join("; "))
+  }
+  const liveReason = CHECK_VOCABULARIES.agent_action_ledger?.reason_code ?? []
+  const pendingReason = new Set(pendingValues("agent_action_ledger_reason_code_check"))
+  const specimen = [...constantValues("lib/kernel/action-ledger.ts", "ACTION_REASON_CODES"), "INVENTED_REASON"]
+  const specimenUnqueued = specimen.filter((v) => !liveReason.includes(v) && !pendingReason.has(v))
+  check("POSITIVE CONTROL: the same comparison flags an invented code with no pending migration", specimenUnqueued.join(",") === "INVENTED_REASON")
+  check("POSITIVE CONTROL: and flags a live value dropped from the code", liveReason.filter((v) => !specimen.slice(1).includes(v)).length === 1)
+  check("POSITIVE CONTROL: the constant reader finds the module's list", constantValues("lib/kernel/action-ledger.ts", "ACTION_REASON_CODES").includes("UNSPECIFIED"))
 }
 
 console.log("\n──────────────────────────────────────────────────")

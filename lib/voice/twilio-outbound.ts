@@ -22,7 +22,7 @@
 
 import { withAiCallDisclosures } from "@/lib/communication/call-disclosures"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
-import { withActionLedger, type ActionReasonCode, type LedgerClient } from "@/lib/kernel/action-ledger"
+import { withActionLedger, isAiIsaSystemSource, type ActionReasonCode, type LedgerClient } from "@/lib/kernel/action-ledger"
 
 export interface OutboundCallBrief {
   engine: "twilio"
@@ -170,12 +170,15 @@ export function ledgerVoiceDial(
   dial: () => Promise<PlaceOutboundResult>,
   opts?: { client?: LedgerClient },
 ): Promise<PlaceOutboundResult> {
-  const autonomous = !!params.managerKey && !params.humanApproved
+  // Wave 100A — an ai_isa* / ghost_recovery dial is the AI ISA's (a SYSTEM actor), not the agent's
+  // whose id rides initiatedBy; the ledger names the ISA's system user (lib/kernel/action-ledger.ts).
+  const managerKey = params.managerKey ?? (isAiIsaSystemSource(params.systemSource) ? "ai_isa" : null)
+  const autonomous = !!managerKey && !params.humanApproved
   return withActionLedger<PlaceOutboundResult>({
     brokerageId: params.brokerageId,
     action: "comms.voice.call",
     channel: "voice",
-    actor: autonomous ? { type: "manager", managerKey: params.managerKey ?? null, userId: params.initiatedBy ?? null }
+    actor: autonomous ? { type: "manager", managerKey, userId: params.initiatedBy ?? null }
       : params.initiatedBy ? { type: "user", userId: params.initiatedBy }
       : { type: "system" },
     subject: params.contactId ? { type: "contact", id: params.contactId }

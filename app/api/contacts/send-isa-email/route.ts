@@ -110,6 +110,8 @@ export async function POST(req: NextRequest) {
       html: emailPayload.html,
       brokerageId: contact.brokerage_id,
       contactId: contact.id,
+      // WHY (wave 100A): a signed-in staff member sent this follow-up from the contact record.
+      ledger: { reasonCode: "HUMAN_REQUESTED", reasonDetail: "staff sent the ISA follow-up email" },
     })
 
     return NextResponse.json({ success: true })

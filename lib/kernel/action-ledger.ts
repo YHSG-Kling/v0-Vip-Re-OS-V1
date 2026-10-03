@@ -35,8 +35,10 @@
  * file existed. Any OTHER refusal fails closed when the caller asked for an idempotency key (the
  * key exists to prevent a double send, and an unreadable ledger cannot promise that).
  */
+import type { SupabaseClient } from "@supabase/supabase-js"
 import { createServiceClient } from "@/lib/supabase/service"
 import { currentCausation } from "@/lib/kernel/causation"
+import { getIsaSystemUserIdCached } from "@/lib/auth/isa-actor"
 
 
 /** agent_action_ledger.status — m687 CHECK agent_action_ledger_status_check. */
@@ -70,6 +72,12 @@ const ACTION_REASON_CODES = [
   "SCHEDULED_CONTENT_PUBLISH",
   // m692 (wave 99A): a subscription state the lifecycle sweep moved (trial expired / converted).
   "SUBSCRIPTION_LIFECYCLE",
+  // m693 (wave 100A): the four WHYs no earlier code fit, found by mapping every sender's own
+  // spelling onto this set (REASON_CODE_MAP below). Each one carried callers that recorded UNSPECIFIED.
+  "NURTURE_TOUCH",           // the AI ISA's / lead plan's cadenced follow-up to a lead or contact
+  "CONVERSATION_RESPONSE",   // answering the person's own message or request (inbound reply, AI chat tool, callback ask)
+  "SERVICE_NOTICE",          // operational notice to a client / vendor / partner (vendor booking, feedback request, w9)
+  "STAFF_ALERT",             // an alert to the brokerage's own staff (push, lead-magnet notify)
   "WAIT_COOLDOWN",
   "NO_ACTION_NEEDED",
   "UNSPECIFIED",
@@ -79,6 +87,137 @@ export type ActionReasonCode = (typeof ACTION_REASON_CODES)[number]
 const REASON_SET = new Set<string>(ACTION_REASON_CODES)
 function normalizeReasonCode(code: string | null | undefined): ActionReasonCode {
   return code && REASON_SET.has(code) ? (code as ActionReasonCode) : "UNSPECIFIED"
+}
+
+/**
+ * THE ONE MAPPING TABLE (wave 100A, CLAUDE.md §6, OWNER LAW 2). Every other spelling of "why an
+ * autonomous action happened" is mapped onto ACTION_REASON_CODES HERE and nowhere else:
+ *   · system_source — the dispatch / voice / portal / push / social `systemSource` every sender
+ *     already passes (≈90 call sites). Exact names first, then the prefix families.
+ *   · nba_plan — lib/ai-isa/lead-action-plan.ts LeadTouchPlanCode (the NBA verdict's sub-reason);
+ *     its own code rides `detail.plan_code`, the canonical WHY rides reason_code.
+ *   · action_prefix — the ledger action name, for writers whose WHY is fixed by what they are
+ *     (an AI tool call inside a conversation answers that conversation).
+ * EVALUATED, NOT MAPPED: campaign_sequences.trigger_event / notification_rules.trigger_event are
+ * WHAT-HAPPENED vocabularies (event types). The event is the CAUSE (causation_id on the row); the
+ * WHY of a sequence step is CAMPAIGN_STEP whatever started the enrollment. Manager signal types are
+ * manager-to-manager messages, not ledger writers.
+ * An explicit valid reasonCode always wins; a spelling with no entry stays UNSPECIFIED (a finding).
+ */
+const REASON_CODE_MAP = {
+  system_source: {
+    ai_isa: "NURTURE_TOUCH", ai_isa_contact: "NURTURE_TOUCH", ghost_recovery: "NURTURE_TOUCH", lead_action_plan: "NURTURE_TOUCH",
+    sequence: "CAMPAIGN_STEP", newsletter: "CAMPAIGN_STEP", email_campaign: "CAMPAIGN_STEP", prelisting_drip: "CAMPAIGN_STEP",
+    direct_mail_campaign: "CAMPAIGN_STEP", marketing_agent_retry: "CAMPAIGN_STEP", open_house_invitation: "CAMPAIGN_STEP",
+    farm_mail: "CAMPAIGN_STEP", email_preset: "CAMPAIGN_STEP", sms_preset: "CAMPAIGN_STEP", orchestrated: "CAMPAIGN_STEP", preset: "CAMPAIGN_STEP",
+    demo_appointment: "SERVICE_NOTICE",
+    lifetime_touchpoints: "LIFETIME_TOUCH", thank_you_note: "LIFETIME_TOUCH", review_request: "LIFETIME_TOUCH", review_automation: "LIFETIME_TOUCH",
+    property_alerts: "BUYER_PROPERTY_MATCH", property_alert: "BUYER_PROPERTY_MATCH", listing_concierge_buybox_preview: "BUYER_PROPERTY_MATCH", buyer_search: "BUYER_PROPERTY_MATCH",
+    home_value_report: "PROPERTY_VALUE_CHANGE", home_value_investor_report: "PROPERTY_VALUE_CHANGE",
+    transaction_notification: "TRANSACTION_MILESTONE", transaction_communication: "TRANSACTION_MILESTONE", transaction_parties_notice: "TRANSACTION_MILESTONE",
+    closing_concierge: "TRANSACTION_MILESTONE", cda: "TRANSACTION_MILESTONE", lender_status_request: "TRANSACTION_MILESTONE",
+    showing_reminder_transactional: "TRANSACTION_MILESTONE", cooperating_agent_copy_transactional: "TRANSACTION_MILESTONE", offer_net_sheet: "TRANSACTION_MILESTONE",
+    agent_client_message: "HUMAN_REQUESTED", inbox: "HUMAN_REQUESTED", inbox_reply: "HUMAN_REQUESTED", universal_inbox_reply: "HUMAN_REQUESTED",
+    communications: "HUMAN_REQUESTED", text_command: "HUMAN_REQUESTED", phone_test_call: "HUMAN_REQUESTED",
+    billing_lifecycle: "SUBSCRIPTION_LIFECYCLE",
+    social_publisher: "SCHEDULED_CONTENT_PUBLISH",
+    open_house_feedback_request: "SERVICE_NOTICE", open_house_weather_alert: "SERVICE_NOTICE", credit_copilot: "SERVICE_NOTICE", listing_appointment: "SERVICE_NOTICE",
+    web_push: "STAFF_ALERT", lead_magnet_notify: "STAFF_ALERT", queue_drain: "STAFF_ALERT",
+  },
+  system_source_prefix: {
+    vendor_: "SERVICE_NOTICE",
+    platform_: "SUBSCRIPTION_LIFECYCLE",
+    "lifecycle:": "LIFETIME_TOUCH",
+  },
+  nba_plan: {
+    due: "NURTURE_TOUCH", convert_on_callback: "CONVERSATION_RESPONSE",
+    interval_not_elapsed: "WAIT_COOLDOWN", appointment_scheduled: "WAIT_COOLDOWN", recently_contacted: "WAIT_COOLDOWN",
+    quiet_hours: "WAIT_COOLDOWN", postponed: "WAIT_COOLDOWN",
+    blocked_lifecycle: "NO_ACTION_NEEDED", max_touches_reached: "NO_ACTION_NEEDED", no_permitted_channel: "NO_ACTION_NEEDED",
+    plan_complete: "NO_ACTION_NEEDED", duplicate: "NO_ACTION_NEEDED", outreach_paused: "NO_ACTION_NEEDED",
+    agent_handling: "NO_ACTION_NEEDED", dead_end: "NO_ACTION_NEEDED",
+  },
+  action_prefix: {
+    "ai.tool.": "CONVERSATION_RESPONSE",
+    "marketing.social.": "SCHEDULED_CONTENT_PUBLISH",
+  },
+} as const satisfies Record<string, Record<string, ActionReasonCode>>
+
+type ReasonVocabulary = keyof typeof REASON_CODE_MAP
+
+/** Map one spelling from a named vocabulary onto the canonical set. Prefix vocabularies match by
+ *  `startsWith`. Unmapped → null (the caller decides; the ledger records UNSPECIFIED). */
+/** @proofSeam exported so scripts/action-ledger-guard.ts asserts the NBA map against the verdicts and runs the chokepoint census through the SAME table the ledger resolves with. */
+export function canonicalReasonCode(vocabulary: ReasonVocabulary, spelling: string | null | undefined): ActionReasonCode | null {
+  if (!spelling) return null
+  const table = REASON_CODE_MAP[vocabulary] as Readonly<Record<string, ActionReasonCode>>
+  if (vocabulary === "system_source_prefix" || vocabulary === "action_prefix") {
+    for (const [prefix, code] of Object.entries(table)) if (spelling.startsWith(prefix)) return code
+    return null
+  }
+  return Object.prototype.hasOwnProperty.call(table, spelling) ? table[spelling] : null
+}
+
+/** The WHY a ledger row records: explicit valid code → systemSource → its prefix family → the
+ *  action's own family → UNSPECIFIED. Deterministic; no model decides it. */
+function resolveReasonCode(ctx: Pick<ActionContext, "reasonCode" | "systemSource" | "action">): ActionReasonCode {
+  const explicit = normalizeReasonCode(ctx.reasonCode)
+  if (explicit !== "UNSPECIFIED") return explicit
+  return canonicalReasonCode("system_source", ctx.systemSource)
+    ?? canonicalReasonCode("system_source_prefix", ctx.systemSource)
+    ?? canonicalReasonCode("action_prefix", ctx.action)
+    ?? "UNSPECIFIED"
+}
+
+// ─── THE AI ISA IS A SYSTEM ACTOR (wave 100A; owner: "isa is a system ai isa") ──────────────
+/** The governed manager key every AI-ISA action is attributed to (lib/kernel/manager-registry.ts). */
+const AI_ISA_MANAGER_KEY = "ai_isa"
+
+/**
+ * True when a sender's `systemSource` says the AI ISA is the one acting — the `ai_isa*` family (the
+ * convention lib/providers/dispatch.ts already uses for compliance `actorType`), ghost recovery, and
+ * the lead plan. The dispatch / voice chokepoints use it to name the ISA as the ACTOR without arming
+ * the autonomy gate (that stays keyed to SYSTEM_SOURCE_TO_MANAGER, lib/managers/autonomy-gate.ts) —
+ * so an unattended ISA SMS never lands on the human agent whose contact it was.
+ */
+export function isAiIsaSystemSource(systemSource: string | null | undefined): boolean {
+  return !!systemSource && (/(^|_)ai_isa(_|$)/.test(systemSource) || systemSource === "ghost_recovery" || systemSource === "lead_action_plan")
+}
+
+/**
+ * WHO a ledger row names. An AI-ISA action (actor manager `ai_isa`) is attributed to the ISA's
+ * SYSTEM identity — `brokerages.ai_isa_system_user_id` (users.platform_role 'ai_isa_system',
+ * lib/auth/isa-actor.ts) or null when the brokerage has none — NEVER to the human whose record or
+ * session it ran beside. That human, if any, is kept as `detail.on_behalf_of_user_id` (context,
+ * not credit). A HUMAN acting (actor `user` / `agent`, including a human approving an ISA draft)
+ * keeps the human. Pure.
+ */
+/** @proofSeam exported so scripts/action-ledger-guard.ts asserts the ISA → system actor rule and the human-keeps-human control on the pure function directly. */
+export function attributedActor(
+  actor: ActionContext["actor"],
+  isaSystemUserId: string | null,
+): { actor: ActionContext["actor"]; onBehalfOfUserId: string | null } {
+  if (actor.type !== "manager" || actor.managerKey !== AI_ISA_MANAGER_KEY) return { actor, onBehalfOfUserId: null }
+  const human = actor.userId && actor.userId !== isaSystemUserId ? actor.userId : null
+  return { actor: { type: "manager", managerKey: AI_ISA_MANAGER_KEY, userId: isaSystemUserId, agentId: null }, onBehalfOfUserId: human }
+}
+
+/** The ISA's system user for a brokerage through the ONE resolver (lib/auth/isa-actor.ts
+ *  getIsaSystemUserIdCached), on the ledger's own client. A thrown / refused read → null: the row
+ *  then names no user — never a human. */
+async function isaSystemUserIdFor(svc: LedgerClient, brokerageId: string): Promise<string | null> {
+  try {
+    return await getIsaSystemUserIdCached(svc as unknown as SupabaseClient, brokerageId)
+  } catch {
+    return null
+  }
+}
+
+/** The insert-ready actor columns + the on-behalf-of context for one ledger row. */
+async function ledgerActorFor(svc: LedgerClient, ctx: ActionContext): Promise<ActionContext> {
+  if (ctx.actor.type !== "manager" || ctx.actor.managerKey !== AI_ISA_MANAGER_KEY) return ctx
+  const { actor, onBehalfOfUserId } = attributedActor(ctx.actor, await isaSystemUserIdFor(svc, ctx.brokerageId))
+  return { ...ctx, actor, detail: onBehalfOfUserId ? { ...(ctx.detail ?? {}), on_behalf_of_user_id: onBehalfOfUserId } : ctx.detail }
 }
 
 /** `domain.entity.action`, lowercase snake segments — the naming rule for NEW actions and events
@@ -188,9 +327,14 @@ function resolveIdempotencyKey(ctx: ActionContext): string | null {
  * column censuses (opposite-missing, readerless-writes) can see every column this module writes —
  * a builder that RETURNED the object hid them, and the ledger read as written-by-nobody.
  */
-function insertLedgerRow(svc: LedgerClient, ctx: ActionContext, status: ActionStatus, key: string | null, extra: Record<string, unknown> = {}) {
+async function insertLedgerRow(
+  svc: LedgerClient, raw: ActionContext, status: ActionStatus, key: string | null, extra: Record<string, unknown> = {},
+): Promise<{ data: { id?: string } | null; error: { code?: string; message?: string } | null }> {
   const scope = currentCausation()
-  return svc.from("agent_action_ledger").insert({
+  const ctx = await ledgerActorFor(svc, raw)
+  const reasonCode = resolveReasonCode(ctx)
+  const write = async (code: ActionReasonCode, detailNote: string | null): Promise<{ data: { id?: string } | null; error: { code?: string; message?: string } | null }> => {
+    const { data, error } = await svc.from("agent_action_ledger").insert({
     brokerage_id: ctx.brokerageId,
     action: ctx.action,
     channel: ctx.channel ?? null,
@@ -201,8 +345,8 @@ function insertLedgerRow(svc: LedgerClient, ctx: ActionContext, status: ActionSt
     subject_type: ctx.subject.type,
     subject_id: ctx.subject.id ?? null,
     subject_ref: ctx.subject.ref ?? null,
-    reason_code: normalizeReasonCode(ctx.reasonCode),
-    reason_detail: ctx.reasonDetail ?? null,
+    reason_code: code,
+    reason_detail: detailNote ? `${detailNote}${ctx.reasonDetail ? ` ${ctx.reasonDetail}` : ""}`.slice(0, 1000) : ctx.reasonDetail ?? null,
     idempotency_key: key,
     status,
     risk_class: ctx.riskClass ?? null,
@@ -211,7 +355,18 @@ function insertLedgerRow(svc: LedgerClient, ctx: ActionContext, status: ActionSt
     correlation_id: ctx.correlationId ?? scope.correlationId,
     detail: ctx.detail ?? {},
     ...extra,
-  }).select("id").single()
+    }).select("id").single()
+    // Read, not swallowed: the caller (claim / non-action) decides degrade vs fail-closed on it.
+    return { data: (data as { id?: string } | null) ?? null, error: error ?? null }
+  }
+  const first = await write(reasonCode, null)
+  // A code the LIVE reason_code CHECK does not know yet (a code whose widening migration is not applied yet) is refused
+  // 23514 — that is a vocabulary lag, not a reason to drop the record or fail a send closed.
+  // Record it once more as UNSPECIFIED with the intended code named in reason_detail.
+  if (first.error?.code === "23514" && /reason_code/.test(first.error.message ?? "") && reasonCode !== "UNSPECIFIED") {
+    return await write("UNSPECIFIED", `[intended ${reasonCode}; CHECK not widened]`)
+  }
+  return first
 }
 
 // ─── claim / settle ───────────────────────────────────────────────────────────
@@ -229,7 +384,7 @@ async function claimAction(ctx: ActionContext, opts?: { client?: LedgerClient })
     const svc = opts?.client ?? createServiceClient()
     const { data, error } = await insertLedgerRow(svc, ctx, "proposed", key)
     if (!error && data?.id) return { kind: "claimed", id: data.id as string, idempotencyKey: key }
-    if (isSchemaAbsent(error)) {
+    if (error && isSchemaAbsent(error)) {
       warnAbsentOnce("claim", error)
       return { kind: "unledgered", reason: `${error.code}: ${error.message}` }
     }

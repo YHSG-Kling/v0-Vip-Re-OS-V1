@@ -254,6 +254,8 @@ export async function triggerAiVoiceCall(params: {
       objective: `Hot-lead outreach (${triggerEvent}): reconnect, learn where they are, and offer to help or book time.`,
       contactName: contact.first_name,
       firstMessage: firstMessage ?? null,
+      // WHY (wave 100A): a signed-in staff member started this dial (initiatedBy = the session user).
+      ledger: { reasonCode: "HUMAN_REQUESTED", reasonDetail: `hot-lead outreach (${triggerEvent})` },
     })
     if (!placed.ok) {
       return { success: false, error: placed.error, blocked: (placed as any).blocked }

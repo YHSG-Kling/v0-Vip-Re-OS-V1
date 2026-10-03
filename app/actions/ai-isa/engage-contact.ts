@@ -653,6 +653,9 @@ async function dispatchContactChannel(
       to: contact.phone,
       message: smsBody,
       agentId: contact.agent_id ?? undefined,
+      // Wave 100A: the ISA's SMS named no source, so the ledger credited the ASSIGNED AGENT (actor
+      // 'agent') with an AI ISA send. Same source as this function's email lane; not gate-arming.
+      systemSource: 'ai_isa_contact',
       metadata: { source: 'ai_isa_contact', reason },
     })
 

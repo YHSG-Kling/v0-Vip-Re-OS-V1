@@ -59,6 +59,7 @@ import { channelRefusalForRecipient } from "@/lib/ai-isa/lead-channel-policy"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
 import {
   withActionLedger,
+  isAiIsaSystemSource,
   settleDispatchResult,
   replayDispatchResult,
   type ActionContext,
@@ -142,6 +143,9 @@ interface DispatchActorContext {
     idempotencyKey?: string
     causationId?: string
     subject?: { type: "listing" | "transaction" | "contact" | "lead" | "subscription"; id: string }
+    /** Wave 100A: the playbook / campaign this send belongs to (e.g. `{ sequence_id }`), so outcome
+     *  attribution (lib/intelligence/roi-ledger.ts) can answer "which campaign produced revenue". */
+    detail?: Record<string, unknown>
   }
 }
 
@@ -158,7 +162,9 @@ function ledgerContextFor(
   params: DispatchActorContext,
   recipientRef: string | null,
 ): ActionContext {
-  const managerKey = managerForDispatch(params.managerKey, params.systemSource)
+  // Wave 100A — the AI ISA is a SYSTEM actor: an ai_isa* send is the ISA's even when no gate-arming
+  // managerKey was passed (the ledger then names brokerages.ai_isa_system_user_id, never the agent).
+  const managerKey = managerForDispatch(params.managerKey, params.systemSource) ?? (isAiIsaSystemSource(params.systemSource) ? "ai_isa" : null)
   const actor: ActionContext["actor"] = managerKey && !params.humanApproved
     ? { type: "manager", managerKey, userId: params.userId ?? null }
     : params.userId ? { type: "user", userId: params.userId, agentId: params.agentId ?? null }
@@ -181,6 +187,7 @@ function ledgerContextFor(
     causationId: params.ledger?.causationId ?? null,
     riskClass: "COMMUNICATION",
     systemSource: params.systemSource ?? null,
+    detail: params.ledger?.detail ?? null,
   }
 }
 
