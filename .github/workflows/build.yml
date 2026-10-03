@@ -353,6 +353,15 @@ jobs:
       # effective abort ceiling of ~11.0 GB against 10.2 GB committed ≈ 8%
       # headroom, where 11264 gave ~0% and lost it. If THIS aborts twice at one
       # commit, the lever is the runner (costed above), not 13312.
+      #
+      #   13312, cpus:1, commit 08282ad6c (2026-10-03, wave 99: fail-closed billing
+      #   resolver + trial lifecycle + AVM capability + memory on 5 surfaces, 58 files)
+      #       → compile aborted ~9m in, exit 134, "Ineffective mark-compacts near heap
+      #         limit", heap 10.74 GB used / 11.76 GB committed (88% of cap) — THREE
+      #         consecutive attempts at the same commit, identical reading. The previous
+      #         push (5fdebe24e) built green. Per the rule above this is no longer the
+      #         intermittent flake: compile demand crossed the 13312 ceiling. ESCALATED
+      #         to the owner: larger runner, or a first-party graph cut.
       # vercel.json still carries 10240 deliberately (no swap there).
       # ── 2026-09-24, run 35963710912 attempts 1+2+3 (commit 83a26b75): 12288 RAN
       # OUT. THREE consecutive heap aborts at ONE commit, all "Ineffective
