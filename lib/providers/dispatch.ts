@@ -53,7 +53,7 @@ import { DECONFLICT_GATE_KEY } from "@/lib/campaign-sequences/deferral-policy"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { needsCassCheck, interpretLobForGate, type MailingGateLead } from "@/lib/providers/mailing-cass-gate"
-import { resolveManagerAutonomy, autonomyDecision, managerForDispatch, HUMAN_APPROVED_SYSTEM_SOURCE } from "@/lib/managers/autonomy-gate"
+import { resolveManagerAutonomy, resolveAgentAuthorityLevel, autonomyDecision, managerForDispatch, HUMAN_APPROVED_SYSTEM_SOURCE } from "@/lib/managers/autonomy-gate"
 import { contentSafetyBackstop } from "@/lib/providers/content-safety"
 import { channelRefusalForRecipient } from "@/lib/ai-isa/lead-channel-policy"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
@@ -229,7 +229,10 @@ async function autonomyGate(args: {
     } catch { accuracyGate = undefined }
   }
 
-  const decision = autonomyDecision({ managerKey, effective, humanApproved, accuracyGate })
+  // AUTHORITY LADDER (wave 98, lane 98C): the tenant's rung for this agent kind — an autonomous send is
+  // a COMMUNICATION and needs ≥3. Same cached row as the posture above; skipped for a human-approved send.
+  const authorityLevel = humanApproved ? null : await resolveAgentAuthorityLevel(args.brokerageId, managerKey)
+  const decision = autonomyDecision({ managerKey, effective, humanApproved, accuracyGate, authorityLevel })
   if (decision.allow) return null
   return { success: false, providerKey: "autonomy_gate", error: `Outbound held: ${decision.reason}` }
 }

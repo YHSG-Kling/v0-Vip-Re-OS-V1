@@ -226,7 +226,10 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.`
         // ::selectToolsForPersona): free tools first, RentCast next,
         // BatchData last, and a BatchData tool a cheaper same-registry tool
         // already covers is dropped.
-        tools: selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools }),
+        // Wave 98 (98C): narrowed by the tenant's AUTHORITY LADDER rung for the persona agent.
+        tools: selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools }, {
+          authorityLevel: await (await import("@/lib/managers/autonomy-gate")).resolveAgentAuthorityLevel(session.brokerage_id, "ai_isa"),
+        }),
         maxSteps: 5,
         userId: ledgerUserId,
         brokerageId: session.brokerage_id,

@@ -3,11 +3,14 @@
 import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_closing_workflow")
 
 /**
  * AI Closing Workflow

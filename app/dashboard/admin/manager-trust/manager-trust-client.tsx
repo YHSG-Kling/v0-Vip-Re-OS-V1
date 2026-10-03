@@ -9,12 +9,13 @@ import { Button } from "@/components/ui/button"
 import { ShieldCheck, Eye, AlertTriangle, HelpCircle, Bot, Lock, Brain, Undo2, Ban, ArrowRightLeft, CalendarClock, CheckCircle2, Scale, Trophy, Handshake, MessageSquareWarning, Gavel, Quote, Archive, RotateCcw } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import {
-  setManagerAutonomy, setManagerRetired, vetoLearnedAdjustment, completeRegionalConventionReview, overrideDeliberationWinner,
+  setManagerAutonomy, setManagerAuthorityLevel, setManagerRetired, vetoLearnedAdjustment, completeRegionalConventionReview, overrideDeliberationWinner,
   type ManagerTrustRow, type CrossManagerReferralView, type StandingReviewView,
 } from "@/app/actions/admin/manager-evals"
 import type { LearnedAdjustmentView } from "@/lib/managers/learning-loop"
 import { StatCard as SummaryCard } from "@/app/components/shared/StatCard"
 import type { TrustTier, AutonomyPosture } from "@/lib/managers/eval-scoring"
+import type { AuthorityLevel } from "@/lib/ai-isa/persona-tool-policy"
 // Type-only imports — erased at build time (the modules themselves are server-side).
 import type { TeamworkMetrics } from "@/lib/managers/teamwork-metrics"
 import type { DeliberationRecord } from "@/lib/managers/deliberation"
@@ -52,7 +53,7 @@ const AUTONOMY_LABEL: Record<AutonomyPosture, string> = {
 }
 
 export function ManagerTrustClient({
-  managers: initialManagers, team, learned: initialLearned = [], referrals = [], standingReviews: initialReviews = [], teamwork = null, accuracyGates = [], accuracyHolds = null, teamMap = [], ownedProofs = [], reaperCoverage = null,
+  managers: initialManagers, team, learned: initialLearned = [], referrals = [], standingReviews: initialReviews = [], teamwork = null, accuracyGates = [], accuracyHolds = null, teamMap = [], ownedProofs = [], reaperCoverage = null, authorityLadder,
 }: {
   managers: ManagerTrustRow[]
   team: { passRate: number; total: number; trustedCount: number; managerCount: number }
@@ -74,7 +75,11 @@ export function ManagerTrustClient({
   /** Sends actually HELD by the accuracy gate (round 37 hold telemetry).
    *  null ⇒ the ledger couldn't be read — rendered as honestly unavailable. */
   accuracyHolds?: AccuracyHoldRollup | null
+  /** AUTHORITY LADDER labels (wave 98, lane 98C) — lib/ai-isa/persona-tool-policy.ts
+   *  AUTHORITY_LEVEL_LABELS, passed from the server page (one vocabulary, never retyped here). */
+  authorityLadder: Readonly<Record<AuthorityLevel, string>>
 }) {
+  const AUTHORITY_LEVEL_LABELS = authorityLadder
   const { toast } = useToast()
   const [managers, setManagers] = useState<ManagerTrustRow[]>(initialManagers)
   const [learned, setLearned] = useState<LearnedAdjustmentView[]>(initialLearned)
@@ -166,6 +171,22 @@ export function ManagerTrustClient({
       toast({ title: "Could not update policy", description: r.error, variant: "destructive" })
     } else {
       toast({ title: `${m.label} policy updated`, description: posture ? `Now: ${AUTONOMY_LABEL[posture]}` : "Reverted to the eval recommendation." })
+    }
+  }
+
+  // AUTHORITY LADDER (wave 98, lane 98C): the rung this agent kind operates at in this brokerage.
+  async function changeAuthority(m: ManagerTrustRow, value: string) {
+    const level = Number(value) as AuthorityLevel
+    setSaving(m.agentKind)
+    const prev = managers
+    setManagers((cur) => cur.map((x) => (x.agentKind === m.agentKind ? { ...x, authorityLevel: level } : x)))
+    const r = await setManagerAuthorityLevel(m.agentKind, level)
+    setSaving(null)
+    if (!r.ok) {
+      setManagers(prev)
+      toast({ title: "Could not update authority level", description: r.error, variant: "destructive" })
+    } else {
+      toast({ title: `${m.label} authority updated`, description: `Now level ${level}: ${AUTHORITY_LEVEL_LABELS[level]}` })
     }
   }
 
@@ -470,6 +491,26 @@ export function ManagerTrustClient({
                       <SelectItem value="autonomous">Override: may act autonomously</SelectItem>
                       <SelectItem value="review_recommended">Override: review recommended</SelectItem>
                       <SelectItem value="approval_required">Override: approval required</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {/* Authority ladder (wave 98): 0 read-only … 6 consequential actions need human approval */}
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs text-muted-foreground">
+                    Authority level · messages need 3+, money/legal always need a human
+                  </span>
+                  <Select
+                    value={String(m.authorityLevel)}
+                    onValueChange={(v) => changeAuthority(m, v)}
+                    disabled={!m.isActive || saving === m.agentKind}
+                  >
+                    <SelectTrigger className="w-56 h-8 text-xs" aria-label={`${m.label} authority level`}>
+                      <SelectValue placeholder={m.isActive ? "Set level" : "Not active yet"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {([0, 1, 2, 3, 4, 5, 6] as AuthorityLevel[]).map((lvl) => (
+                        <SelectItem key={lvl} value={String(lvl)}>{lvl} · {AUTHORITY_LEVEL_LABELS[lvl]}</SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>

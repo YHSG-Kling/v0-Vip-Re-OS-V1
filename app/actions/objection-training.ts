@@ -16,12 +16,15 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { z } from "zod"
 import { getScenarioByKey } from "@/lib/training/objection-scenarios"
 import type { ObjectionScenario } from "@/lib/training/objection-scenarios"
 import { clamp } from "@/lib/format/math"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("objection_training")
 
 // OBJECTION_SCENARIOS + ObjectionScenario were re-exported here but "use server"
 // rejects non-async exports. Consumers import them directly from

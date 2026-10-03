@@ -36,6 +36,7 @@ import {
 } from '@/app/actions/ai-isa-settings'
 import type { IsaSettingsOwnerType } from '@/lib/ai-isa/resolve-isa-settings'
 import type { AIISASettings } from '@/lib/ai-isa/settings-types'
+import { SUPPRESSIBLE_DEAD_ENDS, canonicalDeadEnd } from '@/lib/ai-isa/settings-types'
 import { createClient } from '@/lib/supabase/client'
 
 const WRITE_ROLES = new Set(['broker', 'broker_admin', 'admin', 'superadmin'])
@@ -52,14 +53,8 @@ const LEAD_CHANNELS = [
   { key: 'direct_mail', label: 'Direct Mail', Icon: Home },
 ] as const
 
-const OUTCOME_OPTIONS = [
-  'not_interested',
-  'do_not_contact',
-  'do_not_call',
-  'wrong_number',
-  'bad_contact_data',
-  'ghosted',
-]
+// Wave 98 (98C): the ONE dead-end vocabulary (lib/ai-isa/settings-types.ts) — never a retyped list.
+const OUTCOME_OPTIONS = SUPPRESSIBLE_DEAD_ENDS
 
 export default function AIISASettingsPage() {
   const [brokerageId, setBrokerageId]   = useState<string | null>(null)
@@ -473,9 +468,10 @@ export default function AIISASettingsPage() {
             {OUTCOME_OPTIONS.map((outcome) => (
               <div key={outcome} className="flex items-center gap-2">
                 <Checkbox
-                  checked={settings.suppress_on_outcomes.includes(outcome)}
+                  checked={settings.suppress_on_outcomes.some((o) => canonicalDeadEnd(o) === outcome)}
                   onCheckedChange={(checked) => {
-                    const current = settings.suppress_on_outcomes
+                    // Saving re-spells any legacy value (e.g. 'do_not_call') onto the canonical one.
+                    const current = Array.from(new Set(settings.suppress_on_outcomes.map((o) => canonicalDeadEnd(o) ?? o)))
                     patchSettings({
                       suppress_on_outcomes: checked
                         ? [...current, outcome]

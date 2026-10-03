@@ -2,7 +2,7 @@
 
 import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -11,6 +11,9 @@ import { handleError } from "@/lib/errors"
 // brokerage comes from the SESSION and nowhere else.
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { z } from "zod"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_training_coaching")
 
 // ============================================================================
 // AI TRAINING & COACHING SYSTEM

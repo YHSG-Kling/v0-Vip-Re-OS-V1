@@ -338,6 +338,38 @@ check("lib/ai/generate.ts still exposes GeneratedUsage with the SERVED MODEL, so
   /export\s+interface\s+GeneratedUsage/.test(blankStrings(stripComments(readFileSync(join(root, "lib/ai/generate.ts"), "utf8")))) &&
   /model:\s*AIModel\s*\|\s*null/.test(blankStrings(stripComments(readFileSync(join(root, "lib/ai/generate.ts"), "utf8")))))
 
+// A5 (wave 98, lane 98C) — THE BOOKED SHIM. Callers that bind `bookedGenerateObject(feature)` no
+// longer import the unbooking `generateObject`, so A1 stops seeing them. That is only honest while the
+// booked shim really books, from the SESSION tenant — asserted here on stripped source, with a
+// positive control that the finder still flags the unbooked shim and clears the booked one.
+console.log("\n[A5 · the booked shim books — callers switched onto it leave the debt honestly]")
+{
+  const genSrc = stripComments(readFileSync(join(root, "lib/ai/generate.ts"), "utf8"))
+  const start = genSrc.search(/export\s+function\s+bookedGenerateObject\s*\(/)
+  // The function BODY, brace-balanced over string-blanked source (same offsets), sliced from the original.
+  const blanked = blankStrings(genSrc)
+  let body = ""
+  if (start !== -1) {
+    const open = blanked.indexOf("{", start)
+    let depth = 0
+    for (let i = open; i < blanked.length; i++) {
+      if (blanked[i] === "{") depth++
+      else if (blanked[i] === "}" && --depth === 0) { body = genSrc.slice(open, i + 1); break }
+    }
+  }
+  check("lib/ai/generate.ts exports bookedGenerateObject(feature)", start !== -1)
+  check("bookedGenerateObject books through logAIUsage", /\blogAIUsage\s*\(/.test(blankStrings(body)))
+  check("bookedGenerateObject takes the tenant from the SESSION (getAgentContext), never an argument",
+    /getAgentContext\s*\(/.test(body) && /brokerageId:\s*ctx\.brokerageId/.test(body))
+  const analyse = (src: string) => { const nc = stripComments(src); return laneCallSites(blankStrings(nc), nc).hits.length }
+  check("PC: a file on the unbooking shim is still a hit",
+    analyse(`import { generateObject } from "@/lib/ai/generate"\nexport async function a() { return generateObject({ model: "m", schema: {} as never }) }`) === 1)
+  check("PC: a file bound to the booked shim is not a hit",
+    analyse(`import { bookedGenerateObject } from "@/lib/ai/generate"\nconst generateObject = bookedGenerateObject("x")\nexport async function a() { return generateObject({ model: "m", schema: {} as never }) }`) === 0)
+  const bound = files.filter((f) => /\bbookedGenerateObject\s*\(/.test(blankStrings(stripComments(readFileSync(join(root, f), "utf8")))) && f !== "lib/ai/generate.ts")
+  console.log(`  files bound to the booked shim: ${bound.length}`)
+}
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${pass} passed, ${fail} failed`)
 if (fail > 0) {

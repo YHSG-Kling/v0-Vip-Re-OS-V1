@@ -29,13 +29,52 @@ prove the status either way in this lane, so we did not guess.
 | 19 | Memory compiler (facts w/ confidence + expiry) | `conversation-memory.ts` (`contacts.metadata.context_spine.facts`, lane 97B), `contact_memory` (vector recall), `consensus-memory.ts` | **BUILT (structured facts)** | Wave 97B: timeline / price expectation / channel preference / motivation carry observed_at, confidence and review_by; a newer contradicting fact supersedes the old one (kept, marked superseded); the portal AI chat reads only current, unexpired facts. No migration (jsonb). Open: other AI surfaces (DID, ISA email, voice) still read raw context; the vector `contact_memory` rows carry no expiry. |
 | 20 | Evaluation / replay / experiments | `agent_outcome_evaluations`, `direct_mail_variant_outcomes`, `strategy_outcomes`, `feature_flags` | **PARTIAL** | No replay harness and no general experiment table. |
 | 21 | Tenant operating policies as data | `brokerage_settings.settings` (e.g. `ai_agent_capabilities`), `*_cadence_policy`, `lifecycle_promo_policy`, `assignment_rules` | **PARTIAL** | Policies are spread across settings JSON and per-domain tables, with no single policy schema. |
-| 22 | Authority ladder (controlled autonomy) | `lib/kernel/reporting-autonomy.ts`, `lib/documents/autonomy-ratchet.ts`, `approval_items` + `approval-queue-aggregator.ts`, dispatch autonomy gate | **PARTIAL** | The ladder exists for documents and outbound. It is not keyed to the tool risk classes from #9. |
+| 22 | Authority ladder (controlled autonomy) | `lib/kernel/reporting-autonomy.ts`, `lib/documents/autonomy-ratchet.ts`, `approval_items` + `approval-queue-aggregator.ts`, dispatch autonomy gate | **BUILT (wave 98)** | Wave 98: one level from 0 to 6 per tenant per agent kind (`managed_agents.config.authority_level`) is keyed to the risk class. The persona mounts and dispatch both read it. COMMUNICATION needs level 3 or above. FINANCIAL needs level 6 and a named approval gate. LEGAL and IRREVERSIBLE never mount. See "Planes not yet mapped". |
 | 23 | Territory engine + dynamic ownership / SLA reassignment | `farm_territories`, `lib/territory/metrics-aggregator.ts`, `assignment_rules`, `lib/kernel/urgent-sla.ts`, `lib/lead-assignment` | **PARTIAL** | Reassignment on SLA breach is unresolved (not traced). |
 | 24 | Recruiting on the same opportunity machinery | `lib/recruiting/*` (switch-propensity, retention-radar), `recruits`, `raw_recruit_prospects` | **PARTIAL** | Runs its own scorers rather than the lead signal/NBA rail. |
 | 25 | Marketplace / procurement | `lib/vendor-marketplace/*`, `lib/kernel/vendor-orchestration.ts`, `vendor-price-intelligence.ts` | **PARTIAL** | No quote/bid procurement object (unresolved). |
 | 26 | Digital twin / brokerage intelligence | `lib/brokerage-intelligence/miners.ts`, `lib/kernel/intelligence-report.ts`, `territory_metrics` | **PARTIAL** | Reports exist. There is no simulate-a-change model. |
 | 27 | "Run my morning" / exceptions-first | `lib/kernel/morning-standup.ts`, `overnight-digest.ts`, `exception-center.ts`, `command-center.ts` | **BUILT** | Not checked against the blueprint's exact morning brief (unresolved). |
 | 28 | Outcome attribution | `marketing_attribution_credits`, `outcome_reconciliations`, `lib/kernel/outcome-learning.ts`, `lib/lead-intelligence/person-spend.ts` | **PARTIAL** | No end-to-end decision → action → revenue link (this needs #11 and #12). |
+
+## Planes not yet mapped (wave 98, lane 98C)
+
+The rows above came from the blueprint items wave 96 chose to map. This section scores the rest of the platform against the 12 planes and the blueprint's cross-cutting systems. One line each: **survivor `file:line` → status → gap**. Same status rules as above.
+
+### The 12 planes
+
+| Plane | Survivor | Status | Gap |
+|---|---|---|---|
+| Experience (client) | `app/portal/[contactId]/**`, `app/api/portal/ai-chat/route.ts:497` | **BUILT** | Portal surfaces exist per deal and contact. Not checked page by page against the blueprint (unresolved). |
+| Agent experience (staff) | `app/api/internal/ai-chat/route.ts:1390` (`selectToolsForSeat`), `lib/kernel/morning-standup.ts`, `command-center.ts` | **BUILT** | None material. |
+| Agent (AI managers) | `lib/kernel/manager-registry.ts` (`MANAGERS`), `managed_agents` | **BUILT** | None material. Authority per agent kind is now data (the ladder row below). |
+| Decision | `lib/ai-isa/lead-action-plan.ts:planNextLeadTouch`, `lib/providers/dispatch.ts` (policy chain) | **PARTIAL** | The lead NBA is code with reasons-not-to-act. The contact side (`next-best-touch.ts`) does not take the NBA context yet. |
+| Event | `lib/kernel/emit.ts` (`emitKernelEvent`), `lifecycle_events` + causation (m687) | **PARTIAL** | About 12 modules still insert `lifecycle_events` directly (wave 97 open). |
+| Intelligence | `lib/lead-intelligence/behavioral-summary.ts:scoreDecayedIntent`, `lib/kernel/intelligence-report.ts` | **BUILT** | Pre-conversion leads get no intent (they have no contact id). |
+| Data | `contacts`/`leads`, generated schema caches `scripts/schema-snapshot.ts` | **PARTIAL** | There is no canonical Person record (row #15). Retention classes are MISSING (below). |
+| Capability | `lib/agentic-os/vendor-capability-registry.ts`, `connected-vendor-registry.ts`, `lib/ai-isa/property-lookup-rail.ts:305` (`CONTACT_PROVIDER_ROUTES`) | **PARTIAL** | Capability to adapter routing is code per chain, not one data table (row #5). |
+| Provider orchestration | `property-lookup-rail.ts:lookupPropertyForConversation`, `runVersiumContactLeg` | **BUILT (wave 98)** | Wave 98: health-aware. A provider in `failing` is routed around for its cool-down. The AVM chain (`lib/avm/provider-chain.ts`) does not consult health yet. |
+| Provider | `lib/external/*-client.ts`, all calls through `lib/agentic-os/connector-gateway.ts:callConnector` | **BUILT** | None material. |
+| Economic | `lib/ai/cost-tracking.ts:logAIUsage` → `meter_readings`, `vendor_usage_tracking` | **PARTIAL** | Wave 98: unbooked model files went from 27 to 4. Balances are still not derived from ledger entries (commission row #16). |
+| Learning | `lib/kernel/outcome-learning.ts`, `agent_outcome_evaluations`, `lib/managers/eval-scoring.ts` | **PARTIAL** | No end-to-end decision → revenue attribution (row #28). |
+
+### Cross-cutting systems
+
+| System | Survivor | Status | Gap |
+|---|---|---|---|
+| Entitlements / usage | `lib/entitlements/resolve.ts:81` `resolveEntitlement`, `tenant-capabilities.ts:104`, `feature_flags` + `feature_access_overrides` | **BUILT** | Usage metering and entitlements are two reads. No single "may this tenant use X *and* afford it" answer. |
+| Provider health / failover state | `lib/agentic-os/connector-gateway.ts` `deriveProviderHealth` / `loadProviderHealth` (over `api_response_logs`), `lib/platform/provider-posture.ts` `healthState` | **BUILT (wave 98)** | States: healthy → degraded → rate_limited → failing → fallback (half-open) → recovered. These are derived and never stored. Health is per connector, not per tenant. |
+| Authority ladder per agent per tenant | `lib/ai-isa/persona-tool-policy.ts` `MIN_AUTHORITY_FOR_RISK` / `isToolAllowedAtAuthority`, `lib/managers/autonomy-gate.ts` `resolveAgentAuthorityLevel` (`managed_agents.config.authority_level`) | **BUILT (wave 98)** | Levels run from 0 (read only) to 6 (consequential actions need human approval). The default of 6 keeps today's behaviour. The level is set on Manager Trust. Rungs 4 and 5 are reserved and add no capability yet. The staff copilot is not keyed to a rung. |
+| Tenant operating policies as data | `brokerage_settings.settings`, `ai_isa_settings`, `managed_agents.config`, `assignment_rules` | **PARTIAL** | Three stores and no single policy schema (row #21). |
+| Territory engine + dynamic ownership / SLA reassignment | `farm_territories`, `lib/territory/metrics-aggregator.ts`, `lib/kernel/urgent-sla.ts:24` `urgentSlaBreached`, `lib/lead-assignment/unassigned-escalation.ts:33` | **PARTIAL** | An SLA breach escalates (a notification). No automatic reassignment to the next owner was found. |
+| Recruiting / agent lifecycle on the opportunity machinery | `lib/recruiting/switch-propensity.ts`, `retention-radar.ts`, `career-tier.ts:11` | **PARTIAL** | Recruiting uses its own scorers, not the signal → decay → NBA rail (row #24). |
+| Gamification by lifecycle milestones | `lib/gamification/award-points.ts:104` `awardAgentPoints`, called from onboarding, listing lifecycle, challenges and reassignment | **PARTIAL** | Points are awarded at a few lifecycle moments. There is no milestone table keyed to the lifecycle stages. |
+| Brokerage intelligence / digital twin | `lib/brokerage-intelligence/miners.ts:661` `mineAllPatterns`, `territory_metrics` | **PARTIAL** | Reports only. No simulate-a-change model (row #26). |
+| Mission / objective engine | `lib/goals/goal-types.ts`, `agent_goals` (`app/actions/ai-agent-goals.ts`) | **PARTIAL** | Goals are agent-level targets. No brokerage objective decomposes into agent and agent-kind missions. `ai-agent-goals.ts` takes `brokerageId` as a parameter (§4 shape, not fixed here). |
+| Evaluation / replay / experiments + tenant feature flags | `agent_outcome_evaluations`, `direct_mail_variant_outcomes`, `feature_flags` / `feature_access_overrides` (`lib/entitlements/resolve.ts:28`) | **PARTIAL** | Flags are entitlement gates, not experiments. No replay harness (row #20). |
+| Negative intelligence | `lib/ai-isa/settings-types.ts` `DEAD_END_OUTCOMES` / `canonicalDeadEnd` / `deadEndsFromLeadSources` → `lead-action-plan.ts` `reasonsNotToAct` | **BUILT (wave 98, leads)** | One vocabulary of 7 dead ends: not_interested, wrong_number, do_not_contact, already_represented, property_sold, postponed, paused. The lead sweep reads ISA outcomes, call outcomes, the qualification line and the nurture date. The contact-side engagement path does not read it yet, and `property_sold` has no writer. |
+| Data retention classes | `lib/kernel/signal-reaper-policy.ts:11` (signal TTL), `lib/privacy/contact-pii-redaction.ts:14` (DSR erasure) | **MISSING** | There are TTLs for signals and erasure for PII, but no per-table retention class (keep / archive / purge after N). |
+| Domain API surface | `app/api/**` (route handlers per feature), `"use server"` actions | **PARTIAL** | No versioned domain API (`/api/v1/{person,opportunity,action}`). The surface is feature-shaped. |
 
 ## Event and action naming (wave 97)
 
@@ -46,7 +85,7 @@ prove the status either way in this lane, so we did not guess.
 
 ## Next waves (smallest high-leverage builds first)
 
-1. **Book the remaining 27 unbooked model call sites** (wave 97 moved 36 → 27; the 20 shim callers hold real usage via `GeneratedUsage` and need only a tenant-threaded `logAIUsage`). This is a ledger correctness fix, and a wrong ledger means a wrong invoice (§5).
+1. ~~**Book the remaining 27 unbooked model call sites**~~ Wave 98 (98C): 27 → 4 (23 `generateObject` shim callers bound to `bookedGenerateObject`, which books to the SESSION tenant). The 4 left are `social/generate-social-post.ts` (its usage is booked by the AI Tools hub, so booking it here would double-bill), `buyer-coaching.ts`, `ad-monitor.ts` and `services/aiMappingService.ts`. (wave 97 moved 36 → 27; the 20 shim callers hold real usage via `GeneratedUsage` and need only a tenant-threaded `logAIUsage`). This is a ledger correctness fix, and a wrong ledger means a wrong invoice (§5).
 2. ~~Extend the mount-time risk check; trace the delivery gates~~ — DONE wave 97 (97C). Next: key the authority ladder (#22) to the risk class.
 3. ~~Versium contact budget gate; `field_provenance` reader~~ — DONE wave 97 (97C).
 4. ~~Add causation and correlation ids to `lifecycle_events`~~ **Done in wave 97 (m687, APPLIED LIVE 2026-10-02).** Next: move the direct `lifecycle_events` inserters onto `emitKernelEvent` so they get lineage.

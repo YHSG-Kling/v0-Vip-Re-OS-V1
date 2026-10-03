@@ -4,7 +4,7 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { z } from "zod"
@@ -14,6 +14,9 @@ import { revalidatePath } from "next/cache"
 import { dispatchEmail, dispatchSms } from "@/lib/providers/dispatch"
 import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
 import { requireCallerWithAgent as requireCaller } from "@/lib/auth/require-caller"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_communication_hub")
 
 /**
  * AI Communication Hub

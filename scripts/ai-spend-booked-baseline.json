@@ -1,76 +1,7 @@
 {
   "unbooked": {
-    "app/actions/ai-agent-goals.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-calendar-management.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-client-gifting.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-closing-workflow.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-communication-hub.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-contract-review.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-document-intelligence.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-lead-nurturing.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-lead-scoring.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-listing-presentation.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-market-intelligence.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-newsletter.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-property-matching.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-referral-management.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-review-automation.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-sphere-management.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-training-coaching.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-transaction-coordinator.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-vendor-management.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/ai-voice-transcription.ts": [
-      "shim:generateObject"
-    ],
     "app/actions/buyer-coaching.ts": [
       "raw:generateText"
-    ],
-    "app/actions/documents.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/market-insight-actions.ts": [
-      "shim:generateObject"
-    ],
-    "app/actions/objection-training.ts": [
-      "shim:generateObject"
     ],
     "app/actions/social/generate-social-post.ts": [
       "shim:generateObject"

@@ -396,6 +396,45 @@ console.log("\n[Layer R · every AI tool is risk-classed; every consequential to
   console.log("  blind spots: rentcast_* / batchdata_* tools are built from vendor MCP catalogues at runtime (named by prefix → READ; their spend is gated by costRankForTool + resolveBatchDataAccess); tools mounted outside lib/ai-isa, the two platform files and the staff route are not in the census (lib/voice/twilio-voice.ts VOICE_TOOL_ALLOWLIST builds from these same builders); send_explainer_video has NO automated delivery (contact_id null on the project) — its gate is the approval queue, recorded in TOOL_APPROVAL_GATE.")
 }
 
+// Wave 98 (lane 98C) — THE AUTHORITY LADDER keyed to the risk classes (gap map #22). The RULE, not a
+// waypoint: each class has a minimum rung derived from MIN_AUTHORITY_FOR_RISK; COMMUNICATION needs ≥3;
+// FINANCIAL mounts only behind a named approval gate; LEGAL/IRREVERSIBLE never; DEFAULT keeps today's mount.
+console.log("\n[Layer A · authority ladder 0-6 per tenant per agent kind, keyed to the risk class (wave 98)]")
+{
+  const P = await import("../lib/ai-isa/persona-tool-policy")
+  const { autonomyDecision } = await import("../lib/managers/autonomy-gate")
+  const origWarn = console.warn; console.warn = () => {}
+  const reg = { get_my_context: {}, schedule_callback: {}, send_newsletter: {}, start_subscription: {}, mark_do_not_contact: {}, wire_funds_now: {} }
+  const at = (lvl: 0 | 1 | 2 | 3 | 4 | 5 | 6) => Object.keys(P.selectToolsForPersona(reg, { authorityLevel: lvl })).sort().join(",")
+  const dflt = Object.keys(P.selectToolsForPersona(reg)).sort().join(",")
+  check("DEFAULT is today's behaviour: no level passed mounts exactly what level 6 mounts", dflt === at(P.DEFAULT_AUTHORITY_LEVEL) && P.DEFAULT_AUTHORITY_LEVEL === 6, dflt)
+  check("level 0 (read only) mounts READ + the protective opt-out only", at(0) === "get_my_context,mark_do_not_contact", at(0))
+  check("level 2 (draft) mounts no COMMUNICATION tool; level 3 does (COMMUNICATION needs ≥3)",
+    !at(2).includes("send_newsletter") && at(3).includes("send_newsletter") && P.MIN_AUTHORITY_FOR_RISK.COMMUNICATION === 3)
+  check("FINANCIAL mounts only at the top rung AND only with a named approval gate", !at(5).includes("start_subscription") && at(6).includes("start_subscription")
+    && P.isToolAllowedAtAuthority("start_subscription", 6) === Boolean(P.TOOL_APPROVAL_GATE.start_subscription))
+  check("LEGAL / IRREVERSIBLE (and an unclassified name) never mount at any rung", [0, 1, 2, 3, 4, 5, 6].every((l) => !P.isToolAllowedAtAuthority("wire_funds_now", l as 0)) && P.MIN_AUTHORITY_FOR_RISK.LEGAL === null)
+  check("every risk class's rung is monotone (a higher rung never loses a tool)",
+    ([0, 1, 2, 3, 4, 5] as const).every((l) => at(l).split(",").every((n) => !n || at((l + 1) as 1).split(",").includes(n))))
+  const held = autonomyDecision({ managerKey: "ai_isa" as never, effective: null, authorityLevel: 2 })
+  const ok = autonomyDecision({ managerKey: "ai_isa" as never, effective: null, authorityLevel: 3 })
+  const approved = autonomyDecision({ managerKey: "ai_isa" as never, effective: null, authorityLevel: 0, humanApproved: true })
+  check("EXECUTED dispatch decision: an autonomous send at level 2 is HELD, at level 3 allowed, a human-approved send is never held (positive control)",
+    held.held && !ok.held && approved.allow, `${held.reason}`)
+  const dispatchSrc = stripped("lib/providers/dispatch.ts"), gateSrc = stripped("lib/managers/autonomy-gate.ts")
+  const mounts = ["app/actions/ai-isa/handle-inbound-email.ts", "app/api/did/custom-llm/route.ts", "app/api/widget/message/route.ts", "app/api/portal/ai-chat/route.ts", "lib/voice/twilio-voice.ts"]
+  const unwired = mounts.filter((f) => !/resolveAgentAuthorityLevel\(/.test(stripped(f)) || !/selectToolsForPersona\([^;]*authorityLevel/.test(stripped(f).replace(/\n/g, " ")))
+  check(`WIRED: all ${mounts.length} persona mounts resolve the tenant's rung and pass it to selectToolsForPersona`, unwired.length === 0, unwired.join(", "))
+  check("WIRED: dispatch's autonomyGate passes authorityLevel; the rung is read from managed_agents.config.authority_level",
+    /autonomyDecision\(\{[^}]*authorityLevel/.test(dispatchSrc) && /cfg\.authority_level/.test(gateSrc))
+  check("POSITIVE CONTROL: the mount-wiring finder rejects the pre-98 unscoped mount", !/selectToolsForPersona\([^;]*authorityLevel/.test("tools: selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools }),"))
+  const writerSrc = stripped("app/actions/admin/manager-evals.ts")
+  check("WRITER: setManagerAuthorityLevel stores authority_level on managed_agents.config, tenant from the session",
+    /export async function setManagerAuthorityLevel/.test(writerSrc) && /cfg\.authority_level = level/.test(writerSrc) && /\.eq\("brokerage_id", ctx\.brokerageId\)/.test(writerSrc))
+  console.warn = origWarn
+  console.log("  blind spots: the staff copilot (selectToolsForSeat) and the platform prospect agent are not keyed to a tenant rung (a human session / the platform itself acts); rungs 4 and 5 add no capability in code yet (reserved).")
+}
+
 console.log("\n" + "─".repeat(60))
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) {

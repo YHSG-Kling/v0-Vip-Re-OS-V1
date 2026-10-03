@@ -1,13 +1,16 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
 import { requireCaller } from "@/lib/auth/require-caller"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_lead_nurturing")
 
 // ============================================================================
 // AI LEAD NURTURING SYSTEM

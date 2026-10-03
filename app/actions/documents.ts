@@ -11,7 +11,7 @@ import { revalidatePath } from "next/cache"
 // to lib/storage/put-and-sign.ts#putAndSign (see below); this removes the last
 // Vercel Blob call, the DELETE half, per the owner ruling that all file storage
 // lives in Supabase buckets.
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { z } from "zod"
@@ -19,6 +19,9 @@ import { handleError } from "@/lib/errors"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("documents")
 
 export async function getDocuments(params?: { contactId?: string; transactionId?: string; type?: string }) {
   try {

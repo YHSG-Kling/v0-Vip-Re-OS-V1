@@ -577,7 +577,10 @@ export async function POST(request: NextRequest) {
         .map((m) => ({ role: m.role, content: String(m.content ?? "") })),
       temperature: 0.7,
       // Lane 74B — cost-ranked order + need-dedup (selectToolsForPersona).
-      tools: selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools }),
+      // Wave 98 (98C): narrowed by the tenant's AUTHORITY LADDER rung for the persona agent.
+      tools: selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools }, {
+        authorityLevel: await (await import("@/lib/managers/autonomy-gate")).resolveAgentAuthorityLevel(brokerageId, "ai_isa"),
+      }),
       maxSteps: 5,
       userId: agentUserId,
       brokerageId,

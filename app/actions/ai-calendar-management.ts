@@ -3,7 +3,7 @@
 import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -12,6 +12,9 @@ import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-s
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { requireCallerTenant } from "@/lib/auth/require-caller"
 import { CalendarEventType, canonicalCalendarEventType } from "@/lib/kernel/calendar-types"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_calendar_management")
 
 /**
  * AI CALENDAR & SCHEDULING MANAGEMENT

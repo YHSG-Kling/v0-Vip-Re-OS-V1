@@ -80,13 +80,16 @@ export async function transitionBookingStatus(params: {
   }
   return { success: true }
 }
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { modelAuthoredToVendorVerdict } from "@/lib/vendors/appraiser-independence"
 import { benchCategoryFilter, type VendorCategory } from "@/lib/kernel/vendor-categories"
 import { z } from "zod"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_vendor_management")
 
 // ============================================================================
 // AI VENDOR MANAGEMENT SYSTEM

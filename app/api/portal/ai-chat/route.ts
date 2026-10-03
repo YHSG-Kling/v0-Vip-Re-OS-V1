@@ -494,7 +494,10 @@ export async function POST(request: Request) {
       system:   systemPrompt,
       messages: await convertToModelMessages(messages),
       // Lane 74B — cost-ranked order + need-dedup (selectToolsForPersona).
-      tools:    selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools }),
+      // Wave 98 (98C): narrowed by the tenant's AUTHORITY LADDER rung for the persona agent.
+      tools:    selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools }, {
+        authorityLevel: await (await import("@/lib/managers/autonomy-gate")).resolveAgentAuthorityLevel(contact.brokerage_id, "ai_isa"),
+      }),
       maxSteps: 5,
       userId:      user.id,
       brokerageId: contact.brokerage_id,

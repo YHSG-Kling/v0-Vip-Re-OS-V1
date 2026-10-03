@@ -2,9 +2,12 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { handleError } from "@/lib/errors"
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { z } from "zod"
 import { requireCaller } from "@/lib/auth/require-caller"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_lead_scoring")
 
 /**
  * The caller, and the tenant they may score inside.

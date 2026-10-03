@@ -7,7 +7,7 @@
 import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { LIFETIME_CUSTOMER_SEGMENT } from "@/lib/contact-types"
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { revalidatePath } from "next/cache"
 import { isValidUUID, isValidEmail } from "@/lib/validations"
@@ -19,6 +19,9 @@ import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import type { NewsletterSectionInput } from "@/lib/kernel/content-creators"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_newsletter")
 
 // ============================================
 // AI NEWSLETTER SYSTEM

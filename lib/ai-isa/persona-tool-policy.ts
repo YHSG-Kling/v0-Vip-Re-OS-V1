@@ -592,7 +592,13 @@ const BATCHDATA_TOOL_NEED: Readonly<Record<string, string>> = {
  *      that reads `Object.keys(...)` in order (or logs it) sees the cheapest
  *      tools first.
  */
-export function selectToolsForPersona<T extends Record<string, unknown>>(registry: T): Partial<T> {
+export function selectToolsForPersona<T extends Record<string, unknown>>(
+  registry: T,
+  opts: { authorityLevel?: AuthorityLevel } = {},
+): Partial<T> {
+  // Wave 98 (lane 98C): the tenant's AUTHORITY LEVEL for the persona agent (ai_isa) — read by the
+  // caller through lib/managers/autonomy-gate.ts::resolveAgentAuthorityLevel. Absent = today's ladder.
+  const authority = opts.authorityLevel ?? DEFAULT_AUTHORITY_LEVEL
   const names = Object.keys(registry)
   const rentcastNames = names.filter((n) => n.startsWith("rentcast_"))
   const coveredNeeds = new Set<string>()
@@ -606,6 +612,8 @@ export function selectToolsForPersona<T extends Record<string, unknown>>(registr
       console.warn(`[persona-tool-policy] tool "${n}" not mounted: risk class ${riskClassForTool(n)} (classify it in TOOL_RISK_CLASS)`)
       return false
     }
+    // Policy, not a defect — a tool above the tenant's rung is simply not offered to the model.
+    if (!isToolAllowedAtAuthority(n, authority)) return false
     const need = BATCHDATA_TOOL_NEED[n]
     return !(need && coveredNeeds.has(need))
   })
@@ -633,7 +641,7 @@ export function selectToolsForPersona<T extends Record<string, unknown>>(registr
 //   FINANCIAL      — obligates or moves money.
 //   LEGAL / IRREVERSIBLE — signs, files, or cannot be undone. NO AI tool carries either today; an
 //                    UNCLASSIFIED name resolves to IRREVERSIBLE (fail closed) until it is classified here.
-type ToolRiskClass = "READ" | "LOW_RISK_WRITE" | "COMMUNICATION" | "FINANCIAL" | "LEGAL" | "IRREVERSIBLE"
+export type ToolRiskClass = "READ" | "LOW_RISK_WRITE" | "COMMUNICATION" | "FINANCIAL" | "LEGAL" | "IRREVERSIBLE"
 
 /** Names whose prefix states a pure read. Writes are never inferred from a prefix — they are listed. */
 const READ_TOOL_PREFIX = /^(get_|list_|search_|lookup_|find_|check_|verify_|show_|comparable_|investor_buybox_|geocode|reverse_geocode|platform_faq_|rentcast_|batchdata_)/
@@ -750,4 +758,64 @@ export function riskClassForTool(toolName: string): ToolRiskClass {
   if (listed) return listed
   if (READ_TOOL_PREFIX.test(toolName)) return "READ"
   return "IRREVERSIBLE"
+}
+
+// ─── THE AUTHORITY LADDER (wave 98, lane 98C — owner blueprint "controlled autonomy", gap map #22) ──
+// ONE level per tenant per agent kind, stored as DATA on the existing autonomy store
+// (managed_agents.config.authority_level, beside autonomy_tier — lib/managers/autonomy-gate.ts reads
+// it, app/actions/admin/manager-evals.ts::setManagerAuthorityLevel writes it, the Manager Trust page
+// sets it). It is keyed to the risk classes above, so "what may this agent do" is the same answer at
+// the tool mount (selectToolsForPersona) and at the send (dispatch.ts autonomyGate → autonomyDecision).
+//   0 read_only      — answers from data; READ tools only.
+//   1 record         — + LOW_RISK_WRITE (our own records, internal hand-offs).
+//   2 draft          — same tools as 1; an AUTONOMOUS outbound send is HELD for a human (approval queue).
+//   3 communicate    — + COMMUNICATION (reaches a person, always through the dispatch policy chain).
+//   4 act_and_report — same mount as 3 today (reserved rung; no extra capability in code yet).
+//   5 act_in_budget  — same mount as 3 today (reserved rung; spend stays gated by the budget gates).
+//   6 consequential_with_approval — + FINANCIAL, and ONLY a tool with a named human-approval gate
+//                      (TOOL_APPROVAL_GATE). LEGAL / IRREVERSIBLE never mount at any level.
+// DEFAULT 6 = today's behaviour exactly: every tool that mounted before this ladder still mounts and
+// every consequential tool still sits behind its approval gate. No tenant loses capability silently.
+export type AuthorityLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6
+
+export const AUTHORITY_LEVEL_LABELS: Readonly<Record<AuthorityLevel, string>> = {
+  0: "Read only",
+  1: "Record (own records)",
+  2: "Draft (a human sends)",
+  3: "Communicate",
+  4: "Act and report",
+  5: "Act within budget",
+  6: "Full — consequential actions need human approval",
+}
+
+export const DEFAULT_AUTHORITY_LEVEL: AuthorityLevel = 6
+
+/** Tools a rung never withholds — they PROTECT the person (an opt-out is honoured at once). */
+const PROTECTIVE_TOOL_NAMES: ReadonlySet<string> = new Set(["mark_do_not_contact"])
+
+/** The lowest rung at which a risk class may act. null = never by an AI tool (humans own it). */
+export const MIN_AUTHORITY_FOR_RISK: Readonly<Record<ToolRiskClass, AuthorityLevel | null>> = {
+  READ: 0,
+  LOW_RISK_WRITE: 1,
+  COMMUNICATION: 3,
+  FINANCIAL: 6,
+  LEGAL: null,
+  IRREVERSIBLE: null,
+}
+
+export function isAuthorityLevel(v: unknown): v is AuthorityLevel {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 6
+}
+
+/** PURE — may an agent at `level` be handed this tool? Fails closed on an unclassified name (it
+ *  resolves to IRREVERSIBLE). FINANCIAL additionally needs a named approval gate: consequential
+ *  actions are ALWAYS behind a human, never granted by a level alone. */
+export function isToolAllowedAtAuthority(toolName: string, level: AuthorityLevel): boolean {
+  // An opt-out is PROTECTIVE (TCPA / CAN-SPAM): honoured at every rung, even read-only.
+  if (PROTECTIVE_TOOL_NAMES.has(toolName)) return true
+  const risk = riskClassForTool(toolName)
+  const min = MIN_AUTHORITY_FOR_RISK[risk]
+  if (min === null || level < min) return false
+  if (risk === "FINANCIAL" && !TOOL_APPROVAL_GATE[toolName]) return false
+  return true
 }

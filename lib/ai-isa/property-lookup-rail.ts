@@ -431,6 +431,8 @@ export async function runVersiumContactLeg(
     meter?: (input: { vendorName: string; usageType: string; cost: number; brokerageId?: string | null; systemSource?: string; metadata?: Record<string, unknown>; attribution?: { leadId?: string | null; contactId?: string | null; rawRecordId?: string | null } }) => Promise<unknown>
     /** Test seam — defaults to lib/vendor-governance/budget-gate.ts::checkVendorBudget (the financial rung's gate). */
     checkBudget?: (p: { brokerageId: string; addCost: number }) => Promise<{ allowed: boolean }>
+    /** Wave 98 (98C) test seam — defaults to connector-gateway.ts::loadProviderHealth. */
+    providerHealth?: ProviderHealthFn
   } = {},
 ): Promise<{ answered: boolean; emails: string[]; phones: string[]; cost: number; skipped: string | null; demographicsProfile: Record<string, any> | null; demographicCategories: string[]; fieldProvenance: Record<string, VersiumProvenance> }> {
   const outputs: Array<"email" | "phone"> = []
@@ -448,6 +450,12 @@ export async function runVersiumContactLeg(
   // Unconfigured Versium spends nothing — answer that before paying for a budget read.
   if (!deps.call && !(await import("@/lib/external/versium-client")).isVersiumConfigured()) {
     return { answered: false, emails: [], phones: [], cost: 0, skipped: "unconfigured", ...none }
+  }
+  // Wave 98 (98C) — PROVIDER HEALTH: a Versium in `failing` is routed around for its cool-down; the
+  // caller's chain (PeopleData) runs exactly as it does on any other skip. No paid call, no budget read.
+  const versiumHealth = await (deps.providerHealth ?? defaultProviderHealth)("versium").catch(() => null)
+  if (versiumHealth?.routeAround) {
+    return { answered: false, emails: [], phones: [], cost: 0, skipped: `provider_failing: ${versiumHealth.reason}`, ...none }
   }
   try {
     const checkBudget = deps.checkBudget
@@ -1000,7 +1008,14 @@ export interface PropertyLookupDeps {
   /** listing_intake only — injectable so the proof runs with zero network. */
   geocode?: PropertyGeocodeFn
   estimate?: PropertyEstimateFn
+  /** Wave 98 (98C) test seam — defaults to lib/agentic-os/connector-gateway.ts::loadProviderHealth. */
+  providerHealth?: ProviderHealthFn
 }
+
+/** The provider-health reader the router consults (connector-gateway.ts::loadProviderHealth). */
+export type ProviderHealthFn = (serviceKey: string) => Promise<{ state: string; routeAround: boolean; reason: string }>
+const defaultProviderHealth: ProviderHealthFn = async (serviceKey) =>
+  (await import("@/lib/agentic-os/connector-gateway")).loadProviderHealth(serviceKey)
 
 // ─── THE ONE BATCHDATA GATE (non-facts shapes: skip trace, DNC, list pulls) ──
 
@@ -1107,6 +1122,17 @@ export async function lookupPropertyForConversation(
       policy = policy ?? (await readProductionPolicy(req.brokerageId))
       if (!isBatchDataRungAllowed(req.purpose, policy)) {
         result.skipped.push({ rung, reason: policy.batchDataTier === "off" ? "BatchData tier is off" : "tenant not opted into billed BatchData pulls by platform staff" })
+        continue
+      }
+    }
+    // Wave 98 (98C) — PROVIDER HEALTH: a RentCast in `failing` (consecutive provider faults inside the
+    // cool-down, derived from the gateway's own ledger) is routed around for the cool-down, so the
+    // ladder falls to the next rung (public records, then BatchData where the purpose admits it)
+    // instead of paying a timeout per lookup. Deterministic; no vendor call is made to decide it.
+    if (rung === "rentcast") {
+      const health = await (deps.providerHealth ?? defaultProviderHealth)("rentcast").catch(() => null)
+      if (health?.routeAround) {
+        result.skipped.push({ rung, reason: `provider ${health.state}: ${health.reason}` })
         continue
       }
     }

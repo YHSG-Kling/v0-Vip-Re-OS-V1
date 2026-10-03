@@ -63,8 +63,67 @@ export const DEFAULT_AISA_SETTINGS: AIISASettings = {
   auto_enable_on_new_contacts: false,
   pause_on_agent_assigned: true,
   default_handoff_action: 'both',
-  suppress_on_outcomes: ['not_interested', 'do_not_contact', 'do_not_call', 'wrong_number'],
+  // Wave 98 (98C): canonical dead-end spellings — 'do_not_call' merged onto 'do_not_contact' (§6);
+  // a stored legacy spelling still reads correctly through canonicalDeadEnd below.
+  suppress_on_outcomes: ['not_interested', 'do_not_contact', 'wrong_number'],
 }
+
+// ─── NEGATIVE INTELLIGENCE — ONE VOCABULARY FOR DEAD ENDS (wave 98, lane 98C; CLAUDE.md §6) ──────
+// Dead-end outcomes were spelled differently by every writer: voice_calls.outcome ('not_interested',
+// 'opt_out' — live CHECK), ai_isa_activities.outcome via lib/kernel/ai-isa.ts recordAiIsaOutcome
+// ('explicit_opt_out', 'not_ready_now', 'wrong_number'), the inbound-suppression intents ('stop',
+// 'do_not_call', 'wrong_person'), this file's own former settings options ('do_not_call', 'bad_contact_data'), the record_qualification line 'already represented by an agent: yes',
+// and lifecycle_state ('representation', 'long_term_nurture'). Stored values keep their live spellings
+// (the CHECKs are the database's truth); every READER maps them onto these seven through
+// canonicalDeadEnd, and every new writer uses these spellings.
+export const DEAD_END_OUTCOMES = [
+  'not_interested',
+  'wrong_number',
+  'do_not_contact',
+  'already_represented',
+  'property_sold',
+  'postponed',
+  'paused',
+] as const
+export type DeadEndOutcome = (typeof DEAD_END_OUTCOMES)[number]
+
+/** Every live alias → its canonical dead end. A spelling absent here and from DEAD_END_OUTCOMES is
+ *  NOT a dead end (e.g. 'disqualified' is a routing verdict, 'no_answer' is a retry). */
+const DEAD_END_ALIASES: Readonly<Record<string, DeadEndOutcome>> = {
+  opt_out: 'do_not_contact',
+  explicit_opt_out: 'do_not_contact',
+  do_not_call: 'do_not_contact',
+  do_not_text: 'do_not_contact',
+  dnc: 'do_not_contact',
+  stop: 'do_not_contact',
+  unsubscribe: 'do_not_contact',
+  wrong_person: 'wrong_number',
+  bad_contact_data: 'wrong_number',
+  not_ready_now: 'postponed',
+  long_term_nurture: 'postponed',
+  representation: 'already_represented',
+  has_agent: 'already_represented',
+  sold: 'property_sold',
+  ai_outreach_paused: 'paused',
+}
+
+/** PURE — the canonical dead end for any recorded spelling, or null when it is not a dead end. */
+export function canonicalDeadEnd(raw: unknown): DeadEndOutcome | null {
+  if (typeof raw !== 'string') return null
+  const k = raw.trim().toLowerCase()
+  if ((DEAD_END_OUTCOMES as readonly string[]).includes(k)) return k as DeadEndOutcome
+  return DEAD_END_ALIASES[k] ?? null
+}
+
+/** Dead ends that stop outreach WHATEVER the tenant's suppression settings say: an opt-out is the
+ *  law (TCPA / CAN-SPAM) and a person represented by another agent is not solicited (NAR Art. 16). */
+export const ALWAYS_TERMINAL_DEAD_ENDS: ReadonlySet<DeadEndOutcome> = new Set<DeadEndOutcome>(['do_not_contact', 'already_represented'])
+
+/** The dead ends a broker may choose to suppress on (the settings page's options). `postponed` is
+ *  time-bounded (it waits, then ends by itself) and `paused` is a human's own switch — neither is a
+ *  suppression rule. */
+export const SUPPRESSIBLE_DEAD_ENDS: readonly DeadEndOutcome[] =
+  DEAD_END_OUTCOMES.filter((o) => o !== 'postponed' && o !== 'paused')
 
 export type IsaCapability =
   | "qualify_lead"
@@ -122,4 +181,54 @@ export const ISA_CAPABILITY_CATALOG: IsaCapabilityDescriptor[] = [
 /** Default capability set when no per-brokerage config exists. */
 export function defaultEnabledCapabilities(): IsaCapability[] {
   return ISA_CAPABILITY_CATALOG.filter((c) => c.defaultEnabled).map((c) => c.key)
+}
+
+/** One recorded dead end for a person, already on the canonical vocabulary. */
+export interface DeadEndEvidence {
+  outcome: DeadEndOutcome
+  /** When it was recorded (null = the source carries no time). */
+  at: Date | null
+  /** Where it was read (table.column) — the evidence line on the decision. */
+  source: string
+  /** `postponed` only — the end of the requested quiet period. */
+  until?: Date | null
+}
+
+/**
+ * PURE — every dead end already RECORDED for one lead, on the canonical vocabulary. Each source is an
+ * existing writer (nothing here invents a fact):
+ *   · ai_isa_activities.outcome (activity_type 'outcome_recorded') — lib/kernel/ai-isa.ts recordAiIsaOutcome
+ *   · voice_calls.outcome — the voice call close (live CHECK: 'not_interested', 'opt_out', …)
+ *   · leads.qualification_summary — record_qualification's `already represented by an agent: yes|no`
+ *     line (lib/ai-isa/customer-context-tools.ts, which names THIS reader as the one it was waiting for);
+ *     the NEWEST line wins, so a later "no" clears an earlier "yes"
+ *   · leads.long_term_nurture_until — recordAiIsaOutcome 'not_ready_now' → postponed until that date
+ * Called by lib/ai-isa/lead-action-plan.ts advanceLeadActionPlans (the lead sweep).
+ */
+export function deadEndsFromLeadSources(input: {
+  isaOutcomes?: ReadonlyArray<{ outcome: string | null; created_at: string | null }>
+  callOutcomes?: ReadonlyArray<{ outcome: string | null; created_at: string | null }>
+  qualificationSummary?: string | null
+  longTermNurtureUntil?: string | null
+}): DeadEndEvidence[] {
+  const out: DeadEndEvidence[] = []
+  const at = (v: string | null | undefined) => (v && Number.isFinite(new Date(v).getTime()) ? new Date(v) : null)
+  for (const r of input.isaOutcomes ?? []) {
+    const o = canonicalDeadEnd(r.outcome)
+    if (!o) continue
+    // A not_ready_now outcome is `postponed`; its end date lives on the lead (long_term_nurture_until).
+    if (o === "postponed") continue
+    out.push({ outcome: o, at: at(r.created_at), source: "ai_isa_activities.outcome" })
+  }
+  for (const r of input.callOutcomes ?? []) {
+    const o = canonicalDeadEnd(r.outcome)
+    if (o && o !== "postponed") out.push({ outcome: o, at: at(r.created_at), source: "voice_calls.outcome" })
+  }
+  const lines = [...(input.qualificationSummary ?? "").matchAll(/already represented by an agent:\s*(yes|no)/gi)]
+  if (lines.length > 0 && lines[lines.length - 1][1].toLowerCase() === "yes") {
+    out.push({ outcome: "already_represented", at: null, source: "leads.qualification_summary" })
+  }
+  const until = at(input.longTermNurtureUntil)
+  if (until) out.push({ outcome: "postponed", at: null, until, source: "leads.long_term_nurture_until" })
+  return out
 }

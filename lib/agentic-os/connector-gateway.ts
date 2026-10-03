@@ -285,3 +285,123 @@ async function executeConnector<T = any>(req: GatewayRequest): Promise<GatewayRe
     return { ok: false, status: null, data: null, headers: {}, drift: null, error: err instanceof Error ? err.message : String(err) }
   }
 }
+
+// ─── PROVIDER HEALTH STATE (wave 98, lane 98C — owner blueprint "provider health / failover state") ──
+// DERIVED, never stored: the state is a pure function of the outcomes this gateway already ledgers
+// (api_response_logs, written by logApiResponse above — the ONE per-call record of every vendor
+// answer). No new vendor call, no new table. Only PROVIDER faults count (network_or_timeout,
+// provider_error, rate_limited); a request_rejected 4xx is the caller's request, not the provider's
+// health, so it neither counts as a fault nor as a success that clears one.
+//   healthy      — no provider fault in the window (or no traffic: no evidence either way, said so).
+//   degraded     — some faults, under the failing streak.
+//   rate_limited — the newest outcome is a 429 (under the failing streak).
+//   failing      — ≥ failingStreak consecutive newest faults, the newest inside the cool-down →
+//                  the capability router ROUTES AROUND it to the next provider for the cool-down.
+//   fallback     — the streak still stands but the cool-down has elapsed with no newer call: the
+//                  router stops skipping and lets the next real call probe the provider (half-open);
+//                  a fresh fault puts it back in `failing` with a fresh cool-down.
+//   recovered    — the newest call succeeded after a failing streak inside the window.
+export type ProviderHealthState = "healthy" | "degraded" | "rate_limited" | "failing" | "fallback" | "recovered"
+
+export const PROVIDER_HEALTH_POLICY = Object.freeze({
+  windowMs: 30 * 60_000,
+  failingStreak: 3,
+  cooldownMs: 10 * 60_000,
+  degradedFaultRate: 0.2,
+  maxSamples: 50,
+})
+
+const PROVIDER_FAULT_TYPES: ReadonlySet<string> = new Set(["network_or_timeout", "provider_error", "rate_limited"])
+
+export interface ProviderOutcome { at: string | Date; ok: boolean; errorType: string | null }
+
+export interface ProviderHealth {
+  state: ProviderHealthState
+  /** true ONLY in `failing` — the router skips this provider until cooldownUntil. */
+  routeAround: boolean
+  reason: string
+  calls: number
+  faults: number
+  streak: number
+  cooldownUntil: string | null
+}
+
+/** PURE — the health state from recent outcomes (any order; sorted newest-first here). */
+export function deriveProviderHealth(outcomes: readonly ProviderOutcome[], now: Date = new Date()): ProviderHealth {
+  const P = PROVIDER_HEALTH_POLICY
+  const t = (o: ProviderOutcome) => new Date(o.at).getTime()
+  const isFault = (o: ProviderOutcome) => !o.ok && PROVIDER_FAULT_TYPES.has(o.errorType ?? "")
+  // request_rejected (and any non-provider error) is neutral — dropped before the streak is read.
+  const counted = outcomes
+    .filter((o) => Number.isFinite(t(o)) && now.getTime() - t(o) <= P.windowMs && (o.ok || isFault(o)))
+    .sort((a, b) => t(b) - t(a))
+    .slice(0, P.maxSamples)
+  const faults = counted.filter(isFault).length
+  const base = { calls: counted.length, faults, cooldownUntil: null as string | null }
+  if (counted.length === 0) {
+    return { ...base, state: "healthy", routeAround: false, streak: 0, reason: `no provider outcome in the last ${P.windowMs / 60_000} min — no evidence either way` }
+  }
+  let streak = 0
+  while (streak < counted.length && isFault(counted[streak])) streak++
+  if (streak >= P.failingStreak) {
+    const until = t(counted[0]) + P.cooldownMs
+    if (now.getTime() < until) {
+      return { ...base, state: "failing", routeAround: true, streak, cooldownUntil: new Date(until).toISOString(),
+        reason: `${streak} consecutive provider faults (newest ${counted[0].errorType}) — routed around until ${new Date(until).toISOString()}` }
+    }
+    return { ...base, state: "fallback", routeAround: false, streak,
+      reason: `${streak} consecutive faults but the ${P.cooldownMs / 60_000} min cool-down has elapsed — the next call probes the provider` }
+  }
+  if (streak === 0) {
+    let run = 0
+    for (const o of counted) {
+      run = isFault(o) ? run + 1 : 0
+      if (run >= P.failingStreak) return { ...base, state: "recovered", routeAround: false, streak, reason: "the newest call succeeded after a failing streak in the window" }
+    }
+  }
+  if (streak > 0 && counted[0].errorType === "rate_limited") {
+    return { ...base, state: "rate_limited", routeAround: false, streak, reason: `newest call was rate limited (429), ${streak} in a row` }
+  }
+  if (faults > 0 && (streak > 0 || faults / counted.length >= P.degradedFaultRate)) {
+    return { ...base, state: "degraded", routeAround: false, streak, reason: `${faults}/${counted.length} provider faults in the window` }
+  }
+  return { ...base, state: "healthy", routeAround: false, streak, reason: `${counted.length} call(s), ${faults} fault(s) in the window` }
+}
+
+const providerHealthCache = new Map<string, { value: ProviderHealth; expiresAt: number }>()
+const PROVIDER_HEALTH_TTL_MS = 30_000
+
+/**
+ * I/O — the health of one connector (api_response_logs.service_key) from its recent outcomes.
+ * One bounded read, cached 30s in-process. An UNREADABLE ledger is read and logged (§3) and returns
+ * `healthy` with that reason: routing every call to the dearer provider because the ledger is down
+ * would be a spend change nobody decided. Never throws.
+ */
+export async function loadProviderHealth(serviceKey: string, now: Date = new Date()): Promise<ProviderHealth> {
+  const hit = providerHealthCache.get(serviceKey)
+  if (hit && hit.expiresAt > Date.now()) return hit.value
+  const unreadable = (why: string): ProviderHealth =>
+    ({ state: "healthy", routeAround: false, reason: `health ledger unreadable (${why}) — not routed around`, calls: 0, faults: 0, streak: 0, cooldownUntil: null })
+  let value: ProviderHealth
+  try {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { data, error } = await createServiceClient()
+      .from("api_response_logs")
+      .select("recorded_at, is_error, error_type")
+      .eq("service_key", serviceKey)
+      .gte("recorded_at", new Date(now.getTime() - PROVIDER_HEALTH_POLICY.windowMs).toISOString())
+      .order("recorded_at", { ascending: false })
+      .limit(PROVIDER_HEALTH_POLICY.maxSamples)
+    if (error) {
+      console.warn(`[connector-gateway] provider health read refused for ${serviceKey}: ${error.message} — not routed around`)
+      value = unreadable(error.message)
+    } else {
+      value = deriveProviderHealth(((data ?? []) as Array<{ recorded_at: string; is_error: boolean; error_type: string | null }>)
+        .map((r) => ({ at: r.recorded_at, ok: r.is_error !== true, errorType: r.error_type })), now)
+    }
+  } catch (e) {
+    value = unreadable(e instanceof Error ? e.message : String(e))
+  }
+  providerHealthCache.set(serviceKey, { value, expiresAt: Date.now() + PROVIDER_HEALTH_TTL_MS })
+  return value
+}

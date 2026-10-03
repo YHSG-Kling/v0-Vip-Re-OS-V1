@@ -7,6 +7,7 @@ import {
 import { composeTeamArgumentMap } from "@/lib/managers/team-argument-map"
 import { reaperCoverage } from "@/lib/intelligence/reaper-net"
 import { ManagerTrustClient, type OwnedProofSeat } from "./manager-trust-client"
+import { AUTHORITY_LEVEL_LABELS } from "@/lib/ai-isa/persona-tool-policy"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { MAINTENANCE_DOMAINS, MANAGERS, resolveMaintenanceManager, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
@@ -99,6 +100,7 @@ export default async function ManagerTrustPage() {
       teamwork={teamwork}
       accuracyGates={accuracyGates}
       accuracyHolds={accuracyHolds}
+      authorityLadder={AUTHORITY_LEVEL_LABELS}
     />
   )
 }

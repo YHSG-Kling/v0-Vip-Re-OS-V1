@@ -661,7 +661,9 @@ export async function planTurnWithPrompt(
   // sorts EVERYTHING (free bundle included, always rank 0) cheapest-first.
   const { selectToolsForPersona } = await import("@/lib/ai-isa/persona-tool-policy")
   const merged: Record<string, unknown> = { ...freeTools, ...allowlisted }
-  const voiceTools = selectToolsForPersona(merged)
+  // Wave 98 (98C): narrowed by the tenant's AUTHORITY LADDER rung for the persona agent.
+  const { resolveAgentAuthorityLevel } = await import("@/lib/managers/autonomy-gate")
+  const voiceTools = selectToolsForPersona(merged, { authorityLevel: await resolveAgentAuthorityLevel(toolCtx.brokerageId, "ai_isa") })
 
   return runVoiceTurnRound({
     systemPrompt, turnInstructions: TURN_INSTRUCTIONS, toolGuidance: TOOL_TURN_GUIDANCE,

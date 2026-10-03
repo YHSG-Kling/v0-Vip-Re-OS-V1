@@ -1,12 +1,27 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
+import { requireCaller } from "@/lib/auth/require-caller"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
 import { AGENT_GOAL_TYPES, isAgentGoalType, type AgentGoalType } from "@/lib/goals/goal-types"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_agent_goals")
+
+/**
+ * Tenant comes from the SESSION (CLAUDE.md §4). Every export here takes `brokerageId` from its caller;
+ * wave 98 found none checked it (the IDOR shape). The parameter is now only accepted when it IS the
+ * caller's own brokerage — a mismatch, no session or no brokerage refuses (fail closed).
+ */
+async function refuseForeignTenant(brokerageId: string): Promise<string | null> {
+  const caller = await requireCaller()
+  if (!caller.ok) return caller.error
+  return caller.brokerageId === brokerageId ? null : "Forbidden"
+}
 
 /**
  * AI Agent Goals System
@@ -27,6 +42,8 @@ export async function getAgentGoals(params: {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid IDs" }
   }
+  const tenantRefusal = await refuseForeignTenant(params.brokerageId)
+  if (tenantRefusal) return { success: false, error: tenantRefusal }
 
   const supabase  = await createClient()
   const year      = params.year ?? new Date().getFullYear()
@@ -63,6 +80,8 @@ export async function upsertAgentGoal(params: {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid IDs" }
   }
+  const tenantRefusal = await refuseForeignTenant(params.brokerageId)
+  if (tenantRefusal) return { success: false, error: tenantRefusal }
 
   // GATE THE VOCABULARY BEFORE THE WRITE. goalType was typed `string` and passed
   // straight through, so a caller — including the shipped goals page — could send
@@ -129,6 +148,8 @@ export async function updateGoalProgress(params: {
   if (!isValidUUID(params.goalId) || !isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid IDs" }
   }
+  const caller = await requireCaller()
+  if (!caller.ok) return { success: false, error: caller.error }
 
   const supabase = await createClient()
 
@@ -141,6 +162,7 @@ export async function updateGoalProgress(params: {
       })
       .eq("id",       params.goalId)
       .eq("agent_id", params.agentId)
+      .eq("brokerage_id", caller.brokerageId)
       .select()
       .single()
 
@@ -165,6 +187,8 @@ export async function aiRecommendGoals(params: {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid IDs" }
   }
+  const tenantRefusal = await refuseForeignTenant(params.brokerageId)
+  if (tenantRefusal) return { success: false, error: tenantRefusal }
 
   const supabase = await createClient()
   const year     = params.year ?? new Date().getFullYear()
@@ -257,6 +281,8 @@ export async function aiCoachGoalProgress(params: {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid IDs" }
   }
+  const tenantRefusal = await refuseForeignTenant(params.brokerageId)
+  if (tenantRefusal) return { success: false, error: tenantRefusal }
 
   const supabase = await createClient()
   const year     = params.year ?? new Date().getFullYear()
@@ -323,6 +349,8 @@ export async function syncGoalCurrentValues(params: {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid IDs" }
   }
+  const tenantRefusal = await refuseForeignTenant(params.brokerageId)
+  if (tenantRefusal) return { success: false, error: tenantRefusal }
 
   const supabase = await createClient()
   const year     = params.year ?? new Date().getFullYear()

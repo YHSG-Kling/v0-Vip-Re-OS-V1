@@ -24,7 +24,7 @@ import { checkMaxTouches } from '@/lib/ai-isa/isa-outreach-logger'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
 import { buildISATools } from '@/lib/ai-isa/tools'
 import { batchDataIsaTools } from '@/lib/ai-isa/batchdata-isa-tools'
-import { resolveToolPersona, filterRentCastToolsForPersona, selectToolsForPersona } from '@/lib/ai-isa/persona-tool-policy'
+import { resolveToolPersona, filterRentCastToolsForPersona, selectToolsForPersona, isToolAllowedAtAuthority } from '@/lib/ai-isa/persona-tool-policy'
 import { rentCastMcpTools } from '@/lib/external/rentcast-ai-tools'
 import { buildCustomerFreeTools } from '@/lib/ai-isa/customer-context-tools'
 import { buildQualificationPrompt } from '@/lib/ai-isa/qualification-playbook'
@@ -491,11 +491,18 @@ export async function processInboundEmail(params: {
   // second ordering rule per surface (§6). isaTools (escalate_to_agent,
   // mark_qualification, request_appointment, mark_do_not_contact) are CRM
   // actions, not property-data tools, so they are spread in separately.
-  const propertyAndFreeTools = selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools })
+  // Wave 98 (98C): the tenant's AUTHORITY LADDER rung for the persona agent narrows the mount.
+  const { resolveAgentAuthorityLevel } = await import("@/lib/managers/autonomy-gate")
+  const authorityLevel = await resolveAgentAuthorityLevel(lead.brokerage_id, "ai_isa")
+  const propertyAndFreeTools = selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools }, { authorityLevel })
   const { text: replyBody } = await generateText({
     feature: 'ai_isa_response',
     system: systemPrompt,
-    tools: { ...isaTools, ...propertyAndFreeTools },
+    // The CRM actions ride the same rung (the protective opt-out mounts at every rung).
+    tools: {
+      ...Object.fromEntries(Object.entries(isaTools).filter(([n]) => isToolAllowedAtAuthority(n, authorityLevel))),
+      ...propertyAndFreeTools,
+    },
     maxSteps: 5,
     messages: [
       {

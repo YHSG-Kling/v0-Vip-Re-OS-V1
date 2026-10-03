@@ -2,7 +2,7 @@
 
 import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -10,6 +10,9 @@ import { revalidatePath } from "next/cache"
 import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { getReputationPreferences } from "@/app/actions/settings/reputation-preferences"
 import { respondToReview } from "@/lib/kernel/reputation"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_review_automation")
 
 /**
  * AI Review & Testimonial Automation System

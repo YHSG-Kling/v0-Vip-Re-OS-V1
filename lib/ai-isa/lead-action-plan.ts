@@ -92,8 +92,8 @@
 // NOT server-only: the PURE half is driven directly by the simulator. The async
 // half takes an injected client and imports the service client lazily.
 
-import type { AIISASettings } from "./settings-types"
-import { DEFAULT_AISA_SETTINGS } from "./settings-types"
+import type { AIISASettings, DeadEndOutcome, DeadEndEvidence } from "./settings-types"
+import { DEFAULT_AISA_SETTINGS, ALWAYS_TERMINAL_DEAD_ENDS, canonicalDeadEnd, deadEndsFromLeadSources } from "./settings-types"
 import { pickLeadOutreachChannel } from "./lead-channel-policy"
 import { permittedLeadChannels, decideNextChannel } from "./next-best-touch"
 import type { GenerationalCohort } from "@/lib/kernel/education"
@@ -343,6 +343,9 @@ export type LeadTouchPlanCode =
   | "agent_handling"
   | "recently_contacted"
   | "quiet_hours"
+  // Wave 98 (98C) — NEGATIVE INTELLIGENCE: a recorded dead end (settings-types.ts DEAD_END_OUTCOMES).
+  | "dead_end"
+  | "postponed"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NEXT-BEST-ACTION (lane 97B, blueprint row 13): WAIT and DO_NOTHING are real
@@ -366,12 +369,18 @@ export type ReasonNotToActCode =
   | "channel_restricted_no_consent"
   | "low_confidence"
   | "intent_declining"
+  | "dead_end"
+  | "postponed"
 
 export interface ReasonNotToAct {
   code: ReasonNotToActCode
   /** true = this check alone stops the touch; false = recorded, weighed, not decisive. */
   blocking: boolean
   detail: string
+  /** Wave 98 (98C): the canonical dead end behind a `dead_end` / `postponed` reason. */
+  outcome?: DeadEndOutcome
+  /** `postponed` only — when the person asked to be left until. */
+  until?: Date | null
 }
 
 /** Fatigue scope: no new ISA touch within this many hours of ANY touch (agent, ISA,
@@ -402,6 +411,11 @@ export interface NextBestActionContext {
   dncOrNoConsent?: boolean
   /** The recipient's local hour, when resolvable; null = not evaluated. */
   recipientLocalHour?: number | null
+  /** Wave 98 (98C) — NEGATIVE INTELLIGENCE: the dead ends already recorded for this person
+   *  (deadEndsFromLeadSources), so the plan never rediscovers one by touching again. */
+  deadEnds?: readonly DeadEndEvidence[]
+  /** The tenant's ai_isa_settings.suppress_on_outcomes (any spelling; canonicalised on read). */
+  suppressOnOutcomes?: readonly string[]
 }
 
 export interface NbaEvidence { kind: string; detail: string }
@@ -444,6 +458,8 @@ const ACTION_FOR_CODE: Readonly<Record<LeadTouchPlanCode, NextBestAction>> = Obj
   duplicate: "do_nothing",
   outreach_paused: "do_nothing",
   agent_handling: "do_nothing",
+  dead_end: "do_nothing",
+  postponed: "wait",
 })
 
 /** PURE. Every reason-not-to-act check, in precedence order. */
@@ -454,6 +470,34 @@ export function reasonsNotToAct(ctx: NextBestActionContext | undefined, now: Dat
   const H = 3_600_000
   if (ctx.duplicateOf) out.push({ code: "duplicate", blocking: true, detail: `duplicate of ${ctx.duplicateOf} — act on the survivor` })
   if (ctx.outreachPaused) out.push({ code: "outreach_paused", blocking: true, detail: "a human paused the AI on this person" })
+  // NEGATIVE INTELLIGENCE (wave 98, 98C): every recorded dead end, once per canonical outcome (newest
+  // evidence wins). Always-terminal ones (opt-out, represented elsewhere) block whatever the settings
+  // say; the rest block when the tenant suppresses on them; `postponed` waits until its date; `paused`
+  // is the human switch already read above.
+  const suppress = new Set((ctx.suppressOnOutcomes ?? DEFAULT_AISA_SETTINGS.suppress_on_outcomes).map(canonicalDeadEnd).filter(Boolean))
+  const seen = new Set<DeadEndOutcome>()
+  const newestFirst = [...(ctx.deadEnds ?? [])].sort((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0))
+  for (const d of newestFirst) {
+    if (seen.has(d.outcome)) continue
+    seen.add(d.outcome)
+    if (d.outcome === "paused") {
+      if (!ctx.outreachPaused) out.push({ code: "outreach_paused", blocking: true, detail: `paused (${d.source})`, outcome: d.outcome })
+      continue
+    }
+    if (d.outcome === "postponed") {
+      if (d.until && d.until.getTime() > now.getTime()) {
+        out.push({ code: "postponed", blocking: true, detail: `asked to be left until ${d.until.toISOString()} (${d.source})`, outcome: d.outcome, until: d.until })
+      }
+      continue
+    }
+    const blocking = ALWAYS_TERMINAL_DEAD_ENDS.has(d.outcome) || suppress.has(d.outcome)
+    out.push({
+      code: "dead_end",
+      blocking,
+      outcome: d.outcome,
+      detail: `${d.outcome} recorded${d.at ? ` ${d.at.toISOString()}` : ""} (${d.source})${blocking ? "" : " — not in this brokerage's suppression rules, weighed only"}`,
+    })
+  }
   if (ctx.appointmentAt && ctx.appointmentAt.getTime() > now.getTime()) {
     out.push({ code: "appointment_scheduled", blocking: true, detail: `appointment on the calendar ${ctx.appointmentAt.toISOString()}` })
   }
@@ -478,10 +522,13 @@ export function reasonsNotToAct(ctx: NextBestActionContext | undefined, now: Dat
   return out
 }
 
+// deadEndsFromLeadSources lives beside the vocabulary it maps onto: lib/ai-isa/settings-types.ts.
+
 /** The plan code a blocking reason maps to (same spelling — one vocabulary). */
 const CODE_FOR_BLOCKING: Partial<Record<ReasonNotToActCode, LeadTouchPlanCode>> = {
   duplicate: "duplicate", outreach_paused: "outreach_paused", appointment_scheduled: "appointment_scheduled",
   agent_handling: "agent_handling", recently_contacted: "recently_contacted", quiet_hours: "quiet_hours",
+  dead_end: "dead_end", postponed: "postponed",
 }
 
 function intentEvidence(intent: DecayedIntent | null | undefined): NbaEvidence[] {
@@ -522,13 +569,16 @@ export function planNextLeadTouch(input: PlanNextLeadTouchInput): LeadTouchPlan 
   if (dup) return finish({ code: "duplicate", step: null, channel: null, reason: dup.detail, dueAt: null })
   // OWNER RULING: a callback is positive intent → convert. It outranks cadence,
   // fatigue and the plan itself (the conversion rail books the call).
-  if (ctx?.callbackRequested && !reasons.some((r) => r.code === "outreach_paused")) {
+  // A callback never overrides a terminal dead end (an opt-out, or represented by another agent).
+  const terminal = reasons.some((r) => r.code === "dead_end" && r.outcome && ALWAYS_TERMINAL_DEAD_ENDS.has(r.outcome))
+  if (ctx?.callbackRequested && !terminal && !reasons.some((r) => r.code === "outreach_paused")) {
     return finish({ code: "convert_on_callback", step: null, channel: null, reason: "callback requested — positive intent; convert and book the call", dueAt: input.now })
   }
   const blocking = reasons.find((r) => r.blocking)
   if (blocking) {
     const code = CODE_FOR_BLOCKING[blocking.code] ?? "blocked_lifecycle"
     const dueAt = code === "appointment_scheduled" ? (ctx?.appointmentAt ?? null)
+      : code === "postponed" ? (blocking.until ?? null)
       : code === "recently_contacted" && ctx?.lastAnyTouchAt ? new Date(ctx.lastAnyTouchAt.getTime() + NBA_FATIGUE_HOURS * 3_600_000)
       : null
     return finish({ code, step: null, channel: null, reason: blocking.detail, dueAt })
@@ -1083,7 +1133,7 @@ export async function advanceLeadActionPlans(input: {
       "id, brokerage_id, first_touched_at, first_touch_channel, lifecycle_state, is_active, agent_id, contact_id, " +
       "ai_outreach_paused, dnc_status, email, email_verified, email_opt_out, direct_mail_opt_out, " +
       "mailing_address, mailing_address_verified, mailing_city, mailing_state, mailing_zip, enrichment_profile, " +
-      "duplicate_of_lead_id, duplicate_of_contact_id",
+      "duplicate_of_lead_id, duplicate_of_contact_id, qualification_summary, long_term_nurture_until",
     )
     .eq("brokerage_id", input.brokerageId)
     .eq("ai_isa_owner", true)
@@ -1097,6 +1147,33 @@ export async function advanceLeadActionPlans(input: {
   if (leadsError) {
     out.warnings.push(`leads read refused (${leadsError.message}) — NO plan advanced this sweep`)
     return out
+  }
+
+  // NEGATIVE INTELLIGENCE (wave 98, 98C) — the dead ends already recorded for this page of leads, in
+  // TWO batched reads (not one per lead). A refused read stops the sweep: "nobody checked whether this
+  // person said no" must never render as "they never said no" (§4 fail closed).
+  const pageIds = ((leads ?? []) as Array<{ id: string }>).map((l) => l.id)
+  const isaOutcomesByLead = new Map<string, Array<{ outcome: string | null; created_at: string | null }>>()
+  const callOutcomesByLead = new Map<string, Array<{ outcome: string | null; created_at: string | null }>>()
+  if (pageIds.length > 0) {
+    const [isaRes, callRes] = await Promise.all([
+      supabase.from("ai_isa_activities").select("lead_id, outcome, created_at")
+        .eq("brokerage_id", input.brokerageId).eq("activity_type", "outcome_recorded").in("lead_id", pageIds)
+        .not("outcome", "is", null).order("created_at", { ascending: false }).limit(1000),
+      supabase.from("voice_calls").select("lead_id, outcome, created_at")
+        .eq("brokerage_id", input.brokerageId).in("lead_id", pageIds)
+        .not("outcome", "is", null).order("created_at", { ascending: false }).limit(1000),
+    ])
+    if (isaRes.error || callRes.error) {
+      out.warnings.push(`dead-end outcome read refused (${(isaRes.error ?? callRes.error)?.message}) — NO plan advanced this sweep`)
+      return out
+    }
+    for (const r of (isaRes.data ?? []) as Array<{ lead_id: string; outcome: string | null; created_at: string | null }>) {
+      const a = isaOutcomesByLead.get(r.lead_id) ?? []; a.push(r); isaOutcomesByLead.set(r.lead_id, a)
+    }
+    for (const r of (callRes.data ?? []) as Array<{ lead_id: string; outcome: string | null; created_at: string | null }>) {
+      const a = callOutcomesByLead.get(r.lead_id) ?? []; a.push(r); callOutcomesByLead.set(r.lead_id, a)
+    }
   }
 
   const { cohortFromEnrichment } = await import("./adaptive-reengagement")
@@ -1200,6 +1277,13 @@ export async function advanceLeadActionPlans(input: {
         outreachPaused: lead.ai_outreach_paused === true,
         dncOrNoConsent: true, // a lead is pre-consent by definition; dnc_status only confirms it
         lastAnyTouchAt: lastSentAt,
+        deadEnds: deadEndsFromLeadSources({
+          isaOutcomes: isaOutcomesByLead.get(leadId),
+          callOutcomes: callOutcomesByLead.get(leadId),
+          qualificationSummary: (lead.qualification_summary as string | null) ?? null,
+          longTermNurtureUntil: (lead.long_term_nurture_until as string | null) ?? null,
+        }),
+        suppressOnOutcomes: settings.suppress_on_outcomes,
       },
     })
 

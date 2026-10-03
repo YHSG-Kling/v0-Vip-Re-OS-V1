@@ -25,6 +25,7 @@ import {
   scoreEvals, teamTrust, effectiveAutonomy, isAutonomyPosture,
   type ManagerEvalScore, type AutonomyPosture,
 } from "@/lib/managers/eval-scoring"
+import { DEFAULT_AUTHORITY_LEVEL, isAuthorityLevel, type AuthorityLevel } from "@/lib/ai-isa/persona-tool-policy"
 import {
   scoreStrategyOutcomes, scoreMarketingOutcomes, effectivenessBand,
   type EffectivenessBand,
@@ -44,6 +45,9 @@ export interface ManagerTrustRow {
   overrideAutonomy: AutonomyPosture | null
   /** What the manager actually operates under = override ?? recommended. */
   effectiveAutonomy: AutonomyPosture
+  /** AUTHORITY LADDER rung (0-6, wave 98 lane 98C) from managed_agents.config.authority_level;
+   *  DEFAULT_AUTHORITY_LEVEL (6 = today's behaviour) when unset. */
+  authorityLevel: AuthorityLevel
   /** Whether this manager has an instantiated managed_agents row (override is settable only then). */
   isActive: boolean
   /** RETIRED — this kind has NO live row and at least one archived one, i.e. a
@@ -168,6 +172,7 @@ export async function getManagerTrustScorecard(): Promise<
     if (!prev || at > prev) retiredAtByKind.set(kind, at)
   }
   const overrideByKind = new Map<string, AutonomyPosture | null>()
+  const authorityByKind = new Map<string, AuthorityLevel>()
   const activeKinds = new Set<string>()
   const versionsByKind = new Map<string, Set<string>>()
   for (const a of agentRows ?? []) {
@@ -176,6 +181,7 @@ export async function getManagerTrustScorecard(): Promise<
     const cfg = (a.config ?? {}) as Record<string, unknown>
     const ov = cfg.autonomy_tier
     if (isAutonomyPosture(ov)) overrideByKind.set(kind, ov)
+    if (isAuthorityLevel(cfg.authority_level)) authorityByKind.set(kind, cfg.authority_level)
     const ver = a.anthropic_version as string | null
     // Only a version the row actually carries. A null is "this row never recorded one",
     // never a fabricated "v1" — the axis stays absent rather than wrong.
@@ -260,6 +266,7 @@ export async function getManagerTrustScorecard(): Promise<
         tokensOut: b?.tokensOut ?? 0,
         overrideAutonomy: override,
         effectiveAutonomy: effectiveAutonomy(score.autonomy, override),
+        authorityLevel: authorityByKind.get(kind) ?? DEFAULT_AUTHORITY_LEVEL,
         isActive: activeKinds.has(kind),
         // Retired = archived AND not live. A kind that was retired and later
         // respawned has a live row again and is simply active.
@@ -377,6 +384,58 @@ export async function setManagerAutonomy(
     if (!error) updated += 1
   }
   revalidatePath("/dashboard/admin/manager-trust")
+  return { ok: true, updated }
+}
+
+/**
+ * AUTHORITY LADDER (wave 98, lane 98C — owner blueprint "controlled autonomy"). Broker governance:
+ * set (or clear, null → DEFAULT 6) the rung 0-6 an agent kind operates at in THIS brokerage.
+ * Stored beside autonomy_tier on managed_agents.config (the existing per-tenant per-agent policy
+ * store) and read by lib/managers/autonomy-gate.ts::resolveAgentAuthorityLevel at the tool mount
+ * and at dispatch. Tenant from the SESSION; broker/admin only (same gate as setManagerAutonomy).
+ * Every row of the kind is updated and each refusal is READ (§3) — `updated` counts real writes.
+ */
+export async function setManagerAuthorityLevel(
+  agentKind: string,
+  level: AuthorityLevel | null,
+): Promise<{ ok: true; updated: number } | { ok: false; error: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  if (!isAdminOrBroker({ user_type: ctx.userType })) {
+    return { ok: false, error: "Forbidden — only a broker or admin can set an agent's authority level" }
+  }
+  if (level !== null && !isAuthorityLevel(level)) return { ok: false, error: "Invalid authority level (0-6)" }
+  if (!(agentKind in MANAGERS)) return { ok: false, error: "Unknown agent kind" }
+  if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
+
+  const svc = createServiceClient()
+  const { data: rows, error: readErr } = await svc
+    .from("managed_agents")
+    .select("id, config")
+    .eq("brokerage_id", ctx.brokerageId)
+    .eq("agent_kind", agentKind)
+    .is("archived_at", null)
+  if (readErr) return { ok: false, error: readErr.message }
+  if (!rows || rows.length === 0) {
+    return { ok: false, error: "This agent has no active row yet — its authority level applies once it runs (default: level 6)." }
+  }
+
+  let updated = 0
+  const failures: string[] = []
+  const nowIso = new Date().toISOString()
+  for (const row of rows) {
+    const cfg = { ...((row.config ?? {}) as Record<string, unknown>) }
+    if (level === null) { delete cfg.authority_level; delete cfg.authority_updated_at; delete cfg.authority_set_by }
+    else { cfg.authority_level = level; cfg.authority_updated_at = nowIso; cfg.authority_set_by = ctx.userId }
+    const { data: wrote, error } = await svc.from("managed_agents").update({ config: cfg, updated_at: nowIso })
+      .eq("id", row.id as string).eq("brokerage_id", ctx.brokerageId).select("id")
+    if (error) failures.push(error.message)
+    else updated += (wrote ?? []).length
+  }
+  const { __clearAutonomyCache } = await import("@/lib/managers/autonomy-gate")
+  __clearAutonomyCache()
+  revalidatePath("/dashboard/admin/manager-trust")
+  if (updated === 0) return { ok: false, error: failures[0] ?? "No row was updated" }
   return { ok: true, updated }
 }
 

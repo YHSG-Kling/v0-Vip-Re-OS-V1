@@ -32,7 +32,7 @@
 // bounded (probe caps, page sizes) so one sweep is a handful of API calls,
 // not a fan-out storm. All egress via the connector gateway.
 
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { callConnector, deriveProviderHealth, type ProviderHealthState, type ProviderOutcome } from "@/lib/agentic-os/connector-gateway"
 import { canonicalWebhookUrl, findWebhookContractEntry } from "@/lib/providers/webhook-contract"
 import type { A2pState } from "@/lib/voice/a2p-registration"
 import { nextA2pStep } from "@/lib/voice/a2p-registration"
@@ -943,6 +943,10 @@ export interface ProviderPostureRow {
   selfHeal: { healed: number; failed: number; escalated: number; topFailure: string | null }
   /** Pull-drift sentinel state: pending schema_drift_quarantine dead letters. */
   drift: { pendingQuarantines: number; lastAt: string | null }
+  /** Wave 98 (98C): the failover state machine (connector-gateway.ts::deriveProviderHealth) over the
+   *  same ledger rows — healthy / degraded / rate_limited / failing / fallback / recovered. */
+  healthState: ProviderHealthState
+  healthReason: string
   needsAttention: boolean
   attentionReason: string | null
   /** Honest no-data label — "no traffic recorded (14d)" — never fake health. */
@@ -1009,7 +1013,7 @@ export async function getFullProviderPosture(svc: any): Promise<FullProviderPost
     svc.from("platform_credentials").select("platform").eq("is_active", true).limit(CRED_FETCH_CAP),
     svc.from("integration_credentials").select("provider_name").eq("is_active", true).limit(CRED_FETCH_CAP),
     svc.from("agent_api_credentials").select("service_name").eq("is_active", true).limit(CRED_FETCH_CAP),
-    svc.from("api_response_logs").select("service_key, recorded_at, is_error")
+    svc.from("api_response_logs").select("service_key, recorded_at, is_error, error_type")
       .gte("recorded_at", sinceIso).order("recorded_at", { ascending: false }).limit(LEDGER_FETCH_CAP),
     svc.from("self_heal_events").select("brokerage_id, subject, action, outcome, detail, created_at")
       .gte("created_at", sinceIso).order("created_at", { ascending: false }).limit(HEAL_FETCH_CAP),
@@ -1029,10 +1033,14 @@ export async function getFullProviderPosture(svc: any): Promise<FullProviderPost
 
   // Connector ledger — the gateway's own per-call telemetry.
   const ledger = new Map<string, { calls: number; errors: number; lastSuccessAt: string | null; lastErrorAt: string | null }>()
-  const ledgerData = (ledgerRows.data ?? []) as Array<{ service_key: string; recorded_at: string; is_error: boolean }>
+  const ledgerData = (ledgerRows.data ?? []) as Array<{ service_key: string; recorded_at: string; is_error: boolean; error_type?: string | null }>
+  const outcomesByProvider = new Map<string, ProviderOutcome[]>()
   for (const r of ledgerData) {
     const canon = canonOf(r.service_key)
     if (!canon) continue
+    const oc = outcomesByProvider.get(canon) ?? []
+    oc.push({ at: r.recorded_at, ok: r.is_error !== true, errorType: r.error_type ?? null })
+    outcomesByProvider.set(canon, oc)
     const l = ledger.get(canon) ?? { calls: 0, errors: 0, lastSuccessAt: null, lastErrorAt: null }
     l.calls++
     if (r.is_error) { l.errors++; if (!l.lastErrorAt) l.lastErrorAt = r.recorded_at }
@@ -1087,7 +1095,9 @@ export async function getFullProviderPosture(svc: any): Promise<FullProviderPost
 
     const unhealed = h.failed + h.escalated
     const topFailure = topFailureCause(h.failures)
+    const health = deriveProviderHealth(outcomesByProvider.get(e.provider) ?? [])
     const reasons: string[] = []
+    if (health.routeAround) reasons.push(`provider ${health.state} — ${health.reason}`)
     if (unhealed >= UNHEALED_ATTENTION_THRESHOLD) {
       reasons.push(`${unhealed} unhealed failure(s) in ${POSTURE_WINDOW_DAYS}d${topFailure ? ` — ${topFailure}` : ""}`)
     }
@@ -1106,6 +1116,8 @@ export async function getFullProviderPosture(svc: any): Promise<FullProviderPost
       lastSuccessAt: l.lastSuccessAt, lastErrorAt: l.lastErrorAt,
       selfHeal: { healed: h.healed, failed: h.failed, escalated: h.escalated, topFailure },
       drift: { pendingQuarantines: d.pending, lastAt: d.lastAt },
+      healthState: health.state,
+      healthReason: health.reason,
       needsAttention: reasons.length > 0,
       attentionReason: reasons.length > 0 ? reasons.join(" · ") : null,
       activityNote: noTraffic ? `no traffic recorded (${POSTURE_WINDOW_DAYS}d)` : null,

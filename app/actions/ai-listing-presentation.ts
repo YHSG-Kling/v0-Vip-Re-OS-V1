@@ -1,6 +1,6 @@
 "use server"
 
-import { generateObject } from "@/lib/ai/generate"
+import { bookedGenerateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -12,6 +12,9 @@ import {
 } from "@/lib/listing-presentation/generate-ai-presentation"
 import { z } from "zod"
 import { requireCaller } from "@/lib/auth/require-caller"
+
+// Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
+const generateObject = bookedGenerateObject("ai_listing_presentation")
 
 // ============================================================================
 // AI LISTING PRESENTATION GENERATOR

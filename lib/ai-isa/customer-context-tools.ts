@@ -1053,6 +1053,9 @@ export function buildRecordQualificationTool(ctx: CustomerContextToolsContext) {
       // named candidate; that reader would justify a m66x column, and the
       // column must land BEFORE this writer names it — PGRST204 refuses the
       // whole patch otherwise, CLAUDE.md §3).
+      // Wave 98 (98C): THE READER NOW EXISTS — lib/ai-isa/lead-action-plan.ts::deadEndsFromLeadSources
+      // parses the newest line of this exact spelling into the canonical dead end
+      // `already_represented` (ALWAYS terminal for outreach). Keep the wording byte-identical.
       if (args.already_represented === true || args.already_represented === false) summaryBits.push(`already represented by an agent: ${args.already_represented ? "yes" : "no"}`)
       // FOLLOW-UP PREFERENCE (lane 78D, blind spot 9) — ALREADY EXISTED, REUSED:
       // `preferred_channel` ('phone'|'email'|'sms', lib/contact-pipeline/

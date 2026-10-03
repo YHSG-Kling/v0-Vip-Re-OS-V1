@@ -72,7 +72,7 @@ import {
   wireChannelFor,
   type LeadSettingsResolution,
 } from "../lib/ai-isa/lead-action-plan"
-import { DEFAULT_AISA_SETTINGS, type AIISASettings } from "../lib/ai-isa/settings-types"
+import { DEFAULT_AISA_SETTINGS, DEAD_END_OUTCOMES, canonicalDeadEnd, deadEndsFromLeadSources, type AIISASettings } from "../lib/ai-isa/settings-types"
 import { pickLeadOutreachChannel, LEAD_ALLOWED_CHANNELS } from "../lib/ai-isa/lead-channel-policy"
 import { CRON_REGISTRY } from "../lib/kernel/cron-dispatch"
 import {
@@ -520,6 +520,45 @@ console.log("\n── 7b. LANE 97B: signal decay, intent velocity, next-best-act
   check("NBA-DNC-NO-CHANNEL: DNC with neither email nor mail verified → DO_NOTHING with its reason",
     dncNoChannel.action === "do_nothing" && dncNoChannel.reasonCode === "no_permitted_channel"
       && dncNoChannel.reasonsNotToAct.some((r) => r.code === "channel_restricted_no_consent"))
+  // NEGATIVE INTELLIGENCE (wave 98, lane 98C) — ONE dead-end vocabulary, read by the reasons-not-to-act.
+  {
+    const live = ["opt_out", "explicit_opt_out", "do_not_call", "wrong_person", "not_ready_now", "representation", "bad_contact_data", "not_interested", "wrong_number"]
+    check("DEAD-END-VOCAB: every live spelling maps onto one of the seven canonical dead ends",
+      live.every((v) => (DEAD_END_OUTCOMES as readonly string[]).includes(canonicalDeadEnd(v) ?? "")), live.filter((v) => !canonicalDeadEnd(v)).join(","))
+    check("DEAD-END-VOCAB-CONTROL (positive control): a non-dead-end (no_answer, disqualified, appointment_set) is NOT mapped",
+      ["no_answer", "disqualified", "appointment_set"].every((v) => canonicalDeadEnd(v) === null))
+    check("DEAD-END-DEFAULT-CANONICAL: the default suppress_on_outcomes uses only canonical spellings (do_not_call merged onto do_not_contact)",
+      DEFAULT_AISA_SETTINGS.suppress_on_outcomes.every((o) => canonicalDeadEnd(o) === o))
+    const ev = deadEndsFromLeadSources({
+      isaOutcomes: [{ outcome: "wrong_number", created_at: "2026-09-20T00:00:00Z" }, { outcome: "no_answer", created_at: "2026-09-21T00:00:00Z" }],
+      callOutcomes: [{ outcome: "opt_out", created_at: "2026-09-22T00:00:00Z" }],
+      qualificationSummary: "[AI qualification] already represented by an agent: yes\n[AI qualification] timeline: 3-6",
+      longTermNurtureUntil: "2026-12-01T00:00:00Z",
+    })
+    check("DEAD-END-SOURCES: each existing writer's record is read onto the vocabulary (ISA outcome, call outcome, qualification line, nurture date)",
+      ["wrong_number", "do_not_contact", "already_represented", "postponed"].every((o) => ev.some((e) => e.outcome === o)) && ev.length === 4, ev.map((e) => e.outcome).join(","))
+    check("DEAD-END-SOURCES-NEWEST-LINE: a later 'already represented … no' clears an earlier yes",
+      deadEndsFromLeadSources({ qualificationSummary: "already represented by an agent: yes\nalready represented by an agent: no" }).length === 0)
+    const wrong = planNextLeadTouch({ ...nbaBase, context: { deadEnds: [{ outcome: "wrong_number", at: NOW, source: "proof" }] } })
+    check("NBA-DEAD-END: a suppressed dead end (default settings) → DO_NOTHING, reason dead_end", wrong.action === "do_nothing" && wrong.reasonCode === "dead_end", wrong.reasonCode)
+    const weighed = planNextLeadTouch({ ...nbaBase, context: { deadEnds: [{ outcome: "property_sold", at: NOW, source: "proof" }], suppressOnOutcomes: ["not_interested"] } })
+    check("NBA-DEAD-END-WEIGHED (positive control): a dead end the tenant does NOT suppress is weighed, not decisive — the plan still sends",
+      weighed.action === "send_touch" && weighed.reasonsNotToAct.some((r) => r.code === "dead_end" && !r.blocking), weighed.reasonCode)
+    const repr = planNextLeadTouch({ ...nbaBase, context: { callbackRequested: true, deadEnds: [{ outcome: "already_represented", at: null, source: "proof" }], suppressOnOutcomes: [] } })
+    check("NBA-DEAD-END-TERMINAL: already_represented blocks whatever the settings say, and outranks a callback", repr.action === "do_nothing" && repr.reasonCode === "dead_end", repr.reasonCode)
+    const legacy = planNextLeadTouch({ ...nbaBase, context: { deadEnds: [{ outcome: "do_not_contact", at: NOW, source: "proof" }], suppressOnOutcomes: ["do_not_call"] } })
+    check("NBA-DEAD-END-LEGACY-SPELLING: a stored legacy setting ('do_not_call') still suppresses its canonical dead end", legacy.action === "do_nothing")
+    const later = planNextLeadTouch({ ...nbaBase, context: { deadEnds: [{ outcome: "postponed", at: null, until: new Date("2026-12-01T00:00:00Z"), source: "proof" }] } })
+    check("NBA-POSTPONED: postponed → WAIT until the requested date", later.action === "wait" && later.reasonCode === "postponed" && later.dueAt?.toISOString() === "2026-12-01T00:00:00.000Z", later.reasonCode)
+    const lapsed = planNextLeadTouch({ ...nbaBase, context: { deadEnds: [{ outcome: "postponed", at: null, until: new Date("2026-01-01T00:00:00Z"), source: "proof" }] } })
+    check("NBA-POSTPONED-LAPSED (positive control): a postponement whose date has passed no longer holds", lapsed.action === "send_touch", lapsed.reasonCode)
+    const sweep = stripComments(readFileSync(join(root, "lib/ai-isa/lead-action-plan.ts"), "utf8"))
+    check("WIRED: the lead sweep reads the dead ends (ai_isa_activities + voice_calls, batched) and passes them + the tenant's suppress_on_outcomes to the plan",
+      /from\("ai_isa_activities"\)[\s\S]{0,200}outcome_recorded/.test(sweep) && /from\("voice_calls"\)/.test(sweep)
+        && /deadEnds: deadEndsFromLeadSources\(/.test(sweep) && /suppressOnOutcomes: settings\.suppress_on_outcomes/.test(sweep))
+    const page = stripComments(readFileSync(join(root, "app/dashboard/ai-isa/settings/page.tsx"), "utf8"))
+    check("WIRED: the settings page offers the ONE vocabulary (no retyped outcome list)", /OUTCOME_OPTIONS = SUPPRESSIBLE_DEAD_ENDS/.test(page))
+  }
   const waitInterval = planNextLeadTouch({ ...nbaBase, lastTouchAt: new Date("2026-10-01T12:00:00Z") })
   check("NBA-WAIT: inside the cadence interval the action is WAIT with a due time",
     waitInterval.action === "wait" && waitInterval.dueAt !== null, waitInterval.reasonCode)

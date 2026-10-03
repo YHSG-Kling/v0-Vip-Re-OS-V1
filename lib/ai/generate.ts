@@ -203,6 +203,54 @@ export interface GeneratedUsage {
   model: AIModel | null
 }
 
+/**
+ * THE BOOKED SHIM (wave 98, lane 98C — the gap map's "book the remaining unbooked model calls").
+ *
+ * `generateObject` above returns real usage and books nothing, because it has no tenant. Its
+ * user-triggered callers in `app/actions/**` all run inside an authenticated request, so the tenant
+ * EXISTS — it is the SESSION's (CLAUDE.md §4: never a body-supplied brokerageId). A caller binds once:
+ *     const generateObject = bookedGenerateObject("ai_calendar_management")
+ * and every call through it is booked by `logAIUsage` (lib/ai/cost-tracking.ts — the ONE ledger
+ * primitive: ai_tool_usage + the monthly aggregate + usage_counters + billing_usage) against the
+ * session's user + brokerage, after the model answered.
+ *   · No session tenant (a cron or a sessionless caller) → NOT booked, warned by name: a guessed
+ *     tenant is a wrong invoice, and m476 refuses a row with neither user nor tenant.
+ *   · The shim cannot name the served model → NOT booked, warned (m508 refuses tokens without one).
+ *   · A booking failure never fails the user's call (logAIUsage is best-effort by contract).
+ * scripts/ai-spend-booked-guard.ts treats `bookedGenerateObject` as a BOOKING lane and asserts this
+ * body calls logAIUsage — so a caller switched onto it leaves the frozen debt honestly.
+ */
+export function bookedGenerateObject(feature: string) {
+  return async function generateObjectBooked<T extends z.ZodType>(
+    args: Parameters<typeof generateObject<T>>[0],
+  ): Promise<{ object: z.infer<T>; usage: GeneratedUsage }> {
+    const result = await generateObject<T>(args)
+    try {
+      const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+      const ctx = await getAgentContext()
+      if (!ctx.isAuthenticated || !ctx.brokerageId) {
+        console.warn(`[ai/generate] ${feature}: model usage NOT booked — no session tenant to bill (sessionless caller)`)
+      } else if (!result.usage.model) {
+        console.warn(`[ai/generate] ${feature}: model usage NOT booked — the shim could not name the served model`)
+      } else {
+        const { logAIUsage } = await import("@/lib/ai/cost-tracking")
+        await logAIUsage({
+          userId: ctx.userId,
+          brokerageId: ctx.brokerageId,
+          agentId: ctx.agentId ?? null,
+          model: result.usage.model,
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          feature,
+        })
+      }
+    } catch (e) {
+      console.warn(`[ai/generate] ${feature}: model usage booking failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    return result
+  }
+}
+
 function readUsage(usage: unknown, prompt: string, model: AIModel | null): GeneratedUsage {
   const u = (usage ?? {}) as Record<string, number | undefined>
   const input = u.inputTokens ?? u.promptTokens
