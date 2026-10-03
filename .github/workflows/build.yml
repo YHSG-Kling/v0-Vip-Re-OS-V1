@@ -28,7 +28,12 @@ concurrency:
 
 jobs:
   next-build:
-    runs-on: ubuntu-latest
+    # OWNER RULING 2026-10-03 ("Both"): a LARGER runner unblocks the compile ceiling recorded at
+    # 08282ad6c, and a graph cut follows. GitHub larger runners are created by an org/repo admin
+    # (Settings → Actions → Runners → New runner → GitHub-hosted, e.g. 8-core / 32 GB) under a label
+    # of the admin's choosing; set repo variable BUILD_RUNNER to that label and BUILD_HEAP_MB to the
+    # matching heap (e.g. 24576). Unset → today's runner and cap, unchanged.
+    runs-on: ${{ vars.BUILD_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 40
     env:
       NEXT_TELEMETRY_DISABLED: "1"
@@ -393,7 +398,7 @@ jobs:
       # larger runner or a first-party graph cut (a route/page census — 996 entry
       # points), and either is an owner decision.
       # vercel.json still carries 10240 deliberately (no swap there).
-      NODE_OPTIONS: "--max-old-space-size=13312"
+      NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_HEAP_MB || '13312' }}"
       #
       # A COMMENT THAT SAID THE OPPOSITE OF THE LINE ABOVE IT USED TO LIVE HERE.
       # It read: "NO max-old-space-size override: `next build` uses Turbopack
