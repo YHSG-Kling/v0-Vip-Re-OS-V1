@@ -173,7 +173,7 @@ export default async function AIAuditPage({ searchParams }: { searchParams: Prom
                   <li key={`${l.kind}-${l.id}`} className="flex flex-wrap gap-2">
                     <span className="text-xs text-gray-500">{new Date(l.at).toLocaleString()}</span>
                     <span className="font-medium">{l.name}</span>
-                    {l.kind === 'action' && <Badge variant="outline">{l.status} · {l.reasonCode}</Badge>}
+                    {l.kind === 'action' && <Badge variant="outline">{l.status} · {l.reasonCode}{l.settledAt ? ` · settled ${new Date(l.settledAt).toLocaleString()}` : ''}{l.error ? ` · ${l.error}` : ''}</Badge>}
                     {l.because && l.because.length > 0 && <span className="text-xs text-gray-500">because {l.because.join(' → ')}</span>}
                   </li>
                 ))}

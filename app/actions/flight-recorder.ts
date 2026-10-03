@@ -19,7 +19,6 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
 import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
 import {
-  ACTION_LEDGER_TABLE,
   assembleCausalChain,
   type ChainAction,
   type ChainEvent,
@@ -36,7 +35,7 @@ const LIMIT = 200
 const EVENT_BASE = "id, event_type, entity_type, entity_id, created_at"
 const EVENT_LINEAGE = `${EVENT_BASE}, causation_id, correlation_id`
 const ACTION_COLS =
-  "id, action, status, reason_code, reason_detail, outcome, subject_type, subject_id, actor_type, actor_manager_key, created_at, causation_id, correlation_id"
+  "id, action, status, reason_code, reason_detail, outcome, subject_type, subject_id, actor_type, actor_manager_key, created_at, settled_at, error, causation_id, correlation_id"
 
 function schemaAbsent(code: string | undefined): boolean {
   return code === "42P01" || code === "PGRST205" || code === "42703" || code === "PGRST204"
@@ -75,7 +74,7 @@ export async function getEntityCausalChain(input: { entityType: string; entityId
   // 2. Ledger rows about the entity, and rows its events caused elsewhere.
   let ledgerAvailable = true
   const actions = new Map<string, ChainAction>()
-  const own = await svc.from(ACTION_LEDGER_TABLE).select(ACTION_COLS)
+  const own = await svc.from("agent_action_ledger").select(ACTION_COLS)
     .eq("brokerage_id", brokerageId).eq("subject_type", entityType).eq("subject_id", entityId)
     .order("created_at", { ascending: true }).limit(LIMIT)
   if (own.error) {
@@ -85,7 +84,7 @@ export async function getEntityCausalChain(input: { entityType: string; entityId
     for (const a of (own.data ?? []) as ChainAction[]) actions.set(a.id, a)
     const eventIds = [...events.keys()].slice(0, LIMIT)
     if (eventIds.length > 0) {
-      const caused = await svc.from(ACTION_LEDGER_TABLE).select(ACTION_COLS)
+      const caused = await svc.from("agent_action_ledger").select(ACTION_COLS)
         .eq("brokerage_id", brokerageId).in("causation_id", eventIds).limit(LIMIT)
       if (caused.error) return { ok: false, error: `Action ledger could not be read: ${caused.error.message}` }
       for (const a of (caused.data ?? []) as ChainAction[]) actions.set(a.id, a)

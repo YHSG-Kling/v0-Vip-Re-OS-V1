@@ -489,6 +489,8 @@ export interface ChainAction {
   actor_type: string
   actor_manager_key?: string | null
   created_at: string
+  settled_at?: string | null
+  error?: string | null
   causation_id?: string | null
   correlation_id?: string | null
 }
@@ -502,6 +504,9 @@ export interface ChainLink {
   status?: string
   reasonCode?: string
   outcome?: string | null
+  /** When the provider's result settled the row (the unknown-settler or the send itself), and why it failed. */
+  settledAt?: string | null
+  error?: string | null
   /** For an action: the event chain that caused it, ROOT first ("why did the AI send this?"). */
   because?: string[]
 }
@@ -534,6 +539,7 @@ export function assembleCausalChain(events: ChainEvent[], actions: ChainAction[]
       kind: "action", id: a.id, at: a.created_at, name: a.action,
       causationId: a.causation_id ?? null, correlationId: a.correlation_id ?? null,
       status: a.status, reasonCode: a.reason_code, outcome: a.outcome ?? null,
+      settledAt: a.settled_at ?? null, error: a.error ?? null,
       because: ancestry(a.causation_id),
     })),
   ]

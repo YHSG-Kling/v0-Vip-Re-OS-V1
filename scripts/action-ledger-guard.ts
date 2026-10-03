@@ -20,7 +20,7 @@
  *   8. m687 agrees with the code (vocabularies DERIVED from both sides, not pinned).
  * Scans read stripped source (scripts/strip-comments.ts).
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { stripComments, blankStrings } from "./strip-comments"
 import {
@@ -305,8 +305,20 @@ async function main() {
   {
     const sqlRaw = read("supabase/migrations/m687-action-ledger-and-event-causation.sql")
     const sql = sqlRaw.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")
+    // A later migration may REDEFINE a CHECK (m691 widened reason_code) — compare against the LATEST
+    // file that defines the constraint, not the one that first created it (assert the rule, not a waypoint).
+    const latestSqlFor = (constraint: string): string => {
+      const files = readdirSync(join(root, "supabase/migrations")).filter((f) => /^m\d+.*\.sql$/.test(f))
+        .sort((a, b) => parseInt(a.slice(1), 10) - parseInt(b.slice(1), 10))
+      let found = sql
+      for (const f of files) {
+        const body = read(`supabase/migrations/${f}`).split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")
+        if (new RegExp(`${constraint}\\s*CHECK`).test(body)) found = body
+      }
+      return found
+    }
     const listIn = (constraint: string): string[] => {
-      const m = new RegExp(`${constraint}\\s*CHECK\\s*\\(\\s*\\w+\\s+IN\\s*\\(([^)]*)\\)`, "s").exec(sql)
+      const m = new RegExp(`${constraint}\\s*CHECK\\s*\\(\\s*\\w+\\s+IN\\s*\\(([^)]*)\\)`, "s").exec(latestSqlFor(constraint))
       return m ? [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort() : []
     }
     const same = (a: readonly string[], b: string[]) => a.length > 0 && [...a].sort().join(",") === b.join(",")
