@@ -63,7 +63,7 @@
     "lib/ai-isa/ghost-reengagement.ts": 1,
     "lib/ai-isa/inbound-intent-classifier.ts": 1,
     "lib/ai-isa/isa-acting-scope.ts": 1,
-    "lib/ai-isa/lead-action-plan.ts": 1,
+    "lib/ai-isa/lead-action-plan.ts": 2,
     "lib/ai-isa/lead-nurture.ts": 1,
     "lib/ai-isa/listing-appointment.ts": 6,
     "lib/ai-isa/meeting-followthrough.ts": 2,
@@ -518,7 +518,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10593,
+  "census": 10619,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -561,6 +561,7 @@
     "app/actions/admin/staff-360.ts": 2,
     "app/actions/admin/subscription-agreement.ts": 2,
     "app/actions/admin/team-members.ts": 3,
+    "app/actions/admin/tenant-policy.ts": 3,
     "app/actions/admin/update-user.ts": 1,
     "app/actions/agent-action-queue.ts": 1,
     "app/actions/agent-deactivation.ts": 5,
@@ -774,7 +775,7 @@
     "app/actions/fb-audience-templates.ts": 1,
     "app/actions/financial-kernel.ts": 20,
     "app/actions/financials.ts": 7,
-    "app/actions/flight-recorder.ts": 1,
+    "app/actions/flight-recorder.ts": 4,
     "app/actions/forms-kernel.ts": 10,
     "app/actions/gamification.ts": 7,
     "app/actions/generate-marketing-image.ts": 1,
@@ -1924,6 +1925,8 @@
     "app/dashboard/admin/learning-modules/learning-modules-client.tsx": 1,
     "app/dashboard/admin/locations/locations-client.tsx": 1,
     "app/dashboard/admin/manager-trust/manager-trust-client.tsx": 1,
+    "app/dashboard/admin/manager-trust/revert-policy-button.tsx": 1,
+    "app/dashboard/admin/manager-trust/tenant-constitution-panel.tsx": 1,
     "app/dashboard/admin/marketing-agent-actions/client.tsx": 1,
     "app/dashboard/admin/marketing-approvals/marketing-approvals-client.tsx": 1,
     "app/dashboard/admin/marketing-campaigns/marketing-campaigns-client.tsx": 1,
@@ -2832,7 +2835,7 @@
     "lib/ai-isa/inbound-intent-classifier.ts": 3,
     "lib/ai-isa/isa-acting-scope.ts": 2,
     "lib/ai-isa/isa-outreach-logger.ts": 4,
-    "lib/ai-isa/lead-action-plan.ts": 11,
+    "lib/ai-isa/lead-action-plan.ts": 15,
     "lib/ai-isa/lead-call-intent.ts": 1,
     "lib/ai-isa/lead-channel-policy.ts": 3,
     "lib/ai-isa/lead-nurture.ts": 2,
@@ -2896,7 +2899,7 @@
     "lib/auth/authorize-for-user.ts": 1,
     "lib/auth/contact-access.ts": 1,
     "lib/auth/crm-contact-staff.ts": 1,
-    "lib/auth/isa-actor.ts": 1,
+    "lib/auth/isa-actor.ts": 2,
     "lib/auth/lead-visibility.ts": 6,
     "lib/auth/permissions-client.ts": 3,
     "lib/auth/platform-guard.ts": 5,
@@ -2912,7 +2915,7 @@
     "lib/behavior-learning/preference-updater.ts": 2,
     "lib/behavior-learning/signal-mapping.ts": 7,
     "lib/billing/ai-overage.ts": 4,
-    "lib/billing/billing-access.ts": 5,
+    "lib/billing/billing-access.ts": 6,
     "lib/billing/dunning.ts": 3,
     "lib/billing/past-due-clock.ts": 2,
     "lib/billing/phone-plan-resolve.ts": 2,
@@ -3577,6 +3580,7 @@
     "lib/kernel/deal-play.ts": 2,
     "lib/kernel/deal-room-reel.ts": 4,
     "lib/kernel/deal-save-huddle.ts": 9,
+    "lib/kernel/decision-replay.ts": 1,
     "lib/kernel/deconflict/cadence-policy.ts": 2,
     "lib/kernel/deconflict/index.ts": 2,
     "lib/kernel/deconflict/lead-channel.ts": 7,
@@ -3593,6 +3597,7 @@
     "lib/kernel/event-fanout.ts": 2,
     "lib/kernel/event-reactor.ts": 1,
     "lib/kernel/exception-center.ts": 2,
+    "lib/kernel/experiments.ts": 3,
     "lib/kernel/farm-play.ts": 3,
     "lib/kernel/financial.ts": 20,
     "lib/kernel/financing-pit-stop.ts": 8,
@@ -3713,6 +3718,7 @@
     "lib/kernel/tenant-creation-rollback.ts": 1,
     "lib/kernel/tenant-creation.ts": 7,
     "lib/kernel/tenant-guard.ts": 1,
+    "lib/kernel/tenant-policy.ts": 8,
     "lib/kernel/tenant-provisioning-spec.ts": 3,
     "lib/kernel/tenant-scope.ts": 7,
     "lib/kernel/tier-role-matrix.ts": 20,
@@ -4796,6 +4802,11 @@
       "listTeamMembers",
       "addTeamMember",
       "removeTeamMember"
+    ],
+    "app/actions/admin/tenant-policy.ts": [
+      "getTenantOperatingConstitution",
+      "policyHistory",
+      "revertPolicy"
     ],
     "app/actions/admin/update-user.ts": [
       "updateUser"
@@ -6233,7 +6244,10 @@
       "logScopedExpense"
     ],
     "app/actions/flight-recorder.ts": [
-      "getEntityCausalChain"
+      "getEntityCausalChain",
+      "replayTenantDecisions",
+      "getTenantExperimentPolicy",
+      "setExperimentKillSwitch"
     ],
     "app/actions/forms-kernel.ts": [
       "resolveFormsProviderAction",
@@ -10984,6 +10998,12 @@
     "app/dashboard/admin/manager-trust/manager-trust-client.tsx": [
       "ManagerTrustClient"
     ],
+    "app/dashboard/admin/manager-trust/revert-policy-button.tsx": [
+      "RevertPolicyButton"
+    ],
+    "app/dashboard/admin/manager-trust/tenant-constitution-panel.tsx": [
+      "TenantConstitutionPanel"
+    ],
     "app/dashboard/admin/marketing-agent-actions/client.tsx": [
       "MarketingAgentActionsClient"
     ],
@@ -14023,6 +14043,10 @@
       "releaseDueLeadTouches",
       "resolveLeadSettingsResolution",
       "nonActionRecordFor",
+      "decisionInputSnapshot",
+      "planFromDecisionInput",
+      "contactTouchSignals",
+      "rankContactsForTouch",
       "loadContactNbaContext",
       "advanceLeadActionPlans"
     ],
@@ -14494,6 +14518,7 @@
       "isCrmContactStaff"
     ],
     "lib/auth/isa-actor.ts": [
+      "isaAuditActor",
       "getIsaSystemUserIdCached"
     ],
     "lib/auth/lead-visibility.ts": [
@@ -14601,6 +14626,7 @@
       "resolveBillingAccess",
       "loadBillingAccess",
       "mayUseAndAfford",
+      "mayUseFeature",
       "isPaywalledPath",
       "resolveRequestAccess"
     ],
@@ -17937,6 +17963,9 @@
       "runDealSaveHuddle",
       "standDownDealSaveHuddle"
     ],
+    "lib/kernel/decision-replay.ts": [
+      "replayDecisions"
+    ],
     "lib/kernel/deconflict/cadence-policy.ts": [
       "computeLearnedCadence",
       "getEngagementSignals"
@@ -18037,6 +18066,11 @@
     "lib/kernel/exception-center.ts": [
       "composeExceptionCenter",
       "applyExceptionLocationFilter"
+    ],
+    "lib/kernel/experiments.ts": [
+      "assignExperimentArm",
+      "experimentLedgerDetail",
+      "loadExperimentPolicy"
     ],
     "lib/kernel/farm-play.ts": [
       "farmWinIsRecruitingProof",
@@ -18746,6 +18780,16 @@
     ],
     "lib/kernel/tenant-guard.ts": [
       "logTenantFinding"
+    ],
+    "lib/kernel/tenant-policy.ts": [
+      "managerPolicyKey",
+      "isaPolicyKey",
+      "parsePolicyKey",
+      "samePolicyValue",
+      "changedPolicySettingsKeys",
+      "appendTenantPolicyVersion",
+      "loadPolicyHistory",
+      "buildTenantOperatingConstitution"
     ],
     "lib/kernel/tenant-provisioning-spec.ts": [
       "requiresAgentRow",

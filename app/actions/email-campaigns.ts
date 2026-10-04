@@ -22,7 +22,7 @@ import { LIFETIME_CUSTOMER_SEGMENT } from "@/lib/contact-types"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import { canAccessFeature } from "@/lib/kernel"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { generateEmail } from "@/app/actions/ai-content-generation"
@@ -436,7 +436,7 @@ export async function sendEmailCampaign(campaignId: string, _actorUserId?: strin
     const auth = await requireCaller()
     if (!auth.ok) return { success: false, error: auth.error }
 
-    const access = await canAccessFeature(auth.userId, "email_campaigns")
+    const access = await mayUseFeature(auth.userId, "email_campaigns")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Email campaigns feature not available" }
     }
@@ -624,7 +624,7 @@ export async function prepareListingEmailCampaign(params: {
     if (!user) {
       return { success: false, error: "Unauthorized" }
     }
-    const access = await canAccessFeature(user.id, "email_campaigns")
+    const access = await mayUseFeature(user.id, "email_campaigns")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Email campaigns feature not available" }
     }

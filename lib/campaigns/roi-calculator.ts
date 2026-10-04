@@ -11,7 +11,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 
 // Default avg commission if not available (for ROI calculation)
 const DEFAULT_AVG_COMMISSION = 7500
@@ -1015,7 +1015,7 @@ export async function getCampaignROIData(
     // ══════════════════════════════════════════════════════════════════════════
     // Kernel gate: canAccessFeature
     // ══════════════════════════════════════════════════════════════════════════
-    const access = await canAccessFeature(userId, "campaign_roi_dashboard")
+    const access = await mayUseFeature(userId, "campaign_roi_dashboard")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
@@ -1119,7 +1119,7 @@ export async function getChannelPerformanceData(
 }> {
   try {
     // Kernel gate
-    const access = await canAccessFeature(userId, "campaign_roi_dashboard")
+    const access = await mayUseFeature(userId, "campaign_roi_dashboard")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
@@ -1166,7 +1166,7 @@ export async function getTopCampaigns(
   campaigns?: any[]
 }> {
   try {
-    const access = await canAccessFeature(userId, "campaign_roi_dashboard")
+    const access = await mayUseFeature(userId, "campaign_roi_dashboard")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }

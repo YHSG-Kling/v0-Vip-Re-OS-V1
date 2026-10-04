@@ -523,7 +523,9 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
         content: params.subject,
         actorContext: {
           brokerageId: params.brokerageId,
-          actorType: params.systemSource?.includes("ai_isa") ? "ai_isa" : "system",
+          // ONE ISA predicate (lib/kernel/action-ledger.ts isAiIsaSystemSource — ghost_recovery and
+          // lead_action_plan are the ISA too); a HUMAN-approved draft keeps the human (wave 101C).
+          actorType: isAiIsaSystemSource(params.systemSource) && params.humanApproved !== true ? "ai_isa" : "system",
           userId: params.userId,
         },
       })
@@ -608,7 +610,7 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
     brokerageId: params.brokerageId, channel: "email",
     parts: [params.subject, assembled.text, params.text, assembled.html],
     isAutonomous: isAutonomousSend(params), contactId: params.contactId ?? null,
-    actorUserId: params.userId ?? null, systemSource: params.systemSource,
+    actorUserId: params.userId ?? null, systemSource: params.systemSource, humanApproved: params.humanApproved === true,
   })
   if (fhEmail.blocked) return { success: false, providerKey: "content_safety_gate", error: `Outbound blocked: ${fhEmail.reason}` }
 
@@ -763,7 +765,9 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
         content: params.message,
         actorContext: {
           brokerageId: params.brokerageId,
-          actorType: params.systemSource?.includes("ai_isa") ? "ai_isa" : "system",
+          // ONE ISA predicate (lib/kernel/action-ledger.ts isAiIsaSystemSource — ghost_recovery and
+          // lead_action_plan are the ISA too); a HUMAN-approved draft keeps the human (wave 101C).
+          actorType: isAiIsaSystemSource(params.systemSource) && params.humanApproved !== true ? "ai_isa" : "system",
           userId: params.userId,
         },
       })
@@ -802,7 +806,7 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
   const fhSms = await contentSafetyBackstop({
     brokerageId: params.brokerageId, channel: "sms", parts: [params.message],
     isAutonomous: isAutonomousSend(params), contactId: params.contactId ?? null,
-    actorUserId: params.userId ?? null, systemSource: params.systemSource,
+    actorUserId: params.userId ?? null, systemSource: params.systemSource, humanApproved: params.humanApproved === true,
   })
   if (fhSms.blocked) return { success: false, providerKey: "content_safety_gate", error: `Outbound blocked: ${fhSms.reason}` }
 
@@ -836,6 +840,9 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
     leadId: params.leadId ?? null,
     brokerageId: params.brokerageId,
     transactional: params.transactional,
+    // ISA IS A SYSTEM AI ISA (wave 101C): the TCPA log names the ISA for an unattended ISA SMS.
+    systemSource: params.systemSource,
+    humanApproved: params.humanApproved === true,
   })
 
   const result: DispatchResult = {
@@ -1158,7 +1165,7 @@ export async function dispatchDirectMail(
     brokerageId: params.brokerageId, channel: "direct_mail",
     parts: Object.values(params.mergeVars ?? {}),
     isAutonomous: isAutonomousSend(params), contactId: params.contactId ?? null,
-    actorUserId: params.userId ?? null, systemSource: params.systemSource,
+    actorUserId: params.userId ?? null, systemSource: params.systemSource, humanApproved: params.humanApproved === true,
   })
   if (fhMail.blocked) return { success: false, providerKey: "content_safety_gate", error: `Outbound blocked: ${fhMail.reason}` }
 

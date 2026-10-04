@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { getAgentProgress } from "@/app/actions/onboarding/progress"
 import { ProgressDashboardClient } from "./progress-dashboard-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
@@ -37,9 +37,13 @@ export default async function ProgressPage() {
     redirect("/dashboard/onboarding")
   }
 
-  // Check feature access
-  const hasAccess = await canAccessFeature("training_progress", user.id, userData.brokerage_id)
-  if (!hasAccess) {
+  // Check feature access — mayUseAndAfford "feature.use" (wave 101C). The call that stood here was
+  // canAccessFeature("training_progress", user.id, brokerage_id): featureKey and userId SWAPPED (the gate
+  // looked up a users row whose id was "training_progress"), and `!hasAccess` tested the result OBJECT,
+  // which is always truthy — so the gate could never refuse. Now: the session user, the session tenant,
+  // the session client, and the verdict's `.allowed`.
+  const access = await mayUseFeature(user.id, "training_progress", { brokerageId: userData.brokerage_id, client: supabase })
+  if (!access.allowed) {
     redirect("/dashboard/onboarding")
   }
 

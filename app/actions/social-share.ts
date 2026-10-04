@@ -9,8 +9,7 @@ import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { requireCallerTenant } from "@/lib/auth/require-caller"
 
@@ -48,7 +47,7 @@ export async function shareListingPost(params: {
   params = { ...params, brokerageId: tenant.brokerageId }
 
   // Feature access check
-  const canAccess = await canAccessFeature(params.agentUserId, "social_automation")
+  const canAccess = await mayUseFeature(params.agentUserId, "social_automation")
 
   if (!canAccess.allowed) {
     return { success: false, error: "Feature not available for your subscription tier" }
@@ -104,7 +103,9 @@ export async function shareListingPost(params: {
       throw shareError
     }
 
-    // Fire kernel event
+    // Fire kernel event — ONE EMIT (wave 101C): the audit row and its fan-out are one
+    // emitKernelEvent, so the reactor gets the lifecycleEventId. Reactor input unchanged
+    // (its SOCIAL_POST_SHARED_BY_AGENT handler reads no metadata; no actor → no attribution).
     await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
       entityType: "agent_social_share",
       entityId: share.id,
@@ -117,17 +118,7 @@ export async function shareListingPost(params: {
         original_platform: post.platform,
         listing_id: post.listing_id,
       },
-      auditOnly: true,
     }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
-
-    await processKernelEvent({
-      event: KernelEvent.SOCIAL_POST_SHARED_BY_AGENT,
-      brokerageId: params.brokerageId,
-      entityType: "agent_social_share",
-      entityId: share.id,
-    }).catch((err) =>
-      console.error("[social-share] Kernel event failed:", err)
-    )
 
     revalidatePath("/dashboard/social")
     return { success: true, data: share }

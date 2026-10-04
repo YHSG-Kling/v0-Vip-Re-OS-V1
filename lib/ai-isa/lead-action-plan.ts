@@ -396,8 +396,12 @@ export const NBA_AGENT_ACTIVE_DAYS = 7
 export interface NextBestActionContext {
   /** The decayed intent (lib/lead-intelligence/behavioral-summary.ts scoreDecayedIntent). */
   intent?: DecayedIntent | null
-  /** Positive intent: the person asked to be called back. */
+  /** Positive intent: the person asked to be called back. LEAD subject → convert on it. CONTACT
+   *  subject (wave 101C) → a callback is PENDING (an open ai_callback task / scheduled call
+   *  activity): the agent's call is the next touch, so the ISA waits for it (see decideNextAction). */
   callbackRequested?: boolean
+  /** Wave 101C: when the pending callback is due (contact subject) — the wait's dueAt. */
+  callbackDueAt?: Date | null
   /** The survivor this row duplicates (leads.duplicate_of_lead_id / duplicate_of_contact_id). */
   duplicateOf?: string | null
   /** ai_outreach_paused — a human paused the ISA on this person. */
@@ -561,7 +565,7 @@ function intentEvidence(intent: DecayedIntent | null | undefined): NbaEvidence[]
  * is SKIPPED, not downgraded into a channel the lead never allowed.
  */
 export function planNextLeadTouch(input: PlanNextLeadTouchInput): LeadTouchPlan {
-  return decideNextAction(input.context, input.now, () => planLeadTouchCore(input))
+  return decideNextAction(input.context, input.now, () => planLeadTouchCore(input), "lead")
 }
 
 /**
@@ -576,7 +580,7 @@ export function planNextLeadTouch(input: PlanNextLeadTouchInput): LeadTouchPlan 
 export function planNextContactTouch(input: { now: Date; context?: NextBestActionContext }): LeadTouchPlan {
   return decideNextAction(input.context, input.now, () => ({
     code: "due", step: null, channel: null, reason: "no reason not to act — the contact engine picks the channel", dueAt: input.now,
-  }))
+  }), "contact")
 }
 
 function memoryEvidence(facts: NextBestActionContext["memoryFacts"]): NbaEvidence[] {
@@ -584,7 +588,7 @@ function memoryEvidence(facts: NextBestActionContext["memoryFacts"]): NbaEvidenc
 }
 
 /** THE NBA — one decision for both subjects; `core` is the subject's own plan when nothing blocks. */
-function decideNextAction(ctx: NextBestActionContext | undefined, now: Date, core: () => CorePlan): LeadTouchPlan {
+function decideNextAction(ctx: NextBestActionContext | undefined, now: Date, core: () => CorePlan, subject: "lead" | "contact"): LeadTouchPlan {
   const reasons = reasonsNotToAct(ctx, now)
   const evidence = [...intentEvidence(ctx?.intent), ...memoryEvidence(ctx?.memoryFacts)]
   const priority = ctx?.intent ? ctx.intent.momentumRank : 0
@@ -599,6 +603,12 @@ function decideNextAction(ctx: NextBestActionContext | undefined, now: Date, cor
   // A callback never overrides a terminal dead end (an opt-out, or represented by another agent).
   const terminal = reasons.some((r) => r.code === "dead_end" && r.outcome && ALWAYS_TERMINAL_DEAD_ENDS.has(r.outcome))
   if (ctx?.callbackRequested && !terminal && !reasons.some((r) => r.code === "outreach_paused")) {
+    // A CONTACT is already converted: the same positive intent means the callback is PENDING on the
+    // agent's desk (wave 101C) — the call IS the next touch, so an automated touch on top of it waits
+    // until it is due (the appointment verdict: a call is a booked conversation).
+    if (subject === "contact") {
+      return finish({ code: "appointment_scheduled", step: null, channel: null, reason: "a callback is pending — the agent's call is the next touch", dueAt: ctx.callbackDueAt ?? null })
+    }
     return finish({ code: "convert_on_callback", step: null, channel: null, reason: "callback requested — positive intent; convert and book the call", dueAt: now })
   }
   const blocking = reasons.find((r) => r.blocking)
@@ -1306,6 +1316,85 @@ export interface ContactNbaRow {
   last_contacted_at?: string | null
 }
 
+// ─── WAVE 101C — THE THREE INPUTS THE CONTACT NBA WAS NOT FED ───────────────
+// reasonsNotToAct already weighed `lastAgentTouchAt` (agent_handling), `appointmentAt`
+// (appointment_scheduled) and `callbackRequested`; nothing loaded them for a contact, so a
+// person the agent called yesterday, or with a showing tomorrow, or waiting on a callback, got
+// an automated touch anyway. Sources (each one's WRITER named):
+//   · agent touch — `activities` a human agent COMPLETED with the person: a touch type
+//     (AGENT_TOUCH_ACTIVITY_TYPES), an agent named (agent_id / agent_user_id), completed
+//     (status 'completed' or completed_at). Scheduled rows are commitments, not touches.
+//   · appointment — the earliest FUTURE of: `showings.scheduled_at` (the showing writers) and
+//     `activities` meeting / showing / listing_appointment rows still open
+//     (lib/ai-isa/qualification-signals.ts writeFollowUpActivity writes status 'scheduled').
+//   · pending callback — `tasks` source 'ai_callback' status 'pending' (lib/ai-isa/callback-task.ts
+//     createCallbackTask; the reader app/api/cron/ai-callback-dispatch uses the same predicate) and
+//     `activities` call rows still open (landCallbackOnAgentContact → scheduleFollowUp).
+const AGENT_TOUCH_ACTIVITY_TYPES: ReadonlySet<string> = new Set(["call", "email", "text", "sms", "meeting", "showing", "listing_appointment", "video_call"])
+const APPOINTMENT_ACTIVITY_TYPES: ReadonlySet<string> = new Set(["meeting", "showing", "listing_appointment"])
+const CLOSED_ACTIVITY_STATUSES: ReadonlySet<string> = new Set(["completed", "cancelled", "canceled", "failed", "no_show", "missed"])
+
+export interface ContactTouchRows {
+  activities: ReadonlyArray<{ activity_type: string | null; status: string | null; agent_id?: string | null; agent_user_id?: string | null; scheduled_at?: string | null; completed_at?: string | null; created_at?: string | null }>
+  showings: ReadonlyArray<{ scheduled_at: string | null; status: string | null }>
+  callbackTasks: ReadonlyArray<{ due_date: string | null; status: string | null }>
+}
+
+const at = (v: string | null | undefined): Date | null => (v && Number.isFinite(Date.parse(v)) ? new Date(v) : null)
+
+/** PURE (wave 101C). The three NBA inputs from the rows above. */
+/** @proofSeam exported so scripts/lead-action-plan-simulator.ts asserts each input's rule (and its positive control) on the pure function directly. */
+export function contactTouchSignals(rows: ContactTouchRows, now: Date): Pick<NextBestActionContext, "lastAgentTouchAt" | "appointmentAt" | "callbackRequested" | "callbackDueAt"> {
+  let lastAgentTouchAt: Date | null = null
+  let appointmentAt: Date | null = null
+  let callbackDueAt: Date | null = null
+  let callbackRequested = false
+  const later = (a: Date | null, b: Date | null) => (!a ? b : !b ? a : a > b ? a : b)
+  const sooner = (a: Date | null, b: Date | null) => (!a ? b : !b ? a : a < b ? a : b)
+  for (const a of rows.activities) {
+    const type = (a.activity_type ?? "").toLowerCase()
+    const status = (a.status ?? "").toLowerCase()
+    const done = status === "completed" || !!a.completed_at
+    if (done && AGENT_TOUCH_ACTIVITY_TYPES.has(type) && (a.agent_id || a.agent_user_id)) {
+      lastAgentTouchAt = later(lastAgentTouchAt, at(a.completed_at) ?? at(a.created_at))
+    }
+    if (done || CLOSED_ACTIVITY_STATUSES.has(status)) continue
+    const when = at(a.scheduled_at)
+    if (APPOINTMENT_ACTIVITY_TYPES.has(type) && when && when > now) appointmentAt = sooner(appointmentAt, when)
+    if (type === "call") { callbackRequested = true; callbackDueAt = sooner(callbackDueAt, when) }
+  }
+  for (const s of rows.showings) {
+    const when = at(s.scheduled_at)
+    if (when && when > now && !CLOSED_ACTIVITY_STATUSES.has((s.status ?? "").toLowerCase())) appointmentAt = sooner(appointmentAt, when)
+  }
+  for (const t of rows.callbackTasks) {
+    if ((t.status ?? "").toLowerCase() !== "pending") continue
+    callbackRequested = true
+    callbackDueAt = sooner(callbackDueAt, at(t.due_date))
+  }
+  return { lastAgentTouchAt, appointmentAt, callbackRequested, callbackDueAt }
+}
+
+/**
+ * PURE (wave 101C). THE ORDER of a contact batch by the NBA: people the NBA would act on come
+ * first, then by the NBA's own priority (intent momentum — rising moderate intent outranks
+ * high-but-declining), then the detector's order (ghosted before stale, oldest first). A person
+ * whose inputs could not be read sorts LAST (engageContact refuses them anyway — fail closed).
+ * Wired: app/api/cron/stale-contact-monitor/route.ts.
+ */
+/** @proofSeam exported so scripts/lead-action-plan-simulator.ts asserts the order (and its controls) on the pure function directly. */
+export function rankContactsForTouch<T>(items: ReadonlyArray<{ item: T; plan: LeadTouchPlan | null }>): T[] {
+  const acts = (p: LeadTouchPlan | null) => (p && (p.action === "send_touch" || p.action === "convert") ? 1 : 0)
+  return items
+    .map((x, i) => ({ ...x, i }))
+    .sort((a, b) =>
+      Number(!!b.plan) - Number(!!a.plan)
+      || acts(b.plan) - acts(a.plan)
+      || (b.plan?.priority ?? 0) - (a.plan?.priority ?? 0)
+      || a.i - b.i)
+    .map((x) => x.item)
+}
+
 export type ContactNbaContextResult =
   | { ok: true; context: NextBestActionContext }
   | { ok: false; error: string }
@@ -1332,6 +1421,23 @@ export async function loadContactNbaContext(
   if (isaRes.error || callRes.error) {
     return { ok: false, error: `dead-end outcome read refused: ${(isaRes.error ?? callRes.error)?.message}` }
   }
+  // Wave 101C: agent touch / appointment / pending callback (contactTouchSignals above). FAIL CLOSED
+  // like the dead-end read: "nobody checked for a booked showing" never renders as "none booked".
+  const [actRes, showRes, cbRes] = await Promise.all([
+    supabase.from("activities").select("activity_type, status, agent_id, agent_user_id, scheduled_at, completed_at, created_at")
+      .eq("brokerage_id", brokerageId).eq("contact_id", contact.id)
+      .order("created_at", { ascending: false }).limit(200),
+    supabase.from("showings").select("scheduled_at, status")
+      .eq("brokerage_id", brokerageId).eq("contact_id", contact.id)
+      .gte("scheduled_at", now.toISOString()).order("scheduled_at", { ascending: true }).limit(20),
+    supabase.from("tasks").select("due_date, status")
+      .eq("brokerage_id", brokerageId).eq("contact_id", contact.id)
+      .eq("source", "ai_callback").eq("status", "pending").limit(20),
+  ])
+  if (actRes.error || showRes.error || cbRes.error) {
+    return { ok: false, error: `touch / appointment / callback read refused: ${(actRes.error ?? showRes.error ?? cbRes.error)?.message}` }
+  }
+  const touch = contactTouchSignals({ activities: actRes.data ?? [], showings: showRes.data ?? [], callbackTasks: cbRes.data ?? [] }, now)
   const nurtureUntil = ((lineage ?? []) as Array<{ long_term_nurture_until: string | null }>)
     .map((l) => l.long_term_nurture_until).filter((v): v is string => !!v).sort().pop() ?? null
   const deadEnds = deadEndsFromLeadSources({
@@ -1363,6 +1469,12 @@ export async function loadContactNbaContext(
       intent: summary.decayedIntent.independentSources > 0 ? summary.decayedIntent : undefined,
       outreachPaused: contact.ai_outreach_paused === true,
       lastAnyTouchAt: input.humanInitiated ? null : lastAny,
+      // AUTONOMOUS runs only, like fatigue: a human who asks for the touch is never told "an agent is
+      // handling it" / "wait for the showing" / "wait for the callback" by their own desk's work.
+      lastAgentTouchAt: input.humanInitiated ? null : touch.lastAgentTouchAt,
+      appointmentAt: input.humanInitiated ? null : touch.appointmentAt,
+      callbackRequested: input.humanInitiated ? false : touch.callbackRequested,
+      callbackDueAt: input.humanInitiated ? null : touch.callbackDueAt,
       deadEnds,
       suppressOnOutcomes,
       memoryFacts: memory ? currentMemoryFacts(memory.spine, now) : [],

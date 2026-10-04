@@ -7,7 +7,8 @@
 import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import type { KernelContact } from "@/lib/kernel/types"
@@ -90,7 +91,7 @@ export async function createAdCampaign(
   const supabase = await createClient()
 
   // ── 1. Feature gate ─────────────────────────────────────────────────────────
-  const accessCheck = await canAccessFeature(userId, "ad_creator")
+  const accessCheck = await mayUseFeature(userId, "ad_creator")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
   }
@@ -197,7 +198,7 @@ export async function generateAdCreative(
   // as a kernel gate and the numbered comments below skip from 1 to 3, but no gate
   // was ever called here — so the only AI-spending export in the file was also the
   // only one not metered. Added, with the matching usage increment at the end.
-  const accessCheck = await canAccessFeature(userId, "ad_creator")
+  const accessCheck = await mayUseFeature(userId, "ad_creator")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
   }

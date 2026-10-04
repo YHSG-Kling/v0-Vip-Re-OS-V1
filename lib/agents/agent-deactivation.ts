@@ -375,12 +375,15 @@ export async function executeAgentDeactivation(
 
   const nowIso = new Date().toISOString()
   const audit = async (entityId: string, action: string, meta: Record<string, unknown>) => {
-    await sentinelWrite(svc, svc.from("lifecycle_events").insert({
-      brokerage_id: brokerageId, entity_type: "contact", entity_id: entityId,
-      event_type: "AGENT_DEACTIVATION_REASSIGN",
+    // THE ONE EMITTER (wave 101C): emitKernelEvent's client seam writes the echo on the injected
+    // client (with lineage), audit-only; sentinelWrite still ledgers a loss via asWriteResult.
+    const kernelEmit = await import("@/lib/kernel/emit")
+    await sentinelWrite(svc, kernelEmit.emitKernelEvent({
+      client: svc, auditOnly: true,
+      event: "AGENT_DEACTIVATION_REASSIGN", brokerageId, entityType: "contact", entityId,
       metadata: { action, from_agent: agentId, to_agent: successorAgentId, by: actorUserId ?? null, ...meta },
-      created_at: nowIso,
-    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+      createdAt: nowIso,
+    }).then(kernelEmit.asWriteResult), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
   }
 
   // ── Contacts ──

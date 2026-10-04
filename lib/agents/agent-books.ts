@@ -490,9 +490,14 @@ export async function listBookTransfers(svc: Svc, brokerageId: string, limit = 5
 }
 
 async function audit(svc: Svc, brokerageId: string, agentId: string, eventType: string, actorUserId: string | null, metadata: Record<string, unknown>) {
-  const { error } = await svc.from("lifecycle_events").insert({
-    brokerage_id: brokerageId, entity_type: "agent", entity_id: agentId, event_type: eventType,
-    actor_user_id: actorUserId, metadata, created_at: new Date().toISOString(),
+  // THE ONE EMITTER (wave 101C): emitKernelEvent through its client seam — the row lands on the
+  // INJECTED client this command writes through (with causation lineage), audit-only (no fan-out,
+  // exactly as the direct insert it replaces). A refusal is still read and reported.
+  const kernelEmit = await import("@/lib/kernel/emit")
+  const r = await kernelEmit.emitKernelEvent({
+    client: svc, auditOnly: true,
+    event: eventType, brokerageId, entityType: "agent", entityId: agentId,
+    actorUserId, metadata, createdAt: new Date().toISOString(),
   })
-  if (error) console.warn(`[agent-books] audit ${eventType} refused:`, error.message)
+  if (r.error) console.warn(`[agent-books] audit ${eventType} refused:`, r.error)
 }

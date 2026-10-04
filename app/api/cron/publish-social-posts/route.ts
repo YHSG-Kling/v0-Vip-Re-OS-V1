@@ -298,6 +298,9 @@ export async function GET(request: Request) {
           }), { table: "social_engagement_tracking", flow: "social_engagement_tracking_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
           // processKernelEvent(KernelEvent.SOCIAL_POST_PUBLISHED)
+          // ONE EMIT (wave 101C): this row and its fan-out were two calls (an auditOnly emit, then a bare
+          // processKernelEvent). One emitKernelEvent now — the reactor gets the lifecycleEventId. Equivalent:
+          // same event/tenant/entity, and the reactor's reader for this event uses no metadata.
           await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
             entityType: "social_post",
             entityId: post.id,
@@ -309,17 +312,8 @@ export async function GET(request: Request) {
               listing_id: post.listing_id,
               post_type: post.post_type,
             },
-            auditOnly: true,
           }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
-          await processKernelEvent({
-            event: KernelEvent.SOCIAL_POST_PUBLISHED,
-            brokerageId: post.brokerage_id,
-            entityType: "social_post",
-            entityId: post.id,
-          }).catch((err) =>
-            console.error("[cron/publish-social-posts] Kernel event failed:", err)
-          )
 
           results.push({
             postId: post.id,

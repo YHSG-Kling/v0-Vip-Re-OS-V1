@@ -182,6 +182,47 @@ async function main() {
   ok("lead-visibility's AI subtraction derives from the ONE list (no second spelling)",
     /new Set<string>\(SYSTEM_AI_USER_TYPES\)/.test(code("lib/auth/lead-visibility.ts")))
 
+  // ── F · wave 101C — EVERY ISA send/call/voice audit row resolves its actor via lib/auth/isa-actor.ts ──
+  console.log("\n[F · ISA sends, calls and voice name the SYSTEM AI ISA on every audit row (wave 101C)]")
+  {
+    const { isaAuditActor } = await import("../lib/auth/isa-actor")
+    const ISA_USER = "99999999-9999-4999-8999-999999999999"
+    const AGENT_USER = "88888888-8888-4888-8888-888888888888"
+    const client = (isaId: string | null) => ({
+      from: () => { const q: any = { select: () => q, eq: () => q, maybeSingle: async () => ({ data: { ai_isa_system_user_id: isaId }, error: null }) }; return q },
+    }) as any
+    const a = await isaAuditActor(client(ISA_USER), BRK, AGENT_USER)
+    ok("isaAuditActor: the ISA's system user is the actor; the agent it ran beside rides as on_behalf_of", a.actorUserId === ISA_USER && a.onBehalfOfUserId === AGENT_USER)
+    const none = await isaAuditActor(client(null), OTHER, AGENT_USER)
+    ok("isaAuditActor FAILS SAFE: an unprovisioned ISA names NO user — never falls back to the human", none.actorUserId === null && none.onBehalfOfUserId === AGENT_USER)
+    // The three audit writers an ISA send/call reaches OUTSIDE the action ledger (the ledger itself is
+    // proven in test:action-ledger — attributedActor / ledgerActorFor).
+    const WRITERS: Array<[string, string, RegExp]> = [
+      ["compliance_events (outbound suppression gate)", "lib/kernel/communication-compliance.ts", /actorContext\.actorType === "ai_isa"[\s\S]{0,200}isaAuditActor\([\s\S]{0,300}actor_user_id: isaActor \? isaActor\.actorUserId/],
+      ["compliance_events (content-safety backstop)", "lib/providers/content-safety.ts", /isAiIsaSystemSource\(input\.systemSource\) && input\.humanApproved !== true[\s\S]{0,200}isaAuditActor\([\s\S]{0,900}actor_user_id: isaActor \? isaActor\.actorUserId/],
+      ["outbound_message_compliance_log (TCPA gate — voice + SMS)", "lib/communication/tcpa-gate.ts", /isAiIsaSystemSource\(input\.systemSource\) && input\.humanApproved !== true[\s\S]{0,200}isaAuditActor\([\s\S]{0,400}initiated_by:\s*isaActor \? isaActor\.actorUserId/],
+    ]
+    for (const [what, file, re] of WRITERS) ok(`WIRED: ${what} — ${file} names the ISA via isaAuditActor`, re.test(code(file)))
+    ok("POSITIVE CONTROL: the writer finder rejects the pre-101C shape (actor = the send's human userId)",
+      !WRITERS[0][2].test(`supabase.from("compliance_events").insert({ actor_user_id: actorContext.userId ?? null, actor_role: actorContext.actorType })`))
+    const disp = code("lib/providers/dispatch.ts")
+    ok("dispatch: the compliance actorType uses THE ONE ISA predicate (isAiIsaSystemSource — ghost_recovery / lead_action_plan are the ISA too), not a substring test; a human-approved draft keeps the human",
+      (disp.match(/actorType: isAiIsaSystemSource\(params\.systemSource\) && params\.humanApproved !== true \? "ai_isa" : "system"/g) ?? []).length === 2 && !/systemSource\?\.includes\("ai_isa"\)/.test(disp))
+    ok("dispatch → content-safety and dispatch → SMS → TCPA carry the systemSource + human approval the rule needs",
+      (disp.match(/systemSource: params\.systemSource, humanApproved: params\.humanApproved === true/g) ?? []).length === 3 &&
+      /messagingSendSMS\(\{[\s\S]{0,400}systemSource: params\.systemSource,\s*humanApproved: params\.humanApproved === true/.test(disp) &&
+      /systemSource:\s*params\.systemSource \?\? null,\s*humanApproved: params\.humanApproved === true/.test(code("lib/providers/messaging/index.ts")))
+    ok("voice: the outbound call gates hand the dial's systemSource + human approval to the TCPA log",
+      /enforceTCPACompliance\(\{[\s\S]{0,300}systemSource: ctx\.systemSource \?\? null,\s*humanApproved: ctx\.humanApproved === true/.test(code("lib/voice/outbound-call-gates.ts")))
+    // The ISA's own dialers name the ISA source (so every row above resolves the ISA), census over the callers.
+    const dialers: Array<[string, RegExp]> = [
+      ["app/actions/ai-isa/engage-contact.ts", /placeOutboundAiCall\([\s\S]{0,1500}systemSource: reason === "ghosted" \? "ghost_recovery" : "ai_isa"/],
+      ["app/actions/ai-isa/initiate-engagement.ts", /placeOutboundAiCall\([\s\S]{0,1500}systemSource: "ai_isa"/],
+      ["app/api/cron/ai-callback-dispatch/route.ts", /placeOutboundAiCall\([\s\S]{0,600}systemSource: "ai_isa"/],
+    ]
+    for (const [f, re] of dialers) ok(`ISA dialer ${f} names an ISA systemSource (→ the ledger, TCPA log and compliance rows resolve the ISA)`, re.test(code(f)))
+  }
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) process.exit(1)

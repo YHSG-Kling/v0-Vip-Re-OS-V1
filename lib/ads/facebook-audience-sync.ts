@@ -8,7 +8,8 @@
 // Next 16: file is "use server" so client components can import it
 // directly. Type exports live in ./facebook-audience-sync-types.
 
-import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import {
@@ -110,7 +111,7 @@ export async function previewAudienceReach(
   const actor = await resolveAdsActor()
   if (!actor.ok) return { success: false, error: actor.error }
 
-  const accessCheck = await canAccessFeature(actor.ctx.userId, "ads_audiences")
+  const accessCheck = await mayUseFeature(actor.ctx.userId, "ads_audiences")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
   }
@@ -161,7 +162,7 @@ export async function createAudience(
   const userId = ctx.userId
 
   // ── 1. Feature gate ─────────────────────────────────────────────────────────
-  const accessCheck = await canAccessFeature(userId, "ads_audiences")
+  const accessCheck = await mayUseFeature(userId, "ads_audiences")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
   }
@@ -211,7 +212,7 @@ export async function syncAudience(
   const userId = ctx.userId
 
   // ── 1. Feature gate ─────────────────────────────────────────────────────────
-  const accessCheck = await canAccessFeature(userId, "ads_audiences")
+  const accessCheck = await mayUseFeature(userId, "ads_audiences")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
   }
@@ -256,7 +257,7 @@ export async function approveAudience(
   const brokerageId = actor.ctx.brokerageId
 
   // Feature gate
-  const accessCheck = await canAccessFeature(userId, "ads_audiences")
+  const accessCheck = await mayUseFeature(userId, "ads_audiences")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
   }
@@ -314,7 +315,7 @@ export async function deleteAudience(
   const brokerageId = actor.ctx.brokerageId
 
   // Feature gate
-  const accessCheck = await canAccessFeature(userId, "ads_audiences")
+  const accessCheck = await mayUseFeature(userId, "ads_audiences")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
   }
@@ -380,7 +381,7 @@ export async function getAudienceSyncHistory(
   const userId = ctx.userId
 
   // ── 1. Feature gate ─────────────────────────────────────────────────────────
-  const accessCheck = await canAccessFeature(userId, "ads_audiences")
+  const accessCheck = await mayUseFeature(userId, "ads_audiences")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
   }

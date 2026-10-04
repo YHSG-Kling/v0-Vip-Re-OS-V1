@@ -963,12 +963,20 @@ function layer9_formsAndOpenHouse() {
   const endEventNextExport = sellerOpenHouse.indexOf("export async function", endEventStart + 40)
   check("CONTROL: endOpenHouseEvent is findable in the stripped source", endEventStart > -1 && endEventNextExport > endEventStart)
   const endEventBlock = sellerOpenHouse.slice(endEventStart, endEventNextExport > -1 ? endEventNextExport : endEventStart + 6000)
+  // RE-ANCHORED TO THE RULE (wave 101C, CLAUDE.md §2 — no waypoint pins): the rule is "the audit row is
+  // written AND the reactor runs for the same event, with the attendee's contact". Wave 100 spelled it as an
+  // auditOnly emit + a separate processKernelEvent; wave 101C merged the pair into ONE emitKernelEvent that
+  // writes the row and fans out (no auditOnly), carrying contactId. Either spelling satisfies the rule.
+  const oneEmit = /emitKernelEvent\(\{(?:(?!auditOnly)[^}])*event:\s*KernelEvent\.OPEN_HOUSE_ATTENDEE_CAPTURED(?:(?!auditOnly)[^}])*contactId:\s*attendee\.contact_id(?:(?!auditOnly)[^}])*\}/
+  const mergedOrPaired = (s: string) => oneEmit.test(s) ||
+    (/emitKernelEvent\(\{[^}]*event:\s*KernelEvent\.OPEN_HOUSE_ATTENDEE_CAPTURED[\s\S]{0,500}?auditOnly:\s*true/.test(s) &&
+      /processKernelEvent\(\{[^}]*event:\s*KernelEvent\.OPEN_HOUSE_ATTENDEE_CAPTURED/s.test(s))
   check("endOpenHouseEvent still writes the lifecycle_events AUDIT row for\n    OPEN_HOUSE_ATTENDEE_CAPTURED (the fix adds the reactor call, it does not\n    remove the audit trail)",
-    /event_type:\s*KernelEvent\.OPEN_HOUSE_ATTENDEE_CAPTURED/.test(endEventBlock) ||
-    // Wave 100 (100B): the audit row through THE emitter, audit-only (the reactor call below fans out).
-    /emitKernelEvent\(\{[^}]*event:\s*KernelEvent\.OPEN_HOUSE_ATTENDEE_CAPTURED[\s\S]{0,500}?auditOnly:\s*true/.test(endEventBlock))
-  check("...AND now calls processKernelEvent for the SAME event, so the reactor\n    (and therefore deliverConversionWelcome, when the attendee already\n    resolved to a contact) actually runs",
-    /processKernelEvent\(\{[^}]*event:\s*KernelEvent\.OPEN_HOUSE_ATTENDEE_CAPTURED/s.test(endEventBlock))
+    /event_type:\s*KernelEvent\.OPEN_HOUSE_ATTENDEE_CAPTURED/.test(endEventBlock) || mergedOrPaired(endEventBlock))
+  check("...AND the reactor runs for the SAME event (one fanning-out emit carrying the\n    contact, or the row + a processKernelEvent), so deliverConversionWelcome,\n    when the attendee already resolved to a contact, actually runs",
+    mergedOrPaired(endEventBlock))
+  check("POSITIVE CONTROL: an audit-only row with NO reactor call fails the rule",
+    !mergedOrPaired(`emitKernelEvent({ event: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED, contactId: attendee.contact_id, auditOnly: true })`))
   check("CONTROL: the matcher requires BOTH the emit call and the enum on the same\n    call — a bare `processKernelEvent(` elsewhere in the block (e.g. a\n    differently-typed event) would not satisfy it",
     !/processKernelEvent\(\{[^}]*event:\s*KernelEvent\.LISTING_OPEN_HOUSE_COMPLETED/s.test(endEventBlock))
   check("no double-delivery: welcome dedup is per-contact via ensureClientWelcome\n    (same ledger check as every other entry point), so a contact already\n    welcomed at check-in time (app/api/open-house/attend/route.ts) is a no-op\n    when endOpenHouseEvent's emit reaches the reactor a second time — never a\n    second send",

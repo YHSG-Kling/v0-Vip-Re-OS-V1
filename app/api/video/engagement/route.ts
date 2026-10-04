@@ -461,6 +461,9 @@ async function checkPerformanceThresholds(
   const clickThroughRate = tracking.click_through_rate || 0
 
   // Always fire VIDEO_PERFORMANCE_UPDATED
+  // ONE EMIT (wave 101C): this row and its fan-out were two calls (an auditOnly emit, then a bare
+  // processKernelEvent). One emitKernelEvent now — the reactor gets the lifecycleEventId. Equivalent:
+  // same event/tenant/entity, and the reactor's reader for this event uses no metadata.
   await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     entityType: "video_performance",
     entityId: tracking.id,
@@ -473,15 +476,8 @@ async function checkPerformanceThresholds(
       video_asset_id: tracking.video_asset_id,
       video_project_id: tracking.video_project_id,
     },
-    auditOnly: true,
   }).then(k.asWriteResult)), "performance audit echo; the engagement tracking row itself is written above")
 
-  await processKernelEvent({
-    event: KernelEvent.VIDEO_PERFORMANCE_UPDATED,
-    brokerageId,
-    entityType: "video_performance",
-    entityId: tracking.id,
-  }).catch(err => console.error("[v0] Kernel event failed:", err))
 
   // Check for high performer
   if (

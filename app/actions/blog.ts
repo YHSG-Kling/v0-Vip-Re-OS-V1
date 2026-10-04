@@ -7,7 +7,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -775,7 +775,7 @@ export async function discoverKeywordsAI(
   const supabase = await createClient()
 
   // ── 1. Feature gate ──────────────────────────────────────────────────────────
-  const accessCheck = await canAccessFeature(userId, "seo_blog_engine")
+  const accessCheck = await mayUseFeature(userId, "seo_blog_engine")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
   }
@@ -957,7 +957,7 @@ export async function generateTopicIdeas(): Promise<{
   }
 
   // ── 2. Feature gate ──────────────────────────────────────────────────────────
-  const accessCheck = await canAccessFeature(ctx.userId, "seo_blog_engine")
+  const accessCheck = await mayUseFeature(ctx.userId, "seo_blog_engine")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
   }
@@ -1045,7 +1045,7 @@ export async function suggestSEOKeywords(params: {
   }
 
   // ── 2. Feature gate ──────────────────────────────────────────────────────────
-  const accessCheck = await canAccessFeature(ctx.userId, "seo_blog_engine")
+  const accessCheck = await mayUseFeature(ctx.userId, "seo_blog_engine")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
   }

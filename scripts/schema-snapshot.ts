@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 712 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 713 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-03
+ * generated: 2026-10-04
  * source: public.live_schema_json()
- * body-sha256: e055d79423c566695555d61a2ce6af45abcb125c08a7ce544a2e23807b46212f
+ * body-sha256: 5fcce87ba6ed5562658ef71865760f1fcc3920a2f2d3a18d7f54c99c27d27444
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -643,6 +643,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   tenant_contract_signatures: ["brokerage_id", "created_at", "id", "signature", "signed_at", "signed_by", "signed_name", "template_id", "template_version"],
   tenant_custom_domains: ["added_by", "brokerage_id", "created_at", "domain", "error_detail", "id", "last_checked_at", "status", "verification", "verified_at"],
   tenant_phone_numbers: ["agent_user_id", "brokerage_id", "created_at", "department", "id", "is_active", "number_source", "phone_digits", "phone_number", "scope_type", "team_id", "twilio_number_sid"],
+  tenant_policy_versions: ["actor_type", "brokerage_id", "changed_by", "created_at", "id", "policy_key", "previous", "reason", "value", "version"],
   tenant_safety_findings: ["affected_rows", "created_at", "details", "finding_type", "id", "resolution_note", "resolved", "resolved_at", "resolved_by", "scan_run_id", "severity", "table_name"],
   tenant_sso_connections: ["activated_at", "brokerage_id", "created_at", "created_by", "email_domain", "error_detail", "id", "metadata_url", "provider_type", "status", "supabase_sso_provider_id", "updated_at"],
   tenant_transition_log: ["action", "actor_user_id", "at", "entity_id", "entity_type", "from_brokerage_id", "id", "metadata", "row_count_moved", "to_brokerage_id"],

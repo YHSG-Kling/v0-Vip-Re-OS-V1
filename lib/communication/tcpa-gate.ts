@@ -103,6 +103,12 @@ export interface TCPAGateInput {
   leadId?:       string | null
   brokerageId?:  string | null
   initiatedBy?:  string | null
+  /** Wave 101C — ISA IS A SYSTEM AI ISA: the send's systemSource. An unattended AI-ISA send
+   *  (lib/kernel/action-ledger.ts isAiIsaSystemSource, not human-approved) is logged as the ISA's
+   *  system user (lib/auth/isa-actor.ts isaAuditActor); `initiatedBy` (the agent whose line or
+   *  record it ran beside) rides as details.on_behalf_of_user_id. */
+  systemSource?: string | null
+  humanApproved?: boolean
   /** Set true on system-of-record retention/transactional notices that may
    *  bypass marketing consent (e.g. an in-progress transaction confirmation
    *  to an existing client). DNC and quiet hours STILL apply. */
@@ -357,17 +363,21 @@ async function writeLog(
 ): Promise<string | undefined> {
   try {
     const svc = createServiceClient()
+    const { isAiIsaSystemSource } = await import("@/lib/kernel/action-ledger")
+    const isaActor = isAiIsaSystemSource(input.systemSource) && input.humanApproved !== true
+      ? await (await import("@/lib/auth/isa-actor")).isaAuditActor(svc as any, input.brokerageId, input.initiatedBy ?? null)
+      : null
     const { data, error: complianceLogErr } = await svc
       .from("outbound_message_compliance_log")
       .insert({
         brokerage_id:         input.brokerageId ?? null,
         contact_id:           input.contactId   ?? null,
-        initiated_by:         input.initiatedBy ?? null,
+        initiated_by:         isaActor ? isaActor.actorUserId : (input.initiatedBy ?? null),
         channel:              input.channel,
         phone:                input.phone,
         decision,
         block_reason:         reason,
-        details:              { ...details, transactional: input.transactional ?? false },
+        details:              { ...details, transactional: input.transactional ?? false, ...(isaActor?.onBehalfOfUserId ? { on_behalf_of_user_id: isaActor.onBehalfOfUserId } : {}) },
         recipient_state:      state ?? null,
         recipient_local_hour: localHour ?? null,
       })

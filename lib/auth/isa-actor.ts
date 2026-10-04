@@ -31,6 +31,29 @@ async function getIsaSystemUserId(
 const isaActorCache = new Map<string, { value: string | null; expiresAt: number }>()
 const CACHE_TTL_MS = 5 * 60 * 1000
 
+/**
+ * THE AUDIT-ROW FORM OF THE ISA ACTOR RULE (wave 101C — "isa is a system ai isa"). The ledger form is
+ * lib/kernel/action-ledger.ts attributedActor; this is the same rule for the plain audit columns an
+ * ISA send/call writes OUTSIDE the ledger (compliance_events.actor_user_id from the suppression gate
+ * and the content-safety backstop, outbound_message_compliance_log.initiated_by from the TCPA gate):
+ * an AI-ISA action names the ISA's SYSTEM user, never the human whose record or line it ran beside.
+ * That human rides as `onBehalfOfUserId` (context, not credit). A refused / missing ISA identity
+ * names NO user — never falls back to the human.
+ */
+export async function isaAuditActor(
+  client: SupabaseClient,
+  brokerageId: string | null | undefined,
+  humanUserId: string | null | undefined,
+): Promise<{ actorUserId: string | null; onBehalfOfUserId: string | null }> {
+  let isa: string | null = null
+  try {
+    isa = await getIsaSystemUserIdCached(client, brokerageId)
+  } catch {
+    isa = null
+  }
+  return { actorUserId: isa, onBehalfOfUserId: humanUserId && humanUserId !== isa ? humanUserId : null }
+}
+
 /** Same as getIsaSystemUserId but memoizes per process for 5 minutes. */
 export async function getIsaSystemUserIdCached(
   client: SupabaseClient,

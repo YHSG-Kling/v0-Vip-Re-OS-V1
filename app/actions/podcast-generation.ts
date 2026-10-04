@@ -12,7 +12,8 @@ import { convertSpeech } from "@/lib/providers/elevenlabs/client"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { syndicateEpisode, type SyndicateEpisodeResult } from "@/lib/podcast/transistor-client"
 import { generateTextRouted } from "@/lib/ai/models"
-import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { DEFAULT_LANGUAGE } from "@/lib/video/multilingual-reel"
 import { resolveProvider } from "@/lib/kernel/providers"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
@@ -170,7 +171,7 @@ export async function generatePodcastAudio(episodeId: string) {
     // ══════════════════════════════════════════════════════════════════════════
     // KERNEL GATE: Feature Access Check
     // ══════════════════════════════════════════════════════════════════════════
-    const accessCheck = await canAccessFeature(userId, "podcast_generation")
+    const accessCheck = await mayUseFeature(userId, "podcast_generation")
     if (!accessCheck.allowed) {
       return { success: false, error: accessCheck.reason || "Feature access denied" }
     }
@@ -460,7 +461,7 @@ export async function publishPodcastEpisode(
     // ══════════════════════════════════════════════════════════════════════════
     // KERNEL GATE: Feature Access Check
     // ══════════════════════════════════════════════════════════════════════════
-    const accessCheck = await canAccessFeature(userId, "podcast_generation")
+    const accessCheck = await mayUseFeature(userId, "podcast_generation")
     if (!accessCheck.allowed) {
       return { success: false, error: accessCheck.reason || "Feature access denied" }
     }

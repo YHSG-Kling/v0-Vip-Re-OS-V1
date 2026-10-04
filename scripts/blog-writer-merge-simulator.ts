@@ -94,6 +94,12 @@ function reset() {
   tables = {
     brokerages: [{ id: A, name: "Alpha Realty" }, { id: B, name: "Beta Homes" }],
     users: [{ id: USER_A, brokerage_id: A }, { id: USER_A2, brokerage_id: A }, { id: USER_B, brokerage_id: B }],
+    // Wave 101C: the plan-feature gate is mayUseAndAfford("feature.use") — the subscription half runs
+    // first (fail closed without a row; test:billing-access owns the lapsed / missing cases).
+    subscriptions: [
+      { id: "sub-a", brokerage_id: A, status: "active", trial_end: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+      { id: "sub-b", brokerage_id: B, status: "active", trial_end: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+    ],
     marketing_campaigns: [{ id: CAMP_A, brokerage_id: A }, { id: CAMP_B, brokerage_id: B }],
     brand_voice_profile: [{ id: "bv", brokerage_id: A, team_id: null, agent_id: null, tone: "warm", prohibited_words: ["guaranteed"], preferred_words: [], key_brand_messages: ["Local since 1999"] }],
     blog_posts: [], seo_keywords: [], blog_post_keywords: [],

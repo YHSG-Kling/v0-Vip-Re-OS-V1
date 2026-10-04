@@ -20,11 +20,11 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import {
-  canAccessFeature,
   resolveProvider,
   processKernelEvent,
   KernelEvent,
 } from "@/lib/kernel"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { dispatchDirectMail } from "@/lib/providers/dispatch"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
@@ -823,7 +823,7 @@ export async function sendCampaign(params: SendCampaignParams) {
     }
 
     // ── Kernel Gate: canAccessFeature ──
-    const access = await canAccessFeature(params.actorUserId, "direct_mail")
+    const access = await mayUseFeature(params.actorUserId, "direct_mail")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Direct mail feature not available" }
     }

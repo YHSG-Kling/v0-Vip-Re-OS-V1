@@ -207,6 +207,44 @@ async function main() {
   const wRefused = await recordObservedDeadEnd(fakeDb({}, ["ai_isa_activities"]), { brokerageId: B, subject: { type: "lead", id: L }, outcome: "property_sold", source: "proof" })
   check("PROPERTY-SOLD FAIL-CLOSED: a refused dedupe read writes nothing and says so", !wRefused.recorded && !!wRefused.error)
 
+  // ── WAVE 101C — the three inputs the contact NBA was not fed: agent touch, appointment, callback.
+  console.log("\n[Contact NBA — last agent touch, upcoming appointment/showing, pending callback (wave 101C)]")
+  const inDays = (n: number) => new Date(NOW.getTime() + n * day).toISOString()
+  const agentCall = { brokerage_id: B, contact_id: C, activity_type: "call", status: "completed", agent_id: "agent-1", completed_at: ago(2), created_at: ago(2) }
+  const touched = await decide(fakeDb({ activities: [agentCall] }))
+  check("AGENT TOUCH: a call the agent COMPLETED 2 days ago → do_nothing (agent_handling) — the agent owns this person",
+    touched?.action === "do_nothing" && touched?.reasonCode === "agent_handling")
+  const scheduledOnly = await decide(fakeDb({ activities: [{ ...agentCall, status: "scheduled", completed_at: null, scheduled_at: inDays(-3), activity_type: "meeting" }] }))
+  check("AGENT TOUCH CONTROL: a scheduled (never completed) row is a commitment, not a touch → send_touch", scheduledOnly?.action === "send_touch")
+  const oldTouch = await decide(fakeDb({ activities: [{ ...agentCall, completed_at: ago(30), created_at: ago(30) }] }))
+  check("AGENT TOUCH CONTROL: a touch older than the agent-active window no longer blocks → send_touch", oldTouch?.action === "send_touch")
+  const humanAsk = await load(fakeDb({ activities: [agentCall] }), {}, true)
+  check("AGENT TOUCH CONTROL: a HUMAN-initiated run is never blocked by its own desk's work", humanAsk.ok && planNextContactTouch({ now: NOW, context: humanAsk.context }).action === "send_touch")
+
+  const showing = await decide(fakeDb({ showings: [{ brokerage_id: B, contact_id: C, scheduled_at: inDays(1), status: "confirmed" }] }))
+  check("APPOINTMENT: a confirmed showing tomorrow → wait (appointment_scheduled) until it has happened",
+    showing?.action === "wait" && showing?.reasonCode === "appointment_scheduled" && showing?.dueAt?.toISOString() === inDays(1))
+  const meeting = await decide(fakeDb({ activities: [{ brokerage_id: B, contact_id: C, activity_type: "listing_appointment", status: "scheduled", scheduled_at: inDays(4), created_at: ago(1) }] }))
+  check("APPOINTMENT: an open listing appointment on the calendar → wait", meeting?.action === "wait" && meeting?.reasonCode === "appointment_scheduled")
+  const cancelledShowing = await decide(fakeDb({ showings: [{ brokerage_id: B, contact_id: C, scheduled_at: inDays(1), status: "cancelled" }] }))
+  check("APPOINTMENT CONTROL: a CANCELLED showing does not hold the touch → send_touch", cancelledShowing?.action === "send_touch")
+
+  const callbackTask = { brokerage_id: B, contact_id: C, source: "ai_callback", status: "pending", due_date: inDays(1) }
+  const cb = await decide(fakeDb({ tasks: [callbackTask] }))
+  check("CALLBACK: a pending ai_callback task → the contact WAITS for the call (not 'convert' — a contact is already converted)",
+    cb?.action === "wait" && cb?.reasonCode === "appointment_scheduled" && /callback is pending/.test(cb?.reason ?? "") && cb?.dueAt?.toISOString() === inDays(1))
+  const cbActivity = await decide(fakeDb({ activities: [{ brokerage_id: B, contact_id: C, activity_type: "call", status: "scheduled", scheduled_at: inDays(2), created_at: ago(0) }] }))
+  check("CALLBACK: the landCallbackOnAgentContact writer's open call activity counts too", cbActivity?.action === "wait" && /callback/.test(cbActivity?.reason ?? ""))
+  const cbDone = await decide(fakeDb({ tasks: [{ ...callbackTask, status: "completed" }] }))
+  check("CALLBACK CONTROL: a completed callback task no longer holds the touch → send_touch", cbDone?.action === "send_touch")
+  const cbTerminal = await decide(fakeDb({ tasks: [callbackTask], voice_calls: [{ brokerage_id: B, contact_id: C, lead_id: null, outcome: "opt_out", created_at: ago(1) }] }))
+  check("CALLBACK CONTROL: a pending callback never overrides a terminal dead end (opt-out)", cbTerminal?.action === "do_nothing")
+
+  for (const t of ["activities", "showings", "tasks"]) {
+    const r = await load(fakeDb({}, [t]))
+    check(`FAIL-CLOSED: a refused ${t} read returns ok:false (never 'no appointment / no callback / no agent touch')`, !r.ok)
+  }
+
   // WIRING — on the real callers, read from stripped source, with a positive control.
   const { readFileSync } = await import("node:fs")
   const { stripComments } = await import("./strip-comments")
@@ -217,6 +255,13 @@ async function main() {
   check("WIRED: engageContact runs the contact NBA and records non-actions BEFORE the portal note (a touch too)", wired(engage))
   check("WIRED CONTROL: a specimen that decides after the portal note is refused",
     !wired(`await supabase.from('client_portal_messages').insert({}); loadContactNbaContext(x); planNextContactTouch(y); recordNonAction(nonAction)`))
+  // Wave 101C (d): the stale-contact cron's batch is ORDERED by this NBA before it is cut.
+  const cron = src("app/api/cron/stale-contact-monitor/route.ts")
+  const ordered = (s: string) => /loadContactNbaContext\(/.test(s) && /planNextContactTouch\(/.test(s) &&
+    /rankContactsForTouch\(planned\)\.slice\(0,\s*BATCH\)/.test(s) && s.indexOf("rankContactsForTouch(") < s.indexOf("for (const contact of staleContacts)")
+  check("WIRED: the stale-contact cron plans its pool with the contact NBA and orders it (rankContactsForTouch) BEFORE cutting the batch and engaging", ordered(cron))
+  check("WIRED CONTROL: a cron that cuts the detector's order first is refused",
+    !ordered(`const staleContacts = pool.slice(0, BATCH); for (const contact of staleContacts) {} loadContactNbaContext(a); planNextContactTouch(b); rankContactsForTouch(planned)`))
   check("WIRED: the RentCast sold transition and the closed transaction both write property_sold",
     /recordObservedDeadEnd\(/.test(src("lib/kernel/listings-batchdata-feed.ts")) && /recordPropertySoldForClosedAddress\(/.test(src("lib/kernel/transactions.ts")))
 

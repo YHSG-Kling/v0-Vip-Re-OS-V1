@@ -74,6 +74,10 @@ export interface SendSMSParams {
   leadId?: string | null
   brokerageId?: string
   initiatedBy?: string
+  /** Wave 101C: the send's systemSource / human approval — an unattended AI-ISA SMS is logged in
+   *  the TCPA log as the ISA's system user (lib/communication/tcpa-gate.ts). */
+  systemSource?: string
+  humanApproved?: boolean
   /** Bypass EWC (still enforces DNC + quiet hours + opt-out + RND staleness) */
   transactional?: boolean
   /** Caller can opt out of the gate ONLY for system-internal flows where TCPA
@@ -103,6 +107,8 @@ export async function sendSMS(params: SendSMSParams): Promise<SendSMSResult> {
       leadId:        params.leadId      ?? null,
       brokerageId:   params.brokerageId ?? null,
       initiatedBy:   params.initiatedBy ?? null,
+      systemSource:  params.systemSource ?? null,
+      humanApproved: params.humanApproved === true,
       transactional: params.transactional ?? false,
     })
     if (!gate.allowed) {

@@ -13,7 +13,7 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID, isValidEmail } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
-import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -61,7 +61,7 @@ export async function aiGenerateSubjectLines(params: {
     const sessionAgentId = ctx.agentId
 
     // Kernel: Feature access check
-    const access = await canAccessFeature(sessionUserId, "newsletter_engine")
+    const access = await mayUseFeature(sessionUserId, "newsletter_engine")
     if (!access.allowed) {
       return { success: false, error: access.reason || "Feature not available" }
     }
@@ -523,7 +523,7 @@ export async function sendNewsletter(params: { newsletterId: string; agentId?: s
     }
 
     // Kernel: Feature access check
-    const access = await canAccessFeature(sessionUserId, "newsletter_engine")
+    const access = await mayUseFeature(sessionUserId, "newsletter_engine")
     if (!access.allowed) {
       return { success: false, error: access.reason || "Feature not available" }
     }

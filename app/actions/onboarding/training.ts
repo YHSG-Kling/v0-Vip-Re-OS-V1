@@ -7,7 +7,8 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { canAccessFeature, KernelEvent, processKernelEvent } from "@/lib/kernel"
+import { KernelEvent, processKernelEvent } from "@/lib/kernel"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -72,7 +73,7 @@ export async function getTrainingVideos(): Promise<{
     const { userId, agentId, brokerageId } = await getAgentContext()
 
     // Check feature access
-    const access = await canAccessFeature(userId, "training_library")
+    const access = await mayUseFeature(userId, "training_library")
     if (!access.allowed) {
       return { success: false, error: access.reason || "Access denied" }
     }
@@ -156,7 +157,7 @@ export async function getVideoWithProgress(videoId: string): Promise<{
     const { userId, agentId, brokerageId } = await getAgentContext()
 
     // Check feature access
-    const access = await canAccessFeature(userId, "training_library")
+    const access = await mayUseFeature(userId, "training_library")
     if (!access.allowed) {
       return { success: false, error: access.reason || "Access denied" }
     }

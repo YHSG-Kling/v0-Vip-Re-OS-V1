@@ -468,6 +468,21 @@ export async function mergeContacts(params: { primaryContactId: string; duplicat
       throw new DatabaseError("Failed to merge contact fields onto primary", mergeError)
     }
 
+    // FIELD PROVENANCE (wave 101C — the universal-provenance remainder). A staff MERGE is a staff
+    // edit made outside lib/kernel/crm.ts::updateContactRecord: when the primary had no phone and
+    // the merge took the duplicate's, the primary's phone is now a value a HUMAN chose. Stamped
+    // through THE ONE writer (enrichment-column-map.ts::stampFieldProvenance) and THE persistence
+    // door (field-provenance-store.ts), source 'staff', the session user as actor. Non-blocking:
+    // the value is already written; a refusal is logged, never thrown.
+    if (!primary.phone && duplicate.phone) {
+      const { data: auth } = await supabase.auth.getUser()
+      const { stampFieldProvenance } = await import("@/lib/lead-pipeline/enrichment-column-map")
+      const { persistFieldProvenance } = await import("@/lib/enrichment/field-provenance-store")
+      const prov = await persistFieldProvenance(supabase, { table: "contacts", id: params.primaryContactId, brokerageId: primary.brokerage_id },
+        stampFieldProvenance(["phone"], { source: "staff", capability: "contact.merge", purpose: "staff_edit", actor: auth?.user?.id ?? null }))
+      if (!prov.ok) console.warn("[mergeContacts] merged-phone provenance not recorded:", prov.error)
+    }
+
     // Transfer relationships to primary.
     //
     // m598 repoint: this re-keyed `property_interactions` — a zero-writer table

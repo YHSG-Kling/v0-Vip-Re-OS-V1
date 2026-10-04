@@ -27,9 +27,9 @@ import { runComplianceGate } from "@/lib/kernel/marketing/real-estate-compliance
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import {
-  canAccessFeature,
   incrementFeatureUsage,
 } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
@@ -201,7 +201,7 @@ export interface CreateTaskParams {
 // ─── FEATURE GATE HELPER ──────────────────────────────────────────────────────
 
 async function assertMarketingStudioAccess(userId: string): Promise<{ allowed: boolean; reason?: string }> {
-  const access = await canAccessFeature(userId, "marketing_studio")
+  const access = await mayUseFeature(userId, "marketing_studio")
   if (!access.allowed) {
     const reason = access.reason === "Feature does not exist"
       ? "Marketing Studio is not yet enabled for your account. Contact your administrator to enable it."

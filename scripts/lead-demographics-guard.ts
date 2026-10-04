@@ -22,6 +22,7 @@
  * Every absence assertion carries a POSITIVE CONTROL (CLAUDE.md §2).
  */
 import { readFileSync } from "fs"
+import { join } from "path"
 import { stripComments, blankStrings } from "./strip-comments"
 import { mapPeopleDataPerson, pdlAgeFromBirth, ageRangeForAge, PEOPLEDATA_MATCH_COST_USD, PEOPLEDATA_NO_MATCH_COST_USD } from "../lib/external/peopledata-client"
 import { buildPeopleDataProfile, demographicsFromProfile, DEMOGRAPHIC_PROFILE_FIELDS, peopleDataProfileToLeadColumns } from "../lib/lead-pipeline/enrichment-column-map"
@@ -318,6 +319,49 @@ console.log("\n[universal field provenance — one writer, every chokepoint, rea
   const pset = code("app/actions/portal-settings.ts")
   check("the self-edit write takes only declared fields (no body spread into the contacts update)",
     !/\{\s*\.\.\.updates,\s*updated_at/.test(pset) && /for \(const k of SELF_EDITABLE_PROFILE_FIELDS\)/.test(pset))
+  // ── WAVE 101C — the universal-provenance REMAINDER: staff edits outside updateContactRecord.
+  const merge = stripped("lib/services/contact-management.service.ts")
+  const mergeWire = /if \(!primary\.phone && duplicate\.phone\)[\s\S]{0,700}persistFieldProvenance\(supabase, \{ table: "contacts", id: params\.primaryContactId, brokerageId: primary\.brokerage_id \}[\s\S]{0,200}stampFieldProvenance\(\["phone"\], \{ source: "staff", capability: "contact\.merge", purpose: "staff_edit"/
+  check("WIRED: a staff MERGE that takes the duplicate's phone stamps it through THE ONE writer + THE door (source staff, the session user) — lib/services/contact-management.service.ts mergeContacts",
+    mergeWire.test(merge) && merge.indexOf("persistFieldProvenance(") > merge.indexOf("if (mergeError)"))
+  check("POSITIVE CONTROL: the merge-wire finder rejects the pre-101C merge (value written, no stamp)",
+    !mergeWire.test(`const merged = { phone: primary.phone || duplicate.phone }; await supabase.from("contacts").update(merged)`))
+  // THE CENSUS — every contacts .update/.upsert whose LITERAL payload names an identity / contact-point
+  // field is NAMED with its provenance status. A new unnamed writer fails. Variable payloads are a
+  // published blind spot (their keys are not visible to a source scan).
+  const IDENTITY_KEY = /\b(first_name|last_name|email|phone|mailing_address|address|city|state|zip_code|legal_first_name|legal_last_name)\s*:/
+  const CONTACT_IDENTITY_WRITERS: Record<string, string> = {
+    "lib/lead-pipeline/enrichment-orchestrator.ts": "STAMPED — the enrichment drain (withFieldProvenance, lane 100C)",
+    "lib/documents/contact-legal-writeback.ts": "OWN PROVENANCE COLUMN — legal_name_source='document_scan' (+ verified_at), read by twin-provenance",
+    "app/api/open-house/attend/route.ts": "NOT STAFF — the attendee typed it at the kiosk (contact self-capture); open: stamp as source 'contact'",
+    "lib/ai-isa/customer-context-tools.ts": "NOT STAFF — the AI's customer-context tool sets address from the conversation; open: stamp as the AI's capability",
+    "lib/inbound-mail/offer-intake.ts": "NOT STAFF — the inbound-offer email names a placeholder buyer contact (system); open",
+  }
+  const { readdirSync, statSync } = await import("node:fs")
+  const walk = (dir: string, out: string[] = []): string[] => {
+    for (const e of readdirSync(join(process.cwd(), dir))) {
+      const rel = `${dir}/${e}`
+      if (e === "node_modules" || e.startsWith(".")) continue
+      if (statSync(join(process.cwd(), rel)).isDirectory()) walk(rel, out)
+      else if (/\.(ts|tsx)$/.test(e)) out.push(rel)
+    }
+    return out
+  }
+  const literalIdentityWriters = (src: string): number => {
+    let n = 0
+    for (const m of src.matchAll(/\.from\(\s*["']contacts["']\s*\)\s*\.(?:update|upsert)\(\s*\{/g)) {
+      let d = 0, e = m.index! + m[0].length - 1
+      for (; e < src.length; e++) { if (src[e] === "{") d++; else if (src[e] === "}") { d--; if (!d) break } }
+      if (IDENTITY_KEY.test(src.slice(m.index!, e))) n++
+    }
+    return n
+  }
+  const writers = [...walk("app"), ...walk("lib")].filter((rel) => literalIdentityWriters(stripped(rel)) > 0)
+  const unnamed = writers.filter((rel) => !(rel in CONTACT_IDENTITY_WRITERS))
+  console.log(`  · census: ${writers.length} module(s) write a contacts identity / contact-point field through a LITERAL payload; updateContactRecord (staff) and portal-settings (self) stamp through variable payloads and are wired above. Blind spot: variable payloads (.update(updates)) are not classified by key`)
+  check("CENSUS: every literal-payload contacts identity writer is NAMED with its provenance status (stamped / own column / not-staff-open)", unnamed.length === 0, unnamed.join(", "))
+  check("CENSUS POSITIVE CONTROL: the finder sees a staff identity write and ignores a non-identity one",
+    literalIdentityWriters(`await s.from("contacts").update({ email: e, updated_at: now })`) === 1 && literalIdentityWriters(`await s.from("contacts").update({ tags: t })`) === 0)
   const panel100 = stripped("app/crm/contacts/[contactId]/components/enrichment-panel.tsx")
   check("the card lists every OTHER stamped field under Field sources (not only the inline FIELD_LABELS)",
     /const otherSources = Object\.entries\(provenance\)\.filter/.test(panel100) && /otherSources\.map\(/.test(panel100))

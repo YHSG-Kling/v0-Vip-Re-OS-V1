@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 441 tables, 783 columns.
+ * MEASURED AT GENERATION: 442 tables, 784 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-03
+ * generated: 2026-10-04
  * source: public.live_check_constraints_json()
- * body-sha256: 83cce7e35c2bc3ba6f386cc15f648e72ebed8d0ecfe0a6ca8758956bf76e41c4
+ * body-sha256: fe9cea10f45ecb8287afd51d4c8e215fbca00821ea1e2948f526f3048f1a840e
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1485,6 +1485,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   tenant_phone_numbers: {
     number_source: ["byoc_twilio", "ported"],
     scope_type: ["agent", "brokerage", "platform", "team"],
+  },
+  tenant_policy_versions: {
+    actor_type: ["agent", "manager", "system", "user"],
   },
   tenant_safety_findings: {
     finding_type: ["cross_tenant_join_risk", "listing_missing_agreement", "rows_missing_brokerage_id", "table_missing_brokerage_id", "table_missing_rls_policy"],

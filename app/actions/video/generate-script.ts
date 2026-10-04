@@ -164,8 +164,11 @@ export async function generateVideoScript(
   // the per-tier feature_flags gate (access + solo/team limits) and incrementFeatureUsage
   // is the counter that feeds the per-tier overage projection; both are the same key
   // app/actions/link-to-video.ts and app/actions/video-generation.ts already use.
-  const { canAccessFeature, incrementFeatureUsage } = await import("@/lib/kernel/0.1-feature-access")
-  const access = await canAccessFeature(userId, "video_generation")
+  // Wave 101C: the gate is mayUseAndAfford "feature.use" (subscription half first, then the same
+  // canAccessFeature) through its call-site form, lib/billing/billing-access.ts mayUseFeature.
+  const { incrementFeatureUsage } = await import("@/lib/kernel/0.1-feature-access")
+  const { mayUseFeature } = await import("@/lib/billing/billing-access")
+  const access = await mayUseFeature(userId, "video_generation")
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Video script generation is not available on your plan" }
   }

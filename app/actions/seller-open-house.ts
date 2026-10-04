@@ -5,7 +5,6 @@ import { bestEffort } from "@/lib/db/best-effort"
 import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { markOpenHouseCompleted } from "@/app/actions/seller-listing/execution-engine"
 import { ingestOpenHouseAttendeeSignalAction } from "@/app/actions/lead-signal-ingest"
@@ -488,24 +487,19 @@ export async function endOpenHouseEvent(params: {
     // attendee already welcomed at check-in is a no-op here, never a second
     // send — proved in scripts/conversion-welcome-simulator.ts.
     for (const attendee of attendees) {
+      // ONE EMIT (wave 101C): row + fan-out in one emitKernelEvent. Metadata is the fan-out's (a
+      // superset of the row's, same values — the reactor reads metadata.contactId); contactId rides
+      // through; agentUserId: null keeps the reactor's attribution exactly as the bare fan-out had it.
       await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
         brokerageId: auth.brokerageId,
         entityType: "listing",
         entityId: params.listingId,
         event: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
         actorUserId: auth.userId,
-        metadata: { attendee_id: attendee.id, scored_at_event_end: true },
-        auditOnly: true,
-      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
-
-      await processKernelEvent({
-        event:       KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
-        brokerageId: auth.brokerageId,
-        entityType:  "listing",
-        entityId:    params.listingId,
+        agentUserId: null,
         contactId:   attendee.contact_id ?? undefined,
-        metadata:    { attendee_id: attendee.id, contactId: attendee.contact_id ?? null, scored_at_event_end: true },
-      }).catch(() => {})
+        metadata: { attendee_id: attendee.id, contactId: attendee.contact_id ?? null, scored_at_event_end: true },
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
     }
   }
 
@@ -637,35 +631,26 @@ export async function createOpenHouseEvent(params: {
   if (error) return { success: false, error: error.message }
   if (!event) return { success: false, error: "Failed to create event" }
 
-  await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
-    brokerageId: auth.brokerageId,
-    entityType: "listing",
-    entityId: params.listingId,
-    event: KernelEvent.OPEN_HOUSE_SCHEDULED,
-    actorUserId: auth.userId,
-    metadata: { event_id: event.id, event_date: params.eventDate },
-    auditOnly: true,
-  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
-
   // Portal fan-out: the seller sees "Open house scheduled" on their portal.
   const { data: ohListing } = await serviceClient
     .from("listings")
     .select("seller_contact_id")
     .eq("id", params.listingId)
     .maybeSingle()
-  // Row already written above → skipInsert (fan-out only).
-  const { emitKernelEvent } = await import("@/lib/kernel/emit")
-  await emitKernelEvent({
+  // ONE EMIT (wave 101C): the audit-only row and the skipInsert fan-out that followed it carried
+  // the same event, entity and metadata — now one emitKernelEvent, so the portal card's reactor
+  // run gets the lifecycleEventId. Same seller hint, listing id and agent attribution as before.
+  await sentinelWrite(serviceClient, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     event:           KernelEvent.OPEN_HOUSE_SCHEDULED,
     brokerageId:     auth.brokerageId,
     entityType:      "listing",
     entityId:        params.listingId,
+    actorUserId:     auth.userId,
     sellerContactId: ohListing?.seller_contact_id ?? undefined,
     listingId:       params.listingId,
     agentUserId:     auth.userId,
     metadata:        { event_id: event.id, event_date: params.eventDate },
-    skipInsert:      true,
-  }).catch(() => {})
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
   return { success: true, event }
@@ -840,25 +825,14 @@ export async function convertAttendeeToContact(params: {
       entityId: contactId,
       event: KernelEvent.CONTACT_CREATED,
       actorUserId: auth.userId,
-      metadata: { source: "open_house", attendee_id: params.attendeeId, listing_id: params.listingId },
-      auditOnly: true,
-    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
-
-    // AUTOMATIC ENRICHMENT ON A NEW CONTACT (owner, wave 14). The insert above was
-    // the WHOLE emit: the row landed, the event was auditable, and the REACTOR
-    // never ran — so the CONTACT_CREATED branch in lib/kernel/event-reactor.ts,
-    // which enqueues enrichment for every new contact, never saw this door and an
-    // open-house attendee was enriched only if the nightly net happened to reach
-    // them. Same insert-then-dispatch pair lib/contact-pipeline/contact-capture.ts
-    // uses; the lifecycle row keeps its actor attribution, which emitKernelEvent
-    // does not carry.
-    await processKernelEvent({
-      event:       KernelEvent.CONTACT_CREATED,
-      brokerageId: auth.brokerageId,
-      entityType:  "contact",
-      entityId:    contactId,
+      // AUTOMATIC ENRICHMENT ON A NEW CONTACT (owner, wave 14): the CONTACT_CREATED reactor branch
+      // enqueues enrichment. ONE EMIT (wave 101C): this used to be an audit-only row plus a separate
+      // processKernelEvent (emitKernelEvent "did not carry" the actor then — it does now). The
+      // reactor's CONTACT_CREATED readers use no metadata; contactId rides through; agentUserId: null
+      // keeps its attribution exactly as the bare fan-out had it.
       contactId,
-    })
+      agentUserId: null,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     // THE WELCOME (owner ruling 2026-09-10, wave 51): "contact came from open house
     // — same welcome email but mentions the open house with welcome video/portal

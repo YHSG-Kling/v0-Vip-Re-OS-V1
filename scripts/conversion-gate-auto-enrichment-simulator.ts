@@ -243,8 +243,14 @@ function enrichmentSource() {
   check("the reactor queues on CONTACT_CREATED and CONTACT_CAPTURED",
     /KernelEvent\.CONTACT_CREATED \|\| params\.event === KernelEvent\.CONTACT_CAPTURED/.test(reactor))
   const openHouse = src("app/actions/seller-open-house.ts")
+  // RE-ANCHORED TO THE RULE (wave 101C): CONTACT_CREATED reaches the reactor — a processKernelEvent, or (since
+  // 101C) ONE emitKernelEvent of it that is not audit-only (row + fan-out in one call).
+  const dispatchesCreated = (s: string) => /processKernelEvent\(\{[\s\S]{0,200}?KernelEvent\.CONTACT_CREATED/.test(s) ||
+    /emitKernelEvent\(\{[^}]*event:\s*KernelEvent\.CONTACT_CREATED(?:(?!auditOnly)[^}])*\}\)/.test(s)
   check("the open-house conversion now DISPATCHES its CONTACT_CREATED (a bare lifecycle insert never reached the reactor)",
-    /processKernelEvent\(\{[\s\S]{0,200}?KernelEvent\.CONTACT_CREATED/.test(openHouse))
+    dispatchesCreated(openHouse))
+  check("POSITIVE CONTROL: an audit-only CONTACT_CREATED row (no reactor) fails",
+    !dispatchesCreated(`emitKernelEvent({ event: KernelEvent.CONTACT_CREATED, entityId: c, auditOnly: true })`))
   const homeValue = src("app/actions/home-value.ts")
   check("both home-value contact doors queue enrichment",
     (homeValue.match(/queueContactEnrichment\(/g) ?? []).length === 2)

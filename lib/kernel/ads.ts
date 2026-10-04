@@ -74,7 +74,8 @@ import {
   AD_PLATFORMS_WITHOUT_CONNECTIONS,
   isConnectableAdPlatform,
 } from "@/lib/integrations/ad-campaign-vocabulary"
-import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import {
   listSocialBaselines,
   computeOrganicLift,
@@ -390,7 +391,7 @@ export async function loadAdsWorkspace(input: LoadAdsWorkspaceInput): Promise<Ke
   // "your plan does not include this".
   let accessCheck
   try {
-    accessCheck = await canAccessFeature(ctx.userId, "ads_campaigns")
+    accessCheck = await mayUseFeature(ctx.userId, "ads_campaigns")
   } catch (err) {
     return {
       success: false,
@@ -623,7 +624,7 @@ export async function createAdCampaign(input: CreateAdCampaignInput): Promise<Ke
   }
 
   // Feature access check
-  const accessCheck = await canAccessFeature(ctx.userId, "ads_campaigns")
+  const accessCheck = await mayUseFeature(ctx.userId, "ads_campaigns")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature not available" }
   }

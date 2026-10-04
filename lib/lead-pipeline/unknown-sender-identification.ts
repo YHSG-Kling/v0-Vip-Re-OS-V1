@@ -654,16 +654,20 @@ async function recordDrop(
   fromEmail: string,
   messageId: string | null,
 ): Promise<void> {
+  // THE ONE EMITTER (wave 101C): emitKernelEvent's client seam — the injected client, audit-only
+  // (no fan-out, as before; a null-entity event never fans out anyway), with causation lineage.
+  const kernelEmit = await import("@/lib/kernel/emit")
   await sentinelWrite(
     svc,
-    svc.from("lifecycle_events").insert({
-      brokerage_id: brokerageId,
-      entity_type: "system",
-      entity_id: null,
-      event_type: KernelEvent.UNKNOWN_SENDER_DROPPED,
+    kernelEmit.emitKernelEvent({
+      client: svc, auditOnly: true,
+      brokerageId,
+      entityType: "system",
+      entityId: null,
+      event: KernelEvent.UNKNOWN_SENDER_DROPPED,
       metadata: { reason, detail, from_email: fromEmail, message_id: messageId },
-      created_at: new Date().toISOString(),
-    }),
+      createdAt: new Date().toISOString(),
+    }).then(kernelEmit.asWriteResult),
     { table: "lifecycle_events", flow: "unknown_sender_dropped", brokerageId, reason: "counted drop audit — best effort" },
   )
 }
@@ -944,20 +948,22 @@ export async function identifyAndRouteUnknownSender(
     leadId = landing.leadId
   }
 
+  const kernelEmit = await import("@/lib/kernel/emit")
   await sentinelWrite(
     svc,
-    svc.from("lifecycle_events").insert({
-      brokerage_id: brokerageId,
-      entity_type: "lead",
-      entity_id: leadId,
-      event_type: KernelEvent.UNKNOWN_SENDER_IDENTIFIED_AS_LEAD,
+    kernelEmit.emitKernelEvent({
+      client: svc, auditOnly: true,
+      brokerageId,
+      entityType: "lead",
+      entityId: leadId ?? null,
+      event: KernelEvent.UNKNOWN_SENDER_IDENTIFIED_AS_LEAD,
       metadata: {
         from_email: params.fromEmail, message_id: params.messageId,
         owner_kind: params.mailboxOwner.ownerKind, owner_agent_id: params.mailboxOwner.agentId,
         intent_type: c.intentType, confidence: c.confidence,
         transactional: listingMatch ? { listing_id: listingMatch.listingId, matched_address: listingMatch.matchedAddress, type: c.transactionalType } : null,
       },
-    }),
+    }).then(kernelEmit.asWriteResult),
     { table: "lifecycle_events", flow: "unknown_sender_identified_as_lead", brokerageId },
   )
 

@@ -714,11 +714,9 @@ async function main() {
       "app/actions/orchestrator.ts": "the orchestrator's own recorder: writes payload/user_id/processed=false and returns the whole row",
       "lib/events/lifecycle-event-core.ts": "recordLifecycleEvent core: writes processed=false + payload for the orchestrator worker and returns the whole row",
       "lib/kernel/document-autofile.ts": "writes lifecycle_events.payload, which the autofile reviewer reads",
-      "lib/agents/agent-books.ts": "audits through an INJECTED client its in-memory proof asserts; emitKernelEvent has no client seam",
-      "lib/agents/agent-deactivation.ts": "audits through an INJECTED client its in-memory proof asserts; emitKernelEvent has no client seam",
       "lib/kernel/lifecycle.ts": "transitionLifecycle IS the state-machine writer: inserts lifecycle.<event> and fans out itself with its own row id",
-      "lib/lead-pipeline/unknown-sender-identification.ts": "audits through an INJECTED client its in-memory proof (test:lead-email-conversion) asserts; UNKNOWN_SENDER_DROPPED also has entity_id NULL (emitKernelEvent requires an entity)",
-      "lib/kernel/managing-broker.ts": "audits through an INJECTED client its in-memory proof (test:managing-broker) asserts; emitKernelEvent has no client seam",
+      // Wave 101C: agent-books, agent-deactivation, managing-broker and unknown-sender-identification
+      // MOVED — emitKernelEvent gained its `client` seam (and a nullable entity for a run-level audit).
     }
     const unexplained = remaining.filter((rel) => !(rel in NOT_MOVED))
     const stale = Object.keys(NOT_MOVED).filter((rel) => !remaining.includes(rel))
@@ -727,6 +725,101 @@ async function main() {
     if (stale.length) console.log(`  · stale NOT_MOVED entries (moved since; delete them): ${stale.join(", ")}`)
     check("POSITIVE CONTROL: the ratchet accuses an unnamed inserter", ["lib/x/new-inserter.ts"].filter((rel) => !(rel in NOT_MOVED)).length === 1)
     check("the census ran over a non-trivial tree and excludes the emitter itself", remaining.length > 0 && !remaining.includes("lib/kernel/emit.ts"))
+  }
+
+  console.log("\n[13c · wave 101C — the client seam (4 injected-client audits) + ONE EMIT per event (pairs merged)]")
+  {
+    // (c) the four injected-client audits now ride emitKernelEvent's client seam.
+    const SEAMED = ["lib/agents/agent-books.ts", "lib/agents/agent-deactivation.ts", "lib/kernel/managing-broker.ts", "lib/lead-pipeline/unknown-sender-identification.ts"]
+    const directInsert = /\.from\(\s*"lifecycle_events"\s*\)\s*\.(insert|upsert)\(/
+    const seamCall = /emitKernelEvent\(\{[^]*?\bclient:\s*svc\b/
+    for (const rel of SEAMED) {
+      const src = stripComments(read(rel))
+      check(`${rel}: audits through emitKernelEvent's client seam (client: svc) and inserts lifecycle_events directly nowhere`, seamCall.test(src) && !directInsert.test(src))
+    }
+    check("POSITIVE CONTROL: the seam finder rejects an emit without the client and accepts one with it",
+      !seamCall.test(`emitKernelEvent({ event: "x", brokerageId })`) && seamCall.test(`emitKernelEvent({\n client: svc, auditOnly: true })`))
+    const em = stripComments(read("lib/kernel/emit.ts"))
+    check("emit.ts: the seam is `input.client ?? createServiceClient()` inside the try (never throws)", /try\s*\{[^}]*input\.client[^}]*\?\?\s*createServiceClient\(\)/.test(em))
+    check("emit.ts: a null-entity event never fans out (shouldFanOut requires an entity)", /!!input\.entityId/.test(em))
+
+    // (b) PAIRS → ONE EMIT. An auditOnly row of a typed event followed by a separate processKernelEvent of
+    // the SAME event is the pair shape. Every remaining pair is NAMED with why it is not equivalent; a
+    // merged pair that comes back (or a new one) fails. Derived, never pinned.
+    const PAIR_NOT_MERGED: Record<string, string> = {
+      "app/actions/business-card/business-card-actions.ts#BUSINESS_CARD_APPROVED": "vendor branch: the row stores category ?? VENDOR_CATEGORY_OTHER, the reactor's manager-signal payload forwards the raw category — one metadata cannot be both",
+      "app/actions/video-voice.ts#VOICE_CLONE_READY": "the reactor handler forwards params.metadata as the manager-signal payload; the bare fan-out sent {} — merging changes the payload",
+      "app/actions/video/generate-script.ts#SCRIPT_GENERATED": "the reactor's SCRIPT_GENERATED reader forwards metadata; the bare fan-out sent {}",
+      "app/actions/video-generation.ts#SCRIPT_GENERATED": "same reader as above — the bare fan-out sent {}",
+      "app/actions/video-generation.ts#VIDEO_HIGH_PERFORMER_DETECTED": "the reactor forwards metadata as the signal payload; the bare fan-out sent {}",
+      "app/actions/video-generation.ts#VIDEO_LOW_PERFORMER_DETECTED": "the reactor forwards metadata as the signal payload; the bare fan-out sent {}",
+      "app/api/video/engagement/route.ts#VIDEO_HIGH_PERFORMER_DETECTED": "the reactor forwards metadata as the signal payload; the bare fan-out sent {}",
+      "app/api/video/engagement/route.ts#VIDEO_LOW_PERFORMER_DETECTED": "the reactor forwards metadata as the signal payload; the bare fan-out sent {}",
+      "app/api/cron/publish-social-posts/route.ts#SOCIAL_POST_FAILED": "the reactor forwards metadata as the signal payload; the bare fan-out sent {}",
+      "app/actions/video-repurposing.ts#SNIPPET_CREATED": "the reactor's SNIPPET_CREATED reader forwards metadata; the bare fan-out sent {}",
+      "lib/kernel/content-creators.ts#VIDEO_GENERATION_REQUESTED": "the reactor's VIDEO_GENERATION_REQUESTED reader reads metadata; the bare fan-out sent none",
+      "app/actions/seller-listing/execution-engine.ts#LISTING_AGREEMENT_INITIATED": "the reactor forwards metadata as the signal payload; the bare fan-out sent {}",
+      "app/api/offers/upload/route.ts#OFFER_UPLOADED": "a TEMPLATED portal event: writePortalUpdate stores ctx.metadata on the buyer/seller portal card — the row's offer_document_url would reach the client's card",
+      "app/api/providers/inbound/route.ts#ISA_REPLY_RECEIVED": "ORDER: the fan-out runs after steps 6b–7 (behavioural event, opt-out review); one emit at step 6 would run the reactor before them",
+      "lib/kernel/financial.ts#COMMISSION_PAID": "not a pair: the auditOnly row is the pay-status command's (entity agent_commission); the fan-out is createCommissionRecord's, ~440 lines later (entity commission) — two moments, two functions",
+      "lib/ai-isa/convert-buyer-lead-on-intent.ts#?":"not one event: the row is the free-form lifecycle.<event> on entity buyer_lifecycle; the fan-out is the typed event on entity contact",
+    }
+    // Every emitKernelEvent({...}) call as its own balanced block (a lazy regex would span calls).
+    const emitBlocks = (src: string): Array<{ blk: string; end: number }> => {
+      const out: Array<{ blk: string; end: number }> = []
+      const emitRe = /emitKernelEvent\(\{/g
+      let m: RegExpExecArray | null
+      while ((m = emitRe.exec(src))) {
+        let d = 0, e = m.index + "emitKernelEvent".length
+        for (; e < src.length; e++) { if (src[e] === "(") d++; else if (src[e] === ")") { d--; if (!d) break } }
+        out.push({ blk: src.slice(m.index, e + 1), end: e + 1 })
+      }
+      return out
+    }
+    const pairsIn = (src: string): string[] => {
+      const out: string[] = []
+      for (const { blk, end: e } of emitBlocks(src)) {
+        if (!/auditOnly:\s*true/.test(blk)) continue
+        const ev = (blk.match(/event:\s*KernelEvent\.([A-Z_]+)/) ?? [])[1] ?? "?"
+        // The fan-out of the same event anywhere AFTER the row in the module (an ordered pair can sit
+        // a whole pipeline apart — the inbound router's step 6 row and step 8 fan-out).
+        const next = src.slice(e)
+        for (const pk of next.matchAll(/processKernelEvent\(\{\s*event:\s*([^,\n]+)/g)) {
+          const pkEv = (pk[1].match(/KernelEvent\.([A-Z_]+)/) ?? [])[1] ?? "?"
+          if ((ev !== "?" && pkEv === ev) || (ev === "?" && /plan\.kernelEvent/.test(pk[1]))) { out.push(ev); break }
+        }
+      }
+      return out
+    }
+    const { readdirSync: rd, statSync: st } = await import("node:fs")
+    const walkAll = (dir: string, out: string[] = []): string[] => {
+      for (const e of rd(join(root, dir))) {
+        const rel = `${dir}/${e}`
+        if (e === "node_modules" || e.startsWith(".")) continue
+        if (st(join(root, rel)).isDirectory()) walkAll(rel, out)
+        else if (/\.(ts|tsx)$/.test(e)) out.push(rel)
+      }
+      return out
+    }
+    const found: string[] = []
+    for (const rel of [...walkAll("lib"), ...walkAll("app")]) {
+      if (rel === "lib/kernel/emit.ts") continue
+      const raw = read(rel)
+      if (!raw.includes("auditOnly") || !raw.includes("processKernelEvent")) continue
+      for (const ev of pairsIn(stripComments(raw))) found.push(`${rel}#${ev}`)
+    }
+    const unexplained = [...new Set(found)].filter((k) => !(k in PAIR_NOT_MERGED))
+    const staleNames = Object.keys(PAIR_NOT_MERGED).filter((k) => !found.includes(k))
+    console.log(`  · census: ${found.length} auditOnly-row + processKernelEvent pair(s) remain (wave 100 end: ~40 incl. the different-event rows; wave 101C merged 21 into one emit). Denominator: every .ts/.tsx under lib/ + app/`)
+    check("RATCHET: every remaining audit-row + separate-fan-out pair is NAMED with why one emit is not equivalent", unexplained.length === 0, unexplained.join(", "))
+    if (staleNames.length) console.log(`  · stale PAIR_NOT_MERGED entries (merged since; delete them): ${staleNames.join(", ")}`)
+    check("POSITIVE CONTROL: the pair finder sees the pre-101C shape", pairsIn(`await emitKernelEvent({ event: KernelEvent.OFFER_AI_EXTRACTED, brokerageId, entityType: "offer", entityId: id, auditOnly: true })\nawait processKernelEvent({ event: KernelEvent.OFFER_AI_EXTRACTED, brokerageId, entityType: "offer", entityId: id })`).length === 1)
+    check("CONTROL: the merged shape (one emit, no auditOnly) is not a pair", pairsIn(`await emitKernelEvent({ event: KernelEvent.OFFER_AI_EXTRACTED, brokerageId, entityType: "offer", entityId: id, agentUserId: null })`).length === 0)
+    for (const [rel, ev] of [["lib/offers/offer-extractor.ts", "OFFER_AI_EXTRACTED"], ["app/actions/seller-open-house.ts", "CONTACT_CREATED"], ["app/actions/video-voice.ts", "VOICE_CLONE_PROFILE_CREATED"], ["app/actions/business-card/business-card-actions.ts", "BUSINESS_CARD_APPROVED"]] as const) {
+      const blocks = emitBlocks(stripComments(read(rel))).filter((b) => new RegExp(`event:\\s*KernelEvent\\.${ev}\\b`).test(b.blk))
+      check(`${rel}: ${ev} has an emit that fans out (no auditOnly) and carries the fan-out's own fields`,
+        blocks.some((b) => !/auditOnly:\s*true/.test(b.blk)) && (ev !== "BUSINESS_CARD_APPROVED" || blocks.some((b) => /routed_to: "recruit"[^]*?classified_by/.test(b.blk))))
+    }
   }
 
   console.log("\n[13b · audit-only option + executed lineage through a fake PostgREST]")
@@ -798,6 +891,23 @@ async function main() {
       seen.length = 0
       await collectError(args)
       check("POSITIVE CONTROL: outside a scope the same inserter writes NO causation (a root event)", leRows().length === 1 && !("causation_id" in (leRows()[0]?.body ?? {})))
+
+      // Wave 101C — THE CLIENT SEAM, executed: the row lands on the INJECTED client; the service URL sees nothing.
+      seen.length = 0
+      const injected: Array<{ table: string; row: Record<string, unknown> }> = []
+      const seamClient = { from: (t: string) => ({ insert: (r: Record<string, unknown>) => { injected.push({ table: t, row: r }); return builder({ id: "le-seam" }) } }) }
+      const seamRes = await withCausationFrom("evt-seam", () => emitKernelEvent({
+        client: seamClient, auditOnly: true, event: "agent_books_reassigned", brokerageId: "b-1", entityType: "agent", entityId: "a-1",
+      }))
+      check("CLIENT SEAM: the row is written on the INJECTED client, with lineage, and nothing reaches the service client",
+        seamRes.inserted && seamRes.lifecycleEventId === "le-seam" && injected.length === 1 && injected[0].table === "lifecycle_events" && injected[0].row.causation_id === "evt-seam" && seen.length === 0,
+        `${injected.length} injected / ${seen.length} service request(s)`)
+      seen.length = 0
+      await emitKernelEvent({ auditOnly: true, event: "agent_books_reassigned", brokerageId: "b-1", entityType: "agent", entityId: "a-1" })
+      check("POSITIVE CONTROL: without the seam the same emit lands on the service client", leRows().length === 1 && injected.length === 1)
+      seen.length = 0
+      await emitKernelEvent({ event: KernelEvent.UNKNOWN_SENDER_DROPPED, brokerageId: "b-1", entityType: "system", entityId: null })
+      check("a NULL-entity typed event (a run-level audit) is written once and never fans out", leRows().length === 1 && seen.length === 1, `${seen.length} request(s)`)
     } finally {
       if (prevUrl === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL; else process.env.NEXT_PUBLIC_SUPABASE_URL = prevUrl
       if (prevKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY; else process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey
@@ -807,7 +917,7 @@ async function main() {
 
   console.log("\n[blind spots]")
   console.log("  · lifecycle_events inserters NOT moved are NAMED with their reasons in section 13 (payload/processed writers, injected-client audits, the transition writer, an entity-less row). The finder sees only the literal .from(\"lifecycle_events\").insert( shape — a table-name constant or a single-quoted literal is invisible to it")
-  console.log("  · a moved row whose module ALSO calls processKernelEvent separately keeps that call (auditOnly row + the existing fan-out; the two metadata shapes differ). Merging each pair into ONE emit, so the reactor gets the lifecycleEventId, is the next step")
+  console.log("  · pairs (13c): an auditOnly row + a separate processKernelEvent of the same event were merged into ONE emit wherever the reactor input is byte-equivalent (same event/tenant/entity/ids; the event's reactor readers use no metadata, or the fan-out's metadata is a same-valued superset; agentUserId: null keeps attribution). The finder pairs a row with the SAME typed event fanned out ANYWHERE later in the module — a pair split across functions is named, not merged; a fan-out with no audit row of its own (a bare processKernelEvent) is not a pair and is not counted")
   console.log("  · portal messages: ~30 direct client_portal_messages inserters remain outside insertPortalMessage; the four senders that reach a client on demand are routed")
   console.log("  · AI tool calls are ledgered on the CUSTOMER bundle (buildCustomerFreeTools); the platform prospect agent (no tenant) and the staff toolkit's non-portal tools are not")
   console.log("  · 'unknown' rows with no outcome_reconciliations claim are settled 'failed' after the abandon window — a send that DID leave without a claim (provider timed out AFTER accepting) can then be retried by a LATER cycle")

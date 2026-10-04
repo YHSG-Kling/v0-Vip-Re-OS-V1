@@ -686,6 +686,51 @@ console.log("\n── 7d. WAVE 100 (100B): ONE NBA, two subjects — the contact
     leadRec?.subject.type === "lead" && leadRec?.domain === "lead" && leadRec?.systemSource === "lead_action_plan")
 }
 
+console.log("\n── 7e. WAVE 101C: the contact NBA's three new inputs + the batch order ──")
+{
+  const { contactTouchSignals, rankContactsForTouch } = await import("../lib/ai-isa/lead-action-plan")
+  const now = new Date("2026-10-04T12:00:00Z")
+  const d = (n: number) => new Date(now.getTime() + n * 86_400_000).toISOString()
+  const none = { activities: [], showings: [], callbackTasks: [] }
+  const t = contactTouchSignals({ ...none, activities: [
+    { activity_type: "call", status: "completed", agent_id: "a1", completed_at: d(-1), created_at: d(-1) },
+    { activity_type: "email", status: "completed", agent_id: "a1", completed_at: d(-4), created_at: d(-4) },
+    { activity_type: "note", status: "completed", agent_id: "a1", completed_at: d(0), created_at: d(0) },
+    { activity_type: "call", status: "completed", agent_id: null, agent_user_id: null, completed_at: d(0), created_at: d(0) },
+  ] }, now)
+  check("AGENT-TOUCH: the LATEST completed agent touch is the input; a note is not a touch of the person, and a row naming no agent is not an agent's",
+    t.lastAgentTouchAt?.toISOString() === d(-1))
+  check("AGENT-TOUCH CONTROL: a scheduled row is a commitment, not a touch",
+    contactTouchSignals({ ...none, activities: [{ activity_type: "call", status: "scheduled", agent_id: "a1", scheduled_at: d(-1), created_at: d(-2) }] }, now).lastAgentTouchAt === null)
+  const appt = contactTouchSignals({ ...none,
+    showings: [{ scheduled_at: d(3), status: "confirmed" }, { scheduled_at: d(1), status: "cancelled" }, { scheduled_at: d(-1), status: "confirmed" }],
+    activities: [{ activity_type: "meeting", status: "scheduled", scheduled_at: d(2), created_at: d(-1) }] }, now)
+  check("APPOINTMENT: the EARLIEST future open showing/meeting (a cancelled one and a past one never count)", appt.appointmentAt?.toISOString() === d(2))
+  const cb = contactTouchSignals({ ...none, callbackTasks: [{ due_date: d(5), status: "pending" }, { due_date: d(1), status: "completed" }] }, now)
+  check("CALLBACK: a pending ai_callback task is a pending callback, due at its due_date; a completed one is not", cb.callbackRequested === true && cb.callbackDueAt?.toISOString() === d(5))
+  check("CALLBACK CONTROL: no rows → no callback, no appointment, no agent touch",
+    (() => { const z = contactTouchSignals(none, now); return !z.callbackRequested && z.appointmentAt === null && z.lastAgentTouchAt === null })())
+
+  const leadCb = planNextLeadTouch({ ...planBase, now, context: { callbackRequested: true } })
+  const contactCb = planNextContactTouch({ now, context: { callbackRequested: true, callbackDueAt: new Date(d(5)) } })
+  check("SUBJECT: a callback CONVERTS a lead (owner ruling unchanged) but makes a CONTACT wait for the agent's call",
+    leadCb.action === "convert" && leadCb.reasonCode === "convert_on_callback" && contactCb.action === "wait" && contactCb.reasonCode === "appointment_scheduled" && contactCb.dueAt?.toISOString() === d(5))
+
+  const plan = (action: "send_touch" | "wait" | "do_nothing", priority: number) =>
+    ({ ...planNextContactTouch({ now, context: {} }), action, priority }) as ReturnType<typeof planNextContactTouch>
+  const order = rankContactsForTouch([
+    { item: "waiting", plan: plan("wait", 9) },
+    { item: "declining", plan: plan("send_touch", 1) },
+    { item: "unreadable", plan: null },
+    { item: "accelerating", plan: plan("send_touch", 5) },
+    { item: "tie-first", plan: plan("send_touch", 1) },
+  ])
+  check("ORDER: actionable first, then NBA priority (intent momentum), then the detector's order; a waiting person after; unreadable inputs LAST",
+    JSON.stringify(order) === JSON.stringify(["accelerating", "declining", "tie-first", "waiting", "unreadable"]), JSON.stringify(order))
+  check("ORDER CONTROL: an all-equal batch keeps the detector's order (ghosted before stale)",
+    JSON.stringify(rankContactsForTouch([{ item: "g", plan: plan("send_touch", 0) }, { item: "s", plan: plan("send_touch", 0) }])) === JSON.stringify(["g", "s"]))
+}
+
 console.log("\n── 8. LIVE LAYER (creds-gated): the gate opens and closes, with ZERO spend ──")
 
 const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&

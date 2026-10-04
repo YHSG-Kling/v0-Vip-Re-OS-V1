@@ -12,8 +12,8 @@ import { revalidatePath } from "next/cache"
 import { generateAIResponse } from "@/lib/ai"
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
@@ -286,7 +286,7 @@ export async function scheduleSocialPost(params: {
   const userId = auth.userId
 
   // Feature access check
-  const canAccess = await canAccessFeature(userId, "social_automation")
+  const canAccess = await mayUseFeature(userId, "social_automation")
 
   if (!canAccess.allowed) {
     return { success: false, error: "Feature not available for your subscription tier" }
@@ -428,6 +428,9 @@ export async function scheduleSocialPost(params: {
       .catch((err) => console.warn("[social-media-automation] Usage increment failed:", err))
 
     // Fire kernel event
+    // ONE EMIT (wave 101C): this row and its fan-out were two calls (an auditOnly emit, then a bare
+    // processKernelEvent). One emitKernelEvent now — the reactor gets the lifecycleEventId. Equivalent:
+    // same event/tenant/entity, and the reactor's reader for this event uses no metadata.
     await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
       entityType: "social_post",
       entityId: post.id,
@@ -440,15 +443,8 @@ export async function scheduleSocialPost(params: {
         listing_id: params.listingId,
         campaign_id: params.campaignId,
       },
-      auditOnly: true,
     }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
-    await processKernelEvent({
-      event: KernelEvent.SOCIAL_POST_SCHEDULED,
-      brokerageId,
-      entityType: "social_post",
-      entityId: post.id,
-    }).catch((err) => console.error("[social-media-automation] Kernel event failed:", err))
 
     revalidatePath("/dashboard/social")
     return { success: true, data: post }

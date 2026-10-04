@@ -1,7 +1,6 @@
 import { bestEffort } from "@/lib/db/best-effort"
 import { generateAIResponse } from "@/lib/ai"
 import { createClient } from "@/lib/supabase/server"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
@@ -192,6 +191,9 @@ export async function applyExtractedOfferData(
     if (updateError) throw new Error(updateError.message)
 
     // lifecycle_events insert + kernel event
+    // ONE EMIT (wave 101C): this row and its fan-out were two calls (an auditOnly emit, then a bare
+    // processKernelEvent). One emitKernelEvent now — the reactor gets the lifecycleEventId. Equivalent:
+    // same event/tenant/entity, and the reactor's reader for this event uses no metadata; agentUserId: null keeps the reactor's attribution as the bare fan-out had it.
     await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
       brokerageId: brokerageId,
       entityType: "offer",
@@ -206,15 +208,9 @@ export async function applyExtractedOfferData(
           (k) => extracted[k as keyof ExtractedOfferData] !== null
         ).length,
       },
-      auditOnly: true,
+      agentUserId: null,
     }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
-    await processKernelEvent({
-      event: KernelEvent.OFFER_AI_EXTRACTED,
-      brokerageId,
-      entityType: "offer",
-      entityId: offerId,
-    }).catch(() => {})
 
     // EVENT-DRIVEN net-sheet: the offer is now COMPARISON-READY (real price extracted). The Data
     // Steward (which owns extraction/normalization of the incoming doc) hands the clean offer to the

@@ -240,6 +240,10 @@ async function runTcpaGate(ctx: OutboundCallGateContext): Promise<OutboundCallRe
     leadId: ctx.leadId ?? null,
     brokerageId: ctx.brokerageId,
     initiatedBy: ctx.initiatedBy ?? null,
+    // ISA IS A SYSTEM AI ISA (wave 101C): the TCPA log names the ISA's system user for an
+    // unattended ISA dial, the agent on whose line it rode as on_behalf_of.
+    systemSource: ctx.systemSource ?? null,
+    humanApproved: ctx.humanApproved === true,
     transactional: ctx.transactional ?? false,
   })
   if (gate.allowed) return null

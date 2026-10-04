@@ -19,7 +19,7 @@
 // Import from '@/lib/kernel' — never import this file directly outside the kernel.
 
 import { resolvePageCapability } from "./helpers"
-import { canAccessFeature } from "./0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import type { PageCapability } from "./helpers"
 import type { FeatureAccessCheck } from "./types"
 // SURVIVOR (§1.1): lib/kernel/identity.ts is deleted; the one WriteContext lives at
@@ -121,7 +121,7 @@ export async function renderCapabilityPreview(
   let featureAccess: FeatureAccessCheck | null = null
   if (featureKey) {
     try {
-      featureAccess = await canAccessFeature(context.userId, featureKey)
+      featureAccess = await mayUseFeature(context.userId, featureKey)
       if (!featureAccess.allowed) {
         return {
           rbac,

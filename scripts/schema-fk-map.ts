@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1801 of 1864 pairs) — storing them would be
+ * overwhelming majority (1803 of 1866 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1945 edges across 715 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1864 unordered
+ * MEASURED AT GENERATION: 1947 edges across 716 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1866 unordered
  * table pairs carry at least one FK; 63
  * carry more than one and are listed below. 13 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -84,9 +84,9 @@
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-03
+ * generated: 2026-10-04
  * source: public.live_foreign_keys_json()
- * body-sha256: 4b6cdaa58eb43f992f8e8c96013d141f3e171919d6f0c4f318d385085e3378ba
+ * body-sha256: 906905ee16924fb71e001b738f8b0a4544ef48e7c003290631cf42f967c8734b
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -711,6 +711,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "tenant_contract_signatures": { "brokerage_id": "brokerages", "signed_by": "users", "template_id": "platform_contract_templates" },
   "tenant_custom_domains": { "added_by": "users", "brokerage_id": "brokerages" },
   "tenant_phone_numbers": { "agent_user_id": "users", "brokerage_id": "brokerages", "team_id": "teams" },
+  "tenant_policy_versions": { "brokerage_id": "brokerages", "changed_by": "users" },
   "tenant_safety_findings": { "resolved_by": "users" },
   "tenant_sso_connections": { "brokerage_id": "brokerages", "created_by": "users" },
   "tenant_transition_log": { "actor_user_id": "users" },

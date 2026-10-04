@@ -1,7 +1,6 @@
 import { bestEffort } from "@/lib/db/best-effort"
 import { generateAIResponse } from "@/lib/ai"
 import { createClient } from "@/lib/supabase/server"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 // Net-to-seller commission math lives in the PURE, dependency-light single source of
 // truth (lib/offers/offer-math) so the non-server-only kernel net-sheet + client net
@@ -230,6 +229,9 @@ Return ONLY a valid JSON object with this exact schema (no markdown, no commenta
   const comparisonId = (compRow as { id: string } | null)?.id ?? null
 
   // lifecycle_events + kernel event
+  // ONE EMIT (wave 101C): this row and its fan-out were two calls (an auditOnly emit, then a bare
+  // processKernelEvent). One emitKernelEvent now — the reactor gets the lifecycleEventId. Equivalent:
+  // same event/tenant/entity, and the reactor's reader for this event uses no metadata; agentUserId: null keeps the reactor's attribution as the bare fan-out had it.
   await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     brokerageId: brokerageId,
     entityType: "listing_stage_machine",
@@ -244,15 +246,9 @@ Return ONLY a valid JSON object with this exact schema (no markdown, no commenta
       // to the row instead of re-deriving "latest for this listing".
       comparison_id: comparisonId,
     },
-    auditOnly: true,
+    agentUserId: null,
   }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
-  await processKernelEvent({
-    event: KernelEvent.OFFER_COMPARISON_GENERATED,
-    brokerageId,
-    entityType: "listing_stage_machine",
-    entityId: listingId,
-  }).catch(() => {})
 
   return { success: true, result, comparisonId }
 }

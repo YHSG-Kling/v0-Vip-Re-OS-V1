@@ -229,6 +229,9 @@ export async function createVoiceProfile(data: {
   }
 
   // Write lifecycle event — kernel-visible
+  // ONE EMIT (wave 101C): this row and its fan-out were two calls (an auditOnly emit, then a bare
+  // processKernelEvent). One emitKernelEvent now — the reactor gets the lifecycleEventId. Equivalent:
+  // same event/tenant/entity, and the reactor's reader for this event uses no metadata; agentUserId: null keeps the reactor's attribution as the bare fan-out had it.
   await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     entityType: "voice_profile",
     entityId: profile.id,
@@ -239,16 +242,9 @@ export async function createVoiceProfile(data: {
       profile_name: data.profileName,
       agent_id: data.agentId,
     },
-    auditOnly: true,
+    agentUserId: null,
   }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
-  // Fire kernel event
-  await processKernelEvent({
-    event: KernelEvent.VOICE_CLONE_PROFILE_CREATED,
-    brokerageId: data.brokerageId,
-    entityType: "voice_profile",
-    entityId: profile.id,
-  }).catch(err => console.error("[video-voice] Kernel event failed:", err))
 
   revalidatePath("/dashboard/videos/voice")
   return profile
@@ -386,6 +382,9 @@ export async function setDefaultVoiceProfile(
   }
 
   // Write lifecycle event
+  // ONE EMIT (wave 101C): this row and its fan-out were two calls (an auditOnly emit, then a bare
+  // processKernelEvent). One emitKernelEvent now — the reactor gets the lifecycleEventId. Equivalent:
+  // same event/tenant/entity, and the reactor's reader for this event uses no metadata; agentUserId: null keeps the reactor's attribution as the bare fan-out had it.
   await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     entityType: "voice_profile",
     entityId: profileId,
@@ -393,15 +392,9 @@ export async function setDefaultVoiceProfile(
     event: KernelEvent.VOICE_CLONE_DEFAULT_SET,
     actorUserId: actorUserId ?? null,
     metadata: { agent_id: agentId },
-    auditOnly: true,
+    agentUserId: null,
   }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
-  await processKernelEvent({
-    event: KernelEvent.VOICE_CLONE_DEFAULT_SET,
-    brokerageId,
-    entityType: "voice_profile",
-    entityId: profileId,
-  }).catch(err => console.error("[video-voice] Kernel event failed:", err))
 
   revalidatePath("/dashboard/videos/voice")
   revalidatePath("/dashboard/videos/create")
@@ -493,6 +486,9 @@ export async function startVoiceCloneTraining(
   }
 
   // Write lifecycle event — KERNEL-VISIBLE
+  // ONE EMIT (wave 101C): this row and its fan-out were two calls (an auditOnly emit, then a bare
+  // processKernelEvent). One emitKernelEvent now — the reactor gets the lifecycleEventId. Equivalent:
+  // same event/tenant/entity, and the reactor's reader for this event uses no metadata; agentUserId: null keeps the reactor's attribution as the bare fan-out had it.
   await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     entityType: "voice_training",
     entityId: trainingJob.id,
@@ -503,16 +499,9 @@ export async function startVoiceCloneTraining(
       profile_id: profileId,
       sample_count: recordedCount,
     },
-    auditOnly: true,
+    agentUserId: null,
   }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
-  // Fire kernel event
-  await processKernelEvent({
-    event: KernelEvent.VOICE_CLONE_TRAINING_STARTED,
-    brokerageId,
-    entityType: "voice_training",
-    entityId: trainingJob.id,
-  }).catch(err => console.error("[video-voice] Kernel event failed:", err))
 
   revalidatePath("/dashboard/videos/voice")
   return trainingJob

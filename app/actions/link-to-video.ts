@@ -11,7 +11,8 @@ import { revalidatePath } from "next/cache"
 // avatar-explainer.ts). Same feature key, same tenant from the SESSION, same
 // logAIUsage booking — one lane for one kind of call (§6).
 import { generateTextRouted } from "@/lib/ai/models"
-import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 // TOMBSTONE (dead-import tranche): `resolveProvider` (lib/kernel/providers.ts:85)
 // was imported here and never called. The VIDEO provider for this lane is
 // resolved by `resolveVideoProvider` inside the canonical creator this file
@@ -102,7 +103,7 @@ export async function generateVideoScript(params: {
   // by nothing, so this AI-spending entry ran with no entitlement check at all.
   // Key `video_generation` — the spelling already in force at
   // app/dashboard/video/page.tsx:13 and lib/kernel/marketing.ts:904.
-  const access = await canAccessFeature(auth.userId, "video_generation")
+  const access = await mayUseFeature(auth.userId, "video_generation")
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Video generation is not available on your plan" }
   }
@@ -360,7 +361,7 @@ export async function startVideoGeneration(videoQueueId: string) {
   // above) and for COMPLIANCE (compliance_approved below) but never for
   // ENTITLEMENT — `canAccessFeature` was imported by this file and called by
   // nothing.
-  const entitlement = await canAccessFeature(auth.userId, "video_generation")
+  const entitlement = await mayUseFeature(auth.userId, "video_generation")
   if (!entitlement.allowed) {
     return { success: false, error: entitlement.reason ?? "Video generation is not available on your plan" }
   }

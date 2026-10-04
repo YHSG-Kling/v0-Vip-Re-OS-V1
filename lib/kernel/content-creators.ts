@@ -55,6 +55,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { isValidUUID } from "@/lib/validations"
@@ -220,7 +221,7 @@ export async function authorNewsletterContent(input: AuthorNewsletterContentInpu
   const brokerageId = ctx.brokerageId
   const userId = ctx.userId
 
-  const access = await canAccessFeature(userId, "newsletter_engine", undefined, featureClient)
+  const access = await mayUseFeature(userId, "newsletter_engine", { client: featureClient })
   if (!access.allowed) return { success: false, error: access.reason || "Feature not available" }
 
   const agent = await resolveActorAgentId(supabase, ctx)
@@ -552,7 +553,7 @@ export async function createNewsletterCampaign(input: CreateNewsletterCampaignIn
   const brokerageId = ctx.brokerageId
   const userId = ctx.userId
 
-  const access = await canAccessFeature(userId, "newsletter_engine", undefined, featureClient)
+  const access = await mayUseFeature(userId, "newsletter_engine", { client: featureClient })
   if (!access.allowed) return { success: false, error: access.reason || "Feature not available" }
 
   // agents.id (newsletter_campaigns.agent_id FKs agents), pinned to the tenant. The action's
@@ -708,7 +709,7 @@ export async function createEmailCampaign(input: CreateEmailCampaignInput): Prom
   const featureClient = supabase as unknown as FeatureClient
   const brokerageId = ctx.brokerageId
 
-  const access = await canAccessFeature(ctx.userId, "email_campaigns", undefined, featureClient)
+  const access = await mayUseFeature(ctx.userId, "email_campaigns", { client: featureClient })
   if (!access.allowed) return { success: false, error: access.reason ?? "Email campaigns feature not available" }
 
   const agent = await resolveActorAgentId(supabase, ctx)
@@ -803,7 +804,7 @@ export async function createBlogPostDraft(input: CreateBlogPostDraftInput): Prom
   const brokerageId = ctx.brokerageId
   const userId = ctx.userId
 
-  const access = await canAccessFeature(userId, "seo_blog_engine", undefined, featureClient)
+  const access = await mayUseFeature(userId, "seo_blog_engine", { client: featureClient })
   if (!access.allowed) return { success: false, error: access.reason || "Feature access denied" }
 
   const slug = (input.slug || input.title.toLowerCase()
@@ -932,7 +933,7 @@ export async function writeBlogPost(input: WriteBlogPostInput): Promise<
   const userId = ctx.userId
 
   // ── 1. Feature gate (through the caller's client — never the anon cookie) ──
-  const access = await canAccessFeature(userId, "seo_blog_engine", undefined, featureClient)
+  const access = await mayUseFeature(userId, "seo_blog_engine", { client: featureClient })
   if (!access.allowed) return { success: false, error: access.reason || "Feature access denied" }
 
   // ── 2. Every caller-named id is verified in THIS tenant ──────────────────
@@ -1210,7 +1211,7 @@ export async function writePodcastScript(input: {
   if (seed.length === 0) return { success: false, error: "Provide a topic or at least one keyword." }
   const supabase: ContentClient = input.client ?? createServiceClient()
 
-  const access = await canAccessFeature(ctx.userId, "podcast_generation", undefined, supabase as unknown as FeatureClient)
+  const access = await mayUseFeature(ctx.userId, "podcast_generation", { client: supabase as unknown as FeatureClient })
   if (!access.allowed) return { success: false, error: access.reason ?? "Podcast generation not available" }
 
   const compliance = await import("@/lib/video/script-compliance")
@@ -1298,7 +1299,7 @@ export async function createPodcastEpisode(input: CreatePodcastEpisodeInput): Pr
   const brokerageId = ctx.brokerageId
   const userId = ctx.userId
 
-  const access = await canAccessFeature(userId, "podcast_generation", undefined, featureClient)
+  const access = await mayUseFeature(userId, "podcast_generation", { client: featureClient })
   if (!access.allowed) return { success: false, error: access.reason || "Feature access denied" }
 
   const agent = await resolveActorAgentId(supabase, ctx)

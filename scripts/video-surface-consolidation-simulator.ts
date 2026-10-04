@@ -47,8 +47,11 @@ console.log("\n── the dedicated video hub is intact (the kept, advanced surf
     existsSync(join(process.cwd(), "app/dashboard/videos/analytics/page.tsx")))
   // The hub entry still enforces the video_generation feature gate.
   const hub = src("app/dashboard/video/page.tsx")
-  check("the video hub entry still gates on video_generation",
-    hub.includes("canAccessFeature") && hub.includes("video_generation"))
+  // RE-ANCHORED TO THE RULE (wave 101C): the hub gates on the video_generation PLAN FEATURE — through
+  // mayUseFeature (mayUseAndAfford "feature.use", subscription half first) since 101C, canAccessFeature before.
+  const gatesOnVideo = (s: string) => /\b(mayUseFeature|canAccessFeature)\([^)]*"video_generation"/.test(s)
+  check("the video hub entry still gates on video_generation", gatesOnVideo(hub))
+  check("POSITIVE CONTROL: a hub with the gate removed fails", !gatesOnVideo(`const x = "video_generation"; return <Page />`))
 }
 
 console.log("\n── the dead 'Video Generation Hub' + its orphaned children are deleted ──")

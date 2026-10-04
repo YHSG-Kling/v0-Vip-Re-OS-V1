@@ -4,7 +4,8 @@
 // Tables: content_performance_predictions, prediction_accuracy_log
 
 import { createClient } from "@/lib/supabase/server"
-import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { processKernelEvent, KernelEvent } from "@/lib/kernel"
 import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
 
@@ -75,7 +76,7 @@ export async function predictContentPerformance(
   const { brokerageId, userId, contentType, sourceTable, sourceId, contentText, platform, scheduledFor } = params
 
   // ── Feature gate ───────────────────────────────────────────────────────────
-  const access = await canAccessFeature(userId, "content_performance_predictor")
+  const access = await mayUseFeature(userId, "content_performance_predictor")
   if (!access.allowed) {
     return { success: false, error: access.reason || "Feature not available" }
   }

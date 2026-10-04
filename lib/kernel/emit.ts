@@ -78,7 +78,10 @@ export interface EmitKernelEventInput {
   event:        KernelEvent | string
   brokerageId:  string | null
   entityType:   string
-  entityId:     string
+  /** NULL only for a run-level audit with no single entity owner (lifecycle_events.entity_id is
+   *  nullable — UNKNOWN_SENDER_DROPPED, SCRAPE_SOURCE_RUN_STARTED). A null-entity event never
+   *  fans out: the reactor needs a subject. */
+  entityId:     string | null
   metadata?:    Record<string, unknown> | null
   // ── Audit-row identity (the columns direct inserters used to write) ──────────────────────
   /** users.id of the human/actor who caused the event → lifecycle_events.actor_user_id (FK users). */
@@ -96,8 +99,11 @@ export interface EmitKernelEventInput {
   sellerContactId?:  string
   transactionId?:    string
   listingId?:        string
-  /** users.id of the acting agent for portal attribution; defaults to actorUserId. */
-  agentUserId?:      string
+  /** users.id of the acting agent for portal attribution; defaults to actorUserId. Explicit `null`
+   *  = the reactor gets NO agent attribution even though the row names an actor (wave 101C: a merged
+   *  "audit row + separate processKernelEvent" pair whose fan-out never carried one keeps its
+   *  reactor path byte-identical — enrolled_by / portal attribution unchanged). */
+  agentUserId?:      string | null
   /** Set by sequence-engine-internal emits to break enrollment feedback loops. */
   suppressEnrollment?: boolean
   /** Optional soft dedupe — same (event, entity, dedupeKey) within `dedupeWindowSec` seconds is
@@ -126,6 +132,11 @@ export interface EmitKernelEventInput {
   /** Write the row (with lineage) and DO NOT fan out, even for a typed KernelEvent. For audit echoes
    *  whose caller fans out separately, or that the owner has never ruled should notify anyone. */
   auditOnly?:         boolean
+  /** The client the row is written (and dedupe-read) through. Defaults to the service client.
+   *  For a command that was HANDED its verified client (agent-books, agent-deactivation,
+   *  managing-broker, unknown-sender-identification) — the audit row rides the same client as the
+   *  write it records, and an in-memory proof sees both. Never a request-body-derived client. */
+  client?:            unknown
 }
 
 export interface EmitKernelEventResult {
@@ -145,7 +156,10 @@ export async function emitKernelEvent(input: EmitKernelEventInput): Promise<Emit
   // a refusal must not start throwing into its caller.
   let svc: ReturnType<typeof createServiceClient>
   try {
-    svc = createServiceClient()
+    // THE CLIENT SEAM (wave 101C): a caller that already holds the VERIFIED client its whole
+    // command writes through (an injected service client, an in-memory proof client) passes it,
+    // so its audit row lands on the same client as the write it records. Default: service client.
+    svc = (input.client as ReturnType<typeof createServiceClient> | undefined) ?? createServiceClient()
   } catch (e) {
     return { inserted: false, lifecycleEventId: null, fanOutOk: false, error: (e as Error).message }
   }
@@ -244,7 +258,7 @@ export async function emitKernelEvent(input: EmitKernelEventInput): Promise<Emit
         event:             input.event as KernelEvent,
         brokerageId:       input.brokerageId as string, // shouldFanOut proved it non-null
         entityType:        input.entityType,
-        entityId:          input.entityId,
+        entityId:          input.entityId as string, // shouldFanOut proved it non-null
         lifecycleEventId:  lifecycleEventId ?? undefined,
         complianceEventId: input.complianceEventId,
         activityId:        input.activityId,
@@ -253,7 +267,7 @@ export async function emitKernelEvent(input: EmitKernelEventInput): Promise<Emit
         sellerContactId:   input.sellerContactId,
         transactionId:     input.transactionId,
         listingId:         input.listingId,
-        agentUserId:       input.agentUserId?.trim() || input.actorUserId?.trim() || undefined,
+        agentUserId:       input.agentUserId === null ? undefined : (input.agentUserId?.trim() || input.actorUserId?.trim() || undefined),
         metadata,
         suppressEnrollment: input.suppressEnrollment,
       })
@@ -266,10 +280,10 @@ export async function emitKernelEvent(input: EmitKernelEventInput): Promise<Emit
   return { inserted, lifecycleEventId, fanOutOk, error: null }
 }
 
-/** THE GATE as one predicate: a tenant, a typed KernelEvent, and not audit-only. (Executed by
+/** THE GATE as one predicate: a tenant, an entity, a typed KernelEvent, and not audit-only. (Executed by
  *  scripts/action-ledger-guard.ts §13b through emitKernelEvent itself, against a fake PostgREST.) */
-function shouldFanOut(input: Pick<EmitKernelEventInput, "brokerageId" | "event" | "auditOnly">): boolean {
-  return !!input.brokerageId && !input.auditOnly && isKernelEventValue(input.event as string)
+function shouldFanOut(input: Pick<EmitKernelEventInput, "brokerageId" | "event" | "auditOnly" | "entityId">): boolean {
+  return !!input.brokerageId && !!input.entityId && !input.auditOnly && isKernelEventValue(input.event as string)
 }
 
 /**

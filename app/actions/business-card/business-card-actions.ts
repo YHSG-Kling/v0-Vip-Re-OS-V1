@@ -327,22 +327,15 @@ export async function uploadBusinessCard(params: {
     }).eq("id", scan!.id)
     if (scanUpdateAgentError) console.error("[businessCardUpload] scan classification update (agent) failed:", scanUpdateAgentError)
 
+    // ONE EMIT (wave 101C): the audit row + its fan-out are one emitKernelEvent; the metadata is the
+    // fan-out's (a superset of the row's old keys, same values), so the reactor input is unchanged.
     await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
       brokerageId: brokerageId,
       entityType: "recruit",
       entityId: recruit.id,
       event: KernelEvent.BUSINESS_CARD_APPROVED,
-      metadata: { scanId: scan!.id, routed_to: "recruit", card_subject_type: cardSubjectType },
-      auditOnly: true,
-    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
-
-    await processKernelEvent({
-      event: KernelEvent.BUSINESS_CARD_APPROVED,
-      brokerageId,
-      entityType: "recruit",
-      entityId: recruit.id,
       metadata: { scanId: scan!.id, routed_to: "recruit", card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_user_type: subjectUserType, classified_by: classifiedBy },
-    })
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { scanId: scan!.id, contactId: null, vendorId: null, recruitId: recruit.id, target: "recruit", cardSubjectType, subjectUserId, viable: true }
   }
@@ -360,22 +353,14 @@ export async function uploadBusinessCard(params: {
     }).eq("id", scan!.id)
     if (scanUpdateSphereError) console.error("[businessCardUpload] scan classification update (sphere/unknown) failed:", scanUpdateSphereError)
 
+    // ONE EMIT (wave 101C) — same rule as the recruit branch above.
     await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
       brokerageId: brokerageId,
       entityType: "business_card",
       entityId: scan!.id,
       event: KernelEvent.BUSINESS_CARD_APPROVED,
-      metadata: { scanId: scan!.id, card_subject_type: cardSubjectType },
-      auditOnly: true,
-    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
-
-    await processKernelEvent({
-      event: KernelEvent.BUSINESS_CARD_APPROVED,
-      brokerageId,
-      entityType: "business_card",
-      entityId: scan!.id,
       metadata: { scanId: scan!.id, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_user_type: subjectUserType, classified_by: classifiedBy },
-    })
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { scanId: scan!.id, contactId: null, vendorId: null, recruitId: null, target: "contact", cardSubjectType, subjectUserId, viable: true }
   }
@@ -423,22 +408,14 @@ export async function uploadBusinessCard(params: {
     .eq("id", scan!.id)
   if (scanUpdateContactError) console.error("[businessCardUpload] scan classification update (contact) failed:", scanUpdateContactError)
 
+  // ONE EMIT (wave 101C) — same rule as the recruit branch above.
   await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     brokerageId: brokerageId,
     entityType: "contact",
     entityId: contactId,
     event: KernelEvent.BUSINESS_CARD_APPROVED,
-    metadata: { scanId: scan!.id, autoApproved: true, card_subject_type: cardSubjectType },
-    auditOnly: true,
-  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
-
-  await processKernelEvent({
-    event: KernelEvent.BUSINESS_CARD_APPROVED,
-    brokerageId: brokerageId,
-    entityType: "contact",
-    entityId: contactId,
     metadata: { scanId: scan!.id, autoApproved: true, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_user_type: subjectUserType, classified_by: classifiedBy },
-  })
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return { scanId: scan!.id, contactId, vendorId: null, recruitId: null, target: "contact", cardSubjectType, subjectUserId, viable: true }
 }

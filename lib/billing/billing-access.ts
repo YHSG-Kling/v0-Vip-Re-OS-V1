@@ -380,6 +380,92 @@ export async function mayUseAndAfford(input: MayUseAndAffordInput): Promise<MayU
   return { allowed: true, reason: allowReason, plan, remainingBudget: null }
 }
 
+// ─── THE CALL-SITE FORM OF "feature.use" (wave 101C) ──────────────────────────
+//
+// Seventy plan-feature gates (content creators, ads, repurposer, tier assigner,
+// newsletters, video, training, …) called canAccessFeature DIRECTLY and so asked
+// only the plan-feature half: a tenant whose subscription had lapsed still passed
+// every one of them. mayUseFeature is not a second gate — it is mayUseAndAfford
+// capability "feature.use", with the two inputs every one of those sites lacked
+// spelled once:
+//   · the TENANT and the ACTOR — read off the VERIFIED user's own users row (the
+//     caller vouches for userId: a session user, or a verified webhook actor). A
+//     tenant-gated rail that passes a brokerages.id here (the competitor monitor)
+//     has no users row; the id IS the tenant — canAccessFeature's own
+//     TENANT-ID FALLBACK, mirrored, not re-decided. An explicit opts.brokerageId
+//     (the caller's session context) wins.
+//   · the result SHAPE — canAccessFeature's own FeatureAccessCheck (allowed,
+//     reason, usage, trial …) so every gate keeps its message and its limits;
+//     the full decision rides along as `.decision`.
+// The feature half reads through opts.client — THE SESSION SEAM: the caller's own
+// session client (RLS-scoped), or a verified service client for a cookieless
+// webhook. Omitted, canAccessFeature builds the request's cookie client itself,
+// which is the session client. The subscription half reads through the service
+// client, as resolveRequestAccess does. FAILS CLOSED: a refused users read, no
+// tenant, a lapsed subscription or a gate that threw all refuse.
+// No new import edge: everything here is already in this module's graph (proxy.ts).
+export interface FeatureUseResult {
+  allowed: boolean
+  reason?: string
+  usage?: { current: number; limit: number; remaining: number }
+  trial?: boolean
+  trial_expires_at?: string
+  disabled?: boolean
+  disabled_reason?: string
+  decision: MayUseAndAffordDecision
+}
+
+/** Human copy for a refusal decided by the SUBSCRIPTION half (the feature half carries its own). */
+function featureUseRefusalMessage(d: MayUseAndAffordDecision): string {
+  if (d.message) return d.message
+  if (d.reason === "no_tenant") return "This feature needs a brokerage account."
+  if (d.reason.startsWith("feature_check_threw") || d.reason.startsWith("user_read_refused")) return "We could not verify access to this feature right now. Please try again."
+  return "Your subscription is not active. Renew it in Billing to use this feature."
+}
+
+export async function mayUseFeature(
+  userId: string,
+  featureKey: string,
+  opts: {
+    brokerageId?: string | null
+    userTier?: string
+    /** THE SESSION SEAM — the client the plan-feature half reads through. */
+    client?: any
+    now?: Date
+    /** Test seams. `service` stands in for the service client of the tenant/actor read and the subscription half. */
+    deps?: MayUseAndAffordInput["deps"] & { service?: any }
+  } = {},
+): Promise<FeatureUseResult> {
+  const fail = (reason: string): FeatureUseResult => {
+    const decision: MayUseAndAffordDecision = { allowed: false, reason, plan: null, remainingBudget: null }
+    return { allowed: false, reason: featureUseRefusalMessage(decision), decision }
+  }
+  if (!userId || !featureKey) return fail("feature_unspecified")
+  let svc: any
+  try {
+    svc = opts.deps?.service ?? (await import("@/lib/supabase/service")).createServiceClient()
+  } catch (e) {
+    return fail(`user_read_refused: ${(e as Error)?.message ?? String(e)}`)
+  }
+  const { data: u, error } = await svc.from("users").select("brokerage_id, user_type, platform_role").eq("id", userId).maybeSingle()
+  if (error) return fail(`user_read_refused: ${error.message}`)
+  const row = (u ?? null) as { brokerage_id: string | null; user_type: string | null; platform_role: string | null } | null
+  const actor = row ? { platformRole: row.platform_role ?? null, userType: row.user_type ?? null } : null
+  const brokerageId = opts.brokerageId ?? (row ? row.brokerage_id : userId)
+  const decision = await mayUseAndAfford({
+    brokerageId, capability: "feature.use", actor, now: opts.now, client: svc,
+    feature: { userId, featureKey, userTier: opts.userTier, client: opts.client },
+    deps: opts.deps,
+  })
+  const verdict = (decision.feature ?? {}) as Omit<FeatureUseResult, "decision">
+  return {
+    ...verdict,
+    allowed: decision.allowed,
+    reason: decision.allowed ? verdict.reason : decision.feature ? (verdict.reason ?? featureUseRefusalMessage(decision)) : featureUseRefusalMessage(decision),
+    decision,
+  }
+}
+
 // ─── THE REQUEST BOUNDARY (proxy.ts) ──────────────────────────────────────────
 
 /** Dashboard paths that stay reachable when access is refused — where a refused tenant is sent. */

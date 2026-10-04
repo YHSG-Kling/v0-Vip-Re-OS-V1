@@ -15,7 +15,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 
@@ -172,7 +172,7 @@ export async function assignTierToListing(
       return { success: false, tierId: null, tierName: null, budgets: [], totalBudget: 0, error: "Unauthorized" }
     }
 
-    const access = await canAccessFeature(gate.actor.userId, "listing_marketing_tiers")
+    const access = await mayUseFeature(gate.actor.userId, "listing_marketing_tiers")
     if (!access.allowed) {
       return {
         success: false,
@@ -479,7 +479,7 @@ export async function createTier(params: {
       return { success: false, error: "Unauthorized" }
     }
 
-    const access = await canAccessFeature(gate.actor.userId, "listing_marketing_tiers")
+    const access = await mayUseFeature(gate.actor.userId, "listing_marketing_tiers")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
@@ -530,7 +530,7 @@ export async function updateTier(params: {
     const gate = await resolveTierActor(params.actorUserId)
     if (!gate.ok) return { success: false, error: gate.error }
 
-    const access = await canAccessFeature(gate.actor.userId, "listing_marketing_tiers")
+    const access = await mayUseFeature(gate.actor.userId, "listing_marketing_tiers")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
@@ -580,7 +580,7 @@ export async function createTierBudget(params: {
     const gate = await resolveTierActor(params.actorUserId)
     if (!gate.ok) return { success: false, error: gate.error }
 
-    const access = await canAccessFeature(gate.actor.userId, "listing_marketing_tiers")
+    const access = await mayUseFeature(gate.actor.userId, "listing_marketing_tiers")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
@@ -628,7 +628,7 @@ export async function createTierDistribution(params: {
     const gate = await resolveTierActor(params.actorUserId)
     if (!gate.ok) return { success: false, error: gate.error }
 
-    const access = await canAccessFeature(gate.actor.userId, "listing_marketing_tiers")
+    const access = await mayUseFeature(gate.actor.userId, "listing_marketing_tiers")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
@@ -669,7 +669,7 @@ export async function deleteTierBudget(budgetId: string, actorUserId: string) {
     const gate = await resolveTierActor(actorUserId)
     if (!gate.ok) return { success: false, error: gate.error }
 
-    const access = await canAccessFeature(gate.actor.userId, "listing_marketing_tiers")
+    const access = await mayUseFeature(gate.actor.userId, "listing_marketing_tiers")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
@@ -712,7 +712,7 @@ export async function deleteTierDistribution(distributionId: string, actorUserId
     const gate = await resolveTierActor(actorUserId)
     if (!gate.ok) return { success: false, error: gate.error }
 
-    const access = await canAccessFeature(gate.actor.userId, "listing_marketing_tiers")
+    const access = await mayUseFeature(gate.actor.userId, "listing_marketing_tiers")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }

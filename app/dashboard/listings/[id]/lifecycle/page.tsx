@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { notFound, redirect } from "next/navigation"
-import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { getAllStages, getStageDefinition, getEnabledSystemGates } from "@/lib/listing-lifecycle/lifecycle-definitions"
 import type { ListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
 import { StagePipeline }       from "@/app/components/dashboard/listings/lifecycle/stage-pipeline"
@@ -372,7 +372,7 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   // The superadmin controls which tier plan each brokerage is on; features are
   // determined by that plan. canAccessFeature handles trial overrides, disabled
   // overrides, and per-tier access columns from the feature_flags table.
-  const marketingAccess = await canAccessFeature(user.id, "listing_marketing_tiers")
+  const marketingAccess = await mayUseFeature(user.id, "listing_marketing_tiers")
   const marketingReady = marketingAccess.allowed
 
   const neighborhoodReport = neighborhoodResult.data

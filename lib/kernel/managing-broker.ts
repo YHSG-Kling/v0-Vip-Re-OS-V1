@@ -190,14 +190,18 @@ export async function assignManagingBroker(
   if ((written ?? []).length !== 1) return { ok: false, reason: "write_refused", error: "The managing broker was not saved: the office row did not match (0 rows updated)." }
 
   // Audited on the lifecycle ledger (the same ledger coverage / deactivation use).
-  const { error: auditErr } = await svc.from("lifecycle_events").insert({
-    brokerage_id: brokerageId, entity_type: "location", entity_id: locationId,
-    event_type: userId ? "managing_broker_assigned" : "managing_broker_cleared",
-    actor_user_id: actorUserId,
+  // THE ONE EMITTER (wave 101C): emitKernelEvent through its client seam — same injected client,
+  // audit-only (no fan-out, as before), with causation lineage. The refusal is still read.
+  const kernelEmit = await import("./emit")
+  const auditRes = await kernelEmit.emitKernelEvent({
+    client: svc, auditOnly: true,
+    event: userId ? "managing_broker_assigned" : "managing_broker_cleared",
+    brokerageId, entityType: "location", entityId: locationId as string,
+    actorUserId,
     metadata: { managing_broker_user_id: userId, seat_added: seatAdded, principal_office_created: principalOfficeCreated },
-    created_at: nowIso,
+    createdAt: nowIso,
   })
-  if (auditErr) console.warn("[managing-broker] audit insert refused:", auditErr.message)
+  if (auditRes.error) console.warn("[managing-broker] audit insert refused:", auditRes.error)
 
   return { ok: true, locationId: locationId as string, userId, seatAdded, principalOfficeCreated }
 }

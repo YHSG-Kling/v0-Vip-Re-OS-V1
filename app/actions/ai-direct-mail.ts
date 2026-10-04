@@ -24,9 +24,9 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { z } from "zod"
 import {
-  canAccessFeature,
   incrementFeatureUsage,
 } from "@/lib/kernel"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 // TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
 // imported here and never called. The wire is real but it is made ONE LAYER
 // DOWN, by the writers this file delegates every state change to:
@@ -152,7 +152,7 @@ export async function aiWritePostcardCopy(params: {
     params = { ...params, brokerageId: tenant.brokerageId }
 
     // ── Kernel Gate: canAccessFeature ──
-    const access = await canAccessFeature(params.agentId, "direct_mail")
+    const access = await mayUseFeature(params.agentId, "direct_mail")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Direct mail feature not available" }
     }
@@ -320,7 +320,7 @@ export async function aiSelectTargetAudience(params: {
     }
 
     // ── Kernel Gate: canAccessFeature ──
-    const access = await canAccessFeature(params.agentId, "direct_mail")
+    const access = await mayUseFeature(params.agentId, "direct_mail")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Direct mail feature not available" }
     }
@@ -409,7 +409,7 @@ export async function aiPredictCampaignROI(params: {
     }
 
     // ── Kernel Gate: canAccessFeature ──
-    const access = await canAccessFeature(params.agentId, "direct_mail")
+    const access = await mayUseFeature(params.agentId, "direct_mail")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Direct mail feature not available" }
     }
@@ -962,7 +962,7 @@ export async function aiAnalyzeCampaignPerformance() {
     }
 
     // ── Kernel Gate: canAccessFeature (entitlement, on the RESOLVED agent) ──
-    const access = await canAccessFeature(ctx.agentId, "direct_mail")
+    const access = await mayUseFeature(ctx.agentId, "direct_mail")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Direct mail feature not available" }
     }

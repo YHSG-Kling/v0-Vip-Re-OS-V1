@@ -226,6 +226,67 @@ async function main() {
     check("POSITIVE CONTROL: the bare-call finder flags the pre-100C spelling",
       /await canAccessFeature\(actorUserId, "direct_mail"/.test(`const access = await canAccessFeature(actorUserId, "direct_mail", undefined, featureClient)`))
 
+    // ── wave 101C: EVERY plan-feature gate rides feature.use — mayUseFeature is its call-site form.
+    {
+      const fakeSvc = (users: Record<string, { brokerage_id: string | null; user_type: string | null; platform_role: string | null }>, refuse = false) => ({
+        from: (_t: string) => {
+          let id = ""
+          const q: any = { select: () => q, eq: (_c: string, v: string) => { id = v; return q },
+            maybeSingle: async () => refuse ? { data: null, error: { message: "users read refused" } } : { data: users[id] ?? null, error: null } }
+          return q
+        },
+      })
+      const users = { u1: { brokerage_id: "b1", user_type: "agent", platform_role: null }, staff: { brokerage_id: null, user_type: "agent", platform_role: "superadmin" } }
+      const asked: Array<{ b: string; u: string; c: unknown }> = []
+      const gate = async (u: string, _k: string, _t: string | undefined, c: unknown) => { asked.push({ b: "", u, c }); return { allowed: true, usage: { current: 2, limit: 10, remaining: 8 } } }
+      const sessionClient = { tag: "session" }
+      const loadSeen: string[] = []
+      const viaAccessFor = (a: BillingAccess) => ({ loadAccess: async (_s: unknown, b: string) => { loadSeen.push(b); return a } })
+      const { mayUseFeature } = await import("../lib/billing/billing-access")
+      const ok = await mayUseFeature("u1", "direct_mail", { client: sessionClient, now, deps: { service: fakeSvc(users), ...viaAccessFor(active), featureAccess: gate } })
+      check("mayUseFeature: the TENANT is read off the verified user's own row, the subscription half runs on it, and the plan-feature half reads through the SESSION client — the verdict's usage rides back",
+        ok.allowed && loadSeen[0] === "b1" && asked[0]?.c === sessionClient && ok.usage?.remaining === 8 && ok.decision.reason === "subscription_current")
+      loadSeen.length = 0; asked.length = 0
+      const lapsed = await mayUseFeature("u1", "direct_mail", { now, deps: { service: fakeSvc(users), ...viaAccessFor(resolveBillingAccess({ status: "cancelled", trial_end: null }, now)), featureAccess: gate } })
+      check("mayUseFeature: a LAPSED tenant is refused before the feature gate is asked, with human copy (not a machine reason) for the surface",
+        !lapsed.allowed && asked.length === 0 && lapsed.decision.reason === "status_cancelled" && /subscription is not active/i.test(lapsed.reason ?? ""))
+      loadSeen.length = 0
+      const tenantRail = await mayUseFeature("b9", "competitor_monitor", { now, deps: { service: fakeSvc(users), ...viaAccessFor(active), featureAccess: gate } })
+      check("mayUseFeature: a tenant-gated rail (a brokerages.id with no users row) is judged as THAT tenant — canAccessFeature's own tenant-id fallback, mirrored",
+        tenantRail.allowed && loadSeen[0] === "b9")
+      const refused = await mayUseFeature("u1", "direct_mail", { now, deps: { service: fakeSvc(users, true), ...viaAccessFor(active), featureAccess: gate } })
+      check("mayUseFeature FAILS CLOSED: a refused users read refuses (never 'no row, let them in')", !refused.allowed && /^user_read_refused/.test(refused.decision.reason))
+      const featRefused = await mayUseFeature("u1", "x", { now, deps: { service: fakeSvc(users), ...viaAccessFor(active), featureAccess: async () => ({ allowed: false, reason: "Upgrade to Team" }) } })
+      check("mayUseFeature: a plan-feature refusal keeps the gate's own message", !featRefused.allowed && featRefused.reason === "Upgrade to Team")
+      loadSeen.length = 0
+      const staff = await mayUseFeature("staff", "x", { now, deps: { service: fakeSvc(users), ...viaAccessFor(active), featureAccess: gate } })
+      check("mayUseFeature: platform staff with no tenant keep the resolver's access bypass (the subscription half is never read)", staff.allowed && loadSeen.length === 0)
+
+      // THE CENSUS: no plan-feature gate asks canAccessFeature directly — only the resolver does.
+      const { readdirSync, statSync } = await import("node:fs")
+      const walk = (dir: string, out: string[] = []): string[] => {
+        for (const e of readdirSync(join(process.cwd(), dir))) {
+          const rel = `${dir}/${e}`
+          if (e === "node_modules" || e.startsWith(".")) continue
+          if (statSync(join(process.cwd(), rel)).isDirectory()) walk(rel, out)
+          else if (/\.(ts|tsx)$/.test(e)) out.push(rel)
+        }
+        return out
+      }
+      const OWNERS = new Set(["lib/billing/billing-access.ts", "lib/kernel/0.1-feature-access.ts"])
+      const bareCall = /(?<![\w.])canAccessFeature\s*\(|\)\.canAccessFeature\s*\(/
+      const files = [...walk("app"), ...walk("lib")]
+      const direct = files.filter((rel) => !OWNERS.has(rel) && bareCall.test(blankStrings(stripComments(readFileSync(join(process.cwd(), rel), "utf8")))))
+      const routed = files.filter((rel) => /\bmayUseFeature\s*\(/.test(blankStrings(stripComments(readFileSync(join(process.cwd(), rel), "utf8"))))).length
+      console.log(`  · census: ${direct.length} module(s) call canAccessFeature directly outside the resolver; ${routed} module(s) gate through mayUseFeature (wave 101C base e0b0a3c8c: 27 modules / 68 call sites direct). Denominator: ${files.length} .ts/.tsx under app/ + lib/`)
+      check("EVERY plan-feature gate rides mayUseAndAfford(feature.use) — no direct canAccessFeature call outside the resolver", direct.length === 0, direct.join(", "))
+      check("POSITIVE CONTROL: the census flags the pre-101C call shape, and not a type-only use", bareCall.test(`const access = await canAccessFeature(userId, "ad_creator")`) && !bareCall.test(`type C = Parameters<typeof canAccessFeature>[3]`))
+      check("the census ran over a non-trivial tree, and gates were found routed", files.length > 1000 && routed >= 20, `${files.length} files / ${routed} routed`)
+      const progress = stripComments(readFileSync(join(process.cwd(), "app/dashboard/onboarding/progress/page.tsx"), "utf8"))
+      check("onboarding/progress: the swapped-argument gate whose OBJECT was tested for truthiness is gone — the session user, the feature key, and `.allowed`",
+        /mayUseFeature\(user\.id, "training_progress"/.test(progress) && /if \(!access\.allowed\)/.test(progress) && !/canAccessFeature\("training_progress"/.test(progress))
+    }
+
     // ── wave 100 (lane 100C — 99A open item 2): dunning recipients come from THE roster.
     const dun = blankStrings(stripComments(readFileSync(join(process.cwd(), "lib/billing/dunning.ts"), "utf8")))
     const dunKeep = stripComments(readFileSync(join(process.cwd(), "lib/billing/dunning.ts"), "utf8"))

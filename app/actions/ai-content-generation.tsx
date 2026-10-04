@@ -13,7 +13,8 @@ import { generateContent } from "@/lib/services/content-generation.service"
 import { calculateCost, type AIModel } from "@/lib/ai/cost-tracking"
 // The one feature vocabulary shared by BOTH content-generation lanes.
 import { CONTENT_GENERATION_FEATURES } from "@/lib/ai/content-features"
-import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { evaluateThemFirstFocus } from "@/lib/compliance-rules/rule-evaluators"
@@ -1010,7 +1011,7 @@ export async function generateListingDescription(params: {
     if (!agentContext.isAuthenticated || !agentContext.brokerageId) {
       return { success: false, error: "Listing description refused: sign in to a brokerage first." }
     }
-    const featureCheck = await canAccessFeature(agentContext.userId, "ai_listing_generation")
+    const featureCheck = await mayUseFeature(agentContext.userId, "ai_listing_generation")
     if (!featureCheck.allowed) {
       return { success: false, error: featureCheck.reason || "Feature access denied" }
     }
@@ -1160,7 +1161,7 @@ export async function generateSocialPost(params: {
   try {
     // ── LAYER 0.1: Feature Access Gate ────────────────────────────────────────
     const agentContext = await getAgentContext()
-    const featureCheck = await canAccessFeature(agentContext.userId, "ai_social_content")
+    const featureCheck = await mayUseFeature(agentContext.userId, "ai_social_content")
     if (!featureCheck.allowed) {
       return { success: false, error: featureCheck.reason || "Feature access denied" }
     }

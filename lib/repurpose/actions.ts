@@ -12,7 +12,8 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { evaluateKernelOutbound, isComplianceBlocked } from "@/lib/kernel/adapters/compliance"
 import { applyKernelBrandVoice, isBrandVoiceBlocked } from "@/lib/kernel/adapters/brand-voice"
-import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { generateAIResponse } from "@/lib/ai"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { scheduleSocialPost, getConnectedAccounts } from "@/app/actions/social-media-automation"
@@ -205,7 +206,7 @@ export async function createRepurposePipeline(
     const { userId, brokerageId: contextBrokerageId } = agentContext
 
     // ── Kernel Gate: canAccessFeature ──
-    const access = await canAccessFeature(userId, "omnipresence_repurposer")
+    const access = await mayUseFeature(userId, "omnipresence_repurposer")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
@@ -264,7 +265,7 @@ export async function executePipeline(params: {
     const { userId, brokerageId: contextBrokerageId } = agentContext
 
     // ── Kernel Gate: canAccessFeature ──
-    const access = await canAccessFeature(userId, "omnipresence_repurposer")
+    const access = await mayUseFeature(userId, "omnipresence_repurposer")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available", blockedReason: "Access denied" }
     }
@@ -660,7 +661,7 @@ export async function repurposeUrlToBrandedVideo(input: {
     return { success: false, error: "Not authenticated" }
   }
 
-  const access = await canAccessFeature(ctx.userId, "omnipresence_repurposer")
+  const access = await mayUseFeature(ctx.userId, "omnipresence_repurposer")
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Feature not available" }
   }

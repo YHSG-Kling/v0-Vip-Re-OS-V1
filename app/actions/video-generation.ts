@@ -19,7 +19,8 @@ import { requireCaller } from "@/lib/auth/require-caller"
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import {
   buildComplianceSystemBlocks,
@@ -597,6 +598,9 @@ export async function createScriptVariation(data: {
   }
 
   // Write lifecycle event
+  // ONE EMIT (wave 101C): this row and its fan-out were two calls (an auditOnly emit, then a bare
+  // processKernelEvent). One emitKernelEvent now — the reactor gets the lifecycleEventId. Equivalent:
+  // same event/tenant/entity, and the reactor's reader for this event uses no metadata; agentUserId: null keeps the reactor's attribution as the bare fan-out had it.
   await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     entityType: "script_variation",
     entityId: variation.id,
@@ -608,16 +612,9 @@ export async function createScriptVariation(data: {
       variation_label: data.variationLabel,
       is_ab_test: data.isAbTest ?? false,
     },
-    auditOnly: true,
+    agentUserId: null,
   }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
-  // Fire kernel event for variation
-  await processKernelEvent({
-    event: KernelEvent.SCRIPT_VARIATION_CREATED,
-    brokerageId: brokerageId,
-    entityType: "script_variation",
-    entityId: variation.id,
-  }).catch(err => console.error("[video-generation] Kernel event failed:", err))
 
   revalidatePath("/dashboard/videos/library")
   return variation
@@ -909,6 +906,9 @@ async function checkAndFirePerformanceEvents(brokerageId: string, tracking: any)
   const clickThroughRate = tracking.click_through_rate || 0
 
   // Always fire VIDEO_PERFORMANCE_UPDATED
+  // ONE EMIT (wave 101C): this row and its fan-out were two calls (an auditOnly emit, then a bare
+  // processKernelEvent). One emitKernelEvent now — the reactor gets the lifecycleEventId. Equivalent:
+  // same event/tenant/entity, and the reactor's reader for this event uses no metadata.
   await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     entityType: "video_performance",
     entityId: tracking.id,
@@ -921,15 +921,8 @@ async function checkAndFirePerformanceEvents(brokerageId: string, tracking: any)
       video_asset_id: tracking.video_asset_id,
       video_project_id: tracking.video_project_id,
     },
-    auditOnly: true,
   }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
-  await processKernelEvent({
-    event: KernelEvent.VIDEO_PERFORMANCE_UPDATED,
-    brokerageId,
-    entityType: "video_performance",
-    entityId: tracking.id,
-  }).catch(err => console.error("[video-generation] Kernel event failed:", err))
 
   // Check high performer threshold
   if (
@@ -1308,7 +1301,7 @@ export async function generateVideoScript(params: {
   // by NOTHING, so both AI/render doors in it ran with an auth check and no
   // entitlement check. Key `video_generation` — the spelling already in force at
   // app/dashboard/video/page.tsx:13 and lib/kernel/marketing.ts:904.
-  const entitlement = await canAccessFeature(auth.userId, "video_generation")
+  const entitlement = await mayUseFeature(auth.userId, "video_generation")
   if (!entitlement.allowed) {
     return { success: false, error: entitlement.reason ?? "Video generation is not available on your plan" }
   }
@@ -1490,7 +1483,7 @@ export async function generateVideoFromScript(params: {
   if (!auth.ok) return { success: false, error: auth.error }
 
   // ── THE TIER GATE, ON THE PAID RENDER ──────────────────────────────────────
-  const entitlement = await canAccessFeature(auth.userId, "video_generation")
+  const entitlement = await mayUseFeature(auth.userId, "video_generation")
   if (!entitlement.allowed) {
     return { success: false, error: entitlement.reason ?? "Video generation is not available on your plan" }
   }

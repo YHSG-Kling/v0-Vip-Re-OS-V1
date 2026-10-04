@@ -136,14 +136,34 @@ export async function GET(request: NextRequest) {
       //
       // It also returns the GHOSTED half (messaged, no reply) that no caller had
       // ever asked for, labelled per contact so the engine can tell the two apart.
-      const staleContacts = await detectAllEligibleContacts(brokerageId, {
+      //
+      // ORDERED BY THE CONTACT NBA (wave 101C). The batch used to be the detector's first 20
+      // (ghosted, then oldest) — so a contact with rising intent sat behind 20 the NBA would only
+      // have told to wait. Now a 2× pool is read, each person is planned by the SAME NBA
+      // engageContact runs (lib/ai-isa/lead-action-plan.ts loadContactNbaContext +
+      // planNextContactTouch, autonomous run), and rankContactsForTouch orders it: actionable
+      // first, then NBA priority (intent momentum), then the detector's order; unreadable inputs
+      // last. engageContact still re-plans each one and ledgers every wait / do_nothing — this
+      // only decides WHO gets the batch's slots. The old inline query took 20 per brokerage per
+      // run; that ceiling is kept for the batch itself.
+      const BATCH = Math.min(20, DEFAULT_MAX_BATCH)
+      const pool = await detectAllEligibleContacts(brokerageId, {
         staleDays,
         ghostedDays: staleDays,
-        // The old inline query took 20 per brokerage per run; keep that ceiling
-        // rather than inheriting the module's larger default batch.
-        maxBatch: Math.min(20, DEFAULT_MAX_BATCH),
+        maxBatch: Math.min(BATCH * 2, DEFAULT_MAX_BATCH),
         requireAssignedAgent: true,
       })
+      const { loadContactNbaContext, planNextContactTouch, rankContactsForTouch } = await import('@/lib/ai-isa/lead-action-plan')
+      const nbaNow = new Date()
+      const planned = await Promise.all(pool.map(async (contact) => {
+        try {
+          const nba = await loadContactNbaContext(supabase, { brokerageId, contact, humanInitiated: false, now: nbaNow })
+          return { item: contact, plan: nba.ok ? planNextContactTouch({ now: nbaNow, context: nba.context }) : null }
+        } catch {
+          return { item: contact, plan: null }
+        }
+      }))
+      const staleContacts = rankContactsForTouch(planned).slice(0, BATCH)
 
       for (const contact of staleContacts) {
         try {

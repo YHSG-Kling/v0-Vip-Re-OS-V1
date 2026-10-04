@@ -1304,6 +1304,9 @@ export async function markRepairFailed(params: {
   }
 
   // Sub-event: kernel event + lifecycle_events row
+  // ONE EMIT (wave 101C): this row and its fan-out were two calls (an auditOnly emit, then a bare
+  // processKernelEvent). One emitKernelEvent now — the reactor gets the lifecycleEventId. Equivalent:
+  // same event/tenant/entity, and the reactor's reader for this event uses no metadata; agentUserId: null keeps the reactor's attribution as the bare fan-out had it.
   await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     brokerageId: brokerageId,
     entityType:  "listing_stage_machine",
@@ -1311,14 +1314,8 @@ export async function markRepairFailed(params: {
     event:   KernelEvent.LISTING_REPAIR_FAILED,
     actorUserId: userId,
     metadata: { repair_id: repairId, reason },
-    auditOnly: true,
+    agentUserId: null,
   }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
-  await processKernelEvent({
-    event:      KernelEvent.LISTING_REPAIR_FAILED,
-    brokerageId,
-    entityType: "listing_stage_machine",
-    entityId:   listingId,
-  }).catch(() => {})
 
   return { success: true, blocked: true }
 }
@@ -1363,6 +1360,9 @@ export async function scheduleMediaCapture(params: {
   }
 
   // Sub-event: kernel event + lifecycle_events row
+  // ONE EMIT (wave 101C): this row and its fan-out were two calls (an auditOnly emit, then a bare
+  // processKernelEvent). One emitKernelEvent now — the reactor gets the lifecycleEventId. Equivalent:
+  // same event/tenant/entity, and the reactor's reader for this event uses no metadata; agentUserId: null keeps the reactor's attribution as the bare fan-out had it.
   await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     brokerageId: brokerageId,
     entityType:  "listing_stage_machine",
@@ -1370,14 +1370,8 @@ export async function scheduleMediaCapture(params: {
     event:   KernelEvent.LISTING_MEDIA_SCHEDULED,
     actorUserId: userId,
     metadata: { scheduled_date: scheduledDate, vendor_id: vendorId ?? null },
-    auditOnly: true,
+    agentUserId: null,
   }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
-  await processKernelEvent({
-    event:      KernelEvent.LISTING_MEDIA_SCHEDULED,
-    brokerageId,
-    entityType: "listing_stage_machine",
-    entityId:   listingId,
-  }).catch(() => {})
 
   return { success: true }
 }
@@ -1817,6 +1811,9 @@ export async function submitToMLSAdmin(params: {
   }
 
   // Sub-event: kernel event + lifecycle_events row
+  // ONE EMIT (wave 101C): this row and its fan-out were two calls (an auditOnly emit, then a bare
+  // processKernelEvent). One emitKernelEvent now — the reactor gets the lifecycleEventId. Equivalent:
+  // same event/tenant/entity, and the reactor's reader for this event uses no metadata; agentUserId: null keeps the reactor's attribution as the bare fan-out had it.
   await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     brokerageId: brokerageId,
     entityType:  "listing_stage_machine",
@@ -1824,14 +1821,8 @@ export async function submitToMLSAdmin(params: {
     event:   KernelEvent.LISTING_MLS_SUBMITTED_TO_ADMIN,
     actorUserId: userId,
     metadata: {},
-    auditOnly: true,
+    agentUserId: null,
   }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
-  await processKernelEvent({
-    event:      KernelEvent.LISTING_MLS_SUBMITTED_TO_ADMIN,
-    brokerageId,
-    entityType: "listing_stage_machine",
-    entityId:   listingId,
-  }).catch(() => {})
 
   return { success: true }
 }
@@ -2112,6 +2103,9 @@ export async function recordShowingCompleted(params: {
   }
 
   // Sub-event: kernel event + lifecycle_events row
+  // ONE EMIT (wave 101C): this row and its fan-out were two calls (an auditOnly emit, then a bare
+  // processKernelEvent). One emitKernelEvent now — the reactor gets the lifecycleEventId. Equivalent:
+  // same event/tenant/entity, and the reactor's reader for this event uses no metadata; agentUserId: null keeps the reactor's attribution as the bare fan-out had it.
   await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     brokerageId: brokerageId,
     entityType:  "listing_stage_machine",
@@ -2119,14 +2113,8 @@ export async function recordShowingCompleted(params: {
     event:   KernelEvent.LISTING_SHOWING_COMPLETED,
     actorUserId: userId,
     metadata: { showing_id: showingId, feedback: feedback ?? null },
-    auditOnly: true,
+    agentUserId: null,
   }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
-  await processKernelEvent({
-    event:      KernelEvent.LISTING_SHOWING_COMPLETED,
-    brokerageId,
-    entityType: "listing_stage_machine",
-    entityId:   listingId,
-  }).catch(() => {})
 
   return { success: true }
 }

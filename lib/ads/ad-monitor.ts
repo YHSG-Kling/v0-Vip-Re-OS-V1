@@ -6,7 +6,7 @@
 // processKernelEvent(COMPETITOR_CONTENT_ALERTED) when severity >= 'high'
 
 import { createClient } from "@/lib/supabase/server"
-import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 // ROUTED, was raw (lane 99B) — see generateInsights below.
@@ -157,7 +157,7 @@ export async function ingestCompetitorAd(
     const supabase = await createClient()
 
     // Kernel gate: canAccessFeature (entitlement, on the RESOLVED brokerage)
-    const accessResult = await canAccessFeature(brokerageId, "competitor_monitor")
+    const accessResult = await mayUseFeature(brokerageId, "competitor_monitor")
     if (!accessResult.allowed) {
       return { success: false, error: accessResult.reason || "Feature access denied" }
     }
@@ -242,7 +242,7 @@ export async function ingestCompetitorPost(
     const supabase = await createClient()
 
     // Kernel gate: canAccessFeature (entitlement, on the RESOLVED brokerage)
-    const accessResult = await canAccessFeature(brokerageId, "competitor_monitor")
+    const accessResult = await mayUseFeature(brokerageId, "competitor_monitor")
     if (!accessResult.allowed) {
       return { success: false, error: accessResult.reason || "Feature access denied" }
     }
@@ -290,7 +290,7 @@ export async function generateInsights(
     const supabase = await createClient()
 
     // Kernel gate: canAccessFeature
-    const accessResult = await canAccessFeature(brokerageId, "competitor_monitor")
+    const accessResult = await mayUseFeature(brokerageId, "competitor_monitor")
     if (!accessResult.allowed) {
       return { success: false, error: accessResult.reason || "Feature access denied" }
     }
@@ -552,7 +552,7 @@ export async function getCompetitorAds(
   try {
     const supabase = await createClient()
 
-    const accessResult = await canAccessFeature(brokerageId, "competitor_monitor")
+    const accessResult = await mayUseFeature(brokerageId, "competitor_monitor")
     if (!accessResult.allowed) {
       return { success: false, error: accessResult.reason || "Feature access denied" }
     }
@@ -581,7 +581,7 @@ export async function getCompetitorPosts(
   try {
     const supabase = await createClient()
 
-    const accessResult = await canAccessFeature(brokerageId, "competitor_monitor")
+    const accessResult = await mayUseFeature(brokerageId, "competitor_monitor")
     if (!accessResult.allowed) {
       return { success: false, error: accessResult.reason || "Feature access denied" }
     }
@@ -610,7 +610,7 @@ export async function getAdInsights(
   try {
     const supabase = await createClient()
 
-    const accessResult = await canAccessFeature(brokerageId, "competitor_monitor")
+    const accessResult = await mayUseFeature(brokerageId, "competitor_monitor")
     if (!accessResult.allowed) {
       return { success: false, error: accessResult.reason || "Feature access denied" }
     }
@@ -639,7 +639,7 @@ export async function getTrendAlerts(
   try {
     const supabase = await createClient()
 
-    const accessResult = await canAccessFeature(brokerageId, "competitor_monitor")
+    const accessResult = await mayUseFeature(brokerageId, "competitor_monitor")
     if (!accessResult.allowed) {
       return { success: false, error: accessResult.reason || "Feature access denied" }
     }

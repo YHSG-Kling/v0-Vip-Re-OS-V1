@@ -268,9 +268,16 @@ export async function evaluateOutboundCompliance(
         // than a console.warn (self_heal_events has no INSERT policy for any
         // non-service role, so a user-scoped client would be refused and the
         // refusal swallowed — see lib/kernel/write-sentinel.ts).
+        // ISA IS A SYSTEM AI ISA (wave 101C): an ai_isa evaluation names the ISA's system user
+        // (lib/auth/isa-actor.ts isaAuditActor), never the agent whose id rode the send; that agent
+        // rides as details.on_behalf_of_user_id.
+        const isaActor = actorContext.actorType === "ai_isa"
+          ? await (await import("@/lib/auth/isa-actor")).isaAuditActor(supabase as any, actorContext.brokerageId, actorContext.userId ?? null)
+          : null
         await sentinelWrite(supabase, supabase.from("compliance_events").insert({
           brokerage_id: actorContext.brokerageId,
-          actor_user_id: actorContext.userId ?? null,
+          actor_user_id: isaActor ? isaActor.actorUserId : (actorContext.userId ?? null),
+          ...(isaActor?.onBehalfOfUserId ? { details: { on_behalf_of_user_id: isaActor.onBehalfOfUserId } } : {}),
           actor_role: actorContext.actorType,
           entity_type: "contact",
           entity_id: contact.id,

@@ -300,6 +300,13 @@ function freshWorld(): void {
     ops: [], events: [], insertReturnsNothing: new Set(), prompts: [],
     tables: {
       brokerages: [{ id: A.brokerage, plan_tier: "brokerage", name: "Alpha Realty", about_text: "About A", bio_text: null }, { id: B.brokerage, plan_tier: "brokerage", name: "Beta" }],
+      // Wave 101C: every plan-feature gate is mayUseAndAfford("feature.use") (mayUseFeature) — the
+      // SUBSCRIPTION half runs first, so each tenant needs a current subscription (fail closed without
+      // one; test:billing-access owns the lapsed / missing cases).
+      subscriptions: [
+        { id: "sub-a", brokerage_id: A.brokerage, status: "active", trial_end: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+        { id: "sub-b", brokerage_id: B.brokerage, status: "active", trial_end: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+      ],
       users: [
         { id: A.user, user_type: "agent", brokerage_id: A.brokerage, team_id: null, platform_role: null },
         { id: B.user, user_type: "agent", brokerage_id: B.brokerage, team_id: null, platform_role: null },
