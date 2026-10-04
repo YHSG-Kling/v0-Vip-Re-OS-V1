@@ -116,8 +116,13 @@ export async function enrollContact(params: EnrollContactParams): Promise<Enroll
       current_step: 0,
       enrolled_at: new Date().toISOString(),
       next_step_at: nextStepAt,
-      // A/B: honor an explicit variant, else split 50/50 when the sequence is_ab_test, else null.
-      ab_variant: (await import("./ab-variant")).assignAbVariant({ isAbTest: (sequence as any).is_ab_test, provided: params.abVariant ?? null }),
+      // A/B: honor an explicit variant, else the STABLE kernel assignment (lib/kernel/experiments.ts)
+      // when the sequence is_ab_test, else null. The tenant kill switch assigns control.
+      ab_variant: (await import("./ab-variant")).assignAbVariant({
+        isAbTest: (sequence as any).is_ab_test, provided: params.abVariant ?? null,
+        brokerageId: params.brokerageId, recipientId, sequenceId: params.sequenceId,
+        policy: (sequence as any).is_ab_test ? await (await import("@/lib/kernel/experiments")).loadExperimentPolicy(supabase, params.brokerageId) : undefined,
+      }),
     })
     .select("id")
     .single()

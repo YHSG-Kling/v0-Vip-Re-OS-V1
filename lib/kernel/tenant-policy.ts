@@ -44,6 +44,7 @@ export interface TenantPolicyDefinition {
 
 /** brokerage_settings.settings keys that ARE tenant operating policy (versioned on every change). */
 export const TENANT_POLICY_SETTINGS_KEYS: Record<string, TenantPolicyDefinition> = {
+  experiments:             { label: "Experiments (per-tenant kill switch)", store: "brokerage_settings.settings", defaultNote: "experiments on; arms by lib/kernel/experiments.ts" },
   ai_agent_capabilities:   { label: "AI agent capabilities (enabled / custom tools)", store: "brokerage_settings.settings", defaultNote: "every catalogue capability enabled, no custom tools" },
   lead_routing:            { label: "Lead routing switches (mailbox-owner preference)", store: "brokerage_settings.settings", defaultNote: "mailbox-owner preference ON" },
   contact_fatigue_weights: { label: "Contact fatigue weights", store: "brokerage_settings.settings", defaultNote: "platform default weights" },

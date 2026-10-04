@@ -26,6 +26,7 @@ import { renderPostcardBothSides4x6, renderPostcardBothSides6x9 } from "@/lib/di
 import { renderLetterHtml } from "@/lib/direct-mail/render-letter"
 import type { DirectMailCopyContext } from "@/lib/direct-mail/draft-copy"
 import { pickVariantArm, recordVariantSend } from "@/lib/direct-mail/variant-bandit"
+import { experimentLedgerDetail } from "@/lib/kernel/experiments"
 import type { Persona } from "@/lib/kernel/types"
 
 export type PostcardSize = "4x6" | "6x9"
@@ -261,6 +262,10 @@ export async function orchestrateRenderAndSend(
     // actually order the larger card from Lob.
     size:           args.pieceType === "postcard" ? (args.postcardSize ?? "4x6") : undefined,
     systemSource:   args.systemSource ?? "orchestrated",
+    // Wave 101 (101B): the bandit's arm rides the send's ledger row as detail.experiment, so 100A
+    // attribution rolls outcomes up by arm beside the A/B arms (lib/kernel/experiments.ts). The
+    // Thompson sampler keeps choosing it — an adaptive allocator, not a fixed-weight split.
+    ...(variantPick ? { ledger: { detail: experimentLedgerDetail({ key: "direct_mail_variant", arm: variantPick.variantId }) } } : {}),
     metadata: {
       rendered,
       fell_back_reason: fellBackReason,

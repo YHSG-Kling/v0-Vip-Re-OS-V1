@@ -25,6 +25,10 @@ import {
   type ChainLink,
 } from "@/lib/kernel/action-ledger"
 import { loadLedgerAttribution, type LedgerAttribution } from "@/lib/intelligence/roi-ledger"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
+import { replayDecisions, type ReplayDecisionsResult } from "@/lib/kernel/decision-replay"
+import { loadExperimentPolicy, type ExperimentPolicy } from "@/lib/kernel/experiments"
+import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
 
 export type CausalChainResult =
   | { ok: true; chain: ChainLink[]; ledgerAvailable: boolean; causationAvailable: boolean; attribution: LedgerAttribution | null; attributionError: string | null }
@@ -123,4 +127,61 @@ export async function getEntityCausalChain(input: { entityType: string; entityId
   }
 
   return { ok: true, chain: assembleCausalChain([...events.values()], [...actions.values()]), ledgerAvailable, causationAvailable, attribution, attributionError }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// DECISION REPLAY + EXPERIMENT KILL SWITCH (wave 101, lane 101B; gap map row 20) — on the AI audit
+// page beside the flight recorder. Same gate shape: tenant FROM THE SESSION (no export here takes a
+// tenant argument, so a cross-tenant replay has no way in; requireCallerTenant refuses a session
+// with no tenant), tenant admin, then the service client pinned to that tenant.
+// ═════════════════════════════════════════════════════════════════════════════
+
+async function gateTenantAdmin(): Promise<{ ok: true; brokerageId: string; userId: string } | { ok: false; error: string }> {
+  const caller = await requireCallerTenant()
+  if (!caller.ok) return { ok: false, error: caller.error }
+  const admin = await resolveTenantAdmin(caller.supabase, caller.userId, { user_type: caller.userType, brokerage_id: caller.brokerageId })
+  if (!admin.ok) return { ok: false, error: `Could not resolve your permissions: ${admin.error}` }
+  if (!admin.isTenantAdmin) return { ok: false, error: "Only a broker or a brokerage admin can replay AI decisions or change experiments." }
+  return { ok: true, brokerageId: caller.brokerageId, userId: caller.userId }
+}
+
+/** Replay this tenant's recorded NBA decisions through the CURRENT planner (lib/kernel/decision-replay.ts). Deterministic, no model calls. */
+export async function replayTenantDecisions(input: {
+  since?: string | null
+  until?: string | null
+  subjectType?: string | null
+  subjectId?: string | null
+}): Promise<ReplayDecisionsResult> {
+  // No tenant argument at all (test:action-ledger §5): the replay is ALWAYS the session's tenant.
+  const gate = await gateTenantAdmin()
+  if (!gate.ok) return gate
+  const since = input?.since && Number.isFinite(Date.parse(input.since)) ? input.since : new Date(Date.now() - 30 * 86_400_000).toISOString()
+  const subjectType: "lead" | "contact" | null = input?.subjectType === "lead" ? "lead" : input?.subjectType === "contact" ? "contact" : null
+  const subject = input?.subjectId && subjectType ? { type: subjectType, id: String(input.subjectId).trim() } : null
+  return replayDecisions({ brokerageId: gate.brokerageId, since, until: input?.until ?? null, subject }, { client: createServiceClient() })
+}
+
+/** The tenant's experiment policy exactly as the assigner reads it (brokerage_settings.settings.experiments). */
+export async function getTenantExperimentPolicy(): Promise<({ ok: true } & ExperimentPolicy) | { ok: false; error: string }> {
+  const gate = await gateTenantAdmin()
+  if (!gate.ok) return gate
+  return { ok: true, ...(await loadExperimentPolicy(createServiceClient(), gate.brokerageId)) }
+}
+
+/**
+ * The per-tenant experiment KILL SWITCH — on: every experiment assigns its control arm
+ * (lib/kernel/experiments.ts assignExperimentArm). Written through the ONE brokerage_settings writer
+ * (mergeBrokerageSettings — by key, compare-and-set, refusals read).
+ * MERGE POINT (lane 101A versioned tenant policy): when the versioned policy writer lands, this
+ * write moves onto it so the toggle gets a policy version + audit row; loadExperimentPolicy is the reader to swap.
+ */
+export async function setExperimentKillSwitch(input: { on: boolean }): Promise<{ ok: true } | { ok: false; error: string }> {
+  const gate = await gateTenantAdmin()
+  if (!gate.ok) return gate
+  const on = input?.on === true
+  const write = await mergeBrokerageSettings(createServiceClient(), gate.brokerageId, (settings) => {
+    const prev = (settings.experiments && typeof settings.experiments === "object" ? settings.experiments : {}) as Record<string, unknown>
+    return { experiments: { ...prev, kill_switch: on, kill_switch_set_by: gate.userId, kill_switch_set_at: new Date().toISOString() } }
+  }, { policy: { type: "user", userId: gate.userId, reason: `experiment kill switch ${on ? "on" : "off"}` } })
+  return write.ok ? { ok: true } : { ok: false, error: write.error }
 }

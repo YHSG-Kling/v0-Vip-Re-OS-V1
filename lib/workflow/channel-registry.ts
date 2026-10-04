@@ -12,6 +12,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { experimentLedgerDetail } from "@/lib/kernel/experiments"
 
 // ─── Step context ─────────────────────────────────────────────────────────────
 
@@ -25,6 +26,9 @@ export interface StepContext {
   /** Which table the recipient came from — "lead" enrollments load the leads row into `contact`
    *  (shape-compatible) and restrict to the approved pre-consent channels. Defaults to "contact". */
   entity?: "contact" | "lead"
+  /** Wave 101 (101B): the enrollment's assigned A/B arm (sequence_enrollments.ab_variant), or null
+   *  when the sequence runs no experiment — recorded as ledger detail.experiment. */
+  abVariant?: string | null
   brokerageId: string
   /** Auth user ID of the agent who created the sequence */
   agentUserId: string | null
@@ -45,19 +49,24 @@ export interface StepContext {
  * current_step advance) replays instead of sending twice. The subject is the real recipient class
  * (a lead enrollment loads the leads row into `contact`).
  */
-export function sequenceStepLedger(ctx: Pick<StepContext, "enrollmentId" | "step" | "contact" | "entity">): {
+export function sequenceStepLedger(ctx: Pick<StepContext, "enrollmentId" | "step" | "contact" | "entity" | "abVariant">): {
   reasonCode: "CAMPAIGN_STEP"
   reasonDetail: string
   cycle: string
   subject?: { type: "contact" | "lead"; id: string }
-  detail: { sequence_id: string; step_id: string }
+  detail: { sequence_id: string; step_id: string; experiment?: { key: string; arm: string } }
 } {
   return {
     reasonCode: "CAMPAIGN_STEP",
     reasonDetail: `sequence ${ctx.step.sequence_id} step ${ctx.step.id}`,
     cycle: `enrollment:${ctx.enrollmentId}:step:${ctx.step.id}`,
     // Wave 100A: the campaign this send belongs to, for outcome → revenue attribution by campaign.
-    detail: { sequence_id: String(ctx.step.sequence_id), step_id: String(ctx.step.id) },
+    // Wave 101 (101B): + the experiment arm the ENROLLMENT was assigned (intent-to-treat — the arm,
+    // not whichever step row happened to exist), keyed like lib/kernel/experiments.ts assigns it.
+    detail: {
+      sequence_id: String(ctx.step.sequence_id), step_id: String(ctx.step.id),
+      ...experimentLedgerDetail(ctx.abVariant ? { key: `sequence_ab:${ctx.step.sequence_id}`, arm: ctx.abVariant } : null),
+    },
     ...(ctx.contact?.id ? { subject: { type: ctx.entity === "lead" ? "lead" as const : "contact" as const, id: ctx.contact.id } } : {}),
   }
 }

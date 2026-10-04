@@ -378,6 +378,8 @@ export async function executeSequenceStep(
     step,
     contact: contact as any,
     entity: recipientEntity,
+    // Wave 101 (101B): the enrollment's experiment arm rides the send's ledger row (sequenceStepLedger).
+    abVariant: (enrollment.ab_variant as string | null) ?? null,
     brokerageId,
     agentUserId,
     agentId,

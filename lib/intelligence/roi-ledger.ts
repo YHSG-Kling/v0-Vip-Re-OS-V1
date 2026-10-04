@@ -165,6 +165,8 @@ export interface LedgerAttribution {
   byManager: AttributionRow[]
   byPlaybook: AttributionRow[]
   byCampaign: AttributionRow[]
+  /** Wave 101 (101B): `<experiment key>=<arm>` from ledger detail.experiment (lib/kernel/experiments.ts). */
+  byExperimentArm: AttributionRow[]
 }
 
 const DECISION_ACTION = /\.decision\.(wait|do_nothing)$/
@@ -172,11 +174,13 @@ function isEligibleStatus(a: AttributableAction): boolean {
   return a.status === "executed" || (a.status === "skipped" && DECISION_ACTION.test(a.action))
 }
 
-/** The four "which X produced revenue" keys of a ledger row. Campaign is null when the row names none. */
-function attributionKeys(a: AttributableAction): { reason: string; manager: string; playbook: string; campaign: string | null } {
+/** The "which X produced revenue" keys of a ledger row. Campaign / experiment arm are null when the row names none. */
+function attributionKeys(a: AttributableAction): { reason: string; manager: string; playbook: string; campaign: string | null; experimentArm: string | null } {
   const d = a.detail ?? {}
   const campaign = (d.sequence_id ?? d.campaign_id ?? null) as string | null
+  const exp = (d.experiment ?? null) as { key?: unknown; arm?: unknown } | null
   return {
+    experimentArm: exp && typeof exp.key === "string" && typeof exp.arm === "string" ? `${exp.key}=${exp.arm}` : null,
     reason: a.reason_code || "UNSPECIFIED",
     manager: a.actor_manager_key ?? `${a.actor_type}`,
     playbook: a.system_source ?? a.action.split(".")[0],
@@ -215,7 +219,7 @@ export function attributeOutcomesToLedger(outcomes: AttributableOutcome[], actio
       credits.push({ outcomeRef: o.ref, kind: o.kind, actionId: a.id, model: "all_touch", decision: a.status !== "executed", cents })
     })
   }
-  const roll = (dim: "reason" | "manager" | "playbook" | "campaign"): AttributionRow[] => {
+  const roll = (dim: "reason" | "manager" | "playbook" | "campaign" | "experimentArm"): AttributionRow[] => {
     const m = new Map<string, AttributionRow>()
     for (const c of credits) {
       const a = byId.get(c.actionId)
@@ -229,7 +233,7 @@ export function attributeOutcomesToLedger(outcomes: AttributableOutcome[], actio
     }
     return [...m.values()].sort((x, y) => y.lastTouchCents - x.lastTouchCents || y.allTouchCents - x.allTouchCents || x.key.localeCompare(y.key))
   }
-  return { outcomes, credits, uncredited, byReasonCode: roll("reason"), byManager: roll("manager"), byPlaybook: roll("playbook"), byCampaign: roll("campaign") }
+  return { outcomes, credits, uncredited, byReasonCode: roll("reason"), byManager: roll("manager"), byPlaybook: roll("playbook"), byCampaign: roll("campaign"), byExperimentArm: roll("experimentArm") }
 }
 
 interface LedgerAttributionSummary {
@@ -240,6 +244,7 @@ interface LedgerAttributionSummary {
   byManager: AttributionRow[]
   byPlaybook: AttributionRow[]
   byCampaign: AttributionRow[]
+  byExperimentArm: AttributionRow[]
 }
 
 /** The tile's cut: totals + the top `n` per dimension. */
@@ -250,6 +255,7 @@ function summarizeLedgerAttribution(r: LedgerAttribution, n: number): LedgerAttr
     revenueCents: r.outcomes.reduce((s, o) => s + o.revenueCents, 0),
     byReasonCode: r.byReasonCode.slice(0, n), byManager: r.byManager.slice(0, n),
     byPlaybook: r.byPlaybook.slice(0, n), byCampaign: r.byCampaign.slice(0, n),
+    byExperimentArm: r.byExperimentArm.slice(0, n),
   }
 }
 

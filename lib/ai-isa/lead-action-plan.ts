@@ -1105,6 +1105,9 @@ async function leadStillSendable(args: {
 export function nonActionRecordFor(
   plan: LeadTouchPlan,
   at: { brokerageId: string; leadId: string; now: Date } | { brokerageId: string; contactId: string; now: Date },
+  /** Wave 101 (101B): the compact planner input, so the replay harness can re-run the CURRENT
+   *  planner on exactly what this decision read (lib/kernel/decision-replay.ts). */
+  decisionInput?: DecisionInputSnapshot,
 ): NonActionRecord | null {
   if (plan.action !== "wait" && plan.action !== "do_nothing") return null
   // Wave 100 (100B): the contact subject of the same NBA records on the same ledger, its own domain.
@@ -1125,10 +1128,159 @@ export function nonActionRecordFor(
       reasons_not_to_act: plan.reasonsNotToAct,
       evidence: plan.evidence.slice(0, 6),
       priority: plan.priority,
+      ...(decisionInput ? { decision_input: decisionInput } : {}),
     },
   }
 }
 type NonActionRecord = Parameters<typeof recordNonActionType>[0]
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DECISION INPUT SNAPSHOT (wave 101, lane 101B; gap map row 20) — the recorded input the replay
+// harness re-runs. The ledger row already carried the VERDICT (plan_code, reasons_not_to_act) but
+// not what it was decided ON, so a changed rule could not be replayed against past decisions. This
+// is that input, compact: settings narrowed to the four keys the core reads, dates as ISO, intent
+// without its evidence list (evidence never decides), memory facts as a count (evidence only), at
+// most 20 dead ends. Rides ledger `detail.decision_input` — no new table.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const DECISION_INPUT_VERSION = 1
+
+export interface DecisionInputSnapshot {
+  v: number
+  subject: "lead" | "contact"
+  now: string
+  /** Lead only — the core plan's inputs. */
+  core?: {
+    settings: Pick<AIISASettings, "blocked_lifecycle_states" | "max_touches_lead" | "touch_interval_days" | "lead_allowed_channels">
+    touchesSoFar: number
+    lastTouchAt: string | null
+    lastChannel: string | null
+    channelsAlreadyStaged: LeadPlanChannel[]
+    emailUsable: boolean
+    mailingVerified: boolean
+    reelReady: boolean
+    lifecycleState: string | null
+    cohort: string | null
+  }
+  context?: {
+    intent: Omit<DecayedIntent, "evidence"> | null
+    callbackRequested: boolean
+    duplicateOf: string | null
+    outreachPaused: boolean
+    appointmentAt: string | null
+    lastAgentTouchAt: string | null
+    lastAnyTouchAt: string | null
+    dncOrNoConsent: boolean
+    recipientLocalHour: number | null
+    deadEnds: Array<{ outcome: DeadEndOutcome; at: string | null; source: string; until?: string | null }>
+    suppressOnOutcomes: string[] | null
+    memoryFactCount: number
+  }
+}
+
+const iso = (d: Date | null | undefined): string | null => (d instanceof Date && Number.isFinite(d.getTime()) ? d.toISOString() : null)
+const dateOf = (s: string | null | undefined): Date | null => (s && Number.isFinite(Date.parse(s)) ? new Date(s) : null)
+
+function contextSnapshot(ctx: NextBestActionContext | undefined): DecisionInputSnapshot["context"] {
+  if (!ctx) return undefined
+  let intent: Omit<DecayedIntent, "evidence"> | null = null
+  if (ctx.intent) {
+    const { evidence: _evidence, ...rest } = ctx.intent
+    void _evidence
+    intent = rest
+  }
+  return {
+    intent,
+    callbackRequested: ctx.callbackRequested === true,
+    duplicateOf: ctx.duplicateOf ?? null,
+    outreachPaused: ctx.outreachPaused === true,
+    appointmentAt: iso(ctx.appointmentAt),
+    lastAgentTouchAt: iso(ctx.lastAgentTouchAt),
+    lastAnyTouchAt: iso(ctx.lastAnyTouchAt),
+    dncOrNoConsent: ctx.dncOrNoConsent === true,
+    recipientLocalHour: typeof ctx.recipientLocalHour === "number" ? ctx.recipientLocalHour : null,
+    deadEnds: (ctx.deadEnds ?? []).slice(0, 20).map((d) => ({ outcome: d.outcome, at: iso(d.at), source: d.source, ...(d.until !== undefined ? { until: iso(d.until) } : {}) })),
+    suppressOnOutcomes: ctx.suppressOnOutcomes ? [...ctx.suppressOnOutcomes] : null,
+    memoryFactCount: (ctx.memoryFacts ?? []).length,
+  }
+}
+
+/** PURE. The compact, JSON-safe input of one NBA decision. */
+export function decisionInputSnapshot(
+  input: { subject: "lead"; plan: PlanNextLeadTouchInput } | { subject: "contact"; now: Date; context?: NextBestActionContext },
+): DecisionInputSnapshot {
+  if (input.subject === "contact") {
+    return { v: DECISION_INPUT_VERSION, subject: "contact", now: input.now.toISOString(), context: contextSnapshot(input.context) }
+  }
+  const p = input.plan
+  return {
+    v: DECISION_INPUT_VERSION,
+    subject: "lead",
+    now: p.now.toISOString(),
+    core: {
+      settings: {
+        blocked_lifecycle_states: p.settings.blocked_lifecycle_states,
+        max_touches_lead: p.settings.max_touches_lead,
+        touch_interval_days: p.settings.touch_interval_days,
+        lead_allowed_channels: p.settings.lead_allowed_channels,
+      },
+      touchesSoFar: p.touchesSoFar,
+      lastTouchAt: iso(p.lastTouchAt),
+      lastChannel: p.lastChannel,
+      channelsAlreadyStaged: [...p.channelsAlreadyStaged],
+      emailUsable: p.emailUsable,
+      mailingVerified: p.mailingVerified,
+      reelReady: p.reelReady,
+      lifecycleState: p.lifecycleState,
+      cohort: p.cohort ?? null,
+    },
+    context: contextSnapshot(p.context),
+  }
+}
+
+function contextFromSnapshot(c: DecisionInputSnapshot["context"]): NextBestActionContext | undefined {
+  if (!c) return undefined
+  return {
+    intent: c.intent ? { ...c.intent, evidence: [] } : undefined,
+    callbackRequested: c.callbackRequested,
+    duplicateOf: c.duplicateOf,
+    outreachPaused: c.outreachPaused,
+    appointmentAt: dateOf(c.appointmentAt),
+    lastAgentTouchAt: dateOf(c.lastAgentTouchAt),
+    lastAnyTouchAt: dateOf(c.lastAnyTouchAt),
+    dncOrNoConsent: c.dncOrNoConsent,
+    recipientLocalHour: c.recipientLocalHour,
+    deadEnds: (c.deadEnds ?? []).map((d) => ({ outcome: d.outcome, at: dateOf(d.at), source: d.source, ...(d.until !== undefined ? { until: dateOf(d.until) } : {}) })),
+    suppressOnOutcomes: c.suppressOnOutcomes ?? undefined,
+  }
+}
+
+/**
+ * PURE. Re-run the CURRENT planner on a recorded snapshot. null = not replayable (unknown version,
+ * or a lead snapshot without its core inputs). Deterministic: the clock is the snapshot's `now`.
+ */
+export function planFromDecisionInput(snap: DecisionInputSnapshot | null | undefined): LeadTouchPlan | null {
+  if (!snap || snap.v !== DECISION_INPUT_VERSION || !Number.isFinite(Date.parse(snap.now))) return null
+  const now = new Date(snap.now)
+  const context = contextFromSnapshot(snap.context)
+  if (snap.subject === "contact") return planNextContactTouch({ now, context })
+  if (snap.subject !== "lead" || !snap.core) return null
+  const c = snap.core
+  return planNextLeadTouch({
+    now,
+    settings: { ...DEFAULT_AISA_SETTINGS, ...c.settings } as AIISASettings,
+    touchesSoFar: c.touchesSoFar,
+    lastTouchAt: dateOf(c.lastTouchAt),
+    lastChannel: c.lastChannel,
+    channelsAlreadyStaged: c.channelsAlreadyStaged,
+    emailUsable: c.emailUsable,
+    mailingVerified: c.mailingVerified,
+    reelReady: c.reelReady,
+    lifecycleState: c.lifecycleState,
+    cohort: (c.cohort ?? undefined) as GenerationalCohort | undefined,
+    context,
+  })
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE CONTACT SUBJECT'S INPUTS (wave 100, lane 100B) — the SAME inputs the lead
@@ -1414,7 +1566,7 @@ export async function advanceLeadActionPlans(input: {
       out.warnings.push(`ai_video_projects count refused for lead ${leadId} (${reelError.message}) — treating the reel as absent`)
     }
 
-    const plan = planNextLeadTouch({
+    const planInput: PlanNextLeadTouchInput = {
       now,
       settings,
       touchesSoFar: touchCount ?? 0,
@@ -1447,12 +1599,14 @@ export async function advanceLeadActionPlans(input: {
         // and the plan decides on cadence alone exactly as before.
         intent: (await buildLeadDecayedIntent(supabase, input.brokerageId, { id: leadId, timeline: (lead.timeline as string | null) ?? null }, now)) ?? undefined,
       },
-    })
+    }
+    const plan = planNextLeadTouch(planInput)
 
     // NBA → LEDGER (lane 98B): a wait / do_nothing verdict is an action too — recorded on
     // agent_action_ledger with its reason code and every reason-not-to-act, once per lead per
     // verdict per UTC day (the sweep re-runs; the idempotency key holds it to one row).
-    const nonAction = nonActionRecordFor(plan, { brokerageId: input.brokerageId, leadId, now })
+    // Wave 101 (101B): + the compact planner input (detail.decision_input) the replay harness re-runs.
+    const nonAction = nonActionRecordFor(plan, { brokerageId: input.brokerageId, leadId, now }, decisionInputSnapshot({ subject: "lead", plan: planInput }))
     if (nonAction) {
       const rec = await recordNonAction(nonAction, { client: supabase })
       if (!rec.recorded && rec.error) out.warnings.push(`lead ${leadId}: ${nonAction.decision} not ledgered — ${rec.error}`)

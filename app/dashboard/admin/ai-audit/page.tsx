@@ -8,11 +8,12 @@ import { Sparkles, Eye, CheckCircle2, TrendingUp } from 'lucide-react'
 import Link from 'next/link'
 import { getAgentContext } from '@/lib/identity'
 import { toCanonicalRoleOrDefault } from '@/lib/security'
-import { getEntityCausalChain } from '@/app/actions/flight-recorder'
+import { getEntityCausalChain, replayTenantDecisions, getTenantExperimentPolicy, setExperimentKillSwitch } from '@/app/actions/flight-recorder'
+import { revalidatePath } from 'next/cache'
 
 export const dynamic = 'force-dynamic'
 
-export default async function AIAuditPage({ searchParams }: { searchParams: Promise<{ entityType?: string; entityId?: string }> }) {
+export default async function AIAuditPage({ searchParams }: { searchParams: Promise<{ entityType?: string; entityId?: string; replay?: string; replaySince?: string; replaySubjectType?: string; replaySubjectId?: string }> }) {
   // Kernel OS: getAgentContext — canonical identity, never raw auth.getUser()
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect('/login')
@@ -40,6 +41,12 @@ export default async function AIAuditPage({ searchParams }: { searchParams: Prom
   const flight = sp?.entityType && sp?.entityId
     ? await getEntityCausalChain({ entityType: sp.entityType, entityId: sp.entityId })
     : null
+  // DECISION REPLAY (wave 101, 101B): re-run the CURRENT planner on recorded NBA decisions. The
+  // action takes the tenant from the session; this page passes only the window / subject.
+  const replay = sp?.replay
+    ? await replayTenantDecisions({ since: sp.replaySince ? `${sp.replaySince}T00:00:00Z` : null, subjectType: sp.replaySubjectType ?? null, subjectId: sp.replaySubjectId || null })
+    : null
+  const experimentPolicy = await getTenantExperimentPolicy()
   const total = outputs.length
   const approved = outputs.filter((o: any) => o.compliance_approved).length
   const pending = outputs.filter((o: any) => !o.compliance_approved).length
@@ -203,6 +210,81 @@ export default async function AIAuditPage({ searchParams }: { searchParams: Prom
           )}
           {flight?.ok && flight.attributionError && <p className="text-xs text-red-600">Outcome attribution could not be read: {flight.attributionError}</p>}
           {flight?.ok && !flight.ledgerAvailable && <p className="text-xs text-amber-700">Action ledger not deployed yet — showing events only.</p>}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Decision replay &amp; experiments</CardTitle>
+          <CardDescription>
+            Re-runs today&apos;s next-best-action planner on what each recorded wait / do-nothing decision saw. Deterministic — no AI model is called.
+            Disagreements show what that decision went on to earn (same attribution rule as the flight recorder).
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <form className="flex flex-wrap gap-2">
+            <input type="hidden" name="replay" value="1" />
+            <label className="flex items-center gap-1 text-xs text-gray-500">since
+              <input type="date" name="replaySince" defaultValue={sp?.replaySince ?? ''} className="border rounded px-2 py-1" />
+            </label>
+            <select name="replaySubjectType" defaultValue={sp?.replaySubjectType ?? 'lead'} className="border rounded px-2 py-1">
+              {['lead', 'contact'].map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <input name="replaySubjectId" defaultValue={sp?.replaySubjectId ?? ''} placeholder="one record id (optional)" className="border rounded px-2 py-1 flex-1 min-w-[14rem]" />
+            <Button type="submit" size="sm" variant="outline">Replay</Button>
+          </form>
+          {replay && !replay.ok && <p className="text-red-600">{replay.error}</p>}
+          {replay?.ok && (() => {
+            const r = replay.report
+            const pct = r.agreementRate == null ? 'n/a' : `${Math.round(r.agreementRate * 1000) / 10}%`
+            return (
+              <div className="space-y-2">
+                <p>
+                  {r.examined} recorded decision{r.examined === 1 ? '' : 's'} · {r.replayed} replayable · <span className="font-medium">{r.agreements} agree ({pct})</span> · {r.disagreements.length} would change
+                  {replay.truncated ? ' · first 2,000 only' : ''}
+                </p>
+                {(r.unreplayable.noSnapshot + r.unreplayable.unknownVersion + r.unreplayable.plannerNull) > 0 && (
+                  <p className="text-xs text-amber-700">
+                    Not replayable: {r.unreplayable.noSnapshot} recorded before decision inputs were stored · {r.unreplayable.unknownVersion} unknown snapshot version · {r.unreplayable.plannerNull} incomplete.
+                  </p>
+                )}
+                {r.byReasonCode.length > 0 && (
+                  <p className="text-xs">By reason code: {r.byReasonCode.map((b) => `${b.recordedCode} ${b.agreed}/${b.replayed}${b.disagreed > 0 ? ` → ${Object.entries(b.changedTo).map(([k, n]) => `${k}×${n}`).join(', ')}` : ''}`).join(' · ')}</p>
+                )}
+                {r.disagreements.length > 0 && (
+                  <ol className="space-y-1 text-xs">
+                    {r.disagreements.slice(0, 25).map((d) => (
+                      <li key={d.actionId} className="flex flex-wrap gap-2">
+                        <span className="text-gray-500">{new Date(d.recordedAt).toLocaleString()}</span>
+                        <Link className="underline" href={`/dashboard/admin/ai-audit?entityType=${d.subjectType}&entityId=${d.subjectId ?? ''}`}>{d.subjectType}</Link>
+                        <Badge variant="outline">{d.recordedAction}:{d.recordedCode} → {d.replayedAction}:{d.replayedCode}</Badge>
+                        {d.outcomes.length > 0 && <Badge className="bg-emerald-50 text-emerald-800 border-emerald-200">then: {[...new Set(d.outcomes.map((o) => o.kind))].join(', ')}{d.outcomes.some((o) => o.cents > 0) ? ` · $${Math.round(d.outcomes.filter((o) => o.model === 'all_touch').reduce((s, o) => s + o.cents, 0) / 100).toLocaleString()} all-touch` : ''}</Badge>}
+                      </li>
+                    ))}
+                  </ol>
+                )}
+                {replay.attributionError && <p className="text-xs text-red-600">Outcome join could not be read: {replay.attributionError}</p>}
+                {!replay.ledgerAvailable && <p className="text-xs text-amber-700">Action ledger not deployed yet — nothing to replay.</p>}
+              </div>
+            )
+          })()}
+          <div className="flex flex-wrap items-center gap-2 border-t pt-3">
+            <span className="font-medium">Experiments:</span>
+            {experimentPolicy.ok
+              ? <span className={experimentPolicy.killSwitch ? 'text-amber-700' : 'text-gray-600'}>
+                  {!experimentPolicy.readable ? 'policy unreadable — every experiment assigns its control arm' : experimentPolicy.killSwitch ? 'kill switch ON — every experiment assigns its control arm' : `running${experimentPolicy.disabled.length > 0 ? ` (disabled: ${experimentPolicy.disabled.join(', ')})` : ''}`}
+                </span>
+              : <span className="text-red-600">{experimentPolicy.error}</span>}
+            {experimentPolicy.ok && experimentPolicy.readable && (
+              <form action={async () => {
+                'use server'
+                await setExperimentKillSwitch({ on: !experimentPolicy.killSwitch })
+                revalidatePath('/dashboard/admin/ai-audit')
+              }}>
+                <Button type="submit" size="sm" variant="outline">{experimentPolicy.killSwitch ? 'Resume experiments' : 'Stop all experiments'}</Button>
+              </form>
+            )}
+          </div>
         </CardContent>
       </Card>
 

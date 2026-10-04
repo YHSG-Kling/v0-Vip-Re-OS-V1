@@ -178,7 +178,7 @@ export async function engageContact(
     //    actions: recorded on the action ledger with every reason, then nothing is sent. ──
     {
       const nbaNow = new Date()
-      const { loadContactNbaContext, planNextContactTouch, nonActionRecordFor } = await import('@/lib/ai-isa/lead-action-plan')
+      const { loadContactNbaContext, planNextContactTouch, nonActionRecordFor, decisionInputSnapshot } = await import('@/lib/ai-isa/lead-action-plan')
       const nbaCtx = await loadContactNbaContext(supabase, {
         brokerageId, contact, humanInitiated: !!actorId || !!forceChannel, now: nbaNow,
       })
@@ -187,7 +187,9 @@ export async function engageContact(
         return { success: false, reason: 'stop:nba_unreadable' }
       }
       const nbaPlan = planNextContactTouch({ now: nbaNow, context: nbaCtx.context })
-      const nonAction = nonActionRecordFor(nbaPlan, { brokerageId, contactId, now: nbaNow })
+      // Wave 101 (101B): + the compact input, so lib/kernel/decision-replay.ts can re-run the planner on it.
+      const nonAction = nonActionRecordFor(nbaPlan, { brokerageId, contactId, now: nbaNow },
+        decisionInputSnapshot({ subject: 'contact', now: nbaNow, context: nbaCtx.context }))
       if (nonAction) {
         const { recordNonAction } = await import('@/lib/kernel/action-ledger')
         const rec = await recordNonAction(nonAction, { client: supabase })

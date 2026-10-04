@@ -592,7 +592,10 @@ console.log("\n── 7b. LANE 97B: signal decay, intent velocity, next-best-act
   // WIRING — the sweep passes the context, and DNC no longer silently skips the lead.
   const lap = code("lib/ai-isa/lead-action-plan.ts")
   check("NBA-WIRED: advanceLeadActionPlans passes a NextBestAction context to the plan",
-    /planNextLeadTouch\(\{[\s\S]{0,1600}context:\s*\{[\s\S]{0,400}duplicateOf[\s\S]{0,200}outreachPaused[\s\S]{0,200}dncOrNoConsent/.test(lap))
+    // Wave 101 (101B): the sweep builds its planner input as `planInput` (so the replay harness can
+    // snapshot it) and then calls planNextLeadTouch(planInput) — either shape carries the context.
+    /(planNextLeadTouch\(\{|const planInput: PlanNextLeadTouchInput = \{)[\s\S]{0,1600}context:\s*\{[\s\S]{0,400}duplicateOf[\s\S]{0,200}outreachPaused[\s\S]{0,200}dncOrNoConsent/.test(lap) &&
+    (/planNextLeadTouch\(\{/.test(lap.slice(lap.indexOf("export async function advanceLeadActionPlans"))) || /planNextLeadTouch\(planInput\)/.test(lap)))
   check("NBA-DNC-NOT-A-SILENT-SKIP: the sweep no longer drops a DNC lead before the plan sees it",
     !/dnc_status\s*===\s*true\)\s*\{[\s\S]{0,120}continue/.test(lap))
   check("NBA-DNC-SCAN-CONTROL (positive control): the skip regex recognises the retired shape",

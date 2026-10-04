@@ -337,12 +337,13 @@ export function CommandCenterClient({
               {data.roiLedger.ledgerAttribution.credited} of {data.roiLedger.ledgerAttribution.outcomes} outcomes credited to a preceding action · last {data.roiLedger.periodDays} days
             </span>
           </div>
-          <div className="grid gap-3 md:grid-cols-4">
+          <div className="grid gap-3 md:grid-cols-5">
             {([
               ["Reason code", data.roiLedger.ledgerAttribution.byReasonCode],
               ["Manager", data.roiLedger.ledgerAttribution.byManager],
               ["Playbook", data.roiLedger.ledgerAttribution.byPlaybook],
               ["Campaign", data.roiLedger.ledgerAttribution.byCampaign],
+              ["Experiment arm", data.roiLedger.ledgerAttribution.byExperimentArm ?? []],
             ] as const).map(([label, rows]) => (
               <Card key={label} className="p-3">
                 <div className="text-xs text-muted-foreground mb-1">By {label.toLowerCase()} · last-touch / all-touch</div>
