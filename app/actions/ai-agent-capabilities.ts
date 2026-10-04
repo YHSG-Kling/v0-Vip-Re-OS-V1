@@ -23,7 +23,7 @@ import {
 } from "@/lib/ai-isa/capability-catalogue"
 
 type SessionGate =
-  | { ok: true; brokerageId: string; canManage: boolean }
+  | { ok: true; brokerageId: string; userId: string | null; canManage: boolean }
   | { ok: false; error: string }
 
 /** Identity and tenant come from the SESSION. Neither is ever an argument. */
@@ -36,6 +36,7 @@ async function resolveSession(): Promise<SessionGate> {
   return {
     ok: true,
     brokerageId: ctx.brokerageId,
+    userId: ctx.userId ?? null,
     canManage: TENANT_ADMIN_USER_TYPES.has(ctx.userType ?? ""),
   }
 }
@@ -77,7 +78,7 @@ export async function setCapabilityEnabled(id: CapabilityId, enabled: boolean): 
       ? current.disabled.filter((d) => d !== id)
       : current.disabled.includes(id) ? current.disabled : [...current.disabled, id]
     return { ai_agent_capabilities: { disabled, custom: current.custom } }
-  })
+  }, { policy: { type: "user", userId: gate.userId, reason: `capability ${id} ${enabled ? "enabled" : "disabled"}` } })
   if (!write.ok) return { ok: false, error: write.error }
   return { ok: true }
 }
@@ -101,7 +102,7 @@ export async function saveCustomTool(def: CustomToolDefinition): Promise<{ ok: b
   const write = await mergeBrokerageSettings(createServiceClient(), gate.brokerageId, (settings) => {
     const current = parseCapabilitiesSettings(settings)
     return { ai_agent_capabilities: { disabled: current.disabled, custom: [...current.custom.filter((c) => c.id !== def.id), def] } }
-  })
+  }, { policy: { type: "user", userId: gate.userId, reason: `custom tool ${def.id} saved` } })
   if (!write.ok) return { ok: false, error: write.error }
   return { ok: true }
 }
@@ -114,7 +115,7 @@ export async function deleteCustomTool(id: string): Promise<{ ok: boolean; error
   const write = await mergeBrokerageSettings(createServiceClient(), gate.brokerageId, (settings) => {
     const current = parseCapabilitiesSettings(settings)
     return { ai_agent_capabilities: { disabled: current.disabled, custom: current.custom.filter((c) => c.id !== id) } }
-  })
+  }, { policy: { type: "user", userId: gate.userId, reason: `custom tool ${id} removed` } })
   if (!write.ok) return { ok: false, error: write.error }
   return { ok: true }
 }

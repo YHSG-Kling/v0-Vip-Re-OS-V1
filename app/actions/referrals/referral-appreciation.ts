@@ -83,7 +83,7 @@ export async function setReferralAppreciationSettingAction(input: {
     else if (teamId) root.byTeam = { ...(root.byTeam ?? {}), [teamId]: entry }
     else if (targetAgent) root.byAgent = { ...(root.byAgent ?? {}), [targetAgent]: entry }
     return { referral_appreciation: root }
-  })
+  }, { policy: { type: "user", userId: caller.userId, reason: `referral appreciation (${input.scope}) set` } })
   if (!write.ok) return { ok: false, error: write.error }
 
   revalidatePath("/referrals/pipeline")

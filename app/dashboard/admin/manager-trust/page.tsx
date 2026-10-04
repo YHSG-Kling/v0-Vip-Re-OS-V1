@@ -11,6 +11,7 @@ import { AUTHORITY_LEVEL_LABELS } from "@/lib/ai-isa/persona-tool-policy"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { MAINTENANCE_DOMAINS, MANAGERS, resolveMaintenanceManager, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
+import { TenantConstitutionPanel } from "./tenant-constitution-panel"
 
 /**
  * OWNED PROOFS — every maintenance/burn domain in the registry, grouped by the manager
@@ -40,7 +41,7 @@ function composeOwnedProofs(): OwnedProofSeat[] {
 
 export const dynamic = "force-dynamic"
 
-export default async function ManagerTrustPage() {
+export default async function ManagerTrustPage({ searchParams }: { searchParams?: Promise<Record<string, string | string[] | undefined>> }) {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect("/login")
   if (!isAdminOrBroker({ user_type: ctx.userType })) return <RoleGateNotice surface="Manager trust" audience="your broker, brokerage admins, team leads and the compliance officer" />
@@ -87,7 +88,12 @@ export default async function ManagerTrustPage() {
   // argument map above; it had no product reader before this — only test:reaper-net —
   // so the coverage gaps were enforced in a proof and shown nowhere a broker could see.
   const reaper = reaperCoverage()
+  // OPERATING CONSTITUTION (wave 101, lane 101A, m696): every tenant policy key, read-only, with
+  // its version / last changer and a History link (?policy=<key>) — no new page.
+  const policyParam = (await searchParams)?.policy
+  const historyKey = typeof policyParam === "string" && policyParam ? policyParam : null
   return (
+    <>
     <ManagerTrustClient
       managers={res.managers}
       team={res.team}
@@ -102,5 +108,7 @@ export default async function ManagerTrustPage() {
       accuracyHolds={accuracyHolds}
       authorityLadder={AUTHORITY_LEVEL_LABELS}
     />
+    <TenantConstitutionPanel historyKey={historyKey} />
+    </>
   )
 }

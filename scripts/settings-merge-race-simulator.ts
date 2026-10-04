@@ -53,6 +53,16 @@ function world(opts: { rows?: Row[]; barrier?: number; refuseRead?: boolean; alw
     await new Promise<void>((res) => { waiting.push(res); if (waiting.length >= (opts.barrier ?? 0)) { released = true; waiting.forEach((w) => w()); waiting = [] } })
   }
   const from = (t: string) => {
+    // Wave 101 (m696): a changed tenant-policy key also appends a version through
+    // lib/kernel/tenant-policy.ts. This race is about brokerage_settings, so the version table
+    // answers as NOT YET APPLIED (42P01) — the merge must still land (test:tenant-policy-versions
+    // proves the versions themselves).
+    if (t === "tenant_policy_versions") {
+      const v: any = {}
+      for (const m of ["select", "eq", "order", "limit", "insert"]) v[m] = () => v
+      v.then = (res: any, rej: any) => Promise.resolve({ data: null, error: { code: "42P01", message: "relation \"public.tenant_policy_versions\" does not exist" } }).then(res, rej)
+      return v
+    }
     if (t !== "brokerage_settings") throw new Error(`unexpected table ${t}`)
     const preds: Array<(r: Row) => boolean> = []
     let op: "select" | "update" | "insert" = "select"

@@ -58,6 +58,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { INTERNAL_CASCADE_ORDER, type ConnectionScope } from "@/lib/connections/scope"
 import { DEFAULT_AISA_SETTINGS, type AIISASettings, type IsaCapability, defaultEnabledCapabilities } from "./settings-types"
+import { appendTenantPolicyVersion, isaPolicyKey, type PolicyActor } from "@/lib/kernel/tenant-policy"
 
 /** The four tiers `ai_isa_settings` stores. Derived from the ONE cascade order. */
 export type IsaSettingsOwnerType = Extract<ConnectionScope, "platform" | "brokerage" | "team" | "agent">
@@ -258,6 +259,8 @@ export async function writeIsaSettings(args: {
   brokerageId: string | null
   teamId?: string | null
   updates: Partial<AIISASettings>
+  /** The SESSION actor + reason — the version row's changer (wave 101, m696). Tenant tiers only. */
+  actor?: PolicyActor
 }): Promise<{ success: boolean; error?: string }> {
   const { owner, updates } = args
   if (owner.ownerType !== "platform" && !args.brokerageId) {
@@ -303,6 +306,7 @@ export async function writeIsaSettings(args: {
     if (!data || data.length === 0) {
       return { success: false, error: `ISA settings update matched no row for ${owner.ownerType}:${owner.ownerId ?? "platform"}` }
     }
+    await versionIsaSettings(svc, owner, args.brokerageId, existing.status === "found" ? current : null, merged, args.actor)
     return { success: true }
   }
 
@@ -314,5 +318,31 @@ export async function writeIsaSettings(args: {
   if (!data || data.length === 0) {
     return { success: false, error: `ISA settings insert returned no row for ${owner.ownerType}:${owner.ownerId ?? "platform"}` }
   }
+  await versionIsaSettings(svc, owner, args.brokerageId, null, merged, args.actor)
   return { success: true }
+}
+
+/**
+ * VERSIONED TENANT POLICY (wave 101, lane 101A, m696): a tenant-tier ISA settings change appends
+ * an immutable version (lib/kernel/tenant-policy.ts — the ONE appender) carrying the settings it
+ * replaced (null = the tier had no row, i.e. inherited defaults). The platform tier is not a
+ * tenant policy and is not versioned here. A lost version is logged; the write already landed.
+ */
+async function versionIsaSettings(
+  svc: any,
+  owner: IsaSettingsOwner,
+  brokerageId: string | null,
+  previous: AIISASettings | null,
+  value: AIISASettings,
+  actor: PolicyActor | undefined,
+): Promise<void> {
+  if (owner.ownerType === "platform" || !brokerageId) return
+  const v = await appendTenantPolicyVersion(svc, {
+    brokerageId,
+    policyKey: isaPolicyKey(owner.ownerType, owner.ownerId),
+    value,
+    previous,
+    actor: actor ?? { type: "system", reason: "ISA settings write without a named actor" },
+  })
+  if (!v.ok) console.error("[isa-settings] policy version NOT recorded:", v.error)
 }

@@ -234,7 +234,7 @@ export async function setVendorTierPricing(
   tier: "basic" | "standard" | "premium" | "preferred_network",
   monthlyPriceUsd: number,
 ): Promise<{ ok: true; pricing: Record<string, number> }> {
-  const { brokerageId } = await requireAdmin()
+  const { brokerageId, userId } = await requireAdmin()
   // 86C: merged BY KEY onto the settings the database holds at write time (version-checked); the
   // old read ignored its refusal and upserted the whole object over every other feature's keys.
   let pricing: Record<string, number> = {}
@@ -243,7 +243,7 @@ export async function setVendorTierPricing(
     if (Number.isFinite(monthlyPriceUsd) && monthlyPriceUsd >= 0) pricing[tier] = Math.round(monthlyPriceUsd)
     else delete pricing[tier]
     return { vendor_tier_pricing: pricing }
-  })
+  }, { policy: { type: "user", userId, reason: `vendor tier ${tier} price set` } })
   if (!write.ok) throw new Error(`Failed to save pricing: ${write.error}`)
   return { ok: true, pricing }
 }

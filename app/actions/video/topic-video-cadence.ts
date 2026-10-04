@@ -59,7 +59,7 @@ export async function setTopicVideoCadenceAction(input: { perWeek?: number; seas
       enabled: typeof input?.enabled === "boolean" ? input.enabled : current.enabled,
     })
     return { [TOPIC_VIDEO_CADENCE_KEY]: { ...cadence, updatedAt: new Date().toISOString(), updatedBy: auth.userId } }
-  })
+  }, { policy: { type: "user", userId: auth.userId, reason: "topic video cadence set" } })
   if (!write.ok) return { ok: false, error: `topic-video cadence was not saved: ${write.error}` }
   return { ok: true, view: view(cadence) }
 }

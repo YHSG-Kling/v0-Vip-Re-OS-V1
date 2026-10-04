@@ -205,7 +205,11 @@ export async function listLearnedAdjustments(brokerageId: string, client?: Svc):
 }
 
 /** Set or clear a broker veto on a learned adjustment. Best-effort; returns the new veto state. */
-export async function setLearnedAdjustmentVeto(brokerageId: string, key: string, vetoed: boolean, client?: Svc): Promise<{ ok: boolean; vetoed: boolean }> {
+export async function setLearnedAdjustmentVeto(
+  brokerageId: string, key: string, vetoed: boolean, client?: Svc,
+  /** The SESSION user who vetoed — the version row's changer (wave 101, m696). */
+  actorUserId?: string | null,
+): Promise<{ ok: boolean; vetoed: boolean }> {
   const supabase = client ?? createServiceClient()
   // 86C: the veto map is merged BY KEY onto the settings the database holds at write time
   // (version-checked), so a veto and the nightly learned-adjustments run can no longer erase
@@ -215,6 +219,6 @@ export async function setLearnedAdjustmentVeto(brokerageId: string, key: string,
     if (vetoed) vetoes[key] = true
     else delete vetoes[key]
     return { learned_vetoes: vetoes }
-  })
+  }, { policy: { type: actorUserId ? "user" : "system", userId: actorUserId ?? null, reason: `learned adjustment ${key} ${vetoed ? "vetoed" : "un-vetoed"}` } })
   return { ok: write.ok, vetoed }
 }

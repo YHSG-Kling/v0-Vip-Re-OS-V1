@@ -23,10 +23,16 @@
  * The caller passes a service client it has ALREADY gated (CLAUDE.md §4: gate first); the
  * tenant is the brokerageId it resolved from the SESSION. Values are re-validated here, so
  * no caller can store what the reader cannot honour.
+ *
+ * VERSIONED (wave 101, lane 101A, m696): both columns are tenant operating policy. Each save reads
+ * the value it replaces (a refused read refuses the save), and after the counted write appends an
+ * immutable version through lib/kernel/tenant-policy.ts appendTenantPolicyVersion — the one
+ * appender — attributed to the caller's session actor.
  */
 import "server-only"
 import { validateReviewRequestDelay } from "@/lib/reputation/review-request-delay"
 import { validateFaceProviderOrder, type FaceRenderProvider } from "@/lib/live-agent/face-render"
+import { appendTenantPolicyVersion, type PolicyActor } from "@/lib/kernel/tenant-policy"
 
 type ColumnWriteResult<T> = { ok: true; rowId: string; value: T } | { ok: false; error: string }
 
@@ -48,10 +54,13 @@ export async function saveReviewRequestDelayDays(
   svc: any,
   brokerageId: string,
   days: number | null,
+  actor?: PolicyActor,
 ): Promise<ColumnWriteResult<number | null>> {
   if (!brokerageId) return { ok: false, error: "No brokerage to save the review request delay for — nothing was written." }
   const v = validateReviewRequestDelay(days)
   if (!v.ok) return { ok: false, error: v.error }
+  const prior = await readPrior(svc, brokerageId, "review_request_delay_days")
+  if (!prior.ok) return prior
   const res = await svc
     .from("brokerage_settings")
     .upsert(
@@ -59,17 +68,22 @@ export async function saveReviewRequestDelayDays(
       { onConflict: "brokerage_id" },
     )
     .select("id")
-  return countedOne("Review request delay", res, v.days)
+  const out = countedOne("Review request delay", res, v.days)
+  if (out.ok) await versionColumn(svc, brokerageId, "review_request_delay_days", v.days, prior.value, actor)
+  return out
 }
 
 export async function saveLiveFaceProviderOrder(
   svc: any,
   brokerageId: string,
   order: unknown,
+  actor?: PolicyActor,
 ): Promise<ColumnWriteResult<FaceRenderProvider[]>> {
   if (!brokerageId) return { ok: false, error: "No brokerage to save the live face provider order for — nothing was written." }
   const v = validateFaceProviderOrder(order)
   if (!v.ok) return { ok: false, error: v.error }
+  const prior = await readPrior(svc, brokerageId, "live_agent_face_provider_order")
+  if (!prior.ok) return prior
   const res = await svc
     .from("brokerage_settings")
     .upsert(
@@ -77,5 +91,24 @@ export async function saveLiveFaceProviderOrder(
       { onConflict: "brokerage_id" },
     )
     .select("id")
-  return countedOne("Live face provider order", res, v.order)
+  const out = countedOne("Live face provider order", res, v.order)
+  if (out.ok) await versionColumn(svc, brokerageId, "live_agent_face_provider_order", v.order, prior.value, actor)
+  return out
+}
+
+type PolicyColumn = "review_request_delay_days" | "live_agent_face_provider_order"
+
+/** The value this save replaces. A refused read refuses — history never starts from a guess. */
+async function readPrior(svc: any, brokerageId: string, column: PolicyColumn): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
+  const { data, error } = await svc.from("brokerage_settings").select(column).eq("brokerage_id", brokerageId).maybeSingle()
+  if (error) return { ok: false, error: `The current ${column} could not be read (${error.message}) — nothing was written.` }
+  return { ok: true, value: (data as Record<string, unknown> | null)?.[column] ?? null }
+}
+
+async function versionColumn(svc: any, brokerageId: string, column: PolicyColumn, value: unknown, previous: unknown, actor: PolicyActor | undefined): Promise<void> {
+  const v = await appendTenantPolicyVersion(svc, {
+    brokerageId, policyKey: column, value, previous,
+    actor: actor ?? { type: "system", reason: "column write without a named actor" },
+  })
+  if (!v.ok) console.error(`[brokerage-settings-columns] policy version of ${column} NOT recorded:`, v.error)
 }

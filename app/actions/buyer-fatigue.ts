@@ -271,7 +271,9 @@ export async function setContactFatigueWeights(input: unknown): Promise<
   if (!auth.ok) return { success: false, error: auth.error }
   const valid = validateContactFatigueWeights(input)
   if (!valid.ok) return { success: false, error: valid.error }
-  const write = await mergeBrokerageSettings(createServiceClient(), auth.brokerageId, { [CONTACT_FATIGUE_WEIGHTS_KEY]: valid.weights })
+  const write = await mergeBrokerageSettings(createServiceClient(), auth.brokerageId, { [CONTACT_FATIGUE_WEIGHTS_KEY]: valid.weights }, {
+    policy: { type: "user", userId: auth.userId, reason: "contact fatigue weights set" },
+  })
   if (!write.ok) return { success: false, error: `Could not save the fatigue weights: ${write.error}` }
   return { success: true, weights: valid.weights }
 }

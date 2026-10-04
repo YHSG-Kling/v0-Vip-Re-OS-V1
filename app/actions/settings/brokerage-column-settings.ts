@@ -39,7 +39,7 @@ import {
 
 /** `forbidden` = signed in and read fine, just not a tenant admin — a page hides the card for
  *  that, and SHOWS every other refusal (a read that could not run is not "nothing to show"). */
-type Gate = { ok: true; brokerageId: string; canEdit: boolean } | { ok: false; error: string; forbidden?: true }
+type Gate = { ok: true; brokerageId: string; userId: string; canEdit: boolean } | { ok: false; error: string; forbidden?: true }
 
 async function gate(mode: "read" | "write", noun: string): Promise<Gate> {
   const ctx = mode === "write" ? await resolveWriteContext() : await resolveActingContext()
@@ -51,7 +51,7 @@ async function gate(mode: "read" | "write", noun: string): Promise<Gate> {
   if (!admin.ok) return { ok: false, error: `Could not resolve your permissions for ${noun}: ${admin.error}` }
   if (!admin.isTenantAdmin) return { ok: false, forbidden: true, error: `Only a broker, owner or admin can change ${noun}.` }
   const readOnly = "readOnly" in ctx ? Boolean((ctx as { readOnly?: boolean }).readOnly) : false
-  return { ok: true, brokerageId: ctx.brokerageId, canEdit: mode === "write" || !readOnly }
+  return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId, canEdit: mode === "write" || !readOnly }
 }
 
 /** A refused settings read refuses — it is never shown as "not set". */
@@ -91,7 +91,7 @@ export async function getReviewRequestDelaySettingAction() {
 export async function saveReviewRequestDelayAction(days: number | null) {
   const g = await gate("write", "review request timing")
   if (!g.ok) return g
-  const w = await saveReviewRequestDelayDays(createServiceClient(), g.brokerageId, days)
+  const w = await saveReviewRequestDelayDays(createServiceClient(), g.brokerageId, days, { type: "user", userId: g.userId, reason: "review request delay set" })
   if (!w.ok) return w
   revalidatePath("/referrals")
   return { ok: true as const, storedDays: w.value, effectiveDays: normalizeReviewRequestDelay(w.value) }
@@ -121,7 +121,7 @@ export async function getLiveFaceProviderSettingAction() {
 export async function saveLiveFaceProviderOrderAction(order: string[]) {
   const g = await gate("write", "the live avatar's backup face")
   if (!g.ok) return g
-  const w = await saveLiveFaceProviderOrder(createServiceClient(), g.brokerageId, order)
+  const w = await saveLiveFaceProviderOrder(createServiceClient(), g.brokerageId, order, { type: "user", userId: g.userId, reason: "live face provider order set" })
   if (!w.ok) return w
   revalidatePath("/dashboard/settings/twin-studio")
   return { ok: true as const, order: w.value }

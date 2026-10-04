@@ -27,15 +27,27 @@
  *
  * The caller passes a service client it has ALREADY gated (CLAUDE.md §4: gate first); the
  * tenant is the brokerageId the caller resolved from its session / verified row.
+ *
+ * VERSIONED TENANT POLICY (wave 101, lane 101A, m696). This is also the ONE writer of the tenant
+ * operating-policy keys (lib/kernel/tenant-policy.ts TENANT_POLICY_SETTINGS_KEYS). After the
+ * compare-and-set lands, every registered key whose value CHANGED gets an immutable version row
+ * (appendTenantPolicyVersion: n+1, carrying the previous value) attributed to `opts.policy` — the
+ * caller's session actor and reason. A caller writing a policy key without `opts.policy` is still
+ * versioned, as actor 'system' (test:tenant-policy-versions refuses such a caller). The live value
+ * stays here; no reader changed. A version that could not be recorded is returned in
+ * `policyVersions` — the settings write itself already succeeded and is not undone.
  */
+import { appendTenantPolicyVersion, changedPolicySettingsKeys, type PolicyActor } from "@/lib/kernel/tenant-policy"
 
 type SettingsObject = Record<string, unknown>
 
 /** The keys to write, computed from the CURRENT settings. A key set to `undefined` is removed. */
 type SettingsPatch = SettingsObject | ((current: SettingsObject) => SettingsObject)
 
+type PolicyVersionOutcome = { key: string; version: number | null; error?: string }
+
 type MergeSettingsResult =
-  | { ok: true; rowId: string; settings: SettingsObject; attempts: number }
+  | { ok: true; rowId: string; settings: SettingsObject; attempts: number; policyVersions: PolicyVersionOutcome[] }
   | { ok: false; error: string; conflict?: boolean }
 
 const DEFAULT_ATTEMPTS = 5
@@ -56,7 +68,7 @@ export async function mergeBrokerageSettings(
   svc: any,
   brokerageId: string,
   patch: SettingsPatch,
-  opts: { maxAttempts?: number; now?: () => Date } = {},
+  opts: { maxAttempts?: number; now?: () => Date; policy?: PolicyActor } = {},
 ): Promise<MergeSettingsResult> {
   if (!brokerageId) return { ok: false, error: "No brokerage to save settings for — nothing was written." }
   const attempts = Math.max(1, opts.maxAttempts ?? DEFAULT_ATTEMPTS)
@@ -92,7 +104,7 @@ export async function mergeBrokerageSettings(
       }
       const id = Array.isArray(ins) ? (ins[0] as { id?: string } | undefined)?.id : (ins as { id?: string } | null)?.id
       if (!id) return { ok: false, error: "Brokerage settings insert returned no row, so nothing was saved." }
-      return { ok: true, rowId: id, settings: next, attempts: attempt }
+      return { ok: true, rowId: id, settings: next, attempts: attempt, policyVersions: await versionPolicyKeys(svc, brokerageId, current, next, opts.policy) }
     }
 
     const r = row as { id: string; updated_at: string | null }
@@ -105,8 +117,33 @@ export async function mergeBrokerageSettings(
     q = r.updated_at == null ? q.is("updated_at", null) : q.eq("updated_at", r.updated_at)
     const { data: upd, error: updErr } = await q.select("id")
     if (updErr) return { ok: false, error: `Brokerage settings were not saved (${updErr.message}).` }
-    if (Array.isArray(upd) && upd.length === 1) return { ok: true, rowId: r.id, settings: next, attempts: attempt }
+    if (Array.isArray(upd) && upd.length === 1) {
+      return { ok: true, rowId: r.id, settings: next, attempts: attempt, policyVersions: await versionPolicyKeys(svc, brokerageId, current, next, opts.policy) }
+    }
     // Zero rows: a concurrent writer moved the version — re-read and merge onto ITS object.
   }
   return { ok: false, conflict: true, error: `Brokerage settings are being changed concurrently — ${attempts} merge attempts lost the race; nothing was overwritten. Try again.` }
+}
+
+/** One version per CHANGED tenant policy key — computed from the object this write replaced. */
+async function versionPolicyKeys(
+  svc: any,
+  brokerageId: string,
+  before: SettingsObject,
+  after: SettingsObject,
+  actor: PolicyActor | undefined,
+): Promise<PolicyVersionOutcome[]> {
+  const out: PolicyVersionOutcome[] = []
+  for (const key of changedPolicySettingsKeys(before, after)) {
+    const v = await appendTenantPolicyVersion(svc, {
+      brokerageId,
+      policyKey: key,
+      value: after[key],
+      previous: before[key],
+      actor: actor ?? { type: "system", reason: "settings write without a named actor" },
+    })
+    if (!v.ok) console.error(`[brokerage-settings] policy version of ${key} NOT recorded:`, v.error)
+    out.push(v.ok ? { key, version: v.version } : { key, version: null, error: v.error })
+  }
+  return out
 }

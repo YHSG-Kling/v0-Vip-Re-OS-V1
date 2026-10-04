@@ -15,6 +15,7 @@
  */
 
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { appendTenantPolicyVersion, managerPolicyKey } from "@/lib/kernel/tenant-policy"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
@@ -352,6 +353,7 @@ export async function getManagerSessionDetail(sessionId: string): Promise<
 export async function setManagerAutonomy(
   agentKind: string,
   posture: AutonomyPosture | null,
+  reason?: string,
 ): Promise<{ ok: true; updated: number } | { ok: false; error: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
@@ -384,6 +386,17 @@ export async function setManagerAutonomy(
     if (!error) updated += 1
   }
   revalidatePath("/dashboard/admin/manager-trust")
+  if (updated > 0) {
+    // VERSIONED (wave 101, m696): one version per change, carrying the posture it replaced.
+    const v = await appendTenantPolicyVersion(svc, {
+      brokerageId: ctx.brokerageId,
+      policyKey: managerPolicyKey("autonomy_tier", agentKind),
+      value: posture,
+      previous: ((rows[0].config ?? {}) as Record<string, unknown>).autonomy_tier ?? null,
+      actor: { type: "user", userId: ctx.userId ?? null, reason: reason ?? `autonomy posture ${posture ?? "cleared"}` },
+    })
+    if (!v.ok) console.error("[manager-evals] autonomy posture version NOT recorded:", v.error)
+  }
   return { ok: true, updated }
 }
 
@@ -398,6 +411,7 @@ export async function setManagerAutonomy(
 export async function setManagerAuthorityLevel(
   agentKind: string,
   level: AuthorityLevel | null,
+  reason?: string,
 ): Promise<{ ok: true; updated: number } | { ok: false; error: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
@@ -436,6 +450,15 @@ export async function setManagerAuthorityLevel(
   __clearAutonomyCache()
   revalidatePath("/dashboard/admin/manager-trust")
   if (updated === 0) return { ok: false, error: failures[0] ?? "No row was updated" }
+  // VERSIONED (wave 101, m696): one version per change, carrying the rung it replaced.
+  const v = await appendTenantPolicyVersion(svc, {
+    brokerageId: ctx.brokerageId,
+    policyKey: managerPolicyKey("authority_level", agentKind),
+    value: level,
+    previous: ((rows[0].config ?? {}) as Record<string, unknown>).authority_level ?? null,
+    actor: { type: "user", userId: ctx.userId ?? null, reason: reason ?? `authority level ${level ?? "cleared (default 6)"}` },
+  })
+  if (!v.ok) console.error("[manager-evals] authority level version NOT recorded:", v.error)
   return { ok: true, updated }
 }
 
@@ -651,7 +674,7 @@ export async function vetoLearnedAdjustment(
   if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
   if (!key?.trim()) return { ok: false, error: "Missing adjustment key" }
   const { setLearnedAdjustmentVeto } = await import("@/lib/managers/learning-loop")
-  const r = await setLearnedAdjustmentVeto(ctx.brokerageId, key, vetoed)
+  const r = await setLearnedAdjustmentVeto(ctx.brokerageId, key, vetoed, undefined, ctx.userId ?? null)
   revalidatePath("/dashboard/admin/manager-trust")
   return r.ok ? { ok: true, vetoed: r.vetoed } : { ok: false, error: "Failed to update veto" }
 }

@@ -131,7 +131,7 @@ export async function connectCeProvider(config: CeProviderConfig): Promise<{ ok:
       launchBaseUrl,
       catalog: Array.isArray(config.catalog) ? config.catalog : [],
     },
-  })
+  }, { policy: { type: "user", userId: user.id, reason: "CE provider connected / updated" } })
   if (!write.ok) throw new Error(`Failed to connect provider: ${write.error}`)
   return { ok: true }
 }

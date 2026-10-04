@@ -289,6 +289,11 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // integrator applies it and flips the header. Sibling wave-97 lanes (97A m687, 97B m688) bump this
 // line for their own files — the integrator sums them when merging.
 // 1 → 0 (wave 97 integrator): m687 (97A) and m689 applied live 2026-10-02 via the Supabase MCP; 97B wrote none.
+// 0 → 1 (wave 101, lane 101A — versioned tenant operating policy): m696-tenant-policy-versions-append-only.sql,
+// WRITTEN NOT APPLIED — tenant_policy_versions + its append-only trigger. Deliberate bump, named per this
+// guard's own instruction; drops back to 0 once the integrator applies it and flips the header. Sibling
+// wave-101 lanes (101B m697, 101C m698) bump this line for their own files — the integrator sums them.
+// 1 → 0 (wave 101 integrator): m696 applied live 2026-10-04.
 const NOT_APPLIED_BASELINE = 0
 console.log("\n[3 · the work-in-flight list only shrinks]")
 if (notApplied.length) for (const f of notApplied) console.log(`     · ${f}`)

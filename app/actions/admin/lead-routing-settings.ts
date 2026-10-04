@@ -26,6 +26,7 @@ import { getAgentContext } from "@/lib/identity"
 import { revalidatePath } from "next/cache"
 import { isRuleType, RULE_TYPE_LABELS, type RuleType } from "@/lib/lead-assignment/rule-matcher"
 import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
+import { appendTenantPolicyVersion } from "@/lib/kernel/tenant-policy"
 import {
   MAILBOX_OWNER_PREFERENCE_DEFAULT,
   MAILBOX_OWNER_PREFERENCE_KEY,
@@ -47,7 +48,7 @@ import {
  * what lets a caller read their own grants.
  */
 async function requireRoutingAdmin(): Promise<
-  { ok: true; brokerageId: string } | { ok: false; error: string }
+  { ok: true; brokerageId: string; userId: string } | { ok: false; error: string }
 > {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) return { ok: false, error: "Not authenticated" }
@@ -63,7 +64,7 @@ async function requireRoutingAdmin(): Promise<
   if (!admin.isTenantAdmin) {
     return { ok: false, error: "Only a broker, an admin or a team lead can change how leads are assigned." }
   }
-  return { ok: true, brokerageId: ctx.brokerageId }
+  return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId }
 }
 
 export async function getDefaultAssignmentMethod(): Promise<{
@@ -87,6 +88,7 @@ export async function getDefaultAssignmentMethod(): Promise<{
 
 export async function setDefaultAssignmentMethod(
   method: string,
+  reason?: string,
 ): Promise<{ success: boolean; error?: string }> {
   const gate = await requireRoutingAdmin()
   if (!gate.ok) return { success: false, error: gate.error }
@@ -99,6 +101,11 @@ export async function setDefaultAssignmentMethod(
   }
 
   const service = createServiceClient()
+  // VERSIONED (wave 101, m696): the value this write replaces is read first, so the version
+  // row carries it. A refused read refuses the save — history must never start from a guess.
+  const { data: prior, error: priorErr } = await service
+    .from("brokerages").select("default_assignment_method").eq("id", gate.brokerageId).maybeSingle()
+  if (priorErr) return { success: false, error: `Could not read the current assignment method: ${priorErr.message}` }
   // The error is READ, not discarded. A rejected write that looks successful is
   // the defect class this repo keeps finding.
   const { error } = await service
@@ -107,6 +114,14 @@ export async function setDefaultAssignmentMethod(
     .eq("id", gate.brokerageId)
 
   if (error) return { success: false, error: error.message }
+  const version = await appendTenantPolicyVersion(service, {
+    brokerageId: gate.brokerageId,
+    policyKey: "default_assignment_method",
+    value: method,
+    previous: (prior as { default_assignment_method?: string | null } | null)?.default_assignment_method ?? null,
+    actor: { type: "user", userId: gate.userId, reason: reason ?? "default assignment method set" },
+  })
+  if (!version.ok) console.error("[lead-routing] policy version NOT recorded:", version.error)
 
   revalidatePath("/dashboard/settings")
   revalidatePath("/dashboard/admin/assignment-rules")
@@ -148,7 +163,7 @@ export async function setMailboxOwnerPreference(
     const current = settings.lead_routing
     const prior = (current && typeof current === "object" ? current : {}) as Record<string, unknown>
     return { lead_routing: { ...prior, [MAILBOX_OWNER_PREFERENCE_KEY]: enabled } }
-  })
+  }, { policy: { type: "user", userId: gate.userId, reason: `mailbox-owner preference ${enabled ? "on" : "off"}` } })
   if (!write.ok) return { success: false, error: `Could not save the mailbox-owner switch: ${write.error}` }
 
   revalidatePath("/dashboard/settings")

@@ -177,6 +177,7 @@ export async function saveAIISASettings(
     owner: { ownerType: 'brokerage', ownerId: brokerageId },
     brokerageId,
     updates,
+    actor: { type: 'user', userId: ctx.userId ?? null, reason: 'brokerage ISA settings saved' },
   })
 }
 
@@ -217,6 +218,7 @@ export async function saveAIISASettingsForOwner(
       owner: { ownerType: 'agent', ownerId: ctx.agentId },
       brokerageId: ctx.brokerageId,
       updates,
+      actor: { type: 'user', userId: ctx.userId ?? null, reason: 'agent ISA settings saved' },
     })
   }
 
@@ -227,6 +229,7 @@ export async function saveAIISASettingsForOwner(
       owner: { ownerType: 'team', ownerId: ctx.teamId },
       brokerageId: ctx.brokerageId,
       updates,
+      actor: { type: 'user', userId: ctx.userId ?? null, reason: 'team ISA settings saved' },
     })
   }
 
@@ -235,6 +238,7 @@ export async function saveAIISASettingsForOwner(
     owner: { ownerType: 'brokerage', ownerId: ctx.brokerageId },
     brokerageId: ctx.brokerageId,
     updates,
+    actor: { type: 'user', userId: ctx.userId ?? null, reason: 'brokerage ISA settings saved' },
   })
 }
 
