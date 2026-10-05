@@ -55,7 +55,7 @@ export async function policyHistory(policyKey: string): Promise<PolicyHistoryRes
 export async function revertPolicy(
   policyKey: string,
   version: number,
-): Promise<{ ok: true; newVersion: number | null; unchanged?: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; newVersion: number | null; unchanged?: true; restoredAs?: { policyKey: string; ruleId: string } } | { ok: false; error: string }> {
   const gate = await requirePolicyAdmin()
   if (!gate.ok) return { ok: false, error: gate.error }
   const parsed = parsePolicyKey(String(policyKey ?? ""))
@@ -86,6 +86,8 @@ export async function revertPolicy(
   const actor: PolicyActor = { type: "user", userId: gate.userId, reason }
 
   let wrote: { ok: boolean; error?: string }
+  // R5 — a DELETED rule restored as a NEW rule: the new key's v1 is the version this revert wrote.
+  let restoredAs: { policyKey: string; ruleId: string } | null = null
   switch (parsed.kind) {
     case "settings": {
       const { mergeBrokerageSettings } = await import("@/lib/settings/brokerage-settings-merge")
@@ -142,12 +144,23 @@ export async function revertPolicy(
         wrote = w.ok ? { ok: true } : { ok: false, error: w.error }
       } else {
         const r = value as { name?: string; rule_type?: string; conditions?: Record<string, unknown>; agent_ids?: string[]; team_id?: string | null; priority?: number; is_active?: boolean }
-        const w = await rules.saveAssignmentRuleAction({
-          id: parsed.ruleId, name: String(r.name ?? ""), ruleType: String(r.rule_type ?? ""), conditions: r.conditions ?? {},
+        const fields = {
+          name: String(r.name ?? ""), ruleType: String(r.rule_type ?? ""), conditions: r.conditions ?? {},
           agentIds: Array.isArray(r.agent_ids) ? r.agent_ids : [], teamId: r.team_id ?? null, priority: Number(r.priority ?? 10), isActive: r.is_active !== false,
-        })
-        // A rule deleted since cannot be restored under its old id (the key names that id): refused, said.
-        wrote = w.ok ? { ok: true } : { ok: false, error: /not found/i.test(w.error) ? `Rule ${parsed.ruleId} no longer exists — a deleted rule cannot be restored under its old id; create it again.` : w.error }
+        }
+        const w = await rules.saveAssignmentRuleAction({ id: parsed.ruleId, ...fields })
+        if (w.ok) {
+          wrote = { ok: true }
+        } else if (/not found/i.test(w.error)) {
+          // R5 (wave 102.1, owner ruling): the rule was DELETED since — restore it as a NEW rule (new
+          // id) through the same writer; its v1 `previous` names this deleted key + version. The old
+          // id is never resurrected (its history ends at the deletion, value null).
+          const made = await rules.saveAssignmentRuleAction({ id: null, ...fields, restoredFrom: { policyKey, version } })
+          if (made.ok) restoredAs = { policyKey: `assignment_rule:${made.id}`, ruleId: made.id }
+          wrote = made.ok ? { ok: true } : { ok: false, error: made.error }
+        } else {
+          wrote = { ok: false, error: w.error }
+        }
       }
       break
     }
@@ -172,8 +185,13 @@ export async function revertPolicy(
   }
   if (!wrote.ok) return { ok: false, error: wrote.error ?? "The revert was not saved." }
 
-  const after = await loadPolicyHistory(svc, gate.brokerageId, policyKey)
   revalidatePath("/dashboard/admin/manager-trust")
+  if (restoredAs) {
+    // The version this revert wrote lives under the NEW rule's key (v1, previous = the deleted key).
+    const restored = await loadPolicyHistory(svc, gate.brokerageId, restoredAs.policyKey)
+    return { ok: true, newVersion: restored.ok ? (restored.rows[0]?.version ?? null) : null, restoredAs }
+  }
+  const after = await loadPolicyHistory(svc, gate.brokerageId, policyKey)
   if (!after.ok) return { ok: true, newVersion: null }
   const top = after.rows[0]
   // The survivor writer appends nothing when the live value already equals the target.

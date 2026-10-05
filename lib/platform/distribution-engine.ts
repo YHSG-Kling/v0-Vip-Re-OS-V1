@@ -57,6 +57,10 @@ interface LeadDistributionRow {
   motivation_type: string | null
   urgency_level: string | null
   raw_record_id: string | null
+  /** Identity fields — read only so the person can be RE-HOMED under the receiving tenant (R1). */
+  first_name: string | null
+  last_name: string | null
+  phone: string | null
 }
 
 /**
@@ -74,7 +78,7 @@ export async function distributePlatformLead(params: {
     .from("leads")
     .select(
       "id, source_origin, property_zip_code, mailing_zip, zip_code, brokerage_id, distribution_brokerage_id, " +
-        "phone_digits, email, source_family, motivation_type, urgency_level, raw_record_id"
+        "phone_digits, email, source_family, motivation_type, urgency_level, raw_record_id, first_name, last_name, phone"
     )
     .eq("id", leadId)
     .single()
@@ -186,11 +190,52 @@ export async function distributePlatformLead(params: {
       .eq("id", lead.raw_record_id), { table: "raw_scraped_leads", flow: "platform_lead_distribution_raw_stamp", brokerageId: targetBrokerageId, reason: "visibility mirror of the lead's distribution (the lead row, checked above, is the record)" })
   }
 
+  // 10. PERSON RE-HOME (R1, wave 102.1, lane 102E). The pipeline resolved this lead's person under
+  //     the MARKET-OWNER tenant (effectiveBrokerageId) while the lead was parked. Now that it belongs
+  //     to a subscriber, the person is resolved UNDER THE RECEIVING BROKERAGE and the lead (and its
+  //     raw row, stamped above) linked there — tenant isolation over a global person index: nothing
+  //     crosses tenants, the market-owner row stays its own evidence, and no id from it is copied.
+  //     dedup_match (the verdict "this lead is this person, placed here at distribution") at 1.0;
+  //     no chokepoint event exists here, so the one person.identity_linked event is emitted.
+  //     Best-effort: the distribution write landed above and is never un-reported.
+  await rehomePersonUnderReceivingBrokerage(supabase, lead, targetBrokerageId, rotationPosition)
+
   return {
     success: true,
     brokerageId: targetBrokerageId,
     rotationPosition,
     reason: `distributed_to_${targetBrokerageId}_position_${rotationPosition}`,
+  }
+}
+
+async function rehomePersonUnderReceivingBrokerage(
+  supabase: ReturnType<typeof createServiceClient>,
+  lead: LeadDistributionRow,
+  targetBrokerageId: string,
+  rotationPosition: number,
+): Promise<void> {
+  try {
+    const { resolvePerson, linkPersonEvidence } = await import("@/lib/kernel/person-identity")
+    const person = await resolvePerson(supabase, {
+      brokerageId: targetBrokerageId,
+      firstName: lead.first_name, lastName: lead.last_name, email: lead.email, phone: lead.phone ?? lead.phone_digits,
+    })
+    if (!person.ok) {
+      if (person.reason !== "no_identity_anchor") console.warn(`[distribution-engine] person not re-homed under ${targetBrokerageId}: ${person.reason}`)
+      return
+    }
+    const common = {
+      brokerageId: targetBrokerageId, personId: person.personId, source: "platform_distribution",
+      actor: { type: "system" as const, userId: null }, identity: person.identity,
+      matchMethod: "dedup_match" as const, matchScore: 1,
+    }
+    const links = [
+      linkPersonEvidence(supabase, { ...common, entityType: "lead", entityId: lead.id, detail: { stage: "distribution", distribution_brokerage_id: targetBrokerageId, rotation_position: rotationPosition, raw_record_id: lead.raw_record_id } }),
+      ...(lead.raw_record_id ? [linkPersonEvidence(supabase, { ...common, entityType: "raw_scraped_lead", entityId: lead.raw_record_id, detail: { stage: "distribution", distribution_brokerage_id: targetBrokerageId, lead_id: lead.id } })] : []),
+    ]
+    for (const r of await Promise.all(links)) if (!r.ok) console.warn(`[distribution-engine] person evidence not recorded at distribution: ${r.reason}`)
+  } catch (err) {
+    console.warn("[distribution-engine] person re-home threw (distribution unaffected):", err instanceof Error ? err.message : String(err))
   }
 }
 

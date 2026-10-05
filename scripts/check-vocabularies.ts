@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-05
  * source: public.live_check_constraints_json()
- * body-sha256: d1c84e4efec1c3986836ac92dc13624a99fe65d1dbc6382deacf3bcdb25ea093
+ * body-sha256: e9cfeaf119a1b49fc031ef25a2b647a2ea82f4c1ab0ad338d0b33b7e96a2c252
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1326,9 +1326,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     severity_tier: ["advisory", "binding", "informational"],
   },
   relationship_edges: {
-    from_entity_type: ["agent", "contact", "household", "lead", "listing", "outside_agent", "transaction", "vendor"],
+    from_entity_type: ["agent", "contact", "household", "lead", "listing", "outside_agent", "referral_partner", "transaction", "vendor"],
     relationship_type: ["bought_from", "co_buyer", "co_owner", "household_member", "lender_for", "occupies", "owns", "previously_owned", "referred_by", "represented_by", "sold_to", "sponsor_of", "spouse_partner", "vendor_for"],
-    to_entity_type: ["agent", "contact", "household", "lead", "listing", "outside_agent", "transaction", "vendor"],
+    to_entity_type: ["agent", "contact", "household", "lead", "listing", "outside_agent", "referral_partner", "transaction", "vendor"],
   },
   remotion_composition_renders: {
     render_status: ["cancelled", "failed", "queued", "rendering", "succeeded"],

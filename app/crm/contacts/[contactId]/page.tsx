@@ -15,6 +15,7 @@ import { EnrichmentPanel }          from "./components/enrichment-panel"
 import { FollowupCard }            from "./components/followup-card"
 import { SmartDripCard }           from "./components/smart-drip-card"
 import { LeadHistoryCard }        from "./components/lead-history-card"
+import { IdentityEvidenceCard }   from "./components/identity-evidence-card"
 import { VoiceNoteCard }          from "./components/voice-note-card"
 import { IsaOutreachCard }        from "./components/isa-outreach-card"
 import { SegmentMemberships }      from "./components/segment-memberships"
@@ -489,6 +490,13 @@ export default async function ContactDetailPage({ params }: PageProps) {
           summary and the ISA handoff. */}
       <div className="px-4 pt-3">
         <LeadHistoryCard contactId={contactId} />
+      </div>
+
+      {/* Identity evidence (wave 102.1) — why the records behind this contact are ONE
+          person: confidence, who judged each link, what is linked. Reads the same brief
+          the voice pre-call card reads (ContactBrief.identityEvidence); never a cost. */}
+      <div className="px-4 pt-3">
+        <IdentityEvidenceCard contactId={contactId} />
       </div>
 
       {/* Dictate the note after a showing or a call — parsed into a written

@@ -27,10 +27,23 @@
  *   and both readers (person-timeline, contact-brief); the service is the only inserter of the two
  *   tables — with a fixture positive control.
  *
- * BLIND SPOTS (published): the trigger and RLS are proven on SQL text, not executed (m697 is written,
- * not applied); pipeline-processor, mergeContacts, instant-greeting and the form route are proven by
- * source census (their module graphs need the live app), the service and history-carry by execution;
- * behavioral_signal evidence has no writer yet and is reserved, not asserted.
+ * WAVE 102.1 (lane 102E) — closures, each on the ONE service:
+ *   11. R2: resolveSurvivorPerson — a dedup verdict links the record onto the SURVIVOR's person (its
+ *       evidence, else a person keyed on the survivor's identity); positive control: the old path
+ *       (resolvePerson on the record's own email) mints a second person;
+ *   12. R1: the REAL distributePlatformLead, in-memory — the person is re-homed under the receiving
+ *       brokerage; the market-owner row and its evidence are untouched; nothing crosses tenants;
+ *   13. R6: ProvenancePurpose has `conversation` (self_service kept; no exhaustive map left behind);
+ *   14. the identity evidence CARD reads only the summary's fields (no cost key, no raw id);
+ *   census: captureContact wires ONCE inside; the form route keeps one path; crm manual dedup; the
+ *   behavioral_signal writer (module-private in a 'use server' file); distribution; the card + mount.
+ *
+ * BLIND SPOTS (published): the trigger and RLS are proven on SQL text, not executed; pipeline-processor,
+ * mergeContacts, crm manual dedup, captureContact, instant-greeting, the form route and the
+ * visitor-identify writer are proven by source census (their module graphs need the live app), the
+ * service, history-carry, person-timeline and distribution by execution; the in-memory client has no
+ * UNIQUE enforcement, so link idempotency is the service's own pre-read; section 15 prints whether the
+ * visitor-identify writer's own predicate column (behavioral_signals.email_captured) exists live.
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -264,13 +277,19 @@ async function main() {
   // ── 10. census: every chokepoint reaches the ONE service ──────────────────────────────────────
   console.log("\n[10 — census (stripped source): every chokepoint and reader reaches lib/kernel/person-identity.ts]")
   const SITES: Array<{ file: string; needs: RegExp[]; label: string }> = [
-    { file: "lib/lead-pipeline/pipeline-processor.ts", label: "pipeline-processor: identity gate + dedup verdicts + lead creation", needs: [/from ['"]@\/lib\/kernel\/person-identity['"]/, /resolvePerson\(/, /linkPersonEvidence\(/, /matchMethod: 'dedup_match'/, /matchMethod: 'identity_gate'/, /person_id: personId/] },
+    { file: "lib/lead-pipeline/pipeline-processor.ts", label: "pipeline-processor: identity gate + dedup verdicts + lead creation (+ R2: every verdict names its survivor)", needs: [/from ['"]@\/lib\/kernel\/person-identity['"]/, /resolvePerson\(/, /resolveSurvivorPerson\(/, /linkPersonEvidence\(/, /matchMethod: 'dedup_match'/, /matchMethod: 'identity_gate'/, /person_id: personId/, /dedupSurvivor\(preEnrichDuplicate\)/, /dedupSurvivor\(postEnrichDuplicate\)/] },
+    { file: "lib/kernel/crm.ts", label: "crm manual dedup (R2): the verdict links onto the SURVIVOR contact's person, CONTACT_MERGED is the event", needs: [/resolveSurvivorPerson\(/, /survivor: \{ entityType: "contact", entityId: params\.existingContactId \}/, /matchMethod: "dedup_match", matchScore: 0\.9/, /existingEvent: KernelEvent\.CONTACT_MERGED/] },
+    { file: "lib/contact-pipeline/contact-capture.ts", label: "captureContact: resolve + link ONCE inside (merge at its fuzzy score, create at 1.0), the capture's own event", needs: [/person-identity/, /matchMethod: 'capture_match'/, /existingEvent: action === 'merged' \? KernelEvent\.CONTACT_DEDUP_MERGED : KernelEvent\.CONTACT_CAPTURED/, /recordCapturePersonEvidence\(supabase, params, bestId, 'merged', bestScore\)/, /recordCapturePersonEvidence\(supabase, params, contactId, 'created', 1\)/, /personId: person\.personId, personIdentity: person\.identity/] },
+    { file: "app/actions/lead-intelligence.ts", label: "visitor-identify loop: THE behavioral_signals.identified writer links signal + contact (email_exact), human actor", needs: [/entityType: "behavioral_signal"/, /matchMethod: "email_exact"/, /\.from\("behavioral_signals"\)\.update\(\{ identified: true, contact_id: contact\.id \}\)[\s\S]{0,400}recordBehavioralSignalIdentity\(supabase, \{ brokerageId: auth\.brokerageId, signalId: signal\.id/, /actor: \{ type: "user" as const, userId: input\.actorUserId \}/] },
+    { file: "lib/platform/distribution-engine.ts", label: "distribution (R1): person re-homed under the RECEIVING brokerage, lead + raw linked there, after the distribution write", needs: [/person-identity/, /brokerageId: targetBrokerageId,\s*firstName: lead\.first_name/, /matchMethod: "dedup_match" as const/, /entityType: "lead", entityId: lead\.id/, /entityType: "raw_scraped_lead", entityId: lead\.raw_record_id/, /\.is\("distribution_brokerage_id", null\)[\s\S]*rehomePersonUnderReceivingBrokerage\(supabase, lead, targetBrokerageId, rotationPosition\)/] },
+    { file: "app/crm/contacts/[contactId]/components/identity-evidence-card.tsx", label: "identity evidence CARD reads the brief's identityEvidence (confidence / sources / linked / how)", needs: [/\/api\/contacts\/\$\{contactId\}\/brief/, /identityEvidence/, /evidence\.confidence/, /evidence\.sources/, /evidence\.linked/, /evidence\.how/] },
+    { file: "app/crm/contacts/[contactId]/page.tsx", label: "the contact detail pane mounts the card next to the lead-history card", needs: [/<LeadHistoryCard contactId=\{contactId\} \/>[\s\S]{0,600}<IdentityEvidenceCard contactId=\{contactId\} \/>/] },
     { file: "lib/contact-promotion/history-carry.ts", label: "history-carry: canonical_contact_id from the LINK call", needs: [/person-identity/, /resolvePerson\(/, /markPersonConverted\(/, /matchMethod: "promotion_link"/, /existingEvent: "lead_converted_to_contact"/] },
     { file: "lib/services/contact-management.service.ts", label: "mergeContacts: contact_merge evidence + survivor re-point", needs: [/person-identity/, /matchMethod: "contact_merge"/, /override: true/, /type: "user" as const, userId: auth\?\.user\?\.id/] },
     { file: "lib/lead-pipeline/unknown-sender-identification.ts", label: "unknown sender: email match → evidence, person_id on the event", needs: [/person-identity/, /matchMethod: "email_exact"/, /person_id: personId/] },
     { file: "lib/open-house/instant-greeting.ts", label: "open-house kiosk: contact + attendee evidence", needs: [/person-identity/, /entityType: "open_house_attendee"/, /matchMethod: "capture_match"/, /lastName: input\.lastName/] },
     { file: "app/api/open-house/attend/route.ts", label: "attend route passes lastName to the kiosk greeting", needs: [/sendInstantOpenHouseGreeting\(\{[\s\S]*?lastName,[\s\S]*?\}\)/] },
-    { file: "app/api/forms/submit/route.ts", label: "form submit: contact + submission evidence, person_id on FORM_SUBMISSION_RECEIVED", needs: [/person-identity/, /entityType: 'form_submission'/, /person_id: personId/] },
+    { file: "app/api/forms/submit/route.ts", label: "form submit: ONE path — the person from captureContact, only the submission row linked here, person_id on FORM_SUBMISSION_RECEIVED", needs: [/person-identity/, /personId: capturedPersonId, personIdentity/, /entityType: 'form_submission'/, /person_id: personId/] },
     { file: "lib/lead-intelligence/person-timeline.ts", label: "person-timeline reads personForContact / personForLead", needs: [/personForContact\(/, /personForLead\(/, /"identity_evidence"/] },
     { file: "lib/contacts/contact-brief.ts", label: "contact-brief reads personForContact + summarizePersonEvidence", needs: [/personForContact\(/, /summarizePersonEvidence\(/, /identityEvidence/] },
   ]
@@ -279,7 +298,8 @@ async function main() {
     const missing = s.needs.filter((re) => !re.test(text))
     check(s.label, missing.length === 0, missing.map(String).join(" | "))
   }
-  check("POSITIVE CONTROL: a chokepoint fixture WITHOUT the call fails the same census", SITES[1].needs.some((re) => !re.test(src(SITES[1].file).replace(/person-identity/g, "person-xxx"))))
+  const carrySite = SITES.find((s) => s.file === "lib/contact-promotion/history-carry.ts")!
+  check("POSITIVE CONTROL: a chokepoint fixture WITHOUT the call fails the same census", carrySite.needs.some((re) => !re.test(src(carrySite.file).replace(/person-identity/g, "person-xxx"))))
   // the service is the only inserter of the two tables
   const { readdirSync, statSync } = await import("node:fs")
   const walk = (dir: string, out: string[] = []): string[] => { for (const n of readdirSync(join(ROOT, dir))) { if (n === "node_modules" || n.startsWith(".")) continue; const p = `${dir}/${n}`; if (statSync(join(ROOT, p)).isDirectory()) walk(p, out); else if (/\.tsx?$/.test(n)) out.push(p) } return out }
@@ -290,6 +310,98 @@ async function main() {
   }
   check(`the kernel service is the ONLY inserter of person_identities / person_identity_evidence (${inserters.join(", ") || "none"})`, inserters.length === 1 && inserters[0] === "lib/kernel/person-identity.ts")
   check("POSITIVE CONTROL: the inserter finder recognises the service's own insert", /\.from\(["']person_identity_evidence["']\)[\s\S]{0,200}?\.insert\(/.test(src("lib/kernel/person-identity.ts")))
+  // ONE path per door: the form route no longer resolves or links the contact itself (captureContact does).
+  const formSrc = src("app/api/forms/submit/route.ts")
+  check("form route: no resolvePerson and no contact link of its own (captureContact is the one writer for the contact)", !/resolvePerson\(/.test(formSrc) && !/entityType: 'contact'/.test(formSrc))
+  check("POSITIVE CONTROL: the pre-102E form route (its own resolvePerson) would fail that census", /resolvePerson\(/.test(formSrc.replace(/linkPersonEvidence\(/, "resolvePerson(")))
+  check("the behavioral_signal writer helper is module-private (a 'use server' file: every export is public)", !/export async function recordBehavioralSignalIdentity/.test(src("app/actions/lead-intelligence.ts")) && /async function recordBehavioralSignalIdentity/.test(src("app/actions/lead-intelligence.ts")))
+
+  // ── 11. R2 — a dedup verdict links onto the SURVIVOR's person (wave 102.1, lane 102E) ────────
+  console.log("\n[11 — R2: a verdict with a DIFFERENT email links the record onto the survivor's person; never a second person]")
+  const svc5 = memSupabase({ person_identities: [], person_identity_evidence: [] }, { stampCreatedAt: true })
+  G.__102A.svc = svc5
+  G.__102A.events = []
+  const L1 = uuid(501), RAWB = uuid(502), C2 = uuid(503), RAWC = uuid(504), L3 = uuid(505)
+  const janeA = { firstName: "Jane", lastName: "Doe", email: "jane.doe@example.com", phone: "5550100100" }
+  const janeB = { firstName: "Jane", lastName: "Doe", email: "jane.d@work.example", phone: null }
+  const p0 = await pi.resolvePerson(svc5, { brokerageId: A, ...janeA })
+  await pi.linkPersonEvidence(svc5, { brokerageId: A, personId: p0.ok ? p0.personId : "", entityType: "lead", entityId: L1, matchMethod: "identity_gate", matchScore: 1, source: "pipeline_processor", existingEvent: "raw_record_promoted" })
+  const viaEvidence = await pi.resolveSurvivorPerson(svc5, { brokerageId: A, survivor: { entityType: "lead", entityId: L1 }, survivorIdentity: janeA, recordIdentity: janeB })
+  check("survivor lead with evidence → its person (via survivor_evidence), nothing created", viaEvidence.ok && p0.ok && viaEvidence.personId === p0.personId && viaEvidence.via === "survivor_evidence" && !viaEvidence.created)
+  check("ONE person row — the record's other email did NOT mint a second", (svc5.tables.person_identities as any[]).length === 1)
+  const lk = await pi.linkPersonEvidence(svc5, { brokerageId: A, personId: viaEvidence.ok ? viaEvidence.personId : "", entityType: "raw_scraped_lead", entityId: RAWB, matchMethod: "dedup_match", matchScore: 0.85, source: "pipeline_processor", identity: viaEvidence.ok ? viaEvidence.identity : null, detail: { stage: "pre_enrichment" }, existingEvent: "raw_record_promoted" })
+  const rawLink = (svc5.tables.person_identity_evidence as any[]).find((e) => e.entity_type === "raw_scraped_lead" && e.entity_id === RAWB)
+  const viaRawSurvivor = await pi.resolveSurvivorPerson(svc5, { brokerageId: A, survivor: { entityType: "raw_scraped_lead", entityId: RAWB }, survivorIdentity: janeB })
+  check("the record is linked onto the survivor's person at the verdict's score (dedup_match 0.85); a later verdict naming THAT raw row as survivor resolves the same person", lk.ok && !lk.duplicate && p0.ok && rawLink?.person_id === p0.personId && rawLink?.match_score === 0.85 && viaRawSurvivor.ok && viaRawSurvivor.personId === p0.personId && viaRawSurvivor.via === "survivor_evidence")
+  const janeC = { firstName: "Jane", lastName: "Doe", email: "jane.c@third.example", phone: null }
+  const janeD = { firstName: "Jane", lastName: "Doe", email: "jane.d@fourth.example", phone: null }
+  const viaIdentity = await pi.resolveSurvivorPerson(svc5, { brokerageId: A, survivor: { entityType: "contact", entityId: C2 }, survivorIdentity: janeC, recordIdentity: janeD })
+  const keyedOn = (svc5.tables.person_identities as any[]).find((p) => p.id === (viaIdentity.ok ? viaIdentity.personId : ""))
+  check("survivor contact with NO evidence → a person keyed on the SURVIVOR's email (via survivor_identity), not the record's", viaIdentity.ok && viaIdentity.via === "survivor_identity" && viaIdentity.created && keyedOn?.email_normalized === "jane.c@third.example")
+  const viaRecord = await pi.resolveSurvivorPerson(svc5, { brokerageId: A, survivor: { entityType: "lead", entityId: L3 }, survivorIdentity: { firstName: "Jane", lastName: null, email: null }, recordIdentity: janeD })
+  check("survivor without a gate identity → the record's own identity keys it (via record_identity)", viaRecord.ok && viaRecord.via === "record_identity")
+  const noAnchor = await pi.resolveSurvivorPerson(svc5, { brokerageId: A, survivor: { entityType: "lead", entityId: L3 }, survivorIdentity: { firstName: "J", lastName: null, email: null }, recordIdentity: { firstName: null, lastName: null, email: null } })
+  const noTenant = await pi.resolveSurvivorPerson(svc5, { brokerageId: null, survivor: { entityType: "lead", entityId: L1 }, survivorIdentity: janeA })
+  check("no gate identity on either side → no_identity_anchor; no tenant → refused (fail closed)", !noAnchor.ok && noAnchor.reason === "no_identity_anchor" && !noTenant.ok && noTenant.reason === "no_tenant")
+  const before11 = (svc5.tables.person_identities as any[]).length
+  const oldPath = await pi.resolvePerson(svc5, { brokerageId: A, ...janeB })
+  check("POSITIVE CONTROL: the pre-R2 path (resolvePerson on the record's own email) WOULD have minted a second person", oldPath.ok && oldPath.created && (svc5.tables.person_identities as any[]).length === before11 + 1)
+  const crossB = await pi.resolveSurvivorPerson(svc5, { brokerageId: B, survivor: { entityType: "lead", entityId: L1 }, survivorIdentity: janeA })
+  check("tenant B resolving the same survivor never sees tenant A's person (a new person under B)", crossB.ok && p0.ok && crossB.personId !== p0.personId && crossB.via === "survivor_identity")
+  void RAWC
+
+  // ── 12. R1 — distribution re-homes the person under the RECEIVING brokerage ──────────────────
+  console.log("\n[12 — R1: distributePlatformLead resolves the person under the receiving brokerage; nothing crosses tenants]")
+  const MARKET = uuid(600), SUB = uuid(601), DLEAD = uuid(602), DRAW = uuid(603)
+  const svc6 = memSupabase({
+    person_identities: [], person_identity_evidence: [],
+    leads: [{ id: DLEAD, source_origin: "platform", property_zip_code: null, mailing_zip: null, zip_code: "30301", brokerage_id: null, distribution_brokerage_id: null, phone_digits: null, email: "jane.doe@example.com", source_family: "scrape", motivation_type: null, urgency_level: null, raw_record_id: DRAW, first_name: "Jane", last_name: "Doe", phone: "5550100100" }],
+    raw_scraped_leads: [{ id: DRAW, brokerage_id: null }],
+    subscriber_service_areas: [{ brokerage_id: SUB, joined_at: "2026-01-01T00:00:00.000Z", zip_code: "30301", active: true, agent_user_id: null, team_id: null }],
+    platform_lead_distributions: [], platform_suppression_list: [], self_heal_ledger: [], agent_action_ledger: [],
+  }, { stampCreatedAt: true })
+  G.__102A.svc = svc6
+  G.__102A.events = []
+  const market = await pi.resolvePerson(svc6, { brokerageId: MARKET, firstName: "Jane", lastName: "Doe", email: "jane.doe@example.com", phone: "5550100100" })
+  await pi.linkPersonEvidence(svc6, { brokerageId: MARKET, personId: market.ok ? market.personId : "", entityType: "lead", entityId: DLEAD, matchMethod: "identity_gate", matchScore: 1, source: "pipeline_processor", existingEvent: "raw_record_promoted" })
+  let distributed: any = null
+  let distErr: string | null = null
+  try {
+    const { distributePlatformLead } = await import("../lib/platform/distribution-engine")
+    distributed = await distributePlatformLead({ leadId: DLEAD })
+  } catch (err) { distErr = err instanceof Error ? err.message : String(err) }
+  check("distributePlatformLead ran in-memory and placed the lead under the subscriber", distErr === null && distributed?.success === true && distributed?.brokerageId === SUB, distErr ?? JSON.stringify(distributed))
+  const persons6 = svc6.tables.person_identities as any[]
+  const ev6 = svc6.tables.person_identity_evidence as any[]
+  const subPerson = persons6.find((p) => p.brokerage_id === SUB)
+  check("a SECOND person row exists under the receiving brokerage (the market-owner row untouched)", persons6.length === 2 && !!subPerson && persons6.some((p) => p.brokerage_id === MARKET && market.ok && p.id === market.personId))
+  check("lead + raw row linked under the receiving tenant (dedup_match at distribution, 1.0, source platform_distribution)", !!subPerson && ev6.some((e) => e.brokerage_id === SUB && e.person_id === subPerson.id && e.entity_type === "lead" && e.entity_id === DLEAD && e.match_method === "dedup_match" && e.match_score === 1 && e.source === "platform_distribution" && e.detail?.stage === "distribution") && ev6.some((e) => e.brokerage_id === SUB && e.person_id === subPerson.id && e.entity_type === "raw_scraped_lead" && e.entity_id === DRAW))
+  check("nothing crosses tenants: no evidence under SUB names the market-owner person; the market-owner evidence is unchanged", market.ok && !ev6.some((e) => e.brokerage_id === SUB && JSON.stringify(e).includes(market.personId)) && ev6.filter((e) => e.brokerage_id === MARKET).length === 1)
+  check("no chokepoint event at distribution → the one person.identity_linked event emitted, under the receiving tenant", (G.__102A.events as any[]).some((e) => e.event === "person.identity_linked" && e.brokerageId === SUB) && !(G.__102A.events as any[]).some((e) => e.brokerageId === MARKET))
+  const viewSub = await pi.personForLead(svc6, { brokerageId: SUB, leadId: DLEAD })
+  const viewMkt = await pi.personForLead(svc6, { brokerageId: MARKET, leadId: DLEAD })
+  check("personForLead answers per tenant: the subscriber sees its person, the market owner still sees its own", viewSub.ok && viewSub.view?.person.id === subPerson?.id && viewMkt.ok && market.ok && viewMkt.view?.person.id === market.personId)
+
+  // ── 13. R6 — ProvenancePurpose gains `conversation` ───────────────────────────────────────────
+  console.log("\n[13 — R6: ProvenancePurpose has `conversation`; the AI-stated address keeps self_service]")
+  const purposesText = /const PROVENANCE_PURPOSES = \[([\s\S]*?)\] as const/.exec(src("lib/lead-pipeline/enrichment-column-map.ts"))?.[1] ?? ""
+  const purposes = [...purposesText.matchAll(/'([a-z_]+)'/g)].map((m) => m[1])
+  check(`PROVENANCE_PURPOSES (${purposes.length}) includes conversation AND self_service (one vocabulary, both kept)`, purposes.includes("conversation") && purposes.includes("self_service") && new Set(purposes).size === purposes.length)
+  check("the AI-stated address still stamps self_service (R6: they typed it themselves)", /purpose: "self_service"/.test(src("lib/ai-isa/customer-context-tools.ts")))
+  check("POSITIVE CONTROL: the parser sees the vocabulary shrink when a value is removed", ![...purposesText.replace("'conversation',", "").matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).includes("conversation"))
+  const purposeSwitches = [...walk("lib"), ...walk("app"), ...walk("scripts")].filter((f) => f !== "scripts/person-identity-guard.ts" && /Record<ProvenancePurpose\b/.test(src(f)))
+  check(`no Record<ProvenancePurpose, …> exhaustive map exists that would now miss 'conversation' (${purposeSwitches.length} found)`, purposeSwitches.length === 0, purposeSwitches.join(", "))
+
+  // ── 14. the card never renders a cost ─────────────────────────────────────────────────────────
+  console.log("\n[14 — identity evidence card: reads only the summary's fields, no cost key]")
+  const cardSrc = src("app/crm/contacts/[contactId]/components/identity-evidence-card.tsx")
+  check("the card reads no cost / spend / price property (the summary has none; the card cannot invent one)", !/\.(cost|spend|usd|price|budget)\w*/i.test(cardSrc) && !/\b(cost|spend|usd|price)_\w+/i.test(cardSrc))
+  check("the card renders no raw id (personId is never printed)", !/\{evidence\.personId\}/.test(cardSrc))
+  check("POSITIVE CONTROL: a card reading evidence.costUsd would fail", /\.(cost|spend|usd|price|budget)\w*/i.test(cardSrc + "\n{evidence.costUsd}"))
+
+  // ── 15. blind spot published (not asserted): the visitor-identify writer's own predicate ───────
+  const sigCols = /behavioral_signals: \[([^\]]*)\]/.exec(raw("scripts/schema-snapshot.ts"))?.[1] ?? ""
+  console.log(`\n[15 — published blind spot] behavioral_signals.email_captured in the live snapshot: ${/"email_captured"/.test(sigCols) ? "PRESENT" : "ABSENT — resolveIdentity's email match (and so the behavioral_signal evidence writer behind it) cannot fire live until that column exists or the predicate reads another; wired at the real writer, listed for the owner"}`)
 
   console.log(`\nRESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(fails.map((f) => `  - ${f}`).join("\n")); process.exit(1) }

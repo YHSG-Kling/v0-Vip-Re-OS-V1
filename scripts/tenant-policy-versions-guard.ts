@@ -299,8 +299,21 @@ async function main() {
       && entry(ruleKey)?.version === 4 && entry(ruleKey)?.isDefault === true && entry(ruleKey)?.store === "assignment_rules")
   const h10 = await actions.policyHistory(ruleKey)
   check("history of the rule key is readable (4 versions, newest first)", h10.ok && h10.rows.length === 4 && h10.rows[0].version === 4)
+  // R5 (wave 102.1, 102F): a DELETED rule reverts as a NEW rule (new id) whose v1 `previous` names the
+  // deleted key + version; the old key's history is untouched (still ends at v4 = deleted).
   const rvRule = await actions.revertPolicy(ruleKey, 2)
-  check("reverting a DELETED rule is refused and says why (never a silent new id)", !rvRule.ok && /no longer exists/.test(rvRule.ok ? "" : rvRule.error) && versionsOf(rowSvc, A, ruleKey).length === 4)
+  const restoredRows = (rowSvc.tables.assignment_rules as any[])
+  const restoredKey = rvRule.ok ? rvRule.restoredAs?.policyKey ?? "" : ""
+  const rvNew = restoredKey ? versionsOf(rowSvc, A, restoredKey) : []
+  check("R5: reverting a DELETED rule restores it as a NEW rule (new id, v2's columns: priority 7) and says so (restoredAs)",
+    rvRule.ok && !!rvRule.restoredAs && restoredRows.length === 1 && restoredRows[0].id !== rid && restoredRows[0].id === rvRule.restoredAs!.ruleId && restoredRows[0].priority === 7 && restoredRows[0].brokerage_id === A)
+  check("R5: the new rule's v1 `previous` names the deleted key and the version it came from; reason says restored",
+    rvNew.length === 1 && rvNew[0].version === 1 && rvNew[0].previous?.restored_from === ruleKey && rvNew[0].previous?.restored_from_version === 2 && /restored from assignment_rule:/.test(rvNew[0].reason) && rvRule.ok && rvRule.newVersion === 1)
+  check("R5: the DELETED key's history is never rewritten (still 4 versions, last = null) — the old id is not resurrected",
+    versionsOf(rowSvc, A, ruleKey).length === 4 && versionsOf(rowSvc, A, ruleKey)[3].value === null && !restoredRows.some((r) => r.id === rid))
+  check("positive control: a plain create carries previous null and the 'created' reason (restoredFrom is revert-only)",
+    (await rules.saveAssignmentRuleAction({ name: "Plain", ruleType: "round_robin", conditions: {}, agentIds: [AG], priority: 3 })).ok
+      && (rowSvc.tables.tenant_policy_versions as any[]).filter((r) => r.brokerage_id === A && /^assignment_rule:/.test(r.policy_key) && r.version === 1 && r.reason === "assignment rule created").length === 2)
   const rvNl = await actions.revertPolicy(nlKey, 1)
   check("reverting the newsletter cadence writes v3 through the upsert action (live row weekly again)", rvNl.ok && rvNl.newVersion === 3 && (rowSvc.tables.newsletter_cadence_policy as any[])[0].cadence === "weekly")
   check("every row-policy version left its auditOnly evidence event", (G.__101A.events as any[]).filter((e) => e.event === "tenant_policy.changed" && e.brokerageId === A).length >= 10)
@@ -432,6 +445,28 @@ async function main() {
     const loaded = await bandit.loadDirectMailExplorationPolicy(banditClient({ direct_mail_exploration: { frozen: true } }) as any, T)
     check("loadDirectMailExplorationPolicy is the ONE reader (frozen:true read back; empty brokerageId → frozen, unreadable)",
       loaded.frozen === true && loaded.readable === true && (await bandit.loadDirectMailExplorationPolicy(banditClient({}) as any, "")).frozen === true)
+    // R4 (wave 102.1, 102F): FROZEN with EVERY arm cold → the bandit is SKIPPED, the catalog DEFAULT
+    // variant (the cohort's first platform arm: farm_mail 4x6 = PostcardFront4x6 / direct-fact) is sent,
+    // and the pick carries the reason the orchestrator ledgers.
+    check("picks carry their reason: frozen with evidence = frozen_exploit; exploring = thompson_sample", frozenPick?.pickReason === "frozen_exploit" && (await bandit.pickVariantArm(cohort, { client: banditClient({}), now }))?.pickReason === "thompson_sample")
+    const allCold: Arm[] = [
+      { id: "arm-c2", composition_id: "PostcardFront4x6", copy_style: "social-proof",  layout_variant: "default", outcomes: [] },
+      { id: "arm-c1", composition_id: "PostcardFront4x6", copy_style: "direct-fact",   layout_variant: "default", outcomes: [{ sends_count: 0, scans_count: 0, leads_count: 0, last_send_at: null, last_scan_at: null }] },
+      { id: "arm-c3", composition_id: "PostcardFront4x6", copy_style: "question-hook", layout_variant: "default", outcomes: [] },
+    ]
+    const coldClient = (settings: unknown) => ({ from(table: string) { const c = banditClient(settings).from(table); if (table === "direct_mail_variants") c.then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => Promise.resolve({ data: allCold, error: null }).then(res, rej); return c } })
+    const coldPicks = new Set<string>()
+    const coldReasons = new Set<string>()
+    for (let i = 0; i < 25; i++) { const p = (await bandit.pickVariantArm(cohort, { client: coldClient({ direct_mail_exploration: { frozen: true } }), now }))!; coldPicks.add(p.variantId); coldReasons.add(p.pickReason) }
+    check("R4: FROZEN + all arms cold → 25/25 picks are the catalog DEFAULT arm (direct-fact, NOT the first row returned) with reason frozen_all_cold_catalog_default",
+      coldPicks.size === 1 && coldPicks.has("arm-c1") && coldReasons.size === 1 && coldReasons.has("frozen_all_cold_catalog_default"))
+    check("R4: catalogDefaultArm names the cohort's first platform arm; an unknown cohort has none", bandit.catalogDefaultArm("farm_mail", "4x6")?.copy_style === "direct-fact" && bandit.catalogDefaultArm("farm_mail", "6x9")?.copy_style === "photo-led" && bandit.catalogDefaultArm("welcome_kit", "6x9")?.copy_style === "intro-warm")
+    const coldExplore = new Set<string>()
+    for (let i = 0; i < 300; i++) coldExplore.add((await bandit.pickVariantArm(cohort, { client: coldClient({}), now }))!.variantId)
+    check("positive control: EXPLORING with all arms cold still samples across the arms (Thompson, not the default)", coldExplore.size > 1)
+    const os = src("lib/direct-mail/orchestrate-send.ts")
+    check("orchestrate-send ledgers the send under policyKey direct_mail_exploration with the pick reason beside the arm (detail.bandit_pick_reason) and in metadata",
+      /policyKey:\s*"direct_mail_exploration"/.test(os) && /bandit_pick_reason:\s*variantPick\.pickReason/.test(os) && /bandit_pick_reason:\s*variantPick\?\.pickReason/.test(os))
   }
   {
     // The writer: ONE server action → mergeBrokerageSettings with the session actor → a version row.

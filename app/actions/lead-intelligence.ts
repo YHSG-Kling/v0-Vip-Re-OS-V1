@@ -2535,6 +2535,38 @@ async function getAllSignalsForProfile(profileId: string, brokerageId: string, c
 // IDENTITY RESOLUTION
 // ============================================
 
+// PERSON IDENTITY (wave 102.1, lane 102E) — THIS is the behavioral_signals.identified / contact_id
+// writer (the visitor-identify loop), so this is where the `behavioral_signal` evidence reserved in
+// m697 gets its writer: the identified visitor is linked to the CONTACT's person
+// (lib/kernel/person-identity.ts — the contact by email_exact, the signal by email_exact, because an
+// email_captured match is what identified it). Tenant = the caller's session brokerage the match
+// above was already pinned to; actor = the human who ran the resolution (LAW 5). No chokepoint
+// event exists here, so the one person.identity_linked event is emitted. Best-effort: the signal
+// link above already landed and is never un-reported. Module-private: NOT a "use server" export.
+async function recordBehavioralSignalIdentity(
+  supabase: ReturnType<typeof createServiceClient>,
+  input: { brokerageId: string | null; signalId: string; contact: { id: string; first_name?: string | null; last_name?: string | null; email?: string | null; phone?: string | null }; actorUserId: string | null },
+): Promise<void> {
+  try {
+    const { resolvePerson, linkPersonEvidence } = await import("@/lib/kernel/person-identity")
+    const person = await resolvePerson(supabase, {
+      brokerageId: input.brokerageId,
+      firstName: input.contact.first_name ?? null, lastName: input.contact.last_name ?? null,
+      email: input.contact.email ?? null, phone: input.contact.phone ?? null,
+    })
+    if (!person.ok) {
+      if (person.reason !== "no_identity_anchor") console.warn(`[lead-intelligence] person identity not resolved for the identified visitor: ${person.reason}`)
+      return
+    }
+    const common = { brokerageId: input.brokerageId, personId: person.personId, source: "visitor_identify", actor: { type: "user" as const, userId: input.actorUserId }, identity: person.identity }
+    const a = await linkPersonEvidence(supabase, { ...common, entityType: "contact", entityId: input.contact.id, matchMethod: "email_exact", matchScore: 1, detail: { behavioral_signal_id: input.signalId } })
+    const b = await linkPersonEvidence(supabase, { ...common, entityType: "behavioral_signal", entityId: input.signalId, matchMethod: "email_exact", matchScore: 1, detail: { contact_id: input.contact.id, identified_by: "email_captured" } })
+    for (const r of [a, b]) if (!r.ok) console.warn(`[lead-intelligence] behavioral_signal person evidence not recorded: ${r.reason}`)
+  } catch (err) {
+    console.warn("[lead-intelligence] person identity threw (signal link unaffected):", err instanceof Error ? err.message : String(err))
+  }
+}
+
 export async function resolveIdentity(behavioralSignalId: string) {
   // Reads contact PII via email match — require auth
   const auth = await requireCaller()
@@ -2559,6 +2591,7 @@ export async function resolveIdentity(behavioralSignalId: string) {
       if (contact) {
         const { error: identifyErr } = await supabase.from("behavioral_signals").update({ identified: true, contact_id: contact.id }).eq("id", signal.id)
         if (identifyErr) console.error(`[lead-intelligence] visitor identified but the signal was NOT linked to the contact: ${identifyErr.message}`)
+        else await recordBehavioralSignalIdentity(supabase, { brokerageId: auth.brokerageId, signalId: signal.id as string, contact, actorUserId: auth.userId })
         return { success: true, contact, method: "email_match" }
       }
     }

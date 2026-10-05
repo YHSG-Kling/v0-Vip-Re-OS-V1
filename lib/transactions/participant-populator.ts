@@ -86,7 +86,7 @@ export async function populateInitialParticipants(
   // Look up the transaction + offer + listing fan-out in one round
   const { data: tx, error: txErr } = await supabase
     .from("transactions")
-    .select("id, brokerage_id, offer_id, listing_id, buyer_contact_id, seller_contact_id, agent_id")
+    .select("id, brokerage_id, offer_id, listing_id, buyer_contact_id, seller_contact_id, contact_id, deal_type, agent_id")
     .eq("id", transactionId)
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
@@ -285,10 +285,20 @@ export async function populateInitialParticipants(
   // (idempotent on the graph's UNIQUE key; a lost edge is logged, the roster is never failed).
   const rosterEdges = async () => {
     try {
-      const { planRosterEdges, upsertRelationships } = await import("@/lib/kernel/relationship-graph")
-      const planned = planRosterEdges({ buyerContactId, buyerAgent: buyerAgentRef, sellerContactId, sellerAgentUserId, observedAt: new Date().toISOString() })
+      const { planRosterEdges, upsertRelationships, resolveCoBuyerContactIds } = await import("@/lib/kernel/relationship-graph")
+      const observedAt = new Date().toISOString()
+      const planned = planRosterEdges({ buyerContactId, buyerAgent: buyerAgentRef, sellerContactId, sellerAgentUserId, observedAt })
+      // 102F — a second buyer-side contact on the roster (the row's client on a buyer deal, or a
+      // buyer / co_buyer row whose email is a contact of this tenant) is a co_buyer of the buyer.
+      if (buyerContactId) {
+        const co = await resolveCoBuyerContactIds(supabase, { brokerageId, transactionId, tx: { ...tx, buyer_contact_id: buyerContactId } })
+        if (co.errors.length > 0) console.warn(`[participant-populator] co-buyer resolution partial for ${transactionId}: ${co.errors.join("; ")}`)
+        for (const id of co.ids) {
+          planned.push({ from: { type: "contact", id: buyerContactId }, to: { type: "contact", id }, type: "co_buyer", evidence: { source: "transaction_roster", confidence: 0.85, observed_at: observedAt } })
+        }
+      }
       const r = await upsertRelationships(supabase, brokerageId, planned, null)
-      if (r.errors.length > 0 && !r.degraded) console.error(`[participant-populator] represented_by edges for ${transactionId}: ${r.errors.join("; ")}`)
+      if (r.errors.length > 0 && !r.degraded) console.error(`[participant-populator] represented_by / co_buyer edges for ${transactionId}: ${r.errors.join("; ")}`)
     } catch (e) {
       console.error("[participant-populator] relationship edge derivation failed (non-blocking)", e)
     }

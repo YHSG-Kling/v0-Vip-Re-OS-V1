@@ -100,7 +100,8 @@ check("marketingSystemFeatureKeys() is DERIVED from the catalogue, not a second 
   ALL_KEYS.size === new Set(MARKETING_SYSTEM_CLAIMS.flatMap((c) => c.requires)).size)
 
 /**
- * Live `feature_flags.feature_key` values, snapshotted 2026-08-26. Regenerate with:
+ * Live `feature_flags.feature_key` values, snapshotted 2026-10-05 (70 keys; wave 102.1 lane 102F refresh — m699's
+ * ai_listing_generation / ai_social_content rows are live since 2026-10-05). Regenerate with:
  *   select feature_key from feature_flags where enabled and not deprecated order by 1;
  *
  * A pure proof has no credentials, so this is a DATED SNAPSHOT rather than a live
@@ -108,28 +109,28 @@ check("marketingSystemFeatureKeys() is DERIVED from the catalogue, not a second 
  * real on the snapshot date and has since been renamed. Published as a blind spot
  * at the foot of this run rather than left for a reader to discover.
  */
-const LIVE_FEATURE_KEYS_20260826 = new Set([
+const LIVE_FEATURE_KEYS_20261005 = new Set([
   "ad_creator", "ads_audiences", "ads_campaigns", "agent_dashboard", "agent_onboarding",
   "ai_campaign_automation", "ai_compliance_checking", "ai_content_generation",
-  "ai_conversation_analysis", "ai_isa", "ai_lead_prediction", "ai_setup_assistant",
-  "ai_video_generation", "brand_setup", "brokerage_dashboard", "brokerage_settings",
-  "buyer_education", "campaign_roi_dashboard", "cma_presentation", "commission_reports",
-  "commission_waterfall", "competitor_monitor", "compliance_reports", "contact_enrichment",
-  "contact_lifecycle_tracking", "content_performance_predictor", "custom_reports",
-  "direct_mail", "direct_mail_integration", "document_esign", "email_campaigns",
-  "email_outbound", "ghosted_reengagement", "integration_setup", "isa_reengagement_approval",
-  "knowledge_management", "lead_assignment_auto", "lead_scoring", "lifetime_learning_portal",
-  "listing_lifecycle", "listing_marketing_tiers", "listing_media", "marketing_studio",
-  "milestone_tracking", "multi_location_dashboard", "multi_location_settings",
-  "multi_offer_handling", "newsletter_engine", "omnipresence_repurposer", "phone_voicemail",
-  "podcast_generation", "prelisting_repairs", "provider_override", "repurposing",
-  "seller_education", "seo_blog_engine", "sms_outbound", "snippet_generation",
-  "social_automation", "social_media_posting", "team_dashboard", "team_management",
-  "training_library", "training_progress", "transaction_orchestration", "video_generation",
-  "voice_clone", "whatsapp_messaging",
+  "ai_conversation_analysis", "ai_isa", "ai_lead_prediction", "ai_listing_generation",
+  "ai_setup_assistant", "ai_social_content", "ai_video_generation", "brand_setup",
+  "brokerage_dashboard", "brokerage_settings", "buyer_education", "campaign_roi_dashboard",
+  "cma_presentation", "commission_reports", "commission_waterfall", "competitor_monitor",
+  "compliance_reports", "contact_enrichment", "contact_lifecycle_tracking",
+  "content_performance_predictor", "custom_reports", "direct_mail", "direct_mail_integration",
+  "document_esign", "email_campaigns", "email_outbound", "ghosted_reengagement",
+  "integration_setup", "isa_reengagement_approval", "knowledge_management", "lead_assignment_auto",
+  "lead_scoring", "lifetime_learning_portal", "listing_lifecycle", "listing_marketing_tiers",
+  "listing_media", "marketing_studio", "milestone_tracking", "multi_location_dashboard",
+  "multi_location_settings", "multi_offer_handling", "newsletter_engine",
+  "omnipresence_repurposer", "phone_voicemail", "podcast_generation", "prelisting_repairs",
+  "provider_override", "repurposing", "seller_education", "seo_blog_engine", "sms_outbound",
+  "snippet_generation", "social_automation", "social_media_posting", "team_dashboard",
+  "team_management", "training_library", "training_progress", "transaction_orchestration",
+  "video_generation", "voice_clone", "whatsapp_messaging",
 ])
-const unknownKeys = [...ALL_KEYS].filter((k) => !LIVE_FEATURE_KEYS_20260826.has(k))
-check("every feature key a claim depends on is a real flag in the 2026-08-26 snapshot",
+const unknownKeys = [...ALL_KEYS].filter((k) => !LIVE_FEATURE_KEYS_20261005.has(k))
+check("every feature key a claim depends on is a real flag in the 2026-10-05 snapshot",
   unknownKeys.length === 0,
   `not in feature_flags: ${unknownKeys.join(", ")}`)
 check("the floor sentence names NO capability — it can never be a false claim",
@@ -375,7 +376,7 @@ console.log(` BLIND SPOTS (§2): this proof covers the COMPOSER and the WIRE. It
 console.log(`   execute resolveTenantCapabilities against the live database (that needs`)
 console.log(`   credentials and would be a tenancy proof, not a claim proof), and it does`)
 console.log(`   not assert the AI's output — only that the output is screened and trimmed.`)
-console.log(`   The feature-key check is a DATED SNAPSHOT (2026-08-26, ${LIVE_FEATURE_KEYS_20260826.size} keys), so it`)
+console.log(`   The feature-key check is a DATED SNAPSHOT (2026-10-05, ${LIVE_FEATURE_KEYS_20261005.size} keys), so it`)
 console.log(`   catches an invented key but not one renamed since. The fair-housing screen`)
 console.log(`   is a PHRASE matcher, not an intent classifier — it fires on "perfect for`)
 console.log(`   families" and not on a paraphrase of it; see section 5's note.`)

@@ -1207,6 +1207,19 @@ export async function processEnrichmentQueue(
                   if (propWriteError) {
                     console.warn('[enrichment-orchestrator] batchdata property-enrichment write failed:', propWriteError.message)
                   } else {
+                    // RELATIONSHIP GRAPH (wave 102.1, lane 102F): the owner block's SECOND name is a
+                    // co_owner when it is a contact of this tenant in the same zip
+                    // (lib/kernel/relationship-graph.ts deriveCoOwnerEdges). Contacts only — a lead has
+                    // no property_records and belongs to the person layer. Additive; a lost edge is logged.
+                    if (entityType === 'contact' && Array.isArray(propEnrichment.ownerNames) && propEnrichment.ownerNames.length > 1) {
+                      try {
+                        const { deriveCoOwnerEdges } = await import('@/lib/kernel/relationship-graph')
+                        const co = await deriveCoOwnerEdges(supabase, { brokerageId, contactId: entityId, ownerNames: propEnrichment.ownerNames })
+                        if (co.errors.length > 0 && !co.degraded) console.warn(`[enrichment-orchestrator] co_owner edges for ${entityId}: ${co.errors.join('; ')}`)
+                      } catch (e) {
+                        console.warn('[enrichment-orchestrator] co_owner edge derivation failed (non-blocking):', e)
+                      }
+                    }
                     // PLATFORM LEDGER at the client's reported cost (lane 81B — was a
                     // unitCount:1 priced at the $0.50 motivated-seller rate).
                     await meterVendorSpend({

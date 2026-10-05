@@ -31,11 +31,14 @@ import { appendTenantPolicyVersion, assignmentRulePolicyKey, assignmentRulePolic
 const RULE_POLICY_COLS = "id, brokerage_id, name, rule_type, conditions, agent_ids, team_id, priority, is_active"
 async function versionRule(
   svc: ReturnType<typeof createServiceClient>,
-  args: { brokerageId: string; ruleId: string; previous: Record<string, unknown> | null; value: Record<string, unknown> | null; userId: string; reason: string },
+  args: { brokerageId: string; ruleId: string; previous: Record<string, unknown> | null; value: Record<string, unknown> | null; userId: string; reason: string; restoredFrom?: { policyKey: string; version: number } | null },
 ): Promise<void> {
   const v = await appendTenantPolicyVersion(svc, {
     brokerageId: args.brokerageId, policyKey: assignmentRulePolicyKey(args.ruleId),
-    value: assignmentRulePolicyValue(args.value), previous: assignmentRulePolicyValue(args.previous),
+    value: assignmentRulePolicyValue(args.value),
+    // R5 (wave 102.1): a rule RESTORED from a deleted rule's history is a NEW rule (new id) whose v1
+    // `previous` names the deleted key and version it came from — never the old id resurrected.
+    previous: args.restoredFrom ? { restored_from: args.restoredFrom.policyKey, restored_from_version: args.restoredFrom.version } : assignmentRulePolicyValue(args.previous),
     actor: { type: "user", userId: args.userId, reason: args.reason },
   })
   if (!v.ok) console.error(`[assignment-rules] policy version not recorded for ${args.ruleId}: ${v.error}`)
@@ -70,6 +73,9 @@ export interface AssignmentRuleInput {
   teamId?: string | null
   priority: number
   isActive?: boolean
+  /** R5 — set by revertPolicy when a DELETED rule is restored: creates a NEW rule whose first
+   *  version's `previous` names the deleted key (`assignment_rule:<old id>`) and version. Ignored on an update. */
+  restoredFrom?: { policyKey: string; version: number } | null
 }
 
 /** Verify a rule id belongs to the caller's brokerage before mutating it — and return the row it
@@ -126,7 +132,12 @@ export async function saveAssignmentRuleAction(
     .single()
   if (error) return { ok: false, error: error.message }
   const newId = (data as { id: string }).id
-  await versionRule(svc, { brokerageId: auth.brokerageId, ruleId: newId, previous: null, value: payload, userId: auth.userId, reason: "assignment rule created" })
+  const restoredFrom = input.restoredFrom && /^assignment_rule:/.test(input.restoredFrom.policyKey) && Number.isInteger(input.restoredFrom.version) ? input.restoredFrom : null
+  await versionRule(svc, {
+    brokerageId: auth.brokerageId, ruleId: newId, previous: null, value: payload, userId: auth.userId,
+    reason: restoredFrom ? `assignment rule restored from ${restoredFrom.policyKey} v${restoredFrom.version}` : "assignment rule created",
+    restoredFrom,
+  })
   revalidatePath("/dashboard/admin/assignment-rules")
   return { ok: true, id: newId }
 }

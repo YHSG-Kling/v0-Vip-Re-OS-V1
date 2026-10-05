@@ -102,7 +102,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     // ── Step 5: captureContact ────────────────────────────────────────────────
     const consentNow = new Date().toISOString()
-    const { contactId, action } = await captureContact({
+    const { contactId, action, personId: capturedPersonId, personIdentity } = await captureContact({
       brokerageId: form.brokerage_id,
       // Use agent from form record; captureContact will fallback to brokerage primary if null
       agentUserId: form.agent_id ?? null,
@@ -139,35 +139,28 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       .update({ contact_id: contactId })
       .eq('id', submission.id), { table: "form_submissions", flow: "form_submissions_write", reason: "submission→contact link; the contact is already captured" })
 
-    // ── Step 6b: PERSON IDENTITY (wave 102, lane 102A; m697) ──────────────────
-    // captureContact just decided, by email/phone fuzzy match, whether this submission is an existing
-    // contact or a new one — a person verdict. It is recorded as evidence on THE person row
-    // (lib/kernel/person-identity.ts): the contact (capture_match; a merge scored by the capture's own
-    // dedup, a creation at 1.0) and the submission itself. Tenant = the form's brokerage the route
-    // already resolved from the slug (never the body). The FORM_SUBMISSION_RECEIVED event below
-    // carries person_id, so no second event. Best-effort: never blocks the 200.
-    let personId: string | null = null
-    try {
-      const { resolvePerson, linkPersonEvidence } = await import('@/lib/kernel/person-identity')
-      const person = await resolvePerson(supabase, {
-        brokerageId: form.brokerage_id, firstName: first_name || null, lastName: last_name || null,
-        email: email || null, phone: consentGiven ? (phone || null) : null,
-      })
-      if (!person.ok) {
-        if (person.reason !== 'no_identity_anchor') console.warn('[forms/submit] person identity not resolved:', person.reason)
-      } else {
-        personId = person.personId
-        const common = {
-          brokerageId: form.brokerage_id, personId: person.personId, source: 'form_submit',
-          actor: { type: 'system' as const, userId: null }, identity: person.identity,
+    // ── Step 6b: PERSON IDENTITY (wave 102, lane 102A; m697 · wave 102.1, lane 102E) ──────────
+    // captureContact resolved the person and linked the CONTACT itself (capture_match, inside
+    // lib/contact-pipeline/contact-capture.ts — ONE path for every capture door). This route adds
+    // only what it alone knows: the SUBMISSION row, on the same person. The contact is never re-linked
+    // here (one path; the UNIQUE link would make a second call a no-op anyway, but one writer is the
+    // rule). Tenant = the form's brokerage the route already resolved from the slug (never the body).
+    // The FORM_SUBMISSION_RECEIVED event below carries person_id, so no second event. Best-effort.
+    const personId: string | null = capturedPersonId ?? null
+    if (personId) {
+      try {
+        const { linkPersonEvidence } = await import('@/lib/kernel/person-identity')
+        const b = await linkPersonEvidence(supabase, {
+          brokerageId: form.brokerage_id, personId, source: 'form_submit',
+          actor: { type: 'system' as const, userId: null }, identity: personIdentity ?? null,
           existingEvent: KernelEvent.FORM_SUBMISSION_RECEIVED,
-        }
-        const a = await linkPersonEvidence(supabase, { ...common, entityType: 'contact', entityId: contactId, matchMethod: 'capture_match', matchScore: action === 'merged' ? 0.9 : 1, detail: { capture_action: action, form_id: form.id, submission_id: submission.id } })
-        const b = await linkPersonEvidence(supabase, { ...common, entityType: 'form_submission', entityId: submission.id, matchMethod: 'capture_match', matchScore: 1, detail: { form_id: form.id, contact_id: contactId } })
-        for (const r of [a, b]) if (!r.ok) console.warn('[forms/submit] person evidence not recorded:', r.reason)
+          entityType: 'form_submission', entityId: submission.id, matchMethod: 'capture_match', matchScore: 1,
+          detail: { form_id: form.id, contact_id: contactId, capture_action: action },
+        })
+        if (!b.ok) console.warn('[forms/submit] person evidence not recorded:', b.reason)
+      } catch (err) {
+        console.warn('[forms/submit] person identity threw (submission unaffected):', err instanceof Error ? err.message : String(err))
       }
-    } catch (err) {
-      console.warn('[forms/submit] person identity threw (submission unaffected):', err instanceof Error ? err.message : String(err))
     }
 
     // ── Step 7: Emit lifecycle event ──────────────────────────────────────────

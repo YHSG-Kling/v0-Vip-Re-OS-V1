@@ -25,7 +25,7 @@ import { dispatchDirectMail, type DirectMailPieceType } from "@/lib/providers/di
 import { renderPostcardBothSides4x6, renderPostcardBothSides6x9 } from "@/lib/direct-mail/render-postcard"
 import { renderLetterHtml } from "@/lib/direct-mail/render-letter"
 import type { DirectMailCopyContext } from "@/lib/direct-mail/draft-copy"
-import { pickVariantArm, recordVariantSend } from "@/lib/direct-mail/variant-bandit"
+import { pickVariantArm, recordVariantSend, type BanditPickReason } from "@/lib/direct-mail/variant-bandit"
 import { experimentLedgerDetail } from "@/lib/kernel/experiments"
 import type { Persona } from "@/lib/kernel/types"
 
@@ -101,6 +101,8 @@ export interface OrchestrateSendResult {
     copyStyle:    string
     sampledProb:  number
     isExploration: boolean
+    /** R4 — why this arm (thompson_sample | frozen_exploit | frozen_all_cold_catalog_default). */
+    pickReason:   BanditPickReason
   } | null
   /** Wave 36 m156 — id of the compliance_events row the gate emitted.
    *  Caller stamps it on direct_mail_campaigns for per-piece audit. */
@@ -155,6 +157,7 @@ export async function orchestrateRenderAndSend(
           copyStyle:     pick.copyStyle,
           sampledProb:   pick.sampledProb,
           isExploration: pick.isExploration,
+          pickReason:    pick.pickReason,
         }
         // Wave 36 — stamp the bandit's copy_style into copyCtx so
         // draftPostcardCopy / draftLetterCopy actually swap in the
@@ -265,13 +268,17 @@ export async function orchestrateRenderAndSend(
     // Wave 101 (101B): the bandit's arm rides the send's ledger row as detail.experiment, so 100A
     // attribution rolls outcomes up by arm beside the A/B arms (lib/kernel/experiments.ts). The
     // Thompson sampler keeps choosing it — an adaptive allocator, not a fixed-weight split.
-    ...(variantPick ? { ledger: { detail: experimentLedgerDetail({ key: "direct_mail_variant", arm: variantPick.variantId }) } } : {}),
+    // 102D/102F: the send ran under the tenant's `direct_mail_exploration` policy (the bandit kill
+    // switch, lib/kernel/tenant-policy.ts) — named as policyKey so the ledger row reads
+    // `direct_mail_exploration@<version>` (LAW 5), with the bandit's pick reason beside the arm (R4).
+    ...(variantPick ? { ledger: { detail: { ...experimentLedgerDetail({ key: "direct_mail_variant", arm: variantPick.variantId }), bandit_pick_reason: variantPick.pickReason }, policyKey: "direct_mail_exploration" } } : {}),
     metadata: {
       rendered,
       fell_back_reason: fellBackReason,
       postcard_size:    args.pieceType === "postcard" ? (args.postcardSize ?? "4x6") : undefined,
       variant_id:       variantPick?.variantId ?? null,
       copy_style:       variantPick?.copyStyle ?? null,
+      bandit_pick_reason: variantPick?.pickReason ?? null,
     },
   })
 

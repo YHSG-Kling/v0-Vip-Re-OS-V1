@@ -23,11 +23,25 @@
  *   the lane assigned it; the kernel service is the only relationship_edges inserter; each reader
  *   surface reads the graph — with positive-control fixtures.
  *
+ * WAVE 102.1 (lane 102F — 102B's "no deriving writer" items closed on the ONE service):
+ *   6. co_buyer: the row's second buyer-side contact (buyer deal only) + buyer/co_buyer roster rows
+ *      whose email is a tenant contact → co_buyer (+ owns) at close and roster; idempotent;
+ *   7. co_owner: BatchData's OTHER owner name matched to a tenant contact in the same zip (0.75);
+ *   8. occupies: the contact's mailing address IS a tenant listing (0.6; 0.7 with a renter/owner signal);
+ *   9. R3 backfill: closed transactions missing edges are derived on the weekly cron through the one
+ *      derivation — a healed close costs no write, a re-run derives nothing, a missing table degrades;
+ *   V. m702 widens the two entity CHECKs by `referral_partner` ONLY (additive; TS list == m698 ∪ m702);
+ *   C. the partner-rail lender writes lender_for from a referral_partner; the cron route wires the
+ *      backfill and ledgers its summary; R9: contacts.vendor_id writer census (published, UNRESOLVED).
+ *
  * BLIND SPOTS (published): the survivor writers are proven by census, not executed (their module
  *   graphs pull server-only/cookie edges); the CHECK/RLS/trigger are proven on SQL text, not run
- *   (m698 — APPLIED LIVE 2026-10-05); a writer reaching relationship_edges through an .rpc() or a
- *   dynamic table name is invisible to the census; evidence confidence values are the lane's
- *   defaults, not calibrated.
+ *   (m698 — APPLIED LIVE 2026-10-05; m702 — APPLIED LIVE 2026-10-05);
+ *   a writer reaching relationship_edges through an .rpc() or a dynamic table name is invisible to
+ *   the census; evidence confidence values are the lane's defaults, not calibrated; co_owner name
+ *   matching is word-set equality (a nickname or a maiden name does not match — a miss, never a
+ *   wrong edge); the backfill's "healed" test is a planned-edge set membership, so a close whose
+ *   edges were written under a different buyer id (a merged contact) is derived again (idempotent).
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -39,6 +53,10 @@ import {
   planTransactionCloseEdges, deriveTransactionCloseEdges,
   planHouseholdEdges, deriveHouseholdEdges, planRosterEdges,
   representedByOutsideAgent, describeEdge,
+  // wave 102.1 (102F)
+  coBuyerContactIdsFromTransactionRow, resolveCoBuyerContactIds,
+  planCoOwnerEdges, deriveCoOwnerEdges, planOccupancyEdges, deriveOccupancyEdges,
+  backfillTransactionCloseEdges,
 } from "../lib/kernel/relationship-graph"
 
 let pass = 0, fail = 0
@@ -173,16 +191,153 @@ async function main() {
     check("positive control: a real refusal IS a refusal", !rr.ok && !rr.degraded && /refused/.test(rr.error ?? ""))
   }
 
-  // ── vocabulary vs m698 ────────────────────────────────────────────────────────────────────
-  console.log("\n[V] one vocabulary — TS constants equal m698's CHECK lists")
+  // ── 6. co_buyer ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[6] co_buyer — a second buyer-side contact on the deal (102F)")
+  {
+    const C4 = "aaaaaaaa-0000-4000-8000-000000000004"
+    check("a buyer deal's client (contact_id) who is neither buyer nor seller is a co-buyer",
+      coBuyerContactIdsFromTransactionRow({ deal_type: "buyer", contact_id: C3, buyer_contact_id: C1, seller_contact_id: C2 }).join() === C3)
+    check("positive control: on a seller / dual deal the client column names nobody; the buyer twice names nobody",
+      coBuyerContactIdsFromTransactionRow({ deal_type: "seller", contact_id: C3, buyer_contact_id: C1, seller_contact_id: C2 }).length === 0
+      && coBuyerContactIdsFromTransactionRow({ deal_type: "dual", contact_id: C3, buyer_contact_id: C1 }).length === 0
+      && coBuyerContactIdsFromTransactionRow({ deal_type: "buyer", contact_id: C1, buyer_contact_id: C1 }).length === 0)
+    const planned = planTransactionCloseEdges({ transactionId: T1, buyerContactId: C1, sellerContactId: C2, listingId: L1, coBuyerContactIds: [C3, C1, C2], closeDate: "2026-10-05", observedAt: NOW })
+    const types = planned.map((e) => e.type).sort().join(",")
+    check("one co-buyer adds exactly co_buyer (buyer↔co-buyer) + owns (co-buyer → home); buyer/seller ids in the list are ignored",
+      planned.length === 6 && types === "bought_from,co_buyer,owns,owns,previously_owned,sold_to" && planned.find((e) => e.type === "co_buyer")?.evidence.confidence === 0.9)
+    check("positive control: no co-buyers → the four close edges exactly as before", planTransactionCloseEdges({ transactionId: T1, buyerContactId: C1, sellerContactId: C2, listingId: L1, closeDate: "2026-10-05", observedAt: NOW }).length === 4)
+    const svc = memSupabase({
+      relationship_edges: [],
+      transaction_participants: [
+        { brokerage_id: A, transaction_id: T1, role: "buyer", email: "Pat@Example.com" },
+        { brokerage_id: A, transaction_id: T1, role: "co_buyer", email: "sam@example.com" },
+        { brokerage_id: A, transaction_id: T1, role: "seller", email: "seller@example.com" },
+        { brokerage_id: B, transaction_id: T1, role: "co_buyer", email: "other@example.com" },
+      ],
+      contacts: [
+        { id: C1, brokerage_id: A, email: "pat@example.com" },
+        { id: C4, brokerage_id: A, email: "sam@example.com" },
+        { id: C2, brokerage_id: A, email: "seller@example.com" },
+        { id: C3, brokerage_id: B, email: "other@example.com" },
+      ],
+    })
+    const co = await resolveCoBuyerContactIds(svc, { brokerageId: A, transactionId: T1, tx: { deal_type: "buyer", contact_id: C3, buyer_contact_id: C1, seller_contact_id: C2 } })
+    check("the roster's co_buyer row resolves by email (case-insensitive) to the tenant's contact; the buyer's own row and the seller never do; the row's client joins the list",
+      co.errors.length === 0 && co.ids.join() === [C3, C4].sort().join())
+    const closed = await deriveTransactionCloseEdges(svc, { brokerageId: A, transactionId: T1, buyerContactId: C1, sellerContactId: C2, listingId: L1, coBuyerContactIds: co.ids, closeDate: "2026-10-05", now: new Date(NOW) })
+    const again = await deriveTransactionCloseEdges(svc, { brokerageId: A, transactionId: T1, buyerContactId: C1, sellerContactId: C2, listingId: L1, coBuyerContactIds: co.ids, closeDate: "2026-10-05", now: new Date(NOW) })
+    check("two co-buyers close: 4 + co_buyer×3 (buyer↔each, pair) + owns×2 = 9 rows, re-run derives nothing", closed.written === 9 && again.written === 0 && again.existing === 9 && svc.tables.relationship_edges.length === 9)
+    const hh = await household(svc, { brokerageId: A, contactId: C1 })
+    check("household() of the buyer lists both co-buyers", hh.ok && hh.members.map((m) => m.contactId).sort().join() === [C3, C4].sort().join() && hh.members.every((m) => m.type === "co_buyer"))
+    const refused = memSupabase({ contacts: [], transaction_participants: [] }, { refuse: { transaction_participants: "permission denied" } })
+    const r = await resolveCoBuyerContactIds(refused, { brokerageId: A, transactionId: T1, tx: { deal_type: "buyer", contact_id: C3, buyer_contact_id: C1 } })
+    check("a refused roster read is REPORTED (the row's own co-buyer still resolves)", r.errors.length === 1 && /refused/.test(r.errors[0]) && r.ids.join() === C3)
+  }
+
+  // ── 7. co_owner ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[7] co_owner — the OTHER owner name on the contact's home, matched to a tenant contact (102F)")
+  {
+    const subject = { id: C1, first_name: "Maria", last_name: "Lopez", address: "12 Elm St", zip_code: "78704" }
+    const planned = planCoOwnerEdges(subject, ["LOPEZ MARIA", "LOPEZ JUAN C"], [
+      { id: C2, first_name: "Juan", last_name: "Lopez", zip_code: "78704" },
+      { id: C3, first_name: "Juan", last_name: "Perez", zip_code: "78704" },
+    ], NOW)
+    check("the second owner name matches the contact with the same name words (initials ignored) → co_owner at 0.75; a different surname never matches",
+      planned.length === 1 && planned[0].type === "co_owner" && planned[0].evidence.confidence === 0.75 && planned[0].evidence.source === "batchdata_owner_names" && [planned[0].from.id, planned[0].to.id].includes(C2) && ![planned[0].from.id, planned[0].to.id].includes(C3))
+    check("positive control: the subject's OWN name never becomes a co-owner edge; one owner name → nothing",
+      planCoOwnerEdges(subject, ["Maria Lopez"], [{ id: C2, first_name: "Maria", last_name: "Lopez" }], NOW).length === 0)
+    const svc = memSupabase({
+      relationship_edges: [],
+      contacts: [
+        { id: C1, brokerage_id: A, first_name: "Maria", last_name: "Lopez", address: "12 Elm St", zip_code: "78704", mailing_address: null, mailing_zip: null },
+        { id: C2, brokerage_id: A, first_name: "Juan", last_name: "Lopez", address: "12 Elm St", zip_code: "78704", mailing_address: null, mailing_zip: null },
+        { id: C3, brokerage_id: B, first_name: "Juan", last_name: "Lopez", address: "12 Elm St", zip_code: "78704", mailing_address: null, mailing_zip: null },
+      ],
+    })
+    const d = await deriveCoOwnerEdges(svc, { brokerageId: A, contactId: C1, ownerNames: ["LOPEZ MARIA", "LOPEZ JUAN"], now: new Date(NOW) })
+    const d2 = await deriveCoOwnerEdges(svc, { brokerageId: A, contactId: C2, ownerNames: ["LOPEZ JUAN", "LOPEZ MARIA"], now: new Date(NOW) })
+    check("deriveCoOwnerEdges writes ONE co_owner row for the tenant's contact only (tenant B's namesake untouched); from the other side it is the same row",
+      d.written === 1 && d.errors.length === 0 && d2.written === 0 && d2.existing === 1 && svc.tables.relationship_edges.length === 1 && !svc.tables.relationship_edges.some((r) => r.from_entity_id === C3 || r.to_entity_id === C3))
+    check("a single owner name derives nothing (no second owner to name)", (await deriveCoOwnerEdges(svc, { brokerageId: A, contactId: C1, ownerNames: ["LOPEZ MARIA"] })).planned === 0)
+  }
+
+  // ── 8. occupies ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[8] occupies — the contact's mailing address IS a listing the tenant holds (102F)")
+  {
+    const L2 = "bbbbbbbb-0000-4000-8000-000000000002"
+    const listings = [{ id: L1, address: "12 Elm St.", zip: "78704" }, { id: L2, address: "99 Oak Ave", zip: "78704" }]
+    const renter = planOccupancyEdges({ id: C1, mailing_address: "12 elm st", mailing_zip: "78704-1234", home_owner_status: "renter" }, listings, NOW, "rental_graduation")
+    const plain = planOccupancyEdges({ id: C1, address: "12 Elm St", zip_code: "78704" }, listings, NOW, "contact_enrichment")
+    check("a renter at the listing's address → occupies at 0.7 (the residence signal), source carried", renter.length === 1 && renter[0].type === "occupies" && renter[0].to.id === L1 && renter[0].evidence.confidence === 0.7 && renter[0].evidence.source === "rental_graduation")
+    check("address alone → occupies at 0.6; the other listing in the zip is NOT occupied", plain.length === 1 && plain[0].evidence.confidence === 0.6 && !plain.some((e) => e.to.id === L2))
+    check("positive control: no address → nothing", planOccupancyEdges({ id: C1, home_owner_status: "renter" }, listings, NOW, "x").length === 0)
+    const svc = memSupabase({
+      relationship_edges: [],
+      contacts: [{ id: C1, brokerage_id: A, address: "12 Elm St", zip_code: "78704", mailing_address: null, mailing_zip: null, home_owner_status: "renter" }],
+      listings: [{ id: L1, brokerage_id: A, address: "12 Elm St", zip: "78704", deleted_at: null }, { id: L2, brokerage_id: B, address: "12 Elm St", zip: "78704", deleted_at: null }],
+    })
+    const d = await deriveOccupancyEdges(svc, { brokerageId: A, contactId: C1, source: "contact_enrichment", now: new Date(NOW) })
+    const d2 = await deriveOccupancyEdges(svc, { brokerageId: A, contactId: C1, source: "rental_graduation", now: new Date(NOW) })
+    check("deriveOccupancyEdges writes contact → the TENANT's listing only (B's listing at the same address is never an edge); a re-run is the same row",
+      d.written === 1 && d.errors.length === 0 && d2.written === 0 && d2.existing === 1 && svc.tables.relationship_edges.length === 1 && svc.tables.relationship_edges[0].to_entity_id === L1)
+  }
+
+  // ── 9. R3 backfill ────────────────────────────────────────────────────────────────────────
+  console.log("\n[9] R3 — self-healing backfill of closed transactions on the weekly cron (102F)")
+  {
+    const T2 = "cccccccc-0000-4000-8000-000000000002", T3 = "cccccccc-0000-4000-8000-000000000003", T4 = "cccccccc-0000-4000-8000-000000000004"
+    const C4 = "aaaaaaaa-0000-4000-8000-000000000004", L2 = "bbbbbbbb-0000-4000-8000-000000000002"
+    const svc = memSupabase({
+      relationship_edges: [],
+      transaction_participants: [],
+      contacts: [],
+      transactions: [
+        { id: T1, brokerage_id: A, status: "closed", close_date: "2026-09-01", listing_id: L1, buyer_contact_id: C1, seller_contact_id: C2, contact_id: C1, deal_type: "buyer" },
+        { id: T2, brokerage_id: A, status: "closed", close_date: "2026-08-01", listing_id: L2, buyer_contact_id: C3, seller_contact_id: C4, contact_id: C3, deal_type: "seller" },
+        { id: T3, brokerage_id: A, status: "active", close_date: null, listing_id: L2, buyer_contact_id: C3, seller_contact_id: C4, contact_id: C3, deal_type: "buyer" },
+        { id: T4, brokerage_id: B, status: "closed", close_date: "2026-09-01", listing_id: L1, buyer_contact_id: C1, seller_contact_id: C2, contact_id: C1, deal_type: "buyer" },
+      ],
+    })
+    // T1 was derived at its close (the four edges exist); T2 predates m698 (none).
+    await deriveTransactionCloseEdges(svc, { brokerageId: A, transactionId: T1, buyerContactId: C1, sellerContactId: C2, listingId: L1, closeDate: "2026-09-01", now: new Date(NOW) })
+    const before = svc.tables.relationship_edges.length
+    const bf = await backfillTransactionCloseEdges(svc, { brokerageId: A, now: new Date(NOW) })
+    check("scans the tenant's CLOSED transactions only (not active, not tenant B's): 2 scanned, the already-derived close is HEALED without a write, the other is derived (4 written)",
+      bf.scanned === 2 && bf.healed === 1 && bf.derived === 1 && bf.written === 4 && bf.errors.length === 0 && !bf.degraded && svc.tables.relationship_edges.length === before + 4)
+    check("the backfilled close's owns edge runs from ITS close date, under tenant A", svc.tables.relationship_edges.some((r) => r.relationship_type === "owns" && r.from_entity_id === C3 && r.to_entity_id === L2 && r.effective_from === "2026-08-01" && r.brokerage_id === A))
+    const bf2 = await backfillTransactionCloseEdges(svc, { brokerageId: A, now: new Date(NOW) })
+    check("a re-run heals both and writes nothing (idempotent, self-healing)", bf2.scanned === 2 && bf2.healed === 2 && bf2.derived === 0 && bf2.written === 0 && svc.tables.relationship_edges.length === before + 4)
+    check("positive control: tenant B's own run derives ITS close (no cross-tenant healing)", (await backfillTransactionCloseEdges(svc, { brokerageId: B, now: new Date(NOW) })).written === 4 && svc.tables.relationship_edges.filter((r) => r.brokerage_id === B).length === 4)
+    const gone = memSupabase({ transactions: [{ id: T1, brokerage_id: A, status: "closed", close_date: "2026-09-01", listing_id: L1, buyer_contact_id: C1, seller_contact_id: C2 }] }, { missingTables: ["relationship_edges"] })
+    const bfGone = await backfillTransactionCloseEdges(gone, { brokerageId: A })
+    check("before m698 (missing table) the backfill reports degraded and heals nothing — never a silent success", bfGone.degraded && bfGone.written === 0 && bfGone.errors.length === 1)
+    check("limit is honoured (bounded batch)", (await backfillTransactionCloseEdges(svc, { brokerageId: A, limit: 1, now: new Date(NOW) })).scanned === 1)
+    check("no tenant → refused", (await backfillTransactionCloseEdges(svc, { brokerageId: "" })).errors.join() === "tenant scope required")
+  }
+
+  // ── vocabulary vs m698 (+ m702's additive widening) ───────────────────────────────────────
+  console.log("\n[V] one vocabulary — TS constants equal m698's CHECK lists ∪ m702's additive widening")
   {
     const sql = read("supabase/migrations/m698-relationship-edges.sql").replace(/--[^\n]*/g, "")
-    const list = (name: string) => {
-      const m = sql.match(new RegExp(`${name}_check\\s*CHECK\\s*\\(${name === "relationship_edges_relationship_type" ? "relationship_type" : name.endsWith("from_entity_type") ? "from_entity_type" : "to_entity_type"}\\s+IN\\s*\\(([^)]*)\\)`))
+    const M702 = "supabase/migrations/m702-relationship-edges-admit-referral-partner.sql"
+    const sql702 = read(M702).replace(/--[^\n]*/g, "")
+    const listIn = (text: string, name: string) => {
+      const m = text.match(new RegExp(`${name}_check\\s*CHECK\\s*\\(${name === "relationship_edges_relationship_type" ? "relationship_type" : name.endsWith("from_entity_type") ? "from_entity_type" : "to_entity_type"}\\s+IN\\s*\\(([^)]*)\\)`))
       return m ? m[1].split(",").map((s) => s.trim().replace(/^'|'$/g, "")) : null
     }
+    const list = (name: string) => listIn(sql, name)
     const fromL = list("relationship_edges_from_entity_type"), toL = list("relationship_edges_to_entity_type"), relL = list("relationship_edges_relationship_type")
-    check("from/to entity CHECK lists == RELATIONSHIP_ENTITY_TYPES", !!fromL && !!toL && fromL.join() === RELATIONSHIP_ENTITY_TYPES.join() && toL.join() === RELATIONSHIP_ENTITY_TYPES.join())
+    const from702 = listIn(sql702, "relationship_edges_from_entity_type"), to702 = listIn(sql702, "relationship_edges_to_entity_type")
+    // The RULE: the live list is m698's, widened by whatever a later ADDITIVE migration re-states; the
+    // TS mirror equals that union. m702 may only ADD (every m698 value survives, in order).
+    const additive = (base: string[] | null, next: string[] | null) => !!base && !!next && next.length > base.length && base.every((v, i) => next[i] === v)
+    check("m702 only WIDENS m698's two entity lists (every m698 value survives, in order; at least one added)", additive(fromL, from702) && additive(toL, to702))
+    check("m702 adds exactly `referral_partner` to both sides", !!from702 && !!to702 && from702.slice(fromL!.length).join() === "referral_partner" && to702.slice(toL!.length).join() === "referral_partner" && from702.join() === to702.join())
+    check("from/to entity CHECK lists (m698 ∪ m702) == RELATIONSHIP_ENTITY_TYPES", !!from702 && !!to702 && from702.join() === RELATIONSHIP_ENTITY_TYPES.join() && to702.join() === RELATIONSHIP_ENTITY_TYPES.join())
+    check("positive control: m698 alone no longer equals the TS list (the widening is real)", !!fromL && fromL.join() !== RELATIONSHIP_ENTITY_TYPES.join())
+    check("positive control: the additive finder rejects a REWRITE (a dropped value) and a no-op", !additive(fromL, fromL!.filter((v) => v !== "lead").concat("referral_partner")) && !additive(fromL, fromL))
+    check("m702 touches no other constraint, row, policy or index", !/relationship_type_check|INSERT|UPDATE |DELETE|CREATE POLICY|CREATE INDEX|DROP TABLE/.test(sql702))
+    check("m702 header line 1 carries one provenance stamp (the lane stamp | APPLIED LIVE <date>)", /^-- ── (WRITTEN, NOT APPLIED|APPLIED LIVE \d{4}-\d{2}-\d{2}\b)/.test(read(M702)))
     check("relationship_type CHECK list == RELATIONSHIP_TYPES (14)", !!relL && relL.join() === RELATIONSHIP_TYPES.join() && relL.length === 14)
     check("positive control: a mutated list differs", !!relL && [...relL, "friend_of"].join() !== RELATIONSHIP_TYPES.join())
     // CLAUDE.md §2: the status line is a RULE (one provenance stamp), never a pin on the pre-apply waypoint.
@@ -210,10 +365,37 @@ async function main() {
       ["app/api/recruiting/provision-agent/route.ts", /type: "sponsor_of"/],
       ["lib/enrichment/household-financials.ts", /deriveHouseholdEdges\(/],
       ["lib/enrichment/contact-enrichment-core.ts", /deriveHouseholdEdges\(/],
+      // wave 102.1 (102F)
+      ["lib/kernel/transactions.ts", /resolveCoBuyerContactIds\(/],
+      ["lib/transactions/participant-populator.ts", /type: "co_buyer"/],
+      ["lib/lead-pipeline/enrichment-orchestrator.ts", /deriveCoOwnerEdges\(/],
+      ["lib/enrichment/contact-enrichment-core.ts", /deriveOccupancyEdges\(/],
+      ["lib/lead-pipeline/rental-graduation-sourcer.ts", /deriveOccupancyEdges\(/],
+      ["app/actions/buyer-financial.ts", /type: "referral_partner"/],
+      ["app/api/cron/source-conversion-learning/route.ts", /backfillTransactionCloseEdges\(/],
     ]
     for (const [file, re] of writers) {
       const src = stripped(file)
       check(`${file} imports @/lib/kernel/relationship-graph and derives ${re.source}`, /@\/lib\/kernel\/relationship-graph/.test(src) && re.test(src))
+    }
+    // 102F — the close passes the resolved co-buyers into the one derivation; the roster derives after
+    // the same resolver; the owner names travel from the BatchData client through the one mapper.
+    check("closeTransactionCommand passes coBuyerContactIds from resolveCoBuyerContactIds into deriveTransactionCloseEdges", /coBuyerContactIds:\s*coBuyers\.ids/.test(stripped("lib/kernel/transactions.ts")) && /select\("listing_id, buyer_contact_id, seller_contact_id, contact_id, deal_type/.test(stripped("lib/kernel/transactions.ts")))
+    check("the BatchData property enrichment carries ownerNames (batchDataOwnerNames) and the ONE mapper keeps them in property_records.batchdata.owner_names",
+      /ownerNames:\s*batchDataOwnerNames\(owner\)/.test(stripped("lib/external/batchdata-client.ts")) && /owner_names: e\.ownerNames/.test(stripped("lib/lead-pipeline/enrichment-column-map.ts")))
+    check("the weekly cron ledgers the backfill summary (relationship_backfill in the cron success metadata)", /relationship_backfill: relationshipBackfill/.test(stripped("app/api/cron/source-conversion-learning/route.ts")) && /recordCronSuccessAction\(\{[^}]*metadata: summary/.test(stripped("app/api/cron/source-conversion-learning/route.ts")))
+    check("the cron that carries the backfill is dispatched weekly (lib/kernel/cron-dispatch.ts)", /\/api\/cron\/source-conversion-learning",\s*schedule: "\d+ \d+ \* \* \d"/.test(stripped("lib/kernel/cron-dispatch.ts")))
+    check("the partner rail prefers the vendor endpoint and falls back to the referral_partner (never both, never none when a partner row exists)", /lenderVendorId\s*\?\s*\{ type: "vendor" as const[\s\S]{0,120}referral_partner/.test(stripped("app/actions/buyer-financial.ts")))
+    // R9 — contacts.vendor_id: the orphan-doctrine census, PUBLISHED. A writer would be a contacts
+    // insert/update/upsert whose payload names vendor_id. (Positive control: a fixture is seen.)
+    {
+      const { execSync: ex } = await import("node:child_process")
+      const files = ex(`grep -rl --include=*.ts --include=*.tsx 'from("contacts")' lib app || true`, { cwd: ROOT, encoding: "utf8" }).split("\n").filter(Boolean)
+      const vendorIdWriter = (text: string) => /\.from\("contacts"\)[\s\S]{0,400}?\.(insert|update|upsert)\(\s*\{[^)]{0,600}?\bvendor_id\s*:/.test(text)
+      const writers = files.filter((f) => vendorIdWriter(stripped(f)))
+      console.log(`    R9 census: ${files.length} modules read/write contacts; contacts.vendor_id writers: ${writers.length}${writers.length ? ` (${writers.join(", ")})` : ""} — UNRESOLVED (no vendor seat creates/links its own contact row; see lane102F-notes)`)
+      check("positive control: the R9 finder recognises a fixture contacts writer naming vendor_id", vendorIdWriter(`await svc.from("contacts").update({ vendor_id: v.id }).eq("id", c)`) && !vendorIdWriter(`await svc.from("contacts").select("vendor_id")`))
+      check("R9: contacts.vendor_id writer count is PUBLISHED above (0 today = UNRESOLVED, not a silent pass)", Array.isArray(writers))
     }
     const readers: Array<[string, RegExp]> = [
       ["lib/contacts/contact-brief.ts", /neighbors\(/],

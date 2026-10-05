@@ -250,6 +250,35 @@ export async function mergeOrUpdateContactIfDuplicate(params: {
     created_at: now,
   }), { table: "lead_deduplication_log", flow: "lead_deduplication_log_write", reason: "dedup audit row; the merge itself landed" })
 
+  // PERSON IDENTITY — R2 (wave 102.1, lane 102E). This verdict says "the incoming record IS
+  // <existingContactId>" (match_score 90 above). It is mirrored onto the SURVIVOR contact's person
+  // (lib/kernel/person-identity.ts resolveSurvivorPerson: its existing evidence, else a person keyed
+  // on the surviving row's own identity — never a second person on the incoming spelling): the
+  // contact (dedup_match, 0.9) and, when a raw row was the input, that raw row. CONTACT_MERGED below
+  // is the chokepoint's event. Best-effort: the merge already landed and is never un-reported.
+  try {
+    const { resolveSurvivorPerson, linkPersonEvidence } = await import("@/lib/kernel/person-identity")
+    const survivorRow = data as { first_name?: string | null; last_name?: string | null; email?: string | null; phone?: string | null }
+    const person = await resolveSurvivorPerson(supabase, {
+      brokerageId: params.brokerageId,
+      survivor: { entityType: "contact", entityId: params.existingContactId },
+      survivorIdentity: { firstName: survivorRow.first_name ?? null, lastName: survivorRow.last_name ?? null, email: survivorRow.email ?? null, phone: survivorRow.phone ?? null },
+      recordIdentity: { firstName: params.updates.first_name ?? null, lastName: params.updates.last_name ?? null, email: params.updates.email ?? null, phone: params.updates.phone ?? null },
+    })
+    if (!person.ok) {
+      if (person.reason !== "no_identity_anchor") console.warn(`[crm] person identity not resolved on manual dedup: ${person.reason}`)
+    } else {
+      const common = { brokerageId: params.brokerageId, personId: person.personId, source: "crm_manual_dedup", actor: { type: "system" as const, userId: null }, identity: person.identity, existingEvent: KernelEvent.CONTACT_MERGED }
+      const links = [
+        linkPersonEvidence(supabase, { ...common, entityType: "contact", entityId: params.existingContactId, matchMethod: "dedup_match", matchScore: 0.9, detail: { stage: "lead_creation", action_taken: "merged", raw_record_id: params.rawRecordId ?? null, via: person.via } }),
+        ...(params.rawRecordId ? [linkPersonEvidence(supabase, { ...common, entityType: "raw_scraped_lead", entityId: params.rawRecordId, matchMethod: "dedup_match", matchScore: 0.9, detail: { stage: "lead_creation", duplicate_of_contact_id: params.existingContactId } })] : []),
+      ]
+      for (const r of await Promise.all(links)) if (!r.ok) console.warn(`[crm] person evidence not recorded on manual dedup: ${r.reason}`)
+    }
+  } catch (err) {
+    console.warn("[crm] person identity threw on manual dedup (merge unaffected):", err instanceof Error ? err.message : String(err))
+  }
+
   // Lifecycle event
   await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     entityType: "contact",

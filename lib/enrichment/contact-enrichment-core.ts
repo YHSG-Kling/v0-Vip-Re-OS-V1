@@ -798,6 +798,18 @@ export async function enrichContactRecord(params: {
         console.error("[enrichment] household edge derivation failed (non-blocking)", e)
       }
     }
+    // RELATIONSHIP GRAPH (wave 102.1, lane 102F): an address or a residence signal (home_owner_status)
+    // landing on the contact — when that address IS a listing this tenant holds, the contact
+    // `occupies` it (lib/kernel/relationship-graph.ts deriveOccupancyEdges). Additive, never a failed enrichment.
+    if ("home_owner_status" in enrichmentUpdate || "mailing_address" in enrichmentUpdate || "address" in enrichmentUpdate) {
+      try {
+        const { deriveOccupancyEdges } = await import("@/lib/kernel/relationship-graph")
+        const occ = await deriveOccupancyEdges(supabase, { brokerageId, contactId, source: "contact_enrichment" })
+        if (occ.errors.length > 0 && !occ.degraded) console.error(`[enrichment] occupancy edges for ${contactId}: ${occ.errors.join("; ")}`)
+      } catch (e) {
+        console.error("[enrichment] occupancy edge derivation failed (non-blocking)", e)
+      }
+    }
 
     return { success: true, enriched: true }
   } catch (error) {

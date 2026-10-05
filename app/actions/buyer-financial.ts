@@ -497,20 +497,32 @@ export async function connectBuyerToLender(params: {
   // profile row stays the record). Tenant from the SESSION (access.brokerageId); never fails the referral.
   try {
     let lenderVendorId: string | null = params.lenderVendorId ?? null
+    let partnerRowId: string | null = null
     if (!lenderVendorId && params.partnerId) {
       const { data: partner, error: partnerErr } = await supabase
-        .from("referral_partners").select("vendor_id").eq("id", params.partnerId).eq("brokerage_id", access.brokerageId).maybeSingle()
+        .from("referral_partners").select("id, vendor_id").eq("id", params.partnerId).eq("brokerage_id", access.brokerageId).maybeSingle()
       if (partnerErr) console.error(`[connectBuyerToLender] partner read refused — no lender_for edge: ${partnerErr.message}`)
       lenderVendorId = (partner?.vendor_id as string | null) ?? null
+      partnerRowId = (partner?.id as string | null) ?? null
     }
-    if (lenderVendorId) {
+    // Wave 102.1 (102F, ruling R7 / m702): a partner with NO vendor identity is still the lender —
+    // the edge points at the referral_partner itself (entity type admitted by m702). The vendor
+    // endpoint stays preferred when the partner has one (one lender, one endpoint).
+    const lenderRef = lenderVendorId
+      ? { type: "vendor" as const, id: lenderVendorId }
+      : partnerRowId ? { type: "referral_partner" as const, id: partnerRowId } : null
+    if (lenderRef) {
       const { upsertRelationship } = await import("@/lib/kernel/relationship-graph")
       const edge = await upsertRelationship(supabase, {
         brokerageId: access.brokerageId,
-        from: { type: "vendor", id: lenderVendorId },
+        from: lenderRef,
         to: { type: "contact", id: params.contactId },
         type: "lender_for",
-        evidence: { source: "buyer_financial_profiles.lender_referral", confidence: 0.85, observed_at: new Date().toISOString() },
+        evidence: {
+          source: lenderRef.type === "vendor" ? "buyer_financial_profiles.lender_referral" : "buyer_financial_profiles.lender_referral_partner",
+          confidence: lenderRef.type === "vendor" ? 0.85 : 0.8,
+          observed_at: new Date().toISOString(),
+        },
         createdBy: access.userId,
       })
       if (!edge.ok && !edge.degraded) console.error(`[connectBuyerToLender] lender_for edge not written: ${edge.error}`)

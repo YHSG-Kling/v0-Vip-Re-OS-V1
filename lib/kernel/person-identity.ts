@@ -18,7 +18,12 @@
  * CALLERS (the EXISTING chokepoints only — never a new path):
  *   pipeline-processor.ts (identity gate + every dedup verdict + lead creation), history-carry.ts
  *   (promotion link → canonical_contact_id), contact-management.service.ts mergeContacts,
- *   unknown-sender-identification.ts, open-house/instant-greeting.ts (the kiosk), api/forms/submit.
+ *   unknown-sender-identification.ts, open-house/instant-greeting.ts (the kiosk), api/forms/submit
+ *   (the submission row), and since wave 102.1 (lane 102E): contact-capture.ts captureContact (ONCE,
+ *   inside — every public capture door inherits it: forms, lead magnets, QR, widgets, kiosk),
+ *   lib/kernel/crm.ts mergeOrUpdateContactIfDuplicate (the manual dedup verdict, R2),
+ *   app/actions/lead-intelligence.ts resolveIdentity (the behavioral_signal writer) and
+ *   lib/platform/distribution-engine.ts (R1: a platform lead is re-homed under the RECEIVING tenant).
  *   Each passes the tenant from its own already-resolved context (CLAUDE.md §4) and the client it
  *   already writes with. Every write destructures `{ data, error }` (§3). Before m697 is applied the
  *   tables are absent (42P01 / PGRST205): every function returns `{ ok: false, reason }` — the
@@ -438,6 +443,46 @@ export async function personForContact(client: Client, params: { brokerageId: st
 export async function personForLead(client: Client, params: { brokerageId: string | null | undefined; leadId: string }) {
   if (!params.brokerageId) return { ok: false as const, reason: "no_tenant" }
   return personViewFor(client, params.brokerageId, "lead", params.leadId)
+}
+
+// ─── resolveSurvivorPerson (wave 102.1, R2) ─────────────────────────────────────────────────────
+
+export interface ResolveSurvivorPersonParams {
+  brokerageId: string | null | undefined
+  /** The record a dedup verdict named as the SURVIVOR (duplicate_of_lead_id / duplicate_of_contact_id / an older raw row). */
+  survivor: { entityType: PersonEntityType; entityId: string }
+  /** The survivor's own identity fields — the person is KEYED on these when it has no person yet. */
+  survivorIdentity: PersonIdentityInput
+  /** The duplicate record's identity — used only when the survivor's identity cannot clear the gate. */
+  recordIdentity?: PersonIdentityInput | null
+}
+
+export type ResolveSurvivorPersonResult =
+  | { ok: true; personId: string; created: boolean; via: "survivor_evidence" | "survivor_identity" | "record_identity"; identity: NormalizedPersonIdentity | null }
+  | { ok: false; reason: string }
+
+/**
+ * R2 (wave 102.1): two emails are two persons UNTIL a dedup verdict says otherwise. A verdict
+ * "<record> is a duplicate of <survivor>" links the record onto the SURVIVOR's person — found by the
+ * survivor's existing evidence first, else resolved (find or create) from the SURVIVOR's identity,
+ * else from the record's own — so a re-spelled or second email never mints a second person for a
+ * record the pipeline already judged to be the same human. The gate key itself is unchanged.
+ */
+export async function resolveSurvivorPerson(client: Client, params: ResolveSurvivorPersonParams): Promise<ResolveSurvivorPersonResult> {
+  const brokerageId = params.brokerageId ?? null
+  if (!brokerageId) return { ok: false, reason: "no_tenant" }
+  const existing = await personViewFor(client, brokerageId, params.survivor.entityType, params.survivor.entityId)
+  if (!existing.ok) return { ok: false, reason: existing.reason }
+  if (existing.view) {
+    return { ok: true, personId: existing.view.person.id, created: false, via: "survivor_evidence", identity: normalizePersonIdentity(params.survivorIdentity) }
+  }
+  const bySurvivor = await resolvePerson(client, { brokerageId, ...params.survivorIdentity })
+  if (bySurvivor.ok) return { ok: true, personId: bySurvivor.personId, created: bySurvivor.created, via: "survivor_identity", identity: bySurvivor.identity }
+  if (bySurvivor.reason !== "no_identity_anchor") return { ok: false, reason: bySurvivor.reason }
+  if (!params.recordIdentity) return { ok: false, reason: "no_identity_anchor" }
+  const byRecord = await resolvePerson(client, { brokerageId, ...params.recordIdentity })
+  if (!byRecord.ok) return byRecord
+  return { ok: true, personId: byRecord.personId, created: byRecord.created, via: "record_identity", identity: byRecord.identity }
 }
 
 // ─── Pure summary for agent-facing surfaces ─────────────────────────────────────────────────────

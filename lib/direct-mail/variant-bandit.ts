@@ -77,7 +77,13 @@ export interface BanditPick {
   samplingMode:  "scans" | "leads"
   /** Wave 102C — how the exploration policy was applied to this pick. */
   policy:        DirectMailExplorationPolicy
+  /** Wave 102.1 (102F, ruling R4) — WHY this arm: a Thompson sample (exploring), the best-evidenced
+   *  arm (frozen), or — frozen with EVERY arm cold — the bandit was SKIPPED and the catalog DEFAULT
+   *  variant (first platform arm of the cohort) was sent. Ledgered beside the arm by orchestrate-send. */
+  pickReason:    BanditPickReason
 }
+
+export type BanditPickReason = "thompson_sample" | "frozen_exploit" | "frozen_all_cold_catalog_default"
 
 export interface DirectMailExplorationPolicy {
   /** false = the policy read was refused → frozen (fail closed). */
@@ -375,6 +381,20 @@ export async function pickVariantArm(args: {
   }
   const samplingMode: "scans" | "leads" = cohortLeads >= LEADS_COHORT_THRESHOLD ? "leads" : "scans"
 
+  // R4 (wave 102.1, owner ruling): FROZEN with EVERY arm cold — there is no evidence to exploit, so
+  // the bandit is SKIPPED: the catalog DEFAULT variant (the cohort's first platform arm) is sent and
+  // the reason rides the pick (the orchestrator ledgers it). Deterministic — never a sample, never
+  // "the first row the database happened to return".
+  if (policy.frozen && armRows.every((a) => ((a.outcomes?.[0]?.sends_count ?? 0) === 0))) {
+    const def = catalogDefaultArm(args.useKind, args.size)
+    const row = (def && armRows.find((a) => a.composition_id === def.composition_id && a.copy_style === def.copy_style && a.layout_variant === def.layout_variant)) ?? armRows[0]
+    return {
+      variantId: row.id, compositionId: row.composition_id, copyStyle: row.copy_style, layoutVariant: row.layout_variant,
+      sampledProb: 0, isExploration: true, armState: "cold", samplingMode, policy,
+      pickReason: "frozen_all_cold_catalog_default",
+    }
+  }
+
   // Thompson sample per arm.
   let best: { row: ArmRow; sample: number; isExploration: boolean; armState: VariantArmState } | null = null
   for (const arm of armRows) {
@@ -413,7 +433,16 @@ export async function pickVariantArm(args: {
     armState:      best.armState,
     samplingMode,
     policy,
+    pickReason:    policy.frozen ? "frozen_exploit" : "thompson_sample",
   }
+}
+
+/** PURE — the catalog DEFAULT variant of a cohort: its first platform arm (catalog order is the
+ *  platform's stated preference; every arm carries layout_variant "default"). Null for an unknown cohort.
+ *  @proofSeam scripts/tenant-policy-versions-guard.ts §10 asserts the default per cohort directly (R4). */
+export function catalogDefaultArm(useKind: DirectMailUseKind | "lifecycle" | "pre_listing_kit", size: PostcardSize): { composition_id: string; copy_style: string; layout_variant: string } | null {
+  const c = PLATFORM_CATALOG.find((a) => a.use_kind === useKind && a.postcard_size === size)
+  return c ? { composition_id: c.composition_id, copy_style: c.copy_style, layout_variant: c.layout_variant } : null
 }
 
 /** Stamp a send on the variant's outcomes row. Called by the

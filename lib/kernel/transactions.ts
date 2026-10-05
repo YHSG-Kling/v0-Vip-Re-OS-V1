@@ -1145,7 +1145,7 @@ export async function closeTransactionCommand(params: {
     // Capture related entities BEFORE the close so we can propagate state
     const { data: txBefore } = await supabase
       .from("transactions")
-      .select("listing_id, buyer_contact_id, seller_contact_id, contact_id, property_address")
+      .select("listing_id, buyer_contact_id, seller_contact_id, contact_id, deal_type, property_address")
       .eq("id", params.transactionId)
       .eq("brokerage_id", params.brokerageId)
       .maybeSingle()
@@ -1316,13 +1316,18 @@ export async function closeTransactionCommand(params: {
     // writer, never by a second pipeline. Best-effort: the close already landed; a lost edge is
     // ledgered on the same sentinel ledger the other post-close echoes use.
     try {
-      const { deriveTransactionCloseEdges } = await import("@/lib/kernel/relationship-graph")
+      const { deriveTransactionCloseEdges, resolveCoBuyerContactIds } = await import("@/lib/kernel/relationship-graph")
+      // 102F — the OTHER buyer-side contacts (the row's client on a buyer deal, buyer/co_buyer
+      // roster rows whose email is a contact) become co_buyer edges at the same close.
+      const coBuyers = await resolveCoBuyerContactIds(supabase, { brokerageId: params.brokerageId, transactionId: params.transactionId, tx: txBefore ?? {} })
+      if (coBuyers.errors.length > 0) console.warn("[closeTransactionCommand] co-buyer resolution partial:", coBuyers.errors.join("; "))
       const edges = await deriveTransactionCloseEdges(supabase, {
         brokerageId:     params.brokerageId,
         transactionId:   params.transactionId,
         buyerContactId:  txBefore?.buyer_contact_id ?? null,
         sellerContactId: txBefore?.seller_contact_id ?? null,
         listingId:       txBefore?.listing_id ?? null,
+        coBuyerContactIds: coBuyers.ids,
         closeDate:       today,
         actorUserId:     params.agentId,
       })

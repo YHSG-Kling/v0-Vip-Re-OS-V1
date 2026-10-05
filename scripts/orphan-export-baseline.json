@@ -123,6 +123,7 @@
     "lib/data-guard/index.ts": 1,
     "lib/did/avatar-completion.ts": 2,
     "lib/direct-mail/address-suppression.ts": 2,
+    "lib/direct-mail/variant-bandit.ts": 1,
     "lib/documents/auto-filer.ts": 1,
     "lib/documents/autonomy-ratchet.ts": 3,
     "lib/documents/client-pdf.ts": 2,
@@ -278,7 +279,7 @@
     "lib/kernel/referral-appreciation.ts": 6,
     "lib/kernel/referral-radar.ts": 4,
     "lib/kernel/regulatory-watcher.ts": 5,
-    "lib/kernel/relationship-graph.ts": 2,
+    "lib/kernel/relationship-graph.ts": 5,
     "lib/kernel/repair-digest.ts": 1,
     "lib/kernel/returning-customer.ts": 4,
     "lib/kernel/reverse-prospecting.ts": 2,
@@ -522,7 +523,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10654,
+  "census": 10664,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1842,6 +1843,7 @@
     "app/crm/contacts/[contactId]/components/fatigue-widget.tsx": 1,
     "app/crm/contacts/[contactId]/components/financial-verification-panel.tsx": 1,
     "app/crm/contacts/[contactId]/components/followup-card.tsx": 1,
+    "app/crm/contacts/[contactId]/components/identity-evidence-card.tsx": 1,
     "app/crm/contacts/[contactId]/components/isa-outreach-card.tsx": 1,
     "app/crm/contacts/[contactId]/components/lead-history-card.tsx": 1,
     "app/crm/contacts/[contactId]/components/lifetime-segment-selector.tsx": 1,
@@ -3205,7 +3207,7 @@
     "lib/direct-mail/render-postcard.ts": 2,
     "lib/direct-mail/resolve-size-pref.ts": 2,
     "lib/direct-mail/unsubscribe-token.ts": 5,
-    "lib/direct-mail/variant-bandit.ts": 3,
+    "lib/direct-mail/variant-bandit.ts": 4,
     "lib/documents/auto-filer.ts": 3,
     "lib/documents/auto-populate-participants.ts": 1,
     "lib/documents/autonomy-ratchet.ts": 10,
@@ -3667,7 +3669,7 @@
     "lib/kernel/outreach-reasons.ts": 2,
     "lib/kernel/overnight-digest.ts": 2,
     "lib/kernel/override-vocab.ts": 3,
-    "lib/kernel/person-identity.ts": 7,
+    "lib/kernel/person-identity.ts": 8,
     "lib/kernel/portal-auth.ts": 6,
     "lib/kernel/portal-contracts.ts": 2,
     "lib/kernel/portal-template-render.ts": 1,
@@ -3680,7 +3682,7 @@
     "lib/kernel/referral-appreciation.ts": 8,
     "lib/kernel/referral-radar.ts": 6,
     "lib/kernel/regulatory-watcher.ts": 6,
-    "lib/kernel/relationship-graph.ts": 11,
+    "lib/kernel/relationship-graph.ts": 18,
     "lib/kernel/repair-digest.ts": 3,
     "lib/kernel/reporting-autonomy.ts": 3,
     "lib/kernel/reporting-scope.ts": 2,
@@ -10742,6 +10744,9 @@
     "app/crm/contacts/[contactId]/components/followup-card.tsx": [
       "FollowupCard"
     ],
+    "app/crm/contacts/[contactId]/components/identity-evidence-card.tsx": [
+      "IdentityEvidenceCard"
+    ],
     "app/crm/contacts/[contactId]/components/isa-outreach-card.tsx": [
       "IsaOutreachCard"
     ],
@@ -16078,6 +16083,7 @@
     "lib/direct-mail/variant-bandit.ts": [
       "loadDirectMailExplorationPolicy",
       "pickVariantArm",
+      "catalogDefaultArm",
       "recordVariantSend"
     ],
     "lib/documents/auto-filer.ts": [
@@ -18493,6 +18499,7 @@
       "markPersonConverted",
       "personForContact",
       "personForLead",
+      "resolveSurvivorPerson",
       "summarizePersonEvidence"
     ],
     "lib/kernel/portal-auth.ts": [
@@ -18587,10 +18594,17 @@
       "neighbors",
       "household",
       "planTransactionCloseEdges",
+      "coBuyerContactIdsFromTransactionRow",
+      "resolveCoBuyerContactIds",
       "deriveTransactionCloseEdges",
+      "backfillTransactionCloseEdges",
       "planRosterEdges",
       "planHouseholdEdges",
       "deriveHouseholdEdges",
+      "planCoOwnerEdges",
+      "deriveCoOwnerEdges",
+      "planOccupancyEdges",
+      "deriveOccupancyEdges",
       "representedByOutsideAgent",
       "describeEdge"
     ],

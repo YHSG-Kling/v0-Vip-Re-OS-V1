@@ -30,6 +30,19 @@
  *   sponsor tree           → sponsor_of (sponsor user → recruit user)          (app/api/recruiting/provision-agent/route.ts)
  *   household enrichment   → spouse_partner / household_member                 (lib/enrichment/household-financials.ts,
  *                            (marital status + same mailing address)            contact-enrichment-core.ts)
+ *   WAVE 102.1 (lane 102F — closing 102B's "no deriving writer" items):
+ *   close / roster         → co_buyer (a second buyer-side contact on the deal:  (lib/kernel/transactions.ts,
+ *                            transactions.contact_id on a buyer deal, or a       lib/transactions/participant-populator.ts)
+ *                            buyer / co_buyer roster row whose email is a contact)
+ *   BatchData owner data   → co_owner (the OTHER owner name on the contact's     (lib/lead-pipeline/enrichment-orchestrator.ts,
+ *                            home, matched to a contact of the tenant in the      property_records.batchdata.owner_names)
+ *                            same zip; confidence on the edge)
+ *   residence signal       → occupies (the contact's mailing address IS a        (lib/enrichment/contact-enrichment-core.ts,
+ *                            listing the tenant holds; renters from the            lib/lead-pipeline/rental-graduation-sourcer.ts)
+ *                            rental-graduation sourcer carry the renter signal)
+ *   partner-rail lender    → lender_for (referral_partner → contact) — R7, m702  (app/actions/buyer-financial.ts)
+ *   weekly cron (R3)       → backfillTransactionCloseEdges: the closes that       (app/api/cron/source-conversion-learning/route.ts)
+ *                            predate m698 heal through the ONE derivation
  *
  * DETERMINISTIC: no model call, no clock read inside a planner (observed_at is passed in), symmetric
  * relations stored ONCE with a fixed orientation (lower id → higher id), neighbors sorted.
@@ -48,9 +61,11 @@
 
 // ── The vocabulary (mirrored by m698's CHECKs — scripts/relationship-graph-guard.ts holds them equal) ──
 
-/** @proofSeam scripts/relationship-graph-guard.ts asserts this list equals m698's CHECK (one vocabulary, §6). */
+/** @proofSeam scripts/relationship-graph-guard.ts asserts this list equals m698's CHECK + m702's additive widening
+ *  (one vocabulary, §6). `referral_partner` (referral_partners.id — R7, m702) is the partner-rail lender a
+ *  buyer_financial_profiles.lender_referred_partner_id names when the partner has no vendor identity. */
 export const RELATIONSHIP_ENTITY_TYPES = [
-  "contact", "lead", "listing", "transaction", "agent", "vendor", "outside_agent", "household",
+  "contact", "lead", "listing", "transaction", "agent", "vendor", "outside_agent", "household", "referral_partner",
 ] as const
 export type RelationshipEntityType = (typeof RELATIONSHIP_ENTITY_TYPES)[number]
 
@@ -339,6 +354,8 @@ export function planTransactionCloseEdges(input: {
   buyerContactId?: string | null
   sellerContactId?: string | null
   listingId?: string | null
+  /** 102F — the OTHER buyer-side contacts on the deal (coBuyerContactIds / resolveCoBuyerContactIds). */
+  coBuyerContactIds?: readonly string[] | null
   closeDate: string
   observedAt: string
 }): EdgeInput[] {
@@ -353,17 +370,129 @@ export function planTransactionCloseEdges(input: {
   }
   if (buyer && listing) out.push({ from: buyer, to: listing, type: "owns", evidence, effectiveFrom: input.closeDate })
   if (seller && listing) out.push({ from: seller, to: listing, type: "previously_owned", evidence, effectiveTo: input.closeDate })
+  // 102F — co-buyers: each is a co_buyer of the buyer (and of each other), and owns the home too.
+  // Never the seller, never the buyer twice; sorted so the plan is byte-stable.
+  const coBuyers = [...new Set((input.coBuyerContactIds ?? []).filter((id): id is string => !!id && id !== input.buyerContactId && id !== input.sellerContactId))].sort()
+  const coEvidence: RelationshipEvidence = { source: "transaction_close", confidence: 0.9, observed_at: input.observedAt }
+  const buyerSide = [...(buyer ? [buyer.id] : []), ...coBuyers]
+  for (let i = 0; i < buyerSide.length; i++) {
+    for (let j = i + 1; j < buyerSide.length; j++) {
+      out.push(orientEdge({ from: { type: "contact", id: buyerSide[i] }, to: { type: "contact", id: buyerSide[j] }, type: "co_buyer", evidence: coEvidence, effectiveFrom: input.closeDate }))
+    }
+  }
+  if (listing) for (const id of coBuyers) out.push({ from: { type: "contact", id }, to: listing, type: "owns", evidence: coEvidence, effectiveFrom: input.closeDate })
   return out
+}
+
+/**
+ * PURE — the second buyer-side contact a transaction ROW itself names: `contacts.contact_id` (the
+ * deal's client) on a BUYER deal, when it is neither the buyer nor the seller. On a seller / dual
+ * deal the client column is the seller's side (or ambiguous) and names nobody here.
+ * @proofSeam scripts/relationship-graph-guard.ts asserts the rule on the pure function.
+ */
+export function coBuyerContactIdsFromTransactionRow(tx: {
+  deal_type?: string | null
+  contact_id?: string | null
+  buyer_contact_id?: string | null
+  seller_contact_id?: string | null
+}): string[] {
+  if (tx.deal_type !== "buyer") return []
+  const c = tx.contact_id
+  if (!c || c === tx.buyer_contact_id || c === tx.seller_contact_id) return []
+  return [c]
+}
+
+/**
+ * The buyer-side contacts on a deal besides the buyer: the row's own second contact (above) plus
+ * every roster row (transaction_participants) in a buyer role whose email is a CONTACT of this
+ * tenant. The roster holds names and emails, never ids (lib/transactions/participant-populator.ts),
+ * so the match is by email, lower-cased. A refused read contributes nothing and says so.
+ */
+export async function resolveCoBuyerContactIds(
+  svc: Svc,
+  input: { brokerageId: string; transactionId: string; tx: { deal_type?: string | null; contact_id?: string | null; buyer_contact_id?: string | null; seller_contact_id?: string | null } },
+): Promise<{ ids: string[]; errors: string[] }> {
+  const ids = new Set<string>(coBuyerContactIdsFromTransactionRow(input.tx))
+  const errors: string[] = []
+  const { data: roster, error: rosterErr } = await svc.from("transaction_participants").select("role, email")
+    .eq("brokerage_id", input.brokerageId).eq("transaction_id", input.transactionId).in("role", ["buyer", "co_buyer"]).limit(20)
+  if (rosterErr) errors.push(`roster read refused: ${rosterErr.message}`)
+  const emails = [...new Set(((roster ?? []) as Array<{ email?: string | null }>).map((r) => (r.email ?? "").toString().trim().toLowerCase()).filter(Boolean))]
+  if (emails.length > 0) {
+    const { data: matched, error: matchErr } = await svc.from("contacts").select("id, email").eq("brokerage_id", input.brokerageId).in("email", emails).limit(20)
+    if (matchErr) errors.push(`roster contact match refused: ${matchErr.message}`)
+    for (const c of (matched ?? []) as Array<{ id: string; email?: string | null }>) {
+      if (emails.includes((c.email ?? "").toString().trim().toLowerCase())) ids.add(c.id)
+    }
+  }
+  const out = [...ids].filter((id) => id !== input.tx.buyer_contact_id && id !== input.tx.seller_contact_id).sort()
+  return { ids: out, errors }
 }
 
 export async function deriveTransactionCloseEdges(
   svc: Svc,
-  input: { brokerageId: string; transactionId: string; buyerContactId?: string | null; sellerContactId?: string | null; listingId?: string | null; closeDate: string; actorUserId?: string | null; now?: Date },
+  input: { brokerageId: string; transactionId: string; buyerContactId?: string | null; sellerContactId?: string | null; listingId?: string | null; coBuyerContactIds?: readonly string[] | null; closeDate: string; actorUserId?: string | null; now?: Date },
 ) {
   const observedAt = (input.now ?? new Date()).toISOString()
   const planned = planTransactionCloseEdges({ ...input, observedAt })
   const r = await upsertRelationships(svc, input.brokerageId, planned, input.actorUserId ?? null)
   return { ...r, planned: planned.length }
+}
+
+/** PURE — the stored key of a planned edge (orientation applied), for set membership. */
+function edgeKey(e: { from: EntityRef; to: EntityRef; type: RelationshipType }): string {
+  const o = orientEdge({ ...e, evidence: { source: "", confidence: 0, observed_at: "" } })
+  return `${o.from.type}:${o.from.id}|${o.to.type}:${o.to.id}|${o.type}`
+}
+
+const CLOSE_EDGE_TYPES: readonly RelationshipType[] = ["bought_from", "sold_to", "owns", "previously_owned", "co_buyer"]
+const CLOSE_BACKFILL_BATCH = 200
+
+/**
+ * R3 (wave 102.1) — SELF-HEALING BACKFILL of the closes that predate m698, on the existing weekly
+ * learning cron, through the ONE derivation (never raw SQL). Bounded: the newest `limit` closed
+ * transactions of the tenant; a close whose planned edges ALL exist is healed and costs no write;
+ * the rest go through deriveTransactionCloseEdges (idempotent on the UNIQUE key). The roster is
+ * read only for a close that still needs edges. Returns the summary the cron ledgers.
+ */
+export async function backfillTransactionCloseEdges(
+  svc: Svc,
+  input: { brokerageId: string; limit?: number; now?: Date },
+): Promise<{ scanned: number; healed: number; derived: number; written: number; existing: number; errors: string[]; degraded: boolean }> {
+  const out = { scanned: 0, healed: 0, derived: 0, written: 0, existing: 0, errors: [] as string[], degraded: false }
+  if (!input.brokerageId) { out.errors.push("tenant scope required"); return out }
+  const limit = Math.max(1, Math.min(input.limit ?? CLOSE_BACKFILL_BATCH, 1000))
+  const { data: closed, error: txErr } = await svc.from("transactions")
+    .select("id, listing_id, buyer_contact_id, seller_contact_id, contact_id, deal_type, close_date, agent_id")
+    .eq("brokerage_id", input.brokerageId).in("status", ["closed", "funded"]).not("close_date", "is", null)
+    .order("close_date", { ascending: false }).limit(limit)
+  if (txErr) { out.errors.push(`closed transactions read refused: ${txErr.message}`); return out }
+  const rows = (closed ?? []) as Array<{ id: string; listing_id: string | null; buyer_contact_id: string | null; seller_contact_id: string | null; contact_id: string | null; deal_type: string | null; close_date: string; agent_id: string | null }>
+  out.scanned = rows.length
+  if (rows.length === 0) return out
+  const { data: edges, error: edgeErr } = await svc.from("relationship_edges")
+    .select("from_entity_type, from_entity_id, to_entity_type, to_entity_id, relationship_type")
+    .eq("brokerage_id", input.brokerageId).in("relationship_type", [...CLOSE_EDGE_TYPES]).limit(5000)
+  if (edgeErr) {
+    if (isMissingTable(edgeErr)) { out.degraded = true; out.errors.push("relationship_edges unreachable — nothing healed"); return out }
+    out.errors.push(`edge read refused: ${edgeErr.message}`); return out
+  }
+  const have = new Set(((edges ?? []) as Array<{ from_entity_type: RelationshipEntityType; from_entity_id: string; to_entity_type: RelationshipEntityType; to_entity_id: string; relationship_type: RelationshipType }>)
+    .map((e) => edgeKey({ from: { type: e.from_entity_type, id: e.from_entity_id }, to: { type: e.to_entity_type, id: e.to_entity_id }, type: e.relationship_type })))
+  const observedAt = (input.now ?? new Date()).toISOString()
+  for (const tx of rows) {
+    const closeDate = String(tx.close_date).slice(0, 10)
+    const rowCoBuyers = coBuyerContactIdsFromTransactionRow(tx)
+    const planned = planTransactionCloseEdges({ transactionId: tx.id, buyerContactId: tx.buyer_contact_id, sellerContactId: tx.seller_contact_id, listingId: tx.listing_id, coBuyerContactIds: rowCoBuyers, closeDate, observedAt })
+    if (planned.length === 0 || planned.every((e) => have.has(edgeKey(e)))) { out.healed++; continue }
+    const co = await resolveCoBuyerContactIds(svc, { brokerageId: input.brokerageId, transactionId: tx.id, tx })
+    out.errors.push(...co.errors.map((e) => `${tx.id}: ${e}`))
+    const r = await deriveTransactionCloseEdges(svc, { brokerageId: input.brokerageId, transactionId: tx.id, buyerContactId: tx.buyer_contact_id, sellerContactId: tx.seller_contact_id, listingId: tx.listing_id, coBuyerContactIds: co.ids, closeDate, actorUserId: null, now: input.now })
+    out.derived++; out.written += r.written; out.existing += r.existing
+    out.errors.push(...r.errors.map((e) => `${tx.id}: ${e}`))
+    if (r.degraded) out.degraded = true
+  }
+  return out
 }
 
 /** PURE — the roster says who REPRESENTS whom: buyer → buyer's agent, seller → listing agent. */
@@ -460,6 +589,127 @@ export async function deriveHouseholdEdges(
     .eq("brokerage_id", input.brokerageId).or(`mailing_zip.eq.${zip},zip_code.eq.${zip}`).limit(200)
   if (othersErr) return { planned: 0, written: 0, existing: 0, errors: [`household candidates read refused: ${othersErr.message}`], degraded: false }
   const planned = planHouseholdEdges(subject as HouseholdCandidateRow, (others ?? []) as HouseholdCandidateRow[], observedAt)
+  const r = await upsertRelationships(svc, input.brokerageId, planned, null)
+  return { planned: planned.length, ...r }
+}
+
+// ── Co-owner derivation (the OTHER owner name on the contact's home, BatchData owner data) ───────
+
+export interface CoOwnerCandidateRow extends HouseholdCandidateRow {
+  first_name?: string | null
+  last_name?: string | null
+}
+
+/** PURE — a person name reduced to its sorted word set ("SMITH JOHN A" == "John A. Smith"), initials dropped. */
+function nameKey(...parts: Array<string | null | undefined>): string {
+  const words = parts.filter((p): p is string => !!p).join(" ").toLowerCase().replace(/[^a-z ]+/g, " ").split(/\s+/).filter((w) => w.length > 1)
+  return [...new Set(words)].sort().join(" ")
+}
+
+/**
+ * PURE — the co_owner edges the property's OWNER NAMES prove: every owner name that is not the
+ * subject's own, matched to a contact of the tenant (same name words) among the candidates (the
+ * caller bounds them to the subject's zip — co-owners live at the home). Confidence 0.75: a public
+ * record's name plus the same zip, never a verified identity. Symmetric, stored once. Deterministic.
+ * @proofSeam scripts/relationship-graph-guard.ts asserts the planner on an owner pair.
+ */
+export function planCoOwnerEdges(subject: CoOwnerCandidateRow, ownerNames: readonly string[], candidates: readonly CoOwnerCandidateRow[], observedAt: string): EdgeInput[] {
+  const self = nameKey(subject.first_name, subject.last_name)
+  const others = [...new Set(ownerNames.map((n) => nameKey(n)).filter((k) => k && k !== self))]
+  if (others.length === 0) return []
+  const out: EdgeInput[] = []
+  const sorted = [...candidates].filter((c) => c.id !== subject.id).sort((a, b) => a.id.localeCompare(b.id))
+  for (const c of sorted) {
+    const k = nameKey(c.first_name, c.last_name)
+    if (!k || !others.includes(k)) continue
+    out.push(orientEdge({
+      from: { type: "contact", id: subject.id },
+      to: { type: "contact", id: c.id },
+      type: "co_owner",
+      evidence: { source: "batchdata_owner_names", confidence: 0.75, observed_at: observedAt },
+    }))
+  }
+  return out
+}
+
+/**
+ * After BatchData's property datasets land on a contact (owner names in property_records.batchdata):
+ * match the other owner names to the tenant's contacts in the subject's zip and upsert co_owner.
+ * Tenant from the caller's existing context. Never throws; a refused read is reported.
+ */
+export async function deriveCoOwnerEdges(
+  svc: Svc,
+  input: { brokerageId: string; contactId: string; ownerNames: readonly string[]; now?: Date },
+): Promise<{ planned: number; written: number; existing: number; errors: string[]; degraded: boolean }> {
+  const none = { planned: 0, written: 0, existing: 0, errors: [] as string[], degraded: false }
+  if (!input.ownerNames || input.ownerNames.length < 2) return none
+  const observedAt = (input.now ?? new Date()).toISOString()
+  const cols = "id, first_name, last_name, address, zip_code, mailing_address, mailing_zip"
+  const { data: subject, error: subjErr } = await svc.from("contacts").select(cols).eq("brokerage_id", input.brokerageId).eq("id", input.contactId).maybeSingle()
+  if (subjErr) return { ...none, errors: [`co-owner subject read refused: ${subjErr.message}`] }
+  if (!subject) return none
+  const key = householdAddressKey(subject as HouseholdCandidateRow)
+  if (!key) return none
+  const zip = key.split("|")[1]
+  const { data: others, error: othersErr } = await svc.from("contacts").select(cols)
+    .eq("brokerage_id", input.brokerageId).or(`mailing_zip.eq.${zip},zip_code.eq.${zip}`).limit(200)
+  if (othersErr) return { ...none, errors: [`co-owner candidates read refused: ${othersErr.message}`] }
+  const planned = planCoOwnerEdges(subject as CoOwnerCandidateRow, input.ownerNames, (others ?? []) as CoOwnerCandidateRow[], observedAt)
+  const r = await upsertRelationships(svc, input.brokerageId, planned, null)
+  return { planned: planned.length, ...r }
+}
+
+// ── Occupancy derivation (the contact's mailing address IS a listing the tenant holds) ───────────
+
+export interface OccupancyListingRow { id: string; address?: string | null; zip?: string | null }
+
+/**
+ * PURE — occupies edges: the contact's (mailing) address, normalised the household way, equals a
+ * listing's address in the same zip. Confidence 0.7 with a residence signal on the contact
+ * (home_owner_status renter / owner — the rental-graduation sourcer's renters), 0.6 on address alone.
+ * Deterministic: listings taken in id order.
+ * @proofSeam scripts/relationship-graph-guard.ts asserts the planner on a listing at the contact's address.
+ */
+export function planOccupancyEdges(
+  subject: HouseholdCandidateRow & { home_owner_status?: string | null },
+  listings: readonly OccupancyListingRow[],
+  observedAt: string,
+  source: string,
+): EdgeInput[] {
+  const key = householdAddressKey(subject)
+  if (!key) return []
+  const status = (subject.home_owner_status ?? "").toString().trim().toLowerCase()
+  const confidence = status === "renter" || status === "owner" ? 0.7 : 0.6
+  const out: EdgeInput[] = []
+  for (const l of [...listings].sort((a, b) => a.id.localeCompare(b.id))) {
+    if (householdAddressKey({ id: l.id, address: l.address, zip_code: l.zip }) !== key) continue
+    out.push({ from: { type: "contact", id: subject.id }, to: { type: "listing", id: l.id }, type: "occupies", evidence: { source, confidence, observed_at: observedAt } })
+  }
+  return out
+}
+
+/**
+ * After an address (or a residence signal) lands on a contact: read its address, the tenant's
+ * listings in that zip, and upsert `occupies`. `source` names the survivor writer (e.g.
+ * "contact_enrichment", "rental_graduation"). Never throws; a refused read is reported.
+ */
+export async function deriveOccupancyEdges(
+  svc: Svc,
+  input: { brokerageId: string; contactId: string; source: string; now?: Date },
+): Promise<{ planned: number; written: number; existing: number; errors: string[]; degraded: boolean }> {
+  const none = { planned: 0, written: 0, existing: 0, errors: [] as string[], degraded: false }
+  const observedAt = (input.now ?? new Date()).toISOString()
+  const { data: subject, error: subjErr } = await svc.from("contacts").select("id, address, zip_code, mailing_address, mailing_zip, home_owner_status")
+    .eq("brokerage_id", input.brokerageId).eq("id", input.contactId).maybeSingle()
+  if (subjErr) return { ...none, errors: [`occupancy subject read refused: ${subjErr.message}`] }
+  if (!subject) return none
+  const key = householdAddressKey(subject as HouseholdCandidateRow)
+  if (!key) return none
+  const zip = key.split("|")[1]
+  const { data: listings, error: listErr } = await svc.from("listings").select("id, address, zip")
+    .eq("brokerage_id", input.brokerageId).eq("zip", zip).is("deleted_at", null).limit(200)
+  if (listErr) return { ...none, errors: [`occupancy listings read refused: ${listErr.message}`] }
+  const planned = planOccupancyEdges(subject as HouseholdCandidateRow, (listings ?? []) as OccupancyListingRow[], observedAt, input.source)
   const r = await upsertRelationships(svc, input.brokerageId, planned, null)
   return { planned: planned.length, ...r }
 }

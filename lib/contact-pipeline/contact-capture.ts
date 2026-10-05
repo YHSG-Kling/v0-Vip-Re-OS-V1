@@ -15,6 +15,7 @@ import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 // PURE — no server-only, no SCHEMA_SNAPSHOT at module scope (see that file's
 // own header note) — safe as a static import into this shared pipeline file.
 import { localeToElevenLabsLanguage } from '@/lib/video/multilingual-reel'
+import type { NormalizedPersonIdentity } from '@/lib/kernel/person-identity'
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
 // `server-only` (it holds the service client and the paid PeopleData/OSINT
@@ -170,6 +171,56 @@ export interface CaptureContactParams {
 export interface CaptureContactResult {
   contactId: string
   action: 'created' | 'merged'
+  /** PERSON IDENTITY (wave 102.1, lane 102E) — the person_identities row this capture resolved to
+   *  (lib/kernel/person-identity.ts), null when the capture had no gate identity (no email / no
+   *  last name), on the lead-conversion fast path (history-carry links it), or when m697 refused. A
+   *  caller that links its OWN row (a form submission) passes this id and never re-links the contact. */
+  personId?: string | null
+  /** The normalised identity the person was resolved on — for the caller's own evidence stamp. */
+  personIdentity?: NormalizedPersonIdentity | null
+}
+
+// ─── Person identity evidence (wave 102.1, lane 102E) ─────────────────────────
+//
+// captureContact IS the public-capture dedup verdict (email/phone fuzzy match → merge, else
+// create) for every consented door: forms, lead magnets, QR, embed/widget, home-value, business
+// card, kiosk, listing landing. Wired ONCE here so every door inherits it instead of each wiring
+// around it (the form route did until this lane). ONE evidence row on the contact — capture_match,
+// scored by the capture's own dedup (a merge at its fuzzy score, a creation at 1.0) — through THE one
+// service. The chokepoint's own event (CONTACT_DEDUP_MERGED / CONTACT_CAPTURED, emitted below) is
+// the event; no person.identity_linked. A door that re-links the same contact (the kiosk greeting's
+// capture_match) is a UNIQUE-protected no-op (duplicate: true). Best-effort: never blocks capture.
+async function recordCapturePersonEvidence(
+  supabase: ReturnType<typeof createServiceClient>,
+  params: CaptureContactParams,
+  contactId: string,
+  action: 'created' | 'merged',
+  matchScore: number,
+): Promise<{ personId: string | null; personIdentity: NormalizedPersonIdentity | null }> {
+  try {
+    const { resolvePerson, linkPersonEvidence } = await import('@/lib/kernel/person-identity')
+    const person = await resolvePerson(supabase, {
+      brokerageId: params.brokerageId,
+      firstName: params.first_name ?? null, lastName: params.last_name ?? null,
+      email: params.email ?? null, phone: params.phone ?? null,
+    })
+    if (!person.ok) {
+      if (person.reason !== 'no_identity_anchor') console.warn(`[contact-capture] person identity not resolved: ${person.reason}`)
+      return { personId: null, personIdentity: null }
+    }
+    const link = await linkPersonEvidence(supabase, {
+      brokerageId: params.brokerageId, personId: person.personId,
+      entityType: 'contact', entityId: contactId, matchMethod: 'capture_match', matchScore,
+      source: 'contact_capture', actor: { type: 'system', userId: null }, identity: person.identity,
+      detail: { capture_action: action, capture_source: params.source },
+      existingEvent: action === 'merged' ? KernelEvent.CONTACT_DEDUP_MERGED : KernelEvent.CONTACT_CAPTURED,
+    })
+    if (!link.ok) console.warn(`[contact-capture] person evidence not recorded: ${link.reason}`)
+    return { personId: person.personId, personIdentity: person.identity }
+  } catch (err) {
+    console.warn('[contact-capture] person identity threw (capture unaffected):', err instanceof Error ? err.message : String(err))
+    return { personId: null, personIdentity: null }
+  }
 }
 
 // ─── captureContact ───────────────────────────────────────────────────────────
@@ -459,7 +510,8 @@ export async function captureContact(
       contactId: bestId,
     })
 
-    return { contactId: bestId, action: 'merged' }
+    const mergedPerson = await recordCapturePersonEvidence(supabase, params, bestId, 'merged', bestScore)
+    return { contactId: bestId, action: 'merged', ...mergedPerson }
   }
 
   // ── CREATE path ──────────────────────────────────────────────────────────
@@ -610,7 +662,8 @@ export async function captureContact(
     console.error('[captureContact] portal invite failed (non-fatal):', err)
   }
 
-  return { contactId, action: 'created' }
+  const createdPerson = await recordCapturePersonEvidence(supabase, params, contactId, 'created', 1)
+  return { contactId, action: 'created', ...createdPerson }
 }
 
 // ─── queueContactEnrichmentAndScore ──────────────────────────────────────────

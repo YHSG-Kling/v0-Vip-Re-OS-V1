@@ -320,6 +320,9 @@ export interface BatchDataPropertyEnrichmentLike {
   ownerOccupied: boolean | null
   /** Lane 85C — the `demographic` dataset's household financials (householdFinancialsFromBatchData). */
   householdFinancials?: HouseholdFinancials | null
+  /** Wave 102.1 (102F) — the `owner` dataset's owner names; kept in property_records.batchdata.owner_names
+   *  and the second name derives a co_owner edge (lib/kernel/relationship-graph.ts deriveCoOwnerEdges). */
+  ownerNames?: string[]
 }
 
 /** Pure: BatchData property-enrichment → the first-class columns BOTH leads and
@@ -401,6 +404,8 @@ export function batchDataPropertyEnrichmentToContactColumns(
       foreclosure_status: e.foreclosureStatus,
       last_deed_type: e.lastDeedType,
       owner_occupied: e.ownerOccupied,
+      // 102F — the owner names ride the same record (the second one is the co_owner the graph derives).
+      ...(Array.isArray(e.ownerNames) && e.ownerNames.length > 0 ? { owner_names: e.ownerNames } : {}),
     },
   }
   return out
@@ -760,6 +765,8 @@ const PROVENANCE_PURPOSES = [
   'osint',        // public-web findings (Exa mentions, ZenRows people search, Perplexity gap-fill)
   'staff_edit',   // a back-office user typed it
   'self_service', // the contact typed it in their own portal
+  'conversation', // what the person SAID in an AI conversation (voice / chat ISA) — R6, wave 102.1
+                  // (the AI-stated address keeps self_service: they typed it in their own session)
 ] as const
 export type ProvenancePurpose = typeof PROVENANCE_PURPOSES[number]
 

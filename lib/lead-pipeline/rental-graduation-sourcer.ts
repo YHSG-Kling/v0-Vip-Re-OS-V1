@@ -205,6 +205,18 @@ export async function sourceRentalToBuyerGraduation(
     }, { minTenureYears })
     if (!rec) continue
 
+    // RELATIONSHIP GRAPH (wave 102.1, lane 102F): a renter whose mailing address IS a listing this
+    // tenant holds `occupies` it — the renter signal rides the edge's confidence
+    // (lib/kernel/relationship-graph.ts deriveOccupancyEdges). Additive and idempotent; a lost
+    // edge is logged, the graduation signal below is never withheld for it.
+    try {
+      const { deriveOccupancyEdges } = await import('@/lib/kernel/relationship-graph')
+      const occ = await deriveOccupancyEdges(svc, { brokerageId, contactId: row.id, source: 'rental_graduation', now })
+      if (occ.errors.length > 0 && !occ.degraded) console.warn(`[rental-graduation-sourcer] occupancy edges for ${row.id}: ${occ.errors.join('; ')}`)
+    } catch (e) {
+      console.warn('[rental-graduation-sourcer] occupancy edge derivation failed (non-blocking):', e)
+    }
+
     // Direct cooldown read — see the header for why the bus's own "one OPEN signal" dedupe is
     // not enough here (this signal's underlying facts barely change tick to tick).
     const { data: recent } = await svc

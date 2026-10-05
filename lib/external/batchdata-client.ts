@@ -1705,8 +1705,25 @@ export interface BatchDataPropertyEnrichment {
   ownerOccupied: boolean | null
   /** Lane 85C — the `demographic` dataset, requested in the SAME lookup (no extra billed record). */
   householdFinancials?: HouseholdFinancials | null
+  /** Wave 102.1 (102F) — the `owner` dataset's owner NAMES (same lookup, no extra record): the second
+   *  name is the co_owner the relationship graph derives (lib/kernel/relationship-graph.ts). */
+  ownerNames?: string[]
   cost: number
   error?: string
+}
+
+/** PURE — every owner name BatchData's `owner` block carries, in its order, blanks dropped
+ *  (owner.names[] of strings or {full|fullName}, else fullName / owner1FullName / owner2FullName).
+ *  Module-private: its one caller is enrichPropertyDatasetsBatchData below. */
+function batchDataOwnerNames(owner: Record<string, any> | null | undefined): string[] {
+  if (!owner || typeof owner !== "object") return []
+  const s = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null)
+  const out: string[] = []
+  if (Array.isArray(owner.names)) {
+    for (const x of owner.names) { const n = s(typeof x === "string" ? x : x?.full ?? x?.fullName); if (n) out.push(n) }
+  }
+  if (out.length === 0) for (const k of ["fullName", "owner1FullName", "owner2FullName"]) { const n = s(owner[k]); if (n) out.push(n) }
+  return [...new Set(out)]
 }
 
 export async function enrichPropertyDatasetsBatchData(address: string): Promise<BatchDataPropertyEnrichment> {
@@ -1746,6 +1763,7 @@ export async function enrichPropertyDatasetsBatchData(address: string): Promise<
       lastDeedType: typeof deed.documentType === "string" ? deed.documentType : null,
       ownerOccupied: typeof owner.ownerOccupied === "boolean" ? owner.ownerOccupied : null,
       householdFinancials: (() => { const hf = householdFinancialsFromBatchData(prop); return Object.keys(hf).length > 0 ? hf : null })(),
+      ownerNames: batchDataOwnerNames(owner),
       cost: 0.05,
     }
   } catch (e) {

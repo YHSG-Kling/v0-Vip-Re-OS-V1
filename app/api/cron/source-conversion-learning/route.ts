@@ -45,10 +45,29 @@ export async function GET(request: NextRequest) {
     // Two different units — one is "brokerages advised", the other is "markets
     // signalled" — and summing them would hide which one produced nothing.
     let marketsScanned = 0, marketsSignalled = 0
+    // R3 (wave 102.1, lane 102F) — relationship-graph self-healing, counted apart (edges, not advice).
+    const relationshipBackfill = { brokerages: 0, scanned: 0, healed: 0, derived: 0, written: 0, errors: 0, degraded: 0 }
     const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
 
     for (const b of (brokerages ?? []) as { id: string }[]) {
       scanned++
+
+      // RELATIONSHIP GRAPH SELF-HEALING (owner ruling R3): the closes that predate m698 — or whose
+      // post-close derivation was lost — get their bought_from / sold_to / owns / previously_owned /
+      // co_buyer edges through the ONE derivation (lib/kernel/relationship-graph.ts
+      // backfillTransactionCloseEdges; idempotent on the UNIQUE key; bounded batch; never raw SQL).
+      // Same weekly cadence as the learners; best-effort; the summary rides the cron ledger below.
+      try {
+        const { backfillTransactionCloseEdges } = await import("@/lib/kernel/relationship-graph")
+        const bf = await backfillTransactionCloseEdges(svc, { brokerageId: b.id })
+        relationshipBackfill.brokerages++
+        relationshipBackfill.scanned += bf.scanned; relationshipBackfill.healed += bf.healed; relationshipBackfill.derived += bf.derived
+        relationshipBackfill.written += bf.written; relationshipBackfill.errors += bf.errors.length
+        if (bf.degraded) relationshipBackfill.degraded++
+        if (bf.errors.length > 0) console.error(`[source-conversion-learning] relationship backfill for ${b.id}: ${bf.errors.slice(0, 3).join("; ")}${bf.errors.length > 3 ? ` (+${bf.errors.length - 3})` : ""}`)
+      } catch (e) {
+        console.error("[source-conversion-learning] relationship backfill failed (non-blocking):", e)
+      }
 
       // LEARNING CONDUCTOR (copy) — promote the winning ai_intent variant per A/B step (reply-rate,
       // sample+margin gated). Same weekly cadence as the source learner; best-effort.
@@ -139,7 +158,7 @@ export async function GET(request: NextRequest) {
       } catch { /* best-effort — lifetime health never fails the conversion learner */ }
     }
 
-    const summary = { scanned, advised, markets_scanned: marketsScanned, markets_signalled: marketsSignalled }
+    const summary = { scanned, advised, markets_scanned: marketsScanned, markets_signalled: marketsSignalled, relationship_backfill: relationshipBackfill }
     await recordCronSuccessAction({ context_id: contextId, records_processed: advised, metadata: summary })
     return NextResponse.json({ message: "Source-conversion learning complete", summary })
   } catch (e) {
