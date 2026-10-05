@@ -5,6 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
 import { resolveAgentId, requireAgentId } from "@/lib/kernel/agent-identity"
+import { recordLifetimeTouchpointSent } from "@/lib/sphere/lifetime-touchpoint-ledger"
 
 // System callers (e.g. the daily lifetime-touchpoints cron) have no user session,
 // so they pass the owning agentId + a service-role client; UI callers pass neither
@@ -97,19 +98,12 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
     return { success: false, error: result.error ?? "Send blocked by compliance gate" }
   }
 
-  const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
-    brokerage_id: brokerageId,
-    contact_id: contactId,
-    agent_id: agentId,
-    touchpoint_type: "home_anniversary",
-    channel: "email",
-    scheduled_date: new Date().toISOString().split("T")[0],
-    sent_date: new Date().toISOString().split("T")[0],
-    engagement_data: { message },
-    status: "sent",
+  // THE ONE sent-touch ledger + the ONE LIFETIME_CUSTOMER_TOUCHPOINT_SENT emit (wave 104, lane 104E).
+  const recorded = await recordLifetimeTouchpointSent(supabase, {
+    brokerageId: brokerageId!, contactId, agentId, touchpointType: "home_anniversary", channel: "email",
+    engagementData: { message }, source: opts?.client ? "cron" : "ui",
   })
-
-  if (error) throw error
+  if (!recorded.ok) throw new Error(recorded.error)
 
   // Fire the personalized anniversary D-ID + cloned-voice video alongside the
   // email. Gated on contacts.video_opt_out + agent voice profile, idempotent
@@ -179,19 +173,12 @@ export async function sendBirthdayMessage(contactId: string, opts?: TouchpointAc
     return { success: false, error: result.error ?? "Send blocked by compliance gate" }
   }
 
-  const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
-    brokerage_id: brokerageId,
-    contact_id: contactId,
-    agent_id: agentId,
-    touchpoint_type: "birthday",
-    channel: "sms",
-    scheduled_date: new Date().toISOString().split("T")[0],
-    sent_date: new Date().toISOString().split("T")[0],
-    engagement_data: { message },
-    status: "sent",
+  // THE ONE sent-touch ledger + the ONE LIFETIME_CUSTOMER_TOUCHPOINT_SENT emit (wave 104, lane 104E).
+  const recorded = await recordLifetimeTouchpointSent(supabase, {
+    brokerageId: brokerageId!, contactId, agentId, touchpointType: "birthday", channel: "sms",
+    engagementData: { message }, source: opts?.client ? "cron" : "ui",
   })
-
-  if (error) throw error
+  if (!recorded.ok) throw new Error(recorded.error)
 
   revalidatePath("/lifetime-customers")
   return { success: true }
@@ -243,19 +230,12 @@ export async function sendReferralRequest(contactId: string, opts?: TouchpointAc
     return { success: false, error: result.error ?? "Send blocked by compliance gate" }
   }
 
-  const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
-    brokerage_id: brokerageId,
-    contact_id: contactId,
-    agent_id: agentId,
-    touchpoint_type: "referral_request",
-    channel: "sms",
-    scheduled_date: new Date().toISOString().split("T")[0],
-    sent_date: new Date().toISOString().split("T")[0],
-    engagement_data: { message },
-    status: "sent",
+  // THE ONE sent-touch ledger + the ONE LIFETIME_CUSTOMER_TOUCHPOINT_SENT emit (wave 104, lane 104E).
+  const recorded = await recordLifetimeTouchpointSent(supabase, {
+    brokerageId: brokerageId!, contactId, agentId, touchpointType: "referral_request", channel: "sms",
+    engagementData: { message }, source: opts?.client ? "cron" : "ui",
   })
-
-  if (error) throw error
+  if (!recorded.ok) throw new Error(recorded.error)
 
   revalidatePath("/lifetime-customers")
   return { success: true }

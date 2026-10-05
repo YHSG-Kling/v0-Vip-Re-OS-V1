@@ -94,6 +94,11 @@ export async function GET(request: NextRequest) {
       try {
         const { resolvePredictorOutcomes } = await import("@/lib/intelligence/predictor-outcome-resolver")
         await resolvePredictorOutcomes(b.id, {}, svc)
+        // CONTROLLED LEARNING (104C) — the record-derived raise-the-bar tuning becomes a `threshold`
+        // proposal a human promotes (lib/kernel/improvement-proposals.ts); the silent tuning stays
+        // the conservative default until then. Same cadence as the outcomes it reads.
+        const { PREDICTOR_NAMES, proposePredictorTuning } = await import("@/lib/intelligence/predictor-learning-runner")
+        for (const predictor of PREDICTOR_NAMES) await proposePredictorTuning(svc, b.id, predictor)
       } catch { /* best-effort — never fails the source learner */ }
 
       const scored = await loadSourceConversions(b.id, {}, svc)

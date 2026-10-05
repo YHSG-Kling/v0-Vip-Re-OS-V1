@@ -697,4 +697,11 @@ export enum KernelEvent {
   MENTOR_SESSION_HELD                = 'mentor_session_held',
   CE_COMPLETED                       = 'ce_completed',
   AGENT_WORK_ANNIVERSARY             = 'agent_work_anniversary',
+
+  // ── Layer 7 — durable mission runtime (wave 104, lane 104D) ─────────────────
+  // Audit rows (auditOnly) written by the ONE mission service lib/kernel/missions.ts:
+  // a mission created, and every state transition the machine admitted. The reactor
+  // has no mission rule; the flight recorder reads these through entity_type 'mission'.
+  MISSION_CREATED                    = 'mission_created',
+  MISSION_STATE_CHANGED              = 'mission_state_changed',
 }

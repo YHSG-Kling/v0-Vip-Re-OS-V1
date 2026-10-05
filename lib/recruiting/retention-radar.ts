@@ -13,6 +13,7 @@ import {
   CLIENT_REPLY_WINDOW_HOURS, SUPPORT_NUDGE_MIN_SIGNALS, type RetentionSignals,
 } from "@/lib/recruiting/retention-score"
 import { supportSuggestedLines } from "@/lib/recruiting/retention-intervention"
+import { afterHoursVolume, timeZoneForState } from "@/lib/fatigue/after-hours"
 import { daysSince } from "@/lib/format/dates"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -77,7 +78,7 @@ export function clientResponsiveness(
 
 /** Gather the real signals for one agent (best-effort; missing → null → neutral in the scorer). */
 async function gatherSignals(
-  svc: Svc, agent: { id: string; user_id?: string | null; brokerage_id?: string | null; created_at?: string | null }, now: Date,
+  svc: Svc, agent: { id: string; user_id?: string | null; brokerage_id?: string | null; created_at?: string | null; license_state?: string | null; brokerage_state?: string | null }, now: Date,
 ): Promise<RetentionSignals> {
   const since30 = new Date(now.getTime() - 30 * 86_400_000).toISOString()
   const [act, lastClose, pipeline, onboarding, points] = await Promise.all([
@@ -102,7 +103,7 @@ async function gatherSignals(
 /** The wave-89 fatigue signals for one agent. Each read is error-read; a refusal is logged and leaves
  *  that signal ABSENT (null) so the scorer drops it — never a fabricated zero. Best-effort, never throws. */
 async function gatherFatigueSignals(
-  svc: Svc, agent: { id: string; user_id?: string | null; brokerage_id?: string | null }, now: Date,
+  svc: Svc, agent: { id: string; user_id?: string | null; brokerage_id?: string | null; license_state?: string | null; brokerage_state?: string | null }, now: Date,
 ): Promise<Partial<RetentionSignals>> {
   const sinceFatigue = new Date(now.getTime() - FATIGUE_WINDOW_DAYS * 86_400_000).toISOString()
   const sinceHalf = new Date(now.getTime() - ACTIVITY_TREND_HALF_DAYS * 86_400_000).toISOString()
@@ -153,6 +154,13 @@ async function gatherFatigueSignals(
     out.responseLagHours = r.medianLagHours
     // No inbound at all → nothing to answer → the signal is absent, not "0 unanswered = perfect".
     out.unansweredClientMessages = rows.some((x) => x.inbound) ? r.unanswered : null
+
+    // WAVE 104 (lane 104E) — after-hours volume, the agent scope of the ONE fatigue calculator
+    // (lib/fatigue/after-hours.ts), from the SAME outbound rows: zone from the agent's license state,
+    // else the brokerage's state; no zone → the signal stays absent (never a UTC guess).
+    const tz = timeZoneForState(agent.license_state) ?? timeZoneForState(agent.brokerage_state)
+    const ah = afterHoursVolume(rows.filter((x) => !x.inbound).map((x) => x.at), tz)
+    if (tz) { out.outbound30d = ah.outbound; out.afterHoursOutbound30d = ah.afterHours }
   }
 
   if (!refused("calendar_events", appts.error) && appts.data) {
@@ -298,12 +306,16 @@ export async function runRetentionRadar(
 
   const { data: agents } = await svc
     .from("agents")
-    .select("id, user_id, team_id, created_at, users(first_name, last_name)")
+    .select("id, user_id, team_id, created_at, license_state, users(first_name, last_name)")
     .eq("brokerage_id", params.brokerageId).not("user_id", "is", null).limit(500)
+  // The brokerage's state — the after-hours zone fallback (lane 104E); a refused read leaves it null.
+  const { data: brokerageRow, error: brokerageErr } = await svc.from("brokerages").select("state").eq("id", params.brokerageId).maybeSingle()
+  if (brokerageErr) console.error(`[retention-radar] brokerages.state read refused for ${params.brokerageId}: ${brokerageErr.message}`)
+  const brokerageState = (brokerageRow as { state?: string | null } | null)?.state ?? null
 
   for (const a of (agents ?? []) as any[]) {
     out.scanned++
-    const sig = await gatherSignals(svc, { ...a, brokerage_id: params.brokerageId }, now)
+    const sig = await gatherSignals(svc, { ...a, brokerage_id: params.brokerageId, brokerage_state: brokerageState }, now)
     const rs = computeRetentionScore(sig)
     // Wave 89: which fatigue signals are lit, and the broker's support lines for the drivers.
     const litSignals = weakFatigueSignals(rs.breakdown)

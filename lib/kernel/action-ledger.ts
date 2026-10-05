@@ -81,6 +81,12 @@ const ACTION_REASON_CODES = [
   "STAFF_ALERT",             // an alert to the brokerage's own staff (push, lead-magnet notify)
   "WAIT_COOLDOWN",
   "NO_ACTION_NEEDED",
+  // m709 (wave 104C): the controlled-learning loop promoted / rolled back one of its own proposals
+  // under the autonomy gate (lib/kernel/improvement-proposals.ts); a human's promotion is HUMAN_REQUESTED.
+  "LEARNED_IMPROVEMENT",
+  // m710 (wave 104D): a mission created / moved by the state machine (lib/kernel/missions.ts) —
+  // the WHY of the transition rides reason_detail, the mission id rides detail.mission_id.
+  "MISSION_LIFECYCLE",
   "UNSPECIFIED",
 ] as const
 export type ActionReasonCode = (typeof ACTION_REASON_CODES)[number]

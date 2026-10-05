@@ -34,6 +34,9 @@ interface StartRunInput {
   triggerEvent?: string | null
   triggerEventId?: string | null
   metadata?: Record<string, any>
+  /** WAVE 104 (lane 104D): the mission this run serves (missions.id, m710 workflow_runs.mission_id).
+   *  The run is attached to the mission as an action once it exists. */
+  missionId?: string | null
 }
 
 interface RunResult {
@@ -95,12 +98,24 @@ export async function startRun(input: StartRunInput): Promise<RunResult> {
       current_step_index: 0,
       metadata: input.metadata ?? {},
       step_outputs: {},
+      // m710 — a run started under a mission links to it (nullable; the integrator applies m710).
+      ...(input.missionId ? { mission_id: input.missionId } : {}),
     })
     .select("id")
     .single()
 
   if (error || !run) {
     return { success: false, error: error?.message ?? "Failed to create run" }
+  }
+
+  // The mission learns about the run it owns (an action with no ledger row of its own: the run id
+  // is the reference; the chain's sends ledger themselves). Best-effort; a refusal is logged.
+  if (input.missionId) {
+    try {
+      const { attachAction } = await import("@/lib/kernel/missions")
+      const r = await attachAction({ brokerageId: input.brokerageId, missionId: input.missionId, ledgerEntryId: run.id, riskClass: "LOW_RISK_WRITE", detail: { workflow_run_id: run.id, chain_key: chain.key } }, svc as any)
+      if (!r.ok) console.error(`[workflow-engine] run ${run.id} NOT attached to mission ${input.missionId}: ${r.reason}`)
+    } catch (e) { console.error(`[workflow-engine] mission attach failed: ${e instanceof Error ? e.message : String(e)}`) }
   }
 
   // Pre-create step rows (pending) so the UI shows the full pipeline

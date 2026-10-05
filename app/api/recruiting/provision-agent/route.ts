@@ -197,6 +197,8 @@ export async function POST(req: Request) {
             // agents.onboarding_status is (not_started|in_progress|completed|
             // pending_review). A freshly provisioned recruit has not started.
             onboarding_status: "not_started",
+            // agents.anniversary_date: the recruit's start date (wave 104, lane 104E) — read by work-anniversaries.
+            anniversary_date: new Date().toISOString().slice(0, 10),
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           },

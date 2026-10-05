@@ -14,7 +14,13 @@ import { classifyStaleWorkflowRun, WORKFLOW_RUN_STALE_HOURS } from "./stale-run-
 
 type Svc = ReturnType<typeof createServiceClient>
 
-export interface WorkflowRunReaperResult { scanned: number; escalated: number }
+export interface WorkflowRunReaperResult {
+  scanned: number
+  escalated: number
+  /** WAVE 104 (lane 104D): the mission pass on the SAME tick — deadlines passed and blockers left
+   *  72h are ESCALATED (lib/kernel/missions.ts sweepMissionDeadlines). No second reaper. */
+  missions?: { scanned: number; escalated: number; readRefused: string | null }
+}
 
 export async function reapStaleWorkflowRuns(
   brokerageId: string, client?: Svc, opts?: { now?: Date; limit?: number },
@@ -23,6 +29,18 @@ export async function reapStaleWorkflowRuns(
   const now = opts?.now ?? new Date()
   const result: WorkflowRunReaperResult = { scanned: 0, escalated: 0 }
   if (!brokerageId) return result
+
+  // Missions first (the objectives the chains serve): a mission past its deadline or blocked with
+  // nobody unblocking it gets its owner manager signalled. Best-effort; a refused read is PUBLISHED.
+  try {
+    const { sweepMissionDeadlines } = await import("@/lib/kernel/missions")
+    const m = await sweepMissionDeadlines(brokerageId, svc as any, { now })
+    result.missions = m
+    result.scanned += m.scanned
+    result.escalated += m.escalated
+  } catch (e) {
+    result.missions = { scanned: 0, escalated: 0, readRefused: e instanceof Error ? e.message : String(e) }
+  }
 
   const { data: rows } = await svc.from("workflow_runs")
     .select("id, chain_key, agent_user_id, status, started_at, updated_at")

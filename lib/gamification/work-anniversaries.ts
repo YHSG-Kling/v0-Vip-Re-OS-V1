@@ -7,11 +7,10 @@
 // reactor awards WORK_ANNIVERSARY once per agent per calendar year
 // (lib/gamification/award-points.ts LIFECYCLE_AWARD_RULES, scope "per_year").
 //
-// THE DATE IS agents.created_at — when the seat was created. `agents.anniversary_date`
-// exists in the live schema and is written by NOTHING in the tree (no code
-// writer; CLAUDE.md §3: a reader with no writer is a dead feature wearing a
-// working query), so it is deliberately NOT read here. Owner item: give it a
-// writer (the agent profile form) and this module switches to it.
+// THE DATE IS agents.anniversary_date (date) — stamped at seat creation by every provisioning
+// door since wave 104 (lane 104E: lib/kernel/users.ts, app/actions/agents.ts createAgent,
+// app/api/recruiting/provision-agent) — with agents.created_at as the fallback for seats
+// provisioned before the stamp (the column was writerless until then; CLAUDE.md §3).
 
 import type { createServiceClient } from "@/lib/supabase/service"
 
@@ -41,13 +40,19 @@ export function anniversaryYearsOn(startedAt: string | null | undefined, now: Da
   return null
 }
 
+/** PURE: the date an anniversary counts from — anniversary_date when stamped, else created_at.
+ *  @proofSeam the proof asserts the preference and the fallback. */
+export function anniversaryStartDate(a: { created_at: string | null; anniversary_date?: string | null }): string | null {
+  return a.anniversary_date ?? a.created_at
+}
+
 export interface WorkAnniversaryResult { brokerages: number; agents: number; emitted: number }
 
 /** One brokerage: emit for every active agent whose anniversary fell in the window. */
 async function runWorkAnniversaries(svc: Svc, params: { brokerageId: string; now?: Date }): Promise<Omit<WorkAnniversaryResult, "brokerages">> {
   const now = params.now ?? new Date()
   const out = { agents: 0, emitted: 0 }
-  const { data: agents, error } = await svc.from("agents").select("id, created_at")
+  const { data: agents, error } = await svc.from("agents").select("id, created_at, anniversary_date")
     .eq("brokerage_id", params.brokerageId).eq("is_active", true).limit(5000)
   if (error) {
     console.error(`[work-anniversaries] agent roster read refused for ${params.brokerageId}: ${error.message}`)
@@ -55,9 +60,10 @@ async function runWorkAnniversaries(svc: Svc, params: { brokerageId: string; now
   }
   const { emitKernelEvent } = await import("@/lib/kernel/emit")
   const { KernelEvent } = await import("@/lib/kernel/events")
-  for (const a of (agents ?? []) as Array<{ id: string; created_at: string | null }>) {
+  for (const a of (agents ?? []) as Array<{ id: string; created_at: string | null; anniversary_date: string | null }>) {
     out.agents++
-    const years = anniversaryYearsOn(a.created_at, now)
+    const startedAt = anniversaryStartDate(a)
+    const years = anniversaryYearsOn(startedAt, now)
     if (years === null) continue
     const res = await emitKernelEvent({
       event:       KernelEvent.AGENT_WORK_ANNIVERSARY,
@@ -65,7 +71,7 @@ async function runWorkAnniversaries(svc: Svc, params: { brokerageId: string; now
       entityType:  "agent",
       entityId:    a.id,
       source:      "cron",
-      metadata:    { agent_id: a.id, years, started_at: a.created_at },
+      metadata:    { agent_id: a.id, years, started_at: startedAt },
       // A re-run inside the cadence is the same anniversary; the reactor's per-year
       // once-award is the stop beyond this window.
       dedupeKey:       `${a.id}:${now.getUTCFullYear()}`,

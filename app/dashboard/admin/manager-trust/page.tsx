@@ -12,6 +12,7 @@ import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { MAINTENANCE_DOMAINS, MANAGERS, resolveMaintenanceManager, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 import { TenantConstitutionPanel } from "./tenant-constitution-panel"
+import { ImprovementProposalsPanel } from "./improvement-proposals-panel"
 
 /**
  * OWNED PROOFS — every maintenance/burn domain in the registry, grouped by the manager
@@ -109,6 +110,9 @@ export default async function ManagerTrustPage({ searchParams }: { searchParams?
       authorityLadder={AUTHORITY_LEVEL_LABELS}
     />
     <TenantConstitutionPanel historyKey={historyKey} />
+    {/* CONTROLLED LEARNING (wave 104, lane 104C, m709): what the OS proposes to change about itself, with
+        the evidence, the deterministic evaluation and the human approve / reject / promote / roll back. */}
+    <ImprovementProposalsPanel />
     </>
   )
 }

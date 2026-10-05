@@ -18,6 +18,10 @@ interface CaptureFormData {
   name: string
   email: string
   phone: string
+  /** THE SEPARATE EMAIL-CONSENT BOX (wave 104, lane 104E; owner answer 1, 2026-10-05). Sent as
+   *  `email_consent` ONLY from a ticked box — the server refuses an email without it (fail closed).
+   *  The phone rule ("phone provided = TCPA consent") is unchanged. */
+  emailConsent: boolean
 }
 
 type CaptureState = 'none' | 'prompted' | 'captured'
@@ -48,7 +52,7 @@ export function WidgetChatClient({
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [captureState, setCaptureState] = useState<CaptureState>('none')
-  const [captureForm, setCaptureForm] = useState<CaptureFormData>({ name: '', email: '', phone: '' })
+  const [captureForm, setCaptureForm] = useState<CaptureFormData>({ name: '', email: '', phone: '', emailConsent: false })
   const [captureError, setCaptureError] = useState<string | null>(null)
   const [captureLoading, setCaptureLoading] = useState(false)
   const [input, setInput] = useState('')
@@ -165,6 +169,10 @@ export function WidgetChatClient({
       setCaptureError('Name and email are required.')
       return
     }
+    if (!captureForm.emailConsent) {
+      setCaptureError('Please tick the box to let us email you.')
+      return
+    }
     if (!sessionToken) {
       setCaptureError('Chat is unavailable right now. Please try again later.')
       return
@@ -188,6 +196,7 @@ export function WidgetChatClient({
           email: captureForm.email.trim(),
           phone: captureForm.phone.trim() || null,
           tcpa_consent: !!captureForm.phone.trim(), // phone provided = TCPA consent
+          email_consent: captureForm.emailConsent === true, // the separate email box (104E) — never defaulted
           // The tracking cookie /api/track/visitor opened on widget open (wave 103, lane 103D):
           // with it the consented email lands on the visitor's behavioral signal too. Read only,
           // never minted here — a visitor with no cookie sends none.
@@ -314,6 +323,15 @@ export function WidgetChatClient({
               onChange={e => setCaptureForm(p => ({ ...p, phone: e.target.value }))}
               aria-label="Phone number"
             />
+            <label className="widget-capture-consent">
+              <input
+                type="checkbox"
+                checked={captureForm.emailConsent}
+                onChange={e => setCaptureForm(p => ({ ...p, emailConsent: e.target.checked }))}
+                aria-label="I agree to be contacted by email"
+              />
+              <span>I agree to receive emails about my real estate needs. Adding a phone number means you also agree to calls or texts.</span>
+            </label>
             {captureError && (
               <p className="widget-capture-error" role="alert">{captureError}</p>
             )}
@@ -560,6 +578,16 @@ export function WidgetChatClient({
           min-height: 44px;
         }
         .widget-capture-submit:disabled { opacity: 0.6; cursor: not-allowed; }
+        .widget-capture-consent {
+          display: flex;
+          gap: 8px;
+          align-items: flex-start;
+          font-size: 12px;
+          color: #4b5563;
+          margin: 6px 0 8px;
+          line-height: 1.4;
+        }
+        .widget-capture-consent input { margin-top: 2px; min-width: 16px; min-height: 16px; }
         .widget-capture-skip {
           padding: 9px 12px;
           background: transparent;

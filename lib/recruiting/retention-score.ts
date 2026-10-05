@@ -1,3 +1,4 @@
+import { afterHoursSubScore } from "@/lib/fatigue/after-hours"
 // lib/recruiting/retention-score.ts
 //
 // AGENT RETENTION SCORE — the defensive mirror of the switch-propensity scout. Where that scores which
@@ -47,6 +48,11 @@ export interface RetentionSignals {
   bookContacts?: number | null
   /** Book transfers away from this agent in the last 90 days (temporary cover or permanent). */
   bookTransfers90d?: number | null
+  /** WAVE 104 (lane 104E) — after-hours volume, the agent scope of lib/fatigue (after-hours.ts): outbound
+   *  client sends in the window and how many landed in the agent's local after-hours band. Absent (null)
+   *  when no time zone resolves or the volume is below the floor — never a fabricated zero. */
+  outbound30d?: number | null
+  afterHoursOutbound30d?: number | null
 }
 
 /** A client message unanswered past this many hours counts against the agent (the industry
@@ -62,6 +68,7 @@ export const FATIGUED_BOOK_FULL_SHARE = 0.3
 export const AGENT_FATIGUE_SIGNAL_KEYS = [
   "response_lag", "unanswered_clients", "missed_appointments", "activity_trend",
   "overdue_tasks", "pipeline_drop", "fatigued_book", "book_transfers",
+  "after_hours_volume",
 ] as const
 export type AgentFatigueSignalKey = (typeof AGENT_FATIGUE_SIGNAL_KEYS)[number]
 
@@ -75,6 +82,7 @@ export const AGENT_FATIGUE_LABELS: Record<AgentFatigueSignalKey, string> = {
   pipeline_drop:       "Pipeline shrinking",
   fatigued_book:       "A fatigued book — contacts not answering",
   book_transfers:      "Book recently transferred or covered",
+  after_hours_volume:  "Working late — client messages sent after hours",
 }
 
 export type RetentionTier = "engaged" | "healthy" | "watch" | "at_risk" | "critical"
@@ -200,6 +208,8 @@ export function agentFatigueSubScores(sig: RetentionSignals): Array<{ key: Agent
     { key: "pipeline_drop",       weight: 0.10, sub: pipeSub },
     { key: "fatigued_book",       weight: 0.10, sub: bookSub },
     { key: "book_transfers",      weight: 0.05, sub: transfers == null ? null : (transfers > 0 ? 0 : 1) },
+    // Wave 104 (lane 104E): the rule lives in lib/fatigue/after-hours.ts (the ONE calculator's agent scope).
+    { key: "after_hours_volume",  weight: 0.06, sub: afterHoursSubScore(num(sig.afterHoursOutbound30d), num(sig.outbound30d)) },
   ]
 }
 

@@ -246,6 +246,35 @@ export async function generateBrokerBrief(params: {
     curriculumPending = (await generateCurriculumBoard(params.brokerageId))?.pending ?? 0
   } catch { /* best-effort */ }
 
+  // 3a. LEDGER TRUTH (wave 104, lane 104A) — the brokerage's contribution margin
+  // from the economic graph (ledger rows only) and the reconciliation of every
+  // money summary back to it. A drift is a FINDING here and on the finance page;
+  // the reaper escalates it; nothing rewrites money. The broker brief is the
+  // brokerage's finance read — the agent brief never carries it (§5).
+  let contributionMarginLine = "—"
+  let summaryDrifts = 0
+  try {
+    const { loadEconomicGraph } = await import("@/lib/kernel/economic-graph")
+    const { reconcileSummariesAgainstLedger } = await import("@/lib/commission/reconcile-tracking")
+    const graph = await loadEconomicGraph(supabase, { brokerageId: params.brokerageId })
+    const rec = await reconcileSummariesAgainstLedger(supabase, { brokerageId: params.brokerageId, graph })
+    contributionMarginLine = `$${Math.round(graph.contributionMarginCents / 100).toLocaleString()}${graph.measured ? "" : " (floor — a ledger read was refused)"}`
+    summaryDrifts = rec.drifts.length
+    if (priorities.length < 3 && summaryDrifts > 0) {
+      const worst = [...rec.drifts].sort((a, b) => Math.abs(b.deltaCents) - Math.abs(a.deltaCents))[0]
+      priorities.push({
+        id: "ledger-summary-drift",
+        title: `${summaryDrifts} money summar${summaryDrifts === 1 ? "y" : "ies"} disagree with the ledger`,
+        body: `${worst.projection} reads $${(worst.projectedCents / 100).toFixed(2)} vs $${(worst.ledgerCents / 100).toFixed(2)} on the ledger (${worst.refs.length} rows). Nothing was rewritten — review and correct through the commission correction screen.`,
+        severity: "high",
+        manager: "finance_manager",
+        ctas: [{ label: "Open ledger truth", href: "/dashboard/financials/brokerage" }],
+      })
+    }
+  } catch (err) {
+    console.error("[BrokerBrief] economic graph failed:", err)
+  }
+
   // 3b. MANAGER DAILY STANDUP — what the ten Claude managers did in 24h and what
   // needs a human. Items needing approval become priorities (manager-attributed);
   // the report itself rides the brief, so the broker reads governed autonomy's
@@ -278,6 +307,8 @@ export async function generateBrokerBrief(params: {
     { label: "Compliance flags 7d", value: complianceEvents.length, href: "/dashboard/compliance" },
     { label: "Agents at flight risk", value: retentionAtRisk, href: "/dashboard/admin/command-center" },
     { label: "Agent tiers", value: agentTiersLine, href: "/dashboard/intelligence" },
+    { label: "Contribution margin YTD (ledger)", value: contributionMarginLine, href: "/dashboard/financials/brokerage" },
+    ...(summaryDrifts > 0 ? [{ label: "Money summaries off the ledger", value: summaryDrifts, href: "/dashboard/financials/brokerage" }] : []),
     ...(curriculumPending > 0 ? [{ label: "AI curriculum pending", value: curriculumPending, href: "/dashboard/admin/command-center" }] : []),
     // Standup digest — one metric per reporting manager (label = manager, value = 24h activity)
     ...standupLines.slice(0, 4).map((l) => ({

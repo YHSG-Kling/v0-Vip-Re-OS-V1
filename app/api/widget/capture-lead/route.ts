@@ -1,6 +1,7 @@
 // POST /api/widget/capture-lead
 // Called by the widget client when the visitor submits the capture form
-// (name / email / phone / intent). Widget form fill = TCPA consent.
+// (name / email / phone / intent). Phone provided = TCPA consent; email needs its OWN ticked box
+// (email_consent — wave 104, lane 104E) or the submission is refused.
 // Creates/merges a contact record (never a lead) and assigns agent from session
 // or brokerage primary fallback. Updates chat_session.capture_state → 'captured'.
 //
@@ -32,6 +33,7 @@ export async function POST(req: NextRequest) {
       intent_type,
       notes,
       tcpa_consent,
+      email_consent,
       visitor_id,
     }: {
       session_token: string
@@ -42,6 +44,11 @@ export async function POST(req: NextRequest) {
       intent_type?: 'buyer' | 'seller' | 'unknown'
       notes?: string | null
       tcpa_consent?: boolean
+      /** THE SEPARATE EMAIL-CONSENT BOX (wave 104, lane 104E; owner answer 1, 2026-10-05). The phone rule
+       *  ("phone provided = TCPA consent", tcpa_consent above) is UNCHANGED; this is the email channel's own
+       *  consent. FAIL CLOSED: an email arrives only with `email_consent === true` (a ticked box, never a
+       *  default) — otherwise the submission is refused (422) and no contact, artifact or signal is written. */
+      email_consent?: boolean
       /** The widget's tracking cookie (vip_visitor_id) — the behavioral signal /api/track/visitor
        *  opened for this visitor. With it, the consent artifact written below also lets the ONE
        *  capture door stamp the consented email onto that signal and fire the identify loop
@@ -55,6 +62,11 @@ export async function POST(req: NextRequest) {
 
     if (!email && !phone) {
       return NextResponse.json({ error: 'email or phone required' }, { status: 422 })
+    }
+    // Fail closed (CLAUDE.md §4): an email without its own ticked consent box is refused BEFORE any write.
+    const emailConsentGiven = email_consent === true
+    if (email && !emailConsentGiven) {
+      return NextResponse.json({ error: 'email_consent required when an email is provided' }, { status: 422 })
     }
 
     const supabase = createServiceClient()
@@ -116,9 +128,9 @@ export async function POST(req: NextRequest) {
     // prove later; the wired door recorded the consented phone but never the
     // consent EVENT. Best-effort: the contact is already written above and a
     // refused audit row must not turn a captured lead into a visitor-facing 500.
+    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
+    const userAgent = req.headers.get('user-agent') ?? null
     if (consentGiven) {
-      const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
-      const userAgent = req.headers.get('user-agent') ?? null
       const consentWrite = await persistContactConsent({
         brokerageId: session.brokerage_id,
         agentId: session.agent_id ?? null,
@@ -129,31 +141,53 @@ export async function POST(req: NextRequest) {
         ipAddress: ip,
         userAgent,
       }).catch(() => null)
+      if (!consentWrite?.consentEventId) console.warn('[Widget/capture-lead] TCPA consent artifact not recorded (contact already captured)')
+    }
 
-      // ── CONSENTED EMAIL CAPTURE on the visitor's behavioral signal (wave 103, lane 103D; m706) ──
-      // The SAME door as the tracking pixel: trackBehavior (the behavioral_signals writer) takes the
-      // artifact persistContactConsent just wrote — by id, read back in this tenant — and stores the
-      // email on the visitor's signal, then the identify loop links the signal to the contact captured
-      // above. No artifact (refused ledger write) or no visitor id → nothing is stored; the capture
-      // itself is already done and is never gated on this.
-      if (consentWrite?.consentEventId && email && typeof visitor_id === 'string' && visitor_id.trim()) {
-        try {
-          const { trackBehavior } = await import('@/app/actions/lead-intelligence')
-          const tracked = await trackBehavior({
-            visitor_id: visitor_id.trim(),
-            page_visited: '/api/widget/capture-lead',
-            time_spent: 0,
-            action_taken: 'widget_capture_form',
-            ip_address: ip ?? undefined,
-            user_agent: userAgent ?? undefined,
-            brokerage_id: session.brokerage_id,
-            email_capture: { email, consent_event_id: consentWrite.consentEventId },
-          })
-          const ec = (tracked as { emailCapture?: { stored: boolean; reason?: string } }).emailCapture
-          if (!tracked.success || (ec && !ec.stored)) console.warn(`[Widget/capture-lead] visitor email not stamped on the signal: ${(tracked as { error?: string }).error ?? ec?.reason ?? 'unknown'}`)
-        } catch (e) {
-          console.warn('[Widget/capture-lead] visitor signal capture threw (contact already captured):', e instanceof Error ? e.message : String(e))
-        }
+    // ── THE EMAIL CONSENT ARTIFACT (wave 104, lane 104E; owner answer 1) ──────────────────────
+    // The separate box → its OWN consent_type 'email' row through the ONE consent writer
+    // (channel 'email': the tcpa_* columns are untouched — the visitor consented to email, not calls).
+    // An email-only submission therefore writes an artifact where it wrote none under the phone rule.
+    let emailConsentWrite: Awaited<ReturnType<typeof persistContactConsent>> | null = null
+    if (email && emailConsentGiven) {
+      emailConsentWrite = await persistContactConsent({
+        brokerageId: session.brokerage_id,
+        agentId: session.agent_id ?? null,
+        contactId,
+        channel: 'email',
+        consentText: 'Widget chat consent — email contact consent box ticked in chat widget',
+        consentSource: '/api/widget/capture-lead',
+        consented: true,
+        ipAddress: ip,
+        userAgent,
+      }).catch(() => null)
+      if (!emailConsentWrite?.consentEventId) console.warn('[Widget/capture-lead] email consent artifact not recorded (contact already captured; visitor email NOT stamped)')
+    }
+
+    // ── CONSENTED EMAIL CAPTURE on the visitor's behavioral signal (wave 103, lane 103D; m706) ──
+    // The SAME door as the tracking pixel: trackBehavior (the behavioral_signals writer) takes the
+    // EMAIL artifact persistContactConsent just wrote — by id, read back in this tenant — and stores
+    // the email on the visitor's signal, then the identify loop links the signal to the contact
+    // captured above. Keyed on the EMAIL artifact only (104E): the TCPA artifact is phone consent and
+    // no longer stands in for it. No artifact (refused ledger write) or no visitor id → nothing is
+    // stored; the capture itself is already done and is never gated on this.
+    if (emailConsentWrite?.consentEventId && email && typeof visitor_id === 'string' && visitor_id.trim()) {
+      try {
+        const { trackBehavior } = await import('@/app/actions/lead-intelligence')
+        const tracked = await trackBehavior({
+          visitor_id: visitor_id.trim(),
+          page_visited: '/api/widget/capture-lead',
+          time_spent: 0,
+          action_taken: 'widget_capture_form',
+          ip_address: ip ?? undefined,
+          user_agent: userAgent ?? undefined,
+          brokerage_id: session.brokerage_id,
+          email_capture: { email, consent_event_id: emailConsentWrite.consentEventId },
+        })
+        const ec = (tracked as { emailCapture?: { stored: boolean; reason?: string } }).emailCapture
+        if (!tracked.success || (ec && !ec.stored)) console.warn(`[Widget/capture-lead] visitor email not stamped on the signal: ${(tracked as { error?: string }).error ?? ec?.reason ?? 'unknown'}`)
+      } catch (e) {
+        console.warn('[Widget/capture-lead] visitor signal capture threw (contact already captured):', e instanceof Error ? e.message : String(e))
       }
     }
 

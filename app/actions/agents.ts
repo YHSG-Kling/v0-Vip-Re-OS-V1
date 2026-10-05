@@ -298,6 +298,8 @@ export async function createAgent(agentData: {
       // next person to read it.
       brokerage_id: ctx.brokerageId,
       user_id: agentData.user_id,
+      // agents.anniversary_date: the seat's start date (wave 104, lane 104E) — read by work-anniversaries.
+      anniversary_date: new Date().toISOString().slice(0, 10),
       license_number: agentData.license_number?.trim() || null,
       license_state: agentData.license_state?.trim() || null,
       license_expiry: agentData.license_expiry?.trim() || null,

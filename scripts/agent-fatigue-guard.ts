@@ -121,7 +121,7 @@ check("a null contact_id row is ignored (nothing to pair on)", radar.clientRespo
 
 // ── D ─────────────────────────────────────────────────────────────────────────
 console.log("\n[D · the support library]")
-const SUPPORT_KEYS = ["response_support", "inbox_support", "scheduling_support", "task_support", "activity_dropoff", "fatigued_book_support", "transfer_conversation"]
+const SUPPORT_KEYS = ["response_support", "inbox_support", "scheduling_support", "task_support", "activity_dropoff", "fatigued_book_support", "transfer_conversation", "boundary_support"]
 const labelKeys = Object.values(rs.AGENT_FATIGUE_LABELS).map((l) => iv.interventionKeyForDriver(l))
 check("every fatigue label maps to a SUPPORT play the broker performs (the seven wave-89 plays, or the existing pipeline-unstick review for a shrinking pipeline) — never the generic holistic check-in",
   labelKeys.every((k) => SUPPORT_KEYS.includes(k) || k === "pipeline_unstick") && !labelKeys.includes("holistic_check_in"), labelKeys.join(","))
@@ -140,6 +140,19 @@ check("every support play is something the BROKER does (offers cover / the ISA /
 const copy = iv.buildSavePlayCopy({ agentName: "Sam", score: 31, drivers: [rs.AGENT_FATIGUE_LABELS.unanswered_clients] })
 check("the fresh-breach save-play selects the fatigue play for a fatigue driver (the existing rail, tailored)", copy.interventionKey === "inbox_support" && /Sam/.test(copy.body))
 
+// ── D2 (wave 104, lane 104E) — the after-hours-volume signal: lib/fatigue's agent scope ──────────
+console.log("\n[D2 · after-hours volume — the ninth signal, from the ONE calculator's agent scope]")
+const ah = await import("../lib/fatigue/after-hours")
+const late = (n: number) => Array.from({ length: n }, (_, i) => `2026-10-0${1 + (i % 7)}T03:30:00Z`)   // 23:30 America/Chicago (CDT)
+const day = (n: number) => Array.from({ length: n }, (_, i) => `2026-10-0${1 + (i % 7)}T16:00:00Z`)    // 11:00 America/Chicago
+check("no resolvable zone → the signal is ABSENT (share null), never a UTC guess", ah.afterHoursVolume(late(20), null).share === null && ah.timeZoneForState(null) === null && ah.timeZoneForState("ZZ") === null)
+check("below the volume floor → null (a share of three sends is noise)", ah.afterHoursVolume(late(ah.AFTER_HOURS_MIN_OUTBOUND - 1), "America/Chicago").share === null)
+check("a late-night sender in Texas (license_state TX → America/Chicago) → share 1, sub-score 0", ah.timeZoneForState("tx") === "America/Chicago" && ah.afterHoursVolume(late(20), "America/Chicago").share === 1 && ah.afterHoursSubScore(20, 20) === 0)
+check("POSITIVE CONTROL: a daytime sender → share 0, sub-score 1; half after hours → 0", ah.afterHoursVolume(day(20), "America/Chicago").share === 0 && ah.afterHoursSubScore(0, 20) === 1 && ah.afterHoursSubScore(10, 20) === 0)
+check("the window is local wall-clock (the same instants read as daytime in Honolulu)", ah.afterHoursVolume(late(20), "Pacific/Honolulu").share === 0)
+check("retention-score carries after_hours_volume as the ninth fatigue key with a label, through the one sub-score rule", rs.AGENT_FATIGUE_SIGNAL_KEYS.includes("after_hours_volume" as any) && !!rs.AGENT_FATIGUE_LABELS["after_hours_volume" as AgentFatigueSignalKey] && sub({ afterHoursOutbound30d: 20, outbound30d: 20 } as any, "after_hours_volume" as AgentFatigueSignalKey) === 0 && sub({} as any, "after_hours_volume" as AgentFatigueSignalKey) === null)
+check("the label reaches the boundary_support play (a conversation + cover, never a productivity demand)", iv.interventionKeyForDriver(rs.AGENT_FATIGUE_LABELS["after_hours_volume" as AgentFatigueSignalKey]) === "boundary_support")
+
 // ── E ─────────────────────────────────────────────────────────────────────────
 console.log("\n[E · radar wiring]")
 const radarSrc = stripped("lib/recruiting/retention-radar.ts")
@@ -155,6 +168,7 @@ check("calendar_events is keyed on agent.user_id (users.id) — never agents.id 
 const refusedCalls = (gather.match(/refused\("/g) ?? []).length
 check("every fatigue read destructures its error through `refused(...)` (≥ 9 reads, each read; a refusal leaves the signal absent)", refusedCalls >= 9 && /if \(err\) console\.error/.test(gather) && /return !!err/.test(gather), String(refusedCalls))
 check("no inbound at all → unansweredClientMessages is NULL, not a perfect 0", /rows\.some\(\(x\) => x\.inbound\) \? r\.unanswered : null/.test(gather))
+check("the radar feeds after-hours volume from the SAME outbound rows (no new read), zone from license_state ?? brokerage state, absent without a zone", /afterHoursVolume\(rows\.filter\(\(x\) => !x\.inbound\)\.map\(\(x\) => x\.at\), tz\)/.test(gather) && /timeZoneForState\(agent\.license_state\) \?\? timeZoneForState\(agent\.brokerage_state\)/.test(gather) && /if \(tz\) \{ out\.outbound30d = ah\.outbound; out\.afterHoursOutbound30d = ah\.afterHours \}/.test(gather) && /select\("id, user_id, team_id, created_at, license_state, users\(first_name, last_name\)"\)/.test(radarSrc))
 check("the pipeline-drop baseline is read back from the stored raw_signals (~30 days ago)", /from\("agent_retention_scores"\)\.select\("raw_signals"\)[^\n]*\.lte\("score_date", priorDate\)/.test(gather) && /activePipelinePrior/.test(gather))
 const runAt = radarSrc.indexOf("export async function runRetentionRadar(")
 const run = radarSrc.slice(runAt, radarSrc.indexOf("export async function draftSavePlaysForAtRiskAgents"))
@@ -172,7 +186,7 @@ check("the nudge reaches the broker/admin roster (tier-safe resolver) AND the ag
 check("the nudge is one 'agent_support_suggested' notification per recipient, deduped by created_at, carrying the signals and the support lines",
   /type: "agent_support_suggested"/.test(nudge) && /\.eq\("type", "agent_support_suggested"\)[\s\S]{0,60}\.gte\("created_at", sinceDedupe\)/.test(nudge)
     && /if \(seenErr\)/.test(nudge) && /Suggested support: \$\{p\.support\.join/.test(nudge))
-check("the radar selects team_id for the nudge and the cron reports supportNudged", /select\("id, user_id, team_id, created_at, users\(first_name, last_name\)"\)/.test(radarSrc)
+check("the radar selects team_id for the nudge and the cron reports supportNudged", /from\("agents"\)\s*\.select\("id, user_id, team_id, created_at,[^"]*users\(first_name, last_name\)"\)/.test(radarSrc)
   && /retention_support_nudged = ret\.supportNudged/.test(stripped("app/api/cron/compliance-monitoring/route.ts")))
 check("no raw sentinel-less notification insert (every bell goes through sentinelWrite; the source read with strings intact — a blanked-string read would be blind here)",
   (radarSrc.match(/from\("notifications"\)\.insert\(/g) ?? []).length >= 2 && !/from\("notifications"\)\.insert\(/.test(radarSrc.replace(/sentinelWrite\(svc, svc\.from\("notifications"\)\.insert\(/g, "")))

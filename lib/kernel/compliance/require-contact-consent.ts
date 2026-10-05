@@ -32,7 +32,20 @@ export interface PersistConsentParams {
   consented: boolean
   ipAddress?: string | null
   userAgent?: string | null
+  /**
+   * WHICH consent this artifact records (wave 104, lane 104E; owner answer 1, 2026-10-05: "a separate
+   * email-consent checkbox on the website widget — email-only submissions get their own consent artifact").
+   *   · 'phone' (default) — the TCPA rule: leads/contacts tcpa_* columns are stamped and the ledger row is
+   *     consent_type 'tcpa'. Unchanged for every existing caller.
+   *   · 'email' — an EMAIL contact consent (the widget's separate box): ONLY the ledger row is written
+   *     (consent_type 'email'); the tcpa_* columns say nothing about phone consent the visitor never gave.
+   * consent_type is a free text column live (no CHECK — information_schema, 2026-10-05).
+   */
+  channel?: 'phone' | 'email'
 }
+
+/** The contact_consent_events.consent_type each channel records — ONE spelling (CLAUDE.md §6). */
+export const CONSENT_TYPE_FOR_CHANNEL = { phone: 'tcpa', email: 'email' } as const
 
 export interface PersistConsentResult {
   /** False when the CONTACTS consent write was refused — the consent state the
@@ -64,9 +77,10 @@ export interface PersistConsentResult {
 export async function persistContactConsent(params: PersistConsentParams): Promise<PersistConsentResult> {
   const supabase = createServiceClient()
   const now = new Date().toISOString()
+  const channel = params.channel ?? 'phone'
 
-  // 1. Update leads row if provided
-  if (params.leadId) {
+  // 1. Update leads row if provided — the TCPA (phone) rule only; an email consent never stamps tcpa_*.
+  if (params.leadId && channel === 'phone') {
     const { error: leadConsentErr } = await supabase
       .from('leads')
       .update({
@@ -84,7 +98,7 @@ export async function persistContactConsent(params: PersistConsentParams): Promi
 
   // 2. Update contacts row if provided
   let contactConsentError: string | null = null
-  if (params.contactId) {
+  if (params.contactId && channel === 'phone') {
     const { error } = await supabase
       .from('contacts')
       .update({
@@ -114,7 +128,7 @@ export async function persistContactConsent(params: PersistConsentParams): Promi
     lead_id:        params.leadId ?? null,
     brokerage_id:   params.brokerageId,
     agent_id:       params.agentId ?? null,
-    consent_type:   'tcpa',
+    consent_type:   CONSENT_TYPE_FOR_CHANNEL[channel],
     consent_text:   params.consentText,
     consent_source: params.consentSource,
     consented:      params.consented,

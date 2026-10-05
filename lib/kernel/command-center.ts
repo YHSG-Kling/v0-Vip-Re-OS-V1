@@ -187,6 +187,19 @@ export interface CronOwnerLine {
   managerLabel:     string
 }
 
+export interface EconomicGraphSummary {
+  since: string
+  closings: number
+  grossCents: number
+  brokerageShareCents: number
+  tenantCostCents: number
+  contributionMarginCents: number
+  summaryDrifts: number
+  conservationFailures: number
+  /** false when a ledger read was refused — the figures are a floor. */
+  measured: boolean
+}
+
 export interface CommandCenterData {
   sessions:        CommandCenterSession[]
   pendingActions:  CommandCenterAction[]
@@ -225,11 +238,22 @@ export interface CommandCenterData {
    *  traced to ledger rows (attribution credits, calls, live bookings, sent drafts).
    *  The renewal argument, live. Brokerage-wide; null when unavailable. */
   roiLedger: import("@/lib/intelligence/roi-ledger").RoiLedger | null
+  /** THE ECONOMIC GRAPH (wave 104, lane 104A) — the brokerage's ledger-derived contribution
+   *  margin for the year and how many money summaries have drifted from the ledger
+   *  (lib/kernel/economic-graph.ts + reconcileSummariesAgainstLedger). Brokerage-wide,
+   *  admin-gated by this loader's caller; null when unavailable. */
+  economicGraph: EconomicGraphSummary | null
   /** THE AI EXECUTIVE STANDUP — the weekly ROI-ranked org plan synthesized ACROSS every manager's output
    *  (retention flight-risk, WoW GCI swings, SLA-breached approval backlog, recruiting flywheel, enablement)
    *  and the single human ask. The executive layer above the per-manager P&L. Brokerage-wide; null when
    *  unavailable. */
   weeklyExecPlan: import("@/lib/intelligence/manager-weekly-exec-plan").WeeklyExecPlan | null
+  /** THE BROKERAGE DIGITAL TWIN (wave 104B) — ONE derived representation: now / changed / at risk /
+   *  capacity / objectives / economic, every conclusion with an evidence ref
+   *  (lib/kernel/brokerage-twin.ts). Brokerage-wide, or a TEAM's own board under a team scope
+   *  (platform scope sees every tenant through its own per-tenant builds). Null when unavailable —
+   *  never a fake twin. The weekly exec plan reads it (one read, not six). */
+  brokerageTwin: import("@/lib/kernel/brokerage-twin").BrokerageTwin | null
   /** Proposed AI ISA voice dial batches awaiting approval (AI ISA — "call my hottest N"). */
   dialBatches:     Array<{ id: string; proposedCount: number; proposedAt: string | null }>
   /** Managers talking — recent inter-manager signals (who told whom what, and what the
@@ -648,8 +672,9 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   let revenueShareBoard: import("@/lib/intelligence/revenue-share-board").RevenueShareBoard | null = null
   let curriculumBoard: import("@/lib/intelligence/curriculum-board").CurriculumBoard | null = null
   let roiLedger: import("@/lib/intelligence/roi-ledger").RoiLedger | null = null
+  let economicGraph: EconomicGraphSummary | null = null
   if (brokerageWide && brokerageId) {
-    const [standupRes, pnlRes, delivRes, retentionRes, outcomesRes, skillRes, revShareRes, curriculumRes, roiRes] = await Promise.allSettled([
+    const [standupRes, pnlRes, delivRes, retentionRes, outcomesRes, skillRes, revShareRes, curriculumRes, roiRes, econRes] = await Promise.allSettled([
       import("@/lib/intelligence/manager-standup").then((m) => m.generateManagerStandup(brokerageId)),
       import("@/lib/intelligence/manager-weekly-pnl").then((m) => m.generateManagerWeeklyPnl(brokerageId)),
       import("@/lib/intelligence/deliverables-summary").then((m) => m.generateDeliverablesSummary({ brokerageId })),
@@ -659,6 +684,19 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
       import("@/lib/intelligence/revenue-share-board").then((m) => m.generateRevenueShareBoard(brokerageId)),
       import("@/lib/intelligence/curriculum-board").then((m) => m.generateCurriculumBoard(brokerageId)),
       import("@/lib/intelligence/roi-ledger").then((m) => m.generateRoiLedger(supabase, brokerageId, 90, { attribution: true })),
+      (async (): Promise<EconomicGraphSummary> => {
+        const { loadEconomicGraph } = await import("@/lib/kernel/economic-graph")
+        const { reconcileSummariesAgainstLedger } = await import("@/lib/commission/reconcile-tracking")
+        const graph = await loadEconomicGraph(supabase, { brokerageId })
+        const rec = await reconcileSummariesAgainstLedger(supabase, { brokerageId, graph })
+        return {
+          since: graph.since, closings: graph.transactions.length, grossCents: graph.brokerage.grossCents,
+          brokerageShareCents: graph.brokerage.brokerageShareCents,
+          tenantCostCents: graph.brokerage.tenantCostCents + graph.unattributedCosts.tenantCostCents + graph.brokerage.companyObligationCents,
+          contributionMarginCents: graph.contributionMarginCents, summaryDrifts: rec.drifts.length,
+          conservationFailures: graph.brokerage.conservationFailures, measured: graph.measured && rec.measured,
+        }
+      })(),
     ])
     if (standupRes.status === "fulfilled") standup = standupRes.value
     else console.error("[command-center] manager standup failed:", standupRes.reason)
@@ -678,6 +716,8 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     else console.error("[command-center] curriculum board failed:", curriculumRes.reason)
     if (roiRes.status === "fulfilled") roiLedger = roiRes.value
     else console.error("[command-center] roi ledger failed:", roiRes.reason)
+    if (econRes.status === "fulfilled") economicGraph = econRes.value
+    else console.error("[command-center] economic graph failed:", econRes.reason)
   }
 
   // Proposed AI ISA dial batches awaiting approval — surfaced as a one-tap callout.
@@ -758,6 +798,23 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   // THE AI EXECUTIVE STANDUP — synthesize the weekly ROI-ranked plan over the already-computed boards +
   // the live approval backlog (managerBreakdown carries the real SLA-breached counts). Best-effort; reuses
   // the boards above so there are no double queries.
+  // THE BROKERAGE DIGITAL TWIN (wave 104B) — built ONCE here (persisted: the snapshot is the evidence
+  // of what the OS believed at this instant and the next build's baseline) and handed to the exec
+  // plan. Brokerage-wide, or a team's own board under a team scope. Best-effort; null never fakes.
+  let brokerageTwin: import("@/lib/kernel/brokerage-twin").BrokerageTwin | null = null
+  if (brokerageId && (brokerageWide || (scope?.kind === "team" && scope.teamId))) {
+    try {
+      const { buildBrokerageTwin } = await import("@/lib/kernel/brokerage-twin")
+      const built = await buildBrokerageTwin(brokerageId, new Date(), {
+        svc: supabase, teamId: scope?.kind === "team" ? scope.teamId ?? null : null, persist: true,
+      })
+      brokerageTwin = built.twin
+      if (built.persist.error) console.error(`[command-center] twin snapshot not persisted: ${built.persist.error}`)
+    } catch (err) {
+      console.error("[command-center] brokerage twin failed:", err)
+    }
+  }
+
   let weeklyExecPlan: import("@/lib/intelligence/manager-weekly-exec-plan").WeeklyExecPlan | null = null
   if (brokerageWide && brokerageId) {
     try {
@@ -765,6 +822,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
       weeklyExecPlan = await loadWeeklyExecPlan(brokerageId, {
         supabase, weeklyPnl, retentionBoard, curriculumBoard,
         managerBacklog: managerBreakdown.map((m) => ({ manager: m.key, breached: m.breached, pending: m.count })),
+        twin: brokerageTwin,
       })
     } catch (err) {
       console.error("[command-center] weekly exec plan failed:", err)
@@ -785,7 +843,9 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     revenueShareBoard,
     curriculumBoard,
     roiLedger,
+    economicGraph,
     weeklyExecPlan,
+    brokerageTwin,
     dialBatches,
     managerTalk,
     managerActivity,

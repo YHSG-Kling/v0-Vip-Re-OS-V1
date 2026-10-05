@@ -47,7 +47,13 @@ async function main() {
   const totalManagerCount = Object.keys(MANAGERS).length
   check("totalManagers = the live roster size", cov.totalManagers === totalManagerCount)
   check("covered managers include deal_coordinator (2 domains)", cov.coveredManagers.includes("deal_coordinator"))
-  check("finance_manager now covers 2 domains (leak + tracking-drift)", REAPER_NET.filter((e) => e.manager === "finance_manager").length === 2)
+  // The RULE, not a waypoint (CLAUDE.md §2): the leak, the status-drift and the
+  // amount-drift reapers (wave 104A) are each registered under finance_manager.
+  // The literal `=== 2` pinned the wave-37 count and failed the moment 104A added
+  // the amount sibling — a count that moves is the finding, not the failure.
+  const financeDomains = REAPER_NET.filter((e) => e.manager === "finance_manager").map((e) => e.domain)
+  check("finance_manager covers the money reapers (leak + tracking-drift + amount-drift)",
+    ["commission_unrecorded", "commission_tracking_drift", "commission_amount_drift"].every((d) => financeDomains.includes(d)))
   // m618: "marketing_agent" retired — its stuck_social_posts domain is now
   // campaign_orchestrator's (already in this list).
   check("covered incl finance + compliance + marketing + ads + recruiting", ["asset_manager", "campaign_orchestrator", "sphere_of_influence", "data_steward", "finance_manager", "compliance_officer", "ads_manager", "recruiting_manager"].every((m) => cov.coveredManagers.includes(m as any)))

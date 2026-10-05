@@ -79,8 +79,9 @@ export async function upsertAgentGoal(params: {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid IDs" }
   }
-  const tenantRefusal = await refuseForeignTenant(params.brokerageId)
-  if (tenantRefusal) return { success: false, error: tenantRefusal }
+  // The same session-tenant rule as refuseForeignTenant, keeping the caller (the mission's created_by).
+  const caller = await requireCallerTenant(params.brokerageId)
+  if (!caller.ok) return { success: false, error: caller.error }
 
   // GATE THE VOCABULARY BEFORE THE WRITE. goalType was typed `string` and passed
   // straight through, so a caller — including the shipped goals page — could send
@@ -127,6 +128,34 @@ export async function upsertAgentGoal(params: {
       .single()
 
     if (error) throw error
+
+    // WAVE 104 (lane 104D): a NEW goal is the OBJECTIVE of a mission the OS owns from here on
+    // (lib/kernel/missions.ts; m710 agent_goals.mission_id). Tenant = the session's (checked
+    // above); owner manager = the recruiting manager (TABLE_MANAGER agent_goals); the success
+    // criterion is the goal itself, measured by syncGoalCurrentValues. Best-effort: a refused
+    // mission never un-saves the goal, and the refusal is logged.
+    if (!existing && data?.id) {
+      try {
+        const { createMission } = await import("@/lib/kernel/missions")
+        const { createServiceClient } = await import("@/lib/supabase/service")
+        const svc = createServiceClient()
+        const m = await createMission({
+          brokerageId: params.brokerageId,
+          objective: `${year} goal: ${params.goalType} → ${params.targetValue}`,
+          missionType: "agent_goal", ownerManager: "recruiting_manager", participatingManagers: ["ai_isa", "campaign_orchestrator"],
+          subject: { type: "agent_goal", id: data.id as string }, priority: "normal",
+          successCriteria: [{ metric: params.goalType, op: ">=", target: params.targetValue }],
+          deadline: new Date(Date.UTC(year, 11, 31, 23, 59, 59)).toISOString(),
+          createdBy: caller.userId,
+          initialState: "ACTIVE",
+        }, svc as any)
+        if (!m.ok) console.error(`[ai-agent-goals] mission NOT created for goal ${data.id}: ${m.reason}`)
+        else {
+          const { error: linkErr } = await svc.from("agent_goals").update({ mission_id: m.mission.id }).eq("id", data.id).eq("brokerage_id", params.brokerageId).select("id")
+          if (linkErr) console.error(`[ai-agent-goals] goal ${data.id} NOT linked to mission ${m.mission.id}: ${linkErr.message}`)
+        }
+      } catch (e) { console.error(`[ai-agent-goals] mission wiring failed: ${e instanceof Error ? e.message : String(e)}`) }
+    }
 
     revalidatePath("/dashboard")
     return { success: true, data }

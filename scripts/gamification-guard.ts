@@ -25,7 +25,7 @@ import {
 import { awardLifecycleMilestones, awardBadgeToAgent } from "../lib/gamification/lifecycle-awards"
 import { tierDistributionLine } from "../lib/gamification/tiers"
 import { isUnderStrain, strainedFromRows } from "../lib/gamification/strain"
-import { anniversaryYearsOn, ANNIVERSARY_WINDOW_DAYS } from "../lib/gamification/work-anniversaries"
+import { anniversaryYearsOn, ANNIVERSARY_WINDOW_DAYS, anniversaryStartDate } from "../lib/gamification/work-anniversaries"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -47,7 +47,7 @@ function pureLayer() {
     [KernelEvent.USER_ONBOARDING_STEP_COMPLETED, KernelEvent.USER_ONBOARDING_COMPLETED, KernelEvent.CERTIFICATION_AWARDED, KernelEvent.CONTACT_CREATED,
      KernelEvent.ISA_APPOINTMENT_SCHEDULED, KernelEvent.TRANSACTION_CLOSED, KernelEvent.CE_COMPLETED, KernelEvent.MENTOR_SESSION_HELD, KernelEvent.AGENT_WORK_ANNIVERSARY].every(covered))
   check("customer lifecycle covered: kept anniversary touch, referral received + converted, repeat client",
-    [KernelEvent.ANNIVERSARY_TRIGGERED, KernelEvent.REFERRAL_RECEIVED, KernelEvent.REFERRAL_CONVERTED].every(covered) &&
+    [KernelEvent.LIFETIME_CUSTOMER_TOUCHPOINT_SENT, KernelEvent.REFERRAL_RECEIVED, KernelEvent.REFERRAL_CONVERTED].every(covered) &&
       LIFECYCLE_AWARD_RULES.some((r) => r.reason === "REPEAT_CLIENT_CLOSED" && r.when === "repeat_client"))
 
   const now = new Date("2026-10-05T12:00:00Z")
@@ -64,9 +64,15 @@ function pureLayer() {
   const anniv = planLifecycleAwards(KernelEvent.AGENT_WORK_ANNIVERSARY, { entityId: AGENT, now })[0]
   check("a work anniversary is once per calendar year (since = Jan 1 UTC, no reference)",
     !!anniv && !anniv.once.referenceId && anniv.once.since?.toISOString() === "2026-01-01T00:00:00.000Z")
-  const kept = planLifecycleAwards(KernelEvent.ANNIVERSARY_TRIGGERED, { entityId: CONTACT, now })[0]
-  check("a kept client anniversary is once per contact per year (reference AND since)",
-    !!kept && kept.once.referenceId === CONTACT && kept.once.since?.getUTCFullYear() === 2026)
+  const kept = planLifecycleAwards(KernelEvent.LIFETIME_CUSTOMER_TOUCHPOINT_SENT, { entityId: CONTACT, now })[0]
+  check("a kept client touch (LIFETIME_CUSTOMER_TOUCHPOINT_SENT — the touch itself, wave 104) is once per contact per year (reference AND since)",
+    !!kept && kept.reason === "LIFETIME_TOUCHPOINT_KEPT" && kept.once.referenceId === CONTACT && kept.once.since?.getUTCFullYear() === 2026)
+  check("POSITIVE CONTROL: ANNIVERSARY_TRIGGERED (a calendar date, not a kept touch) plans nothing any more", planLifecycleAwards(KernelEvent.ANNIVERSARY_TRIGGERED, { entityId: CONTACT, now }).length === 0)
+  const sellerLifetime = planLifecycleAwards(KernelEvent.LIFETIME_CUSTOMER, { entityId: CONTACT, now, metadata: { side: "seller", agent_id: AGENT } })
+  check("LIFETIME_CUSTOMER with metadata.side 'seller' plans SELLER_LIFETIME_TRANSITION once per contact (wave 104: the seller transition emits, the reactor awards)",
+    sellerLifetime.length === 1 && sellerLifetime[0].reason === "SELLER_LIFETIME_TRANSITION" && sellerLifetime[0].once.referenceId === CONTACT)
+  check("POSITIVE CONTROL: the buyer-side LIFETIME_CUSTOMER (no seller side) plans nothing — the seller award never leaks onto a buyer",
+    planLifecycleAwards(KernelEvent.LIFETIME_CUSTOMER, { entityId: CONTACT, now, metadata: { side: "buyer" } }).length === 0 && planLifecycleAwards(KernelEvent.LIFETIME_CUSTOMER, { entityId: CONTACT, now }).length === 0)
   check("REFERRAL_RECEIVED keys on metadata.referral_id, not the contact it is emitted on",
     planLifecycleAwards(KernelEvent.REFERRAL_RECEIVED, { entityId: CONTACT, now, metadata: { referral_id: U(60) } })[0]?.once.referenceId === U(60))
   check("MENTOR_SESSION_HELD credits mentor AND mentee", planLifecycleAwards(KernelEvent.MENTOR_SESSION_HELD, { entityId: SESSION, now })[0]?.party === "mentor_and_mentee")
@@ -259,6 +265,27 @@ function wiringLayer() {
     const emitters = all.filter((f) => !/lib\/kernel\/events\.ts|award-points\.ts|^scripts\//.test(f) && new RegExp(`KernelEvent\\.${name}\\b`).test(src(f)))
     check(`${name} has a real emitter (${emitters.join(", ") || "none"})`, emitters.length >= 1)
   }
+
+  // WAVE 104 (lane 104E) — the wave-103 remainders closed on survivors.
+  const ledger = src("lib/sphere/lifetime-touchpoint-ledger.ts")
+  check("lifetime touches: ONE sent-row writer + ONE LIFETIME_CUSTOMER_TOUCHPOINT_SENT emit (lib/sphere/lifetime-touchpoint-ledger.ts), metadata.agent_id for the reactor's acting-agent resolution",
+    (ledger.match(/from\("lifetime_customer_touchpoints"\)/g) ?? []).length === 1 && /KernelEvent\.LIFETIME_CUSTOMER_TOUCHPOINT_SENT/.test(ledger) && /agent_id: p\.agentId/.test(ledger) && /if \(error\) return \{ ok: false/.test(ledger))
+  const touchActions = ["app/actions/lifetime-customer-touchpoints.ts", "app/actions/lifetime-customers.ts"]
+  check("the five former sent-row inserters (three senders + the manual log + the market update) call recordLifetimeTouchpointSent and insert no sent row themselves (stripped source)",
+    touchActions.every((f) => !/from\("lifetime_customer_touchpoints"\)\s*\.insert/.test(src(f))) && (src("app/actions/lifetime-customer-touchpoints.ts").match(/recordLifetimeTouchpointSent\(/g) ?? []).length === 3 && (src("app/actions/lifetime-customers.ts").match(/recordLifetimeTouchpointSent\(/g) ?? []).length === 2)
+  check("POSITIVE CONTROL: the scheduled-row writer (lib/kernel/transactions.ts, status 'scheduled' on close — not a send) still inserts and is NOT routed through the sent ledger", /from\("lifetime_customer_touchpoints"\)\.insert\(rows\)/.test(src("lib/kernel/transactions.ts")))
+  const sellerSrc = src("lib/application/listing-lifecycle.ts")
+  const sellerFn = sellerSrc.slice(sellerSrc.indexOf("export async function handleSellerToLifetimeTransition("), sellerSrc.indexOf("export async function advanceListingStageService("))
+  check("handleSellerToLifetimeTransition emits LIFETIME_CUSTOMER (side 'seller', metadata.agent_id) and awards nothing itself", /KernelEvent\.LIFETIME_CUSTOMER,/.test(sellerFn) && /side: "seller", agent_id: agentRecordId/.test(sellerFn) && !/awardAgentPoints/.test(sellerFn))
+  const onboardingSrc = src("lib/kernel/agent-onboarding.ts")
+  check("agent-onboarding emits ONBOARDING_COMPLETED on the false→true completion edge (entity agent_onboarding) and awards nothing itself", /if \(isComplete && !wasAlreadyComplete\) \{[\s\S]*?KernelEvent\.ONBOARDING_COMPLETED/.test(onboardingSrc) && /entityType: "agent_onboarding"/.test(onboardingSrc) && !/awardAgentPoints/.test(onboardingSrc))
+  const remaining = ["app/actions/contact-reassignment.ts", "lib/recruiting/challenge-runner.ts"].filter((f) => /awardAgentPoints\(/.test(src(f)))
+  check("exactly two call-site awards remain, both UNRESOLVED by design (CONTACT_ASSIGNED: the canonical CONTACT_AGENT_ASSIGNED is the welcome trigger and A→B→A repeats; CHALLENGE_PRIZE: no event, data-driven points)", remaining.length === 2 && !/awardAgentPoints\(/.test(src("lib/application/listing-lifecycle.ts")) && !/awardAgentPoints\(/.test(src("lib/kernel/agent-onboarding.ts")))
+  check("anniversaries key on agents.anniversary_date with created_at fallback (pure anniversaryStartDate) and the roster read selects it",
+    anniversaryStartDate({ created_at: "2024-01-01", anniversary_date: "2023-06-01" }) === "2023-06-01" && anniversaryStartDate({ created_at: "2024-01-01", anniversary_date: null }) === "2024-01-01" && /select\("id, created_at, anniversary_date"\)/.test(src("lib/gamification/work-anniversaries.ts")))
+  const seatDoors = ["lib/kernel/users.ts", "app/actions/agents.ts", "app/api/recruiting/provision-agent/route.ts"]
+  check("every agents-row provisioning door stamps anniversary_date (the writer the column lacked)", seatDoors.every((f) => /anniversary_date: new Date\(\)\.toISOString\(\)\.slice\(0, 10\)/.test(src(f))))
+  check("POSITIVE CONTROL: the stamp finder does not match a file that only READS the column", !/anniversary_date: new Date\(\)/.test(src("lib/gamification/work-anniversaries.ts")))
 
   // Fatigue-aware pressure.
   const career = src("lib/recruiting/career-tier.ts")

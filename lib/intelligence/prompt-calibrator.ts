@@ -121,6 +121,24 @@ export async function calibrateSystemPrompts(
         promptChanges,
       })
 
+      // CONTROLLED LEARNING (wave 104C). Before this, the model-authored prompt changes landed only
+      // in model_retraining_log (status 'completed' — a log entry nobody could approve, reject or
+      // promote) plus an admin suggestion. The SAME change is now a `prompt` proposal in
+      // lib/kernel/improvement-proposals.ts: evaluated `inconclusive` (no deterministic replay for a
+      // prompt), authority 6 — a tenant admin approves or rejects it on the Manager Trust page; the
+      // model never promotes it. The log row stays as the evidence the proposal points at.
+      try {
+        const { proposeEvaluatePromote } = await import("@/lib/kernel/improvement-proposals")
+        const p = await proposeEvaluatePromote(supabase, {
+          brokerageId, subjectKind: "prompt", subjectKey: sourceSystem, proposer: "prompt_calibrator",
+          proposedChange: { ...promptChanges, approval_rate_before: data.approvalRate },
+          evidenceRefs: [{ kind: "model_retraining_log", id: insertedLog?.id ?? null }, { kind: "ai_improvement_metrics", source_system: sourceSystem, approval_rate: data.approvalRate, negative_themes: data.themes }],
+        })
+        if (!p.proposal.ok) console.error(`[PromptCalibrator] proposal for ${sourceSystem} not recorded: ${p.proposal.error}`)
+      } catch (e) {
+        console.error(`[PromptCalibrator] proposal for ${sourceSystem} threw:`, e)
+      }
+
       // Create smart_assistant_suggestion for admins
       await sentinelWrite(supabase, supabase.from("smart_assistant_suggestions").insert({
         brokerage_id: brokerageId,

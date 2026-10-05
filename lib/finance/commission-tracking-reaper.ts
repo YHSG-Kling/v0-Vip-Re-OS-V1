@@ -125,3 +125,52 @@ export async function reapCommissionTrackingDrift(
 
   return { scanned, escalated, reaped }
 }
+
+/**
+ * AMOUNT-DRIFT REAPER (wave 104, lane 104A) — the ledger is authoritative, the
+ * summaries are projections. Recomputes each mutable money summary from the
+ * distributions / cost ledgers (reconcileSummariesAgainstLedger) and ESCALATES
+ * every drift to finance as a deduped notification. It NEVER rewrites money —
+ * `reaped` is structurally 0: the correction path is the existing one
+ * (lib/kernel/financial.ts correctCommissionDistribution, a new ledger row).
+ */
+export async function reapCommissionAmountDrift(
+  brokerageId: string,
+  svc: Svc,
+): Promise<{ scanned: number; escalated: number; reaped: number }> {
+  const { reconcileSummariesAgainstLedger } = await import("@/lib/commission/reconcile-tracking")
+  const rec = await reconcileSummariesAgainstLedger(svc, { brokerageId })
+  let escalated = 0
+  if (rec.drifts.length === 0) return { scanned: rec.checked, escalated, reaped: 0 }
+
+  const { resolveOrgRecipients } = await import("@/lib/kernel/org-recipients")
+  const actorUserId = (await resolveOrgRecipients(svc, brokerageId, { limit: 1 }))[0] ?? ""
+  const since = new Date(Date.now() - 7 * 86_400_000).toISOString()
+  for (const d of rec.drifts) {
+    // Dedup — one open alert per (projection, subject) in the last 7 days.
+    const { data: existing } = await svc
+      .from("notifications")
+      .select("id")
+      .eq("brokerage_id", brokerageId)
+      .eq("type", "commission_amount_drift")
+      .eq("entity_id", d.subjectId)
+      .gte("created_at", since)
+      .limit(1)
+    if (existing && existing.length > 0) continue
+    escalated++
+    if (!actorUserId) continue
+    const { error: notifyError } = await svc.from("notifications").insert({
+      user_id: actorUserId,
+      brokerage_id: brokerageId,
+      type: "commission_amount_drift",
+      title: "Money summary disagrees with the ledger",
+      body: `${d.projection} reads $${(d.projectedCents / 100).toFixed(2)} but the ledger adds up to $${(d.ledgerCents / 100).toFixed(2)} (${d.refs.length} ledger rows). Review and correct through the commission correction screen — nothing was rewritten.`,
+      entity_type: d.transactionId ? "transaction" : "summary",
+      entity_id: d.subjectId,
+      priority: "high",
+      channel: "in_app",
+    })
+    if (notifyError) console.warn("[commission-tracking-reaper.ts] amount-drift notification refused — the bell will not ring:", notifyError.message)
+  }
+  return { scanned: rec.checked, escalated, reaped: 0 }
+}

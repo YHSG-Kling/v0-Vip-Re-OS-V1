@@ -250,7 +250,7 @@ export interface LifecycleAwardRule {
   /** Who earns it. `acting` = the agent the event resolves to; `mentor_and_mentee` = both parties on a session. */
   party: "acting" | "mentor_and_mentee"
   /** Extra predicate on the resolved context (e.g. the contact was closed with before). */
-  when?: "repeat_client"
+  when?: "repeat_client" | "seller_side"
   /** Where the idempotency reference comes from; default = the event's entityId. */
   referenceFrom?: "entity" | "metadata.stepId" | "metadata.referral_id"
   referenceType: string
@@ -277,7 +277,14 @@ export const LIFECYCLE_AWARD_RULES: readonly LifecycleAwardRule[] = [
   { event: KernelEvent.MENTOR_SESSION_HELD, reason: "MENTOR_SESSION_HELD", scope: "per_reference", party: "mentor_and_mentee", referenceType: "mentor_session" },
   { event: KernelEvent.AGENT_WORK_ANNIVERSARY, reason: "WORK_ANNIVERSARY", scope: "per_year", party: "acting", referenceType: "agent" },
   // ── customer lifecycle — "knows the client for life" earns the agent recognition ──
-  { event: KernelEvent.ANNIVERSARY_TRIGGERED, reason: "LIFETIME_TOUCHPOINT_KEPT", scope: "per_reference_per_year", party: "acting", referenceType: "contact" },
+  // Wave 104 (lane 104E): the kept touch rides the TOUCH itself — LIFETIME_CUSTOMER_TOUCHPOINT_SENT, emitted
+  // ONCE by lib/sphere/lifetime-touchpoint-ledger.ts (metadata.agent_id = the agent who kept it) — no longer
+  // ANNIVERSARY_TRIGGERED, a calendar date the system fired whether or not anyone touched the client.
+  { event: KernelEvent.LIFETIME_CUSTOMER_TOUCHPOINT_SENT, reason: "LIFETIME_TOUCHPOINT_KEPT", scope: "per_reference_per_year", party: "acting", referenceType: "contact" },
+  // Wave 104 (lane 104E): the seller's lifetime transition now EMITS LIFETIME_CUSTOMER (metadata.side 'seller')
+  // from lib/application/listing-lifecycle.ts handleSellerToLifetimeTransition, and the award moves here from
+  // the call site. `when: "seller_side"` keeps the buyer-side LIFETIME_CUSTOMER (lifecycle-logger) out of it.
+  { event: KernelEvent.LIFETIME_CUSTOMER, reason: "SELLER_LIFETIME_TRANSITION", scope: "per_reference", party: "acting", when: "seller_side", referenceType: "contact" },
   { event: KernelEvent.REFERRAL_RECEIVED, reason: "REFERRAL_CREATED", scope: "per_reference", party: "acting", referenceFrom: "metadata.referral_id", referenceType: "referral" },
   { event: KernelEvent.REFERRAL_CONVERTED, reason: "REFERRAL_CONVERTED", scope: "per_reference", party: "acting", referenceType: "referral" },
   { event: KernelEvent.TRANSACTION_CLOSED, reason: "REPEAT_CLIENT_CLOSED", scope: "per_reference", party: "acting", when: "repeat_client", referenceType: "transaction" },
@@ -315,6 +322,7 @@ export function planLifecycleAwards(event: string, ctx: MilestoneContext): Miles
   for (const rule of LIFECYCLE_AWARD_RULES) {
     if (rule.event !== event) continue
     if (rule.when === "repeat_client" && !ctx.repeatClient) continue
+    if (rule.when === "seller_side" && (ctx.metadata as { side?: unknown } | null | undefined)?.side !== "seller") continue
     const ref = referenceFor(rule, ctx)
     let once: OnceKey
     switch (rule.scope) {

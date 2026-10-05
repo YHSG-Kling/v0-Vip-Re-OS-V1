@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 716 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 719 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-05
  * source: public.live_schema_json()
- * body-sha256: b67084eca6aed84a11e7e58a72c5b1fd0cb80dfd17d749454f549692bcb50ca9
+ * body-sha256: 49999008ee4cf7970e0c391f02620f69be8a3298a2f1167bd853e58e8e0fc513
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -59,7 +59,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   agent_earnings: ["agent_id", "agent_net", "brokerage_id", "brokerage_net", "cap_progress_pct", "cap_status", "computed_at", "gross_commission", "id", "period_label", "period_type", "total_fees", "transaction_count"],
   agent_fee_assignments: ["agent_id", "brokerage_id", "created_at", "end_date", "fee_type_id", "id", "is_active", "start_date"],
   agent_fee_charges: ["agent_id", "amount", "brokerage_id", "created_at", "currency", "due_date", "fee_type_id", "id", "notes", "paid_at", "payment_method", "period_end", "period_start", "status", "stripe_invoice_id", "stripe_payment_intent_id", "updated_at"],
-  agent_goals: ["agent_id", "brokerage_id", "created_at", "current_value", "goal_type", "id", "notes", "target_value", "updated_at", "year"],
+  agent_goals: ["agent_id", "brokerage_id", "created_at", "current_value", "goal_type", "id", "mission_id", "notes", "target_value", "updated_at", "year"],
   agent_handoffs: ["accepted_at", "brokerage_id", "completed_at", "context_package", "created_at", "entity_id", "entity_type", "from_agent_type", "handoff_reason", "handoff_status", "human_agent_id", "id", "session_id", "to_agent_type"],
   agent_intro_videos: ["agent_id", "brokerage_id", "contact_id", "created_at", "delivered_at", "delivery_channel", "error_message", "id", "status", "trigger", "trigger_year", "video_project_id"],
   agent_licenses: ["agent_id", "brokerage_id", "created_at", "document_url", "eo_certificate_url", "eo_coverage_amount", "eo_expiration_date", "eo_insurance_carrier", "eo_policy_number", "expiration_date", "id", "license_number", "license_state", "license_status", "license_type", "updated_at", "verification_status", "verified_at"],
@@ -331,6 +331,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   help_topics_kb: ["brokerage_id", "category", "content", "content_embedding", "created_at", "id", "is_active", "tags", "title", "topic_key", "updated_at"],
   home_value_estimates: ["ai_narrative", "brokerage_id", "comps_json", "confidence_score", "contact_id", "estimated_equity", "estimated_value_high", "estimated_value_low", "estimated_value_mid", "expires_at", "generated_at", "id", "market_trend", "methodology", "property_address", "valuation_request_id"],
   home_value_page_configs: ["agent_bio_override", "agent_id", "brokerage_id", "created_at", "cta_button_text", "headline", "id", "is_active", "label_buy_after_sell", "label_has_agent", "label_mortgage_status", "label_motivation", "label_price_expectation", "label_sell_timeline", "primary_color", "show_q_additional_notes", "show_q_buy_after_sell", "show_q_has_agent", "show_q_mortgage_status", "show_q_motivation", "show_q_price_expectation", "show_q_sell_timeline", "show_scheduler", "subheadline", "updated_at", "working_hours"],
+  improvement_proposals: ["authority_required", "brokerage_id", "created_at", "decided_at", "decided_by", "decision_reason", "evaluated_at", "evaluation", "evidence_refs", "id", "policy_version_ref", "promoted_at", "proposed_change", "proposer", "rollback_policy_version_ref", "rolled_back_at", "status", "subject_key", "subject_kind", "updated_at"],
   inbound_call_classifications: ["ai_handled", "brokerage_id", "call_log_id", "caller_phone", "caller_phone_digits", "classification", "classified_at", "id", "resulting_contact_id", "resulting_vendor_id", "transfer_reason", "transferred_to_user_id"],
   income_forecast_gap_analysis: ["agent_id", "analysis_date", "annual_goal_cents", "brokerage_id", "computed_at", "diagnostics", "forecast_snapshot_id", "gap_to_goal_cents", "gap_to_goal_pct", "high_band_pct", "id", "low_band_pct", "projected_year_end_cents", "remaining_year_cents", "weighted_180_cents", "weighted_30_cents", "weighted_90_cents", "ytd_gci_cents"],
   income_forecast_snapshots: ["active_listing_count", "agent_id", "brokerage_id", "by_stage", "computed_at", "deal_count", "high_band_pct", "id", "low_band_pct", "previous_snapshot_id", "raw_30", "raw_60", "raw_90", "sphere_referral_expected", "weighted_30", "weighted_60", "weighted_90", "weighted_90_delta"],
@@ -431,6 +432,8 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   message_provider_logs: ["brokerage_id", "channel", "direction", "error_message", "event_at", "id", "message_id", "outreach_log_id", "provider_event", "provider_key", "provider_message_id", "provider_response", "provider_status", "sent_at"],
   messages: ["agent_id", "analyzed_at", "attachment_urls", "body", "brokerage_id", "compliance_checked", "compliance_flagged", "compliance_issues", "contact_id", "conversation_id", "created_at", "direction", "emotion_tags", "id", "metadata", "sender_id", "sender_type", "sentiment", "sentiment_score", "status", "subject", "them_first_analysis", "type", "updated_at", "urgency_indicators"],
   meter_readings: ["brokerage_id", "computed_at", "id", "meter_type", "period_end", "period_start", "total_cost_cents", "total_units"],
+  mission_events: ["actor_id", "actor_type", "brokerage_id", "causation_id", "correlation_id", "created_at", "event_kind", "evidence", "from_state", "id", "ledger_entry_id", "mission_id", "reason", "reason_code", "to_state"],
+  missions: ["actions", "authority_ceiling", "blockers", "brokerage_id", "budget", "completed_at", "created_at", "created_by", "deadline", "dependencies", "evidence", "id", "mission_type", "objective", "outcomes", "owner_manager", "parent_mission", "participating_managers", "priority", "progress", "spent_tokens", "spent_usd", "state", "state_changed_at", "subject_id", "subject_type", "success_criteria", "updated_at"],
   model_retraining_log: ["agent_style_updates", "approval_rate_before", "brokerage_id", "completed_at", "created_at", "error_message", "feedback_records_used", "id", "prompt_changes", "source_system", "status", "trigger_type"],
   motivated_seller_signals: ["brokerage_id", "contact_id", "detected_at", "detected_via", "id", "lead_id", "signal_details", "signal_strength", "signal_type"],
   narration_cache: ["alignment", "audio_url", "brokerage_id", "created_at", "duration_seconds", "first_render_key", "hit_count", "id", "last_used_at", "script_chars", "script_hash", "script_preview", "voice_id"],
@@ -742,6 +745,6 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   workflow_automations: ["actions", "assigned_to_role", "brokerage_id", "created_at", "created_by", "execution_count", "id", "is_active", "last_executed_at", "trigger_conditions", "trigger_event", "updated_at", "workflow_name", "workflow_type"],
   workflow_intake_sessions: ["agent_user_id", "brokerage_id", "contact_id", "conversation", "created_at", "current_intake", "document_id", "id", "intake_type", "status", "updated_at"],
   workflow_run_steps: ["attempt_count", "completed_at", "error_message", "id", "output", "run_id", "started_at", "status", "step_index", "step_key", "step_label"],
-  workflow_runs: ["agent_user_id", "brokerage_id", "chain_key", "completed_at", "contact_id", "current_step_index", "error_message", "failed_at", "id", "listing_id", "metadata", "started_at", "status", "step_outputs", "transaction_id", "trigger_event", "trigger_event_id", "updated_at"],
+  workflow_runs: ["agent_user_id", "brokerage_id", "chain_key", "completed_at", "contact_id", "current_step_index", "error_message", "failed_at", "id", "listing_id", "metadata", "mission_id", "started_at", "status", "step_outputs", "transaction_id", "trigger_event", "trigger_event_id", "updated_at"],
   workflow_webhook_events: ["brokerage_id", "contact_id", "event_type", "id", "payload", "received_at", "source"],
 }

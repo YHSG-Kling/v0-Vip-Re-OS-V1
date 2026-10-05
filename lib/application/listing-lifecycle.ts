@@ -526,20 +526,28 @@ export async function handleSellerToLifetimeTransition(
     )
   }
 
-  // 3. Award the agent their points for the transition — the one atomic award path
-  //    (m484: public.award_agent_points), increment + ledger row in one transaction.
-  if (agentRecordId) {
-    const { awardAgentPoints, POINT_VALUES } = await import("@/lib/gamification/award-points")
-    const awarded = await awardAgentPoints(supabase, {
-      agentId: agentRecordId,
-      points: POINT_VALUES.SELLER_LIFETIME_TRANSITION,
-      reason: "SELLER_LIFETIME_TRANSITION",
-      referenceType: "contact",
-      referenceId: contactId,
+  // 3. THE CANONICAL EVENT (wave 104, lane 104E). This transition emitted nothing — the buyer side's
+  //    lifetime move reaches the kernel as LIFETIME_CUSTOMER (lib/kernel/lifecycle.ts, the lifecycle
+  //    logger) and the seller side was dark; the SELLER_LIFETIME_TRANSITION award sat here as a direct
+  //    call-site award. Now ONE emit carries both: metadata.side 'seller' + metadata.agent_id, and the
+  //    event reactor's lifecycle rule (lib/gamification/award-points.ts, `when: "seller_side"`) awards
+  //    the agent once per contact. TOMBSTONE: the awardAgentPoints call that stood here — survivor
+  //    lib/gamification/lifecycle-awards.ts via lib/kernel/event-reactor.ts '(L6)'.
+  try {
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    const res = await emitKernelEvent({
+      event: KernelEvent.LIFETIME_CUSTOMER,
+      brokerageId,
+      entityType: "contact",
+      entityId: contactId,
+      contactId,
+      listingId,
+      agentId: agentRecordId || null,
+      metadata: { side: "seller", agent_id: agentRecordId || null, listing_id: listingId },
     })
-    if (!awarded.ok) {
-      console.error("[handleSellerToLifetimeTransition] points not awarded:", awarded.error)
-    }
+    if (res.error) console.error("[handleSellerToLifetimeTransition] LIFETIME_CUSTOMER did not emit (portal message already sent):", res.error)
+  } catch (err) {
+    console.error("[handleSellerToLifetimeTransition] LIFETIME_CUSTOMER emit threw (portal message already sent):", err instanceof Error ? err.message : String(err))
   }
 
   return { contactId }

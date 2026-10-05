@@ -325,6 +325,38 @@ export function CommandCenterClient({
         </section>
       )}
 
+      {/* Wave 104A — LEDGER TRUTH: the brokerage's contribution margin derived from the posted
+          commission ledger + cost ledgers only (lib/kernel/economic-graph.ts), and how many
+          money summaries have drifted from it. Admin-gated page; agents never see margin (§5). */}
+      {data.economicGraph && (
+        <section className="space-y-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold">Ledger truth — contribution margin</h2>
+            <span className="text-xs text-muted-foreground">since {data.economicGraph.since.slice(0, 10)} · {data.economicGraph.closings} closings · from the ledgers{data.economicGraph.measured ? "" : " · a read was refused (floor)"}</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="rounded-lg border p-3">
+              <div className="text-xs text-muted-foreground">Gross of record</div>
+              <div className="text-2xl font-semibold">${Math.round(data.economicGraph.grossCents / 100).toLocaleString()}</div>
+            </div>
+            <div className="rounded-lg border p-3">
+              <div className="text-xs text-muted-foreground">Brokerage share</div>
+              <div className="text-2xl font-semibold">${Math.round(data.economicGraph.brokerageShareCents / 100).toLocaleString()}</div>
+              <div className="text-xs text-muted-foreground">costs + obligations ${Math.round(data.economicGraph.tenantCostCents / 100).toLocaleString()}</div>
+            </div>
+            <div className="rounded-lg border p-3">
+              <div className="text-xs text-muted-foreground">Contribution margin</div>
+              <div className={`text-2xl font-semibold ${data.economicGraph.contributionMarginCents >= 0 ? "text-green-700" : "text-red-700"}`}>${Math.round(data.economicGraph.contributionMarginCents / 100).toLocaleString()}</div>
+            </div>
+            <div className="rounded-lg border p-3">
+              <div className="text-xs text-muted-foreground">Summaries off the ledger</div>
+              <div className={`text-2xl font-semibold ${data.economicGraph.summaryDrifts > 0 ? "text-red-700" : ""}`}>{data.economicGraph.summaryDrifts}</div>
+              <div className="text-xs text-muted-foreground">{data.economicGraph.conservationFailures} closings where shares ≠ gross</div>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Wave 100A — WHICH reason code / manager / playbook / campaign produced the revenue: closed GCI,
           contracts, appointments and replies credited back to the action ledger (last-touch + all-touch,
           deterministic; lib/intelligence/roi-ledger.ts loadLedgerAttribution). Trace one record in the

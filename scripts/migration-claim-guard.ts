@@ -296,6 +296,11 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // 1 → 0 (wave 101 integrator): m696 applied live 2026-10-04.
 // Wave 102 (lane 102A): m697 (person identity + evidence) was APPLIED LIVE 2026-10-05 by the integrator
 // applies it and drops this back to 0 (the vocabulary cache, snapshot, LIVE_TABLES and FK map follow).
+// 0 → 1 (wave 104, lane 104C — controlled learning): m709-improvement-proposals-controlled-learning.sql,
+// WRITTEN NOT APPLIED — improvement_proposals (the one proposal object, tenant RLS) + LEARNED_IMPROVEMENT
+// in the agent_action_ledger reason-code CHECK. Deliberate bump, named per this guard's own instruction;
+// drops back to 0 once the integrator applies it and flips the header. Sibling wave-104 lanes (104A m707,
+// 104B m708, 104D m710, 104E m711) bump this line for their own files — the integrator sums them.
 const NOT_APPLIED_BASELINE = 0
 console.log("\n[3 · the work-in-flight list only shrinks]")
 if (notApplied.length) for (const f of notApplied) console.log(`     · ${f}`)

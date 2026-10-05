@@ -173,6 +173,29 @@ export async function generateTeamLeadBrief(params: {
     }
   }
 
+  // WAVE 104 (lane 104D): the tenant's missions needing a human — BLOCKED / APPROVAL_REQUIRED /
+  // ESCALATED, through the ONE lazy seam (lib/kernel/missions.ts activeMissionsFor). A refused
+  // read is logged and leaves the brief without the row, never "all missions fine".
+  try {
+    const { activeMissionsFor } = await import("@/lib/kernel/missions")
+    const ms = await activeMissionsFor(params.brokerageId, { limit: 200 }, supabase as any)
+    if (ms.readRefused) console.error(`[team-lead-brief] missions read refused: ${ms.readRefused}`)
+    else if (ms.attention.length > 0) {
+      const top = ms.attention[0]
+      const byState = ms.attention.reduce<Record<string, number>>((acc, m) => { acc[m.state] = (acc[m.state] ?? 0) + 1; return acc }, {})
+      priorities.push({
+        id: "team-missions-attention",
+        title: `${ms.attention.length} mission${ms.attention.length === 1 ? "" : "s"} need${ms.attention.length === 1 ? "s" : ""} a decision`,
+        body: `${Object.entries(byState).map(([s, n]) => `${n} ${s.toLowerCase().replace("_", " ")}`).join(", ")} of ${ms.active.length} active. First: "${top.objective}" (${top.state.toLowerCase().replace("_", " ")}, ${top.owner_manager})`,
+        severity: byState.ESCALATED || byState.APPROVAL_REQUIRED ? "high" : "medium",
+        manager: top.owner_manager,
+        ctas: [{ label: "Open the flight recorder", href: "/dashboard/admin/ai-audit" }],
+      })
+    }
+  } catch (e) {
+    console.error(`[team-lead-brief] missions read failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
+
   // AI ISA manager — unclaimed qualified handoffs into the team lead the brief
   // (canonical process: qualification converted them to team members' contacts).
   const unclaimedHandoffs = isaHandoffs.filter((h) => !h.claimed).length

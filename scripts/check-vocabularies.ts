@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 444 tables, 792 columns.
+ * MEASURED AT GENERATION: 447 tables, 800 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-05
  * source: public.live_check_constraints_json()
- * body-sha256: e9cfeaf119a1b49fc031ef25a2b647a2ea82f4c1ab0ad338d0b33b7e96a2c252
+ * body-sha256: 17ec1a3bdd16ff8f69c91eeff9a345e8ae011d99271c31e9b2b8222af916a140
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -59,7 +59,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   agent_action_ledger: {
     actor_type: ["agent", "manager", "system", "user"],
-    reason_code: ["AGENT_SLA_BREACH", "BUYER_PROPERTY_MATCH", "CAMPAIGN_STEP", "COMPLIANCE_NOTICE", "CONTACT_WELCOME", "CONVERSATION_RESPONSE", "HUMAN_REQUESTED", "LEAD_FIRST_RESPONSE", "LIFETIME_TOUCH", "NO_ACTION_NEEDED", "NURTURE_TOUCH", "PROPERTY_VALUE_CHANGE", "SCHEDULED_CONTENT_PUBLISH", "SELLER_FOLLOWUP_INTENT_INCREASE", "SERVICE_NOTICE", "STAFF_ALERT", "SUBSCRIPTION_LIFECYCLE", "TRANSACTION_DEADLINE", "TRANSACTION_MILESTONE", "UNSPECIFIED", "WAIT_COOLDOWN"],
+    reason_code: ["AGENT_SLA_BREACH", "BUYER_PROPERTY_MATCH", "CAMPAIGN_STEP", "COMPLIANCE_NOTICE", "CONTACT_WELCOME", "CONVERSATION_RESPONSE", "HUMAN_REQUESTED", "LEAD_FIRST_RESPONSE", "LEARNED_IMPROVEMENT", "LIFETIME_TOUCH", "MISSION_LIFECYCLE", "NO_ACTION_NEEDED", "NURTURE_TOUCH", "PROPERTY_VALUE_CHANGE", "SCHEDULED_CONTENT_PUBLISH", "SELLER_FOLLOWUP_INTENT_INCREASE", "SERVICE_NOTICE", "STAFF_ALERT", "SUBSCRIPTION_LIFECYCLE", "TRANSACTION_DEADLINE", "TRANSACTION_MILESTONE", "UNSPECIFIED", "WAIT_COOLDOWN"],
     status: ["executed", "failed", "proposed", "skipped", "unknown"],
   },
   agent_assistant_sessions: {
@@ -758,6 +758,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     market_trend: ["appreciating", "depreciating", "stable", "unknown"],
     methodology: ["ai_cma", "attom", "housecanary", "manual", "sqft_regional_average"],
   },
+  improvement_proposals: {
+    proposer: ["copy_learning", "human", "outcome_autopsy", "predictor_learning", "prompt_calibrator"],
+    status: ["APPROVED", "EVALUATED", "PROMOTED", "PROPOSED", "REJECTED", "ROLLED_BACK"],
+    subject_kind: ["policy", "prompt", "threshold", "variant"],
+  },
   inbound_call_classifications: {
     classification: ["business_general", "cooperating_agent", "existing_contact", "real_estate_buyer", "real_estate_investor", "real_estate_seller", "unknown", "vendor"],
   },
@@ -988,6 +993,15 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   messages: {
     sentiment: ["negative", "neutral", "positive"],
+  },
+  mission_events: {
+    actor_type: ["agent", "manager", "system", "user"],
+    event_kind: ["action_attached", "blocker_added", "blocker_cleared", "created", "evidence", "outcome_attached", "progress", "refused", "transition"],
+  },
+  missions: {
+    mission_type: ["agent_goal", "brokerage_objective", "campaign", "compliance", "custom", "recruiting", "transaction", "workflow"],
+    priority: ["critical", "high", "low", "normal"],
+    state: ["ACTIVE", "APPROVAL_REQUIRED", "BLOCKED", "CANCELLED", "COMPLETED", "ESCALATED", "FAILED", "PLANNING", "PROPOSED", "WAITING"],
   },
   model_retraining_log: {
     status: ["completed", "failed", "pending", "running"],

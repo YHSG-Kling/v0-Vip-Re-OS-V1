@@ -28,6 +28,11 @@ export interface SignalSpec {
  * test:signal-integrity fails on any published type that isn't catalogued (the orphan guard).
  */
 export const SIGNAL_REGISTRY: Record<string, SignalSpec> = {
+  // ── Missions (wave 104, lane 104D) — lib/kernel/missions.ts publishes TO the mission's owner
+  //    manager (any registry key; `cron_manager` raises when the reaper or the system moved it),
+  //    so the consumer list names the supervisor that always sees them on the feed ──
+  mission_escalated:         { consumers: ["cron_manager"], disposition: "feed_only", kind: "escalation", what: "a mission moved to ESCALATED (deadline passed, blocked too long, or a manager raised it) — the OWNER manager named on the mission row is told; a human reads it on the feed and in the stand-up / team-lead brief" },
+  mission_escalated_for_approval: { consumers: ["cron_manager"], disposition: "feed_only", kind: "escalation", what: "a mission needs a HUMAN (authority ceiling refused an action, budget exhausted, or an explicit approval ask) — the owner manager is signalled and the mission's creator gets a notification (type mission_approval_required)" },
   // ── Handled — an automated manager inbox consumes and acts (gated) ──
   isa_call_appointment:    { consumers: ["shopping_agent", "listing_concierge"], disposition: "handled", kind: "handoff",    what: "AI ISA booked an appointment on a dial-batch call — concierge proposes the prep follow-up" },
   deal_closed:             { consumers: ["sphere_of_influence"],                 disposition: "handled", kind: "update",     what: "a deal closed — the client crosses into lifetime territory; Sphere proposes the welcome" },

@@ -852,6 +852,19 @@ export default async function BrokeragePLPage() {
         <CompanyBooksObligations brokerageId={profile.brokerage_id} />
       </Suspense>
 
+      {/* ─── SECTION 10: LEDGER TRUTH — THE ECONOMIC GRAPH (wave 104, lane 104A) ──
+          Every figure above this card is a PROJECTION (brokerage_earnings,
+          brokerage_p_l, team_earnings, agents.ytd_gci — rows a writer computed and
+          cached). This card is derived from the AUTHORITATIVE LEDGERS ONLY
+          (commission_calculations, commission_distributions + m690 corrections,
+          company_books_obligations, the three cost ledgers) through ONE kernel read
+          service, and reconciles the projections back to it: a drift is a finding
+          routed to finance, never a silent rewrite. Finance-admin gate above;
+          agents never reach this page (CLAUDE.md §5). */}
+      <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+        <LedgerTruthSection brokerageId={profile.brokerage_id} />
+      </Suspense>
+
       <AgentPLTruthSection brokerageId={profile.brokerage_id} />
     </div>
   )
@@ -995,6 +1008,80 @@ async function RecruitingAndReferralEconomics({ brokerageId }: { brokerageId: st
       </Card>
     </div>
     </div>
+  )
+}
+
+/**
+ * THE ECONOMIC GRAPH — ledger-derived contribution margin + the reconciliation
+ * of every money summary back to it. Service client AFTER the page's finance-
+ * admin gate (the manager-registry pattern: gate first, then the service
+ * client), because the cost ledgers (agent_action_ledger, ai_tool_usage) are not
+ * readable through the cookie client's policies and a refused read would render
+ * as "$0 cost" — the exact lie this card exists to end. A refused read is
+ * published as `measured: false`, never hidden.
+ */
+async function LedgerTruthSection({ brokerageId }: { brokerageId: string }) {
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { loadEconomicGraph } = await import("@/lib/kernel/economic-graph")
+  const { reconcileSummariesAgainstLedger } = await import("@/lib/commission/reconcile-tracking")
+  const svc = createServiceClient()
+  const graph = await loadEconomicGraph(svc, { brokerageId })
+  const rec = await reconcileSummariesAgainstLedger(svc, { brokerageId, graph })
+  const usd = (cents: number) => usdFormat(cents / 100)
+  const b = graph.brokerage
+  const conservationFailures = graph.transactions.filter((t) => !t.conservation.ok).length
+  const residualFindings = graph.transactions.reduce((s, t) => s + t.residuals.missing.length + t.residuals.unexpected.length, 0)
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <CheckCircle2 className="h-5 w-5" /> Ledger truth — contribution margin (YTD)
+        </CardTitle>
+        <CardDescription>
+          Derived from the posted commission ledger and the cost ledgers only — {graph.transactions.length} closings,
+          {" "}{b.evidenceRows + graph.unattributedCosts.refs.length} ledger rows cited. Every figure above this card is a
+          projection; {rec.checked} of them were recomputed from the ledger below.
+          {!graph.measured || !rec.measured ? " A ledger read was refused — these figures are a floor, not the truth." : ""}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          <div className="p-3 rounded-lg bg-muted/50"><div className="text-xs text-muted-foreground">Gross (events of record)</div><div className="text-xl font-semibold tabular-nums">{usd(b.grossCents)}</div></div>
+          <div className="p-3 rounded-lg bg-muted/50"><div className="text-xs text-muted-foreground">Brokerage share (net of corrections)</div><div className="text-xl font-semibold tabular-nums">{usd(b.brokerageShareCents)}</div></div>
+          <div className="p-3 rounded-lg bg-muted/50"><div className="text-xs text-muted-foreground">Tenant-borne costs + obligations</div><div className="text-xl font-semibold tabular-nums text-red-600">-{usd(b.tenantCostCents + graph.unattributedCosts.tenantCostCents + b.companyObligationCents)}</div><div className="text-[11px] text-muted-foreground">platform-covered AI: {usd(b.platformCoveredCostCents + graph.unattributedCosts.platformCoveredCostCents)}</div></div>
+          <div className="p-3 rounded-lg bg-muted/50"><div className="text-xs text-muted-foreground">Contribution margin</div><div className={`text-xl font-semibold tabular-nums ${graph.contributionMarginCents >= 0 ? "text-green-600" : "text-red-600"}`}>{usd(graph.contributionMarginCents)}</div><div className="text-[11px] text-muted-foreground">incl. {usd(graph.marketplace.referralPayoutsReceivedCents)} referral payouts received</div></div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-xs text-muted-foreground">
+          <div>Agent shares <span className="font-medium text-foreground tabular-nums">{usd(b.agentShareCents)}</span></div>
+          <div>Team <span className="font-medium text-foreground tabular-nums">{usd(b.teamShareCents)}</span></div>
+          <div>Referral <span className="font-medium text-foreground tabular-nums">{usd(b.referralShareCents)}</span></div>
+          <div>Residual <span className="font-medium text-foreground tabular-nums">{usd(b.residualShareCents)}</span></div>
+          <div>Fees / royalty <span className="font-medium text-foreground tabular-nums">{usd(b.feeShareCents + b.royaltyShareCents)}</span></div>
+          <div>Paid / unpaid <span className="font-medium text-foreground tabular-nums">{usd(b.paidCents)} / {usd(b.unpaidCents)}</span></div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Badge variant={rec.drifts.length === 0 ? "secondary" : "destructive"}>{rec.drifts.length} summary drift{rec.drifts.length === 1 ? "" : "s"}</Badge>
+          <Badge variant={conservationFailures === 0 ? "secondary" : "destructive"}>{conservationFailures} closing{conservationFailures === 1 ? "" : "s"} where shares ≠ gross</Badge>
+          <Badge variant={residualFindings === 0 ? "secondary" : "outline"}>{residualFindings} residual finding{residualFindings === 1 ? "" : "s"}</Badge>
+          {b.adjustmentCents !== 0 || b.reversalCents !== 0 ? <Badge variant="outline">corrections {usd(b.adjustmentCents)} · reversals {usd(b.reversalCents)}</Badge> : null}
+        </div>
+        {rec.drifts.length > 0 && (
+          <div className="text-xs space-y-1">
+            {rec.drifts.slice(0, 8).map((d) => (
+              <div key={`${d.projection}:${d.subjectId}`} className="flex justify-between border-b last:border-0 pb-1">
+                <span className="font-mono">{d.projection}</span>
+                <span className="tabular-nums">summary {usd(d.projectedCents)} · ledger {usd(d.ledgerCents)} · {d.refs.length} rows</span>
+              </div>
+            ))}
+            <p className="text-muted-foreground pt-1">Nothing was rewritten. Correct a posted entry through the commission correction screen; the summary re-derives from the new ledger row.</p>
+          </div>
+        )}
+        {(graph.warnings.length > 0 || rec.warnings.length > 0) && (
+          <p className="text-xs text-destructive">{Array.from(new Set([...graph.warnings, ...rec.warnings])).join(" · ")}</p>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

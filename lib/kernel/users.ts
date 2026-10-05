@@ -283,6 +283,10 @@ export async function createOrRepairUserDomainRecords(
             is_active:      true,
             // agents.onboarding_status CHECK: not_started|in_progress|completed|pending_review
             onboarding_status: "not_started",
+            // agents.anniversary_date (date): the seat's start date, stamped at creation by every
+            // provisioning door (wave 104, lane 104E) — lib/gamification/work-anniversaries.ts reads it
+            // (created_at fallback for seats provisioned before this stamp).
+            anniversary_date: new Date().toISOString().slice(0, 10),
             created_at:     new Date().toISOString(),
             updated_at:     new Date().toISOString(),
           })

@@ -15,6 +15,8 @@ export type InterventionKey =
   // they are lacking before they decide to leave"). Every one is a thing the BROKER does for the agent.
   | "response_support" | "inbox_support" | "scheduling_support" | "task_support"
   | "activity_dropoff" | "fatigued_book_support" | "transfer_conversation"
+  // WAVE 104 (lane 104E) — the after-hours-volume signal's play: a boundary conversation + cover.
+  | "boundary_support"
 
 export interface Intervention {
   key: InterventionKey
@@ -107,6 +109,12 @@ const LIBRARY: Record<InterventionKey, Intervention> = {
     brokerAction: "A book that has gone quiet exhausts the agent who keeps calling into it. Pause the cadence on the fatigued contacts, allocate a few fresh qualified leads, and coach ONE useful personal touch per contact instead of more volume.",
     callScript: "\"A lot of your people have gone quiet, and that wears anyone down. Let's pause the noise on those, get you a few fresh ones, and pick one useful thing to say to each of the quiet ones.\"",
   },
+  boundary_support: {
+    key: "boundary_support",
+    headline: "working late — most client messages go out after hours",
+    brokerAction: "An agent answering clients at 11pm every night is burning out, not performing. Have the boundary conversation: agree an evening cut-off, put the after-hours inbox on the ISA / a TC cover, and set the client expectation for them.",
+    callScript: "\"I can see a lot of your client replies are going out late at night. You don't have to carry that — let's agree an evening cut-off and I'll put the after-hours messages on cover so you can switch off.\"",
+  },
   transfer_conversation: {
     key: "transfer_conversation",
     headline: "their book was recently transferred or covered",
@@ -119,6 +127,7 @@ const LIBRARY: Record<InterventionKey, Intervention> = {
 export function interventionKeyForDriver(driver: string | null | undefined): InterventionKey {
   const d = (driver ?? "").toLowerCase()
   // Wave 89 fatigue labels first (AGENT_FATIGUE_LABELS) — they are more specific than the generic words.
+  if (/working late|after.?hours/.test(d)) return "boundary_support"
   if (/slow to answer|reply lag|response/.test(d)) return "response_support"
   if (/unanswered|going unanswered|inbox/.test(d)) return "inbox_support"
   if (/missing or rescheduling|reschedul|no-show|missed appointment/.test(d)) return "scheduling_support"

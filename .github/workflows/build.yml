@@ -432,6 +432,18 @@ jobs:
       # BY CI on the commit carrying this cut; add the GC reading here. If it
       # still aborts, the next lever is the runner (owner, in progress), not
       # another cap step.
+      # ── 2026-10-05, run 37372736027 attempts 1+3 (commit 03b78f3ac, wave 103): 13312 RAN OUT
+      # on ubuntu-latest. Attempt 1 — last GC 10814.9 used / 11877.7 committed (89.2% of cap),
+      # exit 134 at 9m30s. Attempt 2 — the runner itself received a shutdown signal at 9m14s
+      # (not a heap abort). Attempt 3 — 10816.6 used / 11859.1 committed (89.1%), exit 134 at
+      # 9m52s. Two heap aborts within 20 MB of each other = the measurement, not a coin toss:
+      # compile demand is now ~10.8 GB against the ~11.9 GB effective ceiling of 13312 on a
+      # 16 GB runner, and the proxy.ts graph is unchanged at 23 modules (the wave-100 cut
+      # held). The first-party graph grew (waves 101-103: policy versions, replay, identity,
+      # relationship graph, competency, capacity, gamification). There is no room to raise
+      # the cap on 16 GB (page-data RSS, above). THE ANSWER IS THE LARGER RUNNER: set the repo
+      # variables BUILD_RUNNER (an 8-core / 32 GB label) and BUILD_HEAP_MB (16384) — the
+      # owner's "Both" ruling of 2026-10-03 already chose this; the graph cut half was done.
       NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_HEAP_MB || '13312' }}"
       #
       # A COMMENT THAT SAID THE OPPOSITE OF THE LINE ABOVE IT USED TO LIVE HERE.

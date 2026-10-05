@@ -182,10 +182,12 @@ export interface RevenueShareEdge {
 /**
  * PURE: DURATION enforcement — an edge pays only inside its effective window.
  * Null bounds are open (effective_to null = indefinite, the explicit-0 model).
- * Internal to the module: computeRevenueShare applies it, and the guard proves
- * the behavior through computeRevenueShare's window cases.
+ * computeRevenueShare applies it (the guard proves the behavior through its
+ * window cases); EXPORTED (wave 104, lane 104A) so the economic graph
+ * (lib/kernel/economic-graph.ts resolveResidualTree) resolves the residual tree
+ * on the EVENT date with the same window rule rather than a second copy (§6).
  */
-function withinEffectiveWindow(edge: Pick<RevenueShareEdge, "effective_from" | "effective_to">, todayStr: string): boolean {
+export function withinEffectiveWindow(edge: Pick<RevenueShareEdge, "effective_from" | "effective_to">, todayStr: string): boolean {
   if (edge.effective_from && edge.effective_from > todayStr) return false
   if (edge.effective_to && edge.effective_to < todayStr) return false
   return true

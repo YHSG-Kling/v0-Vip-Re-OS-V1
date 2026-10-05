@@ -993,7 +993,11 @@ async function main() {
     const fr = code("app/actions/flight-recorder.ts")
     // m700 is live: ONE literal column list carries policy_ref on BOTH ledger reads (a column-list
     // variable would hide every column from the readerless-write census — wave 102 integration).
-    check("WIRED: the flight recorder's ledger reads select policy_ref through the one literal column list (both reads)", /const ACTION_COLS =\s*"[^"]*\bpolicy_ref\b[^"]*"/.test(stripComments(read("app/actions/flight-recorder.ts"))) && (stripComments(read("app/actions/flight-recorder.ts")).match(/from\("agent_action_ledger"\)\.select\(ACTION_COLS\)/g) ?? []).length === 2)
+    // Asserted as the RULE, not a count (wave 104D added the mission read): EVERY ledger read in the
+    // file selects through ACTION_COLS, and there are at least the two m700 established.
+    const frLedgerReads = (stripComments(read("app/actions/flight-recorder.ts")).match(/from\("agent_action_ledger"\)\.select\(/g) ?? []).length
+    const frColsReads = (stripComments(read("app/actions/flight-recorder.ts")).match(/from\("agent_action_ledger"\)\.select\(ACTION_COLS\)/g) ?? []).length
+    check("WIRED: the flight recorder's ledger reads select policy_ref through the one literal column list (every read)", /const ACTION_COLS =\s*"[^"]*\bpolicy_ref\b[^"]*"/.test(stripComments(read("app/actions/flight-recorder.ts"))) && frLedgerReads >= 2 && frColsReads === frLedgerReads)
     check("WIRED: the AI audit page shows 'permitted by <ref>'", /l\.policyRef/.test(stripComments(read("app/dashboard/admin/ai-audit/page.tsx"))))
     check("POSITIVE CONTROL: the dispatch wiring finder rejects a context without policyKey", !/policyKey:/.test(`return { brokerageId: params.brokerageId, action, channel, actor, subject }`))
   }

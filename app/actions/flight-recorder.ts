@@ -92,6 +92,15 @@ export async function getEntityCausalChain(input: { entityType: string; entityId
     ledgerAvailable = false
   } else {
     for (const a of (own.data ?? []) as ChainAction[]) actions.set(a.id, a)
+    // WAVE 104 (lane 104D): a MISSION's chain also carries the actions attached to it — ledger rows
+    // whose detail names the mission (the chains, sends and tool calls that served the objective).
+    if (entityType === "mission") {
+      const served = await svc.from("agent_action_ledger").select(ACTION_COLS)
+        .eq("brokerage_id", brokerageId).contains("detail", { mission_id: entityId })
+        .order("created_at", { ascending: true }).limit(LIMIT)
+      if (served.error) return { ok: false, error: `Action ledger could not be read: ${served.error.message}` }
+      for (const a of (served.data ?? []) as ChainAction[]) actions.set(a.id, a)
+    }
     const eventIds = [...events.keys()].slice(0, LIMIT)
     if (eventIds.length > 0) {
       const caused = await svc.from("agent_action_ledger").select(ACTION_COLS)

@@ -135,6 +135,20 @@ export const REAPER_NET: ReaperEntry[] = [
     },
   },
   {
+    // Wave 104, lane 104A — the AMOUNT sibling of commission_tracking_drift: every
+    // mutable money summary is a projection of the distributions ledger; this
+    // reaper recomputes each from the ledger and ESCALATES drift (never rewrites
+    // money — correction goes through correctCommissionDistribution).
+    domain: "commission_amount_drift",
+    manager: "finance_manager",
+    lane: "proactive",
+    protects: "money summaries (agent_commissions nets, transaction_commissions stamps, agents.ytd_gci, brokerage_earnings, meter_readings) that disagree with the distributions / cost ledgers",
+    run: async (b, svc) => {
+      const { reapCommissionAmountDrift } = await import("@/lib/finance/commission-tracking-reaper")
+      return norm(await reapCommissionAmountDrift(b, svc))
+    },
+  },
+  {
     domain: "compliance_flags_stuck",
     manager: "compliance_officer",
     lane: "proactive",

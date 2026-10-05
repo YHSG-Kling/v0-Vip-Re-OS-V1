@@ -1,7 +1,7 @@
 /**
  * scripts/live-tables.ts
  *
- * EVERY relation the live public schema exposes — 766 of them — as a flat sorted list.
+ * EVERY relation the live public schema exposes — 770 of them — as a flat sorted list.
  *
  * This is the oracle for "does this name exist in the database", which SCHEMA_SNAPSHOT cannot be:
  * that file holds only the tables the code QUERIES and the database HAS (`referenced ∩ live`), so a
@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-05
  * source: public.live_schema_json()
- * body-sha256: 1df2b1207fd25e0381cc1adcf58639610388763566991c003e78b38fd0e2665a
+ * body-sha256: 8a8c278db6638937d0454c2ffc513ac54a5b13427f71656aaf3bf4a7f479c13a
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -163,6 +163,7 @@ export const LIVE_TABLES: readonly string[] = [
   "brokerage_p_l",
   "brokerage_required_documents",
   "brokerage_settings",
+  "brokerage_twin_snapshots",
   "brokerages",
   "budgets",
   "business_card_scans",
@@ -356,6 +357,7 @@ export const LIVE_TABLES: readonly string[] = [
   "help_topics_kb",
   "home_value_estimates",
   "home_value_page_configs",
+  "improvement_proposals",
   "inbound_call_classifications",
   "income_forecast_gap_analysis",
   "income_forecast_snapshots",
@@ -466,6 +468,8 @@ export const LIVE_TABLES: readonly string[] = [
   "messages",
   "meter_readings",
   "milestone_template_items",
+  "mission_events",
+  "missions",
   "model_retraining_log",
   "motivated_seller_signals",
   "narration_cache",

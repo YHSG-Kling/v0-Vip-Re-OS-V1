@@ -68,6 +68,10 @@ export const TENANT_POLICY_SETTINGS_KEYS: Record<string, TenantPolicyDefinition>
   referral_appreciation:   { label: "Referral appreciation policy", store: "brokerage_settings.settings", defaultNote: "platform default appreciation" },
   ce_provider:             { label: "CE provider", store: "brokerage_settings.settings", defaultNote: "no CE provider connected" },
   learned_vetoes:          { label: "Vetoed learned adjustments", store: "brokerage_settings.settings", defaultNote: "no learned adjustment vetoed" },
+  // Wave 104 (104C, controlled learning): a PROMOTED predictor threshold — { [predictor]: { thresholdMultiplier,
+  // requireStrongest } } read by lib/intelligence/predictor-learning-runner.ts getPredictorTuning ahead of the
+  // record-derived tuning; written ONLY by lib/kernel/improvement-proposals.ts promotion / rollback.
+  predictor_tuning:        { label: "Predictor thresholds (promoted proposals)", store: "brokerage_settings.settings", defaultNote: "record-derived tuning; no promoted override" },
 }
 
 /** Real columns that are tenant operating policy. */

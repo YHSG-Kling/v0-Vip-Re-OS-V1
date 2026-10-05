@@ -196,6 +196,18 @@ function wiringLayer() {
   const reg = code("lib/kernel/manager-registry.ts")
   check("MAINTENANCE_DOMAINS.agent_competency_model owned by recruiting_manager, co-owned by compliance_officer + deal_coordinator, named in prose", /agent_competency_model:\s*\{ manager: "recruiting_manager", proof: "test:competency", coOwners: \["compliance_officer", "deal_coordinator"\]/.test(reg) && /compliance_officer co-owns the compliance_ce skill/.test(reg) && /deal_coordinator co-owns the outcome evidence/.test(reg))
   check("no migration shipped (the model is derived at read time)", !/m703/.test(reg))
+
+  console.log("\n[m711 · competency tags on the existing catalog (wave 104, lane 104E; owner answer 2)]")
+  const m711 = readFileSync("supabase/migrations/m711-competency-tags-on-learning-module-catalog.sql", "utf8")
+  const sql = m711.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")
+  const FIVE = ["objection_handling", "product_knowledge", "coursework_incomplete", "call_quality", "compliance_ce"]
+  check("m711 is DML only (no CREATE / ALTER / DROP)", !/\b(create|alter|drop)\s/i.test(sql) && (sql.match(/update public\.learning_modules/g) ?? []).length === 5)
+  check("each of the five competency tags is appended under its own idempotency guard (NOT gap_tags @> array[tag]) with the fixture rows excluded",
+    FIVE.every((t) => new RegExp(`array_append\\(gap_tags, '${t}'\\)`).test(sql) && new RegExp(`not \\(gap_tags @> array\\['${t}'\\]\\)`).test(sql)) && (sql.match(/title not like 'ZZ\\_%FIXTURE%'/g) ?? []).length === 5)
+  check("the five tags are exactly the model's COMPETENCY_GAP_TAG values the router cannot match today (slow_lead_response / low_close_rate have their own emitters)",
+    FIVE.every((t) => Object.values(COMPETENCY_GAP_TAG).includes(t)) && new Set(Object.values(COMPETENCY_GAP_TAG)).size === FIVE.length + 2)
+  check("the objection tag also lifts the curriculum author's 'objection:<key>' modules (one vocabulary, loop closed)", /t like 'objection:%'/.test(sql))
+  check("POSITIVE CONTROL: a specimen UPDATE without the idempotency guard would be flagged", !/not \(gap_tags @> array\['x'\]\)/.test("update public.learning_modules set gap_tags = array_append(gap_tags, 'x') where title ~* 'x';"))
 }
 
 function main() {

@@ -14,6 +14,7 @@ import {
 import { getRecentLifeChanges } from "@/app/actions/contact-enrichment"
 import { identifyReferralOpportunities } from "@/app/actions/ai-referral-management"
 import { bestEffort } from "@/lib/db/best-effort"
+import { recordLifetimeTouchpointSent } from "@/lib/sphere/lifetime-touchpoint-ledger"
 
 /**
  * Log a touchpoint for a lifetime customer
@@ -30,30 +31,22 @@ export async function logTouchpoint({
   channel?: string
 }) {
   const supabase = await createClient()
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
 
   // Real columns: scheduled_date (NOT NULL, date), sent_date (date), engagement_data (jsonb,
   // not "notes"); status CHECK uses 'sent' not 'completed'; channel CHECK excludes 'manual'.
-  const { data, error } = await supabase
-    .from("lifetime_customer_touchpoints")
-    .insert({
-      contact_id: contactId,
-      agent_id: agentId,
-      brokerage_id: brokerageId,
-      touchpoint_type: touchpointType,
-      channel,
-      engagement_data: notes ? { notes } : {},
-      status: "sent",
-      scheduled_date: new Date().toISOString().split("T")[0],
-      sent_date: new Date().toISOString().split("T")[0],
-    })
-    .select()
-    .single()
-
-  if (error) {
-    console.error("Error logging touchpoint:", error)
-    return { success: false, error: error.message }
+  // THE ONE sent-touch ledger + the ONE LIFETIME_CUSTOMER_TOUCHPOINT_SENT emit (wave 104, lane 104E;
+  // lib/sphere/lifetime-touchpoint-ledger.ts). This log named the event in its activity echo below and
+  // never emitted it; now the ledger does, once, and the reactor's LIFETIME_TOUCHPOINT_KEPT award rides it.
+  const recorded = await recordLifetimeTouchpointSent(supabase, {
+    brokerageId: brokerageId!, contactId, agentId, touchpointType, channel,
+    engagementData: notes ? { notes } : {}, source: "ui", actorUserId: userId ?? null,
+  })
+  if (!recorded.ok) {
+    console.error("Error logging touchpoint:", recorded.error)
+    return { success: false, error: recorded.error }
   }
+  const data = recorded.touchpoint
 
   // Record activity with kernel event reference
   await bestEffort(
@@ -108,22 +101,14 @@ export async function sendMarketUpdate({
     return { success: false, error: msgError.message }
   }
 
-  // Insert touchpoint record
-  const { error: touchpointError } = await supabase
-    .from("lifetime_customer_touchpoints")
-    .insert({
-      contact_id: contactId,
-      agent_id: agentId,
-      brokerage_id: brokerageId,
-      touchpoint_type: "market_update",
-      channel: "in_app", // CHECK excludes 'portal'
-      status: "sent",
-      scheduled_date: new Date().toISOString().split("T")[0],
-      sent_date: new Date().toISOString().split("T")[0],
-    })
-
-  if (touchpointError) {
-    console.error("Error logging touchpoint:", touchpointError)
+  // The ONE sent-touch ledger + the ONE LIFETIME_CUSTOMER_TOUCHPOINT_SENT emit (wave 104, lane 104E).
+  // channel "in_app" — the CHECK excludes 'portal'. A refused row is logged; the portal message already landed.
+  const recorded = await recordLifetimeTouchpointSent(supabase, {
+    brokerageId: brokerageId!, contactId, agentId, touchpointType: "market_update", channel: "in_app",
+    engagementData: { portal_message_id: message?.id ?? null }, source: "ui", actorUserId: userId ?? null,
+  })
+  if (!recorded.ok) {
+    console.error("Error logging touchpoint:", recorded.error)
   }
 
   // Record activity with kernel event reference

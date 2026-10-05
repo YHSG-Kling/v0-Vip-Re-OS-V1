@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1812 of 1875 pairs) — storing them would be
+ * overwhelming majority (1824 of 1887 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,10 +75,10 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1956 edges across 719 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1875 unordered
+ * MEASURED AT GENERATION: 1968 edges across 723 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1887 unordered
  * table pairs carry at least one FK; 63
- * carry more than one and are listed below. 13 of the constraints are self-referential.
+ * carry more than one and are listed below. 15 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
  * however many columns it spans, so counting its unnested rows separately would flag an
  * unambiguous pair as ambiguous.
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-05
  * source: public.live_foreign_keys_json()
- * body-sha256: ab105f8f3edf346cd0ad0dd21a2d30b20acc4fb09938b8bf3a0a7fdc8f1d849a
+ * body-sha256: be9c520937c4dbe5f5e024293d2de396c1de3d979f32d61beecf0524633b2aa5
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -130,7 +130,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "agent_earnings": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "agent_fee_assignments": { "agent_id": "agents", "brokerage_id": "brokerages", "fee_type_id": "brokerage_fee_types" },
   "agent_fee_charges": { "agent_id": "agents", "brokerage_id": "brokerages", "fee_type_id": "brokerage_fee_types" },
-  "agent_goals": { "agent_id": "agents", "brokerage_id": "brokerages" },
+  "agent_goals": { "agent_id": "agents", "brokerage_id": "brokerages", "mission_id": "missions" },
   "agent_handoffs": { "brokerage_id": "brokerages", "human_agent_id": "agents" },
   "agent_intro_videos": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "video_project_id": "ai_video_projects" },
   "agent_learning_paths": { "agent_id": "agents", "brokerage_id": "brokerages" },
@@ -227,6 +227,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "brokerage_p_l": { "brokerage_id": "brokerages" },
   "brokerage_required_documents": { "brokerage_id": "brokerages", "created_by": "users", "template_form_id": "brokerage_form_library" },
   "brokerage_settings": { "brokerage_id": "brokerages" },
+  "brokerage_twin_snapshots": { "brokerage_id": "brokerages", "previous_snapshot_id": "brokerage_twin_snapshots", "team_id": "teams" },
   "brokerages": { "ai_isa_system_user_id": "users" },
   "budgets": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "business_card_scans": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "reviewed_by": "users", "subject_user_id": "users" },
@@ -405,6 +406,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "help_topics_kb": { "brokerage_id": "brokerages" },
   "home_value_estimates": { "brokerage_id": "brokerages", "contact_id": "contacts", "valuation_request_id": "valuation_requests" },
   "home_value_page_configs": { "agent_id": "agents", "brokerage_id": "brokerages" },
+  "improvement_proposals": { "brokerage_id": "brokerages", "decided_by": "users" },
   "inbound_call_classifications": { "brokerage_id": "brokerages" },
   "income_forecast_gap_analysis": { "agent_id": "agents", "brokerage_id": "brokerages", "forecast_snapshot_id": "income_forecast_snapshots" },
   "income_forecast_snapshots": { "agent_id": "agents", "brokerage_id": "brokerages", "previous_snapshot_id": "income_forecast_snapshots" },
@@ -508,6 +510,8 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "messages": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "conversation_id": "conversations" },
   "meter_readings": { "brokerage_id": "brokerages" },
   "milestone_template_items": { "template_id": "transaction_milestone_templates" },
+  "mission_events": { "brokerage_id": "brokerages", "mission_id": "missions" },
+  "missions": { "brokerage_id": "brokerages", "created_by": "users", "parent_mission": "missions" },
   "model_retraining_log": { "brokerage_id": "brokerages" },
   "motivated_seller_signals": { "brokerage_id": "brokerages", "contact_id": "contacts", "lead_id": "leads" },
   "narration_cache": { "brokerage_id": "brokerages" },
@@ -814,7 +818,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "workflow_automations": { "brokerage_id": "brokerages", "created_by": "users" },
   "workflow_intake_sessions": { "agent_user_id": "users", "brokerage_id": "brokerages", "contact_id": "contacts", "document_id": "documents" },
   "workflow_run_steps": { "run_id": "workflow_runs" },
-  "workflow_runs": { "agent_user_id": "users", "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "transaction_id": "transactions", "trigger_event_id": "lifecycle_events" },
+  "workflow_runs": { "agent_user_id": "users", "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "mission_id": "missions", "transaction_id": "transactions", "trigger_event_id": "lifecycle_events" },
   "workflow_webhook_events": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "zenrows_property_search_raw": { "brokerage_id": "brokerages", "lead_id": "leads" },
 }

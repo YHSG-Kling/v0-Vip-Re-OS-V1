@@ -199,12 +199,31 @@ console.log("\nC. contact fatigue — every outbound chokepoint consults the con
   check("C5 the engine consults the CONTACT scope: buyer_fatigue_scores.risk_level → fatigueTemperedPolicy (error read, base policy on refusal)",
     /\.from\("buyer_fatigue_scores"\)\.select\("risk_level"\)/.test(engine) && /fatigueTemperedPolicy\(policy, fatigueRisk\)/.test(engine) && /fatigueErr/.test(engine))
 
-  // PUBLISHED, NOT ASSERTED — outbound-ledger inserters outside the dispatcher (the blind spot).
+  // ASSERTED (wave 104, lane 104E — was "published, not asserted"): every outbound-ledger inserter outside
+  // the dispatcher is either a POST-DISPATCH ledger row (the send already rode dispatchEmail/dispatchSms/
+  // dispatchDirectMail and its gate) or a QUEUE/STAGING row a dispatcher-backed drainer sends later. None
+  // sends anything itself, so none can "route through the dispatcher" — the dispatcher is already in the
+  // path. A NEW inserter outside this list fails here until it is classified.
   const ledgers = ["email_sends", "isa_outreach_log", "direct_mail_recipients", "marketing_campaign_touchpoints"]
+  const OUTSIDE_DISPATCHER_LEDGERS: Record<string, string> = {
+    "lib/campaign-sequences/touchpoint-bridge.ts": "POST-DISPATCH ledger: recordSequenceTouchpoint writes marketing_campaign_touchpoints AFTER step-executor's dispatch (its sentAt is the dispatch result)",
+    "lib/campaign-sequences/step-executor.ts": "POST-DISPATCH ledger: isa_outreach_log row written in step 12 from dispatchResult (the send rode registry.dispatch → lib/workflow/adapters/{email,sms}.ts → dispatchEmail / dispatchSms)",
+    "lib/marketing/touchpoint-recorder.ts": "POST-DISPATCH ledger: recordCampaignTouchpoint* record a launch the campaign publisher/sender already dispatched (campaign-publisher.ts, email-campaign-sender.ts import the dispatcher)",
+    "app/actions/neighbor-notifications.ts": "STAGING row: direct_mail_recipients delivery_status 'queued' — STAGED, NOT SENT; the weekly farm-mail cron's campaign drain (lib/direct-mail/campaign-drain.ts → orchestrateRenderAndSend, lib/direct-mail/orchestrate-send.ts → dispatchDirectMail) sends",
+    "app/actions/email-campaigns.ts": "QUEUE row: email_sends status 'queued' — drained by lib/marketing/email-campaign-sender.ts, where every message rides the consent-gated dispatchEmail",
+  }
   const out = execSync(`grep -rlE 'from\\("(${ledgers.join("|")})"\\)\\s*\\.insert' lib app --include=*.ts --include=*.tsx || true`, { encoding: "utf8" })
   const files = out.split("\n").filter(Boolean).filter((f) => f !== "lib/providers/dispatch.ts")
-  console.log(`  ℹ census: ${files.length} file(s) insert an outbound ledger row outside lib/providers/dispatch.ts (raw grep, comments included — a blind spot, not a finding):`)
-  for (const f of files) console.log(`     - ${f}`)
+    // stripped source: a tombstone naming a ledger is not an inserter (CLAUDE.md §2)
+    .filter((f) => new RegExp(`from\\("(${ledgers.join("|")})"\\)\\s*\\.insert`).test(src(f)))
+  const unclassified = files.filter((f) => !(f in OUTSIDE_DISPATCHER_LEDGERS))
+  check(`C6 every outbound-ledger inserter outside the dispatcher is classified (post-dispatch ledger or dispatcher-drained queue) — ${files.length} file(s), 0 unclassified`, unclassified.length === 0, unclassified.join(", "))
+  check("C6 the classified list names only files that still insert (no stale entry)", Object.keys(OUTSIDE_DISPATCHER_LEDGERS).every((f) => files.includes(f)), Object.keys(OUTSIDE_DISPATCHER_LEDGERS).filter((f) => !files.includes(f)).join(", "))
+  check("C6 the drainers the reasons name reach the dispatcher (email-campaign-sender → dispatchEmail; orchestrate-send → dispatchDirectMail; the workflow email/sms adapters step-executor dispatches through)",
+    ["lib/marketing/email-campaign-sender.ts", "lib/direct-mail/orchestrate-send.ts", "lib/workflow/adapters/email.ts", "lib/workflow/adapters/sms.ts"].every((f) => /dispatchEmail\(|dispatchSms\(|dispatchDirectMail\(/.test(src(f)))
+    && /orchestrateRenderAndSend/.test(src("lib/direct-mail/campaign-drain.ts")) && /registry\.dispatch\(step\.channel, stepCtx\)/.test(src("lib/campaign-sequences/step-executor.ts")))
+  check("C6 POSITIVE CONTROL — an inserter not in the list would be flagged", ["lib/x/new-sender.ts"].filter((f) => !(f in OUTSIDE_DISPATCHER_LEDGERS)).length === 1)
+  for (const f of files) console.log(`     - ${f}: ${OUTSIDE_DISPATCHER_LEDGERS[f] ?? "UNCLASSIFIED"}`)
   console.log("  ℹ NOT consulted by design: transactional portal confirmations (showing-lifecycle, self-book, event-fanout) — confirmations are not pressure; 'portal' is not a DeconflictChannel and deconflict_suppression_log.channel's CHECK admits no such word.")
 }
 

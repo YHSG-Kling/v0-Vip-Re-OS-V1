@@ -319,21 +319,30 @@ export async function completeAISessionStep(params: {
   // computes 100%, so awarding on `isComplete` alone would top the agent up on
   // every re-save. `wasAlreadyComplete` is the prior certification_achieved,
   // so the award fires only on the false→true edge.
+  //
+  // WAVE 104 (lane 104E): the false→true edge now EMITS the canonical ONBOARDING_COMPLETED
+  // (entity agent_onboarding — the reactor's rule resolves agent_onboarding.agent_id and awards
+  // ONBOARDING_COMPLETED first-ever, lib/gamification/award-points.ts) instead of awarding here.
+  // KernelEvent.ONBOARDING_COMPLETED had NO emitter in the tree (only the lifecycle.ts string map)
+  // — so the reactor's manager signal and the award both now have their moment. TOMBSTONE: the
+  // awardAgentPoints call that stood here — survivor lib/gamification/lifecycle-awards.ts via
+  // lib/kernel/event-reactor.ts '(L6)'. Activation stays the exam-gated admin act (above).
   if (isComplete && !wasAlreadyComplete) {
-    const { awardAgentPoints, POINT_VALUES } = await import("@/lib/gamification/award-points")
-    const awarded = await awardAgentPoints(supabase, {
-      agentId: params.agentId,
-      points: POINT_VALUES.ONBOARDING_COMPLETED,
-      reason: "ONBOARDING_COMPLETED",
-      referenceType: "agent_onboarding",
-      referenceId: onboarding.id,
-    })
-    if (!awarded.ok) {
-      // The step completion itself already landed and must stand; a refused
-      // award is logged, never swallowed silently (§3).
-      console.error(
-        `[completeAISessionStep] onboarding completion points not awarded for agent ${params.agentId}: ${awarded.error}`,
-      )
+    try {
+      const { emitKernelEvent } = await import("@/lib/kernel/emit")
+      const { KernelEvent } = await import("@/lib/kernel/events")
+      const res = await emitKernelEvent({
+        event: KernelEvent.ONBOARDING_COMPLETED,
+        brokerageId,
+        entityType: "agent_onboarding",
+        entityId: onboarding.id,
+        actorUserId: params.userId,
+        agentId: params.agentId,
+        metadata: { agent_id: params.agentId, completion_percentage: completionPercentage, certification: "pending_admin_certify" },
+      })
+      if (res.error) console.error(`[completeAISessionStep] ONBOARDING_COMPLETED did not emit for agent ${params.agentId} (the step completion already landed): ${res.error}`)
+    } catch (err) {
+      console.error(`[completeAISessionStep] ONBOARDING_COMPLETED emit threw for agent ${params.agentId} (the step completion already landed):`, err instanceof Error ? err.message : String(err))
     }
   }
 }

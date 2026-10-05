@@ -15,3 +15,5 @@ export type { FatigueResult, FatigueFactors, RiskLevel, FatigueSweepResult } fro
 // both rejected by their own CHECKs. calculateFatigue speaks the vocabulary the
 // database actually admits.
 export { generateRecoveryPlan } from "./recovery-generator"
+// AGENT SCOPE — the after-hours-volume signal (wave 104, lane 104E), read by the retention radar.
+export { afterHoursVolume, afterHoursSubScore, timeZoneForState, AFTER_HOURS_START_HOUR, AFTER_HOURS_END_HOUR, AFTER_HOURS_MIN_OUTBOUND, AFTER_HOURS_FULL_SHARE } from "./after-hours"
