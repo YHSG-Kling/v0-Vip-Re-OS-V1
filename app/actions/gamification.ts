@@ -21,8 +21,6 @@
 // and the Intelligence page.
 
 import { createClient } from "@/lib/supabase/server"
-import { KernelEvent } from "@/lib/kernel/events"
-import { emitKernelEvent } from "@/lib/kernel/emit"
 import {
   isLeaderboardScope,
   isLeaderboardMetric,
@@ -145,6 +143,13 @@ export async function getAgentPointsAndTier(agentId: string) {
   const points = agent?.gamification_points || 0
   const next = nextTierForPoints(points)
 
+  // FATIGUE-AWARE (wave 103, lane 103C): the rail stands down its "N pts to go"
+  // pressure for an agent the retention radar has under strain. Read from the
+  // radar's stored row (lib/gamification/strain.ts), never re-derived; an unknown
+  // (refused read) is treated as NOT strained so a flaky read never hides a rung.
+  const { isAgentUnderStrain } = await import("@/lib/gamification/strain")
+  const underStrain = (await isAgentUnderStrain(supabase, agentId)) === true
+
   return {
     agentId: agent?.id,
     agentName: `${(agent?.users as any)?.first_name || ""} ${(agent?.users as any)?.last_name || ""}`.trim(),
@@ -156,6 +161,8 @@ export async function getAgentPointsAndTier(agentId: string) {
     nextTier: next?.label ?? null,
     pointsToNextTier: next?.pointsToGo ?? 0,
     progressPercent: tierProgressPercent(points),
+    /** True when the Motivation rail should show support instead of a push. */
+    underStrain,
   }
 }
 
@@ -172,104 +179,25 @@ export async function getAgentPointsAndTier(agentId: string) {
 // The only legitimate awarder is checkAndAwardBadges below, which awards against
 // a points threshold the agent actually reached. Module-private is what makes
 // that the ONLY path.
+//
+// TOMBSTONE (wave 103, lane 103C, CLAUDE.md §1): the body that stood here — the
+// pre-read, the tenant-from-the-agent stamp, the agent_badges insert, the
+// GAMIFICATION_BADGE_AWARDED emit and the agent notification — was MERGED onto
+// lib/gamification/lifecycle-awards.ts:awardBadgeToAgent so the event reactor (a lib
+// caller, which cannot reach a "use server" module's private function) awards
+// milestone badges through the SAME writer. This wrapper keeps the module-private
+// door and the RLS client the threshold path always used.
 async function awardBadge(data: {
   agentId: string
   badgeId: string
   reason: string
-}) {
+}): Promise<{ alreadyAwarded: true } | { alreadyAwarded: false; badge: { id: string } }> {
   const supabase = await createClient()
-
-  // Check if agent already has this badge
-  const { data: existing } = await supabase
-    .from("agent_badges")
-    .select("id")
-    .eq("agent_id", data.agentId)
-    .eq("badge_id", data.badgeId)
-    .maybeSingle()
-
-  if (existing) {
-    return { alreadyAwarded: true }
-  }
-
-  // Tenant for the badge row comes from the AGENT it is awarded to
-  // (agents.brokerage_id) — agent_id is an agents.id, not a tenant, and the
-  // two id spaces are disjoint. An unstamped row is readable AND writable by
-  // every brokerage under the `brokerage_id IS NULL OR …` policy, so refuse
-  // rather than write one. `user_id` comes along because the agent is TOLD.
-  const { data: agentData, error: agentErr } = await supabase
-    .from("agents")
-    .select("brokerage_id, user_id")
-    .eq("id", data.agentId)
-    .single()
-  if (agentErr) throw agentErr
-  if (!agentData?.brokerage_id) {
-    throw new Error(`awardBadge: no brokerage resolvable from agent ${data.agentId}`)
-  }
-
-  const { data: newBadge, error } = await supabase
-    .from("agent_badges")
-    .insert({
-      brokerage_id: agentData.brokerage_id,
-      agent_id: data.agentId,
-      badge_id: data.badgeId,
-      awarded_reason: data.reason,
-      awarded_at: new Date().toISOString(),
-    })
-    .select(`
-      id,
-      badge_id,
-      awarded_at,
-      awarded_reason,
-      gamification_badges:badge_id(id, badge_name, badge_description, badge_icon, badge_tier)
-    `)
-    .single()
-
-  if (error) throw error
-
-  const def = (newBadge.gamification_badges as any)
-  const badgeName = (Array.isArray(def) ? def[0]?.badge_name : def?.badge_name) ?? "a badge"
-  const badgeTier = (Array.isArray(def) ? def[0]?.badge_tier : def?.badge_tier) ?? null
-
-  // Emit kernel event — brokerage_id resolved above, from the agent record.
-  // Audit row + reactor (notification_rules keyed on this event now fire).
-  await emitKernelEvent({
-    brokerageId: agentData.brokerage_id,
-    event: KernelEvent.GAMIFICATION_BADGE_AWARDED,
-    entityType: "agent_badge",
-    entityId: newBadge.id,
-    agentId: data.agentId,
-    metadata: {
-      agent_id: data.agentId,
-      badge_id: data.badgeId,
-      badge_name: badgeName,
-      badge_tier: badgeTier,
-      reason: data.reason,
-    },
-  })
-
-  // THE EVENT NOW HAS A CONSUMER, AND IT IS THE PERSON IT IS ABOUT.
-  // GAMIFICATION_BADGE_AWARDED had been emitted since the rail existed with
-  // nothing subscribed to it, so an agent could earn a badge and never find out
-  // unless they happened to open the Motivation page afterwards. A badge nobody
-  // is told about is not a reward. Best-effort: the award itself is committed.
-  if (agentData.user_id) {
-    const { error: notifyErr } = await supabase.from("notifications").insert({
-      user_id: agentData.user_id,
-      brokerage_id: agentData.brokerage_id,
-      type: "gamification_badge_awarded",
-      title: `Badge earned: ${badgeName}`,
-      body: data.reason,
-      entity_type: "agent_badge",
-      entity_id: newBadge.id,
-      priority: "low",
-      is_read: false,
-    })
-    if (notifyErr) {
-      console.error(`[awardBadge] badge ${newBadge.id} awarded but the agent was not notified: ${notifyErr.message}`)
-    }
-  }
-
-  return { alreadyAwarded: false, badge: newBadge }
+  const { awardBadgeToAgent } = await import("@/lib/gamification/lifecycle-awards")
+  const res = await awardBadgeToAgent(supabase, data)
+  if (!res.ok) throw new Error(`awardBadge: ${res.error}`)
+  if (res.alreadyAwarded) return { alreadyAwarded: true }
+  return { alreadyAwarded: false, badge: { id: res.badgeRowId } }
 }
 
 // ─── CHECK AND AWARD BADGES ───────────────────────────────────────────────────

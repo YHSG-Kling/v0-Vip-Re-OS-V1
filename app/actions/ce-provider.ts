@@ -146,13 +146,38 @@ export async function recordCeCompletionFromProvider(
   ctx: { agentId: string; brokerageId: string | null; providerName: string },
 ): Promise<{ recorded: boolean; ceHoursCompleted: number }> {
   const svc = createServiceClient()
-  const row = normalizeCeCompletion(payload, ctx)
+  // CLAUDE.md §4 — the tenant comes from the AGENT ROW the provider named, never from the caller's
+  // ctx: the webhook's brokerage claim is shadowed by what the database says about that agent. A
+  // refused or empty read fails closed (nothing recorded, nothing emitted).
+  const { data: agentRow, error: agentErr } = await svc.from("agents").select("brokerage_id").eq("id", ctx.agentId).maybeSingle()
+  if (agentErr || !agentRow?.brokerage_id) return { recorded: false, ceHoursCompleted: 0 }
+  const brokerageId: string = agentRow.brokerage_id
+  const row = normalizeCeCompletion(payload, { ...ctx, brokerageId })
 
   // Idempotency: one completion per (agent, course, completed_on).
   const { data: existing } = await svc.from("agent_ce_completions").select("id").eq("agent_id", ctx.agentId).eq("course_name", row.course_name).eq("completed_on", row.completed_on).limit(1).maybeSingle()
   if (!existing) {
-    const { error } = await svc.from("agent_ce_completions").insert(row)
+    const { data: inserted, error } = await svc.from("agent_ce_completions").insert(row).select("id").single()
     if (error) return { recorded: false, ceHoursCompleted: 0 }
+    // CE_COMPLETED (wave 103, lane 103C): the ledger row had no event, so the OS never
+    // recognised a completed credit. The reactor awards CE_COMPLETED points once per
+    // completion row (lib/gamification/award-points.ts LIFECYCLE_AWARD_RULES).
+    if (inserted?.id) {
+      try {
+        const { emitKernelEvent } = await import("@/lib/kernel/emit")
+        const { KernelEvent } = await import("@/lib/kernel/events")
+        await emitKernelEvent({
+          event:       KernelEvent.CE_COMPLETED,
+          brokerageId,
+          entityType:  "agent_ce_completion",
+          entityId:    inserted.id,
+          source:      "webhook",
+          metadata:    { agent_id: ctx.agentId, course_name: row.course_name, hours: row.hours, provider: ctx.providerName },
+        })
+      } catch (err) {
+        console.error(`[recordCeCompletionFromProvider] CE_COMPLETED did not emit for ${inserted.id}:`, err)
+      }
+    }
   }
 
   const { data: all } = await svc.from("agent_ce_completions").select("hours").eq("agent_id", ctx.agentId).limit(500)

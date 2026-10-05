@@ -57,6 +57,9 @@ export async function POST(req: NextRequest) {
       action_taken,
       search_terms,
       calculator_inputs,
+      email,
+      tcpa_consent,
+      tcpa_consent_text,
     }: {
       brokerage_slug: string
       visitor_id: string
@@ -65,6 +68,13 @@ export async function POST(req: NextRequest) {
       action_taken?: string
       search_terms?: string[]
       calculator_inputs?: unknown
+      /** CONSENTED EMAIL CAPTURE (wave 103, lane 103D; m706): an email the visitor typed on the
+       *  tracked page. Stored ONLY when `tcpa_consent === true` — the ticked box becomes a
+       *  contact_consent_events artifact through the one consent writer first; a bare email with
+       *  no box stores nothing (trackBehavior → captureConsentedVisitorEmail, fail closed). */
+      email?: string | null
+      tcpa_consent?: boolean
+      tcpa_consent_text?: string | null
     } = body
 
     if (!visitor_id || !page_visited) {
@@ -89,12 +99,19 @@ export async function POST(req: NextRequest) {
       ip_address: ip,
       user_agent: req.headers.get("user-agent") ?? undefined,
       brokerage_id: resolution.tenant.brokerageId,
+      // The consent flag travels as the visitor set it: ONLY a literal `true` is consent.
+      email_capture: typeof email === "string" && email.trim()
+        ? { email, consented: tcpa_consent === true, consent_text: tcpa_consent_text ?? null }
+        : undefined,
     })
 
     if (!result.success) {
       return NextResponse.json({ error: (result as { error?: string }).error ?? "not recorded" }, { status: 400 })
     }
-    return NextResponse.json({ ok: true })
+    // The capture outcome is reported (stored / not, never the matched contact — this is a public
+    // door and the answer must not enumerate a brokerage's contact list).
+    const ec = (result as { emailCapture?: { stored: boolean; reason?: string } }).emailCapture
+    return NextResponse.json(ec ? { ok: true, email_captured: ec.stored, ...(ec.stored ? {} : { email_capture_reason: ec.reason }) } : { ok: true })
   } catch (error) {
     console.error("[track/visitor] unexpected failure:", error)
     return NextResponse.json({ error: "internal error" }, { status: 500 })

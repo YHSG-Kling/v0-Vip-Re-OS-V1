@@ -188,6 +188,10 @@ export function WidgetChatClient({
           email: captureForm.email.trim(),
           phone: captureForm.phone.trim() || null,
           tcpa_consent: !!captureForm.phone.trim(), // phone provided = TCPA consent
+          // The tracking cookie /api/track/visitor opened on widget open (wave 103, lane 103D):
+          // with it the consented email lands on the visitor's behavioral signal too. Read only,
+          // never minted here — a visitor with no cookie sends none.
+          visitor_id: (() => { try { return window.localStorage.getItem('vip_visitor_id') } catch { return null } })(),
           intent_type: 'unknown',
           conversationMessages: messages.map(m => ({
             role: m.role,

@@ -69,6 +69,11 @@ export interface ContactBrief {
    *  (lib/kernel/relationship-graph.ts describeEdge): spouse / household, the home they own or
    *  sold, who represents them, who referred them, their lender and vendors. Empty before m698. */
   relationships: string[]
+  /** VENDOR SEAT (wave 103, lane 103D) — this contact HOLDS a vendor seat (contacts.vendor_id,
+   *  written at seat activation by lib/kernel/vendor-seat-contact.ts): the vendor's category and
+   *  name, and how many of the tenant's contacts its own vendor_for edges say it served
+   *  (lib/kernel/relationship-graph.ts vendorSeatCorroboration). null when the contact is no vendor. */
+  vendorSeat: { vendorId: string; category: string | null; name: string | null; servedContacts: number; corroborated: boolean } | null
 }
 
 /**
@@ -113,7 +118,7 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
     .select(
       `id, brokerage_id, first_name, last_name, preferred_name, name_pronunciation, salutation_style,
        legal_first_name, legal_last_name, legal_name_source,
-       contact_type, contact_persona, buyer_stage, city, state,
+       contact_type, contact_persona, buyer_stage, city, state, vendor_id,
        engagement_score, last_contacted_at,
        dnc_status, email_opt_out, sms_opt_out, phone_opt_out`,
     )
@@ -279,6 +284,23 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
       else if (relationships.length > 0) talkingPoints.push(`Relationships: ${relationships.slice(0, 3).join("; ")}.`)
     }
   } catch { /* additive — the brief stands without the graph */ }
+  // VENDOR SEAT (wave 103, lane 103D) — contacts.vendor_id says this contact HOLDS a vendor seat.
+  // The vendor row is read in the contact's own tenant through the session client; the seat's own
+  // vendor_for edges (the vendor entity's neighbors) corroborate it. "Is a vendor: <category>".
+  let vendorSeat: ContactBrief["vendorSeat"] = null
+  try {
+    const vendorId = (contact as any).vendor_id as string | null
+    const brokerageId = (contact as any).brokerage_id as string | null
+    if (vendorId && brokerageId) {
+      const { data: vendor, error: vendorErr } = await supabase.from("vendors").select("id, name, category").eq("id", vendorId).eq("brokerage_id", brokerageId).maybeSingle()
+      if (vendorErr) console.warn("[contact-brief] vendor seat read refused:", vendorErr.message)
+      const { neighbors, vendorSeatCorroboration } = await import("@/lib/kernel/relationship-graph")
+      const own = await neighbors(supabase as any, { brokerageId, entity: { type: "vendor", id: vendorId }, types: ["vendor_for"], direction: "out" })
+      const corroboration = vendorSeatCorroboration(own.edges, vendorId)
+      vendorSeat = { vendorId, category: (vendor as any)?.category ?? null, name: (vendor as any)?.name ?? null, servedContacts: corroboration.served.length, corroborated: corroboration.corroborated }
+      talkingPoints.push(`Is a vendor: ${vendorSeat.category ?? "category unknown"}${vendorSeat.name ? ` (${vendorSeat.name})` : ""}${corroboration.corroborated ? ` — served ${corroboration.served.length} of your contacts.` : "."}`)
+    }
+  } catch { /* additive — the brief stands without the seat */ }
 
   return {
     contactId: contact.id,
@@ -306,5 +328,6 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
     provenanceLine,
     identityEvidence,
     relationships,
+    vendorSeat,
   }
 }

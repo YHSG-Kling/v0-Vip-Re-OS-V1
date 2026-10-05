@@ -38,12 +38,29 @@
  *   census: captureContact wires ONCE inside; the form route keeps one path; crm manual dedup; the
  *   behavioral_signal writer (module-private in a 'use server' file); distribution; the card + mount.
  *
+ * WAVE 103 (lane 103D; m706; owner answer 1 — CONSENTED website-visitor email capture):
+ *   15. m706 text: email_captured / email_captured_at / consent_event_id → contact_consent_events(id)
+ *       are ADDITIVE, the fail-closed rule is a CHECK (email_captured IS NULL OR consent_event_id IS
+ *       NOT NULL, mutated positive control), nothing destructive; prints whether the column is live;
+ *   16. the ONE door (lib/lead-intelligence/visitor-email-capture.ts captureConsentedVisitorEmail),
+ *       executed in memory with the REAL persistContactConsent: a capture WITHOUT consent stores
+ *       NOTHING (the positive control the owner asked for); only a literal `true` consents; with
+ *       consent the artifact is written first, the signal names it, the identify match fires and
+ *       the 102E evidence writer records contact + behavioral_signal under the system actor; an
+ *       artifact handed over by id is read back (opted-out / foreign / made-up ids store nothing);
+ *       a refused ledger write and a pre-m706 column each REPORT, never a silent success;
+ *   17. census: trackBehavior is the one door, /api/track/visitor and /api/widget/capture-lead reach
+ *       it (flag → artifact, or the artifact id the widget form already wrote), the widget client
+ *       sends its visitor cookie, persistContactConsent returns the artifact id, the lib module is
+ *       the ONLY writer naming email_captured (fixture positive control), the artifact is resolved
+ *       before the update in source order; resolveIdentity DELEGATES to the one match.
+ *
  * BLIND SPOTS (published): the trigger and RLS are proven on SQL text, not executed; pipeline-processor,
- * mergeContacts, crm manual dedup, captureContact, instant-greeting, the form route and the
- * visitor-identify writer are proven by source census (their module graphs need the live app), the
- * service, history-carry, person-timeline and distribution by execution; the in-memory client has no
- * UNIQUE enforcement, so link idempotency is the service's own pre-read; section 15 prints whether the
- * visitor-identify writer's own predicate column (behavioral_signals.email_captured) exists live.
+ * mergeContacts, crm manual dedup, captureContact, instant-greeting, the form route, trackBehavior and
+ * the two public routes are proven by source census (their module graphs need the live app), the
+ * service, history-carry, person-timeline, distribution and the capture door by execution; the in-memory
+ * client has no UNIQUE enforcement, so link idempotency is the service's own pre-read; m706's CHECK is
+ * proven on text — in memory the door's own order (artifact, then email) is what keeps the rule.
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -280,7 +297,11 @@ async function main() {
     { file: "lib/lead-pipeline/pipeline-processor.ts", label: "pipeline-processor: identity gate + dedup verdicts + lead creation (+ R2: every verdict names its survivor)", needs: [/from ['"]@\/lib\/kernel\/person-identity['"]/, /resolvePerson\(/, /resolveSurvivorPerson\(/, /linkPersonEvidence\(/, /matchMethod: 'dedup_match'/, /matchMethod: 'identity_gate'/, /person_id: personId/, /dedupSurvivor\(preEnrichDuplicate\)/, /dedupSurvivor\(postEnrichDuplicate\)/] },
     { file: "lib/kernel/crm.ts", label: "crm manual dedup (R2): the verdict links onto the SURVIVOR contact's person, CONTACT_MERGED is the event", needs: [/resolveSurvivorPerson\(/, /survivor: \{ entityType: "contact", entityId: params\.existingContactId \}/, /matchMethod: "dedup_match", matchScore: 0\.9/, /existingEvent: KernelEvent\.CONTACT_MERGED/] },
     { file: "lib/contact-pipeline/contact-capture.ts", label: "captureContact: resolve + link ONCE inside (merge at its fuzzy score, create at 1.0), the capture's own event", needs: [/person-identity/, /matchMethod: 'capture_match'/, /existingEvent: action === 'merged' \? KernelEvent\.CONTACT_DEDUP_MERGED : KernelEvent\.CONTACT_CAPTURED/, /recordCapturePersonEvidence\(supabase, params, bestId, 'merged', bestScore\)/, /recordCapturePersonEvidence\(supabase, params, contactId, 'created', 1\)/, /personId: person\.personId, personIdentity: person\.identity/] },
-    { file: "app/actions/lead-intelligence.ts", label: "visitor-identify loop: THE behavioral_signals.identified writer links signal + contact (email_exact), human actor", needs: [/entityType: "behavioral_signal"/, /matchMethod: "email_exact"/, /\.from\("behavioral_signals"\)\.update\(\{ identified: true, contact_id: contact\.id \}\)[\s\S]{0,400}recordBehavioralSignalIdentity\(supabase, \{ brokerageId: auth\.brokerageId, signalId: signal\.id/, /actor: \{ type: "user" as const, userId: input\.actorUserId \}/] },
+    // Wave 103 (103D): the match + the evidence writer moved to lib/lead-intelligence/visitor-email-capture.ts so
+    // the PUBLIC capture door (no session) and the staff action run ONE match; the action delegates with its
+    // session tenant + human actor, the door passes the slug-resolved tenant + no human (system actor).
+    { file: "lib/lead-intelligence/visitor-email-capture.ts", label: "visitor-identify loop: THE behavioral_signals.identified writer links signal + contact (email_exact); human actor when a user ran it, system for the public door", needs: [/entityType: "behavioral_signal"/, /matchMethod: "email_exact"/, /\.from\("behavioral_signals"\)\s*\.update\(\{ identified: true, contact_id: contact\.id \}\)[\s\S]{0,600}recordBehavioralSignalIdentity\(client, \{ brokerageId: input\.brokerageId, signalId: signal\.id/, /input\.actorUserId \? \{ type: "user" as const, userId: input\.actorUserId \} : \{ type: "system" as const, userId: null \}/] },
+    { file: "app/actions/lead-intelligence.ts", label: "resolveIdentity (staff) DELEGATES to the one match with its session tenant + actor; trackBehavior (the public door) captures through captureConsentedVisitorEmail with no human actor", needs: [/resolveSignalIdentity\(supabase, \{ brokerageId: auth\.brokerageId, signalId: behavioralSignalId, actorUserId: auth\.userId \}\)/, /captureConsentedVisitorEmail\(supabase, \{[\s\S]{0,600}actorUserId: null,/] },
     { file: "lib/platform/distribution-engine.ts", label: "distribution (R1): person re-homed under the RECEIVING brokerage, lead + raw linked there, after the distribution write", needs: [/person-identity/, /brokerageId: targetBrokerageId,\s*firstName: lead\.first_name/, /matchMethod: "dedup_match" as const/, /entityType: "lead", entityId: lead\.id/, /entityType: "raw_scraped_lead", entityId: lead\.raw_record_id/, /\.is\("distribution_brokerage_id", null\)[\s\S]*rehomePersonUnderReceivingBrokerage\(supabase, lead, targetBrokerageId, rotationPosition\)/] },
     { file: "app/crm/contacts/[contactId]/components/identity-evidence-card.tsx", label: "identity evidence CARD reads the brief's identityEvidence (confidence / sources / linked / how)", needs: [/\/api\/contacts\/\$\{contactId\}\/brief/, /identityEvidence/, /evidence\.confidence/, /evidence\.sources/, /evidence\.linked/, /evidence\.how/] },
     { file: "app/crm/contacts/[contactId]/page.tsx", label: "the contact detail pane mounts the card next to the lead-history card", needs: [/<LeadHistoryCard contactId=\{contactId\} \/>[\s\S]{0,600}<IdentityEvidenceCard contactId=\{contactId\} \/>/] },
@@ -314,7 +335,7 @@ async function main() {
   const formSrc = src("app/api/forms/submit/route.ts")
   check("form route: no resolvePerson and no contact link of its own (captureContact is the one writer for the contact)", !/resolvePerson\(/.test(formSrc) && !/entityType: 'contact'/.test(formSrc))
   check("POSITIVE CONTROL: the pre-102E form route (its own resolvePerson) would fail that census", /resolvePerson\(/.test(formSrc.replace(/linkPersonEvidence\(/, "resolvePerson(")))
-  check("the behavioral_signal writer helper is module-private (a 'use server' file: every export is public)", !/export async function recordBehavioralSignalIdentity/.test(src("app/actions/lead-intelligence.ts")) && /async function recordBehavioralSignalIdentity/.test(src("app/actions/lead-intelligence.ts")))
+  check("the behavioral_signal evidence helper is module-private in the lib module (not exported) and no second copy is left in the 'use server' file (tombstone only)", !/export async function recordBehavioralSignalIdentity/.test(src("lib/lead-intelligence/visitor-email-capture.ts")) && /async function recordBehavioralSignalIdentity/.test(src("lib/lead-intelligence/visitor-email-capture.ts")) && !/function recordBehavioralSignalIdentity/.test(src("app/actions/lead-intelligence.ts")) && !/\.eq\("email", signal\.email_captured\)/.test(src("app/actions/lead-intelligence.ts")))
 
   // ── 11. R2 — a dedup verdict links onto the SURVIVOR's person (wave 102.1, lane 102E) ────────
   console.log("\n[11 — R2: a verdict with a DIFFERENT email links the record onto the survivor's person; never a second person]")
@@ -399,9 +420,99 @@ async function main() {
   check("the card renders no raw id (personId is never printed)", !/\{evidence\.personId\}/.test(cardSrc))
   check("POSITIVE CONTROL: a card reading evidence.costUsd would fail", /\.(cost|spend|usd|price|budget)\w*/i.test(cardSrc + "\n{evidence.costUsd}"))
 
-  // ── 15. blind spot published (not asserted): the visitor-identify writer's own predicate ───────
+  // ── 15. m706 — the consented capture columns (wave 103, lane 103D; owner answer 1) ────────────
+  console.log("\n[15 — m706 text: three additive columns, FK to the consent ledger, the fail-closed CHECK, nothing destructive]")
+  const M706 = "supabase/migrations/m706-consented-visitor-email-capture-on-behavioral-signals.sql"
+  const mig706 = raw(M706)
+  const body706 = sqlBody(mig706)
+  check("m706 header line 1 carries one provenance stamp (the lane stamp | APPLIED LIVE <date>)", /^-- ── (WRITTEN, NOT APPLIED|APPLIED LIVE \d{4}-\d{2}-\d{2}\b)/.test(mig706.split("\n")[0]))
+  check("ADD COLUMN IF NOT EXISTS email_captured text + email_captured_at timestamptz on behavioral_signals", /ALTER TABLE public\.behavioral_signals\s+ADD COLUMN IF NOT EXISTS email_captured text,\s+ADD COLUMN IF NOT EXISTS email_captured_at timestamptz,/.test(body706))
+  check("consent_event_id uuid REFERENCES public.contact_consent_events(id) — the consent ledger, with NO ON DELETE action (erase the email before the artifact)", /ADD COLUMN IF NOT EXISTS consent_event_id uuid REFERENCES public\.contact_consent_events\(id\);/.test(body706) && !/consent_event_id uuid REFERENCES public\.contact_consent_events\(id\) ON DELETE/.test(body706))
+  const check706 = /CHECK \(([^)]*)\)/.exec(body706.slice(body706.indexOf("behavioral_signals_email_requires_consent_check\n")))?.[1] ?? ""
+  check("the fail-closed rule is a CHECK at the database: email_captured IS NULL OR consent_event_id IS NOT NULL", check706.replace(/\s+/g, " ").trim() === "email_captured IS NULL OR consent_event_id IS NOT NULL")
+  check("POSITIVE CONTROL: a CHECK that let an email sit without a consent artifact would fail the same finder", (/CHECK \(([^)]*)\)/.exec(body706.replace("email_captured IS NULL OR consent_event_id IS NOT NULL", "email_captured IS NULL OR consent_event_id IS NULL").slice(body706.indexOf("behavioral_signals_email_requires_consent_check\n")))?.[1] ?? "") !== "email_captured IS NULL OR consent_event_id IS NOT NULL")
+  // SQL string literals (the COMMENT ON COLUMN prose says "ON DELETE") are blanked before the scan —
+  // a comment is not a statement (CLAUDE.md §2: strip before you scan for tokens).
+  const stmts706 = body706.replace(/'(?:[^']|'')*'/g, "''")
+  check("nothing destructive: no DROP COLUMN / DROP TABLE / DELETE / UPDATE / TRUNCATE statement, no ALTER of contacts, leads or contact_consent_events", !/DROP COLUMN|DROP TABLE|\bDELETE\b|\bUPDATE\b|TRUNCATE/.test(stmts706) && !/ALTER TABLE public\.(contacts|leads|contact_consent_events)\b/.test(stmts706))
+  check("POSITIVE CONTROL: a DROP COLUMN statement in the text would fail that scan", /DROP COLUMN/.test((stmts706 + "\nALTER TABLE public.behavioral_signals DROP COLUMN email_captured;")))
+  check("two-part apply markers present (PART A columns + CHECK, PART B index)", /PART A — columns, CHECK/.test(mig706) && /PART B — index/.test(mig706))
   const sigCols = /behavioral_signals: \[([^\]]*)\]/.exec(raw("scripts/schema-snapshot.ts"))?.[1] ?? ""
-  console.log(`\n[15 — published blind spot] behavioral_signals.email_captured in the live snapshot: ${/"email_captured"/.test(sigCols) ? "PRESENT" : "ABSENT — resolveIdentity's email match (and so the behavioral_signal evidence writer behind it) cannot fire live until that column exists or the predicate reads another; wired at the real writer, listed for the owner"}`)
+  console.log(`    published: behavioral_signals.email_captured in the live snapshot: ${/"email_captured"/.test(sigCols) ? "PRESENT (m706 applied; the loop fires live)" : "ABSENT — the column awaits the integrator (m706): the door refuses to store (42703 / PGRST204 on the update is read and reported as store_refused) until the migration is live and the snapshot regenerated"}`)
+
+  // ── 16. the capture door, executed in memory: no consent → nothing stored ─────────────────────
+  console.log("\n[16 — consented visitor email capture (the ONE door, in memory): fail closed, the artifact first, then the signal, then the identify loop]")
+  const vec = await import("../lib/lead-intelligence/visitor-email-capture")
+  const SIG = uuid(700), SIGB = uuid(701), CON7 = uuid(702), EVB = uuid(703), EVNO = uuid(704), SIGOLD = uuid(705)
+  const seedSignals = () => [
+    { id: SIG, brokerage_id: A, visitor_id: "v-1", identified: false, contact_id: null, email_captured: null, email_captured_at: null, consent_event_id: null },
+    { id: SIGB, brokerage_id: B, visitor_id: "v-2", identified: false, contact_id: null, email_captured: null, email_captured_at: null, consent_event_id: null },
+    { id: SIGOLD, brokerage_id: A, visitor_id: "v-3", identified: false, contact_id: null, email_captured: "old@example.com", email_captured_at: null, consent_event_id: null },
+  ]
+  const svc7 = memSupabase({
+    behavioral_signals: seedSignals(), contact_consent_events: [], person_identities: [], person_identity_evidence: [],
+    contacts: [{ id: CON7, brokerage_id: A, first_name: "Jane", last_name: "Doe", email: "Jane.Doe@Example.com", phone: "5550100100" }],
+  }, { stampCreatedAt: true })
+  G.__102A.svc = svc7
+  G.__102A.events = []
+  const sig = () => (svc7.tables.behavioral_signals as any[]).find((s) => s.id === SIG)
+  const noConsent = await vec.captureConsentedVisitorEmail(svc7, { brokerageId: A, signalId: SIG, email: "jane.doe@example.com", consent: { consented: false, consentSource: "/home-value" }, actorUserId: null })
+  check("POSITIVE CONTROL (the owner's rule): a capture WITHOUT consent stores NOTHING — no consent row, no email on the signal, no link, no evidence", !noConsent.stored && noConsent.reason === "no_consent" && (svc7.tables.contact_consent_events as any[]).length === 0 && sig().email_captured === null && sig().identified === false && (svc7.tables.person_identity_evidence as any[]).length === 0)
+  check("PURE rule: only a literal `true` is consent — 'true', 1, 'yes', undefined all refuse; a bare field never consents", ["true", 1, "yes", undefined, null, "on"].every((v) => !vec.visitorEmailCaptureVerdict({ email: "a@b.co", consented: v }).ok) && vec.visitorEmailCaptureVerdict({ email: " A@B.co ", consented: true }).ok)
+  const badEmail = await vec.captureConsentedVisitorEmail(svc7, { brokerageId: A, signalId: SIG, email: "not-an-email", consent: { consented: true, consentSource: "/home-value" }, actorUserId: null })
+  check("consent with an invalid email stores nothing (no consent row is written for a value that cannot be stored)", !badEmail.stored && badEmail.reason === "invalid_email" && (svc7.tables.contact_consent_events as any[]).length === 0)
+  const stored = await vec.captureConsentedVisitorEmail(svc7, { brokerageId: A, signalId: SIG, email: " Jane.Doe@Example.com ", consent: { consented: true, consentText: "I agree to be contacted.", consentSource: "/home-value", ipAddress: "203.0.113.9", userAgent: "ua" }, actorUserId: null })
+  const consentRows = svc7.tables.contact_consent_events as any[]
+  check("consented capture: the artifact is written through the ONE consent writer (tcpa, consented=true, the page as source, ip/ua, no contact/lead yet)", stored.stored && consentRows.length === 1 && consentRows[0].consented === true && consentRows[0].consent_type === "tcpa" && consentRows[0].consent_source === "/home-value" && consentRows[0].brokerage_id === A && consentRows[0].contact_id === null && consentRows[0].ip_address === "203.0.113.9")
+  check("…the signal carries the normalised email, a capture time and consent_event_id = THAT artifact's id", sig().email_captured === "jane.doe@example.com" && typeof sig().email_captured_at === "string" && sig().consent_event_id === consentRows[0].id && stored.stored && stored.consentEventId === consentRows[0].id)
+  check("…the identify loop fired: the tenant's contact matched case-insensitively, identified + contact_id stamped", stored.stored && stored.identity.identified && sig().identified === true && sig().contact_id === CON7)
+  const ev7 = svc7.tables.person_identity_evidence as any[]
+  check("…the 102E evidence writer recorded contact + behavioral_signal (email_exact, source visitor_identify) under tenant A with the SYSTEM actor (the public door has no human)", ev7.length === 2 && ev7.some((e) => e.entity_type === "contact" && e.entity_id === CON7 && e.match_method === "email_exact" && e.source === "visitor_identify" && e.actor_type === "system" && e.brokerage_id === A) && ev7.some((e) => e.entity_type === "behavioral_signal" && e.entity_id === SIG && e.detail?.identified_by === "email_captured"))
+  check("…person.identity_linked emitted per link under tenant A (no chokepoint event exists at the pixel; the two links are two auditOnly events, as 102E's path already did)", (G.__102A.events as any[]).filter((e) => e.event === "person.identity_linked" && e.brokerageId === A).length === 2 && (G.__102A.events as any[]).every((e) => e.brokerageId === A))
+  const tenantB = await vec.captureConsentedVisitorEmail(svc7, { brokerageId: A, signalId: SIGB, email: "jane.doe@example.com", consent: { consented: true, consentSource: "/x" }, actorUserId: null })
+  check("tenant pin: a consented capture naming another tenant's signal stores nothing on it (the update matched no row — counted, not assumed)", !tenantB.stored && tenantB.reason === "store_refused" && (svc7.tables.behavioral_signals as any[]).find((s) => s.id === SIGB).email_captured === null)
+  const oldShape = await vec.resolveSignalIdentity(svc7, { brokerageId: A, signalId: SIGOLD, actorUserId: UA })
+  check("the reader repeats the rule: an email with NO consent artifact (a pre-m706 shape) is never matched", !oldShape.identified && oldShape.reason === "no_email" && (svc7.tables.behavioral_signals as any[]).find((s) => s.id === SIGOLD).identified === false)
+  // the widget form hands over an artifact it already wrote — read back, never trusted
+  const svc8 = memSupabase({
+    behavioral_signals: seedSignals(),
+    contact_consent_events: [{ id: EVB, brokerage_id: A, consented: true, consent_type: "tcpa" }, { id: EVNO, brokerage_id: A, consented: false, consent_type: "tcpa" }, { id: uuid(706), brokerage_id: B, consented: true, consent_type: "tcpa" }],
+    contacts: [], person_identities: [], person_identity_evidence: [],
+  }, { stampCreatedAt: true })
+  G.__102A.svc = svc8
+  const byId = await vec.captureConsentedVisitorEmail(svc8, { brokerageId: A, signalId: SIG, email: "new@example.com", consent: { consentEventId: EVB }, actorUserId: null })
+  const sig8 = (svc8.tables.behavioral_signals as any[]).find((s) => s.id === SIG)
+  check("an artifact handed over by id (the widget form) is read back in the tenant and the email is stored against it; no contact → identify reports no_contact_match, nothing invented", byId.stored && sig8.consent_event_id === EVB && sig8.email_captured === "new@example.com" && byId.identity.identified === false && byId.identity.reason === "no_contact_match" && (svc8.tables.contacts as any[]).length === 0)
+  const optOutId = await vec.captureConsentedVisitorEmail(svc8, { brokerageId: A, signalId: SIGB, email: "new@example.com", consent: { consentEventId: EVNO }, actorUserId: null })
+  const foreignId = await vec.captureConsentedVisitorEmail(svc8, { brokerageId: A, signalId: SIGB, email: "new@example.com", consent: { consentEventId: uuid(706) }, actorUserId: null })
+  const madeUpId = await vec.captureConsentedVisitorEmail(svc8, { brokerageId: A, signalId: SIGB, email: "new@example.com", consent: { consentEventId: uuid(799) }, actorUserId: null })
+  check("an opted-OUT artifact, another tenant's artifact or a made-up id each store nothing (consent_artifact_not_found)", [optOutId, foreignId, madeUpId].every((r) => !r.stored && r.reason === "consent_artifact_not_found") && (svc8.tables.behavioral_signals as any[]).find((s) => s.id === SIGB).email_captured === null)
+  const svc9 = memSupabase({ behavioral_signals: seedSignals(), contact_consent_events: [], contacts: [] }, { refuse: { contact_consent_events: "permission denied for table contact_consent_events" } })
+  G.__102A.svc = svc9
+  const refusedLedger = await vec.captureConsentedVisitorEmail(svc9, { brokerageId: A, signalId: SIG, email: "jane@example.com", consent: { consented: true, consentSource: "/x" }, actorUserId: null })
+  check("a REFUSED consent-ledger write is read (supabase-js resolves it) and the email is NOT stored: no artifact, no email", !refusedLedger.stored && refusedLedger.reason === "consent_not_recorded" && (svc9.tables.behavioral_signals as any[]).find((s) => s.id === SIG).email_captured === null)
+  const svc10 = memSupabase({ behavioral_signals: seedSignals(), contact_consent_events: [], contacts: [] }, { missingColumns: { behavioral_signals: ["email_captured"] } })
+  G.__102A.svc = svc10
+  const preM706 = await vec.captureConsentedVisitorEmail(svc10, { brokerageId: A, signalId: SIG, email: "jane@example.com", consent: { consented: true, consentSource: "/x" }, actorUserId: null })
+  check("before m706 is applied (42703 on the column) the door REPORTS store_refused — the consent artifact stays on the ledger, the email is not silently dropped as a success", !preM706.stored && preM706.reason === "store_refused" && /email_captured/.test(preM706.error ?? "") && (svc10.tables.contact_consent_events as any[]).length === 1)
+
+  // ── 17. census: the door is wired at the real writer and the real routes; ONE writer of the column ─
+  console.log("\n[17 — census (stripped source): trackBehavior is the one door; both public routes reach it; the lib module is the only writer of email_captured]")
+  const li = src("app/actions/lead-intelligence.ts")
+  check("trackBehavior takes email_capture and hands it to captureConsentedVisitorEmail AFTER the tenant-stamped signal exists, consent by flag or by artifact id, page as the consent source", /email_capture\?: \{/.test(li) && /captureConsentedVisitorEmail\(supabase, \{\s*brokerageId,\s*signalId,/.test(li) && /\{ consentEventId: ec\.consent_event_id \}/.test(li) && /\{ consented: ec\.consented === true, consentText: ec\.consent_text \?\? null, consentSource: sessionData\.page_visited/.test(li))
+  const trackRoute = src("app/api/track/visitor/route.ts")
+  check("POST /api/track/visitor passes email + tcpa_consent from the body as `consented: tcpa_consent === true` (a literal true, never a truthy string) and answers stored/not without the matched contact", /consented: tcpa_consent === true/.test(trackRoute) && /email_captured: ec\.stored/.test(trackRoute) && !/contact/.test(trackRoute.slice(trackRoute.indexOf("const ec ="))))
+  const captureRoute = src("app/api/widget/capture-lead/route.ts")
+  check("POST /api/widget/capture-lead hands the artifact persistContactConsent just wrote (consentEventId) + the visitor id to the SAME door (trackBehavior email_capture.consent_event_id)", /const consentWrite = await persistContactConsent\(/.test(captureRoute) && /email_capture: \{ email, consent_event_id: consentWrite\.consentEventId \}/.test(captureRoute) && /consentWrite\?\.consentEventId && email && typeof visitor_id === 'string'/.test(captureRoute))
+  check("the widget client sends its vip_visitor_id cookie with the capture form (read, never minted there)", /visitor_id: \(\(\) => \{ try \{ return window\.localStorage\.getItem\('vip_visitor_id'\) \}/.test(src("app/widget/[brokerageSlug]/widget-chat-client.tsx")))
+  const consentSrc = src("lib/kernel/compliance/require-contact-consent.ts")
+  check("persistContactConsent returns consentEventId from a `.select('id')` on the ledger insert (null when refused — never a made-up id)", /\.from\('contact_consent_events'\)\.insert\(\{[\s\S]{0,600}\}\)\.select\('id'\)\.maybeSingle\(\)/.test(consentSrc) && /consentEventId = \(consentEvent as \{ id\?: string \} \| null\)\?\.id \?\? null/.test(consentSrc))
+  const emailWriterRe = /\.from\(["']behavioral_signals["']\)[\s\S]{0,300}?\.(insert|update|upsert)\(\s*\{[^)]{0,400}?\bemail_captured\s*:/
+  const emailWriters = [...walk("lib"), ...walk("app")].filter((f) => emailWriterRe.test(src(f)))
+  check(`lib/lead-intelligence/visitor-email-capture.ts is the ONLY writer of behavioral_signals.email_captured (${emailWriters.join(", ") || "none"})`, emailWriters.length === 1 && emailWriters[0] === "lib/lead-intelligence/visitor-email-capture.ts")
+  check("POSITIVE CONTROL: the writer finder recognises a fixture insert naming email_captured, and ignores a select", emailWriterRe.test(`await svc.from("behavioral_signals").insert({ visitor_id: v, email_captured: e })`) && !emailWriterRe.test(`await svc.from("behavioral_signals").select("id, email_captured")`))
+  const vecSrc = src("lib/lead-intelligence/visitor-email-capture.ts")
+  check("in the one writer the consent artifact is resolved BEFORE the update that names email_captured (no store without an id)", vecSrc.indexOf("if (!consentEventId) return { stored: false, reason: \"consent_not_recorded\"") < vecSrc.indexOf(".update({ email_captured: verdict.email") && vecSrc.indexOf("return { stored: false, reason: \"consent_artifact_not_found\" }") < vecSrc.indexOf(".update({ email_captured: verdict.email"))
 
   console.log(`\nRESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(fails.map((f) => `  - ${f}`).join("\n")); process.exit(1) }

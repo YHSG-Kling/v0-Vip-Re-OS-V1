@@ -6,7 +6,8 @@
 // same real last-practice signals the radar uses. Read-only; best-effort; no model narration in the numbers.
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { computeSkillFreshness, SKILL_LABEL, type SkillSignal } from "@/lib/education/skill-freshness"
+import { computeSkillFreshness, SKILL_LABEL, type CompetencyProfile } from "@/lib/education/skill-freshness"
+import { gatherSkillSignals, loadAgentCompetency } from "@/lib/education/skill-freshness-radar"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -29,6 +30,10 @@ export interface SkillFreshnessBoard {
   sharp: number
   /** Worst-first, capped for the card. */
   agents: SkillBoardAgent[]
+  /** Wave 103 (103A): the roster's COMPETENCY read beside freshness — agents carrying at least one
+   *  gap (score ≤ COMPETENCY_GAP_SCORE), the most common gap skill, lowest agents first. Absent
+   *  (undefined) when the competency read was not made, never zero-faked. */
+  competency?: { scored: number; withGaps: number; topGap: string | null; agents: Array<{ agentId: string; name: string; overall: number | null; gaps: string[] }> }
 }
 
 const WORST_RANK: Record<string, number> = { stale: 0, untested: 1, aging: 2 }
@@ -61,11 +66,27 @@ export function summarizeSkillBoard(
   return { scored: reports.length, needRefresh, unproven, sharp, agents: agents.slice(0, cap) }
 }
 
-const daysSince = (iso: string | null | undefined, now: Date): number | null => {
-  if (!iso) return null
-  const t = Date.parse(iso)
-  return Number.isNaN(t) ? null : Math.max(0, Math.floor((now.getTime() - t) / 86_400_000))
+/** PURE: fold per-agent competency profiles into the board's competency tally (lowest overall first).
+ *  @proofSeam the roster fold is asserted in-memory by scripts/competency-guard.ts (no database);
+ *  its only product caller is generateSkillFreshnessBoard in this file. */
+export function summarizeCompetencyBoard(
+  profiles: Array<{ agentId: string; name: string; profile: CompetencyProfile }>,
+  cap = 8,
+): NonNullable<SkillFreshnessBoard["competency"]> {
+  const gapCount = new Map<string, number>()
+  const rows = profiles.map((p) => {
+    for (const g of p.profile.gaps) gapCount.set(g.label, (gapCount.get(g.label) ?? 0) + 1)
+    return { agentId: p.agentId, name: p.name, overall: p.profile.overall, gaps: p.profile.gaps.map((g) => `${g.label} ${g.score}/100`) }
+  })
+  const withGaps = rows.filter((r) => r.gaps.length > 0)
+  withGaps.sort((a, b) => (a.overall ?? 101) - (b.overall ?? 101) || a.name.localeCompare(b.name))
+  const top = [...gapCount.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]
+  return { scored: profiles.length, withGaps: withGaps.length, topGap: top ? top[0] : null, agents: withGaps.slice(0, cap) }
 }
+
+// TOMBSTONE (wave 103, lane 103A — CLAUDE.md §1.1): the local `daysSince` and the inline
+// objection/quiz/coursework signal reads that lived here were a byte-identical copy of
+// lib/education/skill-freshness-radar.ts:gatherSkillSignals (now exported) — merged onto it.
 
 /** Build the board for a brokerage's active agents. Best-effort → null on failure. */
 export async function generateSkillFreshnessBoard(
@@ -79,26 +100,26 @@ export async function generateSkillFreshnessBoard(
     const list = (agents ?? []) as any[]
     if (list.length === 0) return { scored: 0, needRefresh: 0, unproven: 0, sharp: 0, agents: [] }
 
-    const reports = await Promise.all(list.map(async (a) => {
-      const [obj, quiz, course] = await Promise.all([
-        a.user_id ? supabase.from("objection_training_sessions").select("completed_at, total_score").eq("agent_user_id", a.user_id).not("completed_at", "is", null).order("completed_at", { ascending: false }).limit(1).maybeSingle() : Promise.resolve({ data: null }),
-        supabase.from("agent_quiz_attempts").select("created_at, score, passed").eq("agent_id", a.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
-        // Coursework = most recent COMPLETED learning_modules assignment (canonical rail; legacy
-        // agent_courses had no writer, so it was permanently null).
-        a.user_id ? supabase.from("learning_assignments").select("completed_at, quiz_score").eq("agent_user_id", a.user_id).eq("status", "completed").is("contact_id", null).not("completed_at", "is", null).order("completed_at", { ascending: false }).limit(1).maybeSingle() : Promise.resolve({ data: null }),
-      ])
-      const o = (obj as any).data, q = (quiz as any).data, c = (course as any).data
-      const signals: SkillSignal[] = [
-        { area: "objection_handling", lastPracticedDays: daysSince(o?.completed_at, now), lastScore: o?.total_score ?? null },
-        { area: "product_knowledge", lastPracticedDays: daysSince(q?.created_at, now), lastScore: q ? (q.passed === false ? Math.min(q.score ?? 0, 50) : q.score ?? null) : null },
-        { area: "coursework", lastPracticedDays: daysSince(c?.completed_at, now), lastScore: c?.quiz_score ?? null },
-      ]
+    const named = list.map((a) => {
       const u = Array.isArray(a.users) ? a.users[0] : a.users
-      const name = [u?.first_name, u?.last_name].filter(Boolean).join(" ").trim() || "An agent"
-      return { agentId: a.id, name, skills: computeSkillFreshness(signals) }
-    }))
+      return { id: a.id as string, user_id: (a.user_id ?? null) as string | null, name: [u?.first_name, u?.last_name].filter(Boolean).join(" ").trim() || "An agent" }
+    })
+    const reports = await Promise.all(named.map(async (a) => ({
+      agentId: a.id, name: a.name, skills: computeSkillFreshness(await gatherSkillSignals(supabase, a, now)),
+    })))
+    const board = summarizeSkillBoard(reports)
 
-    return summarizeSkillBoard(reports)
+    // COMPETENCY beside freshness (wave 103). Per-agent reads, capped so the board stays a glance;
+    // a failure leaves the field absent rather than publishing a half-scored roster.
+    try {
+      const profiles = await Promise.all(named.slice(0, 50).map(async (a) => ({
+        agentId: a.id, name: a.name, profile: await loadAgentCompetency(supabase, { id: a.id, user_id: a.user_id, brokerage_id: brokerageId }, now),
+      })))
+      board.competency = summarizeCompetencyBoard(profiles)
+    } catch (err) {
+      console.error("[skill-freshness-board] competency read failed (field left absent):", err)
+    }
+    return board
   } catch (err) {
     console.error("[skill-freshness-board] failed:", err)
     return null

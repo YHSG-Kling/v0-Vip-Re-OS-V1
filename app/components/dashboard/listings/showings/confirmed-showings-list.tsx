@@ -25,7 +25,6 @@ import {
 // ShowingTime mode declines through the vendor instead).
 import { cancelShowing } from "@/app/actions/showings"
 import { aiSendShowingConfirmation, aiCollectShowingFeedback, getShowingCommunicationsAction } from "@/app/actions/ai-showing-management"
-import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 
 const STATUS_BADGE: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
   scheduled:   { label: "Scheduled",  variant: "secondary" },
@@ -137,7 +136,11 @@ export default function ConfirmedShowingsList({ showings, listing, brokerageId, 
       if (res.success) {
         updateShowing(activeId, { status: "completed" })
         close()
-        awardPointsForAction(agentUserId, "showing_completed").catch(() => {})
+        // TOMBSTONE (wave 103, lane 103C): `awardPointsForAction(agentUserId,
+        // "showing_completed")` stood here. markShowingCompleted emits
+        // SHOWING_COMPLETED and the event reactor awards it once per showing
+        // (lib/gamification/award-points.ts:LIFECYCLE_AWARD_RULES) — a second,
+        // client-side award was the double-award shape.
       }
     })
   }

@@ -184,6 +184,21 @@ export async function trackBehavior(sessionData: {
   ip_address?: string
   user_agent?: string
   brokerage_id?: string  // REQUIRED — see the tenancy note below
+  /**
+   * CONSENTED EMAIL CAPTURE (wave 103, lane 103D; m706; owner answer 1). The visit carried an email.
+   * It is stored on the signal ONLY with an explicit consent artifact — either the visitor ticked the
+   * box on this request (`consented: true` → the one consent writer records it here) or the caller
+   * already wrote the artifact through that writer on this request (`consent_event_id`, read back in
+   * this tenant). Anything else stores nothing (lib/lead-intelligence/visitor-email-capture.ts —
+   * the ONE writer of email_captured; fail closed). Once stored the identify loop fires: the
+   * tenant's contact with that email is linked and the person evidence is recorded.
+   */
+  email_capture?: {
+    email: string
+    consented?: boolean
+    consent_text?: string | null
+    consent_event_id?: string | null
+  }
 }) {
   // ── TENANCY IS NOT OPTIONAL ON THIS TABLE ───────────────────────────────
   // behavioral_signals / site_activity / intelligence_signals_log all carry a
@@ -298,6 +313,31 @@ export async function trackBehavior(sessionData: {
       console.error("[lead-intelligence] site_activity insert was refused:", activityError.message)
     }
 
+    // ── CONSENTED EMAIL CAPTURE → the identify loop (wave 103, lane 103D; m706) ──────────────────
+    // THE ONE door: the signal exists (above, tenant-stamped), the email goes through
+    // captureConsentedVisitorEmail, which stores it only once a consent artifact exists (written
+    // here through persistContactConsent, or read back by the id the widget form hands over) and
+    // then runs the same match resolveIdentity runs for staff. Best-effort for the VISIT: a refused
+    // capture is reported on the result, never a tracking failure.
+    let emailCapture: { stored: boolean; reason?: string; identified?: boolean } | undefined
+    if (sessionData.email_capture) {
+      const { captureConsentedVisitorEmail } = await import("@/lib/lead-intelligence/visitor-email-capture")
+      const ec = sessionData.email_capture
+      const captured = await captureConsentedVisitorEmail(supabase, {
+        brokerageId,
+        signalId,
+        email: ec.email,
+        consent: ec.consent_event_id
+          ? { consentEventId: ec.consent_event_id }
+          : { consented: ec.consented === true, consentText: ec.consent_text ?? null, consentSource: sessionData.page_visited, ipAddress: sessionData.ip_address ?? null, userAgent: sessionData.user_agent ?? null },
+        actorUserId: null,
+      })
+      emailCapture = captured.stored
+        ? { stored: true, identified: captured.identity.identified }
+        : { stored: false, reason: captured.reason }
+      if (!captured.stored && captured.reason !== "no_consent") console.warn(`[lead-intelligence] visitor email not captured (${captured.reason}): ${captured.error ?? ""}`)
+    }
+
     // Get page history for AI analysis if multiple sessions
     if (totalSessions >= 2) {
       const { data: pageHistory } = await supabase
@@ -340,7 +380,7 @@ Investor signals: ROI calculators, rental income tools, market analysis pages`
         const intent = intentData.data as Record<string, unknown> | null
 
         if (!intent) {
-          return { success: true, signalId }
+          return { success: true, signalId, emailCapture }
         }
 
         // Update behavioral signal with AI insights
@@ -364,14 +404,14 @@ Investor signals: ROI calculators, rental income tools, market analysis pages`
           }), { table: "intelligence_signals_log", flow: "intelligence_signals_log_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
         }
 
-        return { success: true, signalId, intent }
+        return { success: true, signalId, intent, emailCapture }
       } catch (aiError) {
         console.error("[v0] AI intent analysis error:", aiError)
-        return { success: true, signalId }
+        return { success: true, signalId, emailCapture }
       }
     }
 
-    return { success: true, signalId }
+    return { success: true, signalId, emailCapture }
   } catch (error) {
     console.error("[v0] Error tracking behavior:", error)
     return { success: false, error: String(error) }
@@ -2535,38 +2575,16 @@ async function getAllSignalsForProfile(profileId: string, brokerageId: string, c
 // IDENTITY RESOLUTION
 // ============================================
 
-// PERSON IDENTITY (wave 102.1, lane 102E) — THIS is the behavioral_signals.identified / contact_id
-// writer (the visitor-identify loop), so this is where the `behavioral_signal` evidence reserved in
-// m697 gets its writer: the identified visitor is linked to the CONTACT's person
-// (lib/kernel/person-identity.ts — the contact by email_exact, the signal by email_exact, because an
-// email_captured match is what identified it). Tenant = the caller's session brokerage the match
-// above was already pinned to; actor = the human who ran the resolution (LAW 5). No chokepoint
-// event exists here, so the one person.identity_linked event is emitted. Best-effort: the signal
-// link above already landed and is never un-reported. Module-private: NOT a "use server" export.
-async function recordBehavioralSignalIdentity(
-  supabase: ReturnType<typeof createServiceClient>,
-  input: { brokerageId: string | null; signalId: string; contact: { id: string; first_name?: string | null; last_name?: string | null; email?: string | null; phone?: string | null }; actorUserId: string | null },
-): Promise<void> {
-  try {
-    const { resolvePerson, linkPersonEvidence } = await import("@/lib/kernel/person-identity")
-    const person = await resolvePerson(supabase, {
-      brokerageId: input.brokerageId,
-      firstName: input.contact.first_name ?? null, lastName: input.contact.last_name ?? null,
-      email: input.contact.email ?? null, phone: input.contact.phone ?? null,
-    })
-    if (!person.ok) {
-      if (person.reason !== "no_identity_anchor") console.warn(`[lead-intelligence] person identity not resolved for the identified visitor: ${person.reason}`)
-      return
-    }
-    const common = { brokerageId: input.brokerageId, personId: person.personId, source: "visitor_identify", actor: { type: "user" as const, userId: input.actorUserId }, identity: person.identity }
-    const a = await linkPersonEvidence(supabase, { ...common, entityType: "contact", entityId: input.contact.id, matchMethod: "email_exact", matchScore: 1, detail: { behavioral_signal_id: input.signalId } })
-    const b = await linkPersonEvidence(supabase, { ...common, entityType: "behavioral_signal", entityId: input.signalId, matchMethod: "email_exact", matchScore: 1, detail: { contact_id: input.contact.id, identified_by: "email_captured" } })
-    for (const r of [a, b]) if (!r.ok) console.warn(`[lead-intelligence] behavioral_signal person evidence not recorded: ${r.reason}`)
-  } catch (err) {
-    console.warn("[lead-intelligence] person identity threw (signal link unaffected):", err instanceof Error ? err.message : String(err))
-  }
-}
-
+// PERSON IDENTITY (wave 102.1, lane 102E) — THE behavioral_signals.identified / contact_id writer
+// (the visitor-identify loop) and the `behavioral_signal` evidence writer behind it.
+//
+// TOMBSTONE (wave 103, lane 103D; orphan doctrine §1.1 — merge onto the survivor, then ONE path):
+// `recordBehavioralSignalIdentity` and the email match that lived here MOVED to
+// lib/lead-intelligence/visitor-email-capture.ts (resolveSignalIdentity + its module-private
+// recordBehavioralSignalIdentity), so the PUBLIC capture door (trackBehavior above — m706's
+// consented email capture, which has no session) and this staff action run the SAME match. This
+// export keeps its contract: a session caller resolves a signal within its own brokerage; actor =
+// the human who ran it (LAW 5).
 export async function resolveIdentity(behavioralSignalId: string) {
   // Reads contact PII via email match — require auth
   const auth = await requireCaller()
@@ -2574,28 +2592,12 @@ export async function resolveIdentity(behavioralSignalId: string) {
 
   const supabase = createServiceClient()
 
-  const { data: signal } = await supabase.from("behavioral_signals").select("*").eq("id", behavioralSignalId).single()
-
-  if (!signal) return { success: false, error: "Signal not found" }
-
   try {
-    if (signal.email_captured) {
-      // Only match within caller's brokerage
-      const { data: contact } = await supabase
-        .from("contacts")
-        .select("*")
-        .eq("email", signal.email_captured)
-        .eq("brokerage_id", auth.brokerageId)
-        .maybeSingle()
-
-      if (contact) {
-        const { error: identifyErr } = await supabase.from("behavioral_signals").update({ identified: true, contact_id: contact.id }).eq("id", signal.id)
-        if (identifyErr) console.error(`[lead-intelligence] visitor identified but the signal was NOT linked to the contact: ${identifyErr.message}`)
-        else await recordBehavioralSignalIdentity(supabase, { brokerageId: auth.brokerageId, signalId: signal.id as string, contact, actorUserId: auth.userId })
-        return { success: true, contact, method: "email_match" }
-      }
-    }
-
+    const { resolveSignalIdentity } = await import("@/lib/lead-intelligence/visitor-email-capture")
+    const r = await resolveSignalIdentity(supabase, { brokerageId: auth.brokerageId, signalId: behavioralSignalId, actorUserId: auth.userId })
+    if (r.identified) return { success: true, contact: r.contact, method: r.method }
+    if (r.reason === "signal_not_found") return { success: false, error: "Signal not found" }
+    if (r.reason === "read_refused" || r.reason === "link_refused") return { success: false, error: r.error ?? r.reason }
     return { success: false, message: "Unable to resolve identity" }
   } catch (error) {
     console.error("[v0] Identity resolution error:", error)

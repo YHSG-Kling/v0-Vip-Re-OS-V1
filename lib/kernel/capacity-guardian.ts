@@ -23,6 +23,12 @@ export interface WorkloadSignals {
   activeDeals: number
   /** 0..1 — recent no-show rate (execution strain). */
   noShowRate?: number
+  /** WAVE 103 (lane 103B): showings still ahead on the calendar — attention already spoken for. */
+  pendingShowings?: number
+  /** WAVE 103 (lane 103B): the agent's own fatigue band as the retention radar scored it
+   *  (agent_retention_scores.tier — ONE vocabulary with lib/recruiting/retention-score.ts).
+   *  null / undefined = no row (never read as "fine", never read as "fatigued"). */
+  fatigueTier?: "engaged" | "healthy" | "watch" | "at_risk" | "critical" | null
 }
 
 export interface CapacityThresholds {
@@ -74,12 +80,14 @@ export const DEBT_ALARM = 8
  * Deterministic: ties keep input order (callers pass a stable order, e.g. created_at asc).
  */
 export function pickLeastLoadedWithHeadroom(
-  candidates: Array<{ agentId: string; load: number }>,
+  candidates: Array<{ agentId: string; load: number; band?: CapacityBand }>,
   maxLoad: number,
 ): string | null {
   if (candidates.length === 0) return null
   const ceiling = Math.max(1, maxLoad)
-  const withHeadroom = candidates.filter((c) => c.load / ceiling < HIGH_LOAD)
+  // WAVE 103 (lane 103B): a candidate that carries its capacity BAND is judged by the one kernel
+  // answer (fatigue and follow-up debt included); a bare load keeps the original ceiling test.
+  const withHeadroom = candidates.filter((c) => (c.band ? hasHeadroom(c.band) : c.load / ceiling < HIGH_LOAD))
   const pool = withHeadroom.length > 0 ? withHeadroom : candidates
   let best = pool[0]
   for (const c of pool) if (c.load < best.load) best = c
@@ -87,8 +95,10 @@ export function pickLeastLoadedWithHeadroom(
 }
 
 /** Pure: compute an agent's workload index. burnoutRisk is HIGH when the agent is at/over the tier
- *  ceiling OR carrying alarming follow-up debt (the ball is already dropping). */
-export function computeAgentWorkloadIndex(s: WorkloadSignals, t: CapacityThresholds): WorkloadIndex {
+ *  ceiling OR carrying alarming follow-up debt (the ball is already dropping).
+ *  Module-private since wave 103 (lane 103B): every reader — the runner, the pick, the simulators —
+ *  reaches it as `computeCapacity(...).index`, the ONE kernel answer. */
+function computeAgentWorkloadIndex(s: WorkloadSignals, t: CapacityThresholds): WorkloadIndex {
   const load = s.activeContacts + s.activeLeads + s.activeDeals
   const maxLoad = Math.max(1, t.maxLoad)
   const capacityScore = Math.min(1, load / maxLoad)
@@ -124,4 +134,124 @@ export function detectOverload(idx: WorkloadIndex, t: CapacityThresholds): Overl
   const debtRelief = idx.followUpDebt >= DEBT_ALARM ? Math.ceil(idx.followUpDebt / 3) : 0
   const rebalanceCount = Math.max(1, overCeiling, debtRelief)
   return { overloaded: true, rebalanceCount, reason: idx.drivers.join("; ") || "high burnout risk" }
+}
+
+// ─── WAVE 103 (lane 103B) — AGENT CAPACITY, ONE KERNEL ANSWER ─────────────────────────────────────
+//
+// Every consumer that used to ask its own question ("who has room?", "is this agent slammed?",
+// "should the ISA keep touching this book?") now reads ONE answer: `AgentCapacity` — load,
+// headroom, band, reasons. The pure half lives here next to the index it extends; the gatherer
+// (`capacityFor`) lives on lib/lead-assignment/capacity-pick.ts, the one I/O survivor both the
+// assignment cascade and the guardian runner already shared for the load definition.
+//
+// ONE VOCABULARY (§6) for the band: available · busy · at_capacity · over.
+
+/** The manager-bus words the guardian publishes — ONE spelling each (runner writes, brief reads). */
+export const AGENT_OVERLOADED_SIGNAL = "agent_overloaded"
+export const AGENT_REASSIGNMENT_SUGGESTED_SIGNAL = "agent_reassignment_suggested"
+
+/** @proofSeam exported so scripts/capacity-guard.ts can assert the band vocabulary is spelled once
+ *  and that every live agent_retention_scores.tier maps into it; product code reads the type. */
+export const CAPACITY_BANDS = ["available", "busy", "at_capacity", "over"] as const
+export type CapacityBand = (typeof CAPACITY_BANDS)[number]
+
+export interface AgentCapacity {
+  /** Working load = contacts + leads + deals (the SAME definition computeAgentWorkloadIndex uses). */
+  load: number
+  /** Items the agent can still take before HIGH_LOAD of the tier ceiling; 0 when at/over. */
+  headroom: number
+  band: CapacityBand
+  /** The REAL reasons the band is what it is (no fabrication; empty when available). */
+  reasons: string[]
+  /** The underlying index, for consumers that already read it (the guardian runner). */
+  index: WorkloadIndex
+}
+
+/** An agent may take fresh work only in these bands. */
+export function hasHeadroom(band: CapacityBand): boolean {
+  return band === "available" || band === "busy"
+}
+
+/** PURE. Derive the band from the index and the agent's own fatigue tier. Over ⇐ at/over the
+ *  ceiling, alarming follow-up debt, or a CRITICAL fatigue tier (a burnt-out agent has no room
+ *  whatever the count says). at_capacity ⇐ HIGH_LOAD or an at_risk tier. busy ⇐ MED_LOAD or half
+ *  the debt alarm. A missing fatigue row changes nothing. Module-private: the proof drives it
+ *  through computeCapacity. */
+function capacityBandFor(idx: WorkloadIndex, fatigueTier?: WorkloadSignals["fatigueTier"]): CapacityBand {
+  if (idx.capacityScore >= 1 || idx.followUpDebt >= DEBT_ALARM || fatigueTier === "critical") return "over"
+  if (idx.capacityScore >= HIGH_LOAD || fatigueTier === "at_risk") return "at_capacity"
+  if (idx.capacityScore >= MED_LOAD || idx.followUpDebt >= DEBT_ALARM / 2) return "busy"
+  return "available"
+}
+
+/** PURE. The one capacity answer for an agent. */
+export function computeCapacity(s: WorkloadSignals, t: CapacityThresholds): AgentCapacity {
+  const index = computeAgentWorkloadIndex(s, t)
+  const band = capacityBandFor(index, s.fatigueTier)
+  const maxLoad = Math.max(1, t.maxLoad)
+  const headroom = hasHeadroom(band) ? Math.max(0, Math.floor(maxLoad * HIGH_LOAD) - index.load) : 0
+  const reasons = [...index.drivers]
+  if ((s.pendingShowings ?? 0) > 0) reasons.push(`${s.pendingShowings} showings ahead`)
+  if (s.fatigueTier === "critical" || s.fatigueTier === "at_risk") reasons.push(`agent fatigue ${s.fatigueTier}`)
+  if (band === "busy" && reasons.length === 0) reasons.push(`load ${index.load}/${maxLoad} (${Math.round(index.capacityScore * 100)}% of capacity)`)
+  return { load: index.load, headroom, band, reasons, index }
+}
+
+/** PURE. Share of an automated touch batch an agent's book may receive this run — FEWER touches
+ *  when the agent is over capacity (every reply lands on that agent). 1 = the whole batch.
+ *  Module-private: the proof drives it through throttleTouchBatch. */
+function touchAllowanceFor(band: CapacityBand): number {
+  switch (band) {
+    case "over":        return 0.25
+    case "at_capacity": return 0.5
+    default:            return 1
+  }
+}
+
+/** PURE. Cap a ranked touch batch per owning agent by that agent's band. Order is preserved;
+ *  an item whose agent has no capacity answer (null) is kept — a missing read never throttles. */
+export function throttleTouchBatch<T>(
+  items: ReadonlyArray<T>,
+  agentIdOf: (item: T) => string | null,
+  bandOf: (agentId: string) => CapacityBand | null,
+  batch: number,
+): { kept: T[]; throttled: number } {
+  const taken = new Map<string, number>()
+  const kept: T[] = []
+  let throttled = 0
+  for (const item of items) {
+    const agentId = agentIdOf(item)
+    const band = agentId ? bandOf(agentId) : null
+    if (!agentId || !band) { kept.push(item); continue }
+    const allowance = Math.max(1, Math.floor(Math.max(1, batch) * touchAllowanceFor(band)))
+    const n = taken.get(agentId) ?? 0
+    if (n >= allowance) { throttled++; continue }
+    taken.set(agentId, n + 1)
+    kept.push(item)
+  }
+  return { kept, throttled }
+}
+
+/** Days an agent must stay OVER before the guardian suggests a temporary books reassignment. */
+export const OVER_CAPACITY_ESCALATION_DAYS = 3
+/** The temporary cover window the suggestion proposes (agent-books validates it). */
+export const REASSIGNMENT_SUGGESTION_DAYS = 14
+
+/** PURE. Count the DISTINCT days (UTC) inside the trailing window on which an overload signal was
+ *  raised — the guardian signals once per agent per day, so this is "days over". */
+export function overloadDaysIn(signalCreatedAts: ReadonlyArray<string>, now: Date, windowDays: number = OVER_CAPACITY_ESCALATION_DAYS): number {
+  const since = now.getTime() - windowDays * 86_400_000
+  const days = new Set<string>()
+  for (const iso of signalCreatedAts) {
+    const t = Date.parse(iso)
+    if (!Number.isFinite(t) || t < since || t > now.getTime()) continue
+    days.add(new Date(t).toISOString().slice(0, 10))
+  }
+  return days.size
+}
+
+/** PURE. Escalate to a reassignment suggestion once the agent has been over for N days (today
+ *  included), and never when there is nobody with headroom to receive the book. */
+export function shouldSuggestReassignment(daysOver: number, receiverId: string | null, n: number = OVER_CAPACITY_ESCALATION_DAYS): boolean {
+  return daysOver >= n && receiverId !== null
 }

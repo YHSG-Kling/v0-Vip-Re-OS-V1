@@ -131,6 +131,48 @@ export async function generateTeamLeadBrief(params: {
 
   const priorities: BriefPriority[] = []
 
+  // WAVE 103 (lane 103B) — EXCEPTIONS FIRST: team members over / at capacity (the ONE kernel
+  // answer, capacityFor) and the guardian's open reassignment suggestions lead the brief, ahead
+  // of handoffs and deal risk — a lead handed to an agent with no headroom is the next stale
+  // contact. Best-effort: a refused read leaves the brief without the row, never "all clear".
+  if (teamAgentIds.length > 0) {
+    try {
+      const { capacityFor, resolveBrokerageMaxLoad } = await import("@/lib/lead-assignment/capacity-pick")
+      const { hasHeadroom, AGENT_REASSIGNMENT_SUGGESTED_SIGNAL } = await import("@/lib/kernel/capacity-guardian")
+      const maxLoad = await resolveBrokerageMaxLoad(supabase, params.brokerageId)
+      const exceptions: Array<{ agentId: string; band: string; load: number; reasons: string[] }> = []
+      for (const agentId of teamAgentIds.slice(0, 50)) {
+        const cap = await capacityFor(supabase, params.brokerageId, agentId, { maxLoad })
+        if (!hasHeadroom(cap.band)) exceptions.push({ agentId, band: cap.band, load: cap.load, reasons: cap.reasons })
+      }
+      const { data: suggested, error: suggestedErr } = await supabase
+        .from("manager_signals").select("entity_id, payload")
+        .eq("brokerage_id", params.brokerageId).eq("signal_type", AGENT_REASSIGNMENT_SUGGESTED_SIGNAL)
+        .eq("status", "open").in("entity_id", teamAgentIds).limit(20)
+      if (suggestedErr) console.error(`[team-lead-brief] reassignment suggestions read refused: ${suggestedErr.message}`)
+      const suggestions = (suggested ?? []) as Array<{ entity_id: string | null; payload: { daysOver?: number } | null }>
+      if (exceptions.length > 0 || suggestions.length > 0) {
+        const over = exceptions.filter((e) => e.band === "over")
+        const top = over[0] ?? exceptions[0]
+        priorities.push({
+          id: "team-capacity-exceptions",
+          title: exceptions.length > 0
+            ? `${exceptions.length} team member${exceptions.length === 1 ? "" : "s"} ${over.length > 0 ? "over" : "at"} capacity`
+            : `${suggestions.length} books reassignment${suggestions.length === 1 ? "" : "s"} awaiting your approval`,
+          body: [
+            top ? `Heaviest: ${top.load} active items (${top.band.replace("_", " ")})${top.reasons.length ? ` — ${top.reasons.slice(0, 2).join("; ")}` : ""}` : null,
+            suggestions.length > 0 ? `${suggestions.length} temporary cover suggestion${suggestions.length === 1 ? "" : "s"} proposed (over ${suggestions[0].payload?.daysOver ?? "several"} days running) — approve to rebalance the book` : null,
+          ].filter(Boolean).join(". "),
+          severity: over.length > 0 || suggestions.length > 0 ? "high" : "medium",
+          manager: "recruiting_manager",
+          ctas: [{ label: "Rebalance books", href: "/dashboard/team" }],
+        })
+      }
+    } catch (e) {
+      console.error(`[team-lead-brief] capacity exceptions failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
   // AI ISA manager — unclaimed qualified handoffs into the team lead the brief
   // (canonical process: qualification converted them to team members' contacts).
   const unclaimedHandoffs = isaHandoffs.filter((h) => !h.claimed).length
@@ -174,11 +216,62 @@ export async function generateTeamLeadBrief(params: {
     })
   }
 
+  // WAVE 103 (lane 103A) — THE TEAM'S COMPETENCY GAPS. The ONE competency model
+  // (lib/education/skill-freshness.ts:scoreCompetency via loadAgentCompetency) read for each team
+  // member; the lead sees who scores at or below the gap line and on what, so the 1:1 above has a
+  // subject. Capped to 25 members (a brief, not a census); a refused read leaves the line out.
+  let competencyGapAgents: Array<{ name: string; gaps: string[] }> = []
+  if (teamAgentIds.length > 0) {
+    try {
+      const { loadAgentCompetency } = await import("@/lib/education/skill-freshness-radar")
+      const { data: members } = await supabase
+        .from("agents").select("id, user_id, users(first_name, last_name)")
+        .in("id", teamAgentIds.slice(0, 25)).eq("brokerage_id", params.brokerageId)
+      for (const m of (members ?? []) as any[]) {
+        const p = await loadAgentCompetency(supabase, { id: m.id, user_id: m.user_id ?? null, brokerage_id: params.brokerageId })
+        if (p.gaps.length === 0) continue
+        const u = Array.isArray(m.users) ? m.users[0] : m.users
+        const name = [u?.first_name, u?.last_name].filter(Boolean).join(" ").trim() || "A team member"
+        competencyGapAgents.push({ name, gaps: p.gaps.slice(0, 2).map((g) => `${g.label} ${g.score}/100`) })
+      }
+    } catch (e) {
+      console.error("[team-lead-brief] competency read failed (line left out):", (e as Error).message)
+    }
+  }
+  if (competencyGapAgents.length > 0) {
+    priorities.push({
+      id: "team-competency",
+      title: `${competencyGapAgents.length} team member${competencyGapAgents.length === 1 ? " has" : "s have"} a competency gap`,
+      body: competencyGapAgents.slice(0, 3).map((a) => `${a.name}: ${a.gaps.join(", ")}`).join(" · ") + " — the Academy has queued a module for each gap; make it the 1:1 topic",
+      severity: "medium",
+      manager: "recruiting_manager",
+      ctas: [{ label: "View team", href: "/dashboard/team" }],
+    })
+  }
+  // Points tiers across the team (wave 103, lane 103C): the team lead sees the
+  // team board (ruling #191) and the brief carries its tier mix. A refused read
+  // reads as "—".
+  let teamTiersLine = "—"
+  if (teamAgentIds.length > 0) {
+    const { data: tierRows, error: tierErr } = await supabase
+      .from("agents")
+      .select("gamification_points")
+      .in("id", teamAgentIds)
+      .limit(5000)
+    if (tierErr) console.error(`[TeamLeadBrief] team tier read refused: ${tierErr.message}`)
+    else {
+      const { tierDistributionLine } = await import("@/lib/gamification/tiers")
+      teamTiersLine = tierDistributionLine(((tierRows ?? []) as Array<{ gamification_points: number | null }>).map((r) => r.gamification_points))
+    }
+  }
+
   const metrics: BriefMetric[] = [
     { label: "Team members", value: teamMemberCount },
     { label: "Team deals at risk", value: dealsAtRisk.length },
     { label: "Team hot contacts", value: teamHotContacts },
+    { label: "Team tiers", value: teamTiersLine, href: "/dashboard/intelligence" },
     ...(isaHandoffs.length > 0 ? [{ label: "ISA handoffs (24h)", value: isaHandoffs.length }] : []),
+    ...(teamMemberCount > 0 ? [{ label: "Competency gaps", value: competencyGapAgents.length }] : []),
   ]
 
   let summary = "Team running normally — focus on coaching and pipeline review."

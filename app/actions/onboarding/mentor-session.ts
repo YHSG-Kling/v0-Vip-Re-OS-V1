@@ -44,21 +44,27 @@ export async function logMentorSession(input: {
   }).select("id").single()
   if (error || !row) return { ok: false, error: error?.message ?? "insert failed" }
 
-  // Award to both parties through the ONE atomic award path (m484's
-  // public.award_agent_points). A raw ledger insert stood here, which advanced the
-  // ledger and left agents.gamification_points untouched — so a mentor could hold
-  // ten sessions, earn 750 points on the board, and see no change to their tier.
+  // TOMBSTONE (wave 103, lane 103C): the direct awardAgentPoints loop over
+  // [mentor, mentee] that stood here moved onto the EVENT REACTOR — this action
+  // now EMITS the canonical MENTOR_SESSION_HELD event and lib/gamification/
+  // award-points.ts LIFECYCLE_AWARD_RULES (party "mentor_and_mentee", once per
+  // session) credits both parties through the same one award path. The session
+  // had a writer and no event; a mentorship moment the OS never heard about.
   if (brokerageId) {
-    const { awardAgentPoints, POINT_VALUES } = await import("@/lib/gamification/award-points")
-    for (const agentId of [input.mentorAgentId, input.menteeAgentId]) {
-      const awarded = await awardAgentPoints(svc, {
-        agentId,
-        points: POINT_VALUES.MENTOR_SESSION_HELD,
-        reason: "MENTOR_SESSION_HELD",
-        referenceType: "mentor_session",
-        referenceId: (row as any).id,
+    try {
+      const { emitKernelEvent } = await import("@/lib/kernel/emit")
+      const { KernelEvent } = await import("@/lib/kernel/events")
+      await emitKernelEvent({
+        event:       KernelEvent.MENTOR_SESSION_HELD,
+        brokerageId,
+        entityType:  "mentor_session",
+        entityId:    (row as any).id,
+        actorUserId: user.id,
+        metadata:    { mentor_agent_id: input.mentorAgentId, mentee_agent_id: input.menteeAgentId, session_type: input.sessionType ?? "check_in" },
       })
-      if (!awarded.ok) console.error(`[logMentorSession] ${awarded.error}`)
+    } catch (err) {
+      // The session row stands; a fan-out failure is logged, never swallowed (§3).
+      console.error(`[logMentorSession] MENTOR_SESSION_HELD did not emit for ${(row as any).id}:`, err)
     }
   }
 

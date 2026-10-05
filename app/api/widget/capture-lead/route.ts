@@ -32,6 +32,7 @@ export async function POST(req: NextRequest) {
       intent_type,
       notes,
       tcpa_consent,
+      visitor_id,
     }: {
       session_token: string
       first_name?: string | null
@@ -41,6 +42,11 @@ export async function POST(req: NextRequest) {
       intent_type?: 'buyer' | 'seller' | 'unknown'
       notes?: string | null
       tcpa_consent?: boolean
+      /** The widget's tracking cookie (vip_visitor_id) — the behavioral signal /api/track/visitor
+       *  opened for this visitor. With it, the consent artifact written below also lets the ONE
+       *  capture door stamp the consented email onto that signal and fire the identify loop
+       *  (wave 103, lane 103D; m706). Optional: an older embed sends none and loses nothing else. */
+      visitor_id?: string | null
     } = body
 
     if (!session_token) {
@@ -113,7 +119,7 @@ export async function POST(req: NextRequest) {
     if (consentGiven) {
       const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
       const userAgent = req.headers.get('user-agent') ?? null
-      await persistContactConsent({
+      const consentWrite = await persistContactConsent({
         brokerageId: session.brokerage_id,
         agentId: session.agent_id ?? null,
         contactId,
@@ -122,7 +128,33 @@ export async function POST(req: NextRequest) {
         consented: true,
         ipAddress: ip,
         userAgent,
-      }).catch(() => {})
+      }).catch(() => null)
+
+      // ── CONSENTED EMAIL CAPTURE on the visitor's behavioral signal (wave 103, lane 103D; m706) ──
+      // The SAME door as the tracking pixel: trackBehavior (the behavioral_signals writer) takes the
+      // artifact persistContactConsent just wrote — by id, read back in this tenant — and stores the
+      // email on the visitor's signal, then the identify loop links the signal to the contact captured
+      // above. No artifact (refused ledger write) or no visitor id → nothing is stored; the capture
+      // itself is already done and is never gated on this.
+      if (consentWrite?.consentEventId && email && typeof visitor_id === 'string' && visitor_id.trim()) {
+        try {
+          const { trackBehavior } = await import('@/app/actions/lead-intelligence')
+          const tracked = await trackBehavior({
+            visitor_id: visitor_id.trim(),
+            page_visited: '/api/widget/capture-lead',
+            time_spent: 0,
+            action_taken: 'widget_capture_form',
+            ip_address: ip ?? undefined,
+            user_agent: userAgent ?? undefined,
+            brokerage_id: session.brokerage_id,
+            email_capture: { email, consent_event_id: consentWrite.consentEventId },
+          })
+          const ec = (tracked as { emailCapture?: { stored: boolean; reason?: string } }).emailCapture
+          if (!tracked.success || (ec && !ec.stored)) console.warn(`[Widget/capture-lead] visitor email not stamped on the signal: ${(tracked as { error?: string }).error ?? ec?.reason ?? 'unknown'}`)
+        } catch (e) {
+          console.warn('[Widget/capture-lead] visitor signal capture threw (contact already captured):', e instanceof Error ? e.message : String(e))
+        }
+      }
     }
 
     // ── Update session with contact_id and capture state ─────────────────

@@ -87,6 +87,7 @@ export default async function IntelligencePage() {
       nextTier: "Bronze" as string | null,
       pointsToNextTier: 500,
       progressPercent: 0,
+      underStrain: false,
     })),
     getAgentBadges(agentId).catch(() => ({ ok: false as const, badges: [] })),
     getWeeklyMetrics(brokerageId, thisWeekStart).catch(() => ({

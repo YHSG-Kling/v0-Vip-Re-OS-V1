@@ -34,6 +34,18 @@
  *   C. the partner-rail lender writes lender_for from a referral_partner; the cron route wires the
  *      backfill and ledgers its summary; R9: contacts.vendor_id writer census (published, UNRESOLVED).
  *
+ * WAVE 103 (lane 103D — owner answer 2: contacts.vendor_id → vendors IS a live FK, build its writer on the
+ * vendor survivor):
+ *   10. lib/kernel/vendor-seat-contact.ts, in memory: planVendorSeatContactLinks (pure: unlinked → link,
+ *       this vendor → already, another vendor → never re-pointed), linkVendorSeatContact (tenant-pinned,
+ *       case-insensitive email match, link ONLY — no contact created, a foreign vendor refused, a refused
+ *       read reported, the update counted, idempotent) with field_provenance.vendor_id stamped through
+ *       stampFieldProvenance (source vendor_seat, actor = the accepting user); vendorSeatCorroboration
+ *       (pure: the seat's own vendor_for edges corroborate, another vendor's do not). Census: R9 is RESOLVED
+ *       — exactly ONE contacts.vendor_id writer (the seat module), called by acceptVendorInviteAction after
+ *       the seat's role assignment with the invitation's tenant / vendor / email; the contact brief reads
+ *       it ("Is a vendor: <category>") with the vendor's vendor_for edges as corroboration.
+ *
  * BLIND SPOTS (published): the survivor writers are proven by census, not executed (their module
  *   graphs pull server-only/cookie edges); the CHECK/RLS/trigger are proven on SQL text, not run
  *   (m698 — APPLIED LIVE 2026-10-05; m702 — APPLIED LIVE 2026-10-05);
@@ -57,7 +69,10 @@ import {
   coBuyerContactIdsFromTransactionRow, resolveCoBuyerContactIds,
   planCoOwnerEdges, deriveCoOwnerEdges, planOccupancyEdges, deriveOccupancyEdges,
   backfillTransactionCloseEdges,
+  // wave 103 (103D)
+  vendorSeatCorroboration,
 } from "../lib/kernel/relationship-graph"
+import { planVendorSeatContactLinks, linkVendorSeatContact, VENDOR_SEAT_PROVENANCE_SOURCE } from "../lib/kernel/vendor-seat-contact"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -352,6 +367,56 @@ async function main() {
   }
 
   // ── census ────────────────────────────────────────────────────────────────────────────────
+  // ── 10. contacts.vendor_id — THE writer on the seat survivor (wave 103, lane 103D; owner answer 2) ──
+  console.log("\n[10] contacts.vendor_id: the seat link (link only, tenant-pinned, provenance-stamped) + vendor_for corroboration")
+  {
+    const V1 = "ffffffff-0000-4000-8000-000000000001"
+    const V2 = "ffffffff-0000-4000-8000-000000000002"
+    const VB = "ffffffff-0000-4000-8000-00000000000b"
+    const C4 = "aaaaaaaa-0000-4000-8000-000000000004"
+    const C5 = "aaaaaaaa-0000-4000-8000-000000000005"
+    const plan = planVendorSeatContactLinks([{ id: C1, vendor_id: null }, { id: C2, vendor_id: V1 }, { id: C3, vendor_id: V2 }, { id: "", vendor_id: null }], V1)
+    check("PURE plan: an unlinked row is linked, a row already on THIS vendor is reported as already, a row on ANOTHER vendor is never re-pointed, a blank id is skipped", plan.link.join() === C1 && plan.already.join() === C2 && plan.otherVendor.join() === C3)
+    check("positive control: nothing to link → empty plan", planVendorSeatContactLinks([], V1).link.length === 0)
+    const seed = () => ({
+      vendors: [{ id: V1, brokerage_id: A, category: "plumber", name: "Pipes Co" }, { id: VB, brokerage_id: B, category: "roofer", name: "Roofs" }],
+      contacts: [
+        { id: C1, brokerage_id: A, email: "Vendor@Pipes.Example", vendor_id: null, enrichment_profile: { field_provenance: { email: { source: "staff" } } } },
+        { id: C2, brokerage_id: A, email: "vendor@pipes.example", vendor_id: V2, enrichment_profile: null },
+        { id: C3, brokerage_id: B, email: "vendor@pipes.example", vendor_id: null, enrichment_profile: null },
+        { id: C4, brokerage_id: A, email: "someone.else@pipes.example", vendor_id: null, enrichment_profile: null },
+      ],
+    })
+    const svc = memSupabase(seed())
+    const r = await linkVendorSeatContact(svc, { brokerageId: A, vendorId: V1, email: " vendor@pipes.example ", actorUserId: U1 })
+    const row = (id: string) => (svc.tables.contacts as any[]).find((c) => c.id === id)
+    check("the tenant's contact with the seat's email is LINKED (case-insensitive match; the other address is not); tenant B's namesake row is untouched", r.ok && r.linked.join() === C1 && row(C1).vendor_id === V1 && row(C3).vendor_id === null && row(C4).vendor_id === null)
+    check("a row already on ANOTHER vendor is reported, never re-pointed; the vendor's category comes back for the reader", r.ok && r.otherVendor.join() === C2 && row(C2).vendor_id === V2 && r.category === "plumber" && r.errors.length === 0)
+    const fp = row(C1).enrichment_profile?.field_provenance
+    check(`provenance through THE one writer: field_provenance.vendor_id {source ${VENDOR_SEAT_PROVENANCE_SOURCE}, capability vendor.seat_link, purpose self_service, actor = the accepting user}; the prior email stamp survives the merge`, fp?.vendor_id?.source === VENDOR_SEAT_PROVENANCE_SOURCE && fp?.vendor_id?.capability === "vendor.seat_link" && fp?.vendor_id?.purpose === "self_service" && fp?.vendor_id?.actor === U1 && typeof fp?.vendor_id?.retrievedAt === "string" && fp?.email?.source === "staff")
+    check("the update is tenant-pinned and counted (one contacts update, matched 1)", svc.writes.filter((w) => w.table === "contacts" && w.op === "update").length === 1 && svc.writes.find((w) => w.table === "contacts")!.matched === 1)
+    const again = await linkVendorSeatContact(svc, { brokerageId: A, vendorId: V1, email: "vendor@pipes.example", actorUserId: U1 })
+    check("a re-run links nothing new (already), writes nothing (idempotent)", again.ok && again.linked.length === 0 && again.already.join() === C1 && svc.writes.filter((w) => w.table === "contacts" && w.op === "update").length === 1)
+    check("no contact is ever CREATED by the link (contacts count unchanged)", (svc.tables.contacts as any[]).length === 4 && !svc.writes.some((w) => w.table === "contacts" && w.op === "insert"))
+    const foreign = await linkVendorSeatContact(memSupabase(seed()), { brokerageId: A, vendorId: VB, email: "vendor@pipes.example", actorUserId: U1 })
+    check("fail closed: a vendor outside the tenant is refused before any read of contacts (vendor_not_in_tenant)", !foreign.ok && foreign.reason === "vendor_not_in_tenant")
+    const noTenant = await linkVendorSeatContact(memSupabase(seed()), { brokerageId: "", vendorId: V1, email: "x@y.z", actorUserId: U1 })
+    const noEmail = await linkVendorSeatContact(memSupabase(seed()), { brokerageId: A, vendorId: V1, email: "  ", actorUserId: U1 })
+    check("no tenant → refused; no email → refused (nothing matched on a blank)", !noTenant.ok && noTenant.reason === "no_tenant" && !noEmail.ok && noEmail.reason === "no_email")
+    const refused = await linkVendorSeatContact(memSupabase(seed(), { refuse: { contacts: "permission denied for table contacts" } }), { brokerageId: A, vendorId: V1, email: "vendor@pipes.example", actorUserId: U1 })
+    check("a refused contacts read is READ and reported (read_refused), never a silent 'no match'", !refused.ok && refused.reason === "read_refused" && /permission denied/.test(refused.error ?? ""))
+    // vendor_for corroboration — the seat's own edges, read for the VENDOR entity
+    const edges: any[] = [
+      { id: "e1", brokerage_id: A, from_entity_type: "vendor", from_entity_id: V1, to_entity_type: "contact", to_entity_id: C4, relationship_type: "vendor_for", evidence: ev(0.9, "vendor_booking"), effective_from: null, effective_to: null, created_by: null },
+      { id: "e2", brokerage_id: A, from_entity_type: "vendor", from_entity_id: V1, to_entity_type: "contact", to_entity_id: C5, relationship_type: "vendor_for", evidence: ev(0.9, "vendor_booking"), effective_from: null, effective_to: null, created_by: null },
+      { id: "e3", brokerage_id: A, from_entity_type: "vendor", from_entity_id: V1, to_entity_type: "contact", to_entity_id: C5, relationship_type: "lender_for", evidence: ev(0.9), effective_from: null, effective_to: null, created_by: null },
+      { id: "e4", brokerage_id: A, from_entity_type: "vendor", from_entity_id: V2, to_entity_type: "contact", to_entity_id: C4, relationship_type: "vendor_for", evidence: ev(0.9), effective_from: null, effective_to: null, created_by: null },
+    ]
+    const corr = vendorSeatCorroboration(edges, V1)
+    check("vendorSeatCorroboration: the seat's OWN vendor_for edges corroborate (2 served contacts, sorted, deduplicated); another vendor's edge and a lender_for edge do not count", corr.corroborated && corr.served.join() === [C4, C5].sort().join() && corr.edges.length === 2)
+    check("positive control: no seat → nothing corroborates; a vendor with no edges → not corroborated", !vendorSeatCorroboration(edges, null).corroborated && !vendorSeatCorroboration(edges, VB).corroborated && vendorSeatCorroboration(edges, VB).served.length === 0)
+  }
+
   console.log("\n[C] census — survivor writers reach the one kernel writer (stripped source)")
   {
     const writers: Array<[string, RegExp]> = [
@@ -386,19 +451,27 @@ async function main() {
     check("the weekly cron ledgers the backfill summary (relationship_backfill in the cron success metadata)", /relationship_backfill: relationshipBackfill/.test(stripped("app/api/cron/source-conversion-learning/route.ts")) && /recordCronSuccessAction\(\{[^}]*metadata: summary/.test(stripped("app/api/cron/source-conversion-learning/route.ts")))
     check("the cron that carries the backfill is dispatched weekly (lib/kernel/cron-dispatch.ts)", /\/api\/cron\/source-conversion-learning",\s*schedule: "\d+ \d+ \* \* \d"/.test(stripped("lib/kernel/cron-dispatch.ts")))
     check("the partner rail prefers the vendor endpoint and falls back to the referral_partner (never both, never none when a partner row exists)", /lenderVendorId\s*\?\s*\{ type: "vendor" as const[\s\S]{0,120}referral_partner/.test(stripped("app/actions/buyer-financial.ts")))
-    // R9 — contacts.vendor_id: the orphan-doctrine census, PUBLISHED. A writer would be a contacts
-    // insert/update/upsert whose payload names vendor_id. (Positive control: a fixture is seen.)
+    // R9 — contacts.vendor_id: the orphan-doctrine census. 102F published 0 writers (UNRESOLVED); the
+    // owner ruled (wave 103, answer 2) and lane 103D built THE writer on the seat survivor. The RULE:
+    // every contacts writer naming vendor_id is the one kernel seat-link service — never a second
+    // path. (Positive control: a fixture is seen.)
     {
       const { execSync: ex } = await import("node:child_process")
       const files = ex(`grep -rl --include=*.ts --include=*.tsx 'from("contacts")' lib app || true`, { cwd: ROOT, encoding: "utf8" }).split("\n").filter(Boolean)
       const vendorIdWriter = (text: string) => /\.from\("contacts"\)[\s\S]{0,400}?\.(insert|update|upsert)\(\s*\{[^)]{0,600}?\bvendor_id\s*:/.test(text)
       const writers = files.filter((f) => vendorIdWriter(stripped(f)))
-      console.log(`    R9 census: ${files.length} modules read/write contacts; contacts.vendor_id writers: ${writers.length}${writers.length ? ` (${writers.join(", ")})` : ""} — UNRESOLVED (no vendor seat creates/links its own contact row; see lane102F-notes)`)
+      console.log(`    R9 census: ${files.length} modules read/write contacts; contacts.vendor_id writers: ${writers.length}${writers.length ? ` (${writers.join(", ")})` : ""}`)
       check("positive control: the R9 finder recognises a fixture contacts writer naming vendor_id", vendorIdWriter(`await svc.from("contacts").update({ vendor_id: v.id }).eq("id", c)`) && !vendorIdWriter(`await svc.from("contacts").select("vendor_id")`))
-      check("R9: contacts.vendor_id writer count is PUBLISHED above (0 today = UNRESOLVED, not a silent pass)", Array.isArray(writers))
+      check("R9 RESOLVED: contacts.vendor_id has exactly ONE writer and it is lib/kernel/vendor-seat-contact.ts (the seat survivor's link, never a second path)", writers.length === 1 && writers[0] === "lib/kernel/vendor-seat-contact.ts")
+      const invite = stripped("app/actions/vendor-invite.ts")
+      check("acceptVendorInviteAction (THE seat activation) calls linkVendorSeatContact AFTER the user_role_assignments link, with the invitation's tenant / vendor / email and the accepting user as actor", /from\("user_role_assignments"\)\.insert\(/.test(invite) && invite.indexOf('from("user_role_assignments").insert(') < invite.indexOf("linkVendorSeatContact(svc, {") && /linkVendorSeatContact\(svc, \{\s*brokerageId: invitation\.brokerage_id as string,\s*vendorId: invitation\.vendor_id as string,\s*email: invitation\.email as string,\s*actorUserId: user\.id,/.test(invite))
+      check("the seat link never creates a contact (no contacts insert in the seat module) and is link-only in the invite action", !/\.from\("contacts"\)[\s\S]{0,200}?\.insert\(/.test(stripped("lib/kernel/vendor-seat-contact.ts")) && !/\.from\("contacts"\)/.test(invite))
+      const brief = stripped("lib/contacts/contact-brief.ts")
+      check("the contact brief reads contacts.vendor_id, the vendor's category in the contact's tenant and the seat's own vendor_for edges, and says 'Is a vendor: <category>'", /vendor_id,/.test(brief) && /from\("vendors"\)\.select\("id, name, category"\)\.eq\("id", vendorId\)\.eq\("brokerage_id", brokerageId\)/.test(brief) && /entity: \{ type: "vendor", id: vendorId \}, types: \["vendor_for"\]/.test(brief) && /vendorSeatCorroboration\(own\.edges, vendorId\)/.test(brief) && /`Is a vendor: \$\{vendorSeat\.category/.test(brief))
     }
     const readers: Array<[string, RegExp]> = [
       ["lib/contacts/contact-brief.ts", /neighbors\(/],
+      ["lib/contacts/contact-brief.ts", /vendorSeatCorroboration\(/],
       ["lib/ai-isa/lead-action-plan.ts", /representedByOutsideAgent\(/],
       ["lib/ai-isa/lead-action-plan.ts", /householdContactIds/],
       ["lib/kernel/referral-radar.ts", /"referred_by"/],

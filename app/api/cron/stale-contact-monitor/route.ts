@@ -13,6 +13,7 @@ import { verifyCronAuth } from "@/lib/cron-auth"
 import { ISA_SERVICE_IDENTITY, isaTenantWorkQueue } from "@/lib/ai-isa/isa-acting-scope"
 import { scopeBrokerageId } from "@/lib/kernel/tenant-scope"
 import { resolveStaleThreshold } from "@/lib/ai-isa/reengagement-policy"
+import { throttleTouchBatch, type CapacityBand } from "@/lib/kernel/capacity-guardian"
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300
@@ -45,6 +46,8 @@ export async function GET(request: NextRequest) {
     ghostedCount: number
     reengaged: number
     skipped: number
+    /** Touches withheld because the owning agent is at/over capacity (wave 103, lane 103B). */
+    throttledForCapacity: number
     errors: string[]
   }> = []
 
@@ -113,6 +116,8 @@ export async function GET(request: NextRequest) {
 
     let reengaged = 0
     let skipped = 0
+    /** Touches withheld this run because the owning agent is at/over capacity (wave 103). */
+    let throttledForCapacity = 0
     const errors: string[] = []
 
     try {
@@ -163,7 +168,23 @@ export async function GET(request: NextRequest) {
           return { item: contact, plan: null }
         }
       }))
-      const staleContacts = rankContactsForTouch(planned).slice(0, BATCH)
+      const rankedForTouch = rankContactsForTouch(planned).slice(0, BATCH)
+      // CAPACITY THROTTLE (wave 103, lane 103B). Every automated touch lands its reply on the
+      // OWNING AGENT; a book whose agent is over capacity gets FEWER touches this run (the one
+      // kernel answer, capacityFor → band → touchAllowanceFor), never more work for a drowning
+      // agent. A refused capacity read throttles nothing (null band = kept).
+      const { capacityFor, resolveBrokerageMaxLoad } = await import('@/lib/lead-assignment/capacity-pick')
+      const bandByAgent = new Map<string, CapacityBand | null>()
+      try {
+        const maxLoad = await resolveBrokerageMaxLoad(supabase, brokerageId)
+        for (const agentId of new Set(rankedForTouch.map((c) => c.agent_id).filter((v): v is string => !!v))) {
+          try { bandByAgent.set(agentId, (await capacityFor(supabase, brokerageId, agentId, { now: nbaNow, maxLoad })).band) }
+          catch (e) { console.error(`[StaleContactMonitor] capacity read failed for agent ${agentId}: ${e instanceof Error ? e.message : String(e)}`); bandByAgent.set(agentId, null) }
+        }
+      } catch (e) { console.error(`[StaleContactMonitor] capacity ceiling read failed: ${e instanceof Error ? e.message : String(e)}`) }
+      const throttle = throttleTouchBatch(rankedForTouch, (c) => c.agent_id, (id) => bandByAgent.get(id) ?? null, BATCH)
+      throttledForCapacity = throttle.throttled
+      const staleContacts = throttle.kept
 
       for (const contact of staleContacts) {
         try {
@@ -305,11 +326,12 @@ export async function GET(request: NextRequest) {
         ghostedCount: staleContacts.filter((c) => c.detection_type === 'ghosted').length,
         reengaged,
         skipped,
+        throttledForCapacity,
         errors,
       })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
-      results.push({ brokerageId, staleCount: 0, ghostedCount: 0, reengaged: 0, skipped: 0, errors: [msg] })
+      results.push({ brokerageId, staleCount: 0, ghostedCount: 0, reengaged: 0, skipped: 0, throttledForCapacity, errors: [msg] })
     }
   }
 

@@ -145,6 +145,16 @@ export interface EducationContext {
   contactType: string | null
   currentMilestone: string | null
   /**
+   * WAVE 103 (lane 103A) — DUAL CLIENT, BOTH SIDES. The kernel's portal resolution shows a dual
+   * client (selling AND buying with us) BOTH layouts (lib/kernel/portal.ts: ["seller","buyer"]), but
+   * education read only the newest active transaction's milestone, so the other side of the move
+   * got no stage lesson. This is the earliest pending client-visible milestone of the OTHER active
+   * transaction; the learning router adds it to the stage match. Null for a single-side client.
+   */
+  secondaryMilestone: string | null
+  /** Every layout the portal shows this contact (primary first) — a dual client has two. */
+  layouts: PortalView[]
+  /**
    * MOUNTED, orphan doctrine §1.2, wave 55: the third JourneyPhase value.
    * "post" — the contact's portal view is "lifetime" (closed, no active
    * transaction: determinePortalView already decided this). "active" — an
@@ -208,8 +218,12 @@ export async function resolveEducationContext(
   contactId: string
 ): Promise<EducationContext> {
   // Get portal view from kernel
-  // (wave 94: the kernel's LAYOUTS — education follows the PRIMARY layout of the portal.)
-  const portalView: PortalView = (await resolvePortalLayouts(supabase, { contactId })).primary
+  // (wave 94: the kernel's LAYOUTS — education follows the PRIMARY layout of the portal;
+  //  wave 103: a dual client's SECOND layout gets its own stage milestone below.)
+  const layoutRes = await resolvePortalLayouts(supabase, { contactId })
+  const portalView: PortalView = layoutRes.primary
+  const layouts: PortalView[] = layoutRes.layouts
+  const isDualClient = layouts.includes("buyer") && layouts.includes("seller")
 
   // Get contact details
   // `age_range` joins the select under the wave-15 owner ruling. It is the column
@@ -281,20 +295,21 @@ export async function resolveEducationContext(
 
   // Get current milestone from active transaction
   let currentMilestone: string | null = null
-  
-  // Find active transaction for this contact
+  let secondaryMilestone: string | null = null
+
+  // Find active transaction(s) for this contact — ONE for a single-side client; a DUAL client
+  // (both layouts) reads its two newest so the other side of the move gets a stage lesson too.
   const { data: transactions } = await supabase
     .from("transactions")
     .select("id, status")
     .or(clientTransactionFilter(contactId))
     .not("status", "in", "(closed,completed,cancelled)")
     .order("created_at", { ascending: false })
-    .limit(1)
+    .limit(isDualClient ? 2 : 1)
 
-  if (transactions && transactions.length > 0) {
-    const txId = transactions[0].id
-
-    // Get earliest incomplete CLIENT_VISIBLE milestone
+  // Earliest incomplete CLIENT_VISIBLE milestone of one transaction, anchored on the canonical
+  // identity so the lesson/explanation maps resolve regardless of the tier's free-text name.
+  const earliestPendingMilestone = async (txId: string): Promise<string | null> => {
     const { data: milestone } = await supabase
       .from("transaction_milestones")
       .select("milestone_name, milestone_type")
@@ -303,11 +318,14 @@ export async function resolveEducationContext(
       .eq("is_client_visible", true)
       .order("target_date", { ascending: true })
       .maybeSingle()
+    return milestone ? (resolveMilestoneIdentity(milestone) ?? milestone.milestone_name) : null
+  }
 
-    if (milestone) {
-      // Anchor on the canonical identity so the lesson/explanation maps resolve
-      // regardless of the tier's free-text milestone_name.
-      currentMilestone = resolveMilestoneIdentity(milestone) ?? milestone.milestone_name
+  if (transactions && transactions.length > 0) {
+    currentMilestone = await earliestPendingMilestone(transactions[0].id)
+    if (transactions.length > 1) {
+      const second = await earliestPendingMilestone(transactions[1].id)
+      if (second && second !== currentMilestone) secondaryMilestone = second
     }
   }
 
@@ -340,6 +358,8 @@ export async function resolveEducationContext(
     buyerStage,
     contactType,
     currentMilestone,
+    secondaryMilestone,
+    layouts,
     journeyPhase,
     ageSeg,
     ageSegSource,

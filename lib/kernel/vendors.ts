@@ -41,6 +41,10 @@
 //   vendors, vendor_bookings, vendor_assignments,
 //   vendor_ratings, referral_partners, listings, transactions
 
+// contacts.vendor_id (a contact that HOLDS a vendor seat) is written at seat activation by
+// lib/kernel/vendor-seat-contact.ts (wave 103, lane 103D) from app/actions/vendor-invite.ts
+// acceptVendorInviteAction — the vendor commands here create vendors, never contacts.
+
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { sendEmail } from "@/lib/providers/messaging"

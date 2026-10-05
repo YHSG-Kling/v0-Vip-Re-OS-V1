@@ -25,7 +25,6 @@ import {
 } from "@/app/dashboard/referrals/components/os"
 import { updateReferralStatus, sendReferralThankYou } from "@/app/actions/referrals/referral-actions"
 import type { ReferralStatus } from "@/lib/referrals/referral-status"
-import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 import { ReviewRequestTimingCard, type ReviewRequestTimingInitial } from "./review-request-timing-card"
 
 interface Referral {
@@ -172,7 +171,11 @@ export function ReferralsOsClient({
 
   const handleSendThankYou = async (referralId: string) => {
     await sendReferralThankYou(referralId)
-    awardPointsForAction(agentId, "referral_received").catch(() => {})
+    // TOMBSTONE (wave 103, lane 103C): `awardPointsForAction(agentId,
+    // "referral_received")` stood here — it credited a REFERRAL for sending a
+    // thank-you note, and would have doubled the award the event reactor now
+    // makes once per referral on REFERRAL_RECEIVED (createReferral's emit;
+    // lib/gamification/award-points.ts:LIFECYCLE_AWARD_RULES).
     router.refresh()
   }
 

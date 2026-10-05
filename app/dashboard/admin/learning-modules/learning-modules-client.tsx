@@ -59,6 +59,9 @@ const GAP_TAG_SUGGESTIONS = [
   "open_deal_interventions", "open_listing_interventions", "long_dom", "low_close_rate",
   "tc_workload_spike", "tc_closing_backlog", "unresolved_compliance_events",
   "open_tenant_safety_findings", "team_pattern_adoption_pending", "staff_onboarding",
+  // Wave 103 (103A): the competency model's own gap tags (lib/education/skill-freshness.ts
+  // COMPETENCY_GAP_TAG) — a module tagged here is what the learning router assigns for that gap.
+  "objection_handling", "product_knowledge", "coursework_incomplete", "call_quality", "compliance_ce",
 ]
 
 interface ModuleRow {

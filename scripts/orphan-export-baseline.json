@@ -41,12 +41,11 @@
     "lib/agentic-os/invocation-log.ts": 1,
     "lib/agentic-os/mcp-tools.ts": 2,
     "lib/agentic-os/vendor-ownership.ts": 2,
-    "lib/agents/agent-books.ts": 1,
     "lib/agents/agent-deactivation.ts": 1,
     "lib/agents/buyer-match-reel-producer.ts": 1,
     "lib/agents/buyer-reel-delivery.ts": 2,
     "lib/agents/coverage-mode.ts": 1,
-    "lib/agents/education-delivery-producer.ts": 3,
+    "lib/agents/education-delivery-producer.ts": 4,
     "lib/agents/recruit-outreach-producer.ts": 1,
     "lib/agents/referral-closer.ts": 2,
     "lib/agents/seller-update-reel-producer.ts": 4,
@@ -133,6 +132,7 @@
     "lib/documents/stage-candidates.ts": 1,
     "lib/education/agent-guide.ts": 2,
     "lib/education/book-authority-program.ts": 1,
+    "lib/education/client-education-authoring.ts": 1,
     "lib/education/client-education-curriculum.ts": 2,
     "lib/education/client-tutor.ts": 2,
     "lib/education/content-freshness.ts": 3,
@@ -144,7 +144,7 @@
     "lib/education/regulatory-curriculum.ts": 2,
     "lib/education/seller-signal-education-context.ts": 1,
     "lib/education/skill-freshness-radar.ts": 1,
-    "lib/education/skill-freshness.ts": 1,
+    "lib/education/skill-freshness.ts": 2,
     "lib/embed/widget-modes.ts": 1,
     "lib/enrichment/household-financials.ts": 1,
     "lib/enrichment/reverse-skip-trace.ts": 1,
@@ -172,6 +172,8 @@
     "lib/finance/tax-planning.ts": 3,
     "lib/finance/team-pl-writer.ts": 1,
     "lib/financials/revenue-projection.ts": 2,
+    "lib/gamification/strain.ts": 2,
+    "lib/gamification/work-anniversaries.ts": 1,
     "lib/geo/citation-scope.ts": 1,
     "lib/geo/citation-share.ts": 1,
     "lib/geo/publish-video-landing.ts": 1,
@@ -201,7 +203,7 @@
     "lib/intelligence/retention-outcomes.ts": 2,
     "lib/intelligence/revenue-share-board.ts": 1,
     "lib/intelligence/roi-ledger.ts": 3,
-    "lib/intelligence/skill-freshness-board.ts": 1,
+    "lib/intelligence/skill-freshness-board.ts": 2,
     "lib/intelligence/steer-my-day.ts": 1,
     "lib/intelligence/time-to-value-radar.ts": 1,
     "lib/kernel/action-ledger.ts": 2,
@@ -305,6 +307,7 @@
     "lib/kernel/vendor-orchestration.ts": 3,
     "lib/kernel/vendor-price-intelligence.ts": 2,
     "lib/kernel/vendor-rating-governance.ts": 4,
+    "lib/kernel/vendor-seat-contact.ts": 1,
     "lib/kernel/vendor-subscription.ts": 1,
     "lib/kernel/vendor-verification.ts": 1,
     "lib/kernel/video-coordination.ts": 2,
@@ -316,6 +319,7 @@
     "lib/lead-governance/protected-class-signals.ts": 4,
     "lib/lead-governance/seller-signal-strength.ts": 4,
     "lib/lead-intelligence/behavioral-summary.ts": 4,
+    "lib/lead-intelligence/visitor-email-capture.ts": 1,
     "lib/lead-magnets/embed-snippet.ts": 1,
     "lib/lead-pipeline/ai-intent-classifier.ts": 3,
     "lib/lead-pipeline/email-engagement-sourcer.ts": 1,
@@ -523,7 +527,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10664,
+  "census": 10694,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2771,7 +2775,7 @@
     "lib/agents/contact-memory.ts": 2,
     "lib/agents/coverage-mode.ts": 2,
     "lib/agents/deal-coordinator.ts": 1,
-    "lib/agents/education-delivery-producer.ts": 5,
+    "lib/agents/education-delivery-producer.ts": 6,
     "lib/agents/extract-client-messages.ts": 1,
     "lib/agents/generate-client-message.ts": 1,
     "lib/agents/listing-concierge.ts": 1,
@@ -3230,7 +3234,7 @@
     "lib/education/agent-guide.ts": 3,
     "lib/education/book-authority-program.ts": 2,
     "lib/education/ce-provider.ts": 7,
-    "lib/education/client-education-authoring.ts": 2,
+    "lib/education/client-education-authoring.ts": 3,
     "lib/education/client-education-curriculum.ts": 3,
     "lib/education/client-tutor.ts": 3,
     "lib/education/content-freshness.ts": 5,
@@ -3244,8 +3248,8 @@
     "lib/education/question-gap.ts": 2,
     "lib/education/regulatory-curriculum.ts": 3,
     "lib/education/seller-signal-education-context.ts": 2,
-    "lib/education/skill-freshness-radar.ts": 3,
-    "lib/education/skill-freshness.ts": 2,
+    "lib/education/skill-freshness-radar.ts": 5,
+    "lib/education/skill-freshness.ts": 4,
     "lib/elevenlabs/conv-ai.ts": 4,
     "lib/email/orchestrate-email-preset-send.ts": 1,
     "lib/embed/resolve-site-embed.ts": 1,
@@ -3358,9 +3362,12 @@
     "lib/forms/pdf-form-fill.ts": 3,
     "lib/forms/prefill-property-into-pdf.ts": 1,
     "lib/forms/state-package-match.ts": 1,
-    "lib/gamification/award-points.ts": 1,
+    "lib/gamification/award-points.ts": 4,
     "lib/gamification/leaderboard-vocabulary.ts": 5,
-    "lib/gamification/tiers.ts": 4,
+    "lib/gamification/lifecycle-awards.ts": 2,
+    "lib/gamification/strain.ts": 4,
+    "lib/gamification/tiers.ts": 5,
+    "lib/gamification/work-anniversaries.ts": 2,
     "lib/geo/citation-scope.ts": 4,
     "lib/geo/citation-share.ts": 3,
     "lib/geo/publish-video-landing.ts": 5,
@@ -3480,7 +3487,7 @@
     "lib/intelligence/roi-ledger.ts": 6,
     "lib/intelligence/showing-feedback-routing-runner.ts": 1,
     "lib/intelligence/showing-feedback-routing.ts": 1,
-    "lib/intelligence/skill-freshness-board.ts": 2,
+    "lib/intelligence/skill-freshness-board.ts": 3,
     "lib/intelligence/small-wins.ts": 1,
     "lib/intelligence/spoken-ai-receipt.ts": 1,
     "lib/intelligence/standup-narrative.ts": 1,
@@ -3543,7 +3550,7 @@
     "lib/kernel/campaign-center.ts": 4,
     "lib/kernel/capability-radar.ts": 1,
     "lib/kernel/capacity-guardian-runner.ts": 1,
-    "lib/kernel/capacity-guardian.ts": 4,
+    "lib/kernel/capacity-guardian.ts": 8,
     "lib/kernel/causation.ts": 2,
     "lib/kernel/child-safe-delete.ts": 2,
     "lib/kernel/client-framing.ts": 2,
@@ -3682,7 +3689,7 @@
     "lib/kernel/referral-appreciation.ts": 8,
     "lib/kernel/referral-radar.ts": 6,
     "lib/kernel/regulatory-watcher.ts": 6,
-    "lib/kernel/relationship-graph.ts": 18,
+    "lib/kernel/relationship-graph.ts": 19,
     "lib/kernel/repair-digest.ts": 3,
     "lib/kernel/reporting-autonomy.ts": 3,
     "lib/kernel/reporting-scope.ts": 2,
@@ -3745,6 +3752,7 @@
     "lib/kernel/vendor-rating-governance.ts": 6,
     "lib/kernel/vendor-request.ts": 4,
     "lib/kernel/vendor-review-moderation.ts": 4,
+    "lib/kernel/vendor-seat-contact.ts": 2,
     "lib/kernel/vendor-sla.ts": 2,
     "lib/kernel/vendor-subscription.ts": 6,
     "lib/kernel/vendor-verification.ts": 4,
@@ -3760,7 +3768,7 @@
     "lib/knowledge/embedding-service.ts": 10,
     "lib/knowledge/help-topic-categories.ts": 2,
     "lib/lead-assignment/assignment-engine.ts": 3,
-    "lib/lead-assignment/capacity-pick.ts": 2,
+    "lib/lead-assignment/capacity-pick.ts": 3,
     "lib/lead-assignment/contact-assignment.ts": 1,
     "lib/lead-assignment/default-assignment.ts": 1,
     "lib/lead-assignment/mailbox-owner-preference.ts": 3,
@@ -3784,6 +3792,7 @@
     "lib/lead-intelligence/person-spend.ts": 3,
     "lib/lead-intelligence/person-timeline.ts": 3,
     "lib/lead-intelligence/signal-extensions.ts": 4,
+    "lib/lead-intelligence/visitor-email-capture.ts": 3,
     "lib/lead-intent/inbound-lead-intent.ts": 1,
     "lib/lead-intent/lead-opt-out.ts": 2,
     "lib/lead-magnets/embed-snippet.ts": 2,
@@ -13728,6 +13737,7 @@
       "pickEducationChannel",
       "conciergeForSide",
       "buildEducationDelivery",
+      "resolveClientSides",
       "produceEducationDelivery",
       "produceEducationForEvent"
     ],
@@ -16192,6 +16202,7 @@
     ],
     "lib/education/client-education-authoring.ts": [
       "authorClientModule",
+      "clientModulePassesCompliance",
       "persistClientModule"
     ],
     "lib/education/client-education-curriculum.ts": [
@@ -16263,13 +16274,17 @@
       "readSellerSignalEducationContext"
     ],
     "lib/education/skill-freshness-radar.ts": [
+      "gatherSkillSignals",
       "loadAgentSkillFreshness",
+      "loadAgentCompetency",
       "runSkillFreshnessRadar",
       "runSkillFreshnessRadarAll"
     ],
     "lib/education/skill-freshness.ts": [
       "scoreSkill",
-      "computeSkillFreshness"
+      "computeSkillFreshness",
+      "claimSpeedScore",
+      "scoreCompetency"
     ],
     "lib/elevenlabs/conv-ai.ts": [
       "ensureAssistantAgent",
@@ -16875,7 +16890,10 @@
       "matchStatePackage"
     ],
     "lib/gamification/award-points.ts": [
-      "awardAgentPoints"
+      "awardAgentPoints",
+      "isUuid",
+      "awardAgentPointsOnce",
+      "planLifecycleAwards"
     ],
     "lib/gamification/leaderboard-vocabulary.ts": [
       "isLeaderboardScope",
@@ -16884,11 +16902,26 @@
       "isCanonicalPeriodLabel",
       "defaultPeriodLabel"
     ],
+    "lib/gamification/lifecycle-awards.ts": [
+      "awardLifecycleMilestones",
+      "awardBadgeToAgent"
+    ],
+    "lib/gamification/strain.ts": [
+      "isUnderStrain",
+      "strainedFromRows",
+      "strainedAgentIds",
+      "isAgentUnderStrain"
+    ],
     "lib/gamification/tiers.ts": [
       "tierForPoints",
       "tierLabelForPoints",
       "nextTierForPoints",
+      "tierDistributionLine",
       "tierProgressPercent"
+    ],
+    "lib/gamification/work-anniversaries.ts": [
+      "anniversaryYearsOn",
+      "runWorkAnniversariesAll"
     ],
     "lib/geo/citation-scope.ts": [
       "allowedScopes",
@@ -17406,6 +17439,7 @@
     ],
     "lib/intelligence/skill-freshness-board.ts": [
       "summarizeSkillBoard",
+      "summarizeCompetencyBoard",
       "generateSkillFreshnessBoard"
     ],
     "lib/intelligence/small-wins.ts": [
@@ -17728,8 +17762,12 @@
     "lib/kernel/capacity-guardian.ts": [
       "tierMaxLoadForAgentCount",
       "pickLeastLoadedWithHeadroom",
-      "computeAgentWorkloadIndex",
-      "detectOverload"
+      "detectOverload",
+      "hasHeadroom",
+      "computeCapacity",
+      "throttleTouchBatch",
+      "overloadDaysIn",
+      "shouldSuggestReassignment"
     ],
     "lib/kernel/causation.ts": [
       "currentCausation",
@@ -18606,7 +18644,8 @@
       "planOccupancyEdges",
       "deriveOccupancyEdges",
       "representedByOutsideAgent",
-      "describeEdge"
+      "describeEdge",
+      "vendorSeatCorroboration"
     ],
     "lib/kernel/repair-digest.ts": [
       "composeRepairDigest",
@@ -19008,6 +19047,10 @@
       "screenReview",
       "moderationAfterFlag"
     ],
+    "lib/kernel/vendor-seat-contact.ts": [
+      "planVendorSeatContactLinks",
+      "linkVendorSeatContact"
+    ],
     "lib/kernel/vendor-sla.ts": [
       "computeVendorSla",
       "slaTier"
@@ -19118,6 +19161,7 @@
       "claimLead"
     ],
     "lib/lead-assignment/capacity-pick.ts": [
+      "capacityFor",
       "resolveBrokerageMaxLoad",
       "selectAgentByCapacity"
     ],
@@ -19230,6 +19274,11 @@
       "buildOpenHouseAttendeeSignal",
       "buildPredictiveSellerSignal",
       "applySignalDelta"
+    ],
+    "lib/lead-intelligence/visitor-email-capture.ts": [
+      "visitorEmailCaptureVerdict",
+      "resolveSignalIdentity",
+      "captureConsentedVisitorEmail"
     ],
     "lib/lead-intent/inbound-lead-intent.ts": [
       "evaluateInboundLeadSignal"

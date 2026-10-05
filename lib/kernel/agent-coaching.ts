@@ -114,6 +114,12 @@ export interface AgentCoachingStats {
   lessonsAssigned: number
   lessonsCompleted: number
   educationCompletionPct: number | null
+  /** WAVE 103 (lane 103A) — the ONE competency model's gaps for this agent (lib/education/
+   *  skill-freshness.ts:scoreCompetency, skills scoring ≤ COMPETENCY_GAP_SCORE, lowest first),
+   *  each with the evidence sentence behind the score. The brief CITES the gap and points the
+   *  focus at it. Optional: absent when the read was refused or the stats row predates wave 103 —
+   *  absent is not "no gaps". */
+  competencyGaps?: Array<{ skill: string; label: string; score: number; evidence: string }>
 }
 
 export interface CoachingBrief {
@@ -206,6 +212,17 @@ export function composeCoachingBrief(stats: AgentCoachingStats): CoachingBrief {
     }
   }
 
+  // ── Competency gap (wave 103, lane 103A) — the ONE model's lowest evidence-scored skill, CITED ──
+  // The brief names the gap, its score and the evidence sentence, so the broker's 1:1 and the
+  // curriculum the learning router assigns for the same gap tag point at the same thing.
+  const gaps = stats.competencyGaps ?? []
+  if (gaps.length > 0) {
+    const g = gaps[0]
+    const others = gaps.slice(1, 3).map((x) => `${x.label} ${x.score}/100`)
+    leaks.push(`Competency gap: ${g.label} scores ${g.score}/100 — ${g.evidence}.${others.length ? ` Also below the line: ${others.join(", ")}.` : ""} A module for this gap is queued in the Academy.`)
+    leakFocus.push(`Close the ${g.label.toLowerCase()} gap (${g.score}/100) — the Academy module assigned for it is the week's one rep.`)
+  }
+
   // ── Production (a genuine, earned strength — only when real GCI/closings exist) ──
   if (stats.closings > 0) {
     strengths.push(`${stats.closings} closing${stats.closings === 1 ? "" : "s"} booked${stats.ytdGci > 0 ? ` (${usd(stats.ytdGci)} GCI year-to-date)` : ""} — real production on the board.`)
@@ -219,7 +236,8 @@ export function composeCoachingBrief(stats: AgentCoachingStats): CoachingBrief {
     (stats.fatiguedContacts ?? 0) >= FATIGUED_LEAK_COUNT ||
     (stats.activeDeals > 0 && stats.avgHealthScore != null) ||
     (stats.lessonsAssigned > 0 && stats.educationCompletionPct != null) ||
-    stats.closings > 0
+    stats.closings > 0 ||
+    gaps.length > 0
 
   if (!anySignal) {
     return {
@@ -488,9 +506,28 @@ async function buildCoachingStats(
     })
   }
 
+  // WAVE 103 (lane 103A): the ONE competency model per agent — the brief cites its lowest gap.
+  // Per-agent evidence reads, best-effort: a thrown read leaves `competencyGaps` ABSENT for that
+  // agent (never an empty list that reads as "no gaps").
+  const competencyByAgent = new Map<string, AgentCoachingStats["competencyGaps"]>()
+  try {
+    const { loadAgentCompetency } = await import("@/lib/education/skill-freshness-radar")
+    for (const a of agents) {
+      try {
+        const p = await loadAgentCompetency(supabase, { id: a.id, user_id: a.user_id, brokerage_id: brokerageId }, now)
+        competencyByAgent.set(a.id, p.gaps.map((g) => ({ skill: g.skill, label: g.label, score: g.score as number, evidence: g.evidence.join("; ") })))
+      } catch (e) {
+        console.error("[agent-coaching] competency read failed for agent", a.id, (e as Error).message)
+      }
+    }
+  } catch (e) {
+    console.error("[agent-coaching] competency model unavailable:", (e as Error).message)
+  }
+
   return agents.map((a) => {
     const card = cardById.get(a.id)
     return {
+      competencyGaps: competencyByAgent.get(a.id),
       agentId: a.id,
       name: card?.name ?? "Agent",
       ytdGci: card?.ytdGci ?? 0,

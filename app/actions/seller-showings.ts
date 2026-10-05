@@ -695,6 +695,23 @@ export async function markShowingCompleted(params: {
     entityId:    params.listingId,
   }).catch(() => {})
 
+  // SHOWING_COMPLETED — the canonical event app/actions/showings.ts:completeShowing
+  // already emits for the same moment (wave 103, lane 103C). This path emitted only
+  // the dotted audit row above, and its UI (confirmed-showings-list) awarded
+  // gamification points CLIENT-SIDE instead; that award moved onto the event
+  // reactor (lib/gamification/award-points.ts:LIFECYCLE_AWARD_RULES, once per
+  // showing), so this emit is what now earns it. The owning agent resolves from
+  // showings.agent_id (agents.id); the session user is the attribution.
+  await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    event:       KernelEvent.SHOWING_COMPLETED,
+    brokerageId: auth.brokerageId,
+    entityType:  "showing",
+    entityId:    params.showingId,
+    listingId:   params.listingId,
+    actorUserId: auth.userId,
+    metadata:    { listing_id: params.listingId, feedback_token: feedbackReq.feedback_token },
+  }).then(k.asWriteResult)), "SHOWING_COMPLETED fan-out (points, sequences, bells) after the completion landed; a lost row is logged, never silent")
+
   revalidatePath(`/dashboard/listings/${params.listingId}/showings`)
   return { success: true, feedbackToken: feedbackReq.feedback_token }
 }

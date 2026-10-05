@@ -8,6 +8,7 @@ import {
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { runCapacityGuardian } from "@/lib/kernel/capacity-guardian-runner"
+import { AGENT_OVERLOADED_SIGNAL } from "@/lib/kernel/capacity-guardian"
 import { revertExpiredBookTransfers } from "@/lib/agents/agent-books"
 
 /**
@@ -88,6 +89,7 @@ export async function GET(request: Request) {
     let agentsScanned = 0
     let overloaded = 0
     let proposals = 0
+    let reassignmentsSuggested = 0
     let suppressedRecent = 0
     const errors: Array<{ brokerageId: string; error: string }> = []
 
@@ -107,7 +109,7 @@ export async function GET(request: Request) {
           .from("manager_signals")
           .select("entity_id")
           .eq("brokerage_id", b.id)
-          .eq("signal_type", "agent_overloaded")
+          .eq("signal_type", AGENT_OVERLOADED_SIGNAL)
           .gte("created_at", suppressSince)
           .limit(1000)
         if (recentError) throw new Error(`manager_signals read refused: ${recentError.message}`)
@@ -125,6 +127,7 @@ export async function GET(request: Request) {
         agentsScanned += r.scanned
         overloaded += r.overloaded
         proposals += r.proposals.length
+        reassignmentsSuggested += r.reassignments.length
       } catch (e) {
         errors.push({ brokerageId: b.id, error: e instanceof Error ? e.message : String(e) })
       }
@@ -137,6 +140,7 @@ export async function GET(request: Request) {
       agents_scanned: agentsScanned,
       overloaded,
       proposals,
+      reassignments_suggested: reassignmentsSuggested,
       suppressed_signalled_within_hours: SUPPRESS_HOURS,
       suppressed_recent: suppressedRecent,
       books_transfers_due: booksRevert.due,

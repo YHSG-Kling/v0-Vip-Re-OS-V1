@@ -140,7 +140,11 @@ export async function gatherTierStats(svc: Svc, agent: { id: string; created_at?
   }
 }
 
-export interface TierEvalResult { scanned: number; upgraded: number; approachNudges: number }
+export interface TierEvalResult {
+  scanned: number; upgraded: number; approachNudges: number
+  /** Agents whose approach nudge stood down because the retention radar has them under strain (wave 103). */
+  strainSkipped: number
+}
 
 /**
  * Evaluate a brokerage's active agents: AUTO-UPGRADE career_tier when a higher AUTO tier is earned (never
@@ -148,9 +152,15 @@ export interface TierEvalResult { scanned: number; upgraded: number; approachNud
  * >=80% toward the next tier (deduped per agent+nextTier+ISO-2-week). Best-effort.
  */
 export async function runCareerTierEvaluation(svc: Svc, params: { brokerageId: string; now?: Date }): Promise<TierEvalResult> {
-  const out: TierEvalResult = { scanned: 0, upgraded: 0, approachNudges: 0 }
+  const out: TierEvalResult = { scanned: 0, upgraded: 0, approachNudges: 0, strainSkipped: 0 }
   const now = params.now ?? new Date()
   const { data: agents } = await svc.from("agents").select("id, user_id, created_at, team_id, career_tier").eq("brokerage_id", params.brokerageId).eq("is_active", true).limit(2000)
+  // FATIGUE-AWARE (wave 103, lane 103C): an agent the retention radar has under
+  // strain gets no "you're 80% of the way, push harder" nudge this run. Upgrades
+  // still land and are still celebrated — recognition is not pressure. Read, not
+  // re-derived (lib/gamification/strain.ts over agent_retention_scores).
+  const { strainedAgentIds } = await import("@/lib/gamification/strain")
+  const strained = await strainedAgentIds(svc, params.brokerageId)
   const biweek = `${now.getUTCFullYear()}-${Math.floor((now.getTime() - Date.UTC(now.getUTCFullYear(), 0, 1)) / (14 * 86_400_000))}`
 
   for (const a of (agents ?? []) as any[]) {
@@ -172,7 +182,8 @@ export async function runCareerTierEvaluation(svc: Svc, params: { brokerageId: s
         continue // don't also nudge in the same run
       }
 
-      // APPROACH NUDGE — >=80% toward the next tier.
+      // APPROACH NUDGE — >=80% toward the next tier. Never for a strained agent.
+      if (strained.has(a.id)) { out.strainSkipped++; continue }
       const prog = tierProgress(current, stats)
       if (prog.nextTier && prog.pctToNext >= 80 && prog.pctToNext < 100 && prog.gap) {
         const dedupeTag = `CAREER TIER — agent:${a.id} ${prog.nextTier} ${biweek}`

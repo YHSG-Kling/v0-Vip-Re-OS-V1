@@ -19,6 +19,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
+import { hasHeadroom, type CapacityBand } from "./capacity-guardian"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -31,7 +32,7 @@ export interface StandupItem {
   /** The spoken line for this move. */
   line: string
   /** Machine tag for the UI / follow-on voice verbs. */
-  kind: "fire" | "approval" | "health" | "reengage"
+  kind: "fire" | "approval" | "health" | "reengage" | "capacity"
   entityId: string | null
 }
 
@@ -42,6 +43,10 @@ export interface StandupInputs {
    *  propensity cooling lead because it's a KNOWN relationship slipping away. */
   slippingClient: { contactId: string; name: string; band: string; score: number } | null
   reengage: { contactId: string; name: string; reasons: string[]; daysCold: number } | null
+  /** WAVE 103 (lane 103B): the agent's OWN capacity — the one kernel answer (capacityFor). An
+   *  exception (over / at_capacity) ranks right after fires: the day cannot be planned on a book
+   *  the agent cannot carry. Optional so pre-103 callers and proofs are unchanged. */
+  capacity?: { agentId: string; band: CapacityBand; load: number; headroom: number; reasons: string[] } | null
 }
 
 /** Pure: rank the day. Fires first (most expensive to ignore), then aging approvals
@@ -54,6 +59,13 @@ export function rankStandup(inputs: StandupInputs): StandupItem[] {
   for (const f of inputs.fireDrills.slice(0, 2)) {
     items.push({ rank: rank++, manager: "deal_coordinator", kind: "fire", entityId: f.entityId,
       line: `a fire drill is open — ${f.title}. Clear the save plan in your notifications first.` })
+  }
+  const cap = inputs.capacity
+  if (cap && !hasHeadroom(cap.band)) {
+    items.push({ rank: rank++, manager: "recruiting_manager", kind: "capacity", entityId: cap.agentId,
+      line: cap.band === "over"
+        ? `you are over capacity (${cap.load} active items${cap.reasons.length ? ` — ${cap.reasons.slice(0, 2).join(", ")}` : ""}). The team is proposing a rebalance; hand off before you add anything.`
+        : `you are at capacity (${cap.load} active items${cap.reasons.length ? ` — ${cap.reasons.slice(0, 2).join(", ")}` : ""}). Close or hand off before taking new work.` })
   }
   const overdue = inputs.approvals.filter((a) => a.hoursWaiting >= APPROVAL_SLA_HOURS)
   const fresh = inputs.approvals.filter((a) => a.hoursWaiting < APPROVAL_SLA_HOURS)
@@ -164,11 +176,21 @@ export async function runMorningStandup(
     }
   } catch { /* best-effort — standup still ranks without it */ }
 
+  // WAVE 103 (lane 103B): the agent's own capacity — ONE kernel answer, best-effort (a refused
+  // read ranks the day without it, never as "fine").
+  let capacity: StandupInputs["capacity"] = null
+  try {
+    const { capacityFor } = await import("@/lib/lead-assignment/capacity-pick")
+    const cap = await capacityFor(supabase, brokerageId, standupAgentId, { now })
+    capacity = { agentId: standupAgentId, band: cap.band, load: cap.load, headroom: cap.headroom, reasons: cap.reasons }
+  } catch (e) { console.error(`[morning-standup] capacity read failed: ${e instanceof Error ? e.message : String(e)}`) }
+
   const items = rankStandup({
     fireDrills: ((fires ?? []) as any[]).filter((f) => f.entity_id).map((f) => ({ entityId: f.entity_id, title: f.title ?? "an uncovered deadline" })),
     approvals,
     slippingClient,
     reengage: best ? { contactId: best.contactId, name: best.name, reasons: best.reasons, daysCold: best.daysCold } : null,
+    capacity,
   })
   return { spoken: composeStandup(opts.firstName ?? null, items), items }
 }

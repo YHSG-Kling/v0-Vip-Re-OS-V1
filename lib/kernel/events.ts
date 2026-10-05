@@ -687,4 +687,14 @@ export enum KernelEvent {
   // Appointment no-show / reschedule autopilot — a client missed a booked appointment
   // (audit row; the gated re-book + existing re-engage loop carry the recovery).
   APPOINTMENT_NO_SHOW                = 'appointment_no_show',
+
+  // ── Layer 6 — lifecycle gamification (wave 103, lane 103C) ──────────────────
+  // Three agent-lifecycle moments that had a WRITER but no event: a mentor session
+  // (app/actions/onboarding/mentor-session.ts), an accredited CE completion
+  // (app/actions/ce-provider.ts) and a work anniversary (the weekly recruit-outreach
+  // cron). Each now reaches the reactor, where lib/gamification/award-points.ts
+  // LIFECYCLE_AWARD_RULES awards from the ONE ledger path.
+  MENTOR_SESSION_HELD                = 'mentor_session_held',
+  CE_COMPLETED                       = 'ce_completed',
+  AGENT_WORK_ANNIVERSARY             = 'agent_work_anniversary',
 }

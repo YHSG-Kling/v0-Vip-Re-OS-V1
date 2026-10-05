@@ -45,6 +45,14 @@ export interface AgentLearningContext {
   /** Brokerage Intelligence insights this agent has NOT adopted —
    *  surface a learning module that teaches the pattern. */
   unadoptedInsightIds: string[]
+  /**
+   * WAVE 103 (lane 103A) — THE COMPETENCY GAPS this context was scored under: the ONE competency
+   * model's lowest skills (lib/education/skill-freshness.ts:scoreCompetency, ≤ COMPETENCY_GAP_SCORE)
+   * with their scores, so the assignment row's signal_metadata says WHICH gap a module was picked
+   * for. Their gap tags are already folded into `gapTags` above (the ONE scorer matches them against
+   * learning_modules.gap_tags). Empty when the agent is unproven or the read was refused.
+   */
+  competencyGaps:      Array<{ skill: string; score: number; gapTag: string }>
 }
 
 export async function resolveAgentLearningContext(
@@ -152,6 +160,25 @@ export async function resolveAgentLearningContext(
   //    peers, surface pipeline-management modules.
   // (Skipped for v1; the brokerage insights miner already captures this.)
 
+  // 6. THE COMPETENCY MODEL (wave 103, lane 103A) — curriculum assignment picks modules for the
+  //    LOWEST competencies. The one evidence-scored profile (skill-freshness.ts:scoreCompetency)
+  //    contributes its gap tags: the gap skills' tags + "objection:<scenario>" for weak drill
+  //    scenarios, which is exactly the tag the curriculum author stamps on the module it writes
+  //    for that gap (lib/education/curriculum-author.ts) — the loop closes on one vocabulary.
+  //    Best-effort: a refused evidence rail scores that skill as unproven; a thrown read leaves
+  //    the context without competency tags rather than without a context.
+  let competencyGaps: AgentLearningContext["competencyGaps"] = []
+  if (agentsId) {
+    try {
+      const { loadAgentCompetency } = await import("@/lib/education/skill-freshness-radar")
+      const profile = await loadAgentCompetency(supabase as any, { id: agentsId, user_id: userId, brokerage_id: brokerageId })
+      competencyGaps = profile.gaps.map((g) => ({ skill: g.skill, score: g.score as number, gapTag: g.gapTag }))
+      for (const t of profile.gapTags) gapTags.push(t)
+    } catch (e) {
+      console.error("[learning-router] competency read failed (context stands without it):", (e as Error).message)
+    }
+  }
+
   return {
     userId,
     brokerageId,
@@ -160,6 +187,7 @@ export async function resolveAgentLearningContext(
     dismissedModuleIds,
     gapTags:             Array.from(new Set(gapTags)),
     unadoptedInsightIds,
+    competencyGaps,
   }
 }
 

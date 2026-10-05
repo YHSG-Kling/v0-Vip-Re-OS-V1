@@ -12,8 +12,11 @@
  *     referral_sources               the fee and the partner directory
  *   document_folders.related_contact_id   the contact a folder is about
  *   buyer_financial_profiles.lender_referred_partner_id / _vendor_id   the buyer's lender introduction
- *   contacts.vendor_id               the vendor bridge column (m595) — NO writer in code today; the
- *                                    live vendor↔contact writer is vendor_bookings
+ *   contacts.vendor_id               the vendor bridge column (m595) — "this contact HOLDS a vendor seat";
+ *                                    written since wave 103 (lane 103D) by lib/kernel/vendor-seat-contact.ts
+ *                                    at seat activation (link only); vendor_bookings stays the
+ *                                    vendor↔contact BOOKING fact. vendorSeatCorroboration below reads the
+ *                                    seat's own vendor_for edges as corroboration of the seat.
  *   lib/intelligence/relationship-health.ts   a PURE score of how alive one client relationship is
  *   lib/enrichment/household-financials.ts    marital status / income / net worth as CONTACT COLUMNS
  *   lib/kernel/referral-radar.ts              life-event detection on past clients
@@ -744,4 +747,19 @@ export function describeEdge(e: RelationshipEdge, contactId: string): string {
   const [out, inn] = label[e.relationship_type]
   const conf = Math.round(clampConfidence(Number(e.evidence?.confidence ?? 0)) * 100)
   return `${outbound ? out : inn} ${other} (${e.evidence?.source ?? "unknown"}, ${conf}%)`
+}
+
+/**
+ * PURE — a contact that HOLDS a vendor seat (contacts.vendor_id, written by
+ * lib/kernel/vendor-seat-contact.ts at seat activation — wave 103, lane 103D): the seat's own
+ * `vendor_for` edges (vendor → the contacts it served, derived at createVendorBooking) CORROBORATE
+ * the seat. Reads the edges the caller fetched for the VENDOR entity; a contact with no seat, or
+ * edges of another vendor, corroborate nothing.
+ * @proofSeam scripts/relationship-graph-guard.ts executes the rule directly.
+ */
+export function vendorSeatCorroboration(edges: readonly RelationshipEdge[], contactVendorId: string | null | undefined): { corroborated: boolean; served: string[]; edges: RelationshipEdge[] } {
+  if (!contactVendorId) return { corroborated: false, served: [], edges: [] }
+  const own = edges.filter((e) => e.relationship_type === "vendor_for" && e.from_entity_type === "vendor" && e.from_entity_id === contactVendorId)
+  const served = [...new Set(own.filter((e) => e.to_entity_type === "contact").map((e) => e.to_entity_id))].sort()
+  return { corroborated: own.length > 0, served, edges: own }
 }

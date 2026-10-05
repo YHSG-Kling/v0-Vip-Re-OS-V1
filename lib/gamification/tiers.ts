@@ -69,6 +69,26 @@ export function nextTierForPoints(
   return { tier: next.tier, label: TIER_LABEL[next.tier], threshold: next.minPoints, pointsToGo: next.minPoints - p }
 }
 
+/**
+ * PURE: a roster's tier distribution as one manager-brief line, highest rung first —
+ * "2 Gold · 3 Silver · 1 Bronze". Unranked agents are counted only when nobody
+ * has reached a rung (so a brand-new team reads "4 Unranked", not ""). The broker
+ * and team-lead briefs read this (wave 103, lane 103C); the ladder is the ONE above.
+ * @proofSeam PURE — the proof asserts ordering and the unranked rule directly.
+ */
+export function tierDistributionLine(pointsByAgent: ReadonlyArray<number | null | undefined>): string {
+  const counts = new Map<PointsTier, number>()
+  for (const p of pointsByAgent) {
+    const t = tierForPoints(Number(p) || 0)
+    counts.set(t, (counts.get(t) ?? 0) + 1)
+  }
+  const ranked = TIER_LADDER.filter((t) => t.tier !== "unranked" && (counts.get(t.tier) ?? 0) > 0)
+    .map((t) => `${counts.get(t.tier)} ${TIER_LABEL[t.tier]}`)
+  if (ranked.length > 0) return ranked.join(" · ")
+  const unranked = counts.get("unranked") ?? 0
+  return unranked > 0 ? `${unranked} ${TIER_LABEL.unranked}` : "—"
+}
+
 /** 0-100 progress from the tier the agent is on to the next rung; 100 at the top. */
 export function tierProgressPercent(points: number): number {
   const p = Number.isFinite(points) ? points : 0

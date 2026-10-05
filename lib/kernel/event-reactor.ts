@@ -4610,6 +4610,30 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       }
   }
 
+  // (L6) LIFECYCLE GAMIFICATION — wave 103, lane 103C. THE ONE TRIGGER for lifecycle
+  // awards: every canonical event passes through here, and lib/gamification/
+  // award-points.ts LIFECYCLE_AWARD_RULES (hook: lifecycle-awards.ts) decides whether it earns points (and a
+  // milestone badge) through the ONE award path. Call sites emit; they do not
+  // award — the component-side awardPointsForAction hooks for showings and
+  // referrals were retired onto this (tombstones at those sites). Idempotent per
+  // (agent, reason, reference | window), so a retried emit or a merged audit-row +
+  // fan-out pair lands once. Best-effort: the business write already landed.
+  if (isKnownEvent) {
+    try {
+      const { awardLifecycleMilestones } = await import("@/lib/gamification/lifecycle-awards")
+      await awardLifecycleMilestones(svc, {
+        event:       params.event,
+        brokerageId: params.brokerageId,
+        entityType:  params.entityType,
+        entityId:    params.entityId,
+        metadata:    params.metadata ?? null,
+        agentUserId: params.agentUserId ?? null,
+      })
+    } catch (err) {
+      console.error(`[event-reactor] lifecycle gamification failed for ${params.event}:`, err)
+    }
+  }
+
   // matched/enrolled/skipped/errors are legacy marketing-trigger counters — System B enrollment
   // is retired, so they are always zero now (shape kept for callers of ReactorResult).
   return { matched: 0, enrolled: 0, skipped: 0, errors: 0, sequencesEnrolled, portalUpdated }

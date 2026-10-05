@@ -39,6 +39,11 @@ export interface PersistConsentResult {
    *  caller believes it recorded is NOT what the row holds. */
   ok: boolean
   error?: string
+  /** THE CONSENT ARTIFACT (wave 103, lane 103D; m706): the contact_consent_events.id this call
+   *  inserted, or null when the ledger refused it. A caller that must store something ONLY on a
+   *  consent artifact (behavioral_signals.email_captured — the consented visitor email capture,
+   *  lib/lead-intelligence/visitor-email-capture.ts) keys on this id and stores nothing without it. */
+  consentEventId: string | null
 }
 
 /**
@@ -101,8 +106,10 @@ export async function persistContactConsent(params: PersistConsentParams): Promi
     }
   }
 
-  // 3. Always insert a consent event for audit trail
-  const { error: consentEventErr } = await supabase.from('contact_consent_events').insert({
+  // 3. Always insert a consent event for audit trail. `.select("id")` — the row's id IS the consent
+  //    artifact a capture may depend on (m706); a refused insert comes back as null, never as a
+  //    made-up id (CLAUDE.md §3).
+  const { data: consentEvent, error: consentEventErr } = await supabase.from('contact_consent_events').insert({
     contact_id:     params.contactId ?? null,
     lead_id:        params.leadId ?? null,
     brokerage_id:   params.brokerageId,
@@ -114,12 +121,13 @@ export async function persistContactConsent(params: PersistConsentParams): Promi
     ip_address:     params.ipAddress ?? null,
     user_agent:     params.userAgent ?? null,
     created_at:     now,
-  })
+  }).select('id').maybeSingle()
   if (consentEventErr) console.error(`[require-contact-consent] consent event NOT recorded on the consent ledger: ${consentEventErr.message}`)
+  const consentEventId = (consentEvent as { id?: string } | null)?.id ?? null
 
   // Reported AFTER the audit event so a refused consent write still leaves the
   // attempt on the trail — the caller learns the row does not agree with it.
   return contactConsentError
-    ? { ok: false, error: contactConsentError }
-    : { ok: true }
+    ? { ok: false, error: contactConsentError, consentEventId }
+    : { ok: true, consentEventId }
 }

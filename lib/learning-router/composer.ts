@@ -199,7 +199,9 @@ export async function pickLearningModulesForActor(input: PickInput): Promise<Lea
     // same as completed ones — merged into the ONE exclusion set below.
     completedIds  = [...ctx.completedModuleIds, ...ctx.dismissedModuleIds]
     signalSource  = ctx.gapTags[0] ? `gap:${ctx.gapTags[0]}` : `tenure:agent_${ctx.tenureDays ?? 0}d`
-    signalMetadata = { tenureDays: ctx.tenureDays, gapTags: ctx.gapTags, unadoptedInsightIds: ctx.unadoptedInsightIds }
+    // competencyGaps rides onto the assignment row (signal_metadata) so "picked for the lowest
+    // competency" is a recorded fact, not an inference (wave 103, lane 103A).
+    signalMetadata = { tenureDays: ctx.tenureDays, gapTags: ctx.gapTags, unadoptedInsightIds: ctx.unadoptedInsightIds, competencyGaps: ctx.competencyGaps }
   } else if (actorKind === "staff") {
     const ctx = await resolveStaffLearningContext(supabase, actorId)
     if (!ctx) return []
@@ -247,8 +249,12 @@ export async function pickLearningModulesForActor(input: PickInput): Promise<Lea
     ageSegSource = ctx.ageSegSource
     protectedClassBasis = ctx.protectedClassBasis
     if (ctx.currentMilestone) stageTags.push(ctx.currentMilestone)
+    // DUAL CLIENT, BOTH SIDES (wave 103, lane 103A): the other active transaction's milestone and
+    // the second layout join the stage match, so a client selling AND buying is taught both stages.
+    if (ctx.secondaryMilestone) stageTags.push(ctx.secondaryMilestone)
     if (ctx.buyerStage)       stageTags.push(ctx.buyerStage)
     if (ctx.portalView)       stageTags.push(ctx.portalView)
+    for (const l of ctx.layouts ?? []) if (l !== ctx.portalView && !stageTags.includes(l)) stageTags.push(l)
     // Post-1043: customer completion is now also tracked in learning_assignments
     // (contact_id + status='completed'). Fetch those module ids to exclude.
     {
@@ -264,6 +270,8 @@ export async function pickLearningModulesForActor(input: PickInput): Promise<Lea
       ageSeg: ctx.ageSeg, ageSegSource: ctx.ageSegSource,
       generationalCohort: ctx.generationalCohort, persona: c?.contact_persona,
       milestone: ctx.currentMilestone,
+      secondaryMilestone: ctx.secondaryMilestone,
+      layouts: ctx.layouts,
       personaHints: ctx.personaHints,
       sellerSignalTypes: ctx.sellerSignalTypes,
     }

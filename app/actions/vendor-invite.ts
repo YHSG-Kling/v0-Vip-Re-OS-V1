@@ -25,6 +25,8 @@
  *   Verifies the token is pending + unexpired, then:
  *     1. Upserts a users row with user_type='vendor', brokerage_id from invitation
  *     2. Creates a user_role_assignments row linking auth user_id ↔ vendor_id
+ *     2b. Links the tenant's existing contact row(s) with the invitation's email to the vendor
+ *         (contacts.vendor_id — lib/kernel/vendor-seat-contact.ts; wave 103, lane 103D; link only)
  *     3. Marks the invitation 'accepted' with accepted_by + accepted_at
  *
  * The vendor portal (/portal/vendor) already reads user_role_assignments.vendor_id,
@@ -368,6 +370,27 @@ export async function acceptVendorInviteAction(
     updated_at:   new Date().toISOString(),
   })
   if (linkErr) return { ok: false, error: `Could not link your login to the vendor company: ${linkErr.message}` }
+
+  // ── THE SEAT'S OWN CONTACT ROW — contacts.vendor_id (wave 103, lane 103D; owner answer 2) ──
+  // contacts_vendor_id_fkey is live and had NO writer (102F, R9). The seat activation is the one
+  // moment the platform holds the vendor company, the tenant and the human's email, so the tenant's
+  // EXISTING contact row(s) with the invitation's email are linked here — link only, never created,
+  // never re-pointed off another vendor, provenance stamped (source vendor_seat, actor = this user).
+  // Tenant = invitation.brokerage_id (the row the token names, never the body). Non-fatal: the seat
+  // is the invitation's contract; a refused link is reported, not thrown.
+  try {
+    const { linkVendorSeatContact } = await import("@/lib/kernel/vendor-seat-contact")
+    const seatContact = await linkVendorSeatContact(svc, {
+      brokerageId: invitation.brokerage_id as string,
+      vendorId: invitation.vendor_id as string,
+      email: invitation.email as string,
+      actorUserId: user.id,
+    })
+    if (!seatContact.ok) console.warn(`[acceptVendorInvite] contacts.vendor_id not linked (${seatContact.reason}): ${seatContact.error ?? ""}`)
+    else if (seatContact.errors.length > 0) console.warn(`[acceptVendorInvite] contacts.vendor_id partial link: ${seatContact.errors.join("; ")}`)
+  } catch (e) {
+    console.warn(`[acceptVendorInvite] contacts.vendor_id link threw (seat unaffected): ${(e as Error).message}`)
+  }
 
   // ── THE VENDOR'S GLOBAL PLATFORM IDENTITY — the writer that never existed ──
   // (§1.2, built 2026-08-27.) vendor_marketplace_profiles is the table the

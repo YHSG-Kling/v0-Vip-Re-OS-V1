@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-05
  * source: public.live_schema_json()
- * body-sha256: 034e099d0dd329d5641d179fad429551fa72ef0d0472d6c280142f4c14e296c8
+ * body-sha256: b67084eca6aed84a11e7e58a72c5b1fd0cb80dfd17d749454f549692bcb50ca9
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -128,7 +128,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   batchdata_motivated_sellers_raw: ["brokerage_id", "created_at", "email", "first_name", "id", "last_name", "lead_id", "motivation_confidence", "motivation_type", "phone", "predicted_timeframe", "property_address", "property_baths", "property_beds", "property_city", "property_estimated_value", "property_sqft", "property_state", "property_zip", "raw_json", "residential_address", "residential_city", "residential_state", "residential_zip", "scraper_execution_id"],
   batchdata_smart_search_subscriptions: ["created_at", "geography_count", "id", "last_error", "last_reconciled_at", "market_id", "pool_key", "pooled", "priority", "quicklist", "renewed_at", "status", "subscription_id", "updated_at", "webhook_url"],
   behavioral_patterns: ["brokerage_id", "confidence_threshold", "created_at", "description", "detection_rules", "entity_type", "id", "is_active", "is_system_default", "minimum_signals", "pattern_name", "pattern_slug", "pattern_type", "recommended_action", "updated_at"],
-  behavioral_signals: ["brokerage_id", "city", "contact_id", "detected_at", "id", "identified", "intent_confidence_score", "intent_type", "ip_address", "last_seen_date", "state", "total_sessions", "unified_profile_id", "user_agent", "visitor_id", "zip"],
+  behavioral_signals: ["brokerage_id", "city", "consent_event_id", "contact_id", "detected_at", "email_captured", "email_captured_at", "id", "identified", "intent_confidence_score", "intent_type", "ip_address", "last_seen_date", "state", "total_sessions", "unified_profile_id", "user_agent", "visitor_id", "zip"],
   billing_invoices: ["amount_cents", "brokerage_id", "created_at", "due_date", "id", "invoice_date", "paid_at", "pdf_url", "status", "stripe_invoice_id", "subscription_id"],
   billing_usage: ["active_agents", "ai_calls_count", "brokerage_id", "id", "period_label", "recorded_at", "scraper_calls", "storage_bytes", "subscription_id", "video_minutes"],
   blog_cadence_policy: ["cadence", "fire_day", "id", "preferred_categories", "preferred_persona", "scope_id", "scope_type", "skipped_until", "updated_at", "updated_by"],

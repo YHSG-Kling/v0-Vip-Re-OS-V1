@@ -471,6 +471,25 @@ export function CommandCenterClient({
               ))}
             </div>
           )}
+          {/* Competency gaps (wave 103) — the evidence-scored read beside freshness: who scores at or
+              below the gap line, on what, so the manager's 1:1 and the curriculum target the same gap. */}
+          {data.skillBoard.competency && data.skillBoard.competency.scored > 0 && (
+            <Card className={"p-3 space-y-1.5 " + (data.skillBoard.competency.withGaps > 0 ? "border-amber-200" : "")}>
+              <div className="flex items-baseline justify-between">
+                <span className="text-sm font-medium">Competency gaps</span>
+                <span className="text-xs text-muted-foreground">
+                  {data.skillBoard.competency.withGaps} of {data.skillBoard.competency.scored} agents
+                  {data.skillBoard.competency.topGap ? ` · most common: ${data.skillBoard.competency.topGap}` : ""}
+                </span>
+              </div>
+              {data.skillBoard.competency.agents.map((a) => (
+                <div key={a.agentId} className="flex items-center justify-between gap-3 text-xs">
+                  <span className="font-medium truncate">{a.name}{a.overall != null ? ` · ${a.overall}/100` : ""}</span>
+                  <span className="text-muted-foreground truncate max-w-[22rem]">{a.gaps.join(" · ")}</span>
+                </div>
+              ))}
+            </Card>
+          )}
         </section>
       )}
 

@@ -152,6 +152,15 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
       delete() { op = "delete"; return b },
       eq(col: string, v: unknown) { filterCols.push(col); filters.push((r) => val(r, col) === v); return b },
       neq(col: string, v: unknown) { filterCols.push(col); filters.push((r) => val(r, col) !== v); return b },
+      // Wave 103 (103D): `.ilike(col, pattern)` — PostgREST's case-insensitive LIKE (`%` / `_`
+      // wildcards, `\` escapes). The consented email capture and the vendor-seat contact link match
+      // an address case-insensitively; a pattern with no wildcard is case-insensitive equality.
+      ilike(col: string, pattern: string) {
+        filterCols.push(col)
+        const re = new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]]/g, "\\$&").replace(/\\\\([%_])/g, (_m, c) => (c === "%" ? "\\x25" : "\\x5f")).replace(/%/g, ".*").replace(/_/g, ".")}$`, "i")
+        filters.push((r) => typeof val(r, col) === "string" && re.test(val(r, col)))
+        return b
+      },
       in(col: string, vs: string[] | string) { filterCols.push(col); const set = new Set(parseList(vs)); filters.push((r) => set.has(String(val(r, col)))); return b },
       is(col: string, v: unknown) { filterCols.push(col); filters.push((r) => (v === null ? val(r, col) === null || val(r, col) === undefined : val(r, col) === v)); return b },
       not(col: string, operator: string, v: unknown) {

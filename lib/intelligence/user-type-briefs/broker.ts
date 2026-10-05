@@ -137,6 +137,25 @@ export async function generateBrokerBrief(params: {
   const unassignedLeadsCount = unassignedLeadsRes.count ?? 0
   const activeAgentsCount = activeAgentsRes.count ?? 0
 
+  // Points tiers across the roster (wave 103, lane 103C — incentives surface in the
+  // manager brief). agents.gamification_points is the ONE total the atomic award
+  // RPC maintains; the ladder is lib/gamification/tiers.ts. A refused read reads
+  // as "—", never as everyone unranked.
+  let agentTiersLine = "—"
+  {
+    const { data: tierRows, error: tierErr } = await supabase
+      .from("agents")
+      .select("gamification_points")
+      .eq("brokerage_id", params.brokerageId)
+      .eq("is_active", true)
+      .limit(5000)
+    if (tierErr) console.error(`[BrokerBrief] agent tier read refused: ${tierErr.message}`)
+    else {
+      const { tierDistributionLine } = await import("@/lib/gamification/tiers")
+      agentTiersLine = tierDistributionLine(((tierRows ?? []) as Array<{ gamification_points: number | null }>).map((r) => r.gamification_points))
+    }
+  }
+
   // 3. Build priorities (top 3 by severity)
   const priorities: BriefPriority[] = []
 
@@ -258,6 +277,7 @@ export async function generateBrokerBrief(params: {
     { label: "Unassigned leads", value: unassignedLeadsCount, href: "/dashboard/admin/lead-lineage" },
     { label: "Compliance flags 7d", value: complianceEvents.length, href: "/dashboard/compliance" },
     { label: "Agents at flight risk", value: retentionAtRisk, href: "/dashboard/admin/command-center" },
+    { label: "Agent tiers", value: agentTiersLine, href: "/dashboard/intelligence" },
     ...(curriculumPending > 0 ? [{ label: "AI curriculum pending", value: curriculumPending, href: "/dashboard/admin/command-center" }] : []),
     // Standup digest — one metric per reporting manager (label = manager, value = 24h activity)
     ...standupLines.slice(0, 4).map((l) => ({

@@ -251,20 +251,41 @@ export function buildEducationDelivery(
   }
 }
 
+/** PURE (wave 103, lane 103A): the client's side(s) from the open transactions they are a party to.
+ *  A `dual` deal_type names the BROKERAGE's representation, not the client's side — the side comes
+ *  from WHICH party column holds the contact. A client who is the seller on one deal and the buyer
+ *  on another is a DUAL CLIENT: `side` leads with seller (the kernel's portal rule — a must-sell-to-
+ *  buy move starts with the home they own, lib/kernel/portal.ts) and `dualClient` is published so
+ *  the delivery record says both sides were in play.
+ *  @proofSeam the side rule is asserted on fixtures by scripts/competency-guard.ts; its only product
+ *  caller is resolveClientContext in this file. */
+export function resolveClientSides(
+  contactId: string,
+  txns: Array<{ deal_type: string | null; contact_id: string | null; buyer_contact_id: string | null; seller_contact_id: string | null }>,
+): { side: "buyer" | "seller" | null; dualClient: boolean } {
+  let seller = false, buyer = false
+  for (const t of txns) {
+    if (t.seller_contact_id === contactId) seller = true
+    if (t.buyer_contact_id === contactId) buyer = true
+    if (t.contact_id === contactId && t.buyer_contact_id !== contactId && t.seller_contact_id !== contactId) {
+      if (t.deal_type === "seller") seller = true
+      else if (t.deal_type === "buyer") buyer = true
+    }
+  }
+  return { side: seller ? "seller" : buyer ? "buyer" : null, dualClient: seller && buyer }
+}
+
 /** Resolve the client's deal side + agent name (best-effort). */
-async function resolveClientContext(supabase: Svc, brokerageId: string, contactId: string): Promise<{ side: "buyer" | "seller" | null; agentName: string }> {
-  let side: "buyer" | "seller" | null = null
-  const { data: txn } = await supabase
+async function resolveClientContext(supabase: Svc, brokerageId: string, contactId: string): Promise<{ side: "buyer" | "seller" | null; dualClient: boolean; agentName: string }> {
+  const { data: txns } = await supabase
     .from("transactions")
-    .select("deal_type")
+    .select("deal_type, contact_id, buyer_contact_id, seller_contact_id")
     .eq("brokerage_id", brokerageId)
     .or(`contact_id.eq.${contactId},buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`)
     .not("status", "in", "(lost,closed)")
     .order("created_at", { ascending: false })
-    .limit(1).maybeSingle()
-  const dt = (txn as { deal_type?: string | null } | null)?.deal_type ?? null
-  if (dt === "seller") side = "seller"
-  else if (dt === "buyer") side = "buyer"
+    .limit(5)
+  let { side, dualClient } = resolveClientSides(contactId, (txns ?? []) as any[])
 
   let agentName = "Your Agent"
   const { data: c } = await supabase.from("contacts").select("agent_id, contact_type").eq("id", contactId).maybeSingle()
@@ -279,7 +300,7 @@ async function resolveClientContext(supabase: Svc, brokerageId: string, contactI
       if (full) agentName = full
     }
   }
-  return { side, agentName }
+  return { side, dualClient, agentName }
 }
 
 /**
@@ -329,7 +350,7 @@ async function deliverChosenModule(
     protectedClassBasis?: readonly ProtectedClassBasis[]
   },
 ): Promise<{ proposed: boolean; moduleId?: string; reason?: string; channel?: EducationChannel }> {
-  const { side, agentName } = await resolveClientContext(supabase, brokerageId, contactId)
+  const { side, dualClient, agentName } = await resolveClientContext(supabase, brokerageId, contactId)
   const manager = conciergeForSide(side)
 
   // ── THE OWNER'S ACTUAL USE CASE: the RAIL is chosen by AGE BAND ──────────────
@@ -387,6 +408,10 @@ async function deliverChosenModule(
       delivery_channels_rejected: choice.rejected,
       band_preferred_format: choice.preferredFormat,
       protected_class_basis: basis,
+      // Wave 103 (103A): a dual client is taught BOTH sides (the router matched both layouts'
+      // stages); the record says so, and which side this lesson's concierge spoke for.
+      client_side: side,
+      dual_client: dualClient,
     },
     priority_score: chosen.priorityScore, status: "open",
   })

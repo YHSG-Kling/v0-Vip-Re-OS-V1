@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1811 of 1874 pairs) — storing them would be
+ * overwhelming majority (1812 of 1875 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1955 edges across 719 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1874 unordered
+ * MEASURED AT GENERATION: 1956 edges across 719 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1875 unordered
  * table pairs carry at least one FK; 63
  * carry more than one and are listed below. 13 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-05
  * source: public.live_foreign_keys_json()
- * body-sha256: b9c0a586915fdfc6e883553ff27f4b55bb78a55683dc479ea58ddaef12d109a1
+ * body-sha256: ab105f8f3edf346cd0ad0dd21a2d30b20acc4fb09938b8bf3a0a7fdc8f1d849a
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -205,7 +205,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "batchdata_motivated_sellers_raw": { "brokerage_id": "brokerages", "lead_id": "leads" },
   "batchdata_smart_search_subscriptions": { "market_id": "lead_scraping_markets" },
   "behavioral_patterns": { "brokerage_id": "brokerages" },
-  "behavioral_signals": { "brokerage_id": "brokerages", "contact_id": "contacts" },
+  "behavioral_signals": { "brokerage_id": "brokerages", "consent_event_id": "contact_consent_events", "contact_id": "contacts" },
   "billing_invoices": { "brokerage_id": "brokerages", "subscription_id": "subscriptions" },
   "billing_usage": { "brokerage_id": "brokerages", "subscription_id": "subscriptions" },
   "blog_cadence_policy": { "updated_by": "users" },

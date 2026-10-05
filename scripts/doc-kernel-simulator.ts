@@ -2118,7 +2118,10 @@ async function main() {
           && src("app/api/onboarding/performance-report/route.ts").includes("resolveAgentId")
           && src("lib/education/skill-freshness-radar.ts").includes('from("learning_assignments")')
           && src("lib/education/skill-freshness-radar.ts").includes('.eq("status", "completed")')
-          && src("lib/intelligence/skill-freshness-board.ts").includes('.eq("status", "completed")')
+          // Wave 103 (103A): the board's duplicate gatherer was MERGED onto the radar's gatherSkillSignals
+          // (CLAUDE.md §1) — the rule is "the board reads completions through the ONE gatherer", not the
+          // duplicate's literal.
+          && (src("lib/intelligence/skill-freshness-board.ts").includes('.eq("status", "completed")') || src("lib/intelligence/skill-freshness-board.ts").includes("gatherSkillSignals"))
           && !src("lib/education/skill-freshness-radar.ts").includes('from("agent_courses")')
           && src("app/actions/video-generation.ts").includes('toLibraryScriptType("custom")')
           && src("app/actions/video/generate-script.ts").includes("toLibraryScriptType(params.videoType)")

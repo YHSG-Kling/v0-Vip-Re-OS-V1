@@ -32,6 +32,9 @@ interface MotivationRailProps {
   pointsToNextTier: number
   /** 0-100, from lib/gamification/tiers.ts — the ONE ladder. */
   tierProgress: number
+  /** FATIGUE-AWARE (wave 103): true = the retention radar has this agent under strain, so the
+   *  "N pts to go" push stands down and a support line takes its place. Standing is unchanged. */
+  underStrain?: boolean
   recentBadges: Array<{
     id: string
     name: string
@@ -52,6 +55,7 @@ export function MotivationRail({
   nextTier,
   pointsToNextTier,
   tierProgress,
+  underStrain = false,
   recentBadges,
   nextBadgeProgress,
   pointDrivers,
@@ -94,8 +98,13 @@ export function MotivationRail({
           <p className="text-sm text-muted-foreground">total points</p>
         </div>
 
-        {/* Tier Progress */}
-        {nextTier && pointsToNextTier > 0 && (
+        {/* Tier Progress — stands down for a strained agent (no streak pressure, wave 103) */}
+        {underStrain && (
+          <p className="text-sm text-muted-foreground" data-testid="motivation-strain-notice">
+            Your {currentTier} standing is safe. Focus on your clients this week — the ladder will be here when you are ready.
+          </p>
+        )}
+        {!underStrain && nextTier && pointsToNextTier > 0 && (
           <div className="space-y-2">
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">Progress to {nextTier}</span>

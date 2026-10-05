@@ -117,6 +117,8 @@ interface IntelligenceOSClientProps {
     nextTier: string | null
     pointsToNextTier: number
     progressPercent: number
+    /** Retention radar has this agent under strain — the rail shows support, not a push (wave 103). */
+    underStrain?: boolean
   }
   recentBadges: Array<{
     id: string
@@ -244,6 +246,7 @@ export function IntelligenceOSClient({
                 nextTier={pointsData.nextTier}
                 pointsToNextTier={pointsData.pointsToNextTier}
                 tierProgress={pointsData.progressPercent}
+                underStrain={pointsData.underStrain === true}
                 recentBadges={recentBadges}
                 nextBadgeProgress={nextBadgeProgress}
                 pointDrivers={pointDrivers}

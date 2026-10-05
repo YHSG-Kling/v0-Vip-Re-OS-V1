@@ -41,11 +41,20 @@ function sourceLayer() {
   // so the old shape asserted an implementation the ruling deliberately removed.
   // The claim that still matters is unchanged: BOTH parties are credited, for the
   // same named reason, through the one path.
+  // Re-anchored (wave 103, lane 103C): the direct awardAgentPoints loop moved onto
+  // the EVENT REACTOR. The action now EMITS MENTOR_SESSION_HELD naming both parties,
+  // and lib/gamification/award-points.ts LIFECYCLE_AWARD_RULES (party
+  // "mentor_and_mentee") credits both through the one award path — test:gamification
+  // proves that rule. The claim that still matters is unchanged: BOTH parties, ONE path.
   check(
-    "logMentorSession awards CONSOLIDATED points to both parties through the one award path",
-    /awardAgentPoints\(/.test(act) &&
-      /for \(const agentId of \[input\.mentorAgentId, input\.menteeAgentId\]\)/.test(act) &&
-      /reason:\s*"MENTOR_SESSION_HELD"/.test(act),
+    "logMentorSession emits MENTOR_SESSION_HELD naming mentor + mentee (the reactor awards both through the one path)",
+    /KernelEvent\.MENTOR_SESSION_HELD/.test(act) &&
+      /mentor_agent_id:\s*input\.mentorAgentId,\s*mentee_agent_id:\s*input\.menteeAgentId/.test(act) &&
+      !/awardAgentPoints\(/.test(act),
+  )
+  check(
+    "the reactor rule credits BOTH parties for MENTOR_SESSION_HELD",
+    /event:\s*KernelEvent\.MENTOR_SESSION_HELD,\s*reason:\s*"MENTOR_SESSION_HELD",\s*scope:\s*"per_reference",\s*party:\s*"mentor_and_mentee"/.test(src("lib/gamification/award-points.ts")),
   )
   check(
     "and it writes the ledger through that path only — no direct agent_points_log insert survives here",

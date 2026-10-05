@@ -14,11 +14,16 @@ import type { PointReason } from "@/lib/gamification/award-points"
 // that existed. The ledger's `reason` column is the audit trail for why an agent
 // has the points they have, and it read "ONBOARDING_STEP_COMPLETED" for work that
 // had nothing to do with onboarding. Each now has its own key and its own value.
+//
+// RETIRED KEYS (wave 103, lane 103C — tombstone, CLAUDE.md §1): `showing_completed`,
+// `deal_closed` and `referral_received` are gone from this map. Each of those
+// moments emits a canonical kernel event (SHOWING_COMPLETED, TRANSACTION_CLOSED,
+// REFERRAL_RECEIVED) and the EVENT REACTOR now awards it once, through
+// lib/gamification/award-points.ts:LIFECYCLE_AWARD_RULES. A key here would be a
+// second awarder for the same moment. The keys that remain are for actions with
+// no canonical event yet (offers, reviews, posts, follow-ups, trainings, open houses).
 const ACTION_MAP: Record<string, PointReason> = {
-  showing_completed:  "SHOWING_COMPLETED",
   offer_submitted:    "OFFER_SUBMITTED",
-  deal_closed:        "LISTING_CLOSED",
-  referral_received:  "REFERRAL_CREATED",
   review_received:    "VENDOR_REVIEW_WRITTEN",
   followup_completed: "FOLLOWUP_SENT",
   social_posted:      "SOCIAL_POST_PUBLISHED",
