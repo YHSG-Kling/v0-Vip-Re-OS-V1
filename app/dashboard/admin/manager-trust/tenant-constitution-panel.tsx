@@ -6,8 +6,41 @@
  * revert writes a NEW version through the key's own survivor writer. No value is edited here.
  */
 import Link from "next/link"
+import { revalidatePath } from "next/cache"
 import { getTenantOperatingConstitution, policyHistory } from "@/app/actions/admin/tenant-policy"
+import { getDirectMailExplorationPolicy, getTenantExperimentPolicy, setDirectMailExplorationFrozen, setExperimentKillSwitch } from "@/app/actions/flight-recorder"
 import { RevertPolicyButton } from "./revert-policy-button"
+
+/**
+ * The two per-tenant KILL SWITCHES, toggled HERE beside their constitution rows (wave 102C, owner
+ * answer 4): `experiments` (lib/kernel/experiments.ts) and `direct_mail_exploration` (the direct-mail
+ * Thompson bandit, lib/direct-mail/variant-bandit.ts). Each write goes through its ONE server action
+ * in app/actions/flight-recorder.ts → mergeBrokerageSettings → appendTenantPolicyVersion, so the row
+ * it sits beside shows the new version and actor after the revalidate.
+ */
+async function KillSwitchToggle({ policyKey }: { policyKey: string }) {
+  if (policyKey === "experiments") {
+    const p = await getTenantExperimentPolicy()
+    if (!p.ok) return <span className="text-xs text-red-700">{p.error}</span>
+    if (!p.readable) return <span className="text-xs text-amber-700">policy unreadable — every experiment assigns control</span>
+    return (
+      <form action={async () => { "use server"; await setExperimentKillSwitch({ on: !p.killSwitch }); revalidatePath("/dashboard/admin/manager-trust") }}>
+        <button type="submit" className="rounded border px-2 py-1 text-xs">{p.killSwitch ? "Resume experiments" : "Stop all experiments"}</button>
+      </form>
+    )
+  }
+  if (policyKey === "direct_mail_exploration") {
+    const p = await getDirectMailExplorationPolicy()
+    if (!p.ok) return <span className="text-xs text-red-700">{p.error}</span>
+    if (!p.readable) return <span className="text-xs text-amber-700">policy unreadable — the bandit exploits only (fail closed)</span>
+    return (
+      <form action={async () => { "use server"; await setDirectMailExplorationFrozen({ frozen: !p.frozen }); revalidatePath("/dashboard/admin/manager-trust") }}>
+        <button type="submit" className="rounded border px-2 py-1 text-xs">{p.frozen ? "Resume direct-mail exploration" : "Freeze direct-mail exploration"}</button>
+      </form>
+    )
+  }
+  return null
+}
 
 function preview(v: unknown): string {
   if (v === null || v === undefined) return "—"
@@ -30,7 +63,8 @@ export async function TenantConstitutionPanel({ historyKey }: { historyKey: stri
       <h2 className="text-lg font-semibold">Operating constitution</h2>
       <p className="mb-3 text-sm text-muted-foreground">
         Every operating policy this brokerage runs on, where it lives, and who last changed it. Read-only here —
-        each policy is changed on its own settings screen; every change is kept as a version.
+        each policy is changed on its own settings screen; every change is kept as a version. The two kill
+        switches (experiments, direct-mail exploration) toggle in place.
         {!res.versionsAvailable && " Version history is not available yet (pending migration m696) — values shown are live."}
       </p>
       <div className="overflow-x-auto">
@@ -59,7 +93,10 @@ export async function TenantConstitutionPanel({ historyKey }: { historyKey: stri
                   {e.changedAt ? `${new Date(e.changedAt).toLocaleString()} · ${e.changedByName ?? e.actorType ?? "—"}` : "—"}
                 </td>
                 <td className="py-2">
-                  <Link className="text-xs underline" href={`?policy=${encodeURIComponent(e.policyKey)}#tenant-constitution`}>History</Link>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Link className="text-xs underline" href={`?policy=${encodeURIComponent(e.policyKey)}#tenant-constitution`}>History</Link>
+                    <KillSwitchToggle policyKey={e.policyKey} />
+                  </div>
                 </td>
               </tr>
             ))}

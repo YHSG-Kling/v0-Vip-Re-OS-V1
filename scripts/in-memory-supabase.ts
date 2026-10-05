@@ -63,9 +63,10 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
     const filters: Filter[] = []
     /** Columns named by filters — a missing column in a WHERE is a 42703 too. */
     const filterCols: string[] = []
-    let op: "select" | "insert" | "update" | "delete" = "select"
+    let op: "select" | "insert" | "update" | "delete" | "upsert" = "select"
     let patch: Row | null = null
     let inserted: Row[] | null = null
+    let conflictCols: string[] = []
     let cols: string[] | null = null
     let limitN: number | null = null
     let orderBy: { col: string; asc: boolean } | null = null
@@ -98,6 +99,20 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
       if (f) return f
       if (!tables[table]) tables[table] = []
       const rows = tables[table]
+      if (op === "upsert") {
+        // Wave 102 (102D): `.upsert(row, { onConflict: "a,b" })` — update the row whose conflict
+        // columns match, else insert (the cadence writers' (scope_type, scope_id) shape).
+        const made: Row[] = []
+        for (const r of inserted ?? []) {
+          const hit = conflictCols.length > 0 ? rows.find((x) => conflictCols.every((c) => x[c] === r[c])) : undefined
+          if (hit) { Object.assign(hit, r); made.push(hit); continue }
+          const row: Row = { id: r.id ?? `${table}-${++seq}`, ...r }
+          if (opts.stampCreatedAt && row.created_at === undefined) row.created_at = new Date().toISOString()
+          rows.push(row); made.push(row)
+        }
+        writes.push({ table, op: "insert", payload: inserted?.[0] ?? {}, matched: made.length })
+        return { data: selectAfterWrite ? made.map(project) : null, error: null }
+      }
       if (op === "insert") {
         const made: Row[] = []
         for (const r of inserted ?? []) {
@@ -132,6 +147,7 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
     const b: any = {
       select(c?: string) { cols = c ? c.split(",").map((s) => s.trim()) : ["*"]; if (op !== "select") selectAfterWrite = true; return b },
       insert(rowOrRows: Row | Row[]) { op = "insert"; inserted = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows]; return b },
+      upsert(rowOrRows: Row | Row[], o?: { onConflict?: string }) { op = "upsert"; inserted = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows]; conflictCols = (o?.onConflict ?? "id").split(",").map((s) => s.trim()).filter(Boolean); return b },
       update(p: Row) { op = "update"; patch = p; return b },
       delete() { op = "delete"; return b },
       eq(col: string, v: unknown) { filterCols.push(col); filters.push((r) => val(r, col) === v); return b },
@@ -150,14 +166,18 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
       // (wave 94). Only `eq` and `is.null` are honoured; anything else THROWS, so a proof can
       // never silently match a filter this fake does not understand.
       or(expr: string) {
+        // Wave 102 (102D): + `gte` / `lte` — the attribution's deal window (lib/intelligence/roi-ledger.ts
+        // `contract_date.gte.<day>,close_date.gte.<day>`). Everything else still THROWS.
         const terms = expr.split(",").map((t) => {
-          const m = /^([\w]+)\.(eq|is)\.(.*)$/.exec(t.trim())
+          const m = /^([\w]+)\.(eq|is|gte|lte)\.(.*)$/.exec(t.trim())
           if (!m) throw new Error(`memSupabase: unsupported or() term "${t}"`)
           filterCols.push(m[1])
           return m
         })
         filters.push((r) => terms.some(([, col, op, v]) =>
           op === "eq" ? String(val(r, col)) === v
+          : op === "gte" ? val(r, col) !== null && val(r, col) !== undefined && String(val(r, col)) >= v
+          : op === "lte" ? val(r, col) !== null && val(r, col) !== undefined && String(val(r, col)) <= v
           : v === "null" ? val(r, col) === null || val(r, col) === undefined
           : (() => { throw new Error(`memSupabase: unsupported or() is.${v}`) })()))
         return b

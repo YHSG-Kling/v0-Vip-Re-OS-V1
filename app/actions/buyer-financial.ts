@@ -491,6 +491,34 @@ export async function connectBuyerToLender(params: {
 
   if (profileError) return { success: false, error: profileError.message }
 
+  // RELATIONSHIP GRAPH (wave 102, lane 102B): the introduction IS a lender_for fact (lender vendor →
+  // buyer contact). The bench rail names a vendors.id directly; the partner rail reaches one only
+  // through referral_partners.vendor_id — a partner with no vendor identity leaves no edge (the
+  // profile row stays the record). Tenant from the SESSION (access.brokerageId); never fails the referral.
+  try {
+    let lenderVendorId: string | null = params.lenderVendorId ?? null
+    if (!lenderVendorId && params.partnerId) {
+      const { data: partner, error: partnerErr } = await supabase
+        .from("referral_partners").select("vendor_id").eq("id", params.partnerId).eq("brokerage_id", access.brokerageId).maybeSingle()
+      if (partnerErr) console.error(`[connectBuyerToLender] partner read refused — no lender_for edge: ${partnerErr.message}`)
+      lenderVendorId = (partner?.vendor_id as string | null) ?? null
+    }
+    if (lenderVendorId) {
+      const { upsertRelationship } = await import("@/lib/kernel/relationship-graph")
+      const edge = await upsertRelationship(supabase, {
+        brokerageId: access.brokerageId,
+        from: { type: "vendor", id: lenderVendorId },
+        to: { type: "contact", id: params.contactId },
+        type: "lender_for",
+        evidence: { source: "buyer_financial_profiles.lender_referral", confidence: 0.85, observed_at: new Date().toISOString() },
+        createdBy: access.userId,
+      })
+      if (!edge.ok && !edge.degraded) console.error(`[connectBuyerToLender] lender_for edge not written: ${edge.error}`)
+    }
+  } catch (e) {
+    console.error("[connectBuyerToLender] relationship edge derivation failed (non-blocking)", e)
+  }
+
   // 3. Notify the lender's people, if the vendor has any linked accounts.
   //
   // `notifications.user_id` FKs `users` (scripts/schema-fk-map.ts:532), and a

@@ -39,6 +39,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { createServiceClient } from "@/lib/supabase/service"
 import { currentCausation } from "@/lib/kernel/causation"
 import { getIsaSystemUserIdCached } from "@/lib/auth/isa-actor"
+import { formatPolicyRef, resolvePolicyRef } from "@/lib/kernel/tenant-policy"
 
 
 /** agent_action_ledger.status — m687 CHECK agent_action_ledger_status_check. */
@@ -280,6 +281,15 @@ export interface ActionContext {
   riskClass?: string | null
   systemSource?: string | null
   detail?: Record<string, unknown> | null
+  /**
+   * WHICH POLICY PERMITTED (wave 102, lane 102D; LAW 5) — the registered tenant policy key this
+   * action ran under (`autonomy_tier:<manager>` for an autonomous send, `experiments` for an
+   * experiment arm, `authority_level:ai_isa` for an AI tool call). The row records it as
+   * `policy_key@version` (policy_ref, m700); the version is lib/kernel/tenant-policy.ts
+   * currentPolicyVersion unless the caller already holds it (`policyVersion`).
+   */
+  policyKey?: string | null
+  policyVersion?: number | null
 }
 
 export interface LedgerEntry {
@@ -333,7 +343,11 @@ async function insertLedgerRow(
   const scope = currentCausation()
   const ctx = await ledgerActorFor(svc, raw)
   const reasonCode = resolveReasonCode(ctx)
-  const write = async (code: ActionReasonCode, detailNote: string | null): Promise<{ data: { id?: string } | null; error: { code?: string; message?: string } | null }> => {
+  // 102D — `policy_key@version` from the ONE version reader; a refused version read records `@unknown`.
+  const policyRef = ctx.policyKey
+    ? (ctx.policyVersion !== undefined ? formatPolicyRef(ctx.policyKey, ctx.policyVersion) : await resolvePolicyRef(svc, ctx.brokerageId, ctx.policyKey))
+    : null
+  const write = async (code: ActionReasonCode, detailNote: string | null, withPolicyColumn = true): Promise<{ data: { id?: string } | null; error: { code?: string; message?: string } | null }> => {
     const { data, error } = await svc.from("agent_action_ledger").insert({
     brokerage_id: ctx.brokerageId,
     action: ctx.action,
@@ -353,13 +367,19 @@ async function insertLedgerRow(
     system_source: ctx.systemSource ?? null,
     causation_id: ctx.causationId ?? scope.causationId,
     correlation_id: ctx.correlationId ?? scope.correlationId,
-    detail: ctx.detail ?? {},
+    // Before m700 the column is absent (PGRST204 / 42703): the row is re-written WITHOUT it and the
+    // ref rides detail.policy_ref — the action stays ledgered, the evidence stays.
+    detail: withPolicyColumn || !policyRef ? (ctx.detail ?? {}) : { ...(ctx.detail ?? {}), policy_ref: policyRef },
+    ...(withPolicyColumn ? { policy_ref: policyRef } : {}),
     ...extra,
     }).select("id").single()
     // Read, not swallowed: the caller (claim / non-action) decides degrade vs fail-closed on it.
     return { data: (data as { id?: string } | null) ?? null, error: error ?? null }
   }
-  const first = await write(reasonCode, null)
+  let first = await write(reasonCode, null)
+  if (first.error && isSchemaAbsent(first.error) && /policy_ref/.test(first.error.message ?? "")) {
+    first = await write(reasonCode, null, false)
+  }
   // A code the LIVE reason_code CHECK does not know yet (a code whose widening migration is not applied yet) is refused
   // 23514 — that is a vocabulary lag, not a reason to drop the record or fail a send closed.
   // Record it once more as UNSPECIFIED with the intended code named in reason_detail.
@@ -458,12 +478,17 @@ async function settleAction(id: string, s: Settlement, opts?: { client?: LedgerC
 }
 
 /**
- * Record a decision NOT to act — "wait" or "do nothing" — as a first-class ledger row
- * (status 'skipped', outcome the decision, with its reason). The action name is
- * `<domain>.decision.wait|do_nothing`. Never throws.
+ * Record a DECISION as a first-class ledger row (status 'skipped', outcome the verdict, with its
+ * reason). The action name is `<domain>.decision.<verdict>`. Never throws.
+ *   · wait / do_nothing — the decision NOT to act (lane 98B);
+ *   · send_touch / convert — the ACTING verdict (wave 102C, owner answer 3): the decision row and
+ *     the act are two rows. The act itself is ledgered by its chokepoint (dispatch / voice /
+ *     conversion) as 'executed'; this row stays 'skipped' so lib/intelligence/roi-ledger.ts's
+ *     "executed" attribution rule never counts a verdict as a touch — only its wait / do_nothing
+ *     siblings are attribution-eligible (DECISION_ACTION there), and that rule is unchanged.
  */
 export async function recordNonAction(
-  ctx: Omit<ActionContext, "action"> & { decision: "wait" | "do_nothing"; domain?: string; until?: string | null },
+  ctx: Omit<ActionContext, "action"> & { decision: "wait" | "do_nothing" | "send_touch" | "convert"; domain?: string; until?: string | null },
   opts?: { client?: LedgerClient },
 ): Promise<{ recorded: boolean; id?: string; error?: string }> {
   const action = `${ctx.domain ?? "agent"}.decision.${ctx.decision}`
@@ -590,6 +615,8 @@ export function ledgerToolExecutions<T extends Record<string, unknown>>(
     riskClassOf: (toolName: string) => string
     actor?: ActionContext["actor"]
     surface?: string
+    /** 102D — the policy the mount ran under (the authority ladder key for this actor's agent kind). */
+    policyKey?: string | null
   },
   opts?: { client?: LedgerClient },
 ): T {
@@ -611,6 +638,7 @@ export function ledgerToolExecutions<T extends Record<string, unknown>>(
           systemSource: ctx.surface ?? null,
           cycle: options?.toolCallId ?? null,
           detail: { tool: name },
+          policyKey: ctx.policyKey ?? null,
         },
         () => Promise.resolve((exec as (a: unknown, o?: unknown) => unknown)(args, options)),
         {
@@ -661,6 +689,8 @@ export interface ChainAction {
   detail?: Record<string, unknown> | null
   causation_id?: string | null
   correlation_id?: string | null
+  /** 102D — `policy_key@version` (m700); before m700 the ref rides detail.policy_ref. */
+  policy_ref?: string | null
 }
 export interface ChainLink {
   kind: "event" | "action"
@@ -682,6 +712,8 @@ export interface ChainLink {
   source?: string | null
   subjectRef?: string | null
   detail?: Record<string, unknown> | null
+  /** 102D — which policy permitted: `policy_key@version` (LAW 5). */
+  policyRef?: string | null
   /** For an action: the event chain that caused it, ROOT first ("why did the AI send this?"). */
   because?: string[]
 }
@@ -718,6 +750,7 @@ export function assembleCausalChain(events: ChainEvent[], actions: ChainAction[]
       actor: a.actor_manager_key ?? a.actor_agent_id ?? a.actor_user_id ?? null,
       costUsd: a.cost_usd == null ? null : Number(a.cost_usd), riskClass: a.risk_class ?? null,
       source: a.system_source ?? null, subjectRef: a.subject_ref ?? null, detail: a.detail ?? null,
+      policyRef: a.policy_ref ?? (typeof a.detail?.policy_ref === "string" ? (a.detail.policy_ref as string) : null),
       because: ancestry(a.causation_id),
     })),
   ]

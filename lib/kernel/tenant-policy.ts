@@ -12,6 +12,14 @@
  *   managed_agents.config        authority_level / autonomy_tier per agent kind —
  *                                app/actions/admin/manager-evals.ts setManagerAuthorityLevel / setManagerAutonomy
  *   ai_isa_settings              brokerage / team / agent tier rows — lib/ai-isa/resolve-isa-settings.ts writeIsaSettings
+ *   assignment_rules rows        app/actions/admin/assignment-rules.ts (wave 102, lane 102D)
+ *   *_cadence_policy rows        app/actions/blog-cadence-policy.ts, app/actions/marketing-cadence-policy.ts (102D)
+ *   brokerages.farm_mail_* + lob_fallback_template_id — app/actions/direct-mail-settings.ts (102D)
+ *
+ * WHICH POLICY PERMITTED (wave 102, lane 102D; LAW 5): a ledgered action names the policy it ran
+ * under as `policy_key@version` (agent_action_ledger.policy_ref, m700). The version is THIS file's
+ * currentPolicyVersion — the one reader of "what version is live" — so the ledger, the
+ * constitution and the history can never disagree about what v3 of `experiments` was.
  *
  * WHAT IS HERE: the ONE version appender those survivor writers call AFTER their write lands
  * (appendTenantPolicyVersion → tenant_policy_versions, m696, append-only), the registry of policy
@@ -34,6 +42,8 @@ export type TenantPolicyStore =
   | "brokerages.column"
   | "managed_agents.config"
   | "ai_isa_settings"
+  | "assignment_rules"
+  | "cadence_policy"
 
 export interface TenantPolicyDefinition {
   label: string
@@ -45,6 +55,11 @@ export interface TenantPolicyDefinition {
 /** brokerage_settings.settings keys that ARE tenant operating policy (versioned on every change). */
 export const TENANT_POLICY_SETTINGS_KEYS: Record<string, TenantPolicyDefinition> = {
   experiments:             { label: "Experiments (per-tenant kill switch)", store: "brokerage_settings.settings", defaultNote: "experiments on; arms by lib/kernel/experiments.ts" },
+  // Wave 102 (102C, owner answer 4): the direct-mail Thompson bandit's exploration freeze — versioned
+  // like `experiments`. { frozen: boolean } read by lib/direct-mail/variant-bandit.ts pickVariantArm
+  // (frozen = exploit the current best arm, never explore); written by app/actions/flight-recorder.ts
+  // setDirectMailExplorationFrozen through mergeBrokerageSettings → appendTenantPolicyVersion.
+  direct_mail_exploration: { label: "Direct-mail exploration (bandit kill switch)", store: "brokerage_settings.settings", defaultNote: "exploring; Thompson sampling by lib/direct-mail/variant-bandit.ts" },
   ai_agent_capabilities:   { label: "AI agent capabilities (enabled / custom tools)", store: "brokerage_settings.settings", defaultNote: "every catalogue capability enabled, no custom tools" },
   lead_routing:            { label: "Lead routing switches (mailbox-owner preference)", store: "brokerage_settings.settings", defaultNote: "mailbox-owner preference ON" },
   contact_fatigue_weights: { label: "Contact fatigue weights", store: "brokerage_settings.settings", defaultNote: "platform default weights" },
@@ -60,7 +75,43 @@ export const TENANT_POLICY_COLUMN_KEYS: Record<string, TenantPolicyDefinition> =
   review_request_delay_days:      { label: "Review request delay (days)", store: "brokerage_settings.column", defaultNote: "platform default delay" },
   live_agent_face_provider_order: { label: "Live agent face provider order", store: "brokerage_settings.column", defaultNote: "did, then simli" },
   default_assignment_method:      { label: "Default lead assignment method", store: "brokerages.column", defaultNote: "load_balance" },
+  // 102D: brokerages.farm_mail_enabled / farm_mail_max_per_week / lob_fallback_template_id as ONE value
+  // (app/actions/direct-mail-settings.ts saveFarmMailConfig is the only writer).
+  farm_mail:                      { label: "Farm mail (enabled, weekly cap, Lob fallback template)", store: "brokerages.column", defaultNote: "farm mail off" },
 }
+
+/** 102D — policies that are ROWS in their own table, one version stream per row: `assignment_rule:<id>`,
+ *  `<table>:<scope_type>:<scope_id>`. The row's policy columns are the value; a deleted rule is value null. */
+export const TENANT_POLICY_ROW_KEYS: Record<string, TenantPolicyDefinition> = {
+  assignment_rule:           { label: "Lead assignment rule", store: "assignment_rules", defaultNote: "rule deleted / never saved here" },
+  blog_cadence_policy:       { label: "Blog cadence", store: "cadence_policy", defaultNote: "no row — cadence off" },
+  newsletter_cadence_policy: { label: "Newsletter cadence", store: "cadence_policy", defaultNote: "no row — cadence off" },
+  social_cadence_policy:     { label: "Social cadence", store: "cadence_policy", defaultNote: "no row — cadence off" },
+}
+
+export const FARM_MAIL_POLICY_KEY = "farm_mail"
+export type CadencePolicyTable = "blog_cadence_policy" | "newsletter_cadence_policy" | "social_cadence_policy"
+export type CadenceScopeType = "agent" | "team" | "brokerage"
+
+export function assignmentRulePolicyKey(ruleId: string): string { return `assignment_rule:${ruleId}` }
+export function cadencePolicyKey(table: CadencePolicyTable, scopeType: CadenceScopeType, scopeId: string): string { return `${table}:${scopeType}:${scopeId}` }
+
+const ASSIGNMENT_RULE_POLICY_COLUMNS = ["name", "rule_type", "conditions", "agent_ids", "team_id", "priority", "is_active"] as const
+const CADENCE_POLICY_COLUMNS = ["cadence", "fire_day", "preferred_categories", "preferred_persona", "preferred_post_types"] as const
+const FARM_MAIL_POLICY_COLUMNS = ["farm_mail_enabled", "farm_mail_max_per_week", "lob_fallback_template_id"] as const
+
+function pickPolicyColumns(row: Record<string, unknown> | null | undefined, cols: readonly string[]): Record<string, unknown> | null {
+  if (!row) return null
+  const out: Record<string, unknown> = {}
+  for (const c of cols) if (row[c] !== undefined) out[c] = row[c]
+  return out
+}
+/** PURE — THE policy value of an assignment_rules row (null = no row / deleted). ONE shape for writers, constitution and revert (§6). */
+export function assignmentRulePolicyValue(row: Record<string, unknown> | null | undefined): Record<string, unknown> | null { return pickPolicyColumns(row, ASSIGNMENT_RULE_POLICY_COLUMNS) }
+/** PURE — THE policy value of a *_cadence_policy row (preferred_post_types only where the table has it). */
+export function cadencePolicyValue(row: Record<string, unknown> | null | undefined): Record<string, unknown> | null { return pickPolicyColumns(row, CADENCE_POLICY_COLUMNS) }
+/** PURE — THE policy value of brokerages' farm-mail columns. */
+export function farmMailPolicyValue(row: Record<string, unknown> | null | undefined): Record<string, unknown> | null { return pickPolicyColumns(row, FARM_MAIL_POLICY_COLUMNS) }
 
 /** Per-agent-kind keys: `authority_level:<kind>` / `autonomy_tier:<kind>`. */
 export const TENANT_POLICY_MANAGER_FIELDS = {
@@ -88,6 +139,8 @@ export type ParsedPolicyKey =
   | { kind: "column"; key: string; def: TenantPolicyDefinition }
   | { kind: "manager"; field: keyof typeof TENANT_POLICY_MANAGER_FIELDS; agentKind: string; def: TenantPolicyDefinition }
   | { kind: "isa"; ownerType: "brokerage" | "team" | "agent"; ownerId: string | null; def: TenantPolicyDefinition }
+  | { kind: "rule"; ruleId: string; def: TenantPolicyDefinition }
+  | { kind: "cadence"; table: CadencePolicyTable; scopeType: CadenceScopeType; scopeId: string; def: TenantPolicyDefinition }
 
 const ISA_DEF: TenantPolicyDefinition = { label: "AI ISA settings", store: "ai_isa_settings", defaultNote: "platform ISA defaults" }
 
@@ -104,7 +157,61 @@ export function parsePolicyKey(policyKey: string): ParsedPolicyKey | null {
   if (policyKey === ISA_POLICY_KEY) return { kind: "isa", ownerType: "brokerage", ownerId: null, def: ISA_DEF }
   const i = /^ai_isa_settings:(team|agent):([0-9a-f-]{36})$/.exec(policyKey)
   if (i) return { kind: "isa", ownerType: i[1] as "team" | "agent", ownerId: i[2], def: ISA_DEF }
+  // The id segments follow m696's segment grammar (`[a-z0-9_-]+`), not a uuid shape: the CHECK is the authority.
+  const r = /^assignment_rule:([a-z0-9_-]+)$/.exec(policyKey)
+  if (r) return { kind: "rule", ruleId: r[1], def: TENANT_POLICY_ROW_KEYS.assignment_rule }
+  const c = /^(blog_cadence_policy|newsletter_cadence_policy|social_cadence_policy):(agent|team|brokerage):([a-z0-9_-]+)$/.exec(policyKey)
+  if (c) return { kind: "cadence", table: c[1] as CadencePolicyTable, scopeType: c[2] as CadenceScopeType, scopeId: c[3], def: TENANT_POLICY_ROW_KEYS[c[1]] }
   return null
+}
+
+// ── Which policy permitted (102D) ───────────────────────────────────────────────────────────
+
+/** `policy_key@version` — the agent_action_ledger.policy_ref spelling (m700 CHECK). A version the
+ *  reader could not establish is `@unknown`, never `@0` ("never changed" is a claim). PURE. */
+export function formatPolicyRef(policyKey: string, version: number | null | undefined): string {
+  return `${policyKey}@${Number.isInteger(version) && (version as number) >= 0 ? version : "unknown"}`
+}
+
+/** PURE — the inverse of formatPolicyRef (null for a malformed ref).
+ *  @proofSeam exported so scripts/action-ledger-guard.ts asserts the ref grammar round-trips against the m700 CHECK. */
+export function parsePolicyRef(ref: string | null | undefined): { policyKey: string; version: number | null } | null {
+  const m = /^([a-z][a-z0-9_]*(?::[a-z0-9_-]+)*)@([0-9]+|unknown)$/.exec(String(ref ?? ""))
+  if (!m) return null
+  return { policyKey: m[1], version: m[2] === "unknown" ? null : Number(m[2]) }
+}
+
+/**
+ * THE ONE reader of a key's live version: max(version) in tenant_policy_versions for this tenant,
+ * 0 when the key was never changed through the versioned writer (the constitution's "version 0").
+ * A refused read is returned as such — the caller records `@unknown`, never a guessed number.
+ */
+export async function currentPolicyVersion(
+  svc: any,
+  brokerageId: string,
+  policyKey: string,
+): Promise<{ ok: true; version: number } | { ok: false; error: string }> {
+  if (!brokerageId) return { ok: false, error: "No brokerage." }
+  if (!parsePolicyKey(policyKey)) return { ok: false, error: `"${policyKey}" is not a registered tenant policy key.` }
+  try {
+    const { data, error } = await svc
+      .from("tenant_policy_versions")
+      .select("version")
+      .eq("brokerage_id", brokerageId)
+      .eq("policy_key", policyKey)
+      .order("version", { ascending: false })
+      .limit(1)
+    if (error) return { ok: false, error: String(error.message ?? error.code ?? "refused") }
+    return { ok: true, version: ((data ?? [])[0] as { version?: number } | undefined)?.version ?? 0 }
+  } catch (e) {
+    return { ok: false, error: (e as Error).message }
+  }
+}
+
+/** `policy_key@version` for a ledger row, through currentPolicyVersion; `@unknown` on a refused read. */
+export async function resolvePolicyRef(svc: any, brokerageId: string, policyKey: string): Promise<string> {
+  const v = await currentPolicyVersion(svc, brokerageId, policyKey)
+  return formatPolicyRef(policyKey, v.ok ? v.version : null)
 }
 
 // ── Equality (a no-op write is not a version) ──────────────────────────────────────────────
@@ -286,14 +393,18 @@ export type ConstitutionResult =
  */
 export async function buildTenantOperatingConstitution(svc: any, brokerageId: string): Promise<ConstitutionResult> {
   if (!brokerageId) return { ok: false, error: "No brokerage on this session." }
-  const [bs, br, ma, isa, tpv] = await Promise.all([
+  const [bs, br, ma, isa, tpv, rules, agents, teams] = await Promise.all([
     svc.from("brokerage_settings").select("settings, review_request_delay_days, live_agent_face_provider_order").eq("brokerage_id", brokerageId).maybeSingle(),
-    svc.from("brokerages").select("default_assignment_method").eq("id", brokerageId).maybeSingle(),
+    svc.from("brokerages").select("default_assignment_method, farm_mail_enabled, farm_mail_max_per_week, lob_fallback_template_id").eq("id", brokerageId).maybeSingle(),
     svc.from("managed_agents").select("agent_kind, config").eq("brokerage_id", brokerageId).is("archived_at", null),
     svc.from("ai_isa_settings").select("owner_type, team_id, agent_id, settings").eq("brokerage_id", brokerageId),
     svc.from("tenant_policy_versions").select("policy_key, version, changed_by, actor_type, created_at").eq("brokerage_id", brokerageId).order("version", { ascending: false }).limit(2000),
+    svc.from("assignment_rules").select("id, name, rule_type, conditions, agent_ids, team_id, priority, is_active").eq("brokerage_id", brokerageId).limit(500),
+    // blog_cadence_policy carries no brokerage_id: its scope ids are this tenant's agents / teams / the brokerage itself.
+    svc.from("agents").select("id").eq("brokerage_id", brokerageId).limit(2000),
+    svc.from("teams").select("id").eq("brokerage_id", brokerageId).limit(500),
   ])
-  for (const [name, r] of [["brokerage settings", bs], ["brokerage", br], ["managed agents", ma], ["ISA settings", isa]] as const) {
+  for (const [name, r] of [["brokerage settings", bs], ["brokerage", br], ["managed agents", ma], ["ISA settings", isa], ["assignment rules", rules], ["agents", agents], ["teams", teams]] as const) {
     if (r.error) return { ok: false, error: `The ${name} could not be read (${r.error.message}) — the constitution is not shown rather than shown as defaults.` }
   }
   let versionsAvailable = true
@@ -323,6 +434,30 @@ export async function buildTenantOperatingConstitution(svc: any, brokerageId: st
   push("review_request_delay_days", TENANT_POLICY_COLUMN_KEYS.review_request_delay_days, bsRow.review_request_delay_days)
   push("live_agent_face_provider_order", TENANT_POLICY_COLUMN_KEYS.live_agent_face_provider_order, bsRow.live_agent_face_provider_order)
   push("default_assignment_method", TENANT_POLICY_COLUMN_KEYS.default_assignment_method, (br.data as Record<string, unknown> | null)?.default_assignment_method)
+  {
+    const fm = farmMailPolicyValue(br.data as Record<string, unknown> | null)
+    push(FARM_MAIL_POLICY_KEY, TENANT_POLICY_COLUMN_KEYS.farm_mail, fm && fm.farm_mail_enabled != null ? fm : undefined)
+  }
+  for (const r of ((rules.data ?? []) as Array<Record<string, unknown>>).sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? "")))) {
+    push(assignmentRulePolicyKey(String(r.id)), TENANT_POLICY_ROW_KEYS.assignment_rule, assignmentRulePolicyValue(r), `${TENANT_POLICY_ROW_KEYS.assignment_rule.label} — ${String(r.name ?? r.id)}`)
+  }
+  // Cadence rows: newsletter / social are tenant-anchored; blog is matched on this tenant's scope ids.
+  const scopeIds = new Set<string>([brokerageId, ...((agents.data ?? []) as Array<{ id: string }>).map((a) => a.id), ...((teams.data ?? []) as Array<{ id: string }>).map((t) => t.id)])
+  const cadenceSelect = "scope_type, scope_id, cadence, fire_day, preferred_categories, preferred_persona"
+  const [blog, nl, so] = await Promise.all([
+    svc.from("blog_cadence_policy").select(cadenceSelect).in("scope_id", [...scopeIds].slice(0, 500)).limit(500),
+    svc.from("newsletter_cadence_policy").select(cadenceSelect).eq("brokerage_id", brokerageId).limit(500),
+    svc.from("social_cadence_policy").select(`${cadenceSelect}, preferred_post_types`).eq("brokerage_id", brokerageId).limit(500),
+  ])
+  for (const [table, r] of [["blog_cadence_policy", blog], ["newsletter_cadence_policy", nl], ["social_cadence_policy", so]] as const) {
+    if (r.error) return { ok: false, error: `The ${table} rows could not be read (${r.error.message}) — the constitution is not shown rather than shown as defaults.` }
+    for (const row of (r.data ?? []) as Array<Record<string, unknown>>) {
+      const st = row.scope_type as CadenceScopeType
+      if ((st !== "agent" && st !== "team" && st !== "brokerage") || !row.scope_id) continue
+      const def = TENANT_POLICY_ROW_KEYS[table]
+      push(cadencePolicyKey(table, st, String(row.scope_id)), def, cadencePolicyValue(row), `${def.label} — ${st}`)
+    }
+  }
   const kinds = new Map<string, Record<string, unknown>>()
   for (const r of (ma.data ?? []) as Array<{ agent_kind: string; config: Record<string, unknown> | null }>) {
     if (!kinds.has(r.agent_kind)) kinds.set(r.agent_kind, r.config ?? {})

@@ -214,6 +214,9 @@ export interface PortalLayoutResolution extends DualPortalResolution {
   layouts: PortalView[]
   /** The layout the shell, labels and default tab lead with. */
   primary: PortalView
+  /** Wave 102 (102B), READ ONLY: the co-buyer / spouse contacts the relationship graph knows for
+   *  this client (lib/kernel/relationship-graph.ts household). Never changes the layouts. */
+  householdContactIds: string[]
 }
 
 /**
@@ -338,7 +341,22 @@ export async function resolvePortalLayouts(
     hasClosedDeal = !closedErr && (closed ?? []).length > 0
   }
   const layouts = portalLayoutsFor({ ...dual, hasClosedDeal })
-  return { ...dual, layouts, primary: layouts[0] }
+  // RELATIONSHIP GRAPH (wave 102, lane 102B) — READ ONLY, NO LAYOUT CHANGE: the co-buyer / spouse
+  // contacts the graph knows (lib/kernel/relationship-graph.ts household) ride on the resolution so a
+  // dual-client surface can NAME the other party; the layouts above are byte-for-byte unchanged.
+  // Gated, tenant-scoped client; a refused read (or no graph yet) is an empty household.
+  let householdContactIds: string[] = []
+  if (brokerageId) {
+    try {
+      const { household } = await import("@/lib/kernel/relationship-graph")
+      const hh = await household(client, { brokerageId, contactId: input.contactId })
+      if (!hh.ok && hh.error) console.warn("[Portal] resolvePortalLayouts household read refused:", hh.error)
+      householdContactIds = hh.members.filter((m) => m.type === "co_buyer" || m.type === "spouse_partner").map((m) => m.contactId)
+    } catch (e) {
+      console.warn("[Portal] resolvePortalLayouts household read failed:", e)
+    }
+  }
+  return { ...dual, layouts, primary: layouts[0], householdContactIds }
 }
 
 /** Does this contact's portal show `view`? The gate every sub-page uses. */

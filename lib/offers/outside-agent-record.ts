@@ -402,6 +402,22 @@ export async function linkOutsideAgentToBuyer(
     listing_id:         params.listingId ?? null,
   })
   if (insErr) return { ok: false, linked: false, error: `link not written: ${insErr.message}` }
+  // RELATIONSHIP GRAPH (wave 102, lane 102B): the link IS a represented_by fact — derived here at
+  // the survivor writer (buyer contact → outside_agent). The link row stays the record; a lost edge
+  // is logged, never fails the link.
+  try {
+    const { upsertRelationship } = await import("@/lib/kernel/relationship-graph")
+    const edge = await upsertRelationship(svc, {
+      brokerageId: params.brokerageId,
+      from: { type: "contact", id: params.contactId },
+      to: { type: "outside_agent", id: params.outsideAgentId },
+      type: "represented_by",
+      evidence: { source: "outside_agent_contact_links", confidence: 0.95, observed_at: new Date().toISOString() },
+    })
+    if (!edge.ok && !edge.degraded) console.error(`[outside-agent-record] represented_by edge not written: ${edge.error}`)
+  } catch (e) {
+    console.error("[outside-agent-record] relationship edge derivation failed (non-blocking)", e)
+  }
   return { ok: true, linked: true, error: null }
 }
 

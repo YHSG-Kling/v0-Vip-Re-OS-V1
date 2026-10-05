@@ -50,7 +50,6 @@ import { createClient } from "@/lib/supabase/server"
 import { requireCaller } from "@/lib/auth/require-caller"
 import { generateAIResponse } from "@/lib/ai/models"
 import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { loadBrandVoicePrompt } from "@/lib/ai-isa/brand-voice-prompt"
 import {
   buildComplianceSystemBlocks,
@@ -542,25 +541,21 @@ ${l.features?.length ? `- Key features: ${l.features.join(", ")}` : ""}
           brokerageId: brokerageId,
           event: KernelEvent.SCRIPT_GENERATED,
           actorUserId: userId,
+          // Wave 102C: ONE emit (row + fan-out); the reactor's SCRIPT_GENERATED reader forwards this
+          // metadata as the signal payload (was {}), read by named keys. agentUserId: null keeps the
+          // reactor's attribution exactly as the bare fan-out had it.
           metadata: {
             script_type: toLibraryScriptType(params.videoType),
             ai_generated: true,
             approval_status: "draft",
           },
-          auditOnly: true,
+          agentUserId: null,
         }))
         // supabase-js RESOLVES a refused insert. Without this the ledger could
         // be empty forever and every surface would read that as "no scripts".
         if (ledgerError) {
           console.error("[generate-script] lifecycle_events insert refused:", ledgerError.message)
         }
-
-        await processKernelEvent({
-          event: KernelEvent.SCRIPT_GENERATED,
-          brokerageId,
-          entityType: "video_script",
-          entityId: savedScriptId,
-        }).catch((err) => console.error("[generate-script] Kernel event failed:", err))
       }
     }
   }

@@ -18,7 +18,6 @@ import { requireCaller } from "@/lib/auth/require-caller"
 // provider_* columns. A second resolution here would have been a second opinion.
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { mayUseFeature } from "@/lib/billing/billing-access"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
@@ -264,21 +263,15 @@ export async function saveVideoScript(data: {
     brokerageId: brokerageId,
     event: KernelEvent.SCRIPT_GENERATED,
     actorUserId: createdBy,
+    // Wave 102C: ONE emit (row + fan-out) — the reactor forwards this metadata as the signal payload
+    // (was {}), read by named keys; agentUserId: null keeps the reactor attribution the bare fan-out had.
     metadata: {
       script_type: data.scriptType,
       ai_generated: data.aiGenerated ?? false,
       approval_status: data.approvalStatus ?? "draft",
     },
-    auditOnly: true,
+    agentUserId: null,
   }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
-
-  // Fire kernel event
-  await processKernelEvent({
-    event: KernelEvent.SCRIPT_GENERATED,
-    brokerageId: brokerageId,
-    entityType: "video_script",
-    entityId: script.id,
-  }).catch(err => console.error("[video-generation] Kernel event failed:", err))
 
   revalidatePath("/dashboard/videos")
   revalidatePath("/dashboard/videos/library")
@@ -941,15 +934,9 @@ async function checkAndFirePerformanceEvents(brokerageId: string, tracking: any)
         click_through_rate: clickThroughRate,
         thresholds: PERFORMANCE_THRESHOLDS.HIGH_PERFORMER,
       },
-      auditOnly: true,
+      // Wave 102C: ONE emit — the reactor forwards this metadata as the signal payload (was {}).
+      agentUserId: null,
     }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
-
-    await processKernelEvent({
-      event: KernelEvent.VIDEO_HIGH_PERFORMER_DETECTED,
-      brokerageId,
-      entityType: "video_performance",
-      entityId: tracking.id,
-    }).catch(err => console.error("[video-generation] Kernel event failed:", err))
   }
 
   // Check low performer threshold
@@ -969,15 +956,9 @@ async function checkAndFirePerformanceEvents(brokerageId: string, tracking: any)
         click_through_rate: clickThroughRate,
         thresholds: PERFORMANCE_THRESHOLDS.LOW_PERFORMER,
       },
-      auditOnly: true,
+      // Wave 102C: ONE emit — the reactor forwards this metadata as the signal payload (was {}).
+      agentUserId: null,
     }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
-
-    await processKernelEvent({
-      event: KernelEvent.VIDEO_LOW_PERFORMER_DETECTED,
-      brokerageId,
-      entityType: "video_performance",
-      entityId: tracking.id,
-    }).catch(err => console.error("[video-generation] Kernel event failed:", err))
   }
 
   // THE OWNER'S VIRAL RULE — "if the video goes viral using that script, it

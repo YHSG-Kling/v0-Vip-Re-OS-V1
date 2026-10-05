@@ -217,6 +217,11 @@ export interface HistoryCarryResult {
   moved: Record<string, number>
   /** Human-readable refusals. Never thrown — the conversion outlives them. */
   warnings: string[]
+  /** Wave 102 (lane 102A, m697) — the person_identities.id now pointing at this contact
+   *  (canonical_contact_id), stamped from THIS call because this is where leads.contact_id is
+   *  stamped; null when the link could not be made (reason in `personLinkReason`). */
+  personId?: string | null
+  personLinkReason?: string | null
 }
 
 export interface HistoryCarryParams {
@@ -259,6 +264,63 @@ export async function carryLeadHistoryToContact(
       )
     } else {
       result.linked = true
+    }
+  }
+
+  // ── Wave 102 (lane 102A, m697): THE PERSON pointer moves with the LINK, from the same call ──
+  // leads.contact_id + converted_at is the lineage survivor and this is its one writer (both the
+  // manual and the automatic converter run through here), so the person row's canonical_contact_id
+  // is stamped HERE and nowhere else — never a second converter. The lead's gate identity resolves
+  // the person (lib/kernel/person-identity.ts), the lead and the contact become promotion_link
+  // evidence on it, and canonical_contact_id is filled. The callers emit LEAD_CONVERTED_TO_CONTACT
+  // themselves (existingEvent), so no second event. Best-effort and tenant-pinned: no brokerage,
+  // no lead identity, or no m697 → reported on the result, never a warning (the carry's own
+  // contract) and never thrown.
+  result.personId = null
+  result.personLinkReason = null
+  if (!result.linked) {
+    result.personLinkReason = "link not stamped — no person pointer moved"
+  } else if (!brokerageId) {
+    result.personLinkReason = "no brokerage_id — person link skipped (tenant-pinned)"
+  } else {
+    try {
+      const { data: leadRow, error: leadErr } = await supabase
+        .from("leads")
+        .select("first_name, last_name, email, phone")
+        .eq("id", leadId)
+        .eq("brokerage_id", brokerageId)
+        .maybeSingle()
+      if (leadErr) {
+        result.personLinkReason = `lead identity read refused: ${leadErr.message}`
+      } else if (!leadRow) {
+        result.personLinkReason = "lead identity not readable — person link skipped"
+      } else {
+        const { resolvePerson, linkPersonEvidence, markPersonConverted } = await import("@/lib/kernel/person-identity")
+        const person = await resolvePerson(supabase, {
+          brokerageId,
+          firstName: (leadRow as { first_name?: string | null }).first_name ?? null,
+          lastName: (leadRow as { last_name?: string | null }).last_name ?? null,
+          email: (leadRow as { email?: string | null }).email ?? null,
+          phone: (leadRow as { phone?: string | null }).phone ?? null,
+        })
+        if (!person.ok) {
+          result.personLinkReason = person.reason
+        } else {
+          const common = {
+            brokerageId, personId: person.personId, source: "history_carry", matchScore: 1,
+            actor: { type: "system" as const, userId: null }, identity: person.identity, observedAt: now,
+            existingEvent: "lead_converted_to_contact",
+          }
+          const leadLink = await linkPersonEvidence(supabase, { ...common, entityType: "lead", entityId: leadId, matchMethod: "promotion_link", detail: { contact_id: contactId } })
+          const contactLink = await linkPersonEvidence(supabase, { ...common, entityType: "contact", entityId: contactId, matchMethod: "promotion_link", detail: { lead_id: leadId } })
+          const converted = await markPersonConverted(supabase, { brokerageId, personId: person.personId, contactId, convertedAt: now })
+          const refusals = [leadLink, contactLink, converted].filter((r): r is { ok: false; reason: string } => !r.ok).map((r) => r.reason)
+          result.personId = person.personId
+          result.personLinkReason = refusals.length > 0 ? refusals.join("; ") : null
+        }
+      }
+    } catch (err) {
+      result.personLinkReason = `person link threw (carry unaffected): ${err instanceof Error ? err.message : String(err)}`
     }
   }
 

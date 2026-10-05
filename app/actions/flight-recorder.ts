@@ -28,6 +28,7 @@ import { loadLedgerAttribution, type LedgerAttribution } from "@/lib/intelligenc
 import { requireCallerTenant } from "@/lib/auth/require-caller"
 import { replayDecisions, type ReplayDecisionsResult } from "@/lib/kernel/decision-replay"
 import { loadExperimentPolicy, type ExperimentPolicy } from "@/lib/kernel/experiments"
+import { loadDirectMailExplorationPolicy, type DirectMailExplorationPolicy } from "@/lib/direct-mail/variant-bandit"
 import { mergeBrokerageSettings } from "@/lib/settings/brokerage-settings-merge"
 
 export type CausalChainResult =
@@ -39,8 +40,12 @@ const ENTITY_TYPE_RE = /^[a-z][a-z_]{1,39}$/
 const LIMIT = 200
 const EVENT_BASE = "id, event_type, entity_type, entity_id, created_at"
 const EVENT_LINEAGE = `${EVENT_BASE}, causation_id, correlation_id`
+// 102D — which policy permitted (m700, APPLIED LIVE 2026-10-05): policy_ref is read with the rest.
+// The pre-apply fallback (retry on the base columns when only policy_ref was absent) was retired at
+// integration: a column-list VARIABLE hides every column from the readerless-write census, and the
+// column is live. One literal list, one read shape.
 const ACTION_COLS =
-  "id, action, status, reason_code, reason_detail, outcome, subject_type, subject_id, actor_type, actor_manager_key, actor_user_id, actor_agent_id, subject_ref, risk_class, system_source, cost_usd, detail, created_at, settled_at, error, causation_id, correlation_id"
+  "id, action, status, reason_code, reason_detail, outcome, subject_type, subject_id, actor_type, actor_manager_key, actor_user_id, actor_agent_id, subject_ref, risk_class, system_source, cost_usd, detail, created_at, settled_at, error, causation_id, correlation_id, policy_ref"
 
 function schemaAbsent(code: string | undefined): boolean {
   return code === "42P01" || code === "PGRST205" || code === "42703" || code === "PGRST204"
@@ -184,4 +189,31 @@ export async function setExperimentKillSwitch(input: { on: boolean }): Promise<{
     return { experiments: { ...prev, kill_switch: on, kill_switch_set_by: gate.userId, kill_switch_set_at: new Date().toISOString() } }
   }, { policy: { type: "user", userId: gate.userId, reason: `experiment kill switch ${on ? "on" : "off"}` } })
   return write.ok ? { ok: true } : { ok: false, error: write.error }
+}
+
+// ── Direct-mail bandit kill switch (wave 102, lane 102C — owner answer 4) ───────────────────────
+// Same gate, same ONE writer, same versioning: `direct_mail_exploration` is a registered tenant
+// policy key (lib/kernel/tenant-policy.ts), so mergeBrokerageSettings appends a version with this
+// actor on every change (appendTenantPolicyVersion) — the toggle sits beside `experiments` on the
+// Manager Trust page's Operating Constitution (app/dashboard/admin/manager-trust/tenant-constitution-panel.tsx).
+
+/** The tenant's direct-mail exploration policy exactly as the bandit reads it (fail closed: unreadable = frozen). */
+export async function getDirectMailExplorationPolicy(): Promise<({ ok: true } & DirectMailExplorationPolicy) | { ok: false; error: string }> {
+  const gate = await gateTenantAdmin()
+  if (!gate.ok) return gate
+  return { ok: true, ...(await loadDirectMailExplorationPolicy(createServiceClient(), gate.brokerageId)) }
+}
+
+/** Freeze (exploit the best arm only) or resume the direct-mail bandit's exploration for the session tenant. */
+export async function setDirectMailExplorationFrozen(input: { frozen: boolean }): Promise<{ ok: true; version: number | null } | { ok: false; error: string }> {
+  const gate = await gateTenantAdmin()
+  if (!gate.ok) return gate
+  const frozen = input?.frozen === true
+  const write = await mergeBrokerageSettings(createServiceClient(), gate.brokerageId, (settings) => {
+    const prev = (settings.direct_mail_exploration && typeof settings.direct_mail_exploration === "object" ? settings.direct_mail_exploration : {}) as Record<string, unknown>
+    return { direct_mail_exploration: { ...prev, frozen, frozen_set_by: gate.userId, frozen_set_at: new Date().toISOString() } }
+  }, { policy: { type: "user", userId: gate.userId, reason: `direct-mail exploration ${frozen ? "frozen" : "resumed"}` } })
+  if (!write.ok) return { ok: false, error: write.error }
+  const v = write.policyVersions.find((p) => p.key === "direct_mail_exploration")
+  return { ok: true, version: v?.version ?? null }
 }

@@ -7,7 +7,7 @@
  *     (pure). Replay calls planFromDecisionInput, which runs THOSE functions — never a copy;
  *   · the recorded decisions: agent_action_ledger `lead.decision.*` / `contact.decision.*` rows
  *     (recordNonAction, lib/kernel/action-ledger.ts), whose detail now carries the compact planner
- *     input (detail.decision_input, written by nonActionRecordFor's callers);
+ *     input (detail.decision_input, written by decisionRecordFor's callers);
  *   · the outcomes: lib/intelligence/roi-ledger.ts loadLedgerAttribution (wave 100A) — joined so a
  *     disagreement shows what the decision that WOULD HAVE CHANGED actually earned.
  *
@@ -18,8 +18,11 @@
 import { planFromDecisionInput, type DecisionInputSnapshot } from "@/lib/ai-isa/lead-action-plan"
 import { loadLedgerAttribution } from "@/lib/intelligence/roi-ledger"
 
-/** The NBA decisions the ledger records (recordNonAction: `<domain>.decision.<wait|do_nothing>`). */
-const DECISION_ACTIONS = ["lead.decision.wait", "lead.decision.do_nothing", "contact.decision.wait", "contact.decision.do_nothing"] as const
+/** The NBA decisions the ledger records (recordNonAction: `<domain>.decision.<verdict>`). Wave 102C
+ *  (owner answer 3): the ACTING verdicts send_touch / convert are decision rows too (decisionRecordFor),
+ *  so replay covers every verdict — attribution still reads only the wait / do_nothing rows. */
+const DECISION_VERDICTS = ["wait", "do_nothing", "send_touch", "convert"] as const
+const DECISION_ACTIONS = (["lead", "contact"] as const).flatMap((d) => DECISION_VERDICTS.map((v) => `${d}.decision.${v}`))
 const REPLAY_LIMIT = 2000
 const REPLAY_COLS = "id, brokerage_id, action, status, reason_code, subject_type, subject_id, created_at, causation_id, correlation_id, detail"
 

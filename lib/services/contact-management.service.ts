@@ -483,6 +483,48 @@ export async function mergeContacts(params: { primaryContactId: string; duplicat
       if (!prov.ok) console.warn("[mergeContacts] merged-phone provenance not recorded:", prov.error)
     }
 
+    // PERSON IDENTITY (wave 102, lane 102A; m697). A staff merge is a human identity verdict:
+    // "these two contact rows are ONE person". The survivor's gate identity resolves the person
+    // (lib/kernel/person-identity.ts); both contacts become contact_merge evidence on it, attributed
+    // to the session user; canonical_contact_id is re-pointed at the PRIMARY (override — the duplicate
+    // may have been the canonical contact of this person or of its own, since the two rows can carry
+    // different emails). Gate first (both rows already gated on agent_id through the session client
+    // above), then the service client — the one pattern lib/kernel/manager-registry.ts names, because
+    // m697 admits no session-client write. No event exists in this function, so the service emits the
+    // one person.identity_linked audit event. Non-blocking: the merge is already written; a refusal
+    // (or an unapplied m697) is logged, never thrown.
+    try {
+      const { data: auth } = await supabase.auth.getUser()
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const { resolvePerson, linkPersonEvidence, markPersonConverted, personForContact } = await import("@/lib/kernel/person-identity")
+      const svc = createServiceClient()
+      const brokerageId = primary.brokerage_id as string | null
+      const person = await resolvePerson(svc, {
+        brokerageId, firstName: primary.first_name, lastName: primary.last_name,
+        email: primary.email ?? duplicate.email, phone: merged.phone ?? null,
+      })
+      if (!person.ok) {
+        console.warn("[mergeContacts] person identity not resolved:", person.reason)
+      } else {
+        const actor = { type: "user" as const, userId: auth?.user?.id ?? null }
+        const common = { brokerageId, personId: person.personId, source: "contact_merge", actor, identity: person.identity }
+        const a = await linkPersonEvidence(svc, { ...common, entityType: "contact", entityId: params.primaryContactId, matchMethod: "contact_merge", matchScore: 1, detail: { role: "survivor", merged_contact_id: params.duplicateContactId } })
+        const b = await linkPersonEvidence(svc, { ...common, entityType: "contact", entityId: params.duplicateContactId, matchMethod: "contact_merge", matchScore: 1, detail: { role: "duplicate", survivor_contact_id: params.primaryContactId } })
+        const c = await markPersonConverted(svc, { brokerageId, personId: person.personId, contactId: params.primaryContactId, override: true })
+        // The duplicate may have been the canonical contact of a DIFFERENT person row (its own email):
+        // that person now points at the survivor too, with the same evidence.
+        const dupPerson = await personForContact(svc, { brokerageId, contactId: params.duplicateContactId })
+        if (dupPerson.ok && dupPerson.view && dupPerson.view.person.id !== person.personId) {
+          const d = await markPersonConverted(svc, { brokerageId, personId: dupPerson.view.person.id, contactId: params.primaryContactId, override: true })
+          const e = await linkPersonEvidence(svc, { ...common, personId: dupPerson.view.person.id, entityType: "contact", entityId: params.primaryContactId, matchMethod: "contact_merge", matchScore: 1, detail: { role: "survivor", merged_contact_id: params.duplicateContactId } })
+          for (const r of [d, e]) if (!r.ok) console.warn("[mergeContacts] duplicate's person not re-pointed:", r.reason)
+        }
+        for (const r of [a, b, c]) if (!r.ok) console.warn("[mergeContacts] person evidence not recorded:", r.reason)
+      }
+    } catch (err) {
+      console.warn("[mergeContacts] person identity threw (merge unaffected):", err instanceof Error ? err.message : String(err))
+    }
+
     // Transfer relationships to primary.
     //
     // m598 repoint: this re-keyed `property_interactions` — a zero-writer table

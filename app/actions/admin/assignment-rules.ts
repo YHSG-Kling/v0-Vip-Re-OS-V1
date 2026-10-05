@@ -22,6 +22,24 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { isRuleType } from "@/lib/lead-assignment/rule-matcher"
+import { appendTenantPolicyVersion, assignmentRulePolicyKey, assignmentRulePolicyValue } from "@/lib/kernel/tenant-policy"
+
+// 102D — an assignment rule is TENANT OPERATING POLICY (who receives which leads). Every write
+// here appends a version through the ONE appender (lib/kernel/tenant-policy.ts, m696): key
+// `assignment_rule:<id>`, value the rule's policy columns, null once deleted. The tenant is the
+// session's (requireAdmin above), the actor the session user. A lost version is reported, never silent.
+const RULE_POLICY_COLS = "id, brokerage_id, name, rule_type, conditions, agent_ids, team_id, priority, is_active"
+async function versionRule(
+  svc: ReturnType<typeof createServiceClient>,
+  args: { brokerageId: string; ruleId: string; previous: Record<string, unknown> | null; value: Record<string, unknown> | null; userId: string; reason: string },
+): Promise<void> {
+  const v = await appendTenantPolicyVersion(svc, {
+    brokerageId: args.brokerageId, policyKey: assignmentRulePolicyKey(args.ruleId),
+    value: assignmentRulePolicyValue(args.value), previous: assignmentRulePolicyValue(args.previous),
+    actor: { type: "user", userId: args.userId, reason: args.reason },
+  })
+  if (!v.ok) console.error(`[assignment-rules] policy version not recorded for ${args.ruleId}: ${v.error}`)
+}
 
 // TOMBSTONE (lane 91D2, §1.1 / §6 one vocabulary). A file-local
 // `RULE_TYPES = new Set(["round_robin","load_balance","geo_based","specialization"])`
@@ -54,10 +72,11 @@ export interface AssignmentRuleInput {
   isActive?: boolean
 }
 
-/** Verify a rule id belongs to the caller's brokerage before mutating it. */
-async function ruleBelongsToBrokerage(svc: ReturnType<typeof createServiceClient>, ruleId: string, brokerageId: string): Promise<boolean> {
-  const { data } = await svc.from("assignment_rules").select("brokerage_id").eq("id", ruleId).maybeSingle()
-  return !!data && (data as { brokerage_id: string }).brokerage_id === brokerageId
+/** Verify a rule id belongs to the caller's brokerage before mutating it — and return the row it
+ *  had (the `previous` of the version the write appends). */
+async function ruleBelongsToBrokerage(svc: ReturnType<typeof createServiceClient>, ruleId: string, brokerageId: string): Promise<Record<string, unknown> | null> {
+  const { data } = await svc.from("assignment_rules").select(RULE_POLICY_COLS).eq("id", ruleId).maybeSingle()
+  return data && (data as { brokerage_id: string }).brokerage_id === brokerageId ? (data as Record<string, unknown>) : null
 }
 
 export async function saveAssignmentRuleAction(
@@ -89,11 +108,13 @@ export async function saveAssignmentRuleAction(
   }
 
   if (input.id) {
-    if (!(await ruleBelongsToBrokerage(svc, input.id, auth.brokerageId))) {
+    const previous = await ruleBelongsToBrokerage(svc, input.id, auth.brokerageId)
+    if (!previous) {
       return { ok: false, error: "Rule not found for this brokerage" }
     }
     const { error } = await svc.from("assignment_rules").update(payload).eq("id", input.id)
     if (error) return { ok: false, error: error.message }
+    await versionRule(svc, { brokerageId: auth.brokerageId, ruleId: input.id, previous, value: payload, userId: auth.userId, reason: "assignment rule saved" })
     revalidatePath("/dashboard/admin/assignment-rules")
     return { ok: true, id: input.id }
   }
@@ -104,8 +125,10 @@ export async function saveAssignmentRuleAction(
     .select("id")
     .single()
   if (error) return { ok: false, error: error.message }
+  const newId = (data as { id: string }).id
+  await versionRule(svc, { brokerageId: auth.brokerageId, ruleId: newId, previous: null, value: payload, userId: auth.userId, reason: "assignment rule created" })
   revalidatePath("/dashboard/admin/assignment-rules")
-  return { ok: true, id: (data as { id: string }).id }
+  return { ok: true, id: newId }
 }
 
 export async function toggleAssignmentRuleAction(
@@ -115,11 +138,13 @@ export async function toggleAssignmentRuleAction(
   const auth = await requireAdmin()
   if (!auth.ok) return auth
   const svc = createServiceClient()
-  if (!(await ruleBelongsToBrokerage(svc, ruleId, auth.brokerageId))) {
+  const previous = await ruleBelongsToBrokerage(svc, ruleId, auth.brokerageId)
+  if (!previous) {
     return { ok: false, error: "Rule not found for this brokerage" }
   }
   const { error } = await svc.from("assignment_rules").update({ is_active: isActive }).eq("id", ruleId)
   if (error) return { ok: false, error: error.message }
+  await versionRule(svc, { brokerageId: auth.brokerageId, ruleId, previous, value: { ...previous, is_active: isActive }, userId: auth.userId, reason: `assignment rule ${isActive ? "activated" : "deactivated"}` })
   revalidatePath("/dashboard/admin/assignment-rules")
   return { ok: true }
 }
@@ -130,11 +155,15 @@ export async function deleteAssignmentRuleAction(
   const auth = await requireAdmin()
   if (!auth.ok) return auth
   const svc = createServiceClient()
-  if (!(await ruleBelongsToBrokerage(svc, ruleId, auth.brokerageId))) {
+  const previous = await ruleBelongsToBrokerage(svc, ruleId, auth.brokerageId)
+  if (!previous) {
     return { ok: false, error: "Rule not found for this brokerage" }
   }
-  const { error } = await svc.from("assignment_rules").delete().eq("id", ruleId)
+  // .select() + count: a DELETE matching nothing also resolves (CLAUDE.md §3).
+  const { data: deleted, error } = await svc.from("assignment_rules").delete().eq("id", ruleId).eq("brokerage_id", auth.brokerageId).select("id")
   if (error) return { ok: false, error: error.message }
+  if (!Array.isArray(deleted) || deleted.length !== 1) return { ok: false, error: "Rule not found for this brokerage" }
+  await versionRule(svc, { brokerageId: auth.brokerageId, ruleId, previous, value: null, userId: auth.userId, reason: "assignment rule deleted" })
   revalidatePath("/dashboard/admin/assignment-rules")
   return { ok: true }
 }

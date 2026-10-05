@@ -24,6 +24,8 @@ export interface InstantGreetingInput {
   brokerageId:     string
   agentId:         string
   firstName:       string
+  /** Wave 102 — the kiosk collects it (the sign-in requires it); it is half of the person key. */
+  lastName?:       string | null
   phone?:          string | null
   email:           string
   listingAddress?: string | null
@@ -42,6 +44,34 @@ export async function sendInstantOpenHouseGreeting(
   input: InstantGreetingInput,
 ): Promise<InstantGreetingResult> {
   const svc = createServiceClient()
+
+  // PERSON IDENTITY (wave 102, lane 102A; m697). The kiosk check-in is an identity event whether or
+  // not the greeting goes out: the attendee's name + email resolved (or created) the contact by email
+  // in the attend route, so the contact AND the attendee row become capture_match evidence on THE
+  // person row (lib/kernel/person-identity.ts), tenant from the event's brokerage the route already
+  // resolved. The route's own listing.open_house.attendee_captured event carries the contact, so no
+  // second event. Best-effort: a refusal (or an unapplied m697) is logged, never blocks the greeting.
+  try {
+    const { resolvePerson, linkPersonEvidence } = await import("@/lib/kernel/person-identity")
+    const person = await resolvePerson(svc, {
+      brokerageId: input.brokerageId, firstName: input.firstName, lastName: input.lastName ?? null,
+      email: input.email, phone: input.phone ?? null,
+    })
+    if (!person.ok) {
+      if (person.reason !== "no_identity_anchor") console.warn("[instant-greeting] person identity not resolved:", person.reason)
+    } else {
+      const common = {
+        brokerageId: input.brokerageId, personId: person.personId, source: "open_house_kiosk", matchScore: 1,
+        actor: { type: "system" as const, userId: null }, identity: person.identity,
+        existingEvent: "listing.open_house.attendee_captured",
+      }
+      const a = await linkPersonEvidence(svc, { ...common, entityType: "contact", entityId: input.contactId, matchMethod: "capture_match", detail: { event_id: input.eventId, attendee_id: input.attendeeId } })
+      const b = await linkPersonEvidence(svc, { ...common, entityType: "open_house_attendee", entityId: input.attendeeId, matchMethod: "capture_match", detail: { event_id: input.eventId, contact_id: input.contactId } })
+      for (const r of [a, b]) if (!r.ok) console.warn("[instant-greeting] person evidence not recorded:", r.reason)
+    }
+  } catch (err) {
+    console.warn("[instant-greeting] person identity threw (greeting unaffected):", err instanceof Error ? err.message : String(err))
+  }
 
   // Resolve agent name + brand voice context
   const { data: agentUser } = await svc

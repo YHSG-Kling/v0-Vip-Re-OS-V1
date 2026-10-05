@@ -15,6 +15,8 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolvePolicyScopeAccess } from "@/lib/identity/policy-scope"
 import { revalidatePath } from "next/cache"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
+import { appendTenantPolicyVersion, FARM_MAIL_POLICY_KEY, farmMailPolicyValue } from "@/lib/kernel/tenant-policy"
 
 export interface FarmMailConfig {
   farm_mail_enabled:        boolean
@@ -89,15 +91,32 @@ export async function saveFarmMailConfig(input: {
     return { success: false, error: "Max per week must be between 1 and 200 contacts." }
   }
 
+  // 102D — the version's actor is the SESSION user (requireCallerTenant; the scope gate above
+  // carries no userId). Farm mail is a communication limit: tenant operating policy, versioned.
+  const caller = await requireCallerTenant()
+  if (!caller.ok) return { success: false, error: caller.error }
+
   const svc = createServiceClient()
+  const { data: before, error: beforeErr } = await svc.from("brokerages")
+    .select("farm_mail_enabled, farm_mail_max_per_week, lob_fallback_template_id")
+    .eq("id", access.brokerageScopeId)
+    .maybeSingle()
+  if (beforeErr) return { success: false, error: `Current farm-mail config could not be read: ${beforeErr.message}` }
+  const next = {
+    farm_mail_enabled:        input.farm_mail_enabled,
+    farm_mail_max_per_week:   input.farm_mail_max_per_week,
+    lob_fallback_template_id: input.lob_fallback_template_id?.trim() || null,
+  }
   const { error } = await svc.from("brokerages")
-    .update({
-      farm_mail_enabled:        input.farm_mail_enabled,
-      farm_mail_max_per_week:   input.farm_mail_max_per_week,
-      lob_fallback_template_id: input.lob_fallback_template_id?.trim() || null,
-    })
+    .update(next)
     .eq("id", access.brokerageScopeId)
   if (error) return { success: false, error: error.message }
+  const v = await appendTenantPolicyVersion(svc, {
+    brokerageId: access.brokerageScopeId, policyKey: FARM_MAIL_POLICY_KEY,
+    value: farmMailPolicyValue(next), previous: farmMailPolicyValue(before as Record<string, unknown> | null),
+    actor: { type: "user", userId: caller.userId, reason: "farm mail config saved" },
+  })
+  if (!v.ok) console.error(`[direct-mail-settings] policy version not recorded: ${v.error}`)
 
   revalidatePath("/settings/direct-mail")
   return { success: true }

@@ -53,6 +53,13 @@ export async function GET(request: NextRequest) {
       // LEARNING CONDUCTOR (copy) — promote the winning ai_intent variant per A/B step (reply-rate,
       // sample+margin gated). Same weekly cadence as the source learner; best-effort.
       try {
+        // 102D — per-arm outcomes FIRST (attributed reply / appointment / contract / closed → one
+        // agent_outcome_evaluations row per arm action, lib/intelligence/roi-ledger.ts), so the
+        // winner gate below reads attributed arm results, not only the step counters.
+        const { recordExperimentArmOutcomes } = await import("@/lib/intelligence/roi-ledger")
+        const armed = await recordExperimentArmOutcomes(svc, b.id)
+        if (!armed.ok) console.error(`[source-conversion-learning] arm outcomes not recorded for ${b.id}: ${armed.error}`)
+        else if (armed.recording.errors.length > 0) console.error(`[source-conversion-learning] arm outcomes for ${b.id}: ${armed.recording.errors.join("; ")}`)
         const { runSequenceCopyLearning } = await import("@/lib/campaign-sequences/copy-learning-conductor")
         await runSequenceCopyLearning(b.id, svc)
       } catch { /* best-effort — never fails the source learner */ }

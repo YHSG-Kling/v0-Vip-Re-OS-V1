@@ -47,7 +47,6 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { normalizeInbound } from "@/lib/providers/inbound-router"
 import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel"
 import { processOptOut } from "@/app/actions/ai-isa/process-opt-out"
 import { detectOptOutIntent } from "@/lib/ai-isa/opt-out-utils"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
@@ -337,23 +336,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   }
 
-  // ── Step 6: Write lifecycle_events ─────────────────────────────────────────
-  // DB column is `metadata` (jsonb) — pass plain object, not JSON.stringify
-  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
-    brokerageId: inbound.brokerageId,
-    entityType: entityType,
-    entityId: entityId,
-    event: KernelEvent.ISA_REPLY_RECEIVED,
-    metadata: {
-      provider: inbound.providerType,
-      messageId: inbound.messageId,
-      fromEmail: inbound.fromEmail,
-      fromPhone: inbound.fromPhone,
-      subject: inbound.subject,
-      text: (inbound.text ?? "").slice(0, 500),
-    },
-    auditOnly: true,
-  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+  // ── Step 6: lifecycle_events — MOVED to step 8 (wave 102C): the row and the fan-out are ONE emit
+  //    there, so the reactor still runs AFTER the behavioural event (6b) and the opt-out review (7),
+  //    exactly as the separate fan-out did. Nothing between here and step 8 returns early.
 
   // ── Step 6b: Behavioural event log — sms_reply ─────────────────────────────
   // The contact texting back is a scored responsiveness signal (sms_reply,
@@ -486,17 +471,29 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   }
 
-  // ── Step 8: Kernel handoff ──────────────────────────────────────────────────
-  // Non-fatal: if kernel processing fails, the lifecycle_event is already recorded.
+  // ── Step 8: lifecycle_events row + kernel handoff — ONE emit (wave 102C) ────────────────────
+  // The row (metadata below; jsonb column, plain object) and the fan-out were a pair kept apart only
+  // for ORDER; emitting here keeps that order. The reactor's ISA_REPLY_RECEIVED reader publishes a
+  // data_steward signal with no payload, so the row's metadata reaching it changes nothing. Non-fatal:
+  // a refused row is sentinelled, a failed fan-out is logged by emitKernelEvent itself.
   try {
-    await processKernelEvent({
-      event: KernelEvent.ISA_REPLY_RECEIVED,
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
       brokerageId: inbound.brokerageId,
-      entityType,
-      entityId,
-    })
+      entityType: entityType,
+      entityId: entityId,
+      event: KernelEvent.ISA_REPLY_RECEIVED,
+      metadata: {
+        provider: inbound.providerType,
+        messageId: inbound.messageId,
+        fromEmail: inbound.fromEmail,
+        fromPhone: inbound.fromPhone,
+        subject: inbound.subject,
+        text: (inbound.text ?? "").slice(0, 500),
+      },
+      agentUserId: null,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
   } catch (err) {
-    console.error("[InboundRouter] processKernelEvent failed:", err)
+    console.error("[InboundRouter] ISA_REPLY_RECEIVED emit failed:", err)
   }
 
   // ── Step 8b: AI ISA inbound-intent classification + conversion (LEAD replies) ────

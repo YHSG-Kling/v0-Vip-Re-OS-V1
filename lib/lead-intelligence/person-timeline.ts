@@ -83,6 +83,7 @@ export type TimelineEventType =
   | "enrichment"
   | "qualification"
   | "consent"
+  | "identity_evidence"
 
 export interface TimelineEvent {
   id: string
@@ -116,6 +117,10 @@ export interface PersonTimelineResult {
   platformPaidAcquisitionCost: number | null
   behavioralIntentScore: number
   warnings: string[]
+  /** Wave 102 (lane 102A, m697) — THE person this lead/contact is (person_identities.id); every lead
+   *  and raw row linked to it by evidence is folded into this one timeline. null when no evidence
+   *  names the pair (or m697 is not applied — reported in warnings). */
+  personId: string | null
 }
 
 interface Params {
@@ -127,7 +132,7 @@ interface Params {
 
 const EMPTY = (leadId: string | null, contactId: string | null, brokerageId: string | null): PersonTimelineResult => ({
   leadId, contactId, brokerageId, events: [], convertedAt: null, acquisitionCost: null,
-  platformPaidSpend: null, platformPaidAcquisitionCost: null, behavioralIntentScore: 0, warnings: [],
+  platformPaidSpend: null, platformPaidAcquisitionCost: null, behavioralIntentScore: 0, warnings: [], personId: null,
 })
 
 /** Whose mailbox an unknown sender wrote to (raw_data.mailbox_owner_kind, stamped by
@@ -212,10 +217,44 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
     warnings.push("no brokerage_id resolved — brokerage-scoped sources (form_submissions, assignment_log, ad_campaigns) skipped")
   }
 
-  const events: TimelineEvent[] = []
+  // ── Wave 102 (lane 102A, m697): THE PERSON fold ──────────────────────────
+  // contact_lead_history (above) knows only the leads that CONVERTED into this contact. The person
+  // evidence ledger (lib/kernel/person-identity.ts) also knows the leads and raw rows the dedup
+  // passes judged to be the same person without converting — a re-scraped person with two leads is
+  // ONE person here, so both leads' scrape / dedup / ISA history folds into this one timeline. Every
+  // evidence row is also an event (lead-desk only: it names raw rows and dedup methods; the
+  // contact view keeps post-conversion rows through the usual rule). Tenant-pinned; a refused read
+  // (or an unapplied m697) is a warning, never a throw.
+  let personId: string | null = null
+  const personRawIds = new Set<string>()
+  const identityEvents: TimelineEvent[] = []
+  if (brokerageId && (contactId || leadId)) {
+    const { personForContact, personForLead } = await import("@/lib/kernel/person-identity")
+    const view = contactId
+      ? await personForContact(svc, { brokerageId, contactId })
+      : await personForLead(svc, { brokerageId, leadId: leadId as string })
+    if (!view.ok) warnings.push(`person identity read refused: ${view.reason}`)
+    else if (view.view) {
+      personId = view.view.person.id
+      for (const e of view.view.evidence) {
+        if (e.entity_type === "lead" && !allLeadIds.includes(e.entity_id)) allLeadIds = [...allLeadIds, e.entity_id]
+        if (e.entity_type === "raw_scraped_lead") personRawIds.add(e.entity_id)
+        identityEvents.push({
+          id: `identity:${e.id}`,
+          type: "identity_evidence",
+          occurredAt: e.observed_at ?? null,
+          summary: `Identified as the same person — ${e.entity_type.replace(/_/g, " ")} linked by ${e.match_method.replace(/_/g, " ")} (${Math.round(Number(e.match_score) * 100)}%) via ${e.source}`,
+          sensitivity: "lead_desk_only",
+          detail: { entityType: e.entity_type, entityId: e.entity_id, matchMethod: e.match_method, matchScore: Number(e.match_score), source: e.source, actorType: e.actor_type },
+        })
+      }
+    }
+  }
 
-  // ── 1. SCRAPE SOURCE — raw_scraped_leads (per lead id) ────────────────────
-  if (allLeadIds.length > 0) {
+  const events: TimelineEvent[] = [...identityEvents]
+
+  // ── 1. SCRAPE SOURCE — raw_scraped_leads (per lead id, plus the person's own raw rows) ──
+  if (allLeadIds.length > 0 || personRawIds.size > 0) {
     // raw_scraped_leads.cost_per_record IS selected now (lane 85B): the earlier NOT-SELECTED note
     // (no writer) went stale when lib/kernel/scraping.ts::ingestRawSourceBatch began stamping it from
     // the batch's metered cost (wave 66, `costPerRecord`). It is the per-record acquisition cost
@@ -223,12 +262,26 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
     // (source inbound_email_unknown — lane 85B lands it RAW before the lead gate) the CONVERSATION that
     // started the record is on raw_data; its subject and a short excerpt are read by JSON path so the
     // timeline keeps it as lead intelligence history without pulling whole scraped payloads.
-    const { data, error } = await svc.from("raw_scraped_leads")
-      .select("id, lead_id, source, source_channel, scrape_category, source_subtype, source_origin, scraper_execution_id, created_at, dedupe_status, cost_per_record, inbound_subject:raw_data->>subject, inbound_body:raw_data->>body, inbound_name_source:raw_data->>name_source, inbound_mailbox_owner_kind:raw_data->>mailbox_owner_kind")
-      .in("lead_id", allLeadIds)
-    if (error) warnings.push(`raw_scraped_leads read refused: ${error.message}`)
-    else {
-      for (const r of (data ?? []) as Array<Record<string, any>>) {
+    const RAW_COLS = "id, lead_id, source, source_channel, scrape_category, source_subtype, source_origin, scraper_execution_id, created_at, dedupe_status, cost_per_record, inbound_subject:raw_data->>subject, inbound_body:raw_data->>body, inbound_name_source:raw_data->>name_source, inbound_mailbox_owner_kind:raw_data->>mailbox_owner_kind"
+    const rawRows: Array<Record<string, any>> = []
+    const seenRaw = new Set<string>()
+    const takeRaw = (rows: unknown) => { for (const r of (rows ?? []) as Array<Record<string, any>>) { const id = r.id ? String(r.id) : null; if (id && seenRaw.has(id)) continue; if (id) seenRaw.add(id); rawRows.push(r) } }
+    if (allLeadIds.length > 0) {
+      const { data, error } = await svc.from("raw_scraped_leads").select(RAW_COLS).in("lead_id", allLeadIds)
+      if (error) warnings.push(`raw_scraped_leads read refused: ${error.message}`)
+      else takeRaw(data)
+    }
+    // Wave 102 — raw rows the person evidence names that never became one of these leads (a dedup-skipped
+    // re-scrape): the same person's scrape history, folded in. A second query, never an .or() — the
+    // ids are already known.
+    const extraRawIds = [...personRawIds].filter((id) => !seenRaw.has(id))
+    if (extraRawIds.length > 0) {
+      const { data, error } = await svc.from("raw_scraped_leads").select(RAW_COLS).in("id", extraRawIds)
+      if (error) warnings.push(`raw_scraped_leads (person-linked) read refused: ${error.message}`)
+      else takeRaw(data)
+    }
+    {
+      for (const r of rawRows) {
         if (r.id) rawRecordIds.add(String(r.id))
         events.push({
           id: `raw:${r.id}`,
@@ -620,6 +673,7 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
     platformPaidAcquisitionCost,
     behavioralIntentScore,
     warnings,
+    personId,
   }
 }
 

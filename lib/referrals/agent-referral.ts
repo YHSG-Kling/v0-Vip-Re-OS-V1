@@ -95,6 +95,27 @@ export async function createAgentReferral(svc: Svc, input: CreateAgentReferralIn
   if (error) return { ok: false, error: error.message }
   const referralId = (data as any).id as string
 
+  // RELATIONSHIP GRAPH (wave 102, lane 102B): the hand-off IS a referred_by fact (contact → the
+  // referring agent). The graph's `agent` entity is a USERS id (agents.id and users.id are disjoint,
+  // §3), so the agents row is crossed once; a missing user is logged, never invented.
+  try {
+    const { data: refAgent, error: refAgentErr } = await svc.from("agents").select("user_id").eq("id", input.referringAgentId).maybeSingle()
+    if (refAgentErr) console.error(`[createAgentReferral] referring agent read refused — no referred_by edge: ${refAgentErr.message}`)
+    else if (refAgent?.user_id) {
+      const { upsertRelationship } = await import("@/lib/kernel/relationship-graph")
+      const edge = await upsertRelationship(svc, {
+        brokerageId: input.brokerageId,
+        from: { type: "contact", id: input.contactId },
+        to: { type: "agent", id: refAgent.user_id as string },
+        type: "referred_by",
+        evidence: { source: "referrals", confidence: 0.9, observed_at: new Date().toISOString() },
+      })
+      if (!edge.ok && !edge.degraded) console.error(`[createAgentReferral] referred_by edge not written: ${edge.error}`)
+    }
+  } catch (e) {
+    console.error("[createAgentReferral] relationship edge derivation failed (non-blocking)", e)
+  }
+
   // ── THE FEE SECOND-LOOK (round 41, referral_fee_economics — deliberative): the
   // agreed fee is real money booked on the canonical commission rail at close, so
   // the Sphere raises the terms INTO Finance's domain for the governed argument —

@@ -85,6 +85,7 @@ import {
   REPRESENTED_BY_OUTSIDE_AGENT_KEY,
 } from "@/lib/offers/outside-agent-record"
 import { splitPersonName } from "@/lib/platform/prospect-conversion"
+import { stampFieldProvenance, withFieldProvenance } from "@/lib/lead-pipeline/enrichment-column-map"
 import {
   looksLikeOffer, matchListingByAddress, assessOfferIntake, planInboundFiling,
   planInboundOfferLink,
@@ -412,6 +413,13 @@ async function intakeOutsideAgentOffer(svc: Svc, ctx: InboundOfferContext): Prom
         listing_id: match.id,
         name_source: named.first ? "email_body" : "placeholder",
       },
+      // 102D — PROVENANCE (wave 101C still-open): the buyer's name came off an outside agent's email
+      // (source inbound_email, purpose acquisition); a placeholder "Buyer" is confidence LOW so the
+      // contact card never shows it as a known fact. ONE pure writer (stampFieldProvenance).
+      enrichment_profile: withFieldProvenance({}, stampFieldProvenance(["first_name", "last_name"], {
+        source: "inbound_email", capability: "offer_intake.buyer_name", purpose: "acquisition",
+        matchConfidence: named.first ? "medium" : "low", actor: null,
+      })),
     }).select("id").single()
     if (buyerErr || !buyer) return { handled: false, errors: [`intake buyer not filed: ${buyerErr?.message ?? "no row"}`] }
     buyerContactId = (buyer as { id: string }).id

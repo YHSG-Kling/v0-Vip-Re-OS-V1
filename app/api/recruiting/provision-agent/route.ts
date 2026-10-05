@@ -290,6 +290,32 @@ export async function POST(req: Request) {
               },
               { onConflict: "agent_id,brokerage_id,relationship_type" }
             ), { table: "agent_relationships", flow: "agent_relationships_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
+
+            // RELATIONSHIP GRAPH (wave 102, lane 102B): the downline edge IS a sponsor_of fact
+            // (sponsor → recruit). The graph's `agent` entity is a USERS id (agents.id and users.id
+            // are disjoint, §3): the recruit's is resolvedUserId, the sponsor's is crossed once via
+            // agents.user_id. agent_relationships stays the revenue-share record; a lost edge is
+            // ledgered on the same sentinel the tree write uses.
+            try {
+              const { data: sponsorAgent, error: sponsorErr } = await service.from("agents").select("user_id").eq("id", sponsorId).maybeSingle()
+              if (sponsorErr) console.error(`[provision-agent] sponsor agent read refused — no sponsor_of edge: ${sponsorErr.message}`)
+              else if (sponsorAgent?.user_id && resolvedUserId) {
+                const { upsertRelationship } = await import("@/lib/kernel/relationship-graph")
+                const edge = await upsertRelationship(service, {
+                  brokerageId: recruit.brokerage_id,
+                  from: { type: "agent", id: sponsorAgent.user_id as string },
+                  to: { type: "agent", id: resolvedUserId },
+                  type: "sponsor_of",
+                  evidence: { source: "agent_relationships", confidence: 1, observed_at: new Date().toISOString() },
+                })
+                if (!edge.ok && !edge.degraded) {
+                  const { recordBestEffortLoss } = await import("@/lib/kernel/write-sentinel")
+                  await recordBestEffortLoss(service, { table: "relationship_edges", flow: "sponsor_of_relationship_edge", brokerageId: recruit.brokerage_id, reason: "sponsor_of edge beside the revenue-share tree; the tree write already landed" }, edge.error, null)
+                }
+              }
+            } catch (e) {
+              console.error("[provision-agent] relationship edge derivation failed (non-blocking)", e)
+            }
           }
         }
       }

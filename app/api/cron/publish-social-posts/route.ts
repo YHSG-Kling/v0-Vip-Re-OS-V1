@@ -6,7 +6,6 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { NextResponse } from "next/server"
 import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { publishToSocialPlatform } from "@/lib/social/publisher"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { assembleSocialDisclosures, appendDisclosures } from "@/lib/social/assemble-disclosures"
@@ -353,7 +352,8 @@ export async function GET(request: Request) {
           created_at: new Date().toISOString(),
         }), { table: "social_publish_log", flow: "social_publish_log_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
-        // processKernelEvent(KernelEvent.SOCIAL_POST_FAILED)
+        // Wave 102C: ONE emit (row + fan-out) — the reactor forwards this metadata as the
+        // social_post_failed signal payload (was {}), read by named keys.
         await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
           entityType: "social_post",
           entityId: post.id,
@@ -365,17 +365,8 @@ export async function GET(request: Request) {
             retry_count: retryCount,
             listing_id: post.listing_id,
           },
-          auditOnly: true,
+          agentUserId: null,
         }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
-
-        await processKernelEvent({
-          event: KernelEvent.SOCIAL_POST_FAILED,
-          brokerageId: post.brokerage_id,
-          entityType: "social_post",
-          entityId: post.id,
-        }).catch((err) =>
-          console.error("[cron/publish-social-posts] Kernel event failed:", err)
-        )
 
         results.push({
           postId: post.id,

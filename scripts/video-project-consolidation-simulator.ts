@@ -254,7 +254,10 @@ function supersetLayer() {
     // Wave 100 (100B): the row may be written through emitKernelEvent (event: …) — same rule.
     (/event_type\s*:\s*KernelEvent\.VIDEO_GENERATION_REQUESTED/.test(eventInsert) ||
       /emitKernelEvent\(\{[\s\S]{0,300}?event\s*:\s*KernelEvent\.VIDEO_GENERATION_REQUESTED/.test(body)) &&
-    /processKernelEvent\(\{\s*event\s*:\s*KernelEvent\.VIDEO_GENERATION_REQUESTED/.test(body.replace(/\s*\n\s*/g, " ")))
+    // The FAN-OUT: a separate processKernelEvent of the event (through wave 101), or — wave 102C, the
+    // pair merged onto ONE emit — an emitKernelEvent of the event that is not auditOnly (it fans out itself).
+    (/processKernelEvent\(\{\s*event\s*:\s*KernelEvent\.VIDEO_GENERATION_REQUESTED/.test(body.replace(/\s*\n\s*/g, " ")) ||
+      (() => { const m = /emitKernelEvent\(\{([\s\S]{0,600}?)\}\)\)/.exec(body.slice(body.indexOf("KernelEvent.VIDEO_GENERATION_REQUESTED") - 400)); return !!m && /event\s*:\s*KernelEvent\.VIDEO_GENERATION_REQUESTED/.test(m[1]) && !/auditOnly\s*:\s*true/.test(m[1]) })()))
 
   // The kernel creator's own shape WAS the reference for "nothing lost" while it
   // existed. Wave 56 (lane OC, orphan doctrine §1.1) deleted lib/kernel/video.ts's

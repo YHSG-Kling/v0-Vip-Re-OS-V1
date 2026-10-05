@@ -4,7 +4,6 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { captureContact } from "@/lib/contact-pipeline/contact-capture"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
-import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 import { VENDOR_CATEGORY_OTHER } from "@/lib/kernel/vendor-categories"
@@ -272,25 +271,20 @@ export async function uploadBusinessCard(params: {
     }).eq("id", scan!.id)
     if (scanUpdateVendorError) console.error("[businessCardUpload] scan classification update (vendor) failed:", scanUpdateVendorError)
 
+    // Wave 102C (owner ruling: one emit where the row metadata is a SUPERSET the reactor reads by named
+    // key). The 101C census kept this pair apart because the row stored `category ?? VENDOR_CATEGORY_OTHER`
+    // and the payload the raw `category` — but in this branch `category` is ALREADY
+    // `detected.category ?? VENDOR_CATEGORY_OTHER` (line ~240), so the two were the same value. One emit:
+    // the row carries the whole routing payload (subject_user_type per the 2026-09-10 ruling — the
+    // reactor forwards `metadata` as the manager-signal payload, the handler reads `scanId`).
     await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
       brokerageId: brokerageId,
       entityType: "vendor",
       entityId: vendor.id,
       event: KernelEvent.BUSINESS_CARD_APPROVED,
-      metadata: { scanId: scan!.id, routed_to: "vendor", category: category ?? VENDOR_CATEGORY_OTHER, card_subject_type: cardSubjectType },
-      auditOnly: true,
-    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
-
-    await processKernelEvent({
-      event: KernelEvent.BUSINESS_CARD_APPROVED,
-      brokerageId,
-      entityType: "vendor",
-      entityId: vendor.id,
-      // subject_user_type rides the routing metadata (owner ruling 2026-09-10:
-      // "should be a userid user type") — event-reactor.ts's BUSINESS_CARD_APPROVED
-      // block forwards this whole object as the manager signal payload.
       metadata: { scanId: scan!.id, routed_to: "vendor", category, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_user_type: subjectUserType, classified_by: classifiedBy },
-    })
+      agentUserId: null,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
     return { scanId: scan!.id, contactId: null, vendorId: vendor.id, recruitId: null, target: "vendor", cardSubjectType, subjectUserId, viable: true }
   }

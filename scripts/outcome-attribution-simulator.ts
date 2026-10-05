@@ -92,6 +92,27 @@ console.log("\n[ledger attribution · decision → action → outcome → revenu
   const reply = attributeOutcomesToLedger([{ ref: "reply:1", kind: "reply", brokerageId: T, subjectIds: [C], at: "2026-05-03T00:00:00Z", revenueCents: 0 }], actions)
   check("a reply credits only rows inside its 30-day window (the March lead touch is out)", reply.credits.some((c) => c.actionId === "a-seq") && !reply.credits.some((c) => c.actionId === "a-lead"))
 
+  // WAVE 102C (owner answer 3): the ACTING verdicts are now decision rows too (`*.decision.send_touch` /
+  // `*.decision.convert`, status 'skipped', lib/ai-isa/lead-action-plan.ts decisionRecordFor). The
+  // "executed" rule is UNCHANGED: those rows are not attribution-eligible, so adding them to the
+  // same fixture moves NO credit, NO split and NO rollup — the act they announce is its own executed row.
+  const actingRows: A[] = [
+    act("d-send", "2026-04-15T00:00:00Z", { action: "lead.decision.send_touch", status: "skipped", reason_code: "NURTURE_TOUCH", subject_type: "lead", subject_id: LEAD }),
+    act("d-convert", "2026-05-01T12:00:00Z", { action: "contact.decision.convert", status: "skipped", reason_code: "CONVERSATION_RESPONSE" }),
+  ]
+  const withActing = attributeOutcomesToLedger([closed], [...actions, ...actingRows])
+  check("102C: acting-verdict decision rows earn NOTHING (neither last-touch nor all-touch)", !withActing.credits.some((c) => c.actionId === "d-send" || c.actionId === "d-convert"))
+  check("102C: with the acting rows present the attribution is BYTE-IDENTICAL (credits, uncredited, every rollup unchanged)",
+    JSON.stringify({ c: withActing.credits, u: withActing.uncredited, r: withActing.byReasonCode, m: withActing.byManager, p: withActing.byPlaybook, k: withActing.byCampaign, e: withActing.byExperimentArm }) ===
+    JSON.stringify({ c: r.credits, u: r.uncredited, r: r.byReasonCode, m: r.byManager, p: r.byPlaybook, k: r.byCampaign, e: r.byExperimentArm }))
+  const onlyActing = attributeOutcomesToLedger([closed], actingRows)
+  check("102C: an outcome preceded ONLY by acting-verdict rows is uncredited (a verdict is not a touch)", onlyActing.credits.length === 0 && onlyActing.uncredited.includes(closed.ref))
+  check("POSITIVE CONTROL: the same row as a wait decision IS eligible (the rule reads the verdict, not the status alone)",
+    attributeOutcomesToLedger([closed], [{ ...actingRows[0], action: "lead.decision.wait" }]).credits.some((c) => c.actionId === "d-send"))
+  const roiSrc = stripComments(readFileSync("lib/intelligence/roi-ledger.ts", "utf8"))
+  check("102C: the executed rule is the wave-100A text (status executed, or skipped AND a wait/do_nothing decision) — unchanged",
+    /const DECISION_ACTION = \/\\\.decision\\\.\(wait\|do_nothing\)\$\//.test(roiSrc) && /a\.status === "executed" \|\| \(a\.status === "skipped" && DECISION_ACTION\.test\(a\.action\)\)/.test(roiSrc))
+
   // The kernel query + its surfaces (stripped source — a tombstone is not a call site).
   const src = (p: string) => stripComments(readFileSync(p, "utf8"))
   const roi = src("lib/intelligence/roi-ledger.ts")

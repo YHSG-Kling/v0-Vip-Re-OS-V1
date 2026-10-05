@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 442 tables, 784 columns.
+ * MEASURED AT GENERATION: 444 tables, 792 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-04
+ * generated: 2026-10-05
  * source: public.live_check_constraints_json()
- * body-sha256: fe9cea10f45ecb8287afd51d4c8e215fbca00821ea1e2948f526f3048f1a840e
+ * body-sha256: d1c84e4efec1c3986836ac92dc13624a99fe65d1dbc6382deacf3bcdb25ea093
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -149,6 +149,8 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     step_type: ["approval", "form", "quiz", "task", "video"],
   },
   agent_outcome_evaluations: {
+    evaluator: ["anthropic_rubric", "ledger_attribution"],
+    outcome_kind: ["appointment", "closed", "contract", "reply"],
     result: ["failed", "interrupted", "max_iterations_reached", "needs_revision", "satisfied"],
   },
   agent_relationships: {
@@ -1126,6 +1128,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     entity_type: ["contact", "listing"],
     outcome: ["correct", "inconclusive", "incorrect", "pending"],
   },
+  person_identity_evidence: {
+    actor_type: ["agent", "manager", "system", "user"],
+    entity_type: ["behavioral_signal", "contact", "form_submission", "lead", "open_house_attendee", "raw_scraped_lead"],
+    match_method: ["capture_match", "contact_merge", "dedup_match", "email_exact", "identity_gate", "phone_corroborated", "promotion_link"],
+  },
   phone_number_events: {
     event_type: ["failed", "manually_added", "ported_in", "purchased", "released", "webhooks_bound"],
   },
@@ -1317,6 +1324,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   reg_change_observations: {
     severity_tier: ["advisory", "binding", "informational"],
+  },
+  relationship_edges: {
+    from_entity_type: ["agent", "contact", "household", "lead", "listing", "outside_agent", "transaction", "vendor"],
+    relationship_type: ["bought_from", "co_buyer", "co_owner", "household_member", "lender_for", "occupies", "owns", "previously_owned", "referred_by", "represented_by", "sold_to", "sponsor_of", "spouse_partner", "vendor_for"],
+    to_entity_type: ["agent", "contact", "household", "lead", "listing", "outside_agent", "transaction", "vendor"],
   },
   remotion_composition_renders: {
     render_status: ["cancelled", "failed", "queued", "rendering", "succeeded"],

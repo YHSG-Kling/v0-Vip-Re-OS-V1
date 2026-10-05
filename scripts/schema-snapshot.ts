@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 713 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 716 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-04
+ * generated: 2026-10-05
  * source: public.live_schema_json()
- * body-sha256: 5fcce87ba6ed5562658ef71865760f1fcc3920a2f2d3a18d7f54c99c27d27444
+ * body-sha256: 034e099d0dd329d5641d179fad429551fa72ef0d0472d6c280142f4c14e296c8
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -39,7 +39,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   ad_retarget_presets: ["ad_body", "ad_cta", "ad_headline", "ad_image_url", "ad_landing_url", "ad_video_url", "brokerage_id", "compliance_event_id", "created_at", "created_by", "daily_budget_cents", "facebook_audience_id", "id", "is_active", "name", "scope_id", "scope_type", "updated_at"],
   affiliate_commission_events: ["affiliate_id", "brokerage_id", "commission_cents", "created_at", "id", "mrr_cents", "period", "referral_id", "status"],
   affiliate_referrals: ["affiliate_id", "attributed_at", "brokerage_id", "expires_at", "first_payment_at", "id"],
-  agent_action_ledger: ["action", "actor_agent_id", "actor_manager_key", "actor_type", "actor_user_id", "attempts", "brokerage_id", "causation_id", "channel", "correlation_id", "cost_usd", "created_at", "detail", "error", "id", "idempotency_key", "outcome", "provider", "provider_ref", "reason_code", "reason_detail", "risk_class", "settled_at", "status", "subject_id", "subject_ref", "subject_type", "system_source", "updated_at"],
+  agent_action_ledger: ["action", "actor_agent_id", "actor_manager_key", "actor_type", "actor_user_id", "attempts", "brokerage_id", "causation_id", "channel", "correlation_id", "cost_usd", "created_at", "detail", "error", "id", "idempotency_key", "outcome", "policy_ref", "provider", "provider_ref", "reason_code", "reason_detail", "risk_class", "settled_at", "status", "subject_id", "subject_ref", "subject_type", "system_source", "updated_at"],
   agent_api_credentials: ["access_token", "agent_id", "api_key", "api_secret", "brokerage_id", "config", "created_at", "error_message", "id", "is_active", "is_verified", "last_verified_at", "refresh_token", "service_name", "service_type", "token_expires_at", "updated_at"],
   agent_assistant_sessions: ["agent_id", "brokerage_id", "context_contact_id", "context_listing_id", "context_transaction_id", "context_url", "conversation_id", "duration_seconds", "ended_at", "ended_reason", "id", "message_count", "metadata", "started_at", "tool_call_count", "user_id"],
   agent_assistant_tool_calls: ["brokerage_id", "error_message", "id", "latency_ms", "session_id", "success", "tool_input", "tool_name", "tool_output", "ts"],
@@ -66,7 +66,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   agent_mentor_relationships: ["brokerage_id", "created_at", "end_date", "id", "mentee_agent_id", "mentor_agent_id", "notes", "start_date", "status"],
   agent_monthly_earnings: ["agent_id", "brokerage_id", "created_at", "gross_total", "id", "metadata", "month_year", "net_total", "transaction_count", "updated_at"],
   agent_onboarding: ["additional_data", "additional_settings", "agent_id", "brokerage_id", "certification_achieved", "certified_at", "completion_percentage", "created_at", "current_day", "id", "start_date", "status", "updated_at", "user_id"],
-  agent_outcome_evaluations: ["anthropic_outcome_id", "brokerage_id", "cache_read_input_tokens", "evaluated_at", "explanation", "id", "input_tokens", "iteration", "managed_agent_session_id", "output_tokens", "result"],
+  agent_outcome_evaluations: ["anthropic_outcome_id", "brokerage_id", "cache_read_input_tokens", "evaluated_at", "evaluator", "experiment_arm", "experiment_key", "explanation", "id", "input_tokens", "iteration", "ledger_action_id", "managed_agent_session_id", "outcome_kind", "outcome_ref", "output_tokens", "result"],
   agent_performance_reports: ["agent_id", "ai_summary", "brokerage_id", "created_at", "generated_at", "id", "metrics", "period_end", "period_start", "recommendations", "report_type"],
   agent_pl_snapshot: ["agent_id", "agent_payout", "ai_cost_cents", "brokerage_gross", "brokerage_id", "computed_at", "fee_income_cents", "gci_gross", "id", "marketing_spend_cents", "month_year", "net_brokerage_margin", "roi_multiple", "transaction_count"],
   agent_points_log: ["agent_id", "brokerage_id", "created_at", "id", "points", "reason", "reference_id", "reference_type"],
@@ -481,6 +481,8 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   pattern_adoptions: ["adopted_by", "agent_id", "applied_actions", "baseline_metric", "brokerage_id", "created_at", "followup_at", "followup_metric", "id", "insight_id", "notes", "observed_lift_pct", "status"],
   pattern_detections: ["acted_on_at", "agent_id", "agent_notified", "agent_notified_at", "ai_reasoning", "brokerage_id", "confidence", "created_at", "entity_id", "entity_type", "expires_at", "id", "pattern_id", "pattern_type", "status", "trigger_signals"],
   pattern_predictions: ["agent_id", "ai_reasoning", "brokerage_id", "created_at", "detection_id", "entity_id", "entity_type", "id", "outcome", "outcome_recorded_at", "predicted_date", "predicted_event", "predicted_within_days", "prediction_label", "probability", "recommended_action"],
+  person_identities: ["brokerage_id", "canonical_contact_id", "converted_at", "created_at", "email_normalized", "evidence_count", "first_name_normalized", "first_seen_at", "id", "identity_key", "last_name_normalized", "last_seen_at", "phone_digits", "updated_at"],
+  person_identity_evidence: ["actor_type", "actor_user_id", "brokerage_id", "created_at", "detail", "entity_id", "entity_type", "id", "match_method", "match_score", "observed_at", "person_id", "source"],
   phone_number_events: ["agent_id", "brokerage_id", "cost_usd", "created_at", "event_type", "id", "notes", "phone_number", "source", "twilio_sid"],
   photo_enhancement_jobs: ["agent_id", "brokerage_id", "completed_at", "enhanced_url", "enhancement_type", "error_message", "id", "original_url", "photo_id", "started_at", "status"],
   photo_ordering_rules: ["agent_id", "brokerage_id", "created_at", "id", "is_active", "prioritize_high_quality", "room_sequence", "rule_name", "updated_at"],
@@ -560,6 +562,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   referral_payouts: ["amount_cents", "basis", "created_at", "fee_percent", "id", "note", "period", "posted_at", "posted_by", "prospect_id", "received_at", "received_by", "recipient_brokerage_id", "recipient_email", "referrer", "status", "updated_at"],
   referrals: ["agent_id", "brokerage_id", "closed_at", "commission_amount", "commission_potential", "converted_at", "created_at", "gift_sent", "gift_sent_at", "id", "notes", "partner_id", "referral_fee_pct", "referral_name", "referral_source", "referred_by", "referred_contact_id", "referred_lead_id", "referrer_contact_id", "referring_agent_id", "source_contact_name", "status", "thank_you_sent", "thank_you_sent_at", "updated_at", "value_estimate"],
   reg_change_observations: ["affected_surfaces", "brokerage_id", "change_signature", "created_at", "effective_date", "escalated_at", "id", "observed_at", "period", "severity_tier", "source", "surface_detail", "title", "url"],
+  relationship_edges: ["brokerage_id", "created_at", "created_by", "effective_from", "effective_to", "evidence", "from_entity_id", "from_entity_type", "id", "relationship_type", "to_entity_id", "to_entity_type", "updated_at"],
   remotion_composition_renders: ["agent_user_id", "artifact_key", "brokerage_id", "cache_hit", "completed_at", "composition_id", "created_at", "entity_id", "entity_type", "error_message", "facts", "facts_key", "frame_key", "id", "input_props", "is_published", "living_kind", "output_url", "public_slug", "published_at", "refreshed_from_render_id", "render_status", "requested_via", "retry_count", "scope_id", "scope_type", "served_from_render_id", "thumbnail_url", "used_did_avatar", "used_intro_asset_id", "used_music_asset_id", "used_outro_asset_id", "used_voiceover"],
   remotion_compositions: ["asset_manager_notes", "category", "composition_id", "created_at", "display_name", "duration_frames", "fps", "height", "is_active", "last_rendered_at", "orientation", "requires_did_avatar", "requires_voiceover", "seo_description", "seo_title", "stock_intro_category", "stock_outro_category", "supports_bookends", "thumbnail_composition_id", "tier_access", "updated_at", "width"],
   repurpose_pipelines: ["agent_user_id", "brokerage_id", "created_at", "created_by", "id", "is_active", "output_config", "pipeline_name", "source_type", "team_id", "updated_at", "visibility_scope"],

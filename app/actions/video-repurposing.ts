@@ -382,21 +382,15 @@ export async function createVideoSnippet(data: {
     brokerageId: brokerageId,
     event: KernelEvent.SNIPPET_CREATED,
     actorUserId: createdBy,
+    // Wave 102C: ONE emit (row + fan-out) — the reactor's SNIPPET_CREATED reader forwards this
+    // metadata as the signal payload (was {}); agentUserId: null keeps the bare fan-out's attribution.
     metadata: {
       platform_target: normalizedPlatform,
       duration: duration,
       source_project_id: data.videoProjectId,
     },
-    auditOnly: true,
+    agentUserId: null,
   }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
-
-  // Fire kernel event
-  await processKernelEvent({
-    event: KernelEvent.SNIPPET_CREATED,
-    brokerageId: brokerageId,
-    entityType: "video_snippet",
-    entityId: snippet.id,
-  }).catch(err => console.error("[video-repurposing] Kernel event failed:", err))
 
   revalidatePath("/dashboard/videos/snippets")
   revalidatePath("/social-planner")

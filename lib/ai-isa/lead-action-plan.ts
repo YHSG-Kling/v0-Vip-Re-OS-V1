@@ -424,6 +424,10 @@ export interface NextBestActionContext {
   /** Wave 100 (100B): the person's CURRENT memory facts (lib/kernel/conversation-memory.ts
    *  currentMemoryFacts — expired facts never reach here). Evidence the decision read, never a blocker. */
   memoryFacts?: ReadonlyArray<{ key: string; value: string; confidence: number; observedAt: string }>
+  /** Wave 102 (102B): the contact's HOUSEHOLD from the relationship graph (lib/kernel/relationship-graph.ts
+   *  household — spouse / household member / co-buyer / co-owner contact ids). Evidence the decision
+   *  read, never a blocker; a represented_by edge to an OUTSIDE agent lands in deadEnds instead. */
+  householdContactIds?: readonly string[]
 }
 
 export interface NbaEvidence { kind: string; detail: string }
@@ -1106,20 +1110,34 @@ async function leadStillSendable(args: {
   return { ok: true, reason: personalized.reason }
 }
 
+// TOMBSTONE (wave 102C): `nonActionRecordFor` (lane 98B — the recordNonAction context for a wait /
+// do_nothing verdict, null when the plan acts) was MERGED onto its survivor `decisionRecordFor` below
+// (this file), which records EVERY verdict with the same shape; the wait / do_nothing rows it writes
+// are byte-identical to the ones nonActionRecordFor wrote (test:lead-action-plan NBA-LEDGER-*).
+
+/** The ledger reason of each verdict — the m687/m693 vocabulary (nba_plan map in action-ledger.ts:
+ *  due → NURTURE_TOUCH, convert_on_callback → CONVERSATION_RESPONSE; WAIT_COOLDOWN / NO_ACTION_NEEDED as before). */
+const DECISION_REASON_CODE: Record<NextBestAction, "WAIT_COOLDOWN" | "NO_ACTION_NEEDED" | "NURTURE_TOUCH" | "CONVERSATION_RESPONSE"> = {
+  wait: "WAIT_COOLDOWN", do_nothing: "NO_ACTION_NEEDED", send_touch: "NURTURE_TOUCH", convert: "CONVERSATION_RESPONSE",
+}
+
 /**
- * PURE (lane 98B). The recordNonAction context for a wait / do_nothing verdict, or null when the
- * plan acts (send_touch / convert). WAIT_COOLDOWN / NO_ACTION_NEEDED are the m687 vocabulary; the
- * plan's own reasonCode and every reason-not-to-act ride in `detail`. Cycle = verdict + UTC day.
+ * PURE (lane 98B, widened in wave 102C — owner answer 3: "acting decisions ARE ledgered as decisions
+ * with the same snapshot"). The recordNonAction context for EVERY verdict — wait / do_nothing (the
+ * 98B rows: WAIT_COOLDOWN / NO_ACTION_NEEDED, the plan's own reasonCode and every reason-not-to-act
+ * in `detail`), and since 102C send_touch / convert too — so lib/kernel/decision-replay.ts replays
+ * the acting verdicts as well. The acting row is the DECISION, not the act: it stays status 'skipped'
+ * (recordNonAction), the act is its chokepoint's own 'executed' row, and attribution's "executed"
+ * rule is untouched (lib/intelligence/roi-ledger.ts:195 — a `*.decision.send_touch` row is not
+ * attribution-eligible). Cycle = verdict code + UTC day: the sweep's re-runs hold each verdict to one
+ * row per day. `decisionInput` (wave 101B) is the compact planner input the replay harness re-runs.
  */
-/** @proofSeam exported so scripts/lead-action-plan-simulator.ts asserts the verdict → ledger mapping (wait, do_nothing, acting = none) on the pure function directly. */
-export function nonActionRecordFor(
+/** @proofSeam exported so scripts/lead-action-plan-simulator.ts asserts the verdict → ledger mapping (wait, do_nothing, send_touch, convert) on the pure function directly; the sweep and engageContact are its runtime callers. */
+export function decisionRecordFor(
   plan: LeadTouchPlan,
   at: { brokerageId: string; leadId: string; now: Date } | { brokerageId: string; contactId: string; now: Date },
-  /** Wave 101 (101B): the compact planner input, so the replay harness can re-run the CURRENT
-   *  planner on exactly what this decision read (lib/kernel/decision-replay.ts). */
   decisionInput?: DecisionInputSnapshot,
-): NonActionRecord | null {
-  if (plan.action !== "wait" && plan.action !== "do_nothing") return null
+): NonActionRecord {
   // Wave 100 (100B): the contact subject of the same NBA records on the same ledger, its own domain.
   const subject = "contactId" in at ? { type: "contact" as const, id: at.contactId } : { type: "lead" as const, id: at.leadId }
   return {
@@ -1128,7 +1146,7 @@ export function nonActionRecordFor(
     decision: plan.action,
     actor: { type: "manager", managerKey: "ai_isa" },
     subject,
-    reasonCode: plan.action === "wait" ? "WAIT_COOLDOWN" : "NO_ACTION_NEEDED",
+    reasonCode: DECISION_REASON_CODE[plan.action],
     reasonDetail: `${plan.reasonCode}: ${plan.reason}`.slice(0, 500),
     cycle: `${plan.reasonCode}:${at.now.toISOString().slice(0, 10)}`,
     until: plan.dueAt ? plan.dueAt.toISOString() : null,
@@ -1449,6 +1467,23 @@ export async function loadContactNbaContext(
   })
   if (contact.ai_outreach_paused === true) deadEnds.push({ outcome: "paused", at: null, source: "contacts.ai_outreach_paused" })
 
+  // Wave 102 (102B): the RELATIONSHIP GRAPH — household (evidence) and represented_by. A contact
+  // represented by an OUTSIDE agent is another brokerage's client: an always-terminal
+  // already_represented dead end (reasonsNotToAct blocks it whatever the settings say). A refused
+  // read fails closed like the reads above; "no graph yet" (m698 unapplied) is an empty graph.
+  const { neighbors: graphNeighbors, household: graphHousehold, representedByOutsideAgent } = await import("@/lib/kernel/relationship-graph")
+  const [repRes, hhRes] = await Promise.all([
+    graphNeighbors(supabase, { brokerageId, entity: { type: "contact", id: contact.id }, types: ["represented_by"], direction: "out" }),
+    graphHousehold(supabase, { brokerageId, contactId: contact.id }),
+  ])
+  if (!repRes.ok || !hhRes.ok) return { ok: false, error: `relationship graph read refused: ${repRes.error ?? hhRes.error}` }
+  const outsideRep = representedByOutsideAgent(repRes.edges, contact.id)
+  if (outsideRep) {
+    const at = Number.isFinite(Date.parse(outsideRep.evidence?.observed_at ?? "")) ? new Date(outsideRep.evidence.observed_at) : null
+    deadEnds.push({ outcome: "already_represented", at, source: "relationship_edges.represented_by" })
+  }
+  const householdContactIds = hhRes.members.map((m) => m.contactId)
+
   const resolution = await resolveLeadSettingsResolution({ brokerageId })
   // An unreadable policy narrows to the DEFAULT suppressions — the always-terminal dead ends
   // (opt-out, represented) block regardless, so the fallback can only be stricter-or-equal.
@@ -1478,6 +1513,7 @@ export async function loadContactNbaContext(
       deadEnds,
       suppressOnOutcomes,
       memoryFacts: memory ? currentMemoryFacts(memory.spine, now) : [],
+      householdContactIds,
     },
   }
 }
@@ -1718,10 +1754,12 @@ export async function advanceLeadActionPlans(input: {
     // agent_action_ledger with its reason code and every reason-not-to-act, once per lead per
     // verdict per UTC day (the sweep re-runs; the idempotency key holds it to one row).
     // Wave 101 (101B): + the compact planner input (detail.decision_input) the replay harness re-runs.
-    const nonAction = nonActionRecordFor(plan, { brokerageId: input.brokerageId, leadId, now }, decisionInputSnapshot({ subject: "lead", plan: planInput }))
-    if (nonAction) {
-      const rec = await recordNonAction(nonAction, { client: supabase })
-      if (!rec.recorded && rec.error) out.warnings.push(`lead ${leadId}: ${nonAction.decision} not ledgered — ${rec.error}`)
+    // Wave 102 (102C): EVERY verdict is a decision row — the acting ones (send_touch / convert) too,
+    // with the same snapshot; the send below is its own 'executed' row (decisionRecordFor).
+    const decisionRow = decisionRecordFor(plan, { brokerageId: input.brokerageId, leadId, now }, decisionInputSnapshot({ subject: "lead", plan: planInput }))
+    {
+      const rec = await recordNonAction(decisionRow, { client: supabase })
+      if (!rec.recorded && rec.error) out.warnings.push(`lead ${leadId}: ${decisionRow.decision} not ledgered — ${rec.error}`)
     }
 
     if (plan.code !== "due" || !plan.step) {

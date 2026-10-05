@@ -32,6 +32,28 @@ import { tool } from "ai"
 import { z } from "zod"
 import { createServiceClient } from "@/lib/supabase/service"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { stampFieldProvenance } from "@/lib/lead-pipeline/enrichment-column-map"
+import { getIsaSystemUserIdCached } from "@/lib/auth/isa-actor"
+
+/**
+ * 102D — PROVENANCE for an address the person STATED to the AI (wave 101C still-open). Source
+ * `ai_tool`, actor the brokerage's ISA system user (lib/auth/isa-actor.ts — never the human whose
+ * session the tool ran beside), purpose self_service (they said it themselves, in their own
+ * conversation). Non-blocking by contract: the value is already written; a refused stamp is logged.
+ */
+async function stampAiStatedAddress(
+  svc: ReturnType<typeof createServiceClient>,
+  target: { table: "contacts" | "leads"; id: string; brokerageId: string },
+  toolName: string,
+): Promise<void> {
+  // Lazy on purpose: field-provenance-store is `server-only`, and this module is loaded at runtime by the
+  // voice ISA (lib/voice/twilio-voice.ts) whose proofs run outside the react-server condition — the same
+  // shape as the other server-side imports in this file (self-book, callback-task).
+  const { persistFieldProvenance } = await import("@/lib/enrichment/field-provenance-store")
+  const actor = await getIsaSystemUserIdCached(svc, target.brokerageId).catch(() => null)
+  const r = await persistFieldProvenance(svc, target, stampFieldProvenance(["address"], { source: "ai_tool", capability: `ai_isa.${toolName}`, purpose: "self_service", matchConfidence: "stated", actor }))
+  if (!r.ok) console.error(`[${toolName}] address provenance not stamped on ${target.table} ${target.id}: ${r.error}`)
+}
 // Lane 91C — the one recency window for a buyer listing pull (pure constant).
 import { BUYER_LISTING_RECENCY_DAYS } from "@/lib/property-alerts/alert-cadence"
 import { QUALIFICATION_FOLLOW_UP_MENU, QUALIFICATION_GOALS, parseFollowUpPreference } from "@/lib/ai-isa/qualification-playbook"
@@ -713,11 +735,13 @@ export function buildScheduleHomeValueReviewTool(ctx: CustomerContextToolsContex
       // the SAME column every other seller-facing reader already treats as
       // "the property they own" (no new column).
       if (ctx.contactId) {
-        await sentinelWrite(svc, svc.from("contacts").update({ address: property_address }).eq("id", ctx.contactId).eq("brokerage_id", ctx.brokerageId),
+        const ok = await sentinelWrite(svc, svc.from("contacts").update({ address: property_address }).eq("id", ctx.contactId).eq("brokerage_id", ctx.brokerageId),
           { table: "contacts", flow: "qualification_home_value", brokerageId: ctx.brokerageId })
+        if (ok) await stampAiStatedAddress(svc, { table: "contacts", id: ctx.contactId, brokerageId: ctx.brokerageId }, "schedule_home_value_review")
       } else if (ctx.leadId) {
-        await sentinelWrite(svc, svc.from("leads").update({ address: property_address }).eq("id", ctx.leadId).eq("brokerage_id", ctx.brokerageId),
+        const ok = await sentinelWrite(svc, svc.from("leads").update({ address: property_address }).eq("id", ctx.leadId).eq("brokerage_id", ctx.brokerageId),
           { table: "leads", flow: "qualification_home_value", brokerageId: ctx.brokerageId })
+        if (ok) await stampAiStatedAddress(svc, { table: "leads", id: ctx.leadId, brokerageId: ctx.brokerageId }, "schedule_home_value_review")
       }
 
       // NEVER RUN OR SPEAK A VALUE HERE. Owner ruling (wave 75 verbatim):
@@ -1085,6 +1109,10 @@ export function buildRecordQualificationTool(ctx: CustomerContextToolsContext) {
           svc, svc.from(table).update(patch).eq("id", id).eq("brokerage_id", ctx.brokerageId),
           { table, flow: "record_qualification", brokerageId: ctx.brokerageId },
         )
+        // 102D — a seller address the person stated carries its provenance (source ai_tool).
+        if (wrote && typeof patch.address === "string" && (table === "contacts" || table === "leads")) {
+          await stampAiStatedAddress(svc, { table, id, brokerageId: ctx.brokerageId }, "record_qualification")
+        }
       }
 
       // Buyer criteria → property_preferences (contact-only — no lead twin).
@@ -1230,6 +1258,9 @@ export async function buildCustomerFreeTools(ctx: CustomerContextToolsContext): 
     riskClassOf: riskClassForTool,
     actor: { type: "manager", managerKey: "ai_isa" },
     surface: ctx.persona ? `customer_tools:${ctx.persona}` : "customer_tools",
+    // 102D — which policy permitted: the tool mount is gated by the authority ladder for this agent kind
+    // (persona-tool-policy.ts selectToolsForPersona ← managed_agents.config.authority_level).
+    policyKey: `authority_level:ai_isa`,
   })
 }
 

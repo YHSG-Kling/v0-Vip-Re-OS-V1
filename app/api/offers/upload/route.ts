@@ -3,7 +3,6 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { extractOfferFromPdf } from "@/lib/offers/offer-extractor"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { uploadDocument } from "@/lib/documents/upload-document"
@@ -283,7 +282,11 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // lifecycle_events + OFFER_UPLOADED kernel event (non-blocking)
+  // lifecycle_events + OFFER_UPLOADED kernel event (non-blocking). Wave 102C: ONE emit (row + fan-out).
+  // The portal template (lib/kernel/event-fanout.ts PORTAL_UPDATE_TEMPLATES) stores this metadata on the
+  // transparency card, and the card renderer (app/portal/[contactId]/components/RecentUpdatesFeed.tsx
+  // cardVideo) reads NAMED keys only (a video url/poster per update_type) — offer_document_url is stored,
+  // never rendered. agentUserId: null keeps the portal attribution the bare fan-out had.
   await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     brokerageId:  brokerageId,
     entityType:   "offer",
@@ -294,15 +297,8 @@ export async function POST(req: NextRequest) {
       listing_id:        listingId,
       offer_document_url: publicUrl,
     },
-    auditOnly: true,
+    agentUserId: null,
   }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
-
-  await processKernelEvent({
-    event:      KernelEvent.OFFER_UPLOADED,
-    brokerageId,
-    entityType: "offer",
-    entityId:   offer.id,
-  }).catch(() => {})
 
   // ── 3. Kick off AI extraction (fire-and-forget — client polls status) ─────
   extractOfferFromPdf({

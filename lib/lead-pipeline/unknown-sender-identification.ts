@@ -681,25 +681,72 @@ async function findExistingLeadOrContact(
   svc: Svc,
   brokerageId: string,
   email: string,
-): Promise<{ kind: "lead" | "contact"; id: string } | null> {
+): Promise<ExistingPersonRecord | null> {
   const emailNorm = email.trim().toLowerCase()
+  // Wave 102 — the row's own name + phone ride along so the email match can be recorded as person
+  // evidence (lib/kernel/person-identity.ts) on the record it matched, never a second lookup.
   const { data: contact } = await svc
     .from("contacts")
-    .select("id")
+    .select("id, first_name, last_name, phone")
     .eq("brokerage_id", brokerageId)
     .eq("email", emailNorm)
     .maybeSingle()
-  if (contact) return { kind: "contact", id: (contact as { id: string }).id }
+  if (contact) return { kind: "contact", ...(contact as Omit<ExistingPersonRecord, "kind">) }
 
   const { data: lead } = await svc
     .from("leads")
-    .select("id")
+    .select("id, first_name, last_name, phone")
     .eq("brokerage_id", brokerageId)
     .eq("email", emailNorm)
     .maybeSingle()
-  if (lead) return { kind: "lead", id: (lead as { id: string }).id }
+  if (lead) return { kind: "lead", ...(lead as Omit<ExistingPersonRecord, "kind">) }
 
   return null
+}
+
+interface ExistingPersonRecord {
+  kind: "lead" | "contact"
+  id: string
+  first_name?: string | null
+  last_name?: string | null
+  phone?: string | null
+}
+
+/**
+ * Wave 102 (lane 102A, m697) — an inbound sender whose email already belongs to a lead or a contact
+ * IS that person: the email match is recorded as evidence on THE person row (email_exact, 1.0),
+ * attributed to the system (the AI ISA's inbox, never a human seat). The identity is the matched
+ * row's own name + the sender's email. The caller's existing event carries person_id. Best-effort:
+ * never throws, never changes the route.
+ */
+async function recordSenderPersonEvidence(
+  svc: Svc,
+  brokerageId: string,
+  existing: ExistingPersonRecord,
+  fromEmail: string,
+  existingEvent: string,
+): Promise<string | null> {
+  try {
+    const { resolvePerson, linkPersonEvidence } = await import("@/lib/kernel/person-identity")
+    const person = await resolvePerson(svc, {
+      brokerageId, firstName: existing.first_name ?? null, lastName: existing.last_name ?? null,
+      email: fromEmail, phone: existing.phone ?? null,
+    })
+    if (!person.ok) {
+      if (person.reason !== "no_identity_anchor") console.warn("[unknown-sender] person identity not resolved:", person.reason)
+      return null
+    }
+    const link = await linkPersonEvidence(svc, {
+      brokerageId, personId: person.personId, entityType: existing.kind, entityId: existing.id,
+      matchMethod: "email_exact", matchScore: 1, source: "unknown_sender", actor: { type: "system", userId: null },
+      identity: person.identity, detail: { matched_on: "email", from_email: fromEmail }, existingEvent,
+    })
+    if (!link.ok) console.warn("[unknown-sender] person evidence not recorded:", link.reason)
+    return person.personId
+  } catch (err) {
+    console.warn("[unknown-sender] person identity threw (route unaffected):", err instanceof Error ? err.message : String(err))
+    return null
+  }
 }
 
 interface RawLanding {
@@ -918,9 +965,17 @@ export async function identifyAndRouteUnknownSender(
     // reaching here means a race (created between that check and this one).
     // Never a duplicate contact, never a stray lead for someone who is already
     // a contact.
+    // Wave 102 — the email match is still identity evidence on that contact's person.
+    await recordSenderPersonEvidence(svc, brokerageId, existing, params.fromEmail, KernelEvent.UNKNOWN_SENDER_DROPPED)
     await recordDrop(svc, brokerageId, "already_a_contact", existing.id, params.fromEmail, params.messageId)
     return { outcome: "dropped", reason: "already_a_contact" }
   }
+  // Wave 102 — a sender matched to an existing LEAD by email is that lead's person; the
+  // UNKNOWN_SENDER_IDENTIFIED_AS_LEAD event below carries person_id (a raw landing is recorded by
+  // processRawRecord's own dedup / promotion evidence instead).
+  const personId = existing?.kind === "lead"
+    ? await recordSenderPersonEvidence(svc, brokerageId, existing, params.fromEmail, KernelEvent.UNKNOWN_SENDER_IDENTIFIED_AS_LEAD)
+    : null
 
   const routeReason = isTransactional ? `transactional:${c.transactionalType}` : `intent:${c.intentType}`
 
@@ -962,6 +1017,7 @@ export async function identifyAndRouteUnknownSender(
         owner_kind: params.mailboxOwner.ownerKind, owner_agent_id: params.mailboxOwner.agentId,
         intent_type: c.intentType, confidence: c.confidence,
         transactional: listingMatch ? { listing_id: listingMatch.listingId, matched_address: listingMatch.matchedAddress, type: c.transactionalType } : null,
+        person_id: personId,
       },
     }).then(kernelEmit.asWriteResult),
     { table: "lifecycle_events", flow: "unknown_sender_identified_as_lead", brokerageId },

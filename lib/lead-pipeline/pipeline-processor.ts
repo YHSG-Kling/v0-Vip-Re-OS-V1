@@ -27,6 +27,10 @@ import { leadEmailProblem as leadEmailProblemPure } from './canonical-lead-eligi
 import { KernelEvent } from '@/lib/kernel/events'
 import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 import { emitKernelEvent } from '@/lib/kernel/emit'
+// Wave 102 (lane 102A) — THE person identity/evidence layer under leads/contacts (m697). Every dedup
+// verdict and every promotion here already decides "same person or not"; the decision is mirrored as
+// evidence on the ONE person row (lib/kernel/person-identity.ts), never a second dedup.
+import { resolvePerson, linkPersonEvidence, type PersonEntityType, type PersonMatchMethod } from '@/lib/kernel/person-identity'
 import {
   calculateSourceScore,
   getSourceSemantics,
@@ -344,6 +348,16 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     // Lane 88G — the verdict is unchanged (still a duplicate, still skipped); its SIGNALS now join the
     // existing lead's stack instead of being dropped with the row.
     const preStack = await stackOntoDuplicateLead(supabase, preEnrichDuplicate, rawRecordId, rec)
+    // Wave 102 — the verdict "same person as <dup>" becomes evidence on ONE person row: this raw row
+    // AND the record it duplicates. Identity = the raw row's own gate fields, the duplicate's filling
+    // what the raw row lacks (a name-less raw row that matched on email still names the person).
+    await recordPersonIdentity(supabase, effectiveBrokerageId, {
+      firstName: firstName ?? preEnrichDuplicate.first_name ?? null, lastName: lastName ?? preEnrichDuplicate.last_name ?? null,
+      email: usableEmail ?? preEnrichDuplicate.email ?? null, phone: phone ?? preEnrichDuplicate.phone ?? null,
+    }, [
+      { entityType: 'raw_scraped_lead', entityId: rawRecordId, matchMethod: 'dedup_match', matchScore: preEnrichDuplicate.score, detail: { stage: 'pre_enrichment', ...preEnrichDuplicate.details } },
+      { entityType: dupEntityType(preEnrichDuplicate.type), entityId: preEnrichDuplicate.id, matchMethod: 'dedup_match', matchScore: preEnrichDuplicate.score, detail: { stage: 'pre_enrichment', duplicate_of_raw_record_id: rawRecordId } },
+    ])
     await logDeduplication({
       raw_record_id:             rawRecordId,
       duplicate_of_lead_id:      preEnrichDuplicate.type === 'lead'    ? preEnrichDuplicate.id : null,
@@ -434,6 +448,13 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     // become a lead/contact yet — skip this row; the earlier raw row owns the
     // identity and will promote (or already failed a gate honestly).
     await setStatus(supabase, rawRecordId, 'duplicate_post_enrich', undefined, { dedupeComplete: true })
+    // Wave 102 — both raw rows are the same person (the older one owns the identity and will promote).
+    await recordPersonIdentity(supabase, effectiveBrokerageId, {
+      firstName: enriched.first_name ?? firstName, lastName: enriched.last_name ?? lastName, email: enriched.email ?? usableEmail, phone: enriched.phone ?? phone,
+    }, [
+      { entityType: 'raw_scraped_lead', entityId: rawRecordId, matchMethod: 'dedup_match', matchScore: postEnrichDuplicate.score, detail: { stage: 'post_enrichment', ...postEnrichDuplicate.details } },
+      { entityType: 'raw_scraped_lead', entityId: postEnrichDuplicate.id, matchMethod: 'dedup_match', matchScore: postEnrichDuplicate.score, detail: { stage: 'post_enrichment', duplicate_of_raw_record_id: rawRecordId } },
+    ])
     await logDeduplication({
       raw_record_id:             rawRecordId,
       stage:                     'post_enrichment',
@@ -454,6 +475,18 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   if (postEnrichDuplicate) {
     const oldConfidence = postEnrichDuplicate.enrichment_confidence ?? 0
     const newConfidence = enriched.enrichmentConfidence ?? 0
+
+    // Wave 102 — whichever arm below wins (merge onto, or keep, the existing lead/contact), the
+    // verdict is the same: this raw row IS that person. Evidence on both ends, scored by the dedup pass.
+    await recordPersonIdentity(supabase, effectiveBrokerageId, {
+      firstName: enriched.first_name ?? firstName ?? postEnrichDuplicate.first_name ?? null,
+      lastName:  enriched.last_name  ?? lastName  ?? postEnrichDuplicate.last_name  ?? null,
+      email:     enriched.email ?? usableEmail ?? postEnrichDuplicate.email ?? null,
+      phone:     enriched.phone ?? phone ?? postEnrichDuplicate.phone ?? null,
+    }, [
+      { entityType: 'raw_scraped_lead', entityId: rawRecordId, matchMethod: 'dedup_match', matchScore: postEnrichDuplicate.score, detail: { stage: 'post_enrichment', ...postEnrichDuplicate.details } },
+      { entityType: dupEntityType(postEnrichDuplicate.type), entityId: postEnrichDuplicate.id, matchMethod: 'dedup_match', matchScore: postEnrichDuplicate.score, detail: { stage: 'post_enrichment', duplicate_of_raw_record_id: rawRecordId } },
+    ])
 
     if (newConfidence > oldConfidence * 1.1) {
       const targetTable = postEnrichDuplicate.type === 'lead' ? 'leads' : 'contacts'
@@ -838,6 +871,16 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     new_enrichment_confidence: enriched.enrichmentConfidence,
   }, supabase)
 
+  // Wave 102 — the lead was born from THIS raw row on the gate's own identity: both are evidence on
+  // one person row (identity_gate, 1.0). The RAW_RECORD_PROMOTED event below already exists, so it
+  // carries person_id instead of a second emit.
+  const personId = await recordPersonIdentity(supabase, effectiveBrokerageId, {
+    firstName: promoFirst, lastName: promoLast, email: enriched.email ?? email, phone: enriched.phone ?? phone,
+  }, [
+    { entityType: 'raw_scraped_lead', entityId: rawRecordId, matchMethod: 'identity_gate', matchScore: 1, detail: { stage: 'lead_creation' }, existingEvent: KernelEvent.RAW_RECORD_PROMOTED },
+    { entityType: 'lead', entityId: newLead.id, matchMethod: 'identity_gate', matchScore: 1, detail: { stage: 'lead_creation', raw_record_id: rawRecordId }, existingEvent: KernelEvent.RAW_RECORD_PROMOTED },
+  ])
+
   // Emit RAW_RECORD_PROMOTED through the canonical kernel emitter (does INSERT + reactor fan-out
   // in one call: notifications + sequences + portal). Non-blocking: emit() is never-throws and
   // the audit signal here must not break the lead-creation primary write.
@@ -846,7 +889,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     brokerageId: effectiveBrokerageId,
     entityType:  'raw_scraped_lead',
     entityId:    rawRecordId,
-    metadata:    { lead_id: newLead.id, source: rec.source },
+    metadata:    { lead_id: newLead.id, source: rec.source, person_id: personId },
   })
 
   // ── Engine 1 — Platform Distribution (AUTOMATIC pipeline is the ONLY door) ──
@@ -1200,7 +1243,9 @@ async function findBestMatch(
   brokerageId: string,
   supabase: ReturnType<typeof createServiceClient>,
   scope?: DedupScope,
-): Promise<{ id: string; type: 'lead' | 'contact' | 'raw'; score: number; details: any; enrichment_confidence: number | null; email?: string; phone?: string } | null> {
+// Wave 102 — first_name / last_name are SELECTED by every arm below (they always were, for the fuzzy
+// name score); they are now on the type so the person-identity mirror can name the matched person.
+): Promise<{ id: string; type: 'lead' | 'contact' | 'raw'; score: number; details: any; enrichment_confidence: number | null; email?: string | null; phone?: string | null; first_name?: string | null; last_name?: string | null } | null> {
 
   // Dedup must never reach across tenants: a brokerage's incoming lead can only
   // match its own existing leads/contacts. Without this filter a fuzzy match
@@ -1285,6 +1330,48 @@ async function findBestMatch(
 
   return bestMatch
 }
+
+// ─── Person identity evidence (wave 102, lane 102A; m697) ────────────────────
+//
+// The dedup passes above already answer "is this the same person as an existing raw row / lead /
+// contact" and lead_deduplication_log keeps that DECISION per raw row. This mirrors each verdict onto
+// THE tenant-scoped person row (identity-gate key first|last|email; phone corroborates) as append-only
+// evidence, so a re-scraped person with two leads is ONE person with two links — the thing no survivor
+// could say (contacts.contact_id is per row; the dedup log has no person id). Best-effort by
+// construction: never throws, never blocks the verdict it records; a missing m697 is reported once
+// per call on stderr and the pipeline result is unchanged. Returns the person id (or null) so the
+// RAW_RECORD_PROMOTED event can carry it. Tenant = effectiveBrokerageId, the same scope findBestMatch
+// deduped in.
+async function recordPersonIdentity(
+  supabase: ReturnType<typeof createServiceClient>,
+  brokerageId: string,
+  identity: { firstName: string | null; lastName: string | null; email: string | null; phone: string | null },
+  links: Array<{ entityType: PersonEntityType; entityId: string; matchMethod: PersonMatchMethod; matchScore: number; detail?: Record<string, unknown>; existingEvent?: string | null }>,
+): Promise<string | null> {
+  try {
+    const person = await resolvePerson(supabase, { brokerageId, ...identity })
+    if (!person.ok) {
+      if (person.reason !== 'no_identity_anchor') console.warn(`[pipeline-processor] person identity not resolved: ${person.reason}`)
+      return null
+    }
+    for (const link of links) {
+      const res = await linkPersonEvidence(supabase, {
+        brokerageId, personId: person.personId, entityType: link.entityType, entityId: link.entityId,
+        matchMethod: link.matchMethod, matchScore: link.matchScore, source: 'pipeline_processor',
+        actor: { type: 'system', userId: null }, detail: link.detail ?? null, identity: person.identity,
+        existingEvent: link.existingEvent ?? null,
+      })
+      if (!res.ok) console.warn(`[pipeline-processor] person evidence (${link.entityType} ${link.entityId}) not recorded: ${res.reason}`)
+    }
+    return person.personId
+  } catch (err) {
+    console.warn('[pipeline-processor] person identity threw (verdict unaffected):', err instanceof Error ? err.message : String(err))
+    return null
+  }
+}
+
+/** The dedup target's kind as a person-evidence entity (a promoted raw duplicate already resolves to its lead). */
+function dupEntityType(type: string): PersonEntityType { return type === 'lead' ? 'lead' : type === 'contact' ? 'contact' : 'raw_scraped_lead' }
 
 // ─── Audit logging ────────────────────────────────────────────────────────────
 

@@ -4,7 +4,6 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { requireContactAccess } from "@/lib/portal/require-contact-access"
 import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { bestEffort } from "@/lib/db/best-effort"
 
 // ============================================
@@ -496,15 +495,9 @@ async function checkPerformanceThresholds(
         click_through_rate: clickThroughRate,
         thresholds: PERFORMANCE_THRESHOLDS.HIGH_PERFORMER,
       },
-      auditOnly: true,
+      // Wave 102C: ONE emit — the reactor forwards this metadata as the signal payload (was {}).
+      agentUserId: null,
     }).then(k.asWriteResult)), "performance audit echo; the engagement tracking row itself is written above")
-
-    await processKernelEvent({
-      event: KernelEvent.VIDEO_HIGH_PERFORMER_DETECTED,
-      brokerageId,
-      entityType: "video_performance",
-      entityId: tracking.id,
-    }).catch(err => console.error("[v0] Kernel event failed:", err))
   }
 
   // Check for low performer
@@ -524,15 +517,9 @@ async function checkPerformanceThresholds(
         click_through_rate: clickThroughRate,
         thresholds: PERFORMANCE_THRESHOLDS.LOW_PERFORMER,
       },
-      auditOnly: true,
+      // Wave 102C: ONE emit — the reactor forwards this metadata as the signal payload (was {}).
+      agentUserId: null,
     }).then(k.asWriteResult)), "performance audit echo; the engagement tracking row itself is written above")
-
-    await processKernelEvent({
-      event: KernelEvent.VIDEO_LOW_PERFORMER_DETECTED,
-      brokerageId,
-      entityType: "video_performance",
-      entityId: tracking.id,
-    }).catch(err => console.error("[v0] Kernel event failed:", err))
   }
 
   // THE OWNER'S VIRAL RULE — "if the video goes viral using that script, it

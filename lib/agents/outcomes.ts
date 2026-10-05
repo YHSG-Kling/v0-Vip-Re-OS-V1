@@ -25,6 +25,93 @@
  */
 import "server-only"
 
+// ─── THE ONE agent_outcome_evaluations WRITER (wave 102, lane 102D) ──────────────────────────
+// Before 102D the only insert sat inline in app/api/webhooks/anthropic-agent/route.ts
+// (span.outcome_evaluation_end). It now lives here so the SECOND evaluator — an attributed
+// real-world outcome landing on an experiment-arm action (lib/intelligence/roi-ledger.ts
+// recordExperimentArmOutcomes) — extends the same row and the same writer rather than adding a
+// second table or a second inserter (CLAUDE.md §1, OWNER LAW 2). The two evaluators are told apart
+// by `evaluator` (m700): 'anthropic_rubric' rows carry the session + outcome id; 'ledger_attribution'
+// rows carry the ledger action, the experiment key/arm and the outcome they earned.
+
+/** agent_outcome_evaluations.result — the live CHECK (lib/managers/eval-scoring.ts EVAL_RESULTS). */
+export type OutcomeEvaluationResult = "satisfied" | "needs_revision" | "max_iterations_reached" | "failed" | "interrupted"
+
+export type OutcomeEvaluationInput =
+  | {
+      evaluator: "anthropic_rubric"
+      brokerageId: string
+      managedAgentSessionId: string
+      anthropicOutcomeId: string
+      iteration: number
+      result: OutcomeEvaluationResult
+      explanation: string | null
+      usage?: { input_tokens?: number | null; output_tokens?: number | null; cache_read_input_tokens?: number | null }
+    }
+  | {
+      evaluator: "ledger_attribution"
+      brokerageId: string
+      /** The agent_action_ledger row that carried `detail.experiment = { key, arm }`. */
+      ledgerActionId: string
+      experimentKey: string
+      experimentArm: string
+      /** `<kind>:<source row id>` — the attribution's own stable outcome ref. */
+      outcomeRef: string
+      outcomeKind: "reply" | "appointment" | "contract" | "closed"
+      /** When the outcome happened (the attribution anchor), not when this row was written. */
+      outcomeAt: string
+      explanation: string | null
+    }
+
+/**
+ * The ONE insert. The row literal sits inside `.insert({...})` so the column censuses see every
+ * column this module writes. Refusals are READ and returned (§3); `duplicate: true` is the m700
+ * UNIQUE (ledger_action_id, outcome_ref) saying this arm outcome was already recorded — idempotent.
+ */
+export async function recordOutcomeEvaluation(
+  svc: { from: (t: string) => any },
+  input: OutcomeEvaluationInput,
+): Promise<{ ok: true; id: string | null; duplicate: boolean } | { ok: false; error: string; code?: string }> {
+  const row = input.evaluator === "anthropic_rubric"
+    ? {
+        brokerage_id:             input.brokerageId,
+        evaluator:                "anthropic_rubric",
+        managed_agent_session_id: input.managedAgentSessionId,
+        anthropic_outcome_id:     input.anthropicOutcomeId,
+        iteration:                input.iteration,
+        result:                   input.result,
+        explanation:              input.explanation,
+        input_tokens:             input.usage?.input_tokens             ?? null,
+        output_tokens:            input.usage?.output_tokens            ?? null,
+        cache_read_input_tokens:  input.usage?.cache_read_input_tokens  ?? null,
+      }
+    : {
+        brokerage_id:     input.brokerageId,
+        evaluator:        "ledger_attribution",
+        iteration:        0,
+        // An attributed outcome IS the bar met in the real world (eval-scoring's PASS_RESULT).
+        result:           "satisfied",
+        explanation:      input.explanation,
+        ledger_action_id: input.ledgerActionId,
+        experiment_key:   input.experimentKey,
+        experiment_arm:   input.experimentArm,
+        outcome_ref:      input.outcomeRef,
+        outcome_kind:     input.outcomeKind,
+        evaluated_at:     input.outcomeAt,
+      }
+  const { data, error } = await svc.from("agent_outcome_evaluations").insert(row).select("id").maybeSingle()
+  if (error) {
+    if (String(error.code ?? "") === "23505") return { ok: true, id: null, duplicate: true }
+    return { ok: false, error: String(error.message ?? "refused"), code: error.code ? String(error.code) : undefined }
+  }
+  return { ok: true, id: ((data as { id?: string } | null)?.id ?? null), duplicate: false }
+}
+
+/** True when the refusal means m700 part 2 is not applied yet (no evaluator / experiment columns). */
+export function isOutcomeEvaluationSchemaLag(code: string | undefined): boolean {
+  return code === "PGRST204" || code === "42703" || code === "23502"
+}
+
 export type AgentOutcomeKind =
   | "buyer_concierge"
   | "listing_concierge"

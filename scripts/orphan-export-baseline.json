@@ -99,6 +99,7 @@
     "lib/buyer-search/fair-housing.ts": 3,
     "lib/buyer-search/investor-facing.ts": 1,
     "lib/buyer-search/investor-offmarket-match.ts": 2,
+    "lib/campaign-sequences/copy-learning-conductor.ts": 1,
     "lib/campaign-sequences/sequence-counters.ts": 2,
     "lib/campaign-sequences/touchpoint-bridge.ts": 1,
     "lib/campaigns/channels.ts": 1,
@@ -198,7 +199,7 @@
     "lib/intelligence/retention-board.ts": 1,
     "lib/intelligence/retention-outcomes.ts": 2,
     "lib/intelligence/revenue-share-board.ts": 1,
-    "lib/intelligence/roi-ledger.ts": 2,
+    "lib/intelligence/roi-ledger.ts": 3,
     "lib/intelligence/skill-freshness-board.ts": 1,
     "lib/intelligence/steer-my-day.ts": 1,
     "lib/intelligence/time-to-value-radar.ts": 1,
@@ -269,6 +270,7 @@
     "lib/kernel/os-self-audit.ts": 3,
     "lib/kernel/outcome-learning.ts": 2,
     "lib/kernel/overnight-digest.ts": 1,
+    "lib/kernel/person-identity.ts": 1,
     "lib/kernel/portal-value.ts": 1,
     "lib/kernel/portal.ts": 4,
     "lib/kernel/postclose-concierge.ts": 3,
@@ -276,6 +278,7 @@
     "lib/kernel/referral-appreciation.ts": 6,
     "lib/kernel/referral-radar.ts": 4,
     "lib/kernel/regulatory-watcher.ts": 5,
+    "lib/kernel/relationship-graph.ts": 2,
     "lib/kernel/repair-digest.ts": 1,
     "lib/kernel/returning-customer.ts": 4,
     "lib/kernel/reverse-prospecting.ts": 2,
@@ -292,6 +295,7 @@
     "lib/kernel/team-plays.ts": 2,
     "lib/kernel/team-query.ts": 2,
     "lib/kernel/tenant-creation.ts": 5,
+    "lib/kernel/tenant-policy.ts": 1,
     "lib/kernel/title-closing-watchtower.ts": 3,
     "lib/kernel/tour-optimizer.ts": 5,
     "lib/kernel/vendor-coverage-forecast.ts": 2,
@@ -518,7 +522,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10619,
+  "census": 10654,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -775,7 +779,7 @@
     "app/actions/fb-audience-templates.ts": 1,
     "app/actions/financial-kernel.ts": 20,
     "app/actions/financials.ts": 7,
-    "app/actions/flight-recorder.ts": 4,
+    "app/actions/flight-recorder.ts": 6,
     "app/actions/forms-kernel.ts": 10,
     "app/actions/gamification.ts": 7,
     "app/actions/generate-marketing-image.ts": 1,
@@ -2776,7 +2780,7 @@
     "lib/agents/offer-ready-decision.ts": 1,
     "lib/agents/offer-ready-detector.ts": 1,
     "lib/agents/offer-strategy-producer.ts": 3,
-    "lib/agents/outcomes.ts": 2,
+    "lib/agents/outcomes.ts": 4,
     "lib/agents/persona-context.ts": 1,
     "lib/agents/recruit-outreach-producer.ts": 4,
     "lib/agents/referral-closer.ts": 3,
@@ -3004,7 +3008,7 @@
     "lib/campaign-sequences/channel-order-runner.ts": 1,
     "lib/campaign-sequences/channel-order.ts": 1,
     "lib/campaign-sequences/compliance-gate.ts": 1,
-    "lib/campaign-sequences/copy-learning-conductor.ts": 1,
+    "lib/campaign-sequences/copy-learning-conductor.ts": 2,
     "lib/campaign-sequences/deferral-policy.ts": 2,
     "lib/campaign-sequences/enrollment-attribution.ts": 2,
     "lib/campaign-sequences/enrollment-engine.ts": 5,
@@ -3201,7 +3205,7 @@
     "lib/direct-mail/render-postcard.ts": 2,
     "lib/direct-mail/resolve-size-pref.ts": 2,
     "lib/direct-mail/unsubscribe-token.ts": 5,
-    "lib/direct-mail/variant-bandit.ts": 2,
+    "lib/direct-mail/variant-bandit.ts": 3,
     "lib/documents/auto-filer.ts": 3,
     "lib/documents/auto-populate-participants.ts": 1,
     "lib/documents/autonomy-ratchet.ts": 10,
@@ -3471,7 +3475,7 @@
     "lib/intelligence/retention-board.ts": 2,
     "lib/intelligence/retention-outcomes.ts": 3,
     "lib/intelligence/revenue-share-board.ts": 2,
-    "lib/intelligence/roi-ledger.ts": 4,
+    "lib/intelligence/roi-ledger.ts": 6,
     "lib/intelligence/showing-feedback-routing-runner.ts": 1,
     "lib/intelligence/showing-feedback-routing.ts": 1,
     "lib/intelligence/skill-freshness-board.ts": 2,
@@ -3663,6 +3667,7 @@
     "lib/kernel/outreach-reasons.ts": 2,
     "lib/kernel/overnight-digest.ts": 2,
     "lib/kernel/override-vocab.ts": 3,
+    "lib/kernel/person-identity.ts": 7,
     "lib/kernel/portal-auth.ts": 6,
     "lib/kernel/portal-contracts.ts": 2,
     "lib/kernel/portal-template-render.ts": 1,
@@ -3675,6 +3680,7 @@
     "lib/kernel/referral-appreciation.ts": 8,
     "lib/kernel/referral-radar.ts": 6,
     "lib/kernel/regulatory-watcher.ts": 6,
+    "lib/kernel/relationship-graph.ts": 11,
     "lib/kernel/repair-digest.ts": 3,
     "lib/kernel/reporting-autonomy.ts": 3,
     "lib/kernel/reporting-scope.ts": 2,
@@ -3718,7 +3724,7 @@
     "lib/kernel/tenant-creation-rollback.ts": 1,
     "lib/kernel/tenant-creation.ts": 7,
     "lib/kernel/tenant-guard.ts": 1,
-    "lib/kernel/tenant-policy.ts": 8,
+    "lib/kernel/tenant-policy.ts": 17,
     "lib/kernel/tenant-provisioning-spec.ts": 3,
     "lib/kernel/tenant-scope.ts": 7,
     "lib/kernel/tier-role-matrix.ts": 20,
@@ -6247,7 +6253,9 @@
       "getEntityCausalChain",
       "replayTenantDecisions",
       "getTenantExperimentPolicy",
-      "setExperimentKillSwitch"
+      "setExperimentKillSwitch",
+      "getDirectMailExplorationPolicy",
+      "setDirectMailExplorationFrozen"
     ],
     "app/actions/forms-kernel.ts": [
       "resolveFormsProviderAction",
@@ -13757,6 +13765,8 @@
       "produceOfferStrategyBrief"
     ],
     "lib/agents/outcomes.ts": [
+      "recordOutcomeEvaluation",
+      "isOutcomeEvaluationSchemaLag",
       "buildOutcomeFor",
       "buildDefineOutcomeEvent"
     ],
@@ -14042,7 +14052,7 @@
       "planNextContactTouch",
       "releaseDueLeadTouches",
       "resolveLeadSettingsResolution",
-      "nonActionRecordFor",
+      "decisionRecordFor",
       "decisionInputSnapshot",
       "planFromDecisionInput",
       "contactTouchSignals",
@@ -15169,6 +15179,7 @@
       "checkSequenceAuthority"
     ],
     "lib/campaign-sequences/copy-learning-conductor.ts": [
+      "loadExperimentArmResults",
       "runSequenceCopyLearning"
     ],
     "lib/campaign-sequences/deferral-policy.ts": [
@@ -16065,6 +16076,7 @@
       "mailOptOutPrintLine"
     ],
     "lib/direct-mail/variant-bandit.ts": [
+      "loadDirectMailExplorationPolicy",
       "pickVariantArm",
       "recordVariantSend"
     ],
@@ -17376,7 +17388,9 @@
       "composeRoiHeadline",
       "generateRoiLedger",
       "attributeOutcomesToLedger",
-      "loadLedgerAttribution"
+      "loadLedgerAttribution",
+      "experimentArmOutcomes",
+      "recordExperimentArmOutcomes"
     ],
     "lib/intelligence/showing-feedback-routing-runner.ts": [
       "routeAndPublishShowingFeedback"
@@ -18472,6 +18486,15 @@
       "isTrialOverride",
       "isDisableOverride"
     ],
+    "lib/kernel/person-identity.ts": [
+      "normalizePersonIdentity",
+      "resolvePerson",
+      "linkPersonEvidence",
+      "markPersonConverted",
+      "personForContact",
+      "personForLead",
+      "summarizePersonEvidence"
+    ],
     "lib/kernel/portal-auth.ts": [
       "requireLenderVendorActor",
       "requireTitleActor",
@@ -18557,6 +18580,19 @@
       "extractEffectiveDate",
       "parseChangesFromSearchResult",
       "runRegulatoryWatcher"
+    ],
+    "lib/kernel/relationship-graph.ts": [
+      "upsertRelationship",
+      "upsertRelationships",
+      "neighbors",
+      "household",
+      "planTransactionCloseEdges",
+      "deriveTransactionCloseEdges",
+      "planRosterEdges",
+      "planHouseholdEdges",
+      "deriveHouseholdEdges",
+      "representedByOutsideAgent",
+      "describeEdge"
     ],
     "lib/kernel/repair-digest.ts": [
       "composeRepairDigest",
@@ -18782,9 +18818,18 @@
       "logTenantFinding"
     ],
     "lib/kernel/tenant-policy.ts": [
+      "assignmentRulePolicyKey",
+      "cadencePolicyKey",
+      "assignmentRulePolicyValue",
+      "cadencePolicyValue",
+      "farmMailPolicyValue",
       "managerPolicyKey",
       "isaPolicyKey",
       "parsePolicyKey",
+      "formatPolicyRef",
+      "parsePolicyRef",
+      "currentPolicyVersion",
+      "resolvePolicyRef",
       "samePolicyValue",
       "changedPolicySettingsKeys",
       "appendTenantPolicyVersion",

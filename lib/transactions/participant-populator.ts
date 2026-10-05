@@ -118,6 +118,10 @@ export async function populateInitialParticipants(
   }
 
   const pending: PendingParticipant[] = []
+  // RELATIONSHIP GRAPH (wave 102, lane 102B): the roster also says who REPRESENTS whom — kept as
+  // ids beside the name rows and derived once the roster insert lands (planRosterEdges).
+  let buyerAgentRef: { type: "agent" | "outside_agent"; id: string } | null = null
+  let sellerAgentUserId: string | null = null
 
   // ── BUYER ─────────────────────────────────────────────────────────────────
   const buyerContactId = (tx.buyer_contact_id as string | null) ?? (offer?.contact_id as string | null) ?? null
@@ -173,9 +177,14 @@ export async function populateInitialParticipants(
     const buyerAgentId = (tx.agent_id as string | null) ?? (offer?.agent_id as string | null) ?? null
     if (buyerAgentId) {
       const buyerAgent = await resolveAgent(supabase, buyerAgentId)
-      if (buyerAgent) pending.push({ role: "buyer_agent", ...buyerAgent })
+      if (buyerAgent) {
+        const { userId, ...row } = buyerAgent
+        buyerAgentRef = { type: "agent", id: userId }
+        pending.push({ role: "buyer_agent", ...row })
+      }
     }
   }
+  if (outsideAgent && outsideName) buyerAgentRef = { type: "outside_agent", id: outsideAgent.id as string }
 
   // ── SELLER ────────────────────────────────────────────────────────────────
   const sellerContactId = (tx.seller_contact_id as string | null) ?? (listing?.seller_contact_id as string | null) ?? null
@@ -201,7 +210,11 @@ export async function populateInitialParticipants(
   // ── SELLER_AGENT (a.k.a. listing agent) ──────────────────────────────────
   if (listing?.agent_id) {
     const sellerAgent = await resolveAgent(supabase, listing.agent_id as string)
-    if (sellerAgent) pending.push({ role: "seller_agent", ...sellerAgent })
+    if (sellerAgent) {
+      const { userId, ...row } = sellerAgent
+      sellerAgentUserId = userId
+      pending.push({ role: "seller_agent", ...row })
+    }
   }
 
   // ── LENDER (from buyer's most-recent PAL on file) ────────────────────────
@@ -268,7 +281,20 @@ export async function populateInitialParticipants(
   // Insert all collected participants in one statement — only the roles the deal
   // does not already hold (see the per-role rule at the top).
   const missing = pending.filter(p => !existingRoles.has(p.role.toLowerCase()))
+  // represented_by edges ride on the ids resolved above, whether or not a name row was new
+  // (idempotent on the graph's UNIQUE key; a lost edge is logged, the roster is never failed).
+  const rosterEdges = async () => {
+    try {
+      const { planRosterEdges, upsertRelationships } = await import("@/lib/kernel/relationship-graph")
+      const planned = planRosterEdges({ buyerContactId, buyerAgent: buyerAgentRef, sellerContactId, sellerAgentUserId, observedAt: new Date().toISOString() })
+      const r = await upsertRelationships(supabase, brokerageId, planned, null)
+      if (r.errors.length > 0 && !r.degraded) console.error(`[participant-populator] represented_by edges for ${transactionId}: ${r.errors.join("; ")}`)
+    } catch (e) {
+      console.error("[participant-populator] relationship edge derivation failed (non-blocking)", e)
+    }
+  }
   if (missing.length === 0) {
+    await rosterEdges()
     return { inserted_count: 0, roles_inserted: [], skipped_existing: pending.length > 0 }
   }
 
@@ -291,6 +317,7 @@ export async function populateInitialParticipants(
     console.error("[participant-populator] insert failed:", insertErr.message)
     return { inserted_count: 0, roles_inserted: [], skipped_existing: false, error: `roster insert refused: ${insertErr.message}` }
   }
+  await rosterEdges()
 
   return {
     inserted_count: rows.length,
@@ -308,7 +335,7 @@ export async function populateInitialParticipants(
 async function resolveAgent(
   supabase: SupabaseClient,
   agentId: string,
-): Promise<{ name: string; email?: string | null; phone?: string | null; license_number?: string | null } | null> {
+): Promise<{ name: string; email?: string | null; phone?: string | null; license_number?: string | null; userId: string } | null> {
   const { data: agentRow } = await supabase
     .from("agents")
     .select("id, user_id, license_number")
@@ -331,6 +358,7 @@ async function resolveAgent(
     email:          user.email ?? null,
     phone:          (user as any).phone ?? null,
     license_number: agentRow.license_number ?? null,
+    userId:         agentRow.user_id as string,
   }
 }
 

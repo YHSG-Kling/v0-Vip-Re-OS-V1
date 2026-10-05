@@ -267,6 +267,18 @@ export async function runReferralRadar(
     .eq("brokerage_id", brokerageId).or(orClause).limit(500)
 
   const contacts = (rows ?? []) as RadarContact[]
+  // RELATIONSHIP GRAPH (wave 102, lane 102B): who has this past client ALREADY referred to us? The
+  // referred_by edges point AT the referrer (lib/kernel/relationship-graph.ts); one tenant-wide read,
+  // counted per contact, becomes a real fact in the touch ("they have sent us N people") and in the
+  // agent's nudge. Read-only; a refused read (or no graph yet) is an empty map, never a failed pass.
+  const referralsGiven = new Map<string, number>()
+  {
+    const { data: refEdges, error: refErr } = await supabase.from("relationship_edges")
+      .select("to_entity_id")
+      .eq("brokerage_id", brokerageId).eq("relationship_type", "referred_by").eq("to_entity_type", "contact").limit(2000)
+    if (refErr) { if (!/does not exist|could not find/i.test(refErr.message ?? "")) console.warn("[referral-radar] referred_by read refused:", refErr.message) }
+    else for (const e of (refEdges ?? []) as Array<{ to_entity_id: string }>) referralsGiven.set(e.to_entity_id, (referralsGiven.get(e.to_entity_id) ?? 0) + 1)
+  }
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
   const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
   const { resolveResponsibleAgentUserId } = await import("@/lib/intelligence/mobile-approval-queue")
@@ -313,7 +325,12 @@ export async function runReferralRadar(
     const draft = await generatePersonaCopy(
       {
         goal: "a warm, no-pressure past-client check-in that opens the door to repeat business or a referral",
-        facts: [ev.clientHook, "I stay in touch with the people I've worked with", "I'm glad to help them or anyone they refer"],
+        facts: [
+          ev.clientHook,
+          "I stay in touch with the people I've worked with",
+          "I'm glad to help them or anyone they refer",
+          ...((referralsGiven.get(c.id) ?? 0) > 0 ? [`they have already referred ${referralsGiven.get(c.id)} ${referralsGiven.get(c.id) === 1 ? "person" : "people"} to me`] : []),
+        ],
         channel: "portal",
         persona: {
           name: fullName || null,

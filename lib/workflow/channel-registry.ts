@@ -12,7 +12,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { experimentLedgerDetail } from "@/lib/kernel/experiments"
+import { experimentLedgerDetail, EXPERIMENTS_POLICY_KEY } from "@/lib/kernel/experiments"
 
 // ─── Step context ─────────────────────────────────────────────────────────────
 
@@ -55,8 +55,11 @@ export function sequenceStepLedger(ctx: Pick<StepContext, "enrollmentId" | "step
   cycle: string
   subject?: { type: "contact" | "lead"; id: string }
   detail: { sequence_id: string; step_id: string; experiment?: { key: string; arm: string } }
+  /** 102D: an experiment-arm send ran under the tenant's `experiments` policy (its version rides the ledger row). */
+  policyKey?: string
 } {
   return {
+    ...(ctx.abVariant ? { policyKey: EXPERIMENTS_POLICY_KEY } : {}),
     reasonCode: "CAMPAIGN_STEP",
     reasonDetail: `sequence ${ctx.step.sequence_id} step ${ctx.step.id}`,
     cycle: `enrollment:${ctx.enrollmentId}:step:${ctx.step.id}`,

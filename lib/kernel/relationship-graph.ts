@@ -1,0 +1,497 @@
+/**
+ * lib/kernel/relationship-graph.ts — THE RELATIONSHIP GRAPH (wave 102, lane 102B; m698;
+ * OS-CONSTITUTION LAW 1/2/5). Layer 3 of the intelligence graph: Person • Household • Property •
+ * Relationship • Opportunity, on top of the EXISTING entities (contacts, leads, listings,
+ * transactions, users-as-agents, vendors, outside_agents). No lead/contact migration.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT IS NOT HERE: the facts. Every survivor stays the system of record for what it records —
+ *   agent_relationships              the revenue-share SPONSOR TREE (agents.id ↔ agents.id, depth, terms)
+ *   outside_agent_contact_links      an outside buyer's agent ↔ the buyer contact it represents
+ *   transaction_participants         the per-deal ROSTER (names / emails / phones, no ids)
+ *   referrals / referral_partners /  who sent whom (referrer_contact_id, referring_agent_id, partner_id),
+ *     referral_sources               the fee and the partner directory
+ *   document_folders.related_contact_id   the contact a folder is about
+ *   buyer_financial_profiles.lender_referred_partner_id / _vendor_id   the buyer's lender introduction
+ *   contacts.vendor_id               the vendor bridge column (m595) — NO writer in code today; the
+ *                                    live vendor↔contact writer is vendor_bookings
+ *   lib/intelligence/relationship-health.ts   a PURE score of how alive one client relationship is
+ *   lib/enrichment/household-financials.ts    marital status / income / net worth as CONTACT COLUMNS
+ *   lib/kernel/referral-radar.ts              life-event detection on past clients
+ *
+ * WHAT IS HERE: the ONE typed edge store (relationship_edges, m698) and its ONE writer
+ * (upsertRelationship — idempotent on UNIQUE (brokerage, from, to, type)), the two readers
+ * (neighbors, household) and the DERIVATIONS the survivor writers call after their own write lands:
+ *   transaction close      → bought_from / sold_to / owns / previously_owned   (lib/kernel/transactions.ts)
+ *   transaction roster     → represented_by (buyer/seller → their agent)       (lib/transactions/participant-populator.ts)
+ *   outside-agent link     → represented_by (buyer → outside_agent)            (lib/offers/outside-agent-record.ts)
+ *   referral writers       → referred_by                                       (lib/referrals/referral-record.ts, agent-referral.ts)
+ *   lender referral        → lender_for (vendor → contact)                     (app/actions/buyer-financial.ts)
+ *   vendor booking         → vendor_for (vendor → contact)                     (app/actions/contact-vendor-booking.ts)
+ *   sponsor tree           → sponsor_of (sponsor user → recruit user)          (app/api/recruiting/provision-agent/route.ts)
+ *   household enrichment   → spouse_partner / household_member                 (lib/enrichment/household-financials.ts,
+ *                            (marital status + same mailing address)            contact-enrichment-core.ts)
+ *
+ * DETERMINISTIC: no model call, no clock read inside a planner (observed_at is passed in), symmetric
+ * relations stored ONCE with a fixed orientation (lower id → higher id), neighbors sorted.
+ * Tenant from the caller's EXISTING context (never a request body). Every read/write destructures
+ * `{ data, error }`. Not server-only: simulator-driven with an injected client.
+ *
+ * Before m698 is applied every write resolves 42P01 / PGRST205 → `{ ok: false, degraded: true }`
+ * and every reader answers "no graph yet" as an EMPTY graph with `degraded: true` — never as a
+ * refusal (a reader that fails closed on a missing table would take its survivor surface down).
+ *
+ * LANE 102A COORDINATION: edges key on contact / lead ids today. When the person identity layer
+ * lands, `contact` / `lead` endpoints on person↔person edges (spouse_partner, household_member,
+ * co_buyer, co_owner, referred_by, bought_from, sold_to) should resolve to the person id — the
+ * `household` entity type is reserved for that layer.
+ */
+
+// ── The vocabulary (mirrored by m698's CHECKs — scripts/relationship-graph-guard.ts holds them equal) ──
+
+/** @proofSeam scripts/relationship-graph-guard.ts asserts this list equals m698's CHECK (one vocabulary, §6). */
+export const RELATIONSHIP_ENTITY_TYPES = [
+  "contact", "lead", "listing", "transaction", "agent", "vendor", "outside_agent", "household",
+] as const
+export type RelationshipEntityType = (typeof RELATIONSHIP_ENTITY_TYPES)[number]
+
+/** @proofSeam scripts/relationship-graph-guard.ts asserts this list equals m698's CHECK (one vocabulary, §6). */
+export const RELATIONSHIP_TYPES = [
+  "spouse_partner", "household_member", "co_buyer", "co_owner",
+  "owns", "occupies", "previously_owned",
+  "referred_by", "represented_by", "lender_for", "vendor_for", "sponsor_of",
+  "bought_from", "sold_to",
+] as const
+export type RelationshipType = (typeof RELATIONSHIP_TYPES)[number]
+
+/** The person↔person types a household is DERIVED from (symmetric; stored once, lower id first).
+ *  @proofSeam scripts/relationship-graph-guard.ts asserts household() reads exactly these. */
+export const HOUSEHOLD_RELATIONSHIP_TYPES = ["spouse_partner", "household_member", "co_buyer", "co_owner"] as const
+export type HouseholdRelationshipType = (typeof HOUSEHOLD_RELATIONSHIP_TYPES)[number]
+
+const SYMMETRIC_TYPES: ReadonlySet<string> = new Set(HOUSEHOLD_RELATIONSHIP_TYPES)
+
+export interface EntityRef { type: RelationshipEntityType; id: string }
+
+export interface RelationshipEvidence {
+  /** WHERE the fact was read — the survivor writer (e.g. "transaction_close", "household_financials"). */
+  source: string
+  /** HOW sure, 0..1. */
+  confidence: number
+  /** WHEN it was observed (ISO). */
+  observed_at: string
+}
+
+export interface RelationshipEdge {
+  id: string
+  brokerage_id: string
+  from_entity_type: RelationshipEntityType
+  from_entity_id: string
+  to_entity_type: RelationshipEntityType
+  to_entity_id: string
+  relationship_type: RelationshipType
+  evidence: RelationshipEvidence
+  effective_from: string | null
+  effective_to: string | null
+  created_by: string | null
+}
+
+export interface EdgeInput {
+  from: EntityRef
+  to: EntityRef
+  type: RelationshipType
+  evidence: RelationshipEvidence
+  effectiveFrom?: string | null
+  effectiveTo?: string | null
+}
+
+export type UpsertRelationshipResult =
+  | { ok: true; id: string; created: boolean; updated: boolean }
+  | { ok: false; error: string; degraded: boolean }
+
+type Svc = { from: (table: string) => any }
+
+// The table name is a LITERAL at every call site (wave 98 lesson: a write through a table-name
+// constant is invisible to opposite-missing / readerless-writes / the census guards).
+
+/** 42P01 / PGRST205 — the table is not there (m698 is live since 2026-10-05; older environments degrade). */
+function isMissingTable(err: { code?: string; message?: string } | null | undefined): boolean {
+  const code = err?.code ?? ""
+  const msg = (err?.message ?? "").toLowerCase()
+  return code === "42P01" || code === "PGRST205" || msg.includes("does not exist") || msg.includes("could not find the table")
+}
+
+function isEntityType(v: unknown): v is RelationshipEntityType {
+  return typeof v === "string" && (RELATIONSHIP_ENTITY_TYPES as readonly string[]).includes(v)
+}
+function isRelationshipType(v: unknown): v is RelationshipType {
+  return typeof v === "string" && (RELATIONSHIP_TYPES as readonly string[]).includes(v)
+}
+
+function clampConfidence(c: number): number {
+  if (!Number.isFinite(c)) return 0
+  return Math.min(1, Math.max(0, Math.round(c * 100) / 100))
+}
+
+/** PURE — the stored orientation of a symmetric edge: lower id first, so (a,b) and (b,a) are ONE row. */
+function orientEdge(input: EdgeInput): EdgeInput {
+  if (!SYMMETRIC_TYPES.has(input.type)) return input
+  const a = `${input.from.type}:${input.from.id}`
+  const b = `${input.to.type}:${input.to.id}`
+  return a <= b ? input : { ...input, from: input.to, to: input.from }
+}
+
+/** PURE — why an edge cannot be written (null = valid). */
+function validateEdgeInput(input: EdgeInput): string | null {
+  if (!isEntityType(input.from?.type)) return `unknown from entity type ${String(input.from?.type)}`
+  if (!isEntityType(input.to?.type)) return `unknown to entity type ${String(input.to?.type)}`
+  if (!input.from?.id || !input.to?.id) return "an edge needs both endpoint ids"
+  if (!isRelationshipType(input.type)) return `unknown relationship type ${String(input.type)}`
+  if (input.from.type === input.to.type && input.from.id === input.to.id) return "an entity cannot relate to itself"
+  if (!input.evidence?.source) return "evidence.source is required"
+  if (!input.evidence?.observed_at) return "evidence.observed_at is required"
+  return null
+}
+
+// ── The ONE writer ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Idempotent on UNIQUE (brokerage, from, to, type). An existing edge is re-read, never duplicated;
+ * its evidence is replaced only when the incoming confidence is at least as high (newest evidence
+ * of equal or better quality wins), and an effective window is filled, never cleared.
+ */
+export async function upsertRelationship(
+  svc: Svc,
+  input: EdgeInput & { brokerageId: string; createdBy?: string | null },
+): Promise<UpsertRelationshipResult> {
+  if (!input.brokerageId) return { ok: false, error: "tenant scope required", degraded: false }
+  const invalid = validateEdgeInput(input)
+  if (invalid) return { ok: false, error: invalid, degraded: false }
+  const e = orientEdge(input)
+  const evidence: RelationshipEvidence = {
+    source: e.evidence.source,
+    confidence: clampConfidence(e.evidence.confidence),
+    observed_at: e.evidence.observed_at,
+  }
+
+  const { data: existing, error: readErr } = await svc
+    .from("relationship_edges")
+    .select("id, evidence, effective_from, effective_to")
+    .eq("brokerage_id", input.brokerageId)
+    .eq("from_entity_type", e.from.type).eq("from_entity_id", e.from.id)
+    .eq("to_entity_type", e.to.type).eq("to_entity_id", e.to.id)
+    .eq("relationship_type", e.type)
+    .limit(1)
+  if (readErr) return { ok: false, error: `edge read refused: ${readErr.message}`, degraded: isMissingTable(readErr) }
+
+  const row = (existing ?? [])[0] as { id: string; evidence: Partial<RelationshipEvidence> | null; effective_from: string | null; effective_to: string | null } | undefined
+  if (row) {
+    const patch: Record<string, unknown> = {}
+    const haveConf = clampConfidence(Number(row.evidence?.confidence ?? 0))
+    if (evidence.confidence >= haveConf) patch.evidence = evidence
+    if (e.effectiveFrom && !row.effective_from) patch.effective_from = e.effectiveFrom
+    if (e.effectiveTo && !row.effective_to) patch.effective_to = e.effectiveTo
+    if (Object.keys(patch).length === 0) return { ok: true, id: row.id, created: false, updated: false }
+    const { error: updErr } = await svc.from("relationship_edges").update(patch).eq("id", row.id).eq("brokerage_id", input.brokerageId)
+    if (updErr) return { ok: false, error: `edge update refused: ${updErr.message}`, degraded: isMissingTable(updErr) }
+    return { ok: true, id: row.id, created: false, updated: true }
+  }
+
+  const { data: ins, error: insErr } = await svc
+    .from("relationship_edges")
+    .insert({
+      brokerage_id: input.brokerageId,
+      from_entity_type: e.from.type, from_entity_id: e.from.id,
+      to_entity_type: e.to.type, to_entity_id: e.to.id,
+      relationship_type: e.type,
+      evidence,
+      effective_from: e.effectiveFrom ?? null,
+      effective_to: e.effectiveTo ?? null,
+      created_by: input.createdBy ?? null,
+    })
+    .select("id")
+    .single()
+  if (insErr) {
+    // A concurrent writer landed the same key (23505): it exists — re-read, never duplicate.
+    if (insErr.code === "23505") {
+      const { data: again, error: againErr } = await svc
+        .from("relationship_edges").select("id")
+        .eq("brokerage_id", input.brokerageId)
+        .eq("from_entity_type", e.from.type).eq("from_entity_id", e.from.id)
+        .eq("to_entity_type", e.to.type).eq("to_entity_id", e.to.id)
+        .eq("relationship_type", e.type).limit(1)
+      const id = (again ?? [])[0]?.id as string | undefined
+      if (!againErr && id) return { ok: true, id, created: false, updated: false }
+    }
+    return { ok: false, error: `edge insert refused: ${insErr.message}`, degraded: isMissingTable(insErr) }
+  }
+  return { ok: true, id: (ins as { id: string }).id, created: true, updated: false }
+}
+
+/** Write a planned batch; the survivor's own write has already landed, so a miss is reported, never thrown. */
+export async function upsertRelationships(
+  svc: Svc,
+  brokerageId: string,
+  edges: EdgeInput[],
+  createdBy?: string | null,
+): Promise<{ written: number; existing: number; errors: string[]; degraded: boolean }> {
+  const out = { written: 0, existing: 0, errors: [] as string[], degraded: false }
+  for (const edge of edges) {
+    const r = await upsertRelationship(svc, { ...edge, brokerageId, createdBy })
+    if (r.ok) { if (r.created) out.written++; else out.existing++ }
+    else { out.errors.push(`${edge.type} ${edge.from.type}:${edge.from.id} → ${edge.to.type}:${edge.to.id}: ${r.error}`); if (r.degraded) out.degraded = true }
+  }
+  return out
+}
+
+// ── The readers ──────────────────────────────────────────────────────────────────────────────────
+
+export interface NeighborsResult {
+  ok: boolean
+  edges: RelationshipEdge[]
+  /** The table is not there yet (m698 unapplied): an EMPTY graph, not a refusal. */
+  degraded: boolean
+  error: string | null
+}
+
+/**
+ * Every edge touching `entity` in this tenant, optionally narrowed by type and direction.
+ * Sorted (type, from, to) so two reads of the same graph are byte-equal.
+ */
+export async function neighbors(
+  svc: Svc,
+  input: { brokerageId: string; entity: EntityRef; types?: readonly RelationshipType[]; direction?: "out" | "in" | "both" },
+): Promise<NeighborsResult> {
+  if (!input.brokerageId) return { ok: false, edges: [], degraded: false, error: "tenant scope required" }
+  const direction = input.direction ?? "both"
+  const cols = "id, brokerage_id, from_entity_type, from_entity_id, to_entity_type, to_entity_id, relationship_type, evidence, effective_from, effective_to, created_by"
+  const build = (side: "from" | "to") => {
+    let q = svc.from("relationship_edges").select(cols)
+      .eq("brokerage_id", input.brokerageId)
+      .eq(`${side}_entity_type`, input.entity.type)
+      .eq(`${side}_entity_id`, input.entity.id)
+    if (input.types && input.types.length > 0) q = q.in("relationship_type", [...input.types])
+    return q.limit(500)
+  }
+  const reads: Array<Promise<{ data: unknown[] | null; error: { code?: string; message: string } | null }>> = []
+  if (direction !== "in") reads.push(build("from"))
+  if (direction !== "out") reads.push(build("to"))
+  const results = await Promise.all(reads)
+  const refused = results.find((r) => r.error)?.error ?? null
+  if (refused) {
+    if (isMissingTable(refused)) return { ok: true, edges: [], degraded: true, error: null }
+    return { ok: false, edges: [], degraded: false, error: `edge read refused: ${refused.message}` }
+  }
+  const seen = new Set<string>()
+  const edges: RelationshipEdge[] = []
+  for (const r of results) for (const row of (r.data ?? []) as RelationshipEdge[]) {
+    if (seen.has(row.id)) continue
+    seen.add(row.id)
+    edges.push(row)
+  }
+  edges.sort((a, b) =>
+    a.relationship_type.localeCompare(b.relationship_type)
+    || a.from_entity_id.localeCompare(b.from_entity_id)
+    || a.to_entity_id.localeCompare(b.to_entity_id))
+  return { ok: true, edges, degraded: false, error: null }
+}
+
+export interface HouseholdMember { contactId: string; type: HouseholdRelationshipType; confidence: number }
+
+/**
+ * The contacts one hop from `contactId` over the household types (spouse / household member /
+ * co-buyer / co-owner). Sorted by confidence desc, then id. The subject is never a member of itself.
+ */
+export async function household(
+  svc: Svc,
+  input: { brokerageId: string; contactId: string },
+): Promise<{ ok: boolean; members: HouseholdMember[]; degraded: boolean; error: string | null }> {
+  const res = await neighbors(svc, {
+    brokerageId: input.brokerageId,
+    entity: { type: "contact", id: input.contactId },
+    types: HOUSEHOLD_RELATIONSHIP_TYPES,
+  })
+  if (!res.ok) return { ok: false, members: [], degraded: res.degraded, error: res.error }
+  const byId = new Map<string, HouseholdMember>()
+  for (const e of res.edges) {
+    const subjectIsFrom = e.from_entity_type === "contact" && e.from_entity_id === input.contactId
+    const otherType = subjectIsFrom ? e.to_entity_type : e.from_entity_type
+    const otherId = subjectIsFrom ? e.to_entity_id : e.from_entity_id
+    if (otherType !== "contact" || otherId === input.contactId) continue
+    const conf = clampConfidence(Number(e.evidence?.confidence ?? 0))
+    const have = byId.get(otherId)
+    if (!have || conf > have.confidence) byId.set(otherId, { contactId: otherId, type: e.relationship_type as HouseholdRelationshipType, confidence: conf })
+  }
+  const members = [...byId.values()].sort((a, b) => b.confidence - a.confidence || a.contactId.localeCompare(b.contactId))
+  return { ok: true, members, degraded: res.degraded, error: null }
+}
+
+// ── Derivations at the survivor writers ──────────────────────────────────────────────────────────
+
+/**
+ * PURE — the edges a CLOSED transaction proves: the buyer bought from the seller, the seller sold to
+ * the buyer, the buyer now OWNS the home (from the close date) and the seller PREVIOUSLY owned it
+ * (until the close date). Four edges when buyer, seller and listing are all known; the agents on the
+ * deal are the roster's business (planRosterEdges).
+ * @proofSeam scripts/relationship-graph-guard.ts asserts the four edges on the pure planner directly.
+ */
+export function planTransactionCloseEdges(input: {
+  transactionId: string
+  buyerContactId?: string | null
+  sellerContactId?: string | null
+  listingId?: string | null
+  closeDate: string
+  observedAt: string
+}): EdgeInput[] {
+  const evidence: RelationshipEvidence = { source: "transaction_close", confidence: 1, observed_at: input.observedAt }
+  const out: EdgeInput[] = []
+  const buyer = input.buyerContactId ? { type: "contact" as const, id: input.buyerContactId } : null
+  const seller = input.sellerContactId && input.sellerContactId !== input.buyerContactId ? { type: "contact" as const, id: input.sellerContactId } : null
+  const listing = input.listingId ? { type: "listing" as const, id: input.listingId } : null
+  if (buyer && seller) {
+    out.push({ from: buyer, to: seller, type: "bought_from", evidence, effectiveFrom: input.closeDate })
+    out.push({ from: seller, to: buyer, type: "sold_to", evidence, effectiveFrom: input.closeDate })
+  }
+  if (buyer && listing) out.push({ from: buyer, to: listing, type: "owns", evidence, effectiveFrom: input.closeDate })
+  if (seller && listing) out.push({ from: seller, to: listing, type: "previously_owned", evidence, effectiveTo: input.closeDate })
+  return out
+}
+
+export async function deriveTransactionCloseEdges(
+  svc: Svc,
+  input: { brokerageId: string; transactionId: string; buyerContactId?: string | null; sellerContactId?: string | null; listingId?: string | null; closeDate: string; actorUserId?: string | null; now?: Date },
+) {
+  const observedAt = (input.now ?? new Date()).toISOString()
+  const planned = planTransactionCloseEdges({ ...input, observedAt })
+  const r = await upsertRelationships(svc, input.brokerageId, planned, input.actorUserId ?? null)
+  return { ...r, planned: planned.length }
+}
+
+/** PURE — the roster says who REPRESENTS whom: buyer → buyer's agent, seller → listing agent. */
+export function planRosterEdges(input: {
+  buyerContactId?: string | null
+  buyerAgent?: { type: "agent" | "outside_agent"; id: string } | null
+  sellerContactId?: string | null
+  sellerAgentUserId?: string | null
+  observedAt: string
+}): EdgeInput[] {
+  const evidence: RelationshipEvidence = { source: "transaction_roster", confidence: 0.9, observed_at: input.observedAt }
+  const out: EdgeInput[] = []
+  if (input.buyerContactId && input.buyerAgent?.id) {
+    out.push({ from: { type: "contact", id: input.buyerContactId }, to: { type: input.buyerAgent.type, id: input.buyerAgent.id }, type: "represented_by", evidence })
+  }
+  if (input.sellerContactId && input.sellerAgentUserId) {
+    out.push({ from: { type: "contact", id: input.sellerContactId }, to: { type: "agent", id: input.sellerAgentUserId }, type: "represented_by", evidence })
+  }
+  return out
+}
+
+// ── Household derivation (marital status + same mailing address) ─────────────────────────────────
+
+export interface HouseholdCandidateRow {
+  id: string
+  address?: string | null
+  zip_code?: string | null
+  mailing_address?: string | null
+  mailing_zip?: string | null
+  marital_status?: string | null
+}
+
+const PARTNERED_STATUSES: ReadonlySet<string> = new Set(["married", "partnered", "domestic_partner", "domestic_partnership", "civil_union", "cohabiting"])
+
+/** PURE — the address key two contacts must share: normalised street line + zip (both required). */
+function householdAddressKey(c: HouseholdCandidateRow): string | null {
+  const street = (c.mailing_address ?? c.address ?? "").toString().toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim()
+  const zip = (c.mailing_zip ?? c.zip_code ?? "").toString().trim().slice(0, 5)
+  if (!street || zip.length < 5) return null
+  return `${street}|${zip}`
+}
+
+function isPartnered(status: string | null | undefined): boolean {
+  return PARTNERED_STATUSES.has((status ?? "").toString().trim().toLowerCase())
+}
+
+/**
+ * PURE — the household edges one contact's enrichment proves against the other contacts at the
+ * same mailing address: spouse_partner when either side's marital status says partnered
+ * (confidence 0.8 when both do, 0.7 when one does), household_member on address alone (0.5).
+ * Symmetric, stored once (orientEdge). Deterministic: candidates are taken in id order.
+ * @proofSeam scripts/relationship-graph-guard.ts asserts the planner on two contacts at one address.
+ */
+export function planHouseholdEdges(subject: HouseholdCandidateRow, others: readonly HouseholdCandidateRow[], observedAt: string): EdgeInput[] {
+  const key = householdAddressKey(subject)
+  if (!key) return []
+  const out: EdgeInput[] = []
+  const sorted = [...others].filter((o) => o.id !== subject.id).sort((a, b) => a.id.localeCompare(b.id))
+  for (const other of sorted) {
+    if (householdAddressKey(other) !== key) continue
+    const both = isPartnered(subject.marital_status) && isPartnered(other.marital_status)
+    const one = isPartnered(subject.marital_status) || isPartnered(other.marital_status)
+    const type: HouseholdRelationshipType = one ? "spouse_partner" : "household_member"
+    const confidence = both ? 0.8 : one ? 0.7 : 0.5
+    out.push(orientEdge({
+      from: { type: "contact", id: subject.id },
+      to: { type: "contact", id: other.id },
+      type,
+      evidence: { source: "household_financials", confidence, observed_at: observedAt },
+    }))
+  }
+  return out
+}
+
+/**
+ * After a household/marital write lands on a contact: read the contact's address + marital status,
+ * the other contacts of the SAME tenant sharing its zip, and upsert the planned edges. Tenant comes
+ * from the caller's existing context. Never throws; a refused read is reported.
+ */
+export async function deriveHouseholdEdges(
+  svc: Svc,
+  input: { brokerageId: string; contactId: string; now?: Date },
+): Promise<{ planned: number; written: number; existing: number; errors: string[]; degraded: boolean }> {
+  const observedAt = (input.now ?? new Date()).toISOString()
+  const cols = "id, address, zip_code, mailing_address, mailing_zip, marital_status"
+  const { data: subject, error: subjErr } = await svc.from("contacts").select(cols)
+    .eq("brokerage_id", input.brokerageId).eq("id", input.contactId).maybeSingle()
+  if (subjErr) return { planned: 0, written: 0, existing: 0, errors: [`household subject read refused: ${subjErr.message}`], degraded: false }
+  if (!subject) return { planned: 0, written: 0, existing: 0, errors: [], degraded: false }
+  const key = householdAddressKey(subject as HouseholdCandidateRow)
+  if (!key) return { planned: 0, written: 0, existing: 0, errors: [], degraded: false }
+  const zip = key.split("|")[1]
+  const { data: others, error: othersErr } = await svc.from("contacts").select(cols)
+    .eq("brokerage_id", input.brokerageId).or(`mailing_zip.eq.${zip},zip_code.eq.${zip}`).limit(200)
+  if (othersErr) return { planned: 0, written: 0, existing: 0, errors: [`household candidates read refused: ${othersErr.message}`], degraded: false }
+  const planned = planHouseholdEdges(subject as HouseholdCandidateRow, (others ?? []) as HouseholdCandidateRow[], observedAt)
+  const r = await upsertRelationships(svc, input.brokerageId, planned, null)
+  return { planned: planned.length, ...r }
+}
+
+// ── Reader helpers for the surfaces ──────────────────────────────────────────────────────────────
+
+/** The contact's represented_by edges that point at an OUTSIDE agent — "never touch another brokerage's client". */
+export function representedByOutsideAgent(edges: readonly RelationshipEdge[], contactId: string): RelationshipEdge | null {
+  return edges.find((e) => e.relationship_type === "represented_by" && e.from_entity_type === "contact" && e.from_entity_id === contactId && e.to_entity_type === "outside_agent") ?? null
+}
+
+/** PURE — one human line per edge for a brief / talking point, from the contact's point of view. */
+export function describeEdge(e: RelationshipEdge, contactId: string): string {
+  const outbound = e.from_entity_type === "contact" && e.from_entity_id === contactId
+  const other = outbound ? `${e.to_entity_type} ${e.to_entity_id.slice(0, 8)}` : `${e.from_entity_type} ${e.from_entity_id.slice(0, 8)}`
+  const label: Record<RelationshipType, [string, string]> = {
+    spouse_partner: ["spouse/partner of", "spouse/partner of"],
+    household_member: ["household member with", "household member with"],
+    co_buyer: ["co-buyer with", "co-buyer with"],
+    co_owner: ["co-owner with", "co-owner with"],
+    owns: ["owns", "owned by"],
+    occupies: ["occupies", "occupied by"],
+    previously_owned: ["previously owned", "previously owned by"],
+    referred_by: ["referred by", "referred"],
+    represented_by: ["represented by", "represents"],
+    lender_for: ["lender for", "lender:"],
+    vendor_for: ["vendor for", "vendor:"],
+    sponsor_of: ["sponsor of", "sponsored by"],
+    bought_from: ["bought from", "sold to"],
+    sold_to: ["sold to", "bought from"],
+  }
+  const [out, inn] = label[e.relationship_type]
+  const conf = Math.round(clampConfidence(Number(e.evidence?.confidence ?? 0)) * 100)
+  return `${outbound ? out : inn} ${other} (${e.evidence?.source ?? "unknown"}, ${conf}%)`
+}

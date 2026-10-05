@@ -101,6 +101,24 @@ export async function requestContactVendorBooking(
     return { success: false, error: error?.message ?? "Failed to create booking" }
   }
 
+  // RELATIONSHIP GRAPH (wave 102, lane 102B): a booking IS a vendor_for fact (vendor → contact).
+  // contacts.vendor_id (m595) has no writer in code, so the booking row is the live vendor↔contact
+  // writer and the derivation sits here. Tenant from the contact row the gate above resolved; a lost
+  // edge is logged, never fails the booking.
+  try {
+    const { upsertRelationship } = await import("@/lib/kernel/relationship-graph")
+    const edge = await upsertRelationship(svc, {
+      brokerageId: contact.brokerage_id,
+      from: { type: "vendor", id: input.vendorId },
+      to: { type: "contact", id: input.contactId },
+      type: "vendor_for",
+      evidence: { source: "vendor_bookings", confidence: 0.8, observed_at: new Date().toISOString() },
+    })
+    if (!edge.ok && !edge.degraded) console.error(`[contact-vendor-booking] vendor_for edge not written: ${edge.error}`)
+  } catch (e) {
+    console.error("[contact-vendor-booking] relationship edge derivation failed (non-blocking)", e)
+  }
+
   // Resolve the agent's user_id so we can notify them
   let agentUserId: string | null = null
   if (contact.agent_id) {

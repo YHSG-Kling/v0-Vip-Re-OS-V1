@@ -33,6 +33,19 @@
  * No randomness in production sampling? We use crypto.randomBytes
  * so a deterministic seed isn't required and the bandit produces
  * different picks across requests (the whole point of Thompson).
+ *
+ * KILL SWITCH (wave 102, lane 102C — owner answer 4): per tenant, in
+ * POLICY — brokerage_settings.settings.direct_mail_exploration
+ * { frozen: boolean }, a registered tenant operating-policy key
+ * (lib/kernel/tenant-policy.ts TENANT_POLICY_SETTINGS_KEYS), so every
+ * change is a version with an actor (appendTenantPolicyVersion; writer:
+ * app/actions/flight-recorder.ts setDirectMailExplorationFrozen). Frozen
+ * = EXPLOIT the current best arm (highest posterior mean among the arms
+ * that have evidence), never sample, never pick a cold arm while a
+ * mailed one exists. FAIL CLOSED: an unreadable policy freezes (no
+ * exploration spend on an unknown instruction) — the pick says why
+ * (`policy`). Not an experiment (lib/kernel/experiments.ts): the bandit
+ * keeps its own sampler; only the on/off lives beside `experiments`.
  */
 import "server-only"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
@@ -62,6 +75,36 @@ export interface BanditPick {
    *  target (Beta(leads+1, sends-leads+1)). The math switches per-
    *  cohort when aggregate leads >= LEADS_COHORT_THRESHOLD. */
   samplingMode:  "scans" | "leads"
+  /** Wave 102C — how the exploration policy was applied to this pick. */
+  policy:        DirectMailExplorationPolicy
+}
+
+export interface DirectMailExplorationPolicy {
+  /** false = the policy read was refused → frozen (fail closed). */
+  readable: boolean
+  /** true = exploit only: the best-evidenced arm wins, no Thompson sample, no cold arm. */
+  frozen:   boolean
+}
+
+/** PURE. The tenant's exploration policy from brokerage_settings.settings (any shape; unknown → exploring). */
+function explorationPolicyFromSettings(settings: unknown): DirectMailExplorationPolicy {
+  const p = (settings && typeof settings === "object" ? (settings as Record<string, unknown>).direct_mail_exploration : null) as Record<string, unknown> | null | undefined
+  return { readable: true, frozen: !!p && typeof p === "object" && p.frozen === true }
+}
+
+/**
+ * The ONE read of the tenant's direct-mail exploration policy. FAIL CLOSED: a refused read returns
+ * readable:false + frozen:true — an unknown instruction never spends mail on exploration.
+ */
+export async function loadDirectMailExplorationPolicy(svc: { from: (t: string) => any }, brokerageId: string): Promise<DirectMailExplorationPolicy> {
+  if (!brokerageId) return { readable: false, frozen: true }
+  try {
+    const { data, error } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle()
+    if (error) return { readable: false, frozen: true }
+    return explorationPolicyFromSettings((data as { settings?: unknown } | null)?.settings ?? null)
+  } catch {
+    return { readable: false, frozen: true }
+  }
 }
 
 /** Wave 37 — switch the Thompson Beta from scan-rate to lead-rate
@@ -228,8 +271,7 @@ async function ensureArmsForCohort(args: {
   persona:     Persona
   useKind:     DirectMailUseKind | "lifecycle" | "pre_listing_kit"
   size:        PostcardSize
-}): Promise<void> {
-  const svc = createServiceClient()
+}, svc: { from: (t: string) => any }): Promise<void> {
   const catalog = PLATFORM_CATALOG.filter(
     (c) => c.use_kind === args.useKind && c.postcard_size === args.size,
   )
@@ -283,10 +325,17 @@ export async function pickVariantArm(args: {
   persona:     Persona
   useKind:     DirectMailUseKind | "lifecycle" | "pre_listing_kit"
   size:        PostcardSize
-}): Promise<BanditPick | null> {
-  await ensureArmsForCohort(args)
+}, opts: {
+  /** Wave 102C — the client the arms, outcomes and policy are read through (a proof's fake; the
+   *  service client by default). Never a request-body-derived client. */
+  client?: { from: (t: string) => any }
+  now?: Date
+} = {}): Promise<BanditPick | null> {
+  const svc = opts.client ?? createServiceClient()
+  // Wave 102C: the tenant's exploration policy FIRST — frozen or unreadable means no sampling below.
+  const policy = await loadDirectMailExplorationPolicy(svc, args.brokerageId)
+  await ensureArmsForCohort(args, svc)
 
-  const svc = createServiceClient()
   // Pull every active arm for the cohort + its outcomes (LEFT JOIN
   // because cold arms have no outcomes row yet). One round-trip.
   const { data: arms } = await svc
@@ -309,7 +358,7 @@ export async function pickVariantArm(args: {
     outcomes: VariantArmEvidence[] | null
   }
   const armRows = (arms ?? []) as unknown as ArmRow[]
-  const now = new Date()
+  const now = opts.now ?? new Date()
   if (armRows.length === 0) return null
 
   // Wave 37 — sampling mode decision PER COHORT (not per-arm). Sum
@@ -342,9 +391,13 @@ export async function pickVariantArm(args: {
     const keep = armState === "stale" ? STALE_EVIDENCE_DISCOUNT : 1
     const alpha = rawPositive * keep + 1
     const beta  = rawNegative * keep + 1
-    const sample = sampleBeta(alpha, beta)
+    // FROZEN (wave 102C): no sample — the posterior MEAN decides, and a cold arm never wins while
+    // any mailed arm exists (a cold Beta(1,1) mean of 0.5 would otherwise outrank every real rate).
+    // Exploring: the Thompson sample, as before. Ties keep the first arm (catalog order) — deterministic.
+    const sample = policy.frozen ? alpha / (alpha + beta) : sampleBeta(alpha, beta)
     const isExploration = armState === "cold"
-    if (!best || sample > best.sample) {
+    if (policy.frozen && isExploration && best && !best.isExploration) continue
+    if (!best || sample > best.sample || (policy.frozen && best.isExploration && !isExploration)) {
       best = { row: arm, sample, isExploration, armState }
     }
   }
@@ -359,6 +412,7 @@ export async function pickVariantArm(args: {
     isExploration: best.isExploration,
     armState:      best.armState,
     samplingMode,
+    policy,
   }
 }
 

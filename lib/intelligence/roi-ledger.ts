@@ -169,6 +169,10 @@ export interface LedgerAttribution {
   byExperimentArm: AttributionRow[]
 }
 
+/** The attribution-eligible DECISION rows: wait / do_nothing only. Wave 102C ledgers the acting verdicts
+ *  (`*.decision.send_touch` / `*.decision.convert`, status 'skipped') as decision rows for replay — they
+ *  are deliberately NOT eligible here: the act they announce is its chokepoint's own 'executed' row, and
+ *  counting the verdict too would credit one touch twice. The "executed" rule below is unchanged (owner, wave 102). */
 const DECISION_ACTION = /\.decision\.(wait|do_nothing)$/
 function isEligibleStatus(a: AttributableAction): boolean {
   return a.status === "executed" || (a.status === "skipped" && DECISION_ACTION.test(a.action))
@@ -366,4 +370,83 @@ export async function loadLedgerAttribution(
   } catch (e) {
     return { ok: false, error: (e as Error)?.message ?? String(e) }
   }
+}
+
+// ─── PER-ARM OUTCOMES → agent_outcome_evaluations (wave 102, lane 102D; 101B still-open) ────────
+
+export interface ArmOutcomeRecording {
+  /** Last-touch credits that landed on an action carrying detail.experiment. */
+  armCredits: number
+  written: number
+  duplicates: number
+  /** m700 part 2 not applied (evaluator / experiment columns absent) — nothing written, said here. */
+  schemaLag: boolean
+  errors: string[]
+}
+
+/**
+ * PURE — the arm outcomes an attribution result holds: every LAST-TOUCH credit whose credited action
+ * carries `detail.experiment = { key, arm }` (lib/kernel/experiments.ts experimentLedgerDetail).
+ * Last touch only: an all-touch share would credit the same outcome to both arms of one test.
+ * @proofSeam exported so scripts/replay-harness-guard.ts asserts the arm rule on the pure function directly.
+ */
+export function experimentArmOutcomes(r: LedgerAttribution, actions: Pick<AttributableAction, "id" | "detail">[]): Array<{
+  ledgerActionId: string; experimentKey: string; experimentArm: string; outcomeRef: string; outcomeKind: LedgerOutcomeKind; outcomeAt: string
+}> {
+  const byId = new Map(actions.map((a) => [a.id, a]))
+  const at = new Map(r.outcomes.map((o) => [o.ref, o.at]))
+  const out: ReturnType<typeof experimentArmOutcomes> = []
+  for (const c of r.credits) {
+    if (c.model !== "last_touch") continue
+    const exp = (byId.get(c.actionId)?.detail?.experiment ?? null) as { key?: unknown; arm?: unknown } | null
+    if (!exp || typeof exp.key !== "string" || typeof exp.arm !== "string" || !exp.key || !exp.arm) continue
+    out.push({ ledgerActionId: c.actionId, experimentKey: exp.key, experimentArm: exp.arm, outcomeRef: c.outcomeRef, outcomeKind: c.kind, outcomeAt: at.get(c.outcomeRef) ?? "" })
+  }
+  return out
+}
+
+/**
+ * When an attributed outcome lands on an experiment-arm action, write the evaluation row through
+ * THE ONE agent_outcome_evaluations writer (lib/agents/outcomes.ts recordOutcomeEvaluation,
+ * evaluator 'ledger_attribution'). Idempotent on (ledger_action_id, outcome_ref). Pinned to
+ * `brokerageId` (the cron's per-tenant loop); the window is the attribution's trailing window.
+ * Readers: lib/campaign-sequences/copy-learning-conductor.ts loadExperimentArmResults (the winner gate).
+ */
+export async function recordExperimentArmOutcomes(
+  svc: any,
+  brokerageId: string,
+  opts: { sinceIso?: string; windowDays?: number } = {},
+): Promise<{ ok: true; recording: ArmOutcomeRecording } | { ok: false; error: string }> {
+  const since = opts.sinceIso ?? new Date(Date.now() - (opts.windowDays ?? 90) * 86_400_000).toISOString()
+  const attr = await loadLedgerAttribution(svc, brokerageId, { sinceIso: since })
+  if (!attr.ok) return attr
+  const recording: ArmOutcomeRecording = { armCredits: 0, written: 0, duplicates: 0, schemaLag: false, errors: [] }
+  if (!attr.ledgerAvailable) return { ok: true, recording }
+  // The credited actions' detail is not on the attribution result — re-read only the credited rows.
+  const creditedIds = [...new Set(attr.result.credits.filter((c) => c.model === "last_touch").map((c) => c.actionId))]
+  const actions: Pick<AttributableAction, "id" | "detail">[] = []
+  for (let i = 0; i < creditedIds.length; i += 200) {
+    const r = await svc.from("agent_action_ledger").select("id, detail").eq("brokerage_id", brokerageId).in("id", creditedIds.slice(i, i + 200)).limit(ATTR_LIMIT)
+    if (r.error) return { ok: false, error: `agent_action_ledger (credited): ${r.error.message}` }
+    for (const a of (r.data ?? []) as Pick<AttributableAction, "id" | "detail">[]) actions.push(a)
+  }
+  const arms = experimentArmOutcomes(attr.result, actions)
+  recording.armCredits = arms.length
+  if (arms.length === 0) return { ok: true, recording }
+  const { recordOutcomeEvaluation, isOutcomeEvaluationSchemaLag } = await import("@/lib/agents/outcomes")
+  for (const a of arms) {
+    const w = await recordOutcomeEvaluation(svc, {
+      evaluator: "ledger_attribution", brokerageId, ledgerActionId: a.ledgerActionId, experimentKey: a.experimentKey, experimentArm: a.experimentArm,
+      outcomeRef: a.outcomeRef, outcomeKind: a.outcomeKind, outcomeAt: a.outcomeAt || new Date().toISOString(),
+      explanation: `${a.outcomeKind} attributed (last touch) to ${a.experimentKey} arm ${a.experimentArm}`,
+    })
+    if (!w.ok) {
+      if (isOutcomeEvaluationSchemaLag(w.code)) { recording.schemaLag = true; recording.errors.push(w.error); break }
+      recording.errors.push(w.error)
+      continue
+    }
+    if (w.duplicate) recording.duplicates++
+    else recording.written++
+  }
+  return { ok: true, recording }
 }

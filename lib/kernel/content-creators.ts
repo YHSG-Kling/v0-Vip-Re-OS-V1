@@ -1652,17 +1652,16 @@ export async function createVideoProject(input: CreateVideoProjectInput): Promis
     brokerageId: brokerageId,
     event: KernelEvent.VIDEO_GENERATION_REQUESTED,
     actorUserId: userId,     // users-class
+    // Wave 102C: ONE emit (row + fan-out). The reactor's VIDEO_GENERATION_REQUESTED reader builds its own
+    // payload from the ai_video_projects row (kind / listing_id / contact_id / route_reason) and reads no
+    // metadata key, so the row's metadata reaching it is harmless; agentUserId: null keeps its attribution.
     metadata: {
       video_type: input.videoType, title: input.title, campaign_id: marketingCampaignId,
       source_type: input.sourceType ?? null, source_id: input.sourceId ?? null,
     },
-    auditOnly: true,
+    agentUserId: null,
   }))
   if (eventError) console.error("[content-creators] lifecycle_events insert error:", eventError.message)
-
-  await processKernelEvent({
-    event: KernelEvent.VIDEO_GENERATION_REQUESTED, brokerageId, entityType: "video_project", entityId: String(project.id),
-  }).catch((err) => console.error("[content-creators] VIDEO_GENERATION_REQUESTED not processed (non-blocking):", err))
 
   if (input.brandComplianceCheck) {
     const { checkBrandCompliance } = await import("@/lib/kernel/brand-compliance")

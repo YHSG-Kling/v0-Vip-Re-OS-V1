@@ -98,6 +98,12 @@ export async function revertPolicy(
         const { setDefaultAssignmentMethod } = await import("@/app/actions/admin/lead-routing-settings")
         const w = await setDefaultAssignmentMethod(String(value ?? "load_balance"), reason)
         wrote = { ok: w.success, error: w.error }
+      } else if (parsed.key === "farm_mail") {
+        // 102D — through the survivor writer (its own validation + scope gate + version append).
+        const { saveFarmMailConfig } = await import("@/app/actions/direct-mail-settings")
+        const fm = (value ?? {}) as { farm_mail_enabled?: boolean; farm_mail_max_per_week?: number | null; lob_fallback_template_id?: string | null }
+        const w = await saveFarmMailConfig({ farm_mail_enabled: fm.farm_mail_enabled === true, farm_mail_max_per_week: fm.farm_mail_max_per_week ?? null, lob_fallback_template_id: fm.lob_fallback_template_id ?? null })
+        wrote = { ok: w.success, error: w.error }
       } else {
         const cols = await import("@/lib/settings/brokerage-settings-columns")
         const w = parsed.key === "review_request_delay_days"
@@ -126,6 +132,41 @@ export async function revertPolicy(
         actor,
       })
       wrote = { ok: w.success, error: w.error }
+      break
+    }
+    // 102D — row policies revert through their own server actions (session tenant, admin gate, version append).
+    case "rule": {
+      const rules = await import("@/app/actions/admin/assignment-rules")
+      if (value === null) {
+        const w = await rules.deleteAssignmentRuleAction(parsed.ruleId)
+        wrote = w.ok ? { ok: true } : { ok: false, error: w.error }
+      } else {
+        const r = value as { name?: string; rule_type?: string; conditions?: Record<string, unknown>; agent_ids?: string[]; team_id?: string | null; priority?: number; is_active?: boolean }
+        const w = await rules.saveAssignmentRuleAction({
+          id: parsed.ruleId, name: String(r.name ?? ""), ruleType: String(r.rule_type ?? ""), conditions: r.conditions ?? {},
+          agentIds: Array.isArray(r.agent_ids) ? r.agent_ids : [], teamId: r.team_id ?? null, priority: Number(r.priority ?? 10), isActive: r.is_active !== false,
+        })
+        // A rule deleted since cannot be restored under its old id (the key names that id): refused, said.
+        wrote = w.ok ? { ok: true } : { ok: false, error: /not found/i.test(w.error) ? `Rule ${parsed.ruleId} no longer exists — a deleted rule cannot be restored under its old id; create it again.` : w.error }
+      }
+      break
+    }
+    case "cadence": {
+      const c = (value ?? {}) as { cadence?: string; fire_day?: number | null; preferred_categories?: string[] | null; preferred_persona?: string | null; preferred_post_types?: string[] | null }
+      const cadence = (c.cadence ?? "off") as "weekly" | "biweekly" | "monthly" | "off"
+      if (parsed.table === "blog_cadence_policy") {
+        const { upsertBlogCadencePolicy } = await import("@/app/actions/blog-cadence-policy")
+        const w = await upsertBlogCadencePolicy({ cadence, fireDay: c.fire_day ?? null, preferredCategories: c.preferred_categories ?? null, preferredPersona: c.preferred_persona ?? null, scopeType: parsed.scopeType, scopeId: parsed.scopeId })
+        wrote = { ok: w.success, error: w.error }
+      } else {
+        const { upsertMarketingCadencePolicy } = await import("@/app/actions/marketing-cadence-policy")
+        const w = await upsertMarketingCadencePolicy({
+          channel: parsed.table === "social_cadence_policy" ? "social" : "newsletter", cadence, fireDay: c.fire_day ?? null,
+          preferredCategories: c.preferred_categories ?? null, preferredPersona: c.preferred_persona ?? null, preferredPostTypes: c.preferred_post_types ?? null,
+          scopeType: parsed.scopeType, scopeId: parsed.scopeId,
+        })
+        wrote = { ok: w.success, error: w.error }
+      }
       break
     }
   }

@@ -517,20 +517,16 @@ export async function initiateListingAgreement(params: {
     entityId:     listingId,
     event:    KernelEvent.LISTING_AGREEMENT_INITIATED,
     actorUserId: userId,
+    // Wave 102C: ONE emit (row + fan-out). The reactor's LISTING_AGREEMENT_INITIATED reader publishes
+    // a compliance signal with no payload, so the row's metadata reaching it changes nothing;
+    // agentUserId: null keeps the attribution the bare fan-out had.
     metadata:      { stage: "LISTING_AGREEMENT_INITIATED" },
-    auditOnly: true,
+    agentUserId: null,
   }))
 
   if (leError) {
     return { success: false, error: leError.message }
   }
-
-  await processKernelEvent({
-    event:      KernelEvent.LISTING_AGREEMENT_INITIATED,
-    brokerageId,
-    entityType: "listing_stage_machine",
-    entityId:   listingId,
-  }).catch(() => {})
 
   await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,

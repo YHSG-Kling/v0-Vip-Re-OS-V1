@@ -51,6 +51,24 @@ export interface ContactBrief {
   /** THE LIFETIME VALUE RECEIPT — how the OS found them, every touch since,
    *  and the GCI it earned. One honest sentence from the real ledgers. */
   provenanceLine: string | null
+  /** IDENTITY EVIDENCE (wave 102, lane 102A; m697) — how we know this contact is the same person
+   *  as the records behind it: confidence, which chokepoints judged it, what is linked, and the
+   *  human lines. Agents see contacts only and never lead cost: the summary carries NO cost key
+   *  (lib/kernel/person-identity.ts::summarizePersonEvidence strips every one). null when no
+   *  evidence names this contact or m697 is not applied. */
+  identityEvidence: {
+    personId: string
+    confidence: number
+    evidenceCount: number
+    sources: string[]
+    linked: Partial<Record<string, number>>
+    how: string[]
+    convertedAt: string | null
+  } | null
+  /** RELATIONSHIPS (wave 102, lane 102B) — one line per graph edge touching this contact
+   *  (lib/kernel/relationship-graph.ts describeEdge): spouse / household, the home they own or
+   *  sold, who represents them, who referred them, their lender and vendors. Empty before m698. */
+  relationships: string[]
 }
 
 /**
@@ -93,7 +111,7 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
   const { data: contact } = await supabase
     .from("contacts")
     .select(
-      `id, first_name, last_name, preferred_name, name_pronunciation, salutation_style,
+      `id, brokerage_id, first_name, last_name, preferred_name, name_pronunciation, salutation_style,
        legal_first_name, legal_last_name, legal_name_source,
        contact_type, contact_persona, buyer_stage, city, state,
        engagement_score, last_contacted_at,
@@ -233,6 +251,35 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
     provenanceLine = composeLifetimeValueReceipt(facts).line
   } catch { /* additive — the brief stands without it */ }
 
+  // IDENTITY EVIDENCE (wave 102) — read through the SESSION client (m697's tenant-scoped SELECT
+  // policy), pinned to the contact's own brokerage; the pure summary carries no cost key.
+  let identityEvidence: ContactBrief["identityEvidence"] = null
+  try {
+    const { personForContact, summarizePersonEvidence } = await import("@/lib/kernel/person-identity")
+    const view = await personForContact(supabase, { brokerageId: (contact as any).brokerage_id ?? null, contactId })
+    if (view.ok && view.view) {
+      identityEvidence = summarizePersonEvidence(view.view)
+      if (identityEvidence.evidenceCount > 1) {
+        talkingPoints.push(`Identity: ${identityEvidence.evidenceCount} records resolved to this person (${Math.round(identityEvidence.confidence * 100)}% confidence).`)
+      }
+    }
+  } catch { /* additive — the brief stands without it */ }
+  // RELATIONSHIPS (wave 102, lane 102B) — the graph's edges on this contact, read through the
+  // session client (relationship_edges RLS: the caller's own tenant), tenant from the contact's row.
+  // An outside-agent representation leads the talking points: never touch another brokerage's client.
+  const relationships: string[] = []
+  try {
+    const { neighbors, describeEdge, representedByOutsideAgent } = await import("@/lib/kernel/relationship-graph")
+    const brokerageId = (contact as any).brokerage_id as string | null
+    if (brokerageId) {
+      const graph = await neighbors(supabase as any, { brokerageId, entity: { type: "contact", id: contactId } })
+      if (!graph.ok && graph.error) console.warn("[contact-brief] relationship read refused:", graph.error)
+      for (const e of graph.edges) relationships.push(describeEdge(e, contactId))
+      if (representedByOutsideAgent(graph.edges, contactId)) talkingPoints.push("⚠ Represented by an outside agent — go through their agent, never direct.")
+      else if (relationships.length > 0) talkingPoints.push(`Relationships: ${relationships.slice(0, 3).join("; ")}.`)
+    }
+  } catch { /* additive — the brief stands without the graph */ }
+
   return {
     contactId: contact.id,
     fullName,
@@ -257,5 +304,7 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
     recentActivities,
     talkingPoints,
     provenanceLine,
+    identityEvidence,
+    relationships,
   }
 }

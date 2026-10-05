@@ -54,6 +54,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { needsCassCheck, interpretLobForGate, type MailingGateLead } from "@/lib/providers/mailing-cass-gate"
 import { resolveManagerAutonomy, resolveAgentAuthorityLevel, autonomyDecision, managerForDispatch, HUMAN_APPROVED_SYSTEM_SOURCE } from "@/lib/managers/autonomy-gate"
+import { managerPolicyKey } from "@/lib/kernel/tenant-policy"
 import { contentSafetyBackstop } from "@/lib/providers/content-safety"
 import { channelRefusalForRecipient } from "@/lib/ai-isa/lead-channel-policy"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
@@ -146,6 +147,9 @@ interface DispatchActorContext {
     /** Wave 100A: the playbook / campaign this send belongs to (e.g. `{ sequence_id }`), so outcome
      *  attribution (lib/intelligence/roi-ledger.ts) can answer "which campaign produced revenue". */
     detail?: Record<string, unknown>
+    /** 102D: the registered tenant policy key this send ran under (e.g. `experiments` for an A/B arm).
+     *  Absent → an autonomous manager send names `autonomy_tier:<manager>` (the posture the gate consulted). */
+    policyKey?: string
   }
 }
 
@@ -188,6 +192,10 @@ function ledgerContextFor(
     riskClass: "COMMUNICATION",
     systemSource: params.systemSource ?? null,
     detail: params.ledger?.detail ?? null,
+    // 102D — which policy permitted (LAW 5): the caller's named key, else the autonomy posture the
+    // gate below consults for an unattended manager send (managed_agents.config.autonomy_tier). A
+    // human-approved send names no tenant policy — the human did (reason HUMAN_REQUESTED).
+    policyKey: params.ledger?.policyKey ?? (managerKey && !params.humanApproved ? managerPolicyKey("autonomy_tier", managerKey) : null),
   }
 }
 

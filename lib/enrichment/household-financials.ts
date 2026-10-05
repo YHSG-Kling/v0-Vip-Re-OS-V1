@@ -199,6 +199,21 @@ export async function persistHouseholdFinancialCaptures(params: {
     if (writeError) { out.errors.push(`${table} ${cap.id}: household write refused: ${writeError.message}`); continue }
     if (!updated || updated.length === 0) { out.errors.push(`${table} ${cap.id}: household write matched no row`); continue }
     out.written++
+    // RELATIONSHIP GRAPH (wave 102, lane 102B): a marital status landing on a CONTACT is household
+    // evidence — the other contacts of this tenant at the same mailing address become spouse_partner
+    // (partnered status on either side) or household_member (address alone), with the confidence on
+    // the edge (lib/kernel/relationship-graph.ts planHouseholdEdges). Leads carry no address columns
+    // here and belong to the person layer (lane 102A). The contact columns stay the record; a lost
+    // edge is reported beside the write, never thrown.
+    if (cap.entity === "contact" && cap.financials.marital_status !== undefined) {
+      try {
+        const { deriveHouseholdEdges } = await import("@/lib/kernel/relationship-graph")
+        const edges = await deriveHouseholdEdges(params.supabase, { brokerageId, contactId: cap.id })
+        if (edges.errors.length > 0 && !edges.degraded) out.errors.push(...edges.errors.map((e) => `contact ${cap.id}: household edge: ${e}`))
+      } catch (e) {
+        out.errors.push(`contact ${cap.id}: household edge derivation failed: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
   }
   return out
 }

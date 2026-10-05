@@ -70,7 +70,7 @@ import {
   planNextLeadTouch,
   isPersonalizedForLead,
   wireChannelFor,
-  nonActionRecordFor,
+  decisionRecordFor,
   planNextContactTouch,
   type LeadSettingsResolution,
 } from "../lib/ai-isa/lead-action-plan"
@@ -612,7 +612,7 @@ console.log("\n── 7c. LANE 98B: NBA verdicts → the action ledger; intent f
   const now98 = new Date("2026-08-10T12:00:00Z")
   // do_nothing — a human paused the AI
   const paused = planNextLeadTouch({ ...planBase, now: now98, context: { outreachPaused: true } })
-  const rec = nonActionRecordFor(paused, { brokerageId: B98, leadId: L98, now: now98 })
+  const rec = decisionRecordFor(paused, { brokerageId: B98, leadId: L98, now: now98 })
   check("NBA-LEDGER-DO-NOTHING: a do_nothing verdict becomes a recordNonAction context with NO_ACTION_NEEDED",
     paused.action === "do_nothing" && rec?.decision === "do_nothing" && rec?.reasonCode === "NO_ACTION_NEEDED" && rec?.subject.id === L98)
   check("NBA-LEDGER-REASONS: every reason-not-to-act rides in detail, with the plan's own code",
@@ -622,17 +622,32 @@ console.log("\n── 7c. LANE 98B: NBA verdicts → the action ledger; intent f
   check("NBA-LEDGER-CYCLE: one row per lead per verdict per UTC day (deterministic cycle)", rec?.cycle === "outreach_paused:2026-08-10")
   // wait — fatigue window
   const fatigued = planNextLeadTouch({ ...planBase, now: now98, context: { lastAnyTouchAt: new Date(now98.getTime() - 3_600_000) } })
-  const wrec = nonActionRecordFor(fatigued, { brokerageId: B98, leadId: L98, now: now98 })
+  const wrec = decisionRecordFor(fatigued, { brokerageId: B98, leadId: L98, now: now98 })
   check("NBA-LEDGER-WAIT: a wait verdict → WAIT_COOLDOWN with its until", fatigued.action === "wait" && wrec?.decision === "wait" && wrec?.reasonCode === "WAIT_COOLDOWN" && !!wrec?.until)
-  // POSITIVE CONTROL — an ACTING verdict records no non-action
+  // POSITIVE CONTROL — an ACTING verdict is never a NON-action row (not WAIT_COOLDOWN / NO_ACTION_NEEDED)…
   const due = planNextLeadTouch({ ...planBase, now: now98 })
-  check("NBA-LEDGER-CONTROL: a send_touch verdict records NO non-action (null)", due.action === "send_touch" && nonActionRecordFor(due, { brokerageId: B98, leadId: L98, now: now98 }) === null)
-  // The sweep is wired to record it
+  const dueRec = decisionRecordFor(due, { brokerageId: B98, leadId: L98, now: now98 })
+  check("NBA-LEDGER-CONTROL: a send_touch verdict is NOT recorded as a non-action (neither WAIT_COOLDOWN nor NO_ACTION_NEEDED, decision ≠ wait/do_nothing)",
+    due.action === "send_touch" && dueRec.decision !== "wait" && dueRec.decision !== "do_nothing" && !["WAIT_COOLDOWN", "NO_ACTION_NEEDED"].includes(dueRec.reasonCode as string))
+  // …but (wave 102C, owner answer 3) it IS a decision row — same shape, same snapshot slot, the m693
+  // reason of the verdict (due → NURTURE_TOUCH), on the ledger as `lead.decision.send_touch`.
+  check("NBA-LEDGER-ACTING (102C): a send_touch verdict is a decision row — decision send_touch, NURTURE_TOUCH, same cycle grammar",
+    dueRec.decision === "send_touch" && dueRec.reasonCode === "NURTURE_TOUCH" && dueRec.cycle === "due:2026-08-10" && dueRec.subject.id === L98 && (dueRec.detail as { plan_code?: string }).plan_code === "due")
+  const cb = planNextLeadTouch({ ...planBase, now: now98, context: { callbackRequested: true } })
+  const cbRec = decisionRecordFor(cb, { brokerageId: B98, leadId: L98, now: now98 })
+  check("NBA-LEDGER-ACTING (102C): a convert verdict is a decision row — decision convert, CONVERSATION_RESPONSE (the nba_plan map's convert_on_callback)",
+    cb.action === "convert" && cbRec.decision === "convert" && cbRec.reasonCode === "CONVERSATION_RESPONSE")
+  check("NBA-LEDGER-ONE-MAPPING: the four verdicts map onto four distinct m687/m693 reasons, no two alike",
+    new Set([rec.reasonCode, wrec.reasonCode, dueRec.reasonCode, cbRec.reasonCode]).size === 4)
+  // The sweep is wired to record EVERY verdict (102C) before skipping the lead
   const sweep = stripComments(readFileSync(join(process.cwd(), "lib/ai-isa/lead-action-plan.ts"), "utf8"))
   const adv = sweep.slice(sweep.indexOf("export async function advanceLeadActionPlans"))
-  check("NBA-LEDGER-WIRED: advanceLeadActionPlans records every non-action BEFORE skipping the lead",
-    /const nonAction = nonActionRecordFor\(plan,/.test(adv) && /recordNonAction\(nonAction/.test(adv) &&
-    adv.indexOf("recordNonAction(nonAction") < adv.indexOf("out.skipped.push({ leadId, code: plan.code"))
+  check("NBA-LEDGER-WIRED: advanceLeadActionPlans records every verdict (decisionRecordFor) BEFORE skipping the lead",
+    /const decisionRow = decisionRecordFor\(plan,/.test(adv) && /recordNonAction\(decisionRow/.test(adv) &&
+    adv.indexOf("recordNonAction(decisionRow") < adv.indexOf("out.skipped.push({ leadId, code: plan.code"))
+  const engage = stripComments(readFileSync(join(process.cwd(), "app/actions/ai-isa/engage-contact.ts"), "utf8"))
+  check("NBA-LEDGER-WIRED: engageContact records every contact verdict through decisionRecordFor",
+    /decisionRecordFor\(nbaPlan,/.test(engage) && /recordNonAction\(decisionRow/.test(engage))
 
   // INTENT for an UNCONVERTED lead — lead-keyed rows only
   const obs = leadIntentObservations({
@@ -678,10 +693,10 @@ console.log("\n── 7d. WAVE 100 (100B): ONE NBA, two subjects — the contact
   const mem = planNextContactTouch({ now, context: { memoryFacts: [{ key: "timeline", value: "3-6_months", confidence: 0.8, observedAt: now.toISOString() }] } })
   check("MEMORY-EVIDENCE: current memory facts are read as evidence, never a blocker",
     mem.action === "send_touch" && mem.evidence.some((e) => e.kind === "memory:timeline" && /3-6_months/.test(e.detail)))
-  const waitRec = nonActionRecordFor(planNextContactTouch({ now, context: ctxs[1][1] }), { brokerageId: B, contactId: C, now })
+  const waitRec = decisionRecordFor(planNextContactTouch({ now, context: ctxs[1][1] }), { brokerageId: B, contactId: C, now })
   check("CONTACT-LEDGER: a contact wait is recorded on the SAME ledger under the contact subject/domain with its until",
     waitRec?.subject.type === "contact" && waitRec?.subject.id === C && waitRec?.domain === "contact" && waitRec?.reasonCode === "WAIT_COOLDOWN" && !!waitRec?.until)
-  const leadRec = nonActionRecordFor(planNextLeadTouch({ ...planBase, now, context: { outreachPaused: true } }), { brokerageId: B, leadId: C, now })
+  const leadRec = decisionRecordFor(planNextLeadTouch({ ...planBase, now, context: { outreachPaused: true } }), { brokerageId: B, leadId: C, now })
   check("CONTACT-LEDGER CONTROL: the lead subject still records as a lead (domain lead, source lead_action_plan)",
     leadRec?.subject.type === "lead" && leadRec?.domain === "lead" && leadRec?.systemSource === "lead_action_plan")
 }

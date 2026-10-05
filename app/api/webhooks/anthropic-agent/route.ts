@@ -20,6 +20,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { createHmac, timingSafeEqual } from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import type { OutcomeEvaluationResult } from "@/lib/agents/outcomes"
 
 const ANTHROPIC_BASE = "https://api.anthropic.com"
 const ANTHROPIC_BETA = "managed-agents-2026-04-01"
@@ -341,17 +342,21 @@ export async function POST(request: NextRequest) {
       const explanation = (data.explanation as string | null) ?? null
       const usage = (data.usage ?? {}) as { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number }
       if (outcomeId) {
-        await sentinelWrite(svc, svc.from("agent_outcome_evaluations").insert({
-          brokerage_id:             sessionRow.brokerage_id,
-          managed_agent_session_id: sessionRow.id,
-          anthropic_outcome_id:     outcomeId,
+        // 102D: through THE ONE writer (lib/agents/outcomes.ts recordOutcomeEvaluation) — the same
+        // row the attributed experiment-arm outcomes extend. Analytics row: its loss does not change
+        // what the caller reports — logged, never silent (the sentinel contract this write had).
+        const { recordOutcomeEvaluation } = await import("@/lib/agents/outcomes")
+        const rec = await recordOutcomeEvaluation(svc, {
+          evaluator: "anthropic_rubric",
+          brokerageId: sessionRow.brokerage_id as string,
+          managedAgentSessionId: sessionRow.id as string,
+          anthropicOutcomeId: outcomeId,
           iteration,
-          result,
+          result: result as OutcomeEvaluationResult,
           explanation,
-          input_tokens:             usage.input_tokens             ?? null,
-          output_tokens:            usage.output_tokens            ?? null,
-          cache_read_input_tokens:  usage.cache_read_input_tokens  ?? null,
-        }), { table: "agent_outcome_evaluations", flow: "agent_outcome_evaluations_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
+          usage,
+        })
+        if (!rec.ok) console.error(`[anthropic-webhook] agent_outcome_evaluations write refused (session=${sessionId}): ${rec.error}`)
       }
       break
     }

@@ -785,6 +785,20 @@ export async function enrichContactRecord(params: {
       return { success: false, enriched: false, error: updateError.message }
     }
 
+    // RELATIONSHIP GRAPH (wave 102, lane 102B): the Versium/BatchData household rung just landed a
+    // marital status (or a mailing address) on this contact — derive the household edges against the
+    // tenant's other contacts at the same address (lib/kernel/relationship-graph.ts). Additive: the
+    // enrichment write is already saved; a lost edge is logged, never reported as a failed enrichment.
+    if ("marital_status" in enrichmentUpdate || "mailing_address" in enrichmentUpdate || "address" in enrichmentUpdate) {
+      try {
+        const { deriveHouseholdEdges } = await import("@/lib/kernel/relationship-graph")
+        const edges = await deriveHouseholdEdges(supabase, { brokerageId, contactId })
+        if (edges.errors.length > 0 && !edges.degraded) console.error(`[enrichment] household edges for ${contactId}: ${edges.errors.join("; ")}`)
+      } catch (e) {
+        console.error("[enrichment] household edge derivation failed (non-blocking)", e)
+      }
+    }
+
     return { success: true, enriched: true }
   } catch (error) {
     console.error("[enrichment] enrichContactRecord error:", error)

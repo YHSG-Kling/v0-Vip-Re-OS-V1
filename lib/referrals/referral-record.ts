@@ -77,5 +77,26 @@ export async function insertReferralRecord(
     .select("id")
     .single()
   if (error || !data) return { ok: false, error: error?.message ?? "no row returned" }
+  // RELATIONSHIP GRAPH (wave 102, lane 102B): a referral with a known referrer contact IS a
+  // referred_by fact (referred contact or lead → referrer contact) — derived here at the survivor
+  // writer. The referrals row stays the record; a lost edge is logged, never fails the referral.
+  const referred = input.referredContactId
+    ? { type: "contact" as const, id: input.referredContactId }
+    : input.referredLeadId ? { type: "lead" as const, id: input.referredLeadId } : null
+  if (referred && input.referrerContactId) {
+    try {
+      const { upsertRelationship } = await import("@/lib/kernel/relationship-graph")
+      const edge = await upsertRelationship(db, {
+        brokerageId: input.brokerageId,
+        from: referred,
+        to: { type: "contact", id: input.referrerContactId },
+        type: "referred_by",
+        evidence: { source: "referrals", confidence: 0.9, observed_at: new Date().toISOString() },
+      })
+      if (!edge.ok && !edge.degraded) console.error(`[insertReferralRecord] referred_by edge not written: ${edge.error}`)
+    } catch (e) {
+      console.error("[insertReferralRecord] relationship edge derivation failed (non-blocking)", e)
+    }
+  }
   return { ok: true, id: (data as { id: string }).id, status }
 }

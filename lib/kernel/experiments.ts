@@ -86,16 +86,23 @@ export interface ExperimentPolicy {
   readable: boolean
   killSwitch: boolean
   disabled: readonly string[]
+  /** 102D — the live version of the `experiments` policy (tenant_policy_versions, lib/kernel/tenant-policy.ts
+   *  currentPolicyVersion): 0 = never changed through the versioned writer; null = the version read was refused. */
+  version?: number | null
 }
+
+/** The registered tenant policy key the kill switch lives under (TENANT_POLICY_SETTINGS_KEYS). */
+export const EXPERIMENTS_POLICY_KEY = "experiments"
 
 /** PURE. The tenant's experiment policy from brokerage_settings.settings (any shape; unknown → on). */
 function experimentPolicyFromSettings(settings: unknown): ExperimentPolicy {
   const exp = (settings && typeof settings === "object" ? (settings as Record<string, unknown>).experiments : null) as Record<string, unknown> | null | undefined
-  if (!exp || typeof exp !== "object") return { readable: true, killSwitch: false, disabled: [] }
+  if (!exp || typeof exp !== "object") return { readable: true, killSwitch: false, disabled: [], version: null }
   return {
     readable: true,
     killSwitch: exp.kill_switch === true,
     disabled: Array.isArray(exp.disabled) ? exp.disabled.map(String) : [],
+    version: null,
   }
 }
 
@@ -152,12 +159,17 @@ export function experimentLedgerDetail(a: { key: string; arm: string } | null | 
  * refused read returns readable:false, which assigns control everywhere.
  */
 export async function loadExperimentPolicy(svc: { from: (t: string) => any }, brokerageId: string): Promise<ExperimentPolicy> {
-  if (!brokerageId) return { readable: false, killSwitch: true, disabled: [] }
+  if (!brokerageId) return { readable: false, killSwitch: true, disabled: [], version: null }
   try {
     const { data, error } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle()
-    if (error) return { readable: false, killSwitch: true, disabled: [] }
-    return experimentPolicyFromSettings((data as { settings?: unknown } | null)?.settings ?? null)
+    if (error) return { readable: false, killSwitch: true, disabled: [], version: null }
+    const policy = experimentPolicyFromSettings((data as { settings?: unknown } | null)?.settings ?? null)
+    // 102D — the version rides with the value so a ledger row can say `experiments@<n>` (dynamic
+    // import: this module is reachable from a client bundle through ab-variant.ts).
+    const { currentPolicyVersion } = await import("@/lib/kernel/tenant-policy")
+    const v = await currentPolicyVersion(svc, brokerageId, EXPERIMENTS_POLICY_KEY)
+    return { ...policy, version: v.ok ? v.version : null }
   } catch {
-    return { readable: false, killSwitch: true, disabled: [] }
+    return { readable: false, killSwitch: true, disabled: [], version: null }
   }
 }

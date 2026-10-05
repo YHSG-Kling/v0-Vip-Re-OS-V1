@@ -182,6 +182,7 @@ export default async function AIAuditPage({ searchParams }: { searchParams: Prom
                     <span className="font-medium">{l.name}</span>
                     {l.kind === 'action' && <Badge variant="outline">{l.status} · {l.reasonCode}{l.settledAt ? ` · settled ${new Date(l.settledAt).toLocaleString()}` : ''}{l.error ? ` · ${l.error}` : ''}</Badge>}
                     {l.kind === 'action' && (l.actor || l.costUsd != null || l.riskClass || l.source || l.subjectRef) && <span className="text-xs text-muted-foreground" title={l.detail ? JSON.stringify(l.detail) : undefined}>{[l.actor && `by ${l.actor}`, l.riskClass, l.source, l.subjectRef, l.costUsd != null && `$${l.costUsd.toFixed(4)}`].filter(Boolean).join(' · ')}</span>}
+                    {l.kind === 'action' && l.policyRef && <span className="text-xs text-muted-foreground" title="Which tenant policy permitted this action (policy_key@version — see the Operating Constitution)">permitted by {l.policyRef}</span>}
                     {l.because && l.because.length > 0 && <span className="text-xs text-gray-500">because {l.because.join(' → ')}</span>}
                     {l.kind === 'action' && (() => {
                       // Wave 100A: what this action EARNED (last-touch / all-touch credit, deterministic rule).

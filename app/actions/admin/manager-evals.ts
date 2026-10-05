@@ -106,6 +106,9 @@ export async function getManagerTrustScorecard(): Promise<
   let evalQ = svc
     .from("agent_outcome_evaluations")
     .select("managed_agent_session_id, result, input_tokens, output_tokens, evaluated_at, anthropic_outcome_id")
+    // 102D: the trust scorecard grades RUBRIC evaluations (a session's). Attributed experiment-arm
+    // rows (evaluator 'ledger_attribution', m700) carry no session and must not inflate a pass rate.
+    .not("managed_agent_session_id", "is", null)
     .order("evaluated_at", { ascending: false })
     .limit(5000)
   if (!isPlatform) evalQ = evalQ.eq("brokerage_id", ctx.brokerageId as string)

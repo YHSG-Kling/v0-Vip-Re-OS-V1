@@ -23,10 +23,15 @@
  *   reach appendTenantPolicyVersion; the appender is the only tenant_policy_versions inserter —
  *   each with a positive control fixture.
  *
+ *   10. (wave 102, 102D) the three stores 101A left unversioned — assignment_rules rows, the
+ *      *_cadence_policy rows and brokerages.farm_mail_* — are versioned by their EXISTING server
+ *      actions (create / edit / toggle / delete = v1..v4, null once deleted; cadence upserts;
+ *      farm mail with the columns before as `previous`), shown by the constitution + history, and
+ *      reverted through the same actions (a deleted rule is refused, said).
+ *
  * BLIND SPOTS (published): the trigger is proven on its SQL text, not executed (m696 is written,
  * not applied); a writer that reaches brokerage_settings through an .rpc() or a dynamic table name
- * is invisible to the census; policy-like stores NOT registered (assignment_rules rows, *_cadence_policy
- * tables, brokerages.farm_mail_*) are out of scope and listed, not versioned.
+ * is invisible to the census; `active_listing_sources` is platform-governed and not a tenant policy.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
@@ -45,6 +50,9 @@ const STUB: Record<string, string> = {
   "@/lib/auth/require-caller": "export async function requireCallerTenant(){ const c = globalThis.__101A.caller; return c ? { ok: true, ...c } : { ok: false, reason: 'unauthenticated', error: 'Not authenticated' } }",
   "@/lib/identity": "export async function getAgentContext(){ const c = globalThis.__101A.caller; return c ? { isAuthenticated: true, userId: c.userId, brokerageId: c.brokerageId, userType: c.userType, agentId: null, teamId: null } : { isAuthenticated: false } }",
   "@/lib/managers/autonomy-gate": "export function __clearAutonomyCache(){}",
+  // 102D — the row-policy writers' gates (session-shaped, from the same caller fixture).
+  "@/lib/identity/get-agent-context": "export async function getAgentContext(){ const c = globalThis.__101A.caller; return c ? { isAuthenticated: true, userId: c.userId, brokerageId: c.brokerageId, userType: c.userType, agentId: null, teamId: null } : { isAuthenticated: false } }",
+  "@/lib/identity/policy-scope": "export async function resolvePolicyScopeAccess(){ const c = globalThis.__101A.caller; const admin = !!c && c.userType === 'broker'; return { tier: admin ? 'brokerage' : 'agent', canEditAgent: !!c, canEditTeam: false, canEditBrokerage: admin, agentScopeId: null, teamScopeIds: [], brokerageScopeId: admin ? c.brokerageId : null } }",
 }
 registerHooks({
   resolve(spec: string, ctx: any, next: any) {
@@ -87,6 +95,10 @@ function callText(s: string, open: number): string {
   return s.slice(open)
 }
 
+/** 102D — the row-policy stores the constitution now reads (empty = nothing configured). */
+const ROW_POLICY_TABLES = () => ({ assignment_rules: [], agents: [], teams: [], blog_cadence_policy: [], newsletter_cadence_policy: [], social_cadence_policy: [] })
+const AG = "00000000-0000-4000-8000-0000000000a9"
+
 function versionsOf(svc: MemClient, brokerageId: string, key: string) {
   return (svc.tables.tenant_policy_versions ?? []).filter((r) => r.brokerage_id === brokerageId && r.policy_key === key).sort((a, b) => a.version - b.version)
 }
@@ -98,7 +110,7 @@ async function main() {
 
   // ── 1. a write creates version n+1 carrying the previous value ──────────────────────────────
   console.log("\n[1 — a policy write appends version n+1 carrying the previous value]")
-  const svc = memSupabase({ brokerage_settings: [], tenant_policy_versions: [], brokerages: [{ id: A, default_assignment_method: "load_balance" }, { id: B }], managed_agents: [], ai_isa_settings: [], users: [] }, { stampCreatedAt: true })
+  const svc = memSupabase({ brokerage_settings: [], tenant_policy_versions: [], brokerages: [{ id: A, default_assignment_method: "load_balance" }, { id: B }], managed_agents: [], ai_isa_settings: [], users: [], ...ROW_POLICY_TABLES() }, { stampCreatedAt: true })
   G.__101A.svc = svc
   const v1 = { disabled: ["send_sms"], custom: [] }
   const v2 = { disabled: [], custom: [] }
@@ -164,12 +176,12 @@ async function main() {
   check("agent: history refused", !(await actions.policyHistory("ai_agent_capabilities")).ok)
   check("agent: revert refused", !(await actions.revertPolicy("ai_agent_capabilities", 1)).ok)
   check("agent: constitution refused", !(await actions.getTenantOperatingConstitution()).ok)
-  const fresh = memSupabase({ brokerage_settings: [], tenant_policy_versions: [], brokerages: [{ id: A }], managed_agents: [], ai_isa_settings: [], users: [] })
+  const fresh = memSupabase({ brokerage_settings: [], tenant_policy_versions: [], brokerages: [{ id: A }], managed_agents: [], ai_isa_settings: [], users: [], ...ROW_POLICY_TABLES() })
   G.__101A.svc = fresh
   G.__101A.caller = { userId: UA, brokerageId: A, userType: "broker", platformRole: null, teamId: null }
   const c0 = await actions.getTenantOperatingConstitution()
   check("no versions: every registered key shows version 0 and default", c0.ok && c0.entries.length >= Object.keys(tp.TENANT_POLICY_SETTINGS_KEYS).length && c0.entries.every((e) => e.version === 0 && e.isDefault))
-  const absent = memSupabase({ brokerage_settings: [], brokerages: [{ id: A }], managed_agents: [], ai_isa_settings: [] }, { missingTables: ["tenant_policy_versions"] })
+  const absent = memSupabase({ brokerage_settings: [], brokerages: [{ id: A }], managed_agents: [], ai_isa_settings: [], ...ROW_POLICY_TABLES() }, { missingTables: ["tenant_policy_versions"] })
   G.__101A.svc = absent
   const wAbsent = await mergeBrokerageSettings(absent, A, { lead_routing: { prefer_mailbox_owner: false } }, { policy: actor })
   check("m696 absent: the settings write still LANDS, the lost version is reported", wAbsent.ok && wAbsent.policyVersions[0]?.version === null && !!wAbsent.policyVersions[0]?.error && (absent.tables.brokerage_settings[0].settings as any).lead_routing.prefer_mailbox_owner === false)
@@ -226,6 +238,72 @@ async function main() {
   const sqlSet = new Set((actorCheck ?? "").match(/'([a-z]+)'/g)?.map((x) => x.slice(1, -1)))
   const tsSet = new Set((tsActor ?? "").match(/"([a-z]+)"/g)?.map((x) => x.slice(1, -1)))
   check("PolicyActor.type == the m696 CHECK (derived both sides)", sqlSet.size > 0 && sqlSet.size === tsSet.size && Array.from(tsSet).every((x) => sqlSet.has(x)))
+
+  // ── 10. (102D) rows + farm mail are versioned by their existing actions ─────────────────────
+  console.log("\n[10 — 102D: assignment rules, cadence rows and farm mail are versioned by their existing actions]")
+  const rowSvc = memSupabase({
+    brokerage_settings: [], tenant_policy_versions: [], managed_agents: [], ai_isa_settings: [], users: [],
+    brokerages: [{ id: A, default_assignment_method: "load_balance", farm_mail_enabled: false, farm_mail_max_per_week: null, lob_fallback_template_id: null }],
+    ...ROW_POLICY_TABLES(), agents: [{ id: AG, brokerage_id: A, user_id: UA }],
+  }, { stampCreatedAt: true })
+  G.__101A.svc = rowSvc
+  G.__101A.caller = { userId: UA, brokerageId: A, userType: "broker", platformRole: null, teamId: null }
+  const rules = await import("../app/actions/admin/assignment-rules")
+  const created = await rules.saveAssignmentRuleAction({ name: "Round robin", ruleType: "round_robin", conditions: {}, agentIds: [AG], priority: 5 })
+  const rid = created.ok ? created.id : ""
+  const ruleKey = tp.assignmentRulePolicyKey(rid)
+  let rv10 = versionsOf(rowSvc, A, ruleKey)
+  check("creating a rule appends v1 (previous null, value = the rule's policy columns, actor = session user)",
+    created.ok && rv10.length === 1 && rv10[0].previous === null && (rv10[0].value as any).name === "Round robin" && (rv10[0].value as any).priority === 5 && rv10[0].changed_by === UA)
+  check("the key grammar: assignment_rule:<id> parses as kind rule, store assignment_rules", tp.parsePolicyKey(ruleKey)?.kind === "rule" && tp.parsePolicyKey(ruleKey)?.def.store === "assignment_rules")
+  await rules.saveAssignmentRuleAction({ id: rid, name: "Round robin", ruleType: "round_robin", conditions: {}, agentIds: [AG], priority: 7 })
+  rv10 = versionsOf(rowSvc, A, ruleKey)
+  check("editing the rule appends v2 whose previous is v1's value", rv10.length === 2 && (rv10[1].previous as any).priority === 5 && (rv10[1].value as any).priority === 7)
+  await rules.toggleAssignmentRuleAction(rid, false)
+  rv10 = versionsOf(rowSvc, A, ruleKey)
+  check("deactivating appends v3 (is_active false, previous active)", rv10.length === 3 && (rv10[2].value as any).is_active === false && (rv10[2].previous as any).is_active === true)
+  const del = await rules.deleteAssignmentRuleAction(rid)
+  rv10 = versionsOf(rowSvc, A, ruleKey)
+  check("deleting appends v4 with value NULL and the row is gone (delete counted)", del.ok && rv10.length === 4 && rv10[3].value === null && (rowSvc.tables.assignment_rules as any[]).length === 0)
+  G.__101A.caller = { userId: UB, brokerageId: B, userType: "broker", platformRole: null, teamId: null }
+  const cross = await rules.saveAssignmentRuleAction({ id: rid, name: "x", ruleType: "round_robin", conditions: {}, agentIds: [], priority: 1 })
+  check("another tenant cannot touch the rule (and no version is written under B)", !cross.ok && versionsOf(rowSvc, B, ruleKey).length === 0)
+  G.__101A.caller = { userId: UA, brokerageId: A, userType: "broker", platformRole: null, teamId: null }
+
+  const dm = await import("../app/actions/direct-mail-settings")
+  const fm1 = await dm.saveFarmMailConfig({ farm_mail_enabled: true, farm_mail_max_per_week: 50, lob_fallback_template_id: "tmpl_1" })
+  let fv = versionsOf(rowSvc, A, tp.FARM_MAIL_POLICY_KEY)
+  check("farm mail: v1 carries the columns BEFORE as previous (off) and the saved config as value", fm1.success && fv.length === 1 && (fv[0].previous as any).farm_mail_enabled === false && (fv[0].value as any).farm_mail_max_per_week === 50 && fv[0].changed_by === UA)
+  await dm.saveFarmMailConfig({ farm_mail_enabled: true, farm_mail_max_per_week: 50, lob_fallback_template_id: "tmpl_1" })
+  check("farm mail: saving the same config appends NOTHING", versionsOf(rowSvc, A, tp.FARM_MAIL_POLICY_KEY).length === 1)
+  await dm.saveFarmMailConfig({ farm_mail_enabled: true, farm_mail_max_per_week: 20, lob_fallback_template_id: "tmpl_1" })
+  const rvFm = await actions.revertPolicy(tp.FARM_MAIL_POLICY_KEY, 1)
+  fv = versionsOf(rowSvc, A, tp.FARM_MAIL_POLICY_KEY)
+  check("farm mail: revert to v1 writes v3 THROUGH saveFarmMailConfig (live column back to 50)", rvFm.ok && rvFm.newVersion === 3 && fv.length === 3 && (fv[2].value as any).farm_mail_max_per_week === 50 && (rowSvc.tables.brokerages as any[])[0].farm_mail_max_per_week === 50)
+
+  const mc = await import("../app/actions/marketing-cadence-policy")
+  const nlKey = tp.cadencePolicyKey("newsletter_cadence_policy", "brokerage", A)
+  const nl1 = await mc.upsertMarketingCadencePolicy({ channel: "newsletter", cadence: "weekly", fireDay: 1, scopeType: "brokerage" })
+  await mc.upsertMarketingCadencePolicy({ channel: "newsletter", cadence: "monthly", fireDay: 3, scopeType: "brokerage" })
+  const nv = versionsOf(rowSvc, A, nlKey)
+  check("newsletter cadence (brokerage scope): v1 previous null, v2 previous = weekly", nl1.success && nv.length === 2 && nv[0].previous === null && (nv[1].previous as any).cadence === "weekly" && (nv[1].value as any).cadence === "monthly")
+  check("the cadence key parses (table, scope type, scope id)", tp.parsePolicyKey(nlKey)?.kind === "cadence" && (tp.parsePolicyKey(nlKey) as any).table === "newsletter_cadence_policy")
+  const bc = await import("../app/actions/blog-cadence-policy")
+  const bl = await bc.upsertBlogCadencePolicy({ cadence: "biweekly", fireDay: 2, preferredCategories: null, preferredPersona: null, scopeType: "brokerage" })
+  check("blog cadence (no brokerage_id column): v1 under the session tenant", bl.success && versionsOf(rowSvc, A, tp.cadencePolicyKey("blog_cadence_policy", "brokerage", A)).length === 1)
+
+  const c10 = await actions.getTenantOperatingConstitution()
+  const entry = (k: string) => c10.ok ? c10.entries.find((e) => e.policyKey === k) : undefined
+  check("the constitution shows farm mail v3, newsletter cadence v2, blog cadence v1 and the deleted rule (v4, default)",
+    c10.ok && entry(tp.FARM_MAIL_POLICY_KEY)?.version === 3 && entry(nlKey)?.version === 2 && entry(tp.cadencePolicyKey("blog_cadence_policy", "brokerage", A))?.version === 1
+      && entry(ruleKey)?.version === 4 && entry(ruleKey)?.isDefault === true && entry(ruleKey)?.store === "assignment_rules")
+  const h10 = await actions.policyHistory(ruleKey)
+  check("history of the rule key is readable (4 versions, newest first)", h10.ok && h10.rows.length === 4 && h10.rows[0].version === 4)
+  const rvRule = await actions.revertPolicy(ruleKey, 2)
+  check("reverting a DELETED rule is refused and says why (never a silent new id)", !rvRule.ok && /no longer exists/.test(rvRule.ok ? "" : rvRule.error) && versionsOf(rowSvc, A, ruleKey).length === 4)
+  const rvNl = await actions.revertPolicy(nlKey, 1)
+  check("reverting the newsletter cadence writes v3 through the upsert action (live row weekly again)", rvNl.ok && rvNl.newVersion === 3 && (rowSvc.tables.newsletter_cadence_policy as any[])[0].cadence === "weekly")
+  check("every row-policy version left its auditOnly evidence event", (G.__101A.events as any[]).filter((e) => e.event === "tenant_policy.changed" && e.brokerageId === A).length >= 10)
 
   // ── 8. census: every policy writer goes through the one appender ─────────────────────────────
   console.log("\n[8 — census: every policy writer reaches the one appender]")
@@ -302,6 +380,83 @@ async function main() {
   const panel = src("app/dashboard/admin/manager-trust/tenant-constitution-panel.tsx")
   check("the panel reads the constitution + history and links History per key", /getTenantOperatingConstitution\(\)/.test(panel) && /policyHistory\(/.test(panel) && /\?policy=/.test(panel))
   check("the revert button calls revertPolicy", /revertPolicy\(/.test(src("app/dashboard/admin/manager-trust/revert-policy-button.tsx")))
+
+  // ── 10. wave 102C (owner answer 4): the direct-mail bandit kill switch is a versioned policy key ──
+  console.log("\n[10 — wave 102C: direct_mail_exploration — the bandit kill switch, versioned like experiments]")
+  check("direct_mail_exploration is a registered settings policy key (beside experiments)",
+    !!tp.TENANT_POLICY_SETTINGS_KEYS.direct_mail_exploration && !!tp.TENANT_POLICY_SETTINGS_KEYS.experiments && tp.parsePolicyKey("direct_mail_exploration")?.kind === "settings")
+  {
+    // The bandit on a fake client: policy + arms + outcomes in memory; the real pickVariantArm runs.
+    const bandit = await import("../lib/direct-mail/variant-bandit")
+    const T = A
+    type Arm = { id: string; composition_id: string; copy_style: string; layout_variant: string; outcomes: Array<{ sends_count: number; scans_count: number; leads_count: number; last_send_at: string | null; last_scan_at: string | null }> }
+    const now = new Date("2026-10-05T12:00:00Z")
+    const fresh = now.toISOString()
+    const arms: Arm[] = [
+      { id: "arm-cold",  composition_id: "PostcardFront4x6", copy_style: "direct-fact",   layout_variant: "default", outcomes: [] },
+      { id: "arm-weak",  composition_id: "PostcardFront4x6", copy_style: "question-hook", layout_variant: "default", outcomes: [{ sends_count: 200, scans_count: 4,  leads_count: 0, last_send_at: fresh, last_scan_at: fresh }] },
+      { id: "arm-best",  composition_id: "PostcardFront4x6", copy_style: "social-proof",  layout_variant: "default", outcomes: [{ sends_count: 200, scans_count: 40, leads_count: 0, last_send_at: fresh, last_scan_at: fresh }] },
+    ]
+    const banditClient = (settings: unknown, opts: { refuseSettings?: boolean } = {}) => {
+      const refused = { data: null, error: { code: "42501", message: "permission denied" } }
+      return {
+        from(table: string) {
+          const b: any = {
+            select: () => b, eq: () => b, order: () => b, limit: () => b,
+            upsert: () => Promise.resolve({ data: null, error: null }),
+            maybeSingle: () => Promise.resolve(table === "brokerage_settings" ? (opts.refuseSettings ? refused : { data: { settings }, error: null }) : { data: null, error: null }),
+            then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
+              Promise.resolve(table === "direct_mail_variants" ? { data: arms, error: null } : { data: [], error: null }).then(res, rej),
+          }
+          return b
+        },
+      }
+    }
+    const cohort = { brokerageId: T, persona: "first_time" as const, useKind: "farm_mail" as const, size: "4x6" as const }
+    const frozenPicks = new Set<string>()
+    for (let i = 0; i < 25; i++) frozenPicks.add((await bandit.pickVariantArm(cohort, { client: banditClient({ direct_mail_exploration: { frozen: true } }), now }))!.variantId)
+    check("FROZEN: 25 picks all exploit the best-evidenced arm (highest posterior mean) — never the cold arm, never the weak one",
+      frozenPicks.size === 1 && frozenPicks.has("arm-best"))
+    const frozenPick = await bandit.pickVariantArm(cohort, { client: banditClient({ direct_mail_exploration: { frozen: true } }), now })
+    check("FROZEN: the pick says so (policy.frozen, readable) and is not exploration", frozenPick?.policy.frozen === true && frozenPick?.policy.readable === true && frozenPick?.isExploration === false)
+    const exploringPicks = new Set<string>()
+    for (let i = 0; i < 400; i++) exploringPicks.add((await bandit.pickVariantArm(cohort, { client: banditClient({}), now }))!.variantId)
+    check("POSITIVE CONTROL — EXPLORING (no policy): Thompson sampling still reaches the cold arm over 400 picks, and the best arm too",
+      exploringPicks.has("arm-cold") && exploringPicks.has("arm-best"))
+    const offPicks = new Set<string>()
+    for (let i = 0; i < 400; i++) offPicks.add((await bandit.pickVariantArm(cohort, { client: banditClient({ direct_mail_exploration: { frozen: false } }), now }))!.variantId)
+    check("frozen:false explores exactly like no policy", offPicks.has("arm-cold") && (await bandit.pickVariantArm(cohort, { client: banditClient({ direct_mail_exploration: { frozen: false } }), now }))?.policy.frozen === false)
+    const refusedPick = await bandit.pickVariantArm(cohort, { client: banditClient({}, { refuseSettings: true }), now })
+    check("FAIL CLOSED: a refused policy read freezes (readable:false, frozen:true → the best arm, no exploration spend)",
+      refusedPick?.policy.readable === false && refusedPick?.policy.frozen === true && refusedPick?.variantId === "arm-best")
+    const loaded = await bandit.loadDirectMailExplorationPolicy(banditClient({ direct_mail_exploration: { frozen: true } }) as any, T)
+    check("loadDirectMailExplorationPolicy is the ONE reader (frozen:true read back; empty brokerageId → frozen, unreadable)",
+      loaded.frozen === true && loaded.readable === true && (await bandit.loadDirectMailExplorationPolicy(banditClient({}) as any, "")).frozen === true)
+  }
+  {
+    // The writer: ONE server action → mergeBrokerageSettings with the session actor → a version row.
+    const fr = src("app/actions/flight-recorder.ts")
+    const setFn = fr.slice(fr.indexOf("export async function setDirectMailExplorationFrozen"))
+    check("setDirectMailExplorationFrozen: gate first (gateTenantAdmin), then mergeBrokerageSettings with `policy:` (versioned, attributed) — no tenant argument",
+      /gateTenantAdmin\(\)/.test(setFn.slice(0, 400)) && /mergeBrokerageSettings\(/.test(setFn) && /policy:\s*\{\s*type:\s*"user",\s*userId:\s*gate\.userId/.test(setFn) && !/brokerageId\s*[:,]/.test(setFn.slice(0, setFn.indexOf("{"))))
+    const svcK = memSupabase({ brokerage_settings: [], tenant_policy_versions: [], brokerages: [{ id: A }], users: [] }, { stampCreatedAt: true })
+    const w = await mergeBrokerageSettings(svcK, A, (s: any) => ({ direct_mail_exploration: { ...(s.direct_mail_exploration ?? {}), frozen: true } }), { policy: { type: "user", userId: UA, reason: "direct-mail exploration frozen" } })
+    const dv = (svcK.tables.tenant_policy_versions as any[]).filter((r) => r.policy_key === "direct_mail_exploration")
+    check("freezing through the one writer appends direct_mail_exploration v1 (value frozen:true, previous null, the session user, its reason)",
+      w.ok && w.policyVersions[0]?.key === "direct_mail_exploration" && dv.length === 1 && dv[0].value.frozen === true && dv[0].previous === null && dv[0].changed_by === UA && /frozen/.test(dv[0].reason))
+    const w2 = await mergeBrokerageSettings(svcK, A, (s: any) => ({ direct_mail_exploration: { ...(s.direct_mail_exploration ?? {}), frozen: false } }), { policy: { type: "user", userId: UA, reason: "direct-mail exploration resumed" } })
+    const dv2 = (svcK.tables.tenant_policy_versions as any[]).filter((r) => r.policy_key === "direct_mail_exploration")
+    check("resuming appends v2 carrying v1 as previous (history, never a rewrite)", w2.ok && dv2.length === 2 && dv2[1].version === 2 && dv2[1].previous.frozen === true && dv2[1].value.frozen === false)
+    const c = await tp.buildTenantOperatingConstitution(svcK, A)
+    check("the Operating Constitution lists direct_mail_exploration with its version and changer (beside experiments)",
+      c.ok && c.entries.some((e) => e.policyKey === "direct_mail_exploration" && e.version === 2 && e.changedBy === UA) && c.entries.some((e) => e.policyKey === "experiments"))
+    // The toggle: on the Manager Trust page's constitution panel, beside the experiments toggle.
+    const panelK = src("app/dashboard/admin/manager-trust/tenant-constitution-panel.tsx")
+    check("Manager Trust panel toggles BOTH kill switches in place (setExperimentKillSwitch + setDirectMailExplorationFrozen) keyed by the constitution row",
+      /setDirectMailExplorationFrozen\(/.test(panelK) && /setExperimentKillSwitch\(/.test(panelK) && /policyKey === "direct_mail_exploration"/.test(panelK) && /policyKey === "experiments"/.test(panelK) && /<KillSwitchToggle policyKey=\{e\.policyKey\}/.test(panelK))
+    check("the bandit reads the policy on every pick (loadDirectMailExplorationPolicy inside pickVariantArm, before sampling)",
+      (() => { const vb = src("lib/direct-mail/variant-bandit.ts"); const pick = vb.slice(vb.indexOf("export async function pickVariantArm")); return pick.indexOf("loadDirectMailExplorationPolicy(") > 0 && pick.indexOf("loadDirectMailExplorationPolicy(") < pick.indexOf("sampleBeta(") })())
+  }
 
   console.log(`\nRESULT: ${pass} passed, ${fail} failed`)
   if (fail) { console.log(`FAILED:\n  - ${fails.join("\n  - ")}`); process.exit(1) }

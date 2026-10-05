@@ -69,7 +69,7 @@ async function main() {
   // same inputs through the same helpers. Executed against an in-memory client (no network).
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[Contact NBA — dead ends, postponed, intent priority, ledger, fail-closed (wave 100)]")
-  const { planNextContactTouch, loadContactNbaContext, nonActionRecordFor } = await import("../lib/ai-isa/lead-action-plan")
+  const { planNextContactTouch, loadContactNbaContext, decisionRecordFor } = await import("../lib/ai-isa/lead-action-plan")
   const { scoreDecayedIntent } = await import("../lib/lead-intelligence/behavioral-summary")
   const { recordObservedDeadEnd } = await import("../lib/kernel/ai-isa")
   const B = "11111111-1111-4111-8111-111111111111"
@@ -175,12 +175,14 @@ async function main() {
     auto.ok && human.ok && planNextContactTouch({ now: NOW, context: auto.context }).action === "wait" &&
     planNextContactTouch({ now: NOW, context: human.context }).action === "send_touch")
 
-  // LEDGER — wait / do_nothing are recorded via recordNonAction's context; acting records nothing.
-  const recWait = pp ? nonActionRecordFor(pp, { brokerageId: B, contactId: C, now: NOW }) : null
-  const recNi = ni ? nonActionRecordFor(ni, { brokerageId: B, contactId: C, now: NOW }) : null
+  // LEDGER — every verdict is a decision row (wave 102C, owner answer 3: acting verdicts too — the
+  // survivor is decisionRecordFor; nonActionRecordFor was merged onto it, tombstone lead-action-plan.ts).
+  const recWait = pp ? decisionRecordFor(pp, { brokerageId: B, contactId: C, now: NOW }) : null
+  const recNi = ni ? decisionRecordFor(ni, { brokerageId: B, contactId: C, now: NOW }) : null
   check("LEDGER: wait → WAIT_COOLDOWN, do_nothing → NO_ACTION_NEEDED, both on the contact subject",
     recWait?.reasonCode === "WAIT_COOLDOWN" && recNi?.reasonCode === "NO_ACTION_NEEDED" && recWait?.subject.id === C && recNi?.subject.type === "contact")
-  check("LEDGER CONTROL: send_touch records no non-action", otherPerson ? nonActionRecordFor(otherPerson, { brokerageId: B, contactId: C, now: NOW }) === null : false)
+  check("LEDGER CONTROL: send_touch is recorded as its own decision (replay covers acting verdicts), still on the contact subject",
+    otherPerson ? decisionRecordFor(otherPerson, { brokerageId: B, contactId: C, now: NOW }).decision === "send_touch" && decisionRecordFor(otherPerson, { brokerageId: B, contactId: C, now: NOW }).subject.id === C : false)
 
   // FAIL CLOSED — a refused dead-end read is "could not check", never "never said no".
   const refused = await load(fakeDb({}, ["voice_calls"]))
@@ -250,11 +252,13 @@ async function main() {
   const { stripComments } = await import("./strip-comments")
   const src = (p: string) => stripComments(readFileSync(p, "utf8"))
   const engage = src("app/actions/ai-isa/engage-contact.ts")
-  const wired = (s: string) => /loadContactNbaContext\(/.test(s) && /planNextContactTouch\(/.test(s) && /recordNonAction\(nonAction/.test(s) &&
+  // The RULE: the verdict is recorded on the ledger (recordNonAction — of the non-action through wave 101,
+  // of EVERY verdict through decisionRecordFor since 102C) and decided BEFORE the portal note.
+  const wired = (s: string) => /loadContactNbaContext\(/.test(s) && /planNextContactTouch\(/.test(s) && /recordNonAction\((?:nonAction|decisionRow)/.test(s) &&
     s.indexOf("planNextContactTouch(") < s.indexOf("from('client_portal_messages').insert")
-  check("WIRED: engageContact runs the contact NBA and records non-actions BEFORE the portal note (a touch too)", wired(engage))
+  check("WIRED: engageContact runs the contact NBA and records its verdict BEFORE the portal note (a touch too)", wired(engage))
   check("WIRED CONTROL: a specimen that decides after the portal note is refused",
-    !wired(`await supabase.from('client_portal_messages').insert({}); loadContactNbaContext(x); planNextContactTouch(y); recordNonAction(nonAction)`))
+    !wired(`await supabase.from('client_portal_messages').insert({}); loadContactNbaContext(x); planNextContactTouch(y); recordNonAction(decisionRow)`))
   // Wave 101C (d): the stale-contact cron's batch is ORDERED by this NBA before it is cut.
   const cron = src("app/api/cron/stale-contact-monitor/route.ts")
   const ordered = (s: string) => /loadContactNbaContext\(/.test(s) && /planNextContactTouch\(/.test(s) &&

@@ -8,6 +8,14 @@ import { queueContactEnrichment } from "@/lib/enrichment/contact-enrichment-core
 // THE ONE resolver (§6) — same one app/api/forms/submit/route.ts uses, now
 // shared rather than a second Accept-Language parser at this door.
 import { resolveCapturedLanguage } from "@/lib/contact-pipeline/contact-capture"
+// 102D — PROVENANCE (wave 101C still-open): the attendee typed their own identity at the kiosk.
+// Source `kiosk`, purpose self_service, no actor (a public sign-in has no session). ONE pure writer
+// (lib/lead-pipeline/enrichment-column-map.ts stampFieldProvenance); persisted on the returning
+// branch through THE persistence door (lib/enrichment/field-provenance-store.ts).
+import { stampFieldProvenance, withFieldProvenance } from "@/lib/lead-pipeline/enrichment-column-map"
+import { persistFieldProvenance } from "@/lib/enrichment/field-provenance-store"
+
+const KIOSK_PROVENANCE = { source: "kiosk", capability: "open_house.kiosk_signin", purpose: "self_service" as const, matchConfidence: "self_reported", actor: null }
 
 export async function POST(req: NextRequest) {
   try {
@@ -104,6 +112,10 @@ export async function POST(req: NextRequest) {
         .eq("id", contactId)
       if (attendeeUpdateError) {
         console.error(`[open-house/attend] returning-attendee update REFUSED for ${contactId}:`, attendeeUpdateError.message)
+      } else {
+        const stamped = await persistFieldProvenance(supabase, { table: "contacts", id: contactId, brokerageId: event.brokerage_id },
+          stampFieldProvenance(["first_name", "last_name", ...(phone ? ["phone"] : [])], KIOSK_PROVENANCE))
+        if (!stamped.ok) console.error(`[open-house/attend] kiosk provenance not stamped for ${contactId}: ${stamped.error}`)
       }
     } else {
       const now = new Date().toISOString()
@@ -134,6 +146,7 @@ export async function POST(req: NextRequest) {
           tcpa_consent_source: tcpaConsentSource ?? "/open-house/sign-in",
           tcpa_consent_ip: ip,
           isa_reengage_allowed: false,
+          enrichment_profile: withFieldProvenance({}, stampFieldProvenance(["first_name", "last_name", "email", ...(phone ? ["phone"] : [])], KIOSK_PROVENANCE)),
           // TIER 3 OF resolveContactLanguage — see the ONE resolver's own doc
           // (CaptureContactParams.language, lib/contact-pipeline/contact-capture.ts).
           ...(capturedLanguage ? { metadata: { captured_language: capturedLanguage } } : {}),
@@ -297,6 +310,8 @@ export async function POST(req: NextRequest) {
         brokerageId:    event.brokerage_id,
         agentId:        event.agent_id,
         firstName,
+        // Wave 102 — half of the person key (lib/kernel/person-identity.ts); the sign-in already requires it.
+        lastName,
         phone:          phone ?? null,
         email,
         listingAddress,

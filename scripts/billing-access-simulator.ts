@@ -285,6 +285,41 @@ async function main() {
       const progress = stripComments(readFileSync(join(process.cwd(), "app/dashboard/onboarding/progress/page.tsx"), "utf8"))
       check("onboarding/progress: the swapped-argument gate whose OBJECT was tested for truthiness is gone — the session user, the feature key, and `.allowed`",
         /mayUseFeature\(user\.id, "training_progress"/.test(progress) && /if \(!access\.allowed\)/.test(progress) && !/canAccessFeature\("training_progress"/.test(progress))
+
+      // ── wave 102C (owner answer 1): EVERY feature key the code gates has a ROW IT CAN BE CHECKED AGAINST.
+      // A key with no feature_flags row is refused for everyone ("Feature does not exist", resolve.ts) —
+      // ai_listing_generation / ai_social_content were exactly that until m699. The row names are DERIVED
+      // from the seed writers (every `INSERT INTO feature_flags` under supabase/migrations + scripts) plus
+      // the dated live snapshot in scripts/marketing-system-claim-simulator.ts; the gated keys are the
+      // `mayUseFeature(…, "<key>")` literals on stripped source (strings kept — the key IS the literal).
+      const sqlUnder = (dir: string) => readdirSync(join(process.cwd(), dir)).filter((f) => f.endsWith(".sql")).map((f) => `${dir}/${f}`)
+      const seedFiles = [...sqlUnder("supabase/migrations"), ...sqlUnder("scripts")]
+        .filter((rel) => /INSERT INTO feature_flags/i.test(readFileSync(join(process.cwd(), rel), "utf8")))
+      const seededKeys = new Set<string>()
+      for (const rel of seedFiles) {
+        const sql = readFileSync(join(process.cwd(), rel), "utf8").replace(/--[^\n]*/g, "")
+        for (const m of sql.matchAll(/\(\s*'([a-z][a-z0-9_]*)'\s*,\s*'[^']*'\s*,\s*'[^']*'/g)) seededKeys.add(m[1])
+      }
+      const snapshotSrc = readFileSync(join(process.cwd(), "scripts/marketing-system-claim-simulator.ts"), "utf8")
+      const snapshotBlock = /LIVE_FEATURE_KEYS_\d+\s*=\s*new Set\(\[([\s\S]*?)\]\)/.exec(snapshotSrc)?.[1] ?? ""
+      for (const m of snapshotBlock.matchAll(/"([a-z][a-z0-9_]*)"/g)) seededKeys.add(m[1])
+      const gated = new Map<string, string[]>()
+      for (const rel of files) {
+        const s = stripComments(readFileSync(join(process.cwd(), rel), "utf8"))
+        for (const m of s.matchAll(/\bmayUseFeature\s*\([^,()]+,\s*"([a-z][a-z0-9_]*)"/g)) gated.set(m[1], [...(gated.get(m[1]) ?? []), rel])
+      }
+      const rowless = [...gated.keys()].filter((k) => !seededKeys.has(k)).sort()
+      console.log(`  · census: ${gated.size} distinct feature keys gated by literal across ${[...gated.values()].flat().length} call sites; ${seededKeys.size} row names from ${seedFiles.length} seed file(s) + the dated snapshot. Blind spot: a key passed as a VARIABLE is not a literal and is not counted; the snapshot is dated, the seeds are files (the seed rows exist live only once their migration is applied — m699 was applied 2026-10-05).`)
+      check("EVERY gated feature key (mayUseFeature literal) has a seed / row name it can be checked against", rowless.length === 0, `rowless: ${rowless.join(", ")}`)
+      check("POSITIVE CONTROL: the census would flag a gate on a key no seed names", !seededKeys.has("no_such_feature_key_102c") && /\bmayUseFeature\s*\([^,()]+,\s*"([a-z][a-z0-9_]*)"/.exec(`await mayUseFeature(user.id, "no_such_feature_key_102c")`)?.[1] === "no_such_feature_key_102c")
+      check("m699 seeds ai_listing_generation + ai_social_content and both are gated in the content action (the finder saw them, the seed names them)",
+        ["ai_listing_generation", "ai_social_content"].every((k) => gated.get(k)?.includes("app/actions/ai-content-generation.tsx") && seedFiles.some((rel) => /m699/.test(rel) && readFileSync(join(process.cwd(), rel), "utf8").includes(`'${k}'`))))
+      const m699 = seedFiles.find((rel) => /m699/.test(rel))
+      const m699Sql = m699 ? readFileSync(join(process.cwd(), m699), "utf8") : ""
+      // CLAUDE.md §2: the status line is a RULE (exactly one provenance stamp — the lane's "WRITTEN,
+      // NOT APPLIED" or the integrator's "APPLIED LIVE <date>"), never a pin on the pre-apply waypoint.
+      check("m699 mirrors the live ai_content_generation row (SELECT … FROM feature_flags t WHERE t.feature_key = 'ai_content_generation'), is idempotent (NOT EXISTS + ON CONFLICT DO NOTHING) and line 1 carries one provenance stamp (the lane stamp | APPLIED LIVE <date>)",
+        /FROM feature_flags t[\s\S]*t\.feature_key = 'ai_content_generation'/.test(m699Sql) && /WHERE NOT EXISTS/.test(m699Sql) && /ON CONFLICT \(feature_key\) DO NOTHING/.test(m699Sql) && /^-- ── (WRITTEN, NOT APPLIED|APPLIED LIVE \d{4}-\d{2}-\d{2}\b)/.test(m699Sql))
     }
 
     // ── wave 100 (lane 100C — 99A open item 2): dunning recipients come from THE roster.

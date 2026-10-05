@@ -1,7 +1,7 @@
 /**
  * scripts/live-tables.ts
  *
- * EVERY relation the live public schema exposes — 763 of them — as a flat sorted list.
+ * EVERY relation the live public schema exposes — 766 of them — as a flat sorted list.
  *
  * This is the oracle for "does this name exist in the database", which SCHEMA_SNAPSHOT cannot be:
  * that file holds only the tables the code QUERIES and the database HAS (`referenced ∩ live`), so a
@@ -18,9 +18,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-04
+ * generated: 2026-10-05
  * source: public.live_schema_json()
- * body-sha256: 66dfb629890fa4bd713dc0e3b274edb611a3407dfbdd15d72ec827ba4167df57
+ * body-sha256: 1df2b1207fd25e0381cc1adcf58639610388763566991c003e78b38fd0e2665a
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -518,6 +518,8 @@ export const LIVE_TABLES: readonly string[] = [
   "pattern_adoptions",
   "pattern_detections",
   "pattern_predictions",
+  "person_identities",
+  "person_identity_evidence",
   "phone_number_events",
   "photo_enhancement_jobs",
   "photo_ordering_rules",
@@ -600,6 +602,7 @@ export const LIVE_TABLES: readonly string[] = [
   "referral_sources",
   "referrals",
   "reg_change_observations",
+  "relationship_edges",
   "remotion_composition_renders",
   "remotion_compositions",
   "repurpose_pipelines",

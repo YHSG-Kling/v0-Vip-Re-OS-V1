@@ -294,6 +294,8 @@ check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mention
 // guard's own instruction; drops back to 0 once the integrator applies it and flips the header. Sibling
 // wave-101 lanes (101B m697, 101C m698) bump this line for their own files — the integrator sums them.
 // 1 → 0 (wave 101 integrator): m696 applied live 2026-10-04.
+// Wave 102 (lane 102A): m697 (person identity + evidence) was APPLIED LIVE 2026-10-05 by the integrator
+// applies it and drops this back to 0 (the vocabulary cache, snapshot, LIVE_TABLES and FK map follow).
 const NOT_APPLIED_BASELINE = 0
 console.log("\n[3 · the work-in-flight list only shrinks]")
 if (notApplied.length) for (const f of notApplied) console.log(`     · ${f}`)

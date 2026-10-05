@@ -36,6 +36,8 @@ import {
   type LedgerClient,
 } from "../lib/kernel/action-ledger"
 import { currentCausation, withCausationFrom } from "../lib/kernel/causation"
+import { memSupabase } from "./in-memory-supabase"
+import { formatPolicyRef, parsePolicyRef } from "../lib/kernel/tenant-policy"
 
 let pass = 0
 let fail = 0
@@ -746,21 +748,12 @@ async function main() {
     // (b) PAIRS → ONE EMIT. An auditOnly row of a typed event followed by a separate processKernelEvent of
     // the SAME event is the pair shape. Every remaining pair is NAMED with why it is not equivalent; a
     // merged pair that comes back (or a new one) fails. Derived, never pinned.
+    // Wave 102C (owner ruling, wave 102 answer 2): the 14 "superset payload" pairs are MERGED — the
+    // reactor receives the row's metadata (it forwards it by reference or reads NAMED keys; extra keys
+    // harmless), ISA_REPLY_RECEIVED's one emit moved to the fan-out's position so its order is kept,
+    // and the business-card vendor pair's two `category` values were in fact one value. The two that
+    // remain are GENUINELY DIFFERENT EVENTS (the ruling's keep list).
     const PAIR_NOT_MERGED: Record<string, string> = {
-      "app/actions/business-card/business-card-actions.ts#BUSINESS_CARD_APPROVED": "vendor branch: the row stores category ?? VENDOR_CATEGORY_OTHER, the reactor's manager-signal payload forwards the raw category — one metadata cannot be both",
-      "app/actions/video-voice.ts#VOICE_CLONE_READY": "the reactor handler forwards params.metadata as the manager-signal payload; the bare fan-out sent {} — merging changes the payload",
-      "app/actions/video/generate-script.ts#SCRIPT_GENERATED": "the reactor's SCRIPT_GENERATED reader forwards metadata; the bare fan-out sent {}",
-      "app/actions/video-generation.ts#SCRIPT_GENERATED": "same reader as above — the bare fan-out sent {}",
-      "app/actions/video-generation.ts#VIDEO_HIGH_PERFORMER_DETECTED": "the reactor forwards metadata as the signal payload; the bare fan-out sent {}",
-      "app/actions/video-generation.ts#VIDEO_LOW_PERFORMER_DETECTED": "the reactor forwards metadata as the signal payload; the bare fan-out sent {}",
-      "app/api/video/engagement/route.ts#VIDEO_HIGH_PERFORMER_DETECTED": "the reactor forwards metadata as the signal payload; the bare fan-out sent {}",
-      "app/api/video/engagement/route.ts#VIDEO_LOW_PERFORMER_DETECTED": "the reactor forwards metadata as the signal payload; the bare fan-out sent {}",
-      "app/api/cron/publish-social-posts/route.ts#SOCIAL_POST_FAILED": "the reactor forwards metadata as the signal payload; the bare fan-out sent {}",
-      "app/actions/video-repurposing.ts#SNIPPET_CREATED": "the reactor's SNIPPET_CREATED reader forwards metadata; the bare fan-out sent {}",
-      "lib/kernel/content-creators.ts#VIDEO_GENERATION_REQUESTED": "the reactor's VIDEO_GENERATION_REQUESTED reader reads metadata; the bare fan-out sent none",
-      "app/actions/seller-listing/execution-engine.ts#LISTING_AGREEMENT_INITIATED": "the reactor forwards metadata as the signal payload; the bare fan-out sent {}",
-      "app/api/offers/upload/route.ts#OFFER_UPLOADED": "a TEMPLATED portal event: writePortalUpdate stores ctx.metadata on the buyer/seller portal card — the row's offer_document_url would reach the client's card",
-      "app/api/providers/inbound/route.ts#ISA_REPLY_RECEIVED": "ORDER: the fan-out runs after steps 6b–7 (behavioural event, opt-out review); one emit at step 6 would run the reactor before them",
       "lib/kernel/financial.ts#COMMISSION_PAID": "not a pair: the auditOnly row is the pay-status command's (entity agent_commission); the fan-out is createCommissionRecord's, ~440 lines later (entity commission) — two moments, two functions",
       "lib/ai-isa/convert-buyer-lead-on-intent.ts#?":"not one event: the row is the free-form lifecycle.<event> on entity buyer_lifecycle; the fan-out is the typed event on entity contact",
     }
@@ -820,6 +813,42 @@ async function main() {
       check(`${rel}: ${ev} has an emit that fans out (no auditOnly) and carries the fan-out's own fields`,
         blocks.some((b) => !/auditOnly:\s*true/.test(b.blk)) && (ev !== "BUSINESS_CARD_APPROVED" || blocks.some((b) => /routed_to: "recruit"[^]*?classified_by/.test(b.blk))))
     }
+    // Wave 102C — the 14 merged pairs: ONE emit each, fanning out (no auditOnly), carrying the row's
+    // metadata as the SUPERSET payload the reactor reads by named key, and no processKernelEvent of that
+    // event left behind in the module. The superset is asserted on a named key per site.
+    const MERGED_102C: Array<[string, string, RegExp]> = [
+      ["app/actions/business-card/business-card-actions.ts", "BUSINESS_CARD_APPROVED", /routed_to: "vendor"[^]*?subject_user_type/],
+      ["app/actions/video-voice.ts", "VOICE_CLONE_READY", /quality_score/],
+      ["app/actions/video/generate-script.ts", "SCRIPT_GENERATED", /approval_status/],
+      ["app/actions/video-generation.ts", "SCRIPT_GENERATED", /approval_status/],
+      ["app/actions/video-generation.ts", "VIDEO_HIGH_PERFORMER_DETECTED", /completion_rate/],
+      ["app/actions/video-generation.ts", "VIDEO_LOW_PERFORMER_DETECTED", /completion_rate/],
+      ["app/api/video/engagement/route.ts", "VIDEO_HIGH_PERFORMER_DETECTED", /completion_rate/],
+      ["app/api/video/engagement/route.ts", "VIDEO_LOW_PERFORMER_DETECTED", /completion_rate/],
+      ["app/api/cron/publish-social-posts/route.ts", "SOCIAL_POST_FAILED", /retry_count/],
+      ["app/actions/video-repurposing.ts", "SNIPPET_CREATED", /platform_target/],
+      ["lib/kernel/content-creators.ts", "VIDEO_GENERATION_REQUESTED", /video_type/],
+      ["app/actions/seller-listing/execution-engine.ts", "LISTING_AGREEMENT_INITIATED", /stage: "LISTING_AGREEMENT_INITIATED"/],
+      ["app/api/offers/upload/route.ts", "OFFER_UPLOADED", /offer_document_url/],
+      ["app/api/providers/inbound/route.ts", "ISA_REPLY_RECEIVED", /messageId/],
+    ]
+    for (const [rel, ev, key] of MERGED_102C) {
+      const s = stripComments(read(rel))
+      const blocks = emitBlocks(s).filter((b) => new RegExp(`event:\\s*KernelEvent\\.${ev}\\b`).test(b.blk))
+      const fanning = blocks.filter((b) => !/auditOnly:\s*true/.test(b.blk))
+      const leftover = new RegExp(`processKernelEvent\\(\\{\\s*event:\\s*KernelEvent\\.${ev}\\b`).test(s)
+      // `some`: a module may fan the same event out from several branches (business-card's recruit /
+      // card / contact emits, merged in 101C) — the merged pair is the branch that carries this key.
+      check(`${rel}: ${ev} is ONE emit — fans out, carries the row's metadata (${key.source}), no separate processKernelEvent of it`,
+        fanning.some((b) => key.test(b.blk) && /agentUserId:\s*null/.test(b.blk)) && !leftover)
+    }
+    // ORDER kept for the inbound router: the one ISA_REPLY_RECEIVED emit sits AFTER the opt-out review (step 7).
+    const inbound = stripComments(read("app/api/providers/inbound/route.ts"))
+    check("inbound router: the ISA_REPLY_RECEIVED emit runs after the opt-out review (review_opt_out) — the pair's order survives the merge",
+      inbound.indexOf("review_opt_out") > 0 && inbound.indexOf("review_opt_out") < inbound.indexOf("event: KernelEvent.ISA_REPLY_RECEIVED"))
+    check("POSITIVE CONTROL: the leftover finder sees a surviving processKernelEvent of the same event",
+      /processKernelEvent\(\{\s*event:\s*KernelEvent\.OFFER_UPLOADED\b/.test(`await processKernelEvent({ event: KernelEvent.OFFER_UPLOADED, brokerageId })`))
+    console.log(`  · wave 102C: ${MERGED_102C.length} pairs merged (16 → ${Object.keys(PAIR_NOT_MERGED).length} named as different events)`)
   }
 
   console.log("\n[13b · audit-only option + executed lineage through a fake PostgREST]")
@@ -915,7 +944,62 @@ async function main() {
     }
   }
 
+  // ── WAVE 102 (102D): WHICH POLICY PERMITTED — agent_action_ledger.policy_ref (m700) ────────────
+  console.log("\n[102D · which policy permitted: policy_ref = policy_key@version from the ONE version reader]")
+  {
+    const seed = () => ({ agent_action_ledger: [], tenant_policy_versions: [{ brokerage_id: TENANT, policy_key: "experiments", version: 1 }, { brokerage_id: TENANT, policy_key: "experiments", version: 2 }, { brokerage_id: "other-tenant", policy_key: "experiments", version: 9 }] })
+    const mem = memSupabase(seed())
+    const row = () => (mem.tables.agent_action_ledger as any[]).at(-1)
+    await withActionLedger(ctx({ cycle: null, policyKey: "experiments" }), async () => ({ success: true, providerKey: "x" }), hooks(null), { client: mem })
+    check("a ledgered action under `experiments` records policy_ref experiments@2 (THIS tenant's live version)", row()?.policy_ref === "experiments@2", String(row()?.policy_ref))
+    await withActionLedger(ctx({ cycle: null, policyKey: "autonomy_tier:deal_coordinator" }), async () => ({ success: true, providerKey: "x" }), hooks(null), { client: mem })
+    check("a key never changed through the versioned writer records @0", row()?.policy_ref === "autonomy_tier:deal_coordinator@0")
+    await withActionLedger(ctx({ cycle: null, policyKey: "experiments", policyVersion: 7 }), async () => ({ success: true, providerKey: "x" }), hooks(null), { client: mem })
+    check("a caller that already holds the version passes it (no second read)", row()?.policy_ref === "experiments@7")
+    await withActionLedger(ctx({ cycle: null }), async () => ({ success: true, providerKey: "x" }), hooks(null), { client: mem })
+    check("CONTROL: an action naming no policy records NULL (never an invented ref)", row()?.policy_ref === null)
+    await withActionLedger(ctx({ cycle: null, policyKey: "not_a_policy" }), async () => ({ success: true, providerKey: "x" }), hooks(null), { client: mem })
+    check("CONTROL: an unregistered key records @unknown (the grammar is m696's)", row()?.policy_ref === "not_a_policy@unknown")
+    const refused = memSupabase(seed(), { refuse: { tenant_policy_versions: "permission denied" } })
+    let sent = 0
+    await withActionLedger(ctx({ cycle: null, policyKey: "experiments" }), async () => { sent++; return { success: true, providerKey: "x" } }, hooks(null), { client: refused })
+    const rr = (refused.tables.agent_action_ledger as any[])[0]
+    check("a REFUSED version read records @unknown — the action still runs and is still ledgered", sent === 1 && rr?.policy_ref === "experiments@unknown" && rr?.status === "executed")
+    const pre700 = memSupabase(seed(), { missingColumns: { agent_action_ledger: ["policy_ref"] } })
+    let sent2 = 0
+    await withActionLedger(ctx({ cycle: null, policyKey: "experiments" }), async () => { sent2++; return { success: true, providerKey: "x" } }, hooks(null), { client: pre700 })
+    const pr = (pre700.tables.agent_action_ledger as any[])[0]
+    check("before m700 (column absent): the row is re-written WITHOUT the column and the ref rides detail.policy_ref — never 'unledgered'",
+      sent2 === 1 && !!pr && !("policy_ref" in pr) && pr.detail?.policy_ref === "experiments@2" && pr.status === "executed")
+    check("formatPolicyRef / parsePolicyRef round-trip; a negative or missing version is `unknown`",
+      formatPolicyRef("experiments", 3) === "experiments@3" && formatPolicyRef("experiments", null) === "experiments@unknown" && formatPolicyRef("experiments", -1) === "experiments@unknown"
+        && parsePolicyRef("assignment_rule:00000000-0000-4000-8000-000000000001@4")?.version === 4 && parsePolicyRef("Experiments@2") === null)
+    const chain = assembleCausalChain([], [{ id: "a1", action: "comms.email.send", status: "executed", reason_code: "CAMPAIGN_STEP", subject_type: "contact", actor_type: "system", created_at: "2026-10-01T00:00:00Z", policy_ref: "experiments@2" }, { id: "a2", action: "comms.sms.send", status: "executed", reason_code: "CAMPAIGN_STEP", subject_type: "contact", actor_type: "system", created_at: "2026-10-01T00:00:01Z", detail: { policy_ref: "experiments@1" } }])
+    check("the flight recorder chain carries policyRef (column, else the pre-m700 detail fallback)", chain[0]?.policyRef === "experiments@2" && chain[1]?.policyRef === "experiments@1")
+    // m700 text: the column, its format CHECK (derived and exercised), the index.
+    const m700 = read("supabase/migrations/m700-policy-ref-on-ledger-and-arm-outcome-evaluations.sql").replace(/--[^\n]*/g, "")
+    const fmt = /policy_ref ~ '([^']+)'/.exec(m700)?.[1]
+    const re = fmt ? new RegExp(fmt) : null
+    check("m700 adds agent_action_ledger.policy_ref with a format CHECK", /ADD COLUMN IF NOT EXISTS policy_ref text/.test(m700) && !!re)
+    check("the CHECK admits every ref the writer emits and refuses a mutated one",
+      !!re && ["experiments@2", "autonomy_tier:deal_coordinator@0", "assignment_rule:00000000-0000-4000-8000-000000000001@unknown", "newsletter_cadence_policy:brokerage:00000000-0000-4000-8000-00000000000a@3"].every((s) => re.test(s))
+        && ["Experiments@2", "experiments@-1", "experiments", "experiments@2.0"].every((s) => !re.test(s)))
+    // Wiring (stripped source): the three policy-resolving writers name their key; the recorder reads it; the page shows it.
+    const disp = stripComments(read("lib/providers/dispatch.ts"))
+    check("WIRED: dispatch names the autonomy posture it consulted (autonomy_tier:<manager>) unless a human approved", /policyKey: params\.ledger\?\.policyKey \?\? \(managerKey && !params\.humanApproved \? managerPolicyKey\("autonomy_tier", managerKey\) : null\)/.test(disp))
+    check("WIRED: a sequence A/B send names `experiments`", /policyKey: EXPERIMENTS_POLICY_KEY/.test(code("lib/workflow/channel-registry.ts")))
+    check("WIRED: the AI tool mount names the authority ladder for its agent kind", /policyKey: `authority_level:ai_isa`/.test(stripComments(read("lib/ai-isa/customer-context-tools.ts"))))
+    check("WIRED: loadExperimentPolicy returns the live version beside the value", /currentPolicyVersion\(svc, brokerageId, EXPERIMENTS_POLICY_KEY\)/.test(code("lib/kernel/experiments.ts")))
+    const fr = code("app/actions/flight-recorder.ts")
+    // m700 is live: ONE literal column list carries policy_ref on BOTH ledger reads (a column-list
+    // variable would hide every column from the readerless-write census — wave 102 integration).
+    check("WIRED: the flight recorder's ledger reads select policy_ref through the one literal column list (both reads)", /const ACTION_COLS =\s*"[^"]*\bpolicy_ref\b[^"]*"/.test(stripComments(read("app/actions/flight-recorder.ts"))) && (stripComments(read("app/actions/flight-recorder.ts")).match(/from\("agent_action_ledger"\)\.select\(ACTION_COLS\)/g) ?? []).length === 2)
+    check("WIRED: the AI audit page shows 'permitted by <ref>'", /l\.policyRef/.test(stripComments(read("app/dashboard/admin/ai-audit/page.tsx"))))
+    check("POSITIVE CONTROL: the dispatch wiring finder rejects a context without policyKey", !/policyKey:/.test(`return { brokerageId: params.brokerageId, action, channel, actor, subject }`))
+  }
+
   console.log("\n[blind spots]")
+  console.log("  · policy_ref (102D): the version is read per ledger row from tenant_policy_versions (one extra read per claim); dispatch names the posture key, not the authority rung it also consulted (that rides the same managed_agents row); the direct-mail bandit names no policy until its 102C kill switch key lands; a human-approved send names no tenant policy")
   console.log("  · lifecycle_events inserters NOT moved are NAMED with their reasons in section 13 (payload/processed writers, injected-client audits, the transition writer, an entity-less row). The finder sees only the literal .from(\"lifecycle_events\").insert( shape — a table-name constant or a single-quoted literal is invisible to it")
   console.log("  · pairs (13c): an auditOnly row + a separate processKernelEvent of the same event were merged into ONE emit wherever the reactor input is byte-equivalent (same event/tenant/entity/ids; the event's reactor readers use no metadata, or the fan-out's metadata is a same-valued superset; agentUserId: null keeps attribution). The finder pairs a row with the SAME typed event fanned out ANYWHERE later in the module — a pair split across functions is named, not merged; a fan-out with no audit row of its own (a bare processKernelEvent) is not a pair and is not counted")
   console.log("  · portal messages: ~30 direct client_portal_messages inserters remain outside insertPortalMessage; the four senders that reach a client on demand are routed")

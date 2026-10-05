@@ -178,7 +178,7 @@ export async function engageContact(
     //    actions: recorded on the action ledger with every reason, then nothing is sent. ──
     {
       const nbaNow = new Date()
-      const { loadContactNbaContext, planNextContactTouch, nonActionRecordFor, decisionInputSnapshot } = await import('@/lib/ai-isa/lead-action-plan')
+      const { loadContactNbaContext, planNextContactTouch, decisionRecordFor, decisionInputSnapshot } = await import('@/lib/ai-isa/lead-action-plan')
       const nbaCtx = await loadContactNbaContext(supabase, {
         brokerageId, contact, humanInitiated: !!actorId || !!forceChannel, now: nbaNow,
       })
@@ -188,12 +188,14 @@ export async function engageContact(
       }
       const nbaPlan = planNextContactTouch({ now: nbaNow, context: nbaCtx.context })
       // Wave 101 (101B): + the compact input, so lib/kernel/decision-replay.ts can re-run the planner on it.
-      const nonAction = nonActionRecordFor(nbaPlan, { brokerageId, contactId, now: nbaNow },
+      // Wave 102 (102C): every verdict is a decision row — send_touch / convert too (decisionRecordFor);
+      // the touch that follows is its chokepoint's own 'executed' row.
+      const decisionRow = decisionRecordFor(nbaPlan, { brokerageId, contactId, now: nbaNow },
         decisionInputSnapshot({ subject: 'contact', now: nbaNow, context: nbaCtx.context }))
-      if (nonAction) {
+      {
         const { recordNonAction } = await import('@/lib/kernel/action-ledger')
-        const rec = await recordNonAction(nonAction, { client: supabase })
-        if (!rec.recorded && rec.error) console.warn(`[engageContact] ${nonAction.decision} not ledgered for ${contactId}: ${rec.error}`)
+        const rec = await recordNonAction(decisionRow, { client: supabase })
+        if (!rec.recorded && rec.error) console.warn(`[engageContact] ${decisionRow.decision} not ledgered for ${contactId}: ${rec.error}`)
       }
       if (nbaPlan.action === 'wait' || nbaPlan.action === 'do_nothing') {
         return { success: false, reason: `nba:${nbaPlan.action}:${nbaPlan.reasonCode}` }

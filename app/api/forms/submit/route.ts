@@ -139,6 +139,37 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       .update({ contact_id: contactId })
       .eq('id', submission.id), { table: "form_submissions", flow: "form_submissions_write", reason: "submission→contact link; the contact is already captured" })
 
+    // ── Step 6b: PERSON IDENTITY (wave 102, lane 102A; m697) ──────────────────
+    // captureContact just decided, by email/phone fuzzy match, whether this submission is an existing
+    // contact or a new one — a person verdict. It is recorded as evidence on THE person row
+    // (lib/kernel/person-identity.ts): the contact (capture_match; a merge scored by the capture's own
+    // dedup, a creation at 1.0) and the submission itself. Tenant = the form's brokerage the route
+    // already resolved from the slug (never the body). The FORM_SUBMISSION_RECEIVED event below
+    // carries person_id, so no second event. Best-effort: never blocks the 200.
+    let personId: string | null = null
+    try {
+      const { resolvePerson, linkPersonEvidence } = await import('@/lib/kernel/person-identity')
+      const person = await resolvePerson(supabase, {
+        brokerageId: form.brokerage_id, firstName: first_name || null, lastName: last_name || null,
+        email: email || null, phone: consentGiven ? (phone || null) : null,
+      })
+      if (!person.ok) {
+        if (person.reason !== 'no_identity_anchor') console.warn('[forms/submit] person identity not resolved:', person.reason)
+      } else {
+        personId = person.personId
+        const common = {
+          brokerageId: form.brokerage_id, personId: person.personId, source: 'form_submit',
+          actor: { type: 'system' as const, userId: null }, identity: person.identity,
+          existingEvent: KernelEvent.FORM_SUBMISSION_RECEIVED,
+        }
+        const a = await linkPersonEvidence(supabase, { ...common, entityType: 'contact', entityId: contactId, matchMethod: 'capture_match', matchScore: action === 'merged' ? 0.9 : 1, detail: { capture_action: action, form_id: form.id, submission_id: submission.id } })
+        const b = await linkPersonEvidence(supabase, { ...common, entityType: 'form_submission', entityId: submission.id, matchMethod: 'capture_match', matchScore: 1, detail: { form_id: form.id, contact_id: contactId } })
+        for (const r of [a, b]) if (!r.ok) console.warn('[forms/submit] person evidence not recorded:', r.reason)
+      }
+    } catch (err) {
+      console.warn('[forms/submit] person identity threw (submission unaffected):', err instanceof Error ? err.message : String(err))
+    }
+
     // ── Step 7: Emit lifecycle event ──────────────────────────────────────────
     // Was a direct lifecycle_events insert — audit-only, no reactor fan-out, so
     // notification_rules' live form_submission_received row never fired. Real
@@ -151,7 +182,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       entityType:  'contact',
       entityId:    contactId,
       contactId,
-      metadata:    { formId: form.id, action },
+      metadata:    { formId: form.id, action, person_id: personId },
     }).catch((err) => console.error('[forms/submit] FORM_SUBMISSION_RECEIVED emit failed:', err))
 
     // ── Step 8: Return ────────────────────────────────────────────────────────

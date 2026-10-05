@@ -12,7 +12,6 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { requireCallerTenant } from "@/lib/auth/require-caller"
 import type {
@@ -657,20 +656,15 @@ export async function updateTrainingJobStatus(
         entityId: job.voice_profile_id,
         brokerageId: job.brokerage_id,
         event: KernelEvent.VOICE_CLONE_READY,
+        // Wave 102C: ONE emit (row + fan-out). The reactor forwards this metadata as the manager-signal
+        // payload (was {} from the bare fan-out) — a superset read by named keys, so harmless.
         metadata: {
           training_id: trainingId,
           voice_id: providerResponse?.voice_id,
           quality_score: qualityScore,
         },
-        auditOnly: true,
+        agentUserId: null,
       }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
-
-      await processKernelEvent({
-        event: KernelEvent.VOICE_CLONE_READY,
-        brokerageId: job.brokerage_id,
-        entityType: "voice_profile",
-        entityId: job.voice_profile_id,
-      }).catch(err => console.error("[video-voice] Kernel event failed:", err))
     }
   }
 

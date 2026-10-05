@@ -20,11 +20,44 @@ export interface CopyLearningResult {
   sequencesScanned: number
   groupsEvaluated: number
   variantsPromoted: number
+  /** 102D: groups whose reply counts came from attributed arm results (agent_outcome_evaluations). */
+  armResultsUsed: number
+  /** 102D: groups that fell back to the step counters because the arm results could not be read. */
+  armResultsUnavailable: number
+}
+
+/**
+ * 102D — the ATTRIBUTED arm results for one experiment key (`sequence_ab:<sequence id>`): replies
+ * per arm from agent_outcome_evaluations rows the attribution wrote (evaluator 'ledger_attribution',
+ * lib/intelligence/roi-ledger.ts recordExperimentArmOutcomes). null = the read was refused or the
+ * m700 columns are absent — the caller then falls back to the step counters and SAYS so.
+ * @proofSeam exported so scripts/replay-harness-guard.ts drives it with an in-memory client.
+ */
+export async function loadExperimentArmResults(
+  svc: { from: (t: string) => any },
+  brokerageId: string,
+  experimentKey: string,
+): Promise<{ repliesByArm: Record<string, number>; outcomesByArm: Record<string, number> } | null> {
+  const { data, error } = await svc
+    .from("agent_outcome_evaluations")
+    .select("experiment_arm, outcome_kind")
+    .eq("brokerage_id", brokerageId)
+    .eq("evaluator", "ledger_attribution")
+    .eq("experiment_key", experimentKey)
+    .limit(5000)
+  if (error) return null
+  const repliesByArm: Record<string, number> = {}
+  const outcomesByArm: Record<string, number> = {}
+  for (const r of (data ?? []) as Array<{ experiment_arm: string; outcome_kind: string }>) {
+    outcomesByArm[r.experiment_arm] = (outcomesByArm[r.experiment_arm] ?? 0) + 1
+    if (r.outcome_kind === "reply") repliesByArm[r.experiment_arm] = (repliesByArm[r.experiment_arm] ?? 0) + 1
+  }
+  return { repliesByArm, outcomesByArm }
 }
 
 export async function runSequenceCopyLearning(brokerageId: string, client?: Svc): Promise<CopyLearningResult> {
   const svc = client ?? createServiceClient()
-  const out: CopyLearningResult = { sequencesScanned: 0, groupsEvaluated: 0, variantsPromoted: 0 }
+  const out: CopyLearningResult = { sequencesScanned: 0, groupsEvaluated: 0, variantsPromoted: 0, armResultsUsed: 0, armResultsUnavailable: 0 }
 
   const { data: seqs } = await svc
     .from("campaign_sequences")
@@ -42,6 +75,13 @@ export async function runSequenceCopyLearning(brokerageId: string, client?: Svc)
       .eq("sequence_id", seq.id)
       .eq("is_active", true)
     const rows = (steps ?? []) as any[]
+    // 102D — the winner gate reads ATTRIBUTED arm results when they exist for this sequence's
+    // experiment (lib/kernel/experiments.ts key `sequence_ab:<sequence id>`): a reply credited to
+    // the arm by last touch, the same evidence the command center rolls up byExperimentArm. The
+    // step counters remain the SENT denominator; they are the reply numerator only when no arm
+    // result was ever recorded (pre-m700, or a sequence whose sends predate the ledger).
+    const armResults = await loadExperimentArmResults(svc, brokerageId, `sequence_ab:${seq.id}`)
+    const armReplies = armResults && Object.keys(armResults.repliesByArm).length > 0 ? armResults.repliesByArm : null
 
     // Group by step_number; only groups with ≥2 distinct variants are A/B tests to resolve.
     const byStep = new Map<number, any[]>()
@@ -55,7 +95,11 @@ export async function runSequenceCopyLearning(brokerageId: string, client?: Svc)
       if (group.length < 2 || variants.size < 2) continue
       out.groupsEvaluated++
 
-      const stats = group.map((g) => ({ variant: (g.ab_variant ?? "A") as string, sent: g.sent_count ?? 0, replies: g.reply_count ?? 0 }))
+      if (armReplies) out.armResultsUsed++; else if (armResults === null) out.armResultsUnavailable++
+      const stats = group.map((g) => {
+        const variant = (g.ab_variant ?? "A") as string
+        return { variant, sent: g.sent_count ?? 0, replies: armReplies ? (armReplies[variant] ?? 0) : (g.reply_count ?? 0) }
+      })
       const winner = pickWinningVariant(stats)
       if (!winner.winner) continue // not clearly ahead yet — keep testing
 

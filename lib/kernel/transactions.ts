@@ -1310,6 +1310,30 @@ export async function closeTransactionCommand(params: {
       console.error("[closeTransactionCommand] property_sold dead-end writer failed (non-blocking)", e)
     }
 
+    // RELATIONSHIP GRAPH (wave 102, lane 102B): the close PROVES four edges — buyer bought_from
+    // seller, seller sold_to buyer, buyer owns the home, seller previously_owned it
+    // (lib/kernel/relationship-graph.ts planTransactionCloseEdges). Derived here at the survivor
+    // writer, never by a second pipeline. Best-effort: the close already landed; a lost edge is
+    // ledgered on the same sentinel ledger the other post-close echoes use.
+    try {
+      const { deriveTransactionCloseEdges } = await import("@/lib/kernel/relationship-graph")
+      const edges = await deriveTransactionCloseEdges(supabase, {
+        brokerageId:     params.brokerageId,
+        transactionId:   params.transactionId,
+        buyerContactId:  txBefore?.buyer_contact_id ?? null,
+        sellerContactId: txBefore?.seller_contact_id ?? null,
+        listingId:       txBefore?.listing_id ?? null,
+        closeDate:       today,
+        actorUserId:     params.agentId,
+      })
+      if (edges.errors.length > 0) {
+        const { recordBestEffortLoss } = await import("@/lib/kernel/write-sentinel")
+        await recordBestEffortLoss(supabase, { table: "relationship_edges", flow: "transaction_close_relationship_edges", brokerageId: params.brokerageId, reason: edges.degraded ? "relationship_edges unreachable — edges derived once it is" : "relationship edges after the close landed" }, edges.errors.join("; "), null)
+      }
+    } catch (e) {
+      console.error("[closeTransactionCommand] relationship edge derivation failed (non-blocking)", e)
+    }
+
     // ── Propagate close to related entities ────────────────────────────────
     // 1. Listing → CLOSED on its lifecycle stage machine + status='closed'
     //    (closes the loop: prior to this fix the listing stayed UNDER_CONTRACT
