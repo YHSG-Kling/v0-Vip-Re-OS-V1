@@ -46,6 +46,10 @@ export type AppCapability =
   | "connectivity_scan"    // report live api/oauth/mcp connector health (Connectivity Agent)
   | "payment_transfer"     // platform-operated Stripe payout/transfer (offered to all subscribers)
   | "accounting_sync"      // platform-operated QuickBooks invoice/journal sync
+  // wave 105A — the owner's PREPARE_SELLER_APPOINTMENT: the Listing Concierge's pre-listing-appointment
+  // prep chain (CMA → presentation → chapter reels → section drip), requested by another manager through
+  // a manager_delegation (lib/kernel/manager-delegation.ts). ONE spelling: this catalogue key.
+  | "listing_appointment_prep"
 
 export type AppDomain =
   | "lead_generation" | "crm" | "valuation" | "scheduling" | "transactions" | "listings"
@@ -127,6 +131,9 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
   appointment_schedule: { capability: "appointment_schedule", verb: "BOOK",    scope: "calendar:write",    domain: "scheduling",      mutates: true,  purpose: "Book an appointment on an agent's calendar with a contact.", inputs: ["agentId", "contactId", "startsAt", "durationMin?"] },
   transaction_advance:  { capability: "transaction_advance",  verb: "ADVANCE", scope: "transaction:write", domain: "transactions",    mutates: true,  purpose: "Advance a transaction to its next valid lifecycle stage.", inputs: ["transactionId", "toStatus"] },
   listing_publish:      { capability: "listing_publish",      verb: "PUBLISH", scope: "listing:write",     domain: "listings",        mutates: true,  purpose: "Publish a listing (signed agreement → coming-soon / active).", inputs: ["listingId"] },
+  // wave 105A: the listing-appt-prep chain (lib/workflow-orchestrator/chains/listing-appt-prep.ts) — its first
+  // step is the CMA, so it is gated where cma_generate is gated (the platform RentCast lane).
+  listing_appointment_prep: { capability: "listing_appointment_prep", verb: "CREATE", scope: "listing:write", domain: "listings", mutates: true, purpose: "Prepare a seller's listing appointment (CMA, presentation, chapter reels, section drip) for a booked calendar event.", inputs: ["calendarEventId", "contactId", "listingId?"], requires: { platform: ["rentcast"] } },
   isa_qualify:          { capability: "isa_qualify",          verb: "ANALYZE", scope: "lead:qualify",      domain: "lead_generation", mutates: true,  purpose: "Run AI-ISA qualification on a lead and record the outcome.", inputs: ["leadId"] },
   lead_create:          { capability: "lead_create",          verb: "CREATE",  scope: "lead:write",        domain: "lead_generation", mutates: true,  purpose: "Create a new lead/contact record from supplied identity.", inputs: ["brokerageId", "firstName", "lastName", "email?", "phone?"] },
 

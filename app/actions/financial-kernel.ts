@@ -30,6 +30,7 @@ import {
   emailFinancialReport,
   createCommissionRecord,
   correctCommissionDistribution,
+  voidCommissionDistribution,
   type CreateCommissionRecordInput,
   type FinancialActorContext,
   type LoadAgentFinancialSummaryInput,
@@ -207,6 +208,28 @@ export async function correctCommissionDistributionAction(input: {
       correctedAmount: typeof input.correctedAmount === "number" ? input.correctedAmount : null,
       reason: String(input.reason ?? ""),
     })
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * WAVE 105 (lane 105E, owner ruling 1) — VOID an UNPAID commission entry on the same correction screen.
+ * The tenant and the actor come from the SESSION (getFinancialActorContext — the session's own
+ * brokerage, never a body value; a throw → refused), the finance-admin gate is the kernel's
+ * (lib/kernel/financial.ts voidCommissionDistribution, BROKERAGE_FINANCE_ADMIN_USER_TYPES via
+ * isBrokerageFinanceAdmin, checked BEFORE the service client is built). Only the entry id and the
+ * reason come from the caller. A PAID entry is refused there ("paid distributions are corrected
+ * through reversal/adjustment"). UI: the "Void entry" dialog beside "Correct entry" on the CDA
+ * Commission Breakdown (app/dashboard/transactions/[id]/cda/correct-entry-dialog.tsx VoidEntryDialog).
+ */
+export async function voidCommissionDistributionAction(input: { distributionId: string; reason: string }) {
+  try {
+    if (!input || typeof input.distributionId !== "string" || !UUID_SHAPE.test(input.distributionId)) {
+      return { success: false, error: "Invalid entry id" }
+    }
+    const ctx = await getFinancialActorContext()
+    return await voidCommissionDistribution({ ctx, distributionId: input.distributionId, reason: String(input.reason ?? "") })
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) }
   }

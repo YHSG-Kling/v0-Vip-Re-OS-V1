@@ -20,10 +20,23 @@ export interface WorkflowRunReaperResult {
   /** WAVE 104 (lane 104D): the mission pass on the SAME tick — deadlines passed and blockers left
    *  72h are ESCALATED, escalations unanswered past a passed deadline are FAILED
    *  (lib/kernel/missions.ts sweepMissionDeadlines). No second reaper. */
-  missions?: { scanned: number; escalated: number; failed?: number; readRefused: string | null }
+  missions?: {
+    scanned: number; escalated: number; failed?: number; readRefused: string | null
+    /** WAVE 105 (lane 105B): the EXECUTIVE MISSION CONTROLLER on the SAME tick, right after the
+     *  deadline sweep — ownership / participation / progress / dependencies / disagreement / budget /
+     *  authority / human-intervention verdicts per mission (lib/kernel/mission-controller.ts
+     *  controlMissions). One loop, bounded batch, one summary ledger row. */
+    control?: { scanned: number; transitions: number; enlisted: number; verdictsRecorded: number; unchanged: number; humanNeeded: number; delegationsUnreadable: number; readRefused: string | null }
+  }
   /** Lane 104F: stalled runs that served a mission — the mission is ESCALATED (escalateMission),
    *  its owner manager signalled; the run's failure is the evidence. */
   missionsEscalatedByStalledRun?: number
+  /** WAVE 105A: the delegation pass on the SAME tick — a manager-to-manager delegation past its
+   *  deadline with no return is ESCALATED (lib/kernel/manager-delegation.ts sweepDelegationDeadlines).
+   *  No second reaper. */
+  delegations?: { scanned: number; escalated: number; readRefused: string | null }
+  /** WAVE 105A: stalled runs that served a delegation — the delegation is ESCALATED (settleDelegationForRun). */
+  delegationsEscalatedByStalledRun?: number
 }
 
 export async function reapStaleWorkflowRuns(
@@ -44,6 +57,26 @@ export async function reapStaleWorkflowRuns(
     result.escalated += m.escalated
   } catch (e) {
     result.missions = { scanned: 0, escalated: 0, readRefused: e instanceof Error ? e.message : String(e) }
+  }
+  // Then the controller judges what the sweep does not (lane 105B): who owns / participates, is it
+  // progressing, dependencies, disagreement, budget, authority, does a human need to step in. Same
+  // tick, same tenant, bounded batch; a refused read is PUBLISHED on the result, never an all-clear.
+  try {
+    const { controlMissions } = await import("@/lib/kernel/mission-controller")
+    const { verdicts: _lines, ...summary } = await controlMissions(brokerageId, svc as any, { now })
+    result.missions.control = summary
+  } catch (e) {
+    result.missions.control = { scanned: 0, transitions: 0, enlisted: 0, verdictsRecorded: 0, unchanged: 0, humanNeeded: 0, delegationsUnreadable: 0, readRefused: e instanceof Error ? e.message : String(e) }
+  }
+  // Delegations next (wave 105A): a manager asked another for a capability by a deadline that passed
+  // with nothing returned — ESCALATED to the mission's owner (and the mission to its human). Same
+  // tick, same posture: best-effort, a refused read PUBLISHED.
+  try {
+    const { sweepDelegationDeadlines } = await import("@/lib/kernel/manager-delegation")
+    const dl = await sweepDelegationDeadlines(brokerageId, svc as any, { now })
+    result.delegations = dl
+  } catch (e) {
+    result.delegations = { scanned: 0, escalated: 0, readRefused: e instanceof Error ? e.message : String(e) }
   }
 
   const { data: rows } = await svc.from("workflow_runs")
@@ -72,6 +105,16 @@ export async function reapStaleWorkflowRuns(
           if (e.ok) result.missionsEscalatedByStalledRun = (result.missionsEscalatedByStalledRun ?? 0) + 1
           else if (!e.reason.startsWith("invalid_transition")) console.error(`[stale-run-reaper] mission ${r.mission_id} NOT escalated for stalled run ${r.id}: ${e.reason}`)
         } catch (e) { console.error(`[stale-run-reaper] mission escalation failed: ${e instanceof Error ? e.message : String(e)}`) }
+      }
+      // WAVE 105A: the delegation this run served (input_entities.workflow_run_id) is ESCALATED — the
+      // requesting manager is told the capability it asked for stalled. Best-effort.
+      if (!reapErr) {
+        try {
+          const { settleDelegationForRun } = await import("@/lib/kernel/manager-delegation")
+          const s = await settleDelegationForRun({ runId: r.id, outcome: "stalled", detail: `stalled in '${r.status}' for ${Math.round(ageHours)}h and was reaped`, actor: { type: "manager", id: "cron_manager" } }, svc as any)
+          if (s?.ok) result.delegationsEscalatedByStalledRun = (result.delegationsEscalatedByStalledRun ?? 0) + 1
+          else if (s && !s.reason.startsWith("invalid_transition")) console.error(`[stale-run-reaper] delegation for run ${r.id} NOT escalated: ${s.reason}`)
+        } catch (e) { console.error(`[stale-run-reaper] delegation escalation failed: ${e instanceof Error ? e.message : String(e)}`) }
       }
       if (r.agent_user_id) {
         await sentinelWrite(svc, svc.from("notifications").insert({

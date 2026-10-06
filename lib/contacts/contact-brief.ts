@@ -274,13 +274,16 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
   // An outside-agent representation leads the talking points: never touch another brokerage's client.
   const relationships: string[] = []
   try {
-    const { neighbors, describeEdge, representedByOutsideAgent } = await import("@/lib/kernel/relationship-graph")
+    const { neighbors, describeEdge, representedByOutsideAgent, agentVisibleEdges } = await import("@/lib/kernel/relationship-graph")
     const brokerageId = (contact as any).brokerage_id as string | null
     if (brokerageId) {
       const graph = await neighbors(supabase as any, { brokerageId, entity: { type: "contact", id: contactId } })
       if (!graph.ok && graph.error) console.warn("[contact-brief] relationship read refused:", graph.error)
-      for (const e of graph.edges) relationships.push(describeEdge(e, contactId))
-      if (representedByOutsideAgent(graph.edges, contactId)) talkingPoints.push("⚠ Represented by an outside agent — go through their agent, never direct.")
+      // WAVE 105 (105D): the brief is an AGENT surface — no lead endpoint reaches it (§5: agents see
+      // contacts only; has_opportunity points at a lead row and stays on the lead desk).
+      const visible = agentVisibleEdges(graph.edges)
+      for (const e of visible) relationships.push(describeEdge(e, contactId))
+      if (representedByOutsideAgent(visible, contactId)) talkingPoints.push("⚠ Represented by an outside agent — go through their agent, never direct.")
       else if (relationships.length > 0) talkingPoints.push(`Relationships: ${relationships.slice(0, 3).join("; ")}.`)
     }
   } catch { /* additive — the brief stands without the graph */ }

@@ -448,7 +448,78 @@ jobs:
       # last GC 10832.9 used / 11865.6 committed (89.1% of cap), exit 134 at 8m57s. Third heap
       # abort at the same ~10.8 GB demand across two commits: deterministic, not GC timing.
       # Guards CI is green at this commit; only next-build needs the larger runner.
-      NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_HEAP_MB || '13312' }}"
+      # ── 2026-10-06, run 37404071865 job 112077580883 (commit 0865cda9b, wave 104 merge):
+      # 13312 RAN OUT A FOURTH TIME. Build worker SIGABRT after
+      #   Mark-Compact (reduce) 10815.5 (11865.1) -> 10803.2 (11839.9) MB at 623969 ms;
+      #   last scavenge 10823.5 (11887.7) MB → committed 89.2% of cap, node 22.23.3,
+      #   "Next.js build worker exited with code: null and signal: SIGABRT".
+      # Four aborts across three commits within 30 MB of each other (10.81-10.83 GB
+      # used / 11.84-11.89 GB committed): deterministic. The owner ruled (wave 105,
+      # ruling 2): SPLIT THE BUILD INTO SMALLER BUILDS. What this file now does:
+      #
+      # WHICH WORKER ABORTS. webpackBuildWorker runs the three compilers
+      # SEQUENTIALLY, one jest-worker child each (server → edge-server → client,
+      # next/dist/build/webpack-build/index.js ORDERED_COMPILER_NAMES), and the
+      # child inherits this NODE_OPTIONS (next/dist/lib/worker.js spreads
+      # process.env and strips max-old-space-size only for isolatedMemory workers,
+      # which the build worker is not). The abort is the SERVER compiler, by
+      # three readings: (1) it runs FIRST and no "✓ Compiled" line precedes any
+      # abort; (2) the 2026-08-26 local sampler attributed the peak to the server
+      # worker (7968/8921 MB) while the parent sat at ~135 MB; (3) size — the
+      # server compile holds the union of 992 entries = 4841 first-party modules
+      # (lane105F-census, 0865cda9b) in TWO layers (rsc + ssr: the 1462-module
+      # client graph is compiled again for SSR), the edge-server compile is
+      # proxy.ts = 23 modules, the client compile is 1462. BLIND SPOT: the CI log
+      # carried no per-compiler marker, so this was inferred, not read. The
+      # compile step below sets DEBUG=next:build:webpack-build* so the worker's
+      # own "starting server compiler" / "server compiler finished Nms" lines
+      # (webpack-build/impl.js:223-275) land in the log and the NEXT abort is
+      # attributed by reading, not reasoning.
+      #
+      # THE SPLIT (lever c, verified against the pinned next@16.2.7:
+      # `npx next build --help` → "--experimental-build-mode [mode] … choices:
+      # compile, generate, generate-env"). Two steps in ONE job, sharing .next on
+      # disk, each with its OWN NODE_OPTIONS:
+      #   compile  — webpack only (build/index.js:872 `if (!isGenerateMode)` runs
+      #              the compilers; :1668 `if (!isCompileMode)` SKIPS static
+      #              generation, so NO page-data worker ever inherits this cap).
+      #   generate — page data + prerender only (webpack skipped; :537 skips the
+      #              dist clean; BUILD_ID is read back from .next).
+      # This dissolves the constraint every entry above ran into — "page-data RSS
+      # forbids raising the cap on 16 GB" was true only because ONE NODE_OPTIONS
+      # served both phases. The compile cap now reaches the build worker and
+      # nothing else; the generate cap is the last value page-data (cpus:1) was
+      # measured green under, 10240.
+      #   compile cap 14336 — ONE measured step above 13312, for the reason the
+      #   split exists: effective abort ceiling ~12.9 GB (90%) against 11.9 GB
+      #   committed ≈ 8% headroom where 13312 gave ~0% four times. Worker RSS
+      #   grows ≤1 GB over the 13312 green runs that the 11 GiB of swap below
+      #   already absorbed. If THIS aborts at one commit, STOP re-tuning the
+      #   number: the next lever is (d) below or the larger runner.
+      #   generate cap 10240 — page data + prerender never needed more: every
+      #   green run of this workflow collected page data under ≤13312 with
+      #   cpus:1, and the 10240 bracket's green runs did it under 10240.
+      # Lever (a), the same commit: five server-only packages externalised in
+      # next.config.ts (pdf-lib, puppeteer-core, @modelcontextprotocol/sdk,
+      # stripe, cheerio — ~10.3 MB of built JS the server compiler stops
+      # parsing, ×2 layers). Lever (b), outputFileTracingExcludes, was evaluated
+      # and NOT taken: file tracing runs AFTER compile in its own trace worker
+      # or the parent (build/index.js:903-914 → collect-build-traces.js), not in
+      # the aborting webpack worker, so it moves nothing here; it becomes relevant only if a run dies as a runner
+      # shutdown AFTER "server compiler finished".
+      # (d) THE NEXT CUT, PROPOSED NOT IMPLEMENTED, with the numbers to size it:
+      # `next build --debug-build-paths "<globs>"` (route-discovery.js:271-323
+      # filters app/ entries to the globs) can build the tree in halves —
+      # app/dashboard/** is 328 entries reaching 3189 first-party modules,
+      # app/api/** is 408 entries reaching 2141, everything else 256 entries
+      # reaching ~1300 — so a two-job matrix would put ~3.2k modules in the
+      # largest server compile instead of 4.8k. It is a CI-only gate (the
+      # partial .next is never deployed) and carries an experimental flag whose
+      # partial manifests are untested here; take it only after the two levers
+      # above have been READ in a CI log and found short.
+      # TO BE CONFIRMED BY CI on the commit carrying this: append the GC reading
+      # and the "server compiler finished" line here.
+      NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_HEAP_MB || '14336' }}"
       #
       # A COMMENT THAT SAID THE OPPOSITE OF THE LINE ABOVE IT USED TO LIVE HERE.
       # It read: "NO max-old-space-size override: `next build` uses Turbopack
@@ -511,5 +582,18 @@ jobs:
             echo "no space for a swapfile — building without it"
           fi
           echo "── memory after ──"; free -h; swapon --show || true
-      - name: Production build (next build)
-        run: npm run build
+      # Two steps, one .next (see the 2026-10-06 wave-105F entry beside
+      # NODE_OPTIONS above). `npm run build` (= `next build --webpack`, the single
+      # pass Vercel and local builds still run) is deliberately NOT used here: the
+      # gate's point is that compile and generate get DIFFERENT heaps.
+      - name: Production build — compile (webpack only, one compiler per worker)
+        env:
+          # The worker inherits NODE_OPTIONS (job env above); DEBUG makes the
+          # worker print "starting <name> compiler" / "<name> compiler finished"
+          # so an abort names its compiler. A few lines, no measurable cost.
+          DEBUG: "next:build:webpack-build*"
+        run: npx next build --webpack --experimental-build-mode compile
+      - name: Production build — generate (page data + prerender, no webpack)
+        env:
+          NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_GENERATE_HEAP_MB || '10240' }}"
+        run: npx next build --webpack --experimental-build-mode generate

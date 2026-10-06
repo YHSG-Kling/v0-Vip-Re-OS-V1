@@ -32,7 +32,6 @@
     "lib/ads/promote-post.ts": 1,
     "lib/agentic-os/agent-credentials.ts": 1,
     "lib/agentic-os/app-capability-registry.ts": 1,
-    "lib/agentic-os/capability-ownership.ts": 1,
     "lib/agentic-os/connection-nudge.ts": 1,
     "lib/agentic-os/connector-gateway.ts": 1,
     "lib/agentic-os/connector-probe.ts": 2,
@@ -182,6 +181,7 @@
     "lib/geo/video-landing.ts": 1,
     "lib/inbound-mail/offer-intake.ts": 1,
     "lib/intelligence/agent-registry.ts": 1,
+    "lib/intelligence/agent-scorecard.ts": 1,
     "lib/intelligence/appointment-whisper.ts": 1,
     "lib/intelligence/brokerage-pnl.ts": 2,
     "lib/intelligence/career-architect.ts": 2,
@@ -266,10 +266,13 @@
     "lib/kernel/listing-propensity.ts": 2,
     "lib/kernel/listings-batchdata-feed.ts": 1,
     "lib/kernel/lookalike-audience.ts": 1,
+    "lib/kernel/manager-delegation.ts": 6,
     "lib/kernel/manager-dissent.ts": 2,
     "lib/kernel/manager-registry.ts": 1,
     "lib/kernel/manager-signals.ts": 1,
     "lib/kernel/marketing/real-estate-compliance-gate.ts": 1,
+    "lib/kernel/mission-context.ts": 2,
+    "lib/kernel/mission-controller.ts": 5,
     "lib/kernel/missions.ts": 4,
     "lib/kernel/morning-standup.ts": 2,
     "lib/kernel/neighbor-farm.ts": 1,
@@ -287,7 +290,7 @@
     "lib/kernel/referral-appreciation.ts": 6,
     "lib/kernel/referral-radar.ts": 4,
     "lib/kernel/regulatory-watcher.ts": 5,
-    "lib/kernel/relationship-graph.ts": 5,
+    "lib/kernel/relationship-graph.ts": 14,
     "lib/kernel/repair-digest.ts": 1,
     "lib/kernel/returning-customer.ts": 4,
     "lib/kernel/reverse-prospecting.ts": 2,
@@ -534,7 +537,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10772,
+  "census": 10838,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -790,7 +793,7 @@
     "app/actions/exception-center.ts": 5,
     "app/actions/external-services.ts": 2,
     "app/actions/fb-audience-templates.ts": 1,
-    "app/actions/financial-kernel.ts": 20,
+    "app/actions/financial-kernel.ts": 21,
     "app/actions/financials.ts": 7,
     "app/actions/flight-recorder.ts": 6,
     "app/actions/forms-kernel.ts": 10,
@@ -869,7 +872,7 @@
     "app/actions/marketing-ops.ts": 2,
     "app/actions/marketing-package-automation.ts": 11,
     "app/actions/marketing-studio.ts": 18,
-    "app/actions/missions.ts": 4,
+    "app/actions/missions.ts": 6,
     "app/actions/mls-check.ts": 1,
     "app/actions/multi-persona.ts": 27,
     "app/actions/negotiation-copilot.ts": 2,
@@ -2479,7 +2482,7 @@
     "app/dashboard/transactions/[id]/buyer-move-section.tsx": 1,
     "app/dashboard/transactions/[id]/cda/cda-template-fields-card.tsx": 1,
     "app/dashboard/transactions/[id]/cda/cda-workflow-client.tsx": 1,
-    "app/dashboard/transactions/[id]/cda/correct-entry-dialog.tsx": 1,
+    "app/dashboard/transactions/[id]/cda/correct-entry-dialog.tsx": 3,
     "app/dashboard/transactions/[id]/closing-cost-actual-input.tsx": 1,
     "app/dashboard/transactions/[id]/closing-war-room-section.tsx": 1,
     "app/dashboard/transactions/[id]/closing-watchtower-section.tsx": 1,
@@ -3059,7 +3062,7 @@
     "lib/commission/agreement-total-rate.ts": 1,
     "lib/commission/cap-resolver.ts": 7,
     "lib/commission/cda-discrepancy.ts": 6,
-    "lib/commission/distribution-correction.ts": 3,
+    "lib/commission/distribution-correction.ts": 5,
     "lib/commission/engine.ts": 1,
     "lib/commission/finalization.ts": 2,
     "lib/commission/ledger-sync.ts": 7,
@@ -3418,7 +3421,7 @@
     "lib/integrations/zapier-direction.ts": 1,
     "lib/intelligence/adoption-pulse.ts": 1,
     "lib/intelligence/agent-registry.ts": 4,
-    "lib/intelligence/agent-scorecard.ts": 3,
+    "lib/intelligence/agent-scorecard.ts": 4,
     "lib/intelligence/appointment-whisper.ts": 5,
     "lib/intelligence/brokerage-pnl.ts": 3,
     "lib/intelligence/buyer-stall-predictor-runner.ts": 1,
@@ -3626,7 +3629,7 @@
     "lib/kernel/exception-center.ts": 2,
     "lib/kernel/experiments.ts": 3,
     "lib/kernel/farm-play.ts": 3,
-    "lib/kernel/financial.ts": 20,
+    "lib/kernel/financial.ts": 21,
     "lib/kernel/financing-pit-stop.ts": 8,
     "lib/kernel/fire-drills.ts": 3,
     "lib/kernel/flow-integrity.ts": 10,
@@ -3657,7 +3660,8 @@
     "lib/kernel/local-lifestyle.ts": 1,
     "lib/kernel/lookalike-audience.ts": 2,
     "lib/kernel/manager-activity.ts": 1,
-    "lib/kernel/manager-dissent.ts": 5,
+    "lib/kernel/manager-delegation.ts": 16,
+    "lib/kernel/manager-dissent.ts": 6,
     "lib/kernel/manager-registry.ts": 7,
     "lib/kernel/manager-signals.ts": 6,
     "lib/kernel/managing-broker.ts": 3,
@@ -3665,7 +3669,9 @@
     "lib/kernel/marketing-bench.ts": 1,
     "lib/kernel/marketing.ts": 16,
     "lib/kernel/milestone-calendar-bridge.ts": 1,
-    "lib/kernel/missions.ts": 20,
+    "lib/kernel/mission-context.ts": 5,
+    "lib/kernel/mission-controller.ts": 8,
+    "lib/kernel/missions.ts": 25,
     "lib/kernel/morning-standup.ts": 3,
     "lib/kernel/neighbor-farm.ts": 3,
     "lib/kernel/newsletter/assemble.ts": 2,
@@ -3705,7 +3711,7 @@
     "lib/kernel/referral-appreciation.ts": 8,
     "lib/kernel/referral-radar.ts": 6,
     "lib/kernel/regulatory-watcher.ts": 6,
-    "lib/kernel/relationship-graph.ts": 19,
+    "lib/kernel/relationship-graph.ts": 41,
     "lib/kernel/repair-digest.ts": 3,
     "lib/kernel/reporting-autonomy.ts": 3,
     "lib/kernel/reporting-scope.ts": 2,
@@ -6254,6 +6260,7 @@
     ],
     "app/actions/financial-kernel.ts": [
       "correctCommissionDistributionAction",
+      "voidCommissionDistributionAction",
       "loadFinancialWorkspaceAction",
       "loadAgentFinancialSummaryAction",
       "loadAgentFinancialDashboardSummaryAction",
@@ -6813,8 +6820,10 @@
     ],
     "app/actions/missions.ts": [
       "listMissionsAction",
+      "decideDelegationAction",
       "createMissionAction",
       "decideMissionAction",
+      "controlMissionAction",
       "blockMissionAction"
     ],
     "app/actions/mls-check.ts": [
@@ -12706,7 +12715,9 @@
       "CDAWorkflowClient"
     ],
     "app/dashboard/transactions/[id]/cda/correct-entry-dialog.tsx": [
-      "CorrectEntryDialog"
+      "CorrectEntryDialog",
+      "isVoidEligibleEntry",
+      "VoidEntryDialog"
     ],
     "app/dashboard/transactions/[id]/closing-cost-actual-input.tsx": [
       "ClosingCostActualInput"
@@ -15397,7 +15408,9 @@
     "lib/commission/distribution-correction.ts": [
       "planDistributionCorrection",
       "isSummarizedDistributionType",
-      "summaryAmountFromDistributions"
+      "isVoidedDistribution",
+      "summaryAmountFromDistributions",
+      "planDistributionVoid"
     ],
     "lib/commission/engine.ts": [
       "calculateCommission"
@@ -17152,6 +17165,7 @@
       "getAgentDisplayName"
     ],
     "lib/intelligence/agent-scorecard.ts": [
+      "graphBlock",
       "completionPct",
       "avgOrNull",
       "generateAgentScorecards"
@@ -18231,7 +18245,8 @@
       "emailFinancialReport",
       "loadAgentProfitLossSummary",
       "loadAgentFinancialDashboardSummary",
-      "correctCommissionDistribution"
+      "correctCommissionDistribution",
+      "voidCommissionDistribution"
     ],
     "lib/kernel/financing-pit-stop.ts": [
       "daysUntil",
@@ -18431,11 +18446,30 @@
     "lib/kernel/manager-activity.ts": [
       "loadManagerActivity"
     ],
+    "lib/kernel/manager-delegation.ts": [
+      "isDelegationStatus",
+      "canDelegationTransition",
+      "paidCapabilitiesFor",
+      "missionRemaining",
+      "getDelegation",
+      "pendingDelegationsFor",
+      "requestDelegation",
+      "acceptDelegation",
+      "startDelegationWork",
+      "returnDelegationResult",
+      "rejectDelegation",
+      "dissentDelegation",
+      "escalateDelegation",
+      "cancelDelegation",
+      "sweepDelegationDeadlines",
+      "settleDelegationForRun"
+    ],
     "lib/kernel/manager-dissent.ts": [
       "pickReviewer",
       "evaluateCompliance",
       "compliancePreflight",
       "reviewProposal",
+      "reviewDelegation",
       "runManagerDissent"
     ],
     "lib/kernel/manager-registry.ts": [
@@ -18488,17 +18522,38 @@
     "lib/kernel/milestone-calendar-bridge.ts": [
       "createTransactionMilestoneCalendarEvents"
     ],
+    "lib/kernel/mission-context.ts": [
+      "missionInPlayFor",
+      "compileManagerContext",
+      "mountToolsFromContext",
+      "contextBlocks",
+      "renderManagerContextSection"
+    ],
+    "lib/kernel/mission-controller.ts": [
+      "capabilityRiskClass",
+      "measureOfMetric",
+      "resolveOwnership",
+      "planMissionControl",
+      "controlMission",
+      "controlMissions",
+      "missionVerdictLines",
+      "NO_DELEGATIONS"
+    ],
     "lib/kernel/missions.ts": [
       "isMissionState",
       "canTransition",
+      "currentWorkingContext",
       "evaluateSuccess",
       "budgetExhausted",
       "withinAuthorityCeiling",
       "getMission",
       "activeMissionsFor",
+      "recordMissionEvidence",
+      "enlistMissionParticipants",
       "criteriaFromDecomposition",
       "createMission",
       "transitionMission",
+      "updateMissionWorkingContext",
       "blockMission",
       "unblockMission",
       "escalateMission",
@@ -18508,6 +18563,7 @@
       "syncMissionProgressFromTwin",
       "attachAction",
       "attachOutcome",
+      "attachEvidence",
       "sweepMissionDeadlines"
     ],
     "lib/kernel/morning-standup.ts": [
@@ -18738,6 +18794,7 @@
       "runRegulatoryWatcher"
     ],
     "lib/kernel/relationship-graph.ts": [
+      "entityIdForKey",
       "upsertRelationship",
       "upsertRelationships",
       "neighbors",
@@ -18749,6 +18806,7 @@
       "backfillTransactionCloseEdges",
       "planRosterEdges",
       "planHouseholdEdges",
+      "householdNodeId",
       "deriveHouseholdEdges",
       "planCoOwnerEdges",
       "deriveCoOwnerEdges",
@@ -18756,7 +18814,27 @@
       "deriveOccupancyEdges",
       "representedByOutsideAgent",
       "describeEdge",
-      "vendorSeatCorroboration"
+      "vendorSeatCorroboration",
+      "edgeValidAt",
+      "otherEndpoint",
+      "agentVisibleEdges",
+      "traverse",
+      "rankPaths",
+      "endRelationship",
+      "agentUserIdFor",
+      "deriveTeamMembershipEdge",
+      "planRecruitEdges",
+      "planCompetencyEdges",
+      "deriveCompetencyEdges",
+      "deriveEducationCompletedEdge",
+      "deriveOpportunityOwnership",
+      "planOpportunityEdges",
+      "deriveCampaignInteraction",
+      "backfillAgentStructureEdges",
+      "countRelationships",
+      "agentGraphCounts",
+      "agentStructureEdges",
+      "graphContextFor"
     ],
     "lib/kernel/repair-digest.ts": [
       "composeRepairDigest",

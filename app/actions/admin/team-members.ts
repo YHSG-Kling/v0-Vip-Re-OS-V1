@@ -110,6 +110,15 @@ export async function addTeamMember(input: {
     is_active: true, effective_from: new Date().toISOString().split("T")[0],
   }).select("id").single()
   if (error || !data) return { ok: false, error: error?.message ?? "insert failed" }
+  // RELATIONSHIP GRAPH (wave 105, lane 105D): the roster row IS the strongest member_of_team evidence
+  // (it carries the terms). agents.id → users.id is crossed inside the derivation (§3).
+  try {
+    const { deriveTeamMembershipEdge } = await import("@/lib/kernel/relationship-graph")
+    const edge = await deriveTeamMembershipEdge(svc, { brokerageId: ctx.brokerageId, teamId: input.teamId, agentsId: input.agentId, source: "team_members", effectiveFrom: new Date().toISOString().split("T")[0], actorUserId: ctx.userId ?? null })
+    if (edge.errors.length > 0 && !edge.degraded) console.error(`[team-members] member_of_team edge not derived: ${edge.errors.join("; ")}`)
+  } catch (e) {
+    console.error("[team-members] relationship edge derivation failed (non-blocking)", e)
+  }
   revalidatePath("/dashboard/team")
   return { ok: true, id: (data as { id: string }).id }
 }

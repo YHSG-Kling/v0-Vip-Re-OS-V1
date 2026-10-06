@@ -1419,7 +1419,12 @@ export type ContactNbaContextResult =
 
 export async function loadContactNbaContext(
   supabase: any,
-  input: { brokerageId: string; contact: ContactNbaRow; humanInitiated: boolean; now: Date },
+  input: {
+    brokerageId: string; contact: ContactNbaRow; humanInitiated: boolean; now: Date
+    /** Wave 105C: a caller that already read the contact's memory spine (the context compiler,
+     *  lib/kernel/mission-context.ts) hands it in so the spine is read ONCE per turn. */
+    preloaded?: { memory?: import("@/lib/kernel/conversation-memory").ContactMemoryForPrompt | null }
+  },
 ): Promise<ContactNbaContextResult> {
   const { brokerageId, contact, now } = input
   const { data: lineage, error: lineageErr } = await supabase
@@ -1495,7 +1500,9 @@ export async function loadContactNbaContext(
   const { loadContactMemoryForPrompt, currentMemoryFacts } = await import("@/lib/kernel/conversation-memory")
   const [summary, memory] = await Promise.all([
     buildBehavioralIntentSummary(contact.id, brokerageId, supabase, { now }),
-    loadContactMemoryForPrompt({ contactId: contact.id, brokerageId, client: supabase, now }),
+    input.preloaded && "memory" in input.preloaded
+      ? Promise.resolve(input.preloaded.memory ?? null)
+      : loadContactMemoryForPrompt({ contactId: contact.id, brokerageId, client: supabase, now }),
   ])
   const lastAny = contact.last_contacted_at && Number.isFinite(Date.parse(contact.last_contacted_at)) ? new Date(contact.last_contacted_at) : null
   return {

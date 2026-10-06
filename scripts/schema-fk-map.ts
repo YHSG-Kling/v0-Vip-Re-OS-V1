@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1824 of 1887 pairs) — storing them would be
+ * overwhelming majority (1828 of 1891 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1968 edges across 723 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1887 unordered
+ * MEASURED AT GENERATION: 1972 edges across 725 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1891 unordered
  * table pairs carry at least one FK; 63
  * carry more than one and are listed below. 15 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -84,9 +84,9 @@
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-05
+ * generated: 2026-10-06
  * source: public.live_foreign_keys_json()
- * body-sha256: be9c520937c4dbe5f5e024293d2de396c1de3d979f32d61beecf0524633b2aa5
+ * body-sha256: a23bb36c0d8e9b6909b4795cc534f5458f391288fa7086d863e2900ac1cb73c8
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -486,6 +486,8 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "mail_tracking": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns" },
   "managed_agent_sessions": { "brokerage_id": "brokerages", "managed_agent_id": "managed_agents" },
   "managed_agents": { "brokerage_id": "brokerages" },
+  "manager_delegation_events": { "brokerage_id": "brokerages", "delegation_id": "manager_delegations" },
+  "manager_delegations": { "brokerage_id": "brokerages", "mission_id": "missions" },
   "manager_signals": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "market_active_listings": { "brokerage_id": "brokerages", "market_id": "lead_scraping_markets" },
   "market_data": { "brokerage_id": "brokerages" },

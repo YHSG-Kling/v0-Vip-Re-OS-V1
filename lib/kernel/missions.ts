@@ -38,6 +38,14 @@
  *     whose last-touch action a mission owns), on the per-tenant learning cron.
  *   · decomposeObjective (twin) ← createMission, a brokerage_objective with no criteria.
  *   · registerTwinSeam("missions") at the bottom of this file, loaded by the Command Center build.
+ *
+ * SUPERVISED (wave 105, lane 105B): lib/kernel/mission-controller.ts is the deterministic
+ * EXECUTIVE MISSION CONTROLLER above this service — ownership / participation / progress /
+ * dependencies / disagreement / budget / authority / human-intervention verdicts per mission, on
+ * the same reaper tick as sweepMissionDeadlines. It coordinates THROUGH this file only:
+ * transitionMission / blockMission / escalateMission move state, enlistMissionParticipants widens
+ * the bench, recordMissionEvidence writes the verdict (reason_code MISSION_CONTROL). No second
+ * mission service, no second writer of `missions`.
  */
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { currentCausation } from "@/lib/kernel/causation"
@@ -61,6 +69,10 @@ export const MISSION_ATTENTION_STATES: ReadonlySet<MissionState> = new Set(["BLO
 export const MISSION_BLOCKED_STALE_HOURS = 72
 /** The ledger WHY of every transition (m710 widens agent_action_ledger_reason_code_check). */
 export const MISSION_LIFECYCLE_REASON = "MISSION_LIFECYCLE"
+/** The mission_events reason_code of a CONTROLLER verdict (lib/kernel/mission-controller.ts) —
+ *  mission_events.reason_code is free text (m710), so no CHECK widens for it; the ledger rows the
+ *  controller's transitions ride keep MISSION_LIFECYCLE. */
+export const MISSION_CONTROL_REASON = "MISSION_CONTROL"
 /** The manager signal types an escalation publishes (catalogued in lib/kernel/signal-registry.ts). */
 export const MISSION_ESCALATED_SIGNAL = "mission_escalated"
 export const MISSION_APPROVAL_REQUIRED_SIGNAL = "mission_escalated_for_approval"
@@ -124,6 +136,36 @@ export interface MissionRow {
 }
 
 export type MissionResult = { ok: true; mission: MissionRow } | { ok: false; reason: string; mission?: MissionRow }
+
+/**
+ * THE WORKING CONTEXT (wave 105, lane 105C) — the mission's short-term state a manager needs on
+ * every turn and must never re-derive from the database: what is being pursued right now, which
+ * requests are out (105A delegations), who is waiting on what, the subject's availability, free
+ * notes. DISTINCT from long-term memory (contacts.metadata.context_spine). It lives on the mission
+ * row as `evidence` entries of kind `working_context` (latest wins — a revision IS mission
+ * evidence; `progress` is numeric, so no m714), written ONLY by this service's transitions /
+ * progress and by delegation results, never by free-form manager chat. Read through
+ * currentWorkingContext; compiled into the prompt by lib/kernel/mission-context.ts.
+ */
+export interface WorkingContext {
+  objective_now?: string | null
+  open_requests?: Array<{ id: string; to: string; what: string; since: string }>
+  waiting_on?: { who: string; what: string; since: string } | null
+  availability?: Record<string, unknown> | null
+  notes?: string[]
+  /** Derived at write time from the row (budget − spent); null = unmetered. */
+  budget_remaining_usd?: number | null
+  updated_at: string
+  updated_by: string
+}
+export const WORKING_CONTEXT_EVIDENCE_KIND = "working_context"
+
+/** PURE: the latest working-context revision on the row, or null. @proofSeam the proof asserts latest-wins directly */
+export function currentWorkingContext(m: Pick<MissionRow, "evidence">): WorkingContext | null {
+  const rows = (m.evidence ?? []).filter((e) => e && e.kind === WORKING_CONTEXT_EVIDENCE_KIND && typeof (e as { updated_at?: unknown }).updated_at === "string") as unknown as WorkingContext[]
+  if (rows.length === 0) return null
+  return rows.reduce((a, b) => (b.updated_at >= a.updated_at ? b : a))
+}
 
 type Client = { from: (table: string) => any }
 
@@ -291,6 +333,47 @@ async function appendEvent(svc: Client, m: Pick<MissionRow, "id" | "brokerage_id
   if (error) console.error(`[missions] mission_events append refused (${e.kind}): ${error.message}`)
 }
 
+/**
+ * Append an `evidence` / `progress` row WITHOUT moving state — the controller's verdict door
+ * (lib/kernel/mission-controller.ts) and any supervisor that must leave a reasoned record on the
+ * mission's append-only log (LAW 5). Tenant-pinned: a mission of another tenant matches nothing and
+ * the caller is told. The refusal of the insert itself is published by appendEvent.
+ */
+export async function recordMissionEvidence(p: {
+  brokerageId: string; missionId: string; kind: "evidence" | "progress"; reason: string
+  reasonCode?: string | null; actor?: MissionActor; evidence?: Record<string, unknown>
+}, client?: Client): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const svc = await svcOf(client)
+  const m = await getMission(p.brokerageId, p.missionId, svc)
+  if (!m) return { ok: false, reason: "not_found" }
+  await appendEvent(svc, m, { kind: p.kind, reason: p.reason, reasonCode: p.reasonCode ?? null, actor: p.actor ?? { type: "system" }, evidence: p.evidence })
+  return { ok: true }
+}
+
+/**
+ * Widen the bench ADDITIVELY: registry keys the mission's work needs that the row does not yet
+ * name (the controller's participation verdict). Never removes a participant a human chose, never
+ * touches the owner, never moves state; the enlistment is an `evidence` row naming who and why.
+ */
+export async function enlistMissionParticipants(p: { brokerageId: string; missionId: string; managers: ManagerKey[]; reason: string; actor?: MissionActor }, client?: Client, deps: MissionDeps = {}): Promise<MissionResult & { enlisted?: ManagerKey[] }> {
+  const d = { ...defaultDeps, ...deps }
+  const svc = await svcOf(client)
+  const m = await getMission(p.brokerageId, p.missionId, svc)
+  if (!m) return { ok: false, reason: "not_found" }
+  if (MISSION_TERMINAL_STATES.has(m.state)) return { ok: false, reason: `terminal:${m.state}`, mission: m }
+  const bad = p.managers.find((k) => !isManagerKey(k))
+  if (bad) return { ok: false, reason: `unknown_participating_manager:${String(bad)}`, mission: m }
+  const have = new Set<ManagerKey>(m.participating_managers ?? [])
+  const enlisted = [...new Set(p.managers)].filter((k) => k !== m.owner_manager && !have.has(k))
+  if (enlisted.length === 0) return { ok: true, mission: m, enlisted: [] }
+  const participating_managers = [...have, ...enlisted]
+  const { data, error } = await svc.from("missions").update({ participating_managers, updated_at: d.now().toISOString() }).eq("brokerage_id", p.brokerageId).eq("id", m.id).select("id")
+  if (error) return { ok: false, reason: `update_refused:${error.message}`, mission: m }
+  if (!Array.isArray(data) || data.length !== 1) return { ok: false, reason: "not_found", mission: m }
+  await appendEvent(svc, m, { kind: "evidence", reason: `participants enlisted: ${enlisted.join(", ")} — ${p.reason}`, reasonCode: MISSION_CONTROL_REASON, actor: p.actor ?? { type: "system" }, evidence: { enlisted, participating_managers } })
+  return { ok: true, mission: { ...m, participating_managers }, enlisted }
+}
+
 // ─── create ───────────────────────────────────────────────────────────────────────────────────
 export interface CreateMissionInput {
   /** VERIFIED tenant (session / event / cron) — never a request body. */
@@ -447,7 +530,40 @@ export async function transitionMission(input: TransitionInput, client?: Client,
       if (nErr) console.error(`[missions] approval notification refused: ${nErr.message}`)
     }
   }
+  // WORKING CONTEXT (105C): a hold state records who is waited on; returning to work clears it.
+  if (input.to === "WAITING" || input.to === "BLOCKED" || input.to === "APPROVAL_REQUIRED" || input.to === "ESCALATED") {
+    await updateMissionWorkingContext({ brokerageId: m.brokerage_id, missionId: m.id, actor, patch: { waiting_on: { who: input.to === "APPROVAL_REQUIRED" ? (m.created_by ?? "approver") : input.to === "ESCALATED" ? m.owner_manager : (actor.id ?? actor.type), what: input.reason, since: now } } }, svc, deps)
+  } else if (input.to === "ACTIVE" && from !== "PROPOSED" && from !== "PLANNING") {
+    await updateMissionWorkingContext({ brokerageId: m.brokerage_id, missionId: m.id, actor, patch: { waiting_on: null } }, svc, deps)
+  }
   return { ok: true, mission: next }
+}
+
+/**
+ * THE ONE WRITER of the working context (header of WorkingContext above). Merges `patch` onto the
+ * latest revision, appends the new revision to missions.evidence (latest wins) and records an
+ * `evidence` mission_events row — so the flight record shows every change of the shared state.
+ * Wired: transitionMission (hold states), recordMissionProgress (objective progress), and the
+ * 105A delegation service (request issued → open_requests; result returned → cleared + note).
+ */
+export async function updateMissionWorkingContext(p: { brokerageId: string; missionId: string; patch: Partial<Omit<WorkingContext, "updated_at" | "updated_by">>; actor?: MissionActor }, client?: Client, deps: MissionDeps = {}): Promise<MissionResult & { working?: WorkingContext }> {
+  const d = { ...defaultDeps, ...deps }
+  const svc = await svcOf(client)
+  const m = await getMission(p.brokerageId, p.missionId, svc)
+  if (!m) return { ok: false, reason: "not_found" }
+  const actor = p.actor ?? { type: "system" }
+  const prev = currentWorkingContext(m)
+  const usdCap = typeof m.budget?.usd === "number" ? m.budget.usd : null
+  const next: WorkingContext = {
+    ...(prev ?? {}), ...p.patch,
+    budget_remaining_usd: usdCap === null ? null : Math.max(0, usdCap - Number(m.spent_usd ?? 0)),
+    updated_at: d.now().toISOString(), updated_by: `${actor.type}${actor.id ? `:${actor.id}` : ""}`,
+  }
+  const evidence = [...(m.evidence ?? []), { kind: WORKING_CONTEXT_EVIDENCE_KIND, ...next }]
+  const { error } = await svc.from("missions").update({ evidence, updated_at: next.updated_at }).eq("brokerage_id", p.brokerageId).eq("id", m.id).select("id")
+  if (error) return { ok: false, reason: `update_refused:${error.message}`, mission: m }
+  await appendEvent(svc, m, { kind: "evidence", actor, reason: "working context revised", evidence: { working_context: next, patch_keys: Object.keys(p.patch) } })
+  return { ok: true, mission: { ...m, evidence }, working: next }
 }
 
 // ─── blockers / escalation / completion ───────────────────────────────────────────────────────
@@ -511,6 +627,8 @@ export async function recordMissionProgress(p: { brokerageId: string; missionId:
   if (error) return { ok: false, reason: `update_refused:${error.message}`, mission: m }
   const verdict = evaluateSuccess(m.success_criteria ?? [], progress)
   await appendEvent(svc, m, { kind: "progress", actor: p.actor ?? { type: "system" }, evidence: { progress: p.progress, verdict } })
+  // WORKING CONTEXT (105C): what is being pursued now = the criteria still unmet after this progress.
+  await updateMissionWorkingContext({ brokerageId: p.brokerageId, missionId: m.id, actor: p.actor, patch: { objective_now: verdict.met ? "all success criteria met" : `unmet: ${verdict.unmet.join("; ") || "no criteria yet"}` } }, svc, deps)
   if (verdict.met && (m.success_criteria?.length ?? 0) > 0 && canTransition(m.state, "COMPLETED")) {
     const done = await completeMission({ brokerageId: p.brokerageId, missionId: m.id, reason: `success criteria met on progress: ${Object.entries(p.progress).map(([k, v]) => `${k}=${v}`).join(", ")}`, actor: p.actor }, svc, deps)
     return done.ok ? { ...done, completed: true } : { ok: true, mission: { ...m, progress }, completed: false }
@@ -602,6 +720,27 @@ export async function attachOutcome(p: {
   if (error) return { ok: false, reason: `update_refused:${error.message}`, mission: m }
   await appendEvent(svc, m, { kind: "outcome_attached", actor: p.actor ?? { type: "system" }, evidence: { ...row, progress_metric: p.progressMetric ?? null } })
   return { ok: true, mission: { ...m, outcomes, progress } }
+}
+
+/**
+ * Append a piece of EVIDENCE to the mission (the `evidence` jsonb array m710 carries) and record it
+ * as an `evidence` mission_events row. Wave 105A: the delegation service writes the delegation ref
+ * (request / return / escalation) here, so a mission's row names the work it asked other managers for.
+ * Idempotent per (kind, ref): the same delegation transition appended twice lands once.
+ */
+export async function attachEvidence(p: { brokerageId: string; missionId: string; evidence: { kind: string; ref: string } & Record<string, unknown>; actor?: MissionActor }, client?: Client, deps: MissionDeps = {}): Promise<MissionResult & { duplicate?: boolean }> {
+  const d = { ...defaultDeps, ...deps }
+  const svc = await svcOf(client)
+  const m = await getMission(p.brokerageId, p.missionId, svc)
+  if (!m) return { ok: false, reason: "not_found" }
+  const dup = (m.evidence ?? []).some((e) => e.kind === p.evidence.kind && e.ref === p.evidence.ref)
+  if (dup) return { ok: true, mission: m, duplicate: true }
+  const row = { ...p.evidence, at: d.now().toISOString() }
+  const evidence = [...(m.evidence ?? []), row]
+  const { error } = await svc.from("missions").update({ evidence, updated_at: d.now().toISOString() }).eq("brokerage_id", p.brokerageId).eq("id", m.id).select("id")
+  if (error) return { ok: false, reason: `update_refused:${error.message}`, mission: m }
+  await appendEvent(svc, m, { kind: "evidence", actor: p.actor ?? { type: "system" }, evidence: row })
+  return { ok: true, mission: { ...m, evidence } }
 }
 
 // ─── the reaper pass (called from the ONE stale-run reaper) ───────────────────────────────────

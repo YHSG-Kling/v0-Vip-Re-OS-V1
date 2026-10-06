@@ -9,7 +9,8 @@
  * calculated_amount over the entry's rows therefore see the corrected figure with no special case.
  *
  * Deterministic: integer CENTS throughout, one rounding at the boundary.
- * Writer: lib/kernel/financial.ts correctCommissionDistribution (finance-admin gate, session tenant).
+ * Writers: lib/kernel/financial.ts correctCommissionDistribution (finance-admin gate, session tenant) and,
+ * for an UNPAID entry, voidCommissionDistribution (wave 105E — planDistributionVoid below is its rule).
  */
 
 export type DistributionCorrectionKind = "reversal" | "adjustment"
@@ -99,11 +100,79 @@ export function isSummarizedDistributionType(t: string | null | undefined): t is
   return t === "agent" || t === "brokerage"
 }
 
-/** PURE — the summary figure for one distribution type: Σ calculated_amount over the rows of that type
- *  (original + its corrections), in cents, one rounding at the boundary. Rows of other types are ignored. */
+/** ONE void predicate (wave 105, lane 105E — CLAUDE.md §6): status 'voided' is the signal every reader
+ *  keys on (the CHECK vocabulary); `voided_at` / `voided_reason` are the stamps voidCommissionDistribution
+ *  writes beside it. The re-stamp, the reconciler and the economic graph all exclude rows through THIS. */
+export function isVoidedDistribution(r: { status?: string | null }): boolean {
+  return (r.status ?? "").toLowerCase() === "voided"
+}
+
+/** PURE — the summary figure for one distribution type: Σ calculated_amount over the LIVE rows of that
+ *  type (original + its corrections; a voided row carries no money — isVoidedDistribution), in cents, one
+ *  rounding at the boundary. Rows of other types are ignored. A row with no `status` counts as live. */
 export function summaryAmountFromDistributions(
-  rows: ReadonlyArray<{ distribution_type: string | null; calculated_amount: number | string | null }>,
+  rows: ReadonlyArray<{ distribution_type: string | null; calculated_amount: number | string | null; status?: string | null }>,
   type: SummarizedDistributionType,
 ): number {
-  return fromCents(rows.filter((r) => r.distribution_type === type).reduce((s, r) => s + toCents(r.calculated_amount), 0))
+  return fromCents(rows.filter((r) => r.distribution_type === type && !isVoidedDistribution(r)).reduce((s, r) => s + toCents(r.calculated_amount), 0))
+}
+
+// ─── VOID (wave 105, lane 105E — owner ruling 1, 2026-10-06) ─────────────────────────────────────
+// A void is for an entry whose money has NOT moved: status pending | approved, never posted (no
+// paid_at), not already voided, and not the original of a POSTED correction. It stamps status 'voided'
+// + voided_at + voided_reason on the SAME row (preserved — amounts untouched, never deleted) so every
+// Σ-over-rows reader drops it through isVoidedDistribution. A PAID entry can NEVER be voided: m689 made
+// it append-only and the money left at disbursement — it is corrected through a reversal / adjustment
+// row (planDistributionCorrection), and that refusal is spelled ONCE here (VOID_REFUSED_PAID).
+// Writer: lib/kernel/financial.ts voidCommissionDistribution (finance-admin gate, session tenant,
+// withActionLedger FINANCIAL + COMMISSION_UPDATED event + summary re-stamp + reconciler).
+
+/** A void reason is required and bounded — it is the audit trail's WHY, not an essay. */
+export const MAX_VOID_REASON_LENGTH = 500
+
+/** The one spelling of "a paid entry is not voided" (the UI shows it on posted rows, the kernel returns it). */
+export const VOID_REFUSED_PAID = "paid distributions are corrected through reversal/adjustment"
+
+/** The statuses a void may start from (commission_distributions.status vocabulary: approved | paid | pending | voided). */
+export const VOIDABLE_STATUSES: ReadonlySet<string> = new Set(["pending", "approved"])
+
+export interface VoidableEntry {
+  id: string
+  status: string | null
+  entry_type?: string | null
+  paid_at?: string | null
+  voided_at?: string | null
+}
+
+export type VoidPlan =
+  | { ok: true; reason: string }
+  | { ok: false; error: string }
+
+/**
+ * PURE eligibility + reason rule for voiding ONE entry. `corrections` are the rows whose
+ * adjusts_distribution_id names this entry: a POSTED one (status 'paid' or paid_at) means the entry is
+ * already in the reversal/adjustment lifecycle and is refused the same way a paid entry is.
+ * @proofSeam scripts/commission-set-in-stone-simulator.ts drives every refusal (paid, posted, voided,
+ * corrected, no reason, over-long reason) and the one admit directly, before the kernel command.
+ */
+export function planDistributionVoid(args: {
+  entry: VoidableEntry
+  corrections: ReadonlyArray<{ status?: string | null; paid_at?: string | null }>
+  reason: string
+}): VoidPlan {
+  const { entry } = args
+  const status = (entry.status ?? "").toLowerCase()
+  if (status === "paid" || entry.paid_at) return { ok: false, error: VOID_REFUSED_PAID }
+  if (isVoidedDistribution(entry) || entry.voided_at) return { ok: false, error: "This entry is already voided." }
+  if ((entry.entry_type ?? "entry") !== "entry") {
+    return { ok: false, error: "A correction row is posted the moment it is written — it is itself corrected by a new row, never voided." }
+  }
+  if (!VOIDABLE_STATUSES.has(status)) return { ok: false, error: `An entry in status '${entry.status ?? "unknown"}' cannot be voided.` }
+  if (args.corrections.some((c) => (c.status ?? "").toLowerCase() === "paid" || !!c.paid_at)) {
+    return { ok: false, error: `This entry already carries a posted correction — ${VOID_REFUSED_PAID}` }
+  }
+  const reason = String(args.reason ?? "").trim()
+  if (reason.length === 0) return { ok: false, error: "A reason is required to void an entry." }
+  if (reason.length > MAX_VOID_REASON_LENGTH) return { ok: false, error: `The reason must be ${MAX_VOID_REASON_LENGTH} characters or fewer.` }
+  return { ok: true, reason }
 }

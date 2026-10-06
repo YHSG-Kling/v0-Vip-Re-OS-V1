@@ -31,6 +31,19 @@
  * are invisible; webpack's own module count also includes packages and runtime chunks, so this is a
  * first-party LOWER BOUND, not the bundle size.
  *
+ * ── wave 105F (owner ruling 2026-10-06, "split the CI build heap"): THE APP GRAPH TOO ──
+ * The fourth deterministic 13312-cap abort (run 37404071865) was the SERVER build worker, which
+ * compiles the union of every app/ entry. The same walker now measures the APP side with the same
+ * rule shape: every page/layout/route/template/loading/error/not-found/default/global-error entry
+ * under app/ is walked (static + dynamic, comment-blanked), and the guard FAILS when the HEAVIEST
+ * SINGLE ENTRY exceeds APP_ENTRY_GRAPH_BUDGET or the UNION of all entries exceeds
+ * APP_UNION_GRAPH_BUDGET. Measured at 0865cda9b: top entry app/dashboard/agent/page.tsx = 1155,
+ * union of 992 entries = 4841. Budgets are headroom over those readings (not pins): a wave that
+ * lands a new hub import on a dashboard page shows up here as a number before it shows up in CI
+ * as an exit 134. On failure the top entries are printed; the fix is a cut, never a raised budget.
+ * Positive control: a synthetic app/ tree whose one page reaches budget+1 modules through a
+ * dynamic import fails, and the real walk must find the known heaviest surface.
+ *
  * Run: npx tsx scripts/proxy-graph-budget-guard.ts
  */
 import * as fs from "node:fs"
@@ -39,6 +52,9 @@ import * as path from "node:path"
 import { blankComments } from "./strip-comments"
 
 const PROXY_GRAPH_BUDGET = 40
+// wave 105F: measured 1155 (app/dashboard/agent/page.tsx) and 4841 (union of 992 entries) at 0865cda9b.
+const APP_ENTRY_GRAPH_BUDGET = 1300
+const APP_UNION_GRAPH_BUDGET = 5300
 
 let pass = 0
 let fail = 0
@@ -72,7 +88,10 @@ function makeWalker(root: string) {
     let m: RegExpExecArray | null
     while ((m = reStatic.exec(src))) {
       if (m[2]) continue
-      if (m[3] && /\{[^}]*\}\s*from\s*$/.test(m[3].trim())) {
+      // Anchored at ^ (wave 105F): `import Default, { type A } from "x"` is a VALUE import and must be
+      // followed; unanchored, the brace test alone skipped it and the app union read 6 modules short
+      // of the lane100D measurement tool that the proxy numbers were calibrated against.
+      if (m[3] && /^\{[^}]*\}\s*from\s*$/.test(m[3].trim())) {
         const inner = m[3].slice(m[3].indexOf("{") + 1, m[3].lastIndexOf("}"))
         const parts = inner.split(",").map((s) => s.trim()).filter(Boolean)
         if (parts.length && parts.every((p) => p.startsWith("type "))) continue
@@ -108,6 +127,33 @@ function judge(root: string, entryRel: string, budget: number) {
     return out.reverse().join(" → ")
   }
   return { ok: seen.size <= budget, count: seen.size, modules, chain, error: null as string | null }
+}
+
+/** Every webpack entry under app/ — the file names Next turns into routes. */
+function appEntries(root: string): string[] {
+  const out: string[] = []
+  const walk = (dir: string) => {
+    if (!fs.existsSync(dir)) return
+    for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (d.name === "node_modules" || d.name.startsWith(".")) continue
+      const p = path.join(dir, d.name)
+      if (d.isDirectory()) walk(p)
+      else if (/^(page|layout|route|template|loading|error|not-found|default|global-error)\.(tsx?|jsx?)$/.test(d.name)) out.push(p)
+    }
+  }
+  walk(path.join(root, "app"))
+  return out
+}
+
+/** The app-side rule (wave 105F): heaviest single entry ≤ entryBudget AND union of entries ≤ unionBudget. */
+function judgeApp(root: string, entryBudget: number, unionBudget: number) {
+  const w = makeWalker(root)
+  const entries = appEntries(root)
+  const ranked = entries.map((e) => ({ entry: w.rel(e), count: w.reach(e).seen.size })).sort((a, b) => b.count - a.count)
+  const union = new Set<string>()
+  for (const e of entries) for (const m of w.reach(e).seen) union.add(m)
+  const top = ranked[0] ?? { entry: "<none>", count: 0 }
+  return { entries: entries.length, ranked, top, union: union.size, ok: top.count <= entryBudget && union.size <= unionBudget }
 }
 
 // Modules the proxy is EXPECTED to reach today (the paywall's read path). Not a pass list — the
@@ -161,8 +207,43 @@ function main() {
   }
   if (!real.ok) for (const m of real.modules) console.log(`      P ${m}`)
 
+  console.log("\n[3 · positive control — a synthetic app/ tree the app rule must judge]")
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "app-graph-"))
+    try {
+      const write = (rel: string, body: string) => { fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true }); fs.writeFileSync(path.join(dir, rel), body) }
+      const budget = 5 // the page + hub + 4 leaves = budget + 1 modules, through a DYNAMIC edge
+      write("app/page.tsx", `// import "./lib/commented"\nimport { a } from "../lib/hub"\nexport default function P() { return a }\n`)
+      write("app/api/ping/route.ts", `export const GET = () => new Response("ok")\n`)
+      write("lib/hub.ts", `export const a = 1\nexport async function load() { return import("./leaf-0") }\n`)
+      for (let i = 0; i < budget - 1; i++) write(`lib/leaf-${i}.ts`, i < budget - 2 ? `import "./leaf-${i + 1}"\nexport {}\n` : `export {}\n`)
+      write("lib/commented.ts", `export {}\n`)
+      const over = judgeApp(dir, budget, 1000)
+      check(`POSITIVE CONTROL: an app/ page reaching budget+1 modules through a dynamic import fails (${over.top.count} > ${budget}, entries=${over.entries})`,
+        !over.ok && over.entries === 2 && over.top.count === budget + 1 && over.top.entry === "app/page.tsx", `top=${over.top.entry}:${over.top.count}`)
+      const unionOver = judgeApp(dir, 1000, over.union - 1)
+      check("POSITIVE CONTROL: the same tree fails the UNION budget when it is set one below the union", !unionOver.ok, `union=${unionOver.union}`)
+      fs.writeFileSync(path.join(dir, "lib/hub.ts"), `export const a = 1\n`)
+      const under = judgeApp(dir, budget, 1000)
+      check("CONTROL: the same tree with the dynamic edge cut passes", under.ok && under.top.count === 2, `top=${under.top.count}`)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  console.log("\n[4 · the real app/ graph — what the SERVER build worker compiles]")
+  const app = judgeApp(root, APP_ENTRY_GRAPH_BUDGET, APP_UNION_GRAPH_BUDGET)
+  check("the walker finds app/ entries", app.entries > 0, `${app.entries} entries`)
+  check("the walker sees a known heavy surface (app/dashboard/agent/page.tsx reaches > 100 modules) — a resolver that resolves nothing would report 1 everywhere",
+    (app.ranked.find((r) => r.entry === "app/dashboard/agent/page.tsx")?.count ?? 0) > 100)
+  console.log(`  · ${app.entries} app entries; union ${app.union} first-party modules (budget ${APP_UNION_GRAPH_BUDGET}); heaviest entries:`)
+  for (const r of app.ranked.slice(0, 5)) console.log(`      ${String(r.count).padStart(5)}  ${r.entry}`)
+  check(`RULE: the heaviest app entry reaches ≤ ${APP_ENTRY_GRAPH_BUDGET} first-party modules`, app.top.count <= APP_ENTRY_GRAPH_BUDGET, `${app.top.entry} reaches ${app.top.count}`)
+  check(`RULE: the union of all app entries is ≤ ${APP_UNION_GRAPH_BUDGET} first-party modules`, app.union <= APP_UNION_GRAPH_BUDGET, `${app.union} reached`)
+
   console.log("\n[blind spots]")
   console.log("  · computed import specifiers, package `exports` re-exports and tsconfig paths other than @/* and @/components/* are invisible; packages are not counted — a first-party LOWER BOUND, not webpack's module count")
+  console.log("  · the app numbers count modules once; the server compiler parses the client-graph subset TWICE (rsc + ssr layers), and node_modules packages not in serverExternalPackages are not counted at all")
 
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) process.exit(1)

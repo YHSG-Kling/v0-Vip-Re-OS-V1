@@ -128,6 +128,20 @@ export async function enrollInSequence(
   if (error) return { enrollment: null, error: error.message }
   if (!data) return { enrollment: null, error: "The enrollment was not created" }
 
+  // RELATIONSHIP GRAPH (wave 105, lane 105D): an enrollment naming BOTH the contact and its lead proves
+  // the contact has_opportunity (contact → lead — the lead row IS the cycle record; `opportunity` is not
+  // an entity type). Derived after the enrollment landed; best-effort.
+  try {
+    const { planOpportunityEdges, upsertRelationships } = await import("@/lib/kernel/relationship-graph")
+    const planned = planOpportunityEdges({ contactId: contactId as string, leadId: params.leadId ?? null, source: "sequence_enrollment", observedAt: new Date().toISOString() })
+    if (planned.length > 0) {
+      const r = await upsertRelationships(service, brokerageId, planned, params.enrolledBy ?? null)
+      if (r.errors.length > 0 && !r.degraded) console.error(`[enroll-in-sequence] has_opportunity edge not derived: ${r.errors.join("; ")}`)
+    }
+  } catch (e) {
+    console.error("[enroll-in-sequence] relationship edge derivation failed (non-blocking)", e)
+  }
+
   // Counter bump is best-effort and must never turn a real enrollment into a failure.
   const { error: rpcError } = await service.rpc("increment_sequence_enrollments", { seq_id: sequenceId })
   if (rpcError) console.error("[enroll-in-sequence] enrollment counter not incremented:", rpcError.message)

@@ -189,6 +189,114 @@ async function main() {
   check("m690: only a correction row may be negative", NEG_ONLY_CORRECTIONS.test(m690))
   check("POSITIVE CONTROL: the negative-amount finder rejects the pre-m690 CHECK", !NEG_ONLY_CORRECTIONS.test("CHECK ((calculated_amount >= (0)::numeric))"))
 
+  // ════ Wave 105 (lane 105E, owner ruling 1) — VOID an UNPAID entry IN PLACE; a PAID one is REFUSED to the
+  // reversal/adjustment path. Rule, not waypoint: whatever the amounts, the row is preserved (status
+  // 'voided' + voided_at + voided_reason stamped, amount untouched, never deleted), the actor rides the
+  // ledger row, the audit event is written, and every Σ-over-rows reader drops the row.
+  console.log("\n[VOID (105E) — an unpaid entry is voided in place; a paid one goes to reversal/adjustment]")
+  const checkD = (n: string, c: boolean, d?: unknown) => { check(n, c); if (!c && d !== undefined) console.log("    ↳ " + (typeof d === "string" ? d : JSON.stringify(d))) }
+  const { planDistributionVoid, VOID_REFUSED_PAID, MAX_VOID_REASON_LENGTH, isVoidedDistribution, summaryAmountFromDistributions: sumLive } = await import("../lib/commission/distribution-correction")
+  const pendingE = { id: "v1", status: "pending", entry_type: "entry", paid_at: null, voided_at: null }
+  check("a PAID entry is refused with the ONE spelling (paid distributions are corrected through reversal/adjustment)",
+    (() => { const r = planDistributionVoid({ entry: { ...pendingE, status: "paid" }, corrections: [], reason: "duplicate" }); return !r.ok && r.error === VOID_REFUSED_PAID })())
+  check("...and so is an 'approved' row that carries paid_at (settled money, whatever the status says)",
+    (() => { const r = planDistributionVoid({ entry: { ...pendingE, status: "approved", paid_at: "2026-10-01T00:00:00Z" }, corrections: [], reason: "x" }); return !r.ok && r.error === VOID_REFUSED_PAID })())
+  check("an already-voided row is refused", !planDistributionVoid({ entry: { ...pendingE, status: "voided", voided_at: "2026-10-01T00:00:00Z" }, corrections: [], reason: "again" }).ok)
+  check("a correction row is never voided (it is posted the moment it is written)", !planDistributionVoid({ entry: { ...pendingE, entry_type: "adjustment" }, corrections: [], reason: "nope" }).ok)
+  check("an entry referenced by a POSTED correction is refused to the reversal/adjustment path",
+    (() => { const r = planDistributionVoid({ entry: pendingE, corrections: [{ status: "paid", paid_at: "2026-10-02T00:00:00Z" }], reason: "late" }); return !r.ok && r.error.includes(VOID_REFUSED_PAID) })())
+  check("a reason is REQUIRED (blank refused)", !planDistributionVoid({ entry: pendingE, corrections: [], reason: "   " }).ok)
+  check(`a reason over ${MAX_VOID_REASON_LENGTH} characters is refused; exactly ${MAX_VOID_REASON_LENGTH} is admitted`,
+    !planDistributionVoid({ entry: pendingE, corrections: [], reason: "r".repeat(MAX_VOID_REASON_LENGTH + 1) }).ok && planDistributionVoid({ entry: pendingE, corrections: [], reason: "r".repeat(MAX_VOID_REASON_LENGTH) }).ok)
+  check("pending and approved (no paid_at, no posted correction) are the two voidable states; the reason is trimmed",
+    (() => { const a = planDistributionVoid({ entry: { ...pendingE, status: "approved" }, corrections: [{ status: "pending", paid_at: null }], reason: "  entered twice  " }); return a.ok && a.reason === "entered twice" && planDistributionVoid({ entry: pendingE, corrections: [], reason: "dup" }).ok })())
+  {
+    const rows = [{ distribution_type: "agent", calculated_amount: 9000, status: "paid" }, { distribution_type: "agent", calculated_amount: 2000, status: "voided" }, { distribution_type: "agent", calculated_amount: 100 }]
+    check("PURE: the summary Σ DROPS a voided row through the ONE predicate (9000 + 2000(voided) + 100 → 9100); a row with no status counts as live",
+      sumLive(rows, "agent") === 9100 && isVoidedDistribution(rows[1]) && !isVoidedDistribution(rows[2]))
+    check("POSITIVE CONTROL: without the predicate the same rows would sum to 11100", rows.reduce((s, r) => s + r.calculated_amount, 0) === 11100)
+  }
+
+  // The REAL kernel command against the same in-memory ledger: a second commission (c2 / t2 / a2) so the
+  // earlier assertions' rows are untouched.
+  const VOID_ID = "d0000000-0000-4000-8000-000000000105", BRK_ROW = "d0000000-0000-4000-8000-000000000106"
+  svc.tables.commission_distributions.push(
+    { id: VOID_ID, brokerage_id: BRK, transaction_id: "t2", commission_id: "c2", agent_id: "a2", team_id: null, rule_id: null, distribution_type: "agent", source_of_funds: "brokerage", cap_status: "pre_cap", status: "pending", entry_type: "entry", calculated_amount: 2000, paid_at: null, voided_at: null, voided_reason: null },
+    { id: BRK_ROW, brokerage_id: BRK, transaction_id: "t2", commission_id: "c2", agent_id: null, team_id: null, rule_id: null, distribution_type: "brokerage", source_of_funds: "brokerage", cap_status: null, status: "pending", entry_type: "entry", calculated_amount: 500, paid_at: null, voided_at: null, voided_reason: null },
+  )
+  svc.tables.agent_commissions.push({ id: "c2", brokerage_id: BRK, transaction_id: "t2", agent_id: "a2", net_to_agent: 2000, net_to_brokerage: 500, status: "pending" })
+  svc.tables.transaction_commissions.push({ id: "tc2-a", brokerage_id: BRK, transaction_id: "t2", recipient_type: "agent", recipient_id: "a2", calculated_amount: 2000, status: "pending" })
+  const distWrites = () => svc.writes.filter((w) => w.table === "commission_distributions" && w.op !== "insert").length
+  const w0 = svc.writes.length, dw0 = distWrites()
+  const vAgent = await finKernel.voidCommissionDistribution({ ctx: ctxFor("agent"), distributionId: VOID_ID, reason: "agent tries it" })
+  check("VOID: a NON-finance role (agent) is refused, and nothing is written", !vAgent.success && svc.writes.length === w0)
+  const vTl = await finKernel.voidCommissionDistribution({ ctx: ctxFor("team_lead"), distributionId: VOID_ID, reason: "team lead tries it" })
+  check("...team_lead is refused too (BROKERAGE_FINANCE_ADMIN_USER_TYPES excludes it, m472)", !vTl.success && svc.writes.length === w0)
+  const vCross = await finKernel.voidCommissionDistribution({ ctx: ctxFor("broker", OTHER), distributionId: VOID_ID, reason: "other tenant" })
+  check("TENANT ISOLATION: another tenant's finance admin cannot reach the entry (session tenant pins the read)", !vCross.success && svc.writes.length === w0)
+  const paidBefore = JSON.stringify(svc.tables.commission_distributions.find((r) => r.id === ORIG))
+  const vPaid = await finKernel.voidCommissionDistribution({ ctx: ctxFor("broker"), distributionId: ORIG, reason: "void the paid one" })
+  checkD("a PAID entry is REFUSED with the reversal/adjustment reason, byte-identical afterwards, no UPDATE/DELETE issued",
+    !vPaid.success && vPaid.error === VOID_REFUSED_PAID && JSON.stringify(svc.tables.commission_distributions.find((r) => r.id === ORIG)) === paidBefore && distWrites() === dw0, vPaid)
+  const vNoReason = await finKernel.voidCommissionDistribution({ ctx: ctxFor("broker"), distributionId: VOID_ID, reason: " " })
+  check("a MISSING reason is refused before any write (no ledger claim, no update)", !vNoReason.success && svc.writes.length === w0)
+  const rowCount = svc.tables.commission_distributions.length
+  const ok105 = await finKernel.voidCommissionDistribution({ ctx: ctxFor("broker"), distributionId: VOID_ID, reason: "  entered twice at intake  " })
+  const voidedRow = svc.tables.commission_distributions.find((r) => r.id === VOID_ID)
+  checkD("a finance admin's void SUCCEEDS: status 'voided', voided_at stamped, voided_reason stamped (trimmed)", ok105.success === true
+    && voidedRow?.status === "voided" && typeof voidedRow?.voided_at === "string" && voidedRow?.voided_reason === "entered twice at intake", ok105)
+  check("...the row is PRESERVED — same count, amount untouched (2000), no delete ever issued",
+    svc.tables.commission_distributions.length === rowCount && voidedRow?.calculated_amount === 2000 && !svc.writes.some((w) => w.table === "commission_distributions" && w.op === "delete"))
+  const voidUpdate = svc.writes.find((w) => w.table === "commission_distributions" && w.op === "update" && w.payload.status === "voided")
+  check("...the ONE update matched exactly one row and carried the three stamps together (§3: counted, not assumed)",
+    !!voidUpdate && voidUpdate.matched === 1 && "voided_at" in voidUpdate.payload && "voided_reason" in voidUpdate.payload && Object.keys(voidUpdate.payload).length === 3)
+  const ledgerRows = (svc.tables.agent_action_ledger ?? []).filter((r) => r.action === "finance.commission_distribution.void")
+  checkD("LAW 5 evidence: ONE agent_action_ledger row — FINANCIAL, HUMAN_REQUESTED, the admin as actor, the reason as reason_detail, settled 'executed'",
+    ledgerRows.length === 1 && ledgerRows[0].risk_class === "FINANCIAL" && ledgerRows[0].reason_code === "HUMAN_REQUESTED" && ledgerRows[0].actor_type === "user"
+    && ledgerRows[0].actor_user_id === "u-fin" && ledgerRows[0].subject_id === VOID_ID && /entered twice at intake/.test(String(ledgerRows[0].reason_detail)) && ledgerRows[0].status === "executed" && ledgerRows[0].brokerage_id === BRK,
+    ledgerRows)
+  check("...the refused attempts above left NO ledger row (the gate and the plan run before the claim)", (svc.tables.agent_action_ledger ?? []).length === 1)
+  const evRows = (svc.tables.lifecycle_events ?? []).filter((r) => r.entity_id === VOID_ID)
+  checkD("the canonical COMMISSION_UPDATED event is written with metadata.change 'distribution_voided', the reason and the actor",
+    evRows.length === 1 && evRows[0].event_type === "commission_updated" && evRows[0].metadata?.change === "distribution_voided" && evRows[0].metadata?.voidedReason === "entered twice at intake"
+    && evRows[0].metadata?.voidedBy === "u-fin" && evRows[0].brokerage_id === BRK, evRows)
+  const ac2 = svc.tables.agent_commissions.find((r) => r.id === "c2")
+  checkD("PROJECTIONS reconciled: agent_commissions.net_to_agent re-derived WITHOUT the voided row (2000 → 0) and the deal stamp follows (counted 1 + 1); net_to_brokerage keeps 500",
+    ac2?.net_to_agent === 0 && ac2?.net_to_brokerage === 500 && svc.tables.transaction_commissions.find((r) => r.id === "tc2-a")?.calculated_amount === 0
+    && (ok105.data as any)?.summaries?.agentCommissions === 1 && (ok105.data as any)?.summaries?.transactionStamps === 1, (ok105.data as any)?.summaries)
+  checkD("...and the read-only reconciler ran after the void and reports (checked / drifts / measured) with the result",
+    !!(ok105.data as any)?.reconciliation && typeof (ok105.data as any).reconciliation.drifts === "number" && typeof (ok105.data as any).reconciliation.checked === "number", (ok105.data as any)?.reconciliation)
+  const dw1 = distWrites()
+  const vAgain = await finKernel.voidCommissionDistribution({ ctx: ctxFor("broker"), distributionId: VOID_ID, reason: "again" })
+  check("voiding a voided row is refused — and the brokerage row of the same commission is untouched (pending, 500)",
+    !vAgain.success && distWrites() === dw1 && svc.tables.commission_distributions.find((r) => r.id === BRK_ROW)?.status === "pending")
+
+  // Wiring (stripped source) — the command, the action, the screen, the agent-facing absence, m716.
+  const voidCmd = kernelSrc.slice(kernelSrc.indexOf("export async function voidCommissionDistribution("))
+  check("the void command gates on the finance tier BEFORE it builds the service client, and the UPDATE sits INSIDE withActionLedger",
+    voidCmd.indexOf("isBrokerageFinanceAdmin(") > -1 && voidCmd.indexOf("isBrokerageFinanceAdmin(") < voidCmd.indexOf("createServiceClient()")
+    && voidCmd.indexOf("withActionLedger") > -1 && voidCmd.indexOf("withActionLedger") < voidCmd.indexOf('status: "voided"'))
+  check("the void UPDATE never matches a paid / voided row (m689 is never hit) and is .select()ed to be counted",
+    /\.update\(\{ status: "voided"[\s\S]{0,400}?\.not\("status", "in", '\("paid","voided"\)'\)[\s\S]{0,200}?\.is\("paid_at", null\)[\s\S]{0,200}?\.select\(/.test(voidCmd))
+  const voidAct = action.slice(action.indexOf("export async function voidCommissionDistributionAction("), action.indexOf("export async function loadFinancialWorkspaceAction("))
+  check("the void server action takes NO brokerage id and builds the actor from the session", voidAct.length > 0 && !/brokerageId/.test(voidAct.slice(0, voidAct.indexOf(") {"))) && /getFinancialActorContext\(\)/.test(voidAct))
+  check("the 'Void entry' control is WIRED on the same breakdown, ONLY under the finance-admin gate, through the SAME pure eligibility rule; paid rows show the reversal/adjustment path",
+    /canCorrectEntries && \([\s\S]*?isVoidEligibleEntry\([\s\S]*?<VoidEntryDialog\b/.test(ui) && /Correct via reversal\/adjustment/.test(ui) && /voidCommissionDistributionAction\(/.test(dlg) && /planDistributionVoid\(/.test(dlg))
+  // Agent-facing surfaces never carry the void (§5: commission is off agent display): nothing under
+  // app/portal or the agent brief names the command or the dialog.
+  const walk = (dir: string): string[] => readdirSync(join(process.cwd(), dir), { withFileTypes: true }).flatMap((d) => d.isDirectory() ? walk(`${dir}/${d.name}`) : /\.(ts|tsx)$/.test(d.name) ? [`${dir}/${d.name}`] : [])
+  const VOID_TOKEN = /voidCommissionDistribution|VoidEntryDialog/
+  const agentFiles = [...walk("app/portal"), "lib/intelligence/user-type-briefs/index.ts", "lib/intelligence/user-type-briefs/agent.ts"].filter((f) => { try { readFileSync(join(process.cwd(), f)); return true } catch { return false } })
+  const agentHits = agentFiles.filter((f) => VOID_TOKEN.test(stripComments(src(f))))
+  checkD(`no agent / portal surface names the void (${agentFiles.length} files scanned, 0 hits)`, agentFiles.length > 5 && agentHits.length === 0, agentHits.join(","))
+  check("POSITIVE CONTROL: the same scanner finds the control on the finance-gated breakdown", VOID_TOKEN.test(ui))
+  const m716File = readdirSync(join(process.cwd(), "supabase/migrations")).find((f) => /^m716-/.test(f))
+  const m716 = m716File ? stripComments(src(`supabase/migrations/${m716File}`)) : ""
+  const VOIDED_SHAPE = /CHECK \(\s*status <> 'voided'\s+OR \(\s*voided_at IS NOT NULL\s+AND voided_reason IS NOT NULL\s+AND length\(btrim\(voided_reason\)\) > 0\s+AND length\(voided_reason\) <= 500\s*\)\s*\)/
+  check("m716: a voided row must carry voided_at + a 1..500-char voided_reason (CHECK, added NOT VALID then VALIDATEd in two parts)",
+    VOIDED_SHAPE.test(m716) && /NOT VALID/.test(m716) && /VALIDATE CONSTRAINT commission_distributions_voided_shape_check/.test(m716))
+  check("POSITIVE CONTROL: the shape finder rejects a CHECK that forgets the reason", !VOIDED_SHAPE.test("CHECK (status <> 'voided' OR (voided_at IS NOT NULL))"))
+
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)

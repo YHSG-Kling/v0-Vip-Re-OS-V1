@@ -903,10 +903,13 @@ export async function confirmListingAppointment(
   // AI-booked seller waited for the daily cron. Idempotent (ONE listing.appointment_set
   // event per booking); never undoes the confirm.
   const { fireListingAppointmentSetForBooking } = await import("@/lib/workflow-orchestrator/chains/listing-appt-prep")
+  // WAVE 105A: an AI-ISA-booked appointment the agent confirmed — the ISA (the requesting manager)
+  // delegates the prep to the Listing Concierge (listing_appointment_prep) through the chain trigger.
   const prep = await fireListingAppointmentSetForBooking(svc, {
     calendarEventId: r.id,
     expectedBrokerageId: params.brokerageId,
     origin: "ai_isa_confirmed_booking",
+    delegate: { requestingManager: "ai_isa" },
   })
   if (prep.status === "error") console.error(`[listing-appointment] listing prep did not start for ${r.id}: ${prep.reason}`)
 

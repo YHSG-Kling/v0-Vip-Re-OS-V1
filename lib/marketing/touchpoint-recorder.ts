@@ -65,6 +65,15 @@ export async function recordCampaignTouchpointSafe(
       .select("id")
       .maybeSingle()
     if (error || !data) return { ok: false }
+    // RELATIONSHIP GRAPH (wave 105, lane 105D): the touchpoint IS an interacted_with_campaign fact
+    // (contact → campaign). Derived after the row landed; a lost edge is logged, never thrown.
+    try {
+      const { deriveCampaignInteraction } = await import("@/lib/kernel/relationship-graph")
+      const r = await deriveCampaignInteraction(svc, { brokerageId: input.brokerageId, campaignId: input.campaignId, contactIds: [input.contactId], source: "marketing_campaign_touchpoints" })
+      if (r.errors.length > 0 && !r.degraded) console.error(`[touchpoint-recorder] interacted_with_campaign edge not derived: ${r.errors.join("; ")}`)
+    } catch (e) {
+      console.error("[touchpoint-recorder] relationship edge derivation failed (non-blocking)", e)
+    }
     return { ok: true, touchpointId: data.id as string }
   } catch (err) {
     console.error("[touchpoint-recorder] insert failed:", err)
@@ -97,6 +106,14 @@ export async function recordCampaignTouchpointsBulkSafe(
     }))
     const { error } = await svc.from("marketing_campaign_touchpoints").insert(rows)
     if (error) return { ok: false, inserted: 0 }
+    // RELATIONSHIP GRAPH (wave 105, lane 105D): one interacted_with_campaign edge per audience contact.
+    try {
+      const { deriveCampaignInteraction } = await import("@/lib/kernel/relationship-graph")
+      const r = await deriveCampaignInteraction(svc, { brokerageId, campaignId, contactIds: contactIds, source: "marketing_campaign_touchpoints" })
+      if (r.errors.length > 0 && !r.degraded) console.error(`[touchpoint-recorder] interacted_with_campaign edges not derived: ${r.errors.slice(0, 3).join("; ")}`)
+    } catch (e) {
+      console.error("[touchpoint-recorder] relationship edge derivation failed (non-blocking)", e)
+    }
     return { ok: true, inserted: rows.length }
   } catch (err) {
     console.error("[touchpoint-recorder] bulk insert failed:", err)

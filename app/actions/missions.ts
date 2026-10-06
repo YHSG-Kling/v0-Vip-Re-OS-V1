@@ -15,6 +15,11 @@ import {
   activeMissionsFor, blockMission, createMission, transitionMission, unblockMission,
   type MissionPriority, type MissionRow, type MissionType, type SuccessCriterion,
 } from "@/lib/kernel/missions"
+import type { MissionVerdictLine } from "@/lib/kernel/mission-controller"
+import {
+  acceptDelegation, cancelDelegation, dissentDelegation, escalateDelegation, pendingDelegationsFor, rejectDelegation,
+  type DelegationRow,
+} from "@/lib/kernel/manager-delegation"
 
 type Door<T> = { ok: true; data: T } | { ok: false; error: string }
 
@@ -26,11 +31,45 @@ async function gate(): Promise<{ ok: true; brokerageId: string; userId: string; 
   return { ok: true, brokerageId: caller.brokerageId, userId: caller.userId, admin: isAdminOrBroker(profile) }
 }
 
-export async function listMissionsAction(input?: { mine?: boolean }): Promise<Door<{ active: MissionRow[]; attention: MissionRow[]; readRefused: string | null }>> {
+export async function listMissionsAction(input?: { mine?: boolean }): Promise<Door<{ active: MissionRow[]; attention: MissionRow[]; readRefused: string | null; verdicts: Record<string, MissionVerdictLine>; delegations: Record<string, DelegationRow[]>; delegationsRefused: string | null }>> {
   const g = await gate()
   if (!g.ok) return g
-  const r = await activeMissionsFor(g.brokerageId, { createdBy: input?.mine ? g.userId : null }, createServiceClient() as any)
-  return { ok: true, data: { active: r.active, attention: r.attention, readRefused: r.readRefused } }
+  const svc = createServiceClient() as any
+  const r = await activeMissionsFor(g.brokerageId, { createdBy: input?.mine ? g.userId : null }, svc)
+  // THE CONTROLLER'S VERDICT LINE (wave 105, lane 105B): owner, participants, progress %, blockers,
+  // budget, next action — planned from the row + the delegation seam, never written from here (the
+  // cron tick writes; this door only shows). A refused plan leaves the line out, never a fake one.
+  let verdicts: Record<string, MissionVerdictLine> = {}
+  try {
+    const { missionVerdictLines } = await import("@/lib/kernel/mission-controller")
+    const lines = await missionVerdictLines(g.brokerageId, r.active, svc)
+    verdicts = Object.fromEntries(Object.entries(lines).map(([id, v]) => [id, { line: v.line, nextAction: v.nextAction, flags: v.flags, progressPct: v.progress.pct, humanNeeded: v.human.needed, ownerExpected: v.owner.expected, participantsMissing: v.participants.missing }]))
+  } catch (e) { console.error(`[missions] controller verdict lines unavailable: ${e instanceof Error ? e.message : String(e)}`) }
+    const d = await pendingDelegationsFor(g.brokerageId, {}, svc)
+  return { ok: true, data: { active: r.active, attention: r.attention, readRefused: r.readRefused, verdicts, delegations: d.byMission, delegationsRefused: d.readRefused } }
+}
+
+/**
+ * WAVE 105A — a HUMAN intervenes on a manager-to-manager delegation (the Missions card): accept /
+ * resume it, reject it, dissent with objections, escalate it, or cancel it. Tenant-admin roster only
+ * (a human overriding what two managers agreed is a brokerage decision, not an agent's). The kernel
+ * service is the only writer; the state machine's refusal reads back verbatim.
+ */
+export async function decideDelegationAction(input: { delegationId: string; decision: "accept" | "reject" | "dissent" | "escalate" | "cancel"; reason: string }): Promise<Door<DelegationRow>> {
+  const g = await gate()
+  if (!g.ok) return g
+  if (!g.admin) return { ok: false, error: "Only a brokerage admin can decide a manager delegation." }
+  const svc = createServiceClient() as any
+  const reason = String(input?.reason ?? "").trim()
+  const p = { brokerageId: g.brokerageId, delegationId: String(input?.delegationId ?? ""), actor: { type: "user" as const, id: g.userId } }
+  const r = input?.decision === "accept" ? await acceptDelegation({ ...p, reason: reason || "accepted by a human" }, svc)
+    : input?.decision === "reject" ? await rejectDelegation({ ...p, reason: reason || "rejected by a human" }, svc)
+    : input?.decision === "dissent" ? await dissentDelegation({ ...p, objections: reason ? [reason] : [] }, svc)
+    : input?.decision === "escalate" ? await escalateDelegation({ ...p, reason: reason || "escalated by a human" }, svc)
+    : input?.decision === "cancel" ? await cancelDelegation({ ...p, reason: reason || "cancelled by a human" }, svc)
+    : null
+  if (!r) return { ok: false, error: "Unknown decision" }
+  return r.ok ? { ok: true, data: r.delegation } : { ok: false, error: r.reason }
 }
 
 export async function createMissionAction(input: {
@@ -66,6 +105,24 @@ export async function decideMissionAction(input: { missionId: string; decision: 
   }
   const r = await transitionMission({ brokerageId: g.brokerageId, missionId: input.missionId, to, reason: String(input.reason ?? "").trim() || `${input.decision} by a human`, actor: { type: "user", id: g.userId } }, svc)
   return r.ok ? { ok: true, data: r.mission } : { ok: false, error: r.reason }
+}
+
+/**
+ * RE-CHECK NOW (wave 105, lane 105B): a tenant admin asks the EXECUTIVE MISSION CONTROLLER to
+ * judge ONE mission outside the cron tick (lib/kernel/mission-controller.ts controlMission — plan,
+ * act through the mission service, record the verdict). Admin roster only; the tenant is the
+ * session's. The verdict line comes back verbatim for the card.
+ */
+export async function controlMissionAction(input: { missionId: string }): Promise<Door<{ line: string; nextAction: string; moved: boolean; state: string }>> {
+  const g = await gate()
+  if (!g.ok) return g
+  if (!g.admin) return { ok: false, error: "Only a brokerage admin can run the mission controller." }
+  const missionId = String(input?.missionId ?? "").trim()
+  if (!missionId) return { ok: false, error: "A mission id is required." }
+  const { controlMission } = await import("@/lib/kernel/mission-controller")
+  const r = await controlMission(g.brokerageId, missionId, createServiceClient() as any)
+  if (!r.ok) return { ok: false, error: r.reason }
+  return { ok: true, data: { line: r.plan.line, nextAction: r.plan.nextAction, moved: r.moved, state: r.plan.transition && r.moved ? r.plan.transition.to : r.plan.state } }
 }
 
 export async function blockMissionAction(input: { missionId: string; key: string; reason: string; clear?: boolean }): Promise<Door<MissionRow>> {

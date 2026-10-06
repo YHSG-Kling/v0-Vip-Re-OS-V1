@@ -27,6 +27,19 @@ export interface AgentScorecard {
   /** Recruiting source (null when the agent wasn't recruited through the pipeline). */
   recruitingRoiPct: number | null
   recruitingLifetimeNet: number | null
+  /** THE KNOWLEDGE GRAPH (wave 105, lane 105D) — the agent's structure edges (relationship_edges, agent =
+   *  users id): team, territories, competencies, education completed, opportunities owned, recruited-by,
+   *  residuals earned. Null when the graph is unreadable (never a fake zero). */
+  graph: { teams: number; territories: number; competencies: number; educationCompleted: number; opportunitiesOwned: number; recruitedBy: number; residuals: number } | null
+}
+
+/** Pure: the scorecard's graph block from the per-type counts (agentGraphCounts). */
+export function graphBlock(counts: Record<string, number>): NonNullable<AgentScorecard["graph"]> {
+  return {
+    teams: counts.member_of_team ?? 0, territories: counts.serves_territory ?? 0, competencies: counts.has_competency ?? 0,
+    educationCompleted: counts.completed_education ?? 0, opportunitiesOwned: counts.owns_opportunity ?? 0,
+    recruitedBy: counts.recruited_by ?? 0, residuals: counts.earns_residual ?? 0,
+  }
 }
 
 /** Pure: completion % (null when nothing assigned). */
@@ -122,11 +135,26 @@ export async function generateAgentScorecards(
     roiByAgent.set(r.recruited_agent_id, { roiPct: r.roi_pct != null ? Number(r.roi_pct) : null, net: r.lifetime_brokerage_net != null ? Number(r.lifetime_brokerage_net) : null })
   }
 
+  // THE KNOWLEDGE GRAPH (wave 105, lane 105D) — one read of the roster's structure edges; a refused or
+  // absent graph leaves `graph: null` on every card (published, never a fake zero).
+  let graphEdges: import("@/lib/kernel/relationship-graph").RelationshipEdge[] | null = null
+  let agentGraphCounts: ((edges: readonly import("@/lib/kernel/relationship-graph").RelationshipEdge[], agentUserId: string) => Record<string, number>) | null = null
+  if (userIds.length > 0) {
+    try {
+      const graph = await import("@/lib/kernel/relationship-graph")
+      const r = await graph.agentStructureEdges(supabase as any, { brokerageId: params.brokerageId, agentUserIds: userIds })
+      if (r.ok && !r.degraded) { graphEdges = r.edges; agentGraphCounts = graph.agentGraphCounts }
+      else if (r.error) console.warn("[agent-scorecard] relationship graph read refused:", r.error)
+    } catch (e) { console.warn("[agent-scorecard] relationship graph unavailable:", (e as Error).message) }
+  }
+
   const cards: AgentScorecard[] = agents.map((a) => {
     const p = prod.get(a.id) ?? { gci: 0, closings: 0 }
     const edu = (a.user_id && eduByUser.get(a.user_id)) || { assigned: 0, completed: 0 }
     const rr = roiByAgent.get(a.id) ?? { roiPct: null, net: null }
+    const graph = graphEdges && agentGraphCounts && a.user_id ? graphBlock(agentGraphCounts(graphEdges, a.user_id)) : null
     return {
+      graph,
       agentId: a.id,
       name: (a.user_id && nameByUser.get(a.user_id)) || "Agent",
       ytdGci: p.gci,

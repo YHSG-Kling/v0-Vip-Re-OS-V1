@@ -704,4 +704,11 @@ export enum KernelEvent {
   // has no mission rule; the flight recorder reads these through entity_type 'mission'.
   MISSION_CREATED                    = 'mission_created',
   MISSION_STATE_CHANGED              = 'mission_state_changed',
+  // ── Layer 7 — manager-to-manager delegation (wave 105, lane 105A) ───────────
+  // Audit rows (auditOnly) written by the ONE delegation service
+  // lib/kernel/manager-delegation.ts: a delegation requested, and every status
+  // transition the machine admitted. The reactor has no delegation rule; the flight
+  // recorder folds them into the mission's chain.
+  MANAGER_DELEGATION_REQUESTED       = 'manager_delegation_requested',
+  MANAGER_DELEGATION_STATE_CHANGED   = 'manager_delegation_state_changed',
 }

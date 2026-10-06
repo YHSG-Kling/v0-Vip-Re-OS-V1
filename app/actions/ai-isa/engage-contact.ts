@@ -35,7 +35,7 @@ import {
 } from '@/lib/ai-isa/isa-outreach-logger'
 import { evaluateOutbound } from '@/lib/kernel'
 import { dispatchEmail, dispatchSms } from '@/lib/providers/dispatch'
-import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
+import { loadBrandVoicePrompt, type BrandVoicePromptResult } from '@/lib/ai-isa/brand-voice-prompt'
 import { emitLifecycleEvent } from '@/lib/kernel/helpers'
 import { buildPersonalizationFacts, personalizeOutreach } from '@/lib/ai-isa/personalize-outreach'
 import { isLifetimeCustomerType } from '@/lib/contact-types'
@@ -73,6 +73,8 @@ export interface EngageContactParams {
   forceChannel?: string
   /** User who initiated (for audit trail) */
   actorId?: string
+  /** Wave 105C: the mission this touch serves (else the contact's active mission is looked up). */
+  missionId?: string
 }
 
 export interface EngageContactResult {
@@ -110,27 +112,40 @@ export async function engageContact(
   const supabase = createServiceClient()
 
   try {
-    // ── 1. Fetch contact ──────────────────────────────────────────────────
-    const { data: contact, error: fetchError } = await supabase
-      .from('contacts')
-      .select(
-        `id, first_name, last_name, email, phone,
-         contact_type, contact_persona, buyer_stage, status,
-         dnc_status, call_stop_flag, tcpa_consent, tcpa_consent_date,
-         email_opt_out, sms_opt_out, phone_opt_out, direct_mail_opt_out,
-         isa_reengage_allowed, ai_outreach_paused,
-         preferred_channel, social_handles,
-         brokerage_id, team_id, agent_id,
-         mailing_address, city, mailing_state:state, mailing_zip:zip_code,
-         budget_min, budget_max, timeline, motivation_type, enrichment_profile, age_range,
-         occupation, household_income, home_owner_status, life_events, marital_status,
-         last_contacted_at, qualification_summary`
-      )
-      .eq('id', contactId)
-      .eq('brokerage_id', brokerageId)
-      .maybeSingle()
+    // ── 0. SHARED WORKING CONTEXT (wave 105, lane 105C) — when a mission is in play for this
+    //    contact, ONE compile (lib/kernel/mission-context.ts) replaces three loads this function
+    //    made: the contacts row read (now CONTACT_CONTEXT_COLUMNS, read once by the compiler), the
+    //    NBA context load (4b) and the brand-voice load in dispatchContactChannel. The compiled
+    //    section is appended to the copy prompts' brand block so the writer sees the mission.
+    //    No mission (or a refused compile, logged) → the pre-105C loads below run unchanged. ──
+    const humanInitiated = !!actorId || !!forceChannel
+    const { missionInPlayFor, compileManagerContext } = await import('@/lib/kernel/mission-context')
+    const missionId = await missionInPlayFor({ brokerageId, subject: { type: 'contact', id: contactId }, missionId: params.missionId ?? null, client: supabase })
+    const compiledRes = missionId ? await compileManagerContext({ brokerageId, missionId, manager: 'ai_isa', tokenBudget: 1200, client: supabase }) : null
+    if (compiledRes && !compiledRes.ok) console.error(`[engageContact] mission context not compiled for ${missionId} (${compiledRes.reason}) — running the per-call loads`)
+    const compiled = compiledRes?.ok ? compiledRes : null
+    const compiledVoice = compiled?.context.policy.data?.voice ?? null
+    const preloadedVoice: BrandVoicePromptResult | null = compiled && compiledVoice
+      ? { ...compiledVoice, systemBlock: `${compiledVoice.systemBlock}\n\n${compiled.section}` }
+      : null
 
-    if (fetchError || !contact) {
+    // ── 1. Fetch contact — through the compiler when a mission is in play (the row is read ONCE
+    //    there; see CONTACT_CONTEXT_COLUMNS), else the same tenant-pinned read as before. ──
+    type ContactRow = Record<string, any> & { id: string }
+    let contact: ContactRow | null = null
+    if (compiled) {
+      contact = (compiled.context.person.data?.row as ContactRow | undefined) ?? null
+    } else {
+      const { CONTACT_CONTEXT_COLUMNS } = await import('@/lib/kernel/mission-context')
+      const { data, error: fetchError } = await supabase
+        .from('contacts')
+        .select(CONTACT_CONTEXT_COLUMNS)
+        .eq('id', contactId)
+        .eq('brokerage_id', brokerageId)
+        .maybeSingle()
+      contact = fetchError ? null : ((data as ContactRow | null) ?? null)
+    }
+    if (!contact) {
       return { success: false, reason: 'contact_not_found' }
     }
 
@@ -179,9 +194,18 @@ export async function engageContact(
     {
       const nbaNow = new Date()
       const { loadContactNbaContext, planNextContactTouch, decisionRecordFor, decisionInputSnapshot } = await import('@/lib/ai-isa/lead-action-plan')
-      const nbaCtx = await loadContactNbaContext(supabase, {
-        brokerageId, contact, humanInitiated: !!actorId || !!forceChannel, now: nbaNow,
-      })
+      // 105C: an AUTONOMOUS run with a mission in play reads the compiler's opportunity slice (the
+      // same loadContactNbaContext, run once there); a human-initiated run keeps its own load (its
+      // agent-touch / appointment / callback fields are nulled for humans) but is handed the memory
+      // the compiler already read.
+      const nbaCtx = compiled && !humanInitiated
+        ? (compiled.context.opportunity.data
+            ? { ok: true as const, context: compiled.context.opportunity.data }
+            : { ok: false as const, error: compiled.context.opportunity.refused ?? 'opportunity slice absent' })
+        : await loadContactNbaContext(supabase, {
+            brokerageId, contact, humanInitiated, now: nbaNow,
+            ...(compiled ? { preloaded: { memory: compiled.context.memory.data } } : {}),
+          })
       if (!nbaCtx.ok) {
         console.warn(`[engageContact] next-best-action inputs unreadable for ${contactId} — not touching: ${nbaCtx.error}`)
         return { success: false, reason: 'stop:nba_unreadable' }
@@ -267,7 +291,7 @@ export async function engageContact(
     //    REPLY to, then their AGE-GROUP psychology (gen-z text/video-first, boomers answer the
     //    phone, …), ROTATED off the last channel used — all within consent. resolveContactChannel
     //    remains the floor when consent permits nothing the manager would choose. ──
-    let resolvedChannel = resolveContactChannel(contact)
+    let resolvedChannel = resolveContactChannel(contact as Parameters<typeof resolveContactChannel>[0])
     try {
       const { permittedContactChannels, decideNextChannel } = await import('@/lib/ai-isa/next-best-touch')
       const { cohortFromEnrichment } = await import('@/lib/ai-isa/adaptive-reengagement')
@@ -287,7 +311,7 @@ export async function engageContact(
       const { rankChannelsByReplyRate } = await import('@/lib/campaign-sequences/channel-order')
       const ranked = rankChannelsByReplyRate([...byCh.entries()].map(([channel, v]) => ({ channel, sent: v.sent, replies: v.replies })))
       const nba = decideNextChannel({
-        permitted: permittedContactChannels(contact), cohort,
+        permitted: permittedContactChannels(contact as Parameters<typeof permittedContactChannels>[0]), cohort,
         learnedRanked: ranked.ranked.map((x) => x.channel), lastChannel,
       })
       if (nba.channel !== 'no_channel') resolvedChannel = nba.channel
@@ -311,17 +335,17 @@ export async function engageContact(
         return { success: true, channel: 'newsletter' }
       } catch (e) {
         console.error('[engageContact] newsletter handoff failed; falling back to email:', e)
-        return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+        return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
       }
     }
 
     // Consent guard for phone/SMS
     if (CONSENT_REQUIRED_CHANNELS.has(channel) && !contact.tcpa_consent) {
       // Fall back to email rather than block entirely
-      return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+      return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
     }
 
-    return await dispatchContactChannel(channel, contact, brokerageId, reason, actorId, supabase)
+    return await dispatchContactChannel(channel, contact, brokerageId, reason, actorId, supabase, preloadedVoice)
   } catch (error: any) {
     console.error('[engageContact] Error:', error)
     await collectError({
@@ -397,6 +421,8 @@ async function dispatchContactChannel(
   reason: ISAEngagementReason,
   actorId: string | undefined,
   supabase: ReturnType<typeof createServiceClient>,
+  /** 105C: the brand voice the context compiler already resolved (null = resolve it here). */
+  preloadedVoice: BrandVoicePromptResult | null = null,
 ): Promise<EngageContactResult> {
   const persona = (contact.contact_persona ?? 'buyer') as Persona
   const journeyType = contact.contact_type === 'seller' ? 'seller' : 'buyer'
@@ -420,8 +446,9 @@ async function dispatchContactChannel(
     agent_id: contact.agent_id,
   }
 
-  // Brand voice — extend the AI's knowledge to cover THIS contact.
-  const brandVoice = await loadBrandVoicePrompt({ brokerageId, agentId: contact.agent_id ?? null, contactId: contact.id })
+  // Brand voice — extend the AI's knowledge to cover THIS contact. With a mission in play the
+  // compiler resolved the same cascade once (brand-playbook-context → loadBrandVoicePrompt).
+  const brandVoice = preloadedVoice ?? await loadBrandVoicePrompt({ brokerageId, agentId: contact.agent_id ?? null, contactId: contact.id })
 
   // Compliance gate
   const compliance = await evaluateOutbound({
@@ -638,7 +665,7 @@ async function dispatchContactChannel(
   // ── SMS ──────────────────────────────────────────────────────────────────
   if (channel === 'sms') {
     if (!contact.phone || !contact.tcpa_consent || contact.sms_opt_out) {
-      return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+      return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
     }
 
     // Micro-personalized SMS — never a hardcoded fixed string.
@@ -760,7 +787,7 @@ async function dispatchContactChannel(
   if (channel === 'direct_mail') {
     const hasVerifiedAddr = !!(contact.mailing_address)
     if (!hasVerifiedAddr || contact.direct_mail_opt_out) {
-      return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+      return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
     }
 
     // contactId, NOT leadId (lane W3 2026-09-01). `contact.id` is a contacts.id;
@@ -829,7 +856,7 @@ async function dispatchContactChannel(
   if (channel === 'phone') {
     if (!contact.phone || !contact.tcpa_consent || contact.phone_opt_out || contact.call_stop_flag) {
       return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
-        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
     }
     const { buildCallContext } = await import('@/lib/ai-isa/build-call-context')
     const callContext = await buildCallContext({
@@ -838,7 +865,7 @@ async function dispatchContactChannel(
     })
     if (callContext.blocked) {
       return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
-        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
     }
     // ENGINE: Twilio-native (the single voice lane). placeOutboundAiCall runs
     // the TCPA + budget gates and writes its own voice_calls ledger row; on any
@@ -868,7 +895,7 @@ async function dispatchContactChannel(
     if (!placed.ok) {
       // Call couldn't be placed (TCPA block / provider) — drop a voicemail, else email.
       return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
-        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
     }
 
     await sentinelWrite(supabase, supabase.from('ai_isa_calls').insert({
@@ -905,11 +932,11 @@ async function dispatchContactChannel(
   //    top of mind without interrupting. Falls back to email when no preset / not permitted. ──
   if (channel === 'voicedrop') {
     return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
-      ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+      ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
   }
 
   // Fallback — unsupported channel → email
-  return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+  return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase, preloadedVoice)
 }
 
 /**

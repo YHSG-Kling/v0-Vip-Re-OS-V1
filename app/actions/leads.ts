@@ -501,6 +501,18 @@ export async function handOffToHumanAgent(leadId: string, targetAgentId?: string
 
     if (error) return { success: false, error: error.message }
 
+    // RELATIONSHIP GRAPH (wave 105, lane 105D): the hand-off makes the agent owns_opportunity (agent
+    // user → lead) from today; a release (no target) closes nothing here because the previous owner
+    // is not read on this door. Service client: relationship_edges writes are revoked from sessions.
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const { deriveOpportunityOwnership } = await import("@/lib/kernel/relationship-graph")
+      const r = await deriveOpportunityOwnership(createServiceClient(), { brokerageId, opportunity: { type: "lead", id: leadId }, toAgentsId: resolvedAgentId, source: "lead_handoff", actorUserId: userId ?? null })
+      if (r.errors.length > 0 && !r.degraded) console.error(`[leads.handOffToHumanAgent] owns_opportunity edge not derived: ${r.errors.join("; ")}`)
+    } catch (e) {
+      console.error("[leads.handOffToHumanAgent] relationship edge derivation failed (non-blocking)", e)
+    }
+
     // Log the handoff. This is the LEDGER the ISA console reads
     // (app/dashboard/isa/page.tsx renders `context_package.from_user_id` as the
     // person who handed the lead over). It was a fire-and-forget

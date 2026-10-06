@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 719 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 721 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-05
+ * generated: 2026-10-06
  * source: public.live_schema_json()
- * body-sha256: 49999008ee4cf7970e0c391f02620f69be8a3298a2f1167bd853e58e8e0fc513
+ * body-sha256: df0bb3f263262bd3499d3cb7700583dea633fa79d8224babde0c19fb31583be8
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -409,6 +409,8 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   mail_tracking: ["batch_id", "brokerage_id", "campaign_id", "created_at", "delivered_at", "id", "mailed_at", "provider_delivery_status", "returned_at", "tracking_payload"],
   managed_agent_sessions: ["anthropic_session_id", "brokerage_id", "created_at", "ended_at", "entity_id", "entity_type", "id", "last_agent_message", "last_event_at", "managed_agent_id", "status", "stop_reason"],
   managed_agents: ["agent_kind", "anthropic_agent_id", "anthropic_version", "archived_at", "brokerage_id", "config", "created_at", "id", "model", "system_prompt_hash", "updated_at"],
+  manager_delegation_events: ["actor_id", "actor_type", "brokerage_id", "causation_id", "correlation_id", "created_at", "delegation_id", "event_kind", "evidence", "from_status", "id", "ledger_entry_id", "reason", "reason_code", "to_status"],
+  manager_delegations: ["assigned_manager", "authority", "brokerage_id", "budget", "completed_at", "created_at", "deadline", "evidence", "id", "input_entities", "mission_id", "objective", "requested_capability", "requesting_manager", "required_output", "result", "spent_tokens", "spent_usd", "state_changed_at", "status", "updated_at"],
   manager_signals: ["brokerage_id", "consumed_action", "consumed_at", "contact_id", "created_at", "entity_id", "entity_type", "from_manager", "id", "message", "payload", "signal_type", "status", "to_manager"],
   market_active_listings: ["address_key", "batchdata_quicklists", "baths", "beds", "brokerage_id", "city", "created_at", "current_status", "id", "last_seen_at", "last_status_change_at", "list_price", "market_id", "property_address", "property_type", "sqft", "state", "updated_at", "zip"],
   market_data: ["active_listings", "avg_days_on_market", "brokerage_id", "city", "created_at", "data_date", "dom_trend", "id", "list_to_sale_ratio", "market_area", "market_type", "median_list_price", "median_sale_price", "months_of_inventory", "new_listings_30d", "price_trend_pct_1yr", "price_trend_pct_30d", "price_trend_pct_90d", "sold_listings_30d", "source_type", "state", "updated_at", "zip_code"],

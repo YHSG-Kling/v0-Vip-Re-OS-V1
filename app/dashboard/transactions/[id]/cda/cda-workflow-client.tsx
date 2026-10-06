@@ -1,7 +1,8 @@
 "use client"
 
 import { useState, useTransition, useEffect } from "react"
-import { CorrectEntryDialog } from "./correct-entry-dialog"
+import { CorrectEntryDialog, VoidEntryDialog, isVoidEligibleEntry } from "./correct-entry-dialog"
+import { VOID_REFUSED_PAID } from "@/lib/commission/distribution-correction"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
@@ -200,9 +201,13 @@ export function CDAWorkflowClient({
     entry_type?: string | null
     adjusts_distribution_id?: string | null
     correction_reason?: string | null
+    /** 105E — stamped by voidCommissionDistribution beside status 'voided' (live columns). */
+    voided_at?: string | null
+    voided_reason?: string | null
   }>>([])
   const [markingPaid, setMarkingPaid] = useState(false)
   const [correctingId, setCorrectingId] = useState<string | null>(null)
+  const [voidingId, setVoidingId] = useState<string | null>(null)
   const [distributionsVersion, setDistributionsVersion] = useState(0)
 
   useEffect(() => {
@@ -870,6 +875,10 @@ export function CDAWorkflowClient({
                               <Badge variant="secondary">
                                 <Clock className="h-3 w-3 mr-1" />Pending
                               </Badge>
+                            ) : dist.status === "voided" ? (
+                              <Badge variant="outline" className="capitalize line-through" title={dist.voided_reason ?? undefined}>
+                                Voided
+                              </Badge>
                             ) : (
                               <Badge variant="outline" className="capitalize">{dist.status}</Badge>
                             )}
@@ -878,15 +887,33 @@ export function CDAWorkflowClient({
                             <TableCell>
                               {dist.status === "paid" && (dist.entry_type ?? "entry") === "entry" && (
                                 <>
-                                  <Button size="sm" variant="ghost" className="text-xs h-7" onClick={() => setCorrectingId(dist.id)}>
+                                  <Button size="sm" variant="ghost" className="text-xs h-7" title={VOID_REFUSED_PAID} onClick={() => setCorrectingId(dist.id)}>
                                     Correct entry
                                   </Button>
+                                  <span className="block text-[11px] text-muted-foreground">Correct via reversal/adjustment</span>
                                   <CorrectEntryDialog
                                     entry={dist}
                                     priorCorrections={distributions.filter((d) => d.adjusts_distribution_id === dist.id)}
                                     open={correctingId === dist.id}
                                     onOpenChange={(o) => setCorrectingId(o ? dist.id : null)}
                                     onCorrected={() => { setDistributionsVersion((v) => v + 1); router.refresh() }}
+                                  />
+                                </>
+                              )}
+                              {/* 105E — the Void control ONLY on an eligible (unpaid, unvoided, uncorrected) entry;
+                                  the SAME pure rule the server applies decides what renders. */}
+                              {isVoidEligibleEntry(dist, distributions.filter((d) => d.adjusts_distribution_id === dist.id)) && (
+                                <>
+                                  <Button size="sm" variant="ghost" className="text-xs h-7 text-destructive" onClick={() => setVoidingId(dist.id)}>
+                                    Void entry
+                                  </Button>
+                                  <VoidEntryDialog
+                                    entry={dist}
+                                    corrections={distributions.filter((d) => d.adjusts_distribution_id === dist.id)}
+                                    amount={dist.calculated_amount}
+                                    open={voidingId === dist.id}
+                                    onOpenChange={(o) => setVoidingId(o ? dist.id : null)}
+                                    onVoided={() => { setDistributionsVersion((v) => v + 1); router.refresh() }}
                                   />
                                 </>
                               )}
@@ -901,7 +928,8 @@ export function CDAWorkflowClient({
                     <span>Total</span>
                     <span>
                       {formatCurrency(
-                        distributions.reduce((sum, d) => sum + (d.calculated_amount ?? 0), 0)
+                        // 105E — a voided row keeps its amount for the audit trail and carries no money.
+                        distributions.filter((d) => d.status !== "voided").reduce((sum, d) => sum + (d.calculated_amount ?? 0), 0)
                       )}
                     </span>
                   </div>

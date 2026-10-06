@@ -51,6 +51,9 @@ export const CAPABILITY_MANAGER: Record<AppCapability, ManagerKey> = {
   // ── Sellers & listings — the Concierge ──
   cma_generate:              "listing_concierge",
   listing_publish:           "listing_concierge",
+  // wave 105A: the pre-listing-appointment prep chain is the Concierge's; another manager (the AI ISA
+  // that booked the appointment) REQUESTS it through a manager_delegation, never runs it itself.
+  listing_appointment_prep:  "listing_concierge",
 
   // ── Buyer journey — the Shopping Agent ──
   appointment_schedule:      "shopping_agent",

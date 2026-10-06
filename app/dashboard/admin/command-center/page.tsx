@@ -344,7 +344,7 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
       )}
       {missions?.ok && (
         <div className="mx-6 mt-4">
-          <MissionsCard active={missions.data.active} attention={missions.data.attention} readRefused={missions.data.readRefused} managers={missionManagers} missionTypes={MISSION_TYPES} />
+          <MissionsCard active={missions.data.active} attention={missions.data.attention} readRefused={missions.data.readRefused} delegations={missions.data.delegations} delegationsRefused={missions.data.delegationsRefused} verdicts={missions.data.verdicts} managers={missionManagers} missionTypes={MISSION_TYPES} />
         </div>
       )}
       {missions && !missions.ok && (

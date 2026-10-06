@@ -254,6 +254,10 @@ export interface CommandCenterData {
    *  (platform scope sees every tenant through its own per-tenant builds). Null when unavailable —
    *  never a fake twin. The weekly exec plan reads it (one read, not six). */
   brokerageTwin: import("@/lib/kernel/brokerage-twin").BrokerageTwin | null
+  /** THE KNOWLEDGE GRAPH (wave 105, lane 105D) — how many relationship edges the tenant holds
+   *  (lib/kernel/relationship-graph.ts countRelationships), read beside the twin. `degraded` = the
+   *  table is not there yet; null = not read (no brokerage scope) — never a fake zero. */
+  relationships: { count: number; degraded: boolean } | null
   /** Proposed AI ISA voice dial batches awaiting approval (AI ISA — "call my hottest N"). */
   dialBatches:     Array<{ id: string; proposedCount: number; proposedAt: string | null }>
   /** Managers talking — recent inter-manager signals (who told whom what, and what the
@@ -802,6 +806,18 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   // of what the OS believed at this instant and the next build's baseline) and handed to the exec
   // plan. Brokerage-wide, or a team's own board under a team scope. Best-effort; null never fakes.
   let brokerageTwin: import("@/lib/kernel/brokerage-twin").BrokerageTwin | null = null
+  // THE KNOWLEDGE GRAPH's "relationships" figure (wave 105, 105D) — read beside the twin, same scope rule.
+  let relationships: { count: number; degraded: boolean } | null = null
+  if (brokerageId && (brokerageWide || (scope?.kind === "team" && scope.teamId))) {
+    try {
+      const { countRelationships } = await import("@/lib/kernel/relationship-graph")
+      const r = await countRelationships(supabase as any, { brokerageId })
+      if (r.error) console.error(`[command-center] relationships count refused: ${r.error}`)
+      else relationships = { count: r.count, degraded: r.degraded }
+    } catch (err) {
+      console.error("[command-center] relationships count failed:", err)
+    }
+  }
   if (brokerageId && (brokerageWide || (scope?.kind === "team" && scope.teamId))) {
     // Lane 104F: the twin's seams REGISTER AT MODULE LOAD — the economic graph (104A,
     // registerTwinSeam("contributionMargin")) and the mission runtime (104D, registerTwinSeam("missions")).
@@ -866,6 +882,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     economicGraph,
     weeklyExecPlan,
     brokerageTwin,
+    relationships,
     dialBatches,
     managerTalk,
     managerActivity,

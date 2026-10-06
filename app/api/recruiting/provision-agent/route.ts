@@ -254,6 +254,23 @@ export async function POST(req: Request) {
         // broker configures the model in Settings → Commission & Offerings and
         // future provisions stamp it.
         if ((recruit as any).recruiter_agent_id && (recruit as any).recruiter_agent_id !== agentId) {
+          // RELATIONSHIP GRAPH (wave 105, lane 105D): the recruiter's USERS id, read ONCE here and
+          // reused by the sponsor_of edge below. recruited_by is a fact of the recruit row itself —
+          // planted whether or not a revenue-share model is configured; earns_residual is planted only
+          // beside a planted agent_relationships edge (planRecruitEdges).
+          let recruiterUserId: string | null = null
+          try {
+            const { data: recruiterAgent, error: recruiterErr } = await service.from("agents").select("user_id").eq("id", (recruit as any).recruiter_agent_id as string).maybeSingle()
+            if (recruiterErr) console.error(`[provision-agent] recruiter agent read refused — no recruited_by edge: ${recruiterErr.message}`)
+            recruiterUserId = ((recruiterAgent as { user_id?: string | null } | null)?.user_id as string | null) ?? null
+            if (recruiterUserId && resolvedUserId) {
+              const { planRecruitEdges, upsertRelationships } = await import("@/lib/kernel/relationship-graph")
+              const r = await upsertRelationships(service, recruit.brokerage_id, planRecruitEdges({ recruitUserId: resolvedUserId, recruiterUserId, residualPlanted: false, observedAt: new Date().toISOString(), provisionedOn: new Date().toISOString().slice(0, 10) }), user.id)
+              if (r.errors.length > 0 && !r.degraded) console.error(`[provision-agent] recruited_by edge not derived: ${r.errors.join("; ")}`)
+            }
+          } catch (e) {
+            console.error("[provision-agent] recruited_by derivation failed (non-blocking)", e)
+          }
           const { getRevenueShareModel, edgeTermsFromModel } = await import("@/lib/commission/revenue-share-model")
           const rsState = await getRevenueShareModel(recruit.brokerage_id, service)
           const edgeTerms = edgeTermsFromModel(rsState)
@@ -299,13 +316,12 @@ export async function POST(req: Request) {
             // agents.user_id. agent_relationships stays the revenue-share record; a lost edge is
             // ledgered on the same sentinel the tree write uses.
             try {
-              const { data: sponsorAgent, error: sponsorErr } = await service.from("agents").select("user_id").eq("id", sponsorId).maybeSingle()
-              if (sponsorErr) console.error(`[provision-agent] sponsor agent read refused — no sponsor_of edge: ${sponsorErr.message}`)
-              else if (sponsorAgent?.user_id && resolvedUserId) {
-                const { upsertRelationship } = await import("@/lib/kernel/relationship-graph")
+              // The sponsor IS the recruiter (sponsorId = recruiter_agent_id): its users id was read above.
+              if (recruiterUserId && resolvedUserId) {
+                const { upsertRelationship, upsertRelationships, planRecruitEdges } = await import("@/lib/kernel/relationship-graph")
                 const edge = await upsertRelationship(service, {
                   brokerageId: recruit.brokerage_id,
-                  from: { type: "agent", id: sponsorAgent.user_id as string },
+                  from: { type: "agent", id: recruiterUserId },
                   to: { type: "agent", id: resolvedUserId },
                   type: "sponsor_of",
                   evidence: { source: "agent_relationships", confidence: 1, observed_at: new Date().toISOString() },
@@ -314,6 +330,10 @@ export async function POST(req: Request) {
                   const { recordBestEffortLoss } = await import("@/lib/kernel/write-sentinel")
                   await recordBestEffortLoss(service, { table: "relationship_edges", flow: "sponsor_of_relationship_edge", brokerageId: recruit.brokerage_id, reason: "sponsor_of edge beside the revenue-share tree; the tree write already landed" }, edge.error, null)
                 }
+                // WAVE 105 (105D): the planted tree edge means the sponsor EARNS RESIDUAL from the recruit.
+                const residual = planRecruitEdges({ recruitUserId: resolvedUserId, recruiterUserId, residualPlanted: true, observedAt: new Date().toISOString(), provisionedOn: new Date().toISOString().slice(0, 10) }).filter((e) => e.type === "earns_residual")
+                const rr = await upsertRelationships(service, recruit.brokerage_id, residual, user.id)
+                if (rr.errors.length > 0 && !rr.degraded) console.error(`[provision-agent] earns_residual edge not derived: ${rr.errors.join("; ")}`)
               }
             } catch (e) {
               console.error("[provision-agent] relationship edge derivation failed (non-blocking)", e)

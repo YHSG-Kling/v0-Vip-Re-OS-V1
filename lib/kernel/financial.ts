@@ -54,7 +54,9 @@ import { usd } from "@/lib/format/money"
 import {
   planDistributionCorrection, type DistributionCorrectionKind,
   isSummarizedDistributionType, summaryAmountFromDistributions, SUMMARIZED_DISTRIBUTION_TYPES,
+  planDistributionVoid,
 } from "@/lib/commission/distribution-correction"
+import { withActionLedger } from "@/lib/kernel/action-ledger"
 
 
 // ─── CONSTANTS & ENUMS ────────────────────────────────────────────────────────
@@ -1921,16 +1923,18 @@ async function restampCommissionSummaries(
   // twice carries two commissions, and summing the transaction would count both; the transaction's rows
   // (scoped to the recipient agent) only when the entry was posted without a commission.
   if (!p.commissionId && !p.transactionId) return { ...out, skipped: "entry has neither a commission nor a transaction" }
+  // `status` rides along (105E): a VOIDED row carries no money and summaryAmountFromDistributions drops
+  // it — the same rule the reconciler (reconcile-tracking.ts detectSummaryAmountDrift) compares with.
   let rowsQ = supabase
     .from("commission_distributions")
-    .select("distribution_type, calculated_amount")
+    .select("distribution_type, calculated_amount, status")
     .eq("brokerage_id", p.brokerageId)
     .eq("distribution_type", type)
   rowsQ = p.commissionId ? rowsQ.eq("commission_id", p.commissionId) : rowsQ.eq("transaction_id", p.transactionId as string)
   if (!p.commissionId && type === "agent" && p.agentId) rowsQ = rowsQ.eq("agent_id", p.agentId)
   const { data: rows, error: rowsErr } = await rowsQ
   if (rowsErr) return { ...out, error: `distribution rows: ${rowsErr.message}` }
-  const amount = summaryAmountFromDistributions((rows ?? []) as Array<{ distribution_type: string | null; calculated_amount: number | null }>, type)
+  const amount = summaryAmountFromDistributions((rows ?? []) as Array<{ distribution_type: string | null; calculated_amount: number | null; status: string | null }>, type)
   if (!Number.isFinite(amount)) return { ...out, error: "distribution rows carry a non-numeric amount" }
 
   if (p.commissionId) {
@@ -2046,6 +2050,173 @@ export async function correctCommissionDistribution(
       success: true,
       data: { correctionId: (inserted[0] as { id: string }).id, amount: plan.amount, netAfter: plan.netAfter, summaries: restamp },
     }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+// ─── VOID (wave 105, lane 105E — owner ruling 1, 2026-10-06) ─────────────────────────────────────
+
+export interface VoidCommissionDistributionInput {
+  ctx: FinancialActorContext
+  distributionId: string
+  reason: string
+}
+
+export interface VoidCommissionDistributionResult {
+  distributionId: string
+  voidedAt: string
+  /** The summary rows re-derived without the voided row (same re-stamp the correction uses). */
+  summaries: CommissionSummaryRestamp
+  /** reconcileSummariesAgainstLedger over the tenant's ledger after the void — drift is REPORTED, never
+   *  rolled into a failure (the void is done; a projection that still disagrees is the reaper's finding). */
+  reconciliation: { checked: number; drifts: number; measured: boolean; warnings: string[] } | null
+}
+
+/**
+ * VOID an UNPAID commission entry (owner ruling 1, wave 105): finance admins only, tenant from the
+ * SESSION context, eligibility by the pure rule (lib/commission/distribution-correction.ts
+ * planDistributionVoid — pending | approved, no paid_at, not voided, no posted correction, a reason ≤ 500
+ * chars). The SAME row is stamped status 'voided' + voided_at + voided_reason (preserved: amounts
+ * untouched, never deleted; the actor rides the ledger row — there is no voided_by column, and none is
+ * added). A PAID entry is REFUSED with VOID_REFUSED_PAID: it is corrected through a reversal /
+ * adjustment row (correctCommissionDistribution), never voided — m689's trigger would refuse the UPDATE
+ * anyway, and the status predicate on the UPDATE keeps this command from ever reaching it.
+ *
+ * LAW 5 evidence, in order: withActionLedger (FINANCIAL, HUMAN_REQUESTED — the admin's reason rides
+ * reason_detail) claims BEFORE the write and settles after it; the UPDATE is .select()ed and COUNTED
+ * (§3: an UPDATE matching nothing resolves); then the summary re-stamp (voided row excluded), the
+ * COMMISSION_UPDATED audit event (metadata.change 'distribution_voided'), and the read-only reconciler.
+ */
+export async function voidCommissionDistribution(
+  input: VoidCommissionDistributionInput,
+): Promise<KernelFinancialResult<VoidCommissionDistributionResult>> {
+  const { ctx, distributionId } = input
+  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
+    return { success: false, error: "Only the brokerage's finance admins can void a commission entry." }
+  }
+  if (!ctx.brokerageId) return { success: false, error: "Missing brokerage context" }
+  const supabase = createServiceClient()
+  try {
+    const { data: entry, error: readErr } = await supabase
+      .from("commission_distributions")
+      .select("id, brokerage_id, transaction_id, commission_id, agent_id, distribution_type, status, entry_type, calculated_amount, paid_at, voided_at")
+      .eq("id", distributionId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (readErr) return { success: false, error: `Could not read the entry: ${readErr.message}` }
+    if (!entry) return { success: false, error: "Commission entry not found" }
+
+    const { data: corrections, error: corrErr } = await supabase
+      .from("commission_distributions")
+      .select("status, paid_at")
+      .eq("adjusts_distribution_id", distributionId)
+      .eq("brokerage_id", ctx.brokerageId)
+    if (corrErr) return { success: false, error: `Could not read the entry's corrections: ${corrErr.message}` }
+
+    const e = entry as Record<string, unknown>
+    const plan = planDistributionVoid({
+      entry: { id: distributionId, status: (e.status as string | null) ?? null, entry_type: (e.entry_type as string | null) ?? null, paid_at: (e.paid_at as string | null) ?? null, voided_at: (e.voided_at as string | null) ?? null },
+      corrections: (corrections ?? []) as Array<{ status: string | null; paid_at: string | null }>,
+      reason: input.reason,
+    })
+    if (!plan.ok) return { success: false, error: plan.error }
+
+    const now = new Date().toISOString()
+    type Outcome = { ok: true; voidedAt: string } | { ok: false; error: string }
+    const outcome = await withActionLedger<Outcome>(
+      {
+        brokerageId: ctx.brokerageId,
+        action: "finance.commission_distribution.void",
+        actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null },
+        subject: { type: "commission_distribution", id: distributionId, ref: (e.transaction_id as string | null) ?? null },
+        reasonCode: "HUMAN_REQUESTED",
+        reasonDetail: plan.reason,
+        riskClass: "FINANCIAL",
+        systemSource: "commission_correction_screen",
+        detail: {
+          status_before: e.status ?? null,
+          calculated_amount: e.calculated_amount ?? null,
+          distribution_type: e.distribution_type ?? null,
+          transaction_id: e.transaction_id ?? null,
+          commission_id: e.commission_id ?? null,
+          agent_id: e.agent_id ?? null,
+        },
+      },
+      async (): Promise<Outcome> => {
+        // The status predicate is the m689 guard: a posted / voided row is never matched, so the
+        // append-only trigger is never hit; a 0-row match is REFUSED, not reported as success (§3).
+        const { data: voided, error: updErr } = await supabase
+          .from("commission_distributions")
+          .update({ status: "voided", voided_at: now, voided_reason: plan.reason })
+          .eq("id", distributionId)
+          .eq("brokerage_id", ctx.brokerageId)
+          .not("status", "in", '("paid","voided")')
+          .is("paid_at", null)
+          .select("id, voided_at")
+        if (updErr) return { ok: false, error: `Void refused: ${updErr.message}` }
+        if (!voided || voided.length !== 1) {
+          return { ok: false, error: `Void not recorded (${voided?.length ?? 0} rows matched — already paid / voided, or not in this brokerage)` }
+        }
+        return { ok: true, voidedAt: ((voided[0] as { voided_at?: string | null }).voided_at as string | null) ?? now }
+      },
+      {
+        settle: (r) => (r.ok ? { status: "executed", outcome: "voided" } : { status: "failed", outcome: "refused", error: r.error }),
+        replay: (claim) => ({ ok: false, error: `Void already ${claim.kind === "in_flight" ? "in flight" : "recorded"} for this entry` }),
+      },
+      { client: supabase },
+    )
+    if (!outcome.ok) return { success: false, error: outcome.error }
+
+    // The SUMMARY rows re-derived from the LIVE rows (voided excluded) — the void is already stamped, so
+    // a refused re-stamp is REPORTED beside the success, never rolled into a failure.
+    const restamp = await restampCommissionSummaries(supabase, {
+      brokerageId: ctx.brokerageId,
+      commissionId: (e.commission_id as string | null) ?? null,
+      transactionId: (e.transaction_id as string | null) ?? null,
+      agentId: (e.agent_id as string | null) ?? null,
+      distributionType: (e.distribution_type as string | null) ?? null,
+    })
+    if (restamp.error) console.error("[financial] commission entry voided; summary re-stamp incomplete:", restamp.error)
+
+    // The canonical commission event (KernelEvent vocabulary has no 'voided' — COMMISSION_UPDATED is the
+    // distribution-level change event, and the change rides metadata). Audit row with lineage; no fan-out
+    // (nobody has been ruled to be notified of a void — the ledger row above is the evidence).
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: ctx.brokerageId,
+      entityType: "commission_distribution",
+      entityId: distributionId,
+      event: KernelEvent.COMMISSION_UPDATED,
+      actorUserId: ctx.userId,
+      transactionId: (e.transaction_id as string | null) ?? undefined,
+      metadata: {
+        change: "distribution_voided",
+        statusBefore: e.status ?? null,
+        calculatedAmount: e.calculated_amount ?? null,
+        distributionType: e.distribution_type ?? null,
+        commissionId: e.commission_id ?? null,
+        voidedAt: outcome.voidedAt,
+        voidedReason: plan.reason,
+        voidedBy: ctx.userId,
+      },
+      createdAt: outcome.voidedAt,
+      auditOnly: true,
+      client: supabase,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "commission_distribution_void_echo", brokerageId: ctx.brokerageId, reason: "audit echo after the void landed; the action ledger row is the primary evidence" })
+
+    // The read-only reconciler (104A): the projections are expected to agree now; a drift is a FINDING
+    // reported with the result (and by the commission_amount_drift reaper), never a rollback.
+    let reconciliation: VoidCommissionDistributionResult["reconciliation"] = null
+    try {
+      const { reconcileSummariesAgainstLedger } = await import("@/lib/commission/reconcile-tracking")
+      const rec = await reconcileSummariesAgainstLedger(supabase, { brokerageId: ctx.brokerageId })
+      reconciliation = { checked: rec.checked, drifts: rec.drifts.length, measured: rec.measured, warnings: rec.warnings }
+      if (rec.drifts.length > 0) console.warn(`[financial] void of ${distributionId}: ${rec.drifts.length} projection(s) still drift from the ledger — see commission_amount_drift`)
+    } catch (recErr) {
+      reconciliation = { checked: 0, drifts: 0, measured: false, warnings: [`reconciler threw: ${recErr instanceof Error ? recErr.message : String(recErr)}`] }
+    }
+
+    return { success: true, data: { distributionId, voidedAt: outcome.voidedAt, summaries: restamp, reconciliation } }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) }
   }

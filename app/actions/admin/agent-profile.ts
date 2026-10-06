@@ -384,6 +384,22 @@ export async function updateAgentProfileAction(
       return { ok: false, error: "The database accepted the request but assigned no team — the user record did not match." }
     }
 
+    // RELATIONSHIP GRAPH (wave 105, lane 105D): an assignment plants member_of_team (agent user → team);
+    // a CLEAR closes the open edge (valid_to = today) — the roster row, if any, stays its own fact.
+    try {
+      const { deriveTeamMembershipEdge, endRelationship, neighbors } = await import("@/lib/kernel/relationship-graph")
+      if (input.teamId) {
+        const edge = await deriveTeamMembershipEdge(svc, { brokerageId: auth.brokerageId, teamId: input.teamId, agentUserId: input.targetUserId, source: "agent_profile" })
+        if (edge.errors.length > 0 && !edge.degraded) console.error(`[agent-profile] member_of_team edge not derived: ${edge.errors.join("; ")}`)
+      } else {
+        const open = await neighbors(svc, { brokerageId: auth.brokerageId, entity: { type: "agent", id: input.targetUserId }, types: ["member_of_team"], direction: "out" })
+        const today = new Date().toISOString().slice(0, 10)
+        for (const e of open.edges) await endRelationship(svc, { brokerageId: auth.brokerageId, from: { type: "agent", id: input.targetUserId }, to: { type: "team", id: e.to_entity_id }, type: "member_of_team", effectiveTo: today })
+      }
+    } catch (e) {
+      console.error("[agent-profile] relationship edge derivation failed (non-blocking)", e)
+    }
+
     if (!input.teamId) {
       // CLEARING the explicit assignment cannot end a roster membership — the
       // precedence rule will fall through to any active team_members row, and

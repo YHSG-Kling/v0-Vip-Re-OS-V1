@@ -701,6 +701,16 @@ export async function assignUserToTeam(params: {
     return { success: false, error: `The user joined the team, but their agent row was refused: ${agentTeamErr.message}` }
   }
 
+  // RELATIONSHIP GRAPH (wave 105, lane 105D): the assignment IS a member_of_team fact (agent user →
+  // team). Derived AFTER both survivor columns landed; a lost edge is reported, never thrown.
+  try {
+    const { deriveTeamMembershipEdge } = await import("@/lib/kernel/relationship-graph")
+    const edge = await deriveTeamMembershipEdge(service, { brokerageId: params.brokerageId, teamId: params.teamId, agentUserId: params.userId, source: "users.assignUserToTeam", actorUserId: params.callerUserId })
+    if (edge.errors.length > 0 && !edge.degraded) console.error(`[assignUserToTeam] member_of_team edge not derived: ${edge.errors.join("; ")}`)
+  } catch (e) {
+    console.error("[assignUserToTeam] relationship edge derivation failed (non-blocking)", e)
+  }
+
   await emitUserProvisionedEvent({
     userId:       params.userId,
     userType:     "agent",

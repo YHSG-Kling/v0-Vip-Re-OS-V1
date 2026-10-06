@@ -25,7 +25,7 @@
 // The pure detector/aggregator are unit-tested; the reconcile/deposit helpers do the I/O.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { summaryAmountFromDistributions } from "./distribution-correction"
+import { summaryAmountFromDistributions, isVoidedDistribution } from "./distribution-correction"
 import type { EconomicGraph, LedgerRef } from "@/lib/kernel/economic-graph"
 
 type Svc = SupabaseClient<any, any, any>
@@ -289,7 +289,9 @@ export function detectSummaryAmountDrift(input: {
   summary: { id: string; transaction_id: string | null; net_to_agent: number | string | null; net_to_brokerage: number | string | null }
   distributions: ReadonlyArray<{ id: string; distribution_type: string | null; calculated_amount: number | string | null; status?: string | null }>
 }): SummaryDrift[] {
-  const live = input.distributions.filter((d) => (d.status ?? "").toLowerCase() !== "voided")
+  // The ONE void predicate (lib/commission/distribution-correction.ts, 105E) — the same rule the
+  // re-stamp sums with, so a voided row drops out of the ledger figure AND its refs together.
+  const live = input.distributions.filter((d) => !isVoidedDistribution(d))
   const refs: LedgerRef[] = live.map((d) => ({ table: "commission_distributions" as const, id: d.id }))
   const out: SummaryDrift[] = []
   const agentLedger = Math.round(summaryAmountFromDistributions(live, "agent") * 100)
@@ -359,7 +361,7 @@ export async function reconcileSummariesAgainstLedger(
       // `dists` (commission_distributions rows, vocabulary admits "voided") — named apart from the
       // agent_commissions `rows` below so the vocabulary census tags each receiver with its own table.
       const dists = rows
-      agentNetBySummary.set(`${s.transaction_id}|${s.agent_id}`, Math.round(summaryAmountFromDistributions(dists.filter((d) => (d.status ?? "") !== "voided"), "agent") * 100))
+      agentNetBySummary.set(`${s.transaction_id}|${s.agent_id}`, Math.round(summaryAmountFromDistributions(dists.filter((d) => !isVoidedDistribution(d)), "agent") * 100))
     }
     // The seven-year stamp (agent recipient) vs the same ledger figure.
     for (const st of (stampRes.data ?? []) as Array<Record<string, any>>) {

@@ -201,6 +201,15 @@ export async function reassignContactAction(input: {
       return { ...empty, error: "That contact was not found in your brokerage — nothing was changed." }
     }
     result.contactMoved = true
+    // RELATIONSHIP GRAPH (wave 105, lane 105D): the new agent owns_opportunity (agent user → contact)
+    // from today and the old owner's open edge CLOSES (valid_to = today) — the move's own evidence.
+    try {
+      const { deriveOpportunityOwnership } = await import("@/lib/kernel/relationship-graph")
+      const r = await deriveOpportunityOwnership(svc, { brokerageId: auth.brokerageId, opportunity: { type: "contact", id: input.contactId }, toAgentsId: input.toAgentId, fromAgentsId: fromAgentId, source: "contact_reassignment" })
+      if (r.errors.length > 0 && !r.degraded) refusals.push(`relationship graph: ${r.errors.join("; ")}`)
+    } catch (e) {
+      console.error("[contact-reassignment] relationship edge derivation failed (non-blocking)", e)
+    }
   }
 
   // ── 2. Their leads (ownership follows the client — same as the bulk flow,

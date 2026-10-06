@@ -897,6 +897,11 @@ console.log("\n[code-side vocabularies mirrored by a CHECK]")
     { file: "lib/kernel/action-ledger.ts", constant: "ACTION_REASON_CODES", table: "agent_action_ledger", column: "reason_code", constraint: "agent_action_ledger_reason_code_check" },
     { file: "lib/kernel/action-ledger.ts", constant: "ACTION_ACTOR_TYPES", table: "agent_action_ledger", column: "actor_type", constraint: "agent_action_ledger_actor_type_check" },
     { file: "lib/kernel/action-ledger.ts", constant: "ACTION_STATUSES", table: "agent_action_ledger", column: "status", constraint: "agent_action_ledger_status_check" },
+    // Wave 105 (105D): the relationship graph's three vocabularies are code CONSTANTS written through the
+    // one kernel writer (no caller literal reaches the scan); m715 widens them and is queued for the integrator.
+    { file: "lib/kernel/relationship-graph.ts", constant: "RELATIONSHIP_ENTITY_TYPES", table: "relationship_edges", column: "from_entity_type", constraint: "relationship_edges_from_entity_type_check" },
+    { file: "lib/kernel/relationship-graph.ts", constant: "RELATIONSHIP_ENTITY_TYPES", table: "relationship_edges", column: "to_entity_type", constraint: "relationship_edges_to_entity_type_check" },
+    { file: "lib/kernel/relationship-graph.ts", constant: "RELATIONSHIP_TYPES", table: "relationship_edges", column: "relationship_type", constraint: "relationship_edges_relationship_type_check" },
   ]
   const constantValues = (rel: string, name: string): string[] => {
     const m = new RegExp(`const ${name}\\s*=\\s*\\[([^\\]]*)\\]`, "s").exec(stripComments(readFileSync(join(root, rel), "utf8")))

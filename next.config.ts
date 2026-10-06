@@ -263,6 +263,34 @@ const nextConfig: NextConfig = {
     "@hubspot/api-client",
     "intuit-oauth",
     "lob",
+    // Wave 105F (owner ruling 2026-10-06: split the CI build heap). The fourth
+    // deterministic 13312-cap abort (run 37404071865) is in the SERVER build
+    // worker, so the first lever is to stop webpack walking server-only
+    // packages it does not need to parse. Census (lane105F-census: packages
+    // reached from the 992 app entries, comment-blanked source, no 'use client'
+    // importer, not yet external — built .js MB on disk, the upper bound of
+    // what SWC/webpack parse per layer):
+    //   pdf-lib 5.73 MB (lib/documents/client-pdf, forms/pdf-form-fill,
+    //     kernel/board-packet-pdf, onboarding/certificate-pdf, video/persona-overlay)
+    //   puppeteer-core 2.23 MB (lib/assets/screenshot-capture.ts; the chromium
+    //     binary it drives is ALREADY external above)
+    //   @modelcontextprotocol/sdk 1.48 MB (lib/external/{rentcast,batchdata}-mcp.ts)
+    //   stripe 0.49 MB (lib/stripe.ts + the webhook/registration readers)
+    //   cheerio 0.32 MB (lib/lead-pipeline/scraper-parsers.ts, lib/osint-client.ts)
+    // ≈10.3 MB of built JS the server compiler no longer parses, against 58.3 MB
+    // of first-party TS it still must. The server compile parses shared modules
+    // in TWO layers (rsc + ssr), so the saving is bounded above by ~2× that.
+    // All five are direct dependencies with a CJS entry (package.json `main` or
+    // `exports.require`), so a runtime require() resolves under npm and pnpm.
+    // NOT externalised, with the reason: zod (also in the client graph and in
+    // the AI SDK's zod/v3-v4 dual handling — unmeasured instance risk for 2 MB),
+    // @zoom/meetingsdk (a client-side UMD bundle behind a dynamic import in a
+    // 'use client' component; the server never requires it).
+    "pdf-lib",
+    "puppeteer-core",
+    "@modelcontextprotocol/sdk",
+    "stripe",
+    "cheerio",
   ],
   reactStrictMode: true,
   poweredByHeader: false,
@@ -342,6 +370,16 @@ const nextConfig: NextConfig = {
         { '@hubspot/api-client': 'commonjs @hubspot/api-client' },
         { 'intuit-oauth': 'commonjs intuit-oauth' },
         { lob: 'commonjs lob' },
+        // Same pin for the wave-105F server-only packages (see the
+        // serverExternalPackages block). puppeteer-core is deliberately NOT
+        // pinned here: its `exports.require` resolves to an ESM file
+        // (package.json `type: module`), so a forced `commonjs` external would
+        // lean on Node's require(esm); Next's own external resolution picks the
+        // right module type for it from serverExternalPackages alone.
+        { 'pdf-lib': 'commonjs pdf-lib' },
+        { '@modelcontextprotocol/sdk': 'commonjs @modelcontextprotocol/sdk' },
+        { stripe: 'commonjs stripe' },
+        { cheerio: 'commonjs cheerio' },
       ]
     }
     // Reduce aggressive file watching to prevent duplicate dev server spawns

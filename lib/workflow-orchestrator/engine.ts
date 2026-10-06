@@ -286,6 +286,9 @@ export async function advanceRun(runId: string): Promise<RunResult> {
 
     // The mission learns the run failed (lane 104F): a workflow mission fails with it; any other is escalated.
     if (mission) await reportRunFailureToMission(svc, mission, runId, `step '${step.key}' — ${lastError ?? "unknown error"}`)
+    // WAVE 105A: a delegation this run served (input_entities.workflow_run_id) is ESCALATED — the
+    // requesting manager asked for a capability and the chain that delivers it failed. Best-effort.
+    await settleRunDelegation(svc, runId, "failed", `step '${step.key}' — ${lastError ?? "unknown error"}`)
 
     return { success: false, runId, status: "failed", error: lastError }
   }
@@ -446,5 +449,20 @@ async function completeRun(runId: string, mission: RunMission | null = null): Pr
       if (!r.ok && !r.reason.startsWith("invalid_transition")) console.error(`[workflow-engine] mission ${mission.missionId} NOT completed on run ${runId}: ${r.reason}`)
     } catch (e) { console.error(`[workflow-engine] mission completion failed: ${e instanceof Error ? e.message : String(e)}`) }
   }
+  // WAVE 105A: a delegation this run served RETURNS its result through the delegation service —
+  // the step outputs are what the assigned manager hands back to the requesting manager.
+  if (!completeErr) await settleRunDelegation(svc, runId, "completed", null)
   return { success: true, runId, status: "completed" }
+}
+
+/**
+ * WAVE 105A — the run → delegation seam (lib/kernel/manager-delegation.ts settleDelegationForRun):
+ * tenant from the run row; a run no delegation rode is a no-op. Best-effort, never throws.
+ */
+async function settleRunDelegation(svc: ReturnType<typeof createServiceClient>, runId: string, outcome: "completed" | "failed", detail: string | null): Promise<void> {
+  try {
+    const { settleDelegationForRun } = await import("@/lib/kernel/manager-delegation")
+    const r = await settleDelegationForRun({ runId, outcome, detail, actor: { type: "manager", id: "listing_concierge" } }, svc as any)
+    if (r && !r.ok && !r.reason.startsWith("invalid_transition")) console.error(`[workflow-engine] delegation for run ${runId} NOT settled (${outcome}): ${r.reason}`)
+  } catch (e) { console.error(`[workflow-engine] delegation settlement failed: ${e instanceof Error ? e.message : String(e)}`) }
 }

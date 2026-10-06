@@ -47,6 +47,7 @@ import {
   type RevenueShareModelState,
 } from "@/lib/commission/revenue-share-model"
 import type { DistributionRecord } from "@/lib/commission/types"
+import { isVoidedDistribution } from "@/lib/commission/distribution-correction"
 import { registerTwinSeam } from "@/lib/kernel/brokerage-twin"
 
 type Client = { from: (table: string) => any }
@@ -187,11 +188,11 @@ const toCents = (v: number | string | null | undefined): number => {
   const n = typeof v === "string" ? Number(v) : (v ?? 0)
   return Number.isFinite(n) ? Math.round((n as number) * 100) : 0
 }
-// ONE void signal: status = 'voided' (the CHECK vocabulary). `voided_at` / `voided_reason` are live
-// columns with NO writer anywhere (code, trigger, RPC — integrator census, wave 104); reading them
-// would be a second spelling nobody fills (CLAUDE.md §6). Owner item: a void writer belongs in
-// lib/commission/distribution-correction.ts, and would stamp both.
-const isVoided = (r: { status: string | null }) => (r.status ?? "").toLowerCase() === "voided"
+// ONE void signal: status = 'voided' (the CHECK vocabulary), through the ONE predicate
+// lib/commission/distribution-correction.ts isVoidedDistribution (wave 105E — the owner item that sat
+// here is built: lib/kernel/financial.ts voidCommissionDistribution stamps status + voided_at +
+// voided_reason together; the graph still keys on status alone, CLAUDE.md §6).
+const isVoided = (r: { status: string | null }) => isVoidedDistribution(r)
 const emptyByKind = (): Record<EconomicShareKind, number> =>
   ({ agent: 0, brokerage: 0, team_member: 0, referral: 0, residual: 0, royalty: 0, fee: 0 })
 

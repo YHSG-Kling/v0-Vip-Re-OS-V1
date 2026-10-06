@@ -60,7 +60,50 @@
  * lands, `contact` / `lead` endpoints on person↔person edges (spouse_partner, household_member,
  * co_buyer, co_owner, referred_by, bought_from, sold_to) should resolve to the person id — the
  * `household` entity type is reserved for that layer.
+ *
+ * ═══ WAVE 105 (lane 105D; m715 — APPLIED LIVE 2026-10-06) ═══
+ * THE REAL KNOWLEDGE GRAPH ON POSTGRES — the SAME table, the SAME writer, a traversal; no graph database.
+ *
+ * THE EDGE CONTRACT (owner vocabulary → live columns; no column rename):
+ *   source      = evidence.source      REQUIRED by the writer (which survivor proved it)
+ *   confidence  = evidence.confidence  REQUIRED by the writer, 0..1 (m698's CHECK bounds it)
+ *   valid_from  = effective_from       (date | null = since always known)      → EdgeInput.effectiveFrom
+ *   valid_to    = effective_to         (date | null = still in force)          → EdgeInput.effectiveTo
+ *   evidence    = evidence jsonb       ({source, confidence, observed_at} and nothing else is contractual)
+ *   tenant      = brokerage_id         (from the caller's SESSION context, never a request body)
+ *
+ * `opportunity` IS NOT AN ENTITY TYPE (one vocabulary, §6): an opportunity is the lead or contact row
+ * in a buying/selling cycle, so has_opportunity (contact → lead) and owns_opportunity (agent → lead |
+ * contact) point AT that row. `competency` and `household` have no table of their own: their ids are
+ * DETERMINISTIC (entityIdForKey — sha1 of "<kind>|<key>" laid out as a v5-shaped uuid), so two writers
+ * name the same node without a registry. `agent` endpoints stay USERS ids (§3).
+ *
+ * DERIVATIONS ADDED, each a small call inside the EXISTING writer (never a new pipeline):
+ *   member_of_team           → deriveTeamMembershipEdge   lib/kernel/users.ts assignUserToTeam,
+ *                                                         app/actions/admin/agent-profile.ts, team-members.ts (roster)
+ *   serves_territory         → backfillAgentStructureEdges on the weekly cron (farm_territories.agent_id has
+ *                              NO server-side writer — the admin page writes it client-side — so the survivor
+ *                              TABLE is read and healed, the R3 pattern; member_of_team heals there too)
+ *   recruited_by + earns_residual → planRecruitEdges       app/api/recruiting/provision-agent/route.ts
+ *   has_competency           → planCompetencyEdges        lib/learning-router/resolve-agent-learning-context.ts
+ *                              (the learning router's ONE scoreCompetency load; threshold = COMPETENCY_GAP_SCORE,
+ *                              confidence from the profile's evidence gate)
+ *   completed_education      → deriveEducationCompletedEdge  app/actions/academy-learning.ts (agent quiz pass),
+ *                              lib/kernel/education.ts recordCompletion (a contact's client education)
+ *   owns_opportunity         → deriveOpportunityOwnership  app/actions/leads.ts handOffToHumanAgent (lead),
+ *                              app/actions/contact-reassignment.ts (contact + its leads; the old owner's edge CLOSES)
+ *   has_opportunity          → planOpportunityEdges        lib/campaigns/enroll-in-sequence.ts (contact + lead named)
+ *   interacted_with_campaign → deriveCampaignInteraction  lib/marketing/touchpoint-recorder.ts (single + bulk)
+ *   belongs_to_household     → planHouseholdEdges (102F's derivation, extended): one household node per
+ *                              (tenant, address cluster of ≥ 2 contacts)
+ *
+ * TRAVERSAL: traverse (BFS over neighbors, depth ≤ 3, tenant-scoped, validity window honoured at `at`,
+ * cycle-safe, bounded fan-out, confidence multiplied along the path) + rankPaths (pure). SEAM for the
+ * context compiler (105C — export only): RELATIONSHIP_GRAPH_SEAM / graphContextFor. READERS: the contact
+ * brief (agentVisibleEdges — no lead endpoint reaches an agent surface, §5), the agent scorecard (graph
+ * counts), the command center (countRelationships beside the twin).
  */
+import { createHash } from "node:crypto"
 
 // ── The vocabulary (mirrored by m698's CHECKs — scripts/relationship-graph-guard.ts holds them equal) ──
 
@@ -69,15 +112,21 @@
  *  buyer_financial_profiles.lender_referred_partner_id names when the partner has no vendor identity. */
 export const RELATIONSHIP_ENTITY_TYPES = [
   "contact", "lead", "listing", "transaction", "agent", "vendor", "outside_agent", "household", "referral_partner",
+  // m715 (wave 105, 105D) — additive: team = teams.id, territory = farm_territories.id, campaign =
+  // marketing_campaigns.id, competency = entityIdForKey("competency", skill), education_module = learning_modules.id
+  "team", "territory", "campaign", "competency", "education_module",
 ] as const
 export type RelationshipEntityType = (typeof RELATIONSHIP_ENTITY_TYPES)[number]
 
-/** @proofSeam scripts/relationship-graph-guard.ts asserts this list equals m698's CHECK (one vocabulary, §6). */
+/** @proofSeam scripts/relationship-graph-guard.ts asserts this list equals m698's CHECK ∪ m715's additive widening (one vocabulary, §6). */
 export const RELATIONSHIP_TYPES = [
   "spouse_partner", "household_member", "co_buyer", "co_owner",
   "owns", "occupies", "previously_owned",
   "referred_by", "represented_by", "lender_for", "vendor_for", "sponsor_of",
   "bought_from", "sold_to",
+  // m715 (wave 105, 105D) — additive
+  "belongs_to_household", "has_opportunity", "interacted_with_campaign",
+  "member_of_team", "serves_territory", "recruited_by", "has_competency", "completed_education", "earns_residual", "owns_opportunity",
 ] as const
 export type RelationshipType = (typeof RELATIONSHIP_TYPES)[number]
 
@@ -166,8 +215,24 @@ function validateEdgeInput(input: EdgeInput): string | null {
   if (!isRelationshipType(input.type)) return `unknown relationship type ${String(input.type)}`
   if (input.from.type === input.to.type && input.from.id === input.to.id) return "an entity cannot relate to itself"
   if (!input.evidence?.source) return "evidence.source is required"
+  // m715 contract: confidence is REQUIRED (a number) — an absent confidence used to clamp to 0 silently.
+  if (typeof input.evidence?.confidence !== "number" || !Number.isFinite(input.evidence.confidence)) return "evidence.confidence is required (0..1)"
   if (!input.evidence?.observed_at) return "evidence.observed_at is required"
   return null
+}
+
+/**
+ * PURE — a DETERMINISTIC uuid for an entity that has no table of its own (`competency`, `household`):
+ * sha1 of "<kind>|<key>" laid out as a v5-shaped uuid (version nibble 5, RFC variant). The same key
+ * always names the same node, so two writers meet without a registry. Byte-stable across runs.
+ * @proofSeam scripts/relationship-graph-guard.ts asserts determinism, shape and key sensitivity.
+ */
+export function entityIdForKey(kind: "competency" | "household", key: string): string {
+  const h = createHash("sha1").update(`relationship-graph|${kind}|${key}`).digest("hex").slice(0, 32).split("")
+  h[12] = "5"
+  h[16] = ["8", "9", "a", "b"][parseInt(h[16], 16) & 3]
+  const s = h.join("")
+  return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20, 32)}`
 }
 
 // ── The ONE writer ──────────────────────────────────────────────────────────────────────────────
@@ -549,13 +614,15 @@ function isPartnered(status: string | null | undefined): boolean {
  * Symmetric, stored once (orientEdge). Deterministic: candidates are taken in id order.
  * @proofSeam scripts/relationship-graph-guard.ts asserts the planner on two contacts at one address.
  */
-export function planHouseholdEdges(subject: HouseholdCandidateRow, others: readonly HouseholdCandidateRow[], observedAt: string): EdgeInput[] {
+export function planHouseholdEdges(subject: HouseholdCandidateRow, others: readonly HouseholdCandidateRow[], observedAt: string, household?: { brokerageId: string }): EdgeInput[] {
   const key = householdAddressKey(subject)
   if (!key) return []
   const out: EdgeInput[] = []
   const sorted = [...others].filter((o) => o.id !== subject.id).sort((a, b) => a.id.localeCompare(b.id))
+  const members: string[] = []
   for (const other of sorted) {
     if (householdAddressKey(other) !== key) continue
+    members.push(other.id)
     const both = isPartnered(subject.marital_status) && isPartnered(other.marital_status)
     const one = isPartnered(subject.marital_status) || isPartnered(other.marital_status)
     const type: HouseholdRelationshipType = one ? "spouse_partner" : "household_member"
@@ -567,7 +634,22 @@ export function planHouseholdEdges(subject: HouseholdCandidateRow, others: reado
       evidence: { source: "household_financials", confidence, observed_at: observedAt },
     }))
   }
+  // m715 — THE HOUSEHOLD NODE: one per (tenant, address cluster), only when the cluster has ≥ 2 contacts
+  // (a lone contact at an address is not a household fact worth a node). Deterministic id from the
+  // tenant + the normalised address key; every member (subject included) belongs_to_household at 0.6
+  // (address alone — the person↔person edge above carries the marital evidence).
+  if (household?.brokerageId && members.length > 0) {
+    const node = { type: "household" as const, id: householdNodeId(household.brokerageId, key) }
+    for (const id of [subject.id, ...members].sort()) {
+      out.push({ from: { type: "contact", id }, to: node, type: "belongs_to_household", evidence: { source: "household_financials", confidence: 0.6, observed_at: observedAt } })
+    }
+  }
   return out
+}
+
+/** PURE — the household node for a tenant + normalised address key (street|zip). */
+export function householdNodeId(brokerageId: string, addressKey: string): string {
+  return entityIdForKey("household", `${brokerageId}|${addressKey}`)
 }
 
 /**
@@ -591,7 +673,7 @@ export async function deriveHouseholdEdges(
   const { data: others, error: othersErr } = await svc.from("contacts").select(cols)
     .eq("brokerage_id", input.brokerageId).or(`mailing_zip.eq.${zip},zip_code.eq.${zip}`).limit(200)
   if (othersErr) return { planned: 0, written: 0, existing: 0, errors: [`household candidates read refused: ${othersErr.message}`], degraded: false }
-  const planned = planHouseholdEdges(subject as HouseholdCandidateRow, (others ?? []) as HouseholdCandidateRow[], observedAt)
+  const planned = planHouseholdEdges(subject as HouseholdCandidateRow, (others ?? []) as HouseholdCandidateRow[], observedAt, { brokerageId: input.brokerageId })
   const r = await upsertRelationships(svc, input.brokerageId, planned, null)
   return { planned: planned.length, ...r }
 }
@@ -743,6 +825,17 @@ export function describeEdge(e: RelationshipEdge, contactId: string): string {
     sponsor_of: ["sponsor of", "sponsored by"],
     bought_from: ["bought from", "sold to"],
     sold_to: ["sold to", "bought from"],
+    // m715
+    belongs_to_household: ["belongs to household", "household of"],
+    has_opportunity: ["has opportunity", "opportunity of"],
+    interacted_with_campaign: ["interacted with campaign", "campaign reached"],
+    member_of_team: ["member of team", "team of"],
+    serves_territory: ["serves territory", "territory served by"],
+    recruited_by: ["recruited by", "recruited"],
+    has_competency: ["has competency", "competency of"],
+    completed_education: ["completed", "completed by"],
+    earns_residual: ["earns residual from", "pays residual to"],
+    owns_opportunity: ["owns opportunity", "opportunity owned by"],
   }
   const [out, inn] = label[e.relationship_type]
   const conf = Math.round(clampConfidence(Number(e.evidence?.confidence ?? 0)) * 100)
@@ -763,3 +856,446 @@ export function vendorSeatCorroboration(edges: readonly RelationshipEdge[], cont
   const served = [...new Set(own.filter((e) => e.to_entity_type === "contact").map((e) => e.to_entity_id))].sort()
   return { corroborated: own.length > 0, served, edges: own }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// WAVE 105 (lane 105D; m715) — traversal, the agent/person derivations, the structure backfill, seams
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/** PURE — `${type}:${id}` for set membership / path keys. */
+function refKey(r: { type: string; id: string }): string { return `${r.type}:${r.id}` }
+
+/**
+ * PURE — is the edge in force at `at` (YYYY-MM-DD)? valid_from = effective_from (null = always),
+ * valid_to = effective_to (null = still in force). Date strings compare lexically.
+ * @proofSeam scripts/relationship-graph-guard.ts asserts the window at its four edges.
+ */
+export function edgeValidAt(e: Pick<RelationshipEdge, "effective_from" | "effective_to">, at: string): boolean {
+  const day = at.slice(0, 10)
+  if (e.effective_from && String(e.effective_from).slice(0, 10) > day) return false
+  if (e.effective_to && String(e.effective_to).slice(0, 10) < day) return false
+  return true
+}
+
+/** PURE — the endpoint of `e` that is not `self` (null when `self` is on neither side). */
+export function otherEndpoint(e: RelationshipEdge, self: EntityRef): EntityRef | null {
+  if (e.from_entity_type === self.type && e.from_entity_id === self.id) return { type: e.to_entity_type, id: e.to_entity_id }
+  if (e.to_entity_type === self.type && e.to_entity_id === self.id) return { type: e.from_entity_type, id: e.from_entity_id }
+  return null
+}
+
+/**
+ * PURE — §5: agents see CONTACTS only. No edge with a `lead` endpoint reaches an agent-facing surface
+ * (the contact brief, the NBA context). The lead desk reads the unfiltered graph.
+ * @proofSeam scripts/relationship-graph-guard.ts asserts a lead-endpoint edge is dropped and a contact edge kept.
+ */
+export function agentVisibleEdges<T extends Pick<RelationshipEdge, "from_entity_type" | "to_entity_type">>(edges: readonly T[]): T[] {
+  return edges.filter((e) => e.from_entity_type !== "lead" && e.to_entity_type !== "lead")
+}
+
+export interface TraversalNode {
+  entity: EntityRef
+  /** Hops from the start (0 = the start itself). */
+  depth: number
+  /** Product of the edge confidences along the BEST path found (1 at the start). */
+  confidence: number
+  /** Edge ids along that path, start → node. */
+  path: string[]
+  /** The relationship type of the LAST hop (null at the start). */
+  via: RelationshipType | null
+}
+
+export interface TraversalResult {
+  ok: boolean
+  start: EntityRef
+  nodes: TraversalNode[]
+  edges: RelationshipEdge[]
+  /** The table is not there yet (m698 unapplied): an EMPTY graph, not a refusal. */
+  degraded: boolean
+  /** A fan-out or node cap was hit — the frontier beyond it was not read. */
+  truncated: boolean
+  error: string | null
+}
+
+export const TRAVERSE_MAX_DEPTH = 3
+const TRAVERSE_DEFAULT_FANOUT = 25
+const TRAVERSE_DEFAULT_MAX_NODES = 200
+
+/**
+ * BFS over relationship_edges from `start`, tenant-scoped, depth ≤ TRAVERSE_MAX_DEPTH, honouring the
+ * validity window at `at` (default today), cycle-safe (a node is visited once; a better-confidence
+ * path to an already-visited node updates its confidence but never re-expands it), bounded fan-out
+ * per node and a node cap (truncated = true when either bites), confidence multiplied along the path.
+ * Deterministic: neighbors are sorted, expansion order is sorted. Reads through `neighbors` only.
+ */
+export async function traverse(
+  svc: Svc,
+  input: { brokerageId: string; start: EntityRef; depth?: number; types?: readonly RelationshipType[]; at?: string; maxFanOut?: number; maxNodes?: number },
+): Promise<TraversalResult> {
+  const base: TraversalResult = { ok: true, start: input.start, nodes: [], edges: [], degraded: false, truncated: false, error: null }
+  if (!input.brokerageId) return { ...base, ok: false, error: "tenant scope required" }
+  if (!input.start?.type || !input.start?.id) return { ...base, ok: false, error: "a start entity is required" }
+  const depth = Math.max(0, Math.min(input.depth ?? TRAVERSE_MAX_DEPTH, TRAVERSE_MAX_DEPTH))
+  const at = (input.at ?? new Date().toISOString()).slice(0, 10)
+  const fanOut = Math.max(1, input.maxFanOut ?? TRAVERSE_DEFAULT_FANOUT)
+  const maxNodes = Math.max(1, input.maxNodes ?? TRAVERSE_DEFAULT_MAX_NODES)
+
+  const seen = new Map<string, TraversalNode>()
+  const edgeById = new Map<string, RelationshipEdge>()
+  const startNode: TraversalNode = { entity: input.start, depth: 0, confidence: 1, path: [], via: null }
+  seen.set(refKey(input.start), startNode)
+  let frontier: TraversalNode[] = [startNode]
+  let truncated = false, degraded = false
+
+  for (let d = 0; d < depth && frontier.length > 0; d++) {
+    const next: TraversalNode[] = []
+    for (const node of frontier) {
+      const res = await neighbors(svc, { brokerageId: input.brokerageId, entity: node.entity, types: input.types })
+      if (!res.ok) return { ...base, ok: false, error: res.error, nodes: [...seen.values()], edges: [...edgeById.values()] }
+      if (res.degraded) degraded = true
+      const live = res.edges.filter((e) => edgeValidAt(e, at))
+      if (live.length > fanOut) truncated = true
+      for (const e of live.slice(0, fanOut)) {
+        const other = otherEndpoint(e, node.entity)
+        if (!other) continue
+        edgeById.set(e.id, e)
+        const conf = Math.round(node.confidence * clampConfidence(Number(e.evidence?.confidence ?? 0)) * 1000) / 1000
+        const key = refKey(other)
+        const have = seen.get(key)
+        if (have) {
+          if (conf > have.confidence && have.depth >= node.depth + 1) { have.confidence = conf; have.path = [...node.path, e.id]; have.via = e.relationship_type }
+          continue
+        }
+        if (seen.size >= maxNodes) { truncated = true; continue }
+        const made: TraversalNode = { entity: other, depth: node.depth + 1, confidence: conf, path: [...node.path, e.id], via: e.relationship_type }
+        seen.set(key, made)
+        next.push(made)
+      }
+    }
+    frontier = next.sort((a, b) => refKey(a.entity).localeCompare(refKey(b.entity)))
+  }
+  const nodes = [...seen.values()].sort((a, b) => a.depth - b.depth || b.confidence - a.confidence || refKey(a.entity).localeCompare(refKey(b.entity)))
+  const edges = [...edgeById.values()].sort((a, b) => a.id.localeCompare(b.id))
+  return { ok: true, start: input.start, nodes, edges, degraded, truncated, error: null }
+}
+
+/**
+ * PURE — rank traversal nodes (paths): highest confidence first, then fewest hops, then a stable key.
+ * The start node (depth 0) is excluded; `limit` bounds the answer.
+ * @proofSeam scripts/relationship-graph-guard.ts asserts the ordering on a fixture.
+ */
+export function rankPaths(nodes: readonly TraversalNode[], limit = 20): TraversalNode[] {
+  return nodes.filter((n) => n.depth > 0)
+    .sort((a, b) => b.confidence - a.confidence || a.depth - b.depth || refKey(a.entity).localeCompare(refKey(b.entity)))
+    .slice(0, Math.max(0, limit))
+}
+
+/**
+ * Close an edge's validity window: effective_to (valid_to) is set to `effectiveTo` when the edge
+ * exists and is still open (or ends later). Never deletes — the fact that the relationship held is
+ * evidence. Returns how many rows matched (0 = no such open edge; the caller decides whether that matters).
+ */
+export async function endRelationship(
+  svc: Svc,
+  input: { brokerageId: string; from: EntityRef; to: EntityRef; type: RelationshipType; effectiveTo: string },
+): Promise<{ ok: boolean; matched: number; error: string | null; degraded: boolean }> {
+  if (!input.brokerageId) return { ok: false, matched: 0, error: "tenant scope required", degraded: false }
+  const e = orientEdge({ from: input.from, to: input.to, type: input.type, evidence: { source: "", confidence: 0, observed_at: "" } })
+  const day = input.effectiveTo.slice(0, 10)
+  const { data, error } = await svc.from("relationship_edges")
+    .update({ effective_to: day })
+    .eq("brokerage_id", input.brokerageId)
+    .eq("from_entity_type", e.from.type).eq("from_entity_id", e.from.id)
+    .eq("to_entity_type", e.to.type).eq("to_entity_id", e.to.id)
+    .eq("relationship_type", e.type)
+    .or(`effective_to.is.null,effective_to.gte.${day}`)
+    .select("id")
+  if (error) return { ok: false, matched: 0, error: `edge close refused: ${error.message}`, degraded: isMissingTable(error) }
+  return { ok: true, matched: (data ?? []).length, error: null, degraded: false }
+}
+
+/** agents.id → users.id (the graph's `agent` endpoint, §3). A refused or empty read is reported as null. */
+export async function agentUserIdFor(svc: Svc, brokerageId: string, agentsId: string): Promise<{ userId: string | null; error: string | null }> {
+  if (!agentsId) return { userId: null, error: null }
+  const { data, error } = await svc.from("agents").select("user_id").eq("id", agentsId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (error) return { userId: null, error: `agent user read refused: ${error.message}` }
+  return { userId: ((data as { user_id?: string | null } | null)?.user_id as string | null) ?? null, error: null }
+}
+
+type DeriveSummary = { planned: number; written: number; existing: number; errors: string[]; degraded: boolean }
+const noneDerived = (): DeriveSummary => ({ planned: 0, written: 0, existing: 0, errors: [], degraded: false })
+
+// ── member_of_team ───────────────────────────────────────────────────────────────────────────────
+
+/**
+ * After a team assignment lands (users.team_id / agents.team_id / a team_members roster row): the
+ * agent (USERS id — resolved from agents.id when that is what the writer holds) is member_of_team.
+ * `source` names the writer ("users.assignUserToTeam", "agent_profile", "team_members"). A roster row
+ * carries the terms, so it is the stronger evidence (0.95); a plain assignment column is 0.9.
+ */
+export async function deriveTeamMembershipEdge(
+  svc: Svc,
+  input: { brokerageId: string; teamId: string; agentUserId?: string | null; agentsId?: string | null; source: string; effectiveFrom?: string | null; actorUserId?: string | null; now?: Date },
+): Promise<DeriveSummary> {
+  const out = noneDerived()
+  if (!input.teamId) return out
+  let userId = input.agentUserId ?? null
+  if (!userId && input.agentsId) {
+    const r = await agentUserIdFor(svc, input.brokerageId, input.agentsId)
+    if (r.error) { out.errors.push(r.error); return out }
+    userId = r.userId
+  }
+  if (!userId) return out
+  const observedAt = (input.now ?? new Date()).toISOString()
+  const planned: EdgeInput[] = [{
+    from: { type: "agent", id: userId }, to: { type: "team", id: input.teamId }, type: "member_of_team",
+    evidence: { source: input.source, confidence: input.source === "team_members" ? 0.95 : 0.9, observed_at: observedAt },
+    effectiveFrom: input.effectiveFrom ?? null,
+  }]
+  const r = await upsertRelationships(svc, input.brokerageId, planned, input.actorUserId ?? null)
+  return { planned: planned.length, ...r }
+}
+
+// ── recruited_by + earns_residual (recruit → agent provisioning) ────────────────────────────────
+
+/**
+ * PURE — what provisioning a recruit proves: the new agent was recruited_by the recruiter (always,
+ * recruits.recruiter_agent_id, 1.0) and, when the revenue-share tree edge was planted, the sponsor
+ * earns_residual from the recruit (agent_relationships, 1.0, from the provisioning day).
+ * @proofSeam scripts/relationship-graph-guard.ts asserts both shapes and the no-residual case.
+ */
+export function planRecruitEdges(input: { recruitUserId: string; recruiterUserId: string; residualPlanted: boolean; observedAt: string; provisionedOn?: string | null }): EdgeInput[] {
+  if (!input.recruitUserId || !input.recruiterUserId || input.recruitUserId === input.recruiterUserId) return []
+  const out: EdgeInput[] = [{
+    from: { type: "agent", id: input.recruitUserId }, to: { type: "agent", id: input.recruiterUserId }, type: "recruited_by",
+    evidence: { source: "recruits.recruiter_agent_id", confidence: 1, observed_at: input.observedAt }, effectiveFrom: input.provisionedOn ?? null,
+  }]
+  if (input.residualPlanted) out.push({
+    from: { type: "agent", id: input.recruiterUserId }, to: { type: "agent", id: input.recruitUserId }, type: "earns_residual",
+    evidence: { source: "agent_relationships", confidence: 1, observed_at: input.observedAt }, effectiveFrom: input.provisionedOn ?? null,
+  })
+  return out
+}
+
+// ── has_competency (the learning router's scoreCompetency load) ─────────────────────────────────
+
+export interface CompetencySkillReading { skill: string; score: number | null; confidence: "none" | "low" | "high" }
+
+/**
+ * PURE — the competencies an agent HAS: every scored skill at or above `threshold` (the caller passes
+ * COMPETENCY_GAP_SCORE so the graph and the curriculum router agree on one bar). Edge confidence comes
+ * from the profile's own evidence gate: high → 0.9, low → 0.6; an unproven (null) skill is never an
+ * edge. The competency node id is deterministic from the skill key.
+ * @proofSeam scripts/relationship-graph-guard.ts asserts threshold, confidence mapping and the null case.
+ */
+export function planCompetencyEdges(agentUserId: string, skills: readonly CompetencySkillReading[], opts: { threshold: number; observedAt: string }): EdgeInput[] {
+  if (!agentUserId) return []
+  const out: EdgeInput[] = []
+  for (const s of [...skills].sort((a, b) => a.skill.localeCompare(b.skill))) {
+    if (s.score == null || s.confidence === "none" || s.score < opts.threshold) continue
+    out.push({
+      from: { type: "agent", id: agentUserId }, to: { type: "competency", id: entityIdForKey("competency", s.skill) }, type: "has_competency",
+      evidence: { source: "scoreCompetency", confidence: s.confidence === "high" ? 0.9 : 0.6, observed_at: opts.observedAt },
+    })
+  }
+  return out
+}
+
+export async function deriveCompetencyEdges(
+  svc: Svc,
+  input: { brokerageId: string; agentUserId: string; skills: readonly CompetencySkillReading[]; threshold: number; now?: Date },
+): Promise<DeriveSummary> {
+  const planned = planCompetencyEdges(input.agentUserId, input.skills, { threshold: input.threshold, observedAt: (input.now ?? new Date()).toISOString() })
+  if (planned.length === 0) return noneDerived()
+  const r = await upsertRelationships(svc, input.brokerageId, planned, null)
+  return { planned: planned.length, ...r }
+}
+
+// ── completed_education ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * After a learning_assignments row reaches `completed` (an agent's quiz pass, a contact's client
+ * education): learner → education_module (learning_modules.id), valid from the completion day.
+ * `source` names the writer ("academy_quiz_pass", "client_education").
+ */
+export async function deriveEducationCompletedEdge(
+  svc: Svc,
+  input: { brokerageId: string; learner: { type: "agent" | "contact"; id: string }; moduleId: string; source: string; completedAt?: string | null; actorUserId?: string | null; now?: Date },
+): Promise<DeriveSummary> {
+  if (!input.learner?.id || !input.moduleId) return noneDerived()
+  const observedAt = (input.now ?? new Date()).toISOString()
+  const planned: EdgeInput[] = [{
+    from: input.learner, to: { type: "education_module", id: input.moduleId }, type: "completed_education",
+    evidence: { source: input.source, confidence: 1, observed_at: observedAt }, effectiveFrom: (input.completedAt ?? observedAt).slice(0, 10),
+  }]
+  const r = await upsertRelationships(svc, input.brokerageId, planned, input.actorUserId ?? null)
+  return { planned: planned.length, ...r }
+}
+
+// ── owns_opportunity (lead hand-off / contact ownership) ─────────────────────────────────────────
+
+/**
+ * After an ownership column lands (leads.agent_id / contacts.agent_id — both agents.id): the new owner
+ * (USERS id) owns_opportunity from today; the previous owner's edge, when known, is CLOSED (valid_to =
+ * today) — never deleted. A null new owner (released to the ISA) only closes.
+ */
+export async function deriveOpportunityOwnership(
+  svc: Svc,
+  input: { brokerageId: string; opportunity: { type: "lead" | "contact"; id: string }; toAgentsId: string | null; fromAgentsId?: string | null; source: string; actorUserId?: string | null; now?: Date },
+): Promise<DeriveSummary & { closed: number }> {
+  const out = { ...noneDerived(), closed: 0 }
+  if (!input.opportunity?.id) return out
+  const now = input.now ?? new Date()
+  const day = now.toISOString().slice(0, 10)
+  if (input.fromAgentsId && input.fromAgentsId !== input.toAgentsId) {
+    const prev = await agentUserIdFor(svc, input.brokerageId, input.fromAgentsId)
+    if (prev.error) out.errors.push(prev.error)
+    else if (prev.userId) {
+      const c = await endRelationship(svc, { brokerageId: input.brokerageId, from: { type: "agent", id: prev.userId }, to: input.opportunity, type: "owns_opportunity", effectiveTo: day })
+      if (!c.ok && c.error) { out.errors.push(c.error); if (c.degraded) out.degraded = true }
+      out.closed += c.matched
+    }
+  }
+  if (!input.toAgentsId) return out
+  const next = await agentUserIdFor(svc, input.brokerageId, input.toAgentsId)
+  if (next.error) { out.errors.push(next.error); return out }
+  if (!next.userId) return out
+  const planned: EdgeInput[] = [{
+    from: { type: "agent", id: next.userId }, to: input.opportunity, type: "owns_opportunity",
+    evidence: { source: input.source, confidence: 1, observed_at: now.toISOString() }, effectiveFrom: day,
+  }]
+  const r = await upsertRelationships(svc, input.brokerageId, planned, input.actorUserId ?? null)
+  return { ...out, planned: planned.length, written: r.written, existing: r.existing, errors: [...out.errors, ...r.errors], degraded: out.degraded || r.degraded }
+}
+
+// ── has_opportunity (a contact's lead row in a cycle) + interacted_with_campaign ─────────────────
+
+/**
+ * PURE — a sequence enrollment that names BOTH a contact and a lead proves the contact has_opportunity
+ * (the lead row is the person's cycle record). One without both proves nothing here.
+ * @proofSeam scripts/relationship-graph-guard.ts asserts the pair and the half cases.
+ */
+export function planOpportunityEdges(input: { contactId?: string | null; leadId?: string | null; source: string; observedAt: string }): EdgeInput[] {
+  if (!input.contactId || !input.leadId) return []
+  return [{ from: { type: "contact", id: input.contactId }, to: { type: "lead", id: input.leadId }, type: "has_opportunity", evidence: { source: input.source, confidence: 0.8, observed_at: input.observedAt } }]
+}
+
+/**
+ * After campaign touchpoints land (marketing_campaign_touchpoints): each contact interacted_with_campaign
+ * (marketing_campaigns.id). A touchpoint is a delivery fact, not a reply: 0.7. Bounded to 500 contacts.
+ */
+export async function deriveCampaignInteraction(
+  svc: Svc,
+  input: { brokerageId: string; campaignId: string; contactIds: readonly string[]; source: string; now?: Date },
+): Promise<DeriveSummary> {
+  if (!input.campaignId) return noneDerived()
+  const observedAt = (input.now ?? new Date()).toISOString()
+  const ids = [...new Set(input.contactIds.filter(Boolean))].sort().slice(0, 500)
+  const planned: EdgeInput[] = ids.map((id) => ({ from: { type: "contact" as const, id }, to: { type: "campaign" as const, id: input.campaignId }, type: "interacted_with_campaign" as const, evidence: { source: input.source, confidence: 0.7, observed_at: observedAt } }))
+  if (planned.length === 0) return noneDerived()
+  const r = await upsertRelationships(svc, input.brokerageId, planned, null)
+  return { planned: planned.length, ...r }
+}
+
+// ── serves_territory + member_of_team: the structure backfill (weekly cron, R3 pattern) ──────────
+
+/**
+ * SELF-HEALING BACKFILL of the agent-structure edges from their survivor TABLES, on the existing weekly
+ * learning cron beside backfillTransactionCloseEdges. farm_territories.agent_id has NO server-side
+ * writer (the admin page writes it from the browser), so the only honest derivation reads the table;
+ * agents.team_id is healed the same way (the assignment writers derive at write time, this closes the
+ * rows that predate m715). Idempotent on the UNIQUE key; bounded; a refused read is reported.
+ */
+export async function backfillAgentStructureEdges(
+  svc: Svc,
+  input: { brokerageId: string; limit?: number; now?: Date },
+): Promise<{ scanned: number; planned: number; written: number; existing: number; errors: string[]; degraded: boolean }> {
+  const out = { scanned: 0, planned: 0, written: 0, existing: 0, errors: [] as string[], degraded: false }
+  if (!input.brokerageId) { out.errors.push("tenant scope required"); return out }
+  const limit = Math.max(1, Math.min(input.limit ?? 500, 2000))
+  const observedAt = (input.now ?? new Date()).toISOString()
+  const { data: agents, error: agentErr } = await svc.from("agents").select("id, user_id, team_id").eq("brokerage_id", input.brokerageId).eq("is_active", true).limit(limit)
+  if (agentErr) { out.errors.push(`agents read refused: ${agentErr.message}`); return out }
+  const rows = (agents ?? []) as Array<{ id: string; user_id: string | null; team_id: string | null }>
+  const userByAgent = new Map(rows.filter((a) => a.user_id).map((a) => [a.id, a.user_id as string]))
+  const planned: EdgeInput[] = []
+  for (const a of [...rows].sort((x, y) => x.id.localeCompare(y.id))) {
+    if (a.user_id && a.team_id) planned.push({ from: { type: "agent", id: a.user_id }, to: { type: "team", id: a.team_id }, type: "member_of_team", evidence: { source: "agents.team_id", confidence: 0.9, observed_at: observedAt } })
+  }
+  const { data: terr, error: terrErr } = await svc.from("farm_territories").select("id, agent_id").eq("brokerage_id", input.brokerageId).eq("is_active", true).not("agent_id", "is", null).limit(limit)
+  if (terrErr) out.errors.push(`farm_territories read refused: ${terrErr.message}`)
+  for (const t of ([...((terr ?? []) as Array<{ id: string; agent_id: string | null }>)]).sort((x, y) => x.id.localeCompare(y.id))) {
+    const userId = t.agent_id ? userByAgent.get(t.agent_id) : null
+    if (userId) planned.push({ from: { type: "agent", id: userId }, to: { type: "territory", id: t.id }, type: "serves_territory", evidence: { source: "farm_territories.agent_id", confidence: 0.9, observed_at: observedAt } })
+  }
+  out.scanned = rows.length + ((terr ?? []) as unknown[]).length
+  out.planned = planned.length
+  if (planned.length === 0) return out
+  const r = await upsertRelationships(svc, input.brokerageId, planned, null)
+  out.written = r.written; out.existing = r.existing; out.errors.push(...r.errors); out.degraded = r.degraded
+  return out
+}
+
+// ── Readers for the surfaces (scorecard counts, command center, the 105C context seam) ──────────
+
+/** How many edges this tenant holds (the command center's "relationships" figure beside the twin). */
+export async function countRelationships(svc: Svc, input: { brokerageId: string }): Promise<{ count: number; degraded: boolean; error: string | null }> {
+  if (!input.brokerageId) return { count: 0, degraded: false, error: "tenant scope required" }
+  const { count, error } = await svc.from("relationship_edges").select("id", { count: "exact", head: true }).eq("brokerage_id", input.brokerageId)
+  if (error) return isMissingTable(error) ? { count: 0, degraded: true, error: null } : { count: 0, degraded: false, error: `edge count refused: ${error.message}` }
+  return { count: count ?? 0, degraded: false, error: null }
+}
+
+export const AGENT_STRUCTURE_TYPES: readonly RelationshipType[] = ["member_of_team", "serves_territory", "has_competency", "completed_education", "owns_opportunity", "recruited_by", "earns_residual", "sponsor_of"]
+
+/** PURE — per agent (USERS id), how many edges of each structure type point out of it. */
+export function agentGraphCounts(edges: readonly RelationshipEdge[], agentUserId: string): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const e of edges) {
+    if (e.from_entity_type !== "agent" || e.from_entity_id !== agentUserId) continue
+    out[e.relationship_type] = (out[e.relationship_type] ?? 0) + 1
+  }
+  return out
+}
+
+/** The structure edges of a roster of agents (USERS ids) in one read, for the scorecard. */
+export async function agentStructureEdges(svc: Svc, input: { brokerageId: string; agentUserIds: readonly string[] }): Promise<NeighborsResult> {
+  if (!input.brokerageId) return { ok: false, edges: [], degraded: false, error: "tenant scope required" }
+  const ids = [...new Set(input.agentUserIds.filter(Boolean))]
+  if (ids.length === 0) return { ok: true, edges: [], degraded: false, error: null }
+  const { data, error } = await svc.from("relationship_edges")
+    .select("id, brokerage_id, from_entity_type, from_entity_id, to_entity_type, to_entity_id, relationship_type, evidence, effective_from, effective_to, created_by")
+    .eq("brokerage_id", input.brokerageId).eq("from_entity_type", "agent").in("from_entity_id", ids).in("relationship_type", [...AGENT_STRUCTURE_TYPES]).limit(5000)
+  if (error) return isMissingTable(error) ? { ok: true, edges: [], degraded: true, error: null } : { ok: false, edges: [], degraded: false, error: `edge read refused: ${error.message}` }
+  return { ok: true, edges: (data ?? []) as RelationshipEdge[], degraded: false, error: null }
+}
+
+export interface GraphContext {
+  ok: boolean
+  /** One compact human line per ranked node, from the start entity's point of view. */
+  lines: string[]
+  nodes: TraversalNode[]
+  degraded: boolean
+  truncated: boolean
+  error: string | null
+}
+
+/**
+ * THE SEAM FOR THE CONTEXT COMPILER (105C) — export only; 105C imports it, this lane never edits
+ * 105C's file. A compact, ranked, agent-safe (`agentSafe`: lead endpoints dropped, §5) view of what
+ * is related to `entity` up to `depth` hops at `at`. Lines are bounded by `limit`.
+ */
+export async function graphContextFor(
+  svc: Svc,
+  input: { brokerageId: string; entity: EntityRef; depth?: number; at?: string; types?: readonly RelationshipType[]; limit?: number; agentSafe?: boolean },
+): Promise<GraphContext> {
+  const t = await traverse(svc, { brokerageId: input.brokerageId, start: input.entity, depth: input.depth ?? 2, at: input.at, types: input.types })
+  if (!t.ok) return { ok: false, lines: [], nodes: [], degraded: t.degraded, truncated: t.truncated, error: t.error }
+  const edgeById = new Map(t.edges.map((e) => [e.id, e]))
+  const visible = input.agentSafe === false ? t.nodes : t.nodes.filter((n) => n.entity.type !== "lead" && n.path.every((id) => { const e = edgeById.get(id); return !e || (e.from_entity_type !== "lead" && e.to_entity_type !== "lead") }))
+  const ranked = rankPaths(visible, input.limit ?? 12)
+  const lines = ranked.map((n) => `${n.entity.type} ${n.entity.id.slice(0, 8)} — ${n.via ?? "?"} (${n.depth} hop${n.depth === 1 ? "" : "s"}, ${Math.round(n.confidence * 100)}%)`)
+  return { ok: true, lines, nodes: ranked, degraded: t.degraded, truncated: t.truncated, error: null }
+}
+
+/** The named seam object 105C's compiler reads (neighbors / traverse / graphContextFor) — nothing else is contractual. */
+export const RELATIONSHIP_GRAPH_SEAM = { neighbors, traverse, graphContextFor, rankPaths, agentVisibleEdges } as const

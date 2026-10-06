@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 447 tables, 800 columns.
+ * MEASURED AT GENERATION: 449 tables, 804 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-10-05
+ * generated: 2026-10-06
  * source: public.live_check_constraints_json()
- * body-sha256: 17ec1a3bdd16ff8f69c91eeff9a345e8ae011d99271c31e9b2b8222af916a140
+ * body-sha256: 0df517adfc7bdb589cde41acfecb15bc5779f61addb7bc8e3a538d0fbbcdb846
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -932,6 +932,14 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   managed_agents: {
     agent_kind: ["ads_manager", "ai_isa", "asset_manager", "campaign_orchestrator", "compliance_officer", "cron_manager", "data_steward", "deal_coordinator", "finance_manager", "listing_concierge", "marketing_agent", "recruiting_manager", "shopping_agent", "sphere_of_influence"],
   },
+  manager_delegation_events: {
+    actor_type: ["agent", "manager", "system", "user"],
+    event_kind: ["evidence", "refused", "requested", "review", "transition"],
+  },
+  manager_delegations: {
+    requested_capability: ["accounting_sync", "appointment_schedule", "blog_publish", "cma_generate", "connectivity_scan", "contact_get", "content_repurpose", "direct_mail_send", "education_assign", "education_path_get", "gift_send", "handwritten_note_send", "inbox_reply_send", "isa_qualify", "lead_create", "lead_search", "listing_appointment_prep", "listing_publish", "marketing_campaign_create", "newsletter_send", "payment_transfer", "podcast_publish", "portal_milestones_get", "report_export", "report_generate", "review_request_send", "social_post_publish", "transaction_advance", "video_distribute"],
+    status: ["ACCEPTED", "CANCELLED", "DISSENTED", "ESCALATED", "REJECTED", "REQUESTED", "RETURNED", "WORKING"],
+  },
   manager_signals: {
     status: ["consumed", "expired", "open"],
   },
@@ -1340,9 +1348,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     severity_tier: ["advisory", "binding", "informational"],
   },
   relationship_edges: {
-    from_entity_type: ["agent", "contact", "household", "lead", "listing", "outside_agent", "referral_partner", "transaction", "vendor"],
-    relationship_type: ["bought_from", "co_buyer", "co_owner", "household_member", "lender_for", "occupies", "owns", "previously_owned", "referred_by", "represented_by", "sold_to", "sponsor_of", "spouse_partner", "vendor_for"],
-    to_entity_type: ["agent", "contact", "household", "lead", "listing", "outside_agent", "referral_partner", "transaction", "vendor"],
+    from_entity_type: ["agent", "campaign", "competency", "contact", "education_module", "household", "lead", "listing", "outside_agent", "referral_partner", "team", "territory", "transaction", "vendor"],
+    relationship_type: ["belongs_to_household", "bought_from", "co_buyer", "co_owner", "completed_education", "earns_residual", "has_competency", "has_opportunity", "household_member", "interacted_with_campaign", "lender_for", "member_of_team", "occupies", "owns", "owns_opportunity", "previously_owned", "recruited_by", "referred_by", "represented_by", "serves_territory", "sold_to", "sponsor_of", "spouse_partner", "vendor_for"],
+    to_entity_type: ["agent", "campaign", "competency", "contact", "education_module", "household", "lead", "listing", "outside_agent", "referral_partner", "team", "territory", "transaction", "vendor"],
   },
   remotion_composition_renders: {
     render_status: ["cancelled", "failed", "queued", "rendering", "succeeded"],

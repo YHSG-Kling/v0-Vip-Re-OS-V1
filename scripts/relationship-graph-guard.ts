@@ -71,6 +71,11 @@ import {
   backfillTransactionCloseEdges,
   // wave 103 (103D)
   vendorSeatCorroboration,
+  // wave 105 (105D)
+  entityIdForKey, householdNodeId, edgeValidAt, agentVisibleEdges, traverse, rankPaths, endRelationship,
+  deriveTeamMembershipEdge, planRecruitEdges, planCompetencyEdges, deriveCompetencyEdges, deriveEducationCompletedEdge,
+  deriveOpportunityOwnership, planOpportunityEdges, deriveCampaignInteraction, backfillAgentStructureEdges,
+  countRelationships, agentGraphCounts, agentStructureEdges, graphContextFor, RELATIONSHIP_GRAPH_SEAM, TRAVERSE_MAX_DEPTH,
 } from "../lib/kernel/relationship-graph"
 import { planVendorSeatContactLinks, linkVendorSeatContact, VENDOR_SEAT_PROVENANCE_SOURCE } from "../lib/kernel/vendor-seat-contact"
 
@@ -159,9 +164,12 @@ async function main() {
       ],
     })
     const derived = await deriveHouseholdEdges(svc, { brokerageId: A, contactId: C1, now: new Date(NOW) })
-    check("deriveHouseholdEdges writes the spouse edge for the tenant's contacts only", derived.written === 1 && derived.errors.length === 0 && svc.tables.relationship_edges.length === 1 && !svc.tables.relationship_edges.some((r) => r.to_entity_id === C3 || r.from_entity_id === C3))
+    // wave 105 (105D): the same derivation now also plants the household NODE — one spouse edge + two
+    // belongs_to_household edges onto ONE deterministic node per (tenant, address cluster).
+    const nodeEdges = svc.tables.relationship_edges.filter((r) => r.relationship_type === "belongs_to_household")
+    check("deriveHouseholdEdges writes the spouse edge + the household node's two membership edges for the tenant's contacts only", derived.written === 3 && derived.errors.length === 0 && svc.tables.relationship_edges.length === 3 && nodeEdges.length === 2 && new Set(nodeEdges.map((r) => r.to_entity_id)).size === 1 && nodeEdges[0].to_entity_id === householdNodeId(A, "12 elm st|78704") && !svc.tables.relationship_edges.some((r) => r.to_entity_id === C3 || r.from_entity_id === C3))
     const again = await deriveHouseholdEdges(svc, { brokerageId: A, contactId: C2, now: new Date(NOW) })
-    check("deriving from the OTHER side finds the same row (symmetric, stored once)", again.written === 0 && again.existing === 1 && svc.tables.relationship_edges.length === 1)
+    check("deriving from the OTHER side finds the same rows (symmetric, stored once; the node id is the same)", again.written === 0 && again.existing === 3 && svc.tables.relationship_edges.length === 3)
     const hh1 = await household(svc, { brokerageId: A, contactId: C1 })
     const hh2 = await household(svc, { brokerageId: A, contactId: C2 })
     check("household() answers from either side and never lists the subject", hh1.ok && hh2.ok && hh1.members.map((m) => m.contactId).join() === C2 && hh2.members.map((m) => m.contactId).join() === C1 && hh1.members[0].type === "spouse_partner")
@@ -348,13 +356,24 @@ async function main() {
     const additive = (base: string[] | null, next: string[] | null) => !!base && !!next && next.length > base.length && base.every((v, i) => next[i] === v)
     check("m702 only WIDENS m698's two entity lists (every m698 value survives, in order; at least one added)", additive(fromL, from702) && additive(toL, to702))
     check("m702 adds exactly `referral_partner` to both sides", !!from702 && !!to702 && from702.slice(fromL!.length).join() === "referral_partner" && to702.slice(toL!.length).join() === "referral_partner" && from702.join() === to702.join())
-    check("from/to entity CHECK lists (m698 ∪ m702) == RELATIONSHIP_ENTITY_TYPES", !!from702 && !!to702 && from702.join() === RELATIONSHIP_ENTITY_TYPES.join() && to702.join() === RELATIONSHIP_ENTITY_TYPES.join())
-    check("positive control: m698 alone no longer equals the TS list (the widening is real)", !!fromL && fromL.join() !== RELATIONSHIP_ENTITY_TYPES.join())
+    // WAVE 105 (105D): m715 widens all THREE lists additively on top of m702 / m698. The RULE: the TS
+    // mirror equals the LATEST additive re-statement, and every re-statement only appends.
+    const M715 = "supabase/migrations/m715-relationship-graph-agent-and-person-widening.sql"
+    const sql715 = read(M715).replace(/--[^\n]*/g, "")
+    const from715 = listIn(sql715, "relationship_edges_from_entity_type"), to715 = listIn(sql715, "relationship_edges_to_entity_type"), rel715 = listIn(sql715, "relationship_edges_relationship_type")
+    check("m715 only WIDENS m702's two entity lists and m698's relationship list (every prior value survives, in order; at least one added)", additive(from702, from715) && additive(to702, to715) && additive(relL, rel715))
+    check("m715 adds exactly team, territory, campaign, competency, education_module to both entity sides (no `opportunity` entity — it is a relationship onto lead/contact)", !!from715 && !!to715 && from715.slice(from702!.length).join() === "team,territory,campaign,competency,education_module" && to715.join() === from715.join() && !from715.includes("opportunity"))
+    check("m715 adds exactly the ten agent/person relationship types", !!rel715 && rel715.slice(relL!.length).join() === "belongs_to_household,has_opportunity,interacted_with_campaign,member_of_team,serves_territory,recruited_by,has_competency,completed_education,earns_residual,owns_opportunity")
+    check("from/to entity CHECK lists (m698 ∪ m702 ∪ m715) == RELATIONSHIP_ENTITY_TYPES", !!from715 && !!to715 && from715.join() === RELATIONSHIP_ENTITY_TYPES.join() && to715.join() === RELATIONSHIP_ENTITY_TYPES.join())
+    check("relationship_type CHECK list (m698 ∪ m715) == RELATIONSHIP_TYPES", !!rel715 && rel715.join() === RELATIONSHIP_TYPES.join())
+    check("positive control: m702 / m698 alone no longer equal the TS lists (the widening is real)", !!from702 && from702.join() !== RELATIONSHIP_ENTITY_TYPES.join() && !!relL && relL.join() !== RELATIONSHIP_TYPES.join())
     check("positive control: the additive finder rejects a REWRITE (a dropped value) and a no-op", !additive(fromL, fromL!.filter((v) => v !== "lead").concat("referral_partner")) && !additive(fromL, fromL))
     check("m702 touches no other constraint, row, policy or index", !/relationship_type_check|INSERT|UPDATE |DELETE|CREATE POLICY|CREATE INDEX|DROP TABLE/.test(sql702))
+    check("m715 touches no row, policy, index, column or table (three CHECK re-statements + a COMMENT only)", !/INSERT|UPDATE |DELETE|CREATE POLICY|CREATE INDEX|DROP TABLE|ADD COLUMN|RENAME/.test(sql715) && (sql715.match(/ADD CONSTRAINT/g) ?? []).length === 3)
+    check("m715 documents the edge CONTRACT (source / confidence / valid_from = effective_from / valid_to = effective_to / tenant = brokerage_id) in its header", /valid_from\s*=\s*effective_from/.test(read(M715)) && /valid_to\s*=\s*effective_to/.test(read(M715)) && /tenant\s*=\s*brokerage_id/.test(read(M715)) && /source\s*=\s*evidence->>'source'/.test(read(M715)))
     check("m702 header line 1 carries one provenance stamp (the lane stamp | APPLIED LIVE <date>)", /^-- ── (WRITTEN, NOT APPLIED|APPLIED LIVE \d{4}-\d{2}-\d{2}\b)/.test(read(M702)))
-    check("relationship_type CHECK list == RELATIONSHIP_TYPES (14)", !!relL && relL.join() === RELATIONSHIP_TYPES.join() && relL.length === 14)
-    check("positive control: a mutated list differs", !!relL && [...relL, "friend_of"].join() !== RELATIONSHIP_TYPES.join())
+    check("m715 header line 1 carries one provenance stamp (the lane stamp | APPLIED LIVE <date>)", /^-- ── (WRITTEN, NOT APPLIED|APPLIED LIVE \d{4}-\d{2}-\d{2}\b)/.test(read(M715)))
+    check("positive control: a mutated list differs", !!rel715 && [...rel715, "friend_of"].join() !== RELATIONSHIP_TYPES.join())
     // CLAUDE.md §2: the status line is a RULE (one provenance stamp), never a pin on the pre-apply waypoint.
     check("m698 header line 1 carries one provenance stamp (the lane stamp | APPLIED LIVE <date>)", /^-- ── (WRITTEN, NOT APPLIED|APPLIED LIVE \d{4}-\d{2}-\d{2}\b)/.test(read("supabase/migrations/m698-relationship-edges.sql")))
     const uniq = /UNIQUE \(brokerage_id, from_entity_type, from_entity_id, to_entity_type, to_entity_id, relationship_type\)/.test(sql)
@@ -417,6 +436,118 @@ async function main() {
     check("positive control: no seat → nothing corroborates; a vendor with no edges → not corroborated", !vendorSeatCorroboration(edges, null).corroborated && !vendorSeatCorroboration(edges, VB).corroborated && vendorSeatCorroboration(edges, VB).served.length === 0)
   }
 
+  // ── 11. WAVE 105 (105D) — the knowledge graph: ids, household node, traversal, the new derivations ──
+  console.log("\n[11] wave 105 — deterministic ids, household node, validity window, traversal, derivations, backfill")
+  {
+    const U2 = "eeeeeeee-0000-4000-8000-000000000002", U3 = "eeeeeeee-0000-4000-8000-000000000003"
+    const AG1 = "99999999-0000-4000-8000-000000000001", AG2 = "99999999-0000-4000-8000-000000000002"
+    const TEAM = "77777777-0000-4000-8000-000000000001", TERR = "66666666-0000-4000-8000-000000000001"
+    const LEAD = "55555555-0000-4000-8000-000000000001", CAMP = "44444444-0000-4000-8000-000000000001", MOD = "33333333-0000-4000-8000-000000000001"
+    const L2 = "bbbbbbbb-0000-4000-8000-000000000002"
+    // deterministic ids
+    const k1 = entityIdForKey("competency", "closing"), k2 = entityIdForKey("competency", "closing"), k3 = entityIdForKey("competency", "closing ")
+    check("entityIdForKey is deterministic (same key → same id), uuid-v5-shaped, and key-sensitive", k1 === k2 && /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(k1) && k1 !== k3 && entityIdForKey("household", "closing") !== k1)
+    check("positive control: the household node id is per tenant (same address, two tenants → two nodes)", householdNodeId(A, "12 elm st|78704") !== householdNodeId(B, "12 elm st|78704") && householdNodeId(A, "12 elm st|78704") === householdNodeId(A, "12 elm st|78704"))
+    // household node
+    const hh = planHouseholdEdges({ id: C1, address: "12 Elm St", zip_code: "78704", marital_status: "married" }, [{ id: C2, address: "12 Elm St", zip_code: "78704" }, { id: C3, address: "99 Oak Ave", zip_code: "78704" }], NOW, { brokerageId: A })
+    const belongs = hh.filter((e) => e.type === "belongs_to_household")
+    check("a cluster of two contacts at one address → ONE household node, both belong_to_household (0.6), the subject included; the other street does not", belongs.length === 2 && new Set(belongs.map((e) => e.to.id)).size === 1 && belongs.every((e) => e.to.type === "household" && e.evidence.confidence === 0.6) && belongs.map((e) => e.from.id).sort().join() === [C1, C2].sort().join() && !belongs.some((e) => e.from.id === C3))
+    check("positive control: without a tenant (the 102F call shape) no node is planned; a lone contact at an address plans no node", planHouseholdEdges({ id: C1, address: "12 Elm St", zip_code: "78704" }, [{ id: C2, address: "12 Elm St", zip_code: "78704" }], NOW).every((e) => e.type !== "belongs_to_household") && planHouseholdEdges({ id: C1, address: "12 Elm St", zip_code: "78704" }, [], NOW, { brokerageId: A }).length === 0)
+    // validity window
+    check("edgeValidAt honours valid_from / valid_to at their four edges (open both ways, before from, after to, on the boundary days)",
+      edgeValidAt({ effective_from: null, effective_to: null }, "2026-10-06") && !edgeValidAt({ effective_from: "2026-10-07", effective_to: null }, "2026-10-06") && !edgeValidAt({ effective_from: null, effective_to: "2026-10-05" }, "2026-10-06") && edgeValidAt({ effective_from: "2026-10-06", effective_to: "2026-10-06" }, "2026-10-06T23:00:00Z"))
+    check("agentVisibleEdges drops every edge with a lead endpoint and keeps the contact ones (§5)", agentVisibleEdges([{ from_entity_type: "contact", to_entity_type: "lead" }, { from_entity_type: "agent", to_entity_type: "contact" }, { from_entity_type: "lead", to_entity_type: "campaign" }]).length === 1)
+    check("evidence.confidence is REQUIRED by the writer (the m715 contract) — a missing confidence is refused before any write", /confidence is required/.test(((await upsertRelationship(memSupabase({ relationship_edges: [] }), { brokerageId: A, from: { type: "contact", id: C1 }, to: { type: "listing", id: L1 }, type: "owns", evidence: { source: "x", observed_at: NOW } as any })) as any).error ?? ""))
+    // traversal: C1 -spouse(0.8)- C2 -owns(1.0)-> L1 ; C2 -represented_by(0.9)-> U1 ; cycle C1-C2-C3-C1 ; expired C1->L2 ; lead edge C1 -> LEAD ; tenant B edge from C1
+    const svc = memSupabase({ relationship_edges: [] })
+    const w = async (brokerageId: string, from: any, to: any, type: any, confidence: number, extra: any = {}) => upsertRelationship(svc, { brokerageId, from, to, type, evidence: ev(confidence), ...extra })
+    await w(A, { type: "contact", id: C1 }, { type: "contact", id: C2 }, "spouse_partner", 0.8)
+    await w(A, { type: "contact", id: C2 }, { type: "listing", id: L1 }, "owns", 1)
+    await w(A, { type: "contact", id: C2 }, { type: "agent", id: U1 }, "represented_by", 0.9)
+    await w(A, { type: "contact", id: C2 }, { type: "contact", id: C3 }, "household_member", 0.5)
+    await w(A, { type: "contact", id: C3 }, { type: "contact", id: C1 }, "co_buyer", 0.9)
+    await w(A, { type: "contact", id: C1 }, { type: "listing", id: L2 }, "previously_owned", 1, { effectiveTo: "2020-01-01" })
+    await w(A, { type: "contact", id: C1 }, { type: "lead", id: LEAD }, "has_opportunity", 0.8)
+    await w(B, { type: "contact", id: C1 }, { type: "listing", id: L1 }, "owns", 1)
+    const d1 = await traverse(svc, { brokerageId: A, start: { type: "contact", id: C1 }, depth: 1, at: "2026-10-06" })
+    const d2 = await traverse(svc, { brokerageId: A, start: { type: "contact", id: C1 }, depth: 2, at: "2026-10-06" })
+    const d3 = await traverse(svc, { brokerageId: A, start: { type: "contact", id: C1 }, depth: 9, at: "2026-10-06" })
+    const ids = (t: any) => t.nodes.map((n: any) => `${n.entity.type}:${n.entity.id}`).sort().join()
+    check("depth 1 reaches the direct neighbours only (C2, C3, the lead) — the expired edge to L2 is NOT followed at `at`", d1.ok && ids(d1) === [`contact:${C1}`, `contact:${C2}`, `contact:${C3}`, `lead:${LEAD}`].sort().join())
+    check("depth 2 reaches L1 and U1 through C2; the cycle C1→C2→C3→C1 terminates with every node ONCE", d2.ok && ids(d2) === [`contact:${C1}`, `contact:${C2}`, `contact:${C3}`, `lead:${LEAD}`, `listing:${L1}`, `agent:${U1}`].sort().join() && d2.nodes.filter((n) => n.entity.id === C1).length === 1)
+    check("depth is capped at TRAVERSE_MAX_DEPTH (3); a deeper request yields the same graph and the start node is depth 0 at confidence 1", TRAVERSE_MAX_DEPTH === 3 && d3.ok && ids(d3) === ids(d2) && d3.nodes[0].depth === 0 && d3.nodes[0].confidence === 1)
+    check("confidence is MULTIPLIED along the path (C1→C2 0.8 × C2→L1 1.0 = 0.8; C1→C2→U1 = 0.72)", d2.nodes.find((n) => n.entity.id === L1)?.confidence === 0.8 && d2.nodes.find((n) => n.entity.id === U1)?.confidence === 0.72)
+    check("the better path wins: C3 is reached directly at 0.9 (co_buyer), not via C2 at 0.4", d2.nodes.find((n) => n.entity.id === C3)?.confidence === 0.9 && d2.nodes.find((n) => n.entity.id === C3)?.depth === 1)
+    check("positive control: at a date inside the old window the expired edge IS followed", (await traverse(svc, { brokerageId: A, start: { type: "contact", id: C1 }, depth: 1, at: "2019-06-01" })).nodes.some((n) => n.entity.id === L2))
+    check("tenant isolation: tenant B's traversal from C1 sees only ITS edge (L1), never A's spouse / co-buyer", ids(await traverse(svc, { brokerageId: B, start: { type: "contact", id: C1 }, depth: 3 })) === [`contact:${C1}`, `listing:${L1}`].sort().join())
+    const fan = await traverse(svc, { brokerageId: A, start: { type: "contact", id: C1 }, depth: 1, maxFanOut: 1, at: "2026-10-06" })
+    check("bounded fan-out: maxFanOut 1 expands one edge per node and publishes truncated", fan.ok && fan.truncated && fan.nodes.length === 2)
+    check("no tenant → refused; no start → refused", !(await traverse(svc, { brokerageId: "", start: { type: "contact", id: C1 } })).ok && !(await traverse(svc, { brokerageId: A, start: { type: "contact", id: "" } })).ok)
+    const ranked = rankPaths(d2.nodes, 3)
+    // ties at 0.8: C2 (1 hop) and the lead (1 hop) outrank L1 (2 hops); contact sorts before lead on the stable key
+    check("rankPaths: highest confidence first, fewest hops next, stable key last, start excluded, limit honoured", ranked.length === 3 && ranked[0].entity.id === C3 && ranked[1].entity.id === C2 && ranked[2].entity.id === LEAD && rankPaths(d2.nodes, 4)[3].entity.id === L1 && !ranked.some((n) => n.depth === 0) && rankPaths(d2.nodes, 0).length === 0)
+    const ctx = await graphContextFor(svc, { brokerageId: A, entity: { type: "contact", id: C1 }, depth: 2, at: "2026-10-06" })
+    check("graphContextFor (the 105C seam) is agent-safe by default: the lead node is absent (4 of 5 reachable nodes), lines are compact and ranked", ctx.ok && !ctx.nodes.some((n) => n.entity.type === "lead") && ctx.lines.length === 4 && /^contact [0-9a-f]{8} — co_buyer \(1 hop, 90%\)$/.test(ctx.lines[0]))
+    check("positive control: agentSafe false hands the lead desk the lead node", (await graphContextFor(svc, { brokerageId: A, entity: { type: "contact", id: C1 }, depth: 1, at: "2026-10-06", agentSafe: false })).nodes.some((n) => n.entity.type === "lead"))
+    check("RELATIONSHIP_GRAPH_SEAM exposes neighbors / traverse / graphContextFor / rankPaths / agentVisibleEdges (export only)", RELATIONSHIP_GRAPH_SEAM.neighbors === neighbors && RELATIONSHIP_GRAPH_SEAM.traverse === traverse && RELATIONSHIP_GRAPH_SEAM.graphContextFor === graphContextFor && RELATIONSHIP_GRAPH_SEAM.rankPaths === rankPaths && RELATIONSHIP_GRAPH_SEAM.agentVisibleEdges === agentVisibleEdges)
+    const gone = await traverse(memSupabase({}, { missingTables: ["relationship_edges"] }), { brokerageId: A, start: { type: "contact", id: C1 } })
+    check("before m698 (missing table) a traversal is the start node alone, flagged degraded, never a refusal", gone.ok && gone.degraded && gone.nodes.length === 1)
+    // endRelationship
+    const closed = await endRelationship(svc, { brokerageId: A, from: { type: "contact", id: C2 }, to: { type: "listing", id: L1 }, type: "owns", effectiveTo: "2026-10-06" })
+    check("endRelationship closes the open window (valid_to = the day), matched 1, never deletes; a LATER close matches 0 (already closed earlier — a window is never re-opened)", closed.ok && closed.matched === 1 && svc.tables.relationship_edges.find((r) => r.relationship_type === "owns" && r.brokerage_id === A)?.effective_to === "2026-10-06" && (await endRelationship(svc, { brokerageId: A, from: { type: "contact", id: C2 }, to: { type: "listing", id: L1 }, type: "owns", effectiveTo: "2026-10-07" })).matched === 0 && svc.tables.relationship_edges.filter((r) => r.relationship_type === "owns" && r.brokerage_id === A).length === 1)
+    // team membership (agents.id → users.id cross) + structure backfill
+    const st = memSupabase({
+      relationship_edges: [],
+      agents: [{ id: AG1, brokerage_id: A, user_id: U2, team_id: TEAM, is_active: true }, { id: AG2, brokerage_id: A, user_id: U3, team_id: null, is_active: true }, { id: "ag-b", brokerage_id: B, user_id: "u-b", team_id: TEAM, is_active: true }],
+      farm_territories: [{ id: TERR, brokerage_id: A, agent_id: AG2, is_active: true }, { id: "t2", brokerage_id: A, agent_id: null, is_active: true }, { id: "t3", brokerage_id: B, agent_id: "ag-b", is_active: true }],
+    })
+    const tm = await deriveTeamMembershipEdge(st, { brokerageId: A, teamId: TEAM, agentsId: AG1, source: "team_members", effectiveFrom: "2026-10-06", actorUserId: U1, now: new Date(NOW) })
+    check("deriveTeamMembershipEdge crosses agents.id → users.id and writes agent(user) → team member_of_team at 0.95 for the roster source, valid from the day, created_by the actor", tm.written === 1 && tm.errors.length === 0 && st.tables.relationship_edges[0].from_entity_id === U2 && st.tables.relationship_edges[0].to_entity_id === TEAM && st.tables.relationship_edges[0].evidence.confidence === 0.95 && st.tables.relationship_edges[0].effective_from === "2026-10-06" && st.tables.relationship_edges[0].created_by === U1)
+    check("positive control: an unknown agents.id derives nothing (no edge invented)", (await deriveTeamMembershipEdge(st, { brokerageId: A, teamId: TEAM, agentsId: "nope", source: "x" })).written === 0 && st.tables.relationship_edges.length === 1)
+    const bf1 = await backfillAgentStructureEdges(st, { brokerageId: A, now: new Date(NOW) })
+    const bf2 = await backfillAgentStructureEdges(st, { brokerageId: A, now: new Date(NOW) })
+    check("backfillAgentStructureEdges: the team edge already derived is EXISTING (no write), AG2's territory becomes serves_territory (agents.id crossed), an unassigned territory and tenant B's rows plan nothing; a re-run writes nothing (idempotent)",
+      bf1.planned === 2 && bf1.written === 1 && bf1.existing === 1 && bf1.errors.length === 0 && bf2.written === 0 && bf2.existing === 2 && st.tables.relationship_edges.length === 2 && st.tables.relationship_edges.some((r) => r.relationship_type === "serves_territory" && r.from_entity_id === U3 && r.to_entity_id === TERR && r.brokerage_id === A) && !st.tables.relationship_edges.some((r) => r.brokerage_id === B))
+    check("no tenant → refused", (await backfillAgentStructureEdges(st, { brokerageId: "" })).errors.join() === "tenant scope required")
+    // recruit edges
+    const rec = planRecruitEdges({ recruitUserId: U2, recruiterUserId: U1, residualPlanted: true, observedAt: NOW, provisionedOn: "2026-10-06" })
+    check("planRecruitEdges: recruited_by (recruit → recruiter, recruits.recruiter_agent_id, 1.0) + earns_residual (recruiter → recruit, agent_relationships, 1.0) when the tree edge was planted", rec.length === 2 && rec[0].type === "recruited_by" && rec[0].from.id === U2 && rec[0].to.id === U1 && rec[0].evidence.source === "recruits.recruiter_agent_id" && rec[1].type === "earns_residual" && rec[1].from.id === U1 && rec[1].to.id === U2 && rec[1].evidence.source === "agent_relationships" && rec[1].effectiveFrom === "2026-10-06")
+    check("positive control: no planted tree edge → recruited_by only; self-recruit → nothing", planRecruitEdges({ recruitUserId: U2, recruiterUserId: U1, residualPlanted: false, observedAt: NOW }).map((e) => e.type).join() === "recruited_by" && planRecruitEdges({ recruitUserId: U1, recruiterUserId: U1, residualPlanted: true, observedAt: NOW }).length === 0)
+    // competency
+    const comp = planCompetencyEdges(U1, [{ skill: "closing", score: 80, confidence: "high" }, { skill: "coursework", score: 60, confidence: "low" }, { skill: "call_quality", score: 59, confidence: "high" }, { skill: "compliance_ce", score: null, confidence: "none" }], { threshold: 60, observedAt: NOW })
+    check("planCompetencyEdges: skills AT or ABOVE the threshold become has_competency (high → 0.9, low → 0.6); below-threshold and unproven skills never do; node id deterministic from the skill key", comp.length === 2 && comp.map((e) => e.evidence.confidence).join() === "0.9,0.6" && comp[0].to.id === entityIdForKey("competency", "closing") && comp.every((e) => e.type === "has_competency" && e.evidence.source === "scoreCompetency"))
+    const cs = memSupabase({ relationship_edges: [] })
+    const c1 = await deriveCompetencyEdges(cs, { brokerageId: A, agentUserId: U1, skills: [{ skill: "closing", score: 80, confidence: "high" }], threshold: 60, now: new Date(NOW) })
+    const c2 = await deriveCompetencyEdges(cs, { brokerageId: A, agentUserId: U1, skills: [{ skill: "closing", score: 85, confidence: "high" }], threshold: 60, now: new Date(NOW) })
+    check("deriveCompetencyEdges writes once and is idempotent on the deterministic node", c1.written === 1 && c2.written === 0 && c2.existing === 1 && cs.tables.relationship_edges.length === 1)
+    // education
+    const ed = memSupabase({ relationship_edges: [] })
+    const e1 = await deriveEducationCompletedEdge(ed, { brokerageId: A, learner: { type: "agent", id: U1 }, moduleId: MOD, source: "academy_quiz_pass", completedAt: "2026-10-06T10:00:00Z", actorUserId: U1, now: new Date(NOW) })
+    const e2 = await deriveEducationCompletedEdge(ed, { brokerageId: A, learner: { type: "contact", id: C1 }, moduleId: MOD, source: "client_education", now: new Date(NOW) })
+    check("deriveEducationCompletedEdge: agent → education_module and contact → education_module, valid from the completion day, source carried", e1.written === 1 && e2.written === 1 && ed.tables.relationship_edges.every((r) => r.relationship_type === "completed_education" && r.to_entity_type === "education_module" && r.to_entity_id === MOD) && ed.tables.relationship_edges[0].effective_from === "2026-10-06" && ed.tables.relationship_edges[1].evidence.source === "client_education")
+    check("positive control: no module → nothing", (await deriveEducationCompletedEdge(ed, { brokerageId: A, learner: { type: "agent", id: U1 }, moduleId: "", source: "x" })).planned === 0)
+    // opportunity ownership (hand-over closes the old edge)
+    const op = memSupabase({ relationship_edges: [], agents: [{ id: AG1, brokerage_id: A, user_id: U2 }, { id: AG2, brokerage_id: A, user_id: U3 }] })
+    const o1 = await deriveOpportunityOwnership(op, { brokerageId: A, opportunity: { type: "contact", id: C1 }, toAgentsId: AG1, source: "contact_reassignment", now: new Date("2026-09-01T00:00:00Z") })
+    const o2 = await deriveOpportunityOwnership(op, { brokerageId: A, opportunity: { type: "contact", id: C1 }, toAgentsId: AG2, fromAgentsId: AG1, source: "contact_reassignment", now: new Date(NOW) })
+    const own = (uid: string) => op.tables.relationship_edges.find((r) => r.relationship_type === "owns_opportunity" && r.from_entity_id === uid)
+    check("deriveOpportunityOwnership: the first owner (users id crossed from agents.id) owns_opportunity from its day; the hand-over CLOSES it (valid_to = the day, closed 1) and plants the new owner's edge", o1.written === 1 && o1.closed === 0 && o2.written === 1 && o2.closed === 1 && own(U2)?.effective_from === "2026-09-01" && own(U2)?.effective_to === "2026-10-05" && own(U3)?.effective_from === "2026-10-05" && own(U3)?.effective_to === null)
+    check("a release (no target) closes only; a lead opportunity is typed lead", (await deriveOpportunityOwnership(op, { brokerageId: A, opportunity: { type: "contact", id: C1 }, toAgentsId: null, fromAgentsId: AG2, source: "x", now: new Date("2026-10-07T00:00:00Z") })).closed === 1 && (await deriveOpportunityOwnership(op, { brokerageId: A, opportunity: { type: "lead", id: LEAD }, toAgentsId: AG1, source: "lead_handoff", now: new Date(NOW) })).written === 1 && op.tables.relationship_edges.some((r) => r.to_entity_type === "lead" && r.to_entity_id === LEAD))
+    // has_opportunity + campaign interaction
+    check("planOpportunityEdges: contact + lead → has_opportunity (0.8); a half pair → nothing", planOpportunityEdges({ contactId: C1, leadId: LEAD, source: "sequence_enrollment", observedAt: NOW }).map((e) => `${e.type}:${e.from.type}>${e.to.type}:${e.evidence.confidence}`).join() === "has_opportunity:contact>lead:0.8" && planOpportunityEdges({ contactId: C1, source: "x", observedAt: NOW }).length === 0 && planOpportunityEdges({ leadId: LEAD, source: "x", observedAt: NOW }).length === 0)
+    const cm = memSupabase({ relationship_edges: [] })
+    const ci = await deriveCampaignInteraction(cm, { brokerageId: A, campaignId: CAMP, contactIds: [C2, C1, C1, ""], source: "marketing_campaign_touchpoints", now: new Date(NOW) })
+    check("deriveCampaignInteraction: one interacted_with_campaign edge per distinct contact (0.7), blanks dropped, re-run existing", ci.written === 2 && (await deriveCampaignInteraction(cm, { brokerageId: A, campaignId: CAMP, contactIds: [C1], source: "x" })).existing === 1 && cm.tables.relationship_edges.every((r) => r.relationship_type === "interacted_with_campaign" && r.to_entity_type === "campaign" && r.evidence.confidence === 0.7))
+    check("positive control: no campaign → nothing", (await deriveCampaignInteraction(cm, { brokerageId: A, campaignId: "", contactIds: [C1], source: "x" })).planned === 0)
+    // scorecard counts + command-center count
+    const counts = agentGraphCounts(st.tables.relationship_edges as any, U3)
+    check("agentGraphCounts counts the agent's OWN outgoing structure edges only", counts.serves_territory === 1 && !counts.member_of_team && Object.keys(agentGraphCounts(st.tables.relationship_edges as any, U2)).join() === "member_of_team")
+    const ase = await agentStructureEdges(st, { brokerageId: A, agentUserIds: [U2, U3] })
+    check("agentStructureEdges reads the roster's structure edges in one tenant-scoped read; tenant B reads none", ase.ok && ase.edges.length === 2 && (await agentStructureEdges(st, { brokerageId: B, agentUserIds: [U2, U3] })).edges.length === 0)
+    const cnt = await countRelationships(memSupabase({}, { missingTables: ["relationship_edges"] }), { brokerageId: A })
+    check("countRelationships before m698 is 0 flagged degraded; a refusal is a refusal; no tenant → refused", cnt.degraded && cnt.count === 0 && /refused/.test((await countRelationships(memSupabase({ relationship_edges: [] }, { refuse: { relationship_edges: "permission denied" } }), { brokerageId: A })).error ?? "") && !!(await countRelationships(st, { brokerageId: "" })).error)
+  }
+
   console.log("\n[C] census — survivor writers reach the one kernel writer (stripped source)")
   {
     const writers: Array<[string, RegExp]> = [
@@ -438,10 +569,43 @@ async function main() {
       ["lib/lead-pipeline/rental-graduation-sourcer.ts", /deriveOccupancyEdges\(/],
       ["app/actions/buyer-financial.ts", /type: "referral_partner"/],
       ["app/api/cron/source-conversion-learning/route.ts", /backfillTransactionCloseEdges\(/],
+      // wave 105 (105D) — every NEW relationship type has a deriving writer at its survivor
+      ["lib/kernel/users.ts", /deriveTeamMembershipEdge\(/],
+      ["app/actions/admin/agent-profile.ts", /deriveTeamMembershipEdge\(/],
+      ["app/actions/admin/team-members.ts", /deriveTeamMembershipEdge\(/],
+      ["app/api/recruiting/provision-agent/route.ts", /planRecruitEdges\(/],
+      ["lib/learning-router/resolve-agent-learning-context.ts", /deriveCompetencyEdges\(/],
+      ["app/actions/academy-learning.ts", /deriveEducationCompletedEdge\(/],
+      ["lib/kernel/education.ts", /deriveEducationCompletedEdge\(/],
+      ["app/actions/leads.ts", /deriveOpportunityOwnership\(/],
+      ["app/actions/contact-reassignment.ts", /deriveOpportunityOwnership\(/],
+      ["lib/campaigns/enroll-in-sequence.ts", /planOpportunityEdges\(/],
+      ["lib/marketing/touchpoint-recorder.ts", /deriveCampaignInteraction\(/],
+      ["app/api/cron/source-conversion-learning/route.ts", /backfillAgentStructureEdges\(/],
     ]
     for (const [file, re] of writers) {
       const src = stripped(file)
       check(`${file} imports @/lib/kernel/relationship-graph and derives ${re.source}`, /@\/lib\/kernel\/relationship-graph/.test(src) && re.test(src))
+    }
+    // wave 105 — THE RULE: every relationship type m715 adds maps to a derivation in the kernel service
+    // whose caller the census above proved. Derived from the TS list, never a hardcoded count.
+    {
+      const kernel = stripped("lib/kernel/relationship-graph.ts")
+      const DERIVATION: Record<string, RegExp> = {
+        belongs_to_household: /type: "belongs_to_household"/, has_opportunity: /type: "has_opportunity"/, interacted_with_campaign: /type: "interacted_with_campaign" as const/,
+        member_of_team: /type: "member_of_team"/, serves_territory: /type: "serves_territory"/, recruited_by: /type: "recruited_by"/,
+        has_competency: /type: "has_competency"/, completed_education: /type: "completed_education"/, earns_residual: /type: "earns_residual"/, owns_opportunity: /type: "owns_opportunity"/,
+      }
+      const added = (RELATIONSHIP_TYPES as readonly string[]).slice(14)
+      const unmapped = added.filter((t) => !DERIVATION[t] || !DERIVATION[t].test(kernel))
+      check(`every type m715 adds (${added.length}) is planned by the kernel service (${unmapped.length ? "unmapped: " + unmapped.join(",") : "all mapped"})`, added.length === 10 && unmapped.length === 0)
+      check("positive control: an invented type is unmapped", !DERIVATION["friend_of"])
+      check("the learning router derives at the curriculum's own bar (COMPETENCY_GAP_SCORE), never a second threshold", /threshold: COMPETENCY_GAP_SCORE/.test(stripped("lib/learning-router/resolve-agent-learning-context.ts")))
+      check("the reassignment hands the OLD owner to the derivation so its edge closes; the lead hand-off uses the service client (session writes are revoked)", /fromAgentsId: fromAgentId/.test(stripped("app/actions/contact-reassignment.ts")) && /deriveOpportunityOwnership\(createServiceClient\(\)/.test(stripped("app/actions/leads.ts")))
+      check("provision-agent reads the recruiter's users id ONCE and reuses it for sponsor_of (no second agents read)", (stripped("app/api/recruiting/provision-agent/route.ts").match(/from\("agents"\)\.select\("user_id"\)/g) ?? []).length === 1)
+      check("the context compiler seam is an EXPORT only — this lane edits no lib/kernel/context-compiler file", /export const RELATIONSHIP_GRAPH_SEAM/.test(kernel) && /export async function graphContextFor/.test(kernel))
+      const vocab = stripped("scripts/check-vocabulary-guard.ts")
+      check("check-vocabulary-guard mirrors the three graph constants against the live cache + the pending m715 (the pending-vocabulary read)", /constant: "RELATIONSHIP_ENTITY_TYPES"[^\n]*relationship_edges_from_entity_type_check/.test(vocab) && /constant: "RELATIONSHIP_ENTITY_TYPES"[^\n]*relationship_edges_to_entity_type_check/.test(vocab) && /constant: "RELATIONSHIP_TYPES"[^\n]*relationship_edges_relationship_type_check/.test(vocab))
     }
     // 102F — the close passes the resolved co-buyers into the one derivation; the roster derives after
     // the same resolver; the owner names travel from the BatchData client through the one mapper.
@@ -476,6 +640,10 @@ async function main() {
       ["lib/ai-isa/lead-action-plan.ts", /householdContactIds/],
       ["lib/kernel/referral-radar.ts", /"referred_by"/],
       ["lib/kernel/portal.ts", /household\(/],
+      // wave 105 (105D)
+      ["lib/contacts/contact-brief.ts", /agentVisibleEdges\(graph\.edges\)/],
+      ["lib/intelligence/agent-scorecard.ts", /agentStructureEdges\(/],
+      ["lib/kernel/command-center.ts", /countRelationships\(/],
     ]
     for (const [file, re] of readers) check(`${file} reads the graph (${re.source})`, re.test(stripped(file)))
     check("lead-action-plan turns an outside-agent representation into the already_represented dead end", /outcome: "already_represented", at, source: "relationship_edges\.represented_by"/.test(stripped("lib/ai-isa/lead-action-plan.ts")))

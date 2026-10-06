@@ -216,11 +216,15 @@ export async function bookSellerListingAppointment(
   // 'listing_appointment' (lane 87B2 — the one spelling).
   let chainRunId: string | undefined
   let chainDeduped: boolean | undefined
+  // WAVE 105A: the ISA is a MANAGER asking another manager for a capability — the prep is REQUESTED
+  // from the Listing Concierge as a structured delegation (listing_appointment_prep), returned through
+  // it when the chain completes. The ISA never runs the Concierge's prep itself.
   const prep = await fireListingAppointmentSetForBooking(svc, {
     calendarEventId,
     expectedBrokerageId: params.brokerageId,
     propertyHint: propertyData,
     origin: "ai_isa_seller_milestone",
+    delegate: { requestingManager: "ai_isa" },
   })
   if (prep.status === "started" || prep.status === "deduped") {
     chainRunId = prep.runId ?? undefined

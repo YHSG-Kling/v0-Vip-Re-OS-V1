@@ -506,10 +506,24 @@ export async function processInboundEmail(params: {
   // Wave 98 (98C): the tenant's AUTHORITY LADDER rung for the persona agent narrows the mount.
   const { resolveAgentAuthorityLevel } = await import("@/lib/managers/autonomy-gate")
   const authorityLevel = await resolveAgentAuthorityLevel(lead.brokerage_id, "ai_isa")
-  const propertyAndFreeTools = selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools }, { authorityLevel })
+  const toolRegistry = { ...freeTools, ...batchDataTools, ...rentCastTools }
+  let propertyAndFreeTools = selectToolsForPersona(toolRegistry, { authorityLevel })
+  // Wave 105 (105C): with a MISSION in play for this person, the tool mount comes from the compiled
+  // manager context (the same selector at the manager rung ∧ the mission's authority ceiling) and
+  // the compact context section rides the system prompt. No mission → the mount above stands.
+  let missionSection = ""
+  if (lead.contact_id) {
+    const { missionInPlayFor, compileManagerContext, mountToolsFromContext } = await import("@/lib/kernel/mission-context")
+    const missionId = await missionInPlayFor({ brokerageId: lead.brokerage_id, subject: { type: "contact", id: lead.contact_id } })
+    if (missionId) {
+      const compiled = await compileManagerContext({ brokerageId: lead.brokerage_id, missionId, manager: "ai_isa", tokenBudget: 900, toolRegistry })
+      if (compiled.ok) { propertyAndFreeTools = mountToolsFromContext(compiled.context, toolRegistry); missionSection = compiled.section }
+      else console.error(`[handle-inbound-email] mission context not compiled for ${missionId}: ${compiled.reason}`)
+    }
+  }
   const { text: replyBody } = await generateText({
     feature: 'ai_isa_response',
-    system: systemPrompt,
+    system: missionSection ? `${systemPrompt}\n\n${missionSection}` : systemPrompt,
     // The CRM actions ride the same rung (the protective opt-out mounts at every rung).
     tools: {
       ...Object.fromEntries(Object.entries(isaTools).filter(([n]) => isToolAllowedAtAuthority(n, authorityLevel))),

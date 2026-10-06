@@ -219,6 +219,18 @@ export async function submitModuleQuiz(
     }), { table: "learning_assignments", flow: "learning_assignments_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
 
+  // RELATIONSHIP GRAPH (wave 105, lane 105D): a PASS is a completed_education fact (agent user →
+  // education_module), valid from today. Derived after the assignment row landed; never blocks the grade.
+  if (grade.passed) {
+    try {
+      const { deriveEducationCompletedEdge } = await import("@/lib/kernel/relationship-graph")
+      const r = await deriveEducationCompletedEdge(svc, { brokerageId: ctx.brokerageId, learner: { type: "agent", id: ctx.userId as string }, moduleId, source: "academy_quiz_pass", completedAt: nowIso, actorUserId: ctx.userId ?? null })
+      if (r.errors.length > 0 && !r.degraded) console.error(`[academy-learning] completed_education edge not derived: ${r.errors.join("; ")}`)
+    } catch (e) {
+      console.error("[academy-learning] relationship edge derivation failed (non-blocking)", e)
+    }
+  }
+
   // Certification — only for REQUIRED modules, only on a pass, idempotent.
   let certIssued = false
   if (grade.passed && mod.required && ctx.agentId) {

@@ -122,6 +122,43 @@ export async function getEntityCausalChain(input: { entityType: string; entityId
           detail: { reason_code: e.reason_code, reason: e.reason, actor_type: e.actor_type, actor_id: e.actor_id, ledger_entry_id: e.ledger_entry_id, from_state: e.from_state, to_state: e.to_state, evidence: e.evidence },
         } as ChainEvent)
       }
+      // WAVE 105A: the mission's DELEGATIONS (m712 manager_delegations — what this mission asked other
+      // managers for) and their append-only trail (manager_delegation_events), folded in as events so
+      // the recorder shows who asked whom for which capability, what came back, and every refusal /
+      // review / escalation along the way. The ONE reader of the delegation trail.
+      const dels = await svc.from("manager_delegations")
+        .select("id, mission_id, requesting_manager, assigned_manager, requested_capability, objective, status, authority, budget, spent_usd, spent_tokens, deadline, result, created_at")
+        .eq("brokerage_id", brokerageId).eq("mission_id", entityId).limit(LIMIT)
+      if (dels.error) return { ok: false, error: `Mission delegations could not be read: ${dels.error.message}` }
+      const delRows = (dels.data ?? []) as Array<Record<string, unknown>>
+      if (delRows.length > 0) {
+        const delIds = delRows.map((d) => String(d.id))
+        const delLedger = await svc.from("agent_action_ledger").select(ACTION_COLS)
+          .eq("brokerage_id", brokerageId).eq("subject_type", "manager_delegation").in("subject_id", delIds)
+          .order("created_at", { ascending: true }).limit(LIMIT)
+        if (delLedger.error) return { ok: false, error: `Delegation ledger could not be read: ${delLedger.error.message}` }
+        for (const a of (delLedger.data ?? []) as ChainAction[]) actions.set(a.id, a)
+        const delTrail = await svc.from("manager_delegation_events")
+          .select("id, delegation_id, event_kind, from_status, to_status, reason_code, reason, actor_type, actor_id, evidence, ledger_entry_id, causation_id, correlation_id, created_at")
+          .eq("brokerage_id", brokerageId).in("delegation_id", delIds)
+          .order("created_at", { ascending: true }).limit(LIMIT)
+        if (delTrail.error) return { ok: false, error: `Delegation trail could not be read: ${delTrail.error.message}` }
+        const byId = new Map(delRows.map((d) => [String(d.id), d]))
+        for (const e of (delTrail.data ?? []) as Array<Record<string, unknown>>) {
+          const id = String(e.id)
+          const d = byId.get(String(e.delegation_id))
+          events.set(id, {
+            id,
+            event_type: `delegation.${String(e.event_kind)}${e.to_status ? `:${String(e.from_status ?? "")}→${String(e.to_status)}` : ""}`,
+            entity_type: "manager_delegation",
+            entity_id: String(e.delegation_id),
+            created_at: String(e.created_at),
+            causation_id: (e.causation_id as string | null) ?? null,
+            correlation_id: (e.correlation_id as string | null) ?? null,
+            detail: { reason_code: e.reason_code, reason: e.reason, actor_type: e.actor_type, actor_id: e.actor_id, ledger_entry_id: e.ledger_entry_id, from_status: e.from_status, to_status: e.to_status, evidence: e.evidence, mission_id: entityId, capability: d?.requested_capability ?? null, requesting_manager: d?.requesting_manager ?? null, assigned_manager: d?.assigned_manager ?? null, objective: d?.objective ?? null, status: d?.status ?? null, authority: d?.authority ?? null, budget: d?.budget ?? null, spent_usd: d?.spent_usd ?? null, spent_tokens: d?.spent_tokens ?? null, deadline: d?.deadline ?? null, result: d?.result ?? null },
+          } as ChainEvent)
+        }
+      }
     }
     const eventIds = [...events.keys()].slice(0, LIMIT)
     if (eventIds.length > 0) {

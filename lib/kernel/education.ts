@@ -1051,6 +1051,16 @@ export async function recordCompletion(
     throw new Error(`Failed to record completion: ${error?.message}`)
   }
 
+  // RELATIONSHIP GRAPH (wave 105, lane 105D): the contact completed_education (contact →
+  // education_module). Derived after the assignment row landed; best-effort.
+  try {
+    const { deriveEducationCompletedEdge } = await import("@/lib/kernel/relationship-graph")
+    const r = await deriveEducationCompletedEdge(supabase, { brokerageId: input.brokerageId, learner: { type: "contact", id: input.contactId }, moduleId: input.resourceId, source: "client_education", completedAt: input.completedAt })
+    if (r.errors.length > 0 && !r.degraded) console.error(`[education.recordCompletion] completed_education edge not derived: ${r.errors.join("; ")}`)
+  } catch (e) {
+    console.error("[education.recordCompletion] relationship edge derivation failed (non-blocking)", e)
+  }
+
   await bestEffort(import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
     brokerageId: input.brokerageId,
     entityType: "contact",

@@ -65,6 +65,14 @@ export async function GET(request: NextRequest) {
         relationshipBackfill.written += bf.written; relationshipBackfill.errors += bf.errors.length
         if (bf.degraded) relationshipBackfill.degraded++
         if (bf.errors.length > 0) console.error(`[source-conversion-learning] relationship backfill for ${b.id}: ${bf.errors.slice(0, 3).join("; ")}${bf.errors.length > 3 ? ` (+${bf.errors.length - 3})` : ""}`)
+        // WAVE 105 (105D): the agent-STRUCTURE edges (member_of_team from agents.team_id, serves_territory
+        // from farm_territories.agent_id — which has no server-side writer) heal on the same cadence
+        // through the same service (backfillAgentStructureEdges; idempotent; bounded).
+        const { backfillAgentStructureEdges } = await import("@/lib/kernel/relationship-graph")
+        const st = await backfillAgentStructureEdges(svc, { brokerageId: b.id })
+        relationshipBackfill.scanned += st.scanned; relationshipBackfill.written += st.written; relationshipBackfill.errors += st.errors.length
+        if (st.degraded) relationshipBackfill.degraded++
+        if (st.errors.length > 0) console.error(`[source-conversion-learning] agent structure backfill for ${b.id}: ${st.errors.slice(0, 3).join("; ")}`)
       } catch (e) {
         console.error("[source-conversion-learning] relationship backfill failed (non-blocking):", e)
       }

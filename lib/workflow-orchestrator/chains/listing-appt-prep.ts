@@ -49,6 +49,7 @@ import type { generatePropertyChapterVideos as realGeneratePropertyChapterVideos
 import type { DirectMailCopyContext } from "@/lib/direct-mail/draft-copy"
 import { pushPortalValueCard } from "@/lib/kernel/portal-value"
 import { CalendarEventType } from "@/lib/kernel/calendar-types"
+import type { ManagerKey } from "@/lib/kernel/manager-registry"
 
 // ---------------------------------------------------------------------------
 // Injection seam for the three MONEY-SPENDING leaves of this chain.
@@ -1346,6 +1347,64 @@ async function runForEvent(svc: Svc, brokerageId: string, eventId: string): Prom
  * engine turns into the one run keyed on that event.
  */
 export async function fireListingAppointmentSetForBooking(
+  svc: Svc,
+  params: ResolveBookingPrepParams & { origin: string; delegate?: ListingPrepDelegate | null },
+): Promise<ListingAppointmentSetResult> {
+  const r = await fireListingAppointmentSetCore(svc, params)
+  // The started / deduped variants are the ones that carry the resolved booking `context` (and a run).
+  if (params.delegate && "context" in r) await issueListingPrepDelegation(svc, r, params.delegate)
+  return r
+}
+
+/**
+ * WAVE 105 (lane 105A) — THE OWNER'S EXAMPLE: AI ISA → PREPARE_SELLER_APPOINTMENT → Listing Concierge.
+ * A MANAGER that books a seller appointment (the AI ISA's two booking paths pass `delegate`) does not
+ * run the prep itself — it REQUESTS the Concierge's `listing_appointment_prep` capability as a
+ * structured delegation (lib/kernel/manager-delegation.ts: objective, input entities, required output,
+ * authority rung, deadline = the appointment). The chain run that this trigger just started IS the
+ * Concierge's work, so the delegation is accepted and marked WORKING here; the engine returns the
+ * result through it when the run completes (settleDelegationForRun) and escalates it if the run
+ * fails or the reaper stalls it. A human booking carries no `delegate` — nothing manager-to-manager
+ * happened. Idempotent per run (requestDelegation dedupes on input_entities.workflow_run_id).
+ * Best-effort: a delegation that could not be recorded never undoes the prep.
+ */
+export interface ListingPrepDelegate { requestingManager: ManagerKey; missionId?: string | null }
+
+async function issueListingPrepDelegation(svc: Svc, r: Extract<ListingAppointmentSetResult, { status: "started" | "deduped" }>, delegate: ListingPrepDelegate): Promise<void> {
+  if (!r.runId) return
+  try {
+    const { requestDelegation, acceptDelegation, startDelegationWork, settleDelegationForRun, PREPARE_SELLER_APPOINTMENT_CAPABILITY } = await import("@/lib/kernel/manager-delegation")
+    const { MIN_AUTHORITY_FOR_RISK } = await import("@/lib/ai-isa/persona-tool-policy")
+    const ctx = r.context
+    const req = await requestDelegation({
+      brokerageId: ctx.brokerageId, missionId: delegate.missionId ?? null,
+      requestingManager: delegate.requestingManager, assignedManager: "listing_concierge",
+      capability: PREPARE_SELLER_APPOINTMENT_CAPABILITY,
+      objective: `Prepare the listing appointment${ctx.startAt ? ` on ${ctx.startAt}` : ""} for contact ${ctx.contactId}: CMA, presentation, chapter reels and the pre-appointment drip`,
+      inputEntities: { calendar_event_id: ctx.calendarEventId, contact_id: ctx.contactId, listing_id: ctx.property.listingId ?? null, agent_user_id: ctx.agentUserId, workflow_run_id: r.runId, seller_basis: ctx.sellerBasis },
+      requiredOutput: { cma: true, presentation: true, chapter_videos: true, drip_enrolled: true, pre_listing_kit: "if_verified_address" },
+      authority: MIN_AUTHORITY_FOR_RISK.LOW_RISK_WRITE ?? 0,
+      deadline: ctx.startAt,
+    }, svc as any)
+    if (!req.ok) { console.error(`[listing-appt-prep] delegation NOT requested for run ${r.runId}: ${req.reason}`); return }
+    const id = req.delegation.id
+    const actor = { type: "manager" as const, id: "listing_concierge" }
+    if (r.runStatus === "completed") { await settleDelegationForRun({ runId: r.runId, outcome: "completed", actor }, svc as any); return }
+    if (r.runStatus === "failed" || r.runStatus === "cancelled") { await settleDelegationForRun({ runId: r.runId, outcome: "failed", detail: `run ${r.runStatus} before the delegation was recorded`, actor }, svc as any); return }
+    if (req.delegation.status === "REQUESTED") {
+      const acc = await acceptDelegation({ brokerageId: ctx.brokerageId, delegationId: id, reason: `the listing-appt-prep run ${r.runId} is the Concierge's work`, actor }, svc as any)
+      if (!acc.ok) { console.error(`[listing-appt-prep] delegation ${id} NOT accepted: ${acc.reason}`); return }
+    }
+    if (req.delegation.status === "REQUESTED" || req.delegation.status === "ACCEPTED") {
+      const w = await startDelegationWork({ brokerageId: ctx.brokerageId, delegationId: id, reason: `run ${r.runId} ${r.runStatus ?? "running"}`, actor }, svc as any)
+      if (!w.ok) console.error(`[listing-appt-prep] delegation ${id} NOT marked working: ${w.reason}`)
+    }
+  } catch (err) {
+    console.error(`[listing-appt-prep] delegation for run ${r.runId} failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+async function fireListingAppointmentSetCore(
   svc: Svc,
   params: ResolveBookingPrepParams & { origin: string },
 ): Promise<ListingAppointmentSetResult> {

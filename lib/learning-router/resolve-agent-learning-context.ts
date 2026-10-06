@@ -174,6 +174,17 @@ export async function resolveAgentLearningContext(
       const profile = await loadAgentCompetency(supabase as any, { id: agentsId, user_id: userId, brokerage_id: brokerageId })
       competencyGaps = profile.gaps.map((g) => ({ skill: g.skill, score: g.score as number, gapTag: g.gapTag }))
       for (const t of profile.gapTags) gapTags.push(t)
+      // RELATIONSHIP GRAPH (wave 105, lane 105D): the SAME load plants has_competency (agent user →
+      // competency) for every skill scored at or above the curriculum's own gap bar, confidence from the
+      // profile's evidence gate. One threshold for the router and the graph (§6). Best-effort.
+      try {
+        const { deriveCompetencyEdges } = await import("@/lib/kernel/relationship-graph")
+        const { COMPETENCY_GAP_SCORE } = await import("@/lib/education/skill-freshness")
+        const r = await deriveCompetencyEdges(supabase as any, { brokerageId, agentUserId: userId, skills: profile.skills.map((s) => ({ skill: s.skill, score: s.score, confidence: s.confidence })), threshold: COMPETENCY_GAP_SCORE })
+        if (r.errors.length > 0 && !r.degraded) console.error(`[learning-router] has_competency edges not derived: ${r.errors.join("; ")}`)
+      } catch (e) {
+        console.error("[learning-router] competency edge derivation failed (non-blocking):", (e as Error).message)
+      }
     } catch (e) {
       console.error("[learning-router] competency read failed (context stands without it):", (e as Error).message)
     }
