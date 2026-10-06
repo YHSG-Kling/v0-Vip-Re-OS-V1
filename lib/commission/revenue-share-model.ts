@@ -168,6 +168,8 @@ export function edgeTermsFromModel(state: RevenueShareModelState, from: Date = n
 
 /** Minimal edge shape the computation needs (agent_relationships row). */
 export interface RevenueShareEdge {
+  /** agent_relationships.id — the RULE identity a residual share is keyed on (wave 107, 107A). */
+  id?: string | null
   sponsor_agent_id: string | null
   relationship_type?: string | null
   depth_level?: number | null
@@ -323,6 +325,7 @@ export function computeRevenueShare(input: {
             `${rel.relationship_type ?? "sponsor"} revenue share (level ${rel.depth_level ?? 1}, ` +
             `${calculationType}, brokerage-funded) — this deal's company dollar (${runningBrokerageCents}¢ remaining) ` +
             `cannot fund it; owed from company books`,
+          ...(rel.id ? { relationship_id: rel.id } : {}),
         })
         continue
       }
@@ -337,6 +340,7 @@ export function computeRevenueShare(input: {
       calculated_amount: shareCents / 100, // dollars, like every DistributionRecord
       source_of_funds: source,
       notes: `${rel.relationship_type ?? "sponsor"} revenue share (level ${rel.depth_level ?? 1}, ${calculationType}, ${source}-funded)`,
+      ...(rel.id ? { relationship_id: rel.id } : {}),
     })
   }
 
@@ -346,5 +350,203 @@ export function computeRevenueShare(input: {
     distributions,
     companyObligations,
     skipped: null,
+  }
+}
+
+// ─── THE ECONOMIC RELATIONSHIP GRAPH → RESIDUAL RULE EVALUATION (wave 107, lane 107A) ────────────
+// Owner: "Agent B closes → Economic Event → Commission ledger → Residual relationship lookup → Rule
+// evaluation → Residual ledger entry → Finance Manager review. No LLM calculates authoritative money."
+// SURVIVORS (audited, none rebuilt): the RULE is the agent_relationships edge (its stamped terms +
+// effective window) gated by the brokerage's model (parseRevenueShareModel); the MONEY step is
+// computeRevenueShare above; the GRAPH is relationship_edges (lib/kernel/relationship-graph.ts — m698/m715:
+// recruited_by, earns_residual, sponsor_of (= "sponsored_by", stored sponsor → recruit), member_of_team,
+// referred_by, vendor_for, all with effective_from/effective_to). The graph is a PROJECTION: it corroborates
+// a residual, it never prices one (terms live on agent_relationships only — a graph-only edge pays nothing
+// and is reported). This file imports no model SDK; test:residual-economics censuses the money path.
+
+/** The residual-ELIGIBLE relations — agent_relationships.relationship_type's live CHECK, one vocabulary (§6). */
+export const RESIDUAL_ELIGIBLE_RELATIONSHIPS = ["sponsor", "mentor", "team_lead"] as const
+
+/** relationship_edges types that CORROBORATE a residual edge of each eligible relation (agent endpoints are
+ *  USERS ids): recruited_by (recruit → sponsor), earns_residual / sponsor_of (sponsor → recruit), and for a
+ *  team lead, member_of_team (recruit → team whose teams.team_lead_id is the beneficiary). */
+export const RESIDUAL_CORROBORATING_EDGES: Readonly<Record<(typeof RESIDUAL_ELIGIBLE_RELATIONSHIPS)[number], readonly string[]>> = {
+  sponsor: ["recruited_by", "earns_residual", "sponsor_of"],
+  mentor: ["earns_residual", "sponsor_of"],
+  team_lead: ["earns_residual", "member_of_team"],
+}
+
+/** Economic graph relations that are NOT residual-eligible: each has its own rail (referral fee →
+ *  distribution_type 'referral' via lib/agents/referral-closer.ts; vendor → vendor_invoices / vendor_payouts).
+ *  An edge of these types never mints a residual entry.
+ *  @proofSeam scripts/residual-economics-guard.ts asserts these stay in the graph vocabulary and never mint a residual. */
+export const NON_RESIDUAL_ECONOMIC_EDGES = ["referred_by", "vendor_for"] as const
+
+export interface ResidualGraphEdge {
+  brokerage_id: string | null
+  relationship_type: string
+  from_entity_type: string
+  from_entity_id: string
+  to_entity_type: string
+  to_entity_id: string
+  effective_from?: string | null
+  effective_to?: string | null
+}
+
+export interface ResidualEntryEvaluation {
+  /** Idempotency key: residual:<transaction>:<beneficiary agents.id>:<agent_relationships.id>. */
+  key: string
+  beneficiaryAgentId: string
+  relationshipId: string | null
+  relationshipType: string
+  depth: number
+  cents: number
+  /** in_deal → commission_distributions 'residual'; company_books → company_books_obligations (post-cap). */
+  rail: "in_deal" | "company_books"
+  sourceOfFunds: string
+  calculationType: "percent" | "flat"
+  calculationValue: number | null
+  /** Graph edge types (valid on the evaluation date) that corroborate this residual. */
+  corroboratedBy: string[]
+}
+
+export interface ResidualEvaluation {
+  transactionId: string
+  brokerageId: string
+  producingAgentId: string
+  /** The date every effective window was judged on — the CLOSE date (fallback only when the deal has none). */
+  evaluatedOn: string
+  evaluatedOnSource: "close_date" | "fallback"
+  skipped: RevenueShareSkipReason | null
+  entries: ResidualEntryEvaluation[]
+  computation: RevenueShareComputation
+  /** false = the graph read was refused / absent: corroboration is UNMEASURED (never read as "uncorroborated"). */
+  graphMeasured: boolean
+  findings: string[]
+}
+
+/** PURE — the one spelling of the residual idempotency key (transaction, beneficiary, rule); the proof asserts
+ *  its shape through the evaluation's entries. */
+function residualEntryKey(transactionId: string, beneficiaryAgentId: string, relationshipId: string | null | undefined): string {
+  return `residual:${transactionId}:${beneficiaryAgentId}:${relationshipId ?? "unkeyed"}`
+}
+
+/**
+ * PURE — DETERMINISTIC residual rule evaluation for ONE closing: no model, no clock (the evaluation date is
+ * passed in — the close date), integer cents through computeRevenueShare (the ONE money rule). Edges are
+ * tenant-filtered (a foreign row is dropped and reported), narrowed to the producing agent and ordered
+ * (depth, id) so two runs over the same rows produce byte-equal output.
+ * Product caller: lib/commission/waterfall/09-revenue-share.ts (the money step itself).
+ * @proofSeam scripts/residual-economics-guard.ts drives each relationship type, the close-date window, foreign
+ * rows and the re-run determinism directly.
+ */
+export function evaluateResidualRules(input: {
+  transactionId: string
+  brokerageId: string
+  producingAgentId: string
+  closeDate: string | null
+  /** Used ONLY when the deal has no close date; the caller passes it (no clock in this core). */
+  fallbackDate: string
+  agentFinalNetCents: number
+  brokerageFinalCents: number
+  state: RevenueShareModelState
+  relationships: ReadonlyArray<RevenueShareEdge & { brokerage_id?: string | null; agent_id?: string | null }>
+  graph?: {
+    measured: boolean
+    edges: readonly ResidualGraphEdge[]
+    /** agents.id → users.id (agents.id and users.id are DISJOINT, CLAUDE.md §3). */
+    userIdByAgentId: ReadonlyMap<string, string>
+    /** teams.id → teams.team_lead_id (users.id). */
+    teamLeadUserIdByTeamId?: ReadonlyMap<string, string>
+  }
+}): ResidualEvaluation {
+  const findings: string[] = []
+  const evaluatedOn = (input.closeDate ?? input.fallbackDate).slice(0, 10)
+  const evaluatedOnSource = input.closeDate ? "close_date" : "fallback"
+  if (!input.closeDate) findings.push(`no close date on ${input.transactionId} — effective windows judged on ${evaluatedOn}`)
+
+  const rels = input.relationships
+    .filter((r) => {
+      if (r.brokerage_id !== undefined && r.brokerage_id !== input.brokerageId) { findings.push(`foreign relationship ${r.id ?? "?"} dropped`); return false }
+      if (r.relationship_type && !(RESIDUAL_ELIGIBLE_RELATIONSHIPS as readonly string[]).includes(r.relationship_type)) { findings.push(`relationship ${r.id ?? "?"} type '${r.relationship_type}' is not residual-eligible`); return false }
+      return r.agent_id === undefined || r.agent_id === input.producingAgentId
+    })
+    .slice()
+    .sort((a, b) => (a.depth_level ?? 1) - (b.depth_level ?? 1) || String(a.id ?? "").localeCompare(String(b.id ?? "")))
+
+  const computation = computeRevenueShare({
+    agentId: input.producingAgentId,
+    agentFinalNetCents: input.agentFinalNetCents,
+    brokerageFinalCents: input.brokerageFinalCents,
+    state: input.state,
+    relationships: rels as RevenueShareEdge[],
+    today: new Date(`${evaluatedOn}T00:00:00.000Z`),
+  })
+
+  const relById = new Map(rels.filter((r) => r.id).map((r) => [String(r.id), r]))
+  const graphMeasured = input.graph?.measured === true
+  const edges = (input.graph?.edges ?? []).filter((e) => e.brokerage_id === input.brokerageId && withinEffectiveWindow(e, evaluatedOn))
+  const producerUser = input.graph?.userIdByAgentId.get(input.producingAgentId) ?? null
+
+  const corroborate = (beneficiaryAgentId: string, relType: string): string[] => {
+    if (!graphMeasured || !producerUser) return []
+    const beneficiaryUser = input.graph?.userIdByAgentId.get(beneficiaryAgentId) ?? null
+    if (!beneficiaryUser) return []
+    const allowed = new Set(RESIDUAL_CORROBORATING_EDGES[relType as keyof typeof RESIDUAL_CORROBORATING_EDGES] ?? [])
+    const hits = new Set<string>()
+    for (const e of edges) {
+      if (!allowed.has(e.relationship_type)) continue
+      if (e.relationship_type === "recruited_by" && e.from_entity_id === producerUser && e.to_entity_id === beneficiaryUser) hits.add(e.relationship_type)
+      if ((e.relationship_type === "earns_residual" || e.relationship_type === "sponsor_of") && e.from_entity_id === beneficiaryUser && e.to_entity_id === producerUser) hits.add(e.relationship_type)
+      if (e.relationship_type === "member_of_team" && e.from_entity_id === producerUser && e.to_entity_type === "team" && input.graph?.teamLeadUserIdByTeamId?.get(e.to_entity_id) === beneficiaryUser) hits.add(e.relationship_type)
+    }
+    return Array.from(hits).sort()
+  }
+
+  const entries: ResidualEntryEvaluation[] = []
+  const push = (rail: ResidualEntryEvaluation["rail"], d: { agent_id?: string; relationship_id?: string; calculated_amount: number; calculation_type: "percent" | "flat"; calculation_value?: number }, sourceOfFunds: string) => {
+    if (!d.agent_id) return
+    const rel = d.relationship_id ? relById.get(d.relationship_id) : undefined
+    const relationshipType = rel?.relationship_type ?? "sponsor"
+    const corroboratedBy = corroborate(d.agent_id, relationshipType)
+    if (graphMeasured && corroboratedBy.length === 0) findings.push(`residual to ${d.agent_id} (${relationshipType}) has no corroborating graph edge on ${evaluatedOn}`)
+    entries.push({
+      key: residualEntryKey(input.transactionId, d.agent_id, d.relationship_id),
+      beneficiaryAgentId: d.agent_id,
+      relationshipId: d.relationship_id ?? null,
+      relationshipType,
+      depth: rel?.depth_level ?? 1,
+      cents: Math.round(d.calculated_amount * 100),
+      rail,
+      sourceOfFunds,
+      calculationType: d.calculation_type,
+      calculationValue: d.calculation_value ?? null,
+      corroboratedBy,
+    })
+  }
+  for (const d of computation.distributions) push("in_deal", d, d.source_of_funds)
+  for (const o of computation.companyObligations) push("company_books", o, "brokerage")
+
+  // A graph residual edge with no paying rule: reported, never paid (terms live on agent_relationships).
+  if (graphMeasured && producerUser && !computation.skipped) {
+    const paidUsers = new Set(entries.map((x) => input.graph?.userIdByAgentId.get(x.beneficiaryAgentId)).filter(Boolean) as string[])
+    for (const e of edges) {
+      if (e.relationship_type === "earns_residual" && e.to_entity_id === producerUser && !paidUsers.has(e.from_entity_id)) {
+        findings.push(`earns_residual edge from user ${e.from_entity_id} has no agent_relationships terms in force on ${evaluatedOn} — pays nothing`)
+      }
+    }
+  }
+
+  return {
+    transactionId: input.transactionId,
+    brokerageId: input.brokerageId,
+    producingAgentId: input.producingAgentId,
+    evaluatedOn,
+    evaluatedOnSource,
+    skipped: computation.skipped,
+    entries,
+    computation,
+    graphMeasured,
+    findings,
   }
 }

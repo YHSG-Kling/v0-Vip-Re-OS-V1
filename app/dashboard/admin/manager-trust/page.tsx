@@ -13,6 +13,8 @@ import { MAINTENANCE_DOMAINS, MANAGERS, resolveMaintenanceManager, type ManagerK
 import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 import { TenantConstitutionPanel } from "./tenant-constitution-panel"
 import { ImprovementProposalsPanel } from "./improvement-proposals-panel"
+import { WorkforceThresholdsEditor } from "./workforce-thresholds-editor"
+import { StrategyLibraryPanel } from "./strategy-library-panel"
 
 /**
  * OWNED PROOFS — every maintenance/burn domain in the registry, grouped by the manager
@@ -110,9 +112,15 @@ export default async function ManagerTrustPage({ searchParams }: { searchParams?
       authorityLadder={AUTHORITY_LEVEL_LABELS}
     />
     <TenantConstitutionPanel historyKey={historyKey} />
+    {/* WORKFORCE THRESHOLDS (wave 107G): the dedicated editor for policy key workforce_thresholds — submits a
+        `policy` proposal (or applies it now through the same promotion) into the panel below. */}
+    <WorkforceThresholdsEditor />
     {/* CONTROLLED LEARNING (wave 104, lane 104C, m709): what the OS proposes to change about itself, with
         the evidence, the deterministic evaluation and the human approve / reject / promote / roll back. */}
     <ImprovementProposalsPanel />
+    {/* STRATEGY LIBRARY (wave 107, lane 107E, m725): the platform's versioned strategies — activate a version,
+        see the benchmark and the recorded local adaptation. */}
+    <StrategyLibraryPanel />
     </>
   )
 }

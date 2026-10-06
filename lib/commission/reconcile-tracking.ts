@@ -25,7 +25,7 @@
 // The pure detector/aggregator are unit-tested; the reconcile/deposit helpers do the I/O.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { summaryAmountFromDistributions, isVoidedDistribution } from "./distribution-correction"
+import { summaryAmountFromDistributions, isVoidedDistribution, isResidualAwaitingReview } from "./distribution-correction"
 import type { EconomicGraph, LedgerRef } from "@/lib/kernel/economic-graph"
 
 type Svc = SupabaseClient<any, any, any>
@@ -58,8 +58,11 @@ export function detectCommissionTrackingDrift(input: {
  * when at least one row exists and every non-cancelled row is paid; otherwise 'pending'. Returns null
  * when there is no ledger row at all (bridge-only — not drift, a separate leak concern).
  */
-export function aggregateLedgerStatus(rows: Array<{ status?: string | null }>): string | null {
-  const live = (rows ?? []).filter((r) => (r.status ?? "").toLowerCase() !== "cancelled" && (r.status ?? "").toLowerCase() !== "voided")
+export function aggregateLedgerStatus(rows: Array<{ status?: string | null; distribution_type?: string | null; entry_type?: string | null; paid_at?: string | null }>): string | null {
+  // Wave 107 (107A): a residual still AWAITING the Finance Manager's review is held, not drift — the deal's
+  // disbursement deliberately does not pay it (RESIDUAL_PAYABLE_FILTER), so counting it here would re-fire
+  // the drift alarm forever against a healer that must not pay it. It is the review queue's, not the reaper's.
+  const live = (rows ?? []).filter((r) => (r.status ?? "").toLowerCase() !== "cancelled" && (r.status ?? "").toLowerCase() !== "voided" && !isResidualAwaitingReview(r))
   if (live.length === 0) return null
   return live.every((r) => (r.status ?? "").toLowerCase() === "paid") ? "paid" : "pending"
 }
@@ -170,10 +173,10 @@ export async function reconcileCommissionDisbursement(
       if (status === "paid") {
         const { data: dists } = await svc
           .from("commission_distributions")
-          .select("status")
+          .select("status, distribution_type, entry_type, paid_at")
           .eq("commission_id", row.id)
           .eq("brokerage_id", params.brokerageId)
-        const distStatus = aggregateLedgerStatus((dists ?? []) as Array<{ status?: string | null }>)
+        const distStatus = aggregateLedgerStatus((dists ?? []) as Array<{ status?: string | null; distribution_type?: string | null }>)
         if (distStatus == null || distStatus === "paid") continue
       }
       const res = await markCommissionPaid({

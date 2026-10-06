@@ -36,7 +36,10 @@ import type { AutonomyDecision } from "@/lib/managers/autonomy-gate"
 // Wave 106 (lane 106A, m721 — additive widening): `allocation` = a RESOURCE ALLOCATION recommendation
 // (lib/kernel/resource-allocation.ts — lead assignment / marketing budget) a human approves; proposer
 // `resource_allocation`. scripts/check-vocabulary-guard.ts mirrors both constants against the CHECK.
-export const PROPOSAL_SUBJECT_KINDS = ["policy", "prompt", "variant", "threshold", "allocation"] as const
+// Wave 107 (107F, m726 — additive widening, superset of m721): `strategy` = a STRATEGY LEARNING finding
+// (lib/intelligence/strategy-learning.ts runStrategyLearning — "Strategy B works platform-wide, but A works better
+// for this brokerage"), proposer `strategy_learning`; a human approves (authority 6).
+export const PROPOSAL_SUBJECT_KINDS = ["policy", "prompt", "variant", "threshold", "allocation", "strategy"] as const
 export type ProposalSubjectKind = (typeof PROPOSAL_SUBJECT_KINDS)[number]
 
 export const PROPOSAL_STATUSES = ["PROPOSED", "EVALUATED", "APPROVED", "REJECTED", "PROMOTED", "ROLLED_BACK"] as const
@@ -44,7 +47,7 @@ export type ProposalStatus = (typeof PROPOSAL_STATUSES)[number]
 
 // media_intelligence (wave 106C, m719 widens the m709 CHECK — APPLIED LIVE 2026-10-06; before it a media
 // proposal's insert is refused by the live CHECK and learnFromPerformance reports it, never silently).
-export const PROPOSERS = ["copy_learning", "predictor_learning", "prompt_calibrator", "outcome_autopsy", "human", "media_intelligence", "resource_allocation"] as const
+export const PROPOSERS = ["copy_learning", "predictor_learning", "prompt_calibrator", "outcome_autopsy", "human", "media_intelligence", "resource_allocation", "strategy_learning"] as const
 export type Proposer = (typeof PROPOSERS)[number]
 
 /** The state machine (m709 CHECK is the vocabulary; this is the order). */
@@ -71,6 +74,8 @@ export const PROPOSAL_AUTHORITY: Readonly<Record<ProposalSubjectKind, AuthorityL
   prompt: OWNER_AUTHORITY_LEVEL,
   // "Not automatically at first. Recommendation mode first." (owner, wave 106) — a human, always.
   allocation: OWNER_AUTHORITY_LEVEL,
+  // 107F: a strategy finding is a recommendation — the strategy engine's activations (107E) apply a choice.
+  strategy: OWNER_AUTHORITY_LEVEL,
 })
 
 export type EvaluationVerdict = "pass" | "fail" | "inconclusive"
@@ -236,6 +241,23 @@ export async function evaluateImprovement(
       // spots); there is no replay for "who should get this lead" — a human decides, never a model.
       const rec = (change.recommendation ?? null) as { chain?: unknown[]; blindSpots?: string[]; recommended?: unknown; allocations?: unknown[] } | null
       return { evaluator: "none", verdict: "inconclusive", score: null, why: `a resource allocation recommendation (${String(change.kind ?? "unknown")}) is decided by a human — ${String(change.summary ?? "no summary")}`, detail: { kind: change.kind ?? null, chainSteps: rec?.chain?.length ?? 0, blindSpots: rec?.blindSpots ?? [] } }
+    }
+    case "strategy": {
+      // Wave 107F: RE-MEASURE, never trust the stored numbers — compareStrategies re-runs the tenant comparison
+      // over the proposal's window (deterministic z-test); pass only when the same strategy still wins.
+      const pair = /^strategy_choice:([^|]+)\|(.+)$/.exec(row.subject_key)
+      if (!pair) return { evaluator: "none", verdict: "fail", score: null, why: `"${row.subject_key}" is not a strategy_choice:<a>|<b> subject`, detail: {} }
+      const { compareStrategies } = await import("@/lib/intelligence/strategy-learning")
+      const days = Number(change.windowDays ?? 90) || 90
+      const cmp = await compareStrategies(svc, row.brokerage_id, pair[1], pair[2], { days, now: opts.now })
+      if (!cmp.ok) return { evaluator: "none", verdict: "inconclusive", score: null, why: `strategy comparison refused: ${cmp.error}`, detail: {} }
+      const sig = cmp.comparison.significance
+      const winner = sig.verdict === "a_better" ? pair[1] : sig.verdict === "b_better" ? pair[2] : null
+      const detail = { significance: sig, a: cmp.comparison.a, b: cmp.comparison.b, blindSpots: cmp.comparison.blindSpots }
+      if (!winner) return { evaluator: "none", verdict: "inconclusive", score: sig.z, why: `re-measured: ${sig.why} — a human decides`, detail }
+      return winner === change.winner
+        ? { evaluator: "none", verdict: "pass", score: sig.z, why: `re-measured: ${winner} still wins — ${sig.why}`, detail }
+        : { evaluator: "none", verdict: "fail", score: sig.z, why: `re-measured: ${winner} wins now, not the proposed ${String(change.winner)}`, detail }
     }
     case "prompt":
     default:
@@ -454,6 +476,9 @@ async function applyChange(svc: Svc, row: ImprovementProposalRow, actor: PolicyA
       if (logErr) console.error(`[improvement-proposals] assignment_log routing_reason not stamped for lead ${leadId}: ${logErr.message}`)
       return { writer: "handleLeadAssigned", previous: null, policyVersionRef: null }
     }
+    case "strategy":
+      // 107F: the approval IS the review — which strategy runs is the strategy engine's activation (107E), never this kernel.
+      throw new Error("a strategy finding is applied by selecting the strategy in the strategy engine — the approval is the review")
     case "prompt":
     default:
       throw new Error("no survivor writer applies a prompt change — model_retraining_log is advisory; the approval is the review")

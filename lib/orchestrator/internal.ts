@@ -605,6 +605,26 @@ async function handleListingSigned(event: Event): Promise<ProcessingResult> {
       },
     })
 
+    // WAVE 107B — the Listing Concierge's MEDIA NEED goes through procurement (lib/kernel/procurement.ts):
+    // eligible photographers ranked by availability / price / quality / SLA / history, the top pick
+    // recorded as a 'requested' vendor_booking and put in the agent's approval queue (or booked under
+    // the tenant's procurement_autonomy policy). Best-effort: the checklist above already landed, and
+    // "no eligible vendor" is a named blind spot, not a failure of the signed listing.
+    if (listing_id && event.brokerage_id) {
+      try {
+        const { requestProcurement } = await import("@/lib/kernel/procurement")
+        const r = await requestProcurement(createServiceClient(), {
+          brokerageId: event.brokerage_id, serviceType: "photography", listingId: listing_id,
+          neededBy: typeof go_live_date === "string" ? go_live_date.slice(0, 10) : null,
+          requirements: { purpose: "listing launch media", source: "listing.signed" },
+          requestedByUserId: event.user_id ?? null,
+        })
+        if (!r.ok) console.warn(`[handleListingSigned] photography procurement not recommended for listing ${listing_id}: ${r.error}`)
+      } catch (e) {
+        console.error(`[handleListingSigned] photography procurement threw for listing ${listing_id}:`, e instanceof Error ? e.message : e)
+      }
+    }
+
     return {
       success: true,
       handler: "handleListingSigned",

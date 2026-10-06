@@ -354,7 +354,10 @@ export async function getSuggestedVendorsByStage(stage: string) {
 
 export async function createVendorBooking(data: {
   vendorId: string
-  transactionId: string
+  /** Exactly ONE of transactionId / listingId (wave 107 integration): a listing-stage booking —
+   *  photography, staging before a contract — has no transaction yet and carries listing_id. */
+  transactionId?: string | null
+  listingId?: string | null
   serviceType: string
   scheduledDate: string
   cost?: number
@@ -364,6 +367,9 @@ export async function createVendorBooking(data: {
 
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
+  const transactionId = data.transactionId || null
+  const listingId = data.listingId || null
+  if ((transactionId ? 1 : 0) + (listingId ? 1 : 0) !== 1) throw new Error("A vendor booking names exactly one of a transaction or a listing")
 
   const { data: profile } = await supabase
     .from("users")
@@ -375,7 +381,8 @@ export async function createVendorBooking(data: {
     .from("vendor_bookings")
     .insert({
       vendor_id: data.vendorId,
-      transaction_id: data.transactionId,
+      transaction_id: transactionId,
+      listing_id: listingId,
       brokerage_id: profile?.brokerage_id,
       service_type: data.serviceType,
       scheduled_date: data.scheduledDate,
@@ -390,9 +397,9 @@ export async function createVendorBooking(data: {
 
   if (error) throw error
 
-  // Add timeline entry
-  await bestEffort(supabase.from("transaction_timeline").insert({
-    transaction_id: data.transactionId,
+  // Add timeline entry (a transaction's timeline only — a listing-stage booking has none yet)
+  if (transactionId) await bestEffort(supabase.from("transaction_timeline").insert({
+    transaction_id: transactionId,
     brokerage_id: profile?.brokerage_id,
     activity_type: "vendor_booked",
     description: `Vendor booked for ${data.serviceType}`,
@@ -401,7 +408,8 @@ export async function createVendorBooking(data: {
   }), "timeline echo of a vendor booking already written (checked above)")
 
   const { revalidatePath } = await import("next/cache")
-  revalidatePath(`/dashboard/transactions/${data.transactionId}`)
+  if (transactionId) revalidatePath(`/dashboard/transactions/${transactionId}`)
+  if (listingId) revalidatePath(`/dashboard/listings/${listingId}`)
   revalidatePath("/dashboard/vendors")
   return booking
 }

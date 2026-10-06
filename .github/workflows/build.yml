@@ -593,6 +593,21 @@ jobs:
           # so an abort names its compiler. A few lines, no measurable cost.
           DEBUG: "next:build:webpack-build*"
         run: npx next build --webpack --experimental-build-mode compile
+      # MEASURED 2026-10-06 (run 37420587555, commit 7e6e412a3): the FIRST two-phase run cleared the
+      # heap wall — compile finished, 411 static pages generated in 3.2 min — and then died in
+      # "Finalizing page optimization" with ENOENT rename .next/server/proxy.js → middleware.js.
+      # Next 16.2.7's compile phase already performs that rename; the generate phase repeats it.
+      # Restore the source name (a copy — the rename then overwrites middleware.js with the same
+      # bytes), so both phases see the file layout they expect. No-op when compile left proxy.js.
+      - name: Bridge the proxy bundle between phases (proxy.js ↔ middleware.js)
+        run: |
+          if [ ! -f .next/server/proxy.js ] && [ -f .next/server/middleware.js ]; then
+            cp .next/server/middleware.js .next/server/proxy.js
+            [ -f .next/server/middleware.js.map ] && cp .next/server/middleware.js.map .next/server/proxy.js.map || true
+            echo "restored .next/server/proxy.js from middleware.js for the generate phase"
+          else
+            echo "no bridge needed"
+          fi
       - name: Production build — generate (page data + prerender, no webpack)
         env:
           NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_GENERATE_HEAP_MB || '10240' }}"

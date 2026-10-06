@@ -55,6 +55,7 @@ import {
   planDistributionCorrection, type DistributionCorrectionKind,
   isSummarizedDistributionType, summaryAmountFromDistributions, SUMMARIZED_DISTRIBUTION_TYPES,
   planDistributionVoid,
+  planResidualApproval, planResidualReversal, type ResidualReversalRow,
 } from "@/lib/commission/distribution-correction"
 import { withActionLedger } from "@/lib/kernel/action-ledger"
 
@@ -2046,6 +2047,15 @@ export async function correctCommissionDistribution(
       distributionType: (o.distribution_type as string | null) ?? null,
     })
     if (restamp.error) console.error("[financial] commission correction posted; summary re-stamp incomplete:", restamp.error)
+    // WAVE 107 (107A): REVERSING the producing agent's SOURCE entry reverses every residual it funded.
+    // (An adjustment changes the amount, not the event — residuals are re-judged by finance, not auto-scaled.)
+    if (kind === "reversal" && o.distribution_type === "agent" && o.transaction_id) {
+      const cascade = await reverseDerivedResiduals(supabase, {
+        ctx, transactionId: o.transaction_id as string, commissionId: (o.commission_id as string | null) ?? null,
+        sourceDistributionId: distributionId, trigger: "source_reversed", reason: `source commission entry reversed: ${input.reason.trim()}`,
+      })
+      if (cascade.errors.length > 0) console.error("[financial] reversal posted; residual reversal incomplete:", cascade.errors.join("; "))
+    }
     return {
       success: true,
       data: { correctionId: (inserted[0] as { id: string }).id, amount: plan.amount, netAfter: plan.netAfter, summaries: restamp },
@@ -2179,6 +2189,15 @@ export async function voidCommissionDistribution(
     })
     if (restamp.error) console.error("[financial] commission entry voided; summary re-stamp incomplete:", restamp.error)
 
+    // WAVE 107 (107A): voiding the producing agent's SOURCE entry takes every residual it funded with it.
+    if (e.distribution_type === "agent" && e.transaction_id) {
+      const cascade = await reverseDerivedResiduals(supabase, {
+        ctx, transactionId: e.transaction_id as string, commissionId: (e.commission_id as string | null) ?? null,
+        sourceDistributionId: distributionId, trigger: "source_voided", reason: `source commission entry voided: ${plan.reason}`,
+      })
+      if (cascade.errors.length > 0) console.error("[financial] void landed; residual reversal incomplete:", cascade.errors.join("; "))
+    }
+
     // The canonical commission event (KernelEvent vocabulary has no 'voided' — COMMISSION_UPDATED is the
     // distribution-level change event, and the change rides metadata). Audit row with lineage; no fan-out
     // (nobody has been ruled to be notified of a void — the ledger row above is the evidence).
@@ -2220,4 +2239,196 @@ export async function voidCommissionDistribution(
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) }
   }
+}
+
+// ─── RESIDUAL ECONOMICS: FINANCE MANAGER REVIEW + REVERSAL (wave 107, lane 107A) ──────────────────
+// Owner: "Agent B closes → Economic Event → Commission ledger → Residual relationship lookup → Rule
+// evaluation → Residual ledger entry → Finance Manager review." Steps 1–5 are the waterfall (calculateCommission
+// → 09 evaluateResidualRules on the close date → 11 posts commission_distributions 'residual' as 'pending' with
+// per-entry action-ledger evidence + COMMISSION_DISTRIBUTED). Step 6 is HERE, on the existing correction screen
+// (the CDA Commission Breakdown, canCorrectEntries): approve (pending → approved; only then does the deal's
+// disbursement pay it — RESIDUAL_PAYABLE_FILTER) or reject (the existing VOID). Finance admins only
+// (isBrokerageFinanceAdmin — §5: agents never see others' residuals), tenant from the SESSION context.
+
+/**
+ * APPROVE a residual entry (pending → approved). LAW 5: withActionLedger FINANCIAL / HUMAN_REQUESTED, claimed
+ * BEFORE the write (idempotent per entry); the UPDATE is predicated on the pending residual shape and COUNTED
+ * (§3: an UPDATE matching nothing resolves); then the COMMISSION_APPROVED audit event. Rejection = void.
+ */
+export async function approveResidualEntry(input: { ctx: FinancialActorContext; distributionId: string; note?: string | null }): Promise<KernelFinancialResult<{ distributionId: string; status: "approved" }>> {
+  const { ctx, distributionId } = input
+  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
+    return { success: false, error: "Only the brokerage's finance admins approve residual entries." }
+  }
+  if (!ctx.brokerageId) return { success: false, error: "Missing brokerage context" }
+  const supabase = createServiceClient()
+  try {
+    const { data: entry, error: readErr } = await supabase
+      .from("commission_distributions")
+      .select("id, transaction_id, commission_id, agent_id, distribution_type, status, entry_type, paid_at, calculated_amount")
+      .eq("id", distributionId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (readErr) return { success: false, error: `Could not read the entry: ${readErr.message}` }
+    if (!entry) return { success: false, error: "Residual entry not found" }
+    const e = entry as Record<string, unknown>
+    const plan = planResidualApproval(e as { id: string; distribution_type: string | null; status: string | null; entry_type?: string | null; paid_at?: string | null })
+    if (!plan.ok) return { success: false, error: plan.error }
+
+    type Outcome = { ok: true } | { ok: false; error: string }
+    const outcome = await withActionLedger<Outcome>(
+      {
+        brokerageId: ctx.brokerageId,
+        action: "finance.residual.approve",
+        actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null },
+        subject: { type: "commission_distribution", id: distributionId, ref: (e.transaction_id as string | null) ?? null },
+        reasonCode: "HUMAN_REQUESTED",
+        reasonDetail: (input.note ?? "").trim() || "finance review approved the residual entry",
+        idempotencyKey: `residual-approve:${distributionId}`,
+        riskClass: "FINANCIAL",
+        systemSource: "commission_correction_screen",
+        detail: { transaction_id: e.transaction_id ?? null, commission_id: e.commission_id ?? null, beneficiary_agent_id: e.agent_id ?? null, calculated_amount: e.calculated_amount ?? null, status_before: e.status ?? null },
+      },
+      async (): Promise<Outcome> => {
+        const { data: upd, error: updErr } = await supabase
+          .from("commission_distributions")
+          .update({ status: "approved" })
+          .eq("id", distributionId)
+          .eq("brokerage_id", ctx.brokerageId)
+          .eq("distribution_type", "residual")
+          .eq("status", "pending")
+          .is("paid_at", null)
+          .select("id")
+        if (updErr) return { ok: false, error: `Approval refused: ${updErr.message}` }
+        if (!upd || upd.length !== 1) return { ok: false, error: `Approval not recorded (${upd?.length ?? 0} rows matched — no longer pending, or not in this brokerage)` }
+        return { ok: true }
+      },
+      {
+        settle: (r) => (r.ok ? { status: "executed", outcome: "approved" } : { status: "failed", outcome: "refused", error: r.error }),
+        replay: (claim) => ({ ok: false, error: `Approval already ${claim.kind === "in_flight" ? "in flight" : "recorded"} for this entry` }),
+      },
+      { client: supabase },
+    )
+    if (!outcome.ok) return { success: false, error: outcome.error }
+
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: ctx.brokerageId,
+      entityType: "commission_distribution",
+      entityId: distributionId,
+      event: KernelEvent.COMMISSION_APPROVED,
+      actorUserId: ctx.userId,
+      transactionId: (e.transaction_id as string | null) ?? undefined,
+      metadata: { change: "residual_approved", calculatedAmount: e.calculated_amount ?? null, beneficiaryAgentId: e.agent_id ?? null, commissionId: e.commission_id ?? null },
+      auditOnly: true,
+      client: supabase,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "residual_approved_echo", brokerageId: ctx.brokerageId, reason: "audit echo after the residual approval landed; the action ledger row is the primary evidence" })
+
+    return { success: true, data: { distributionId, status: "approved" } }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * The residual consequence of a SOURCE commission void / reversal (planResidualReversal decides): unpaid
+ * residuals of the same commission are VOIDED in place, paid ones get a NEW reversal row. Each write is its own
+ * withActionLedger FINANCIAL claim keyed per (source, residual) — a re-run replays instead of double-reversing.
+ * Called only from voidCommissionDistribution / correctCommissionDistribution after their own gate passed.
+ */
+async function reverseDerivedResiduals(
+  supabase: ReturnType<typeof createServiceClient>,
+  input: { ctx: FinancialActorContext; transactionId: string; commissionId: string | null; sourceDistributionId: string; trigger: "source_voided" | "source_reversed"; reason: string },
+): Promise<{ voided: number; reversed: number; errors: string[] }> {
+  const { ctx } = input
+  const out = { voided: 0, reversed: 0, errors: [] as string[] }
+  let q = supabase
+    .from("commission_distributions")
+    .select("id, transaction_id, commission_id, agent_id, team_id, distribution_type, source_of_funds, cap_status, status, entry_type, paid_at, voided_at, calculated_amount, adjusts_distribution_id")
+    .eq("brokerage_id", ctx.brokerageId)
+    .eq("transaction_id", input.transactionId)
+    .eq("distribution_type", "residual")
+  if (input.commissionId) q = q.eq("commission_id", input.commissionId)
+  const { data: rows, error: readErr } = await q
+  if (readErr) { out.errors.push(`residual read refused: ${readErr.message}`); return out }
+  const all = (rows ?? []) as Array<ResidualReversalRow & Record<string, unknown>>
+  const entries = all.filter((r) => (r.entry_type ?? "entry") === "entry")
+  const correctionsByEntry = new Map<string, Array<{ calculated_amount: number | string | null; status?: string | null; paid_at?: string | null }>>()
+  for (const c of all.filter((r) => (r.entry_type ?? "entry") !== "entry" && r.adjusts_distribution_id)) {
+    const k = String(c.adjusts_distribution_id)
+    correctionsByEntry.set(k, [...(correctionsByEntry.get(k) ?? []), c])
+  }
+  const reason = input.reason.slice(0, 500)
+  const plan = planResidualReversal({ residuals: entries, correctionsByEntry, reason })
+  const byId = new Map(entries.map((r) => [r.id, r]))
+
+  type Outcome = { ok: true } | { ok: false; error: string }
+  const ledgered = (action: string, residualId: string, run: () => Promise<Outcome>) => withActionLedger<Outcome>(
+    {
+      brokerageId: ctx.brokerageId,
+      action,
+      actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null },
+      subject: { type: "commission_distribution", id: residualId, ref: input.transactionId },
+      reasonCode: "HUMAN_REQUESTED",
+      reasonDetail: reason,
+      idempotencyKey: `${action}:${input.sourceDistributionId}:${residualId}`,
+      riskClass: "FINANCIAL",
+      systemSource: "commission_correction_screen",
+      detail: { trigger: input.trigger, source_distribution_id: input.sourceDistributionId, transaction_id: input.transactionId, residual_id: residualId },
+    },
+    run,
+    {
+      settle: (r) => (r.ok ? { status: "executed", outcome: action.endsWith("void") ? "voided" : "reversed" } : { status: "failed", outcome: "refused", error: r.error }),
+      replay: () => ({ ok: true }),
+    },
+    { client: supabase },
+  )
+
+  for (const id of plan.void) {
+    const r = await ledgered("finance.residual.void", id, async () => {
+      const { data: upd, error } = await supabase
+        .from("commission_distributions")
+        .update({ status: "voided", voided_at: new Date().toISOString(), voided_reason: reason })
+        .eq("id", id).eq("brokerage_id", ctx.brokerageId)
+        .not("status", "in", '("paid","voided")').is("paid_at", null)
+        .select("id")
+      if (error) return { ok: false, error: error.message }
+      return (upd ?? []).length === 1 ? { ok: true } : { ok: false, error: `${(upd ?? []).length} rows matched` }
+    })
+    if (r.ok) out.voided++; else out.errors.push(`void ${id}: ${r.error}`)
+  }
+  for (const rev of plan.reverse) {
+    const o = byId.get(rev.id) as Record<string, unknown>
+    const r = await ledgered("finance.residual.reverse", rev.id, async () => {
+      const now = new Date().toISOString()
+      const { data: ins, error } = await supabase
+        .from("commission_distributions")
+        .insert({
+          brokerage_id: ctx.brokerageId, transaction_id: input.transactionId, commission_id: o.commission_id ?? null,
+          agent_id: o.agent_id ?? null, team_id: o.team_id ?? null, distribution_type: "residual",
+          source_of_funds: o.source_of_funds ?? "brokerage", cap_status: o.cap_status ?? null,
+          calculation_type: "flat", calculation_value: rev.amount, calculated_amount: rev.amount,
+          status: "paid", paid_at: now, entry_type: "reversal", adjusts_distribution_id: rev.id,
+          correction_reason: reason, corrected_by: ctx.userId,
+        })
+        .select("id")
+      if (error) return { ok: false, error: error.message }
+      return (ins ?? []).length === 1 ? { ok: true } : { ok: false, error: `${(ins ?? []).length} rows written` }
+    })
+    if (r.ok) out.reversed++; else out.errors.push(`reverse ${rev.id}: ${r.error}`)
+  }
+
+  if (out.voided + out.reversed > 0) {
+    await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+      brokerageId: ctx.brokerageId,
+      entityType: "commission_distribution",
+      entityId: input.sourceDistributionId,
+      event: KernelEvent.COMMISSION_UPDATED,
+      actorUserId: ctx.userId,
+      transactionId: input.transactionId,
+      metadata: { change: "residual_reversed", trigger: input.trigger, voided: plan.void, reversed: plan.reverse, untouched: plan.untouched },
+      auditOnly: true,
+      client: supabase,
+    }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "residual_reversed_echo", brokerageId: ctx.brokerageId, reason: "audit echo after the residual reversal landed; each residual's action ledger row is the primary evidence" })
+  }
+  return out
 }

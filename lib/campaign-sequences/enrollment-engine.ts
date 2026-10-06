@@ -23,6 +23,17 @@ export interface EnrollContactParams {
   brokerageId: string
   enrolledBy?: string
   abVariant?: "A" | "B"
+  /**
+   * WAVE 107G (106B open loop) — consult the NEXT BEST EXPERIENCE planner before enrolling a CONTACT
+   * (journeyVerdictForEnrollment, the one rule auto-enroll and event-fanout already use):
+   *   "advise" — a HUMAN's own enrolment (the manual path): it proceeds, and the planner's verdict
+   *              rides back on the result so the person sees "the journey says wait" (a human's call
+   *              is never overridden — 106B ruling);
+   *   "hold"   — an autonomous caller: a wait / agent_intervention verdict (or unreadable journey
+   *              inputs — fail closed) refuses the enrolment.
+   * Omitted → not consulted (callers that gate upstream). Leads are not journey-planned (contact scope).
+   */
+  journey?: "advise" | "hold"
 }
 
 export interface EnrollResult {
@@ -30,6 +41,9 @@ export interface EnrollResult {
   enrollmentId?: string
   error?: string
   alreadyEnrolled?: boolean
+  /** The planner's verdict when `journey` was requested (advise: informational; hold: proceed=false refused). */
+  journey?: { mode: "advise" | "hold"; proceed: boolean; experience: string | null; reason: string }
+  heldByJourney?: boolean
 }
 
 // ─── Main enrollment function ─────────────────────────────────────────────────
@@ -82,6 +96,17 @@ export async function enrollContact(params: EnrollContactParams): Promise<Enroll
       alreadyEnrolled: true,
       enrollmentId: existing.id,
       error: "Contact is already actively enrolled in this sequence",
+    }
+  }
+
+  // THE JOURNEY CONSULT (wave 107G) — after the cheap refusals, before anything is written.
+  let journey: EnrollResult["journey"]
+  if (params.journey && !isLead) {
+    const { journeyVerdictForEnrollment } = await import("@/lib/ai-isa/lead-action-plan")
+    const v = await journeyVerdictForEnrollment(supabase, { brokerageId: params.brokerageId, contactId: recipientId })
+    journey = { mode: params.journey, proceed: v.proceed, experience: v.experience, reason: v.reason }
+    if (!v.proceed && params.journey === "hold") {
+      return { success: false, heldByJourney: true, journey, error: `Held by the journey planner — ${v.reason}` }
     }
   }
 
@@ -144,7 +169,7 @@ export async function enrollContact(params: EnrollContactParams): Promise<Enroll
     suppressEnrollment: true,
   }).catch(() => {})
 
-  return { success: true, enrollmentId: enrollment.id }
+  return { success: true, enrollmentId: enrollment.id, ...(journey ? { journey } : {}) }
 }
 
 // ─── Pause / resume enrollment ────────────────────────────────────────────────

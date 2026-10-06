@@ -14,6 +14,10 @@
  *   E  tenant isolation — every new read pinned; B's rows never in A's twin; a team twin sees its own
  *      board and recruits nothing for the brokerage; platform scope = every tenant's own twin
  *   F  wiring (stripped source) with a tombstone control; registration + ownership
+ *   G  THE DEDICATED THRESHOLDS EDITOR (wave 107G): validation against the resolver's ONE bounds table
+ *      (refusals + positive controls, round trip); propose → EVALUATED writes no policy; "apply now" →
+ *      APPROVED → PROMOTED through the real promotion (policy version + ledger row); a non-admin is held;
+ *      the editor reaches the setting ONLY through the proposal path (stripped source, with controls)
  *
  * Owner: recruiting_manager. Co-owners named in prose: data_steward (the twin section + snapshot),
  * campaign_orchestrator (the mission runtime the need is written onto).
@@ -24,8 +28,11 @@ import {
   buildBrokerageTwin, composeBrokerageTwin, loadBrokerageTwinFacts, classifyWorkforceAgent, composeTerritoryDemand,
   recruitingNeeds, recruitingNeedObjective, resolveWorkforceThresholds, DEFAULT_WORKFORCE_THRESHOLDS, WORKFORCE_THRESHOLDS_KEY,
   WORKFORCE_CLASSIFICATIONS, twinMeasures, detectTwinChanges, workforceLine, readBrokerageTwin, TWIN_SNAPSHOT_TABLE,
+  WORKFORCE_THRESHOLD_FIELDS, WORKFORCE_OVERWHELMED_BANDS, validateWorkforceThresholdsEdit,
   type BrokerageTwin, type WorkforceAgentFacts, type TwinAgentCapacity,
 } from "../lib/kernel/brokerage-twin"
+import { proposeEvaluatePromote } from "../lib/kernel/improvement-proposals"
+import { memSupabase } from "./in-memory-supabase"
 import {
   ensureRecruitingMissionsFromTwin, recruitingTargetingFor, recruitingNeedSubjectId, recruitingTargetingOf,
   transitionMission, RECRUITING_NEED_SUBJECT_TYPE, RECRUITING_TARGETING_EVIDENCE_KIND, MISSION_APPROVAL_REQUIRED_SIGNAL, type MissionDeps,
@@ -302,13 +309,116 @@ async function main() {
     const cron = src("app/api/cron/lead-scraping/route.ts")
     check("F5 the recruiting pipeline consumes the targeting: the lead-scraping cron reads recruitingTargetingFor(market.brokerage_id) and passes `targeting` to sourceRecruitProspects; the sourcer widens its terms", /recruitingTargetingFor\(market\.brokerage_id/.test(cron) && /sourceRecruitProspects\(\{[\s\S]*?targeting,/.test(cron) && /targetingSearchTerms\(params\.targeting\)/.test(src("lib/recruit-pipeline/recruit-sourcer.ts")))
     check("F6 surfaces: the Command Center twin card (workforce line), the recruiting dashboard Needs block (getRecruitingNeeds), the team-lead brief (team-workforce)", /brokerageTwin\?\.workforce/.test(src("app/dashboard/admin/command-center/command-center-client.tsx")) && /getRecruitingNeeds\(\)/.test(src("app/dashboard/recruiting-roi/page.tsx")) && /recruitingNeeds\(twin\)/.test(src("app/actions/recruiting-roi.ts")) && /id: "team-workforce"/.test(src("lib/intelligence/user-type-briefs/team-lead.ts")) && /teamTwin\?\.workforce/.test(src("lib/intelligence/user-type-briefs/team-lead.ts")))
-    check("F7 NO second policy writer: recruiting-roi.ts does not write the thresholds itself (the key changes through the proposal promotion path named in tenant-policy.ts)", !/mergeBrokerageSettings\(/.test(src("app/actions/recruiting-roi.ts")) && /policy-proposal promotion path/.test(readFileSync("lib/kernel/tenant-policy.ts", "utf8")) && /workforce_thresholds:/.test(src("lib/kernel/tenant-policy.ts")))
+    const editorAct = code("app/actions/admin/improvement-proposals.ts"), editorActS = src("app/actions/admin/improvement-proposals.ts")
+    check("F7 ONE policy writer: neither recruiting-roi.ts nor the dedicated editor's actions write the thresholds themselves — the editor submits a `policy` proposal (proposer human) through proposeEvaluatePromote; the key's registration names the proposal promotion path",
+      !/mergeBrokerageSettings\(/.test(code("app/actions/recruiting-roi.ts")) && !/mergeBrokerageSettings\(/.test(editorAct) && !/appendTenantPolicyVersion\(/.test(editorAct) && !/from\("brokerage_settings"\)/.test(editorActS)
+      && /proposeEvaluatePromote\(svc, \{[\s\S]{0,200}subjectKind: "policy",\s*subjectKey: WORKFORCE_THRESHOLDS_KEY,\s*proposer: "human",/.test(editorActS)
+      && /policy-proposal promotion path/.test(readFileSync("lib/kernel/tenant-policy.ts", "utf8")) && /workforce_thresholds:/.test(src("lib/kernel/tenant-policy.ts")))
     const fixture = stripComments(`// TOMBSTONE: ensureRecruitingMissionsFromTwin(brokerageTwin) used to live here\nconst x = 1\n/* recruitingTargetingFor(market.brokerage_id) */`)
     check("F8 (control) a tombstone naming the wires is NOT read as a call site", !/ensureRecruitingMissionsFromTwin\(brokerageTwin/.test(fixture) && !/recruitingTargetingFor\(market/.test(fixture) && /const x = 1/.test(fixture))
     const pkg = JSON.parse(readFileSync("package.json", "utf8"))
-    check("F9 package.json: test:workforce-intelligence → this guard, in the chain after test:scrapers", pkg.scripts["test:workforce-intelligence"] === "tsx scripts/workforce-intelligence-guard.ts" && pkg.scripts.guard.indexOf("npm run test:workforce-intelligence") > pkg.scripts.guard.indexOf("npm run test:scrapers") && pkg.scripts.guard.indexOf("npm run test:scrapers") >= 0)
+    check("F9 package.json: test:workforce-intelligence → this guard, a member of the guard chain (position is not pinned — CLAUDE.md §2)", pkg.scripts["test:workforce-intelligence"] === "tsx scripts/workforce-intelligence-guard.ts" && new RegExp("npm run test:workforce-intelligence(\\s|&|$)").test(pkg.scripts.guard))
     const dom = MAINTENANCE_DOMAINS.brokerage_workforce_intelligence
     check("F10 MAINTENANCE_DOMAINS.brokerage_workforce_intelligence: recruiting_manager owns it, proof named, co-owners named in the prose", dom?.manager === "recruiting_manager" && dom.proof === "test:workforce-intelligence" && (dom.coOwners ?? []).length === 2 && (dom.coOwners ?? []).every((k) => k in MANAGERS && dom.what.includes(k)) && TABLE_MANAGER[TWIN_SNAPSHOT_TABLE] === "data_steward" && TABLE_MANAGER.missions === "campaign_orchestrator")
+  }
+
+  // ─── G. the dedicated thresholds editor (wave 107G) ──────────────────────────────────────────
+  console.log("\nG. the dedicated workforce-thresholds editor")
+  {
+    const D = DEFAULT_WORKFORCE_THRESHOLDS
+    const asForm = (t: Record<string, unknown>) => Object.fromEntries(Object.entries(t).map(([k, v]) => [k, String(v)]))
+    const same = validateWorkforceThresholdsEdit(asForm(D as any))
+    check("G1 the defaults submitted back store NOTHING (value null → the key is removed; the tenant keeps following the defaults)", same.ok && same.value === null && same.changedKeys.length === 0 && JSON.stringify(resolveWorkforceThresholds({ [WORKFORCE_THRESHOLDS_KEY]: same.ok ? same.value : 1 })) === JSON.stringify(D))
+    const edited = { ...D, strong_listing_listings_180d: 5, luxury_list_price_usd: 1_500_000, overwhelmed_band: "at_capacity" as const, seller_leads_per_agent_30d: 12 }
+    const e = validateWorkforceThresholdsEdit(asForm(edited))
+    check("G2 an edit stores ONLY the changed keys, and the resolver reads the stored value back to exactly the edited thresholds (round trip)", e.ok && JSON.stringify(Object.keys(e.value ?? {}).sort()) === JSON.stringify(["luxury_list_price_usd", "overwhelmed_band", "seller_leads_per_agent_30d", "strong_listing_listings_180d"]) && JSON.stringify(resolveWorkforceThresholds({ [WORKFORCE_THRESHOLDS_KEY]: e.ok ? e.value : null })) === JSON.stringify(edited))
+    // One bounds table: derived per field from WORKFORCE_THRESHOLD_FIELDS (never a pinned number).
+    const boundsAgree = WORKFORCE_THRESHOLD_FIELDS.every((f) => {
+      const over = validateWorkforceThresholdsEdit(asForm({ ...D, [f.key]: f.max + 1 }))
+      const atMax = validateWorkforceThresholdsEdit(asForm({ ...D, [f.key]: f.max }))
+      const under = validateWorkforceThresholdsEdit(asForm({ ...D, [f.key]: f.min - 1 }))
+      const resolvedOver = resolveWorkforceThresholds({ [WORKFORCE_THRESHOLDS_KEY]: { [f.key]: f.max + 1 } })[f.key]
+      const resolvedMax = resolveWorkforceThresholds({ [WORKFORCE_THRESHOLDS_KEY]: { [f.key]: f.max } })[f.key]
+      return !over.ok && over.errors.some((x) => x.startsWith(f.label)) && atMax.ok && !under.ok && resolvedOver === D[f.key] && resolvedMax === f.max
+    })
+    check(`G3 the editor and the resolver share ONE bounds table — for all ${WORKFORCE_THRESHOLD_FIELDS.length} numeric fields: max+1 and min-1 are refused by the editor (naming the field), max is accepted (positive control), and the resolver drops max+1 to the default`, boundsAgree && WORKFORCE_THRESHOLD_FIELDS.length === Object.keys(D).length - 1)
+    const missing = { ...asForm(D as any) }; delete (missing as any).demand_rise_pct
+    const mv = validateWorkforceThresholdsEdit(missing)
+    const badBand = validateWorkforceThresholdsEdit({ ...asForm(D as any), overwhelmed_band: "melting" })
+    const nan = validateWorkforceThresholdsEdit({ ...asForm(D as any), investor_contacts: "lots" })
+    check("G4 fail closed: a MISSING field, a non-number and an unknown band are refusals (never a silent default); every band in WORKFORCE_OVERWHELMED_BANDS is accepted (control)", !mv.ok && mv.errors.length === 1 && /required/.test(mv.errors[0]) && !badBand.ok && !nan.ok && WORKFORCE_OVERWHELMED_BANDS.every((b) => validateWorkforceThresholdsEdit({ ...asForm(D as any), overwhelmed_band: b }).ok))
+
+    // The real proposal path, in memory: propose (no policy write) → apply now (approve + promote).
+    const BRK = "11111111-1111-4111-8111-11111111aaaa", ADMIN = "aaaaaaaa-0000-4000-8000-0000000000a1"
+    const seed = () => memSupabase({ improvement_proposals: [], brokerage_settings: [{ id: "bs-1", brokerage_id: BRK, settings: {}, updated_at: "2026-10-01T00:00:00.000Z" }], tenant_policy_versions: [], agent_action_ledger: [] }, { stampCreatedAt: true })
+    const mem = seed()
+    const value = e.ok ? e.value : null
+    const input = { brokerageId: BRK, subjectKind: "policy" as const, subjectKey: WORKFORCE_THRESHOLDS_KEY, proposer: "human" as const, proposedChange: { value, changed_keys: e.ok ? e.changedKeys : [] }, evidenceRefs: [{ kind: "human_edit", surface: "manager_trust.workforce_thresholds" }] }
+    const proposed = await proposeEvaluatePromote(mem as any, { ...input, actor: null })
+    const settingsAfterPropose = (mem.tables.brokerage_settings[0] as any).settings
+    check("G5 PROPOSE records one `policy` proposal (proposer human) that evaluates to EVALUATED (no deterministic replay for a settings key → a human decides) and writes NO policy and NO version", proposed.proposal.ok && proposed.status === "EVALUATED" && !proposed.promoted && mem.tables.improvement_proposals.length === 1 && (mem.tables.improvement_proposals[0] as any).proposer === "human" && settingsAfterPropose[WORKFORCE_THRESHOLDS_KEY] === undefined && mem.tables.tenant_policy_versions.length === 0, JSON.stringify(proposed))
+    const applied = await proposeEvaluatePromote(mem as any, { ...input, actor: { type: "user", userId: ADMIN, isTenantAdmin: true, reason: "workforce thresholds applied from the dedicated editor" } })
+    const st = (mem.tables.brokerage_settings[0] as any).settings
+    const ledger = mem.tables.agent_action_ledger.filter((r: any) => r.action === "learning.proposal.promote")
+    check("G6 APPLY NOW rides the SAME open proposal (no second row) → APPROVED → PROMOTED through the promotion function: the setting lands via mergeBrokerageSettings, a tenant_policy_versions row is appended, a learning.proposal.promote ledger row exists, and the twin's resolver reads the new thresholds", applied.promoted && applied.status === "PROMOTED" && mem.tables.improvement_proposals.length === 1 && JSON.stringify(st[WORKFORCE_THRESHOLDS_KEY]) === JSON.stringify(value) && mem.tables.tenant_policy_versions.length >= 1 && ledger.length === 1 && /^workforce_thresholds@\d+$/.test(applied.policyVersionRef ?? "") && resolveWorkforceThresholds(st).strong_listing_listings_180d === 5, JSON.stringify({ applied, versions: mem.tables.tenant_policy_versions.length, ledger: ledger.length }))
+    const mem2 = seed()
+    const held = await proposeEvaluatePromote(mem2 as any, { ...input, actor: { type: "user", userId: ADMIN, isTenantAdmin: false } })
+    check("G7 authority honoured: a user OFF the admin roster cannot apply — held, the proposal stays EVALUATED, nothing written (positive control: G6)", !held.promoted && held.status === "EVALUATED" && !!held.held && (mem2.tables.brokerage_settings[0] as any).settings[WORKFORCE_THRESHOLDS_KEY] === undefined && mem2.tables.tenant_policy_versions.length === 0)
+
+    // Wiring (stripped source).
+    const actS = src("app/actions/admin/improvement-proposals.ts")
+    check("G8 the submit validates through validateWorkforceThresholdsEdit, gates on the admin roster from the SESSION (requireLearningAdmin → requireCallerTenant), refuses a DIFFERENT open proposal, and passes the human actor only on mode=apply", /export async function submitWorkforceThresholdsAction\(/.test(actS) && /validateWorkforceThresholdsEdit\(input\)/.test(actS) && /const gate = await requireLearningAdmin\(mode === "apply"/.test(actS) && /requireCallerTenant\(\)/.test(actS) && /A different workforce-thresholds proposal is already/.test(readFileSync("app/actions/admin/improvement-proposals.ts", "utf8")) && /actor: mode === "apply" \? gate\.actor : null/.test(actS))
+    const formS = src("app/dashboard/admin/manager-trust/workforce-thresholds-form.tsx"), edS = src("app/dashboard/admin/manager-trust/workforce-thresholds-editor.tsx")
+    check("G9 surfaces: Manager Trust renders <WorkforceThresholdsEditor /> (read: getWorkforceThresholdsEditor — current vs default + bounds); the client form posts submitWorkforceThresholdsAction with both doors (propose / apply); the recruiting Needs block links to it; none of them writes a setting", /<WorkforceThresholdsEditor \/>/.test(src("app/dashboard/admin/manager-trust/page.tsx")) && /getWorkforceThresholdsEditor\(\)/.test(edS) && /useActionState<[^>]*>\(submitWorkforceThresholdsAction, null\)/.test(formS) && /value="propose"/.test(formS) && /value="apply"/.test(formS) && /manager-trust#workforce-thresholds/.test(src("app/dashboard/recruiting-roi/page.tsx")) && ![formS, edS].some((t) => /mergeBrokerageSettings|brokerage_settings/.test(t)))
+    const tomb = stripComments("// TOMBSTONE: setWorkforceThresholds used mergeBrokerageSettings(svc, id, …) here\nconst ok = 1")
+    check("G10 (controls) a tombstone naming mergeBrokerageSettings( is NOT a writer; a live call IS matched", !/mergeBrokerageSettings\(/.test(tomb) && /mergeBrokerageSettings\(/.test(blankStrings(stripComments("await mergeBrokerageSettings(svc, b, f)"))))
+  }
+
+  // ─── H. THE SNAPSHOT SEAM (wave 107, lane 107C) — competency from the development cycle's ledgered snapshot ─
+  console.log("\nH. the competency snapshot seam — one read for the roster, stale → recompute (published), tenant-pinned")
+  {
+    const { readCompetencySnapshots, competencyGapCount, COMPETENCY_SNAPSHOT_MAX_AGE_HOURS, DEVELOPMENT_ACTION } = await import("../lib/education/skill-freshness-radar")
+    const { COMPETENCY_GAP_SCORE, COMPETENCY_SKILLS } = await import("../lib/education/skill-freshness")
+    // Scores built from the eleven keys (never restated): ag3 has two at/below the gap score, everyone else none.
+    const scores = (gaps: number) => Object.fromEntries(COMPETENCY_SKILLS.map((k, i) => [k, i < gaps ? COMPETENCY_GAP_SCORE - i : i % 3 === 0 ? null : COMPETENCY_GAP_SCORE + 10]))
+    const snapRow = (brokerage: string, agentId: string, hoursAgo: number, gaps: number) => ({ id: `led-${brokerage.slice(0, 1)}-${agentId}-${hoursAgo}`, brokerage_id: brokerage, action: DEVELOPMENT_ACTION.update, subject_type: "agent", subject_id: agentId, status: "executed", created_at: new Date(NOW.getTime() - hoursAgo * 3_600_000).toISOString(), detail: { scores: scores(gaps) } })
+    const fresh = (brokerage: string, tag: string) => [1, 2, 3, 4, 5].map((n) => snapRow(brokerage, `${tag}-ag${n}`, 6, n === 3 ? 2 : 0))
+    check("H1 competencyGapCount applies scoreCompetency's rule: a score ≤ COMPETENCY_GAP_SCORE is a gap, one above is not, an unproven (null) skill never is", competencyGapCount({ negotiation: COMPETENCY_GAP_SCORE, pricing: COMPETENCY_GAP_SCORE + 1, marketing: null } as any) === 1 && competencyGapCount(scores(2) as any) === 2 && competencyGapCount(null) === 0)
+
+    // Fresh snapshots for every A agent: the live reader is NEVER called, one ledger read serves the roster.
+    competencyCalls.length = 0
+    const c1 = makeClient(world({ agent_action_ledger: [...fresh(A, "a"), ...fresh(B, "a").map((r) => ({ ...r, id: r.id + "-foreign", detail: { scores: scores(9) } }))] }))
+    const t1 = (await buildBrokerageTwin(A, NOW, { svc: c1 as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false })).twin
+    const ledgerReads = c1.log.filter((l) => l.table === "agent_action_ledger" && l.op === "select" && l.filters.includes("in:subject_id"))
+    const facts1 = (id: string) => t1.workforce.agents.find((a) => a.agentId === id)!.facts
+    check("H2 fresh snapshots → the live competency reader runs 0 times; ONE tenant-pinned ledger read serves all 5 agents", competencyCalls.length === 0 && ledgerReads.length === 1 && ledgerReads[0].filters.includes("eq:brokerage_id") && t1.workforce.agents.every((a) => a.facts.competencySource === "snapshot"), `calls=${competencyCalls.length} ledgerReads=${ledgerReads.length}`)
+    check("H3 the snapshot's gap count drives the SAME classification (ag3 in development with 2 gaps; ag1 none) — and tenant B's ledger rows (9 gaps under A's agent ids) are never read into A", facts1("a-ag3").competencyGaps === 2 && facts1("a-ag1").competencyGaps === 0 && t1.workforce.totals.in_development === 1 && !t1.workforce.agents.some((a) => a.facts.competencyGaps === 9))
+    check("H4 no snapshot fallback blind spot when every agent was served from the snapshot", !t1.blindSpots.some((s) => /recomputed live/.test(s)))
+
+    // ag2's snapshot is STALE (older than the window) → only ag2 is recomputed live, and that is published.
+    competencyCalls.length = 0
+    const stale = fresh(A, "a").map((r) => (r.subject_id === "a-ag2" ? { ...r, created_at: new Date(NOW.getTime() - (COMPETENCY_SNAPSHOT_MAX_AGE_HOURS + 2) * 3_600_000).toISOString() } : r))
+    const t2 = (await buildBrokerageTwin(A, NOW, { svc: makeClient(world({ agent_action_ledger: stale })) as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false })).twin
+    check("H5 a STALE snapshot → that agent alone recomputed through the live reader (source 'live'); the fallback is a published blind spot", competencyCalls.length === 1 && competencyCalls[0].includes(":a-ag2:") && t2.workforce.agents.find((a) => a.agentId === "a-ag2")!.facts.competencySource === "live" && t2.blindSpots.some((s) => /1 of 5 agent\(s\) had no development-cycle snapshot/.test(s)), competencyCalls.join(","))
+
+    // The ledger read REFUSED → every agent recomputed live; the refusal named (never a fake score).
+    competencyCalls.length = 0
+    const t3 = (await buildBrokerageTwin(A, NOW, { svc: makeClient(world({ agent_action_ledger: fresh(A, "a") }), { refuse: new Set(["agent_action_ledger"]) }) as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false })).twin
+    check("H6 a refused snapshot read → every agent recomputed live, the refusal named in blindSpots", competencyCalls.length === 5 && t3.blindSpots.some((s) => /agent_action_ledger\(competency snapshots\): refused/.test(s)) && t3.blindSpots.some((s) => /5 of 5 agent/.test(s)))
+
+    // READ COUNT — the REAL loadAgentCompetency against the same in-memory client: the reads the seam removes.
+    const railReads = (log: Array<{ table: string; op: string }>) => log.filter((l) => l.op === "select").length
+    const before = makeClient(world())
+    await buildBrokerageTwin(A, NOW, { svc: before as any, capacityFor: fakeCapacity, persist: false })
+    const after = makeClient(world({ agent_action_ledger: fresh(A, "a") }))
+    await buildBrokerageTwin(A, NOW, { svc: after as any, capacityFor: fakeCapacity, persist: false })
+    const nBefore = railReads(before.log), nAfter = railReads(after.log)
+    console.log(`    read count per build (5 scored agents, real loadAgentCompetency): ${nBefore} without snapshots → ${nAfter} with snapshots (−${nBefore - nAfter}, ~${Math.round((nBefore - nAfter) / 5)} per agent)`)
+    check("H7 the snapshot seam DROPS the read count: the real per-agent reader's rails (≥ 10 reads per agent) collapse into one ledger read", nBefore - nAfter >= 5 * 10 - 1, `${nBefore} → ${nAfter}`)
+    const rs = await readCompetencySnapshots(makeClient(world({ agent_action_ledger: [...fresh(A, "a"), ...fresh(B, "b")] })) as any, A, ["a-ag1", "b-ag1"], NOW)
+    check("H8 readCompetencySnapshots is tenant-pinned: B's agent id asked under A's tenant returns nothing", rs.byAgent.has("a-ag1") && !rs.byAgent.has("b-ag1") && rs.refused === null)
+    const tw = src("lib/kernel/brokerage-twin.ts"), rad = src("lib/education/skill-freshness-radar.ts")
+    check("H9 wiring: the twin reads readCompetencySnapshots BEFORE the per-agent loop and calls the live reader only for an agent without one; the writer is the development cycle's ledgered update (competencyScoreMap)", tw.indexOf("readCompetencySnapshots(") > 0 && tw.indexOf("readCompetencySnapshots(") < tw.indexOf("await competencyReader(") && /if \(snap\) \{[^}]*continue \}/.test(tw) && /ledger\("update", \{ scores: competencyScoreMap\(profile\)/.test(rad))
   }
 
   console.log(`\n${failed === 0 ? "PASS" : "FAIL"} workforce-intelligence: ${passed} passed, ${failed} failed`)

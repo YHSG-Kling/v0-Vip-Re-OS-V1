@@ -1,6 +1,9 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { transitionLifecycle } from '@/lib/kernel/lifecycle'
 import { isCommissionFinalized } from '@/lib/commission/finalization'
+import { liveLedgerEntries } from '@/lib/commission/distribution-correction'
+import { withActionLedger } from '@/lib/kernel/action-ledger'
+import { KernelEvent } from '@/lib/kernel/events'
 import { centsToDollars, dollarsToCents } from '../utils'
 import { CURRENT_ENGINE_VERSION } from '../types'
 import type { WaterfallContext, CommissionCalculationResult } from '../types'
@@ -162,6 +165,50 @@ export async function validateAndPersist(
     }
   }
 
+  // WAVE 107 (lane 107A) — DETERMINISTIC RE-RUN = SAME LEDGER. The finalization lock above only
+  // engages AFTER finalization; between the close-time calc and the CDA/CD lock a second 'final'
+  // run (a CLOSED → reopen → CLOSED, a retry) inserted a SECOND distribution set — every residual
+  // paid twice to the same (beneficiary, rule). A transaction that already carries LIVE posted
+  // entries (liveLedgerEntries — voided rows excluded, so a fully voided deal re-posts) returns
+  // that ledger instead. FAIL CLOSED: a refused read throws — an unprovable "no ledger yet" must
+  // not write a second one.
+  {
+    const { data: postedRows, error: postedErr } = await supabase
+      .from('commission_distributions')
+      .select('id, commission_id, status, entry_type')
+      .eq('transaction_id', context.transactionId)
+      .eq('brokerage_id', context.brokerageId)
+    if (postedErr) {
+      throw new Error(`[commission-engine] Could not read the existing ledger before posting (re-run guard): ${postedErr.message}`)
+    }
+    const live = liveLedgerEntries((postedRows ?? []) as Array<{ id: string; commission_id: string | null; status: string | null; entry_type: string | null }>)
+    if (live.length > 0) {
+      const existingCommissionId = live.find((r) => r.commission_id)?.commission_id ?? null
+      const { data: existing, error: existingErr } = existingCommissionId
+        ? await supabase
+            .from('agent_commissions')
+            .select('id, gross_commission, net_to_agent, net_to_brokerage, total_fees')
+            .eq('id', existingCommissionId)
+            .eq('brokerage_id', context.brokerageId)
+            .maybeSingle()
+        : { data: null, error: null }
+      if (existingErr) {
+        throw new Error(`[commission-engine] Could not read the posted commission summary (re-run guard): ${existingErr.message}`)
+      }
+      const e = existing as { id: string; gross_commission: number | string | null; net_to_agent: number | string | null; net_to_brokerage: number | string | null; total_fees: number | string | null } | null
+      return {
+        success: true,
+        commissionId: e?.id ?? existingCommissionId ?? undefined,
+        gross_commission: e ? Number(e.gross_commission) : centsToDollars(context.grossCommissionCents),
+        net_to_agent: e ? Number(e.net_to_agent) : centsToDollars(context.agentFinalNetCents),
+        net_to_brokerage: e ? Number(e.net_to_brokerage) : centsToDollars(context.brokerageFinalCents),
+        cap_applied: context.capApplied,
+        cap_status: context.capStatus,
+        total_fees: e ? Number(e.total_fees ?? centsToDollars(context.totalFeesCents)) : centsToDollars(context.totalFeesCents),
+      }
+    }
+  }
+
   // 0b. COMPANY-BOOKS OBLIGATIONS (owner ruling 2026-08-28) — brokerage-funded
   // shares this deal's company dollar could not fund (post-cap it is $0). These
   // are recorded on company_books_obligations (m577), the company payables
@@ -305,13 +352,26 @@ export async function validateAndPersist(
     }
   ]
 
-  const { error: distributionsError } = await supabase
+  const { data: insertedDistributions, error: distributionsError } = await supabase
     .from('commission_distributions')
     .insert(distributionRows)
+    .select('id, distribution_type, agent_id')
 
   if (distributionsError) {
     throw new Error(`[commission-engine] Failed to insert distributions: ${distributionsError.message}`)
   }
+
+  // 2a. RESIDUAL LEDGER EVIDENCE (wave 107, lane 107A — LAW 5). The distribution insert above stays ONE
+  // statement (conservation must land atomically), so each residual entry's evidence is claimed right after it:
+  // one agent_action_ledger row per (transaction, beneficiary, rule) — idempotent on that key — then the
+  // canonical COMMISSION_DISTRIBUTED event. Every residual is born 'pending' = HELD for the Finance Manager
+  // (lib/kernel/financial.ts approveResidualEntry; payout sweeps skip it until approved).
+  await recordResidualLedgerEvidence(supabase, {
+    context,
+    commissionId: commission.id as string,
+    triggeredBy: triggeredBy ?? null,
+    inserted: (insertedDistributions ?? []) as Array<{ id: string; distribution_type: string; agent_id: string | null }>,
+  })
 
   // 2b. BRIDGE TO THE DASHBOARD/LIFECYCLE TABLE. The agent's earnings P&L dashboard
   // (app/dashboard/financials/reports) reads `agent_commissions`, NOT the engine's
@@ -532,5 +592,96 @@ export async function validateAndPersist(
       cap_status: (d as any).cap_status,
       rule_id: (d as any).rule_id,
     })) as import('../types').DistributionRecord[]
+  }
+}
+
+/**
+ * LAW 5 evidence for each residual ledger entry step 11 just posted (wave 107, 107A): who (the user whose
+ * close triggered the calc, else the system), why (TRANSACTION_MILESTONE — the closing), what evidence (the
+ * deterministic evaluation: rule key, relation, depth, terms, the close date the windows were judged on, graph
+ * corroboration + findings), which tool (the commission engine), what happened (posted, pending finance
+ * review). Idempotent per (transaction, beneficiary, rule) through the ledger's own key. Evidence never fails
+ * the posted money: a refused claim is logged (the ledger row is the record; the distribution is the money).
+ */
+async function recordResidualLedgerEvidence(
+  supabase: ReturnType<typeof createServiceClient>,
+  input: {
+    context: WaterfallContext
+    commissionId: string
+    triggeredBy: string | null
+    inserted: Array<{ id: string; distribution_type: string; agent_id: string | null }>
+  },
+): Promise<void> {
+  const evaluation = input.context.residualEvaluation
+  if (!evaluation || evaluation.entries.length === 0) return
+  const unclaimed = input.inserted.filter((r) => r.distribution_type === 'residual')
+  const posted: Array<{ key: string; distributionId: string | null; beneficiaryAgentId: string; cents: number; rail: string }> = []
+  for (const entry of evaluation.entries) {
+    let distributionId: string | null = null
+    if (entry.rail === 'in_deal') {
+      const idx = unclaimed.findIndex((r) => r.agent_id === entry.beneficiaryAgentId)
+      if (idx >= 0) distributionId = unclaimed.splice(idx, 1)[0].id
+    }
+    try {
+      await withActionLedger<{ ok: boolean }>(
+        {
+          brokerageId: input.context.brokerageId,
+          action: 'finance.residual.ledger_entry',
+          actor: input.triggeredBy ? { type: 'user', userId: input.triggeredBy } : { type: 'system' },
+          subject: { type: entry.rail === 'in_deal' ? 'commission_distribution' : 'company_books_obligation', id: distributionId, ref: input.context.transactionId },
+          reasonCode: 'TRANSACTION_MILESTONE',
+          reasonDetail: `${entry.relationshipType} residual (level ${entry.depth}) evaluated on the close date ${evaluation.evaluatedOn}`,
+          idempotencyKey: entry.key,
+          riskClass: 'FINANCIAL',
+          systemSource: 'commission_engine',
+          detail: {
+            transaction_id: input.context.transactionId,
+            commission_id: input.commissionId,
+            beneficiary_agent_id: entry.beneficiaryAgentId,
+            relationship_id: entry.relationshipId,
+            relationship_type: entry.relationshipType,
+            depth: entry.depth,
+            cents: entry.cents,
+            rail: entry.rail,
+            source_of_funds: entry.sourceOfFunds,
+            calculation_type: entry.calculationType,
+            calculation_value: entry.calculationValue,
+            evaluated_on: evaluation.evaluatedOn,
+            evaluated_on_source: evaluation.evaluatedOnSource,
+            corroborated_by: entry.corroboratedBy,
+            graph_measured: evaluation.graphMeasured,
+            findings: evaluation.findings,
+            review: 'pending_finance_review',
+          },
+        },
+        async () => ({ ok: true }),
+        {
+          settle: () => ({ status: 'executed', outcome: 'posted_pending_finance_review' }),
+          replay: () => ({ ok: false }),
+        },
+        { client: supabase },
+      )
+    } catch (e) {
+      console.error(`[commission-engine] residual evidence claim failed for ${entry.key}:`, e)
+    }
+    posted.push({ key: entry.key, distributionId, beneficiaryAgentId: entry.beneficiaryAgentId, cents: entry.cents, rail: entry.rail })
+  }
+
+  try {
+    const { emitKernelEvent } = await import('@/lib/kernel/emit')
+    const r = await emitKernelEvent({
+      brokerageId: input.context.brokerageId,
+      entityType: 'agent_commission',
+      entityId: input.commissionId,
+      event: KernelEvent.COMMISSION_DISTRIBUTED,
+      actorUserId: input.triggeredBy,
+      transactionId: input.context.transactionId,
+      metadata: { change: 'residual_posted', evaluatedOn: evaluation.evaluatedOn, residuals: posted, review: 'pending_finance_review' },
+      auditOnly: true,
+      client: supabase,
+    })
+    if (r.error) console.error('[commission-engine] COMMISSION_DISTRIBUTED audit row refused:', r.error)
+  } catch (e) {
+    console.error('[commission-engine] COMMISSION_DISTRIBUTED emit threw:', e)
   }
 }

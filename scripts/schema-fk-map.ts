@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1830 of 1893 pairs) — storing them would be
+ * overwhelming majority (1839 of 1902 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1975 edges across 725 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1893 unordered
+ * MEASURED AT GENERATION: 1984 edges across 728 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1902 unordered
  * table pairs carry at least one FK; 63
  * carry more than one and are listed below. 15 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-06
  * source: public.live_foreign_keys_json()
- * body-sha256: b73e5316d601da0b37f1e34a83d11106e9136da9d43575ccf12b8c980147c321
+ * body-sha256: e4bfbaac38146124647f8e73189f4a6d378c1ad750c8510d9787ea85fc1abf9f
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -693,6 +693,8 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "social_publish_log": { "account_id": "social_media_accounts", "brokerage_id": "brokerages", "campaign_id": "marketing_campaigns", "social_post_id": "social_posts" },
   "social_search_raw_results": { "brokerage_id": "brokerages", "lead_id": "leads" },
   "storage_orphaned_objects": { "brokerage_id": "brokerages" },
+  "strategy_activations": { "activated_by": "users", "brokerage_id": "brokerages", "library_id": "strategy_library" },
+  "strategy_library": { "brokerage_id": "brokerages" },
   "strategy_outcomes": { "brokerage_id": "brokerages", "offer_id": "offers", "recommendation_id": "strategy_recommendations" },
   "strategy_recommendations": { "agent_user_id": "users", "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "offer_id": "offers", "template_id": "offer_strategy_templates" },
   "studio_sessions": { "agent_id": "agents", "brokerage_id": "brokerages" },
@@ -780,7 +782,8 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "value_delivered_daily": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "vendor_access_logs": { "brokerage_id": "brokerages", "vendor_id": "vendor_marketplace_profiles" },
   "vendor_assignments": { "assigned_by_agent_id": "agents", "brokerage_id": "brokerages", "transaction_id": "transactions", "vendor_id": "vendors" },
-  "vendor_bookings": { "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "transaction_id": "transactions", "vendor_id": "vendors" },
+  "vendor_booking_quotes": { "booking_id": "vendor_bookings", "brokerage_id": "brokerages", "vendor_id": "vendors" },
+  "vendor_bookings": { "approval_message_id": "agent_client_messages", "approved_by": "users", "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "transaction_id": "transactions", "vendor_id": "vendors" },
   "vendor_communications": { "brokerage_id": "brokerages", "service_id": "listing_marketing_services", "vendor_id": "vendors" },
   "vendor_contact_assignments": { "assigned_by": "users", "brokerage_id": "brokerages", "contact_id": "contacts", "revoked_by": "users", "transaction_id": "transactions", "vendor_id": "vendors" },
   "vendor_earnings": { "brokerage_id": "brokerages", "invoice_id": "vendor_invoices", "vendor_id": "vendors" },

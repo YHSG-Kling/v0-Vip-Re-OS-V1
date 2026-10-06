@@ -82,7 +82,19 @@ export const TENANT_POLICY_SETTINGS_KEYS: Record<string, TenantPolicyDefinition>
   // recruiting-need rule are judged against — read by lib/kernel/brokerage-twin.ts
   // resolveWorkforceThresholds (DEFAULT_WORKFORCE_THRESHOLDS when absent), written only through
   // the policy-proposal promotion path (improvement_proposals → appendTenantPolicyVersion → mergeBrokerageSettings).
+  // Wave 107 (107B, marketplace procurement): { enabled, max_auto_approve_usd, allowed_service_categories } read by
+  // lib/kernel/procurement.ts loadProcurementAutonomy — DEFAULT OFF (recommendation only, agent approval required).
+  procurement_autonomy:    { label: "Procurement autonomy (auto-approve cap + allowed vendor categories)", store: "brokerage_settings.settings", defaultNote: "off — every vendor purchase waits for agent approval" },
   workforce_thresholds:    { label: "Workforce classification + recruiting-need thresholds", store: "brokerage_settings.settings", defaultNote: "platform defaults (lib/kernel/brokerage-twin.ts DEFAULT_WORKFORCE_THRESHOLDS)" },
+  // Wave 107 (107E, strategy engine): per-strategy local overrides { [strategy_key]: { budgetUsd, authority,
+  // approval, cadenceDays, horizonDays } } read by lib/kernel/strategy-engine.ts activateLibraryStrategy →
+  // adaptStrategy (the adaptation is RECORDED on strategy_activations; the platform version never changes).
+  // Written only through the policy-proposal promotion path (improvement_proposals → mergeBrokerageSettings).
+  strategy_overrides:      { label: "Strategy overrides (budget / authority / timing per activated strategy)", store: "brokerage_settings.settings", defaultNote: "the platform version's own budget, authority and timing" },
+  // Wave 107 (107F): the CONTRACTUAL gate on privacy-safe network benchmarks — { opted_in: boolean, set_by, set_at }
+  // read by lib/intelligence/network-benchmarks.ts readNetworkOptIn (absent / unreadable = NOT contributing);
+  // written by app/actions/network-intelligence.ts setNetworkBenchmarksOptIn (tenant admin, session actor).
+  network_benchmarks_opt_in: { label: "Network benchmarks — contribute anonymized aggregates", store: "brokerage_settings.settings", defaultNote: "opted OUT (no owner ruling yet — contribution is opt-in)" },
 }
 
 /** Real columns that are tenant operating policy. */

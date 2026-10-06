@@ -252,6 +252,28 @@ export async function engageContact(
           return { success: false, reason: `experience:${plan.chosen.kind}:${rec.execution.mode}` }
         }
       }
+
+      // ── 4d. STRATEGY (wave 107, lane 107E) — the ISA SELECTS a plan instead of inventing one: the
+      //    tenant's ACTIVE strategies the ISA participates in (lib/kernel/strategy-engine.ts selectStrategies —
+      //    deterministic eligibility on this contact's facts, learned performance through the 107F seam). The
+      //    top one becomes a MISSION with its managers + per-step delegations (activateStrategy — idempotent per
+      //    contact + strategy, approval per authority). Only an AUTONOMOUS run with no mission already in play;
+      //    a refusal is logged and this touch proceeds — the strategy never blocks the ISA's own step. ──
+      if (!missionId && !humanInitiated) {
+        try {
+          const { selectStrategies, activateStrategy } = await import('@/lib/kernel/strategy-engine')
+          const { factsFromContactRow } = await import('@/lib/kernel/strategy-library')
+          const sel = await selectStrategies({ brokerageId, manager: 'ai_isa', facts: factsFromContactRow(contact, nbaNow) }, supabase)
+          if (sel.readRefused) console.warn(`[engageContact] strategies unreadable for ${contactId}: ${sel.readRefused}`)
+          const top = sel.ranked[0]
+          if (top) {
+            const act = await activateStrategy({ brokerageId, candidate: top, subject: { type: 'contact', id: contactId }, actor: { type: 'manager', id: 'ai_isa' } }, supabase)
+            if (!act.ok) console.warn(`[engageContact] strategy ${top.definition.key} not activated for ${contactId}: ${act.reason}`)
+          }
+        } catch (e) {
+          console.error(`[engageContact] strategy selection failed for ${contactId}:`, e instanceof Error ? e.message : e)
+        }
+      }
     }
 
     // ── MANAGERS DELEGATING — the ISA hands a TRULY SITUATIONAL reel to the Asset Manager

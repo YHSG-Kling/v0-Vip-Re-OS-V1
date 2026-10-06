@@ -81,7 +81,7 @@ export async function generateBrokerBrief(params: {
   const sixtyDaysOut = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
 
-  const [criticalDealsRes, expiringLicensesRes, complianceEventsRes, unassignedLeadsRes, activeAgentsRes] = await Promise.all([
+  const [criticalDealsRes, expiringLicensesRes, complianceEventsRes, unassignedLeadsRes] = await Promise.all([
     supabase
       .from("deal_health_scores")
       .select("transaction_id, overall_score, risk_level, score_components, transactions!inner(property_address, brokerage_id)")
@@ -110,11 +110,9 @@ export async function generateBrokerBrief(params: {
       .eq("brokerage_id", params.brokerageId)
       .is("agent_id", null)
       .eq("is_active", true),
-    supabase
-      .from("agents")
-      .select("id", { count: "exact", head: true })
-      .eq("brokerage_id", params.brokerageId)
-      .eq("is_active", true),
+    // TOMBSTONE (wave 107, lane 107C, CLAUDE.md §1.3): the active-agents head count that stood here
+    // re-derived a number the brokerage twin already carries — lib/kernel/brokerage-twin.ts
+    // TwinCapacity.activeAgents, read below through readBrokerageTwin (the ONE reader).
   ])
 
   const criticalDeals = (criticalDealsRes.data ?? []) as unknown as Array<{
@@ -135,7 +133,19 @@ export async function generateBrokerBrief(params: {
     blocked_reason: string | null
   }>
   const unassignedLeadsCount = unassignedLeadsRes.count ?? 0
-  const activeAgentsCount = activeAgentsRes.count ?? 0
+  // THE TWIN (wave 107C): the brokerage's operating numbers come from ONE reader — the last persisted
+  // brokerage-wide twin (readBrokerageTwin snapshot mode, ≤ TWIN_SNAPSHOT_MAX_AGE_HOURS; the Command
+  // Center's build). No fresh twin → a fresh read-only build (still the one reader, never a second
+  // derivation); no twin at all → "—", never a fabricated count.
+  let twin: import("@/lib/kernel/brokerage-twin").BrokerageTwin | null = null
+  try {
+    const { readBrokerageTwin } = await import("@/lib/kernel/brokerage-twin")
+    twin = (await readBrokerageTwin(params.brokerageId, { svc: supabase as any, snapshot: {} })) ?? (await readBrokerageTwin(params.brokerageId, { svc: supabase as any }))
+  } catch (err) {
+    console.error("[BrokerBrief] brokerage twin read failed:", err)
+  }
+  const activeAgentsCount: number | string = twin ? twin.capacity.activeAgents : "—"
+  const bottleneckLine = twin?.system?.bottleneck?.headline ?? null
 
   // Points tiers across the roster (wave 103, lane 103C — incentives surface in the
   // manager brief). agents.gamification_points is the ONE total the atomic award
@@ -302,6 +312,7 @@ export async function generateBrokerBrief(params: {
   // 4. Build metrics
   const metrics: BriefMetric[] = [
     { label: "Active agents", value: activeAgentsCount, href: "/dashboard/admin/users" },
+    ...(bottleneckLine ? [{ label: "System bottleneck (twin, 90d)", value: bottleneckLine, href: "/dashboard/admin/command-center" }] : []),
     { label: "Critical deals", value: criticalDeals.length, href: "/dashboard/brokerage/deal-health" },
     { label: "Unassigned leads", value: unassignedLeadsCount, href: "/dashboard/admin/lead-lineage" },
     { label: "Compliance flags 7d", value: complianceEvents.length, href: "/dashboard/compliance" },

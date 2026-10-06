@@ -1,7 +1,7 @@
 /**
  * scripts/live-tables.ts
  *
- * EVERY relation the live public schema exposes — 772 of them — as a flat sorted list.
+ * EVERY relation the live public schema exposes — 776 of them — as a flat sorted list.
  *
  * This is the oracle for "does this name exist in the database", which SCHEMA_SNAPSHOT cannot be:
  * that file holds only the tables the code QUERIES and the database HAS (`referenced ∩ live`), so a
@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-06
  * source: public.live_schema_json()
- * body-sha256: 16d160b7495aec88fc0a2de833b01354737485fe036d8a7f3a304d7922008720
+ * body-sha256: 45f676d63facffc9f464ea0c72460a1c11f120771de61dd05dac311d245078d3
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -482,6 +482,7 @@ export const LIVE_TABLES: readonly string[] = [
   "neighborhood_reports",
   "net_sheet_calculations",
   "net_sheet_reconciliations",
+  "network_benchmarks",
   "newsletter_brokers_templates",
   "newsletter_cadence_policy",
   "newsletter_campaigns",
@@ -666,6 +667,8 @@ export const LIVE_TABLES: readonly string[] = [
   "state_compliance_requirements",
   "state_protected_classes",
   "storage_orphaned_objects",
+  "strategy_activations",
+  "strategy_library",
   "strategy_outcomes",
   "strategy_recommendations",
   "studio_sessions",
@@ -758,6 +761,7 @@ export const LIVE_TABLES: readonly string[] = [
   "value_delivered_daily",
   "vendor_access_logs",
   "vendor_assignments",
+  "vendor_booking_quotes",
   "vendor_bookings",
   "vendor_communications",
   "vendor_contact_assignments",

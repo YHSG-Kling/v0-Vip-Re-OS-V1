@@ -337,6 +337,104 @@ console.log("\nJ. the last persisted twin — morning stand-up + team-lead brief
   check("J6 the team-lead brief reads the team's persisted twin for capacity exceptions (twinCapacityForAgent), capacityFor only for members the twin lacks", /readBrokerageTwin\(params\.brokerageId,[^)]*teamId: teamIds\[0\][^)]*snapshot/.test(lead) && /twinCapacityForAgent\(teamTwin, agentId\)/.test(lead) && /line \?\? await capacityFor\(/.test(lead))
 }
 
+// ─── K. TWIN 2.0 — manager slices (wave 107, lane 107C) ──────────────────────────────────────────
+console.log("\nK. manager slices — one per MANAGERS key, owned, read through a survivor, re-homed not duplicated")
+const { TWIN_SLICE_SPECS, TWIN_FLOW_STAGES, detectBottleneck } = await import("../lib/kernel/brokerage-twin")
+// Slice fixture rows for BOTH tenants (A small, B large — a bleed would show as B's numbers in A's slices).
+const sliceRows = (brokerage: string, tag: string, n: number): Record<string, Row[]> => ({
+  tours: Array.from({ length: n }, (_, i) => ({ id: `${tag}-to${i}`, brokerage_id: brokerage, agent_id: `${tag}-ag${(i % 2) + 1}`, created_at: iso(5) })),
+  offers: Array.from({ length: n }, (_, i) => ({ id: `${tag}-of${i}`, brokerage_id: brokerage, agent_id: `${tag}-ag2`, created_at: iso(10) })),
+  marketing_assets: Array.from({ length: n }, (_, i) => ({ id: `${tag}-ma${i}`, brokerage_id: brokerage, team_id: i === 0 ? TEAM : null, approval_status: i === 0 ? "approved" : "pending", cost_usd: 2.5, created_at: iso(3), performance: i === 0 ? { ctr: 0.02 } : {} })),
+  ai_video_projects: [{ id: `${tag}-v1`, brokerage_id: brokerage, agent_id: `${tag}-ag1`, status: "generating" }, { id: `${tag}-v2`, brokerage_id: brokerage, agent_id: `${tag}-ag1`, status: "completed" }],
+  ad_campaigns: [{ id: `${tag}-ac1`, brokerage_id: brokerage, status: "live" }, { id: `${tag}-ac2`, brokerage_id: brokerage, status: "paused" }],
+  ad_performance: Array.from({ length: n }, (_, i) => ({ id: `${tag}-ap${i}`, brokerage_id: brokerage, spend: 40, leads: 2, conversions: i === 0 ? 1 : 0, captured_at: iso(2) })),
+  agent_action_ledger: [
+    ...Array.from({ length: n }, (_, i) => ({ id: `${tag}-je${i}`, brokerage_id: brokerage, action: i === 0 ? "journey.experience.wait" : "journey.experience.education", created_at: iso(4) })),
+    { id: `${tag}-jx`, brokerage_id: brokerage, action: "allocation.recommend.lead", created_at: iso(4) },
+  ],
+  marketing_campaign_touchpoints: Array.from({ length: n }, (_, i) => ({ id: `${tag}-tp${i}`, brokerage_id: brokerage, created_at: iso(6), sent_at: iso(6), opened_at: i < 2 ? iso(5) : null, clicked_at: i === 0 ? iso(5) : null, converted_at: null })),
+  sphere_engagement_scores: [{ id: `${tag}-se1`, brokerage_id: brokerage, agent_id: `${tag}-ag1`, score: 80, referrals_given: 2, calculated_at: iso(1) }, { id: `${tag}-se2`, brokerage_id: brokerage, agent_id: `${tag}-ag2`, score: 40, referrals_given: 0, calculated_at: iso(1) }],
+  cron_execution_logs: [{ id: `${tag}-cl1`, brokerage_id: brokerage, cron_name: "a", status: "completed", started_at: iso(1) }, { id: `${tag}-cl2`, brokerage_id: brokerage, cron_name: "b", status: "failed", started_at: iso(2) }, { id: `${tag}-cl3`, brokerage_id: brokerage, cron_name: "b", status: "started", started_at: iso(1) }],
+  listing_presentations: Array.from({ length: n }, (_, i) => ({ id: `${tag}-lp${i}`, brokerage_id: brokerage, agent_id: `${tag}-ag1`, appointment_at: iso(20) })),
+})
+const merge = (...ws: Array<Record<string, Row[]>>) => { const out: Record<string, Row[]> = {}; for (const w of ws) for (const [k, v] of Object.entries(w)) out[k] = [...(out[k] ?? []), ...v]; return out }
+const sliceWorld = (extra: Record<string, Row[]> = {}) => world(merge(sliceRows(A, "a", 3), sliceRows(B, "b", 9), extra))
+let twinK!: BrokerageTwin
+{
+  const c = makeClient(sliceWorld())
+  twinK = (await buildBrokerageTwin(A, NOW, { svc: c as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false })).twin
+  const keys = Object.keys(MANAGERS).sort()
+  check("K1 one slice per MANAGERS key — the slice table and the built twin both hold exactly the registry's 13 seats, each slice owned by its key", Object.keys(TWIN_SLICE_SPECS).sort().join() === keys.join() && Object.keys(twinK.slices).sort().join() === keys.join() && Object.values(twinK.slices).every((s) => s.manager in MANAGERS && s.reader.length > 0 && s.answers.length > 0))
+  const rehomed = Object.values(twinK.slices).filter((s) => s.origin === "rehomed")
+  const resolves = (p: string) => p.split(".").reduce<any>((o, k) => (o == null ? undefined : o[k]), twinK) !== undefined
+  check("K2 the sections the twin ALREADY carried are RE-HOMED under their manager (deal_coordinator, recruiting_manager, finance_manager, compliance_officer, ai_isa, listing_concierge): they point at existing sections and copy NO numbers", ["deal_coordinator", "recruiting_manager", "finance_manager", "compliance_officer", "ai_isa", "listing_concierge"].every((k) => twinK.slices[k as keyof typeof twinK.slices].origin === "rehomed") && rehomed.every((s) => Object.keys(s.measures).length === 0 && s.sections.length > 0 && s.sections.every(resolves)), rehomed.map((s) => s.sections.filter((p) => !resolves(p)).join("|")).join(";"))
+  check("K3 (control) a section path that does not exist is caught by the resolver K2 uses", !resolves("now.nothingHere"))
+  const readers = Object.values(twinK.slices).filter((s) => s.origin === "reader" && s.manager !== "data_steward")
+  check("K4 every reader slice reads through a survivor: present, fresh-stamped, evidence pinned to brokerage_id and naming its producer", readers.length === 6 && readers.every((s) => s.status === "present" && s.asOf !== null && s.evidence.length > 0 && s.evidence.every((e) => e.filter.includes(`brokerage_id=${A}`) && e.via.length > 0)), readers.map((s) => `${s.manager}:${s.status}`).join(","))
+  const m = (k: string) => twinK.slices[k as keyof typeof twinK.slices].measures
+  check("K5 slice numbers are A's rows as written (B's 9-row fixture never bleeds): buyer tours 3, live campaigns 1, ad spend $120, experiences 3 (wait 1 / education 2, the allocation row excluded), touchpoints 3 opened 2, sphere avg 60, cron failed 1",
+    m("shopping_agent").tours30d === 3 && m("ads_manager").liveCampaigns === 1 && m("ads_manager").spendCents30d === 12_000 && m("ads_manager").costPerLeadCents === 2000 && m("campaign_orchestrator").experiences30d === 3 && m("campaign_orchestrator")["experience.wait"] === 1 && m("campaign_orchestrator")["experience.education"] === 2 && m("campaign_orchestrator").opened30d === 2 && m("sphere_of_influence").avgScore === 60 && m("cron_manager").failed7d === 1 && m("asset_manager").assets30d === 3 && m("asset_manager").videosInFlight === 1, JSON.stringify({ s: m("shopping_agent"), a: m("ads_manager"), c: m("campaign_orchestrator") }))
+  check("K6 the data steward's slice is the build's own confidence (refusals, blind spots, snapshot baseline, competency source)", twinK.slices.data_steward.status === "present" && twinK.slices.data_steward.measures.snapshotBaseline === 1 && typeof twinK.slices.data_steward.measures.refusedReads === "number")
+  check("K7 reader-slice measures ride the snapshot measures (change detection), re-homed slices add none", twinMeasures(twinK)["slices.ads_manager.liveCampaigns"] === 1 && !Object.keys(twinMeasures(twinK)).some((k) => k.startsWith("slices.deal_coordinator.")))
+
+  // A refused reader → that slice alone is "refused", named; the rest stand.
+  const refusing = makeClient(sliceWorld(), { refuse: new Set(["ad_performance"]) })
+  const tr = (await buildBrokerageTwin(A, NOW, { svc: refusing as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false })).twin
+  check("K8 a refused survivor read → the slice reads 'refused' with the refusal named in blindSpots, no partial numbers; other slices unaffected", tr.slices.ads_manager.status === "refused" && Object.keys(tr.slices.ads_manager.measures).length === 0 && tr.blindSpots.some((s) => /slice ads_manager refused: ad_performance\(30d\): refused/.test(s)) && tr.slices.shopping_agent.status === "present")
+  // A registered seam (the ONE registry) replaces the default reader and is cited.
+  const ts = (await buildBrokerageTwin(A, NOW, { svc: makeClient(sliceWorld()) as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false, seams: { "slice:ads_manager": async () => ({ measures: { liveCampaigns: 42 }, asOf: NOW.toISOString(), evidence: [{ table: "ad_campaigns", filter: `brokerage_id=${A}`, count: 42, via: "lib/kernel/ads.ts (registered)" }] }) } })).twin
+  check("K9 registerTwinSeam('slice:<manager>') — the same registry as contributionMargin / missions — overrides the default reader and is cited as the reader", ts.slices.ads_manager.measures.liveCampaigns === 42 && /registerTwinSeam\('slice:ads_manager'\)/.test(ts.slices.ads_manager.reader))
+
+  // TEAM isolation: slices whose rows carry no agent / team column are WITHHELD from a team board — not even read.
+  const tc = makeClient(sliceWorld())
+  const team = (await buildBrokerageTwin(A, NOW, { svc: tc as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false, teamId: TEAM })).twin
+  const withheld = Object.values(team.slices).filter((s) => s.status === "withheld").map((s) => s.manager).sort()
+  const readTables = new Set(tc.log.filter((l) => l.op === "select").map((l) => l.table))
+  check("K10 a TEAM twin withholds the brokerage-wide slices (ads, campaign, cron) and never reads their tables; team-narrowable slices narrow through agent_id / team_id", withheld.join() === "ads_manager,campaign_orchestrator,cron_manager" && !readTables.has("ad_performance") && !readTables.has("marketing_campaign_touchpoints") && !readTables.has("cron_execution_logs") && team.slices.shopping_agent.measures.tours30d === 2 && team.slices.asset_manager.measures.assets30d === 1 && tc.log.filter((l) => l.table === "tours").every((l) => l.filters.includes("in:agent_id")), `withheld=${withheld} tours=${team.slices.shopping_agent.measures.tours30d}`)
+  const reads = makeClient(sliceWorld()); await buildBrokerageTwin(A, NOW, { svc: reads as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false })
+  const pinned = (l: { filters: string[] }) => l.filters.includes("eq:brokerage_id") || l.filters.includes("eq:recipient_brokerage_id") // the economic-graph seam (H7 loaded it) pins referral_payouts by its recipient tenant
+  check("K11 every read of the build (slices + flow included) is pinned to the tenant", reads.log.filter((l) => l.op === "select").every(pinned), reads.log.filter((l) => l.op === "select" && !pinned(l)).map((l) => `${l.table}[${l.filters}]`).join(","))
+}
+
+// ─── L. the system view — flow, conversion, bottleneck ───────────────────────────────────────────
+console.log("\nL. system view — lead → opportunity → appointment → agreement → transaction → closed, with the bottleneck named")
+{
+  const s = twinK.system
+  check("L1 the six stages in flow order with an owner and evidence each", s.stages.map((x) => x.stage).join() === TWIN_FLOW_STAGES.join() && s.stages.every((x) => x.owners.length > 0 && x.evidence.filter.includes(`brokerage_id=${A}`)))
+  const c = (k: string) => s.stages.find((x) => x.stage === k)!.count
+  // A's 90d window: 3 leads created? (fixture leads carry no created_at → 0), converted 1, appointments 3 presentations + 3 tours, agreements 3 offers, closed 1.
+  check("L2 stage counts are the window's rows (appointments = presentations + tours; agreements = listings taken + offers written; closed = the economic section's count)", c("opportunity") === 1 && c("appointment") === 6 && c("agreement") === 3 && c("closed") === twinK.economic.closedCount90d, JSON.stringify(s.stages.map((x) => [x.stage, x.count])))
+  const st = (stage: string, count: number | null) => ({ stage: stage as any, count, owners: ["ai_isa" as const], evidence: { table: "t", filter: "f", count: count ?? 0, via: "v" } })
+  const stages = [st("lead", 100), st("opportunity", 40), st("appointment", 30), st("agreement", 3), st("transaction", 3), st("closed", 2)]
+  const tr = (a: number, b: number) => ({ from: stages[a].stage, to: stages[b].stage, rate: stages[a].count ? stages[b].count! / stages[a].count! : null, status: "measured" as const })
+  const bn = detectBottleneck(stages, [tr(0, 1), tr(1, 2), tr(2, 3), tr(3, 4), tr(4, 5)])
+  check("L3 (positive control) appointment → agreement at 10% against ≥ 40% elsewhere is NAMED the bottleneck, with the median it was judged against and both stages' evidence", bn?.from === "appointment" && bn.to === "agreement" && Math.abs(bn.rate - 0.1) < 1e-9 && bn.medianOtherRate !== null && bn.medianOtherRate >= 0.4 && bn.evidence.length === 2 && /appointment → agreement converts 10%/.test(bn.headline), bn?.headline)
+  check("L4 (control) an UNMEASURED transition is never named even when it would be lowest; nothing measured → null (never a guessed bottleneck)", detectBottleneck(stages, [tr(0, 1), { from: "appointment", to: "agreement", rate: null, status: "unmeasured" }])?.from === "lead" && detectBottleneck(stages, []) === null)
+  const refused = (await buildBrokerageTwin(A, NOW, { svc: makeClient(sliceWorld(), { refuse: new Set(["tours"]) }) as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false })).twin.system
+  check("L5 a refused stage read → that stage's count is null (not 0) and both its transitions read 'unmeasured'", refused.stages.find((x) => x.stage === "appointment")!.count === null && refused.transitions.filter((t) => t.from === "appointment" || t.to === "appointment").every((t) => t.status === "unmeasured"))
+  check("L6 capacity constraint: half the scored roster at capacity or over (capacityFor) → 'agent capacity' named with the capacity evidence", twinK.system.constraints.some((x) => x.what === "agent capacity" && x.evidence.via.includes("capacityFor")))
+  check("L7 the flow counts ride the snapshot measures (system.<stage>)", twinMeasures(twinK)["system.appointment"] === 6)
+}
+
+// ─── M. ONE READER — every consumer reads the twin through readBrokerageTwin ─────────────────────
+console.log("\nM. one-reader census (stripped source) — managers read the twin, they do not re-derive it")
+{
+  const { readdirSync, statSync } = await import("node:fs")
+  const walk = (dir: string, out: string[] = []): string[] => { for (const n of readdirSync(dir)) { const p = `${dir}/${n}`; if (n === "node_modules" || n.startsWith(".")) continue; const st = statSync(p); if (st.isDirectory()) walk(p, out); else if (/\.(ts|tsx)$/.test(n)) out.push(p) } return out }
+  const files = [...walk("lib"), ...walk("app")].filter((p) => p !== "lib/kernel/brokerage-twin.ts")
+  const internals = files.filter((p) => /\b(loadBrokerageTwinFacts|composeBrokerageTwin)\b/.test(code(p)))
+  const builders = files.filter((p) => /\bbuildBrokerageTwin\(/.test(code(p)))
+  const readers = files.filter((p) => /\breadBrokerageTwin\(/.test(code(p)))
+  check("M1 no product module reaches the twin's internals (loader / composer) — only the builder and the ONE reader", internals.length === 0, internals.join(","))
+  check("M2 exactly one product BUILDER (the Command Center, which persists the snapshot every reader serves)", builders.join() === "lib/kernel/command-center.ts", builders.join(","))
+  check("M3 the readers read through readBrokerageTwin — stand-up, team-lead brief, recruiting, allocation, and now the broker brief", ["lib/kernel/morning-standup.ts", "lib/intelligence/user-type-briefs/team-lead.ts", "app/actions/recruiting-roi.ts", "lib/kernel/resource-allocation.ts", "lib/intelligence/user-type-briefs/broker.ts"].every((p) => readers.includes(p)), readers.join(","))
+  const brief = code("lib/intelligence/user-type-briefs/broker.ts")
+  const dup = /\.from\("agents"\)\s*\.select\("id", \{ count: "exact", head: true \}\)\s*\.eq\("brokerage_id", params\.brokerageId\)\s*\.eq\("is_active", true\)/
+  check("M4 the broker brief's active-agent head count (a re-derivation of capacity.activeAgents) is gone; the metric and the bottleneck line read the twin", !dup.test(src("lib/intelligence/user-type-briefs/broker.ts")) && /twin\.capacity\.activeAgents/.test(brief) && /twin\?\.system\?\.bottleneck\?\.headline/.test(brief))
+  check("M5 (positive control) the census regex recognises the removed head-count shape (comment-stripped source, strings kept)", dup.test(stripComments(`supabase\n  .from("agents")\n  .select("id", { count: "exact", head: true })\n  .eq("brokerage_id", params.brokerageId)\n  .eq("is_active", true)`)))
+  check("M6 (control) a tombstone naming the loader is not read as a reach into the internals", !/\bloadBrokerageTwinFacts\b/.test(code("lib/intelligence/user-type-briefs/broker.ts")) && !/\bloadBrokerageTwinFacts\b/.test(stripComments("// loadBrokerageTwinFacts used to be called here\nconst y = 2")))
+}
+
 // ─── I. registration + ownership ──────────────────────────────────────────────────────────────
 console.log("\nI. registration + ownership")
 {

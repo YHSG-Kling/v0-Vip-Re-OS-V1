@@ -19,8 +19,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { correctCommissionDistributionAction, voidCommissionDistributionAction } from "@/app/actions/financial-kernel"
+import { correctCommissionDistributionAction, voidCommissionDistributionAction, approveResidualEntryAction } from "@/app/actions/financial-kernel"
 import {
+  isResidualAwaitingReview,
   planDistributionCorrection,
   planDistributionVoid,
   MIN_CORRECTION_REASON_LENGTH,
@@ -119,6 +120,37 @@ export function CorrectEntryDialog({
  *  so a row is eligible here exactly when the server would admit it (reason aside). */
 export function isVoidEligibleEntry(entry: VoidableEntry, corrections: ReadonlyArray<{ status?: string | null; paid_at?: string | null }>): boolean {
   return planDistributionVoid({ entry, corrections, reason: "eligibility probe" }).ok
+}
+
+/**
+ * WAVE 107 (lane 107A) — the Finance Manager's review of a RESIDUAL ledger entry: "Approve residual" on a
+ * residual still pending review (the SAME pure predicate the server applies — isResidualAwaitingReview). Only an
+ * approved residual is paid by the deal's disbursement; rejecting it is the Void beside it.
+ */
+export function ApproveResidualButton({ entry, onApproved }: { entry: { id: string; distribution_type: string; status: string | null; entry_type?: string | null; paid_at?: string | null }; onApproved: () => void }) {
+  const [pending, startTransition] = useTransition()
+  const [error, setError] = useState<string | null>(null)
+  if (!isResidualAwaitingReview(entry)) return null
+  return (
+    <>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="text-xs h-7"
+        disabled={pending}
+        onClick={() => startTransition(async () => {
+          setError(null)
+          const r = await approveResidualEntryAction({ distributionId: entry.id })
+          if (r.success) onApproved()
+          else setError(r.error ?? "Approval failed")
+        })}
+      >
+        {pending ? "Approving…" : "Approve residual"}
+      </Button>
+      <span className="block text-[11px] text-muted-foreground">Held for finance review until approved</span>
+      {error && <span className="block text-[11px] text-destructive">{error}</span>}
+    </>
+  )
 }
 
 export function VoidEntryDialog({

@@ -37,10 +37,10 @@ export async function reapCommissionTrackingDrift(
   const ledgerStatusFor = async (transactionId: string): Promise<string | null> => {
     const { data } = await svc
       .from("commission_distributions")
-      .select("status")
+      .select("status, distribution_type, entry_type, paid_at")
       .eq("transaction_id", transactionId)
       .eq("brokerage_id", brokerageId)
-    return aggregateLedgerStatus((data ?? []) as Array<{ status?: string | null }>)
+    return aggregateLedgerStatus((data ?? []) as Array<{ status?: string | null; distribution_type?: string | null }>)
   }
 
   // ── Direction 1: summary PAID, distributions lagging → HEAL ──────────────────

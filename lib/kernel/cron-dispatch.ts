@@ -352,6 +352,9 @@ export const CRON_REGISTRY: CronEntry[] = [
   // intent merge read live numbers instead of a table nothing ever wrote to.
   // Every 4 hours, capped at 25 AI extractions per run (cost bound in the route).
   { path: "/api/cron/conversation-insights-refresh"       , schedule: "35 */4 * * *" },
+  // Network intelligence (wave 107F) — weekly: k-anonymous platform benchmarks from OPTED-IN tenants
+  // (the only writer of network_benchmarks), then per-tenant strategy learning against them.
+  { path: "/api/cron/network-intelligence"                , schedule: "47 5 * * 1" },
 ]
 
 /** Pure: one cron field against a value. Supports "*", "*\/n", "a,b,c". */

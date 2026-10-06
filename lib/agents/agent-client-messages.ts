@@ -150,6 +150,16 @@ export async function approveClientMessage(
   if (!claimed) return { status: "skipped", result: { reason: "not in proposed/approved state" } }
   const m = claimed as { brokerage_id: string; entity_type: string; entity_id: string | null; recipient_contact_id: string | null; recipient_lead_id: string | null; audience: string; subject: string | null; body: string; channel: string }
 
+  // WAVE 107B — PROCUREMENT APPROVAL. A proposal on a vendor_booking in status 'requested' IS the
+  // procurement approval (lib/kernel/procurement.ts requestProcurement put it here): approving it BOOKS
+  // the request through the existing booking writer before the approved draft is delivered. A refused
+  // booking fails the message — the human must never read "approved" over a request that did not book.
+  if (m.entity_type === "vendor_booking" && m.entity_id) {
+    const { approveProcurementRequest } = await import("@/lib/kernel/procurement")
+    const booked = await approveProcurementRequest(supabase, { brokerageId: m.brokerage_id, bookingId: m.entity_id, approverUserId })
+    if (!booked.ok && !booked.notProcurement) return await fail(supabase, messageId, `procurement booking refused: ${booked.error}`)
+  }
+
   // WAVE 83C — a PRINTED client message carries a TRACKED QR (82D open item:
   // agent-client-message direct mail passed no qrScanUrl). ONE registered code
   // per approved message, minted/reused through THE ONE minter; null (and
@@ -353,7 +363,14 @@ export async function rejectClientMessage(
   if (reason?.trim()) patch.send_error = `agent feedback: ${reason.trim().slice(0, 300)}`
   const { data, error: rejectErr } = await supabase.from("agent_client_messages")
     .update(patch)
-    .eq("id", messageId).eq("status", "proposed").select("id").maybeSingle()
+    .eq("id", messageId).eq("status", "proposed").select("id, brokerage_id, entity_type, entity_id").maybeSingle()
   if (rejectErr) return { ok: false }
+  // WAVE 107B — rejecting a procurement approval DECLINES the request (requested → cancelled).
+  const r = data as { brokerage_id?: string; entity_type?: string; entity_id?: string | null } | null
+  if (r?.entity_type === "vendor_booking" && r.entity_id && r.brokerage_id) {
+    const { declineProcurementRequest } = await import("@/lib/kernel/procurement")
+    const d = await declineProcurementRequest(supabase, { brokerageId: r.brokerage_id, bookingId: r.entity_id, approverUserId, reason: reason ?? null })
+    if (!d.ok && !d.notProcurement) console.error(`[agent-client-messages] procurement decline refused for booking ${r.entity_id}: ${d.error}`)
+  }
   return { ok: !!data }
 }

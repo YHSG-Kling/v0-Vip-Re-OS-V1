@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 721 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 725 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-06
  * source: public.live_schema_json()
- * body-sha256: 440c4847a00b6a249cc792ef7b2b86c2f6db605677a48a4fbcc80cdd4ef181ca
+ * body-sha256: 07fade8565cf7503a735ae08353f1d39eca6157bcd74912ef9ceb2d30a5595e8
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -446,6 +446,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   neighborhood_reports: ["ai_summary", "amenities_json", "avg_days_on_market", "brokerage_id", "city", "crime_index", "data_source", "expires_at", "generated_at", "id", "list_to_sale_ratio", "listing_id", "market_trend", "median_home_price", "neighborhood_name", "price_per_sqft", "school_ratings", "state", "transit_score", "walk_score", "zip_code"],
   net_sheet_calculations: ["agent_id", "brokerage_id", "buyer_commission_rate", "closing_costs", "commission_flat_amount", "commission_is_flat_fee", "contact_id", "created_at", "expires_at", "gross_proceeds", "hoa_fees", "id", "listing_commission_rate", "listing_id", "mortgage_balance", "mortgage_payoff_amount", "net_proceeds", "property_taxes", "repair_credits", "sale_price", "scenarios", "seller_concessions", "total_costs", "transaction_fee"],
   net_sheet_reconciliations: ["actual_net", "brokerage_id", "created_at", "escalated", "estimated_net", "id", "line_item_deltas", "offer_id", "settlement_signature", "surprise_level", "transaction_id", "variance_amount", "variance_pct"],
+  network_benchmarks: ["cell_key", "channel", "competency", "computed_at", "content_kind", "event_count", "id", "k_min", "market_band", "mean", "metric", "n_min", "period_end", "period_start", "policy_version", "provider", "rate", "sample_size", "strategy_key", "tenant_count"],
   newsletter_brokers_templates: ["approval_status", "approved_at", "approved_by", "brand_colors", "brokerage_id", "content", "created_at", "created_by", "id", "is_default", "logo_url", "name", "rejected_at", "rejected_reason", "status", "template_description", "template_name", "template_tags", "updated_at", "version_number"],
   newsletter_cadence_policy: ["brokerage_id", "cadence", "fire_day", "id", "preferred_categories", "preferred_persona", "scope_id", "scope_type", "skipped_until", "updated_at", "updated_by"],
   newsletter_campaigns: ["agent_id", "approval_status", "brand_compliance_passed", "brokerage_id", "campaign_name", "click_rate", "content", "created_at", "created_by", "defer_reason", "id", "is_ai_generated", "marketing_campaign_id", "open_rate", "send_date", "status", "subject_line", "unsubscribe_rate"],
@@ -624,6 +625,8 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   state_compliance_requirements: ["applies_to_closing_type", "created_at", "description", "document_type", "federal_law_reference", "id", "is_mandatory", "rate_value", "requirement_category", "requirement_name", "state", "timeline_days", "transaction_type", "updated_at"],
   state_protected_classes: ["created_at", "id", "is_active", "patterns", "protected_class", "regulation_reference", "severity_default", "state_code"],
   storage_orphaned_objects: ["brokerage_id", "bucket", "cleaned_at", "cleanup_attempts", "cleanup_error", "detail", "detected_at", "id", "last_attempt_at", "object_path", "reason"],
+  strategy_activations: ["activated_by", "adaptation", "adapted_from_digest", "brokerage_id", "created_at", "deactivated_at", "id", "library_id", "status", "strategy_key", "tier", "updated_at", "version"],
+  strategy_library: ["brokerage_id", "created_at", "definition", "definition_digest", "id", "published_at", "retired_at", "strategy_key", "tier", "title", "version"],
   strategy_outcomes: ["brokerage_id", "created_at", "deviation_from_recommendation", "final_price", "id", "notes", "offer_id", "outcome", "recommendation_id"],
   strategy_recommendations: ["agent_user_id", "ai_analysis", "ai_narrative", "brokerage_id", "comparable_context", "contact_id", "created_at", "id", "listing_id", "offer_id", "recommended_contingencies", "recommended_earnest", "recommended_price", "risk_factors", "status", "success_probability", "template_id"],
   studio_sessions: ["agent_id", "brokerage_id", "commissioned_count", "created_at", "duration_label", "id", "plan", "session_key", "skipped_count", "spoken_command", "status", "updated_at"],
@@ -707,7 +710,8 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   valuation_requests: ["agent_id", "appointment_at", "appointment_scheduled", "bathrooms", "bedrooms", "brokerage_id", "city", "cma_sent", "cma_sent_at", "condition", "contact_id", "id", "property_address", "property_type", "qualification_data", "ref_agent_slug", "square_feet", "state", "submitted_at", "utm_source", "year_built", "zip_code"],
   value_delivered_daily: ["agent_id", "brokerage_id", "cost_to_deliver", "created_at", "date", "id", "recipients_count", "total_value_delivered_dollars", "updated_at", "value_breakdown"],
   vendor_assignments: ["assigned_by_agent_id", "assignment_type", "brokerage_id", "completed_date", "created_at", "id", "notes", "scheduled_date", "status", "transaction_id", "vendor_id"],
-  vendor_bookings: ["agent_rating", "booked_at", "booked_by", "brokerage_id", "client_rating", "completed_at", "contact_id", "cost", "created_at", "id", "listing_id", "notes", "preferred_time_window", "request_message", "request_origin", "scheduled_date", "service_type", "status", "transaction_id", "vendor_id"],
+  vendor_booking_quotes: ["amount", "available_on", "booking_id", "brokerage_id", "created_at", "id", "notes", "status", "updated_at", "vendor_id"],
+  vendor_bookings: ["agent_rating", "approval_message_id", "approval_policy_ref", "approval_status", "approved_at", "approved_by", "booked_at", "booked_by", "brokerage_id", "budget", "client_rating", "completed_at", "contact_id", "cost", "created_at", "id", "listing_id", "needed_by", "notes", "preferred_time_window", "preferred_vendor_ids", "recommendation", "request_message", "request_origin", "requirements", "scheduled_date", "service_type", "status", "territory", "transaction_id", "vendor_id"],
   vendor_communications: ["body", "brokerage_id", "channel", "communication_type", "created_at", "direction", "id", "metadata", "sent_at", "service_id", "subject", "vendor_id"],
   vendor_contact_assignments: ["assigned_by", "brokerage_id", "contact_id", "created_at", "expires_at", "granted_at", "id", "notes", "revoke_reason", "revoked_at", "revoked_by", "scope", "status", "transaction_id", "updated_at", "vendor_id"],
   vendor_earnings: ["brokerage_id", "created_at", "gross_amount", "id", "invoice_id", "net_amount", "period_end", "period_start", "platform_fee", "status", "vendor_id"],

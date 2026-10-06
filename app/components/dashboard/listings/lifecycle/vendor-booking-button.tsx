@@ -96,9 +96,8 @@ export function VendorBookingButton({
       try {
         await createVendorBooking({
           vendorId,
-          // listing-only bookings use listing_id, not transaction_id
-          // pass listing_id via transactionId field and let server handle it
-          transactionId: listingId,
+          // A listing-stage booking carries listing_id (no transaction exists yet).
+          listingId,
           serviceType,
           scheduledDate,
           cost: cost ? Number(cost) : undefined,

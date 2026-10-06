@@ -54,6 +54,8 @@ import { APP_CAPABILITY_REGISTRY, type AppCapability } from "@/lib/agentic-os/ap
 import { MIN_AUTHORITY_FOR_RISK, type AuthorityLevel, type ToolRiskClass } from "@/lib/ai-isa/persona-tool-policy"
 import { OBJECTIVE_MEASURES } from "@/lib/kernel/brokerage-twin"
 import { isAgentGoalType } from "@/lib/goals/goal-types"
+// Wave 107 (107E): a mission a STRATEGY started names its owner / bench / capabilities in its evidence (pure read).
+import { strategyOwnershipOf } from "@/lib/kernel/strategy-library"
 import { currentCausation } from "@/lib/kernel/causation"
 import {
   MISSION_ATTENTION_STATES, MISSION_BLOCKED_STALE_HOURS, MISSION_CONTROL_REASON, MISSION_LIFECYCLE_REASON,
@@ -204,12 +206,22 @@ function resolveMeasure(measure: string): { owner: ManagerKey | null; managers: 
 
 /** PURE: who should own and who should participate, from the registry keys alone.
  *  @proofSeam the proof asserts the owner's example against the real registry */
-export function resolveOwnership(m: Pick<MissionRow, "mission_type" | "success_criteria" | "subject_type" | "owner_manager">): { expected: ManagerKey | null; basis: string; participants: Set<ManagerKey>; capabilities: Set<AppCapability>; participantBasis: string[] } {
+export function resolveOwnership(m: Pick<MissionRow, "mission_type" | "success_criteria" | "subject_type" | "owner_manager"> & { evidence?: MissionRow["evidence"] | null }): { expected: ManagerKey | null; basis: string; participants: Set<ManagerKey>; capabilities: Set<AppCapability>; participantBasis: string[] } {
   const participants = new Set<ManagerKey>()
   const capabilities = new Set<AppCapability>()
   const participantBasis: string[] = []
   let expected: ManagerKey | null = null
   let basis = "unresolved"
+
+  // 0. a STRATEGY mission (wave 107, lane 107E — lib/kernel/strategy-engine.ts activateStrategy): the strategy
+  //    snapshotted its owner, its participating managers (in order) and its capabilities onto the evidence; the
+  //    plan the managers SELECTED is the participation, ahead of any derivation below.
+  const strat = strategyOwnershipOf(m.evidence)
+  if (strat && strat.owner in MANAGERS) {
+    expected = strat.owner; basis = `strategy ${strat.ref} → owner ${strat.owner}`
+    for (const k of strat.managers) if (k in MANAGERS) { participants.add(k); participantBasis.push(`strategy ${strat.ref}∋${k}`) }
+    for (const c of strat.capabilities) if (c in APP_CAPABILITY_REGISTRY) capabilities.add(c)
+  }
 
   // 1. objective-shaped: the criteria's measures (headline first — the first criterion is the objective itself).
   for (const c of m.success_criteria ?? []) {

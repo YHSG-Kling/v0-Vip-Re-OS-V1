@@ -287,6 +287,11 @@ async function main() {
     const rd = await requestCreative(seed(), { need: need(), missionId: "m1" }, { delegate: async (i: any) => { del.push(i); return { ok: true, delegation: { id: "d1" } as any } } })
     check("W17 with a mission in play the request is a structured delegation (105A) on content_repurpose with a USD budget", rd.ok && rd.route === "delegation" && del[0]?.assignedManager === "asset_manager" && del[0]?.capability === "content_repurpose" && del[0]?.missionId === "m1" && del[0]?.budget?.usd === 0.16, JSON.stringify(del[0]))
     check("W18 needKey is stable per need and differs across needs", needKey(need()) === needKey(need()) && needKey(need()) !== needKey(need({ purpose: "social" })) && c.image === 0)
+    // Wave 107G (106C open loop): the creative_fatigue signal carries the MISSION IN PLAY so the handler's
+    // `signal.payload?.mission_id` (read above) can take the delegation route (W17) instead of the bus (W16).
+    const cf = src("lib/ads/creative-fatigue-runner.ts")
+    check("W19 detectCreativeFatigue looks the mission up through activeMissionsFor (subject ad_campaign = this campaign) and puts mission_id on the creative_fatigue payload; a refused read is published", /activeMissionsFor\(input\.brokerageId, \{ subject: \{ type: "ad_campaign", id: input\.adCampaignId \}/.test(cf) && /signalType: "creative_fatigue"[\s\S]{0,400}mission_id: missionId/.test(cf) && /mission_lookup_refused: missionLookupRefused/.test(cf) && /signal\.payload\?\.mission_id/.test(src("lib/kernel/manager-signals.ts")))
+    check("W20 (control) a commented payload key is not read as the writer", !/mission_id: missionId/.test(stripComments("// payload: { mission_id: missionId }\nconst z = 3")))
   }
 
   console.log(`\nRESULT: ${pass} passed, ${fail} failed`)

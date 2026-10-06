@@ -222,6 +222,50 @@ export async function loadAgentCompetency(
   return { ...scoreCompetency(evidence), refusedRails }
 }
 
+// ─── THE COMPETENCY SNAPSHOT SEAM (wave 107, lane 107C; owner: "snapshot seam") ──────────────────
+// loadAgentCompetency costs ~16 reads per agent; the brokerage twin's workforce section used to run
+// it for every scored agent on every build (≤ 60 agents → ~960 reads). The daily development cycle
+// below ALREADY persists each agent's score map: its `update` step is a withActionLedger row
+// (agent_action_ledger, action development.competency.update, subject agent, detail.scores =
+// competencyScoreMap(profile)) — "the ledger is the loop's memory (no competency table)". That row IS
+// the persisted per-agent competency snapshot, so no table is added (no m724): the twin reads every
+// agent's latest snapshot in ONE tenant-pinned read and recomputes live only for agents whose
+// snapshot is absent or older than COMPETENCY_SNAPSHOT_MAX_AGE_HOURS (the caller publishes that
+// fallback as a blind spot). WRITER: runAdaptiveDevelopmentCycle (daily, onboarding-reminders cron).
+
+/** A snapshot older than this is stale (the cycle runs daily; 36h tolerates one late run). */
+export const COMPETENCY_SNAPSHOT_MAX_AGE_HOURS = 36
+
+export interface CompetencySnapshot { agentId: string; at: string; gaps: number; scores: Partial<Record<CompetencySkill, number | null>> }
+
+/** PURE: the gap count of a ledgered score map — the SAME rule scoreCompetency applies to a live
+ *  profile (a scored skill at or below COMPETENCY_GAP_SCORE; an unproven skill is never a gap).
+ *  @proofSeam the proof asserts the snapshot path and the live path agree on the rule */
+export function competencyGapCount(scores: Partial<Record<CompetencySkill, number | null>> | null | undefined): number {
+  if (!scores || typeof scores !== "object") return 0
+  return Object.values(scores).filter((v): v is number => typeof v === "number" && Number.isFinite(v) && v <= COMPETENCY_GAP_SCORE).length
+}
+
+/** ONE read: the latest fresh development-cycle snapshot per agent (tenant-pinned). A refused read
+ *  returns `refused` and an empty map — the caller recomputes live and names it; never a fake score. */
+export async function readCompetencySnapshots(
+  svc: { from: (t: string) => any }, brokerageId: string, agentIds: string[], now: Date = new Date(),
+  maxAgeHours: number = COMPETENCY_SNAPSHOT_MAX_AGE_HOURS,
+): Promise<{ byAgent: Map<string, CompetencySnapshot>; refused: string | null }> {
+  const byAgent = new Map<string, CompetencySnapshot>()
+  if (!brokerageId || agentIds.length === 0) return { byAgent, refused: null }
+  const { data, error } = await svc.from("agent_action_ledger").select("subject_id, detail, created_at")
+    .eq("brokerage_id", brokerageId).eq("action", DEVELOPMENT_ACTION.update).eq("subject_type", "agent").eq("status", "executed")
+    .in("subject_id", agentIds).gte("created_at", new Date(now.getTime() - maxAgeHours * 3_600_000).toISOString())
+    .order("created_at", { ascending: false }).limit(Math.min(5000, agentIds.length * 4))
+  if (error) return { byAgent, refused: error.message ?? "unknown" }
+  for (const r of (data ?? []) as Array<{ subject_id: string | null; detail: { scores?: CompetencySnapshot["scores"] } | null; created_at: string }>) {
+    if (!r.subject_id || byAgent.has(r.subject_id) || !r.detail?.scores || typeof r.detail.scores !== "object") continue
+    byAgent.set(r.subject_id, { agentId: r.subject_id, at: r.created_at, gaps: competencyGapCount(r.detail.scores), scores: r.detail.scores })
+  }
+  return { byAgent, refused: null }
+}
+
 export interface SkillRadarResult { scanned: number; nudged: number; staleSkills: number }
 
 /**

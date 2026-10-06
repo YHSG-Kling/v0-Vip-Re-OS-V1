@@ -31,6 +31,7 @@ import {
   createCommissionRecord,
   correctCommissionDistribution,
   voidCommissionDistribution,
+  approveResidualEntry,
   type CreateCommissionRecordInput,
   type FinancialActorContext,
   type LoadAgentFinancialSummaryInput,
@@ -230,6 +231,25 @@ export async function voidCommissionDistributionAction(input: { distributionId: 
     }
     const ctx = await getFinancialActorContext()
     return await voidCommissionDistribution({ ctx, distributionId: input.distributionId, reason: String(input.reason ?? "") })
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * WAVE 107 (lane 107A) — the FINANCE MANAGER REVIEW of a residual ledger entry (owner: "… → Residual ledger
+ * entry → Finance Manager review"). Tenant + actor from the SESSION (getFinancialActorContext); the
+ * finance-admin gate is the kernel's (lib/kernel/financial.ts approveResidualEntry — isBrokerageFinanceAdmin).
+ * Only the entry id comes from the caller. Rejection is the existing Void. UI: "Approve residual" beside
+ * "Void entry" on the CDA Commission Breakdown (app/dashboard/transactions/[id]/cda/correct-entry-dialog.tsx).
+ */
+export async function approveResidualEntryAction(input: { distributionId: string }) {
+  try {
+    if (!input || typeof input.distributionId !== "string" || !UUID_SHAPE.test(input.distributionId)) {
+      return { success: false, error: "Invalid entry id" }
+    }
+    const ctx = await getFinancialActorContext()
+    return await approveResidualEntry({ ctx, distributionId: input.distributionId })
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) }
   }

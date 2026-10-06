@@ -346,6 +346,16 @@ console.log("\n── 8. WIRED — stripped source (a tombstone is not a call si
     && /request\?: import\("@\/lib\/ai-isa\/lead-action-plan"\)\.PlannerIssuedRequest/.test(readFileSync("lib/video/intro-video-reactor.ts", "utf8"))
     && /request\?: import\("@\/lib\/ai-isa\/lead-action-plan"\)\.PlannerIssuedRequest/.test(readFileSync("lib/transactions/milestone-service.ts", "utf8"))
     && /planner_request/.test(src("lib/video/intro-video-reactor.ts")) && /request\.reasons\[0\]/.test(src("lib/video/memory-video.ts")) && /request\.experience/.test(src("lib/transactions/milestone-service.ts")))
+  // Wave 107G (106B open loop): the MANUAL enrolment path (enrollment-engine.enrollContact) consults the
+  // same verdict — advise for a human (proceeds, verdict returned), hold for an autonomous caller.
+  const ee = src("lib/campaign-sequences/enrollment-engine.ts")
+  check("enrollContact consults journeyVerdictForEnrollment (contact recipients, when `journey` is requested) BEFORE its sequence_enrollments insert; hold refuses, advise proceeds with the verdict on the result",
+    /if \(params\.journey && !isLead\)/.test(ee) && /journeyVerdictForEnrollment\(supabase, \{ brokerageId: params\.brokerageId, contactId: recipientId \}\)/.test(ee)
+    && ee.indexOf("journeyVerdictForEnrollment") < ee.indexOf('.from("sequence_enrollments")\n    .insert') && /!v\.proceed && params\.journey === "hold"/.test(ee) && /heldByJourney: true/.test(ee) && /\.\.\.\(journey \? \{ journey \} : \{\}\)/.test(ee))
+  const wf = src("app/actions/workflows.ts")
+  check("the human manual path (startSmartDrip, enrolledBy = the session user) asks for advice, and the contact card shows it", /enrolledBy: ctx\.userId,\s*journey: "advise",/.test(wf) && /journeyAdvice:/.test(wf) && /result\.journeyAdvice/.test(src("app/crm/contacts/[contactId]/components/smart-drip-card.tsx")))
+  check("(control) a commented-out consult is not read as one", !/journeyVerdictForEnrollment\(supabase/.test(stripComments("// journeyVerdictForEnrollment(supabase, { brokerageId })\nconst y = 2")))
+  check("properties / document_explanation stay NAMED-unexecuted: no catalogue capability exists for either (CAPABILITY_MANAGER has no property-match / document capability)", EXPERIENCE_EXECUTORS.properties.capability === null && EXPERIENCE_EXECUTORS.document_explanation.capability === null && !Object.keys(CAPABILITY_MANAGER).some((k) => /propert|match|alert|document|explain/.test(k)))
   check("no second planner: planNextBestExperience is defined once, in the NBA survivor", (src("lib/ai-isa/lead-action-plan.ts").match(/export function planNextBestExperience\(/g) ?? []).length === 1)
   const dom = MAINTENANCE_DOMAINS.next_best_experience
   check("MAINTENANCE_DOMAINS.next_best_experience: owner ai_isa, proof test:next-best-experience, co-owners named in prose", !!dom && dom.manager === "ai_isa" && dom.proof === "test:next-best-experience" && (dom.coOwners ?? []).length === 3 && (dom.coOwners ?? []).every((c) => dom.what.includes(c)))

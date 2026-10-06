@@ -90,6 +90,20 @@ export async function detectCreativeFatigue(
     console.error("[creative-fatigue-runner] refresh proposal failed:", (e as Error).message)
   }
 
+  // WAVE 107G (106C open loop) — the MISSION IN PLAY: a non-terminal mission whose subject is this ad
+  // campaign (lib/kernel/missions.ts activeMissionsFor, the one mission reader). Its id rides the
+  // payload so the Campaign Orchestrator's handler (manager-signals.ts campaign_orchestrator:creative_fatigue
+  // → requestCreative) asks the Asset Manager through a structured DELEGATION under that mission instead
+  // of the bus. No mission (or a refused read — published in the payload) → the bus route, as before.
+  let missionId: string | null = null
+  let missionLookupRefused: string | null = null
+  try {
+    const { activeMissionsFor } = await import("@/lib/kernel/missions")
+    const ms = await activeMissionsFor(input.brokerageId, { subject: { type: "ad_campaign", id: input.adCampaignId }, limit: 1 }, svc as any)
+    missionLookupRefused = ms.readRefused
+    missionId = ms.active[0]?.id ?? null
+  } catch (e) { missionLookupRefused = (e as Error)?.message ?? String(e) }
+
   let signalId: string | undefined
   try {
     const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
@@ -97,7 +111,7 @@ export async function detectCreativeFatigue(
       brokerageId: input.brokerageId, fromManager: "ads_manager", toManager: "campaign_orchestrator",
       signalType: "creative_fatigue", message: draft.body,
       entityType: "ad_campaign", entityId: input.adCampaignId,
-      payload: { dropPct: decay.dropPct, decayPerDay: decay.decayPerDay, daysLive: decay.daysLive, refresh_creative_id: refreshCreativeId ?? null },
+      payload: { dropPct: decay.dropPct, decayPerDay: decay.decayPerDay, daysLive: decay.daysLive, refresh_creative_id: refreshCreativeId ?? null, mission_id: missionId, ...(missionLookupRefused ? { mission_lookup_refused: missionLookupRefused } : {}) },
     }, svc)
     signalId = sig.signalId
   } catch { /* best-effort */ }

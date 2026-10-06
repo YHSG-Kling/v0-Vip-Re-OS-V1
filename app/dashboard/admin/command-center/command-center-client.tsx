@@ -13,6 +13,8 @@ import { MANAGERS } from "@/lib/kernel/manager-registry"
 import { ManagerTalkFeed } from "./manager-talk-feed"
 import { ManagerActivityFeed } from "./manager-activity-feed"
 import { CommandBar } from "./command-bar"
+import { TwinScenarioPanel } from "./twin-scenario-panel"
+import { NetworkBenchmarksCard } from "./network-benchmarks-card"
 
 const SESSION_BADGE: Record<string, string> = {
   running:    "bg-green-100 text-green-800",
@@ -350,6 +352,8 @@ export function CommandCenterClient({
             {data.brokerageTwin.blindSpots.length > 0 && (
               <div className="text-xs text-muted-foreground">Blind spots: {data.brokerageTwin.blindSpots.slice(0, 3).join(" · ")}{data.brokerageTwin.blindSpots.length > 3 ? ` · +${data.brokerageTwin.blindSpots.length - 3}` : ""}</div>
             )}
+            {/* Wave 107D — the what-if engine on this twin (app/actions/twin-scenario.ts; simulation only). */}
+            <TwinScenarioPanel territories={data.brokerageTwin.workforce.territories.map((t) => t.territory)} />
           </Card>
         </section>
       )}
@@ -398,13 +402,15 @@ export function CommandCenterClient({
               {data.roiLedger.ledgerAttribution.credited} of {data.roiLedger.ledgerAttribution.outcomes} outcomes credited to a preceding action · last {data.roiLedger.periodDays} days
             </span>
           </div>
-          <div className="grid gap-3 md:grid-cols-5">
+          <div className="grid gap-3 md:grid-cols-6">
             {([
               ["Reason code", data.roiLedger.ledgerAttribution.byReasonCode],
               ["Manager", data.roiLedger.ledgerAttribution.byManager],
               ["Playbook", data.roiLedger.ledgerAttribution.byPlaybook],
               ["Campaign", data.roiLedger.ledgerAttribution.byCampaign],
               ["Experiment arm", data.roiLedger.ledgerAttribution.byExperimentArm ?? []],
+              // Wave 107F: strategy + version from ledger detail.strategy (107E activations).
+              ["Strategy", data.roiLedger.ledgerAttribution.byStrategy ?? []],
             ] as const).map(([label, rows]) => (
               <Card key={label} className="p-3">
                 <div className="text-xs text-muted-foreground mb-1">By {label.toLowerCase()} · last-touch / all-touch</div>
@@ -419,6 +425,9 @@ export function CommandCenterClient({
           </div>
         </section>
       )}
+
+      {/* Wave 107F — privacy-safe network benchmarks beside this brokerage's own numbers (k-anonymous, opt-in contribution). */}
+      {data.roiLedger && <NetworkBenchmarksCard />}
 
       {/* Retention board — the Recruiting Manager's daily flight-risk scores made visible.
           People health beside production: who's trending down and why, before they leave. */}

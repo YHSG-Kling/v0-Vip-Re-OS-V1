@@ -293,6 +293,8 @@ export async function startSmartDrip(
   sequenceName?: string
   enrollmentId?: string
   alreadyEnrolled?: boolean
+  /** Wave 107G: the journey planner's advice when it would have chosen a different experience (never a refusal). */
+  journeyAdvice?: string
   error?: string
 }> {
   try {
@@ -350,6 +352,8 @@ export async function startSmartDrip(
       contactId,
       brokerageId,
       enrolledBy: ctx.userId,
+      // The human's enrolment proceeds; the journey planner's verdict comes back as advice (wave 107G).
+      journey: "advise",
     })
 
     const now = new Date().toISOString()
@@ -398,6 +402,8 @@ export async function startSmartDrip(
       sequenceName: (sequence.name as string | null) ?? undefined,
       enrollmentId: enrollment.enrollmentId,
       alreadyEnrolled: !!enrollment.alreadyEnrolled,
+      // Advice, not a refusal: present when the planner would have chosen something other than a sequence touch.
+      journeyAdvice: enrollment.journey && !enrollment.journey.proceed ? `The journey planner suggests ${enrollment.journey.experience ?? "a different experience"} — ${enrollment.journey.reason}` : undefined,
     }
   } catch (error: any) {
     return { success: false, error: error?.message ?? "Failed to start drip" }

@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 449 tables, 805 columns.
+ * MEASURED AT GENERATION: 453 tables, 811 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-06
  * source: public.live_check_constraints_json()
- * body-sha256: 8d2d61c6ef9b921dd5623d50fae04f253a3bf75bbb95ae9392858b0c08a65fe9
+ * body-sha256: c2caa75c13ee7070fbac8c22c2310c988e3bcc3bacb68a37a48ed3790dda3111
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -759,9 +759,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     methodology: ["ai_cma", "attom", "housecanary", "manual", "sqft_regional_average"],
   },
   improvement_proposals: {
-    proposer: ["copy_learning", "human", "media_intelligence", "outcome_autopsy", "predictor_learning", "prompt_calibrator", "resource_allocation"],
+    proposer: ["copy_learning", "human", "media_intelligence", "outcome_autopsy", "predictor_learning", "prompt_calibrator", "resource_allocation", "strategy_learning"],
     status: ["APPROVED", "EVALUATED", "PROMOTED", "PROPOSED", "REJECTED", "ROLLED_BACK"],
-    subject_kind: ["allocation", "policy", "prompt", "threshold", "variant"],
+    subject_kind: ["allocation", "policy", "prompt", "strategy", "threshold", "variant"],
   },
   inbound_call_classifications: {
     classification: ["business_general", "cooperating_agent", "existing_contact", "real_estate_buyer", "real_estate_investor", "real_estate_seller", "unknown", "vendor"],
@@ -1038,6 +1038,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   neighborhood_reports: {
     market_trend: ["cold", "cooling", "hot", "warm"],
+  },
+  network_benchmarks: {
+    metric: ["brokerage_conversion", "channel_response", "content_performance", "education_effectiveness", "provider_reliability", "seller_campaign_conversion", "strategy_conversion"],
   },
   newsletter_brokers_templates: {
     approval_status: ["approved", "draft", "pending_review", "rejected"],
@@ -1463,6 +1466,13 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   state_protected_classes: {
     severity_default: ["critical", "high", "low", "medium"],
   },
+  strategy_activations: {
+    status: ["active", "deactivated", "superseded"],
+    tier: ["platform", "tenant"],
+  },
+  strategy_library: {
+    tier: ["platform", "tenant"],
+  },
   strategy_outcomes: {
     outcome: ["accepted", "countered", "rejected", "withdrawn"],
   },
@@ -1628,9 +1638,13 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     assignment_type: ["cleaner", "contractor", "inspector", "insurance", "lender", "mover", "other", "photographer", "stager", "title"],
     status: ["cancelled", "completed", "confirmed", "in_progress", "pending"],
   },
+  vendor_booking_quotes: {
+    status: ["accepted", "declined", "submitted", "withdrawn"],
+  },
   vendor_bookings: {
+    approval_status: ["approved", "auto_approved", "declined", "pending"],
     request_origin: ["admin", "agent", "contact", "tc", "vendor"],
-    status: ["booked", "cancelled", "completed", "confirmed", "no_show"],
+    status: ["booked", "cancelled", "completed", "confirmed", "no_show", "requested"],
   },
   vendor_contact_assignments: {
     scope: ["financial", "pii_basic", "pii_full", "transaction_docs"],

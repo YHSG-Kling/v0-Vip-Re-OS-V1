@@ -56,6 +56,10 @@ export interface DistributionRecord {
   rule_id?: string
   recipient_type?: string
   notes?: string
+  /** IN-MEMORY ONLY (wave 107, 107A): the agent_relationships.id a 'residual' share was evaluated from —
+   *  the "rule" half of the residual idempotency key. Step 11 maps columns explicitly, so it is never
+   *  written (rule_id FKs commission_rules, not agent_relationships). */
+  relationship_id?: string
 }
 
 /**
@@ -88,6 +92,8 @@ export interface CompanyObligationRecord {
   /** Why this is on company books instead of in the deal. */
   reason: 'post_cap_company_books'
   notes?: string
+  /** IN-MEMORY ONLY (wave 107, 107A) — the agent_relationships.id a residual obligation was evaluated from. */
+  relationship_id?: string
 }
 
 export interface WaterfallContext {
@@ -141,6 +147,12 @@ export interface WaterfallContext {
   // stage 11 excludes these from the conservation identity and persists them to
   // company_books_obligations (m577), never silently dropping them.
   companyObligations?: CompanyObligationRecord[]
+
+  // Residual evaluation (stage 09, wave 107 lane 107A). OPTIONAL like the fields
+  // above. The deterministic rule evaluation's evidence — rule keys, the close date
+  // the effective windows were judged on, graph corroboration findings — which
+  // stage 11 writes onto the action ledger beside each residual ledger entry.
+  residualEvaluation?: import('./revenue-share-model').ResidualEvaluation
 
   // Distribution collections
   grossAdjustments: DistributionRecord[]

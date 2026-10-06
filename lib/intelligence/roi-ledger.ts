@@ -172,6 +172,30 @@ export interface LedgerAttribution {
   /** Wave 106 (106B): the EXPERIENCE KIND (lib/ai-isa/lead-action-plan.ts EXPERIENCE_KINDS) from ledger
    *  detail.experience — so the outcome engine learns WHICH experience converts, not only which channel. */
   byExperience: AttributionRow[]
+  /** Wave 107 (107F): the STRATEGY + VERSION (`<key>@v<version>`) from ledger detail.strategy — written by the
+   *  strategy engine's activations (107E); read here the same way 106B reads detail.experience (lazy seam). */
+  byStrategy: AttributionRow[]
+}
+
+/** The ONE spelling of a strategy key on the ledger (lowercase, `[a-z0-9_.-]`, ≤ 64) — never free text. */
+const STRATEGY_KEY_RE = /^[a-z][a-z0-9_.-]{0,63}$/
+
+/**
+ * PURE — the strategy a ledger row served, from `detail.strategy` (wave 107F lazy seam onto 107E's activations).
+ * Accepts `{ key, version }` (the activation shape) or a `"<key>@v<n>"` / `"<key>"` string; anything else is
+ * not a strategy (an arbitrary string never becomes an attribution key). `ref` is `<key>@v<version>` when a
+ * version is named, else `<key>`.
+ * @proofSeam exported so scripts/network-intelligence-guard.ts asserts the strategy-attribution spelling directly.
+ */
+export function strategyRefOf(detail: Record<string, unknown> | null | undefined): { key: string; version: string | null; ref: string } | null {
+  const s = (detail ?? {}).strategy as unknown
+  let key: unknown = null, version: unknown = null
+  if (s && typeof s === "object") { key = (s as Record<string, unknown>).key; version = (s as Record<string, unknown>).version ?? null }
+  else if (typeof s === "string") { const at = s.indexOf("@"); key = at >= 0 ? s.slice(0, at) : s; version = at >= 0 ? s.slice(at + 1) : null }
+  if (typeof key !== "string" || !STRATEGY_KEY_RE.test(key)) return null
+  const v = version === null || version === undefined || version === "" ? null : String(version).replace(/^v/i, "")
+  if (v !== null && !/^[0-9]{1,6}$/.test(v)) return null
+  return { key, version: v, ref: v ? `${key}@v${v}` : key }
 }
 
 /** The attribution-eligible DECISION rows: wait / do_nothing only. Wave 102C ledgers the acting verdicts
@@ -184,7 +208,7 @@ function isEligibleStatus(a: AttributableAction): boolean {
 }
 
 /** The "which X produced revenue" keys of a ledger row. Campaign / experiment arm are null when the row names none. */
-function attributionKeys(a: AttributableAction): { reason: string; manager: string; playbook: string; campaign: string | null; experimentArm: string | null; experience: string | null } {
+function attributionKeys(a: AttributableAction): { reason: string; manager: string; playbook: string; campaign: string | null; experimentArm: string | null; experience: string | null; strategy: string | null } {
   const d = a.detail ?? {}
   const campaign = (d.sequence_id ?? d.campaign_id ?? null) as string | null
   const exp = (d.experiment ?? null) as { key?: unknown; arm?: unknown } | null
@@ -192,6 +216,8 @@ function attributionKeys(a: AttributableAction): { reason: string; manager: stri
     experimentArm: exp && typeof exp.key === "string" && typeof exp.arm === "string" ? `${exp.key}=${exp.arm}` : null,
     // 106B: only the planner's vocabulary counts — an arbitrary string in detail.experience is not an experience.
     experience: isExperienceKind(d.experience) ? d.experience : null,
+    // 107F: only a well-formed strategy key (strategyRefOf) is a strategy.
+    strategy: strategyRefOf(d)?.ref ?? null,
     reason: a.reason_code || "UNSPECIFIED",
     manager: a.actor_manager_key ?? `${a.actor_type}`,
     playbook: a.system_source ?? a.action.split(".")[0],
@@ -230,7 +256,7 @@ export function attributeOutcomesToLedger(outcomes: AttributableOutcome[], actio
       credits.push({ outcomeRef: o.ref, kind: o.kind, actionId: a.id, model: "all_touch", decision: a.status !== "executed", cents })
     })
   }
-  const roll = (dim: "reason" | "manager" | "playbook" | "campaign" | "experimentArm" | "experience"): AttributionRow[] => {
+  const roll = (dim: "reason" | "manager" | "playbook" | "campaign" | "experimentArm" | "experience" | "strategy"): AttributionRow[] => {
     const m = new Map<string, AttributionRow>()
     for (const c of credits) {
       const a = byId.get(c.actionId)
@@ -244,7 +270,7 @@ export function attributeOutcomesToLedger(outcomes: AttributableOutcome[], actio
     }
     return [...m.values()].sort((x, y) => y.lastTouchCents - x.lastTouchCents || y.allTouchCents - x.allTouchCents || x.key.localeCompare(y.key))
   }
-  return { outcomes, credits, uncredited, byReasonCode: roll("reason"), byManager: roll("manager"), byPlaybook: roll("playbook"), byCampaign: roll("campaign"), byExperimentArm: roll("experimentArm"), byExperience: roll("experience") }
+  return { outcomes, credits, uncredited, byReasonCode: roll("reason"), byManager: roll("manager"), byPlaybook: roll("playbook"), byCampaign: roll("campaign"), byExperimentArm: roll("experimentArm"), byExperience: roll("experience"), byStrategy: roll("strategy") }
 }
 
 interface LedgerAttributionSummary {
@@ -257,6 +283,7 @@ interface LedgerAttributionSummary {
   byCampaign: AttributionRow[]
   byExperimentArm: AttributionRow[]
   byExperience: AttributionRow[]
+  byStrategy: AttributionRow[]
 }
 
 /** The tile's cut: totals + the top `n` per dimension. */
@@ -268,6 +295,7 @@ function summarizeLedgerAttribution(r: LedgerAttribution, n: number): LedgerAttr
     byReasonCode: r.byReasonCode.slice(0, n), byManager: r.byManager.slice(0, n),
     byPlaybook: r.byPlaybook.slice(0, n), byCampaign: r.byCampaign.slice(0, n),
     byExperimentArm: r.byExperimentArm.slice(0, n), byExperience: r.byExperience.slice(0, n),
+    byStrategy: r.byStrategy.slice(0, n),
   }
 }
 

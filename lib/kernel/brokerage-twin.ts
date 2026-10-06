@@ -61,6 +61,7 @@ import {
   type CapacityBand, type WorkloadSignals,
 } from "@/lib/kernel/capacity-guardian"
 import { TRANSACTION_STATUSES_OPEN, TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
+import type { ManagerKey } from "@/lib/kernel/manager-registry"
 
 type Svc = { from: (table: string) => any }
 
@@ -249,24 +250,75 @@ export const DEFAULT_WORKFORCE_THRESHOLDS: WorkforceThresholds = {
   in_development_gaps: 1, demand_rise_pct: 25, demand_min_leads_30d: 5, seller_leads_per_agent_30d: 8, luxury_share_pct: 30,
 }
 
+type NumericWorkforceThreshold = Exclude<keyof WorkforceThresholds, "overwhelmed_band">
+
+/**
+ * THE BOUNDS — one table read by BOTH the resolver below (an out-of-range stored value falls back
+ * to the default) and the dedicated editor (wave 107G: app/actions/admin/improvement-proposals.ts
+ * submitWorkforceThresholdsAction refuses an out-of-range input instead of storing a value the
+ * resolver would silently drop). `min` is what the editor accepts; the resolver additionally floors
+ * seller_leads_per_agent_30d at 1 (a 0 divisor is never a threshold).
+ */
+export const WORKFORCE_THRESHOLD_FIELDS: ReadonlyArray<{ key: NumericWorkforceThreshold; label: string; unit: string; min: number; max: number }> = [
+  { key: "strong_listing_listings_180d", label: "Strong listing agent — listings taken (180 days)", unit: "listings", min: 0, max: 1000 },
+  { key: "strong_buyer_offers_180d", label: "Strong buyer agent — buyer offers written (180 days)", unit: "offers", min: 0, max: 1000 },
+  { key: "investor_contacts", label: "Investor agent — active investor contacts", unit: "contacts", min: 0, max: 10_000 },
+  { key: "bilingual_languages", label: "Bilingual — languages spoken", unit: "languages", min: 0, max: 20 },
+  { key: "luxury_list_price_usd", label: "Luxury listing — list price at or above", unit: "USD", min: 0, max: 1e9 },
+  { key: "luxury_listings_180d", label: "Luxury specialist — luxury listings (180 days)", unit: "listings", min: 0, max: 1000 },
+  { key: "underutilized_load_pct", label: "Underutilized — load at or under % of tier ceiling", unit: "%", min: 0, max: 100 },
+  { key: "in_development_gaps", label: "In development — competency gaps at or above", unit: "gaps", min: 0, max: 20 },
+  { key: "demand_rise_pct", label: "Territory demand UP — seller leads rise at least", unit: "%", min: 0, max: 10_000 },
+  { key: "demand_min_leads_30d", label: "Territory demand UP — at least this many seller leads (30 days)", unit: "leads", min: 0, max: 100_000 },
+  { key: "seller_leads_per_agent_30d", label: "Capacity rule — seller leads one listing agent absorbs (30 days)", unit: "leads", min: 1, max: 10_000 },
+  { key: "luxury_share_pct", label: "Needs a luxury specialist — luxury share of territory seller leads", unit: "%", min: 0, max: 100 },
+]
+export const WORKFORCE_OVERWHELMED_BANDS: ReadonlyArray<WorkforceThresholds["overwhelmed_band"]> = ["over", "at_capacity"]
+
 /** PURE: the tenant's thresholds from the settings jsonb — every key validated, an absent or
  *  out-of-range value falls back to the default (never a NaN threshold). */
 export function resolveWorkforceThresholds(settings: unknown): WorkforceThresholds {
   const raw = settings && typeof settings === "object" ? (settings as Record<string, unknown>)[WORKFORCE_THRESHOLDS_KEY] : undefined
   const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
-  const num = (k: keyof WorkforceThresholds, max: number): number => {
-    const v = Number(obj[k])
-    return Number.isFinite(v) && v >= 0 && v <= max ? v : (DEFAULT_WORKFORCE_THRESHOLDS[k] as number)
+  const out = { ...DEFAULT_WORKFORCE_THRESHOLDS }
+  for (const f of WORKFORCE_THRESHOLD_FIELDS) {
+    const v = Number(obj[f.key])
+    out[f.key] = Number.isFinite(v) && v >= 0 && v <= f.max ? v : DEFAULT_WORKFORCE_THRESHOLDS[f.key]
   }
-  return {
-    strong_listing_listings_180d: num("strong_listing_listings_180d", 1000), strong_buyer_offers_180d: num("strong_buyer_offers_180d", 1000),
-    investor_contacts: num("investor_contacts", 10_000), bilingual_languages: num("bilingual_languages", 20),
-    luxury_list_price_usd: num("luxury_list_price_usd", 1e9), luxury_listings_180d: num("luxury_listings_180d", 1000),
-    overwhelmed_band: obj.overwhelmed_band === "at_capacity" ? "at_capacity" : "over",
-    underutilized_load_pct: num("underutilized_load_pct", 100), in_development_gaps: num("in_development_gaps", 20),
-    demand_rise_pct: num("demand_rise_pct", 10_000), demand_min_leads_30d: num("demand_min_leads_30d", 100_000),
-    seller_leads_per_agent_30d: Math.max(1, num("seller_leads_per_agent_30d", 10_000)), luxury_share_pct: num("luxury_share_pct", 100),
+  out.overwhelmed_band = obj.overwhelmed_band === "at_capacity" ? "at_capacity" : "over"
+  out.seller_leads_per_agent_30d = Math.max(1, out.seller_leads_per_agent_30d)
+  return out
+}
+
+export type WorkforceThresholdsEdit =
+  | { ok: true; thresholds: WorkforceThresholds; /** what is STORED: only the keys that differ from the defaults; null = back to defaults */ value: Partial<WorkforceThresholds> | null; changedKeys: Array<keyof WorkforceThresholds> }
+  | { ok: false; errors: string[] }
+
+/**
+ * PURE — the dedicated editor's validation (wave 107G): every field REQUIRED (a missing field is a
+ * refusal, never a silent default), numeric within WORKFORCE_THRESHOLD_FIELDS' bounds, the band one
+ * of WORKFORCE_OVERWHELMED_BANDS. The stored value is the DIFF against the defaults, so a tenant on
+ * the defaults keeps following them; resolveWorkforceThresholds of the stored value round-trips to
+ * `thresholds` exactly (the proof asserts it).
+ */
+export function validateWorkforceThresholdsEdit(input: Record<string, unknown>): WorkforceThresholdsEdit {
+  const errors: string[] = []
+  const thresholds = { ...DEFAULT_WORKFORCE_THRESHOLDS }
+  for (const f of WORKFORCE_THRESHOLD_FIELDS) {
+    const raw = input[f.key]
+    const s = typeof raw === "number" ? String(raw) : typeof raw === "string" ? raw.trim().replace(/,/g, "") : ""
+    if (s === "") { errors.push(`${f.label}: a value is required`); continue }
+    const v = Number(s)
+    if (!Number.isFinite(v) || v < f.min || v > f.max) { errors.push(`${f.label}: must be a number from ${f.min} to ${f.max}`); continue }
+    thresholds[f.key] = v
   }
+  const band = typeof input.overwhelmed_band === "string" ? input.overwhelmed_band : ""
+  if (!(WORKFORCE_OVERWHELMED_BANDS as readonly string[]).includes(band)) errors.push(`Overwhelmed band: must be one of ${WORKFORCE_OVERWHELMED_BANDS.join(" / ")}`)
+  else thresholds.overwhelmed_band = band as WorkforceThresholds["overwhelmed_band"]
+  if (errors.length) return { ok: false, errors }
+  const changedKeys = (Object.keys(DEFAULT_WORKFORCE_THRESHOLDS) as Array<keyof WorkforceThresholds>).filter((k) => thresholds[k] !== DEFAULT_WORKFORCE_THRESHOLDS[k])
+  const value = changedKeys.length ? Object.fromEntries(changedKeys.map((k) => [k, thresholds[k]])) as Partial<WorkforceThresholds> : null
+  return { ok: true, thresholds, value, changedKeys }
 }
 
 export interface WorkforceEvidence {
@@ -302,6 +354,10 @@ export interface WorkforceAgentFacts {
   /** From loadAgentCompetency; null = the reader was not run / refused for this agent. */
   competencyGaps: number | null
   competencyRefused: string | null
+  /** 107C snapshot seam: "snapshot" = the development cycle's ledgered score map (one read for the
+   *  roster), "live" = recomputed through loadAgentCompetency (snapshot absent / stale / refused). */
+  competencySource?: "snapshot" | "live" | null
+  competencyAsOf?: string | null
 }
 
 export interface TwinTerritoryDemand {
@@ -338,6 +394,108 @@ export interface RecruitingNeed {
   zips: string[]
 }
 
+// ─── TWIN 2.0 — manager slices + the system view (wave 107, lane 107C) ──────────
+//
+// Owner: "does not rebuild the Twin" — from "what is happening?" to "how does the brokerage function
+// as a system?". ONE slice per MANAGERS key (the shared operating model every manager reads), each
+// naming its OWNER manager, its READER (the survivor that writes the rows), its FRESHNESS and — when
+// the read was refused or cannot be narrowed to a team — its BLIND SPOT. A slice whose numbers the
+// twin ALREADY carries is RE-HOMED: it points at the existing section (`sections`) and copies
+// nothing. A slice the twin did not carry reads through the ONE seam registry (registerTwinSeam
+// with key `slice:<manager>` — a registered survivor reader overrides the default; same mechanism as
+// contributionMargin / missions). The SYSTEM VIEW folds the flow lead → opportunity → appointment →
+// agreement (listing / buyer) → transaction → closed revenue over one 90-day window, with stage
+// conversion and the BOTTLENECK named with its evidence (detectBottleneck — pure).
+
+export type TwinSliceStatus = "present" | "refused" | "withheld" | "unregistered"
+
+export interface TwinManagerSlice {
+  manager: ManagerKey
+  /** The question this slice answers for the shared operating model. */
+  answers: string
+  status: TwinSliceStatus
+  /** The survivor that produced the numbers (writer of the rows / the module), never the twin itself. */
+  reader: string
+  /** "rehomed" = the numbers live in an existing twin section (`sections`) — the slice points, never copies. */
+  origin: "rehomed" | "reader"
+  sections: string[]
+  /** Reader slices only (a re-homed slice carries none — no duplicate numbers). */
+  measures: Record<string, number>
+  /** Newest evidence instant (ISO): the build's `at` for live reads, the newest row for scored outputs. */
+  asOf: string | null
+  freshness: "live" | "stale" | "unknown"
+  evidence: EvidenceRef[]
+  blindSpot: string | null
+}
+
+export interface TwinSliceReading { measures: Record<string, number>; asOf: string | null; evidence: EvidenceRef[]; stale?: string | null }
+export type TwinSliceReader = (svc: Svc, brokerageId: string, ctx: { at: Date; teamId: string | null; agentIds: string[] }) => Promise<TwinSliceReading>
+
+export interface TwinSliceSpec {
+  answers: string
+  reader: string
+  /** Non-empty → RE-HOMED onto these twin sections (dotted paths into BrokerageTwin). */
+  sections: string[]
+  /** False → the reader's rows carry no agent / team column: a TEAM twin withholds the slice (teams see only their board). */
+  teamNarrowable: boolean
+}
+
+/** THE slice table — one entry per MANAGERS key (the proof holds it to Object.keys(MANAGERS)).
+ *  @proofSeam the proof asserts ownership, re-homing and the reader census against it */
+export const TWIN_SLICE_SPECS: Readonly<Record<ManagerKey, TwinSliceSpec>> = {
+  ai_isa: { answers: "lead / opportunity state", reader: "leads.lifecycle_state + converted_at (lib/lead-pipeline)", sections: ["now.pipeline", "system.stages"], teamNarrowable: true },
+  shopping_agent: { answers: "buyer demand", reader: "leads(lead_type buyer|both) + tours + offers (the tour planner / offer rail) · buyer_stall_predicted", sections: [], teamNarrowable: true },
+  listing_concierge: { answers: "seller / listing demand", reader: "listings.status + listing_health_scores (calculateListingHealth) + seller leads (workforce territory demand)", sections: ["now.listings", "atRisk", "workforce.territories"], teamNarrowable: true },
+  deal_coordinator: { answers: "transaction state", reader: "transactions.status (lib/transactions/transaction-status.ts) + deal_health_scores (calculateDealHealth)", sections: ["now.transactions", "atRisk"], teamNarrowable: true },
+  recruiting_manager: { answers: "workforce supply", reader: "capacityFor + classifyWorkforceAgent (106E) + agent_retention_scores (runRetentionRadar)", sections: ["workforce", "capacity"], teamNarrowable: true },
+  asset_manager: { answers: "creative / media capacity + outcomes", reader: "marketing_assets (lib/kernel/media-intelligence.ts recordMediaAsset, 106C) + ai_video_projects (lib/video/video-director.ts)", sections: [], teamNarrowable: true },
+  ads_manager: { answers: "paid acquisition", reader: "ad_campaigns + ad_performance (lib/ads/ad-performance-ingest.ts)", sections: [], teamNarrowable: false },
+  campaign_orchestrator: { answers: "nurture / journey performance", reader: "agent_action_ledger journey.experience.<kind> (planNextBestExperience, 106B) + marketing_campaign_touchpoints", sections: [], teamNarrowable: false },
+  sphere_of_influence: { answers: "relationship lifecycle", reader: "sphere_engagement_scores (lib/lifetime-customer-npv/scorer.ts)", sections: [], teamNarrowable: true },
+  finance_manager: { answers: "economics", reader: "transactions.commission_amount + income_forecast_snapshots + ai_tool_usage + economic-graph contribution margin (104A)", sections: ["economic"], teamNarrowable: true },
+  compliance_officer: { answers: "risk", reader: "compliance_flags (lib/compliance flag writers)", sections: ["atRisk"], teamNarrowable: true },
+  data_steward: { answers: "data confidence", reader: "the build's own refusal log (loadBrokerageTwinFacts blindSpots) + the brokerage_twin_snapshots chain", sections: [], teamNarrowable: true },
+  cron_manager: { answers: "operating health", reader: "cron_execution_logs (lib/kernel/cron-logging.ts)", sections: [], teamNarrowable: false },
+}
+
+/** @proofSeam the proof walks the stage vocabulary */
+export const TWIN_FLOW_STAGES = ["lead", "opportunity", "appointment", "agreement", "transaction", "closed"] as const
+export type TwinFlowStageKey = (typeof TWIN_FLOW_STAGES)[number]
+
+export interface TwinFlowStage {
+  stage: TwinFlowStageKey
+  /** null = the read was refused (never 0). */
+  count: number | null
+  owners: ManagerKey[]
+  evidence: EvidenceRef
+}
+export interface TwinFlowTransition {
+  from: TwinFlowStageKey
+  to: TwinFlowStageKey
+  /** to / from over the same window; null when either side is unmeasured or from is 0. */
+  rate: number | null
+  status: "measured" | "unmeasured"
+}
+export interface TwinBottleneck {
+  from: TwinFlowStageKey
+  to: TwinFlowStageKey
+  rate: number
+  /** The median rate of the OTHER measured transitions — what "slow" is judged against. */
+  medianOtherRate: number | null
+  owners: ManagerKey[]
+  headline: string
+  evidence: EvidenceRef[]
+}
+export interface TwinSystemView {
+  windowDays: number
+  stages: TwinFlowStage[]
+  transitions: TwinFlowTransition[]
+  bottleneck: TwinBottleneck | null
+  /** Capacity constraints on the agent-served stages (the one capacity answer), named with evidence. */
+  constraints: Array<{ what: string; reason: string; evidence: EvidenceRef }>
+  closedRevenueCents: number
+}
+
 export interface BrokerageTwin {
   brokerageId: string
   teamId: string | null
@@ -351,6 +509,10 @@ export interface BrokerageTwin {
   economic: TwinEconomic
   /** Wave 106E — the workforce profile + territory demand (classified, evidence + policy threshold on each). */
   workforce: TwinWorkforce
+  /** Wave 107C — one slice per MANAGERS key (owner, reader, freshness, blind spot). A snapshot persisted before 107C carries none. */
+  slices: Record<ManagerKey, TwinManagerSlice>
+  /** Wave 107C — the flow between slices, stage conversion and the named bottleneck. */
+  system: TwinSystemView
   /** Named limits of this build (row caps, refused reads) — published beside the numbers. */
   blindSpots: string[]
   /** A stable digest of the measures (change detection + dedupe). */
@@ -395,19 +557,28 @@ export interface TwinFacts {
     /** Seller-side leads in the trailing 60 days (brokerage-owned — a territory fact, never team-narrowed). */
     sellerLeads60d: Array<{ id: string; property_zip_code: string | null; estimated_value: number | null; created_at: string }>
   }
+  /** 107C — reader slices as read (re-homed slices need no facts). Absent → every reader slice "unregistered". */
+  slices?: Partial<Record<ManagerKey, { status: TwinSliceStatus; reading: TwinSliceReading | null; blindSpot: string | null; reader: string }>>
+  /** 107C — the 90-day flow counts (null = refused). Absent → the system view is unmeasured. */
+  flow?: Partial<Record<TwinFlowStageKey, number | null>>
 }
 
 // ─── Seams (104A economic graph, 104D missions) ──────────────────────────────
 
-export interface TwinSeams {
+/** 107C: a manager slice reader registers under `slice:<ManagerKey>` — the SAME registry. */
+export type TwinSliceSeamKey = `slice:${ManagerKey}`
+
+export type TwinSeams = {
   contributionMargin?: (svc: Svc, brokerageId: string, teamId: string | null) => Promise<{ cents: number | null; source: string }>
   missions?: (svc: Svc, brokerageId: string, teamId: string | null) => Promise<{ active: number; source: string }>
-}
+} & Partial<Record<TwinSliceSeamKey, TwinSliceReader>>
 
 const SEAMS: TwinSeams = {}
 
 /** Register a lazy seam. 104A registers `contributionMargin` (lib/kernel/economic-graph.ts);
- *  104D registers `missions`. Unregistered seams degrade to "unavailable" / "none". */
+ *  104D registers `missions`; a survivor module may register `slice:<manager>` to replace the
+ *  twin's default reader for its slice. Unregistered seams degrade to "unavailable" / "none" /
+ *  the default slice reader. */
 export function registerTwinSeam<K extends keyof TwinSeams>(key: K, fn: TwinSeams[K]): void {
   SEAMS[key] = fn
 }
@@ -445,7 +616,7 @@ export function twinDigest(measures: Record<string, number>): string {
 }
 
 /** PURE: the flat numeric measures a snapshot diff compares. */
-export function twinMeasures(t: Pick<BrokerageTwin, "now" | "atRisk" | "capacity" | "objectives" | "economic"> & Partial<Pick<BrokerageTwin, "workforce">>): Record<string, number> {
+export function twinMeasures(t: Pick<BrokerageTwin, "now" | "atRisk" | "capacity" | "objectives" | "economic"> & Partial<Pick<BrokerageTwin, "workforce" | "slices" | "system">>): Record<string, number> {
   const m: Record<string, number> = {
     "now.pipeline.leads": t.now.pipeline.leads,
     "now.pipeline.converted90d": t.now.pipeline.converted90d,
@@ -473,6 +644,10 @@ export function twinMeasures(t: Pick<BrokerageTwin, "now" | "atRisk" | "capacity
     for (const k of WORKFORCE_CLASSIFICATIONS) m[`workforce.${k}`] = t.workforce.totals[k] ?? 0
     for (const d of t.workforce.territories) if (d.trend === "up") m[`workforce.territory.${d.territory}.sellerLeads30d`] = d.sellerLeads30d
   }
+  // 107C: the flow stage counts and the READER slices' measures (re-homed slices carry none — their
+  // numbers are already measured above). A snapshot older than 107C diffs them as changes against 0.
+  if (t.system) for (const s of t.system.stages) if (s.count !== null) m[`system.${s.stage}`] = s.count
+  if (t.slices) for (const s of Object.values(t.slices)) for (const [k, v] of Object.entries(s.measures)) m[`slices.${s.manager}.${k}`] = v
   return m
 }
 
@@ -615,6 +790,95 @@ export function recruitingNeedObjective(n: RecruitingNeed): string {
   return `find ${n.count} experienced listing agent${n.count === 1 ? "" : "s"} in ${n.territory} with ${n.specialization} specialization`
 }
 
+// ─── TWIN 2.0 composers (PURE) ───────────────────────────────────────────────
+
+/** The 90-day window every flow stage is counted over (window counts, not a cohort — published). */
+const TWIN_FLOW_WINDOW_DAYS = 90
+
+/** PURE: the slowest measured stage transition — the lowest conversion with a non-empty source
+ *  stage — judged against the median of the OTHER measured transitions. Unmeasured transitions
+ *  (a refused count) are never named; nothing measured → null (never a guessed bottleneck).
+ *  @proofSeam the proof drives it with a positive control and the unmeasured controls */
+export function detectBottleneck(stages: TwinFlowStage[], transitions: TwinFlowTransition[]): TwinBottleneck | null {
+  const measured = transitions.filter((t): t is TwinFlowTransition & { rate: number } => t.status === "measured" && t.rate !== null)
+  if (!measured.length) return null
+  const worst = measured.reduce((a, t) => (t.rate < a.rate ? t : a))
+  const others = measured.filter((t) => t !== worst).map((t) => t.rate).sort((a, b) => a - b)
+  const median = others.length ? (others.length % 2 ? others[(others.length - 1) / 2] : (others[others.length / 2 - 1] + others[others.length / 2]) / 2) : null
+  const from = stages.find((s) => s.stage === worst.from)!, to = stages.find((s) => s.stage === worst.to)!
+  const pct = (r: number) => `${Math.round(r * 100)}%`
+  return {
+    from: worst.from, to: worst.to, rate: worst.rate, medianOtherRate: median, owners: to.owners,
+    headline: `${worst.from} → ${worst.to} converts ${pct(worst.rate)} (${from.count} → ${to.count} in ${TWIN_FLOW_WINDOW_DAYS}d)${median !== null ? ` against a median ${pct(median)} for the other stages` : ""} — owned by ${to.owners.join(" + ")}`,
+    evidence: [from.evidence, to.evidence],
+  }
+}
+
+/** PURE: the system view — stage counts, conversions, the bottleneck, capacity constraints. */
+function composeSystemView(f: TwinFacts, capacity: TwinCapacity, economic: TwinEconomic, scope: string): TwinSystemView {
+  const flow = f.flow ?? {}
+  const w = `≥ at−${TWIN_FLOW_WINDOW_DAYS}d`
+  const stage = (s: TwinFlowStageKey, count: number | null, owners: ManagerKey[], table: string, filter: string, via: string): TwinFlowStage =>
+    ({ stage: s, count, owners, evidence: { table, filter: `${scope} ∧ ${filter}`, count: count ?? 0, via } })
+  const stages: TwinFlowStage[] = [
+    stage("lead", flow.lead ?? null, ["ai_isa"], "leads", `created_at ${w}`, "lib/lead-pipeline (lead intake writers)"),
+    stage("opportunity", f.converted90d, ["ai_isa"], "leads", `converted_at ${w}`, "leads.converted_at (the ISA hand-off)"),
+    stage("appointment", flow.appointment ?? null, ["listing_concierge", "shopping_agent"], "listing_presentations + tours", `appointment_at / created_at ${w}`, "lib/listing-presentation (seller appointments) + tours (buyer appointments)"),
+    stage("agreement", flow.agreement ?? null, ["listing_concierge", "shopping_agent"], "listings + offers", `listing_date / created_at ${w}`, "listings.listing_date (listings taken) + offers.agent_id (buyer offers written)"),
+    stage("transaction", flow.transaction ?? null, ["deal_coordinator"], "transactions", `created_at ${w}`, "lib/transactions (transaction creation)"),
+    stage("closed", f.closed90d.length, ["deal_coordinator", "finance_manager"], "transactions", `status∈{closed,funded} ∧ close_date ${w}`, "transactions.commission_amount (lib/commission/*)"),
+  ]
+  const transitions: TwinFlowTransition[] = []
+  for (let i = 0; i + 1 < stages.length; i++) {
+    const a = stages[i], b = stages[i + 1]
+    const ok = a.count !== null && b.count !== null && a.count > 0
+    transitions.push({ from: a.stage, to: b.stage, rate: ok ? b.count! / a.count! : null, status: ok ? "measured" : "unmeasured" })
+  }
+  const constraints: TwinSystemView["constraints"] = []
+  const strained = capacity.bands.over + capacity.bands.at_capacity
+  if (capacity.activeAgents > 0 && strained * 2 >= capacity.activeAgents) {
+    constraints.push({ what: "agent capacity", reason: `${strained} of ${capacity.activeAgents} scored agents are at capacity or over (capacityFor) — the appointment / agreement stages are agent-served`, evidence: capacity.evidence })
+  }
+  return { windowDays: TWIN_FLOW_WINDOW_DAYS, stages, transitions, bottleneck: detectBottleneck(stages, transitions), constraints, closedRevenueCents: economic.gciClosed90dCents }
+}
+
+/** PURE: one slice per MANAGERS key. Re-homed slices point at their sections and copy nothing;
+ *  reader slices carry the reading (or the refusal / withholding as a blind spot); the data
+ *  steward's slice is the build's own confidence. */
+function composeSlices(f: TwinFacts, parts: { capacity: TwinCapacity; economic: TwinEconomic; workforce: TwinWorkforce }): Record<ManagerKey, TwinManagerSlice> {
+  const out = {} as Record<ManagerKey, TwinManagerSlice>
+  for (const [mgr, spec] of Object.entries(TWIN_SLICE_SPECS) as Array<[ManagerKey, TwinSliceSpec]>) {
+    const base = { manager: mgr, answers: spec.answers, reader: spec.reader, sections: spec.sections, measures: {} as Record<string, number> }
+    if (spec.sections.length) {
+      let blindSpot: string | null = null
+      if (mgr === "recruiting_manager" && parts.capacity.unscored > 0) blindSpot = `${parts.capacity.unscored} agent(s) unscored by capacityFor`
+      if (mgr === "finance_manager" && parts.economic.contributionMargin.status !== "present") blindSpot = "contribution margin unavailable (economic-graph seam not registered)"
+      out[mgr] = { ...base, status: "present", origin: "rehomed", asOf: f.at, freshness: "live", blindSpot,
+        evidence: [{ table: "(twin sections)", filter: spec.sections.join(" · "), count: spec.sections.length, via: spec.reader }] }
+      continue
+    }
+    if (mgr === "data_steward") {
+      const slices = f.slices ?? {}
+      const refusedSlices = Object.values(slices).filter((s) => s?.status === "refused").length
+      const withheld = Object.values(slices).filter((s) => s?.status === "withheld").length
+      const fromSnap = parts.workforce.agents.filter((a) => a.facts.competencySource === "snapshot").length
+      const live = parts.workforce.agents.filter((a) => a.facts.competencySource === "live").length
+      out[mgr] = { ...base, status: "present", origin: "reader", asOf: f.at, freshness: "live", blindSpot: null,
+        measures: { blindSpots: f.blindSpots.length, refusedReads: f.blindSpots.filter((s) => /refused/.test(s)).length, slicesRefused: refusedSlices, slicesWithheld: withheld, snapshotBaseline: f.previous ? 0 : 1, competencyFromSnapshot: fromSnap, competencyRecomputed: live },
+        evidence: [{ table: "(build refusal log)", filter: `brokerage_id=${f.brokerageId} → twin.blindSpots`, count: f.blindSpots.length, via: spec.reader }] }
+      continue
+    }
+    const fact = f.slices?.[mgr]
+    if (!fact) { out[mgr] = { ...base, status: "unregistered", origin: "reader", asOf: null, freshness: "unknown", evidence: [], blindSpot: `${mgr}: no reader ran for this slice` }; continue }
+    const r = fact.reading
+    out[mgr] = {
+      ...base, reader: fact.reader, status: fact.status, origin: "reader", measures: r?.measures ?? {}, asOf: r?.asOf ?? null,
+      freshness: !r ? "unknown" : r.stale ? "stale" : "live", evidence: r?.evidence ?? [], blindSpot: fact.blindSpot ?? r?.stale ?? null,
+    }
+  }
+  return out
+}
+
 function riskSeverity(level: string | null): TwinRiskSeverity | null {
   if (level === "critical") return "critical"
   if (level === "at_risk" || level === "high") return "at_risk"
@@ -750,7 +1014,15 @@ export function composeBrokerageTwin(f: TwinFacts): BrokerageTwin {
   // capacity so every "overwhelmed" / "underutilized" verdict reads the one capacity answer.
   const workforce = composeWorkforce(f, scope)
 
-  const partial = { now, atRisk, capacity, objectives, economic, workforce }
+  // TWIN 2.0 (107C) — one slice per manager + the system view. A slice's blind spot is published
+  // beside the numbers like every other refusal.
+  const slices = composeSlices(f, { capacity, economic, workforce })
+  for (const s of Object.values(slices)) if (s.blindSpot && s.origin === "reader" && s.status !== "present") blindSpots.push(`slice ${s.manager} ${s.status}: ${s.blindSpot}`)
+    else if (s.blindSpot && s.freshness === "stale") blindSpots.push(`slice ${s.manager} stale: ${s.blindSpot}`)
+  const system = composeSystemView(f, capacity, economic, scope)
+  if (!f.flow) blindSpots.push("system: no flow counts in these facts — every stage transition reads unmeasured")
+
+  const partial = { now, atRisk, capacity, objectives, economic, workforce, slices, system }
   const measures = twinMeasures(partial)
   const changed: TwinChanged = f.previous
     ? { baseline: false, previousSnapshotId: f.previous.id, previousAt: f.previous.at, changes: detectTwinChanges(f.previous.measures, measures), reason: null }
@@ -792,7 +1064,12 @@ export interface ScenarioResult {
   unsupported: string[]
 }
 
-/** PURE: recompute DERIVED twin fields under explicit deltas. No new predictions — capacity goes
+/** EXTENDED (wave 107, lane 107D): lib/kernel/twin-scenario.ts simulateScenario propagates NAMED
+ *  LEVERS (seller/buyer acquisition, ad spend, headcount by specialization, cadence, territory
+ *  activation, ISA capacity) through the twin's flows and calls THIS function for its agent-capacity
+ *  stage — one capacity model, never two.
+ *
+ *  PURE: recompute DERIVED twin fields under explicit deltas. No new predictions — capacity goes
  *  back through computeCapacity, pipeline value scales the forecaster's own output, cost scales
  *  the meter. A question without an input returns "unsupported", never a number. */
 export function scenario(twin: BrokerageTwin, deltas: ScenarioDeltas): ScenarioResult {
@@ -967,12 +1244,96 @@ export interface LoadTwinOptions {
   capacityFor?: (svc: Svc, brokerageId: string, agentId: string, opts: { now: Date; maxLoad: number }) => Promise<{ band: CapacityBand; load: number; headroom: number; reasons: string[]; index: { followUpDebt: number } }>
   /** 106E — injected competency reader (proofs). Defaults to loadAgentCompetency (the one reader). */
   competencyFor?: (svc: Svc, agent: { id: string; user_id: string | null; brokerage_id: string }, now: Date) => Promise<{ gaps: ReadonlyArray<unknown>; refusedRails: string[] }>
+  /** 107C snapshot seam — injected snapshot reader (proofs). Defaults to readCompetencySnapshots (one read). */
+  competencySnapshots?: (svc: Svc, brokerageId: string, agentIds: string[], now: Date) => Promise<{ byAgent: Map<string, { at: string; gaps: number }>; refused: string | null }>
   seams?: TwinSeams
 }
 
 const CLOSED_STATUSES = ["closed", "funded"]
 const RETIRED_LISTING_STATUSES = ["sold", "cancelled", "withdrawn", "expired"]
 export const TWIN_SNAPSHOT_TABLE = "brokerage_twin_snapshots"
+
+// ─── Default slice readers (107C) — each reads a survivor's OUTPUT rows, tenant-pinned; a refused
+// read THROWS (the slice reads "refused" with the message — never a partial number). ───────────
+const SLICE_STALE_DAYS = 8
+const sliceRead = async <T,>(what: string, q: any): Promise<T[]> => { const { data, error } = await q; if (error) throw new Error(`${what}: refused — ${error.message ?? "unknown"}`); return (data ?? []) as T[] }
+const sliceHead = async (what: string, q: any): Promise<number> => { const { count, error } = await q; if (error) throw new Error(`${what}: refused — ${error.message ?? "unknown"}`); return count ?? 0 }
+const newest = (xs: Array<string | null | undefined>): string | null => xs.reduce<string | null>((a, x) => (x && (!a || x > a) ? x : a), null)
+const teamAgents = (q: any, ctx: { teamId: string | null; agentIds: string[] }) => (ctx.teamId ? q.in("agent_id", ctx.agentIds.length ? ctx.agentIds : ["00000000-0000-0000-0000-000000000000"]) : q)
+const sinceFrom = (at: Date, days: number) => new Date(at.getTime() - days * 86_400_000).toISOString()
+
+const DEFAULT_SLICE_READERS: Partial<Record<ManagerKey, TwinSliceReader>> = {
+  shopping_agent: async (svc, b, ctx) => {
+    const d30 = sinceFrom(ctx.at, 30)
+    const [buyerLeads, tours30d, offers30d] = await Promise.all([
+      sliceHead("leads(buyer)", teamAgents(svc.from("leads").select("id", { count: "exact", head: true }).eq("brokerage_id", b).eq("is_active", true).in("lead_type", ["buyer", "both"]), ctx)),
+      sliceHead("tours(30d)", teamAgents(svc.from("tours").select("id", { count: "exact", head: true }).eq("brokerage_id", b).gte("created_at", d30), ctx)),
+      sliceHead("offers(30d)", teamAgents(svc.from("offers").select("id", { count: "exact", head: true }).eq("brokerage_id", b).gte("created_at", d30), ctx)),
+    ])
+    return { measures: { buyerLeads, tours30d, offers30d }, asOf: ctx.at.toISOString(), evidence: [
+      { table: "leads", filter: `brokerage_id=${b} ∧ is_active ∧ lead_type∈{buyer,both}`, count: buyerLeads, via: "lib/lead-pipeline (lead intake)" },
+      { table: "tours", filter: `brokerage_id=${b} ∧ created_at ≥ at−30d`, count: tours30d, via: "tours (the tour planner)" },
+      { table: "offers", filter: `brokerage_id=${b} ∧ created_at ≥ at−30d`, count: offers30d, via: "offers.agent_id (the offer rail)" },
+    ] }
+  },
+  asset_manager: async (svc, b, ctx) => {
+    let aq = svc.from("marketing_assets").select("approval_status, cost_usd, created_at, performance").eq("brokerage_id", b).gte("created_at", sinceFrom(ctx.at, 30)).limit(5000)
+    if (ctx.teamId) aq = aq.eq("team_id", ctx.teamId)
+    const [assets, videosInFlight] = await Promise.all([
+      sliceRead<{ approval_status: string | null; cost_usd: number | null; created_at: string; performance: unknown }>("marketing_assets(30d)", aq),
+      sliceHead("ai_video_projects(in flight)", teamAgents(svc.from("ai_video_projects").select("id", { count: "exact", head: true }).eq("brokerage_id", b).in("status", ["queued", "scripting", "script_ready", "generating"]), ctx)),
+    ])
+    const withPerf = assets.filter((a) => a.performance && typeof a.performance === "object" && Object.keys(a.performance as object).length > 0).length
+    return { measures: { assets30d: assets.length, approved30d: assets.filter((a) => a.approval_status === "approved").length, pending30d: assets.filter((a) => a.approval_status === "pending").length, costCents30d: assets.reduce((s, a) => s + cents(a.cost_usd), 0), withPerformance30d: withPerf, videosInFlight },
+      asOf: newest(assets.map((a) => a.created_at)) ?? ctx.at.toISOString(), evidence: [
+        { table: "marketing_assets", filter: `brokerage_id=${b}${ctx.teamId ? ` ∧ team_id=${ctx.teamId}` : ""} ∧ created_at ≥ at−30d`, count: assets.length, via: "lib/kernel/media-intelligence.ts recordMediaAsset (106C)" },
+        { table: "ai_video_projects", filter: `brokerage_id=${b} ∧ status∈{queued,scripting,script_ready,generating}`, count: videosInFlight, via: "lib/video/video-director.ts commissionVideo" },
+      ] }
+  },
+  ads_manager: async (svc, b, ctx) => {
+    const [live, perf] = await Promise.all([
+      sliceHead("ad_campaigns(live)", svc.from("ad_campaigns").select("id", { count: "exact", head: true }).eq("brokerage_id", b).eq("status", "live")),
+      sliceRead<{ spend: number | null; leads: number | null; conversions: number | null; captured_at: string | null }>("ad_performance(30d)", svc.from("ad_performance").select("spend, leads, conversions, captured_at").eq("brokerage_id", b).gte("captured_at", sinceFrom(ctx.at, 30)).limit(5000)),
+    ])
+    const spendCents30d = perf.reduce((s, r) => s + cents(r.spend), 0), leads30d = perf.reduce((s, r) => s + (Number(r.leads) || 0), 0)
+    const measures: Record<string, number> = { liveCampaigns: live, spendCents30d, leads30d, conversions30d: perf.reduce((s, r) => s + (Number(r.conversions) || 0), 0) }
+    if (leads30d > 0) measures.costPerLeadCents = Math.round(spendCents30d / leads30d)
+    const asOf = newest(perf.map((r) => r.captured_at))
+    const stale = live > 0 && (!asOf || new Date(asOf).getTime() < ctx.at.getTime() - SLICE_STALE_DAYS * 86_400_000) ? `${live} live campaign(s) but no ad_performance reading in ${SLICE_STALE_DAYS}d — spend is a floor` : null
+    return { measures, asOf: asOf ?? ctx.at.toISOString(), stale, evidence: [
+      { table: "ad_campaigns", filter: `brokerage_id=${b} ∧ status=live`, count: live, via: "lib/kernel/ads.ts (campaign lifecycle)" },
+      { table: "ad_performance", filter: `brokerage_id=${b} ∧ captured_at ≥ at−30d`, count: perf.length, via: "lib/ads/ad-performance-ingest.ts" },
+    ] }
+  },
+  campaign_orchestrator: async (svc, b, ctx) => {
+    const { EXPERIENCE_KINDS } = await import("@/lib/ai-isa/lead-action-plan")
+    const d30 = sinceFrom(ctx.at, 30)
+    const [chosen, touches] = await Promise.all([
+      sliceRead<{ action: string; created_at: string }>("agent_action_ledger(journey.experience 30d)", svc.from("agent_action_ledger").select("action, created_at").eq("brokerage_id", b).in("action", EXPERIENCE_KINDS.map((k) => `journey.experience.${k}`)).gte("created_at", d30).limit(5000)),
+      sliceRead<{ sent_at: string | null; opened_at: string | null; clicked_at: string | null; converted_at: string | null }>("marketing_campaign_touchpoints(30d)", svc.from("marketing_campaign_touchpoints").select("sent_at, opened_at, clicked_at, converted_at").eq("brokerage_id", b).gte("created_at", d30).limit(5000)),
+    ])
+    const measures: Record<string, number> = { experiences30d: chosen.length, touchpoints30d: touches.length, opened30d: touches.filter((t) => t.opened_at).length, clicked30d: touches.filter((t) => t.clicked_at).length, converted30d: touches.filter((t) => t.converted_at).length }
+    for (const k of EXPERIENCE_KINDS) { const n = chosen.filter((c) => c.action === `journey.experience.${k}`).length; if (n) measures[`experience.${k}`] = n }
+    return { measures, asOf: ctx.at.toISOString(), evidence: [
+      { table: "agent_action_ledger", filter: `brokerage_id=${b} ∧ action∈journey.experience.<EXPERIENCE_KINDS> ∧ created_at ≥ at−30d`, count: chosen.length, via: "lib/ai-isa/lead-action-plan.ts planNextBestExperience (106B)" },
+      { table: "marketing_campaign_touchpoints", filter: `brokerage_id=${b} ∧ created_at ≥ at−30d`, count: touches.length, via: "lib/campaign-sequences (touch writers)" },
+    ] }
+  },
+  sphere_of_influence: async (svc, b, ctx) => {
+    const rows = await sliceRead<{ score: number | null; referrals_given: number | null; calculated_at: string | null }>("sphere_engagement_scores", teamAgents(svc.from("sphere_engagement_scores").select("score, referrals_given, calculated_at, agent_id").eq("brokerage_id", b), ctx).limit(5000))
+    const scored = rows.filter((r) => r.score !== null)
+    const asOf = newest(rows.map((r) => r.calculated_at))
+    const stale = rows.length && (!asOf || new Date(asOf).getTime() < ctx.at.getTime() - SLICE_STALE_DAYS * 86_400_000) ? `newest sphere score ${asOf ?? "undated"} is older than ${SLICE_STALE_DAYS}d` : null
+    return { measures: { scored: scored.length, avgScore: scored.length ? Math.round(scored.reduce((s, r) => s + Number(r.score), 0) / scored.length) : 0, referralsGiven: rows.reduce((s, r) => s + (Number(r.referrals_given) || 0), 0) },
+      asOf, stale, evidence: [{ table: "sphere_engagement_scores", filter: `brokerage_id=${b}`, count: rows.length, via: "lib/lifetime-customer-npv/scorer.ts" }] }
+  },
+  cron_manager: async (svc, b, ctx) => {
+    const rows = await sliceRead<{ status: string | null; started_at: string | null; cron_name: string | null }>("cron_execution_logs(7d)", svc.from("cron_execution_logs").select("status, started_at, cron_name").eq("brokerage_id", b).gte("started_at", sinceFrom(ctx.at, 7)).limit(5000))
+    const stuckBefore = new Date(ctx.at.getTime() - 2 * 3_600_000).toISOString()
+    return { measures: { runs7d: rows.length, failed7d: rows.filter((r) => r.status === "failed" || r.status === "timeout").length, stuckStarted: rows.filter((r) => r.status === "started" && (r.started_at ?? "") < stuckBefore).length, crons7d: new Set(rows.map((r) => r.cron_name).filter(Boolean)).size },
+      asOf: newest(rows.map((r) => r.started_at)), evidence: [{ table: "cron_execution_logs", filter: `brokerage_id=${b} ∧ started_at ≥ at−7d (platform-wide runs log brokerage_id NULL — not this tenant's slice)`, count: rows.length, via: "lib/kernel/cron-logging.ts" }] }
+  },
+}
 
 /** Read the facts the composer folds. Every read is pinned to brokerageId; team scope narrows
  *  through agents.team_id. A refused read is NAMED in blindSpots and counts as nothing. */
@@ -982,11 +1343,13 @@ export async function loadBrokerageTwinFacts(svc: Svc, brokerageId: string, opts
   const teamId = opts.teamId ?? null
   const blindSpots: string[] = []
   const since = (days: number) => new Date(at.getTime() - days * 86_400_000).toISOString()
-  const refused = (what: string, e: { message?: string } | null | undefined) => { if (e) blindSpots.push(`${what}: refused — ${e.message ?? "unknown"}`) }
+  const refusedWhat = new Set<string>()
+  const refused = (what: string, e: { message?: string } | null | undefined) => { if (e) { refusedWhat.add(what); blindSpots.push(`${what}: refused — ${e.message ?? "unknown"}`) } }
   const rows = async <T,>(what: string, q: any): Promise<T[]> => { const { data, error } = await q; refused(what, error); return (error ? [] : (data ?? [])) as T[] }
   const head = async (what: string, q: any): Promise<number> => { const { count, error } = await q; refused(what, error); return error ? 0 : (count ?? 0) }
 
   // Roster (and the team's agent ids when scoped).
+  const headOrNull = async (what: string, q: any): Promise<number | null> => { const { count, error } = await q; refused(what, error); return error ? null : (count ?? 0) }
   // 106E: the profile columns (languages, specializations) ride the same roster read.
   let agentQ = svc.from("agents").select("id, is_active, team_id, user_id, languages, specializations").eq("brokerage_id", brokerageId).eq("is_active", true).limit(2000)
   if (teamId) agentQ = agentQ.eq("team_id", teamId)
@@ -1041,8 +1404,8 @@ export async function loadBrokerageTwinFacts(svc: Svc, brokerageId: string, opts
   // WORKFORCE (106E) — the per-agent facts behind the classifications, every read tenant-pinned.
   const [settingsRow, listings180, offers180, investorContacts, farms, sellerLeads60d] = await Promise.all([
     (async () => { const { data, error } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle(); refused("brokerage_settings(workforce_thresholds)", error); return error ? null : (data as { settings?: unknown } | null) })(),
-    rows<{ id: string; agent_id: string | null; list_price: number | null }>("listings(180d)", scoped(svc.from("listings").select("id, agent_id, list_price, listing_date").eq("brokerage_id", brokerageId).is("deleted_at", null).gte("listing_date", since(180).slice(0, 10))).limit(LIMIT)),
-    rows<{ id: string; agent_id: string | null }>("offers(180d)", scoped(svc.from("offers").select("id, agent_id").eq("brokerage_id", brokerageId).gte("created_at", since(180))).limit(LIMIT)),
+    rows<{ id: string; agent_id: string | null; list_price: number | null; listing_date?: string | null }>("listings(180d)", scoped(svc.from("listings").select("id, agent_id, list_price, listing_date").eq("brokerage_id", brokerageId).is("deleted_at", null).gte("listing_date", since(180).slice(0, 10))).limit(LIMIT)),
+    rows<{ id: string; agent_id: string | null; created_at?: string | null }>("offers(180d)", scoped(svc.from("offers").select("id, agent_id, created_at").eq("brokerage_id", brokerageId).gte("created_at", since(180))).limit(LIMIT)),
     rows<{ id: string; agent_id: string | null }>("contacts(investor)", scoped(svc.from("contacts").select("id, agent_id").eq("brokerage_id", brokerageId).is("deleted_at", null).eq("contact_persona", "investor")).limit(LIMIT)),
     rows<TwinFacts["workforce"]["farms"][number]>("farm_territories", svc.from("farm_territories").select("name, zip_codes, agent_id").eq("brokerage_id", brokerageId).eq("is_active", true).limit(LIMIT)),
     rows<TwinFacts["workforce"]["sellerLeads60d"][number]>("leads(seller 60d)", svc.from("leads").select("id, property_zip_code, estimated_value, created_at").eq("brokerage_id", brokerageId).in("lead_type", ["seller", "both"]).gte("created_at", since(60)).limit(LIMIT)),
@@ -1060,20 +1423,37 @@ export async function loadBrokerageTwinFacts(svc: Svc, brokerageId: string, opts
   const offersBy = perAgentCount(offers180), investorBy = perAgentCount(investorContacts)
   const competencyReader: NonNullable<LoadTwinOptions["competencyFor"]> = opts.competencyFor
     ?? (async (s, a, n) => (await import("@/lib/education/skill-freshness-radar")).loadAgentCompetency(s as any, a, n))
+  // THE SNAPSHOT SEAM (107C): every scored agent's latest development-cycle snapshot in ONE read
+  // (agent_action_ledger development.competency.update — readCompetencySnapshots); the ~16-read live
+  // reader runs only for an agent whose snapshot is absent / stale / refused, and that is published.
+  const scoredRoster = agents.slice(0, maxScored)
+  const snapshotReader: NonNullable<LoadTwinOptions["competencySnapshots"]> = opts.competencySnapshots
+    ?? (async (s, b, idsIn, n) => (await import("@/lib/education/skill-freshness-radar")).readCompetencySnapshots(s, b, idsIn, n))
+  let snapshots = new Map<string, { at: string; gaps: number }>()
+  try {
+    const snap = await snapshotReader(svc, brokerageId, scoredRoster.map((a) => a.id), at)
+    if (snap.refused) refused("agent_action_ledger(competency snapshots)", { message: snap.refused })
+    snapshots = snap.byAgent
+  } catch (e) { blindSpots.push(`competency snapshots threw: ${e instanceof Error ? e.message : String(e)} — every agent recomputed live`) }
   const workforceAgents: WorkforceAgentFacts[] = []
-  for (const a of agents.slice(0, maxScored)) {
+  let recomputed = 0
+  for (const a of scoredRoster) {
     const facts: WorkforceAgentFacts = {
       agentId: a.id, userId: a.user_id ?? null, languages: normList(a.languages), specializations: normList(a.specializations),
       listings180d: listingsBy.get(a.id) ?? 0, luxuryListings180d: luxuryBy.get(a.id) ?? 0, offers180d: offersBy.get(a.id) ?? 0,
-      investorContacts: investorBy.get(a.id) ?? 0, competencyGaps: null, competencyRefused: null,
+      investorContacts: investorBy.get(a.id) ?? 0, competencyGaps: null, competencyRefused: null, competencySource: null, competencyAsOf: null,
     }
+    const snap = snapshots.get(a.id)
+    if (snap) { facts.competencyGaps = snap.gaps; facts.competencySource = "snapshot"; facts.competencyAsOf = snap.at; workforceAgents.push(facts); continue }
+    recomputed++
     try {
       const c = await competencyReader(svc, { id: a.id, user_id: a.user_id ?? null, brokerage_id: brokerageId }, at)
-      facts.competencyGaps = c.gaps.length
+      facts.competencyGaps = c.gaps.length; facts.competencySource = "live"; facts.competencyAsOf = atIso
       if (c.refusedRails.length) facts.competencyRefused = c.refusedRails.join("; ")
     } catch (e) { facts.competencyRefused = e instanceof Error ? e.message : String(e); blindSpots.push(`competency(${a.id}) threw: ${facts.competencyRefused}`) }
     workforceAgents.push(facts)
   }
+  if (recomputed > 0) blindSpots.push(`competency: ${recomputed} of ${scoredRoster.length} agent(s) had no development-cycle snapshot (agent_action_ledger development.competency.update) inside the snapshot window — recomputed live through loadAgentCompetency`)
 
   // Seams — degrade cleanly.
   const seams = { ...SEAMS, ...(opts.seams ?? {}) }
@@ -1087,6 +1467,37 @@ export async function loadBrokerageTwinFacts(svc: Svc, brokerageId: string, opts
     try { const r = await seams.missions(svc, brokerageId, teamId); missions = { status: "present", active: r.active, source: r.source } }
     catch (e) { blindSpots.push(`missions seam threw: ${e instanceof Error ? e.message : String(e)}`) }
   }
+
+  // TWIN 2.0 (107C) — the 90-day FLOW counts (null when refused, never 0) …
+  const d90 = since(TWIN_FLOW_WINDOW_DAYS)
+  const [lead90, presentations90, tours90, txn90] = await Promise.all([
+    headOrNull("leads(created 90d)", scoped(svc.from("leads").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).gte("created_at", d90))),
+    headOrNull("listing_presentations(90d)", scoped(svc.from("listing_presentations").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).gte("appointment_at", d90))),
+    headOrNull("tours(90d)", scoped(svc.from("tours").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).gte("created_at", d90))),
+    headOrNull("transactions(created 90d)", scoped(svc.from("transactions").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).is("deleted_at", null).gte("created_at", d90))),
+  ])
+  const agreements = refusedWhat.has("listings(180d)") || refusedWhat.has("offers(180d)") ? null
+    : listings180.filter((l) => (l.listing_date ?? "") >= d90.slice(0, 10)).length + offers180.filter((o) => (o.created_at ?? "") >= d90).length
+  const flow: NonNullable<TwinFacts["flow"]> = {
+    lead: lead90, appointment: presentations90 === null || tours90 === null ? null : presentations90 + tours90,
+    agreement: agreements, transaction: txn90,
+  }
+
+  // … and the READER slices: a registered `slice:<manager>` seam, else the default survivor reader.
+  // A team twin withholds a slice whose rows carry no agent / team column (teams see their board only).
+  const sliceFacts: NonNullable<TwinFacts["slices"]> = {}
+  await Promise.all((Object.keys(DEFAULT_SLICE_READERS) as ManagerKey[]).map(async (mgr) => {
+    const spec = TWIN_SLICE_SPECS[mgr]
+    if (teamId && !spec.teamNarrowable) { sliceFacts[mgr] = { status: "withheld", reading: null, reader: spec.reader, blindSpot: "rows carry no agent / team column — withheld from a team board (teams see only their own)" }; return }
+    const registered = seams[`slice:${mgr}` as TwinSliceSeamKey]
+    const reader = registered ?? DEFAULT_SLICE_READERS[mgr]!
+    try {
+      const reading = await reader(svc, brokerageId, { at, teamId, agentIds })
+      sliceFacts[mgr] = { status: "present", reading, reader: registered ? `registerTwinSeam('slice:${mgr}')` : spec.reader, blindSpot: null }
+    } catch (e) {
+      sliceFacts[mgr] = { status: "refused", reading: null, reader: spec.reader, blindSpot: e instanceof Error ? e.message : String(e) }
+    }
+  }))
 
   // Previous snapshot — the error is READ (an unapplied m708 is a named blind spot, not a baseline lie).
   let previous: TwinFacts["previous"] = null
@@ -1112,6 +1523,7 @@ export async function loadBrokerageTwinFacts(svc: Svc, brokerageId: string, opts
     aiCost30dCents: aiRows.reduce((a, r) => a + (Number(r.cost_cents) || 0), 0),
     contributionMargin, missions, previous, previousReason, blindSpots,
     workforce: { thresholds, thresholdsSource: settingsHasKey ? "policy" : "default", agents: workforceAgents, farms, sellerLeads60d },
+    slices: sliceFacts, flow,
   }
 }
 

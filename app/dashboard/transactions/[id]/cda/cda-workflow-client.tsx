@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition, useEffect } from "react"
-import { CorrectEntryDialog, VoidEntryDialog, isVoidEligibleEntry } from "./correct-entry-dialog"
+import { CorrectEntryDialog, VoidEntryDialog, ApproveResidualButton, isVoidEligibleEntry } from "./correct-entry-dialog"
 import { VOID_REFUSED_PAID } from "@/lib/commission/distribution-correction"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
@@ -900,6 +900,8 @@ export function CDAWorkflowClient({
                                   />
                                 </>
                               )}
+                              {/* 107A — the Finance Manager's residual review (renders only on a pending residual). */}
+                              <ApproveResidualButton entry={dist} onApproved={() => { setDistributionsVersion((v) => v + 1); router.refresh() }} />
                               {/* 105E — the Void control ONLY on an eligible (unpaid, unvoided, uncorrected) entry;
                                   the SAME pure rule the server applies decides what renders. */}
                               {isVoidEligibleEntry(dist, distributions.filter((d) => d.adjusts_distribution_id === dist.id)) && (

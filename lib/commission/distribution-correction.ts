@@ -176,3 +176,86 @@ export function planDistributionVoid(args: {
   if (reason.length > MAX_VOID_REASON_LENGTH) return { ok: false, error: `The reason must be ${MAX_VOID_REASON_LENGTH} characters or fewer.` }
   return { ok: true, reason }
 }
+
+// ─── RESIDUAL REVIEW + REVERSAL (wave 107, lane 107A — owner: "Residual ledger entry → Finance Manager
+// review"; "No LLM calculates authoritative money") ─────────────────────────────────────────────────
+// A residual entry (commission_distributions distribution_type 'residual', written by the waterfall's step
+// 11 from step 09's deterministic evaluation) is HELD for the Finance Manager: it is born 'pending', the
+// finance admin APPROVES it (lib/kernel/financial.ts approveResidualEntry), and only an APPROVED residual is
+// swept to paid by the deal's disbursement (payment-tracker markCommissionPaid / markDistributionPaid read
+// RESIDUAL_PAYABLE_FILTER). Rejection is the existing VOID (planDistributionVoid above). One vocabulary: the
+// live status CHECK (approved | paid | pending | voided) — no new status is invented for "in review".
+
+/** PURE — a residual entry still awaiting the Finance Manager's approval (pending, never posted, not voided). */
+export function isResidualAwaitingReview(r: { distribution_type?: string | null; status?: string | null; entry_type?: string | null; paid_at?: string | null }): boolean {
+  return r.distribution_type === "residual" && (r.entry_type ?? "entry") === "entry" && (r.status ?? "").toLowerCase() === "pending" && !r.paid_at
+}
+
+/** The PostgREST `.or()` filter every payout sweep adds: a residual row is payable only once APPROVED;
+ *  every other distribution type keeps its existing lifecycle. (distribution_type is NOT NULL live.) */
+export const RESIDUAL_PAYABLE_FILTER = "distribution_type.neq.residual,status.eq.approved"
+
+/**
+ * PURE — the posted ENTRIES (entry_type 'entry' / null) of a transaction that are still LIVE (not voided).
+ * Step 11's re-run guard: a final calculation that finds any returns the existing ledger instead of
+ * writing a second set — the same transaction can never carry two residuals for one (beneficiary, rule).
+ * A transaction whose every entry was voided re-posts (the void's purpose).
+ * @proofSeam scripts/residual-economics-guard.ts asserts the re-run guard's rule on fixtures.
+ */
+export function liveLedgerEntries<T extends { status?: string | null; entry_type?: string | null }>(rows: readonly T[]): T[] {
+  return rows.filter((r) => (r.entry_type ?? "entry") === "entry" && !isVoidedDistribution(r))
+}
+
+/** PURE — the residual review's admit rule: refuses anything but a pending residual entry. */
+export function planResidualApproval(entry: { id: string; distribution_type: string | null; status: string | null; entry_type?: string | null; paid_at?: string | null }): { ok: true } | { ok: false; error: string } {
+  if (entry.distribution_type !== "residual") return { ok: false, error: "Only a residual entry is approved through the residual review." }
+  if (!isResidualAwaitingReview(entry)) return { ok: false, error: `This residual entry is '${entry.status ?? "unknown"}' — only a pending residual awaits review.` }
+  return { ok: true }
+}
+
+export interface ResidualReversalRow {
+  id: string
+  status: string | null
+  entry_type?: string | null
+  paid_at?: string | null
+  voided_at?: string | null
+  calculated_amount: number | string | null
+}
+
+export interface ResidualReversalPlan {
+  /** Unpaid residual entries — voided in place (planDistributionVoid's rule; the reason names the source). */
+  void: string[]
+  /** Posted (paid) residual entries — a NEW reversal row of −net each (planDistributionCorrection's rule). */
+  reverse: Array<{ id: string; amount: number }>
+  /** Entries already voided / already netting to zero — nothing to do (a re-run lands here: idempotent). */
+  untouched: string[]
+}
+
+/**
+ * PURE — the residual consequence of a SOURCE commission being voided or reversed. A residual is derived from
+ * the producing agent's commission on the same closing (step 09 computes it from the agent's rolling net), so
+ * when that source is voided (105E) or reversed (98A correction) every residual it funded follows:
+ *   · unpaid residual → VOID (same row, preserved — money never moved);
+ *   · paid residual   → a REVERSAL row of −(current net) (append-only, m689 — the clawback is a new row);
+ *   · voided / already-zero residual → untouched (so running it twice changes nothing).
+ * Integer cents through planDistributionCorrection — no second money rule.
+ * @proofSeam scripts/residual-economics-guard.ts drives void → reversal, paid → reversal row and the re-run no-op directly.
+ */
+export function planResidualReversal(args: {
+  residuals: readonly ResidualReversalRow[]
+  correctionsByEntry: ReadonlyMap<string, ReadonlyArray<{ calculated_amount: number | string | null; status?: string | null; paid_at?: string | null }>>
+  reason: string
+}): ResidualReversalPlan {
+  const out: ResidualReversalPlan = { void: [], reverse: [], untouched: [] }
+  for (const r of [...args.residuals].sort((a, b) => a.id.localeCompare(b.id))) {
+    if ((r.entry_type ?? "entry") !== "entry") continue
+    const corrections = args.correctionsByEntry.get(r.id) ?? []
+    if (isVoidedDistribution(r) || r.voided_at) { out.untouched.push(r.id); continue }
+    const voidPlan = planDistributionVoid({ entry: r, corrections, reason: args.reason })
+    if (voidPlan.ok) { out.void.push(r.id); continue }
+    const rev = planDistributionCorrection({ original: r, priorCorrections: [...corrections], kind: "reversal", reason: args.reason })
+    if (rev.ok) out.reverse.push({ id: r.id, amount: rev.amount })
+    else out.untouched.push(r.id)
+  }
+  return out
+}

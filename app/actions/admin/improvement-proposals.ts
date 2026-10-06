@@ -11,6 +11,9 @@
  *   decideProposalAction(id, decision)    EVALUATED → APPROVED / REJECTED (a human on the roster)
  *   promoteProposalAction(id)             APPROVED → PROMOTED through the subject's survivor writer, ledgered
  *   rollbackProposalAction(id)            PROMOTED → ROLLED_BACK (previous value back through the same writer)
+ *   getWorkforceThresholdsEditor()        the DEDICATED workforce_thresholds editor's read (current vs default + bounds)
+ *   submitWorkforceThresholdsAction(…)    the editor's submit: a `policy` proposal (proposer human); "apply now"
+ *                                         approves + promotes it in the same action through promoteProposal
  */
 
 import { revalidatePath } from "next/cache"
@@ -18,9 +21,14 @@ import { requireCallerTenant } from "@/lib/auth/require-caller"
 import { isTenantAdminGrantRole } from "@/lib/auth/resolve-user-role"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
-  decideProposal, listImprovementProposals, promoteProposal, rollbackProposal,
+  decideProposal, listImprovementProposals, promoteProposal, rollbackProposal, proposeEvaluatePromote, OPEN_STATUSES,
   type ImprovementProposalRow, type ProposalActor,
 } from "@/lib/kernel/improvement-proposals"
+import {
+  DEFAULT_WORKFORCE_THRESHOLDS, WORKFORCE_THRESHOLDS_KEY, WORKFORCE_THRESHOLD_FIELDS, WORKFORCE_OVERWHELMED_BANDS,
+  resolveWorkforceThresholds, validateWorkforceThresholdsEdit, type WorkforceThresholds,
+} from "@/lib/kernel/brokerage-twin"
+import { buildTenantOperatingConstitution } from "@/lib/kernel/tenant-policy"
 
 type AdminGate = { ok: true; brokerageId: string; actor: ProposalActor } | { ok: false; error: string }
 
@@ -83,4 +91,100 @@ export async function rollbackProposalAction(id: string, reason?: string): Promi
   const r = await rollbackProposal(createServiceClient(), { brokerageId: gate.brokerageId, id: String(id ?? ""), actor: gate.actor })
   if (r.ok) revalidatePath("/dashboard/admin/manager-trust")
   return r.ok ? r : { ok: false, error: r.error }
+}
+
+// ── WAVE 107G — THE DEDICATED WORKFORCE-THRESHOLDS EDITOR (owner: "create dedicated editor") ─────────
+// The thresholds are tenant policy key `workforce_thresholds` (lib/kernel/tenant-policy.ts), read by
+// lib/kernel/brokerage-twin.ts resolveWorkforceThresholds. They change through the ONE policy path:
+// an improvement_proposals `policy` proposal (proposer human) → approve → promoteProposal →
+// mergeBrokerageSettings → appendTenantPolicyVersion, inside withActionLedger. This editor never
+// writes brokerage_settings itself (the wave-106 setWorkforceThresholds endpoint was tombstoned for
+// exactly that — app/actions/recruiting-roi.ts). Rendered on the Manager Trust page
+// (app/dashboard/admin/manager-trust/workforce-thresholds-editor.tsx).
+
+export interface WorkforceThresholdsEditorData {
+  current: WorkforceThresholds
+  defaults: WorkforceThresholds
+  source: "policy" | "default"
+  stored: unknown
+  version: number
+  changedAt: string | null
+  fields: typeof WORKFORCE_THRESHOLD_FIELDS
+  bands: typeof WORKFORCE_OVERWHELMED_BANDS
+  openProposal: { id: string; status: string; value: unknown; createdAt: string } | null
+  proposalsAvailable: boolean
+}
+
+export async function getWorkforceThresholdsEditor(): Promise<{ ok: true; data: WorkforceThresholdsEditorData } | { ok: false; error: string }> {
+  const gate = await requireLearningAdmin()
+  if (!gate.ok) return { ok: false, error: gate.error }
+  const svc = createServiceClient()
+  const con = await buildTenantOperatingConstitution(svc, gate.brokerageId)
+  if (!con.ok) return { ok: false, error: con.error }
+  const entry = con.entries.find((e) => e.policyKey === WORKFORCE_THRESHOLDS_KEY)
+  if (!entry) return { ok: false, error: `${WORKFORCE_THRESHOLDS_KEY} is not in the operating constitution — not registered in lib/kernel/tenant-policy.ts` }
+  const list = await listImprovementProposals(svc, gate.brokerageId, { limit: 100 })
+  if (!list.ok) return { ok: false, error: list.error }
+  const open = list.rows.find((r) => r.subject_kind === "policy" && r.subject_key === WORKFORCE_THRESHOLDS_KEY && OPEN_STATUSES.includes(r.status))
+  return {
+    ok: true,
+    data: {
+      current: resolveWorkforceThresholds({ [WORKFORCE_THRESHOLDS_KEY]: entry.value }),
+      defaults: DEFAULT_WORKFORCE_THRESHOLDS,
+      source: entry.isDefault ? "default" : "policy",
+      stored: entry.value ?? null,
+      version: entry.version,
+      changedAt: entry.changedAt,
+      fields: WORKFORCE_THRESHOLD_FIELDS,
+      bands: WORKFORCE_OVERWHELMED_BANDS,
+      openProposal: open ? { id: open.id, status: open.status, value: (open.proposed_change ?? {}).value ?? null, createdAt: open.created_at } : null,
+      proposalsAvailable: list.available,
+    },
+  }
+}
+
+export type WorkforceThresholdsSubmitState = { ok: boolean; message: string; errors?: string[] } | null
+
+/**
+ * The editor's submit (useActionState form action). mode=propose records a `policy` proposal the
+ * Improvement proposals panel decides; mode=apply is the brokerage admin's "apply now" door — the
+ * SAME proposal, approved and promoted in this action through proposeEvaluatePromote → decideProposal
+ * → promoteProposal (promotionDecision honours the human authority; nothing here bypasses it).
+ */
+export async function submitWorkforceThresholdsAction(_prev: WorkforceThresholdsSubmitState, formData: FormData): Promise<WorkforceThresholdsSubmitState> {
+  const mode = formData.get("mode") === "apply" ? "apply" : "propose"
+  const gate = await requireLearningAdmin(mode === "apply" ? "workforce thresholds applied from the dedicated editor" : "workforce thresholds proposed from the dedicated editor")
+  if (!gate.ok) return { ok: false, message: gate.error }
+  const input: Record<string, unknown> = { overwhelmed_band: formData.get("overwhelmed_band") }
+  for (const f of WORKFORCE_THRESHOLD_FIELDS) input[f.key] = formData.get(f.key)
+  const edit = validateWorkforceThresholdsEdit(input)
+  if (!edit.ok) return { ok: false, message: "Nothing was proposed — fix the highlighted values.", errors: edit.errors }
+
+  const svc = createServiceClient()
+  // An OPEN proposal for this key is the one the kernel would hand back (proposeImprovement dedups on
+  // subject) — a DIFFERENT value must not ride it silently: decide that one first.
+  const list = await listImprovementProposals(svc, gate.brokerageId, { limit: 100 })
+  if (!list.ok) return { ok: false, message: list.error }
+  const open = list.rows.find((r) => r.subject_kind === "policy" && r.subject_key === WORKFORCE_THRESHOLDS_KEY && OPEN_STATUSES.includes(r.status))
+  if (open && JSON.stringify((open.proposed_change ?? {}).value ?? null) !== JSON.stringify(edit.value)) {
+    return { ok: false, message: `A different workforce-thresholds proposal is already ${open.status} — approve, promote or reject it in Improvement proposals first.` }
+  }
+  const r = await proposeEvaluatePromote(svc, {
+    brokerageId: gate.brokerageId,
+    subjectKind: "policy",
+    subjectKey: WORKFORCE_THRESHOLDS_KEY,
+    proposer: "human",
+    proposedChange: { value: edit.value, changed_keys: edit.changedKeys },
+    evidenceRefs: [{ kind: "human_edit", surface: "manager_trust.workforce_thresholds", user_id: gate.actor.userId ?? null, mode, changed_keys: edit.changedKeys }],
+    actor: mode === "apply" ? gate.actor : null,
+  })
+  revalidatePath("/dashboard/admin/manager-trust")
+  revalidatePath("/dashboard/recruiting-roi")
+  if (!r.proposal.ok) return { ok: false, message: `Not proposed: ${r.proposal.error}` }
+  if (mode === "apply") {
+    return r.promoted
+      ? { ok: true, message: `Applied — ${r.policyVersionRef ?? "new policy version"}. The next twin build classifies against the new thresholds.` }
+      : { ok: false, message: `Proposed but NOT applied: ${r.held ?? `proposal ${r.status}`}` }
+  }
+  return { ok: true, message: `Proposed (${r.status ?? "PROPOSED"}) — approve and promote it in Improvement proposals below.` }
 }

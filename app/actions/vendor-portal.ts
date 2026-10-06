@@ -148,6 +148,62 @@ export async function acceptVendorBookingAction(params: {
 }
 
 /**
+ * WAVE 107B — PROCUREMENT QUOTES (lib/kernel/procurement.ts). Gate first (requireVendorActor proves the
+ * session holds the claimed vendor seat and supplies its brokerage), THEN the service client — the
+ * quote table admits no session writes (m723). The kernel re-checks the vendor is the pick or a
+ * ranked candidate on the request, so a vendor can never quote on a request it was not asked about.
+ */
+export async function submitVendorQuoteAction(params: {
+  vendorId: string
+  bookingId: string
+  amount: number
+  availableOn?: string | null
+  notes?: string | null
+}): Promise<{ success: boolean; error?: string }> {
+  let actor
+  try {
+    actor = await requireVendorActor(params.vendorId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) return { success: false, error: err.message }
+    throw err
+  }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { submitProcurementQuote } = await import("@/lib/kernel/procurement")
+  const r = await submitProcurementQuote(createServiceClient(), actor, {
+    bookingId: params.bookingId, amount: Number(params.amount), availableOn: params.availableOn ?? null, notes: params.notes ?? null,
+  })
+  if (!r.ok) return { success: false, error: r.error }
+  const { revalidatePath } = await import("next/cache")
+  revalidatePath("/vendor/jobs")
+  return { success: true }
+}
+
+/**
+ * WAVE 107B — the open procurement requests THIS session's vendor seat(s) may quote on, with ONLY the
+ * vendor's own quote (never the budget, the scores, or a competitor's amount). Vendor ids come from the
+ * session's own grants, each re-verified by requireVendorActor — never from the caller.
+ */
+export async function getMyProcurementRequestsAction(): Promise<Array<{ vendorId: string; id: string; service_type: string; needed_by: string | null; myQuote: { amount: number; available_on: string | null; status: string } | null }>> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+  const { data: grants, error } = await supabase.from("user_role_assignments").select("vendor_id").eq("user_id", user.id).not("vendor_id", "is", null)
+  if (error) throw new Error(`Could not read your vendor seats: ${error.message}`)
+  const vendorIds = [...new Set(((grants ?? []) as Array<{ vendor_id: string }>).map((g) => g.vendor_id))]
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { vendorProcurementView } = await import("@/lib/kernel/procurement")
+  const out: Array<{ vendorId: string; id: string; service_type: string; needed_by: string | null; myQuote: { amount: number; available_on: string | null; status: string } | null }> = []
+  for (const vendorId of vendorIds) {
+    let actor
+    try { actor = await requireVendorActor(vendorId) } catch (err) { if (err instanceof PortalAuthError) continue; throw err }
+    const view = await vendorProcurementView(createServiceClient(), actor)
+    if (!view.ok) throw new Error(`Could not load procurement requests: ${view.error}`)
+    for (const r of view.requests) out.push({ vendorId, id: r.id, service_type: r.service_type, needed_by: r.needed_by, myQuote: r.myQuote })
+  }
+  return out
+}
+
+/**
  * Decline a vendor booking — vendor passes on the job. Brokerage gets
  * notified so they can route to another vendor.
  */

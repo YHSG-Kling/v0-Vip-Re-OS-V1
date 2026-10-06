@@ -321,6 +321,10 @@ export default async function RecruitingROIPage() {
               {recruitingNeeds.blindSpots.length > 0 && (
                 <p className="text-xs text-muted-foreground">Blind spots: {recruitingNeeds.blindSpots.join(" · ")}</p>
               )}
+              <p className="text-xs text-muted-foreground">
+                What counts as rising demand, an agent&apos;s capacity or a luxury territory is brokerage policy —{" "}
+                <a className="underline" href="/dashboard/admin/manager-trust#workforce-thresholds">tune the workforce thresholds</a>.
+              </p>
             </CardContent>
           </Card>
           <RecruitingPipelineClient recruits={(recruitRows as any[]) ?? []} brokerageId={profile.brokerage_id} />

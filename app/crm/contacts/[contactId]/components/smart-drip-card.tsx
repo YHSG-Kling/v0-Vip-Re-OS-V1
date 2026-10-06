@@ -95,7 +95,7 @@ export function SmartDripCard({ contactId }: { contactId: string }) {
         ok: true,
         text: result.alreadyEnrolled
           ? `Already enrolled in “${result.sequenceName ?? dripType}” — not double-enrolled.`
-          : `Enrolled in “${result.sequenceName ?? dripType}” — the sequence steps take it from here.`,
+          : `Enrolled in “${result.sequenceName ?? dripType}” — the sequence steps take it from here.${result.journeyAdvice ? ` Note: ${result.journeyAdvice}` : ""}`,
       })
       loadHistory()
     })

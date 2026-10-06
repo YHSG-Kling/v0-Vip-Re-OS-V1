@@ -143,7 +143,7 @@
     "lib/education/question-gap.ts": 1,
     "lib/education/regulatory-curriculum.ts": 2,
     "lib/education/seller-signal-education-context.ts": 1,
-    "lib/education/skill-freshness-radar.ts": 2,
+    "lib/education/skill-freshness-radar.ts": 3,
     "lib/education/skill-freshness.ts": 2,
     "lib/embed/widget-modes.ts": 1,
     "lib/enrichment/household-financials.ts": 1,
@@ -194,6 +194,7 @@
     "lib/intelligence/manager-touch-provenance.ts": 1,
     "lib/intelligence/manager-weekly-exec-plan.ts": 5,
     "lib/intelligence/negotiation-bands.ts": 2,
+    "lib/intelligence/network-benchmarks.ts": 1,
     "lib/intelligence/partners-meeting-reel-props.ts": 1,
     "lib/intelligence/partners-meeting.ts": 1,
     "lib/intelligence/playbook-engine.ts": 1,
@@ -207,6 +208,7 @@
     "lib/intelligence/roi-ledger.ts": 4,
     "lib/intelligence/skill-freshness-board.ts": 2,
     "lib/intelligence/steer-my-day.ts": 1,
+    "lib/intelligence/strategy-learning.ts": 3,
     "lib/intelligence/time-to-value-radar.ts": 1,
     "lib/kernel/action-ledger.ts": 2,
     "lib/kernel/agent-coaching.ts": 1,
@@ -221,7 +223,7 @@
     "lib/kernel/board-packet-reel.ts": 1,
     "lib/kernel/board-packet.ts": 1,
     "lib/kernel/brand-voice.ts": 1,
-    "lib/kernel/brokerage-twin.ts": 10,
+    "lib/kernel/brokerage-twin.ts": 9,
     "lib/kernel/call-intelligence.ts": 1,
     "lib/kernel/campaign-center.ts": 1,
     "lib/kernel/client-pulse.ts": 2,
@@ -273,7 +275,7 @@
     "lib/kernel/marketing/real-estate-compliance-gate.ts": 1,
     "lib/kernel/media-intelligence.ts": 11,
     "lib/kernel/mission-context.ts": 2,
-    "lib/kernel/mission-controller.ts": 5,
+    "lib/kernel/mission-controller.ts": 4,
     "lib/kernel/missions.ts": 5,
     "lib/kernel/morning-standup.ts": 2,
     "lib/kernel/neighbor-farm.ts": 1,
@@ -287,6 +289,7 @@
     "lib/kernel/portal-value.ts": 1,
     "lib/kernel/portal.ts": 4,
     "lib/kernel/postclose-concierge.ts": 3,
+    "lib/kernel/procurement.ts": 4,
     "lib/kernel/providers.ts": 1,
     "lib/kernel/referral-appreciation.ts": 6,
     "lib/kernel/referral-radar.ts": 4,
@@ -306,6 +309,8 @@
     "lib/kernel/signature-chase.ts": 3,
     "lib/kernel/site-traffic-insights.ts": 1,
     "lib/kernel/standup-action.ts": 1,
+    "lib/kernel/strategy-engine.ts": 1,
+    "lib/kernel/strategy-library.ts": 1,
     "lib/kernel/team-plays.ts": 2,
     "lib/kernel/team-query.ts": 2,
     "lib/kernel/tenant-creation.ts": 5,
@@ -317,7 +322,7 @@
     "lib/kernel/vendor-no-show-autopilot.ts": 3,
     "lib/kernel/vendor-orchestration.ts": 3,
     "lib/kernel/vendor-price-intelligence.ts": 2,
-    "lib/kernel/vendor-rating-governance.ts": 4,
+    "lib/kernel/vendor-rating-governance.ts": 2,
     "lib/kernel/vendor-seat-contact.ts": 1,
     "lib/kernel/vendor-subscription.ts": 1,
     "lib/kernel/vendor-verification.ts": 1,
@@ -541,7 +546,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10904,
+  "census": 10974,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -572,7 +577,7 @@
     "app/actions/admin/create-subscriber.ts": 2,
     "app/actions/admin/domain-coherence.ts": 8,
     "app/actions/admin/get-admin-stats.ts": 1,
-    "app/actions/admin/improvement-proposals.ts": 5,
+    "app/actions/admin/improvement-proposals.ts": 7,
     "app/actions/admin/invitations.ts": 4,
     "app/actions/admin/invite-user.ts": 1,
     "app/actions/admin/lead-routing-settings.ts": 4,
@@ -583,6 +588,7 @@
     "app/actions/admin/referral-earnings.ts": 2,
     "app/actions/admin/run-scrape-test.ts": 3,
     "app/actions/admin/staff-360.ts": 2,
+    "app/actions/admin/strategy-library.ts": 2,
     "app/actions/admin/subscription-agreement.ts": 2,
     "app/actions/admin/team-members.ts": 3,
     "app/actions/admin/tenant-policy.ts": 3,
@@ -797,7 +803,7 @@
     "app/actions/exception-center.ts": 5,
     "app/actions/external-services.ts": 2,
     "app/actions/fb-audience-templates.ts": 1,
-    "app/actions/financial-kernel.ts": 21,
+    "app/actions/financial-kernel.ts": 22,
     "app/actions/financials.ts": 7,
     "app/actions/flight-recorder.ts": 6,
     "app/actions/forms-kernel.ts": 10,
@@ -883,6 +889,7 @@
     "app/actions/negotiation-strategy.ts": 6,
     "app/actions/neighbor-notifications.ts": 5,
     "app/actions/neighborhood-reports.ts": 3,
+    "app/actions/network-intelligence.ts": 2,
     "app/actions/newsletter/approve-template.ts": 4,
     "app/actions/newsletter/create-template.ts": 1,
     "app/actions/newsletter/delete-template.ts": 1,
@@ -1089,6 +1096,7 @@
     "app/actions/transaction-transparency.ts": 3,
     "app/actions/transactions/closing-cost-actual.ts": 1,
     "app/actions/transactions.ts": 61,
+    "app/actions/twin-scenario.ts": 2,
     "app/actions/twin-studio-upload.ts": 3,
     "app/actions/twin-studio.ts": 11,
     "app/actions/usage-overview.ts": 1,
@@ -1101,7 +1109,7 @@
     "app/actions/vendor-marketplace.ts": 22,
     "app/actions/vendor-messages.ts": 3,
     "app/actions/vendor-payments.ts": 14,
-    "app/actions/vendor-portal.ts": 8,
+    "app/actions/vendor-portal.ts": 10,
     "app/actions/vendor-premium-placement.ts": 2,
     "app/actions/vendor-requests.ts": 1,
     "app/actions/vendor-respa.ts": 1,
@@ -1312,6 +1320,7 @@
     "app/api/cron/marketing-image-regen/route.ts": 1,
     "app/api/cron/message-needs-response/route.ts": 1,
     "app/api/cron/negotiation-strategy-generator/route.ts": 2,
+    "app/api/cron/network-intelligence/route.ts": 1,
     "app/api/cron/newsletter-cadence-tick/route.ts": 1,
     "app/api/cron/newsletter-video-render/route.ts": 1,
     "app/api/cron/nothing-dropped-sweep/route.ts": 1,
@@ -1914,11 +1923,13 @@
     "app/dashboard/admin/command-center/manager-activity-feed.tsx": 1,
     "app/dashboard/admin/command-center/manager-talk-feed.tsx": 1,
     "app/dashboard/admin/command-center/missions-card.tsx": 1,
+    "app/dashboard/admin/command-center/network-benchmarks-card.tsx": 1,
     "app/dashboard/admin/command-center/policy-decisions-panel.tsx": 1,
     "app/dashboard/admin/command-center/quarterly-review-card.tsx": 1,
     "app/dashboard/admin/command-center/scope-switcher.tsx": 1,
     "app/dashboard/admin/command-center/team-announcement-composer.tsx": 1,
     "app/dashboard/admin/command-center/trust-meter.tsx": 1,
+    "app/dashboard/admin/command-center/twin-scenario-panel.tsx": 1,
     "app/dashboard/admin/compliance/tcpa/consent-panel.tsx": 1,
     "app/dashboard/admin/components/brokerage-intelligence-widget.tsx": 1,
     "app/dashboard/admin/components/os/admin-command-strip.tsx": 1,
@@ -1955,7 +1966,10 @@
     "app/dashboard/admin/manager-trust/improvement-proposals-panel.tsx": 1,
     "app/dashboard/admin/manager-trust/manager-trust-client.tsx": 1,
     "app/dashboard/admin/manager-trust/revert-policy-button.tsx": 1,
+    "app/dashboard/admin/manager-trust/strategy-library-panel.tsx": 1,
     "app/dashboard/admin/manager-trust/tenant-constitution-panel.tsx": 1,
+    "app/dashboard/admin/manager-trust/workforce-thresholds-editor.tsx": 1,
+    "app/dashboard/admin/manager-trust/workforce-thresholds-form.tsx": 1,
     "app/dashboard/admin/marketing-agent-actions/client.tsx": 1,
     "app/dashboard/admin/marketing-approvals/marketing-approvals-client.tsx": 1,
     "app/dashboard/admin/marketing-campaigns/marketing-campaigns-client.tsx": 1,
@@ -2487,7 +2501,7 @@
     "app/dashboard/transactions/[id]/buyer-move-section.tsx": 1,
     "app/dashboard/transactions/[id]/cda/cda-template-fields-card.tsx": 1,
     "app/dashboard/transactions/[id]/cda/cda-workflow-client.tsx": 1,
-    "app/dashboard/transactions/[id]/cda/correct-entry-dialog.tsx": 3,
+    "app/dashboard/transactions/[id]/cda/correct-entry-dialog.tsx": 4,
     "app/dashboard/transactions/[id]/closing-cost-actual-input.tsx": 1,
     "app/dashboard/transactions/[id]/closing-war-room-section.tsx": 1,
     "app/dashboard/transactions/[id]/closing-watchtower-section.tsx": 1,
@@ -3067,13 +3081,13 @@
     "lib/commission/agreement-total-rate.ts": 1,
     "lib/commission/cap-resolver.ts": 7,
     "lib/commission/cda-discrepancy.ts": 6,
-    "lib/commission/distribution-correction.ts": 5,
+    "lib/commission/distribution-correction.ts": 9,
     "lib/commission/engine.ts": 1,
     "lib/commission/finalization.ts": 2,
     "lib/commission/ledger-sync.ts": 7,
     "lib/commission/payment-tracker.ts": 4,
     "lib/commission/reconcile-tracking.ts": 8,
-    "lib/commission/revenue-share-model.ts": 5,
+    "lib/commission/revenue-share-model.ts": 6,
     "lib/commission/team-lead-split.ts": 5,
     "lib/commission/utils.ts": 4,
     "lib/commission/waterfall/01-resolve-rate.ts": 1,
@@ -3267,7 +3281,7 @@
     "lib/education/question-gap.ts": 2,
     "lib/education/regulatory-curriculum.ts": 3,
     "lib/education/seller-signal-education-context.ts": 2,
-    "lib/education/skill-freshness-radar.ts": 7,
+    "lib/education/skill-freshness-radar.ts": 9,
     "lib/education/skill-freshness.ts": 8,
     "lib/elevenlabs/conv-ai.ts": 4,
     "lib/email/orchestrate-email-preset-send.ts": 1,
@@ -3476,6 +3490,7 @@
     "lib/intelligence/multi-agent-router.ts": 7,
     "lib/intelligence/negotiation-bands.ts": 6,
     "lib/intelligence/neighborhood-future-lens.ts": 3,
+    "lib/intelligence/network-benchmarks.ts": 5,
     "lib/intelligence/offer-doc-completeness-runner.ts": 1,
     "lib/intelligence/offer-doc-completeness.ts": 1,
     "lib/intelligence/offer-property-prefill-runner.ts": 2,
@@ -3504,7 +3519,7 @@
     "lib/intelligence/retention-board.ts": 2,
     "lib/intelligence/retention-outcomes.ts": 3,
     "lib/intelligence/revenue-share-board.ts": 2,
-    "lib/intelligence/roi-ledger.ts": 8,
+    "lib/intelligence/roi-ledger.ts": 9,
     "lib/intelligence/showing-feedback-routing-runner.ts": 1,
     "lib/intelligence/showing-feedback-routing.ts": 1,
     "lib/intelligence/skill-freshness-board.ts": 3,
@@ -3513,6 +3528,7 @@
     "lib/intelligence/standup-narrative.ts": 1,
     "lib/intelligence/steer-my-day-runner.ts": 1,
     "lib/intelligence/steer-my-day.ts": 2,
+    "lib/intelligence/strategy-learning.ts": 7,
     "lib/intelligence/stuck-stage-detector-runner.ts": 1,
     "lib/intelligence/stuck-stage-detector.ts": 3,
     "lib/intelligence/time-to-value-radar.ts": 3,
@@ -3562,7 +3578,7 @@
     "lib/kernel/board-packet.ts": 2,
     "lib/kernel/brand-compliance.ts": 1,
     "lib/kernel/brand-voice.ts": 2,
-    "lib/kernel/brokerage-twin.ts": 20,
+    "lib/kernel/brokerage-twin.ts": 22,
     "lib/kernel/calendar-deadline-watcher.ts": 1,
     "lib/kernel/calendar-engine.ts": 1,
     "lib/kernel/calendar-sync.ts": 6,
@@ -3634,7 +3650,7 @@
     "lib/kernel/exception-center.ts": 2,
     "lib/kernel/experiments.ts": 3,
     "lib/kernel/farm-play.ts": 3,
-    "lib/kernel/financial.ts": 21,
+    "lib/kernel/financial.ts": 22,
     "lib/kernel/financing-pit-stop.ts": 8,
     "lib/kernel/fire-drills.ts": 3,
     "lib/kernel/flow-integrity.ts": 10,
@@ -3713,6 +3729,7 @@
     "lib/kernel/postclose-concierge.ts": 4,
     "lib/kernel/preview.ts": 2,
     "lib/kernel/priority-rank.ts": 2,
+    "lib/kernel/procurement.ts": 9,
     "lib/kernel/providers.ts": 2,
     "lib/kernel/referral-appreciation.ts": 8,
     "lib/kernel/referral-radar.ts": 6,
@@ -3753,6 +3770,8 @@
     "lib/kernel/stalled-deferrals-runner.ts": 1,
     "lib/kernel/stalled-deferrals.ts": 1,
     "lib/kernel/standup-action.ts": 4,
+    "lib/kernel/strategy-engine.ts": 5,
+    "lib/kernel/strategy-library.ts": 12,
     "lib/kernel/strategy-session.ts": 2,
     "lib/kernel/suppression-sync.ts": 1,
     "lib/kernel/team-plays.ts": 3,
@@ -3769,6 +3788,7 @@
     "lib/kernel/title-closing-watchtower.ts": 8,
     "lib/kernel/tour-optimizer.ts": 12,
     "lib/kernel/transactions.ts": 21,
+    "lib/kernel/twin-scenario.ts": 3,
     "lib/kernel/unambiguous-tenant.ts": 3,
     "lib/kernel/urgent-sla.ts": 2,
     "lib/kernel/users.ts": 9,
@@ -4782,7 +4802,9 @@
       "recommendMarketingAllocationFormAction",
       "decideProposalAction",
       "promoteProposalAction",
-      "rollbackProposalAction"
+      "rollbackProposalAction",
+      "getWorkforceThresholdsEditor",
+      "submitWorkforceThresholdsAction"
     ],
     "app/actions/admin/invitations.ts": [
       "listPendingInvitationsAction",
@@ -4847,6 +4869,10 @@
     "app/actions/admin/staff-360.ts": [
       "getStaff360Action",
       "assignAcademyModuleToStaffAction"
+    ],
+    "app/actions/admin/strategy-library.ts": [
+      "listStrategyLibraryAction",
+      "activateLibraryStrategyFormAction"
     ],
     "app/actions/admin/subscription-agreement.ts": [
       "getSubscriptionAgreementAction",
@@ -6269,6 +6295,7 @@
     "app/actions/financial-kernel.ts": [
       "correctCommissionDistributionAction",
       "voidCommissionDistributionAction",
+      "approveResidualEntryAction",
       "loadFinancialWorkspaceAction",
       "loadAgentFinancialSummaryAction",
       "loadAgentFinancialDashboardSummaryAction",
@@ -6889,6 +6916,10 @@
       "getNeighborhoodReport",
       "refreshNeighborhoodReport",
       "generateEmbedSnippet"
+    ],
+    "app/actions/network-intelligence.ts": [
+      "getNetworkBenchmarksBeside",
+      "setNetworkBenchmarksOptIn"
     ],
     "app/actions/newsletter/approve-template.ts": [
       "canApproveNewsletterTemplates",
@@ -8247,6 +8278,10 @@
       "getClientTasks",
       "autoProgressMilestone"
     ],
+    "app/actions/twin-scenario.ts": [
+      "simulateTwinScenario",
+      "promoteTwinScenarioToMission"
+    ],
     "app/actions/twin-studio-upload.ts": [
       "uploadTwinAvatar",
       "uploadTwinVoiceSample",
@@ -8350,6 +8385,8 @@
     ],
     "app/actions/vendor-portal.ts": [
       "acceptVendorBookingAction",
+      "submitVendorQuoteAction",
+      "getMyProcurementRequestsAction",
       "declineVendorBookingAction",
       "getVendorJobs",
       "updateVendorJobStatus",
@@ -9114,6 +9151,9 @@
     "app/api/cron/negotiation-strategy-generator/route.ts": [
       "GET",
       "POST"
+    ],
+    "app/api/cron/network-intelligence/route.ts": [
+      "GET"
     ],
     "app/api/cron/newsletter-cadence-tick/route.ts": [
       "GET"
@@ -10956,6 +10996,9 @@
     "app/dashboard/admin/command-center/missions-card.tsx": [
       "MissionsCard"
     ],
+    "app/dashboard/admin/command-center/network-benchmarks-card.tsx": [
+      "NetworkBenchmarksCard"
+    ],
     "app/dashboard/admin/command-center/policy-decisions-panel.tsx": [
       "PolicyDecisionsPanel"
     ],
@@ -10970,6 +11013,9 @@
     ],
     "app/dashboard/admin/command-center/trust-meter.tsx": [
       "TrustMeter"
+    ],
+    "app/dashboard/admin/command-center/twin-scenario-panel.tsx": [
+      "TwinScenarioPanel"
     ],
     "app/dashboard/admin/compliance/tcpa/consent-panel.tsx": [
       "ConsentPanel"
@@ -11079,8 +11125,17 @@
     "app/dashboard/admin/manager-trust/revert-policy-button.tsx": [
       "RevertPolicyButton"
     ],
+    "app/dashboard/admin/manager-trust/strategy-library-panel.tsx": [
+      "StrategyLibraryPanel"
+    ],
     "app/dashboard/admin/manager-trust/tenant-constitution-panel.tsx": [
       "TenantConstitutionPanel"
+    ],
+    "app/dashboard/admin/manager-trust/workforce-thresholds-editor.tsx": [
+      "WorkforceThresholdsEditor"
+    ],
+    "app/dashboard/admin/manager-trust/workforce-thresholds-form.tsx": [
+      "WorkforceThresholdsForm"
     ],
     "app/dashboard/admin/marketing-agent-actions/client.tsx": [
       "MarketingAgentActionsClient"
@@ -12729,6 +12784,7 @@
     "app/dashboard/transactions/[id]/cda/correct-entry-dialog.tsx": [
       "CorrectEntryDialog",
       "isVoidEligibleEntry",
+      "ApproveResidualButton",
       "VoidEntryDialog"
     ],
     "app/dashboard/transactions/[id]/closing-cost-actual-input.tsx": [
@@ -15430,7 +15486,11 @@
       "isSummarizedDistributionType",
       "isVoidedDistribution",
       "summaryAmountFromDistributions",
-      "planDistributionVoid"
+      "planDistributionVoid",
+      "isResidualAwaitingReview",
+      "liveLedgerEntries",
+      "planResidualApproval",
+      "planResidualReversal"
     ],
     "lib/commission/engine.ts": [
       "calculateCommission"
@@ -15469,7 +15529,8 @@
       "getRevenueShareModel",
       "edgeTermsFromModel",
       "withinEffectiveWindow",
-      "computeRevenueShare"
+      "computeRevenueShare",
+      "evaluateResidualRules"
     ],
     "lib/commission/team-lead-split.ts": [
       "pickTeamTerms",
@@ -16351,6 +16412,8 @@
       "gatherSkillSignals",
       "loadAgentSkillFreshness",
       "loadAgentCompetency",
+      "competencyGapCount",
+      "readCompetencySnapshots",
       "runSkillFreshnessRadar",
       "runSkillFreshnessRadarAll",
       "runAdaptiveDevelopmentCycle",
@@ -17398,6 +17461,13 @@
       "loadFutureLensSignals",
       "composeColdStartBandLine"
     ],
+    "lib/intelligence/network-benchmarks.ts": [
+      "publishBenchmarkCells",
+      "readNetworkOptIn",
+      "runNetworkBenchmarkAggregation",
+      "readNetworkBenchmarks",
+      "benchmarksBeside"
+    ],
     "lib/intelligence/offer-doc-completeness-runner.ts": [
       "verifyOfferDocsReady"
     ],
@@ -17518,6 +17588,7 @@
     "lib/intelligence/roi-ledger.ts": [
       "composeRoiHeadline",
       "generateRoiLedger",
+      "strategyRefOf",
       "attributeOutcomesToLedger",
       "loadLedgerAttribution",
       "experimentArmOutcomes",
@@ -17551,6 +17622,15 @@
     "lib/intelligence/steer-my-day.ts": [
       "mergeWorkQueue",
       "assembleSteerMyDay"
+    ],
+    "lib/intelligence/strategy-learning.ts": [
+      "strategySignificance",
+      "strategyStatsFromRows",
+      "tenantStrategyStats",
+      "compareStrategies",
+      "strategyFinding",
+      "runStrategyLearning",
+      "strategyLearningForSelection"
     ],
     "lib/intelligence/stuck-stage-detector-runner.ts": [
       "detectAndPublishStuckStage"
@@ -17819,6 +17899,7 @@
     ],
     "lib/kernel/brokerage-twin.ts": [
       "resolveWorkforceThresholds",
+      "validateWorkforceThresholdsEdit",
       "registerTwinSeam",
       "twinSeams",
       "twinDigest",
@@ -17829,6 +17910,7 @@
       "composeWorkforce",
       "recruitingNeeds",
       "recruitingNeedObjective",
+      "detectBottleneck",
       "composeBrokerageTwin",
       "scenario",
       "readTwinMeasure",
@@ -18280,7 +18362,8 @@
       "loadAgentProfitLossSummary",
       "loadAgentFinancialDashboardSummary",
       "correctCommissionDistribution",
-      "voidCommissionDistribution"
+      "voidCommissionDistribution",
+      "approveResidualEntry"
     ],
     "lib/kernel/financing-pit-stop.ts": [
       "daysUntil",
@@ -18821,6 +18904,17 @@
       "priorityRank",
       "byPriorityDesc"
     ],
+    "lib/kernel/procurement.ts": [
+      "rankVendorsForRequest",
+      "resolveProcurementAutonomy",
+      "procurementAutonomyDecision",
+      "gatherProcurementFacts",
+      "requestProcurement",
+      "approveProcurementRequest",
+      "declineProcurementRequest",
+      "submitProcurementQuote",
+      "vendorProcurementView"
+    ],
     "lib/kernel/providers.ts": [
       "resolveProviderCore",
       "resolveProvider"
@@ -19095,6 +19189,27 @@
       "runStandupReject",
       "runStandupAction"
     ],
+    "lib/kernel/strategy-engine.ts": [
+      "registerStrategyLearningSeam",
+      "selectStrategies",
+      "activateStrategy",
+      "activateLibraryStrategy",
+      "listStrategyLibrary"
+    ],
+    "lib/kernel/strategy-library.ts": [
+      "participatingManagers",
+      "strategyCapabilities",
+      "strategyGaps",
+      "strategyRef",
+      "strategyLabel",
+      "platformStrategy",
+      "strategyDigest",
+      "evaluateEligibility",
+      "adaptStrategy",
+      "rankStrategies",
+      "factsFromContactRow",
+      "strategyOwnershipOf"
+    ],
     "lib/kernel/strategy-session.ts": [
       "inferStrategyMoment",
       "composeStrategySession"
@@ -19236,6 +19351,11 @@
       "recalculateCommissionStateCommand",
       "emitClientFriendlyUpdateCommand",
       "prefillTransactionFormFromRecord"
+    ],
+    "lib/kernel/twin-scenario.ts": [
+      "simulateScenario",
+      "scenarioHeadline",
+      "loadScenarioFacts"
     ],
     "lib/kernel/unambiguous-tenant.ts": [
       "resolveUnambiguousTenant",

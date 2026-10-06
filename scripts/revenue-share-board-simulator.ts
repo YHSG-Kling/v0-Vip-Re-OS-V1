@@ -322,8 +322,13 @@ function distributionModelLayer() {
     hardcodeRe.test(tombstoneSpecimen) && !hardcodeRe.test(stripComments(tombstoneSpecimen)))
 
   const wf = stripComments(src("lib/commission/waterfall/09-revenue-share.ts"))
+  // Wave 107 (107A): step 09 reaches the pure step through evaluateResidualRules (the deterministic residual
+  // rule evaluator, which delegates to computeRevenueShare on the close date) — assert the rule, not the call form.
+  const rsm = stripComments(src("lib/commission/revenue-share-model.ts"))
+  const evaluatorBody = rsm.slice(rsm.indexOf("export function evaluateResidualRules"))
   check("waterfall step 09 reads the MODEL (getRevenueShareModel) and computes through the pure step",
-    /getRevenueShareModel\(context\.brokerageId/.test(wf) && /computeRevenueShare\(\{/.test(wf))
+    /getRevenueShareModel\(context\.brokerageId/.test(wf) &&
+      (/computeRevenueShare\(\{/.test(wf) || (/evaluateResidualRules\(\{/.test(wf) && /computeRevenueShare\(\{/.test(evaluatorBody))))
   check("step 09 fail-closed + published: unconfigured → empty distributions with the skip recorded and warned (no-op, not a refusal — the waterfall's absent-config precedent)",
     /revenueShareSkipped: 'model_unconfigured'/.test(wf) && /console\.warn\(/.test(wf) && /revenueShareDistributions: \[\]/.test(wf))
   check("step 09 applies BOTH balances from the computation (brokerage-funded shares now deduct)",

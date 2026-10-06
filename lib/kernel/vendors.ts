@@ -59,7 +59,10 @@ import {
 // permitted. Forward-only transitions are enforced for the lifecycle path.
 
 const BOOKING_STATUS_TRANSITIONS: Record<string, string[]> = {
-  booked:    ["confirmed", "cancelled", "no_show"],
+  // m723 (wave 107B): a PROCUREMENT request awaiting approval — the approval (human, or the tenant's
+  // procurement_autonomy policy) books it; anything else cancels it. lib/kernel/procurement.ts.
+  requested: ["booked", "cancelled"],
+  booked:   ["confirmed", "cancelled", "no_show"],
   confirmed: ["completed", "cancelled", "no_show"],
   completed: [],                          // terminal — no further transitions
   cancelled: [],                          // terminal
@@ -204,9 +207,15 @@ export interface AssignVendorToTransactionInput {
 export interface UpdateVendorBookingStatusInput {
   bookingId:    string
   brokerageId:  string
-  agentUserId:  string
+  /** users.id of the human acting; NULL = no human (a procurement booking the tenant's
+   *  procurement_autonomy policy authorised — lib/kernel/procurement.ts; never a borrowed id). */
+  agentUserId:  string | null
   toStatus:     "booked" | "confirmed" | "completed" | "cancelled" | "no_show"
   notes?:       string
+  /** Extra columns stamped in the SAME update as the transition (procurement approval stamps). */
+  extra?:       Record<string, unknown>
+  /** Client seam (wave 107B): the caller's verified service client / an in-memory proof client. */
+  client?:      ReturnType<typeof createServiceClient>
 }
 
 export interface AttachVendorDeliverableInput {
@@ -264,10 +273,10 @@ async function resolveAgentId(
  *  it replaces never reached the reactor, so VENDOR_* notification rules never
  *  fired. Same columns; a refused row is logged instead of resolving silently. */
 async function emitLifecycleEvent(
-  _supabase: ReturnType<typeof createServiceClient>,
+  supabase: ReturnType<typeof createServiceClient>,
   params: {
     brokerageId:  string
-    actorUserId:  string
+    actorUserId:  string | null
     entityType:   string
     entityId:     string
     event:        KernelEvent
@@ -282,6 +291,8 @@ async function emitLifecycleEvent(
     entityType:  params.entityType,
     entityId:    params.entityId,
     metadata:    params.metadata ?? {},
+    // The audit row lands on the same client as the write it records (emit.ts client seam).
+    client:      supabase,
   })
   if (r.error) {
     console.error(`[kernel/vendors] lifecycle_events row refused for ${params.event} on ${params.entityType}:${params.entityId}: ${r.error}`)
@@ -799,7 +810,7 @@ export async function updateVendorBookingStatus(
   input: UpdateVendorBookingStatusInput
 ): Promise<KernelVendorResult> {
   const { bookingId, brokerageId, agentUserId, toStatus, notes } = input
-  const supabase = createServiceClient()
+  const supabase = input.client ?? createServiceClient()
 
   const { data: booking } = await supabase
     .from("vendor_bookings")
@@ -821,17 +832,22 @@ export async function updateVendorBookingStatus(
     }
   }
 
-  const updatePayload: Record<string, unknown> = { status: toStatus }
+  const updatePayload: Record<string, unknown> = { ...(input.extra ?? {}), status: toStatus }
   if (notes) updatePayload.notes = notes
   if (toStatus === "completed") updatePayload.completed_at = new Date().toISOString()
 
-  const { error } = await supabase
+  // Compare-and-set on the status read above, and COUNT what came back (CLAUDE.md §3): a racing
+  // transition matches nothing and must not report success.
+  const { data: moved, error } = await supabase
     .from("vendor_bookings")
     .update(updatePayload)
     .eq("id", bookingId)
     .eq("brokerage_id", brokerageId)
+    .eq("status", booking.status)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!moved || (moved as unknown[]).length === 0) return { success: false, error: `Booking moved before the ${booking.status} → ${toStatus} transition landed.` }
 
   const event = toStatus === "completed"
     ? KernelEvent.VENDOR_BOOKING_COMPLETED
