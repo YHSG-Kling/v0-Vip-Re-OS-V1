@@ -22,6 +22,9 @@ export function WorkforceThresholdsForm({ current, defaults, fields, bands }: { 
             </tr>
           </thead>
           <tbody>
+            {fields.length === 0 && (
+              <tr><td colSpan={5} className="py-2 text-xs text-muted-foreground">No workforce thresholds configured — the platform defaults apply.</td></tr>
+            )}
             {fields.map((f) => (
               <tr key={f.key} className="border-b align-middle">
                 <td className="py-2 pr-3">

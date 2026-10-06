@@ -352,7 +352,10 @@ const sliceRows = (brokerage: string, tag: string, n: number): Record<string, Ro
     ...Array.from({ length: n }, (_, i) => ({ id: `${tag}-je${i}`, brokerage_id: brokerage, action: i === 0 ? "journey.experience.wait" : "journey.experience.education", created_at: iso(4) })),
     { id: `${tag}-jx`, brokerage_id: brokerage, action: "allocation.recommend.lead", created_at: iso(4) },
   ],
-  marketing_campaign_touchpoints: Array.from({ length: n }, (_, i) => ({ id: `${tag}-tp${i}`, brokerage_id: brokerage, created_at: iso(6), sent_at: iso(6), opened_at: i < 2 ? iso(5) : null, clicked_at: i === 0 ? iso(5) : null, converted_at: null })),
+  marketing_campaign_touchpoints: Array.from({ length: n }, (_, i) => ({ id: `${tag}-tp${i}`, brokerage_id: brokerage, created_at: iso(6), sent_at: iso(6) })),
+  // Engagement where it is WRITTEN (provider event fan-out → sequence_step_executions; sequence-conversion → enrollments).
+  sequence_step_executions: Array.from({ length: n }, (_, i) => ({ id: `${tag}-sx${i}`, brokerage_id: brokerage, created_at: iso(6), opened_at: i < 2 ? iso(5) : null, replied_at: i === 0 ? iso(5) : null })),
+  sequence_enrollments: [{ id: `${tag}-en0`, brokerage_id: brokerage, converted_at: iso(4) }],
   sphere_engagement_scores: [{ id: `${tag}-se1`, brokerage_id: brokerage, agent_id: `${tag}-ag1`, score: 80, referrals_given: 2, calculated_at: iso(1) }, { id: `${tag}-se2`, brokerage_id: brokerage, agent_id: `${tag}-ag2`, score: 40, referrals_given: 0, calculated_at: iso(1) }],
   cron_execution_logs: [{ id: `${tag}-cl1`, brokerage_id: brokerage, cron_name: "a", status: "completed", started_at: iso(1) }, { id: `${tag}-cl2`, brokerage_id: brokerage, cron_name: "b", status: "failed", started_at: iso(2) }, { id: `${tag}-cl3`, brokerage_id: brokerage, cron_name: "b", status: "started", started_at: iso(1) }],
   listing_presentations: Array.from({ length: n }, (_, i) => ({ id: `${tag}-lp${i}`, brokerage_id: brokerage, agent_id: `${tag}-ag1`, appointment_at: iso(20) })),

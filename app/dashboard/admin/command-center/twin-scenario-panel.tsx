@@ -76,6 +76,9 @@ export function TwinScenarioPanel({ territories }: { territories: string[] }) {
           ))}
         </div>
       )}
+      {territories.length === 0 && (
+        <p className="text-xs text-muted-foreground">No farm territories assigned yet — the seller lift applies brokerage-wide.</p>
+      )}
       <div className="flex gap-2">
         <Button size="sm" onClick={run} disabled={pending}>{pending ? "Projecting…" : "Project"}</Button>
         {p && p.opportunityGain.addedCloses30d > 0 && <Button size="sm" variant="outline" onClick={promote} disabled={pending}>Promote to proposed mission</Button>}

@@ -64,7 +64,7 @@ export const PROCUREMENT_FACTOR_WEIGHTS: Readonly<Record<ProcurementFactor, numb
   availability: 0.2, price: 0.2, quality: 0.2, sla: 0.15, history: 0.15, preference: 0.1,
 })
 const NEUTRAL = 0.5
-export const PROCUREMENT_SOURCE = "procurement"
+const PROCUREMENT_SOURCE = "procurement"
 export const PROCUREMENT_AUTONOMY_POLICY_KEY = "procurement_autonomy"
 
 // ── FACTS ────────────────────────────────────────────────────────────────────────────────────────
@@ -84,7 +84,8 @@ export interface ProcurementCandidateFacts {
   /** This brokerage's history with the vendor (same service category). */
   history: { completed: number; noShows: number; costs: number[] }
   sla: { slaPct: number; total: number } | null
-  quote: { amount: number; availableOn: string | null; status: string } | null
+  /** notes = the vendor's own words on its quote (scope, what is included) — shown to the approver beside the price. */
+  quote: { amount: number; availableOn: string | null; status: string; notes: string | null } | null
 }
 
 export interface ProcurementRequestFacts {
@@ -185,6 +186,8 @@ export function rankVendorsForRequest(f: ProcurementRequestFacts): VendorRanking
         ? { score: 0, reason: `$${price} over the $${f.budget} budget` }
         : { score: round3(1 - 0.5 * (price / f.budget)), reason: `$${price} within the $${f.budget} budget${c.quote ? " (quoted)" : " (history median)"}` }
     } else factors.price = { score: cheapest && price > 0 ? round3(cheapest / price) : 1, reason: `$${price}${c.quote ? " quoted" : " history median"} vs cheapest $${cheapest}` }
+    // The vendor's own quote note (scope, inclusions) rides the price reason the approver reads — never scored.
+    if (c.quote?.notes && factors.price) factors.price = { ...factors.price, reason: `${factors.price.reason} — vendor note: "${c.quote.notes.slice(0, 140)}"` }
     // quality — the review rollup (vendor_ratings), the loop the review step closes
     const avg = c.rating ? blendedAvg(c.rating.avgAgent, c.rating.avgClient) : null
     factors.quality = avg == null
@@ -269,7 +272,7 @@ export async function gatherProcurementFacts(svc: Svc, input: {
     pids.length ? svc.from("vendor_service_areas").select("platform_vendor_id, state, zip_code, trade_category, status, license, notes").in("platform_vendor_id", pids) : Promise.resolve({ data: [], error: null }),
     svc.from("vendor_ratings").select("vendor_id, avg_agent_rating, avg_client_rating, total_bookings, one_star_count").eq("brokerage_id", input.brokerageId).in("vendor_id", ids),
     svc.from("vendor_bookings").select("vendor_id, service_type, scheduled_date, completed_at, status, cost").eq("brokerage_id", input.brokerageId).in("vendor_id", ids).gte("created_at", since).limit(2000),
-    input.requestId ? svc.from("vendor_booking_quotes").select("vendor_id, amount, available_on, status").eq("brokerage_id", input.brokerageId).eq("booking_id", input.requestId) : Promise.resolve({ data: [], error: null }),
+    input.requestId ? svc.from("vendor_booking_quotes").select("vendor_id, amount, available_on, status, notes").eq("brokerage_id", input.brokerageId).eq("booking_id", input.requestId) : Promise.resolve({ data: [], error: null }),
   ])
   for (const [name, r] of [["vendor_subscriptions", subs], ["vendor_service_areas", areas], ["vendor_ratings", ratings], ["vendor_bookings history", hist], ["vendor_booking_quotes", quotes]] as const) {
     if ((r as any).error) blindSpots.push(`${name} read refused: ${(r as any).error.message} — scored neutral`)
@@ -295,7 +298,7 @@ export async function gatherProcurementFacts(svc: Svc, input: {
       rating: rating ? { avgAgent: rating.avg_agent_rating ?? null, avgClient: rating.avg_client_rating ?? null, sample: rating.total_bookings ?? 0, oneStars: rating.one_star_count ?? 0 } : null,
       history: { completed: mine.filter((b) => b.status === "completed").length, noShows: mine.filter((b) => b.status === "no_show").length, costs: mine.filter((b) => b.status === "completed" && typeof b.cost === "number").map((b) => Number(b.cost)) },
       sla: sla[v.id] ? { slaPct: sla[v.id].slaPct, total: sla[v.id].total } : null,
-      quote: quote ? { amount: Number(quote.amount), availableOn: quote.available_on ?? null, status: quote.status } : null,
+      quote: quote ? { amount: Number(quote.amount), availableOn: quote.available_on ?? null, status: quote.status, notes: quote.notes ?? null } : null,
     })
   }
   return facts
@@ -498,12 +501,12 @@ export async function vendorProcurementView(svc: Svc, actor: { vendorId: string;
   const { data, error } = await svc.from("vendor_bookings").select("id, service_type, status, needed_by, requirements, vendor_id, recommendation").eq("brokerage_id", actor.brokerageId).eq("status", "requested").limit(200)
   if (error) return { ok: false, error: error.message, requests: [] }
   const mine = ((data ?? []) as any[]).filter((r) => r.vendor_id === actor.vendorId || (r.recommendation?.ranked ?? []).some((c: any) => c.vendorId === actor.vendorId))
-  const { data: qs, error: qErr } = await svc.from("vendor_booking_quotes").select("booking_id, amount, available_on, status").eq("brokerage_id", actor.brokerageId).eq("vendor_id", actor.vendorId)
+  const { data: qs, error: qErr } = await svc.from("vendor_booking_quotes").select("booking_id, amount, available_on, status, notes").eq("brokerage_id", actor.brokerageId).eq("vendor_id", actor.vendorId)
   if (qErr) return { ok: false, error: qErr.message, requests: [] }
   // Budget, competitors, scores and other vendors' quotes never leave this function.
   return { ok: true, requests: mine.map((r) => {
     const q = ((qs ?? []) as any[]).find((x) => x.booking_id === r.id)
-    return { id: r.id, service_type: r.service_type, status: r.status, needed_by: r.needed_by ?? null, requirements: r.requirements ?? {}, myQuote: q ? { amount: Number(q.amount), available_on: q.available_on ?? null, status: q.status } : null }
+    return { id: r.id, service_type: r.service_type, status: r.status, needed_by: r.needed_by ?? null, requirements: r.requirements ?? {}, myQuote: q ? { amount: Number(q.amount), available_on: q.available_on ?? null, notes: q.notes ?? null, status: q.status } : null }
   }) }
 }
 

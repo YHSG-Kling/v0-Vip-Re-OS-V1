@@ -61,7 +61,7 @@ export const SCENARIO_LEVER_KEYS = [
   "seller_lead_acquisition_pct", "buyer_lead_acquisition_pct", "ad_spend_pct", "agent_headcount",
   "campaign_cadence_pct", "territory_activation", "isa_capacity_pct",
 ] as const
-export type ScenarioLeverKey = (typeof SCENARIO_LEVER_KEYS)[number]
+type ScenarioLeverKey = (typeof SCENARIO_LEVER_KEYS)[number]
 
 /** Levers a saturation search can sweep (scalar % levers), in priority order. */
 const SWEEPABLE: ReadonlyArray<"seller_lead_acquisition_pct" | "buyer_lead_acquisition_pct" | "ad_spend_pct" | "campaign_cadence_pct"> = [
@@ -316,7 +316,7 @@ export interface ScenarioProjection {
     firstSaturated: ScenarioStage | null
     /** The lever value at which it saturates (null when already saturated at no change, or never within the sweep). */
     atLeverValue: number | null
-    lever: string | null
+    lever: ScenarioLeverKey | null
     /** Stages saturated under the levers as given. */
     saturatedNow: ScenarioStage[]
     /** Per stage, the swept lever value at which it first saturates (null = not within the sweep). */

@@ -1308,15 +1308,23 @@ const DEFAULT_SLICE_READERS: Partial<Record<ManagerKey, TwinSliceReader>> = {
   campaign_orchestrator: async (svc, b, ctx) => {
     const { EXPERIENCE_KINDS } = await import("@/lib/ai-isa/lead-action-plan")
     const d30 = sinceFrom(ctx.at, 30)
-    const [chosen, touches] = await Promise.all([
+    const [chosen, touches, steps, conversions] = await Promise.all([
       sliceRead<{ action: string; created_at: string }>("agent_action_ledger(journey.experience 30d)", svc.from("agent_action_ledger").select("action, created_at").eq("brokerage_id", b).in("action", EXPERIENCE_KINDS.map((k) => `journey.experience.${k}`)).gte("created_at", d30).limit(5000)),
-      sliceRead<{ sent_at: string | null; opened_at: string | null; clicked_at: string | null; converted_at: string | null }>("marketing_campaign_touchpoints(30d)", svc.from("marketing_campaign_touchpoints").select("sent_at, opened_at, clicked_at, converted_at").eq("brokerage_id", b).gte("created_at", d30).limit(5000)),
+      sliceRead<{ sent_at: string | null }>("marketing_campaign_touchpoints(30d)", svc.from("marketing_campaign_touchpoints").select("sent_at").eq("brokerage_id", b).gte("created_at", d30).limit(5000)),
+      // Engagement lives where it is WRITTEN (wave 107 integration): the provider event fan-out stamps
+      // sequence_step_executions.opened_at / replied_at, and sequence-conversion stamps
+      // sequence_enrollments.converted_at — marketing_campaign_touchpoints' opened/clicked/converted
+      // columns have no writer, so reading them reported a permanent 0 as if it were measured.
+      sliceRead<{ opened_at: string | null; replied_at: string | null }>("sequence_step_executions(30d)", svc.from("sequence_step_executions").select("opened_at, replied_at").eq("brokerage_id", b).gte("created_at", d30).limit(5000)),
+      sliceRead<{ converted_at: string | null }>("sequence_enrollments(converted 30d)", svc.from("sequence_enrollments").select("converted_at").eq("brokerage_id", b).gte("converted_at", d30).limit(5000)),
     ])
-    const measures: Record<string, number> = { experiences30d: chosen.length, touchpoints30d: touches.length, opened30d: touches.filter((t) => t.opened_at).length, clicked30d: touches.filter((t) => t.clicked_at).length, converted30d: touches.filter((t) => t.converted_at).length }
+    const measures: Record<string, number> = { experiences30d: chosen.length, touchpoints30d: touches.length, opened30d: steps.filter((t) => t.opened_at).length, replied30d: steps.filter((t) => t.replied_at).length, converted30d: conversions.length }
     for (const k of EXPERIENCE_KINDS) { const n = chosen.filter((c) => c.action === `journey.experience.${k}`).length; if (n) measures[`experience.${k}`] = n }
     return { measures, asOf: ctx.at.toISOString(), evidence: [
       { table: "agent_action_ledger", filter: `brokerage_id=${b} ∧ action∈journey.experience.<EXPERIENCE_KINDS> ∧ created_at ≥ at−30d`, count: chosen.length, via: "lib/ai-isa/lead-action-plan.ts planNextBestExperience (106B)" },
       { table: "marketing_campaign_touchpoints", filter: `brokerage_id=${b} ∧ created_at ≥ at−30d`, count: touches.length, via: "lib/campaign-sequences (touch writers)" },
+      { table: "sequence_step_executions", filter: `brokerage_id=${b} ∧ created_at ≥ at−30d (opened_at / replied_at)`, count: steps.length, via: "lib/outcomes/provider-event-fanout.ts (open/reply stamps)" },
+      { table: "sequence_enrollments", filter: `brokerage_id=${b} ∧ converted_at ≥ at−30d`, count: conversions.length, via: "lib/campaign-sequences/sequence-conversion.ts" },
     ] }
   },
   sphere_of_influence: async (svc, b, ctx) => {
