@@ -444,6 +444,10 @@ jobs:
       # the cap on 16 GB (page-data RSS, above). THE ANSWER IS THE LARGER RUNNER: set the repo
       # variables BUILD_RUNNER (an 8-core / 32 GB label) and BUILD_HEAP_MB (16384) — the
       # owner's "Both" ruling of 2026-10-03 already chose this; the graph cut half was done.
+      # ── 2026-10-06, run 37401062161 (commit 8d341c53a, wave 104): 13312 RAN OUT AGAIN —
+      # last GC 10832.9 used / 11865.6 committed (89.1% of cap), exit 134 at 8m57s. Third heap
+      # abort at the same ~10.8 GB demand across two commits: deterministic, not GC timing.
+      # Guards CI is green at this commit; only next-build needs the larger runner.
       NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_HEAP_MB || '13312' }}"
       #
       # A COMMENT THAT SAID THE OPPOSITE OF THE LINE ABOVE IT USED TO LIVE HERE.
