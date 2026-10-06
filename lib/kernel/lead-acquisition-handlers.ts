@@ -433,6 +433,18 @@ export async function handleLeadAssigned(params: {
     created_at: new Date().toISOString(),
   }), { table: "assignment_log", flow: "lead_assignment_log", brokerageId: brokerageId, reason: "assignment audit row after the assignment landed (checked above)" })
 
+  // Wave 106 (106A integration) — THE SLA ROWS NOW BELONG TO AN AGENT: the open first_contact /
+  // qualification timers this lead carries are stamped with the agent who just received it, so a
+  // breach is "breached per agent" (lib/kernel/resource-allocation.ts reads lead_sla_tracking.agent_id
+  // for the SLA step of the assignment chain; the stale-lead processor still derives the breach).
+  await sentinelWrite(supabase, supabase
+    .from('lead_sla_tracking')
+    .update({ agent_id: agentId })
+    .eq('lead_id', leadId)
+    .eq('brokerage_id', brokerageId)
+    .is('agent_id', null)
+    .is('completed_at', null), { table: "lead_sla_tracking", flow: "lead_sla_agent_stamp", brokerageId: brokerageId, reason: "attributes the lead's open SLA timers to the assigned agent; a refusal is logged, the assignment already landed" })
+
   await sentinelWrite(supabase, supabase
     .from('lead_sla_tracking')
     .update({ completed_at: new Date().toISOString() })

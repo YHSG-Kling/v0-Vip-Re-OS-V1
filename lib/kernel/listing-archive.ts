@@ -229,6 +229,9 @@ export const LISTING_CHILD_RULES: readonly ChildRule[] = [
   { table: "offer_comparison", column: "listing_id", disposition: "block", why: "belongs to offers" },
   { table: "strategy_recommendations", column: "listing_id", disposition: "block", why: "belongs to offers / contacts" },
   { table: "marketing_campaigns", column: "listing_id", disposition: "block", why: "campaign with real spend and its own children" },
+  // Wave 106 (106C, m719): the media record points at the listing it was made for; the asset is the
+  // brokerage's (cost, rights, lineage, campaign) and outlives the listing — the FK is ON DELETE SET NULL.
+  { table: "marketing_assets", column: "listing_id", disposition: "detach", why: "a media asset with its own cost, rights and lineage; the listing pointer is a reference, not ownership" },
   { table: "qr_codes", column: "listing_id", disposition: "block", why: "belongs to a marketing_campaign, printed in the world" },
   { table: "social_posts", column: "listing_id", disposition: "block", why: "published content on a social account" },
   { table: "ai_message_drafts", column: "listing_id", disposition: "block", why: "belongs to a conversation / message thread" },

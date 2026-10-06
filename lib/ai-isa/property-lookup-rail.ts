@@ -200,6 +200,7 @@
  * scripts/provider-cost-routing-guard.ts holds that.
  */
 
+import type { EnrichmentDecision } from "@/lib/kernel/resource-allocation"
 import type { BatchDataToolTier } from "@/lib/ai-isa/persona-tool-policy"
 import { BATCHDATA_SKIP_TRACE_COST_USD, BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD } from "@/lib/external/batchdata-client"
 import { PEOPLEDATA_MATCH_COST_USD, PEOPLEDATA_EMAIL_VALIDATE_COST_USD } from "@/lib/external/peopledata-client"
@@ -493,7 +494,8 @@ export async function runVersiumContactLeg(
      * bought before; a caller naming a decision none of the missing fields can change buys NOTHING
      * (`skipped: "no_decision_impact"`), and a field the decision does not depend on is never asked.
      */
-    decision?: string
+    /** Wave 106A: the DECLARED decision the purchase must be able to change (lib/kernel/resource-allocation.ts DECISION_FIELD_DEPENDENCIES). */
+    decision?: EnrichmentDecision
   },
   deps: {
     call?: VersiumContactCall
@@ -515,7 +517,7 @@ export async function runVersiumContactLeg(
   // Wave 106A — THE DATA SPEND GATE: only the missing fields that could change the declared decision
   // are bought (fail closed on an undeclared decision; the per-decision USD cap is tenant policy).
   const { shouldPurchaseEnrichment, loadResourceAllocationPolicy } = await import("@/lib/kernel/resource-allocation")
-  const decision = req.decision ?? (req.stage === "lead" ? "lead_first_touch" : "contact_first_touch")
+  const decision: EnrichmentDecision = req.decision ?? (req.stage === "lead" ? "lead_first_touch" : "contact_first_touch")
   const policy = req.brokerageId
     ? await (deps.allocationPolicy
         ? deps.allocationPolicy(req.brokerageId)

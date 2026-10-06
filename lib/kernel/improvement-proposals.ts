@@ -450,7 +450,8 @@ async function applyChange(svc: Svc, row: ImprovementProposalRow, actor: PolicyA
       if (!gate.ok) throw new Error(`${gate.reason} — the lead is not assignable`)
       const { handleLeadAssigned } = await import("@/lib/kernel/lead-acquisition-handlers")
       await handleLeadAssigned({ leadId, brokerageId: row.brokerage_id, agentId, method: "ai_recommendation", scoreAtAssignment: Number(lead.lead_score ?? 0) })
-      await svc.from("assignment_log").update({ routing_reason: `[allocation_proposal:${row.id}][gate:${gate.via}] human-approved resource allocation recommendation` }).eq("lead_id", leadId).eq("brokerage_id", row.brokerage_id).is("routing_reason", null)
+      const { error: logErr } = await svc.from("assignment_log").update({ routing_reason: `[allocation_proposal:${row.id}][gate:${gate.via}] human-approved resource allocation recommendation` }).eq("lead_id", leadId).eq("brokerage_id", row.brokerage_id).is("routing_reason", null)
+      if (logErr) console.error(`[improvement-proposals] assignment_log routing_reason not stamped for lead ${leadId}: ${logErr.message}`)
       return { writer: "handleLeadAssigned", previous: null, policyVersionRef: null }
     }
     case "prompt":
