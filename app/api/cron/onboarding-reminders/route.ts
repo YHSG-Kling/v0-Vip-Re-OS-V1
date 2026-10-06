@@ -68,6 +68,17 @@ export async function GET(request: Request) {
       console.error("[OnboardingReminders] skill freshness radar:", e)
     }
 
+    // ADAPTIVE AGENT DEVELOPMENT (wave 106, lane 106D) — one cycle per active agent: observed weakness →
+    // education recommendation → assessment nudge → competency update on evidence (ledgered per step).
+    let development = { brokerages: 0, agents: 0, recommended: 0, nudged: 0, improved: 0 }
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const { runAdaptiveDevelopmentAll } = await import("@/lib/education/skill-freshness-radar")
+      development = await runAdaptiveDevelopmentAll(createServiceClient())
+    } catch (e) {
+      console.error("[OnboardingReminders] adaptive development:", e)
+    }
+
     // ONBOARDING FALL-BEHIND — a new agent materially behind their 90-day ramp (red) → ONE gated broker
     // intervention with a check-in script (the agent-facing reminder handles the gentler cases).
     let fallBehindInterventions = 0
@@ -95,8 +106,8 @@ export async function GET(request: Request) {
       console.error("[OnboardingReminders] subscriber stall:", e)
     }
 
-    await recordCronSuccessAction({ context_id: contextId, records_processed: mentorship.graduated + mentorship.nudged + skillRefreshers + fallBehindInterventions + tenantCheckIns.sent + subscriberStall.nudged + subscriberStall.escalated, metadata: { mentorship, skillRefreshers, fallBehindInterventions, tenantCheckIns, subscriberStall } })
-    return NextResponse.json({ ok: true, mentorship, skillRefreshers, fallBehindInterventions, tenantCheckIns, subscriberStall }, { status: 200 })
+    await recordCronSuccessAction({ context_id: contextId, records_processed: mentorship.graduated + mentorship.nudged + skillRefreshers + fallBehindInterventions + tenantCheckIns.sent + subscriberStall.nudged + subscriberStall.escalated + development.recommended + development.nudged + development.improved, metadata: { mentorship, skillRefreshers, fallBehindInterventions, tenantCheckIns, subscriberStall, development } })
+    return NextResponse.json({ ok: true, mentorship, skillRefreshers, fallBehindInterventions, tenantCheckIns, subscriberStall, development }, { status: 200 })
   } catch (err) {
     console.error("[cron/onboarding-reminders] Failed:", err)
     await recordCronFailureAction({ context_id: contextId, error: err as Error | string, stage: "main-processing" })

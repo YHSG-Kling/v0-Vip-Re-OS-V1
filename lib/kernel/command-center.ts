@@ -258,6 +258,11 @@ export interface CommandCenterData {
    *  (lib/kernel/relationship-graph.ts countRelationships), read beside the twin. `degraded` = the
    *  table is not there yet; null = not read (no brokerage scope) — never a fake zero. */
   relationships: { count: number; degraded: boolean } | null
+  /** RESOURCE ALLOCATION RECOMMENDATIONS (wave 106, lane 106A) — the OPEN allocation proposals
+   *  (lead assignment / marketing budget) awaiting a human on the Manager Trust page
+   *  (lib/kernel/resource-allocation.ts loadAllocationBoard). Brokerage-wide, admin-gated by this
+   *  loader's caller; null when not read (no brokerage scope) — never a fake zero. */
+  allocationBoard: import("@/lib/kernel/resource-allocation").AllocationBoard | null
   /** Proposed AI ISA voice dial batches awaiting approval (AI ISA — "call my hottest N"). */
   dialBatches:     Array<{ id: string; proposedCount: number; proposedAt: string | null }>
   /** Managers talking — recent inter-manager signals (who told whom what, and what the
@@ -818,6 +823,19 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
       console.error("[command-center] relationships count failed:", err)
     }
   }
+  // RESOURCE ALLOCATION RECOMMENDATIONS (wave 106A) — read beside the twin, same scope rule; a refused
+  // read leaves the card out (null), never "no recommendations".
+  let allocationBoard: import("@/lib/kernel/resource-allocation").AllocationBoard | null = null
+  if (brokerageId && brokerageWide) {
+    try {
+      const { loadAllocationBoard } = await import("@/lib/kernel/resource-allocation")
+      const b = await loadAllocationBoard(supabase as any, brokerageId)
+      if (!b.ok) console.error(`[command-center] allocation board refused: ${b.error}`)
+      else allocationBoard = b.board
+    } catch (err) {
+      console.error("[command-center] allocation board failed:", err)
+    }
+  }
   if (brokerageId && (brokerageWide || (scope?.kind === "team" && scope.teamId))) {
     // Lane 104F: the twin's seams REGISTER AT MODULE LOAD — the economic graph (104A,
     // registerTwinSeam("contributionMargin")) and the mission runtime (104D, registerTwinSeam("missions")).
@@ -847,6 +865,17 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
         if (synced.readRefused) console.error(`[command-center] mission progress from twin: missions read refused: ${synced.readRefused}`)
       } catch (err) {
         console.error("[command-center] mission progress from twin failed:", err)
+      }
+      // NEED-DRIVEN RECRUITING (106E): the twin's recruiting needs become recruiting missions held
+      // APPROVAL_REQUIRED for a human (lib/kernel/missions.ts ensureRecruitingMissionsFromTwin —
+      // idempotent per need; nothing reaches a prospect). Brokerage-wide only. Best-effort.
+      try {
+        const { ensureRecruitingMissionsFromTwin } = await import("@/lib/kernel/missions")
+        const r = await ensureRecruitingMissionsFromTwin(brokerageTwin, supabase as any)
+        if (r.readRefused) console.error(`[command-center] recruiting needs: missions read refused: ${r.readRefused}`)
+        for (const x of r.refused) console.error(`[command-center] recruiting need not held for approval: ${x}`)
+      } catch (err) {
+        console.error("[command-center] recruiting needs from twin failed:", err)
       }
     }
   }
@@ -883,6 +912,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     weeklyExecPlan,
     brokerageTwin,
     relationships,
+    allocationBoard,
     dialBatches,
     managerTalk,
     managerActivity,

@@ -33,13 +33,18 @@ import { parsePolicyKey, formatPolicyRef, type PolicyActor } from "@/lib/kernel/
 import type { AuthorityLevel } from "@/lib/ai-isa/persona-tool-policy"
 import type { AutonomyDecision } from "@/lib/managers/autonomy-gate"
 
-export const PROPOSAL_SUBJECT_KINDS = ["policy", "prompt", "variant", "threshold"] as const
+// Wave 106 (lane 106A, m721 — additive widening): `allocation` = a RESOURCE ALLOCATION recommendation
+// (lib/kernel/resource-allocation.ts — lead assignment / marketing budget) a human approves; proposer
+// `resource_allocation`. scripts/check-vocabulary-guard.ts mirrors both constants against the CHECK.
+export const PROPOSAL_SUBJECT_KINDS = ["policy", "prompt", "variant", "threshold", "allocation"] as const
 export type ProposalSubjectKind = (typeof PROPOSAL_SUBJECT_KINDS)[number]
 
 export const PROPOSAL_STATUSES = ["PROPOSED", "EVALUATED", "APPROVED", "REJECTED", "PROMOTED", "ROLLED_BACK"] as const
 export type ProposalStatus = (typeof PROPOSAL_STATUSES)[number]
 
-export const PROPOSERS = ["copy_learning", "predictor_learning", "prompt_calibrator", "outcome_autopsy", "human"] as const
+// media_intelligence (wave 106C, m719 widens the m709 CHECK — APPLIED LIVE 2026-10-06; before it a media
+// proposal's insert is refused by the live CHECK and learnFromPerformance reports it, never silently).
+export const PROPOSERS = ["copy_learning", "predictor_learning", "prompt_calibrator", "outcome_autopsy", "human", "media_intelligence", "resource_allocation"] as const
 export type Proposer = (typeof PROPOSERS)[number]
 
 /** The state machine (m709 CHECK is the vocabulary; this is the order). */
@@ -64,6 +69,8 @@ export const PROPOSAL_AUTHORITY: Readonly<Record<ProposalSubjectKind, AuthorityL
   threshold: 4,
   policy: OWNER_AUTHORITY_LEVEL,
   prompt: OWNER_AUTHORITY_LEVEL,
+  // "Not automatically at first. Recommendation mode first." (owner, wave 106) — a human, always.
+  allocation: OWNER_AUTHORITY_LEVEL,
 })
 
 export type EvaluationVerdict = "pass" | "fail" | "inconclusive"
@@ -223,6 +230,12 @@ export async function evaluateImprovement(
       const detail = { replayed: r.replayed, agreements: r.agreements, disagreements: r.disagreements.length, earnedChanged, earnedCents, byReasonCode: r.byReasonCode, attributionError: res.attributionError }
       if (earnedChanged > 0) return { evaluator: "decision_replay", verdict: "fail", score: r.agreementRate, why: `would change ${earnedChanged} decision(s) that earned $${(earnedCents / 100).toFixed(2)} (attributed) — refused`, detail }
       return { evaluator: "decision_replay", verdict: "pass", score: r.agreementRate, why: `replayed ${r.replayed}: ${r.agreements} unchanged, ${r.disagreements.length} would change, none of them earned`, detail }
+    }
+    case "allocation": {
+      // Wave 106A: the chain already ran deterministically (every factor named with its reader and blind
+      // spots); there is no replay for "who should get this lead" — a human decides, never a model.
+      const rec = (change.recommendation ?? null) as { chain?: unknown[]; blindSpots?: string[]; recommended?: unknown; allocations?: unknown[] } | null
+      return { evaluator: "none", verdict: "inconclusive", score: null, why: `a resource allocation recommendation (${String(change.kind ?? "unknown")}) is decided by a human — ${String(change.summary ?? "no summary")}`, detail: { kind: change.kind ?? null, chainSteps: rec?.chain?.length ?? 0, blindSpots: rec?.blindSpots ?? [] } }
     }
     case "prompt":
     default:
@@ -414,6 +427,31 @@ async function applyChange(svc: Svc, row: ImprovementProposalRow, actor: PolicyA
       const r = direction === "promote" ? await retireLosingVariants(svc, row.brokerage_id, loserIds) : await restoreRetiredVariants(svc, row.brokerage_id, loserIds)
       if (!r.ok) throw new Error(r.error)
       return { writer: "campaign_sequence_steps.is_active", previous: { active: true }, policyVersionRef: null, loserIds }
+    }
+    case "allocation": {
+      // Wave 106A: an APPROVED lead-assignment recommendation commits through the SURVIVOR commit path
+      // (lib/kernel/lead-acquisition-handlers.ts handleLeadAssigned — the same handoff autoAssignLead
+      // runs), behind the SAME gate (evaluateAssignmentEligibility) and the idempotency the assigner
+      // keeps (an already-owned lead is never handed out twice). A marketing allocation has no survivor
+      // budget writer: the approval IS the review (the budgets are set on the campaign / territory screens).
+      if (direction === "rollback") throw new Error("an applied lead assignment is not rolled back here — reassign the contact on the team board")
+      const kind = String(change.kind ?? "")
+      if (kind !== "lead_assignment") throw new Error("a marketing allocation is applied on the campaign / territory budget screens — the approval is the review")
+      const rec = (change.recommendation ?? {}) as { leadId?: string; recommended?: { agentId?: string } | null }
+      const leadId = String(rec.leadId ?? row.subject_key.replace(/^lead_assignment:/, ""))
+      const agentId = rec.recommended?.agentId
+      if (!agentId) throw new Error("the recommendation names no agent — nothing to apply")
+      const { data: lead, error: leadErr } = await svc.from("leads").select("id, agent_id, lead_stage, lifecycle_state, lead_score").eq("id", leadId).eq("brokerage_id", row.brokerage_id).maybeSingle()
+      if (leadErr) throw new Error(`lead read refused: ${leadErr.message}`)
+      if (!lead) throw new Error("lead not found in this brokerage")
+      if (lead.agent_id) throw new Error(`lead already has an owner (${lead.agent_id}) — no second assignment; reassign the contact on the team board`)
+      const { evaluateAssignmentEligibility } = await import("@/lib/lead-assignment/rule-matcher")
+      const gate = evaluateAssignmentEligibility(lead.lead_stage, lead.lifecycle_state)
+      if (!gate.ok) throw new Error(`${gate.reason} — the lead is not assignable`)
+      const { handleLeadAssigned } = await import("@/lib/kernel/lead-acquisition-handlers")
+      await handleLeadAssigned({ leadId, brokerageId: row.brokerage_id, agentId, method: "ai_recommendation", scoreAtAssignment: Number(lead.lead_score ?? 0) })
+      await svc.from("assignment_log").update({ routing_reason: `[allocation_proposal:${row.id}][gate:${gate.via}] human-approved resource allocation recommendation` }).eq("lead_id", leadId).eq("brokerage_id", row.brokerage_id).is("routing_reason", null)
+      return { writer: "handleLeadAssigned", previous: null, policyVersionRef: null }
     }
     case "prompt":
     default:

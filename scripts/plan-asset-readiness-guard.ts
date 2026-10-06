@@ -341,7 +341,11 @@ async function main() {
     check("the campaign playbook video stamps its still's provenance (campaignStillProvenance → asset_readiness)", /campaignStillProvenance\(still, \{ forCampaignVideo: !!campaignVideoStillUrl \}\)/.test(playbooks) && /asset_readiness:/.test(playbooks) && /stillLedger,/.test(playbooks))
     const mod = code("lib/video/plan-asset-readiness.ts")
     check("the module CONSUMES 84B's rule (screenshotUseAllowed from the seam) and door (approvedTenantStill(…, \"campaign_video\")), restating no use list", /import \{ screenshotUseAllowed\b[^}]*\} from "@\/lib\/assets\/screenshot-capture"/.test(mod) && /d\.stillUseAllowed\("general", use\)/.test(mod) && /subject: "general"/.test(mod) && /approvedTenantStill\(svc, a\.brokerageId, \{ address: a\.address \}, "campaign_video"\)/.test(mod) && !/ZESTIMATE_SCREENSHOT_USES|ZESTIMATE_STILL_USES|PUBLIC_PAGE_STILL_USES|SCREENSHOT_USE_RULE/.test(mod))
-    check("creation books on the cost ledger (ai_tool_usage insert, counted) and captures into the library", /\.from\("ai_tool_usage"\)\.insert\(/.test(mod) && /\.select\("id"\)/.test(mod) && /\.from\("marketing_assets"\)\.insert\(/.test(mod))
+    // Wave 106 (106C): the library capture goes through THE ONE asset writer (lib/kernel/media-intelligence.ts
+    // recordMediaAsset — lineage, rights, the owner shape) with bookCost:false, since the spend is booked HERE
+    // (bookImageSpend) and never twice; the marketing_assets insert now lives in that writer.
+    const mediaWriter = code("lib/kernel/media-intelligence.ts")
+    check("creation books on the cost ledger (ai_tool_usage insert, counted) and captures into the library through the ONE asset writer (cost booked once)", /\.from\("ai_tool_usage"\)\.insert\(/.test(mod) && /\.select\("id"\)/.test(mod) && /recordMediaAsset\(svc, \{/.test(mod) && /bookCost: false/.test(mod) && !/\.from\("marketing_assets"\)\.insert\(/.test(mod) && /\.from\("marketing_assets"\)\.insert\(/.test(mediaWriter))
     check("the readiness module reuses the survivors (pickBrollClips, pickStockAsset, listScreenshotStillsForUse, seedMissingDemoStill, generateImage, approvedTenantStill)",
       ["pickBrollClips", "pickStockAsset", "listScreenshotStillsForUse", "seedMissingDemoStill", "generateImage", "approvedTenantStill"].every((f) => new RegExp(`\\b${f}\\b`).test(mod)))
   }

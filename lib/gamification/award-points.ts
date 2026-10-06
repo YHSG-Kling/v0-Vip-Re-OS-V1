@@ -76,6 +76,9 @@ export const POINT_VALUES = {
   REFERRAL_CONVERTED: 100,
   /** A close for a contact the agent has ALREADY closed with — the repeat client. */
   REPEAT_CLIENT_CLOSED: 150,
+  /** Wave 106 (106D): a competency score ROSE on evidence (the adaptive development loop's update
+   *  step). The improvement earns it — a completed module earns nothing here by design. */
+  COMPETENCY_IMPROVED: 50,
 } as const
 
 export type PointReason = keyof typeof POINT_VALUES
@@ -276,6 +279,10 @@ export const LIFECYCLE_AWARD_RULES: readonly LifecycleAwardRule[] = [
   { event: KernelEvent.CE_COMPLETED, reason: "CE_COMPLETED", scope: "per_reference", party: "acting", referenceType: "agent_ce_completion" },
   { event: KernelEvent.MENTOR_SESSION_HELD, reason: "MENTOR_SESSION_HELD", scope: "per_reference", party: "mentor_and_mentee", referenceType: "mentor_session" },
   { event: KernelEvent.AGENT_WORK_ANNIVERSARY, reason: "WORK_ANNIVERSARY", scope: "per_year", party: "acting", referenceType: "agent" },
+  // Wave 106 (106D): the development loop's competency update — once per competency node per year
+  // (the entity is the deterministic competency uuid; metadata.agent_id names the earner), so a
+  // score that oscillates across the bar cannot farm the award.
+  { event: KernelEvent.COMPETENCY_IMPROVED, reason: "COMPETENCY_IMPROVED", scope: "per_reference_per_year", party: "acting", referenceType: "competency" },
   // ── customer lifecycle — "knows the client for life" earns the agent recognition ──
   // Wave 104 (lane 104E): the kept touch rides the TOUCH itself — LIFETIME_CUSTOMER_TOUCHPOINT_SENT, emitted
   // ONCE by lib/sphere/lifetime-touchpoint-ledger.ts (metadata.agent_id = the agent who kept it) — no longer

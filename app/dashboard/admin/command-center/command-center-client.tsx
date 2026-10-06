@@ -325,6 +325,35 @@ export function CommandCenterClient({
         </section>
       )}
 
+      {/* Wave 106E — THE BROKERAGE TWIN's workforce line: the classified roster (lib/kernel/brokerage-twin.ts
+          workforce, evidence + policy threshold on every classification) and the territories whose seller
+          demand is rising — the recruiting needs the Missions card holds for approval. Admin-gated page. */}
+      {data.brokerageTwin?.workforce && (
+        <section className="space-y-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold">Brokerage twin — workforce</h2>
+            <span className="text-xs text-muted-foreground">as of {data.brokerageTwin.at.slice(0, 16).replace("T", " ")} · thresholds from {data.brokerageTwin.workforce.thresholdsSource === "policy" ? "tenant policy" : "platform defaults"}</span>
+          </div>
+          <Card className="p-4 space-y-2">
+            <div className="text-sm">
+              {data.brokerageTwin.workforce.agents.length} agent{data.brokerageTwin.workforce.agents.length === 1 ? "" : "s"} profiled —{" "}
+              {(["strong_listing", "strong_buyer", "investor", "bilingual", "luxury_specialist", "overwhelmed", "underutilized", "in_development"] as const)
+                .filter((k) => (data.brokerageTwin!.workforce.totals[k] ?? 0) > 0)
+                .map((k) => `${data.brokerageTwin!.workforce.totals[k]} ${k.replace("_specialist", "").replace(/_/g, " ")}`)
+                .join(" · ") || "no classification met its threshold yet"}
+            </div>
+            {data.brokerageTwin.workforce.territories.filter((t) => t.trend === "up").length > 0 && (
+              <div className="text-xs text-muted-foreground">
+                Seller demand rising: {data.brokerageTwin.workforce.territories.filter((t) => t.trend === "up").map((t) => `${t.territory} (${t.sellerLeadsPrev30d}→${t.sellerLeads30d} seller leads, ${t.agentsWithHeadroom} serving with headroom${t.luxuryShare30d >= 0.3 ? `, ${Math.round(t.luxuryShare30d * 100)}% luxury` : ""})`).join("; ")} — recruiting needs are held on the Missions card until you approve them.
+              </div>
+            )}
+            {data.brokerageTwin.blindSpots.length > 0 && (
+              <div className="text-xs text-muted-foreground">Blind spots: {data.brokerageTwin.blindSpots.slice(0, 3).join(" · ")}{data.brokerageTwin.blindSpots.length > 3 ? ` · +${data.brokerageTwin.blindSpots.length - 3}` : ""}</div>
+            )}
+          </Card>
+        </section>
+      )}
+
       {/* Wave 104A — LEDGER TRUTH: the brokerage's contribution margin derived from the posted
           commission ledger + cost ledgers only (lib/kernel/economic-graph.ts), and how many
           money summaries have drifted from it. Admin-gated page; agents never see margin (§5). */}

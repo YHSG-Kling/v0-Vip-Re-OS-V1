@@ -99,6 +99,9 @@ import { permittedLeadChannels, decideNextChannel } from "./next-best-touch"
 import type { GenerationalCohort } from "@/lib/kernel/education"
 import type { DecayedIntent } from "@/lib/lead-intelligence/behavioral-summary"
 import type { recordNonAction as recordNonActionType } from "@/lib/kernel/action-ledger"
+// Wave 106 (106B) — type-only (erased): the experience executors are manager keys + catalogue capabilities.
+import type { ManagerKey } from "@/lib/kernel/manager-registry"
+import type { AppCapability } from "@/lib/agentic-os/app-capability-registry"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE PLAN'S VOCABULARY
@@ -1793,4 +1796,516 @@ export async function advanceLeadActionPlans(input: {
   }
 
   return out
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WAVE 106 (lane 106B) — THE NEXT BEST EXPERIENCE: THE ADAPTIVE CUSTOMER JOURNEY
+// ═════════════════════════════════════════════════════════════════════════════
+// OWNER (2026-10-06): not "every buyer gets Sequence #4". PERSON + OPPORTUNITY +
+// BEHAVIOR + MEMORY + TRANSACTION STATE + EDUCATION STATE + FATIGUE + POLICY =
+// NEXT BEST EXPERIENCE; the experiences are communication, education, video,
+// properties, appointment, agent intervention, market update, portal task,
+// document explanation, nothing/wait; AI ISA + Shopping Agent + Listing Concierge +
+// Asset Manager + Campaign Manager + Deal Coordinator together.
+//
+// THIS IS THE SAME NBA, ONE RUNG UP — not a second planner. decideNextAction above
+// answers "may the ISA touch this person now, and why not" (the WHETHER). The
+// experience planner takes that verdict as its first input and answers the WHAT:
+// which KIND of experience serves this person next, ranked, with the manager that
+// executes it. Every slice reaches it through the reader that already owns it:
+//   PERSON ........ the contact row (CONTACT_CONTEXT_COLUMNS, lib/kernel/mission-context.ts)
+//   OPPORTUNITY ... loadContactNbaContext (dead ends, agent touch, appointment, callback, household)
+//   BEHAVIOR ...... decayed intent (buildBehavioralIntentSummary, inside the NBA context) +
+//                   marketing_campaign_touchpoints (the campaign bridge's rows) + the portal's
+//                   education views (lifecycle_events PORTAL_EDUCATION_VIEWED)
+//   MEMORY ........ loadContactMemoryForPrompt → currentMemoryFacts (inside the NBA context)
+//   TRANSACTION ... transactions (contact_id / buyer_contact_id) + transaction_milestones
+//                   (the milestone-service's rows; is_client_visible is the portal task)
+//   EDUCATION ..... learning_assignments keyed by contact_id (lib/kernel/education.ts) +
+//                   learning_modules (milestone_key ties a lesson to the deal's stage)
+//   FATIGUE ....... buyer_fatigue_scores.risk_level (the one calculator, contact scope — read
+//                   as lib/kernel/deconflict reads it) + the NBA's 48h fatigue window
+//   POLICY ........ resolveLeadSettingsResolution (contact_allowed_channels, auto-send) +
+//                   the compliance hard flag the caller already evaluated
+// The planner is PURE and DETERMINISTIC — no model call, so no AI spend ("use expensive
+// reasoning only when expected value justifies it"; choosing WHICH experience is a rule,
+// not a reasoning task). SEQUENCES STAY THE DELIVERY SURVIVOR: the planner chooses, the
+// enroller / engageContact / the delegated manager delivers. FAIL CLOSED: an unreadable
+// consent-bearing slice (the NBA context, the transaction) refuses the plan; an unreadable
+// evidence slice (fatigue, education, behavior) is published as a blind spot beside it.
+
+/**
+ * THE ONE EXPERIENCE VOCABULARY (CLAUDE.md §6). A const, not a CHECK: it is written only
+ * into agent_action_ledger.detail.experience (jsonb) and lifecycle_events.metadata — no column
+ * carries it, so no m718 is owed. isExperienceKind is the reader-side guard.
+ */
+export const EXPERIENCE_KINDS = Object.freeze([
+  "communication", "education", "video", "properties", "appointment",
+  "agent_intervention", "market_update", "portal_task", "document_explanation", "wait",
+] as const)
+export type ExperienceKind = (typeof EXPERIENCE_KINDS)[number]
+export function isExperienceKind(v: unknown): v is ExperienceKind {
+  return typeof v === "string" && (EXPERIENCE_KINDS as readonly string[]).includes(v)
+}
+
+/** The six managers the owner named as executing the journey together. */
+export type ExperienceExecutor = Extract<ManagerKey, "ai_isa" | "shopping_agent" | "listing_concierge" | "asset_manager" | "campaign_orchestrator" | "deal_coordinator">
+
+export interface ExperienceExecution {
+  manager: ExperienceExecutor
+  /** The catalogue capability the ISA delegates through (lib/kernel/manager-delegation.ts
+   *  requestDelegation — owned by `manager` per CAPABILITY_MANAGER). null = the executor acts on
+   *  its own rail (named in `rail`) and the planner only hands it the request. */
+  capability: AppCapability | null
+  rail: string
+}
+
+/** WHO EXECUTES EACH EXPERIENCE — the manager registry's own ownership, spelled once. */
+export const EXPERIENCE_EXECUTORS: Readonly<Record<ExperienceKind, ExperienceExecution>> = Object.freeze({
+  communication:        { manager: "ai_isa",               capability: null,                   rail: "campaign sequences (lib/campaign-sequences) / engageContact — the ISA delivers itself" },
+  education:            { manager: "campaign_orchestrator", capability: "education_assign",     rail: "learning_assignments via education_assign (lib/kernel/education.ts assignResource)" },
+  video:                { manager: "asset_manager",         capability: "content_repurpose",    rail: "lib/video/memory-video.ts offerMemoryVideo / lib/video/intro-video-reactor.ts dispatchAnniversaryVideo" },
+  properties:           { manager: "shopping_agent",        capability: null,                   rail: "lib/property-alerts/alert-engine.ts (the shopping agent's own match rail)" },
+  appointment:          { manager: "shopping_agent",        capability: "appointment_schedule", rail: "appointment_schedule" },
+  agent_intervention:   { manager: "ai_isa",               capability: null,                   rail: "lib/ai-isa/callback-task.ts createCallbackTask (assigneeType 'agent') — a human decides" },
+  market_update:        { manager: "listing_concierge",     capability: "cma_generate",         rail: "cma_generate (the seller's market update)" },
+  portal_task:          { manager: "deal_coordinator",      capability: "transaction_advance",  rail: "transaction_milestones.is_client_visible (lib/transactions/milestone-service.ts)" },
+  document_explanation: { manager: "deal_coordinator",      capability: null,                   rail: "lib/kernel/client-story-drafts.ts (the deal coordinator explains its own documents)" },
+  wait:                 { manager: "ai_isa",               capability: null,                   rail: "nothing — the decision row is the act" },
+})
+
+export interface NextBestExperienceInput {
+  now: Date
+  subject: "lead" | "contact"
+  /** OPPORTUNITY + BEHAVIOR(intent) + MEMORY + FATIGUE(touch window) — loadContactNbaContext's context. */
+  nba: NextBestActionContext
+  person: { contactType: string | null; persona: string | null; hasAssignedAgent: boolean; stage?: string | null }
+  behavior: { touchpoints7d: number; lastTouchpointChannel: string | null; portalEducationViews: number }
+  transaction: { id: string; stage: string | null; status: string | null; nextMilestone: { name: string; type: string | null; targetDate: string | null; clientVisible: boolean } | null } | null
+  education: { open: number; completed: number; nextModule: { id: string; title: string | null; milestoneKey: string | null } | null } | null
+  fatigue: { riskLevel: string | null }
+  policy: {
+    /** A HARD fair-housing / compliance flag the caller already holds (evaluateOutbound's hard verdict,
+     *  a compliance hold on the person). Warnings pass through (§5); only a hard flag escalates. */
+    complianceHardFlag: boolean
+    allowedChannels: readonly string[]
+    autoSendAllowed: boolean
+    videoAllowed: boolean
+  }
+  /** Slices that could not be read (published, never silent). */
+  blindSpots?: readonly string[]
+}
+
+export interface RankedExperience {
+  kind: ExperienceKind
+  score: number
+  reasons: string[]
+  manager: ExperienceExecutor
+  capability: AppCapability | null
+  dueAt: Date | null
+}
+
+export interface NextBestExperiencePlan {
+  chosen: RankedExperience
+  ranked: RankedExperience[]
+  /** The WHETHER verdict the WHAT was built on. */
+  nba: LeadTouchPlan
+  /** Which slices contributed a reason (the proof asserts each one can). */
+  contributed: string[]
+  blindSpots: string[]
+  evidence: NbaEvidence[]
+}
+
+const ACTIVE_TX_STAGES: ReadonlySet<string> = new Set(["UNDER_CONTRACT", "INSPECTION", "APPRAISAL", "FINANCING_PENDING", "CLOSING_PREP"])
+const ACTIVE_TX_STATUSES: ReadonlySet<string> = new Set(["under_contract", "pending", "clear_to_close"])
+const DOCUMENT_MILESTONE = /disclosure|contract|addend|inspection|appraisal|title|loan|financ|document|closing|settlement|escrow/i
+const FATIGUE_WAIT_LEVELS: ReadonlySet<string> = new Set(["high", "critical"])
+
+/** PURE. The transaction is ACTIVE (a document / portal task can be owed) only inside the contract-to-close window. */
+export function transactionIsActive(tx: NextBestExperienceInput["transaction"]): boolean {
+  if (!tx) return false
+  return (!!tx.stage && ACTIVE_TX_STAGES.has(tx.stage)) || (!!tx.status && ACTIVE_TX_STATUSES.has(tx.status))
+}
+
+/**
+ * planNextBestExperience — PURE, DETERMINISTIC. Every slice adds a candidate with a reason; the
+ * highest score is the chosen experience. Precedence that is not a score: a HARD compliance flag
+ * is agent_intervention whatever else is true; a blocking NBA verdict (dead end, pause, agent
+ * handling, appointment, the 48h fatigue window, quiet hours) or a high/critical fatigue score is
+ * `wait` — nothing automated outranks "do not touch this person now".
+ * @proofSeam exported so scripts/next-best-experience-guard.ts asserts every slice's contribution (and its control) on the pure function directly.
+ */
+export function planNextBestExperience(input: NextBestExperienceInput): NextBestExperiencePlan {
+  const now = input.now
+  const nba = planNextContactTouch({ now, context: input.nba })
+  const cand = new Map<ExperienceKind, { score: number; reasons: string[]; dueAt: Date | null }>()
+  const contributed = new Set<string>()
+  const add = (kind: ExperienceKind, delta: number, reason: string, slice: string, dueAt: Date | null = null) => {
+    const c = cand.get(kind) ?? { score: 0, reasons: [], dueAt: null }
+    c.score += delta
+    c.reasons.push(reason)
+    if (dueAt && (!c.dueAt || dueAt < c.dueAt)) c.dueAt = dueAt
+    cand.set(kind, c)
+    contributed.add(slice)
+  }
+
+  // POLICY — the hard flag. A human decides; nothing automated is ranked above it.
+  if (input.policy.complianceHardFlag) add("agent_intervention", 100, "hard fair-housing / compliance flag — a human decides the next touch", "policy")
+
+  // OPPORTUNITY / FATIGUE (touch window) — the WHETHER. wait / do_nothing are not overridden.
+  if (nba.action === "wait" || nba.action === "do_nothing") add("wait", 90, `NBA ${nba.reasonCode}: ${nba.reason}`, "opportunity", nba.dueAt)
+  if (nba.action === "convert") add("appointment", 80, nba.reason, "opportunity")
+  // FATIGUE — the calculator's contact-scope score. high / critical → wait (owner: fatigue → wait).
+  if (input.fatigue.riskLevel && FATIGUE_WAIT_LEVELS.has(input.fatigue.riskLevel)) add("wait", 85, `fatigue risk ${input.fatigue.riskLevel} (buyer_fatigue_scores) — no new experience until it eases`, "fatigue")
+
+  // TRANSACTION STATE — inside contract-to-close the deal's next pending milestone is the experience.
+  const tx = input.transaction
+  if (tx && transactionIsActive(tx)) {
+    const m = tx.nextMilestone
+    if (m && DOCUMENT_MILESTONE.test(`${m.name} ${m.type ?? ""}`)) {
+      add("document_explanation", 70, `transaction ${tx.stage ?? tx.status} — next milestone "${m.name}"${m.targetDate ? ` due ${m.targetDate}` : ""} is a document the client will be asked to read`, "transaction", at(m.targetDate))
+    } else if (m) {
+      add("portal_task", 65, `transaction ${tx.stage ?? tx.status} — next milestone "${m.name}"${m.clientVisible ? " (client-visible)" : ""} is the client's next step`, "transaction", at(m.targetDate))
+    } else {
+      add("portal_task", 40, `transaction ${tx.stage ?? tx.status} with no pending milestone on the board — the portal needs its next step`, "transaction")
+    }
+  }
+
+  // EDUCATION STATE — an open lesson (or one keyed to the deal's stage) beats a generic touch.
+  const ed = input.education
+  if (ed && ed.nextModule) {
+    const stageMatch = !!ed.nextModule.milestoneKey && !!tx?.stage && ed.nextModule.milestoneKey.toUpperCase() === tx.stage.toUpperCase()
+    add("education", stageMatch ? 72 : 60, `${ed.open} open lesson(s), ${ed.completed} completed — next "${ed.nextModule.title ?? ed.nextModule.id}"${stageMatch ? ` matches the deal stage ${tx?.stage}` : ""}`, "education")
+  } else if (ed && ed.open === 0 && ed.completed > 0 && input.behavior.portalEducationViews > 0) {
+    add("education", 35, `${ed.completed} lesson(s) completed and ${input.behavior.portalEducationViews} portal education view(s) — they read; offer the next lesson`, "education")
+  }
+
+  // BEHAVIOR — decayed intent + campaign touchpoints. Buyers with intent get properties, sellers a market update.
+  const intent = input.nba.intent
+  const type = (input.person.contactType ?? "").toLowerCase()
+  const buyerish = type === "buyer" || type === "both"
+  const sellerish = type === "seller" || type === "both"
+  if (intent && intent.score >= 60 && intent.trend !== "falling") {
+    if (buyerish && input.subject === "contact") add("properties", 55 + (input.behavior.touchpoints7d === 0 ? 5 : 0), `intent ${intent.score}/100 ${intent.trend}${input.behavior.touchpoints7d === 0 ? ", no campaign touch in 7d" : ""} — show matching properties`, "behavior")
+    if (sellerish) add("market_update", 55, `intent ${intent.score}/100 ${intent.trend} — a market update on their home`, "behavior")
+  }
+  // Three campaign touches in a week cancel the default message entirely (30 − 30): the floor (wait) wins
+  // unless another slice argues for a DIFFERENT kind of experience.
+  if (input.behavior.touchpoints7d >= 3) add("communication", -30, `${input.behavior.touchpoints7d} campaign touchpoints in 7d — another message is the wrong experience`, "behavior")
+
+  // PERSON — who they are to us.
+  if (type === "lifetime" || type === "past_client") add("video", 45, `${type} — a memory / anniversary moment, not a nurture message`, "person")
+  if (!input.person.hasAssignedAgent && input.subject === "contact") add("agent_intervention", 20, "no assigned agent — an experience needs an owner", "person")
+
+  // MEMORY — what they told us (current facts only).
+  for (const f of input.nba.memoryFacts ?? []) {
+    if (f.key === "channel_preference" && /video/i.test(f.value)) add("video", 15, `memory: prefers video (${f.value})`, "memory")
+    if (f.key === "timeline" && /^1-3|1 ?- ?3|asap|now/i.test(f.value)) { if (buyerish) add("properties", 10, `memory: timeline ${f.value}`, "memory"); if (sellerish) add("market_update", 10, `memory: timeline ${f.value}`, "memory") }
+    if (f.key === "price_expectation" && buyerish) add("properties", 5, `memory: price expectation ${f.value}`, "memory")
+  }
+
+  // POLICY — what the brokerage allows shapes what can be chosen.
+  if (!input.policy.videoAllowed && cand.has("video")) add("video", -100, "video not permitted by policy / opt-out", "policy")
+  if (input.policy.autoSendAllowed && input.policy.allowedChannels.length > 0) add("communication", 30, `default — a personalised touch on ${input.policy.allowedChannels.join("/")} (the sequence stays the delivery survivor)`, "policy")
+  else add("communication", 10, "no auto-send / no permitted channel — a communication would stage for a human", "policy")
+  if (input.fatigue.riskLevel === "moderate") { for (const k of ["communication", "market_update", "video"] as const) if (cand.has(k)) add(k, -10, "fatigue moderate — tempered", "fatigue") }
+
+  // The floor: nothing argues for acting.
+  if (!cand.has("wait")) add("wait", 5, "nothing else argues for an experience", "floor")
+
+  const order = (k: ExperienceKind) => EXPERIENCE_KINDS.indexOf(k)
+  const ranked: RankedExperience[] = [...cand.entries()]
+    .map(([kind, c]) => ({ kind, score: c.score, reasons: c.reasons, manager: EXPERIENCE_EXECUTORS[kind].manager, capability: EXPERIENCE_EXECUTORS[kind].capability, dueAt: c.dueAt }))
+    .sort((a, b) => b.score - a.score || order(a.kind) - order(b.kind))
+  // Precedence that is not a score (see the doc comment).
+  const forced: ExperienceKind | null = input.policy.complianceHardFlag ? "agent_intervention"
+    : (nba.action === "wait" || nba.action === "do_nothing" || (input.fatigue.riskLevel && FATIGUE_WAIT_LEVELS.has(input.fatigue.riskLevel))) ? "wait"
+    : null
+  const chosen = (forced ? ranked.find((r) => r.kind === forced) : null) ?? ranked[0]
+  return { chosen, ranked, nba, contributed: [...contributed], blindSpots: [...(input.blindSpots ?? [])], evidence: nba.evidence }
+}
+
+/**
+ * PURE. What a CONTACT (portal / client surface) may see of a plan: the kind and when — never
+ * the reasons (they name intent scores, fatigue, dead ends), never a manager, never anything
+ * financial (CLAUDE.md §5: contacts see no financials). @proofSeam exported so the proof asserts it.
+ */
+export function contactFacingExperience(plan: NextBestExperiencePlan): { experience: ExperienceKind; dueAt: string | null } {
+  return { experience: plan.chosen.kind, dueAt: plan.chosen.dueAt ? plan.chosen.dueAt.toISOString() : null }
+}
+
+/** The keys a plan must never carry (the proof's positive control also uses it). */
+export const FINANCIAL_KEY_PATTERN = /commission|cost|margin|usd|cents|revenue|payout/i
+
+/** The ledger reason code of a chosen experience (the m693 vocabulary, lib/kernel/action-ledger.ts). */
+export function experienceReasonCode(kind: ExperienceKind): "WAIT_COOLDOWN" | "TRANSACTION_MILESTONE" | "BUYER_PROPERTY_MATCH" | "HUMAN_REQUESTED" | "COMPLIANCE_NOTICE" | "NURTURE_TOUCH" {
+  switch (kind) {
+    case "wait": return "WAIT_COOLDOWN"
+    case "portal_task": case "document_explanation": return "TRANSACTION_MILESTONE"
+    case "properties": return "BUYER_PROPERTY_MATCH"
+    case "agent_intervention": return "COMPLIANCE_NOTICE"
+    default: return "NURTURE_TOUCH"
+  }
+}
+
+// ─── THE LOADER — every slice through its survivor reader ─────────────────────────────────────
+
+export type NextBestExperienceInputsResult =
+  | { ok: true; input: NextBestExperienceInput }
+  | { ok: false; error: string }
+
+export interface ExperienceContactRow extends ContactNbaRow {
+  contact_type?: string | null
+  contact_persona?: string | null
+  agent_id?: string | null
+  buyer_stage?: string | null
+  video_opt_out?: boolean | null
+}
+
+/** The contact columns the loader needs (the enroller reads them itself; engage-contact already holds them). */
+export const EXPERIENCE_CONTACT_COLUMNS = "id, ai_outreach_paused, qualification_summary, last_contacted_at, contact_type, contact_persona, agent_id, buyer_stage, video_opt_out"
+
+export async function loadNextBestExperienceInputs(
+  supabase: any,
+  args: {
+    brokerageId: string
+    contact: ExperienceContactRow
+    humanInitiated: boolean
+    now: Date
+    /** The caller already evaluated the hard compliance flag (evaluateOutbound / a hold). Default false — the send-time gate still runs. */
+    complianceHardFlag?: boolean
+    preloaded?: { nba?: NextBestActionContext | null; memory?: import("@/lib/kernel/conversation-memory").ContactMemoryForPrompt | null }
+  },
+): Promise<NextBestExperienceInputsResult> {
+  const { brokerageId, contact, now } = args
+  const blindSpots: string[] = []
+  const msg = (e: unknown) => (e && typeof e === "object" && "message" in e ? String((e as { message: unknown }).message) : String(e))
+
+  // OPPORTUNITY / MEMORY / INTENT — fail closed (consent-bearing).
+  const nbaRes = args.preloaded?.nba
+    ? { ok: true as const, context: args.preloaded.nba }
+    : await loadContactNbaContext(supabase, { brokerageId, contact, humanInitiated: args.humanInitiated, now, ...(args.preloaded && "memory" in args.preloaded ? { preloaded: { memory: args.preloaded.memory ?? null } } : {}) })
+  if (!nbaRes.ok) return { ok: false, error: nbaRes.error }
+
+  // TRANSACTION STATE — fail closed (a document explanation on the wrong deal is a wrong experience).
+  const txRes = await supabase.from("transactions").select("id, stage, status")
+    .eq("brokerage_id", brokerageId).or(`contact_id.eq.${contact.id},buyer_contact_id.eq.${contact.id}`)
+    .is("deleted_at", null).not("stage", "in", "(CLOSED,LOST)")
+    .order("created_at", { ascending: false }).limit(1)
+  if (txRes.error) return { ok: false, error: `transactions read refused: ${msg(txRes.error)}` }
+  const txRow = ((txRes.data ?? []) as Array<{ id: string; stage: string | null; status: string | null }>)[0] ?? null
+  let transaction: NextBestExperienceInput["transaction"] = null
+  if (txRow) {
+    const msRes = await supabase.from("transaction_milestones").select("milestone_name, milestone_type, status, target_date, is_client_visible")
+      .eq("brokerage_id", brokerageId).eq("transaction_id", txRow.id).eq("status", "pending")
+      .order("target_date", { ascending: true }).limit(10)
+    if (msRes.error) return { ok: false, error: `transaction_milestones read refused: ${msg(msRes.error)}` }
+    const rows = (msRes.data ?? []) as Array<{ milestone_name: string; milestone_type: string | null; target_date: string | null; is_client_visible: boolean | null }>
+    const m = rows.find((r) => r.is_client_visible) ?? rows[0] ?? null
+    transaction = { id: txRow.id, stage: txRow.stage, status: txRow.status, nextMilestone: m ? { name: m.milestone_name, type: m.milestone_type, targetDate: m.target_date, clientVisible: !!m.is_client_visible } : null }
+  }
+
+  // EDUCATION STATE — evidence (blind spot on refusal).
+  let education: NextBestExperienceInput["education"] = null
+  const laRes = await supabase.from("learning_assignments").select("module_id, status, completed_at, created_at")
+    .eq("brokerage_id", brokerageId).eq("contact_id", contact.id).order("created_at", { ascending: false }).limit(50)
+  if (laRes.error) blindSpots.push(`education: learning_assignments read refused — ${msg(laRes.error)}`)
+  else {
+    const rows = (laRes.data ?? []) as Array<{ module_id: string; status: string | null }>
+    const open = rows.filter((r) => r.status === "open" || r.status === "viewed")
+    const completed = rows.filter((r) => r.status === "completed").length
+    let nextModule: NonNullable<NextBestExperienceInput["education"]>["nextModule"] = null
+    if (open[0]) {
+      const modRes = await supabase.from("learning_modules").select("id, title, milestone_key").eq("id", open[0].module_id).limit(1).maybeSingle()
+      if (modRes.error) blindSpots.push(`education: learning_modules read refused — ${msg(modRes.error)}`)
+      const mod = (modRes.data ?? null) as { id: string; title: string | null; milestone_key: string | null } | null
+      nextModule = { id: open[0].module_id, title: mod?.title ?? null, milestoneKey: mod?.milestone_key ?? null }
+    }
+    education = { open: open.length, completed, nextModule }
+  }
+
+  // FATIGUE — the calculator's row (contact scope); evidence.
+  let riskLevel: string | null = null
+  const ftRes = await supabase.from("buyer_fatigue_scores").select("risk_level").eq("brokerage_id", brokerageId).eq("contact_id", contact.id).maybeSingle()
+  if (ftRes.error) blindSpots.push(`fatigue: buyer_fatigue_scores read refused — ${msg(ftRes.error)}`)
+  else riskLevel = (ftRes.data as { risk_level?: string | null } | null)?.risk_level ?? null
+
+  // BEHAVIOR — campaign touchpoints (7d) + portal education views (30d); evidence.
+  const since7 = new Date(now.getTime() - 7 * 86_400_000).toISOString()
+  const since30 = new Date(now.getTime() - 30 * 86_400_000).toISOString()
+  let touchpoints7d = 0, lastTouchpointChannel: string | null = null, portalEducationViews = 0
+  const tpRes = await supabase.from("marketing_campaign_touchpoints").select("channel, created_at")
+    .eq("brokerage_id", brokerageId).eq("contact_id", contact.id).gte("created_at", since7).order("created_at", { ascending: false }).limit(50)
+  if (tpRes.error) blindSpots.push(`behavior: marketing_campaign_touchpoints read refused — ${msg(tpRes.error)}`)
+  else { const rows = (tpRes.data ?? []) as Array<{ channel: string | null }>; touchpoints7d = rows.length; lastTouchpointChannel = rows[0]?.channel ?? null }
+  const evRes = await supabase.from("lifecycle_events").select("id")
+    .eq("brokerage_id", brokerageId).eq("entity_type", "contact").eq("entity_id", contact.id).eq("event_type", "portal_education_viewed").gte("created_at", since30).limit(50)
+  if (evRes.error) blindSpots.push(`behavior: lifecycle_events read refused — ${msg(evRes.error)}`)
+  else portalEducationViews = ((evRes.data ?? []) as unknown[]).length
+
+  // POLICY — the tenant's ISA settings (the same resolver the NBA reads).
+  const resolution = await resolveLeadSettingsResolution({ brokerageId })
+  const settings = resolution.status === "unreadable" ? null : resolution.settings
+  if (!settings) blindSpots.push("policy: ai_isa_settings unreadable — defaults applied (no auto-send)")
+  const allowedChannels: readonly string[] = settings?.contact_allowed_channels ?? []
+  const autoSendAllowed = !!settings && settings.require_broker_approval !== true
+
+  return {
+    ok: true,
+    input: {
+      now, subject: "contact", nba: nbaRes.context,
+      person: { contactType: contact.contact_type ?? null, persona: contact.contact_persona ?? null, hasAssignedAgent: !!contact.agent_id, stage: contact.buyer_stage ?? null },
+      behavior: { touchpoints7d, lastTouchpointChannel, portalEducationViews },
+      transaction, education, fatigue: { riskLevel },
+      policy: { complianceHardFlag: args.complianceHardFlag === true, allowedChannels, autoSendAllowed, videoAllowed: contact.video_opt_out !== true },
+      blindSpots,
+    },
+  }
+}
+
+// ─── EVIDENCE + EXECUTION — withActionLedger + emitKernelEvent per chosen experience ───────────
+
+/** A request the planner hands a delivery survivor (memory video, anniversary reel, portal task). */
+export interface PlannerIssuedRequest {
+  source: "next_best_experience"
+  experience: ExperienceKind
+  reasons: readonly string[]
+  /** The agent_action_ledger row of the choice, when the ledger accepted it. */
+  ledgerActionId?: string | null
+}
+
+export type ExperienceExecutionResult =
+  | { mode: "delegated"; delegationId: string; manager: ExperienceExecutor; capability: AppCapability }
+  | { mode: "caller"; manager: ExperienceExecutor; rail: string }
+  | { mode: "none" }
+  | { mode: "unexecuted"; manager: ExperienceExecutor; reason: string }
+
+export interface ExperienceRecordDeps {
+  ledger?: typeof import("@/lib/kernel/action-ledger").withActionLedger
+  emit?: (input: Record<string, unknown>) => Promise<unknown>
+  delegate?: (input: { brokerageId: string; missionId: string | null; requestingManager: ManagerKey; assignedManager: ManagerKey; capability: AppCapability; objective: string; inputEntities: Record<string, unknown>; actor: { type: "manager"; id: string } }, client: any) => Promise<{ ok: true; delegation: { id: string } } | { ok: false; reason: string }>
+}
+
+export interface RecordedExperience {
+  execution: ExperienceExecutionResult
+  ledgered: boolean
+  eventEmitted: boolean
+  warnings: string[]
+}
+
+/**
+ * ONE chosen experience → ONE ledger row (`journey.experience.<kind>`, detail.experience for
+ * outcome attribution — lib/intelligence/roi-ledger.ts byExperience) + ONE audit event
+ * (NEXT_BEST_EXPERIENCE_CHOSEN) + the hand-off to its executor: a catalogue capability owned
+ * by another manager is DELEGATED (lib/kernel/manager-delegation.ts, lazy — a refused delegation
+ * is returned as `unexecuted` with its reason, never thrown, never pretended); an ai_isa kind is
+ * returned as `caller` (the engage path / the sequence delivers it); `wait` executes nothing.
+ * Idempotent per (contact, kind, UTC day) through the ledger's cycle key.
+ */
+export async function recordAndExecuteExperience(
+  svc: any,
+  args: { brokerageId: string; contactId: string; plan: NextBestExperiencePlan; now: Date; missionId?: string | null; systemSource?: string },
+  deps: ExperienceRecordDeps = {},
+): Promise<RecordedExperience> {
+  const { brokerageId, contactId, plan, now } = args
+  const chosen = plan.chosen
+  const exec = EXPERIENCE_EXECUTORS[chosen.kind]
+  const day = now.toISOString().slice(0, 10)
+  const warnings: string[] = []
+  const ledger = deps.ledger ?? (await import("@/lib/kernel/action-ledger")).withActionLedger
+  const emit = deps.emit ?? (async (input: Record<string, unknown>) => (await import("@/lib/kernel/emit")).emitKernelEvent(input as any))
+  const delegate: NonNullable<ExperienceRecordDeps["delegate"]> = deps.delegate ?? (async (input, client) => {
+    const { requestDelegation } = await import("@/lib/kernel/manager-delegation")
+    return requestDelegation(input as any, client)
+  })
+
+  const run = async (): Promise<ExperienceExecutionResult> => {
+    if (chosen.kind === "wait") return { mode: "none" }
+    if (exec.manager === "ai_isa") return { mode: "caller", manager: exec.manager, rail: exec.rail }
+    if (!exec.capability) return { mode: "unexecuted", manager: exec.manager, reason: `no catalogue capability — ${exec.manager} executes on its own rail (${exec.rail}); the request is on the ledger` }
+    try {
+      const r = await delegate({
+        brokerageId, missionId: args.missionId ?? null, requestingManager: "ai_isa", assignedManager: exec.manager, capability: exec.capability,
+        objective: `Next best experience for contact ${contactId}: ${chosen.kind} — ${chosen.reasons[0] ?? ""}`,
+        inputEntities: { contact_id: contactId, experience: chosen.kind, reasons: chosen.reasons, due_at: chosen.dueAt?.toISOString() ?? null },
+        actor: { type: "manager", id: "ai_isa" },
+      }, svc)
+      if (!r.ok) return { mode: "unexecuted", manager: exec.manager, reason: r.reason }
+      return { mode: "delegated", delegationId: r.delegation.id, manager: exec.manager, capability: exec.capability }
+    } catch (e) {
+      return { mode: "unexecuted", manager: exec.manager, reason: `delegation threw: ${(e as Error).message}` }
+    }
+  }
+
+  let ledgered = true
+  const execution = await ledger<ExperienceExecutionResult>(
+    {
+      brokerageId, action: `journey.experience.${chosen.kind}`,
+      actor: { type: "manager", managerKey: "ai_isa" },
+      subject: { type: "contact", id: contactId },
+      reasonCode: experienceReasonCode(chosen.kind),
+      reasonDetail: chosen.reasons.join("; ").slice(0, 500),
+      cycle: `nbe:${chosen.kind}:${day}`,
+      systemSource: args.systemSource ?? "next_best_experience",
+      policyKey: "ai_isa_settings",
+      detail: {
+        experience: chosen.kind, score: chosen.score, manager: exec.manager, capability: exec.capability,
+        ranked: plan.ranked.map((r) => ({ kind: r.kind, score: r.score })),
+        contributed: plan.contributed, blind_spots: plan.blindSpots, nba_reason_code: plan.nba.reasonCode,
+        ...(args.missionId ? { mission_id: args.missionId } : {}),
+      },
+    },
+    run,
+    {
+      settle: (r) => ({ status: r.mode === "delegated" || r.mode === "caller" ? "executed" : "skipped", outcome: r.mode === "delegated" ? `delegated:${r.delegationId}` : r.mode, error: r.mode === "unexecuted" ? r.reason : null }),
+      replay: (claim) => { ledgered = claim.kind !== "refused"; warnings.push(`ledger ${claim.kind} — not re-executed`); return { mode: "none" } },
+    },
+    { client: svc },
+  )
+
+  let eventEmitted = false
+  try {
+    const ev = await emit({
+      event: "next_best_experience_chosen", brokerageId, entityType: "contact", entityId: contactId, contactId,
+      metadata: { experience: chosen.kind, score: chosen.score, manager: exec.manager, capability: exec.capability, reasons: chosen.reasons.slice(0, 5), execution: execution.mode, nba_reason_code: plan.nba.reasonCode },
+      auditOnly: true, dedupeKey: `nbe:${chosen.kind}:${day}`, dedupeWindowSec: 86_400, client: svc,
+    }) as { inserted?: boolean; error?: string | null } | undefined
+    eventEmitted = !!ev?.inserted
+    if (ev && !ev.inserted && ev.error) warnings.push(`event not written: ${ev.error}`)
+  } catch (e) { warnings.push(`event threw: ${(e as Error).message}`) }
+
+  return { execution, ledgered, eventEmitted, warnings }
+}
+
+/**
+ * THE ENROLLER'S QUESTION (wired: lib/campaign-sequences/auto-enroll.ts autoEnrollContact and
+ * lib/kernel/event-fanout.ts enrollMatchingSequences): may this person be dropped into the default
+ * sequence, or does the journey say otherwise? `wait` and `agent_intervention` OVERRIDE the default
+ * sequence — ledgered as the decision; every other kind lets the sequence enrol (it remains the
+ * delivery survivor). An unreadable plan is a refusal (fail closed), stated.
+ */
+export type EnrollmentVerdict =
+  | { proceed: true; experience: ExperienceKind; reason: string }
+  | { proceed: false; experience: ExperienceKind | null; reason: string }
+
+export async function journeyVerdictForEnrollment(
+  svc: any,
+  args: { brokerageId: string; contactId: string; now?: Date },
+  deps: ExperienceRecordDeps & { load?: typeof loadNextBestExperienceInputs } = {},
+): Promise<EnrollmentVerdict> {
+  const now = args.now ?? new Date()
+  const { data: row, error } = await svc.from("contacts").select(EXPERIENCE_CONTACT_COLUMNS)
+    .eq("id", args.contactId).eq("brokerage_id", args.brokerageId).maybeSingle()
+  if (error) return { proceed: false, experience: null, reason: `contact read refused: ${error.message}` }
+  if (!row) return { proceed: false, experience: null, reason: "contact not in this brokerage" }
+  const load = deps.load ?? loadNextBestExperienceInputs
+  const inputs = await load(svc, { brokerageId: args.brokerageId, contact: row as ExperienceContactRow, humanInitiated: false, now })
+  if (!inputs.ok) return { proceed: false, experience: null, reason: `journey inputs unreadable — not enrolling: ${inputs.error}` }
+  const plan = planNextBestExperience(inputs.input)
+  const kind = plan.chosen.kind
+  if (kind === "wait" || kind === "agent_intervention") {
+    const rec = await recordAndExecuteExperience(svc, { brokerageId: args.brokerageId, contactId: args.contactId, plan, now, systemSource: "sequence_enroller" }, deps)
+    return { proceed: false, experience: kind, reason: `journey says ${kind}: ${plan.chosen.reasons[0] ?? ""}${rec.ledgered ? "" : " (not ledgered)"}` }
+  }
+  return { proceed: true, experience: kind, reason: plan.chosen.reasons[0] ?? "" }
 }

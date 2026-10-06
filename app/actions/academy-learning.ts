@@ -271,6 +271,10 @@ export async function submitModuleQuiz(
 export interface MyLearningProgress {
   completed: Array<{ id: string; title: string; type: string }>
   inProgress: Array<{ id: string; title: string; type: string }>
+  /** ADAPTIVE DEVELOPMENT (wave 106, lane 106D) — the signed-in agent's OWN last development cycle
+   *  (agent_action_ledger development.competency.update, scoped to the session's agents.id + tenant):
+   *  the focus competency and the module the loop queued for it. Null when no cycle ran. */
+  development: { focus: string; score: number; moduleTitle: string | null; improved: string[]; cycleAt: string } | null
 }
 
 /**
@@ -280,7 +284,7 @@ export interface MyLearningProgress {
  */
 export async function getMyLearningProgress(): Promise<MyLearningProgress> {
   const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated) return { completed: [], inProgress: [] }
+  if (!ctx.isAuthenticated) return { completed: [], inProgress: [], development: null }
 
   const svc = createServiceClient()
   const { data } = await svc
@@ -289,6 +293,28 @@ export async function getMyLearningProgress(): Promise<MyLearningProgress> {
     .eq("agent_user_id", ctx.userId)
     .order("viewed_at", { ascending: false })
     .limit(100)
+
+  // The development loop's last cycle for THIS agent only (session identity, tenant from the session).
+  let development: MyLearningProgress["development"] = null
+  if (ctx.agentId && ctx.brokerageId) {
+    const { data: dev, error: devErr } = await svc
+      .from("agent_action_ledger").select("detail, created_at")
+      .eq("brokerage_id", ctx.brokerageId).eq("action", "development.competency.update").eq("subject_type", "agent").eq("subject_id", ctx.agentId).eq("status", "executed")
+      .order("created_at", { ascending: false }).limit(1).maybeSingle()
+    if (devErr) console.error("[academy] development ledger read refused:", devErr.message)
+    else if (dev) {
+      const { developmentBlock } = await import("@/lib/intelligence/agent-scorecard")
+      const { COMPETENCY_LABEL } = await import("@/lib/education/skill-freshness")
+      const block = developmentBlock((dev as any).detail, (dev as any).created_at)
+      if (block.weakest) {
+        const { data: queued } = await svc.from("learning_assignments").select("learning_modules ( title )")
+          .eq("agent_user_id", ctx.userId).eq("signal_source", "adaptive_development").in("status", ["open", "viewed"]).order("created_at", { ascending: false }).limit(1).maybeSingle()
+        const mod = (queued as any)?.learning_modules
+        const label = (COMPETENCY_LABEL as Record<string, string>)[block.weakest.skill] ?? block.weakest.skill
+        development = { focus: label, score: block.weakest.score, moduleTitle: (Array.isArray(mod) ? mod[0]?.title : mod?.title) ?? null, improved: block.improvedLastCycle.map((s) => (COMPETENCY_LABEL as Record<string, string>)[s] ?? s), cycleAt: block.cycleAt }
+      }
+    }
+  }
 
   const completed: MyLearningProgress["completed"] = []
   const inProgressRanked: Array<{ id: string; title: string; type: string; priorityScore: number }> = []
@@ -307,7 +333,7 @@ export async function getMyLearningProgress(): Promise<MyLearningProgress> {
   // top 3 (training-progress-panel.tsx), so which 3 THAT is depends on this.
   inProgressRanked.sort((a, b) => b.priorityScore - a.priorityScore)
   const inProgress: MyLearningProgress["inProgress"] = inProgressRanked.map(({ priorityScore, ...row }) => row)
-  return { completed, inProgress }
+  return { completed, inProgress, development }
 }
 
 /**

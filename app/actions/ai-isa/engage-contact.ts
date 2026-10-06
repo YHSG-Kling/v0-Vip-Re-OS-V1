@@ -224,6 +224,34 @@ export async function engageContact(
       if (nbaPlan.action === 'wait' || nbaPlan.action === 'do_nothing') {
         return { success: false, reason: `nba:${nbaPlan.action}:${nbaPlan.reasonCode}` }
       }
+
+      // ── 4c. NEXT BEST EXPERIENCE (wave 106, lane 106B) — the SAME NBA one rung up: now that
+      //    the ISA MAY touch this person, WHAT serves them next? PERSON + OPPORTUNITY + BEHAVIOR +
+      //    MEMORY + TRANSACTION STATE + EDUCATION STATE + FATIGUE + POLICY → one ranked experience
+      //    (lib/ai-isa/lead-action-plan.ts planNextBestExperience, deterministic — no model spend).
+      //    `communication` is this path's own job and continues below (the sequence / this touch
+      //    stays the delivery). Any other experience is ledgered (withActionLedger, detail.experience
+      //    → roi-ledger byExperience), audited (NEXT_BEST_EXPERIENCE_CHOSEN) and HANDED to its
+      //    executing manager through the 105A delegation seam (lazy; a refused delegation is
+      //    reported, never pretended) — and this touch does NOT go out on top of it. A human-
+      //    initiated run is the human's call: the plan is recorded, the touch proceeds. ──
+      {
+        const { loadNextBestExperienceInputs, planNextBestExperience, recordAndExecuteExperience } = await import('@/lib/ai-isa/lead-action-plan')
+        const inputs = await loadNextBestExperienceInputs(supabase, {
+          brokerageId, contact: contact as Parameters<typeof loadNextBestExperienceInputs>[1]['contact'], humanInitiated, now: nbaNow,
+          preloaded: { nba: nbaCtx.context },
+        })
+        if (!inputs.ok) {
+          console.warn(`[engageContact] next-best-experience inputs unreadable for ${contactId} — not touching: ${inputs.error}`)
+          return { success: false, reason: 'stop:experience_unreadable' }
+        }
+        const plan = planNextBestExperience(inputs.input)
+        const rec = await recordAndExecuteExperience(supabase, { brokerageId, contactId, plan, now: nbaNow, missionId: missionId ?? null, systemSource: 'engage_contact' })
+        for (const w of rec.warnings) console.warn(`[engageContact] experience ${plan.chosen.kind}: ${w}`)
+        if (plan.chosen.kind !== 'communication' && !humanInitiated) {
+          return { success: false, reason: `experience:${plan.chosen.kind}:${rec.execution.mode}` }
+        }
+      }
     }
 
     // ── MANAGERS DELEGATING — the ISA hands a TRULY SITUATIONAL reel to the Asset Manager

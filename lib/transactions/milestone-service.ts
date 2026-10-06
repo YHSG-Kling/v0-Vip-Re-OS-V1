@@ -40,7 +40,11 @@ export interface OverrideMilestoneParams {
 export async function seedJourneyMilestones(
   transactionId: string,
   brokerageId: string,
-  transactionType: string
+  transactionType: string,
+  /** Wave 106 (106B): the PORTAL TASK was ISSUED BY THE JOURNEY PLANNER (lib/ai-isa/lead-action-plan.ts
+   *  planNextBestExperience chose `portal_task`). Stamped on the seeded rows' `notes` so the board says
+   *  why the step appeared; the catalog, the dedupe and the tenant stamp are unchanged. */
+  request?: import("@/lib/ai-isa/lead-action-plan").PlannerIssuedRequest | null,
 ): Promise<void> {
   const supabase = createServiceClient()
 
@@ -79,6 +83,7 @@ export async function seedJourneyMilestones(
       is_client_visible: m.clientVisible,
       status: "pending" as const,
       created_at: now,
+      ...(request ? { notes: `Journey planner (${request.source}): ${request.experience} — ${request.reasons[0] ?? ""}`.slice(0, 500) } : {}),
     }))
 
   if (rows.length > 0) {

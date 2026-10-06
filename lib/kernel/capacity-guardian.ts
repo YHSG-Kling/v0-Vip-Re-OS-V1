@@ -165,6 +165,10 @@ export interface AgentCapacity {
   reasons: string[]
   /** The underlying index, for consumers that already read it (the guardian runner). */
   index: WorkloadIndex
+  /** Wave 106 (106A): the retention tier the band was computed WITH (gatherWorkloadSignals already reads
+   *  it) — carried through so a consumer scoring fatigue separately (the allocation recommender) needs no
+   *  second read of agent_retention_scores. null = no row / not read. */
+  fatigueTier: WorkloadSignals["fatigueTier"]
 }
 
 /** An agent may take fresh work only in these bands. */
@@ -194,7 +198,7 @@ export function computeCapacity(s: WorkloadSignals, t: CapacityThresholds): Agen
   if ((s.pendingShowings ?? 0) > 0) reasons.push(`${s.pendingShowings} showings ahead`)
   if (s.fatigueTier === "critical" || s.fatigueTier === "at_risk") reasons.push(`agent fatigue ${s.fatigueTier}`)
   if (band === "busy" && reasons.length === 0) reasons.push(`load ${index.load}/${maxLoad} (${Math.round(index.capacityScore * 100)}% of capacity)`)
-  return { load: index.load, headroom, band, reasons, index }
+  return { load: index.load, headroom, band, reasons, index, fatigueTier: s.fatigueTier ?? null }
 }
 
 /** PURE. Share of an automated touch batch an agent's book may receive this run — FEWER touches

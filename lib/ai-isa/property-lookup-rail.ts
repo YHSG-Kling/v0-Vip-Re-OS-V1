@@ -485,10 +485,21 @@ export async function runVersiumContactLeg(
      * re-bought. Omitted → treated as empty (every category is asked).
      */
     existingProfile?: Record<string, unknown> | null
+    /**
+     * Wave 106 (lane 106A) — WHICH DECISION the append serves (lib/kernel/resource-allocation.ts
+     * DECISION_FIELD_DEPENDENCIES). Owner: "Only purchase enrichment when missing information could
+     * change the decision." Defaults by stage — a lead's first touch depends on email alone (leads get
+     * email + direct mail), a contact's on email + phone — so every existing caller buys exactly what it
+     * bought before; a caller naming a decision none of the missing fields can change buys NOTHING
+     * (`skipped: "no_decision_impact"`), and a field the decision does not depend on is never asked.
+     */
+    decision?: string
   },
   deps: {
     call?: VersiumContactCall
     demographicCall?: VersiumDemographicCall
+    /** Wave 106A test seam — defaults to the tenant's resource_allocation policy (defaults when unreadable). */
+    allocationPolicy?: (brokerageId: string) => Promise<{ enrichment_max_usd_per_decision: number }>
     meter?: (input: { vendorName: string; usageType: string; cost: number; brokerageId?: string | null; systemSource?: string; metadata?: Record<string, unknown>; attribution?: { leadId?: string | null; contactId?: string | null; rawRecordId?: string | null } }) => Promise<unknown>
     /** Test seam — defaults to lib/vendor-governance/budget-gate.ts::checkVendorBudget (the financial rung's gate). */
     checkBudget?: (p: { brokerageId: string; addCost: number }) => Promise<{ allowed: boolean }>
@@ -496,11 +507,23 @@ export async function runVersiumContactLeg(
     providerHealth?: ProviderHealthFn
   } = {},
 ): Promise<{ answered: boolean; emails: string[]; phones: string[]; cost: number; skipped: string | null; demographicsProfile: Record<string, any> | null; demographicCategories: string[]; fieldProvenance: Record<string, VersiumProvenance> }> {
-  const outputs: Array<"email" | "phone"> = []
-  if (!req.hasEmail) outputs.push("email")
-  if (req.stage === "contact" && !req.hasPhone) outputs.push("phone")
+  const missing: Array<"email" | "phone"> = []
+  if (!req.hasEmail) missing.push("email")
+  if (req.stage === "contact" && !req.hasPhone) missing.push("phone")
   const none = { demographicsProfile: null, demographicCategories: [] as string[], fieldProvenance: {} as Record<string, VersiumProvenance> }
-  if (outputs.length === 0) return { answered: false, emails: [], phones: [], cost: 0, skipped: "nothing_to_append", ...none }
+  if (missing.length === 0) return { answered: false, emails: [], phones: [], cost: 0, skipped: "nothing_to_append", ...none }
+  // Wave 106A — THE DATA SPEND GATE: only the missing fields that could change the declared decision
+  // are bought (fail closed on an undeclared decision; the per-decision USD cap is tenant policy).
+  const { shouldPurchaseEnrichment, loadResourceAllocationPolicy } = await import("@/lib/kernel/resource-allocation")
+  const decision = req.decision ?? (req.stage === "lead" ? "lead_first_touch" : "contact_first_touch")
+  const policy = req.brokerageId
+    ? await (deps.allocationPolicy
+        ? deps.allocationPolicy(req.brokerageId)
+        : (async () => { try { return await loadResourceAllocationPolicy((await import("@/lib/supabase/service")).createServiceClient(), req.brokerageId as string) } catch { return null } })())
+    : null
+  const purchase = shouldPurchaseEnrichment({ decision, missingFields: missing, providerCostUsd: Math.round(VERSIUM_MATCH_CREDIT_USD * missing.length * 100) / 100, policy })
+  if (!purchase.purchase) return { answered: false, emails: [], phones: [], cost: 0, skipped: `no_decision_impact: ${purchase.reason}`, ...none }
+  const outputs = missing.filter((f) => purchase.decisiveFields.includes(f))
   // Wave 97 (lane 97C): THE SAME vendor budget gate the Versium financial rung runs
   // (lib/enrichment/household-financials.ts::appendModeledCreditForProfile → checkVendorBudget), asked
   // BEFORE the paid call with the worst-case bill (one match credit per output asked). Tenant-attributed

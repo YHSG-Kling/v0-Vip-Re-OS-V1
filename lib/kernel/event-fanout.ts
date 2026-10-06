@@ -128,6 +128,19 @@ export async function enrollMatchingSequences(
         .maybeSingle()
       if (existing) continue
 
+      // WAVE 106 (106B): the JOURNEY decides before the default sequence does — the same
+      // consult lib/campaign-sequences/auto-enroll.ts makes (one rule, two enrollers, §6).
+      // `wait` / `agent_intervention` override the enrolment (ledgered by the planner);
+      // an unreadable plan refuses, stated (fail closed) — never a silent enrol.
+      {
+        const { journeyVerdictForEnrollment } = await import("@/lib/ai-isa/lead-action-plan")
+        const verdict = await journeyVerdictForEnrollment(supabase, { brokerageId, contactId })
+        if (!verdict.proceed) {
+          console.warn(`[event-fanout] ${event}: contact ${contactId} not enrolled in ${seq.id} — journey:${verdict.experience ?? "unreadable"}: ${verdict.reason}`)
+          continue
+        }
+      }
+
       // Schedule the first step at next_step_at = now (worker picks it up
       // immediately; subsequent steps are scheduled by the worker using
       // delay_days/delay_hours from campaign_sequence_steps).

@@ -98,6 +98,27 @@ export async function ingestAdPerformance(
     if (!error) ingested++; else skipped++
     if (error) continue
 
+    // Wave 106 (106C) — the Ads Manager WRITES PERFORMANCE BACK to the asset it tested: every creative
+    // variation of this campaign that was backed by an Asset Manager asset (source_marketing_asset_id)
+    // folds this reading into marketing_assets.performance, and the Asset Manager learns from it
+    // (lib/kernel/media-intelligence.ts learnFromPerformance → media-kind improvement proposal,
+    // recommendation mode). Best-effort per asset; a refused read is logged, never read as "no assets".
+    try {
+      const { data: variations, error: varErr } = await supabase.from("ad_creative_variations")
+        .select("id, source_marketing_asset_id").eq("ad_campaign_id", c.id).eq("brokerage_id", brokerageId)
+        .not("source_marketing_asset_id", "is", null).limit(20)
+      if (varErr) console.error("[ad-performance-ingest] ad_creative_variations read refused:", varErr.message)
+      const assetIds = [...new Set(((variations ?? []) as Array<{ source_marketing_asset_id: string | null }>).map((v) => v.source_marketing_asset_id).filter((x): x is string => !!x))]
+      if (assetIds.length > 0) {
+        const { learnFromPerformance } = await import("@/lib/kernel/media-intelligence")
+        const geo = (c.targeting_config?.geo ?? null) as { city?: string; cities?: string[] } | null
+        for (const assetId of assetIds) {
+          const learned = await learnFromPerformance(supabase, { brokerageId, assetId, sample: { impressions: perf.impressions, clicks: perf.clicks, leads: perf.leads, spendUsd: perf.spend, market: geo?.city ?? geo?.cities?.[0] ?? null, source: `ad_performance:${c.platform}` } })
+          if (!learned.ok) console.error("[ad-performance-ingest] asset performance not learned:", assetId, learned.error)
+        }
+      }
+    } catch (e) { console.error("[ad-performance-ingest] media learning failed:", (e as Error).message) }
+
     // THE TIME-SERIES HALF (wired 2026-09-03). ad_performance keeps only the
     // latest reading per pass; ad_performance_history is what
     // lib/ads/creative-fatigue-runner.ts detectCreativeFatigue and

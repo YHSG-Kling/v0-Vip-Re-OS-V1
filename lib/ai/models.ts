@@ -873,6 +873,47 @@ export interface RoutedTextRequest {
    * brokerageId is present.
    */
   platformPaid?: boolean
+  /**
+   * Wave 106 (lane 106A) — AI SPEND POLICY, owner: "Use expensive reasoning only when expected value
+   * justifies it." A caller that can price what this call is for (the commission on the offer it
+   * strategises, the appraisal gap it coaches) declares it here; the router then asks
+   * lib/kernel/resource-allocation.ts shouldUseExpensiveReasoning against the tenant's
+   * resource_allocation policy (ratio of value to the routed model's estimated cost) and, when the
+   * value does not justify it, serves the CHEAPER of the table's primary/fallback pair instead. The
+   * decision is booked on the ai_tool_usage row (context_json.reasoning_spend). Omitted → the table
+   * routes exactly as before (every existing caller is unchanged).
+   */
+  economics?: { expectedValueUsd: number | null }
+}
+
+/**
+ * Wave 106A — apply the reasoning-spend policy to one routed call. Returns the model to serve FIRST
+ * and the booking for the ledger row; the un-chosen model of the pair stays the fallback. Pure given
+ * the policy; the policy read is the one tenant-settings read (defaults when it cannot be read).
+ */
+async function applyReasoningSpendPolicy(
+  request: Pick<RoutedTextRequest, "feature" | "brokerageId" | "economics">,
+  routed: AIModel, fallback: AIModel, estTokens: number,
+): Promise<{ model: AIModel; fallback: AIModel; booking: Record<string, unknown> | null }> {
+  if (!request.economics || !request.brokerageId) return { model: routed, fallback, booking: null }
+  try {
+    const { shouldUseExpensiveReasoning, loadResourceAllocationPolicy } = await import("@/lib/kernel/resource-allocation")
+    const { calculateCost } = await import("@/lib/ai/cost-tracking")
+    const inTok = Math.round(estTokens * 0.7), outTok = Math.max(0, estTokens - Math.round(estTokens * 0.7))
+    const costUsd = (m: AIModel) => calculateCost(m, inTok, outTok) / 100
+    const routedCost = costUsd(routed), fallbackCost = costUsd(fallback)
+    const cheaper: AIModel = fallbackCost < routedCost ? fallback : routed
+    const dearer: AIModel = cheaper === routed ? fallback : routed
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const policy = await loadResourceAllocationPolicy(createServiceClient(), request.brokerageId)
+    const d = shouldUseExpensiveReasoning({ feature: request.feature ?? "unspecified", expectedValueUsd: request.economics.expectedValueUsd, costUsd: Math.max(routedCost, fallbackCost), policy })
+    const model = d.useExpensive ? routed : cheaper
+    const booking = { decision: d.useExpensive ? "expensive" : "cheaper", ratio: d.ratio, reason: d.reason, expected_value_usd: request.economics.expectedValueUsd, routed_model: routed, served_model: model, routed_cost_usd: routedCost, cheaper_cost_usd: Math.min(routedCost, fallbackCost), policy_source: policy.source, policy_key: "resource_allocation" }
+    return { model, fallback: model === routed ? fallback : dearer, booking }
+  } catch (e) {
+    // The gate could not run: the table routes as before and the row says so (never a silent default).
+    return { model: routed, fallback, booking: { decision: "ungated", reason: `reasoning-spend gate threw: ${e instanceof Error ? e.message : String(e)}` } }
+  }
 }
 
 /**
@@ -951,12 +992,16 @@ export async function generateObjectRouted<TSchema extends z.ZodTypeAny>(
   request: RoutedTextRequest & { schema: TSchema }
 ): Promise<{ object: z.infer<TSchema>; usage: RoutedUsage }> {
   const feature = request.feature ?? 'unspecified'
-  const { model: routedModel, fallback } = selectModelForTask(feature)
+  const { model: tableModel, fallback: tableFallback } = selectModelForTask(feature)
 
   // Fair-use pre-flight (skipped for background jobs without brokerageId)
   const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "") + messagesTextForEstimate(request.messages)) + (request.maxTokens ?? 2000)
   const fairUse = await affordAI(request.brokerageId, estTokens)
   if (!fairUse.allowed) throw new Error(fairUse.message ?? "AI fair-use limit reached.")
+
+  // Wave 106A — expensive reasoning only when the declared expected value justifies it.
+  const spend = await applyReasoningSpendPolicy(request, tableModel, tableFallback, estTokens)
+  const routedModel = spend.model, fallback = spend.fallback
 
   // Data Guard — redact high-confidence secrets before either model call (primary + fallback).
   {
@@ -1020,6 +1065,7 @@ export async function generateObjectRouted<TSchema extends z.ZodTypeAny>(
       feature,
       manager:      request.manager ?? null,
       platformPaid: request.platformPaid === true,
+      contextExtra: spend.booking ? { ...(request.contextExtra ?? {}), reasoning_spend: spend.booking } : request.contextExtra ?? undefined,
     })
   }
 
@@ -1034,12 +1080,16 @@ export async function generateTextRouted(
 ): Promise<{ text: string; usage: RoutedUsage }> {
   const _generateTextRoutedStartedAt = Date.now()
   const feature = request.feature ?? 'unspecified'
-  const { model: routedModel, fallback } = selectModelForTask(feature)
+  const { model: tableModel, fallback: tableFallback } = selectModelForTask(feature)
 
   // Fair-use pre-flight (skipped for background jobs without brokerageId)
   const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "") + messagesTextForEstimate(request.messages)) + (request.maxTokens ?? 2000)
   const fairUse = await affordAI(request.brokerageId, estTokens)
   if (!fairUse.allowed) throw new Error(fairUse.message ?? "AI fair-use limit reached.")
+
+  // Wave 106A — expensive reasoning only when the declared expected value justifies it.
+  const spend = await applyReasoningSpendPolicy(request, tableModel, tableFallback, estTokens)
+  const routedModel = spend.model, fallback = spend.fallback
 
   // Data Guard — redact high-confidence secrets before either model call (primary + fallback).
   {
@@ -1120,7 +1170,7 @@ export async function generateTextRouted(
       manager:        request.manager ?? null,
       executionTimeMs: Date.now() - _generateTextRoutedStartedAt,
       success:        true,
-      contextExtra:   request.contextExtra ?? undefined,
+      contextExtra:   spend.booking ? { ...(request.contextExtra ?? {}), reasoning_spend: spend.booking } : request.contextExtra ?? undefined,
     })
   }
 

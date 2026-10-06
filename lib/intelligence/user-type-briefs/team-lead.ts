@@ -175,6 +175,32 @@ export async function generateTeamLeadBrief(params: {
           ctas: [{ label: "Rebalance books", href: "/dashboard/team" }],
         })
       }
+      // WAVE 106 (lane 106E): the team's WORKFORCE line from the same persisted team twin — who on
+      // this board is overwhelmed / underutilized / in development (evidence + policy threshold on
+      // each, lib/kernel/brokerage-twin.ts workforce). Only the team's own members (the twin was
+      // built under teamId); a twin without the section (older snapshot) leaves the brief without it.
+      const w = teamTwin?.workforce
+      if (w && w.agents.length > 0) {
+        const { workforceLine, WORKFORCE_CLASSIFICATIONS } = await import("@/lib/kernel/brokerage-twin")
+        const members = w.agents.filter((a) => teamAgentIds.includes(a.agentId))
+        const count = (k: (typeof WORKFORCE_CLASSIFICATIONS)[number]) => members.filter((a) => a.classifications.some((c) => c.kind === k)).length
+        const dev = count("in_development"), under = count("underutilized"), over = count("overwhelmed")
+        if (members.length > 0 && (dev > 0 || under > 0 || over > 0)) {
+          const firstDev = members.find((a) => a.classifications.some((c) => c.kind === "in_development"))?.classifications.find((c) => c.kind === "in_development")
+          const totals = Object.fromEntries(WORKFORCE_CLASSIFICATIONS.map((k) => [k, count(k)])) as Record<(typeof WORKFORCE_CLASSIFICATIONS)[number], number>
+          priorities.push({
+            id: "team-workforce",
+            title: workforceLine({ totals, agents: members }) ?? "Team workforce",
+            body: [
+              under > 0 ? `${under} underutilized — room for the next lead or a transfer from an overwhelmed teammate` : null,
+              dev > 0 ? `${dev} in development${firstDev ? ` (${firstDev.reason})` : ""} — the coaching brief carries the gap` : null,
+            ].filter(Boolean).join(". "),
+            severity: over > 0 ? "high" : "medium",
+            manager: "recruiting_manager",
+            ctas: [{ label: "Coaching briefs", href: "/dashboard/team" }],
+          })
+        }
+      }
     } catch (e) {
       console.error(`[team-lead-brief] capacity exceptions failed: ${e instanceof Error ? e.message : String(e)}`)
     }
@@ -201,6 +227,29 @@ export async function generateTeamLeadBrief(params: {
     }
   } catch (e) {
     console.error(`[team-lead-brief] missions read failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
+
+  // WAVE 106 (lane 106A): open RESOURCE ALLOCATION recommendations awaiting a human (held leads the
+  // chain ranked an agent for, picks that differ from the rules, marketing budget splits) — one line,
+  // through the one board reader (lib/kernel/resource-allocation.ts loadAllocationBoard). A refused
+  // read leaves the line out, never "nothing to decide". Team leads are on the admin roster; agents
+  // never receive this brief (CLAUDE.md §5 — leads are the brokerage's).
+  try {
+    const { loadAllocationBoard } = await import("@/lib/kernel/resource-allocation")
+    const b = await loadAllocationBoard(supabase as any, params.brokerageId, { limit: 1 })
+    if (!b.ok) console.error(`[team-lead-brief] allocation board refused: ${b.error}`)
+    else if (b.board.open > 0) {
+      priorities.push({
+        id: "allocation-recommendations",
+        title: `${b.board.open} resource allocation recommendation${b.board.open === 1 ? "" : "s"} await${b.board.open === 1 ? "s" : ""} your decision`,
+        body: `${b.board.byKind.lead_assignment} lead assignment, ${b.board.byKind.marketing_allocation} marketing budget. ${b.board.latest[0] ? `Latest: ${b.board.latest[0].summary}` : ""} Nothing is applied until you approve it.`,
+        severity: "medium",
+        manager: "ai_isa",
+        ctas: [{ label: "Decide on Manager Trust", href: "/dashboard/admin/manager-trust" }],
+      })
+    }
+  } catch (e) {
+    console.error(`[team-lead-brief] allocation board failed: ${e instanceof Error ? e.message : String(e)}`)
   }
 
   // AI ISA manager — unclaimed qualified handoffs into the team lead the brief
@@ -250,7 +299,7 @@ export async function generateTeamLeadBrief(params: {
   // (lib/education/skill-freshness.ts:scoreCompetency via loadAgentCompetency) read for each team
   // member; the lead sees who scores at or below the gap line and on what, so the 1:1 above has a
   // subject. Capped to 25 members (a brief, not a census); a refused read leaves the line out.
-  let competencyGapAgents: Array<{ name: string; gaps: string[] }> = []
+  let competencyGapAgents: Array<{ name: string; gaps: string[]; focus: string | null }> = []
   if (teamAgentIds.length > 0) {
     try {
       const { loadAgentCompetency } = await import("@/lib/education/skill-freshness-radar")
@@ -262,7 +311,11 @@ export async function generateTeamLeadBrief(params: {
         if (p.gaps.length === 0) continue
         const u = Array.isArray(m.users) ? m.users[0] : m.users
         const name = [u?.first_name, u?.last_name].filter(Boolean).join(" ").trim() || "A team member"
-        competencyGapAgents.push({ name, gaps: p.gaps.slice(0, 2).map((g) => `${g.label} ${g.score}/100`) })
+        // WAVE 106 (lane 106D): the development loop's FOCUS is the lowest evidenced gap (observeWeakness,
+        // one per member) — the line names it so the 1:1 has the loop's subject, not a list.
+        const { observeWeakness } = await import("@/lib/education/skill-freshness")
+        const focus = observeWeakness(p, { limit: 1 })[0]
+        competencyGapAgents.push({ name, gaps: p.gaps.slice(0, 2).map((g) => `${g.label} ${g.score}/100`), focus: focus ? focus.label : null })
       }
     } catch (e) {
       console.error("[team-lead-brief] competency read failed (line left out):", (e as Error).message)
@@ -271,8 +324,8 @@ export async function generateTeamLeadBrief(params: {
   if (competencyGapAgents.length > 0) {
     priorities.push({
       id: "team-competency",
-      title: `${competencyGapAgents.length} team member${competencyGapAgents.length === 1 ? " has" : "s have"} a competency gap`,
-      body: competencyGapAgents.slice(0, 3).map((a) => `${a.name}: ${a.gaps.join(", ")}`).join(" · ") + " — the Academy has queued a module for each gap; make it the 1:1 topic",
+      title: `${competencyGapAgents.length} team member${competencyGapAgents.length === 1 ? " is" : "s are"} in development`,
+      body: competencyGapAgents.slice(0, 3).map((a) => `${a.name}: ${a.gaps.join(", ")}${a.focus ? ` (focus: ${a.focus})` : ""}`).join(" · ") + " — the development loop has queued a module and an assessment for each focus; make it the 1:1 topic",
       severity: "medium",
       manager: "recruiting_manager",
       ctas: [{ label: "View team", href: "/dashboard/team" }],

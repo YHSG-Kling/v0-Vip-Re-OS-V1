@@ -40,6 +40,10 @@ export async function generateBuyerOfferStrategy(
       brokerageId: spendActor.brokerageId,
       userId: spendActor.userId,
       feature: "offer_analysis",
+      // Wave 106A — what this reasoning is worth: a buyer-side commission (2.5%) on the list price,
+      // discounted by a one-in-four chance the strategy decides the deal. The router's reasoning-spend
+      // gate (resource_allocation.ai_min_value_to_cost_ratio) routes a trivial value to the cheaper model.
+      economics: { expectedValueUsd: Math.round(params.listPrice * 0.025 * 0.25) },
       schema: BuyerOfferStrategySchema,
       prompt: `You are a buyer's agent strategist. Help craft a winning offer strategy.
 

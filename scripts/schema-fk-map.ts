@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1828 of 1891 pairs) — storing them would be
+ * overwhelming majority (1830 of 1893 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1972 edges across 725 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1891 unordered
+ * MEASURED AT GENERATION: 1975 edges across 725 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1893 unordered
  * table pairs carry at least one FK; 63
  * carry more than one and are listed below. 15 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-06
  * source: public.live_foreign_keys_json()
- * body-sha256: a23bb36c0d8e9b6909b4795cc534f5458f391288fa7086d863e2900ac1cb73c8
+ * body-sha256: b73e5316d601da0b37f1e34a83d11106e9136da9d43575ccf12b8c980147c321
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -498,7 +498,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "marketing_agent_actions": { "approved_by": "users", "brokerage_id": "brokerages", "managed_agent_session_id": "managed_agent_sessions" },
   "marketing_agent_weekly_outcomes": { "brokerage_id": "brokerages" },
   "marketing_asset_qr_links": { "brokerage_id": "brokerages", "marketing_asset_id": "marketing_assets", "qr_code_id": "qr_codes" },
-  "marketing_assets": { "agent_user_id": "users", "brokerage_id": "brokerages", "campaign_id": "marketing_campaigns", "created_by": "users", "team_id": "teams" },
+  "marketing_assets": { "agent_user_id": "users", "approved_by": "users", "brokerage_id": "brokerages", "campaign_id": "marketing_campaigns", "contact_id": "contacts", "created_by": "users", "listing_id": "listings", "team_id": "teams" },
   "marketing_attribution_credits": { "brokerage_id": "brokerages", "campaign_id": "marketing_campaigns", "contact_id": "contacts", "transaction_id": "transactions" },
   "marketing_campaign_comments": { "author_user_id": "users", "brokerage_id": "brokerages", "campaign_id": "marketing_campaigns" },
   "marketing_campaign_tasks": { "assigned_user_id": "users", "brokerage_id": "brokerages", "campaign_id": "marketing_campaigns" },
@@ -884,7 +884,7 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "listing_media|users": 2,
   "listing_presentations|users": 2,
   "locations|users": 3,
-  "marketing_assets|users": 2,
+  "marketing_assets|users": 3,
   "marketing_campaigns|users": 2,
   "newsletter_brokers_templates|users": 2,
   "offers|strategy_recommendations": 2,

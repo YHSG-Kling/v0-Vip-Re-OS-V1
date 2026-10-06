@@ -10,6 +10,7 @@ import {
   getBreakEvenAnalysis,
   getRecruitingAnalyticsByYear,
   listRecruitableAgents,
+  getRecruitingNeeds,
 } from "@/app/actions/recruiting-roi"
 import { YearlyRevenueChart } from "./yearly-revenue-chart"
 import { BreakEvenChart } from "./breakeven-chart"
@@ -152,6 +153,13 @@ export default async function RecruitingROIPage() {
     .order("created_at", { ascending: false })
     .limit(100)
 
+  // Wave 106E — the twin's recruiting NEEDS and the missions they became (app/actions/recruiting-roi.ts
+  // getRecruitingNeeds). A refusal renders as a blind spot on the block, never as "no needs".
+  const recruitingNeeds = await getRecruitingNeeds().catch((e) => ({
+    needs: [], missions: [], workforceLine: null, twinAt: null,
+    blindSpots: [`recruiting needs unavailable: ${e instanceof Error ? e.message : String(e)}`],
+  }))
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       <div>
@@ -275,6 +283,46 @@ export default async function RecruitingROIPage() {
               It had no editor anywhere in the app until now — see
               app/actions/settings/recruiting-pitch.ts. */}
           <RecruitingPitchPanel />
+          {/* Wave 106E — NEEDS: what the brokerage twin says the roster lacks (territory demand ↑ vs
+              capacity vs specialist coverage) and the recruiting missions holding those needs for
+              your approval. Approve on the Command Center's Missions card; an approved (ACTIVE)
+              mission's territory + specialization becomes the sourcer's search criteria. */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2"><Target className="h-5 w-5" />Recruiting needs</CardTitle>
+              <CardDescription>
+                {recruitingNeeds.workforceLine ?? "No workforce profile yet"}{recruitingNeeds.twinAt ? ` · twin as of ${recruitingNeeds.twinAt.slice(0, 16).replace("T", " ")}` : ""}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {recruitingNeeds.needs.length === 0 && recruitingNeeds.missions.length === 0 && (
+                <p className="text-sm text-muted-foreground">No territory shows rising seller demand the roster cannot absorb.</p>
+              )}
+              {recruitingNeeds.needs.map((n) => (
+                <div key={`${n.territory}-${n.specialization}`} className="rounded-md border p-3">
+                  <div className="text-sm font-medium">{n.count} {n.specialization} listing agent{n.count === 1 ? "" : "s"} needed in {n.territory}</div>
+                  <ul className="mt-1 list-disc pl-5 text-xs text-muted-foreground">{n.reasons.map((r, i) => <li key={i}>{r}</li>)}</ul>
+                </div>
+              ))}
+              {recruitingNeeds.missions.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-muted-foreground">Recruiting missions</div>
+                  {recruitingNeeds.missions.map((m) => (
+                    <div key={m.id} className="flex items-center justify-between text-sm">
+                      <span>{m.objective}</span>
+                      <span className={`text-xs rounded px-2 py-0.5 ${m.state === "ACTIVE" ? "bg-green-50 text-green-700" : m.state === "APPROVAL_REQUIRED" ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-700"}`}>
+                        {m.state === "APPROVAL_REQUIRED" ? "awaiting your approval" : m.state === "ACTIVE" ? "approved — feeding the sourcer" : m.state.toLowerCase().replace("_", " ")}
+                      </span>
+                    </div>
+                  ))}
+                  <p className="text-xs text-muted-foreground">Approve or cancel a mission on the Command Center&apos;s Missions card. Nothing reaches a prospect until a mission is approved.</p>
+                </div>
+              )}
+              {recruitingNeeds.blindSpots.length > 0 && (
+                <p className="text-xs text-muted-foreground">Blind spots: {recruitingNeeds.blindSpots.join(" · ")}</p>
+              )}
+            </CardContent>
+          </Card>
           <RecruitingPipelineClient recruits={(recruitRows as any[]) ?? []} brokerageId={profile.brokerage_id} />
         </TabsContent>
 

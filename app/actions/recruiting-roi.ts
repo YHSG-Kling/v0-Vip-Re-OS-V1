@@ -36,6 +36,46 @@ async function requireRecruitingCaller(): Promise<{ client: Awaited<ReturnType<t
   return { client, userId: user.id, brokerageId: u.brokerage_id as string }
 }
 
+/**
+ * WAVE 106 (lane 106E) — THE RECRUITING "NEEDS" BLOCK: the twin's recruiting needs (territory
+ * demand ↑ vs capacity vs specialist coverage — lib/kernel/brokerage-twin.ts recruitingNeeds over
+ * the last persisted twin) beside the recruiting missions those needs became (held
+ * APPROVAL_REQUIRED until a human approves them on the Missions card; ACTIVE = approved and
+ * feeding the sourcer's criteria). Tenant from the session; admin roster. A missing twin or a
+ * refused missions read is PUBLISHED, never an empty "no needs".
+ */
+export async function getRecruitingNeeds(): Promise<{
+  needs: Array<{ territory: string; specialization: string; count: number; reasons: string[] }>
+  missions: Array<{ id: string; objective: string; state: string; territory: string | null; specialization: string | null; createdAt: string }>
+  workforceLine: string | null
+  twinAt: string | null
+  blindSpots: string[]
+}> {
+  const { brokerageId } = await requireRecruitingCaller()
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { readBrokerageTwin, recruitingNeeds, workforceLine } = await import("@/lib/kernel/brokerage-twin")
+  const { activeMissionsFor, recruitingTargetingOf } = await import("@/lib/kernel/missions")
+  const svc = createServiceClient() as any
+  const blindSpots: string[] = []
+  const twin = await readBrokerageTwin(brokerageId, { svc, snapshot: {} })
+  if (!twin) blindSpots.push("no brokerage twin persisted in the last 24h — open the Command Center to build one")
+  else if (!twin.workforce) blindSpots.push("the last twin predates the workforce section — the next Command Center visit rebuilds it")
+  const needs = twin?.workforce ? recruitingNeeds(twin) : []
+  const ms = await activeMissionsFor(brokerageId, { ownerManager: "recruiting_manager", limit: 200 }, svc)
+  if (ms.readRefused) blindSpots.push(`missions read refused: ${ms.readRefused}`)
+  const missions = ms.active.filter((m) => m.mission_type === "recruiting").map((m) => {
+    const t = recruitingTargetingOf(m)
+    return { id: m.id, objective: m.objective, state: m.state, territory: t?.territory ?? null, specialization: t?.specialization ?? null, createdAt: m.created_at }
+  })
+  return { needs, missions, workforceLine: workforceLine(twin?.workforce), twinAt: twin?.at ?? null, blindSpots }
+}
+
+// TOMBSTONE (wave 106 integration, CLAUDE.md §1.3): `setWorkforceThresholds` was a public "use server"
+// endpoint no surface called. The thresholds are a TENANT POLICY KEY (lib/kernel/tenant-policy.ts
+// workforce_thresholds) and policy keys change through the ONE path every other key uses — an
+// improvement_proposals `policy` proposal promoted on the Manager Trust page
+// (lib/kernel/improvement-proposals.ts → appendTenantPolicyVersion → mergeBrokerageSettings).
+
 export async function getRecruitingROISummary() {
   const { client, brokerageId } = await requireRecruitingCaller()
 

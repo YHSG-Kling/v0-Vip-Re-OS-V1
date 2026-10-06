@@ -697,6 +697,12 @@ export enum KernelEvent {
   MENTOR_SESSION_HELD                = 'mentor_session_held',
   CE_COMPLETED                       = 'ce_completed',
   AGENT_WORK_ANNIVERSARY             = 'agent_work_anniversary',
+  // Wave 106 (lane 106D) — the adaptive development loop's competency UPDATE step: a competency
+  // score rose on evidence (lib/education/skill-freshness-radar.ts runAdaptiveDevelopmentCycle).
+  // entityId = the competency node (relationship-graph entityIdForKey), metadata.agent_id = agents.id,
+  // metadata.skill / before / after. The reactor awards COMPETENCY_IMPROVED on it — the improvement,
+  // never a completion (no TRAINING_COURSE_COMPLETED rule exists in LIFECYCLE_AWARD_RULES).
+  COMPETENCY_IMPROVED                = 'competency_improved',
 
   // ── Layer 7 — durable mission runtime (wave 104, lane 104D) ─────────────────
   // Audit rows (auditOnly) written by the ONE mission service lib/kernel/missions.ts:
@@ -711,4 +717,10 @@ export enum KernelEvent {
   // recorder folds them into the mission's chain.
   MANAGER_DELEGATION_REQUESTED       = 'manager_delegation_requested',
   MANAGER_DELEGATION_STATE_CHANGED   = 'manager_delegation_state_changed',
+  // ── Layer 7 — the adaptive customer journey (wave 106, lane 106B) ───────────
+  // Audit row (auditOnly) written by lib/ai-isa/lead-action-plan.ts
+  // recordAndExecuteExperience: the NEXT BEST EXPERIENCE chosen for a contact
+  // (metadata.experience ∈ EXPERIENCE_KINDS, the executing manager, the NBA reason
+  // code). The reactor has no rule; the flight recorder and the outcome engine read it.
+  NEXT_BEST_EXPERIENCE_CHOSEN        = 'next_best_experience_chosen',
 }

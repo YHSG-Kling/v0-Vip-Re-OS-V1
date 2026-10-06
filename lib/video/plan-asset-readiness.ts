@@ -391,15 +391,21 @@ const DEFAULT_DEPS: DefaultDeps = {
     return ((data ?? []) as unknown[]).length === 1 ? { ok: true, reason: null } : { ok: false, reason: `ai_tool_usage insert returned ${((data ?? []) as unknown[]).length} rows` }
   },
   async captureLibraryImage(svc, a) {
-    const { data, error } = await svc.from("marketing_assets").insert({
-      brokerage_id: a.ctx.brokerageId, agent_user_id: a.ctx.agentUserId, visibility_scope: "brokerage",
-      asset_type: "image", asset_name: `Video visual — ${a.subject.slice(0, 60)}`, asset_url: a.imageUrl, thumbnail_url: a.imageUrl,
-      source_table: "ai_video_projects", tags: ["reusable", "video_asset", "generated"], approval_status: "approved",
+    // Wave 106 (106C): the capture goes through THE ONE asset writer (lib/kernel/media-intelligence.ts
+    // recordMediaAsset) so the created image carries the owner's record — subject, purpose, rights
+    // {source: generated}, the model, the cost (ALREADY booked by bookImageSpend above → bookCost:false,
+    // never twice). The direct marketing_assets insert that lived here is tombstoned onto it.
+    const { recordMediaAsset } = await import("@/lib/kernel/media-intelligence")
+    const r = await recordMediaAsset(svc, {
+      brokerageId: a.ctx.brokerageId, agentUserId: a.ctx.agentUserId, assetType: "image", assetUrl: a.imageUrl, thumbnailUrl: a.imageUrl,
+      assetName: `Video visual — ${a.subject.slice(0, 60)}`, subject: a.subject,
+      purpose: a.ctx.campaignId ? "campaign" : a.ctx.listingId ? "listing_promo" : "brand", listingId: a.ctx.listingId ?? null, campaignId: a.ctx.campaignId ?? null,
+      rights: { source: "generated" }, generationModel: "gpt-image-1", costUsd: null, bookCost: false,
+      sourceTable: "ai_video_projects", tags: ["video_asset", "generated"], feature: "video_asset_readiness",
       metadata: { captured_from: "video_asset_readiness", subject: a.subject, customer_facing_value: false },
-    }).select("id")
-    if (error) return { id: null, reason: `marketing_assets capture refused: ${error.message}` }
-    const id = ((data ?? []) as Array<{ id: string }>)[0]?.id ?? null
-    return { id, reason: id ? null : "marketing_assets capture returned no row" }
+    })
+    if (!r.ok) return { id: null, reason: `marketing_assets capture refused: ${r.error}` }
+    return { id: r.id, reason: null }
   },
   async verifyCampaign(svc, a) {
     // An FK proves a campaign exists, never that it is OURS — the tenant predicate does.

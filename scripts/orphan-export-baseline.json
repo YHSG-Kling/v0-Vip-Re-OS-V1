@@ -21,7 +21,7 @@
     "lib/ads/ad-creative-engine.ts": 2,
     "lib/ads/ad-lead-intake.ts": 2,
     "lib/ads/ad-manager.ts": 2,
-    "lib/ads/ad-outcome-loop.ts": 2,
+    "lib/ads/ad-outcome-loop.ts": 1,
     "lib/ads/audience-persona-basis.ts": 1,
     "lib/ads/audience-source-rules.ts": 2,
     "lib/ads/connectors/ad-payload.ts": 2,
@@ -61,7 +61,7 @@
     "lib/ai-isa/ghost-reengagement.ts": 1,
     "lib/ai-isa/inbound-intent-classifier.ts": 1,
     "lib/ai-isa/isa-acting-scope.ts": 1,
-    "lib/ai-isa/lead-action-plan.ts": 2,
+    "lib/ai-isa/lead-action-plan.ts": 5,
     "lib/ai-isa/lead-nurture.ts": 1,
     "lib/ai-isa/listing-appointment.ts": 6,
     "lib/ai-isa/meeting-followthrough.ts": 2,
@@ -143,7 +143,7 @@
     "lib/education/question-gap.ts": 1,
     "lib/education/regulatory-curriculum.ts": 2,
     "lib/education/seller-signal-education-context.ts": 1,
-    "lib/education/skill-freshness-radar.ts": 1,
+    "lib/education/skill-freshness-radar.ts": 2,
     "lib/education/skill-freshness.ts": 2,
     "lib/embed/widget-modes.ts": 1,
     "lib/enrichment/household-financials.ts": 1,
@@ -221,7 +221,7 @@
     "lib/kernel/board-packet-reel.ts": 1,
     "lib/kernel/board-packet.ts": 1,
     "lib/kernel/brand-voice.ts": 1,
-    "lib/kernel/brokerage-twin.ts": 6,
+    "lib/kernel/brokerage-twin.ts": 10,
     "lib/kernel/call-intelligence.ts": 1,
     "lib/kernel/campaign-center.ts": 1,
     "lib/kernel/client-pulse.ts": 2,
@@ -254,7 +254,7 @@
     "lib/kernel/fire-drills.ts": 2,
     "lib/kernel/flow-integrity.ts": 4,
     "lib/kernel/idle-hands.ts": 2,
-    "lib/kernel/improvement-proposals.ts": 5,
+    "lib/kernel/improvement-proposals.ts": 4,
     "lib/kernel/ingress-continuity.ts": 2,
     "lib/kernel/intelligence-report.ts": 4,
     "lib/kernel/intent-campaign.ts": 4,
@@ -271,9 +271,10 @@
     "lib/kernel/manager-registry.ts": 1,
     "lib/kernel/manager-signals.ts": 1,
     "lib/kernel/marketing/real-estate-compliance-gate.ts": 1,
+    "lib/kernel/media-intelligence.ts": 11,
     "lib/kernel/mission-context.ts": 2,
     "lib/kernel/mission-controller.ts": 5,
-    "lib/kernel/missions.ts": 4,
+    "lib/kernel/missions.ts": 5,
     "lib/kernel/morning-standup.ts": 2,
     "lib/kernel/neighbor-farm.ts": 1,
     "lib/kernel/objection-library.ts": 3,
@@ -290,8 +291,9 @@
     "lib/kernel/referral-appreciation.ts": 6,
     "lib/kernel/referral-radar.ts": 4,
     "lib/kernel/regulatory-watcher.ts": 5,
-    "lib/kernel/relationship-graph.ts": 14,
+    "lib/kernel/relationship-graph.ts": 13,
     "lib/kernel/repair-digest.ts": 1,
+    "lib/kernel/resource-allocation.ts": 10,
     "lib/kernel/returning-customer.ts": 4,
     "lib/kernel/reverse-prospecting.ts": 2,
     "lib/kernel/schema-adaptation.ts": 1,
@@ -447,6 +449,7 @@
     "lib/providers/messaging/sms-adapters.ts": 2,
     "lib/providers/outbound-sender.ts": 3,
     "lib/providers/web-push.ts": 1,
+    "lib/recruit-pipeline/recruit-sourcer.ts": 1,
     "lib/recruiting/career-tier.ts": 4,
     "lib/recruiting/challenge-runner.ts": 1,
     "lib/recruiting/leaderboard.ts": 3,
@@ -478,6 +481,7 @@
     "lib/storage/file-limits.ts": 3,
     "lib/storage/signed-upload-url.ts": 4,
     "lib/strategy-learning/strategy-insights.ts": 1,
+    "lib/training/objection-scenarios.ts": 1,
     "lib/transactions/buyer-move.ts": 3,
     "lib/transactions/cda-esign.ts": 1,
     "lib/transactions/cda-field-classifier.ts": 2,
@@ -537,7 +541,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 10838,
+  "census": 10904,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -568,7 +572,7 @@
     "app/actions/admin/create-subscriber.ts": 2,
     "app/actions/admin/domain-coherence.ts": 8,
     "app/actions/admin/get-admin-stats.ts": 1,
-    "app/actions/admin/improvement-proposals.ts": 4,
+    "app/actions/admin/improvement-proposals.ts": 5,
     "app/actions/admin/invitations.ts": 4,
     "app/actions/admin/invite-user.ts": 1,
     "app/actions/admin/lead-routing-settings.ts": 4,
@@ -950,7 +954,7 @@
     "app/actions/push-subscriptions.ts": 4,
     "app/actions/qr-management.ts": 2,
     "app/actions/quarterly-review.ts": 1,
-    "app/actions/recruiting-roi.ts": 7,
+    "app/actions/recruiting-roi.ts": 8,
     "app/actions/referrals/agent-referral-actions.ts": 2,
     "app/actions/referrals/referral-actions.ts": 7,
     "app/actions/referrals/referral-appreciation.ts": 3,
@@ -1900,6 +1904,7 @@
     "app/dashboard/admin/campaign-center/approve-buttons.tsx": 2,
     "app/dashboard/admin/command-center/acting-as-log.tsx": 1,
     "app/dashboard/admin/command-center/ai-teammates-panel.tsx": 1,
+    "app/dashboard/admin/command-center/allocation-card.tsx": 1,
     "app/dashboard/admin/command-center/autonomy-accuracy-card.tsx": 1,
     "app/dashboard/admin/command-center/autonomy-halt-banner.tsx": 1,
     "app/dashboard/admin/command-center/command-bar.tsx": 1,
@@ -2859,7 +2864,7 @@
     "lib/ai-isa/inbound-intent-classifier.ts": 3,
     "lib/ai-isa/isa-acting-scope.ts": 2,
     "lib/ai-isa/isa-outreach-logger.ts": 4,
-    "lib/ai-isa/lead-action-plan.ts": 15,
+    "lib/ai-isa/lead-action-plan.ts": 23,
     "lib/ai-isa/lead-call-intent.ts": 1,
     "lib/ai-isa/lead-channel-policy.ts": 3,
     "lib/ai-isa/lead-nurture.ts": 2,
@@ -3262,8 +3267,8 @@
     "lib/education/question-gap.ts": 2,
     "lib/education/regulatory-curriculum.ts": 3,
     "lib/education/seller-signal-education-context.ts": 2,
-    "lib/education/skill-freshness-radar.ts": 5,
-    "lib/education/skill-freshness.ts": 4,
+    "lib/education/skill-freshness-radar.ts": 7,
+    "lib/education/skill-freshness.ts": 8,
     "lib/elevenlabs/conv-ai.ts": 4,
     "lib/email/orchestrate-email-preset-send.ts": 1,
     "lib/embed/resolve-site-embed.ts": 1,
@@ -3421,7 +3426,7 @@
     "lib/integrations/zapier-direction.ts": 1,
     "lib/intelligence/adoption-pulse.ts": 1,
     "lib/intelligence/agent-registry.ts": 4,
-    "lib/intelligence/agent-scorecard.ts": 4,
+    "lib/intelligence/agent-scorecard.ts": 5,
     "lib/intelligence/appointment-whisper.ts": 5,
     "lib/intelligence/brokerage-pnl.ts": 3,
     "lib/intelligence/buyer-stall-predictor-runner.ts": 1,
@@ -3557,7 +3562,7 @@
     "lib/kernel/board-packet.ts": 2,
     "lib/kernel/brand-compliance.ts": 1,
     "lib/kernel/brand-voice.ts": 2,
-    "lib/kernel/brokerage-twin.ts": 13,
+    "lib/kernel/brokerage-twin.ts": 20,
     "lib/kernel/calendar-deadline-watcher.ts": 1,
     "lib/kernel/calendar-engine.ts": 1,
     "lib/kernel/calendar-sync.ts": 6,
@@ -3668,10 +3673,11 @@
     "lib/kernel/marketing/real-estate-compliance-gate.ts": 2,
     "lib/kernel/marketing-bench.ts": 1,
     "lib/kernel/marketing.ts": 16,
+    "lib/kernel/media-intelligence.ts": 18,
     "lib/kernel/milestone-calendar-bridge.ts": 1,
     "lib/kernel/mission-context.ts": 5,
     "lib/kernel/mission-controller.ts": 8,
-    "lib/kernel/missions.ts": 25,
+    "lib/kernel/missions.ts": 29,
     "lib/kernel/morning-standup.ts": 3,
     "lib/kernel/neighbor-farm.ts": 3,
     "lib/kernel/newsletter/assemble.ts": 2,
@@ -3720,6 +3726,7 @@
     "lib/kernel/resolve-event-contacts.ts": 1,
     "lib/kernel/resolve-user-office.ts": 2,
     "lib/kernel/resolve-user-team.ts": 3,
+    "lib/kernel/resource-allocation.ts": 16,
     "lib/kernel/returning-customer.ts": 8,
     "lib/kernel/reverse-prospecting.ts": 3,
     "lib/kernel/role-routes.ts": 1,
@@ -4214,7 +4221,7 @@
     "lib/providers/zenrows/client.ts": 1,
     "lib/quality-checker.ts": 1,
     "lib/recruit-pipeline/recruit-processor.ts": 1,
-    "lib/recruit-pipeline/recruit-sourcer.ts": 1,
+    "lib/recruit-pipeline/recruit-sourcer.ts": 2,
     "lib/recruiting/benefit-offerings.ts": 3,
     "lib/recruiting/career-tier.ts": 7,
     "lib/recruiting/challenge-runner.ts": 3,
@@ -4345,7 +4352,7 @@
     "lib/them-first/empathy-library.ts": 4,
     "lib/them-first/validator.ts": 1,
     "lib/tools/visitor-id.ts": 2,
-    "lib/training/objection-scenarios.ts": 1,
+    "lib/training/objection-scenarios.ts": 3,
     "lib/transactions/auto-execute-offer.ts": 1,
     "lib/transactions/buyer-move.ts": 8,
     "lib/transactions/buyer-representation.ts": 1,
@@ -4772,6 +4779,7 @@
     ],
     "app/actions/admin/improvement-proposals.ts": [
       "listProposals",
+      "recommendMarketingAllocationFormAction",
       "decideProposalAction",
       "promoteProposalAction",
       "rollbackProposalAction"
@@ -7320,6 +7328,7 @@
       "getQuarterlyReviewAction"
     ],
     "app/actions/recruiting-roi.ts": [
+      "getRecruitingNeeds",
       "getRecruitingROISummary",
       "getRecruitROIByRecruit",
       "getRecruitingCostBreakdown",
@@ -10917,6 +10926,9 @@
     "app/dashboard/admin/command-center/ai-teammates-panel.tsx": [
       "AiTeammatesPanel"
     ],
+    "app/dashboard/admin/command-center/allocation-card.tsx": [
+      "AllocationCard"
+    ],
     "app/dashboard/admin/command-center/autonomy-accuracy-card.tsx": [
       "AutonomyAccuracyCard"
     ],
@@ -14119,7 +14131,15 @@
       "contactTouchSignals",
       "rankContactsForTouch",
       "loadContactNbaContext",
-      "advanceLeadActionPlans"
+      "advanceLeadActionPlans",
+      "isExperienceKind",
+      "transactionIsActive",
+      "planNextBestExperience",
+      "contactFacingExperience",
+      "experienceReasonCode",
+      "loadNextBestExperienceInputs",
+      "recordAndExecuteExperience",
+      "journeyVerdictForEnrollment"
     ],
     "lib/ai-isa/lead-call-intent.ts": [
       "routeLeadCallIntent"
@@ -16332,13 +16352,19 @@
       "loadAgentSkillFreshness",
       "loadAgentCompetency",
       "runSkillFreshnessRadar",
-      "runSkillFreshnessRadarAll"
+      "runSkillFreshnessRadarAll",
+      "runAdaptiveDevelopmentCycle",
+      "runAdaptiveDevelopmentAll"
     ],
     "lib/education/skill-freshness.ts": [
       "scoreSkill",
       "computeSkillFreshness",
       "claimSpeedScore",
-      "scoreCompetency"
+      "scoreCompetency",
+      "observeWeakness",
+      "competencyDeltas",
+      "improvedCompetencies",
+      "competencyScoreMap"
     ],
     "lib/elevenlabs/conv-ai.ts": [
       "ensureAssistantAgent",
@@ -17165,6 +17191,7 @@
       "getAgentDisplayName"
     ],
     "lib/intelligence/agent-scorecard.ts": [
+      "developmentBlock",
       "graphBlock",
       "completionPct",
       "avgOrNull",
@@ -17791,11 +17818,17 @@
       "applyBrandVoice"
     ],
     "lib/kernel/brokerage-twin.ts": [
+      "resolveWorkforceThresholds",
       "registerTwinSeam",
       "twinSeams",
       "twinDigest",
       "twinMeasures",
       "detectTwinChanges",
+      "classifyWorkforceAgent",
+      "composeTerritoryDemand",
+      "composeWorkforce",
+      "recruitingNeeds",
+      "recruitingNeedObjective",
       "composeBrokerageTwin",
       "scenario",
       "readTwinMeasure",
@@ -17803,7 +17836,8 @@
       "loadBrokerageTwinFacts",
       "buildBrokerageTwin",
       "readBrokerageTwin",
-      "twinCapacityForAgent"
+      "twinCapacityForAgent",
+      "workforceLine"
     ],
     "lib/kernel/calendar-deadline-watcher.ts": [
       "checkUpcomingDeadlines"
@@ -18519,6 +18553,26 @@
       "repurposeContentAsset",
       "previewQrAsset"
     ],
+    "lib/kernel/media-intelligence.ts": [
+      "rightsVerdict",
+      "brandPolicyVerdict",
+      "subjectSimilarity",
+      "performanceScore",
+      "sufficiencyVerdict",
+      "foldPerformance",
+      "mediaKindVerdict",
+      "redactForAudience",
+      "needKey",
+      "readMediaAssets",
+      "recordMediaAsset",
+      "recordAssetLineage",
+      "lineageChain",
+      "findSufficientAsset",
+      "produceVariants",
+      "learnFromPerformance",
+      "requestCreative",
+      "fulfilCreativeNeed"
+    ],
     "lib/kernel/milestone-calendar-bridge.ts": [
       "createTransactionMilestoneCalendarEvents"
     ],
@@ -18561,6 +18615,10 @@
       "failMission",
       "recordMissionProgress",
       "syncMissionProgressFromTwin",
+      "recruitingNeedSubjectId",
+      "recruitingTargetingOf",
+      "ensureRecruitingMissionsFromTwin",
+      "recruitingTargetingFor",
       "attachAction",
       "attachOutcome",
       "attachEvidence",
@@ -18881,6 +18939,24 @@
       "resolveLedTeamId",
       "resolveUserTeam",
       "resolveTeamAgentIds"
+    ],
+    "lib/kernel/resource-allocation.ts": [
+      "resolveResourceAllocationPolicy",
+      "loadResourceAllocationPolicy",
+      "planLeadAssignment",
+      "gatherLeadAssignmentFacts",
+      "recordAllocationRecommendation",
+      "summarizeRecommendation",
+      "recommendLeadAssignment",
+      "consultLeadAssignmentRecommendation",
+      "marginalReturnPerUsd",
+      "planMarketingAllocation",
+      "gatherMarketingAllocationFacts",
+      "recommendMarketingAllocation",
+      "shouldUseExpensiveReasoning",
+      "shouldPurchaseEnrichment",
+      "loadAllocationBoard",
+      "allocationSubjectKey"
     ],
     "lib/kernel/returning-customer.ts": [
       "isReengageableLifetime",
@@ -21571,6 +21647,7 @@
       "processRawRecruit"
     ],
     "lib/recruit-pipeline/recruit-sourcer.ts": [
+      "targetingSearchTerms",
       "sourceRecruitProspects"
     ],
     "lib/recruiting/benefit-offerings.ts": [
@@ -22202,7 +22279,9 @@
       "isVisitorIdPersistent"
     ],
     "lib/training/objection-scenarios.ts": [
-      "getScenarioByKey"
+      "getScenarioByKey",
+      "scenarioCompetency",
+      "composeAssessment"
     ],
     "lib/transactions/auto-execute-offer.ts": [
       "autoExecuteFullySignedOffer"

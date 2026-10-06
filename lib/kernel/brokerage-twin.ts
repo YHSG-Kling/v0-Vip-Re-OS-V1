@@ -185,6 +185,159 @@ export interface TwinChanged {
   reason: string | null
 }
 
+// ─── Workforce (wave 106, lane 106E) ─────────────────────────────────────────
+//
+// BROKERAGE WORKFORCE INTELLIGENCE — the OS knows of its 50 agents who is a strong listing / buyer /
+// investor agent, who is bilingual, who is a luxury specialist, who is overwhelmed, who is
+// underutilized, who is in development. ONE new twin section (snapshot-persisted with the rest),
+// every classification carrying the READER that produced its evidence and the THRESHOLD it was
+// judged against — the threshold comes from TENANT POLICY (brokerage_settings.settings
+// .workforce_thresholds, registered in lib/kernel/tenant-policy.ts; defaults below), never a
+// constant hidden in a composer. SURVIVORS READ, none re-derived: capacityFor (band + fatigue
+// tier — the one capacity answer), loadAgentCompetency (the one competency reader; 106D widens
+// its vocabulary and this section reads gaps through it, never restating the skill list),
+// agents.languages / agents.specializations (the profile columns the people-ops profile writes),
+// listings / offers / contacts.contact_persona (the m589 vocabulary: 'investor', 'luxury').
+// TERRITORY DEMAND (the recruiting trigger): farm_territories (an agent's farm — the only
+// territory model, m551/m715) × leads.property_zip_code — seller leads in the trailing 30 days
+// against the 30 before, per territory; the serving agents' headroom and specialist coverage
+// are the capacity and competency coverage a recruiting need is judged against (recruitingNeeds).
+
+export type WorkforceClassification =
+  | "strong_listing" | "strong_buyer" | "investor" | "bilingual" | "luxury_specialist"
+  | "overwhelmed" | "underutilized" | "in_development"
+
+export const WORKFORCE_CLASSIFICATIONS: readonly WorkforceClassification[] = [
+  "strong_listing", "strong_buyer", "investor", "bilingual", "luxury_specialist", "overwhelmed", "underutilized", "in_development",
+]
+
+/** The tenant-policy key (brokerage_settings.settings) the thresholds are read from. */
+export const WORKFORCE_THRESHOLDS_KEY = "workforce_thresholds"
+
+export interface WorkforceThresholds {
+  /** strong_listing: listings taken (listing_date) in the trailing 180 days, or active now. */
+  strong_listing_listings_180d: number
+  /** strong_buyer: buyer-side offers written in the trailing 180 days (offers.agent_id). */
+  strong_buyer_offers_180d: number
+  /** investor: active contacts at contact_persona='investor' on the agent's book. */
+  investor_contacts: number
+  /** bilingual: agents.languages entries. */
+  bilingual_languages: number
+  /** luxury: a listing at or above this list price is a luxury listing. */
+  luxury_list_price_usd: number
+  /** luxury_specialist: luxury listings taken in 180 days (or a 'luxury' entry in agents.specializations). */
+  luxury_listings_180d: number
+  /** overwhelmed: the capacity band at or beyond which an agent is overwhelmed (capacityFor folds the fatigue tier). */
+  overwhelmed_band: "over" | "at_capacity"
+  /** underutilized: band available AND load at or under this percentage of the tier ceiling. */
+  underutilized_load_pct: number
+  /** in_development: competency gaps (loadAgentCompetency) at or above this count. */
+  in_development_gaps: number
+  /** Territory demand is UP when seller leads 30d exceed the prior 30d by this percentage. */
+  demand_rise_pct: number
+  /** …and are at least this many (a rise from 1 to 2 is noise). */
+  demand_min_leads_30d: number
+  /** Seller leads one listing agent with headroom absorbs in 30 days (the capacity rule). */
+  seller_leads_per_agent_30d: number
+  /** A territory whose seller leads are this % luxury-priced needs a luxury specialist. */
+  luxury_share_pct: number
+}
+
+export const DEFAULT_WORKFORCE_THRESHOLDS: WorkforceThresholds = {
+  strong_listing_listings_180d: 3, strong_buyer_offers_180d: 3, investor_contacts: 3, bilingual_languages: 2,
+  luxury_list_price_usd: 1_000_000, luxury_listings_180d: 2, overwhelmed_band: "over", underutilized_load_pct: 25,
+  in_development_gaps: 1, demand_rise_pct: 25, demand_min_leads_30d: 5, seller_leads_per_agent_30d: 8, luxury_share_pct: 30,
+}
+
+/** PURE: the tenant's thresholds from the settings jsonb — every key validated, an absent or
+ *  out-of-range value falls back to the default (never a NaN threshold). */
+export function resolveWorkforceThresholds(settings: unknown): WorkforceThresholds {
+  const raw = settings && typeof settings === "object" ? (settings as Record<string, unknown>)[WORKFORCE_THRESHOLDS_KEY] : undefined
+  const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
+  const num = (k: keyof WorkforceThresholds, max: number): number => {
+    const v = Number(obj[k])
+    return Number.isFinite(v) && v >= 0 && v <= max ? v : (DEFAULT_WORKFORCE_THRESHOLDS[k] as number)
+  }
+  return {
+    strong_listing_listings_180d: num("strong_listing_listings_180d", 1000), strong_buyer_offers_180d: num("strong_buyer_offers_180d", 1000),
+    investor_contacts: num("investor_contacts", 10_000), bilingual_languages: num("bilingual_languages", 20),
+    luxury_list_price_usd: num("luxury_list_price_usd", 1e9), luxury_listings_180d: num("luxury_listings_180d", 1000),
+    overwhelmed_band: obj.overwhelmed_band === "at_capacity" ? "at_capacity" : "over",
+    underutilized_load_pct: num("underutilized_load_pct", 100), in_development_gaps: num("in_development_gaps", 20),
+    demand_rise_pct: num("demand_rise_pct", 10_000), demand_min_leads_30d: num("demand_min_leads_30d", 100_000),
+    seller_leads_per_agent_30d: Math.max(1, num("seller_leads_per_agent_30d", 10_000)), luxury_share_pct: num("luxury_share_pct", 100),
+  }
+}
+
+export interface WorkforceEvidence {
+  /** The reader that produced the value (table.column + the module), never the twin itself. */
+  reader: string
+  value: number | string
+  /** The policy threshold the value was judged against. */
+  threshold: number | string
+}
+
+export interface WorkforceClassified {
+  kind: WorkforceClassification
+  evidence: WorkforceEvidence
+  reason: string
+}
+
+export interface WorkforceAgentProfile {
+  agentId: string
+  classifications: WorkforceClassified[]
+  /** The per-agent facts behind the classifications (a reviewer sees the counts, not only the verdict). */
+  facts: WorkforceAgentFacts
+}
+
+export interface WorkforceAgentFacts {
+  agentId: string
+  userId: string | null
+  languages: string[]
+  specializations: string[]
+  listings180d: number
+  luxuryListings180d: number
+  offers180d: number
+  investorContacts: number
+  /** From loadAgentCompetency; null = the reader was not run / refused for this agent. */
+  competencyGaps: number | null
+  competencyRefused: string | null
+}
+
+export interface TwinTerritoryDemand {
+  /** farm_territories.name (one territory may be several agents' farms); "unassigned" = zips no farm covers. */
+  territory: string
+  zips: string[]
+  servingAgentIds: string[]
+  sellerLeads30d: number
+  sellerLeadsPrev30d: number
+  trend: "up" | "flat" | "down"
+  /** 0..1 — share of the 30-day seller leads priced at or above luxury_list_price_usd (estimated_value). */
+  luxuryShare30d: number
+  /** Serving agents with headroom (band available / busy — the one capacity answer). */
+  agentsWithHeadroom: number
+  listingSpecialists: number
+  luxurySpecialists: number
+}
+
+export interface TwinWorkforce {
+  thresholds: WorkforceThresholds
+  /** "policy" when brokerage_settings.workforce_thresholds carried a value, "default" otherwise. */
+  thresholdsSource: "policy" | "default"
+  agents: WorkforceAgentProfile[]
+  totals: Record<WorkforceClassification, number>
+  territories: TwinTerritoryDemand[]
+  evidence: EvidenceRef[]
+}
+
+export interface RecruitingNeed {
+  territory: string
+  specialization: "listing" | "luxury"
+  count: number
+  reasons: string[]
+  zips: string[]
+}
+
 export interface BrokerageTwin {
   brokerageId: string
   teamId: string | null
@@ -196,6 +349,8 @@ export interface BrokerageTwin {
   capacity: TwinCapacity
   objectives: TwinObjectives
   economic: TwinEconomic
+  /** Wave 106E — the workforce profile + territory demand (classified, evidence + policy threshold on each). */
+  workforce: TwinWorkforce
   /** Named limits of this build (row caps, refused reads) — published beside the numbers. */
   blindSpots: string[]
   /** A stable digest of the measures (change detection + dedupe). */
@@ -231,6 +386,15 @@ export interface TwinFacts {
   previous: { id: string; at: string; measures: Record<string, number> } | null
   previousReason: string | null
   blindSpots: string[]
+  /** Wave 106E — the workforce facts (per agent) + the territory demand inputs + the policy thresholds. */
+  workforce: {
+    thresholds: WorkforceThresholds
+    thresholdsSource: TwinWorkforce["thresholdsSource"]
+    agents: WorkforceAgentFacts[]
+    farms: Array<{ name: string | null; zip_codes: string[] | null; agent_id: string | null }>
+    /** Seller-side leads in the trailing 60 days (brokerage-owned — a territory fact, never team-narrowed). */
+    sellerLeads60d: Array<{ id: string; property_zip_code: string | null; estimated_value: number | null; created_at: string }>
+  }
 }
 
 // ─── Seams (104A economic graph, 104D missions) ──────────────────────────────
@@ -281,7 +445,7 @@ export function twinDigest(measures: Record<string, number>): string {
 }
 
 /** PURE: the flat numeric measures a snapshot diff compares. */
-export function twinMeasures(t: Pick<BrokerageTwin, "now" | "atRisk" | "capacity" | "objectives" | "economic">): Record<string, number> {
+export function twinMeasures(t: Pick<BrokerageTwin, "now" | "atRisk" | "capacity" | "objectives" | "economic"> & Partial<Pick<BrokerageTwin, "workforce">>): Record<string, number> {
   const m: Record<string, number> = {
     "now.pipeline.leads": t.now.pipeline.leads,
     "now.pipeline.converted90d": t.now.pipeline.converted90d,
@@ -303,6 +467,12 @@ export function twinMeasures(t: Pick<BrokerageTwin, "now" | "atRisk" | "capacity
   }
   if (t.economic.projectedWeighted90Cents !== null) m["economic.projectedWeighted90Cents"] = t.economic.projectedWeighted90Cents
   for (const r of t.atRisk) m[`atRisk.${r.kind}.${r.severity}`] = r.count
+  // 106E: a snapshot older than the workforce section carries none — the first build after it
+  // reads every total as a change against 0 (a workforce that APPEARED is a change).
+  if (t.workforce) {
+    for (const k of WORKFORCE_CLASSIFICATIONS) m[`workforce.${k}`] = t.workforce.totals[k] ?? 0
+    for (const d of t.workforce.territories) if (d.trend === "up") m[`workforce.territory.${d.territory}.sellerLeads30d`] = d.sellerLeads30d
+  }
   return m
 }
 
@@ -316,6 +486,133 @@ export function detectTwinChanges(previous: Record<string, number>, current: Rec
     if (p !== c) out.push({ field: k, previous: p, current: c, delta: c - p })
   }
   return out
+}
+
+// ─── Workforce classifier (PURE) ─────────────────────────────────────────────
+
+const LUXURY_TAG = /luxury/i
+const normList = (v: unknown): string[] => Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : typeof v === "string" ? v.split(",").map((s) => s.trim()).filter(Boolean) : []
+
+/** PURE: classify ONE agent from its facts, its capacity line (the one answer) and the policy
+ *  thresholds. Every verdict names its reader and threshold; a fact the reader could not produce
+ *  (competency null) yields no classification — never a fabricated "in development".
+ *  @proofSeam the proof asserts each classification against its threshold directly */
+export function classifyWorkforceAgent(facts: WorkforceAgentFacts, capacity: TwinAgentCapacity | null, maxLoad: number, t: WorkforceThresholds): WorkforceClassified[] {
+  const out: WorkforceClassified[] = []
+  const add = (kind: WorkforceClassification, reader: string, value: number | string, threshold: number | string, reason: string) => out.push({ kind, evidence: { reader, value, threshold }, reason })
+  if (facts.listings180d >= t.strong_listing_listings_180d) add("strong_listing", "listings.listing_date / listings.status=active (lib/kernel/brokerage-twin.ts loader)", facts.listings180d, t.strong_listing_listings_180d, `${facts.listings180d} listings taken in 180d (policy ≥ ${t.strong_listing_listings_180d})`)
+  if (facts.offers180d >= t.strong_buyer_offers_180d) add("strong_buyer", "offers.agent_id (the offer rail)", facts.offers180d, t.strong_buyer_offers_180d, `${facts.offers180d} buyer offers written in 180d (policy ≥ ${t.strong_buyer_offers_180d})`)
+  if (facts.investorContacts >= t.investor_contacts) add("investor", "contacts.contact_persona='investor' (m589 vocabulary)", facts.investorContacts, t.investor_contacts, `${facts.investorContacts} investor contacts on the book (policy ≥ ${t.investor_contacts})`)
+  if (facts.languages.length >= t.bilingual_languages) add("bilingual", "agents.languages (app/actions/user-profile.ts)", facts.languages.join(", "), t.bilingual_languages, `speaks ${facts.languages.join(", ")} (policy ≥ ${t.bilingual_languages} languages)`)
+  const luxuryTag = facts.specializations.some((s) => LUXURY_TAG.test(s))
+  if (luxuryTag || facts.luxuryListings180d >= t.luxury_listings_180d) add("luxury_specialist", luxuryTag ? "agents.specializations (m492 list)" : `listings.list_price ≥ $${t.luxury_list_price_usd.toLocaleString()} in 180d`, luxuryTag ? "luxury" : facts.luxuryListings180d, luxuryTag ? "specialization tag" : t.luxury_listings_180d, luxuryTag ? "profile names a luxury specialization" : `${facts.luxuryListings180d} luxury listings taken in 180d (policy ≥ ${t.luxury_listings_180d})`)
+  if (capacity) {
+    const over = capacity.band === "over" || (t.overwhelmed_band === "at_capacity" && capacity.band === "at_capacity")
+    if (over) add("overwhelmed", "capacityFor band + agent_retention_scores.tier (lib/lead-assignment/capacity-pick.ts)", capacity.band, t.overwhelmed_band, `capacity ${capacity.band}${capacity.fatigueTier ? `, fatigue ${capacity.fatigueTier}` : ""} (policy: ${t.overwhelmed_band} or beyond)${capacity.reasons.length ? ` — ${capacity.reasons[0]}` : ""}`)
+    const loadPct = maxLoad > 0 ? Math.round((capacity.load / maxLoad) * 100) : 0
+    if (capacity.band === "available" && loadPct <= t.underutilized_load_pct) add("underutilized", "capacityFor load vs tierMaxLoadForAgentCount", loadPct, t.underutilized_load_pct, `load ${capacity.load}/${maxLoad} (${loadPct}% of the ceiling, policy ≤ ${t.underutilized_load_pct}%)`)
+  }
+  if (facts.competencyGaps !== null && facts.competencyGaps >= t.in_development_gaps) add("in_development", "loadAgentCompetency gaps (lib/education/skill-freshness-radar.ts → scoreCompetency)", facts.competencyGaps, t.in_development_gaps, `${facts.competencyGaps} competency gap${facts.competencyGaps === 1 ? "" : "s"} open (policy ≥ ${t.in_development_gaps})`)
+  return out
+}
+
+/** PURE: territory demand per farm territory — seller leads 30d vs the prior 30d, luxury share,
+ *  and the serving agents' headroom / specialist coverage. Zips no farm covers fall into
+ *  "unassigned" (demand with nobody serving it is the loudest recruiting signal). */
+export function composeTerritoryDemand(
+  f: TwinFacts["workforce"], at: string, perAgent: TwinAgentCapacity[], profiles: WorkforceAgentProfile[],
+): TwinTerritoryDemand[] {
+  const t = f.thresholds
+  const atMs = new Date(at).getTime(), d30 = atMs - 30 * 86_400_000, d60 = atMs - 60 * 86_400_000
+  const byName = new Map<string, { zips: Set<string>; agents: Set<string> }>()
+  const zipToTerritory = new Map<string, string>()
+  for (const farm of f.farms) {
+    const name = (farm.name ?? "").trim() || "unnamed"
+    const e = byName.get(name) ?? { zips: new Set<string>(), agents: new Set<string>() }
+    for (const z of farm.zip_codes ?? []) { const zz = String(z).trim(); if (zz) { e.zips.add(zz); if (!zipToTerritory.has(zz)) zipToTerritory.set(zz, name) } }
+    if (farm.agent_id) e.agents.add(farm.agent_id)
+    byName.set(name, e)
+  }
+  const buckets = new Map<string, { cur: number; prev: number; lux: number }>()
+  for (const name of byName.keys()) buckets.set(name, { cur: 0, prev: 0, lux: 0 })
+  for (const l of f.sellerLeads60d) {
+    const ms = new Date(l.created_at).getTime()
+    if (!Number.isFinite(ms) || ms < d60 || ms > atMs) continue
+    const name = (l.property_zip_code && zipToTerritory.get(String(l.property_zip_code).trim())) || "unassigned"
+    const b = buckets.get(name) ?? { cur: 0, prev: 0, lux: 0 }
+    if (ms >= d30) { b.cur++; if ((Number(l.estimated_value) || 0) >= t.luxury_list_price_usd) b.lux++ } else b.prev++
+    buckets.set(name, b)
+  }
+  const capById = new Map(perAgent.map((a) => [a.agentId, a]))
+  const profById = new Map(profiles.map((p) => [p.agentId, p]))
+  const out: TwinTerritoryDemand[] = []
+  for (const [name, b] of buckets) {
+    const e = byName.get(name)
+    const serving = e ? [...e.agents] : []
+    const has = (id: string, k: WorkforceClassification) => profById.get(id)?.classifications.some((c) => c.kind === k) ?? false
+    const trend: TwinTerritoryDemand["trend"] = b.cur >= t.demand_min_leads_30d && b.cur >= b.prev * (1 + t.demand_rise_pct / 100) && b.cur > b.prev ? "up" : b.cur < b.prev ? "down" : "flat"
+    out.push({
+      territory: name, zips: e ? [...e.zips].sort() : [], servingAgentIds: serving,
+      sellerLeads30d: b.cur, sellerLeadsPrev30d: b.prev, trend,
+      luxuryShare30d: b.cur > 0 ? b.lux / b.cur : 0,
+      agentsWithHeadroom: serving.filter((id) => { const c = capById.get(id); return !!c && (c.band === "available" || c.band === "busy") }).length,
+      listingSpecialists: serving.filter((id) => has(id, "strong_listing")).length,
+      luxurySpecialists: serving.filter((id) => has(id, "luxury_specialist")).length,
+    })
+  }
+  return out.sort((a, b) => b.sellerLeads30d - a.sellerLeads30d || a.territory.localeCompare(b.territory))
+}
+
+/** PURE: fold the workforce facts into the twin section (the composer calls it; the proof drives it). */
+export function composeWorkforce(f: TwinFacts, scope: string): TwinWorkforce {
+  const w = f.workforce
+  const capById = new Map(f.capacity.perAgent.map((a) => [a.agentId, a]))
+  const agents: WorkforceAgentProfile[] = w.agents.map((facts) => ({ agentId: facts.agentId, facts, classifications: classifyWorkforceAgent(facts, capById.get(facts.agentId) ?? null, f.capacity.maxLoad, w.thresholds) }))
+  const totals = Object.fromEntries(WORKFORCE_CLASSIFICATIONS.map((k) => [k, 0])) as Record<WorkforceClassification, number>
+  for (const a of agents) for (const c of a.classifications) totals[c.kind]++
+  const territories = composeTerritoryDemand(w, f.at, f.capacity.perAgent, agents)
+  const competencyRead = w.agents.filter((a) => a.competencyGaps !== null).length
+  return {
+    thresholds: w.thresholds, thresholdsSource: w.thresholdsSource, agents, totals, territories,
+    evidence: [
+      { table: "agents", filter: `${scope} ∧ is_active=true (languages, specializations)`, count: agents.length, via: "app/actions/user-profile.ts (profile writer) · classifyWorkforceAgent", ids: agents.slice(0, 20).map((a) => a.agentId) },
+      { table: "listings", filter: `brokerage_id=${f.brokerageId} ∧ deleted_at IS NULL ∧ (listing_date ≥ at−180d ∨ status=active) per agent_id`, count: w.agents.reduce((a, x) => a + x.listings180d, 0), via: "listings.listing_date / list_price (lifecycle writers)" },
+      { table: "offers", filter: `brokerage_id=${f.brokerageId} ∧ created_at ≥ at−180d per agent_id`, count: w.agents.reduce((a, x) => a + x.offers180d, 0), via: "offers.agent_id (the offer rail)" },
+      { table: "contacts", filter: `brokerage_id=${f.brokerageId} ∧ deleted_at IS NULL ∧ contact_persona='investor' per agent_id`, count: w.agents.reduce((a, x) => a + x.investorContacts, 0), via: "contacts.contact_persona (normalizeContactPersona)" },
+      { table: "(competency)", filter: `loadAgentCompetency per agent (${competencyRead} of ${agents.length} read)`, count: competencyRead, via: "lib/education/skill-freshness-radar.ts loadAgentCompetency → scoreCompetency gaps" },
+      { table: "farm_territories", filter: `brokerage_id=${f.brokerageId} ∧ is_active=true`, count: w.farms.length, via: "farm_territories.name / zip_codes / agent_id (an agent's farm)" },
+      { table: "leads", filter: `brokerage_id=${f.brokerageId} ∧ lead_type∈{seller,both} ∧ created_at ≥ at−60d (brokerage-owned, §5)`, count: w.sellerLeads60d.length, via: "leads.property_zip_code / estimated_value (lib/lead-pipeline)" },
+      { table: "brokerage_settings", filter: `brokerage_id=${f.brokerageId} → settings.${WORKFORCE_THRESHOLDS_KEY} (${w.thresholdsSource})`, count: w.thresholdsSource === "policy" ? 1 : 0, via: "lib/kernel/tenant-policy.ts TENANT_POLICY_SETTINGS_KEYS.workforce_thresholds · resolveWorkforceThresholds" },
+    ],
+  }
+}
+
+/** PURE: the brokerage's recruiting NEEDS from the twin — territory demand ↑ vs the serving
+ *  agents' capacity vs their specialist coverage → { territory, specialization, count, reasons }.
+ *  No demand rise and enough covered headroom → no need (never a recruiting mission for its own
+ *  sake). A rising territory nobody serves is a need of its whole demand. */
+export function recruitingNeeds(twin: Pick<BrokerageTwin, "workforce">): RecruitingNeed[] {
+  const t = twin.workforce.thresholds
+  const out: RecruitingNeed[] = []
+  for (const d of twin.workforce.territories) {
+    if (d.trend !== "up") continue
+    const required = Math.ceil(d.sellerLeads30d / t.seller_leads_per_agent_30d)
+    const shortfall = required - d.agentsWithHeadroom
+    const luxury = d.luxuryShare30d * 100 >= t.luxury_share_pct && d.luxurySpecialists === 0
+    if (shortfall <= 0 && !luxury) continue
+    const reasons = [
+      `${d.territory}: seller leads ${d.sellerLeadsPrev30d} → ${d.sellerLeads30d} in 30d (policy: ≥ ${t.demand_rise_pct}% rise, ≥ ${t.demand_min_leads_30d} leads)`,
+      `${required} listing agent${required === 1 ? "" : "s"} needed at ${t.seller_leads_per_agent_30d} seller leads each; ${d.agentsWithHeadroom} serving agent${d.agentsWithHeadroom === 1 ? "" : "s"} with headroom (${d.servingAgentIds.length} serving, ${d.listingSpecialists} strong listing)`,
+    ]
+    if (luxury) reasons.push(`${Math.round(d.luxuryShare30d * 100)}% of the seller leads are priced ≥ $${t.luxury_list_price_usd.toLocaleString()} and no serving agent is a luxury specialist (policy ≥ ${t.luxury_share_pct}%)`)
+    out.push({ territory: d.territory, specialization: luxury ? "luxury" : "listing", count: Math.max(1, shortfall), reasons, zips: d.zips })
+  }
+  return out
+}
+
+/** PURE: the recruiting mission objective a need states (the owner's wording). */
+export function recruitingNeedObjective(n: RecruitingNeed): string {
+  return `find ${n.count} experienced listing agent${n.count === 1 ? "" : "s"} in ${n.territory} with ${n.specialization} specialization`
 }
 
 function riskSeverity(level: string | null): TwinRiskSeverity | null {
@@ -449,7 +746,11 @@ export function composeBrokerageTwin(f: TwinFacts): BrokerageTwin {
     ],
   }
 
-  const partial = { now, atRisk, capacity, objectives, economic }
+  // WORKFORCE (106E) — classified from the facts above + the policy thresholds; composed AFTER
+  // capacity so every "overwhelmed" / "underutilized" verdict reads the one capacity answer.
+  const workforce = composeWorkforce(f, scope)
+
+  const partial = { now, atRisk, capacity, objectives, economic, workforce }
   const measures = twinMeasures(partial)
   const changed: TwinChanged = f.previous
     ? { baseline: false, previousSnapshotId: f.previous.id, previousAt: f.previous.at, changes: detectTwinChanges(f.previous.measures, measures), reason: null }
@@ -664,6 +965,8 @@ export interface LoadTwinOptions {
   maxAgentsScored?: number
   /** Injected capacity reader (proofs). Defaults to capacityFor. */
   capacityFor?: (svc: Svc, brokerageId: string, agentId: string, opts: { now: Date; maxLoad: number }) => Promise<{ band: CapacityBand; load: number; headroom: number; reasons: string[]; index: { followUpDebt: number } }>
+  /** 106E — injected competency reader (proofs). Defaults to loadAgentCompetency (the one reader). */
+  competencyFor?: (svc: Svc, agent: { id: string; user_id: string | null; brokerage_id: string }, now: Date) => Promise<{ gaps: ReadonlyArray<unknown>; refusedRails: string[] }>
   seams?: TwinSeams
 }
 
@@ -684,9 +987,10 @@ export async function loadBrokerageTwinFacts(svc: Svc, brokerageId: string, opts
   const head = async (what: string, q: any): Promise<number> => { const { count, error } = await q; refused(what, error); return error ? 0 : (count ?? 0) }
 
   // Roster (and the team's agent ids when scoped).
-  let agentQ = svc.from("agents").select("id, is_active, team_id").eq("brokerage_id", brokerageId).eq("is_active", true).limit(2000)
+  // 106E: the profile columns (languages, specializations) ride the same roster read.
+  let agentQ = svc.from("agents").select("id, is_active, team_id, user_id, languages, specializations").eq("brokerage_id", brokerageId).eq("is_active", true).limit(2000)
   if (teamId) agentQ = agentQ.eq("team_id", teamId)
-  const agents = await rows<{ id: string }>("agents", agentQ)
+  const agents = await rows<{ id: string; user_id?: string | null; languages?: unknown; specializations?: unknown }>("agents", agentQ)
   const agentIds = agents.map((a) => a.id)
   const scoped = (q: any) => (teamId ? q.in("agent_id", agentIds.length ? agentIds : ["00000000-0000-0000-0000-000000000000"]) : q)
   const LIMIT = 5000
@@ -734,6 +1038,43 @@ export async function loadBrokerageTwinFacts(svc: Svc, brokerageId: string, opts
   }
   if (agents.length > maxScored) { unscored += agents.length - maxScored; blindSpots.push(`capacity: ${agents.length - maxScored} agent(s) beyond the ${maxScored}-agent scoring cap`) }
 
+  // WORKFORCE (106E) — the per-agent facts behind the classifications, every read tenant-pinned.
+  const [settingsRow, listings180, offers180, investorContacts, farms, sellerLeads60d] = await Promise.all([
+    (async () => { const { data, error } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle(); refused("brokerage_settings(workforce_thresholds)", error); return error ? null : (data as { settings?: unknown } | null) })(),
+    rows<{ id: string; agent_id: string | null; list_price: number | null }>("listings(180d)", scoped(svc.from("listings").select("id, agent_id, list_price, listing_date").eq("brokerage_id", brokerageId).is("deleted_at", null).gte("listing_date", since(180).slice(0, 10))).limit(LIMIT)),
+    rows<{ id: string; agent_id: string | null }>("offers(180d)", scoped(svc.from("offers").select("id, agent_id").eq("brokerage_id", brokerageId).gte("created_at", since(180))).limit(LIMIT)),
+    rows<{ id: string; agent_id: string | null }>("contacts(investor)", scoped(svc.from("contacts").select("id, agent_id").eq("brokerage_id", brokerageId).is("deleted_at", null).eq("contact_persona", "investor")).limit(LIMIT)),
+    rows<TwinFacts["workforce"]["farms"][number]>("farm_territories", svc.from("farm_territories").select("name, zip_codes, agent_id").eq("brokerage_id", brokerageId).eq("is_active", true).limit(LIMIT)),
+    rows<TwinFacts["workforce"]["sellerLeads60d"][number]>("leads(seller 60d)", svc.from("leads").select("id, property_zip_code, estimated_value, created_at").eq("brokerage_id", brokerageId).in("lead_type", ["seller", "both"]).gte("created_at", since(60)).limit(LIMIT)),
+  ])
+  const settingsHasKey = !!(settingsRow?.settings && typeof settingsRow.settings === "object" && (settingsRow.settings as Record<string, unknown>)[WORKFORCE_THRESHOLDS_KEY])
+  const thresholds = resolveWorkforceThresholds(settingsRow?.settings)
+  const activeListingIds = new Set(listings.filter((l) => l.status === "active").map((l) => l.id))
+  const perAgentCount = (list: Array<{ agent_id: string | null }>) => { const m = new Map<string, number>(); for (const r of list) if (r.agent_id) m.set(r.agent_id, (m.get(r.agent_id) ?? 0) + 1); return m }
+  // Listings taken = listing_date in 180d ∪ active now (deduped by id).
+  const takenById = new Map<string, { agent_id: string | null; list_price: number | null }>()
+  for (const l of listings180) takenById.set(l.id, l)
+  for (const l of listings as Array<{ id: string; status: string | null; agent_id?: string | null }>) if (activeListingIds.has(l.id) && !takenById.has(l.id)) takenById.set(l.id, { agent_id: l.agent_id ?? null, list_price: null })
+  const taken = [...takenById.values()]
+  const listingsBy = perAgentCount(taken), luxuryBy = perAgentCount(taken.filter((l) => (Number(l.list_price) || 0) >= thresholds.luxury_list_price_usd))
+  const offersBy = perAgentCount(offers180), investorBy = perAgentCount(investorContacts)
+  const competencyReader: NonNullable<LoadTwinOptions["competencyFor"]> = opts.competencyFor
+    ?? (async (s, a, n) => (await import("@/lib/education/skill-freshness-radar")).loadAgentCompetency(s as any, a, n))
+  const workforceAgents: WorkforceAgentFacts[] = []
+  for (const a of agents.slice(0, maxScored)) {
+    const facts: WorkforceAgentFacts = {
+      agentId: a.id, userId: a.user_id ?? null, languages: normList(a.languages), specializations: normList(a.specializations),
+      listings180d: listingsBy.get(a.id) ?? 0, luxuryListings180d: luxuryBy.get(a.id) ?? 0, offers180d: offersBy.get(a.id) ?? 0,
+      investorContacts: investorBy.get(a.id) ?? 0, competencyGaps: null, competencyRefused: null,
+    }
+    try {
+      const c = await competencyReader(svc, { id: a.id, user_id: a.user_id ?? null, brokerage_id: brokerageId }, at)
+      facts.competencyGaps = c.gaps.length
+      if (c.refusedRails.length) facts.competencyRefused = c.refusedRails.join("; ")
+    } catch (e) { facts.competencyRefused = e instanceof Error ? e.message : String(e); blindSpots.push(`competency(${a.id}) threw: ${facts.competencyRefused}`) }
+    workforceAgents.push(facts)
+  }
+
   // Seams — degrade cleanly.
   const seams = { ...SEAMS, ...(opts.seams ?? {}) }
   let contributionMargin: TwinEconomic["contributionMargin"] = { status: "unavailable", cents: null, source: "lib/kernel/economic-graph.ts not registered (104A)" }
@@ -770,6 +1111,7 @@ export async function loadBrokerageTwinFacts(svc: Svc, brokerageId: string, opts
     forecast: latestPer(forecast, (r) => r.agent_id, (r) => r.computed_at),
     aiCost30dCents: aiRows.reduce((a, r) => a + (Number(r.cost_cents) || 0), 0),
     contributionMargin, missions, previous, previousReason, blindSpots,
+    workforce: { thresholds, thresholdsSource: settingsHasKey ? "policy" : "default", agents: workforceAgents, farms, sellerLeads60d },
   }
 }
 
@@ -841,6 +1183,24 @@ export async function readBrokerageTwin(
 /** PURE: the agent's capacity line from the twin (the morning stand-up's one read). */
 export function twinCapacityForAgent(twin: BrokerageTwin | null | undefined, agentId: string): TwinAgentCapacity | null {
   return twin?.capacity.perAgent.find((a) => a.agentId === agentId) ?? null
+}
+
+/**
+ * 106E — THE WORKFORCE PROFILE of a brokerage (or a team's board under teamId): the classified
+ * roster, the totals ("18 strong listing agents … 5 underutilized") and the territory demand,
+ * read from the last persisted twin (snapshot mode — the Command Center's build) or built fresh.
+ * null when no twin can be had (never a fake roster). The caller resolves brokerageId from the
+ * SESSION; a snapshot older than the workforce section (no `workforce`) is rebuilt.
+ */
+// TOMBSTONE (wave 106 integration, CLAUDE.md §1.1): `workforceProfile(brokerageId, opts)` was a second
+// spelling of `readBrokerageTwin(brokerageId, opts)?.workforce` (the survivor) and nothing but its proof
+// called it. Readers take the section from the twin they already hold (recruiting-roi.ts, command-center.ts).
+/** PURE: the owner's one-line reading of the totals ("18 strong listing · 5 underutilized …"). */
+export function workforceLine(w: Pick<TwinWorkforce, "totals" | "agents"> | null | undefined): string | null {
+  if (!w) return null
+  const label: Record<WorkforceClassification, string> = { strong_listing: "strong listing", strong_buyer: "strong buyer", investor: "investor", bilingual: "bilingual", luxury_specialist: "luxury", overwhelmed: "overwhelmed", underutilized: "underutilized", in_development: "in development" }
+  const parts = WORKFORCE_CLASSIFICATIONS.filter((k) => w.totals[k] > 0).map((k) => `${w.totals[k]} ${label[k]}`)
+  return `${w.agents.length} agent${w.agents.length === 1 ? "" : "s"} profiled${parts.length ? ` — ${parts.join(" · ")}` : ""}`
 }
 
 // TOMBSTONE (wave 104 integration, CLAUDE.md §1.3): `hasHeadroom` was re-exported here as a hidden

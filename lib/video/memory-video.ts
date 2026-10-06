@@ -157,6 +157,11 @@ export async function offerMemoryVideo(input: {
   contactId: string
   /** Optional override; defaults to the contact's own assigned agent. */
   agentRecordId?: string | null
+  /** Wave 106 (106B): the offer was ISSUED BY THE JOURNEY PLANNER (lib/ai-isa/lead-action-plan.ts
+   *  planNextBestExperience chose `video`). Carried into the proposal's rationale so the agent sees
+   *  WHY this moment; the eligibility rule below is re-checked regardless — a planner request never
+   *  bypasses the tenure gate. */
+  request?: import("@/lib/ai-isa/lead-action-plan").PlannerIssuedRequest | null
 }): Promise<MemoryVideoOfferResult> {
   if (!input.brokerageId || !input.contactId) {
     return { ok: false, status: "failed", reason: "brokerageId + contactId required" }
@@ -220,7 +225,8 @@ export async function offerMemoryVideo(input: {
     `${MEMORY_VIDEO_OFFER_TAG} — ${years} years in the home (threshold ${MEMORY_VIDEO_MIN_TENURE_YEARS}+). ` +
     `${tenure.reason} Persona signal: ${situation ? "downsize/senior — matches" : "no matching persona on file, tenure alone qualifies them"}. ` +
     `SELLER-DICTATED: if they accept, capture their answers to the ${MEMORY_VIDEO_PROMPTS.length} chapter questions ` +
-    `and file them through recordMemoryVideoDictation. The platform will not write this script and must not be asked to.`
+    `and file them through recordMemoryVideoDictation. The platform will not write this script and must not be asked to.` +
+    (input.request ? ` JOURNEY: the next-best-experience planner chose video — ${input.request.reasons[0] ?? "no reason given"}.` : "")
 
   const proposed = await proposeClientMessage({
     brokerageId:        input.brokerageId,

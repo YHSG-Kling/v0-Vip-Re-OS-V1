@@ -934,6 +934,47 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     })
     return error ? null : "proposed paid video promotion in the ads approval queue"
   },
+  // Wave 106 (106C) — Ads Manager → Campaign Orchestrator: a paid creative is FATIGUING. That alert IS
+  // the Campaign Manager's creative need: the Orchestrator asks the Asset Manager for fresh creative
+  // through lib/kernel/media-intelligence.ts requestCreative — a structured delegation when a mission
+  // is in play (payload.mission_id), else the asset_manager:creative_need_handoff signal below. Nothing is
+  // generated here; the Asset Manager decides reuse-vs-produce.
+  "campaign_orchestrator:creative_fatigue": async (signal, ctx) => {
+    if (!signal.entityId) return null
+    // Tenant from the signal row's ctx; the campaign read is pinned to it (an FK proves existence, not ownership).
+    const { data: camp, error } = await ctx.supabase.from("ad_campaigns")
+      .select("id, campaign_name, objective, platform, agent_user_id, marketing_campaign_id, targeting_config")
+      .eq("id", signal.entityId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (error) return `ad campaign read refused (${error.message}) — creative not requested`
+    if (!camp) return null
+    const c = camp as { id: string; campaign_name: string | null; objective: string | null; platform: string | null; agent_user_id: string | null; marketing_campaign_id: string | null; targeting_config: Record<string, unknown> | null }
+    const geo = (c.targeting_config?.geo ?? null) as { city?: string; cities?: string[] } | null
+    const { requestCreative } = await import("@/lib/kernel/media-intelligence")
+    const r = await requestCreative(ctx.supabase, {
+      need: {
+        brokerageId: ctx.brokerageId, subject: `${c.campaign_name ?? "ad campaign"} — fresh ${c.platform ?? "ad"} creative (${c.objective ?? "leads"})`,
+        purpose: "ad", assetType: "image", audience: "public", campaignId: c.marketing_campaign_id ?? null, agentUserId: c.agent_user_id ?? null,
+        market: geo?.city ?? geo?.cities?.[0] ?? null,
+      },
+      missionId: (signal.payload?.mission_id as string | undefined) ?? null, requestingManager: "campaign_orchestrator",
+      entityType: "ad_campaign", entityId: c.id,
+    })
+    return r.ok ? `asked the Asset Manager for fresh creative via ${r.route} (${r.id ?? "?"})` : `creative request refused: ${r.reason}`
+  },
+  // Wave 106 (106C) — Campaign/Ads Manager → Asset Manager: a creative NEED. Sufficiency first (an
+  // existing approved asset that matches subject / purpose / audience / brand / rights / expiry /
+  // performance is reused and the decision is ledgered with the cost avoided); production only when
+  // nothing suffices (≤ 4 variants through the existing generators, brand policy at produce time,
+  // entitlement-gated, each recorded with lineage + rights + cost). The tenant is the signal row's —
+  // a payload naming another brokerage is refused (§4).
+  "asset_manager:creative_need_handoff": async (signal, ctx) => {
+    const need = (signal.payload?.media_need ?? null) as import("@/lib/kernel/media-intelligence").MediaNeed | null
+    if (!need || !need.subject || !need.purpose || !need.assetType) return "creative_need_handoff carried no media_need — nothing produced"
+    if (need.brokerageId && need.brokerageId !== ctx.brokerageId) return "creative_need_handoff payload names another brokerage — refused"
+    const { fulfilCreativeNeed } = await import("@/lib/kernel/media-intelligence")
+    const r = await fulfilCreativeNeed(ctx.supabase, { ...need, brokerageId: ctx.brokerageId })
+    return r.reason
+  },
   // Asset Manager → Campaign Orchestrator: a render FAILED compliance/redraft (or the
   // provider rejected it). The Orchestrator escalates so the failure is never invisible —
   // it routes a Command Center notification to the responsible agent + the brokerage

@@ -12,12 +12,15 @@ interface TrainingProgressPanelProps {
   completedContent: any[]
   inProgressContent: any[]
   totalAvailable: number
+  /** ADAPTIVE DEVELOPMENT (wave 106, lane 106D): the agent's own development focus + the module the loop queued. */
+  development?: { focus: string; score: number; moduleTitle: string | null; improved: string[]; cycleAt: string } | null
 }
 
 export function TrainingProgressPanel({
   completedContent,
   inProgressContent,
   totalAvailable,
+  development = null,
 }: TrainingProgressPanelProps) {
   const available = totalAvailable - completedContent.length - inProgressContent.length
   const router = useRouter()
@@ -49,6 +52,16 @@ export function TrainingProgressPanel({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
+        {/* Development focus — the adaptive development loop's recommendation for THIS agent (wave 106, 106D) */}
+        {development && (
+          <div className="p-3 bg-blue-50 rounded-lg text-sm" data-testid="development-focus">
+            <div className="font-medium text-blue-800">Development focus: {development.focus} ({development.score}/100)</div>
+            <div className="text-xs text-blue-700">
+              {development.moduleTitle ? `Recommended: ${development.moduleTitle}` : "A module for this focus is queued as soon as the catalog has one."}
+              {development.improved.length > 0 ? ` · Improved last cycle: ${development.improved.join(", ")}` : ""}
+            </div>
+          </div>
+        )}
         {/* Stats Row */}
         <div className="grid grid-cols-3 gap-4 text-center">
           <div className="p-3 bg-green-50 rounded-lg">

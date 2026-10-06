@@ -540,23 +540,47 @@ export async function autoAssignLead(params: {
 
   const decision = await resolveTierRouting(supabase, brokerageId, lead)
 
+  // WAVE 106 (lane 106A) — THE ALLOCATION RECOMMENDER'S CONSULT. "Not automatically at first.
+  // Recommendation mode first." (owner). The owner's chain (opportunity → territory → eligible →
+  // capacity → competency → conversion → fatigue → SLA → relationship) runs beside this resolver,
+  // never instead of it: under the DEFAULT policy (resource_allocation.lead_assignment_mode =
+  // recommend) a held lead or a recommendation that differs from the rules' pick becomes a proposal a
+  // human decides on the Manager Trust page and the rules' pick stands; only the tenant's explicit
+  // `consume` lets the recommendation replace the pick (method ai_recommendation, CHECK-legal). Solo
+  // tier is skipped (one agent, nothing to rank). Best-effort: it never blocks or fails the handoff.
+  let allocationNote = ""
+  if (decision.tier !== "solo_agent") {
+    try {
+      const { consultLeadAssignmentRecommendation } = await import("@/lib/kernel/resource-allocation")
+      const consult = await consultLeadAssignmentRecommendation(supabase as any, { brokerageId, leadId, rulesAgentId: decision.agentId, held: decision.held })
+      if (consult.mode !== "off") allocationNote = `; ${consult.note}`
+      if (consult.consumeAgentId && consult.consumeAgentId !== decision.agentId) {
+        decision.agentId = consult.consumeAgentId
+        decision.method = "ai_recommendation"
+        decision.ruleId = null
+      }
+    } catch (err) {
+      console.warn("[tier-routing] allocation consult failed (rules' pick stands):", err instanceof Error ? err.message : String(err))
+    }
+  }
+
   if (decision.held) {
-    return { assigned: false, held: true, tier: decision.tier, reason: decision.routingReason }
+    return { assigned: false, held: true, tier: decision.tier, reason: `${decision.routingReason}${allocationNote}` }
   }
   if (!decision.agentId) {
-    return { assigned: false, tier: decision.tier, reason: decision.routingReason }
+    return { assigned: false, tier: decision.tier, reason: `${decision.routingReason}${allocationNote}` }
   }
 
   // COVERAGE MODE — an agent on leave never silently collects new work. One hop,
   // never chained; the away agent's existing book is untouched.
   let agentId = decision.agentId
-  let coverageNote = ""
+  let coverageNote = allocationNote
   {
     const { redirectForCoverage } = await import("@/lib/agents/coverage-mode")
     const redirected = await redirectForCoverage(supabase, agentId)
     if (redirected && redirected !== agentId) {
       agentId = redirected
-      coverageNote = "; redirected to a covering agent (coverage mode)"
+      coverageNote += "; redirected to a covering agent (coverage mode)"
     }
   }
 

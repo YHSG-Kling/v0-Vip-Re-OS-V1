@@ -51,7 +51,7 @@ import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { currentCausation } from "@/lib/kernel/causation"
 import { MIN_AUTHORITY_FOR_RISK, type AuthorityLevel, type ToolRiskClass } from "@/lib/ai-isa/persona-tool-policy"
 import { KernelEvent } from "@/lib/kernel/events"
-import { registerTwinSeam, decomposeObjective, readTwinMeasure, type BrokerageTwin } from "@/lib/kernel/brokerage-twin"
+import { registerTwinSeam, decomposeObjective, readTwinMeasure, recruitingNeeds, recruitingNeedObjective, type BrokerageTwin, type RecruitingNeed } from "@/lib/kernel/brokerage-twin"
 
 // ─── vocabularies (mirrors of the m710 CHECKs — one spelling, CLAUDE.md §6) ───────────────────
 export const MISSION_STATES = ["PROPOSED", "PLANNING", "ACTIVE", "WAITING", "BLOCKED", "APPROVAL_REQUIRED", "ESCALATED", "COMPLETED", "FAILED", "CANCELLED"] as const
@@ -660,6 +660,104 @@ export async function syncMissionProgressFromTwin(twin: BrokerageTwin, client?: 
     if (r.ok) { out.measured++; if (r.completed) out.completed++ }
   }
   return out
+}
+
+// ─── 106E: need-driven recruiting — the twin's need becomes a RECRUITING MISSION ──────────────
+//
+// Owner: "twin says North territory seller demand ↑, capacity insufficient, luxury seller coverage
+// weak → Recruiting Manager mission 'find experienced listing agents in target territory with
+// luxury specialization'" — RECOMMENDATION FIRST: the mission is created PLANNING and moved to
+// APPROVAL_REQUIRED at once (the owner manager is signalled through the bus; a human approves it
+// through decideMissionAction before anything reaches a prospect — the recruiting pipeline reads
+// targeting from ACTIVE missions only, recruitingTargetingFor). Idempotent per (territory,
+// specialization): the subject is a deterministic uuid of the need, and an open mission with that
+// subject is left alone. Nothing here sends outreach.
+
+export const RECRUITING_NEED_SUBJECT_TYPE = "recruiting_need"
+export const RECRUITING_TARGETING_EVIDENCE_KIND = "recruiting_targeting"
+
+/** PURE: a stable uuid-shaped id for a need (missions.subject_id is uuid) — the idempotency key.
+ *  Not a security hash; two 32-bit mixes over the key, version/variant nibbles set.
+ *  @proofSeam the proof asserts determinism and the uuid shape directly */
+export function recruitingNeedSubjectId(brokerageId: string, territory: string, specialization: string): string {
+  const s = `${brokerageId}|${territory.trim().toLowerCase()}|${specialization.trim().toLowerCase()}`
+  let h1 = 5381, h2 = 0x811c9dc5, h3 = 7, h4 = 0x1234567
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    h1 = ((h1 << 5) + h1 + c) | 0
+    h2 = Math.imul(h2 ^ c, 0x01000193)
+    h3 = (h3 * 31 + c) | 0
+    h4 = Math.imul(h4 + c, 0x9e3779b1) ^ (h4 >>> 15)
+  }
+  const hex = [h1, h2, h3, h4].map((h) => (h >>> 0).toString(16).padStart(8, "0")).join("")
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+}
+
+export interface RecruitingTargeting { missionId: string; territory: string; specialization: string; count: number; zips: string[] }
+
+/** PURE: the targeting a recruiting mission carries (its recruiting_targeting evidence), or null. */
+export function recruitingTargetingOf(m: Pick<MissionRow, "id" | "evidence">): RecruitingTargeting | null {
+  const e = (m.evidence ?? []).find((x) => x && x.kind === RECRUITING_TARGETING_EVIDENCE_KIND) as { territory?: unknown; specialization?: unknown; count?: unknown; zips?: unknown } | undefined
+  if (!e || typeof e.territory !== "string" || typeof e.specialization !== "string") return null
+  return { missionId: m.id, territory: e.territory, specialization: e.specialization, count: Number(e.count) || 1, zips: Array.isArray(e.zips) ? e.zips.map(String) : [] }
+}
+
+export interface RecruitingMissionsResult {
+  needs: RecruitingNeed[]
+  created: string[]
+  /** Needs an open mission already covers (left alone — idempotent). */
+  existing: string[]
+  refused: string[]
+  readRefused: string | null
+}
+
+/**
+ * Create the recruiting mission each need lacks. Called after the Command Center's twin build
+ * (lib/kernel/command-center.ts, brokerage-wide only — a team's board never recruits for the
+ * brokerage). createMission applies entitlement (mayUseAndAfford) and the owner's authority
+ * ceiling; the ledger + mission_events + MISSION_CREATED event ride the service as for any mission.
+ */
+export async function ensureRecruitingMissionsFromTwin(twin: BrokerageTwin, client?: Client, deps: MissionDeps = {}): Promise<RecruitingMissionsResult> {
+  const out: RecruitingMissionsResult = { needs: [], created: [], existing: [], refused: [], readRefused: null }
+  if (!twin?.brokerageId || !twin.workforce) return out
+  out.needs = recruitingNeeds(twin)
+  if (out.needs.length === 0) return out
+  const svc = await svcOf(client)
+  const open = await activeMissionsFor(twin.brokerageId, { ownerManager: "recruiting_manager", limit: 500 }, svc)
+  if (open.readRefused) { out.readRefused = open.readRefused; return out }
+  const openBySubject = new Set(open.active.filter((m) => m.mission_type === "recruiting" && m.subject_type === RECRUITING_NEED_SUBJECT_TYPE && m.subject_id).map((m) => m.subject_id as string))
+  const actor: MissionActor = { type: "system", id: "brokerage-twin" }
+  for (const need of out.needs) {
+    const subjectId = recruitingNeedSubjectId(twin.brokerageId, need.territory, need.specialization)
+    if (openBySubject.has(subjectId)) { out.existing.push(subjectId); continue }
+    const created = await createMission({
+      brokerageId: twin.brokerageId, objective: recruitingNeedObjective(need), missionType: "recruiting",
+      ownerManager: "recruiting_manager", participatingManagers: ["data_steward"],
+      subject: { type: RECRUITING_NEED_SUBJECT_TYPE, id: subjectId }, priority: "high",
+      successCriteria: [{ metric: "recruits_joined", op: ">=", target: need.count }],
+      initialState: "PLANNING", actor,
+    }, svc, deps)
+    if (!created.ok) { out.refused.push(`${need.territory}/${need.specialization}: ${created.reason}`); continue }
+    await attachEvidence({ brokerageId: twin.brokerageId, missionId: created.mission.id, actor, evidence: { kind: RECRUITING_TARGETING_EVIDENCE_KIND, ref: subjectId, territory: need.territory, specialization: need.specialization, count: need.count, zips: need.zips, reasons: need.reasons, twin_at: twin.at, twin_digest: twin.digest } }, svc, deps)
+    // RECOMMENDATION FIRST — a human approves (decideMissionAction → ACTIVE) before any outreach.
+    const held = await escalateMission({ brokerageId: twin.brokerageId, missionId: created.mission.id, reason: `recommendation from the brokerage twin — ${need.reasons[0]}; a human approves before the recruiting pipeline targets anyone`, actor, needsHuman: true }, svc, deps)
+    if (!held.ok) out.refused.push(`${need.territory}/${need.specialization}: created but not held for approval: ${held.reason}`)
+    out.created.push(created.mission.id)
+  }
+  return out
+}
+
+/**
+ * The targeting the recruiting pipeline consumes as search criteria (lib/recruit-pipeline/
+ * recruit-sourcer.ts via app/api/cron/lead-scraping): territory + specialization of every
+ * APPROVED (ACTIVE) recruiting mission — never a mission still awaiting its human.
+ */
+export async function recruitingTargetingFor(brokerageId: string, client?: Client): Promise<{ targeting: RecruitingTargeting[]; readRefused: string | null }> {
+  const svc = await svcOf(client)
+  const r = await activeMissionsFor(brokerageId, { ownerManager: "recruiting_manager", limit: 200 }, svc)
+  if (r.readRefused) return { targeting: [], readRefused: r.readRefused }
+  const targeting = r.active.filter((m) => m.mission_type === "recruiting" && m.state === "ACTIVE").map(recruitingTargetingOf).filter((t): t is RecruitingTargeting => !!t)
+  return { targeting, readRefused: null }
 }
 
 // ─── actions + outcomes ───────────────────────────────────────────────────────────────────────

@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 449 tables, 804 columns.
+ * MEASURED AT GENERATION: 449 tables, 805 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-06
  * source: public.live_check_constraints_json()
- * body-sha256: 0df517adfc7bdb589cde41acfecb15bc5779f61addb7bc8e3a538d0fbbcdb846
+ * body-sha256: 8d2d61c6ef9b921dd5623d50fae04f253a3bf75bbb95ae9392858b0c08a65fe9
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -759,9 +759,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     methodology: ["ai_cma", "attom", "housecanary", "manual", "sqft_regional_average"],
   },
   improvement_proposals: {
-    proposer: ["copy_learning", "human", "outcome_autopsy", "predictor_learning", "prompt_calibrator"],
+    proposer: ["copy_learning", "human", "media_intelligence", "outcome_autopsy", "predictor_learning", "prompt_calibrator", "resource_allocation"],
     status: ["APPROVED", "EVALUATED", "PROMOTED", "PROPOSED", "REJECTED", "ROLLED_BACK"],
-    subject_kind: ["policy", "prompt", "threshold", "variant"],
+    subject_kind: ["allocation", "policy", "prompt", "threshold", "variant"],
   },
   inbound_call_classifications: {
     classification: ["business_general", "cooperating_agent", "existing_contact", "real_estate_buyer", "real_estate_investor", "real_estate_seller", "unknown", "vendor"],
@@ -969,6 +969,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   marketing_assets: {
     approval_status: ["approved", "pending", "rejected"],
     asset_type: ["ad_creative", "blog", "graphic", "image", "mailer", "newsletter", "podcast", "qr", "script", "snippet", "social_post", "template", "video"],
+    purpose: ["ad", "anniversary", "brand", "buyer_education", "campaign", "email_thumbnail", "lead_intro", "listing_promo", "market_update", "recruiting", "seller_equity", "social"],
     regen_status: ["failed", "processing", "requested"],
     visibility_scope: ["agent", "brokerage", "multi_location", "platform", "team"],
   },

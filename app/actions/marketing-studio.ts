@@ -626,7 +626,10 @@ export async function getAssets(filters?: {
     return { success: false, error: error.message, assets: [] }
   }
 
-  return { success: true, assets: assets ?? [] }
+  // Wave 106 (106C integration): the studio is an AGENT-FACING surface — cost_usd / generation_model /
+  // performance cost never reach it (CLAUDE.md §5); admins read cost on the Command Center allocation card.
+  const { redactForAudience } = await import("@/lib/kernel/media-intelligence")
+  return { success: true, assets: (assets ?? []).map((a: any) => redactForAudience(a, "agent")) }
 }
 
 export async function approveAsset(assetId: string) {

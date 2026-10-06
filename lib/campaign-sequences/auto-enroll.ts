@@ -63,6 +63,9 @@ export interface AutoEnrollInput {
   /** Delay before the first step. Defaults to 24h, matching the prior behaviour. */
   firstStepDelayMs?: number
   now?: Date
+  /** Wave 106 (106B): the journey planner's seam. undefined = consult the planner (default);
+   *  `{ consult }` = an injected verdict (proofs); `null` = the caller already ran the planner. */
+  journey?: { consult: (db: AnyClient, args: { brokerageId: string; contactId: string; now: Date }) => Promise<{ proceed: boolean; experience: string | null; reason: string }> } | null
 }
 
 export interface AutoEnrollResult {
@@ -177,6 +180,24 @@ export async function autoEnrollContact(
     if (existing) return { enrolled: false, sequenceId: sequence.id, reason: "already enrolled" }
 
     const now = input.now ?? new Date()
+
+    // ── WAVE 106 (106B) — THE JOURNEY DECIDES BEFORE THE DEFAULT SEQUENCE DOES. Not "every
+    //    buyer gets Sequence #4": the next-best-experience planner (lib/ai-isa/lead-action-plan.ts
+    //    journeyVerdictForEnrollment — the SAME NBA, one rung up) is consulted with the person's
+    //    opportunity, behaviour, memory, transaction, education, fatigue and policy. A `wait` or
+    //    `agent_intervention` verdict OVERRIDES the enrolment (ledgered there as the decision);
+    //    any other experience lets the sequence enrol — sequences stay the delivery survivor.
+    //    FAIL CLOSED: an unreadable plan is a refusal with its reason, never a silent enrol.
+    //    `journey: null` is the one opt-out — a caller that ALREADY ran the planner (engageContact)
+    //    and is enrolling as the chosen `communication` experience. ──
+    if (input.journey !== null) {
+      const consult = input.journey?.consult ?? (async (c: AnyClient, a: { brokerageId: string; contactId: string; now: Date }) => {
+        const { journeyVerdictForEnrollment } = await import("@/lib/ai-isa/lead-action-plan")
+        return journeyVerdictForEnrollment(c, a)
+      })
+      const verdict = await consult(db, { brokerageId: input.brokerageId, contactId: input.contactId, now })
+      if (!verdict.proceed) return { enrolled: false, sequenceId: sequence.id, reason: `journey:${verdict.experience ?? "unreadable"}: ${verdict.reason}` }
+    }
     const delay = input.firstStepDelayMs ?? DAY_MS
 
     const { error: enrErr } = await db.from("sequence_enrollments").insert({

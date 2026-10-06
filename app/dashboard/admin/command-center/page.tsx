@@ -28,6 +28,7 @@ import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-rost
 import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 import { listMissionsAction } from "@/app/actions/missions"
 import { MissionsCard } from "./missions-card"
+import { AllocationCard } from "./allocation-card"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { MISSION_TYPES } from "@/lib/kernel/missions"
 
@@ -340,6 +341,12 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
       {brokerageId && !isSuperadmin && (
         <div className="mx-6 mt-4">
           <TeamAnnouncementComposer canChooseScope={isAdminOrBroker({ user_type: userType })} />
+        </div>
+      )}
+      {/* RESOURCE ALLOCATION (wave 106A) — the open recommendations a human decides; admin roster only. */}
+      {data.allocationBoard && brokerageId && !isSuperadmin && isAdminOrBroker({ user_type: userType }) && (
+        <div className="mx-6 mt-4">
+          <AllocationCard board={data.allocationBoard} />
         </div>
       )}
       {missions?.ok && (

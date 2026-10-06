@@ -19,7 +19,7 @@ import { generateTextRouted } from "@/lib/ai/models"
 import { bookedGenerateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { z } from "zod"
-import { getScenarioByKey } from "@/lib/training/objection-scenarios"
+import { getScenarioByKey, COMPLIANCE_FIRST_PREAMBLE } from "@/lib/training/objection-scenarios"
 import type { ObjectionScenario } from "@/lib/training/objection-scenarios"
 import { clamp } from "@/lib/format/math"
 
@@ -492,7 +492,9 @@ async function scoreAndContinue(params: {
    *  caller — the SESSION, never a parameter (§4). */
   spendActor: { brokerageId: string | null; userId: string | null }
 }): Promise<ScoreAndContinueResult> {
-  const systemPrompt = `You are scoring a real estate agent's objection-handling practice AND continuing the role-play as the prospect.
+  // COMPLIANCE FIRST (wave 106, lane 106D): fair housing is IN the writing prompt — the prospect never
+  // models a violation and the rubric scores one as a 0 (CLAUDE.md §5, the video-script ruling).
+  const systemPrompt = `${COMPLIANCE_FIRST_PREAMBLE}You are scoring a real estate agent's objection-handling practice AND continuing the role-play as the prospect.
 
 SCENARIO: ${params.scenario.label}
 PROSPECT PERSONA: ${params.scenario.persona}
@@ -554,7 +556,7 @@ async function finalizeSession(params: {
     .map((t) => `${t.speaker === "prospect" ? "PROSPECT" : "AGENT"}: ${t.text}${t.turn_score != null ? ` [score: ${t.turn_score}]` : ""}`)
     .join("\n")
 
-  const prompt = `Practice scenario: ${params.scenario.label}
+  const prompt = `${COMPLIANCE_FIRST_PREAMBLE}Practice scenario: ${params.scenario.label}
 Average per-turn score: ${params.averageScore.toFixed(1)}/100
 
 Success criteria:

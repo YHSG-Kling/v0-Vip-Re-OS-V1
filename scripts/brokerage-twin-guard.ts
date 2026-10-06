@@ -148,13 +148,16 @@ const fakeCapacity = async (_svc: any, _b: string, agentId: string, o: { maxLoad
   band: (agentId.endsWith("ag2") ? "over" : "available") as any, load: agentId.endsWith("ag2") ? o.maxLoad : 5,
   headroom: agentId.endsWith("ag2") ? 0 : 20, reasons: [] as string[], index: { followUpDebt: 0 },
 })
+// 106E: the competency reader is injected like capacityFor — the real loadAgentCompetency keys its
+// reads on the roster's agent id (covered by test:competency); E1's brokerage_id census is the twin's own reads.
+const fakeCompetency = async () => ({ gaps: [] as unknown[], refusedRails: [] as string[] })
 
 // ─── A. build with evidence ───────────────────────────────────────────────────────────────────
 console.log("\nA. the twin builds — evidence on every conclusion")
 let twinA!: BrokerageTwin
 {
   const c = makeClient(world())
-  const r = await buildBrokerageTwin(A, NOW, { svc: c as any, capacityFor: fakeCapacity })
+  const r = await buildBrokerageTwin(A, NOW, { svc: c as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency })
   twinA = r.twin
   check("A1 now: leads / contacts / listings / open deals read as written", twinA.now.pipeline.leads === 2 && twinA.now.pipeline.converted90d === 1 && twinA.now.contacts.active === 1 && twinA.now.listings.active === 1 && twinA.now.transactions.open === 2 && twinA.now.transactions.inEscrow === 1 && twinA.now.transactions.openCommissionCents === 1_300_000, JSON.stringify(twinA.now))
   const evid = [twinA.now.pipeline.evidence, twinA.now.contacts.evidence, twinA.now.listings.evidence, twinA.now.transactions.evidence, twinA.capacity.evidence, ...twinA.objectives.evidence, ...twinA.economic.evidence, ...twinA.atRisk.map((x) => x.evidence)]
@@ -175,14 +178,14 @@ console.log("\nB. what changed — prior snapshot vs honest baseline")
     { id: "snap-old", brokerage_id: A, team_id: null, at: iso(2), twin: prior },
     { id: "snap-b", brokerage_id: B, team_id: null, at: iso(1), twin: { ...prior, now: { ...prior.now, pipeline: { ...prior.now.pipeline, leads: 77 } } } },
   ] }))
-  const { twin } = await buildBrokerageTwin(A, NOW, { svc: c as any, capacityFor: fakeCapacity, persist: false })
+  const { twin } = await buildBrokerageTwin(A, NOW, { svc: c as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false })
   const leads = twin.changed.changes.find((x) => x.field === "now.pipeline.leads")
   const appeared = twin.changed.changes.find((x) => x.field === "atRisk.compliance.at_risk")
   check("B1 diffs against THIS tenant's latest prior snapshot (not the foreign one)", !twin.changed.baseline && twin.changed.previousSnapshotId === "snap-old" && leads?.previous === 5 && leads.current === 2 && leads.delta === -3, JSON.stringify(twin.changed))
   check("B2 a risk that APPEARED is a change against 0", appeared?.previous === 0 && appeared.current === 1)
-  check("B3 the new snapshot chains previous_snapshot_id", (await buildBrokerageTwin(A, NOW, { svc: c as any, capacityFor: fakeCapacity })).twin.changed.previousSnapshotId === "snap-old" && c.inserted[TWIN_SNAPSHOT_TABLE][0].previous_snapshot_id === "snap-old")
+  check("B3 the new snapshot chains previous_snapshot_id", (await buildBrokerageTwin(A, NOW, { svc: c as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency })).twin.changed.previousSnapshotId === "snap-old" && c.inserted[TWIN_SNAPSHOT_TABLE][0].previous_snapshot_id === "snap-old")
   const refused = makeClient(world(), { refuse: new Set([TWIN_SNAPSHOT_TABLE]), refuseInsert: new Set([TWIN_SNAPSHOT_TABLE]) })
-  const r2 = await buildBrokerageTwin(A, NOW, { svc: refused as any, capacityFor: fakeCapacity })
+  const r2 = await buildBrokerageTwin(A, NOW, { svc: refused as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency })
   check("B4 an unapplied m708 → BASELINE with the refusal named, the insert error read, the twin still built", r2.twin.changed.baseline && /refused/.test(r2.twin.changed.reason ?? "") && r2.twin.blindSpots.some((s) => s.includes(TWIN_SNAPSHOT_TABLE)) && /does not exist/.test(r2.persist.error ?? "") && r2.twin.now.pipeline.leads === 2)
   check("B5 pure detectTwinChanges: equal → none; a cleared measure → change to 0", detectTwinChanges({ a: 1 }, { a: 1 }).length === 0 && detectTwinChanges({ a: 1 }, {})[0]?.current === 0)
 }
@@ -223,13 +226,13 @@ console.log("\nD. scenario — derived fields recomputed, unsupported stays unsu
 console.log("\nE. tenant isolation")
 {
   const c = makeClient(world())
-  await buildBrokerageTwin(A, NOW, { svc: c as any, capacityFor: fakeCapacity, persist: false })
+  await buildBrokerageTwin(A, NOW, { svc: c as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false })
   const reads = c.log.filter((l) => l.op === "select")
   check("E1 every read is pinned to brokerage_id", reads.length >= 15 && reads.every((l) => l.filters.includes("eq:brokerage_id")), reads.filter((l) => !l.filters.includes("eq:brokerage_id")).map((l) => l.table).join(","))
   check("E2 tenant B's rows never reach A's twin (B has the same shape — the counts are A's alone)", twinA.now.pipeline.evidence.ids!.every((id) => id.startsWith("a-")) && twinA.capacity.perAgent.every((a) => a.agentId.startsWith("a-")) && twinA.atRisk.every((r) => (r.evidence.ids ?? []).every((id) => id.startsWith("a-"))))
-  const team = (await buildBrokerageTwin(A, NOW, { svc: c as any, capacityFor: fakeCapacity, persist: false, teamId: TEAM })).twin
+  const team = (await buildBrokerageTwin(A, NOW, { svc: c as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false, teamId: TEAM })).twin
   check("E3 a team scope narrows through agents.team_id — the team sees only its board (1 agent, its lead / listing / deal)", team.teamId === TEAM && team.capacity.activeAgents === 1 && team.now.pipeline.leads === 1 && team.now.listings.active === 1 && team.now.transactions.open === 1 && team.now.transactions.openCommissionCents === 900_000, JSON.stringify(team.now))
-  const r = await buildBrokerageTwin(A, NOW, { svc: c as any, capacityFor: fakeCapacity, teamId: TEAM })
+  const r = await buildBrokerageTwin(A, NOW, { svc: c as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, teamId: TEAM })
   check("E4 a team twin's snapshot is stamped with brokerage_id AND team_id", c.inserted[TWIN_SNAPSHOT_TABLE][0].brokerage_id === A && c.inserted[TWIN_SNAPSHOT_TABLE][0].team_id === TEAM && !!r.persist.snapshotId)
   let threw = false
   try { await buildBrokerageTwin("", NOW, { svc: c as any }) } catch { threw = true }
@@ -258,12 +261,12 @@ console.log("\nG. seams — 104A economic graph, 104D missions")
 {
   check("G1 unregistered seams degrade: missions 'none', contribution margin 'unavailable' (named)", twinA.objectives.missions.status === "none" && twinA.objectives.missions.active === 0 && twinA.economic.contributionMargin.status === "unavailable" && /economic-graph/.test(twinA.economic.contributionMargin.source))
   const c = makeClient(world())
-  const { twin } = await buildBrokerageTwin(A, NOW, { svc: c as any, capacityFor: fakeCapacity, persist: false, seams: {
+  const { twin } = await buildBrokerageTwin(A, NOW, { svc: c as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false, seams: {
     missions: async () => ({ active: 3, source: "missions (104D)" }),
     contributionMargin: async () => ({ cents: 123_456, source: "lib/kernel/economic-graph.ts (104A)" }),
   } })
   check("G2 registered seams are read and cited as evidence", twin.objectives.missions.status === "present" && twin.objectives.missions.active === 3 && twin.economic.contributionMargin.cents === 123_456 && twin.objectives.evidence.some((e) => e.table === "missions (104D)"))
-  const t2 = (await buildBrokerageTwin(A, NOW, { svc: c as any, capacityFor: fakeCapacity, persist: false, seams: { missions: async () => { throw new Error("boom") } } })).twin
+  const t2 = (await buildBrokerageTwin(A, NOW, { svc: c as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false, seams: { missions: async () => { throw new Error("boom") } } })).twin
   check("G3 a seam that throws degrades to 'none' and is named in blindSpots", t2.objectives.missions.status === "none" && t2.blindSpots.some((s) => /missions seam threw: boom/.test(s)))
   registerTwinSeam("missions", async () => ({ active: 1, source: "registry" }))
   check("G4 registerTwinSeam lands in the registry", typeof twinSeams().missions === "function")
@@ -298,7 +301,7 @@ console.log("\nH. wiring — one read, not six")
     const refusing = makeClient({}, { refuse: new Set(["transactions", "agent_relationships", "ai_tool_usage", "vendor_usage_tracking", "agent_action_ledger", "vendor_invoices", "referral_payouts", "vendor_payouts"]) })
     const r1 = await cm!(refusing as any, A, null)
     check("H7 the economic seam answers 0¢ (measured) on an empty ledger and null (unmeasured, refusal named) on a refused one — never a fake margin", r0.cents === 0 && /economic-graph/.test(r0.source) && r1.cents === null && /unmeasured/.test(r1.source) && /refused/.test(r1.source), JSON.stringify({ r0, r1 }))
-    const { twin } = await buildBrokerageTwin(A, NOW, { svc: makeClient(world()) as any, capacityFor: fakeCapacity, persist: false })
+    const { twin } = await buildBrokerageTwin(A, NOW, { svc: makeClient(world()) as any, capacityFor: fakeCapacity, competencyFor: fakeCompetency, persist: false })
     // The fixture's only ledger rows are tenant-borne ai_tool_usage costs (no commission rows) → the
     // YTD margin is MINUS their sum, derived from the fixture rather than pinned.
     const fixtureCost = world().ai_tool_usage.filter((r) => r.brokerage_id === A).reduce((a, r) => a + r.cost_cents, 0)

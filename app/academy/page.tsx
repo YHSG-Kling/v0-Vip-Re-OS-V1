@@ -84,6 +84,8 @@ export default function AcademyPage() {
   const [generatingPath, setGeneratingPath] = useState(false)
   // Real learner progress from learning_assignments (was hardcoded empty).
   const [completedContent, setCompletedContent] = useState<any[]>([])
+  // ADAPTIVE DEVELOPMENT (wave 106, lane 106D) — the agent's own development focus from getMyLearningProgress.
+  const [development, setDevelopment] = useState<{ focus: string; score: number; moduleTitle: string | null; improved: string[]; cycleAt: string } | null>(null)
   const [inProgressContent, setInProgressContent] = useState<any[]>([])
   // Preloaded readiness analysis — feeds ReadinessRadar.performanceData
   // directly (was a click-to-analyze cold start) and, via deriveFocusAreas,
@@ -186,6 +188,7 @@ export default function AcademyPage() {
       setFeatured(await getFeaturedModule())
       const progress = await getMyLearningProgress()
       setCompletedContent(progress.completed)
+      setDevelopment(progress.development)
       setInProgressContent(progress.inProgress)
     } catch (error) {
       console.error("Error loading academy viewer:", error)
@@ -513,6 +516,7 @@ export default function AcademyPage() {
                 completedContent={completedContent}
                 inProgressContent={inProgressContent}
                 totalAvailable={academyContent.length}
+                development={development}
               />
             </div>
           </div>

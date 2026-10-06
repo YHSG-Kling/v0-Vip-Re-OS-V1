@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-10-06
  * source: public.live_schema_json()
- * body-sha256: df0bb3f263262bd3499d3cb7700583dea633fa79d8224babde0c19fb31583be8
+ * body-sha256: 440c4847a00b6a249cc792ef7b2b86c2f6db605677a48a4fbcc80cdd4ef181ca
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -422,7 +422,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   marketing_agent_actions: ["action_input", "action_type", "approved_at", "approved_by", "brokerage_id", "executed_at", "id", "managed_agent_session_id", "proposed_at", "rationale", "result", "status"],
   marketing_agent_weekly_outcomes: ["brokerage_id", "id", "plan_quality_score", "realized_at", "realized_campaigns_sent", "realized_click_rate", "realized_open_rate", "realized_persona_breakdown", "realized_recipient_sends", "snapshot_signals_jsonb", "spawned_at", "spawned_session_id", "week_start"],
   marketing_asset_qr_links: ["brokerage_id", "created_at", "id", "marketing_asset_id", "placement_type", "qr_code_id"],
-  marketing_assets: ["agent_user_id", "approval_status", "asset_name", "asset_type", "asset_url", "brokerage_id", "campaign_id", "created_at", "created_by", "id", "metadata", "preview_text", "regen_status", "source_id", "source_table", "tags", "team_id", "thumbnail_url", "updated_at", "visibility_scope"],
+  marketing_assets: ["agent_user_id", "approval_status", "approved_at", "approved_by", "asset_name", "asset_type", "asset_url", "audience", "brand", "brokerage_id", "campaign_id", "contact_id", "cost_usd", "created_at", "created_by", "expires_at", "generation_model", "id", "listing_id", "metadata", "performance", "preview_text", "purpose", "regen_status", "rights", "source_assets", "source_id", "source_table", "subject", "tags", "team_id", "thumbnail_url", "updated_at", "variants", "visibility_scope"],
   marketing_attribution_credits: ["attribution_model", "attribution_weight", "brokerage_id", "campaign_id", "computed_by_run_id", "contact_id", "created_at", "credit_dollars", "first_touchpoint_at", "id", "last_touchpoint_at", "touchpoint_count", "transaction_id"],
   marketing_campaign_comments: ["author_user_id", "brokerage_id", "campaign_id", "comment_body", "created_at", "id"],
   marketing_campaign_tasks: ["assigned_user_id", "brokerage_id", "campaign_id", "created_at", "description", "due_at", "id", "status", "title", "updated_at"],

@@ -1316,11 +1316,22 @@ export async function GET(request: Request) {
         try {
           const reviewUrls = (market.lead_scraping_motivated_params?.[0] as { brokerage_review_urls?: string[] } | undefined)
             ?.brokerage_review_urls ?? []
+          // 106E: the brokerage's APPROVED recruiting missions (the twin's need, held for a human,
+          // approved through decideMissionAction) hand the sourcer their territory + specialization
+          // as search criteria. A refused read is reported; it never widens the search blindly.
+          let targeting: Array<{ missionId: string; territory: string; specialization: string }> = []
+          if (market.brokerage_id) {
+            const { recruitingTargetingFor } = await import("@/lib/kernel/missions")
+            const t = await recruitingTargetingFor(market.brokerage_id, supabase as any)
+            if (t.readRefused) results.errors.push(`recruiting targeting read refused for ${market.name}: ${t.readRefused}`)
+            targeting = t.targeting
+          }
           const recruitRes = await sourceRecruitProspects({
             supabase,
             marketId: market.id,
             state: market.state,
             reviewUrls,
+            targeting,
           })
           results.recruits_sourced += recruitRes.inserted
           if (recruitRes.errors.length) results.errors.push(...recruitRes.errors)

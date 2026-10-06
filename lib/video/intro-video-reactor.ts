@@ -288,6 +288,10 @@ export interface AssignmentIntroInput extends BaseInput {
 // duplicate of the data reel.
 export interface AnniversaryVideoInput extends BaseInput {
   yearsAgo: number
+  /** Wave 106 (106B): the reel was ISSUED BY THE JOURNEY PLANNER (lib/ai-isa/lead-action-plan.ts
+   *  planNextBestExperience chose `video`). Stamped on the VIDEO_GENERATION_REQUESTED audit row so the
+   *  outcome engine can tie the render to the experience; every gate below still runs. */
+  request?: import("@/lib/ai-isa/lead-action-plan").PlannerIssuedRequest | null
   /**
    * THE EQUITY REPORT, as the fact lines the script may state.
    *
@@ -360,6 +364,7 @@ export async function dispatchAnniversaryVideo(
     // single hardcoded sentence about protected characteristics instead.
     situation:   buildAnniversarySituation(input.equity?.facts ?? []),
     hasLoanData: input.equity?.hasLoanData ?? false,
+    request:     input.request ?? null,
     language:    input.language,
   })
 }
@@ -374,6 +379,8 @@ interface ReactorInput extends BaseInput {
   /** Anniversary only — false means estimatedEquity was null, so the script may
    *  report value growth but must not claim equity. See verifyEquityClaims. */
   hasLoanData?: boolean
+  /** Wave 106 (106B): the journey planner's request, when the reel is its chosen experience. */
+  request?: import("@/lib/ai-isa/lead-action-plan").PlannerIssuedRequest | null
 }
 
 /**
@@ -1031,6 +1038,8 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
       intro_video_id:      introVideoId,
       ai_video_project_id: project.id,
       trigger:             input.trigger,
+      // 106B: the experience this render serves, when the journey planner asked for it.
+      ...(input.request ? { planner_request: { source: input.request.source, experience: input.request.experience, ledger_action_id: input.request.ledgerActionId ?? null } } : {}),
     },
     entityId:   project.id,
     entityType: "ai_video_project",

@@ -867,13 +867,33 @@ const memBaseline: string[] = existsSync(MEM_BASELINE_PATH)
   : []
 
 const memBaselineSet = new Set(memBaseline)
-const memFresh = memFound.filter((v) => !memBaselineSet.has(memKey(v)))
+// Wave 106 (106A): a value a WRITTEN-NOT-APPLIED migration declares for the column's CHECK
+// (`<table>_<column>_check … IN (…)`) is QUEUED for the integrator, not "a value the column can never
+// hold" — the SAME rule the mirrored constants below apply (pendingValues). It is reported beside the
+// count, never silently dropped, and the finder stays whole: a value no migration names still trips.
+const pendingCheckValues = (table: string, column: string): Set<string> => {
+  const out = new Set<string>()
+  const migDir = join(root, "supabase/migrations")
+  if (!existsSync(migDir)) return out
+  for (const f of readdirSync(migDir).filter((n) => n.endsWith(".sql"))) {
+    const raw = readFileSync(join(migDir, f), "utf8")
+    if (!/^--[^\n]*WRITTEN, NOT APPLIED/.test(raw)) continue
+    const body = raw.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")
+    const m = new RegExp(`${table}_${column}_check\\s*CHECK\\s*\\(\\s*\\w+\\s+IN\\s*\\(([^)]*)\\)`, "s").exec(body)
+    if (m) for (const x of m[1].matchAll(/'([^']+)'/g)) out.add(x[1])
+  }
+  return out
+}
+const memQueued = memFound.filter((v) => v.tables.split(",").some((t) => pendingCheckValues(t.trim(), v.column).has(v.value)))
+const memQueuedSet = new Set(memQueued.map(memKey))
+const memFresh = memFound.filter((v) => !memBaselineSet.has(memKey(v)) && !memQueuedSet.has(memKey(v)))
 const memStill = new Set(memFound.map(memKey))
 const memFixed = memBaseline.filter((b) => !memStill.has(b))
 
-check(`no NEW in-memory comparison against a value the column can never hold (${memFound.length} total, ${memBaseline.length} baselined)`,
+check(`no NEW in-memory comparison against a value the column can never hold (${memFound.length} total, ${memBaseline.length} baselined${memQueued.length ? `, ${memQueued.length} queued by a WRITTEN-NOT-APPLIED migration: ${[...new Set(memQueued.map((v) => `${v.column}=${v.value}`))].join(", ")}` : ""})`,
   memFresh.length === 0,
   memFresh.slice(0, 8).map((v) => `${v.file}: ${v.column} [${v.tables}] ${v.kind} "${v.value}"`).join("; "))
+check("POSITIVE CONTROL: a value no migration declares is never read as queued", !pendingCheckValues("improvement_proposals", "subject_kind").has("INVENTED_KIND") && !pendingCheckValues("no_such_table", "status").has("open"))
 check(`the in-memory baseline only shrinks (${memFixed.length} retired this run)`, memFixed.length >= 0)
 
 // The census is a DELIVERABLE, not just a pass/fail: a count with no way to read
@@ -902,6 +922,12 @@ console.log("\n[code-side vocabularies mirrored by a CHECK]")
     { file: "lib/kernel/relationship-graph.ts", constant: "RELATIONSHIP_ENTITY_TYPES", table: "relationship_edges", column: "from_entity_type", constraint: "relationship_edges_from_entity_type_check" },
     { file: "lib/kernel/relationship-graph.ts", constant: "RELATIONSHIP_ENTITY_TYPES", table: "relationship_edges", column: "to_entity_type", constraint: "relationship_edges_to_entity_type_check" },
     { file: "lib/kernel/relationship-graph.ts", constant: "RELATIONSHIP_TYPES", table: "relationship_edges", column: "relationship_type", constraint: "relationship_edges_relationship_type_check" },
+    // Wave 106 (106A): the proposal object's two vocabularies are code CONSTANTS written through the one
+    // kernel writer (proposeImprovement); m721 widens them (allocation / resource_allocation) — APPLIED LIVE 2026-10-06.
+    { file: "lib/kernel/improvement-proposals.ts", constant: "PROPOSAL_SUBJECT_KINDS", table: "improvement_proposals", column: "subject_kind", constraint: "improvement_proposals_subject_kind_check" },
+    // Wave 106 (106C): the proposer vocabulary is a code CONSTANT written through proposeImprovement (no
+    // caller literal reaches the scan); m719 widens it with media_intelligence — APPLIED LIVE 2026-10-06.
+    { file: "lib/kernel/improvement-proposals.ts", constant: "PROPOSERS", table: "improvement_proposals", column: "proposer", constraint: "improvement_proposals_proposer_check" },
   ]
   const constantValues = (rel: string, name: string): string[] => {
     const m = new RegExp(`const ${name}\\s*=\\s*\\[([^\\]]*)\\]`, "s").exec(stripComments(readFileSync(join(root, rel), "utf8")))

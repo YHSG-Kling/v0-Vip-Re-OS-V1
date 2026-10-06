@@ -20,8 +20,8 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { stripComments } from "./strip-comments"
 import {
-  scoreCompetency, claimSpeedScore, COMPETENCY_SKILLS, COMPETENCY_GAP_TAG, COMPETENCY_GAP_SCORE,
-  COMPETENCY_LABEL, SKILL_LABEL, type CompetencyEvidence,
+  scoreCompetency, claimSpeedScore, COMPETENCY_SKILLS, COMPETENCY_GAP_TAG, COMPETENCY_GAP_SCORE, COMPETENCY_SECONDARY_GAP_TAG,
+  COMPETENCY_LABEL, SKILL_LABEL, SKILL_AREA_COMPETENCY, type CompetencyEvidence,
 } from "../lib/education/skill-freshness"
 import { summarizeCompetencyBoard } from "../lib/intelligence/skill-freshness-board"
 import { resolveClientSides } from "../lib/agents/education-delivery-producer"
@@ -50,26 +50,28 @@ const skillOf = (p: ReturnType<typeof scoreCompetency>, k: string) => p.skills.f
 function pureLayer() {
   console.log("\n[scoreCompetency · pure — evidence in, deterministic score out, honest nulls]")
   const empty = scoreCompetency(EMPTY)
-  check("every competency skill is scored (8 skills, one vocabulary)", empty.skills.length === COMPETENCY_SKILLS.length && COMPETENCY_SKILLS.every((k) => empty.skills.some((s) => s.skill === k)))
-  check("the three freshness areas ARE competency skills (superset, not a second vocabulary)", (Object.keys(SKILL_LABEL) as string[]).every((k) => (COMPETENCY_SKILLS as readonly string[]).includes(k)))
-  check("no evidence → every evidence-gated skill is null/unproven (never a fabricated zero)", empty.unproven.length === 7 && empty.skills.filter((s) => s.score == null).every((s) => s.confidence === "none"))
-  check("no evidence → compliance still scores (readiness is always a verdict) and overall is that one skill", skillOf(empty, "compliance_ce").score != null && empty.overall === skillOf(empty, "compliance_ce").score)
+  // Wave 106 (106D): the vocabulary is the owner's ELEVEN keys; the three freshness areas are SIGNALS that
+  // each map onto one of them (SKILL_AREA_COMPETENCY) — one vocabulary, the rail names retired.
+  check("every competency skill is scored (one vocabulary, the owner's eleven)", empty.skills.length === COMPETENCY_SKILLS.length && COMPETENCY_SKILLS.length === 11 && COMPETENCY_SKILLS.every((k) => empty.skills.some((s) => s.skill === k)))
+  check("the three freshness areas each evidence a competency skill (SKILL_AREA_COMPETENCY → the one vocabulary, not a second)", (Object.keys(SKILL_LABEL) as string[]).every((k) => (COMPETENCY_SKILLS as readonly string[]).includes(SKILL_AREA_COMPETENCY[k as keyof typeof SKILL_AREA_COMPETENCY])))
+  check("no evidence → every evidence-gated skill is null/unproven (never a fabricated zero)", empty.unproven.length === COMPETENCY_SKILLS.length - 1 && empty.skills.filter((s) => s.score == null).every((s) => s.confidence === "none"))
+  check("no evidence → compliance still scores (readiness is always a verdict) and overall is that one skill", skillOf(empty, "compliance").score != null && empty.overall === skillOf(empty, "compliance").score)
   check("deterministic: same evidence → identical profile", JSON.stringify(scoreCompetency(EMPTY)) === JSON.stringify(scoreCompetency(EMPTY)))
 
   // Objection handling ← the simulator's scores; freshness decay subtracts.
   const drilled = scoreCompetency(ev({ objection: { sessions: 4, avgScore: 82, byScenario: [{ key: "commission_pushback", sessions: 2, avgScore: 55 }, { key: "fsbo_cold_call", sessions: 2, avgScore: 90 }] }, freshness: [{ area: "objection_handling", lastPracticedDays: 10, lastScore: 82 }] }))
-  check("objection drills (4 @ 82) → objection_handling 82, confidence high", skillOf(drilled, "objection_handling").score === 82 && skillOf(drilled, "objection_handling").confidence === "high")
+  check("objection drills (4 @ 82) → negotiation 82, confidence high", skillOf(drilled, "negotiation").score === 82 && skillOf(drilled, "negotiation").confidence === "high")
   check("a WEAK drill scenario names its curriculum tag (objection:<key>) — the author's tag; a strong one does not", drilled.gapTags.includes("objection:commission_pushback") && !drilled.gapTags.includes("objection:fsbo_cold_call"))
   const staleDrill = scoreCompetency(ev({ objection: { sessions: 4, avgScore: 82, byScenario: [] }, freshness: [{ area: "objection_handling", lastPracticedDays: 90, lastScore: 82 }] }))
-  check("POSITIVE CONTROL: the same drills proven 90 days ago score 15 lower (stale decay)", skillOf(staleDrill, "objection_handling").score === 67)
-  check("2 drills → confidence low (below COMPETENCY_MIN_EVIDENCE)", skillOf(scoreCompetency(ev({ objection: { sessions: 2, avgScore: 80, byScenario: [] } })), "objection_handling").confidence === "low")
+  check("POSITIVE CONTROL: the same drills proven 90 days ago score 15 lower (stale decay)", skillOf(staleDrill, "negotiation").score === 67)
+  check("2 drills → confidence low (below COMPETENCY_MIN_EVIDENCE)", skillOf(scoreCompetency(ev({ objection: { sessions: 2, avgScore: 80, byScenario: [] } })), "negotiation").confidence === "low")
 
   // Lead response ← assignment_log claim rate × speed.
   check("claimSpeedScore: 10 min → 100; 60 min → 75; 240 min → 45; 1440 min → 15; 2 days → 10", claimSpeedScore(10) === 100 && claimSpeedScore(60) === 75 && claimSpeedScore(240) === 45 && claimSpeedScore(1440) === 15 && claimSpeedScore(2880) === 10)
   const fast = scoreCompetency(ev({ outcomes: { ...EMPTY.outcomes, leadsAssigned: 10, leadsClaimed: 10, medianClaimMinutes: 12 } }))
   const slow = scoreCompetency(ev({ outcomes: { ...EMPTY.outcomes, leadsAssigned: 10, leadsClaimed: 5, medianClaimMinutes: 600 } }))
-  check("10/10 leads claimed in 12 min → lead_response 100", skillOf(fast, "lead_response").score === 100)
-  check("POSITIVE CONTROL: 5/10 claimed, median 10 h → lead_response is a GAP tagged slow_lead_response", skillOf(slow, "lead_response").score! <= COMPETENCY_GAP_SCORE && slow.gaps.some((g) => g.skill === "lead_response") && slow.gapTags.includes("slow_lead_response"))
+  check("10/10 leads claimed in 12 min → follow_up 100", skillOf(fast, "follow_up").score === 100)
+  check("POSITIVE CONTROL: 5/10 claimed, median 10 h → follow_up is a GAP tagged slow_lead_response", skillOf(slow, "follow_up").score! <= COMPETENCY_GAP_SCORE && slow.gaps.some((g) => g.skill === "follow_up") && slow.gapTags.includes("slow_lead_response"))
 
   // Lead conversion ← tour→offer, no-show penalty; sample gate at 3.
   const converting = scoreCompetency(ev({ outcomes: { ...EMPTY.outcomes, tours: 10, offers: 5 } }))
@@ -79,22 +81,22 @@ function pureLayer() {
   check("2 tours → below the sample gate → unproven (not a gap)", skillOf(scoreCompetency(ev({ outcomes: { ...EMPTY.outcomes, tours: 2, offers: 0 } })), "lead_conversion").score == null)
 
   // Closing ← closings + deal health.
-  check("6 closings at health 90 → closing 94 (0.7·95 + 0.3·90)", skillOf(scoreCompetency(ev({ outcomes: { ...EMPTY.outcomes, closings: 6, activeDeals: 2, avgHealthScore: 90 } })), "closing").score === 94)
-  check("POSITIVE CONTROL: 0 closings, 2 active deals at health 30 → closing 37 (a gap)", skillOf(scoreCompetency(ev({ outcomes: { ...EMPTY.outcomes, closings: 0, activeDeals: 2, avgHealthScore: 30 } })), "closing").score === 37)
+  check("6 closings at health 90 → transaction_management 94 (0.7·95 + 0.3·90)", skillOf(scoreCompetency(ev({ outcomes: { ...EMPTY.outcomes, closings: 6, activeDeals: 2, avgHealthScore: 90 } })), "transaction_management").score === 94)
+  check("POSITIVE CONTROL: 0 closings, 2 active deals at health 30 → transaction_management 37 (a gap)", skillOf(scoreCompetency(ev({ outcomes: { ...EMPTY.outcomes, closings: 0, activeDeals: 2, avgHealthScore: 30 } })), "transaction_management").score === 37)
 
-  // Call quality ← coach insights.
-  check("6 strengths / 0 improvements → call_quality 100; 0 / 6 → 40 (gap)", skillOf(scoreCompetency(ev({ coaching: { strengths: 6, improvements: 0 } })), "call_quality").score === 100 && skillOf(scoreCompetency(ev({ coaching: { strengths: 0, improvements: 6 } })), "call_quality").score === 40)
+  // Buyer consultation ← coach insights.
+  check("6 strengths / 0 improvements → buyer_consultation 100; 0 / 6 → 40 (gap)", skillOf(scoreCompetency(ev({ coaching: { strengths: 6, improvements: 0 } })), "buyer_consultation").score === 100 && skillOf(scoreCompetency(ev({ coaching: { strengths: 0, improvements: 6 } })), "buyer_consultation").score === 40)
 
   // Compliance ← the license-readiness verdict.
   const blocked = scoreCompetency(ev({ compliance: { ready: false, blockers: 1, warnings: 0, cePct: 20, activeCertifications: 0 } }))
   const clear = scoreCompetency(ev({ compliance: { ready: true, blockers: 0, warnings: 0, cePct: 100, activeCertifications: 2 } }))
-  check("a readiness BLOCKER → compliance_ce 10 (a gap, tagged compliance_ce)", skillOf(blocked, "compliance_ce").score === 10 && blocked.gapTags.includes("compliance_ce"))
-  check("clear + CE 100% + 2 certs → compliance_ce 100", skillOf(clear, "compliance_ce").score === 100)
-  check("a warning caps compliance_ce at 70", skillOf(scoreCompetency(ev({ compliance: { ready: true, blockers: 0, warnings: 1, cePct: 100, activeCertifications: 0 } })), "compliance_ce").score === 70)
+  check("a readiness BLOCKER → compliance 10 (a gap, tagged compliance_ce)", skillOf(blocked, "compliance").score === 10 && blocked.gapTags.includes("compliance_ce"))
+  check("clear + CE 100% + 2 certs → compliance 100", skillOf(clear, "compliance").score === 100)
+  check("a warning caps compliance at 70", skillOf(scoreCompetency(ev({ compliance: { ready: true, blockers: 0, warnings: 1, cePct: 100, activeCertifications: 0 } })), "compliance").score === 70)
 
-  // Coursework ← module completions + quizzes.
-  check("4/4 modules, quizzes avg 90 → coursework 96", skillOf(scoreCompetency(ev({ modules: { assigned: 4, completed: 4, avgQuizScore: 90 } })), "coursework").score === 96)
-  check("POSITIVE CONTROL: 1/4 modules, no quiz → coursework 25 (gap coursework_incomplete)", skillOf(scoreCompetency(ev({ modules: { assigned: 4, completed: 1, avgQuizScore: null } })), "coursework").score === 25)
+  // Technology ← the knowledge check; module completion is education STATE, never a score (wave 106).
+  check("knowledge check 90 → technology 90; 4/4 modules completed with no check → unproven (completion proves nothing)", skillOf(scoreCompetency(ev({ freshness: [{ area: "product_knowledge", lastPracticedDays: 5, lastScore: 90 }] })), "technology").score === 90 && skillOf(scoreCompetency(ev({ modules: { assigned: 4, completed: 4, avgQuizScore: 90 } })), "technology").score == null)
+  check("POSITIVE CONTROL: 1/4 modules open, no check → the catalog's coursework_incomplete tag is emitted", scoreCompetency(ev({ modules: { assigned: 4, completed: 1, avgQuizScore: null } })).gapTags.includes("coursework_incomplete"))
 
   // Gaps ordering + overall.
   const mixed = scoreCompetency(ev({ outcomes: { ...EMPTY.outcomes, tours: 10, offers: 1, leadsAssigned: 10, leadsClaimed: 2, medianClaimMinutes: 1500 }, modules: { assigned: 4, completed: 4, avgQuizScore: 95 } }))
@@ -204,8 +206,10 @@ function wiringLayer() {
   check("m711 is DML only (no CREATE / ALTER / DROP)", !/\b(create|alter|drop)\s/i.test(sql) && (sql.match(/update public\.learning_modules/g) ?? []).length === 5)
   check("each of the five competency tags is appended under its own idempotency guard (NOT gap_tags @> array[tag]) with the fixture rows excluded",
     FIVE.every((t) => new RegExp(`array_append\\(gap_tags, '${t}'\\)`).test(sql) && new RegExp(`not \\(gap_tags @> array\\['${t}'\\]\\)`).test(sql)) && (sql.match(/title not like 'ZZ\\_%FIXTURE%'/g) ?? []).length === 5)
-  check("the five tags are exactly the model's COMPETENCY_GAP_TAG values the router cannot match today (slow_lead_response / low_close_rate have their own emitters)",
-    FIVE.every((t) => Object.values(COMPETENCY_GAP_TAG).includes(t)) && new Set(Object.values(COMPETENCY_GAP_TAG)).size === FIVE.length + 2)
+  // Wave 106 (106D): the vocabulary grew to eleven keys with four new tags (m720 stamps those); the RULE
+  // is that every m711 tag is still a tag the model emits (no module orphaned by the rename).
+  check("the five m711 tags are all still COMPETENCY_GAP_TAG values (or the technology secondary tag) — the router matches them under the new keys",
+    FIVE.every((t) => Object.values(COMPETENCY_GAP_TAG).includes(t) || Object.values(COMPETENCY_SECONDARY_GAP_TAG).includes(t)))
   check("the objection tag also lifts the curriculum author's 'objection:<key>' modules (one vocabulary, loop closed)", /t like 'objection:%'/.test(sql))
   check("POSITIVE CONTROL: a specimen UPDATE without the idempotency guard would be flagged", !/not \(gap_tags @> array\['x'\]\)/.test("update public.learning_modules set gap_tags = array_append(gap_tags, 'x') where title ~* 'x';"))
 }

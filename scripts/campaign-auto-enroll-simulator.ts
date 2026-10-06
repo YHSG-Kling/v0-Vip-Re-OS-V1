@@ -210,8 +210,18 @@ console.log("\n── the enroller ──")
   const r = await autoEnrollContact(a.db, {
     brokerageId: "b1", contactId: "c1", source: "home_value_tool", contactType: "seller",
     contactPersona: "downsizer", enrolledBy: "agent-1", now: new Date("2026-07-29T00:00:00.000Z"),
+    // Wave 106 (106B): the enroller consults the journey planner before enrolling (fail closed —
+    // this fixture has no contact / transaction rows, so the DEFAULT consult would refuse). The
+    // journey's own rules are test:next-best-experience's; here the verdict is injected as
+    // "communication → proceed" so this proof keeps measuring source-keyed SELECTION only.
+    journey: { consult: async () => ({ proceed: true, experience: "communication", reason: "proof seam" }) },
   })
   check("enrols on the canonicalised source", r.enrolled && r.sequenceId === "seq-1")
+  // …and the control for the seam itself: the DEFAULT consult (no injection) refuses on this
+  // fixture, stated — never a silent enrol (CLAUDE.md §4 fail closed).
+  const g = fakeDb({ campaign_sequences: [seq], sequence_enrollments: [[]] })
+  const rg = await autoEnrollContact(g.db, { brokerageId: "b1", contactId: "c1", source: "home_value_tool", contactType: "seller", now: new Date("2026-07-29T00:00:00.000Z") })
+  check("106B control: without a readable journey the enroller refuses with its reason (journey:…)", !rg.enrolled && /^journey:/.test(rg.reason ?? "") && !g.calls.some((c) => c.table === "sequence_enrollments" && c.payload))
   const sel = a.calls.find((c) => c.table === "campaign_sequences")
   check("selects by brokerage + source_key + active",
     sel?.filters.brokerage_id === "b1" && sel?.filters.source_key === "home_value" && sel?.filters.is_active === true)

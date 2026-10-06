@@ -383,6 +383,9 @@ Return ONLY JSON: {"seller_reduces":"...","buyer_covers":"...","split_or_reappra
     const { object } = await generateObjectRouted({
       feature: "appraisal_negotiation",
       brokerageId,
+      // Wave 106A — the framing is worth the commission at stake on the gap (3% of the gap, the slice
+      // a lost deal forfeits); the router's reasoning-spend gate serves a small gap on the cheaper model.
+      economics: { expectedValueUsd: Math.round(Math.abs(context.gapAmount) * 0.03) },
       prompt,
       maxTokens: 500,
       schema: z.object({

@@ -39,6 +39,27 @@ export async function listProposals(): Promise<{ ok: true; available: boolean; r
   return listImprovementProposals(createServiceClient(), gate.brokerageId, { limit: 100 })
 }
 
+/**
+ * Wave 106 (lane 106A) — THE MARKETING ALLOCATION DOOR: "how should I split $X this month?" The
+ * recommender (lib/kernel/resource-allocation.ts recommendMarketingAllocation) runs the owner's chain
+ * (budget → campaign performance → territory demand → agent capacity → pipeline need → marginal
+ * expected return) and records ONE allocation proposal a human decides on the Manager Trust page —
+ * nothing is spent or applied here. Form action of the Command Center's allocation card (server
+ * component form); tenant from the SESSION, admin roster only.
+ */
+export async function recommendMarketingAllocationFormAction(formData: FormData): Promise<void> {
+  const gate = await requireLearningAdmin("marketing allocation requested from the Command Center")
+  if (!gate.ok) { console.warn(`[improvement-proposals] marketing allocation refused: ${gate.error}`); return }
+  const budgetUsd = Number(String(formData.get("budgetUsd") ?? "").replace(/[^0-9.]/g, ""))
+  if (!(budgetUsd > 0) || budgetUsd > 10_000_000) { console.warn("[improvement-proposals] marketing allocation refused: budget must be a positive amount"); return }
+  const { recommendMarketingAllocation } = await import("@/lib/kernel/resource-allocation")
+  const r = await recommendMarketingAllocation(createServiceClient(), { brokerageId: gate.brokerageId, budgetUsd })
+  if (!r.ok) console.warn(`[improvement-proposals] marketing allocation not recommended: ${r.error}`)
+  else if (r.record && !r.record.ok) console.warn(`[improvement-proposals] marketing allocation recommended but NOT recorded: ${r.record.error}`)
+  revalidatePath("/dashboard/admin/command-center")
+  revalidatePath("/dashboard/admin/manager-trust")
+}
+
 export async function decideProposalAction(id: string, decision: "approve" | "reject", reason?: string): Promise<{ ok: true; status: string } | { ok: false; error: string }> {
   const gate = await requireLearningAdmin(reason)
   if (!gate.ok) return { ok: false, error: gate.error }

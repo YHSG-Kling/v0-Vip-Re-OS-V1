@@ -72,6 +72,17 @@ export const TENANT_POLICY_SETTINGS_KEYS: Record<string, TenantPolicyDefinition>
   // requireStrongest } } read by lib/intelligence/predictor-learning-runner.ts getPredictorTuning ahead of the
   // record-derived tuning; written ONLY by lib/kernel/improvement-proposals.ts promotion / rollback.
   predictor_tuning:        { label: "Predictor thresholds (promoted proposals)", store: "brokerage_settings.settings", defaultNote: "record-derived tuning; no promoted override" },
+  // Wave 106 (106A): AUTONOMOUS RESOURCE ALLOCATION — { lead_assignment_mode: off | recommend (default) | consume,
+  // ai_min_value_to_cost_ratio, enrichment_max_usd_per_decision } read by lib/kernel/resource-allocation.ts
+  // loadResourceAllocationPolicy (the assigner's consult, the model router's reasoning-spend gate, the
+  // enrichment rail's purchase gate). Written ONLY through mergeBrokerageSettings (a `policy` proposal on
+  // the Manager Trust page promotes it) — never by the recommender itself.
+  resource_allocation:     { label: "Resource allocation (recommendation mode, AI / data spend gates)", store: "brokerage_settings.settings", defaultNote: "recommend; expensive reasoning at ≥20× value/cost; enrichment ≤ $1 per decision" },
+  // Wave 106 (106E, workforce intelligence): the thresholds every workforce classification and the
+  // recruiting-need rule are judged against — read by lib/kernel/brokerage-twin.ts
+  // resolveWorkforceThresholds (DEFAULT_WORKFORCE_THRESHOLDS when absent), written only through
+  // the policy-proposal promotion path (improvement_proposals → appendTenantPolicyVersion → mergeBrokerageSettings).
+  workforce_thresholds:    { label: "Workforce classification + recruiting-need thresholds", store: "brokerage_settings.settings", defaultNote: "platform defaults (lib/kernel/brokerage-twin.ts DEFAULT_WORKFORCE_THRESHOLDS)" },
 }
 
 /** Real columns that are tenant operating policy. */
