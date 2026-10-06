@@ -601,13 +601,16 @@ jobs:
       # bytes), so both phases see the file layout they expect. No-op when compile left proxy.js.
       - name: Bridge the proxy bundle between phases (proxy.js ↔ middleware.js)
         run: |
-          if [ ! -f .next/server/proxy.js ] && [ -f .next/server/middleware.js ]; then
-            cp .next/server/middleware.js .next/server/proxy.js
-            [ -f .next/server/middleware.js.map ] && cp .next/server/middleware.js.map .next/server/proxy.js.map || true
-            echo "restored .next/server/proxy.js from middleware.js for the generate phase"
-          else
-            echo "no bridge needed"
-          fi
+          # MEASURED 2026-10-06 (run 37530795472, commit 5488c160d): restoring proxy.js + .map moved the
+          # abort one file later — generate also renames proxy.js.nft.json. Restore EVERY companion the
+          # compile phase renamed (middleware.js, .map, .nft.json, …), each only where proxy.* is absent.
+          n=0
+          for f in .next/server/middleware.js*; do
+            [ -e "$f" ] || continue
+            t=".next/server/proxy.js${f#.next/server/middleware.js}"
+            if [ ! -e "$t" ]; then cp "$f" "$t"; echo "restored $t"; n=$((n+1)); fi
+          done
+          echo "bridge restored $n file(s)"
       - name: Production build — generate (page data + prerender, no webpack)
         env:
           NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_GENERATE_HEAP_MB || '10240' }}"
