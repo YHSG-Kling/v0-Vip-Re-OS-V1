@@ -22,8 +22,11 @@ import {
   canTransition, evaluateSuccess, budgetExhausted, withinAuthorityCeiling,
   createMission, transitionMission, attachAction, attachOutcome, blockMission, unblockMission, escalateMission,
   completeMission, failMission, recordMissionProgress, activeMissionsFor, sweepMissionDeadlines,
+  syncMissionProgressFromTwin, criteriaFromDecomposition,
   type MissionState, type MissionDeps,
 } from "../lib/kernel/missions"
+import { twinSeams, decomposeObjective, type BrokerageTwin } from "../lib/kernel/brokerage-twin"
+import { missionOutcomeCredits, attributeOutcomesToLedger } from "../lib/intelligence/roi-ledger"
 import { withCausationFrom } from "../lib/kernel/causation"
 import { MAINTENANCE_DOMAINS, MANAGERS, TABLE_MANAGER } from "../lib/kernel/manager-registry"
 import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
@@ -62,7 +65,7 @@ function memClient(tables: Record<string, Row[]> = {}) {
         return { data: (limitN ? hits.slice(0, limitN) : hits).map((r) => structuredClone(r)), error: null }
       }
       const b: any = {
-        select: () => b, order: () => b, not: () => b, is: () => b, or: () => b, gte: () => b, lte: () => b, neq: () => b,
+        select: () => b, order: () => b, not: () => b, is: () => b, or: () => b, gte: () => b, lte: () => b, lt: () => b, neq: () => b,
         limit: (n: number) => { limitN = n; return b },
         insert: (p: Row | Row[]) => { op = "insert"; payload = p; return b },
         update: (p: Row) => { op = "update"; payload = p; return b },
@@ -229,9 +232,12 @@ async function main() {
     const early = await completeMission({ brokerageId: T1, missionId: m.mission.id, reason: "we feel done" }, c as any, s.deps)
     check("E2 COMPLETED is refused while success criteria are unmet (deterministic, never asserted) and recorded as evidence", !early.ok && early.reason.startsWith("criteria_unmet") && c.tables.mission_events.some((e) => e.event_kind === "refused" && /criteria/.test(e.reason)))
     await attachOutcome({ brokerageId: T1, missionId: m.mission.id, outcome: { kind: "closed", entityType: "transaction", entityId: randomUUID(), valueUsd: 9000 }, progressMetric: "transactions_closed" }, c as any, s.deps)
-    await recordMissionProgress({ brokerageId: T1, missionId: m.mission.id, progress: { transactions_closed: 2 } }, c as any, s.deps)
-    const done = await completeMission({ brokerageId: T1, missionId: m.mission.id, reason: "2 of 2 closed" }, c as any, s.deps)
-    check("E3 outcomes attach (roi vocabulary) and move progress; once criteria are met COMPLETED is admitted", done.ok && done.mission.state === "COMPLETED" && c.tables.missions[0].outcomes.length === 1 && c.tables.mission_events.some((e) => e.event_kind === "outcome_attached"))
+    const partial = await recordMissionProgress({ brokerageId: T1, missionId: m.mission.id, progress: { transactions_closed: 1 } }, c as any, s.deps)
+    check("E3a outcomes attach (roi vocabulary) and move progress; progress short of the criteria leaves the mission ACTIVE", partial.ok && partial.completed === false && c.tables.missions[0].state === "ACTIVE" && c.tables.missions[0].outcomes.length === 1 && c.tables.mission_events.some((e) => e.event_kind === "outcome_attached"))
+    // 104F: completion is DETERMINISTIC on the progress update itself — evaluateSuccess true → completeMission, no caller asserts it.
+    const done = await recordMissionProgress({ brokerageId: T1, missionId: m.mission.id, progress: { transactions_closed: 2 } }, c as any, s.deps)
+    const asserted = await completeMission({ brokerageId: T1, missionId: m.mission.id, reason: "we feel done" }, c as any, s.deps)
+    check("E3 the progress update that MEETS the criteria completes the mission (completeMission wired to evaluateSuccess); a later assertion finds it terminal", done.ok && done.completed === true && done.mission.state === "COMPLETED" && c.tables.missions[0].state === "COMPLETED" && !asserted.ok && c.tables.mission_events.some((e) => e.event_kind === "transition" && e.to_state === "COMPLETED" && /criteria met on progress/.test(e.reason)))
     check("E4 evaluateSuccess: unknown metric = unmet; ops >= <= == are exact", !evaluateSuccess([{ metric: "x", op: ">=", target: 1 }], {}).met && evaluateSuccess([{ metric: "x", op: "<=", target: 1 }], { x: 1 }).met && !evaluateSuccess([{ metric: "x", op: "==", target: 1 }], { x: 2 }).met)
     const failed = await failMission({ brokerageId: T1, missionId: m.mission.id, reason: "late" }, c as any, s.deps)
     check("E5 a COMPLETED mission cannot FAIL (terminal)", !failed.ok)
@@ -273,10 +279,98 @@ async function main() {
     check("F13 TABLE_MANAGER: missions + mission_events → campaign_orchestrator", TABLE_MANAGER.missions === "campaign_orchestrator" && TABLE_MANAGER.mission_events === "campaign_orchestrator")
   }
 
+  // ─── G. lane 104F — the seams WIRED to their real callers (each with a positive control) ────
+  console.log("\nG. 104F wires — escalate / fail / complete / progress / outcome / decompose / twin seam")
+  {
+    // G1 hard expiry: ESCALATED + deadline passed + unanswered for the window → FAILED through failMission on the sweep.
+    const c = memClient(); const s = seams()
+    const now = new Date("2026-10-05T12:00:00Z")
+    const stale = await createMission({ ...base, objective: "stale-escalation", initialState: "ACTIVE", deadline: "2026-09-20T00:00:00Z" }, c as any, s.deps)
+    const fresh = await createMission({ ...base, objective: "fresh-escalation", initialState: "ACTIVE", deadline: "2026-09-20T00:00:00Z" }, c as any, s.deps)
+    const noDeadline = await createMission({ ...base, objective: "escalated-no-deadline", initialState: "ACTIVE" }, c as any, s.deps)
+    if (!stale.ok || !fresh.ok || !noDeadline.ok) throw new Error("setup G1")
+    const hoursAgo = (h: number) => new Date(now.getTime() - h * 3_600_000)
+    await escalateMission({ brokerageId: T1, missionId: stale.mission.id, reason: "deadline" }, c as any, { ...s.deps, now: () => hoursAgo(MISSION_BLOCKED_STALE_HOURS + 1) })
+    await escalateMission({ brokerageId: T1, missionId: fresh.mission.id, reason: "deadline" }, c as any, { ...s.deps, now: () => hoursAgo(1) })
+    await escalateMission({ brokerageId: T1, missionId: noDeadline.mission.id, reason: "needs a human" }, c as any, { ...s.deps, now: () => hoursAgo(MISSION_BLOCKED_STALE_HOURS + 10) })
+    const sweep = await sweepMissionDeadlines(T1, c as any, { now }, s.deps)
+    const st = Object.fromEntries(c.tables.missions.map((r) => [r.objective, r.state]))
+    check("G1 the sweep FAILS the escalation nobody answered past its deadline (failMission), leaves the fresh one and the one without a deadline ESCALATED", sweep.failed === 1 && sweep.escalated === 0 && st["stale-escalation"] === "FAILED" && st["fresh-escalation"] === "ESCALATED" && st["escalated-no-deadline"] === "ESCALATED", JSON.stringify({ sweep, st }))
+    check("G1 (control) the failure is evidence: a transition row ESCALATED → FAILED by cron_manager naming the hard expiry", c.tables.mission_events.some((e) => e.event_kind === "transition" && e.from_state === "ESCALATED" && e.to_state === "FAILED" && e.actor_id === "cron_manager" && /hard-expired/.test(e.reason)))
+    const again = await sweepMissionDeadlines(T1, c as any, { now }, s.deps)
+    check("G1 (idempotent) a second sweep fails nothing more", again.failed === 0 && again.escalated === 0)
+  }
+  {
+    // G2 attachOutcome is idempotent on (kind, entity): the attribution cron re-runs weekly.
+    const c = memClient(); const s = seams()
+    const m = await createMission({ ...base, initialState: "ACTIVE" }, c as any, s.deps)
+    if (!m.ok) throw new Error("setup G2")
+    const tx = randomUUID()
+    const first = await attachOutcome({ brokerageId: T1, missionId: m.mission.id, outcome: { kind: "closed", entityType: "transaction", entityId: tx, valueUsd: 9000 }, progressMetric: "attributed_closed_usd" }, c as any, s.deps)
+    const second = await attachOutcome({ brokerageId: T1, missionId: m.mission.id, outcome: { kind: "closed", entityType: "transaction", entityId: tx, valueUsd: 9000 }, progressMetric: "attributed_closed_usd" }, c as any, s.deps)
+    const other = await attachOutcome({ brokerageId: T1, missionId: m.mission.id, outcome: { kind: "reply", entityType: "communication", entityId: tx }, progressMetric: "attributed_reply" }, c as any, s.deps)
+    check("G2 attachOutcome dedupes the same (kind, entity): one outcome row, progress counted once, the duplicate flagged; a different kind on the same entity still attaches", first.ok && !first.duplicate && second.ok && second.duplicate === true && other.ok && !other.duplicate && c.tables.missions[0].outcomes.length === 2 && c.tables.missions[0].progress.attributed_closed_usd === 9000 && c.tables.missions[0].progress.attributed_reply === 1)
+  }
+  {
+    // G3 the pure credit → mission rule (lib/intelligence/roi-ledger.ts missionOutcomeCredits).
+    const A1 = randomUUID(), A2 = randomUUID(), M1 = randomUUID()
+    const attr = attributeOutcomesToLedger(
+      [{ ref: "closed:tx-1", kind: "closed", brokerageId: T1, subjectIds: ["tx-1"], at: "2026-09-10T00:00:00Z", revenueCents: 900_000 }, { ref: "reply:isa:r-1", kind: "reply", brokerageId: T1, subjectIds: ["c-1"], at: "2026-09-10T00:00:00Z", revenueCents: 0 }] as any,
+      [
+        { id: A1, brokerage_id: T1, action: "isa.contact.send", status: "executed", reason_code: "X", actor_type: "manager", subject_type: "transaction", subject_id: "tx-1", created_at: "2026-09-01T00:00:00Z" },
+        { id: A2, brokerage_id: T1, action: "isa.contact.send", status: "executed", reason_code: "X", actor_type: "manager", subject_type: "contact", subject_id: "c-1", created_at: "2026-09-02T00:00:00Z" },
+      ] as any,
+    )
+    const credits = missionOutcomeCredits(attr, new Map([[A1, M1]]))
+    check("G3 missionOutcomeCredits: the LAST-TOUCH credit whose action a mission owns becomes the mission's outcome (entity = the transaction, revenue in cents); an unowned action earns no mission credit", credits.length === 1 && credits[0].missionId === M1 && credits[0].outcomeKind === "closed" && credits[0].entityType === "transaction" && credits[0].entityId === "tx-1" && credits[0].revenueCents === 900_000, JSON.stringify(credits))
+    check("G3 (control) with both actions owned, the isa reply resolves to its isa_outreach_log row and all-touch shares never double-credit", (() => { const cc = missionOutcomeCredits(attr, new Map([[A1, M1], [A2, M1]])); return cc.length === 2 && cc.some((x) => x.entityType === "isa_outreach_log" && x.entityId === "r-1") && attr.credits.filter((x) => x.model === "all_touch").length >= 2 })())
+  }
+  {
+    // G4 a brokerage_objective with no criteria derives them through the twin's decomposition; the twin build then measures them.
+    const c = memClient(); const s = seams()
+    const twin = { brokerageId: T1, economic: { gciClosed90dCents: 800_000, closedCount90d: 1 }, now: { transactions: { inEscrow: 1, openCommissionCents: 1_300_000 } } } as unknown as BrokerageTwin
+    const d = decomposeObjective({ goalType: "transactions_closed", targetValue: 3, currentValue: 0 }, twin)
+    const derived = criteriaFromDecomposition(d)
+    check("G4 criteriaFromDecomposition: one criterion per supported sub-target, keyed on the twin field that measures it", derived.length === 3 && derived.every((x) => x.metric.includes(".") && x.op === ">=") && derived.some((x) => x.metric === "economic.closedCount90d" && x.target === 3), JSON.stringify(derived))
+    const m = await createMission({ ...base, objective: "close 3 this quarter", missionType: "brokerage_objective", initialState: "ACTIVE", objectiveSpec: { goalType: "transactions_closed", targetValue: 3 }, twin }, c as any, s.deps)
+    check("G4 createMission(brokerage_objective, no criteria) stores the derived criteria and records the decomposition as `created` evidence", m.ok && m.mission.success_criteria.length === 3 && c.tables.mission_events[0].evidence.decomposition?.goal_type === "transactions_closed" && c.tables.mission_events[0].evidence.decomposition?.criteria_derived === 3)
+    const given = await createMission({ ...base, objective: "explicit", missionType: "brokerage_objective", successCriteria: [{ metric: "x", op: ">=", target: 1 }], objectiveSpec: { goalType: "transactions_closed", targetValue: 3 } }, c as any, s.deps)
+    const unsupported = await createMission({ ...base, objective: "unsupported", missionType: "brokerage_objective", objectiveSpec: { goalType: "referrals_generated", targetValue: 3 } }, c as any, s.deps)
+    check("G4 (controls) explicit criteria are kept as given; an unsupported goal type derives NO criteria (recorded, not invented)", given.ok && given.mission.success_criteria.length === 1 && given.mission.success_criteria[0].metric === "x" && unsupported.ok && unsupported.mission.success_criteria.length === 0 && c.tables.mission_events.find((e) => e.mission_id === unsupported.mission.id)?.evidence.decomposition?.status === "unsupported")
+    const short = await syncMissionProgressFromTwin(twin, c as any, s.deps)
+    const after1 = c.tables.missions.find((r) => r.objective === "close 3 this quarter")!
+    check("G5 syncMissionProgressFromTwin reads each twin-path criterion into progress (closedCount90d=1, inEscrow=1, open=absent → not written) and does not complete a mission short of its criteria", short.scanned === 1 && short.measured === 1 && short.completed === 0 && after1.progress["economic.closedCount90d"] === 1 && after1.progress["now.transactions.inEscrow"] === 1 && !("now.transactions.open" in after1.progress) && after1.state === "ACTIVE", JSON.stringify({ short, progress: after1.progress }))
+    const met = { ...twin, economic: { gciClosed90dCents: 2_400_000, closedCount90d: 3 }, now: { transactions: { inEscrow: 3, open: 3, openCommissionCents: 0 } } } as unknown as BrokerageTwin
+    const done = await syncMissionProgressFromTwin(met, c as any, s.deps)
+    check("G5 a twin whose readings meet every criterion COMPLETES the objective on the sync (completeMission, deterministic)", done.completed === 1 && c.tables.missions.find((r) => r.objective === "close 3 this quarter")!.state === "COMPLETED")
+    check("G5 (tenant) a twin of another tenant touches nothing here", (await syncMissionProgressFromTwin({ ...met, brokerageId: T2 } as BrokerageTwin, c as any, s.deps)).scanned === 0)
+    // G6 the twin seam registered at module load (this guard imported lib/kernel/missions.ts) reads the live count through activeMissionsFor.
+    const seam = twinSeams().missions
+    const read = seam ? await seam(c as any, T1, null) : null
+    check("G6 registerTwinSeam('missions') ran at module load and answers the non-terminal count through activeMissionsFor (completed one excluded)", typeof seam === "function" && read?.active === 2 && /activeMissionsFor/.test(read.source), JSON.stringify(read))
+    check("G6 (control) the seam THROWS on a refused read rather than answering 0", await (async () => { try { await seam!({ from: () => ({ select: () => ({ eq: () => ({ in: () => ({ order: () => ({ order: () => ({ limit: async () => ({ data: null, error: { message: "refused" } }) }) }) }) }) }) }) } as any, T1, null); return false } catch (e) { return /refused/.test(String(e)) } })())
+  }
+  {
+    // G7 wiring — stripped source (a tombstone is not a call site), with a positive control.
+    const reaper = src("lib/workflow-orchestrator/stale-run-reaper.ts")
+    check("G7 stale-run reaper: a stalled run under a mission ESCALATES it (escalateMission) — mission_id read from the run", reaper.includes("escalateMission(") && /select\("[^"]*mission_id[^"]*"\)/.test(reaper))
+    const engine = src("lib/workflow-orchestrator/engine.ts")
+    check("G7 workflow engine: step done → recordMissionProgress(steps_completed); run failed → failMission (workflow mission) / escalateMission (others); run completed → completeMission (workflow mission)", engine.includes("recordMissionProgress(") && /steps_completed:/.test(engine) && engine.includes("failMission(") && engine.includes("escalateMission(") && engine.includes("completeMission(") && /missionType === "workflow"/.test(engine))
+    const goals = src("app/actions/ai-agent-goals.ts")
+    check("G7 agent_goals → mission progress: syncGoalCurrentValues + updateGoalProgress record the goal's current_value on its mission (recordMissionProgress keyed on goal_type)", goals.includes("recordMissionProgress(") && /\[g\.goal_type\]: Number\(g\.current_value\)/.test(goals) && (goals.match(/recordGoalMissionProgress\(/g) ?? []).length >= 3)
+    const roi = src("lib/intelligence/roi-ledger.ts")
+    check("G7 roi-ledger: recordMissionOutcomes attaches attributed outcomes (attachOutcome) and the learning cron runs it per tenant", roi.includes("attachOutcome(") && roi.includes("missionOutcomeCredits(") && src("app/api/cron/source-conversion-learning/route.ts").includes("recordMissionOutcomes("))
+    const cc = src("lib/kernel/command-center.ts")
+    check("G7 command center: loads economic-graph + missions (seam registration) BEFORE buildBrokerageTwin, then syncMissionProgressFromTwin", cc.indexOf('import("@/lib/kernel/missions")') < cc.indexOf("buildBrokerageTwin(brokerageId") && cc.includes("syncMissionProgressFromTwin("))
+    check("G7 the Missions card: admin command center page lists through listMissionsAction gated by isAdminOrBroker; the card calls decide / block / create", /isAdminOrBroker\(\{ user_type: userType \}\)\s*\?\s*await listMissionsAction\(\)/.test(src("app/dashboard/admin/command-center/page.tsx")) && src("app/dashboard/admin/command-center/page.tsx").includes("<MissionsCard") && ["decideMissionAction(", "blockMissionAction(", "createMissionAction("].every((t) => src("app/dashboard/admin/command-center/missions-card.tsx").includes(t)))
+    const fixture = stripComments(`// TOMBSTONE: escalateMission( used to be called here\nconst x = 1\n/* failMission( */`)
+    check("G7 (control) a tombstone naming a door is NOT read as a call site", !fixture.includes("escalateMission(") && !fixture.includes("failMission(") && fixture.includes("const x = 1"))
+  }
+
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
-  console.log(" BLIND SPOTS: in-memory client (no RLS, no CHECK, no append-only trigger — m710 holds those live); the real emit / signal / authority / entitlement seams are asserted by source, the real ledger by the in-memory client; the goal → mission wire runs only on a NEW goal and needs m710 applied.")
+  console.log(" BLIND SPOTS: in-memory client (no RLS, no CHECK, no append-only trigger — m710 holds those live); the real emit / signal / authority / entitlement seams are asserted by source, the real ledger by the in-memory client; the goal → mission wire runs only on a NEW goal and needs m710 applied; the engine / reaper / cron wires are asserted by stripped source (their runtime paths need a live run); the twin-path criteria are measured only when the Command Center builds the twin.")
   if (fail > 0) { console.log(" ❌ MISSIONS_FAIL"); process.exit(1) }
   console.log(" ✅ MISSIONS_PASS — one durable mission runtime: the machine refuses, every move is evidence, managers coordinate through the registry")
 }

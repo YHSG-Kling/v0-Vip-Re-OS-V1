@@ -803,6 +803,14 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   // plan. Brokerage-wide, or a team's own board under a team scope. Best-effort; null never fakes.
   let brokerageTwin: import("@/lib/kernel/brokerage-twin").BrokerageTwin | null = null
   if (brokerageId && (brokerageWide || (scope?.kind === "team" && scope.teamId))) {
+    // Lane 104F: the twin's seams REGISTER AT MODULE LOAD — the economic graph (104A,
+    // registerTwinSeam("contributionMargin")) and the mission runtime (104D, registerTwinSeam("missions")).
+    // Loading them here, lazily, before the build is what makes the twin's economic.contributionMargin
+    // and objectives.missions read "present"; a module that fails to load leaves its seam absent and
+    // the twin degrades on its own ("unavailable" / "none"), never a fake number.
+    await Promise.allSettled([import("@/lib/kernel/economic-graph"), import("@/lib/kernel/missions")]).then((rs) => {
+      rs.forEach((r, i) => { if (r.status === "rejected") console.error(`[command-center] twin seam module ${i === 0 ? "economic-graph" : "missions"} did not load:`, r.reason) })
+    })
     try {
       const { buildBrokerageTwin } = await import("@/lib/kernel/brokerage-twin")
       const built = await buildBrokerageTwin(brokerageId, new Date(), {
@@ -812,6 +820,18 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
       if (built.persist.error) console.error(`[command-center] twin snapshot not persisted: ${built.persist.error}`)
     } catch (err) {
       console.error("[command-center] brokerage twin failed:", err)
+    }
+    // THE TWIN MEASURES THE OBJECTIVES (104F): every brokerage_objective mission whose criteria name
+    // twin fields gets this build's readings as progress (lib/kernel/missions.ts
+    // syncMissionProgressFromTwin — completes the mission when every criterion is met). Best-effort.
+    if (brokerageTwin && brokerageWide) {
+      try {
+        const { syncMissionProgressFromTwin } = await import("@/lib/kernel/missions")
+        const synced = await syncMissionProgressFromTwin(brokerageTwin, supabase as any)
+        if (synced.readRefused) console.error(`[command-center] mission progress from twin: missions read refused: ${synced.readRefused}`)
+      } catch (err) {
+        console.error("[command-center] mission progress from twin failed:", err)
+      }
     }
   }
 

@@ -287,9 +287,9 @@ const dollarsToCents = (v: number | string | null | undefined): number => {
  */
 export function detectSummaryAmountDrift(input: {
   summary: { id: string; transaction_id: string | null; net_to_agent: number | string | null; net_to_brokerage: number | string | null }
-  distributions: ReadonlyArray<{ id: string; distribution_type: string | null; calculated_amount: number | string | null; status?: string | null; voided_at?: string | null }>
+  distributions: ReadonlyArray<{ id: string; distribution_type: string | null; calculated_amount: number | string | null; status?: string | null }>
 }): SummaryDrift[] {
-  const live = input.distributions.filter((d) => (d.status ?? "").toLowerCase() !== "voided" && !d.voided_at)
+  const live = input.distributions.filter((d) => (d.status ?? "").toLowerCase() !== "voided")
   const refs: LedgerRef[] = live.map((d) => ({ table: "commission_distributions" as const, id: d.id }))
   const out: SummaryDrift[] = []
   const agentLedger = Math.round(summaryAmountFromDistributions(live, "agent") * 100)
@@ -338,16 +338,16 @@ export async function reconcileSummariesAgainstLedger(
     // agent_commissions nets vs Σ distribution rows of that commission_id.
     const [sumRes, distRes, stampRes] = await Promise.all([
       svc.from("agent_commissions").select("id, transaction_id, agent_id, net_to_agent, net_to_brokerage").eq("brokerage_id", brokerageId).in("transaction_id", txnIds),
-      svc.from("commission_distributions").select("id, commission_id, distribution_type, calculated_amount, status, voided_at").eq("brokerage_id", brokerageId).in("transaction_id", txnIds).not("commission_id", "is", null),
+      svc.from("commission_distributions").select("id, commission_id, distribution_type, calculated_amount, status").eq("brokerage_id", brokerageId).in("transaction_id", txnIds).not("commission_id", "is", null),
       svc.from("transaction_commissions").select("id, transaction_id, recipient_id, recipient_type, calculated_amount").eq("brokerage_id", brokerageId).eq("recipient_type", "agent").in("transaction_id", txnIds),
     ])
     if (sumRes.error) refuse("agent_commissions", sumRes.error.message)
     if (distRes.error) refuse("commission_distributions", distRes.error.message)
     if (stampRes.error) refuse("transaction_commissions", stampRes.error.message)
-    const distsByCommission = new Map<string, Array<{ id: string; distribution_type: string | null; calculated_amount: number | string | null; status?: string | null; voided_at?: string | null }>>()
+    const distsByCommission = new Map<string, Array<{ id: string; distribution_type: string | null; calculated_amount: number | string | null; status?: string | null }>>()
     for (const d of (distRes.data ?? []) as Array<Record<string, any>>) {
       const list = distsByCommission.get(d.commission_id) ?? []
-      list.push({ id: d.id, distribution_type: d.distribution_type, calculated_amount: d.calculated_amount, status: d.status, voided_at: d.voided_at })
+      list.push({ id: d.id, distribution_type: d.distribution_type, calculated_amount: d.calculated_amount, status: d.status })
       distsByCommission.set(d.commission_id, list)
     }
     const agentNetBySummary = new Map<string, number>()
@@ -356,7 +356,10 @@ export async function reconcileSummariesAgainstLedger(
       if (rows.length === 0) continue // bridge-only summary (manual entry) — a leak concern, not amount drift
       checked++
       drifts.push(...detectSummaryAmountDrift({ summary: { id: s.id, transaction_id: s.transaction_id, net_to_agent: s.net_to_agent, net_to_brokerage: s.net_to_brokerage }, distributions: rows }))
-      agentNetBySummary.set(`${s.transaction_id}|${s.agent_id}`, Math.round(summaryAmountFromDistributions(rows.filter((r) => (r.status ?? "") !== "voided" && !r.voided_at), "agent") * 100))
+      // `dists` (commission_distributions rows, vocabulary admits "voided") — named apart from the
+      // agent_commissions `rows` below so the vocabulary census tags each receiver with its own table.
+      const dists = rows
+      agentNetBySummary.set(`${s.transaction_id}|${s.agent_id}`, Math.round(summaryAmountFromDistributions(dists.filter((d) => (d.status ?? "") !== "voided"), "agent") * 100))
     }
     // The seven-year stamp (agent recipient) vs the same ledger figure.
     for (const st of (stampRes.data ?? []) as Array<Record<string, any>>) {

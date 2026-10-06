@@ -197,8 +197,12 @@ export async function runMorningStandup(
   let capacity: StandupInputs["capacity"] = null
   // WAVE 104B: the twin's line when the caller already built the twin (one read); a twin that does
   // not carry this agent (unscored / beyond the cap) falls through to capacityFor — never "fine".
-  const { twinCapacityForAgent } = await import("@/lib/kernel/brokerage-twin")
-  const fromTwin = twinCapacityForAgent(opts.twin, standupAgentId)
+  // Lane 104F: when no twin is handed in, the LAST PERSISTED twin (the Command Center's build, no
+  // older than TWIN_SNAPSHOT_MAX_AGE_HOURS) is read instead — readBrokerageTwin in snapshot mode;
+  // absent / stale / refused → null → capacityFor, as before.
+  const { twinCapacityForAgent, readBrokerageTwin } = await import("@/lib/kernel/brokerage-twin")
+  const twin = opts.twin ?? (opts.twin === undefined ? await readBrokerageTwin(brokerageId, { svc: supabase as any, snapshot: { now } }) : null)
+  const fromTwin = twinCapacityForAgent(twin, standupAgentId)
   if (fromTwin) {
     capacity = { agentId: standupAgentId, band: fromTwin.band, load: fromTwin.load, headroom: fromTwin.headroom, reasons: fromTwin.reasons }
   } else {

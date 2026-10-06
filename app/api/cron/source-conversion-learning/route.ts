@@ -75,10 +75,15 @@ export async function GET(request: NextRequest) {
         // 102D — per-arm outcomes FIRST (attributed reply / appointment / contract / closed → one
         // agent_outcome_evaluations row per arm action, lib/intelligence/roi-ledger.ts), so the
         // winner gate below reads attributed arm results, not only the step counters.
-        const { recordExperimentArmOutcomes } = await import("@/lib/intelligence/roi-ledger")
+        const { recordExperimentArmOutcomes, recordMissionOutcomes } = await import("@/lib/intelligence/roi-ledger")
         const armed = await recordExperimentArmOutcomes(svc, b.id)
         if (!armed.ok) console.error(`[source-conversion-learning] arm outcomes not recorded for ${b.id}: ${armed.error}`)
         else if (armed.recording.errors.length > 0) console.error(`[source-conversion-learning] arm outcomes for ${b.id}: ${armed.recording.errors.join("; ")}`)
+        // 104F — the same attribution, read once more for MISSIONS: an attributed outcome whose
+        // last-touch action a mission owns is attached to that mission (lib/kernel/missions.ts attachOutcome).
+        const missioned = await recordMissionOutcomes(svc, b.id)
+        if (!missioned.ok) console.error(`[source-conversion-learning] mission outcomes not recorded for ${b.id}: ${missioned.error}`)
+        else if (missioned.recording.errors.length > 0) console.error(`[source-conversion-learning] mission outcomes for ${b.id}: ${missioned.recording.errors.join("; ")}`)
         const { runSequenceCopyLearning } = await import("@/lib/campaign-sequences/copy-learning-conductor")
         await runSequenceCopyLearning(b.id, svc)
       } catch { /* best-effort — never fails the source learner */ }

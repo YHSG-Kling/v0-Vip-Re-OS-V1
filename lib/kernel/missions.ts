@@ -24,11 +24,26 @@
  *
  * No `import "server-only"`: the proof (scripts/missions-guard.ts) drives the state machine through
  * an in-memory client, as the ledger and causation modules allow.
+ *
+ * WIRED (lane 104F — every door has its real caller):
+ *   · escalateMission ← sweepMissionDeadlines (deadline passed / stale blocker) and the stale-run
+ *     reaper (a stalled run under a mission); the engine (a non-workflow mission's run failed).
+ *   · failMission ← sweepMissionDeadlines (ESCALATED, deadline passed, unanswered 72h) and the
+ *     engine (a `workflow` mission's run failed).
+ *   · completeMission ← recordMissionProgress (criteria met, deterministic) and the engine (a
+ *     `workflow` mission's run completed).
+ *   · recordMissionProgress ← the engine (steps_completed per run), app/actions/ai-agent-goals.ts
+ *     (the goal's measured current_value) and syncMissionProgressFromTwin (twin-path criteria).
+ *   · attachOutcome ← lib/intelligence/roi-ledger.ts recordMissionOutcomes (an attributed outcome
+ *     whose last-touch action a mission owns), on the per-tenant learning cron.
+ *   · decomposeObjective (twin) ← createMission, a brokerage_objective with no criteria.
+ *   · registerTwinSeam("missions") at the bottom of this file, loaded by the Command Center build.
  */
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { currentCausation } from "@/lib/kernel/causation"
 import { MIN_AUTHORITY_FOR_RISK, type AuthorityLevel, type ToolRiskClass } from "@/lib/ai-isa/persona-tool-policy"
 import { KernelEvent } from "@/lib/kernel/events"
+import { registerTwinSeam, decomposeObjective, readTwinMeasure, type BrokerageTwin } from "@/lib/kernel/brokerage-twin"
 
 // ─── vocabularies (mirrors of the m710 CHECKs — one spelling, CLAUDE.md §6) ───────────────────
 export const MISSION_STATES = ["PROPOSED", "PLANNING", "ACTIVE", "WAITING", "BLOCKED", "APPROVAL_REQUIRED", "ESCALATED", "COMPLETED", "FAILED", "CANCELLED"] as const
@@ -40,7 +55,9 @@ export type MissionPriority = (typeof MISSION_PRIORITIES)[number]
 export const MISSION_TERMINAL_STATES: ReadonlySet<MissionState> = new Set(["COMPLETED", "FAILED", "CANCELLED"])
 /** The states a human / manager must look at — the stand-up and the team-lead brief list these. */
 export const MISSION_ATTENTION_STATES: ReadonlySet<MissionState> = new Set(["BLOCKED", "APPROVAL_REQUIRED", "ESCALATED"])
-/** A BLOCKED mission nobody unblocked for this long is escalated by the reaper sweep. */
+/** A BLOCKED mission nobody unblocked for this long is escalated by the reaper sweep; an ESCALATED
+ *  mission whose deadline has passed and that nobody moved for this long is FAILED by the same
+ *  sweep (the deadline hard-expired after escalation). ONE stale window, not two spellings. */
 export const MISSION_BLOCKED_STALE_HOURS = 72
 /** The ledger WHY of every transition (m710 widens agent_action_ledger_reason_code_check). */
 export const MISSION_LIFECYCLE_REASON = "MISSION_LIFECYCLE"
@@ -293,6 +310,29 @@ export interface CreateMissionInput {
   actor?: MissionActor
   /** Start PROPOSED (default) or go straight to ACTIVE (a goal the agent already committed to). */
   initialState?: "PROPOSED" | "PLANNING" | "ACTIVE"
+  /**
+   * A brokerage_objective in the agent_goals vocabulary (goal type + target). When no successCriteria
+   * are given, the criteria are DERIVED through the twin's decomposition (lib/kernel/brokerage-twin.ts
+   * decomposeObjective): one criterion per supported sub-target, each keyed on the twin field that
+   * measures it, so the Command Center's twin build measures the mission (syncMissionProgressFromTwin).
+   * A twin handed in sharpens the sub-targets (closings needed at the brokerage's own average).
+   */
+  objectiveSpec?: { goalType: string; targetValue: number; currentValue?: number } | null
+  twin?: BrokerageTwin | null
+}
+
+/** PURE: the success criteria a decomposed objective yields — the supported sub-targets, keyed on
+ *  the twin field that measures each (metric = the dotted twin path; a mission criterion whose
+ *  metric contains "." is a twin measure, written by syncMissionProgressFromTwin). */
+export function criteriaFromDecomposition(d: ReturnType<typeof decomposeObjective>): SuccessCriterion[] {
+  const out: SuccessCriterion[] = []
+  const seen = new Set<string>()
+  for (const s of d.subTargets) {
+    if (s.status !== "ok" || s.measuredBy === null || typeof s.target !== "number" || seen.has(s.measuredBy)) continue
+    seen.add(s.measuredBy)
+    out.push({ metric: s.measuredBy, op: ">=", target: s.target })
+  }
+  return out
 }
 
 export async function createMission(input: CreateMissionInput, client?: Client, deps: MissionDeps = {}): Promise<MissionResult> {
@@ -317,12 +357,23 @@ export async function createMission(input: CreateMissionInput, client?: Client, 
   const actor: MissionActor = input.actor ?? (input.createdBy ? { type: "user", id: input.createdBy } : { type: "manager", id: input.ownerManager })
   const state: MissionState = input.initialState ?? "PROPOSED"
 
+  // A brokerage objective with no criteria of its own is DECOMPOSED through the twin (104B's
+  // decomposeObjective): the criteria are the supported sub-targets, each keyed on the twin field
+  // that measures it. An unsupported decomposition yields no criteria and is recorded as evidence —
+  // the mission still exists; it completes only once a human gives it measurable criteria.
+  let successCriteria = input.successCriteria ?? []
+  let decomposition: ReturnType<typeof decomposeObjective> | null = null
+  if ((input.missionType ?? "custom") === "brokerage_objective" && successCriteria.length === 0 && input.objectiveSpec) {
+    decomposition = decomposeObjective(input.objectiveSpec, input.twin ?? null)
+    successCriteria = criteriaFromDecomposition(decomposition)
+  }
+
   const { data, error } = await svc.from("missions").insert({
     brokerage_id: input.brokerageId, objective: input.objective.trim(), mission_type: input.missionType ?? "custom",
     owner_manager: input.ownerManager, participating_managers: participants,
     subject_type: input.subject?.type ?? null, subject_id: input.subject?.id ?? null,
     state, priority: input.priority ?? "normal",
-    success_criteria: input.successCriteria ?? [], budget: input.budget ?? {},
+    success_criteria: successCriteria, budget: input.budget ?? {},
     authority_ceiling: ceiling, deadline: input.deadline ?? null, dependencies: input.dependencies ?? [],
     created_by: input.createdBy ?? null, parent_mission: input.parentMission ?? null,
   }).select("*").single()
@@ -331,7 +382,7 @@ export async function createMission(input: CreateMissionInput, client?: Client, 
 
   const c = currentCausation()
   const ledgerId = await d.ledger({ brokerageId: mission.brokerage_id, action: "mission.objective.create", actor, missionId: mission.id, from: null, to: state, reason: `created: ${mission.objective}`, causationId: c.causationId, correlationId: c.correlationId }, svc)
-  await appendEvent(svc, mission, { kind: "created", to: state, reasonCode: MISSION_LIFECYCLE_REASON, reason: "created", actor, ledgerEntryId: ledgerId, evidence: { owner_manager: mission.owner_manager, participating_managers: participants, authority_ceiling: ceiling, entitlement: afford.reason } })
+  await appendEvent(svc, mission, { kind: "created", to: state, reasonCode: MISSION_LIFECYCLE_REASON, reason: "created", actor, ledgerEntryId: ledgerId, evidence: { owner_manager: mission.owner_manager, participating_managers: participants, authority_ceiling: ceiling, entitlement: afford.reason, ...(decomposition ? { decomposition: { goal_type: decomposition.goalType, status: decomposition.status, remaining: decomposition.remaining, reason: decomposition.reason ?? null, sub_targets: decomposition.subTargets, criteria_derived: successCriteria.length } } : {}) } })
   await d.emit({ brokerageId: mission.brokerage_id, event: KernelEvent.MISSION_CREATED, missionId: mission.id, metadata: { mission_id: mission.id, state, owner_manager: mission.owner_manager, objective: mission.objective }, actorUserId: input.createdBy ?? null, causationId: c.causationId, correlationId: c.correlationId }, svc)
   return { ok: true, mission }
 }
@@ -440,17 +491,57 @@ export async function failMission(p: { brokerageId: string; missionId: string; r
   return transitionMission({ brokerageId: p.brokerageId, missionId: p.missionId, to: "FAILED", reason: p.reason, actor: p.actor }, client, deps)
 }
 
-/** Record measured progress (the sync that reads the real tables writes here); never completes by itself. */
-export async function recordMissionProgress(p: { brokerageId: string; missionId: string; progress: Record<string, number>; actor?: MissionActor }, client?: Client, deps: MissionDeps = {}): Promise<MissionResult> {
+/**
+ * Record measured progress — the writers are the surveys that read the real tables: the goal sync
+ * (app/actions/ai-agent-goals.ts syncGoalCurrentValues / updateGoalProgress → the goal's metric), the
+ * workflow engine (steps_completed per run) and the twin build (syncMissionProgressFromTwin → the
+ * twin-path metrics). COMPLETION IS DETERMINISTIC: when the recorded progress meets every success
+ * criterion and the state admits it (ACTIVE / ESCALATED), the mission is COMPLETED here, through
+ * completeMission — never asserted by a caller. A mission with NO criteria never completes on
+ * progress alone (an empty criteria set is "nothing measurable yet", not "done").
+ */
+export async function recordMissionProgress(p: { brokerageId: string; missionId: string; progress: Record<string, number>; actor?: MissionActor }, client?: Client, deps: MissionDeps = {}): Promise<MissionResult & { completed?: boolean }> {
   const d = { ...defaultDeps, ...deps }
   const svc = await svcOf(client)
   const m = await getMission(p.brokerageId, p.missionId, svc)
   if (!m) return { ok: false, reason: "not_found" }
+  if (MISSION_TERMINAL_STATES.has(m.state)) return { ok: false, reason: `terminal:${m.state}`, mission: m }
   const progress = { ...(m.progress ?? {}), ...p.progress }
   const { error } = await svc.from("missions").update({ progress, updated_at: d.now().toISOString() }).eq("brokerage_id", p.brokerageId).eq("id", m.id).select("id")
   if (error) return { ok: false, reason: `update_refused:${error.message}`, mission: m }
-  await appendEvent(svc, m, { kind: "progress", actor: p.actor ?? { type: "system" }, evidence: { progress: p.progress, verdict: evaluateSuccess(m.success_criteria ?? [], progress) } })
-  return { ok: true, mission: { ...m, progress } }
+  const verdict = evaluateSuccess(m.success_criteria ?? [], progress)
+  await appendEvent(svc, m, { kind: "progress", actor: p.actor ?? { type: "system" }, evidence: { progress: p.progress, verdict } })
+  if (verdict.met && (m.success_criteria?.length ?? 0) > 0 && canTransition(m.state, "COMPLETED")) {
+    const done = await completeMission({ brokerageId: p.brokerageId, missionId: m.id, reason: `success criteria met on progress: ${Object.entries(p.progress).map(([k, v]) => `${k}=${v}`).join(", ")}`, actor: p.actor }, svc, deps)
+    return done.ok ? { ...done, completed: true } : { ok: true, mission: { ...m, progress }, completed: false }
+  }
+  return { ok: true, mission: { ...m, progress }, completed: false }
+}
+
+/**
+ * THE TWIN MEASURES THE OBJECTIVE. For every non-terminal mission whose criteria name twin fields
+ * (dotted paths — the criteria createMission derives for a brokerage_objective), read each field
+ * from the twin the Command Center just built and record it as progress (which completes the
+ * mission when every criterion is met). Called after buildBrokerageTwin (lib/kernel/command-center.ts).
+ * A field the twin does not carry is skipped (unknown = unmet), never written as 0.
+ */
+export async function syncMissionProgressFromTwin(twin: BrokerageTwin, client?: Client, deps: MissionDeps = {}): Promise<{ scanned: number; measured: number; completed: number; readRefused: string | null }> {
+  const out = { scanned: 0, measured: 0, completed: 0, readRefused: null as string | null }
+  if (!twin?.brokerageId) return out
+  const svc = await svcOf(client)
+  const list = await activeMissionsFor(twin.brokerageId, { limit: 500 }, svc)
+  if (list.readRefused) { out.readRefused = list.readRefused; return out }
+  for (const m of list.active) {
+    const twinMetrics = (m.success_criteria ?? []).filter((c) => c.metric.includes("."))
+    if (twinMetrics.length === 0) continue
+    out.scanned++
+    const progress: Record<string, number> = {}
+    for (const c of twinMetrics) { const v = readTwinMeasure(twin, c.metric); if (v !== null) progress[c.metric] = v }
+    if (Object.keys(progress).length === 0) continue
+    const r = await recordMissionProgress({ brokerageId: twin.brokerageId, missionId: m.id, progress, actor: { type: "system", id: "brokerage-twin" } }, svc, deps)
+    if (r.ok) { out.measured++; if (r.completed) out.completed++ }
+  }
+  return out
 }
 
 // ─── actions + outcomes ───────────────────────────────────────────────────────────────────────
@@ -494,11 +585,15 @@ export async function attachOutcome(p: {
   brokerageId: string; missionId: string
   outcome: { kind: string; entityType: string; entityId: string; valueUsd?: number | null; occurredAt?: string | null; ledgerEntryId?: string | null }
   progressMetric?: string | null; actor?: MissionActor
-}, client?: Client, deps: MissionDeps = {}): Promise<MissionResult> {
+}, client?: Client, deps: MissionDeps = {}): Promise<MissionResult & { duplicate?: boolean }> {
   const d = { ...defaultDeps, ...deps }
   const svc = await svcOf(client)
   const m = await getMission(p.brokerageId, p.missionId, svc)
   if (!m) return { ok: false, reason: "not_found" }
+  // IDEMPOTENT on (kind, entityType, entityId): the attribution pass re-runs on every cron tick and
+  // must never count one closing twice (a wrong number here is a wrong objective).
+  const dup = (m.outcomes ?? []).some((o) => o.kind === p.outcome.kind && o.entityType === p.outcome.entityType && o.entityId === p.outcome.entityId)
+  if (dup) return { ok: true, mission: m, duplicate: true }
   const row = { ...p.outcome, occurredAt: p.outcome.occurredAt ?? d.now().toISOString() }
   const outcomes = [...(m.outcomes ?? []), row]
   const progress = { ...(m.progress ?? {}) }
@@ -510,33 +605,58 @@ export async function attachOutcome(p: {
 }
 
 // ─── the reaper pass (called from the ONE stale-run reaper) ───────────────────────────────────
-export interface MissionSweepResult { scanned: number; escalated: number; readRefused: string | null }
+export interface MissionSweepResult { scanned: number; escalated: number; failed: number; readRefused: string | null }
 
 /**
  * Deadlines + stale blockers, swept on the existing reaper tick (lib/workflow-orchestrator/
  * stale-run-reaper.ts → reaper-net). A non-terminal mission past its deadline, or BLOCKED longer
- * than MISSION_BLOCKED_STALE_HOURS, is ESCALATED (the owner manager is signalled). Idempotent:
- * an already-ESCALATED mission is left alone.
+ * than MISSION_BLOCKED_STALE_HOURS, is ESCALATED through escalateMission (the owner manager is
+ * signalled). An ESCALATED mission whose deadline has passed and that nobody moved for another
+ * MISSION_BLOCKED_STALE_HOURS is FAILED through failMission — the deadline hard-expired after the
+ * escalation went unanswered. Idempotent: a freshly ESCALATED mission is left alone until the window.
  */
 export async function sweepMissionDeadlines(brokerageId: string, client?: Client, opts: { now?: Date; limit?: number } = {}, deps: MissionDeps = {}): Promise<MissionSweepResult> {
   const now = opts.now ?? new Date()
-  const result: MissionSweepResult = { scanned: 0, escalated: 0, readRefused: null }
+  const result: MissionSweepResult = { scanned: 0, escalated: 0, failed: 0, readRefused: null }
   if (!brokerageId) return result
   const svc = await svcOf(client)
   const { data, error } = await svc.from("missions").select("id, state, deadline, state_changed_at, objective")
     .eq("brokerage_id", brokerageId)
-    .in("state", MISSION_STATES.filter((s) => !MISSION_TERMINAL_STATES.has(s) && s !== "ESCALATED"))
+    .in("state", MISSION_STATES.filter((s) => !MISSION_TERMINAL_STATES.has(s)))
     .limit(opts.limit ?? 200)
   if (error) { result.readRefused = error.message; return result }
+  const sweepDeps = { ...deps, now: () => now }
+  const cron: MissionActor = { type: "manager", id: "cron_manager" }
   for (const m of (data ?? []) as Array<Pick<MissionRow, "id" | "state" | "deadline" | "state_changed_at" | "objective">>) {
-    result.scanned++
     const pastDeadline = !!m.deadline && new Date(m.deadline).getTime() < now.getTime()
-    const blockedHours = m.state === "BLOCKED" && m.state_changed_at ? (now.getTime() - new Date(m.state_changed_at).getTime()) / 3_600_000 : 0
-    const staleBlock = blockedHours >= MISSION_BLOCKED_STALE_HOURS
+    const hoursInState = m.state_changed_at ? (now.getTime() - new Date(m.state_changed_at).getTime()) / 3_600_000 : 0
+    if (m.state === "ESCALATED") {
+      // Hard expiry: escalated, deadline passed, and the escalation went unanswered for the window.
+      if (!pastDeadline || hoursInState < MISSION_BLOCKED_STALE_HOURS) continue
+      result.scanned++
+      const r = await failMission({ brokerageId, missionId: m.id, reason: `deadline ${m.deadline} hard-expired: escalated ${Math.round(hoursInState)}h ago and nobody moved it (reaped)`, actor: cron }, svc, sweepDeps)
+      if (r.ok) result.failed++
+      continue
+    }
+    result.scanned++
+    const staleBlock = m.state === "BLOCKED" && hoursInState >= MISSION_BLOCKED_STALE_HOURS
     if (!pastDeadline && !staleBlock) continue
-    const reason = pastDeadline ? `deadline ${m.deadline} passed (reaped)` : `blocked for ${Math.round(blockedHours)}h with nobody unblocking it (reaped)`
-    const r = await transitionMission({ brokerageId, missionId: m.id, to: "ESCALATED", reason, actor: { type: "manager", id: "cron_manager" } }, svc, { ...deps, now: () => now })
+    const reason = pastDeadline ? `deadline ${m.deadline} passed (reaped)` : `blocked for ${Math.round(hoursInState)}h with nobody unblocking it (reaped)`
+    const r = await escalateMission({ brokerageId, missionId: m.id, reason, actor: cron }, svc, sweepDeps)
     if (r.ok) result.escalated++
   }
   return result
 }
+
+// ─── the twin seam (lib/kernel/brokerage-twin.ts registerTwinSeam) ───────────────────────────
+// Registered AT MODULE LOAD: the Command Center's twin build lazy-imports this module before
+// buildBrokerageTwin, so objectives.missions reads "present" with the live non-terminal count. The
+// seam degrades on its own refusal (the twin names it in blindSpots) — never a fake 0.
+registerTwinSeam("missions", async (svc, brokerageId, teamId) => {
+  const r = await activeMissionsFor(brokerageId, { limit: 500 }, svc as Client)
+  if (r.readRefused) throw new Error(`missions read refused: ${r.readRefused}`)
+  // A team's board: the missions its own members created (created_by ∈ the team's users is resolved
+  // by the caller's scope; the count here is the tenant's — the team sees its attention set through
+  // the team-lead brief). Published as the source so the evidence names the narrowing.
+  return { active: r.active.length, source: teamId ? `missions (brokerage-wide; team ${teamId} sees its attention set via the team-lead brief)` : "missions (lib/kernel/missions.ts activeMissionsFor)" }
+})

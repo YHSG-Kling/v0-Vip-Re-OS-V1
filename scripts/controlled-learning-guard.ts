@@ -17,7 +17,7 @@
  *   W   wiring, read from STRIPPED source, each with a positive control; vocabularies derived, not pinned.
  * In-memory client only, no DB, no model calls.
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { stripComments } from "./strip-comments"
 import { memSupabase } from "./in-memory-supabase"
@@ -199,7 +199,14 @@ async function main() {
   const migSql = readFileSync(join(ROOT, "supabase/migrations/m709-improvement-proposals-controlled-learning.sql"), "utf8")
   const sqlStatuses = [...(/improvement_proposals_status_check\s+CHECK \(status IN \(([^)]*)\)/.exec(migSql)?.[1] ?? "").matchAll(/'([^']+)'/g)].map((m) => m[1])
   check("S2 the migration's status CHECK equals PROPOSAL_STATUSES (derived, both ways)", sqlStatuses.length === PROPOSAL_STATUSES.length && PROPOSAL_STATUSES.every((s) => sqlStatuses.includes(s)), sqlStatuses.join())
-  const sqlReasons = [...(/agent_action_ledger_reason_code_check\s+CHECK \(reason_code IN \(([^)]*)\)/.exec(migSql)?.[1] ?? "").matchAll(/'([^']+)'/g)].map((m) => m[1])
+  // The reason-code CHECK is redefined by whichever migration touched it LAST (m709 added
+  // LEARNED_IMPROVEMENT, m710 added MISSION_LIFECYCLE in the same wave): the rule is "the LATEST
+  // defining migration restates the WHOLE code list" (CLAUDE.md §2 — wave-98 lesson), so read it
+  // from the highest-numbered migration that defines the constraint, never from m709 by name.
+  const migDir = join(ROOT, "supabase/migrations")
+  const latestReasonMig = readdirSync(migDir).filter((f) => /^m\d+/.test(f) && readFileSync(join(migDir, f), "utf8").includes("agent_action_ledger_reason_code_check")).sort((a, b) => Number(a.match(/^m(\d+)/)![1]) - Number(b.match(/^m(\d+)/)![1])).pop()!
+  const latestReasonSql = readFileSync(join(migDir, latestReasonMig), "utf8")
+  const sqlReasons = [...(/agent_action_ledger_reason_code_check\s+CHECK \(reason_code IN \(([^)]*)\)/.exec(latestReasonSql)?.[1] ?? "").matchAll(/'([^']+)'/g)].map((m) => m[1])
   const codeReasons = [...src("lib/kernel/action-ledger.ts").matchAll(/^\s*"([A-Z_]+)",\s*$/gm)].map((m) => m[1])
   check("S3 LEARNED_IMPROVEMENT is in ACTION_REASON_CODES and the migration's CHECK restates the WHOLE code list", codeReasons.includes("LEARNED_IMPROVEMENT") && sqlReasons.includes("LEARNED_IMPROVEMENT") && codeReasons.every((c) => sqlReasons.includes(c)), `code ${codeReasons.length} / sql ${sqlReasons.length}`)
   check("S4 predictor_tuning is a registered settings policy key (the promotion's version stream)", "predictor_tuning" in TENANT_POLICY_SETTINGS_KEYS)

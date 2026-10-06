@@ -100,6 +100,28 @@ export async function getEntityCausalChain(input: { entityType: string; entityId
         .order("created_at", { ascending: true }).limit(LIMIT)
       if (served.error) return { ok: false, error: `Action ledger could not be read: ${served.error.message}` }
       for (const a of (served.data ?? []) as ChainAction[]) actions.set(a.id, a)
+      // ...and the mission's OWN append-only trail (m710 mission_events): every transition, refusal,
+      // attached action/outcome, blocker and evidence row, folded into the chain as events so the
+      // recorder shows WHY the mission moved (reason_code + reason), WHO moved it (actor), the states
+      // it moved between, the ledger row and the causation that carried it. The ONE reader of the trail.
+      const trail = await svc.from("mission_events")
+        .select("id, mission_id, event_kind, from_state, to_state, reason_code, reason, actor_type, actor_id, evidence, ledger_entry_id, causation_id, correlation_id, created_at")
+        .eq("brokerage_id", brokerageId).eq("mission_id", entityId)
+        .order("created_at", { ascending: true }).limit(LIMIT)
+      if (trail.error) return { ok: false, error: `Mission trail could not be read: ${trail.error.message}` }
+      for (const e of (trail.data ?? []) as Array<Record<string, unknown>>) {
+        const id = String(e.id)
+        events.set(id, {
+          id,
+          event_type: `mission.${String(e.event_kind)}${e.to_state ? `:${String(e.from_state ?? "")}→${String(e.to_state)}` : ""}`,
+          entity_type: "mission",
+          entity_id: String(e.mission_id),
+          created_at: String(e.created_at),
+          causation_id: (e.causation_id as string | null) ?? null,
+          correlation_id: (e.correlation_id as string | null) ?? null,
+          detail: { reason_code: e.reason_code, reason: e.reason, actor_type: e.actor_type, actor_id: e.actor_id, ledger_entry_id: e.ledger_entry_id, from_state: e.from_state, to_state: e.to_state, evidence: e.evidence },
+        } as ChainEvent)
+      }
     }
     const eventIds = [...events.keys()].slice(0, LIMIT)
     if (eventIds.length > 0) {

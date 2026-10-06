@@ -46,7 +46,10 @@
 // SEAMS (lazy, degrade cleanly): registerTwinSeam("contributionMargin", fn) is where 104A's
 // lib/kernel/economic-graph.ts plugs in; registerTwinSeam("missions", fn) is where 104D's mission
 // runtime plugs in. Absent → economic.contributionMargin.status "unavailable" /
-// objectives.missions.status "none".
+// objectives.missions.status "none". WIRED (lane 104F): each module registers its seam AT MODULE
+// LOAD (economic-graph.ts / missions.ts, bottom of file); the Command Center's twin build
+// (lib/kernel/command-center.ts) lazy-imports both before buildBrokerageTwin so the registration
+// has happened — a module that fails to load leaves the seam absent and the twin degrades.
 //
 // Tenancy: every read is pinned to brokerageId (the caller resolves it from the SESSION — the
 // Command Center's resolveTenantScope; teams see only their board through teamId → agents.team_id).
@@ -54,7 +57,7 @@
 
 import { AGENT_GOAL_TYPES, isAgentGoalType, type AgentGoalType } from "@/lib/goals/goal-types"
 import {
-  computeCapacity, hasHeadroom, tierMaxLoadForAgentCount, CAPACITY_BANDS,
+  computeCapacity, tierMaxLoadForAgentCount, CAPACITY_BANDS,
   type CapacityBand, type WorkloadSignals,
 } from "@/lib/kernel/capacity-guardian"
 import { TRANSACTION_STATUSES_OPEN, TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
@@ -597,11 +600,14 @@ export const OBJECTIVE_MEASURES: Record<AgentGoalType, string | null> = {
   reviews_requested:   null,
 }
 
-function readPath(twin: BrokerageTwin, path: string): number | null {
+/** PURE: read one numeric twin measure by its dotted path (the field a sub-target / a mission
+ *  criterion names — OBJECTIVE_MEASURES vocabulary). null when absent or not a number, never 0. */
+export function readTwinMeasure(twin: BrokerageTwin, path: string): number | null {
   let cur: any = twin
   for (const p of path.split(".")) { if (cur == null || typeof cur !== "object") return null; cur = cur[p] }
   return typeof cur === "number" ? cur : null
 }
+const readPath = readTwinMeasure
 
 /** PURE: decompose a brokerage objective (agent_goals vocabulary) into measurable sub-targets,
  *  each naming the twin field that measures it. Unknown goal types and measures the twin lacks
@@ -795,8 +801,39 @@ export async function buildBrokerageTwin(
   return { twin, persist }
 }
 
-/** Read-only helper for surfaces: the twin, or null when the build itself failed (never a fake twin). */
-export async function readBrokerageTwin(brokerageId: string, opts: LoadTwinOptions & { svc?: Svc } = {}): Promise<BrokerageTwin | null> {
+/** A persisted twin older than this is NOT handed to a per-agent surface — it falls back to the live
+ *  answer (capacityFor) rather than ranking a day on yesterday's board. */
+export const TWIN_SNAPSHOT_MAX_AGE_HOURS = 24
+
+/**
+ * Read-only helper for surfaces: the twin, or null when it cannot be had (never a fake twin).
+ *   · default — a fresh build (persist: false);
+ *   · `snapshot` — THE LAST PERSISTED TWIN (brokerage_twin_snapshots, the Command Center's build),
+ *     for the tenant (and team when given), no older than maxAgeHours. The per-agent surfaces
+ *     (morning stand-up, team-lead brief) read this: one build per Command Center visit serves
+ *     every agent's line instead of a capacityFor per stand-up. Absent / stale / refused → null.
+ */
+export async function readBrokerageTwin(
+  brokerageId: string,
+  opts: LoadTwinOptions & { svc?: Svc; snapshot?: { maxAgeHours?: number; now?: Date } } = {},
+): Promise<BrokerageTwin | null> {
+  if (!brokerageId) return null
+  if (opts.snapshot) {
+    try {
+      const svc: Svc = opts.svc ?? (await import("@/lib/supabase/service")).createServiceClient()
+      const now = opts.snapshot.now ?? new Date()
+      const maxAge = opts.snapshot.maxAgeHours ?? TWIN_SNAPSHOT_MAX_AGE_HOURS
+      let q = svc.from(TWIN_SNAPSHOT_TABLE).select("id, at, twin").eq("brokerage_id", brokerageId)
+        .gte("at", new Date(now.getTime() - maxAge * 3_600_000).toISOString())
+        .order("at", { ascending: false }).limit(1)
+      q = opts.teamId ? q.eq("team_id", opts.teamId) : q.is("team_id", null)
+      const { data, error } = await q
+      if (error) { console.error(`[brokerage-twin] snapshot read refused for ${brokerageId}: ${error.message}`); return null }
+      const row = ((data ?? []) as Array<{ id: string; at: string; twin: BrokerageTwin | null }>)[0]
+      // The row is trusted only when it is THIS tenant's twin (a foreign row never reaches the caller).
+      return row?.twin && row.twin.brokerageId === brokerageId ? row.twin : null
+    } catch (e) { console.error(`[brokerage-twin] snapshot read failed for ${brokerageId}: ${e instanceof Error ? e.message : String(e)}`); return null }
+  }
   try { return (await buildBrokerageTwin(brokerageId, opts.at, { ...opts, persist: false })).twin }
   catch (e) { console.error(`[brokerage-twin] build failed for ${brokerageId}: ${e instanceof Error ? e.message : String(e)}`); return null }
 }
@@ -806,4 +843,5 @@ export function twinCapacityForAgent(twin: BrokerageTwin | null | undefined, age
   return twin?.capacity.perAgent.find((a) => a.agentId === agentId) ?? null
 }
 
-export { hasHeadroom }
+// TOMBSTONE (wave 104 integration, CLAUDE.md §1.3): `hasHeadroom` was re-exported here as a hidden
+// wire; its survivor is lib/kernel/capacity-guardian.ts:hasHeadroom and every caller imports it there.

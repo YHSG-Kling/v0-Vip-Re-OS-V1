@@ -134,6 +134,38 @@ export async function startRun(input: StartRunInput): Promise<RunResult> {
 }
 
 // ---------------------------------------------------------------------------
+// the mission a run serves (lane 104F) — progress / failure / completion flow to it
+// ---------------------------------------------------------------------------
+
+type RunMission = { brokerageId: string; missionId: string; missionType: string }
+
+/** The mission behind a run (m710 workflow_runs.mission_id), or null. Never throws. */
+async function missionOfRun(svc: ReturnType<typeof createServiceClient>, run: { brokerage_id: string; mission_id?: string | null }): Promise<RunMission | null> {
+  if (!run.mission_id) return null
+  try {
+    const { getMission } = await import("@/lib/kernel/missions")
+    const m = await getMission(run.brokerage_id, run.mission_id, svc as any)
+    return m ? { brokerageId: run.brokerage_id, missionId: m.id, missionType: m.mission_type } : null
+  } catch (e) { console.error(`[workflow-engine] mission read failed: ${e instanceof Error ? e.message : String(e)}`); return null }
+}
+
+/**
+ * A failed run under a mission: a `workflow` mission IS its run, so it FAILS (failMission — the
+ * run's error is the evidence); any other mission type is ESCALATED to its owner manager
+ * (escalateMission — the objective outlives one chain; a human or the manager re-plans). Best-effort.
+ */
+async function reportRunFailureToMission(svc: ReturnType<typeof createServiceClient>, mission: RunMission, runId: string, error: string): Promise<void> {
+  try {
+    const { failMission, escalateMission } = await import("@/lib/kernel/missions")
+    const actor = { type: "manager" as const, id: "campaign_orchestrator" }
+    const r = mission.missionType === "workflow"
+      ? await failMission({ brokerageId: mission.brokerageId, missionId: mission.missionId, reason: `workflow run ${runId} failed: ${error}`, actor }, svc as any)
+      : await escalateMission({ brokerageId: mission.brokerageId, missionId: mission.missionId, reason: `workflow run ${runId} failed: ${error}`, actor }, svc as any)
+    if (!r.ok && !r.reason.startsWith("invalid_transition")) console.error(`[workflow-engine] mission ${mission.missionId} NOT moved on run ${runId} failure: ${r.reason}`)
+  } catch (e) { console.error(`[workflow-engine] mission failure report failed: ${e instanceof Error ? e.message : String(e)}`) }
+}
+
+// ---------------------------------------------------------------------------
 // advanceRun — executes the next pending step
 // ---------------------------------------------------------------------------
 
@@ -156,10 +188,13 @@ export async function advanceRun(runId: string): Promise<RunResult> {
     return { success: true, runId, status: run.status as WorkflowRunStatus }
   }
 
+  // The mission this run serves (null for the common unmissioned run) — read once per advance.
+  const mission = await missionOfRun(svc, run as { brokerage_id: string; mission_id?: string | null })
+
   // Find next pending step
   const stepIndex = run.current_step_index as number
   if (stepIndex >= chain.steps.length) {
-    return await completeRun(runId)
+    return await completeRun(runId, mission)
   }
 
   // DECLARED `| undefined` because the very next line believes it can be.
@@ -171,7 +206,7 @@ export async function advanceRun(runId: string): Promise<RunResult> {
   // place the two facts are stated together.
   const step: WorkflowStep | undefined = chain.steps[stepIndex]
   if (!step) {
-    return await completeRun(runId)
+    return await completeRun(runId, mission)
   }
 
   // Mark step running
@@ -249,6 +284,9 @@ export async function advanceRun(runId: string): Promise<RunResult> {
       .eq("id", runId)
     if (runFailErr) console.error(`[workflow-engine] run failure NOT recorded (it will read as running): ${runFailErr.message}`)
 
+    // The mission learns the run failed (lane 104F): a workflow mission fails with it; any other is escalated.
+    if (mission) await reportRunFailureToMission(svc, mission, runId, `step '${step.key}' — ${lastError ?? "unknown error"}`)
+
     return { success: false, runId, status: "failed", error: lastError }
   }
 
@@ -303,12 +341,24 @@ export async function advanceRun(runId: string): Promise<RunResult> {
     .eq("id", runId)
   if (runAdvanceErr) console.error(`[workflow-engine] run NOT advanced to the next step: ${runAdvanceErr.message}`)
 
+  // Step completion is MEASURED mission progress (lane 104F wire of lib/kernel/missions.ts
+  // recordMissionProgress): steps_completed / steps_total on the mission the run serves. A
+  // workflow mission whose criteria name steps_completed completes deterministically on the last
+  // step. Best-effort; a refusal is logged, never swallowed.
+  if (mission) {
+    try {
+      const { recordMissionProgress } = await import("@/lib/kernel/missions")
+      const p = await recordMissionProgress({ brokerageId: mission.brokerageId, missionId: mission.missionId, progress: { steps_completed: stepIndex + 1, steps_total: chain.steps.length }, actor: { type: "manager", id: "campaign_orchestrator" } }, svc as any)
+      if (!p.ok && !p.reason.startsWith("terminal:")) console.error(`[workflow-engine] mission ${mission.missionId} progress NOT recorded for run ${runId}: ${p.reason}`)
+    } catch (e) { console.error(`[workflow-engine] mission progress failed: ${e instanceof Error ? e.message : String(e)}`) }
+  }
+
   // If more steps remain, recurse to run the next one
   if (stepIndex + 1 < chain.steps.length) {
     return await advanceRun(runId)
   }
 
-  return await completeRun(runId)
+  return await completeRun(runId, mission)
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +425,7 @@ export async function cancelRun(runId: string, reason?: string): Promise<RunResu
 // helpers
 // ---------------------------------------------------------------------------
 
-async function completeRun(runId: string): Promise<RunResult> {
+async function completeRun(runId: string, mission: RunMission | null = null): Promise<RunResult> {
   const svc = createServiceClient()
   const { error: completeErr } = await svc
     .from("workflow_runs")
@@ -385,5 +435,16 @@ async function completeRun(runId: string): Promise<RunResult> {
     })
     .eq("id", runId)
   if (completeErr) console.error(`[workflow-engine] run NOT marked completed: ${completeErr.message}`)
+
+  // A `workflow` mission IS its run: the run completing is the objective met — judged by
+  // completeMission against the mission's own criteria (lane 104F wire), never asserted here. Any
+  // other mission type keeps running; the run was one of its actions (attachAction at start).
+  if (mission && mission.missionType === "workflow" && !completeErr) {
+    try {
+      const { completeMission } = await import("@/lib/kernel/missions")
+      const r = await completeMission({ brokerageId: mission.brokerageId, missionId: mission.missionId, reason: `workflow run ${runId} completed`, actor: { type: "manager", id: "campaign_orchestrator" } }, svc as any)
+      if (!r.ok && !r.reason.startsWith("invalid_transition")) console.error(`[workflow-engine] mission ${mission.missionId} NOT completed on run ${runId}: ${r.reason}`)
+    } catch (e) { console.error(`[workflow-engine] mission completion failed: ${e instanceof Error ? e.message : String(e)}`) }
+  }
   return { success: true, runId, status: "completed" }
 }

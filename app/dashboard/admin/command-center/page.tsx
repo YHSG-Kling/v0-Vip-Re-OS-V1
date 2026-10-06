@@ -26,6 +26,10 @@ import { listAiTeammatesAction } from "@/app/actions/ai-teammates"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
+import { listMissionsAction } from "@/app/actions/missions"
+import { MissionsCard } from "./missions-card"
+import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
+import { MISSION_TYPES } from "@/lib/kernel/missions"
 
 export const metadata = {
   title:       "Agent Command Center | Kernel OS Admin",
@@ -288,6 +292,16 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
     } catch { /* visibility is additive */ }
   }
 
+  // MISSIONS (wave 104, lane 104F) — the durable objectives the OS owns, with the attention set
+  // (BLOCKED / APPROVAL_REQUIRED / ESCALATED) up front and the decide / block / create doors
+  // (app/actions/missions.ts, tenant from the session). TENANT-ADMIN ROSTER ONLY (isAdminOrBroker ⇔
+  // TENANT_ADMIN_USER_TYPES): a solo agent or a team lead entering through tier parity does not
+  // get it, and agents never see it. A refused read is rendered as a refusal, never as "no missions".
+  const missions = brokerageId && !isSuperadmin && isAdminOrBroker({ user_type: userType })
+    ? await listMissionsAction().catch(() => null)
+    : null
+  const missionManagers = (Object.keys(MANAGERS) as ManagerKey[]).map((key) => ({ key, label: MANAGERS[key].label }))
+
   // PER-TENANT AUTONOMY HALT — if platform staff paused this brokerage's autonomous AI, say so
   // honestly, up top, with the staff-entered reason (the same state the dispatch gate enforces).
   const tenantHalt = brokerageId && !isSuperadmin
@@ -327,6 +341,14 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
         <div className="mx-6 mt-4">
           <TeamAnnouncementComposer canChooseScope={isAdminOrBroker({ user_type: userType })} />
         </div>
+      )}
+      {missions?.ok && (
+        <div className="mx-6 mt-4">
+          <MissionsCard active={missions.data.active} attention={missions.data.attention} readRefused={missions.data.readRefused} managers={missionManagers} missionTypes={MISSION_TYPES} />
+        </div>
+      )}
+      {missions && !missions.ok && (
+        <div className="mx-6 mt-4 rounded-lg border p-3 text-sm text-red-700">Missions could not be listed: {missions.error}</div>
       )}
       {earned?.ok && earned.grants && (
         <div className="mx-6 mt-4">

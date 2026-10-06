@@ -450,3 +450,106 @@ export async function recordExperimentArmOutcomes(
   }
   return { ok: true, recording }
 }
+
+// ─── ATTRIBUTED OUTCOMES → THE MISSION THEY SERVED (lane 104F; wire of lib/kernel/missions.ts attachOutcome) ─
+// The same attribution result, one more reader: a LAST-TOUCH credit whose credited action belongs to a
+// mission (the action id is in missions.actions — attachAction's record — or the ledger row's
+// detail.mission_id names one) attaches the outcome to that mission (outcome vocabulary reply /
+// appointment / contract / closed, revenue in cents) and moves its `attributed_<kind>` progress.
+// Last touch only (an all-touch share would credit one closing to several missions). Idempotent on
+// the mission side (attachOutcome dedupes on kind + entity). Runs on the per-tenant learning cron
+// right after recordExperimentArmOutcomes (app/api/cron/source-conversion-learning/route.ts).
+
+export interface MissionOutcomeCredit {
+  missionId: string
+  ledgerActionId: string
+  outcomeRef: string
+  outcomeKind: LedgerOutcomeKind
+  entityType: string
+  entityId: string
+  outcomeAt: string
+  revenueCents: number
+}
+
+/** The survivor entity an outcome ref points at (`<kind>:<source row id>` / `reply:isa:<id>`). */
+function outcomeEntity(ref: string, kind: LedgerOutcomeKind): { entityType: string; entityId: string } {
+  if (ref.startsWith("reply:isa:")) return { entityType: "isa_outreach_log", entityId: ref.slice("reply:isa:".length) }
+  const id = ref.slice(ref.indexOf(":") + 1)
+  return { entityType: kind === "closed" || kind === "contract" ? "transaction" : kind === "appointment" ? "showing" : "communication", entityId: id }
+}
+
+/**
+ * PURE — the mission outcomes an attribution result holds: every LAST-TOUCH credit whose credited
+ * action `actionMission` maps to a mission. One credit per (mission, outcome).
+ * @proofSeam exported so scripts/missions-guard.ts asserts the credit→mission rule on the pure function directly.
+ */
+export function missionOutcomeCredits(r: LedgerAttribution, actionMission: ReadonlyMap<string, string>): MissionOutcomeCredit[] {
+  const at = new Map(r.outcomes.map((o) => [o.ref, o]))
+  const seen = new Set<string>()
+  const out: MissionOutcomeCredit[] = []
+  for (const c of r.credits) {
+    if (c.model !== "last_touch") continue
+    const missionId = actionMission.get(c.actionId)
+    if (!missionId || seen.has(`${missionId}:${c.outcomeRef}`)) continue
+    seen.add(`${missionId}:${c.outcomeRef}`)
+    const o = at.get(c.outcomeRef)
+    const ent = outcomeEntity(c.outcomeRef, c.kind)
+    out.push({ missionId, ledgerActionId: c.actionId, outcomeRef: c.outcomeRef, outcomeKind: c.kind, ...ent, outcomeAt: o?.at ?? "", revenueCents: o?.revenueCents ?? c.cents })
+  }
+  return out
+}
+
+export interface MissionOutcomeRecording {
+  /** Last-touch credits that landed on an action a mission owns. */
+  credits: number
+  attached: number
+  duplicates: number
+  errors: string[]
+}
+
+/**
+ * Attach every attributed outcome to the mission whose action earned it. Pinned to `brokerageId`
+ * (the cron's per-tenant loop); the window is the attribution's trailing window. The mission index
+ * is the tenant's NON-TERMINAL missions (activeMissionsFor — a completed mission's outcomes are
+ * already on it) plus detail.mission_id on the credited ledger rows.
+ */
+export async function recordMissionOutcomes(
+  svc: any,
+  brokerageId: string,
+  opts: { sinceIso?: string; windowDays?: number } = {},
+): Promise<{ ok: true; recording: MissionOutcomeRecording } | { ok: false; error: string }> {
+  const since = opts.sinceIso ?? new Date(Date.now() - (opts.windowDays ?? 90) * 86_400_000).toISOString()
+  const attr = await loadLedgerAttribution(svc, brokerageId, { sinceIso: since })
+  if (!attr.ok) return attr
+  const recording: MissionOutcomeRecording = { credits: 0, attached: 0, duplicates: 0, errors: [] }
+  if (!attr.ledgerAvailable || attr.result.credits.length === 0) return { ok: true, recording }
+  const { activeMissionsFor, attachOutcome } = await import("@/lib/kernel/missions")
+  const missions = await activeMissionsFor(brokerageId, { limit: 500 }, svc)
+  if (missions.readRefused) return { ok: false, error: `missions: ${missions.readRefused}` }
+  const actionMission = new Map<string, string>()
+  for (const m of missions.active) for (const a of m.actions ?? []) actionMission.set(a, m.id)
+  // The credited rows' detail is not on the attribution result — re-read only the credited rows.
+  const creditedIds = [...new Set(attr.result.credits.filter((c) => c.model === "last_touch").map((c) => c.actionId))]
+  for (let i = 0; i < creditedIds.length; i += 200) {
+    const r = await svc.from("agent_action_ledger").select("id, detail").eq("brokerage_id", brokerageId).in("id", creditedIds.slice(i, i + 200)).limit(ATTR_LIMIT)
+    if (r.error) return { ok: false, error: `agent_action_ledger (credited): ${r.error.message}` }
+    for (const a of (r.data ?? []) as Array<{ id: string; detail?: Record<string, unknown> | null }>) {
+      const mid = a.detail?.mission_id
+      if (typeof mid === "string" && mid && !actionMission.has(a.id)) actionMission.set(a.id, mid)
+    }
+  }
+  const credits = missionOutcomeCredits(attr.result, actionMission)
+  recording.credits = credits.length
+  for (const c of credits) {
+    const w = await attachOutcome({
+      brokerageId, missionId: c.missionId,
+      outcome: { kind: c.outcomeKind, entityType: c.entityType, entityId: c.entityId, valueUsd: c.revenueCents > 0 ? c.revenueCents / 100 : null, occurredAt: c.outcomeAt || null, ledgerEntryId: c.ledgerActionId },
+      progressMetric: c.outcomeKind === "closed" ? "attributed_closed_usd" : `attributed_${c.outcomeKind}`,
+      actor: { type: "system", id: "roi_ledger_attribution" },
+    }, svc)
+    if (!w.ok) { recording.errors.push(`${c.missionId}: ${w.reason}`); continue }
+    if (w.duplicate) recording.duplicates++
+    else recording.attached++
+  }
+  return { ok: true, recording }
+}

@@ -18,8 +18,12 @@ export interface WorkflowRunReaperResult {
   scanned: number
   escalated: number
   /** WAVE 104 (lane 104D): the mission pass on the SAME tick — deadlines passed and blockers left
-   *  72h are ESCALATED (lib/kernel/missions.ts sweepMissionDeadlines). No second reaper. */
-  missions?: { scanned: number; escalated: number; readRefused: string | null }
+   *  72h are ESCALATED, escalations unanswered past a passed deadline are FAILED
+   *  (lib/kernel/missions.ts sweepMissionDeadlines). No second reaper. */
+  missions?: { scanned: number; escalated: number; failed?: number; readRefused: string | null }
+  /** Lane 104F: stalled runs that served a mission — the mission is ESCALATED (escalateMission),
+   *  its owner manager signalled; the run's failure is the evidence. */
+  missionsEscalatedByStalledRun?: number
 }
 
 export async function reapStaleWorkflowRuns(
@@ -43,12 +47,12 @@ export async function reapStaleWorkflowRuns(
   }
 
   const { data: rows } = await svc.from("workflow_runs")
-    .select("id, chain_key, agent_user_id, status, started_at, updated_at")
+    .select("id, chain_key, agent_user_id, status, started_at, updated_at, mission_id")
     .eq("brokerage_id", brokerageId)
     .in("status", Object.keys(WORKFLOW_RUN_STALE_HOURS))
     .limit(opts?.limit ?? 100)
 
-  for (const r of (rows ?? []) as Array<{ id: string; chain_key: string | null; agent_user_id: string | null; status: string; started_at: string | null; updated_at: string | null }>) {
+  for (const r of (rows ?? []) as Array<{ id: string; chain_key: string | null; agent_user_id: string | null; status: string; started_at: string | null; updated_at: string | null; mission_id?: string | null }>) {
     result.scanned++
     const anchor = r.updated_at ?? r.started_at ?? now.toISOString()
     const ageHours = (now.getTime() - new Date(anchor).getTime()) / 3_600_000
@@ -58,6 +62,17 @@ export async function reapStaleWorkflowRuns(
         .update({ status: "failed", failed_at: now.toISOString(), error_message: `stalled in '${r.status}' for ${Math.round(ageHours)}h — reaped by the Campaign Orchestrator`, updated_at: now.toISOString() })
         .eq("id", r.id)
       if (reapErr) console.error(`[stale-run-reaper] stalled run NOT marked failed: ${reapErr.message}`)
+      // The mission this run served (m710 workflow_runs.mission_id) is ESCALATED to its owner
+      // manager — the chain the objective relied on stalled; a human or the manager decides whether
+      // to re-run it. Lane 104F wire of lib/kernel/missions.ts escalateMission. Best-effort.
+      if (r.mission_id && !reapErr) {
+        try {
+          const { escalateMission } = await import("@/lib/kernel/missions")
+          const e = await escalateMission({ brokerageId, missionId: r.mission_id, reason: `workflow run ${r.id} (${r.chain_key ?? "automation"}) stalled in '${r.status}' for ${Math.round(ageHours)}h and was reaped`, actor: { type: "manager", id: "cron_manager" } }, svc as any)
+          if (e.ok) result.missionsEscalatedByStalledRun = (result.missionsEscalatedByStalledRun ?? 0) + 1
+          else if (!e.reason.startsWith("invalid_transition")) console.error(`[stale-run-reaper] mission ${r.mission_id} NOT escalated for stalled run ${r.id}: ${e.reason}`)
+        } catch (e) { console.error(`[stale-run-reaper] mission escalation failed: ${e instanceof Error ? e.message : String(e)}`) }
+      }
       if (r.agent_user_id) {
         await sentinelWrite(svc, svc.from("notifications").insert({
           user_id: r.agent_user_id, brokerage_id: brokerageId, type: "workflow_stalled",

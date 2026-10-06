@@ -197,9 +197,9 @@ export async function evaluateImprovement(
         : { evaluator: "predictor_record", verdict: "fail", score: tuning.accuracy, why: `the record says ${tuning.confidence} (×${tuning.thresholdMultiplier}, strongest=${tuning.requireStrongest}), not the proposed ×${change.thresholdMultiplier}/strongest=${change.requireStrongest}`, detail: { tuning } }
     }
     case "policy": {
-      const parsed = parsePolicyKey(row.subject_key)
-      if (!parsed) return { evaluator: "none", verdict: "fail", score: null, why: `"${row.subject_key}" is not a registered tenant policy key`, detail: {} }
-      if (parsed.kind !== "isa") return { evaluator: "none", verdict: "inconclusive", score: null, why: `no deterministic replay exists for ${parsed.kind} policy ${row.subject_key} — a human decides`, detail: { kind: parsed.kind } }
+      const policyKey = parsePolicyKey(row.subject_key)
+      if (!policyKey) return { evaluator: "none", verdict: "fail", score: null, why: `"${row.subject_key}" is not a registered tenant policy key`, detail: {} }
+      if (policyKey.kind !== "isa") return { evaluator: "none", verdict: "inconclusive", score: null, why: `no deterministic replay exists for ${policyKey.kind} policy ${row.subject_key} — a human decides`, detail: { kind: policyKey.kind } }
       const patch: Record<string, unknown> = {}
       for (const f of REPLAYABLE_ISA_FIELDS) if (f in change) patch[f] = change[f]
       if (Object.keys(patch).length === 0) return { evaluator: "none", verdict: "inconclusive", score: null, why: "none of the proposed ISA fields drive the recorded decisions (replayable: blocked_lifecycle_states, max_touches_lead, touch_interval_days, lead_allowed_channels) — a human decides", detail: {} }
@@ -368,28 +368,29 @@ async function applyChange(svc: Svc, row: ImprovementProposalRow, actor: PolicyA
   const prior = row.evaluation?.promotion
   switch (row.subject_kind) {
     case "policy": {
-      const parsed = parsePolicyKey(row.subject_key)
-      if (!parsed) throw new Error(`"${row.subject_key}" is not a registered tenant policy key`)
-      if (parsed.kind === "settings") {
+      // Named for what the message blames (error-message honesty): the thing tested IS the policy key.
+      const policyKey = parsePolicyKey(row.subject_key)
+      if (!policyKey) throw new Error(`Policy key "${row.subject_key}" is not registered for this tenant`)
+      if (policyKey.kind === "settings") {
         const { mergeBrokerageSettings } = await import("@/lib/settings/brokerage-settings-merge")
         let previous: unknown = undefined
         const value = direction === "promote" ? change.value : prior?.previous
-        const w = await mergeBrokerageSettings(svc, row.brokerage_id, (cur) => { previous = cur[parsed.key]; return { [parsed.key]: value === null ? undefined : value } }, { policy: actor })
+        const w = await mergeBrokerageSettings(svc, row.brokerage_id, (cur) => { previous = cur[policyKey.key]; return { [policyKey.key]: value === null ? undefined : value } }, { policy: actor })
         if (!w.ok) throw new Error(w.error)
-        const v = w.policyVersions.find((p) => p.key === parsed.key)
-        return { writer: "mergeBrokerageSettings", previous, policyVersionRef: v?.version ? formatPolicyRef(parsed.key, v.version) : null }
+        const v = w.policyVersions.find((p) => p.key === policyKey.key)
+        return { writer: "mergeBrokerageSettings", previous, policyVersionRef: v?.version ? formatPolicyRef(policyKey.key, v.version) : null }
       }
-      if (parsed.kind === "isa") {
+      if (policyKey.kind === "isa") {
         const { writeIsaSettings } = await import("@/lib/ai-isa/resolve-isa-settings")
         const { currentPolicyVersion } = await import("@/lib/kernel/tenant-policy")
-        const ownerId = parsed.ownerType === "brokerage" ? row.brokerage_id : parsed.ownerId
+        const ownerId = policyKey.ownerType === "brokerage" ? row.brokerage_id : policyKey.ownerId
         const updates = (direction === "promote" ? change : (prior?.previous ?? {})) as Record<string, unknown>
-        const w = await writeIsaSettings({ owner: { ownerType: parsed.ownerType, ownerId } as any, brokerageId: row.brokerage_id, updates: updates as any, actor })
+        const w = await writeIsaSettings({ owner: { ownerType: policyKey.ownerType, ownerId } as any, brokerageId: row.brokerage_id, updates: updates as any, actor })
         if (!w.success) throw new Error(w.error ?? "ISA settings not written")
         const v = await currentPolicyVersion(svc, row.brokerage_id, row.subject_key)
         return { writer: "writeIsaSettings", previous: prior?.previous ?? change.previous ?? null, policyVersionRef: v.ok && v.version ? formatPolicyRef(row.subject_key, v.version) : null }
       }
-      throw new Error(`${parsed.kind} policy ${row.subject_key} promotes only on its own settings screen (no kernel writer here)`)
+      throw new Error(`${policyKey.kind} policy ${row.subject_key} promotes only on its own settings screen (no kernel writer here)`)
     }
     case "threshold": {
       const predictor = String(change.predictor ?? row.subject_key.replace(/^predictor:/, ""))

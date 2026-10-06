@@ -280,9 +280,58 @@ console.log("\nH. wiring — one read, not six")
   const plan = code("lib/intelligence/manager-weekly-exec-plan.ts")
   check("H4 the exec plan reads inputs.twin's risk list (deal_risk + compliance_exposure) instead of re-querying", /inputs\.twin/.test(plan) && /kind:\s*"deal_risk"/.test(src("lib/intelligence/manager-weekly-exec-plan.ts")) && /twin\.atRisk\.find/.test(plan))
   const standup = code("lib/kernel/morning-standup.ts")
-  check("H5 the morning stand-up takes the agent's capacity line from the twin when handed one, else capacityFor", /twinCapacityForAgent\(opts\.twin, standupAgentId\)/.test(standup) && /capacityFor\(supabase, brokerageId, standupAgentId/.test(standup))
+  // 104F: the line comes from the twin HANDED IN, else the last persisted one (J5) — `twin` is that resolution.
+  check("H5 the morning stand-up takes the agent's capacity line from the twin when handed one, else capacityFor", /twinCapacityForAgent\((opts\.)?twin, standupAgentId\)/.test(standup) && /opts\.twin \?\?/.test(standup) && /capacityFor\(supabase, brokerageId, standupAgentId/.test(standup))
   const fixture = stripComments(`// TOMBSTONE: buildBrokerageTwin(brokerageId) used to live here\nconst x = 1\n/* buildBrokerageTwin(brokerageId, at) */`)
   check("H6 (control) a tombstone naming the builder is NOT read as a call site", !/buildBrokerageTwin\(brokerageId/.test(fixture) && /const x = 1/.test(fixture))
+
+  // ─── lane 104F: the seams REGISTER at module load; the Command Center loads both modules first ───
+  check("H7 (before) the economic-graph seam is absent until its module loads (G1 proved the degrade on that absence)", twinSeams().contributionMargin === undefined)
+  await import("../lib/kernel/economic-graph")
+  const cm = twinSeams().contributionMargin
+  check("H7 lib/kernel/economic-graph.ts registers registerTwinSeam('contributionMargin') AT MODULE LOAD", typeof cm === "function" && src("lib/kernel/economic-graph.ts").includes('registerTwinSeam("contributionMargin"'))
+  check("H7 lib/kernel/missions.ts registers registerTwinSeam('missions') (source; the missions proof drives it)", src("lib/kernel/missions.ts").includes('registerTwinSeam("missions"') && src("lib/kernel/missions.ts").includes("activeMissionsFor("))
+  {
+    // The economic seam over an EMPTY ledger: measured, margin 0 — and over a REFUSING ledger: cents null, refusal named.
+    const empty = makeClient({})
+    const r0 = await cm!(empty as any, A, null)
+    const refusing = makeClient({}, { refuse: new Set(["transactions", "agent_relationships", "ai_tool_usage", "vendor_usage_tracking", "agent_action_ledger", "vendor_invoices", "referral_payouts", "vendor_payouts"]) })
+    const r1 = await cm!(refusing as any, A, null)
+    check("H7 the economic seam answers 0¢ (measured) on an empty ledger and null (unmeasured, refusal named) on a refused one — never a fake margin", r0.cents === 0 && /economic-graph/.test(r0.source) && r1.cents === null && /unmeasured/.test(r1.source) && /refused/.test(r1.source), JSON.stringify({ r0, r1 }))
+    const { twin } = await buildBrokerageTwin(A, NOW, { svc: makeClient(world()) as any, capacityFor: fakeCapacity, persist: false })
+    // The fixture's only ledger rows are tenant-borne ai_tool_usage costs (no commission rows) → the
+    // YTD margin is MINUS their sum, derived from the fixture rather than pinned.
+    const fixtureCost = world().ai_tool_usage.filter((r) => r.brokerage_id === A).reduce((a, r) => a + r.cost_cents, 0)
+    check("H7 with the module loaded the twin's economic.contributionMargin reads 'present' through the registered seam (no seams option passed): −Σ tenant-borne cost rows", twin.economic.contributionMargin.status === "present" && twin.economic.contributionMargin.cents === -fixtureCost && fixtureCost > 0, JSON.stringify({ cm: twin.economic.contributionMargin, blind: twin.blindSpots }))
+  }
+  const ccSrc = src("lib/kernel/command-center.ts")
+  check("H8 the Command Center loads economic-graph + missions (lazily, settled, degrading) BEFORE buildBrokerageTwin, and feeds the built twin to syncMissionProgressFromTwin", ccSrc.indexOf("Promise.allSettled([import(") < ccSrc.indexOf("buildBrokerageTwin(brokerageId") && ccSrc.includes('import("@/lib/kernel/economic-graph")') && ccSrc.includes('import("@/lib/kernel/missions")') && ccSrc.includes("syncMissionProgressFromTwin("))
+  check("H9 createMission derives a brokerage_objective's criteria through decomposeObjective (lib/kernel/missions.ts)", src("lib/kernel/missions.ts").includes("decomposeObjective(input.objectiveSpec") && src("lib/kernel/missions.ts").includes("criteriaFromDecomposition("))
+}
+
+// ─── J. lane 104F — readBrokerageTwin snapshot mode: the per-agent surfaces read the LAST PERSISTED twin ─
+console.log("\nJ. the last persisted twin — morning stand-up + team-lead brief read it, never rebuild")
+{
+  const { readBrokerageTwin, TWIN_SNAPSHOT_MAX_AGE_HOURS } = await import("../lib/kernel/brokerage-twin")
+  const teamTwin = { ...twinA, teamId: TEAM, capacity: { ...twinA.capacity, perAgent: [twinA.capacity.perAgent[0]] } }
+  const c = makeClient(world({ [TWIN_SNAPSHOT_TABLE]: [
+    { id: "snap-fresh", brokerage_id: A, team_id: null, at: iso(0.5), twin: twinA },
+    { id: "snap-older", brokerage_id: A, team_id: null, at: iso(0.75), twin: { ...twinA, digest: "older" } },
+    { id: "snap-team", brokerage_id: A, team_id: TEAM, at: iso(0.5), twin: teamTwin },
+    { id: "snap-b", brokerage_id: B, team_id: null, at: iso(0.1), twin: { ...twinA, brokerageId: B } },
+  ] }))
+  const got = await readBrokerageTwin(A, { svc: c as any, snapshot: { now: NOW } })
+  check("J1 snapshot mode returns THIS tenant's latest persisted twin (not the older one, not tenant B's) without building", got?.digest === twinA.digest && c.log.filter((l) => l.op === "select").length === 1 && c.log[0].table === TWIN_SNAPSHOT_TABLE && c.log[0].filters.includes("eq:brokerage_id"))
+  const team = await readBrokerageTwin(A, { svc: c as any, teamId: TEAM, snapshot: { now: NOW } })
+  check("J2 a teamId reads the team's own persisted twin (1 scored member), brokerage-wide reads the team_id IS NULL row", team?.teamId === TEAM && team.capacity.perAgent.length === 1 && got?.teamId === null)
+  const stale = makeClient(world({ [TWIN_SNAPSHOT_TABLE]: [{ id: "snap-stale", brokerage_id: A, team_id: null, at: iso(TWIN_SNAPSHOT_MAX_AGE_HOURS / 24 + 1), twin: twinA }] }))
+  check("J3 a snapshot older than TWIN_SNAPSHOT_MAX_AGE_HOURS → null (the surface falls back to capacityFor, never yesterday's board); a refused read → null", (await readBrokerageTwin(A, { svc: stale as any, snapshot: { now: NOW } })) === null && (await readBrokerageTwin(A, { svc: makeClient(world(), { refuse: new Set([TWIN_SNAPSHOT_TABLE]) }) as any, snapshot: { now: NOW } })) === null)
+  const foreign = makeClient(world({ [TWIN_SNAPSHOT_TABLE]: [{ id: "snap-x", brokerage_id: A, team_id: null, at: iso(0.1), twin: { ...twinA, brokerageId: B } }] }))
+  check("J4 (fail closed) a persisted twin stamped with another tenant inside is refused even when the row matches", (await readBrokerageTwin(A, { svc: foreign as any, snapshot: { now: NOW } })) === null && (await readBrokerageTwin("", { svc: c as any, snapshot: {} })) === null)
+  const standup = code("lib/kernel/morning-standup.ts")
+  check("J5 the morning stand-up reads the last persisted twin when none is handed in (readBrokerageTwin snapshot mode), then twinCapacityForAgent", /readBrokerageTwin\(brokerageId,[^)]*snapshot/.test(standup) && /twinCapacityForAgent\(twin, standupAgentId\)/.test(standup))
+  const lead = code("lib/intelligence/user-type-briefs/team-lead.ts")
+  check("J6 the team-lead brief reads the team's persisted twin for capacity exceptions (twinCapacityForAgent), capacityFor only for members the twin lacks", /readBrokerageTwin\(params\.brokerageId,[^)]*teamId: teamIds\[0\][^)]*snapshot/.test(lead) && /twinCapacityForAgent\(teamTwin, agentId\)/.test(lead) && /line \?\? await capacityFor\(/.test(lead))
 }
 
 // ─── I. registration + ownership ──────────────────────────────────────────────────────────────

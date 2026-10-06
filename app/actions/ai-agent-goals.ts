@@ -196,11 +196,38 @@ export async function updateGoalProgress(params: {
 
     if (error) throw error
 
+    // Lane 104F: a hand-updated goal is measured progress for its mission too (reaching the target completes it).
+    await recordGoalMissionProgress(caller.brokerageId, [data as { id: string; goal_type: string; current_value: number | null; mission_id: string | null }])
+
     revalidatePath("/dashboard")
     return { success: true, data }
   } catch (error) {
     return handleError(error, "updateGoalProgress")
   }
+}
+
+/**
+ * The goal → mission progress wire (lane 104F; NOT an export — this is a "use server" file, every
+ * export is a public door). For each goal linked to a mission (m710 agent_goals.mission_id), record
+ * `{ [goal_type]: current_value }` on the mission through lib/kernel/missions.ts recordMissionProgress,
+ * which COMPLETES the mission when its criterion (goal_type >= target, written by upsertAgentGoal) is
+ * met. brokerageId is the SESSION's (both callers verified it). Best-effort: a refusal is logged.
+ */
+async function recordGoalMissionProgress(
+  brokerageId: string,
+  goals: Array<{ id: string; goal_type: string; current_value: number | null; mission_id: string | null }>,
+): Promise<void> {
+  const linked = goals.filter((g) => g.mission_id && typeof g.current_value === "number")
+  if (linked.length === 0) return
+  try {
+    const { recordMissionProgress } = await import("@/lib/kernel/missions")
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+    for (const g of linked) {
+      const r = await recordMissionProgress({ brokerageId, missionId: g.mission_id as string, progress: { [g.goal_type]: Number(g.current_value) }, actor: { type: "system", id: "agent_goals_sync" } }, svc as any)
+      if (!r.ok && !r.reason.startsWith("terminal:")) console.error(`[ai-agent-goals] mission ${g.mission_id} progress NOT recorded for goal ${g.id}: ${r.reason}`)
+    }
+  } catch (e) { console.error(`[ai-agent-goals] mission progress wiring failed: ${e instanceof Error ? e.message : String(e)}`) }
 }
 
 // ============================================================================
@@ -466,6 +493,15 @@ export async function syncGoalCurrentValues(params: {
     if (errors.length > 0) {
       console.error("[v0] syncGoalCurrentValues partial errors:", errors)
     }
+
+    // Lane 104F: the goal's mission learns the measured value (lib/kernel/missions.ts
+    // recordMissionProgress keyed on the goal type — the criterion upsertAgentGoal wrote). A goal
+    // that reaches its target COMPLETES its mission there, deterministically. Tenant = the session's
+    // (refuseForeignTenant above); the service client carries the write.
+    await recordGoalMissionProgress(params.brokerageId, (await supabase
+      .from("agent_goals").select("id, goal_type, current_value, mission_id")
+      .eq("agent_id", params.agentId).eq("brokerage_id", params.brokerageId).eq("year", year)
+      .not("mission_id", "is", null)).data ?? [])
 
     revalidatePath("/dashboard")
     return { success: true, data: liveValues }

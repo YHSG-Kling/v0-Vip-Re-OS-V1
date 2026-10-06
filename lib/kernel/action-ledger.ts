@@ -671,6 +671,8 @@ export interface ChainEvent {
   created_at: string
   causation_id?: string | null
   correlation_id?: string | null
+  /** WAVE 104: a mission_events row folded into a chain carries its evidence here (reason, actor, states, ledger link). */
+  detail?: Record<string, unknown> | null
 }
 export interface ChainAction {
   id: string

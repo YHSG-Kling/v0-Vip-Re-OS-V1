@@ -29,6 +29,7 @@ import {
   type DistributionRow, type CostRow, type RelationshipRow,
 } from "../lib/kernel/economic-graph"
 import { detectSummaryAmountDrift, compareProjection } from "../lib/commission/reconcile-tracking"
+import { twinSeams } from "../lib/kernel/brokerage-twin"
 import { REAPER_NET } from "../lib/intelligence/reaper-net"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 
@@ -44,7 +45,7 @@ const src = (p: string) => stripComments(readFileSync(join(ROOT, p), "utf8"))
 const T = "txn-1", B = "brk-A", OTHER = "brk-B", AGENT = "agent-1", SPONSOR = "agent-sponsor", SPONSOR2 = "agent-sponsor-2", TEAM = "team-1"
 const d = (over: Partial<DistributionRow> & { id: string; distribution_type: string; calculated_amount: number }): DistributionRow => ({
   brokerage_id: B, transaction_id: T, entry_type: "entry", adjusts_distribution_id: null, agent_id: null, team_id: null,
-  source_of_funds: "brokerage", status: "pending", cap_status: "n/a", paid_at: null, voided_at: null, ...over,
+  source_of_funds: "brokerage", status: "pending", cap_status: "n/a", paid_at: null, ...over,
 })
 // Gross $10,000 → referral 500 + team 1,000 + residual 300 + fee 150 + agent 5,550 + brokerage 2,500 = 10,000.
 const distributions: DistributionRow[] = [
@@ -58,7 +59,7 @@ const distributions: DistributionRow[] = [
   d({ id: "c-fee", distribution_type: "fee", calculated_amount: -50, entry_type: "adjustment", adjusts_distribution_id: "d-fee" }),
   d({ id: "c-ref", distribution_type: "referral", calculated_amount: -500, entry_type: "reversal", adjusts_distribution_id: "d-ref" }),
   // a voided entry and a FOREIGN-TENANT row — neither may count
-  d({ id: "d-void", distribution_type: "fee", calculated_amount: 999, status: "voided", voided_at: "2026-09-01" }),
+  d({ id: "d-void", distribution_type: "fee", calculated_amount: 999, status: "voided" }),
   d({ id: "d-foreign", distribution_type: "brokerage", calculated_amount: 77777, brokerage_id: OTHER }),
 ]
 const costs: CostRow[] = [
@@ -171,6 +172,20 @@ async function main() {
   check("MAINTENANCE_DOMAINS.economic_graph: finance_manager accountable, co-owners named", !!dom && dom.manager === "finance_manager" && dom.proof === "test:economic-graph" && (dom.coOwners ?? []).length >= 2 && (dom.coOwners ?? []).every((c) => dom.what.includes(c)))
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { scripts: Record<string, string> }
   check("registered in package.json and in the guard chain", pkg.scripts["test:economic-graph"] === "tsx scripts/economic-graph-guard.ts" && /npm run test:economic-graph(\s|&|$)/.test(pkg.scripts.guard))
+
+  console.log("\n[G · the digital twin seam (lane 104F) — registered at module load, degrades on a refused ledger]")
+  const seam = twinSeams().contributionMargin
+  check("importing lib/kernel/economic-graph.ts registered registerTwinSeam('contributionMargin') (this guard imported it above)", typeof seam === "function" && graphSrc.includes('registerTwinSeam("contributionMargin"'))
+  // A minimal supabase-shaped client: every read resolves `answer` (empty rows, or a refusal).
+  const client = (answer: { data: any[] | null; error: { message: string } | null }) => {
+    const chain: any = new Proxy({}, { get: (_t, prop) => prop === "then" ? (res: (v: unknown) => unknown) => Promise.resolve(answer).then(res) : () => chain })
+    return { from: () => chain }
+  }
+  const empty = seam ? await seam(client({ data: [], error: null }) as any, B, null) : null
+  const refused = seam ? await seam(client({ data: null, error: { message: "permission denied for table transactions" } }) as any, B, null) : null
+  check("empty ledger → 0¢, measured, source names the loader", empty?.cents === 0 && /loadEconomicGraph/.test(empty?.source ?? ""))
+  check("POSITIVE CONTROL: a refused ledger read → cents null with the refusal named (a floor is never handed to the twin as a margin)", refused?.cents === null && /unmeasured/.test(refused?.source ?? "") && /permission denied/.test(refused?.source ?? ""), JSON.stringify(refused))
+  check("the Command Center loads this module before building the twin (so the registration has happened)", src("lib/kernel/command-center.ts").indexOf('import("@/lib/kernel/economic-graph")') < src("lib/kernel/command-center.ts").indexOf("buildBrokerageTwin(brokerageId") && src("lib/kernel/command-center.ts").includes("Promise.allSettled([import("))
 
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)

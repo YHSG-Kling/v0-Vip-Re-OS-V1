@@ -47,6 +47,7 @@ import {
   type RevenueShareModelState,
 } from "@/lib/commission/revenue-share-model"
 import type { DistributionRecord } from "@/lib/commission/types"
+import { registerTwinSeam } from "@/lib/kernel/brokerage-twin"
 
 type Client = { from: (table: string) => any }
 
@@ -169,9 +170,8 @@ export interface DistributionRow {
   status: string | null
   cap_status?: string | null
   paid_at?: string | null
-  voided_at?: string | null
 }
-export interface ObligationRow { id: string; brokerage_id: string | null; transaction_id: string | null; calculated_amount: number | string | null; status: string | null; voided_at?: string | null }
+export interface ObligationRow { id: string; brokerage_id: string | null; transaction_id: string | null; calculated_amount: number | string | null; status: string | null }
 export interface RelationshipRow extends RevenueShareEdge { id: string; brokerage_id: string | null; agent_id: string | null }
 export interface CostRow {
   table: "ai_tool_usage" | "vendor_usage_tracking" | "agent_action_ledger" | "vendor_invoices"
@@ -187,8 +187,11 @@ const toCents = (v: number | string | null | undefined): number => {
   const n = typeof v === "string" ? Number(v) : (v ?? 0)
   return Number.isFinite(n) ? Math.round((n as number) * 100) : 0
 }
-const isVoided = (r: { status: string | null; voided_at?: string | null }) =>
-  (r.status ?? "").toLowerCase() === "voided" || !!r.voided_at
+// ONE void signal: status = 'voided' (the CHECK vocabulary). `voided_at` / `voided_reason` are live
+// columns with NO writer anywhere (code, trigger, RPC — integrator census, wave 104); reading them
+// would be a second spelling nobody fills (CLAUDE.md §6). Owner item: a void writer belongs in
+// lib/commission/distribution-correction.ts, and would stamp both.
+const isVoided = (r: { status: string | null }) => (r.status ?? "").toLowerCase() === "voided"
 const emptyByKind = (): Record<EconomicShareKind, number> =>
   ({ agent: 0, brokerage: 0, team_member: 0, referral: 0, residual: 0, royalty: 0, fee: 0 })
 
@@ -521,8 +524,8 @@ export async function loadEconomicGraph(
   if (txnIds.length > 0) {
     const [c, d, o] = await Promise.all([
       svc.from("commission_calculations").select("id, brokerage_id, transaction_id, total_commission").eq("brokerage_id", brokerageId).in("transaction_id", txnIds),
-      svc.from("commission_distributions").select("id, brokerage_id, transaction_id, distribution_type, entry_type, adjusts_distribution_id, agent_id, team_id, source_of_funds, calculated_amount, status, cap_status, paid_at, voided_at").eq("brokerage_id", brokerageId).in("transaction_id", txnIds),
-      svc.from("company_books_obligations").select("id, brokerage_id, transaction_id, calculated_amount, status, voided_at").eq("brokerage_id", brokerageId).in("transaction_id", txnIds),
+      svc.from("commission_distributions").select("id, brokerage_id, transaction_id, distribution_type, entry_type, adjusts_distribution_id, agent_id, team_id, source_of_funds, calculated_amount, status, cap_status, paid_at").eq("brokerage_id", brokerageId).in("transaction_id", txnIds),
+      svc.from("company_books_obligations").select("id, brokerage_id, transaction_id, calculated_amount, status").eq("brokerage_id", brokerageId).in("transaction_id", txnIds),
     ])
     if (c.error) refuse("commission_calculations", c.error.message); else calcs = (c.data ?? []) as CalculationRow[]
     if (d.error) refuse("commission_distributions", d.error.message); else dists = (d.data ?? []) as DistributionRow[]
@@ -569,7 +572,7 @@ export async function loadEconomicGraph(
 
   const [payoutsIn, payoutsOut] = await Promise.all([
     svc.from("referral_payouts").select("id, amount_cents, received_at").eq("recipient_brokerage_id", brokerageId).not("received_at", "is", null).gte("received_at", since).lte("received_at", until).limit(5000),
-    svc.from("vendor_payouts").select("id, amount, status, completed_at").eq("brokerage_id", brokerageId).eq("status", "completed").gte("completed_at", since).lte("completed_at", until).limit(5000),
+    svc.from("vendor_payouts").select("id, amount, status, completed_at").eq("brokerage_id", brokerageId).eq("status", "paid").gte("completed_at", since).lte("completed_at", until).limit(5000),
   ])
   let referralPayoutsReceivedCents = 0, vendorPayoutsCompletedCents = 0
   if (payoutsIn.error) refuse("referral_payouts", payoutsIn.error.message)
@@ -646,3 +649,19 @@ export function assembleEconomicGraph(input: {
     measured: input.measured, warnings: input.warnings,
   }
 }
+
+// ─── the twin seam (lib/kernel/brokerage-twin.ts registerTwinSeam) ──────────
+// Registered AT MODULE LOAD (lane 104F): the Command Center's twin build lazy-imports this module
+// before buildBrokerageTwin, so economic.contributionMargin reads "present" with the ledger-derived
+// year-to-date margin. A refused ledger read makes the graph unmeasured — the seam then hands back
+// cents: null with the refusal named (a floor is not a margin), and the twin degrades honestly.
+registerTwinSeam("contributionMargin", async (svc, brokerageId, teamId) => {
+  const graph = await loadEconomicGraph(svc as Client, { brokerageId })
+  const source = "lib/kernel/economic-graph.ts loadEconomicGraph (commission_distributions + cost ledgers, YTD)"
+  if (!graph.measured) return { cents: null, source: `${source} — unmeasured: ${graph.warnings.join("; ")}` }
+  if (teamId) {
+    const team = graph.byTeam.find((t) => t.key === teamId)
+    return { cents: team ? team.contributionMarginCents : 0, source: `${source} — team ${teamId} roll-up` }
+  }
+  return { cents: graph.contributionMarginCents, source }
+})

@@ -139,10 +139,17 @@ export async function generateTeamLeadBrief(params: {
     try {
       const { capacityFor, resolveBrokerageMaxLoad } = await import("@/lib/lead-assignment/capacity-pick")
       const { hasHeadroom, AGENT_REASSIGNMENT_SUGGESTED_SIGNAL } = await import("@/lib/kernel/capacity-guardian")
-      const maxLoad = await resolveBrokerageMaxLoad(supabase, params.brokerageId)
+      // Lane 104F: the team's LAST PERSISTED twin (the Command Center's team-scoped build, no older
+      // than TWIN_SNAPSHOT_MAX_AGE_HOURS — lib/kernel/brokerage-twin.ts readBrokerageTwin, snapshot
+      // mode) already carries every scored member's capacity line (twinCapacityForAgent); a member
+      // the twin does not carry, or no fresh twin at all, falls back to capacityFor — never "fine".
+      const { readBrokerageTwin, twinCapacityForAgent } = await import("@/lib/kernel/brokerage-twin")
+      const teamTwin = teamIds.length === 1 ? await readBrokerageTwin(params.brokerageId, { svc: supabase as any, teamId: teamIds[0], snapshot: {} }) : null
+      const maxLoad = teamTwin?.capacity.maxLoad ?? await resolveBrokerageMaxLoad(supabase, params.brokerageId)
       const exceptions: Array<{ agentId: string; band: string; load: number; reasons: string[] }> = []
       for (const agentId of teamAgentIds.slice(0, 50)) {
-        const cap = await capacityFor(supabase, params.brokerageId, agentId, { maxLoad })
+        const line = twinCapacityForAgent(teamTwin, agentId)
+        const cap = line ?? await capacityFor(supabase, params.brokerageId, agentId, { maxLoad })
         if (!hasHeadroom(cap.band)) exceptions.push({ agentId, band: cap.band, load: cap.load, reasons: cap.reasons })
       }
       const { data: suggested, error: suggestedErr } = await supabase
