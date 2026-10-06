@@ -995,6 +995,16 @@ function hasTopLevelSpread(objText: string): boolean {
       // `...(cond && { col: v })` IS parsed by parseObjectTopLevelKeys; only an
       // opaque spread of an identifier (`...base`, `...fn()`) hides keys.
       if (objText[j] !== "(") return true
+      // FIX C (2026-10-06): a PARENTHESISED spread is knowable only when its operand is an
+      // object LITERAL guarded by a condition — `(cond && { … })` or `(cond ? { … } : { … })`.
+      // `...(input.patch ?? {})` parsed as "the empty literal" and the member expression that
+      // carries the real columns vanished (manager_delegations.result / spent_* filed in 1b over
+      // a live writer). Anything else inside the parens — a member, a call, a `??`/`||` whose
+      // left side is not a literal — is as opaque as `...base`.
+      const close = (() => { let d = 0; for (let k = j; k < objText.length; k++) { if (objText[k] === "(") d++; else if (objText[k] === ")") { d--; if (d === 0) return k } } return -1 })()
+      const inner = close > j ? objText.slice(j + 1, close).trim() : ""
+      const guardedLiteral = /^!?[\w.?!]+\s*&&\s*\{[\s\S]*\}$/.test(inner) || /^!?[\w.?!]+\s*\?\s*\{[\s\S]*\}\s*:\s*\{[\s\S]*\}$/.test(inner) || /^\{[\s\S]*\}$/.test(inner)
+      if (!guardedLiteral) return true
     }
   }
   return false
@@ -1035,6 +1045,21 @@ function hasTopLevelComputedKey(objText: string): boolean {
 /** Either unknowable shape means the write object's key set is not statically knowable. */
 const hasUnknowableKeys = (objText: string): boolean =>
   hasTopLevelSpread(objText) || hasTopLevelComputedKey(objText)
+
+/** The NEAREST `const|let|var NAME(: T)? = {…}` object literal before `beforeIdx` (the same
+ *  nearest-definition rule resolveVariableInsertKeys applies), as text — null when the variable
+ *  is not an object literal (an array, a .map(), a helper result). FIX C reads it for spreads. */
+function nearestObjectLiteralOf(src: string, varName: string, beforeIdx: number): string | null {
+  let best: RegExpMatchArray | null = null
+  for (const m of src.matchAll(new RegExp(`(?:const|let|var)\\s+${varName}\\s*(?::[^=]+)?=\\s*\\{`, "g"))) {
+    if (m.index! >= beforeIdx) break
+    best = m
+  }
+  if (!best) return null
+  const open = best.index! + best[0].length - 1
+  const close = sd.matchBrace(src, open)
+  return close > open ? src.slice(open, close + 1) : null
+}
 
 const noteCol = (map: Map<string, Set<string>>, table: string, col: string, site: string) => {
   let s = map.get(table)
@@ -1290,6 +1315,16 @@ function scanColumns(file: string, src: string) {
       // result by design. Treating that as an empty key set would invent a
       // read-never-written finding for every column the helper really writes.
       if (keys.length === 0) { opaqueWrite.add(table); unresolvedWriteObjects++ }
+      // ── VARIABLE WRITE OBJECT WITH A TOP-LEVEL SPREAD / COMPUTED KEY (FIX C, 2026-10-06) ──
+      // `const patch = { ...(input.patch ?? {}), status, updated_at }` + `.update(patch)` resolved
+      // to its THREE literal keys and nothing else — the spread was dropped silently, so every
+      // column that rides the spread (manager_delegations.result / spent_usd / spent_tokens, written
+      // through lib/kernel/manager-delegation.ts transitionDelegation) was filed in 1b over a live
+      // writer. The inline-object branch already treats the same shape as "not knowable"
+      // (hasUnknowableKeys); the variable branch now does too — the literal keys still count,
+      // and the table is marked OPAQUE so the unknowable remainder never reads as "written by NOBODY".
+      const varObjDef = nearestObjectLiteralOf(src, varM[2], chainStart + varM.index)
+      if (varObjDef && hasUnknowableKeys(varObjDef)) { opaqueWrite.add(table); unresolvedWriteObjects++ }
       for (const k of keys) if (cols.has(k)) noteCol(writeCols, table, k, site)
     }
     // ── MEMBER-EXPRESSION WRITE OBJECT — `.insert(v.value)` (FIX B, 2026-09-01) ──
@@ -1535,6 +1570,22 @@ stage("C1 columns")
       !stripeChain.opaque && stripeChain.write.length === 0 && stripeChain.read.length === 0)
     // The probes above marked contacts opaque 3 times; probe() restores the SET,
     // this restores the site COUNTER so the coverage line still describes the tree.
+    unresolvedWriteObjects = savedOpaqueSites
+  }
+  // ── VARIABLE WRITE OBJECT WITH A SPREAD (FIX C) — both arms ─────────────────
+  {
+    const savedOpaqueSites = unresolvedWriteObjects
+    const spreadVar = probe(`const patch: Record<string, unknown> = { ...(input.patch ?? {}), status: input.to, updated_at: now }\nawait supabase.from("contacts").update(patch).eq("id", id)`)
+    control("C1 a variable write object carrying a TOP-LEVEL SPREAD keeps its literal keys AND marks the table opaque (FIX C)",
+      spreadVar.opaque && spreadVar.write.includes("status") && spreadVar.write.includes("updated_at"), `${spreadVar.opaque} ${spreadVar.write.join(",")}`)
+    // MUST NOT WIDEN: a spread-free variable object stays fully resolved, never opaque.
+    const plainVar = probe(`const patch = { status: input.to, updated_at: now }\nawait supabase.from("contacts").update(patch).eq("id", id)`)
+    control("C1 a spread-free variable write object is NOT marked opaque (FIX C does not widen)",
+      !plainVar.opaque && plainVar.write.includes("status"), `${plainVar.opaque} ${plainVar.write.join(",")}`)
+    // MUST NOT WIDEN: the guarded-literal spread `...(cond && { k })` stays knowable.
+    const guardedVar = probe(`const patch = { ...(flag && { phone }), status: input.to }\nawait supabase.from("contacts").update(patch).eq("id", id)`)
+    control("C1 a `...(cond && { … })` spread in a variable write object stays KNOWABLE (FIX C does not widen)",
+      !guardedVar.opaque && guardedVar.write.includes("status"), `${guardedVar.opaque} ${guardedVar.write.join(",")}`)
     unresolvedWriteObjects = savedOpaqueSites
   }
   // ── EMBED JOIN COLUMNS (FIX A) — both arms, end-to-end through scanColumns ─

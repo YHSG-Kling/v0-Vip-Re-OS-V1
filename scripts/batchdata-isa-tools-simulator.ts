@@ -411,7 +411,10 @@ let sphereToolsEligible: Record<string, unknown> = {}
   // Re-anchored on the two real facts: the SAME three registries feed the
   // ONE selector call, and the selector's result is what generateText's
   // tools: actually receives (never a rival merge).
-  ok(/selectToolsForPersona\(\{\s*\.\.\.freeTools,\s*\.\.\.batchDataTools,\s*\.\.\.rentCastTools\s*\}\s*[,)]/.test(inboundEmail),
+  // Wave 105 (105C): the registry is named ONCE (`toolRegistry`) so the mission-context compiler can
+  // receive the SAME map; the rule is unchanged — the three registries flow through the ONE selector.
+  ok(/selectToolsForPersona\(\{\s*\.\.\.freeTools,\s*\.\.\.batchDataTools,\s*\.\.\.rentCastTools\s*\}\s*[,)]/.test(inboundEmail)
+     || (/const toolRegistry = \{\s*\.\.\.freeTools,\s*\.\.\.batchDataTools,\s*\.\.\.rentCastTools\s*\}/.test(inboundEmail) && /selectToolsForPersona\(toolRegistry,/.test(inboundEmail)),
      "app/actions/ai-isa/handle-inbound-email.ts: free + batchData + rentCast tools flow through the ONE cost-ranked selector (lane 74B)")
   ok(/tools:\s*\{\s*\.\.\.(?:isaTools|Object\.fromEntries\(Object\.entries\(isaTools\)[^\n]*isToolAllowedAtAuthority[^\n]*\)),\s*\.\.\.propertyAndFreeTools,?\s*\}/.test(inboundEmail),
      "app/actions/ai-isa/handle-inbound-email.ts: generateText receives the CRM tools + the selector's cost-ranked output, not a hand-merged map")

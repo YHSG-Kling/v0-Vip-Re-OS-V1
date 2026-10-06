@@ -135,6 +135,10 @@ export const VOICE_WITHHELD: readonly AppCapability[] = [
   "payment_transfer",
   "accounting_sync",
   "transaction_advance",
+  // Wave 105 (105A): a MANAGER-TO-MANAGER delegation capability (AI ISA → Listing Concierge through
+  // lib/kernel/manager-delegation.ts). A human books the appointment by speaking
+  // appointment_schedule; the prep is what the concierge does for the ISA, never a voice command.
+  "listing_appointment_prep",
 ] as const
 
 export interface IntentMatch {
