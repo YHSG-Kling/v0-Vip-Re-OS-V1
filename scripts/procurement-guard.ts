@@ -107,7 +107,7 @@ async function main() {
   check("R6 eligibility: category — the stager and the foreign tenant's photographer are never candidates", !facts.candidates.some((c) => c.vendorId === V_STAGER || c.vendorId === V_FOREIGN))
   check("R7 Fast Photo (on time, meets needed-by) outranks Cheap Photo (late history, 9-day turnaround)", rk.ranked[0]?.vendorId === V_FAST, JSON.stringify(rk.ranked.map((r) => [r.name, r.total])))
   check("R8 deterministic: the same facts rank identically", JSON.stringify(rankVendorsForRequest(facts)) === JSON.stringify(rk))
-  const flipped = rankVendorsForRequest({ ...facts, preferredVendorIds: [V_CHEAP], candidates: facts.candidates.map((c) => c.vendorId === V_CHEAP ? { ...c, quote: { amount: 100, availableOn: day(2), status: "submitted" } } : c) })
+  const flipped = rankVendorsForRequest({ ...facts, preferredVendorIds: [V_CHEAP], candidates: facts.candidates.map((c) => c.vendorId === V_CHEAP ? { ...c, quote: { amount: 100, availableOn: day(2), status: "submitted", notes: null } } : c) })
   check("R9 POSITIVE CONTROL: Cheap quoting $100 available in time + named preferred flips the winner to Cheap", flipped.ranked[0]?.vendorId === V_CHEAP, JSON.stringify(flipped.ranked.map((r) => [r.name, r.total])))
   const noEvidence = rankVendorsForRequest({ ...facts, neededBy: null, candidates: facts.candidates.map((c) => ({ ...c, rating: null, sla: null, history: { completed: 0, noShows: 0, costs: [] } })) })
   check("R10 no evidence scores NEUTRAL and says so — never a silent promotion", noEvidence.ranked.every((r) => r.factors.quality.score === 0.5 && /no ratings/.test(r.factors.quality.reason) && r.factors.availability.score === 0.5))
